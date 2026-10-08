@@ -20,6 +20,8 @@ import logging
 
 from primer.model.storage import OffsetPage
 from primer.model.user import User
+from primer.storage._patch import raw_generation
+from primer.storage.cas import patch_if_checked
 
 
 logger = logging.getLogger(__name__)
@@ -61,8 +63,18 @@ async def ensure_admin_exists(storage_provider) -> None:
         return  # no eligible user to promote
 
     candidate = min(eligible, key=lambda u: u.created_at)
-    promoted = candidate.model_copy(update={"role": "admin"})
-    await storage.update(promoted)
+    # Write ONLY the role, guarded on the role read above (SEC-05 review): a whole-document write of
+    # the row read at boot would put back a session_epoch (or a disabled flag) another replica changed
+    # meanwhile, e.g. a sign-out-everywhere during a rolling deploy.
+    promoted = await patch_if_checked(
+        storage, candidate.id, {"role": "admin"},
+        where={"role": [raw_generation(candidate, "role")]},
+    )
+    if promoted is None:
+        logger.info(
+            "bootstrap: role of %s changed while promoting; leaving it", candidate.username,
+        )
+        return
     logger.warning(
         "bootstrap: no admin user found; promoted %s (id=%s) to admin",
         promoted.username,

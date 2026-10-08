@@ -39,6 +39,7 @@ from primer.auth.passwords import hash_password, verify_password
 from primer.auth.throttle import LoginThrottle
 from primer.auth.tokens import sign_session
 from primer.auth.user_writes import stamp_login, write_user_fields
+from primer.model.except_ import NotFoundError
 from primer.model.user import User
 from primer.storage._predicate import FieldRef, Op, Predicate, Value
 from primer.model.storage import OffsetPage
@@ -345,7 +346,11 @@ async def login(
     # password change had moved, re-validating revoked cookies. The guard also refuses the login if
     # the password changed or the account was disabled while the hash was being verified.
     storage = get_storage_provider(request).get_storage(User)
-    stored = await stamp_login(storage, user, at=datetime.now(timezone.utc))
+    try:
+        stored = await stamp_login(storage, user, at=datetime.now(timezone.utc))
+    except NotFoundError:
+        # The account was deleted while its password was being verified.
+        stored = None
     if stored is None:
         logger.info("auth.login fail (changed during verify) username=%s", username)
         raise HTTPException(
