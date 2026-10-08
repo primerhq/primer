@@ -45,6 +45,7 @@ from primer.api.deps import (
 )
 from primer.channel.reply_binding import ReplyTarget
 from primer.model.event_matcher import EventMatcher
+from primer.model.principal import PrincipalRef
 from primer.model.trigger import (
     Subscription,
     SubscriptionConfig,
@@ -137,6 +138,20 @@ def _deps(
     )
 
 
+def _owner(request: Request) -> PrincipalRef | None:
+    """The caller, recorded as the owner of the trigger or subscription it saves.
+
+    A fired run is ranked no higher than its owners (security review A-20,
+    :mod:`primer.trigger.owner`), so the owner is server-set from the
+    request's resolved actor (``AuthMiddleware``), never read from a body.
+    ``actor`` is absent only when auth is enabled and the request is
+    unauthenticated, which ``require_user`` refuses before this runs; None
+    then records no owner, which fires as an ordinary user.
+    """
+    actor = getattr(request.state, "actor", None)
+    return PrincipalRef.from_principal(actor) if actor is not None else None
+
+
 def _raise_code(status: int, code: str, detail: str) -> None:
     """Raise an HTTPException with ``{detail: {code, message}}`` body."""
     raise HTTPException(
@@ -153,6 +168,7 @@ def _raise_code(status: int, code: str, detail: str) -> None:
 @triggers_router.post("", status_code=201, summary="Create a trigger")
 async def create_trigger_endpoint(
     body: TriggerCreateBody,
+    request: Request,
     sp=Depends(get_storage_provider),
     claim_engine=Depends(get_claim_engine),
     event_bus=Depends(get_event_bus),
@@ -165,6 +181,7 @@ async def create_trigger_endpoint(
             description=body.description,
             config=body.config,
             enabled=body.enabled,
+            owner=_owner(request),
             deps=deps,
         )
     except TriggerSlugConflict as exc:
@@ -221,6 +238,7 @@ async def get_trigger_endpoint(
 @triggers_router.put("/{trigger_id}", summary="Update a trigger")
 async def update_trigger_endpoint(
     body: TriggerUpdateBody,
+    request: Request,
     trigger_id: str = Path(...),
     sp=Depends(get_storage_provider),
     claim_engine=Depends(get_claim_engine),
@@ -234,6 +252,7 @@ async def update_trigger_endpoint(
             description=body.description,
             enabled=body.enabled,
             config=body.config,
+            owner=_owner(request),
             deps=deps,
         )
     except TriggerNotFound as exc:
@@ -341,6 +360,7 @@ async def fire_now_endpoint(
 )
 async def create_subscription_endpoint(
     body: SubscriptionCreateBody,
+    request: Request,
     trigger_id: str = Path(...),
     sp=Depends(get_storage_provider),
     claim_engine=Depends(get_claim_engine),
@@ -357,6 +377,7 @@ async def create_subscription_endpoint(
             enabled=body.enabled,
             event_matcher=body.event_matcher,
             reply_target=body.reply_target,
+            owner=_owner(request),
             deps=deps,
         )
     except TriggerNotFound as exc:
@@ -425,6 +446,7 @@ async def get_subscription_endpoint(
 )
 async def update_subscription_endpoint(
     body: SubscriptionUpdateBody,
+    request: Request,
     trigger_id: str = Path(...),
     subscription_id: str = Path(...),
     sp=Depends(get_storage_provider),
@@ -452,6 +474,7 @@ async def update_subscription_endpoint(
         sub = await update_subscription(
             trigger_id=trigger_id,
             subscription_id=subscription_id,
+            owner=_owner(request),
             deps=deps,
             **kwargs,
         )

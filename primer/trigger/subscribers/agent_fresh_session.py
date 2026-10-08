@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import logging
 
-from primer.model.principal import PrincipalRef
 from primer.model.storage import Op, OffsetPage
 from primer.model.trigger import Subscription
 from primer.model.workspace_session import (
@@ -32,6 +31,7 @@ from primer.trigger.subscribers import (
     check_subscription_busy,
     register,
 )
+from primer.trigger.owner import principal_for_fire
 from primer.workspace.session_factory import (
     SessionFactoryDeps,
     start_workspace_session,
@@ -110,12 +110,11 @@ class AgentFreshSessionDispatcher:
                     "fired_at": fire_context.get("fired_at"),
                 },
                 parent_session_id=None,
-                initiated_by=PrincipalRef(
-                    type="trigger",
-                    id=sub.trigger_id,
-                    display=sub.trigger_id,
-                    role=None,
-                    source="internal",
+                # The run is the owners', ranked by their current roles,
+                # never an internal actor (security review A-20); the
+                # trigger provenance rides in the metadata above.
+                initiated_by=await principal_for_fire(
+                    sub, deps.storage_provider,
                 ),
                 deps=factory_deps,
             )

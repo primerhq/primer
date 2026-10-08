@@ -322,9 +322,11 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
     # ``initiated_by`` propagates this session's own attribution onto the
     # ToolExecutionManager so a tool that spawns a child session
     # (create_workspace_session) inherits it instead of falling back to
-    # the system principal. ``session.initiated_by`` is only absent for
-    # historical rows created before this attribution landed.
-    initiated_by = session.initiated_by or PrincipalRef.system()
+    # the system principal. ``session.initiated_by`` is absent on rows
+    # created before this attribution landed and on the "main" session a
+    # workspace create used to seed with none; a user can reach both, so
+    # they rank as an ordinary user, never as system (security review A-20).
+    initiated_by = session.initiated_by or PrincipalRef.unattributed()
     gis = pool._build_graph_invocation_services(
         workspace=workspace,
         workspace_session=agent_session,
@@ -469,8 +471,9 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
 
     # This graph session's own attribution, propagated onto every
     # per-node ToolExecutionManager so a tool_call node's
-    # create_workspace_session inherits it (see build_agent_executor).
-    initiated_by = session.initiated_by or PrincipalRef.system()
+    # create_workspace_session inherits it (see build_agent_executor). An
+    # unattributed row fails closed, as in build_agent_executor.
+    initiated_by = session.initiated_by or PrincipalRef.unattributed()
 
     async def tool_manager_resolver(agent):
         toolset_ids = _toolset_ids_from_scoped(agent.tools)

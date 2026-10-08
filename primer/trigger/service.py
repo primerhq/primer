@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from primer.model.except_ import NotFoundError
+from primer.model.principal import PrincipalRef
 from primer.model.storage import OffsetPage, Op
 from primer.model.trigger import (
     Subscription,
@@ -158,9 +159,15 @@ async def create_trigger(
     description: str | None,
     config,
     enabled: bool = True,
+    owner: PrincipalRef | None = None,
     deps: ServiceDeps,
 ) -> Trigger:
     """Create a new Trigger row.
+
+    ``owner`` is the caller (the REST actor or the calling run's
+    ``initiated_by``); a fired run is ranked no higher than it (see
+    :mod:`primer.trigger.owner`). None records no owner, which fires as an
+    ordinary user.
 
     Slug uniqueness is enforced via a pre-write find(); the storage
     layer's create() also raises ConflictError on id clash but that
@@ -204,6 +211,7 @@ async def create_trigger(
         enabled=enabled,
         next_fire_at=nxt,
         created_at=_now(),
+        owner=owner,
     )
     await storage.create(trigger)
     await _upsert_claim_if_eligible(trigger, deps=deps)
@@ -217,9 +225,14 @@ async def update_trigger(
     description: str | None = None,
     enabled: bool | None = None,
     config=None,
+    owner: PrincipalRef | None = None,
     deps: ServiceDeps,
 ) -> Trigger:
     """Partial update.
+
+    The caller becomes the owner: whoever last saved a trigger is who its
+    runs are ranked by. ``owner=None`` (a call with no identity) clears it,
+    so the trigger fires as an ordinary user.
 
     Changing the trigger's ``config.kind`` discriminator is rejected
     with :class:`TriggerKindImmutable` (delete + recreate is the
@@ -233,6 +246,7 @@ async def update_trigger(
         raise TriggerKindImmutable(
             f"cannot change kind from {trigger.config.kind!r} to {config.kind!r}"
         )
+    trigger.owner = owner
     if name is not None:
         trigger.name = name
     if description is not None:
@@ -324,9 +338,13 @@ async def create_subscription(
     enabled: bool = True,
     event_matcher=None,
     reply_target=None,
+    owner: PrincipalRef | None = None,
     deps: ServiceDeps,
 ) -> Subscription:
     """Create a subscription bound to ``trigger_id``.
+
+    ``owner`` is the caller; a fresh-session run the subscription fires is
+    attributed to it (see :mod:`primer.trigger.owner`).
 
     Subscriptions with ``kind='parked_session'`` are reserved for the
     ``subscribe_to_trigger`` yielding tool — the REST + toolset create
@@ -353,6 +371,7 @@ async def create_subscription(
         event_matcher=event_matcher,
         reply_target=reply_target,
         created_at=_now(),
+        owner=owner,
     )
     await subs_storage.create(sub)
     return sub
@@ -373,9 +392,12 @@ async def update_subscription(
     description: Any = _UNSET,
     event_matcher: Any = _UNSET,
     reply_target: Any = _UNSET,
+    owner: PrincipalRef | None = None,
     deps: ServiceDeps,
 ) -> Subscription:
     """Partial update.
+
+    The caller becomes the owner, as in :func:`update_trigger`.
 
     Nullable string fields (``payload_template``, ``description``) use
     the ``_UNSET`` sentinel so callers can leave them untouched while
@@ -385,6 +407,7 @@ async def update_subscription(
     sub = await subs_storage.get(subscription_id)
     if sub is None or sub.trigger_id != trigger_id:
         raise SubscriptionNotFound(subscription_id)
+    sub.owner = owner
     if payload_template is not _UNSET:
         sub.payload_template = payload_template
     if parallelism is not None:

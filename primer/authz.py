@@ -32,19 +32,17 @@ _ROLE_RANK = {"restricted": 0, "user": 1, "admin": 2}
 def _role_allows(actor: "Principal | PrincipalRef | None", need: str) -> bool:
     """True iff ``actor`` may invoke a tool requiring role ``need``.
 
-    Always-allow actors (keyed on ``type``):
+    The only always-allow actor (keyed on ``type``) is ``system``: the
+    auth-disabled / internal bypass principal.
 
-    * ``system`` -- the auth-disabled / internal bypass principal.
-    * ``trigger`` -- an internal automation actor: a trigger-fired run
-      identified by its trigger id, carrying no human ``role``. A trigger
-      is trusted internal automation and is allowed through the floor
-      exactly like ``system``.
-
-    Note: the ``trigger`` always-allow branch is exercised only by the
-    agent tool path; the MCP consumer (``invoke_exposed``) never sees a
-    trigger-typed Principal -- ``AuthMiddleware`` mints only
-    ``system`` / ``api_token`` / ``user`` for HTTP/MCP -- so this shared
-    predicate does not widen the MCP floor in practice.
+    A ``trigger``-typed actor is NOT always allowed (security review
+    A-20). A trigger-fired run is attributed to the people who set the
+    trigger up and ranked by their current role
+    (:mod:`primer.trigger.owner`); the only trigger-typed refs left are
+    the runs of rows saved before owners were recorded, which carry
+    ``role="user"`` and are ranked like any other actor. Waving the type
+    through let a ``role=user`` account build a trigger whose run cleared
+    every admin floor.
 
     We key on ``type`` (NOT ``source == "internal"``): an ``api_token``
     actor is also ``source == "internal"`` but must keep being ranked by
@@ -58,7 +56,7 @@ def _role_allows(actor: "Principal | PrincipalRef | None", need: str) -> bool:
     """
     if actor is None:
         return False
-    if actor.type in ("system", "trigger"):
+    if actor.type == "system":
         return True
     return _ROLE_RANK.get(actor.role, -1) >= _ROLE_RANK.get(need, 99)
 
