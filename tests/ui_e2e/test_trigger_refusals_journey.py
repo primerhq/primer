@@ -4,17 +4,21 @@ Two real refusals from the real server:
 
 * a duplicate slug in the create wizard: the banner on step 3 is titled "Create failed" (no code in it), carries the server's own message and one sentence on what to do;
 * Fire now on a trigger that was deleted underneath the open detail page: the banner is titled "Fire failed" and carries the server's explanation, not the bare HTTP title "Not Found" the
-  fire block used to show because it never read ``detail``.
+  fire block used to show because it never read ``detail``;
+* Fire now after the session ended (the #572 review): the auth gate answers 401 with no message and the code in ``extensions.error``. This scratch server runs with auth off, so the
+  write is answered in the browser, but with the body the REAL ``require_user`` and error handlers produce (``tests/_support/trigger_envelopes.py``), not a hand-built dict.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import json
 
 import httpx
 from playwright.sync_api import Page, expect
 
 from tests._support.smk import smk
+from tests._support.trigger_envelopes import real_envelopes
 from tests.ui_e2e._shell_helpers import open_legacy_route, open_view
 
 pytestmark = smk("SMK-UI-03", status="partial")
@@ -96,4 +100,36 @@ def test_a_failed_fire_shows_the_servers_explanation_and_a_plain_title(page: Pag
         assert "was not found" in shown and "Go back to the triggers list." in shown, shown
         assert "trigger_not_found" not in shown and "Fire failed (" not in shown, shown
     finally:
+        _remove(base_url, slug)
+
+
+def test_fire_now_after_the_session_ended_says_so_and_never_prints_the_code(page: Page, base_url: str, console_url: str, unique_suffix: str) -> None:
+    slug = f"rf-auth-{unique_suffix}"
+    when = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=30)).isoformat()
+    with httpx.Client(base_url=base_url, timeout=30.0) as c:
+        r = c.post("/v1/triggers", json={"slug": slug, "name": slug, "description": None, "config": {"kind": "delayed", "fire_at": when}, "enabled": True})
+        assert r.status_code == 201, r.text
+        trigger_id = r.json()["id"]
+    body = json.dumps(real_envelopes()["session_ended"])
+    answered: list[str] = []
+
+    def _ended(route) -> None:
+        answered.append(route.request.url)
+        route.fulfill(status=401, content_type="application/problem+json", body=body)
+
+    try:
+        page.route("**/v1/triggers/*/fire_now", _ended)
+        open_legacy_route(page, console_url, f"triggers/{trigger_id}")
+        fire = page.get_by_role("button", name="Fire now")
+        expect(fire).to_be_visible(timeout=20_000)
+        fire.click()
+
+        banner = page.locator(".banner, [role='alert']").filter(has_text="Fire failed")
+        expect(banner.first).to_be_visible(timeout=15_000)
+        shown = banner.first.inner_text()
+        assert answered, "the stubbed fire_now was never called"
+        assert "Your session has ended; sign in again." in shown, shown
+        assert "auth_required" not in shown and "Fire failed (" not in shown, shown
+    finally:
+        page.unroute("**/v1/triggers/*/fire_now")
         _remove(base_url, slug)
