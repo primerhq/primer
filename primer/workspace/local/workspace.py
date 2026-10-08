@@ -775,7 +775,11 @@ class LocalWorkspace(Workspace):
             self._sessions.clear()
 
     async def end_all_sessions(self) -> None:
-        """End every cached session that is not already ENDED (as ``completed``). For a workspace that is being destroyed."""
+        """End every cached session that is not already ENDED (as ``completed``). For a workspace that is being destroyed.
+
+        One session that cannot be ended (its state repo is already broken) is logged and does not stop the rest, as the sandbox
+        variant does.
+        """
         async with self._lock:
             for session in list(self._sessions.values()):
                 try:
@@ -783,6 +787,11 @@ class LocalWorkspace(Workspace):
                 except ConflictError:
                     # already ended; fine
                     pass
+                except Exception as exc:  # noqa: BLE001 - one broken session must not stop the others from being ended
+                    logger.warning(
+                        "LocalWorkspace: ending a session failed",
+                        extra={"workspace_id": self.id, "session_id": session.session_id, "error": str(exc)},
+                    )
 
     def _refuse_reserved(self, resolved: Path, original: str) -> None:
         """Block writes / deletes inside ``.state`` and ``.tmp``."""
