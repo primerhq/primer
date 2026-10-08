@@ -132,6 +132,12 @@ function TR_webhookUrl(trigger) {
   return `${origin}/v1/webhooks/${token}`;
 }
 
+// What a failed trigger write says: the server's own explanation first (a 403 on a webhook secret says WHY: only the trigger's owner or an
+// admin may change it), then its title, then the caller's fallback. The title alone ("Forbidden") tells the user nothing to act on.
+function TR_writeErrorText(err, fallback) {
+  return (err && (err.detail || err.message || err.title)) || fallback;
+}
+
 // Copy text to clipboard + flash a brief toast.
 function TR_CopyButton({ text, label, testId }) {
   const [copied, setCopied] = React.useState(false);
@@ -1257,6 +1263,7 @@ function TR_TriggerDetail({ id }) {
   // Webhook-specific state
   const [rotateBusy, setRotateBusy] = React.useState(false);
   const [rotateError, setRotateError] = React.useState(null);
+  const [hmacError, setHmacError] = React.useState(null);
   const [hmacDialogOpen, setHmacDialogOpen] = React.useState(false);
 
   const refetchAll = React.useCallback(() => {
@@ -1318,8 +1325,7 @@ function TR_TriggerDetail({ id }) {
       await apiFetch("POST", "/triggers/" + encodeURIComponent(id) + "/rotate_token", {});
       refetchAll();
     } catch (err) {
-      const msg = (err && (err.message || err.title)) || "Rotate failed";
-      setRotateError(msg);
+      setRotateError(TR_writeErrorText(err, "Rotate failed"));
     } finally {
       setRotateBusy(false);
     }
@@ -1458,6 +1464,7 @@ function TR_TriggerDetail({ id }) {
                             confirmLabel: "Clear",
                             danger: true,
                           }))) return;
+                          setHmacError(null);
                           try {
                             await apiFetch(
                               "PUT",
@@ -1465,12 +1472,18 @@ function TR_TriggerDetail({ id }) {
                               { config: { kind: "webhook", hmac_secret: null } },
                             );
                             refetchAll();
-                          } catch (_e) { /* ignore */ }
+                          } catch (err) {
+                            // A refusal (403 for anyone but the owner or an admin) used to vanish: the secret stayed and nothing said so.
+                            setHmacError(TR_writeErrorText(err, "Could not clear the HMAC secret"));
+                          }
                         }}
                         data-testid="clear-hmac-btn"
                       >
                         Clear
                       </Btn>
+                    )}
+                    {hmacError && (
+                      <span className="muted text-sm" role="alert" data-testid="hmac-error" style={{ color: "var(--red)" }}>{hmacError}</span>
                     )}
                   </dd>
                   <dt>Token</dt>
@@ -2192,8 +2205,7 @@ function TR_HmacSecretDialog({ triggerId, onClose, onSaved }) {
       onSaved();
     } catch (err) {
       if (!mountedRef.current) return;
-      const msg = (err && (err.message || err.title)) || "Save failed";
-      setError({ message: msg });
+      setError({ message: TR_writeErrorText(err, "Save failed") });
     } finally {
       if (mountedRef.current) setBusy(false);
     }
