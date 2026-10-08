@@ -86,3 +86,98 @@ async def test_cancelling_a_yield_that_is_not_an_approval_is_unchanged(client, a
     accepted = await client.post(_cancel_url("cy-3", "tc-3"), json={})
 
     assert accepted.status_code == 202, accepted.text
+
+
+# ---- a graph park is judged by the gate that was parked, not by its top-level projection (follow-up of #540 review) -------------------
+
+
+def _graph_park_with_a_keyless_projection(session_id: str, *, tool_call_id: str, approvers: dict | None, in_checkpoint: bool = True) -> WorkspaceSession:
+    """A graph park whose PRIMARY gate is a ToolCall node's approval, shaped as production writes it.
+
+    The gate itself (with its stamped ``approvers``) lives only in ``graph_checkpoint.pending_toolcalls``. The top-level ``yielded`` is a
+    projection of it (``_CheckpointMixin._build_pending_park_yield``) that carries ``original_call`` and nothing else, and
+    ``pending_dispatch`` is the channel-prompt view of the same gate (also ``original_call`` only). So the top-level
+    ``resume_metadata`` has no ``approvers`` key whatever the gate says.
+    """
+    now = datetime.now(UTC)
+    event_key = f"tool_approval:{session_id}:{tool_call_id}"
+    original_call = {"id": tool_call_id, "name": "delete_workspace", "arguments": {"id": "ws-x"}}
+    gate = {
+        "node_id": "worker", "tool_call_id": tool_call_id, "parked_event_key": event_key, "arguments": original_call["arguments"],
+        "tool_name": "_approval", "scoped_tool_call_id": None,
+        "resume_metadata": {
+            "policy_id": "pol", "approval_type": "required", "gate_reason": None, "approvers": approvers, "original_call": original_call,
+        },
+    }
+    return WorkspaceSession(
+        id=session_id, workspace_id="ws", binding=AgentSessionBinding(kind="agent", agent_id="agt"), status=SessionStatus.RUNNING,
+        created_at=now, parked_status="parked", parked_at=now, parked_event_key=event_key, parked_event_keys=[event_key],
+        parked_state={
+            "tool_call_id": tool_call_id,
+            "yielded": {"tool_name": "_approval", "event_key": event_key, "resume_metadata": {"original_call": original_call}, "event_keys": [event_key]},
+            "graph_checkpoint": {
+                "pending_toolcalls": [gate] if in_checkpoint else [],
+                "pending_agent_yields": [],
+                "pending_dispatch": [
+                    {"kind": "_approval", "node_id": "worker", "tool_call_id": tool_call_id, "resume_metadata": {"original_call": original_call}},
+                ],
+            },
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_graph_parks_primary_toolcall_gate_restricted_to_alice_cannot_be_rejected_by_bob_cancelling_it(client, app) -> None:
+    """The route used to judge the caller by the TOP-LEVEL ``yielded.resume_metadata``, which for this gate is ``{"original_call": ...}``
+    with no ``approvers`` key: that reads as "anyone", so bob rejected a gate routed to alice. The gate's own stamp is judged now."""
+    await _register_admin(client)
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    await storage.create(_graph_park_with_a_keyless_projection("cy-4", tool_call_id="tc-4", approvers={"kind": "users", "users": ["alice"]}))
+    published = _Published(app.state.event_bus)
+
+    await _login_user(client, app, "bob")
+    refused = await client.post(_cancel_url("cy-4", "tc-4"), json={"reason": "no"})
+
+    assert refused.status_code == 403, f"bob rejected a graph gate routed to alice by cancelling it: {refused.text}"
+    assert refused.json()["extensions"]["error"] == "approver_mismatch"
+    assert published.events == [], "a refused cancel reached the event bus"
+
+    await _login_user(client, app, "alice")
+    accepted = await client.post(_cancel_url("cy-4", "tc-4"), json={"reason": "no"})
+    assert accepted.status_code == 202, accepted.text
+    assert [key for key, _ in published.events] == ["tool_approval:cy-4:tc-4"]
+
+
+@pytest.mark.asyncio
+async def test_a_graph_parks_unrestricted_toolcall_gate_can_still_be_cancelled_by_any_user(client, app) -> None:
+    await _register_admin(client)
+    await app.state.storage_provider.get_storage(WorkspaceSession).create(
+        _graph_park_with_a_keyless_projection("cy-5", tool_call_id="tc-5", approvers={"kind": "anyone"}),
+    )
+
+    await _login_user(client, app, "carol")
+    accepted = await client.post(_cancel_url("cy-5", "tc-5"), json={})
+
+    assert accepted.status_code == 202, accepted.text
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_whose_gate_cannot_be_resolved_is_admin_only(client, app) -> None:
+    """The park's primary id matches but no pending entry carries it (a checkpoint that lost its entry): the gate's spec cannot be read,
+    so the route fails CLOSED, as an unreadable stamp does. An admin can still cancel it, so the park cannot wedge."""
+    await _register_admin(client)
+    await app.state.storage_provider.get_storage(WorkspaceSession).create(
+        _graph_park_with_a_keyless_projection("cy-6", tool_call_id="tc-6", approvers={"kind": "users", "users": ["alice"]}, in_checkpoint=False),
+    )
+    published = _Published(app.state.event_bus)
+
+    await _login_user(client, app, "bob")
+    refused = await client.post(_cancel_url("cy-6", "tc-6"), json={})
+    assert refused.status_code == 403, f"a gate that resolved to nothing was open to a plain user: {refused.text}"
+    assert refused.json()["extensions"]["error"] == "approver_mismatch"
+    assert published.events == []
+
+    login = await client.post("/v1/auth/login", json={"username": "aradmin", "password": "aradminpass1"})
+    assert login.status_code == 200, login.text
+    accepted = await client.post(_cancel_url("cy-6", "tc-6"), json={})
+    assert accepted.status_code == 202, accepted.text

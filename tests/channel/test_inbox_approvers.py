@@ -139,7 +139,8 @@ def _gate_metadata(tool_call_id: str, approvers: dict | None) -> dict:
 
 def _graph_park(session_id: str, *, toolcalls: list[tuple[str, str, dict | None]], agent_yields: list[tuple[str, str, dict | None]] = ()) -> WorkspaceSession:
     """A graph park whose checkpoint holds the given gates: ``(tool_call_id, event_key, approvers)`` in ``pending_toolcalls`` (a ToolCall
-    node's gate) and in ``pending_agent_yields`` (an agent node's ``_approval`` yield)."""
+    node's gate, which production also writes to ``pending_dispatch`` as ``original_call`` only) and in ``pending_agent_yields`` (an agent
+    node's ``_approval`` yield, which is NOT stored in ``pending_dispatch``)."""
     now = datetime.now(UTC)
     calls = [
         {
@@ -162,7 +163,17 @@ def _graph_park(session_id: str, *, toolcalls: list[tuple[str, str, dict | None]
         parked_state={
             "tool_call_id": primary,
             "yielded": {"tool_name": "_approval", "event_key": f"tool_approval:{session_id}:{primary}", "resume_metadata": {}},
-            "graph_checkpoint": {"pending_toolcalls": calls, "pending_agent_yields": yields, "pending_dispatch": []},
+            "graph_checkpoint": {
+                "pending_toolcalls": calls,
+                "pending_agent_yields": yields,
+                "pending_dispatch": [
+                    {
+                        "kind": "_approval", "node_id": c["node_id"], "tool_call_id": c["tool_call_id"],
+                        "resume_metadata": {"original_call": c["resume_metadata"]["original_call"]},
+                    }
+                    for c in calls
+                ],
+            },
         },
     )
 
@@ -204,3 +215,40 @@ async def test_the_reply_is_published_to_the_event_key_of_the_gate_that_was_chec
     assert event.event_key == "tool_approval:s-b:open-node:dup", (
         f"the reply was admitted by the open gate but published to {event.event_key!r}"
     )
+
+
+# ---- a reply is judged by a gate it can read, or refused (follow-up of #540 review) -----------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_reply_is_refused_when_the_checkpoint_names_the_gate_but_holds_no_entry_whose_spec_can_be_read(world) -> None:
+    """``pending_dispatch`` names an ``_approval`` gate for the tool_call_id but ``pending_toolcalls`` has no entry for it (an
+    inconsistent checkpoint). The reply used to fall through to the event-key lookup, which matched the ``pending_dispatch`` entry and
+    published with NO check, though the spec of that gate cannot be known. It cannot be shown to be unrestricted, so it is refused."""
+    park = _graph_park("s-d", toolcalls=[])
+    park.parked_state["graph_checkpoint"]["pending_dispatch"] = [
+        {"kind": "_approval", "node_id": "worker", "tool_call_id": "tc-1", "resume_metadata": {"original_call": {"id": "tc-1", "name": "x", "arguments": {}}}},
+    ]
+    await world.sp.get_storage(WorkspaceSession).create(park)
+
+    with pytest.raises(ApproverRefusedError):
+        await world.inbox.handle_response(_reply("s-d"))
+
+    assert await world.published() is None, "a reply for a gate whose spec could not be read reached the event bus"
+
+
+@pytest.mark.asyncio
+async def test_a_park_with_no_tool_name_is_not_matched_as_an_approval_gate(world) -> None:
+    """The event-key lookup used to accept a park whose ``tool_name`` is ``None`` as an approval gate (a "legacy" shape nothing writes
+    today). The gate resolver never reads such an entry, so the reply was published to that park's own key with no check. A nameless
+    park is not an approval gate: the reply goes to the reconstructed key and never to the key the nameless park carries."""
+    row = _parked("s-n", approvers={"kind": "users", "users": ["alice"]})
+    row.parked_state["yielded"]["tool_name"] = None
+    row.parked_state["yielded"]["event_key"] = "nameless-park-key"
+    await world.sp.get_storage(WorkspaceSession).create(row)
+
+    await world.inbox.handle_response(_reply("s-n"))
+
+    event = await world.published()
+    assert event is not None
+    assert event.event_key == "tool_approval:s-n:tc-1", f"the reply was matched to a nameless park and published to {event.event_key!r}"
