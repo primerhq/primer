@@ -225,3 +225,17 @@ async def test_reset_rejects_force_deleted_even_when_workspace_healthy():
     )
     with pytest.raises(ConflictError):
         await reset_session(workspace_id="ws-1", session_id="sess-1", deps=deps)
+
+
+@pytest.mark.asyncio
+async def test_reset_clears_the_last_turn_error():
+    """A reopened session is a new invocation: the failure of the turn before it no longer describes the row (C-024)."""
+    from primer.model.workspace_session import LastTurnError
+
+    row = _ended_row(reason="failed")
+    row.last_turn_error = LastTurnError(code="server_error", at=datetime.now(timezone.utc))
+    deps = SessionResetDeps(storage_provider=_SP(row), workspace_registry=_Registry(_WS(_Slot())))
+
+    out, _invocation = await reset_session(workspace_id="ws-1", session_id="sess-1", deps=deps)
+
+    assert out.last_turn_error is None

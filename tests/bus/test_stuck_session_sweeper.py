@@ -417,3 +417,23 @@ async def test_a_session_someone_else_ended_in_the_gap_keeps_their_reason(fake_s
     assert (row.status, row.ended_reason, row.ended_detail) == (SessionStatus.ENDED, "cancelled", None), (
         "the first terminal reason wins: the sweeper must not rewrite why a session ended"
     )
+
+
+@pytest.mark.asyncio
+async def test_leaves_a_first_turn_that_failed_and_rests(fake_storage_provider):
+    """C-024: a failed turn does not bump turn_no and its release drops the lease, so a first turn that failed and left the session resting
+    (WAITING, turn_no 0, no lease, past the grace) has every mark of a session that never started. ``last_turn_error`` is what tells them apart:
+    ending it as ``failed / never_started`` would replace the real code with a wrong one and kill a session the operator can still continue."""
+    from primer.model.workspace_session import LastTurnError
+
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    failed = LastTurnError(code="server_error", at=datetime.now(timezone.utc) - timedelta(minutes=20))
+    await storage.create(_session("se-rests", age_seconds=3600, status=SessionStatus.WAITING, last_turn_error=failed))
+    await storage.create(_session("se-never", age_seconds=3600, status=SessionStatus.WAITING))
+
+    reaped = await _sweeper(storage)._tick()
+
+    assert reaped == 1
+    rests, never = await storage.get("se-rests"), await storage.get("se-never")
+    assert rests.status == SessionStatus.WAITING and rests.ended_reason is None
+    assert never.status == SessionStatus.ENDED and never.ended_detail == "never_started"
