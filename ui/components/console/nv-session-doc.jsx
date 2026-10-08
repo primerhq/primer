@@ -952,7 +952,7 @@ function NV_DecisionCard(props) {
               );
             }}>Approve</button>
           <button type="button" className="nv-btn-reject"
-            data-testid="nv-reject"
+            data-testid="nv-reject" data-armed={rejOpen ? "true" : undefined}
             // uiv2 Wave 3 (a-14 fold): this card is now the ONLY reject
             // path (the records-sheet's AP_RecordRow, which explicitly
             // disabled its own Send-rejection until reason.trim(), is
@@ -965,7 +965,13 @@ function NV_DecisionCard(props) {
                 props.onResolved,
                 function (err) { con.toast("Reject failed: " + (err.detail || err.message)); }
               );
-            }}>Reject with feedback</button>
+            }}>{rejOpen ? "Send rejection" : "Reject with feedback"}</button>
+          {rejOpen ? (
+            // Folds the form without a request and drops the draft, so the next open starts empty and its first click cannot send old text.
+            <button type="button" className="nv-btn-secondary"
+              data-testid="nv-reject-cancel"
+              onClick={function () { setRej(false); setReason(""); }}>Cancel</button>
+          ) : null}
           <span className="nv-card-note" data-testid="nv-decision-ended-note">
             {props.ended
               ? "session ended before this could be resolved"
@@ -975,6 +981,7 @@ function NV_DecisionCard(props) {
         {rejOpen ? (
           <textarea className="nv-card-reason" value={reason}
             data-testid="nv-reject-reason" disabled={!!props.ended}
+            aria-label="Reason for rejecting" autoFocus
             placeholder="Why not — the agent reads this"
             onChange={function (ev) { setReason(ev.target.value); }} />
         ) : null}

@@ -4248,6 +4248,9 @@ input, textarea, select { font: inherit; color: inherit; }
   cursor: pointer; font-family: inherit;
 }
 .nv-btn-reject:hover { border-color: var(--red); color: var(--red); }
+/* The form is open: this button now sends, so it reads as the confirm. */
+.nv-btn-reject[data-armed="true"] { border-color: var(--red); color: var(--red); }
+.nv-btn-reject[data-armed="true"]:disabled { opacity: .5; cursor: not-allowed; }
 .nv-card-note { font-size: 10.5px; color: var(--text-4); }
 .nv-card-reason {
   width: 100%; box-sizing: border-box; margin-top: 10px;
