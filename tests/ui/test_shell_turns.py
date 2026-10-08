@@ -451,3 +451,28 @@ def test_a_write_chip_carries_the_path_it_opens() -> None:
     ))
     assert out["tone"] == "write"
     assert out["path"] == "src/api.ts"
+
+
+def test_a_non_fatal_error_mid_turn_is_numbered_the_way_the_servers_timeline_numbers_it() -> None:
+    """The adapter draws a non-fatal stream Error as a retry notice instead of an error card (ticket 01a11bcc). The server still counts the
+    ERROR record as a turn end (``terminals.TERMINAL_KINDS``), and the console asks the trace for the server's window ordinal, so the
+    notice row has to count as a turn end in ``SH_turnOfSeq`` too. Compared against the real ``closes_turn`` over the same records."""
+    from primer.session.terminals import closes_turn
+
+    records = [
+        {"seq": 1, "kind": "user_input", "payload": {"text": "go"}, "created_at": "t1"},
+        {"seq": 2, "kind": "error", "payload": {"message": "hiccup", "code": "server_error", "fatal": False}, "created_at": "t2"},
+        {"seq": 3, "kind": "assistant_token", "payload": {"text": "carried on"}, "created_at": "t3"},
+        {"seq": 4, "kind": "done", "payload": {"stop_reason": "stop"}, "created_at": "t4"},
+        {"seq": 5, "kind": "user_input", "payload": {"text": "again"}, "created_at": "t5"},
+        {"seq": 6, "kind": "error", "payload": {"message": "x", "code": "y", "fatal": False, "delegated": True, "delegate_run_id": "r1"}, "created_at": "t6"},
+        {"seq": 7, "kind": "done", "payload": {"stop_reason": "stop"}, "created_at": "t7"},
+    ]
+    expected, ordinal = {}, 0
+    for rec in records:
+        expected[str(rec["seq"])] = ordinal
+        if closes_turn(rec):
+            ordinal += 1
+    ctx = _ctx()
+    got = json.loads(ctx.eval("JSON.stringify(SH_turnOfSeq(SA_toTranscript(" + json.dumps(records) + ", null)))"))
+    assert {seq: got[seq] for seq in expected} == expected
