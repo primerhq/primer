@@ -121,9 +121,12 @@ async def _discover_gemini_models(
 
     out: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
-    params: dict[str, Any] = {"key": api_key, "pageSize": 1000}
+    params: dict[str, Any] = {"pageSize": 1000}
+    # The key travels in the x-goog-api-key header, never the query
+    # string: httpx logs every request URL at INFO (SEC-06).
     async with httpx.AsyncClient(
         base_url=GEMINI_BASE_URL, timeout=30.0,
+        headers={"x-goog-api-key": api_key},
     ) as client:
         while True:
             response = await client.get("/models", params=params)

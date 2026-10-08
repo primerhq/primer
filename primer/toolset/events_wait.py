@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from primer.events.redaction import redact_payload
 from primer.model.event import (
     EventFilter,
     EventSubscription,
@@ -142,7 +143,8 @@ def wait_for_event_resume(
     """Format the woken park's result.
 
     The dispatcher delivered the full event envelope as the bus
-    payload; synthetic YieldTimeout / YieldCancelled payloads surface
+    payload, with stored secrets masked (``redact_payload``, the same
+    masking GET /v1/events applies); synthetic YieldTimeout / YieldCancelled payloads surface
     as {timed_out} / {cancelled}. The one-shot subscription is deleted
     by the dispatcher on delivery; a timed-out or cancelled park's
     subscription is garbage-collected by the dispatcher later, so the
@@ -161,6 +163,14 @@ def wait_for_event_resume(
             "cancelled": True,
             "cancel_reason": event_payload.reason,
         })
+    # The dispatcher already publishes a redacted envelope; mask again
+    # here so the agent's transcript never holds a stored secret even if
+    # a wake reaches this hook by another path (SEC-04).
+    if isinstance(event_payload, dict) and "payload" in event_payload:
+        event_payload = {
+            **event_payload,
+            "payload": redact_payload(event_payload["payload"]),
+        }
     return _ok({"event": event_payload})
 
 

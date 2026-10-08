@@ -53,7 +53,8 @@ def _mentions_secretstr(annotation: Any) -> bool:
 
 
 def secret_field_names() -> frozenset[str]:
-    """Field names declared with ``SecretStr`` anywhere in primer.model.
+    """Field names declared with ``SecretStr`` anywhere in primer.model
+    and its subpackages.
 
     Computed once per process; import errors in a model module are a
     bug elsewhere, so they propagate rather than silently shrinking the
@@ -64,8 +65,13 @@ def secret_field_names() -> frozenset[str]:
         import primer.model as model_pkg
 
         names: set[str] = set()
-        for modinfo in pkgutil.iter_modules(model_pkg.__path__):
-            mod = importlib.import_module(f"primer.model.{modinfo.name}")
+        # walk_packages, not iter_modules: secret-bearing models live in
+        # subpackages too (primer.model.providers.toolset declares the MCP
+        # headers/env and the OAuth client_secret).
+        for modinfo in pkgutil.walk_packages(
+            model_pkg.__path__, prefix="primer.model.",
+        ):
+            mod = importlib.import_module(modinfo.name)
             for _, cls in inspect.getmembers(mod, inspect.isclass):
                 if not (
                     issubclass(cls, BaseModel)
