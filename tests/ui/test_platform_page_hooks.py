@@ -83,6 +83,37 @@ def test_the_list_page_stays_between_the_chooser_and_the_platform_shell() -> Non
     assert PLAT.index("function NV_PlatPage(") < PLAT.index("function NV_PlatListPage(") < PLAT.index("function NV_Platform(")
 
 
+def _without_user_handlers(source: str) -> str:
+    """``source`` with every ``onClick={...}`` expression removed (braces matched), so what is left is the render body and the effects: the places where a reset would
+    happen WITHOUT the user asking for it. A click handler is the user asking (the Clear filter button of an empty result, #524)."""
+    out: list[str] = []
+    i = 0
+    while True:
+        j = source.find("onClick={", i)
+        if j < 0:
+            out.append(source[i:])
+            return "".join(out)
+        out.append(source[i:j])
+        depth, k = 0, j + len("onClick=")
+        while k < len(source):
+            depth += {"{": 1, "}": -1}.get(source[k], 0)
+            k += 1
+            if depth == 0:
+                break
+        i = k
+
+
+def test_the_handler_stripper_removes_a_click_handler_and_keeps_an_effect_and_the_render_body() -> None:
+    clicked = '<button onClick={function () { setQ(""); setPageNo(0); }}>Clear</button>'
+    in_effect = 'React.useEffect(function () { setQ(""); }, [nav]);'
+    in_render = 'var x = 1; setQ("");'
+
+    assert 'setQ("")' not in _without_user_handlers(clicked)
+    assert 'setQ("")' in _without_user_handlers(in_effect + clicked)
+    assert 'setQ("")' in _without_user_handlers(in_render + clicked)
+    assert 'setQ("")' not in _without_user_handlers('<a onClick={function () { f({ a: 1 }); setQ(""); }}>x</a>'), "nested braces are matched"
+
+
 def test_a_section_switch_resets_the_filter_the_page_and_the_form_by_remounting_not_by_an_effect() -> None:
     """``key={nav}`` makes every section a fresh instance, so the effect that used to reset ``q``, ``pageNo`` and ``modal`` when ``nav`` changed can never see a change: it is dead
     code that also hides whether the key still works (the lead's review of #547). The behaviour is pinned by ``test_a_filter_typed_on_one_section_is_empty_on_the_next`` in the nav-switch
@@ -90,7 +121,7 @@ def test_a_section_switch_resets_the_filter_the_page_and_the_form_by_remounting_
     list_page = _body("NV_PlatListPage")
 
     assert not re.search(r'React\.useEffect\(function \(\) \{\s*setQ\(""\);\s*setPageNo\(0\);\s*setModal\(null\);\s*\}, \[nav\]\);', list_page), "the reset effect is dead behind key={nav}"
-    assert 'setQ("")' not in list_page, "nothing else resets the filter either: a fresh instance starts empty"
+    assert 'setQ("")' not in _without_user_handlers(list_page), "nothing resets the filter AUTOMATICALLY either: a fresh instance starts empty (a user's Clear filter click may)"
     assert re.search(r"React\.useEffect\(function \(\) \{ setPageNo\(0\); \}, \[q\]\);", list_page), "typing a filter still sends the page back to the first one"
 
 
