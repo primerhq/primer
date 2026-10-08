@@ -35,7 +35,7 @@ function SH_statusWords(status) {
   return "running: " + verb + object;
 }
 function SH_statusLine(status) {
-  return SH_statusWords(status) + " — " + SH_elapsedText((status || {}).elapsedSec);
+  return SH_statusWords(status) + " \u2014 " + SH_elapsedText((status || {}).elapsedSec);
 }
 
 // UX reconcile wave 1 (audit A item 10): the OTHER status-strip form -
