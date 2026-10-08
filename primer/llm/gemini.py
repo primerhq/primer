@@ -27,6 +27,7 @@ from pydantic import BaseModel
 
 from primer.common.google_errors import classify_google_exception
 from primer.int.llm import LLM
+from primer.llm._failure import describe_failure
 from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout, _open_with_connect_timeout
 from primer.llm._tokenizer.gemini import count_tokens_gemini_detailed
 from primer.model.except_ import (
@@ -986,7 +987,7 @@ class GeminiLLM(LLM):
                     except ProviderTimeoutError:
                         raise
                     except Exception as exc:
-                        err = classify_google_exception(exc)
+                        err = describe_failure(classify_google_exception(exc), exc, self._provider)
                         logger.error(
                             "Gemini request failed before stream opened",
                             extra={
@@ -1045,7 +1046,7 @@ class GeminiLLM(LLM):
                             code="stream_timeout",
                         ) from exc
                     except Exception as exc:
-                        err = classify_google_exception(exc)
+                        err = describe_failure(classify_google_exception(exc), exc, self._provider)
                         logger.error(
                             "Gemini stream aborted",
                             extra={

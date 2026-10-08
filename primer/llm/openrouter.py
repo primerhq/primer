@@ -37,6 +37,7 @@ from pydantic import BaseModel
 from primer.common.openai_errors import classify_openai_exception
 from primer.int.coordinator import RateLimiter
 from primer.int.llm import LLM
+from primer.llm._failure import describe_failure
 from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout
 from primer.llm._openai_compat import (
     _build_sampling_params,
@@ -239,7 +240,7 @@ class OpenRouterLLM(LLM):
                 try:
                     sdk_stream = await client.chat.completions.create(**request)
                 except Exception as exc:
-                    err = classify_openai_exception(exc)
+                    err = describe_failure(classify_openai_exception(exc), exc, self._provider)
                     logger.error(
                         "OpenRouter request failed before stream opened",
                         extra={
@@ -293,7 +294,7 @@ class OpenRouterLLM(LLM):
                         code="stream_timeout",
                     ) from exc
                 except Exception as exc:
-                    err = classify_openai_exception(exc)
+                    err = describe_failure(classify_openai_exception(exc), exc, self._provider)
                     logger.error(
                         "OpenRouter stream aborted",
                         extra={

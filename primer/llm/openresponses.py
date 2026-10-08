@@ -27,6 +27,7 @@ from pydantic import BaseModel
 
 from primer.common.openai_errors import classify_openai_exception
 from primer.int.llm import LLM
+from primer.llm._failure import describe_failure
 from primer.llm._openai_common import build_sampling_params as _build_sampling_params_impl
 from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout
 from primer.model.except_ import (
@@ -1041,7 +1042,7 @@ class OpenResponsesLLM(LLM):
                             code="connect_timeout",
                         ) from exc
                     except Exception as exc:
-                        err = classify_openai_exception(exc)
+                        err = describe_failure(classify_openai_exception(exc), exc, self._provider)
                         logger.error(
                             "OpenResponses request failed before stream opened",
                             extra={
@@ -1100,7 +1101,7 @@ class OpenResponsesLLM(LLM):
                             code="stream_timeout",
                         ) from exc
                     except Exception as exc:
-                        err = classify_openai_exception(exc)
+                        err = describe_failure(classify_openai_exception(exc), exc, self._provider)
                         logger.error(
                             "OpenResponses stream aborted",
                             extra={
