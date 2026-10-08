@@ -55,7 +55,7 @@ from primer.toolset._describe import make_tool
 from primer.toolset._helpers import err as _err, ok as _ok
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 from primer.trigger.cron import CronInvalid, TimezoneInvalid
-from primer.trigger.owner import redact_for
+from primer.trigger.owner import view_for
 from primer.trigger.service import (
     ParkedSessionOnlyFromYield,
     ServiceDeps,
@@ -524,7 +524,7 @@ def _make_list_handler(
         )
         # The webhook token only for its owner or an admin (A-20 round 2).
         caller = _caller(ctx)
-        return _ok([await redact_for(t, caller, storage_provider) for t in items])
+        return _ok([await view_for(t, caller, storage_provider) for t in items])
 
     return _handler
 
@@ -556,7 +556,7 @@ def _make_get_handler(
         except TriggerNotFound as exc:
             return _err(str(exc), error_type="trigger_not_found")
         # The webhook token only for its owner or an admin (A-20 round 2).
-        return _ok(await redact_for(trigger, _caller(ctx), storage_provider))
+        return _ok(await view_for(trigger, _caller(ctx), storage_provider))
 
     return _handler
 
@@ -682,7 +682,9 @@ def _make_list_subs_handler(
     claim_engine: Any,
     event_bus: Any,
 ) -> ToolHandler:
-    async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _handler(
+        arguments: dict[str, Any], *, ctx: ToolContext | None = None,
+    ) -> ToolCallResult:
         try:
             args = _SubListArgs.model_validate(arguments)
         except ValidationError as exc:
@@ -697,7 +699,9 @@ def _make_list_subs_handler(
         items = await list_subscriptions(
             trigger_id=args.trigger_id, deps=deps,
         )
-        return _ok(items)
+        # A non-manager sees only the owner's display and role (A-20).
+        caller = _caller(ctx)
+        return _ok([await view_for(s, caller, storage_provider) for s in items])
 
     return _handler
 
@@ -707,7 +711,9 @@ def _make_get_sub_handler(
     claim_engine: Any,
     event_bus: Any,
 ) -> ToolHandler:
-    async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _handler(
+        arguments: dict[str, Any], *, ctx: ToolContext | None = None,
+    ) -> ToolCallResult:
         try:
             args = _SubIdArgs.model_validate(arguments)
         except ValidationError as exc:
@@ -721,7 +727,7 @@ def _make_get_sub_handler(
             )
         except SubscriptionNotFound as exc:
             return _err(str(exc), error_type="subscription_not_found")
-        return _ok(sub)
+        return _ok(await view_for(sub, _caller(ctx), storage_provider))
 
     return _handler
 

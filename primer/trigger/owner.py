@@ -139,7 +139,15 @@ def _rank_label(ref: PrincipalRef | None) -> str:
 WEBHOOK_TOKEN_MASK = MASK
 
 
+def _unattributed(ref: PrincipalRef) -> bool:
+    """``PrincipalRef.unattributed()`` stands for "nobody known", not for an identity: two of them are not the same actor."""
+    unknown = PrincipalRef.unattributed()
+    return (ref.type, ref.id) == (unknown.type, unknown.id)
+
+
 async def _user_id_of(ref: PrincipalRef, storage_provider: Any) -> str | None:
+    if _unattributed(ref):
+        return None
     if ref.type == "user":
         return ref.id
     if ref.type == "api_token":
@@ -157,13 +165,19 @@ async def may_manage_trigger(trigger: Trigger, caller: PrincipalRef | None, stor
     trigger's subscriptions start at the owners' rank, so whoever holds it can drive those runs. The owner is matched by the
     underlying user (a token resolves to its user) AND the caller may not rank below the role the owner was recorded with: a
     capped run carrying an admin's id at ``user`` rank is not that admin. A caller with no identity (the MCP endpoint hands
-    tools no context) may not.
+    tools no context) may not, and neither may an unattributed one (it names nobody, so it owns nothing).
+
+    The caller's role is the one it carries: for a REST request the user's current role, for a run the role recorded when the
+    run's session started. A long-running session of an admin who was demoted since keeps managing until it ends.
     """
+    return await _may_manage_owner(trigger.owner, caller, storage_provider)
+
+
+async def _may_manage_owner(owner: PrincipalRef | None, caller: PrincipalRef | None, storage_provider: Any) -> bool:
     if caller is None:
         return False
     if caller.type == "system" or _ROLE_RANK.get(caller.role, -1) >= _ROLE_RANK["admin"]:
         return True
-    owner = trigger.owner
     if owner is None or owner.type == "system":
         return False
     if _ROLE_RANK.get(caller.role, -1) < _ROLE_RANK.get(owner.role, -1):
@@ -172,17 +186,27 @@ async def may_manage_trigger(trigger: Trigger, caller: PrincipalRef | None, stor
     return caller_user is not None and caller_user == await _user_id_of(owner, storage_provider)
 
 
-async def redact_for(trigger: Trigger, caller: PrincipalRef | None, storage_provider: Any) -> Trigger:
-    """``trigger`` as ``caller`` may see it: the webhook token masked unless :func:`may_manage_trigger`."""
-    if trigger.config.kind != "webhook" or await may_manage_trigger(trigger, caller, storage_provider):
-        return trigger
-    return trigger.model_copy(update={"config": trigger.config.model_copy(update={"token": WEBHOOK_TOKEN_MASK})})
+async def view_for(row: Trigger | Subscription, caller: PrincipalRef | None, storage_provider: Any) -> dict:
+    """The JSON a read of a trigger or subscription serves to ``caller``.
+
+    Unless ``caller`` may manage the row (its owner, an admin, or system; see :func:`may_manage_trigger`), a webhook token is
+    masked and the owner is reduced to ``display`` and ``role``: who owns a row and at what rank is useful to everyone, the
+    owner's type and id are not.
+    """
+    body = row.model_dump(mode="json")
+    if await _may_manage_owner(row.owner, caller, storage_provider):
+        return body
+    if isinstance(row, Trigger) and row.config.kind == "webhook":
+        body["config"]["token"] = WEBHOOK_TOKEN_MASK
+    if body.get("owner") is not None:
+        body["owner"] = {"display": body["owner"]["display"], "role": body["owner"]["role"]}
+    return body
 
 
 async def same_owner(a: PrincipalRef | None, b: PrincipalRef | None, storage_provider: Any) -> bool:
     """Whether two owner refs name the same actor: the same type and id, or the same underlying user (a token resolves to
     its user). The role is not identity."""
-    if a is None or b is None:
+    if a is None or b is None or _unattributed(a) or _unattributed(b):
         return False
     if (a.type, a.id) == (b.type, b.id):
         return True
@@ -194,7 +218,7 @@ __all__ = [
     "WEBHOOK_TOKEN_MASK",
     "may_manage_trigger",
     "principal_for_fire",
-    "redact_for",
+    "view_for",
     "refuse_steer_above_fire",
     "same_owner",
 ]
