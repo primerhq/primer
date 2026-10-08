@@ -545,6 +545,30 @@ async def run_one_session_turn(
     # The failure exit of the turn below: an ERROR record, ENDED/failed, the terminal publish and the checkpoint
     # hooks. Shared by the catch-all ``except Exception`` and the park arms, whose own TurnInvariantError (a
     # deterministic bookkeeping break while parking) is raised inside an except handler the catch-all never sees.
+    # Output the model had already streamed is still only in the coalesce buffers when a turn ends without reaching a tool call or
+    # Done: it becomes a record at neither. A Stop or Cancel makes it durable (the finally below) and so does a FAILED turn
+    # (_end_turn_failed), ahead of the terminal record that explains why the answer ends there; otherwise it existed only in the live
+    # view and vanished on refresh. Best effort and bounded: the appends can run the writer's age flush of records already buffered,
+    # which goes over the workspace connection, and the terminal exit waits on this. A lost lease never calls it (the session may
+    # belong to another worker now).
+    async def _make_partial_output_durable(what: str, then: str) -> None:
+        try:
+            async with asyncio.timeout(_BEST_EFFORT_IO_TIMEOUT_S):
+                for partial in flush_partial_output(
+                    coalesce_state, delta_sink=delta_buffer, turn_no=session.turn_no,
+                ):
+                    await writer.append(partial)
+        except TimeoutError:
+            logger.warning(
+                "session %s: the output streamed before the %s was not confirmed within %gs (the "
+                "workspace is not accepting writes); %s",
+                session_id, what, _BEST_EFFORT_IO_TIMEOUT_S, then,
+            )
+        except Exception:  # noqa: BLE001 - the terminal exit must still land
+            logger.exception(
+                "session %s: could not persist the output streamed before the %s", session_id, what,
+            )
+
     async def _end_turn_failed(exc: BaseException) -> ReleaseOutcome:
         # Build the ProblemDetails envelope once and reuse it for BOTH
         # the structured turn-log event and the messages.jsonl ERROR
@@ -561,6 +585,8 @@ async def run_one_session_turn(
             " releasing claim",
             session_id, (problem.extensions or {}).get("error_id"),
         )
+        # The answer that was streaming when the turn died goes into the log BEFORE the ERROR record below.
+        await _make_partial_output_durable("failure", "ending the turn without it")
         await _safe_turn_log(turn_log, TurnLogFailed(
             seq=0,
             ts=_now(),
@@ -1245,25 +1271,7 @@ async def run_one_session_turn(
             # coalesce buffers (it becomes a record at a tool call or at Done). Make it durable now,
             # ahead of the CANCELLED record below, or it exists only in the live view and vanishes
             # on refresh. Before delta_buffer.aclose() so the live parts are closed too.
-            try:
-                # Bounded: appending can run the writer's age flush of records already buffered, which
-                # goes over the workspace connection, and the cancelled exit below waits on this.
-                async with asyncio.timeout(_BEST_EFFORT_IO_TIMEOUT_S):
-                    for partial in flush_partial_output(
-                        coalesce_state, delta_sink=delta_buffer, turn_no=session.turn_no,
-                    ):
-                        await writer.append(partial)
-            except TimeoutError:
-                logger.warning(
-                    "session %s: the output streamed before the stop was not confirmed within %gs (the "
-                    "workspace is not accepting writes); finishing the cancel without it",
-                    session_id, _BEST_EFFORT_IO_TIMEOUT_S,
-                )
-            except Exception:  # noqa: BLE001 - the cancel must still land
-                logger.exception(
-                    "session %s: could not persist the output streamed before the stop",
-                    session_id,
-                )
+            await _make_partial_output_durable("stop", "finishing the cancel without it")
         _metrics.sessions_active.labels(session.workspace_id).dec()
         reset_delegation_sink(_delegation_token)
         cancel_task.cancel()
