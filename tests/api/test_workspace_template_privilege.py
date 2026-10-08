@@ -248,6 +248,42 @@ async def test_an_admin_free_template_stays_fully_user_editable(app, admin, user
     assert r.json()["backend"]["entrypoint"] == ["bash"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", sorted(_GATED_BODIES))
+async def test_a_user_cannot_delete_a_template_that_holds_admin_only_settings(app, admin, user, field) -> None:  # noqa: F811
+    """Lead re-review of #473: deleting an admin-held template is admin-only too."""
+    body = _GATED_BODIES[field]
+    assert (await admin.post("/v1/workspace_templates", json=body)).status_code == 201
+
+    r = await user.delete(f"/v1/workspace_templates/{body['id']}")
+
+    assert r.status_code == 403, r.text
+    ext = r.json()["extensions"]
+    assert ext["error"] == "forbidden_role", r.text
+    assert "admin-only settings" in ext["message"], r.text
+    assert await app.state.storage_provider.get_storage(WorkspaceTemplate).get(body["id"]) is not None
+
+
+@pytest.mark.asyncio
+async def test_an_admin_can_delete_a_template_that_holds_admin_only_settings(app, admin) -> None:  # noqa: F811
+    assert (await admin.post("/v1/workspace_templates", json=_GATED_BODIES["extra_mounts"])).status_code == 201
+
+    r = await admin.delete("/v1/workspace_templates/tpl-c")
+
+    assert r.status_code == 204, r.text
+    assert await app.state.storage_provider.get_storage(WorkspaceTemplate).get("tpl-c") is None
+
+
+@pytest.mark.asyncio
+async def test_a_user_may_delete_an_admin_free_template(app, admin, user) -> None:  # noqa: F811
+    plain = {"id": "tpl-free", "provider_id": "p-1", "description": "d"}
+    assert (await admin.post("/v1/workspace_templates", json=plain)).status_code == 201
+
+    r = await user.delete("/v1/workspace_templates/tpl-free")
+
+    assert r.status_code == 204, r.text
+
+
 def test_the_403_answers_are_documented(app) -> None:  # noqa: F811
     paths = app.openapi()["paths"]
     assert "403" in paths["/v1/workspaces/{workspace_id}/terminal_access"]["put"]["responses"]
