@@ -5,7 +5,7 @@ const WT_LIST_KEY = "ws:templates";
 // Security review 2026-10-08: host mounts, Kubernetes overlays and secret file sources reach the host, the cluster or
 // operator secrets, so only an admin may set or change them; the server answers a non-admin with 403 forbidden_role.
 const WT_ADMIN_ONLY_NOTE =
-  "Admin only: only an admin can set or change these fields, and only an admin can edit a template that has any of them set. Kubernetes overlays must also stay on the server's allowlist.";
+  "Admin only: only an admin can set or change these fields, and only an admin can edit or delete a template that has any of them set. Users can still create workspaces from such a template and run their own commands next to its mounts and secrets, so do not put host-privileged mounts or secrets in a template ordinary users may use. Kubernetes overlays must also stay on the server's allowlist.";
 
 // ---- ContainerMountEditor: list of {host, container, readonly} rows.
 // Matches the ContainerMount pydantic model used by ContainerTemplateConfig
