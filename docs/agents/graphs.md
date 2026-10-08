@@ -295,8 +295,12 @@ reachable from `begin`.
   and the server assigns `graph-<hex>`; supply one to use it verbatim.
   Immutable after creation.
 - `system::update_graph` - replace the row.
-- `system::delete_graph` - cascade-blocked if any `graph` node
-  references it.
+- `system::delete_graph` - refused with a `conflict` error (`in_use_by`,
+  the same 409 the REST route answers) while another graph has a
+  sub-graph (`graph`) node naming it, a session that is not ended is
+  bound to it, or a trigger subscription targets it (an ended session
+  never blocks, and a graph that names itself does not block its own
+  delete).
 - `system::find_graphs` - predicate query.
 
 ### Discovery (search toolset)
