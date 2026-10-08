@@ -227,3 +227,112 @@ class TestDevFormatter:
         output = buf.getvalue()
         assert "[ERROR]" in output
         assert "RuntimeError: bang" in output
+
+
+# ============================================================================
+# SEC-06: credentials carried in URLs never reach the log
+# ============================================================================
+
+
+_GEMINI_KEY = "AIzaSyD-GEMINI-SECRET-KEY"
+_BOT_TOKEN = "123456789:AAF-telegram_SECRET-token"
+_WEBHOOK_TOKEN = "0123456789abcdef0123456789abcdef"
+
+
+def _configured_stream(json_format: bool = True) -> io.StringIO:
+    """configure_logging(), then point ITS handler (filters and all) at a
+    buffer: the redaction must be part of the configured pipeline, not
+    something a test-only handler adds."""
+    configure_logging(json_format=json_format)
+    buf = io.StringIO()
+    logging.getLogger().handlers[0].setStream(buf)
+    return buf
+
+
+class TestUrlSecretRedaction:
+    @pytest.mark.parametrize("json_format", [True, False])
+    def test_httpx_request_line_for_gemini_hides_the_key(self, json_format):
+        import httpx
+
+        buf = _configured_stream(json_format)
+        url = httpx.URL(
+            "https://generativelanguage.googleapis.com/v1beta/models",
+            params={"key": _GEMINI_KEY, "pageSize": 1000},
+        )
+        # The exact call httpx makes for every request, at INFO.
+        logging.getLogger("httpx").info(
+            'HTTP Request: %s %s "%s %d %s"',
+            "GET", url, "HTTP/1.1", 200, "OK",
+        )
+        out = buf.getvalue()
+        assert "HTTP Request: GET" in out
+        assert _GEMINI_KEY not in out
+        assert "pageSize=1000" in out
+        assert "key=[REDACTED]" in out
+
+    def test_telegram_bot_url_hides_the_token(self):
+        buf = _configured_stream()
+        logging.getLogger("httpx").info(
+            'HTTP Request: %s %s "%s %d %s"', "POST",
+            f"https://api.telegram.org/bot{_BOT_TOKEN}/getUpdates",
+            "HTTP/1.1", 200, "OK",
+        )
+        out = buf.getvalue()
+        assert _BOT_TOKEN not in out
+        assert "AAF-telegram_SECRET-token" not in out
+        assert "/bot[REDACTED]/getUpdates" in out
+
+    @pytest.mark.parametrize("key", [
+        "token", "access_token", "api_key", "apikey", "client_secret",
+    ])
+    def test_query_credentials_in_a_plain_message_are_hidden(self, key):
+        buf = _configured_stream()
+        logging.getLogger("primer.test").warning(
+            "probe failed for https://h.example/x?a=1&%s=S3CR3T-VAL&b=2", key,
+        )
+        out = buf.getvalue()
+        assert "S3CR3T-VAL" not in out
+        assert "a=1" in out and "b=2" in out
+
+    def test_exception_text_with_a_credential_url_is_hidden(self):
+        buf = _configured_stream()
+        try:
+            raise RuntimeError(
+                "Client error '401 Unauthorized' for url "
+                f"'https://generativelanguage.googleapis.com/v1beta/models?key={_GEMINI_KEY}'"
+            )
+        except RuntimeError:
+            logging.getLogger("primer.test").exception("discovery failed")
+        out = buf.getvalue()
+        assert "401 Unauthorized" in out
+        assert _GEMINI_KEY not in out
+
+    def test_uvicorn_access_line_masks_the_webhook_token(self):
+        """uvicorn.access logs through uvicorn's own handler (propagate
+        False), so the redaction sits on the logger itself, and must keep
+        the 5-tuple args uvicorn's AccessFormatter unpacks."""
+        from uvicorn.logging import AccessFormatter
+
+        configure_logging()
+        access = logging.getLogger("uvicorn.access")
+        buf = io.StringIO()
+        handler = logging.StreamHandler(buf)
+        handler.setFormatter(AccessFormatter(
+            '%(client_addr)s - "%(request_line)s" %(status_code)s',
+            use_colors=False,
+        ))
+        saved = (list(access.handlers), access.propagate, access.level)
+        access.handlers = [handler]
+        access.propagate = False
+        access.setLevel(logging.INFO)
+        try:
+            access.info(
+                '%s - "%s %s HTTP/%s" %d', "10.0.0.1:5555", "POST",
+                f"/v1/webhooks/{_WEBHOOK_TOKEN}?x=1", "1.1", 202,
+            )
+        finally:
+            access.handlers, access.propagate, access.level = saved
+        out = buf.getvalue()
+        assert _WEBHOOK_TOKEN not in out
+        assert "/v1/webhooks/***cdef?x=1" in out
+        assert "202" in out

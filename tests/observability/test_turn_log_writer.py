@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 
 import pytest
@@ -364,14 +365,32 @@ class TestToProblemDetails:
         assert pd.title == "RuntimeError"
         assert "boom" in pd.detail
 
-    def test_traceback_included_in_extensions(self):
+    def test_traceback_stays_in_the_server_log_keyed_by_error_id(self, caplog):
+        """The envelope is served to session readers (messages, turn log,
+        tap): it carries the class, the message and an error_id, never a
+        traceback. The traceback goes to the server log under that id."""
         try:
             raise ValueError("traceback test")
         except ValueError as exc:
-            pd = to_problem_details(exc)
+            with caplog.at_level(
+                logging.ERROR, logger="primer.observability.turn_log_writer",
+            ):
+                pd = to_problem_details(exc)
         assert pd.extensions is not None
-        assert "traceback" in pd.extensions
-        assert "ValueError" in pd.extensions["traceback"]
+        assert "traceback" not in pd.extensions
+        assert __file__ not in pd.model_dump_json()
+        assert pd.extensions["exception_class"] == "ValueError"
+        assert "traceback test" in pd.detail
+        error_id = pd.extensions["error_id"]
+        assert isinstance(error_id, str) and len(error_id) >= 16
+        [rec] = [r for r in caplog.records if error_id in r.getMessage()]
+        assert rec.levelno == logging.ERROR
+        assert rec.exc_info is not None and rec.exc_info[1] is exc
+
+    def test_each_envelope_gets_its_own_error_id(self):
+        a = to_problem_details(RuntimeError("a")).extensions["error_id"]
+        b = to_problem_details(RuntimeError("a")).extensions["error_id"]
+        assert a != b
 
     def test_authentication_error_maps_to_401(self):
         from primer.model.except_ import AuthenticationError
@@ -395,12 +414,13 @@ class TestToProblemDetails:
         pd = to_problem_details(NothingToCompact("empty_head"))
         assert pd.status == 422
         assert pd.extensions["reason"] == "empty_head"
-        assert pd.extensions["exception_class"] == "NothingToCompact" and "traceback" in pd.extensions
+        assert pd.extensions["exception_class"] == "NothingToCompact" and "error_id" in pd.extensions
+        assert "traceback" not in pd.extensions
 
     def test_an_exception_without_problem_extensions_adds_no_keys(self):
         from primer.model.except_ import ConflictError
 
-        assert set(to_problem_details(ConflictError("taken")).extensions) == {"exception_class", "traceback"}
+        assert set(to_problem_details(ConflictError("taken")).extensions) == {"exception_class", "error_id"}
 
     def test_every_row_mirrors_the_api_map(self):
         """The two tables are kept in step by hand: a row added to one and not the other would map the same
