@@ -479,6 +479,46 @@ class TestTheRuntimesReadyMarkerIsNotAUserFile:
         assert ".runtime.ready" not in paths and "a.txt" in paths
 
     @pytest.mark.asyncio
+    async def test_the_marker_is_dropped_before_the_page_is_cut_so_pages_and_total_ignore_it(self, client, wsr) -> None:
+        """Filter BEFORE pagination: with the marker present, page one is a full page of the user's files, page two continues from
+        it, and ``total`` counts the user's files only (filtering after the slice would give a page one entry short and total + 1)."""
+        wid, ws = await _setup(client, wsr)
+        ws._files[".runtime.ready"] = b"ready"
+        for name in ("a.txt", "b.txt", "c.txt"):
+            ws._files[name] = b"x"
+
+        first = (await client.get(f"/v1/workspaces/{wid}/files", params={"path": ".", "limit": 2})).json()
+        assert [i["path"] for i in first["items"]] == ["a.txt", "b.txt"], "a full page, the marker sorted first and was dropped"
+        assert first["total"] == 3 and first["length"] == 2
+
+        second = (await client.get(f"/v1/workspaces/{wid}/files", params={"path": ".", "limit": 2, "offset": 2})).json()
+        assert [i["path"] for i in second["items"]] == ["c.txt"] and second["total"] == 3
+
+    @pytest.mark.asyncio
+    async def test_a_recursive_walk_leaves_room_for_the_marker_it_will_drop(self, client, wsr) -> None:
+        """A walk capped at exactly offset+limit that met the marker would leave the page one short, so the route asks for one more."""
+        wid, ws = await _setup(client, wsr)
+        asked: list[int | None] = []
+        real = ws.list_files
+
+        async def spy(path=".", *, recursive=False, max_entries=None):
+            asked.append(max_entries)
+            return await real(path, recursive=recursive, max_entries=max_entries)
+
+        ws.list_files = spy  # type: ignore[assignment]
+        resp = await client.get(f"/v1/workspaces/{wid}/files", params={"path": ".", "recursive": "true", "limit": 5, "offset": 3})
+        assert resp.status_code == 200, resp.text
+        assert asked == [5 + 3 + 1]
+
+    @pytest.mark.asyncio
+    async def test_a_directory_or_symlink_named_like_the_marker_at_the_root_is_hidden_too(self, client, wsr) -> None:
+        """The match is on the path, not the kind: documented, so it is pinned."""
+        wid, ws = await _setup(client, wsr)
+        ws._dirs.add(".runtime.ready")
+        names = [i["name"] for i in (await client.get(f"/v1/workspaces/{wid}/files/tree")).json()["items"]]
+        assert ".runtime.ready" not in names
+
+    @pytest.mark.asyncio
     async def test_a_file_of_that_name_below_the_root_is_the_users(self, client, wsr) -> None:
         wid, ws = await _setup(client, wsr)
         ws._dirs.add("sub")
