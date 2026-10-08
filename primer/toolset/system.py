@@ -416,8 +416,9 @@ def build_system_toolset(
     }
     # The writes that need an admin CALLER although the tool's static required_role is lower (architecture review A-02, security
     # sweep AUTHZ-01 / SEC-02): a stdio MCP toolset launches a command on the server host, a python toolset runs its source there,
-    # and repointing a toolset while its secrets are sent back masked would carry them to the new endpoint. The tool manager's floor compares only the static role, so the handler checks
-    # the run's identity; a call with no identity (the MCP endpoint) is refused. The rule is the one the REST router applies.
+    # and repointing a toolset while its secrets are sent back masked would carry them to the new endpoint. The tool manager's
+    # floor compares only the static role, so the handler checks the run's identity; a call with no identity (the MCP endpoint)
+    # is refused. The rule is the one the REST router applies.
     admin_writes_by_label: dict[str, Any] = {"toolset": toolset_admin_reason}
 
     # What REST does in the collection router's on_pre_delete (ticket 01a1131f "F"): the documents, their content rows and the vector
