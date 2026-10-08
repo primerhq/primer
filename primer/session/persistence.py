@@ -14,6 +14,10 @@ Tick events fire **per-record** (not per-flush) so live WebSocket
 subscribers see real-time deltas even when large batches are coalesced
 into a single I/O write.
 
+A batch the workspace never answers (its runtime connection dropped) does not hold the writer, or whoever flushes it, for ever: a flush
+waits for a batch in flight at most ``_WRITE_TIMEOUT_S`` after it started, then abandons it and BREAKS the writer (see
+:meth:`WorkspaceMessageWriter._do_flush`).
+
 The writer owns the monotonic ``seq`` counter; the caller's
 ``record.seq`` is always overwritten with the writer's internal counter
 so the stored value is authoritative.
@@ -71,6 +75,13 @@ _FLUSH_BYTES = 16 * 1024
 # 100 ms flush age threshold (seconds)
 _FLUSH_AGE_S = 0.100
 
+# How long a batch may stay in flight before a flush stops waiting for it and abandons it. A write that takes this long means the workspace
+# is not accepting writes (its runtime connection dropped, which a client that waits for the answer never reports). Longer than the
+# 10 s ``IN_LOCK_IO_TIMEOUT_S`` that the lock-holding exits already treat as a dead workspace, so a merely slow healthy write is not
+# abandoned where those would still wait; short enough that a clean, failed or parked exit lands well inside a minute. A module value,
+# read when a flush waits, so a test can shorten it.
+_WRITE_TIMEOUT_S = 15.0
+
 # Strong references to the appends in flight (see ``WorkspaceMessageWriter._do_flush``): the loop keeps only weak ones to its
 # tasks, and an append whose flushing task was cancelled has nobody else holding it.
 _APPENDS: set[asyncio.Task[None]] = set()
@@ -83,6 +94,15 @@ def _append_done(task: asyncio.Task[None]) -> None:
     exc = task.exception()          # retrieved; the flushing task, if it is still waiting, gets the same exception
     if exc is not None:
         logger.warning("a batch of session message records could not be appended: %r", exc)
+
+
+class WorkspaceWriteTimeout(TimeoutError):
+    """The workspace did not accept a batch of message records within ``_WRITE_TIMEOUT_S``, so the writer is closed.
+
+    Raised by the flush that gave up, and then by every append and flush of the broken writer, at once. A ``TimeoutError``, so the exits
+    that already treat a write that never returns as "carry on without it" (the best-effort and the CANCELLED-record writes) take it as
+    they take their own bound. A write that FAILS (an ``OSError``, a conflict) is not this: it raises as itself and leaves the writer open.
+    """
 
 
 class WorkspaceIO(Protocol):
@@ -140,6 +160,13 @@ class WorkspaceMessageWriter:
         self._oldest_at: float | None = None  # monotonic clock at first buffered record
         # The append of the batch last taken out of the buffer, while it is still running (see ``_do_flush``).
         self._write: asyncio.Task[None] | None = None
+        # When that append started (monotonic clock) and which seqs it carries, for the bound and for the log line of a loss.
+        self._write_started_at: float = 0.0
+        self._write_span: tuple[int, int] = (0, 0)
+        # The seq of the oldest record in the buffer (0 when empty), for the same log line.
+        self._buffer_first_seq: int = 0
+        # Set when a batch in flight went unanswered past the bound: the writer starts nothing after that (see ``_do_flush``).
+        self._broken: str | None = None
 
     @property
     def last_seq(self) -> int:
@@ -172,6 +199,8 @@ class WorkspaceMessageWriter:
         Returns:
             The assigned seq number (1-based, monotonically increasing).
         """
+        self._raise_if_broken()
+
         # Assign writer-controlled seq
         self._seq += 1
         assigned_seq = self._seq
@@ -196,6 +225,7 @@ class WorkspaceMessageWriter:
         self._buffer_size += len(line)
         if self._oldest_at is None:
             self._oldest_at = time.monotonic()
+            self._buffer_first_seq = assigned_seq
 
         if age_due or self._buffer_size >= _FLUSH_BYTES:
             await self._do_flush()
@@ -218,27 +248,87 @@ class WorkspaceMessageWriter:
         """Write the current buffer to workspace_io and reset it.
 
         A batch that has left the buffer IS written, even if the task flushing it is cancelled while it waits: the append
-        runs as its own task, and the flushing task awaits it behind a shield. A cancel (a Stop's cancel of a call, a hard
+        runs as its own task, and the flushing task awaits it without cancelling it. A cancel (a Stop's cancel of a call, a hard
         Cancel) used to land in that await after the buffer was emptied, so the batch was gone from the buffer and was
         never written; the writer is shared (the delegation recorder writes a subagent's records through the parent's),
         so one cancelled call could drop the parent turn's records too.
 
         A later flush waits for an append that is still in flight before it takes its own batch, so the file stays in seq
         order. An append that fails still raises in the task that is awaiting it, as before.
+
+        None of those waits is unbounded. A batch the workspace never answers (its runtime connection dropped) used to hold the
+        flush that sent it and, through the wait above, every flush after it, so a turn's exit never landed. A flush now waits for a
+        batch until it has been in flight ``_WRITE_TIMEOUT_S``, then ABANDONS it: it logs the loss, drops what is buffered behind it,
+        BREAKS the writer and raises :class:`WorkspaceWriteTimeout`. A broken writer starts no write after that, and its appends and
+        flushes raise at once, which is what keeps the file in order (nothing this writer holds can overtake the abandoned batch)
+        and what stops every later flush from waiting the bound again. The abandoned batch is neither cancelled nor re-sent: if the
+        workspace answers late it is in the file exactly once, and nothing was queued to be written a second time. The next turn
+        builds a new writer, which probes the workspace afresh. A write that FAILS (as opposed to never returning) raises as itself and
+        does not break the writer.
         """
+        self._raise_if_broken()
         while self._write is not None and not self._write.done():
-            await asyncio.wait({self._write})        # waiting does not cancel it, and does not raise its error
+            await self._wait_for(self._write)            # waiting does not cancel it, and does not raise its error
         if not self._buffer:
             return
         combined = b"".join(self._buffer)
+        self._write_span = (self._buffer_first_seq, self._seq)
         self._buffer = []
         self._buffer_size = 0
         self._oldest_at = None
+        self._buffer_first_seq = 0
         write = asyncio.ensure_future(self._io.append_message_line(self._session_id, combined))
         self._write = write
+        self._write_started_at = time.monotonic()
         _APPENDS.add(write)
         write.add_done_callback(_append_done)
-        await asyncio.shield(write)
+        await self._wait_for(write)
+        write.result()                                   # an append that failed raises here, in the task that awaited it
+
+    async def _wait_for(self, write: asyncio.Task[None]) -> None:
+        """Wait for ``write`` until it has been in flight ``_WRITE_TIMEOUT_S``; abandon it and break the writer if it is not done by then.
+
+        Does not cancel ``write`` when the WAITER is cancelled, and does not raise the write's own error (the caller reads it).
+        """
+        remaining = self._write_started_at + _WRITE_TIMEOUT_S - time.monotonic()
+        done, _ = await asyncio.wait({write}, timeout=max(remaining, 0.0))
+        if write in done:
+            return
+        self._break_on(write)
+        self._raise_if_broken()
+
+    def _break_on(self, write: asyncio.Task[None]) -> None:
+        """Abandon the unanswered ``write``: log the loss once, drop the buffer, close the writer."""
+        if self._broken is not None:
+            return                                       # another waiter gave up on it first
+        first, last = self._write_span
+        dropped = len(self._buffer)
+        self._broken = (
+            f"the workspace did not accept a batch of message records (seq {first}-{last}) within {_WRITE_TIMEOUT_S:g}s; "
+            "the writer is closed"
+        )
+        logger.warning(
+            "session %s: %s; that batch is abandoned (it is never re-sent; if the workspace answers late it lands once) and %d "
+            "buffered record(s) behind it are dropped",
+            self._session_id, self._broken, dropped,
+        )
+        self._buffer = []
+        self._buffer_size = 0
+        self._oldest_at = None
+        self._buffer_first_seq = 0
+        write.add_done_callback(self._abandoned_write_done)
+
+    def _abandoned_write_done(self, task: asyncio.Task[None]) -> None:
+        if not task.cancelled() and task.exception() is None:
+            logger.warning(
+                "session %s: the abandoned batch of message records (seq %d-%d) was accepted by the workspace after all; it is in the "
+                "log once, after any records a later turn wrote",
+                self._session_id, *self._write_span,
+            )
+
+    def _raise_if_broken(self) -> None:
+        if self._broken is not None:
+            raise WorkspaceWriteTimeout(f"session {self._session_id}: {self._broken}")
 
 
 def _now_utc() -> datetime:
@@ -1341,6 +1431,6 @@ def infer_agent_phase(event: StreamEvent) -> str | None:
 
 
 __all__ = [
-    "WorkspaceMessageWriter", "WorkspaceIO", "_CoalesceState",
+    "WorkspaceMessageWriter", "WorkspaceWriteTimeout", "WorkspaceIO", "_CoalesceState",
     "translate_stream_event", "stash_graph_scoped_ids",
 ]
