@@ -127,3 +127,32 @@ def test_the_tap_event_builder_strips_a_traceback_from_any_record() -> None:
     )
     assert "traceback" not in ev.payload["extensions"]
     assert ev.payload["extensions"]["exception_class"] == "ValueError"
+    # The builder returns a cleaned copy; the record itself is untouched.
+    assert record.payload["extensions"]["traceback"] == _TB
+
+
+def test_the_compute_turn_log_route_strips_a_legacy_traceback() -> None:
+    """The storage-backed turn-log reader (_record_to_event_dict in
+    primer/api/routers/compute.py) serves the payload blob of a FAILED
+    row; a legacy row's error.extensions.traceback must not ride along."""
+    from types import SimpleNamespace
+
+    from primer.api.routers.compute import _record_to_event_dict
+
+    payload = {
+        "error": {
+            "type": "/errors/internal", "title": "ValueError", "status": 500,
+            "detail": "boom",
+            "extensions": {"exception_class": "ValueError", "traceback": _TB},
+        },
+        "duration_ms": 5,
+    }
+    rec = SimpleNamespace(
+        seq=1, kind="failed", created_at=_NOW, node_id="n1", iteration=0,
+        superstep_id=None, payload=payload,
+    )
+    out = _record_to_event_dict(rec)
+    assert "traceback" not in out["error"]["extensions"]
+    assert out["error"]["extensions"]["exception_class"] == "ValueError"
+    assert out["duration_ms"] == 5 and out["node_id"] == "n1"
+    assert "dispatch.py" not in json.dumps(out, default=str)
