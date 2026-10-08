@@ -129,9 +129,10 @@ def _png_bytes(w=64, h=64):
     return buf.getvalue()
 
 
-async def _setup(tmp_path, *, with_artifacts=True, files=None):
+async def _setup(tmp_path, async_closers, *, with_artifacts=True, files=None):
     p = SqliteStorageProvider(SqliteConfig(path=tmp_path / "r.sqlite"))
     await p.initialize()
+    async_closers.push_async_callback(p.aclose)
     await p.get_storage(Agent).create(Agent(
         id="agent-x", description="X",
         model={"profile_id": "lp--m"}))
@@ -168,10 +169,10 @@ async def _user_message_parts(p, chat_id):
 
 
 @pytest.mark.asyncio
-async def test_photo_message_persists_image_part_with_artifact(tmp_path: Path):
+async def test_photo_message_persists_image_part_with_artifact(tmp_path: Path, async_closers):
     png = _png_bytes()
     p, adapter, store = await _setup(
-        tmp_path, files={"photo-hi": png})
+        tmp_path, async_closers, files={"photo-hi": png})
     msg = _FakeMessage(
         caption="look at this",
         photo=[_FakePhotoSize("photo-lo"), _FakePhotoSize("photo-hi")])
@@ -184,9 +185,9 @@ async def test_photo_message_persists_image_part_with_artifact(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_document_message_preserves_filename(tmp_path: Path):
+async def test_document_message_preserves_filename(tmp_path: Path, async_closers):
     p, adapter, store = await _setup(
-        tmp_path, files={"doc-1": b"%PDF-1.4 hello"})
+        tmp_path, async_closers, files={"doc-1": b"%PDF-1.4 hello"})
     msg = _FakeMessage(
         caption=None,
         document=_FakeDocument("doc-1", "application/pdf", "report.pdf"))
@@ -199,9 +200,9 @@ async def test_document_message_preserves_filename(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_oversized_attachment_skipped_turn_lands_as_text(tmp_path: Path):
+async def test_oversized_attachment_skipped_turn_lands_as_text(tmp_path: Path, async_closers):
     png = _png_bytes(64, 64)
-    p, adapter, store = await _setup(tmp_path, files={"big": png})
+    p, adapter, store = await _setup(tmp_path, async_closers, files={"big": png})
     # Tiny cap forces MediaTooLarge inside store_inbound_media.
     adapter._media_config = MediaConfig(max_bytes=4)
     msg = _FakeMessage(
@@ -216,9 +217,9 @@ async def test_oversized_attachment_skipped_turn_lands_as_text(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_no_artifact_registry_skips_media_text_only(tmp_path: Path):
+async def test_no_artifact_registry_skips_media_text_only(tmp_path: Path, async_closers):
     p, adapter, store = await _setup(
-        tmp_path, with_artifacts=False, files={"photo-hi": _png_bytes()})
+        tmp_path, async_closers, with_artifacts=False, files={"photo-hi": _png_bytes()})
     msg = _FakeMessage(
         caption="hi there",
         photo=[_FakePhotoSize("photo-hi")])

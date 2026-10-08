@@ -132,9 +132,12 @@ async def test_ping_raises_when_the_connection_is_dead(tmp_path: Path):
     answer from in-process state - that is the entire point of it."""
     provider = SqliteStorageProvider(SqliteConfig(path=tmp_path / "data.sqlite"))
     await provider.initialize()
-    await provider.connection.close()
-    with pytest.raises(Exception):
-        await provider.ping()
+    try:
+        await provider.connection.close()
+        with pytest.raises(Exception):
+            await provider.ping()
+    finally:
+        await provider.aclose()
 
 
 @pytest.mark.asyncio

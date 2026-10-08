@@ -136,9 +136,10 @@ class TestChannelMetricsDeclared:
         assert "reply_binding_resolutions_total" in text
 
 
-async def _provider(tmp_path: Path):
+async def _provider(tmp_path: Path, async_closers):
     p = SqliteStorageProvider(SqliteConfig(path=tmp_path / "metrics.sqlite"))
     await p.initialize()
+    async_closers.push_async_callback(p.aclose)
     return p
 
 
@@ -171,10 +172,10 @@ def _event(channel_id):
 
 
 @pytest.mark.asyncio
-async def test_inbound_router_increments_normalized_counter(tmp_path: Path):
+async def test_inbound_router_increments_normalized_counter(tmp_path: Path, async_closers):
     import primer.observability.metrics as m
 
-    p = await _provider(tmp_path)
+    p = await _provider(tmp_path, async_closers)
     ch = await _channel(p)
     store = CorrelationStore(p)
     router = ChannelInboundRouter(storage_provider=p, correlation_store=store)

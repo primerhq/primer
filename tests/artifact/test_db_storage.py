@@ -16,15 +16,17 @@ from primer.model.provider import (
 from primer.storage.sqlite import SqliteStorageProvider
 
 
-async def _sp(tmp_path: Path) -> SqliteStorageProvider:
+@pytest.fixture
+async def sp(tmp_path: Path):
     p = SqliteStorageProvider(SqliteConfig(path=tmp_path / "a.sqlite"))
     await p.initialize()
-    return p
+    yield p
+    await p.aclose()
 
 
 @pytest.mark.asyncio
-async def test_put_get_delete_round_trip(tmp_path: Path):
-    store = DbArtifactStorage(await _sp(tmp_path))
+async def test_put_get_delete_round_trip(sp: SqliteStorageProvider):
+    store = DbArtifactStorage(sp)
     aid = await store.put(data=b"\x89PNG\r\n", mime_type="image/png", filename="x.png")
     assert aid.startswith("artifact-")
     blob = await store.get(aid)
@@ -37,14 +39,13 @@ async def test_put_get_delete_round_trip(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_get_unknown_returns_none(tmp_path: Path):
-    store = DbArtifactStorage(await _sp(tmp_path))
+async def test_get_unknown_returns_none(sp: SqliteStorageProvider):
+    store = DbArtifactStorage(sp)
     assert await store.get("artifact-nope") is None
 
 
 @pytest.mark.asyncio
-async def test_factory_db_backend(tmp_path: Path):
-    sp = await _sp(tmp_path)
+async def test_factory_db_backend(sp: SqliteStorageProvider):
     row = ArtifactStorageProvider(id="asp-1", provider="db")
     store = build_artifact_storage(row, storage_provider=sp)
     assert isinstance(store, DbArtifactStorage)

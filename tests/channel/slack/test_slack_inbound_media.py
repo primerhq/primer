@@ -121,9 +121,10 @@ def _make_channel() -> Channel:
     )
 
 
-async def _make_sp(tmp_path) -> SqliteStorageProvider:
+async def _make_sp(tmp_path, async_closers) -> SqliteStorageProvider:
     sp = SqliteStorageProvider(SqliteConfig(path=tmp_path / "media.sqlite"))
     await sp.initialize()
+    async_closers.push_async_callback(sp.aclose)
     # Channel ch-1 needs chats enabled + a real
     # agent so the router can resolve-or-create a chat for the inbound message.
     await sp.get_storage(Agent).create(Agent(
@@ -164,8 +165,8 @@ def _patch_httpx(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_image_file_becomes_image_part_with_artifact(tmp_path):
-    sp = await _make_sp(tmp_path)
+async def test_image_file_becomes_image_part_with_artifact(tmp_path, async_closers):
+    sp = await _make_sp(tmp_path, async_closers)
     store = _MemArtifacts()
     adapter = _make_adapter(sp, store)
     img = _png_bytes()
@@ -189,8 +190,8 @@ async def test_image_file_becomes_image_part_with_artifact(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_document_file_becomes_document_part_with_filename(tmp_path):
-    sp = await _make_sp(tmp_path)
+async def test_document_file_becomes_document_part_with_filename(tmp_path, async_closers):
+    sp = await _make_sp(tmp_path, async_closers)
     store = _MemArtifacts()
     adapter = _make_adapter(sp, store)
     pdf = b"%PDF-1.4 fake document bytes"
@@ -212,8 +213,8 @@ async def test_document_file_becomes_document_part_with_filename(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_oversized_file_skipped_turn_lands_as_text(tmp_path):
-    sp = await _make_sp(tmp_path)
+async def test_oversized_file_skipped_turn_lands_as_text(tmp_path, async_closers):
+    sp = await _make_sp(tmp_path, async_closers)
     store = _MemArtifacts()
     adapter = _make_adapter(sp, store)
     # 21 MiB exceeds the 20 MiB default cap -> MediaTooLarge -> skipped.
@@ -233,8 +234,8 @@ async def test_oversized_file_skipped_turn_lands_as_text(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_no_artifact_registry_skips_media_gracefully(tmp_path):
-    sp = await _make_sp(tmp_path)
+async def test_no_artifact_registry_skips_media_gracefully(tmp_path, async_closers):
+    sp = await _make_sp(tmp_path, async_closers)
     adapter = _make_adapter(sp, store=None)  # artifact_registry None
     _FakeAsyncClient._by_url["https://files.slack/img"] = _FakeResponse(_png_bytes())
 
@@ -250,8 +251,8 @@ async def test_no_artifact_registry_skips_media_gracefully(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_download_failure_skips_file_without_raising(tmp_path):
-    sp = await _make_sp(tmp_path)
+async def test_download_failure_skips_file_without_raising(tmp_path, async_closers):
+    sp = await _make_sp(tmp_path, async_closers)
     store = _MemArtifacts()
     adapter = _make_adapter(sp, store)
     # Mapped to a 500 -> download failure -> skip, no raise.

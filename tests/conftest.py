@@ -8,6 +8,7 @@ use it without duplication.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 from typing import Any, Generic, TypeVar
 
@@ -707,6 +708,14 @@ def _no_swallowed_counter_bugs(request: pytest.FixtureRequest):
         "estimate (outcome=fallback_bug); see the ERROR log. Fix the counter, or "
         "mark a test that provokes this deliberately with allow_fallback_bug."
     )
+
+
+@pytest.fixture
+async def async_closers():
+    """An ``AsyncExitStack`` unwound at teardown, for a helper that opens a provider the test cannot get through a fixture:
+    ``async_closers.push_async_callback(provider.aclose)`` right after ``await provider.initialize()``."""
+    async with AsyncExitStack() as stack:
+        yield stack
 
 
 @pytest.fixture(autouse=True)

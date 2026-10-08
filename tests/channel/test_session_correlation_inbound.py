@@ -42,9 +42,10 @@ class _CapturingInbox(ChannelInbox):
         self.received.append(env)
 
 
-async def _sp(tmp_path: Path) -> SqliteStorageProvider:
+async def _sp(tmp_path: Path, async_closers) -> SqliteStorageProvider:
     p = SqliteStorageProvider(SqliteConfig(path=tmp_path / "t.sqlite"))
     await p.initialize()
+    async_closers.push_async_callback(p.aclose)
     return p
 
 
@@ -82,13 +83,13 @@ class _SlackClient:
 
 @pytest.mark.asyncio
 async def test_slack_ask_user_writes_store_and_clears_on_reply(
-    tmp_path: Path,
+    tmp_path: Path, async_closers,
 ) -> None:
     """post_prompt(ask_user) -> store write; factory reply handler -> inbox call + clear."""
     from primer.channel.slack.adapter import SlackChannelAdapter
     from primer.channel.slack.connection import SLACK_CONNECTIONS
 
-    sp = await _sp(tmp_path)
+    sp = await _sp(tmp_path, async_closers)
     inbox = _CapturingInbox()
     adapter = SlackChannelAdapter(
         provider=_slack_provider(), channel=_slack_channel(),
@@ -221,12 +222,12 @@ class _DCClient:
 
 @pytest.mark.asyncio
 async def test_discord_ask_user_writes_store_and_reply_resolves(
-    tmp_path: Path,
+    tmp_path: Path, async_closers,
 ) -> None:
     from primer.channel.discord.adapter import DiscordChannelAdapter
     from primer.channel.discord.connection import DISCORD_CONNECTIONS
 
-    sp = await _sp(tmp_path)
+    sp = await _sp(tmp_path, async_closers)
     inbox = _CapturingInbox()
     thread = _DCThread(tid=1000)
     dc_client = _DCClient(thread=thread)
@@ -330,12 +331,12 @@ class _TGApp:
 
 @pytest.mark.asyncio
 async def test_telegram_ask_user_writes_store_and_reply_resolves(
-    tmp_path: Path,
+    tmp_path: Path, async_closers,
 ) -> None:
     from primer.channel.telegram.adapter import TelegramChannelAdapter
     from primer.channel.telegram.connection import TELEGRAM_CONNECTIONS
 
-    sp = await _sp(tmp_path)
+    sp = await _sp(tmp_path, async_closers)
     inbox = _CapturingInbox()
     app = _TGApp()
 
@@ -410,7 +411,7 @@ async def test_telegram_ask_user_writes_store_and_reply_resolves(
 
 @pytest.mark.asyncio
 async def test_telegram_reject_reason_still_uses_reply_targets(
-    tmp_path: Path,
+    tmp_path: Path, async_closers,
 ) -> None:
     """The Reject-button follow-up text (rejection reason) continues to use
     _reply_targets since it is NOT a session gate and has no store correlation.
@@ -418,7 +419,7 @@ async def test_telegram_reject_reason_still_uses_reply_targets(
     from primer.channel.telegram.adapter import TelegramChannelAdapter
     from primer.channel.telegram.connection import TELEGRAM_CONNECTIONS
 
-    sp = await _sp(tmp_path)
+    sp = await _sp(tmp_path, async_closers)
     inbox = _CapturingInbox()
     app = _TGApp()
 
