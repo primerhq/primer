@@ -118,6 +118,11 @@ network).
   a response with any other `Content-Encoding` (`br`, `zstd`, a stacked
   `gzip, gzip`) is refused with `unsupported content-encoding`. Pass your
   own `Accept-Encoding` header to `http_request` only if you can accept that.
+  A compressed body with data after the end of its stream (trailing bytes,
+  a second gzip member), one that ends before it, or one far larger on the
+  wire than its cap allows, is a failed request, never a partial result.
+- `download`'s `max_bytes` can only LOWER the cap the operator configured;
+  a larger value is the operator's cap.
 
 ## Related
 
