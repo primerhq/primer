@@ -83,7 +83,12 @@ def redact_url_secrets(text: str) -> str:
 def _redact_arg(arg: Any) -> Any:
     if arg is None or isinstance(arg, (bool, int, float)):
         return arg
-    text = str(arg)
+    try:
+        text = str(arg)
+    except Exception:  # noqa: BLE001 - a raising __str__ is the formatter's to report
+        # Filters run outside Handler.handleError's guard, so a raise
+        # here would escape to the logger.info() caller. Keep the arg.
+        return arg
     redacted = redact_url_secrets(text)
     # Only replace the arg when something was masked, so %r / %d
     # formatting of ordinary args is untouched.
@@ -101,8 +106,26 @@ class _UrlSecretFilter(logging.Filter):
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
+        # Filters run outside Handler.handleError's guard: nothing in here
+        # may raise into the caller of logger.info().
+        try:
+            self._redact(record)
+        except Exception:  # noqa: BLE001 - never break the caller's log call
+            pass
+        return True
+
+    def _redact(self, record: logging.LogRecord) -> None:
         if isinstance(record.msg, str):
             record.msg = redact_url_secrets(record.msg)
+        elif not record.args:
+            # logger.warning(exc): the message is the object's str().
+            record.msg = _redact_arg(record.msg)
+        # String extras (extra={"path": request.url.path}) are emitted
+        # verbatim by _JsonFormatter.
+        for key, value in list(record.__dict__.items()):
+            if key in _RESERVED_RECORD_ATTRS or not isinstance(value, str):
+                continue
+            record.__dict__[key] = redact_url_secrets(value)
         if isinstance(record.args, tuple):
             record.args = tuple(_redact_arg(a) for a in record.args)
         elif isinstance(record.args, dict):
@@ -125,7 +148,6 @@ class _UrlSecretFilter(logging.Filter):
             )
         if record.exc_text:
             record.exc_text = redact_url_secrets(record.exc_text)
-        return True
 
 
 _URL_SECRET_FILTER = _UrlSecretFilter()
