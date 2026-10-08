@@ -81,7 +81,7 @@ def problems_in(call: Call) -> list[str]:
     """What the live tool's input schema refuses in the call's arguments, with placeholders accepted."""
     tool = built_in_tools().get(call.toolset, {}).get(call.tool)
     if tool is None or not tool.args_schema:
-        return []
+        return []  # an unknown tool name is test_docs_name_real_tools_and_routes' finding; this test only checks arguments
     validator = jsonschema.Draft202012Validator(tool.args_schema)
     problems = []
     # A tool's argument model ignores a name it does not declare, and the schema does not forbid one, so a misspelt or invented argument
