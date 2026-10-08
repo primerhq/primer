@@ -130,6 +130,40 @@ async def test_a_tool_id_with_no_scope_prefix_is_its_own_toolset(client, app) ->
 
 
 @pytest.mark.asyncio
+async def test_the_toolset_is_the_part_before_the_last_double_underscore(client, app) -> None:
+    """``/status`` has always split on the LAST ``__``, so a toolset whose own id contains ``__`` is named by the tool ids after it."""
+    await _seed(app, profile_row("mp-1"))
+    await _seed(app, toolset_row("my__ts"))
+
+    found = await client.post("/v1/agents", json=agent_body("ag-1", tools=["my__ts__do_it"]))
+    not_found = await client.post("/v1/agents", json=agent_body("ag-2", tools=["other__ts__do_it"]))
+
+    assert found.status_code == 201, found.text
+    assert not_found.status_code == 422 and toolsets_missing_message("other__ts") in not_found.text, not_found.text
+
+
+@pytest.mark.asyncio
+async def test_a_retired_alias_with_no_row_is_reported_under_its_current_id(client, app) -> None:
+    """``_search`` is the retired id of ``search``, which is a stored row: with no row, it is ``search`` that is missing."""
+    await _seed(app, profile_row("mp-1"))
+
+    r = await client.post("/v1/agents", json=agent_body("ag-1", tools=["_search__search_agents"]))
+
+    assert r.status_code == 422 and toolsets_missing_message("search") in r.text, r.text
+
+
+@pytest.mark.asyncio
+async def test_a_retired_alias_and_its_current_id_are_one_toolset_for_an_update(client, app) -> None:
+    """An agent that already names ``_search`` (no row) is not newly naming ``search`` when an update adds a tool of it."""
+    await _seed(app, profile_row("mp-1"))
+    await _seed_agent_directly(app, agent_body("ag-1", tools=["_search__x"]))
+
+    r = await client.put("/v1/agents/ag-1", json=agent_body("ag-1", tools=["_search__x", "search__y"]))
+
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
 async def test_search_is_a_stored_toolset_not_a_built_in(client, app) -> None:
     """``search`` is resolved from storage (it exists once Internal Collections is configured), so naming it needs its row."""
     await _seed(app, profile_row("mp-1"))
