@@ -29,7 +29,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from primer.agent.agent_checks import agent_pre_checks
+from primer.agent.agent_checks import AGENT_WRITE_NOTE, agent_pre_checks
 from primer.model.agent import Agent
 from primer.model.chat import Tool
 from primer.model.graph import Graph
@@ -101,6 +101,7 @@ def build_crud_toolset(
             guards=guards,
             pre_create=pre_create,
             pre_update=pre_update,
+            write_note=AGENT_WRITE_NOTE if label == "agent" else None,
         )
         for bare in (f"create_{label}", f"update_{label}"):
             tool, handler = produced[bare]

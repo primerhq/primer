@@ -23,9 +23,10 @@ import re
 from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
 
-from primer.agent.agent_checks import check_agent_on_create, check_agent_on_update, missing_toolset_ids
+from primer.agent.agent_checks import AGENT_FIELD_CODES, check_agent_on_create, check_agent_on_update, missing_toolset_ids
 from primer.api.deps import (
     get_agent_storage,
     get_graph_storage,
@@ -52,8 +53,14 @@ from primer.storage.references import AGENT_REFERENCES, GRAPH_REFERENCES
 # ---- Agent router ----------------------------------------------------------
 
 
-def _agent_check_as_rest_error(exc: EntityCheckError) -> HTTPException:
-    """The 422 the profile and channel routers raise for a refused reference: ``{error, field, message}``."""
+def _agent_check_as_rest_error(exc: EntityCheckError) -> HTTPException | RequestValidationError:
+    """The 422 the profile and channel routers raise for a refused reference: ``{error, field, message}``.
+
+    The id and description rules (ticket 01a11c1c) are about a field of the body, so they answer the request-validation envelope the console's
+    ``fieldErrors`` reads: one error at ``body.<field>`` whose type is the code.
+    """
+    if exc.code in AGENT_FIELD_CODES:
+        return RequestValidationError([{"type": exc.code, "loc": ("body", exc.field), "msg": exc.message}])
     return HTTPException(
         status_code=422, detail={"error": exc.code or "", "field": exc.field or "", "message": exc.message},
     )

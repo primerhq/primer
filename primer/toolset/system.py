@@ -70,7 +70,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
-from primer.agent.agent_checks import agent_pre_checks
+from primer.agent.agent_checks import AGENT_WRITE_NOTE, agent_pre_checks
 from primer.agent.approval import ApprovalResolver
 from primer.agent.approval_checks import check_policy
 from primer.agent.invoke import (
@@ -433,6 +433,7 @@ def build_system_toolset(
 
     # Rules about what a write may set, for the create and update descriptors (the agent reads them before it writes).
     write_notes_by_label: dict[str, str] = {
+        "agent": AGENT_WRITE_NOTE,
         "collection": (
             "The ``system`` flag belongs to the platform: a create that sets it and an update that changes it return ``type=forbidden`` "
             "and nothing is stored. When you replace a row, send back the stored value; leaving the field out counts as ``false``."
