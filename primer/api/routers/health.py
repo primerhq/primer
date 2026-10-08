@@ -72,8 +72,12 @@ class WorkerPoolHealth(BaseModel):
     in_flight: int | None = Field(
         default=None,
         description=(
-            "Number of sessions currently being executed by this "
-            "process's worker pool. Null when the process is API-only."
+            "Number of items currently being executed: this process's own "
+            "worker pool when it has one, otherwise the sum of the live "
+            "workers' last reported load from the durable registry. Null "
+            "when that is unknown: no live worker, or a live worker that "
+            "has not reported its load (a worker from before load reporting "
+            "is not idle, it is unknown)."
         ),
     )
     capacity: int | None = Field(
@@ -237,12 +241,17 @@ async def health(request: Request) -> HealthStatus:
         # topology, so the in-process metrics snapshot above can never
         # answer capacity here. Fall back to the durable scheduler
         # registry, summing live (non-dead) workers' capacity, the same
-        # aggregate the Workers page computes client-side. in_flight has
-        # no durable equivalent (per-worker live load is process-local
-        # and never persisted) so it is left null rather than guessed.
+        # aggregate the Workers page computes client-side. in_flight is
+        # the sum of the same live workers' last reported load (each worker
+        # writes it with its heartbeat), and is left null rather than
+        # guessed when there is no live worker or any of them has not
+        # reported: an undercount would read as a measurement.
         try:
             workers = await scheduler.list_workers()
-            pool_capacity = sum(w.capacity for w in workers if w.status != "dead")
+            live = [w for w in workers if w.status != "dead"]
+            pool_capacity = sum(w.capacity for w in live)
+            if live and all(w.in_flight is not None for w in live):
+                pool_in_flight = sum(w.in_flight for w in live)
         except Exception:
             pool_capacity = None
 

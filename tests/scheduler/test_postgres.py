@@ -403,3 +403,42 @@ async def test_watcher_resubscribes_after_its_listen_backend_is_terminated():
         except asyncio.CancelledError:
             pass
         await _close_pool_bounded(sp)
+
+
+async def test_initialize_adds_a_nullable_load_column_to_the_workers_table(sched, storage_provider):
+    """Lead sweep M2. The table is created without the column (the fixture drops it first, as a deployment that predates load reporting
+    has it) and initialize adds it: nullable and with no default, so a worker that never reports reads NULL, not 0."""
+    async with storage_provider.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT data_type, is_nullable, column_default FROM information_schema.columns "
+            "WHERE table_name = 'workers' AND column_name = 'in_flight' AND table_schema = current_schema()"
+        )
+    assert row is not None, "initialize did not add workers.in_flight"
+    assert (row["data_type"], row["is_nullable"], row["column_default"]) == ("integer", "YES", None)
+
+
+async def test_report_worker_load_is_stored_and_a_new_registration_forgets_it(sched):
+    await sched.register_worker(worker_id="w1", host="h", pid=1, capacity=4)
+    [fresh] = [w for w in await sched.list_workers() if w.id == "w1"]
+    assert fresh.in_flight is None, "a worker that never reported must read as unknown"
+
+    await sched.report_worker_load("w1", in_flight=3)
+    [reported] = [w for w in await sched.list_workers() if w.id == "w1"]
+    assert reported.in_flight == 3
+
+    await sched.register_worker(worker_id="w1", host="h", pid=2, capacity=4)
+    [again] = [w for w in await sched.list_workers() if w.id == "w1"]
+    assert again.in_flight is None, "the previous process's load is not the restarted worker's"
+
+
+async def test_report_worker_load_does_not_touch_the_heartbeat(sched):
+    import asyncio
+
+    await sched.register_worker(worker_id="w1", host="h", pid=1, capacity=1)
+    [before] = [w for w in await sched.list_workers() if w.id == "w1"]
+    await asyncio.sleep(0.05)
+
+    await sched.report_worker_load("w1", in_flight=1)
+
+    [after] = [w for w in await sched.list_workers() if w.id == "w1"]
+    assert after.last_heartbeat == before.last_heartbeat, "load is reported beside the heartbeat, it is not a heartbeat"

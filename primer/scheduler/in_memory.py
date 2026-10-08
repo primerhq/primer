@@ -134,6 +134,12 @@ class InMemoryScheduler(Scheduler):
                     update={"last_heartbeat": datetime.now(timezone.utc)},
                 )
 
+    async def report_worker_load(self, worker_id: str, *, in_flight: int) -> None:
+        async with self._lock:
+            w = self._workers.get(worker_id)
+            if w is not None:
+                w.info = w.info.model_copy(update={"in_flight": in_flight})
+
     async def drain_worker(self, worker_id: str) -> None:
         async with self._lock:
             w = self._workers.get(worker_id)

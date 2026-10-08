@@ -50,6 +50,14 @@ class WorkerInfo(BaseModel):
     started_at: datetime
     last_heartbeat: datetime
     status: Literal["active", "draining", "dead"]
+    in_flight: int | None = Field(
+        default=None, ge=0,
+        description=(
+            "How many items the worker was running at its last load report (its heartbeat tick). ``None`` means it has never reported: "
+            "a worker from before load reporting, or a scheduler that does not persist load. Unknown is not idle, so a fleet total "
+            "must not count ``None`` as 0."
+        ),
+    )
 
 
 class FailureRecord(BaseModel):
@@ -96,6 +104,15 @@ class Scheduler(ABC):
 
     @abstractmethod
     async def heartbeat_worker(self, worker_id: str) -> None: ...
+
+    async def report_worker_load(self, worker_id: str, *, in_flight: int) -> None:
+        """Record how many items the worker is running, beside its heartbeat (Lead sweep M2).
+
+        Not abstract and a no-op by default, on purpose: it is a separate call from :meth:`heartbeat_worker` so the abstract
+        signature did not change under every existing scheduler. A scheduler that does not persist load simply leaves
+        ``WorkerInfo.in_flight`` as ``None``, which readers treat as unknown, never as idle.
+        """
+        del worker_id, in_flight
 
     @abstractmethod
     async def drain_worker(self, worker_id: str) -> None: ...

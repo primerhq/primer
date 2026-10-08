@@ -94,6 +94,9 @@ class PostgresScheduler(Scheduler):
             async with self._storage.pool.acquire() as conn:
                 async with conn.transaction():
                     await conn.execute(_DDL_WORKERS)
+                    # Added after the table shipped (Lead sweep M2): nullable, no default, so a worker from before load reporting
+                    # reads as "never reported" (NULL), not as idle. Idempotent; safe against a rolling upgrade.
+                    await conn.execute("ALTER TABLE workers ADD COLUMN IF NOT EXISTS in_flight INT")
                     # Boot-time recovery: mark dead any worker rows that
                     # haven't heartbeat in 5 minutes.
                     await conn.execute(
@@ -150,7 +153,8 @@ class PostgresScheduler(Scheduler):
                     pid = EXCLUDED.pid,
                     capacity = EXCLUDED.capacity,
                     last_heartbeat = now(),
-                    status = 'active'
+                    status = 'active',
+                    in_flight = NULL
                 """,
                 worker_id, host, pid, capacity,
             )
@@ -160,6 +164,13 @@ class PostgresScheduler(Scheduler):
             await conn.execute(
                 "UPDATE workers SET last_heartbeat = now() WHERE id = $1",
                 worker_id,
+            )
+
+    async def report_worker_load(self, worker_id: str, *, in_flight: int) -> None:
+        async with self._storage.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE workers SET in_flight = $2 WHERE id = $1",
+                worker_id, in_flight,
             )
 
     async def drain_worker(self, worker_id: str) -> None:
@@ -186,7 +197,7 @@ class PostgresScheduler(Scheduler):
     async def list_workers(self) -> list[WorkerInfo]:
         async with self._storage.pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT id, host, pid, capacity, started_at, last_heartbeat, status "
+                "SELECT id, host, pid, capacity, started_at, last_heartbeat, status, in_flight "
                 "FROM workers ORDER BY id"
             )
         return [
@@ -194,6 +205,7 @@ class PostgresScheduler(Scheduler):
                 id=r["id"], host=r["host"], pid=r["pid"],
                 capacity=r["capacity"], started_at=r["started_at"],
                 last_heartbeat=r["last_heartbeat"], status=r["status"],
+                in_flight=r["in_flight"],
             )
             for r in rows
         ]

@@ -42,6 +42,9 @@ class _NullScheduler(Scheduler):
     async def heartbeat_worker(self, worker_id: str) -> None:
         pass
 
+    async def report_worker_load(self, worker_id: str, *, in_flight: int) -> None:
+        pass
+
     async def drain_worker(self, worker_id: str) -> None:
         pass
 
