@@ -97,3 +97,14 @@ async def test_a_collection_created_without_the_flag_is_a_user_collection(world)
 
     assert not is_error, body
     assert (await sp.get_storage(Collection).get("mine")).system is False
+
+
+@pytest.mark.asyncio
+async def test_the_create_and_update_descriptors_tell_an_agent_about_the_forbidden_answer(world) -> None:
+    """An agent reads the descriptor before it writes: the flag rule must be in it, not only in the refusal it gets afterwards."""
+    _, toolset, _ = world
+
+    described = {tool.id: tool.description async for tool in toolset.list_tools()}
+
+    for name in ("create_collection", "update_collection"):
+        assert "type=forbidden" in described[name] and "system" in described[name], described[name]

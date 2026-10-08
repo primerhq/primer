@@ -43,6 +43,7 @@ async def test_creating_a_collection_with_the_system_flag_is_refused(client, pro
     assert resp.status_code == 403, resp.text
     assert resp.headers["content-type"].startswith("application/problem+json")
     assert "system flag" in resp.json()["detail"]
+    assert resp.json()["extensions"]["error"] == "system_flag_protected", "a client cannot tell this 403 from any other without the code"
     assert await provider.get_storage(Collection).get("planted") is None
 
 
@@ -65,6 +66,7 @@ async def test_turning_the_flag_off_is_refused_and_the_collection_cannot_then_be
 
     assert unflag.status_code == 403, unflag.text
     assert "system flag" in unflag.json()["detail"]
+    assert unflag.json()["extensions"]["error"] == "system_flag_protected"
     assert (await provider.get_storage(Collection).get("sys-1")).system is True, "the flag was cleared"
     delete = await client.delete("/v1/collections/sys-1")
     assert delete.status_code == 403, delete.text
