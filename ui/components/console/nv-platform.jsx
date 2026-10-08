@@ -112,6 +112,14 @@ function NV_deleteRow(env, nav, row, path) {
   });
 }
 
+// True exactly when an overlay that was open has just closed. A card opens its
+// entity in an overlay over the grid and a write made there never reached the
+// grid behind it (its list is polled every 15 s), so the page refetches on this
+// transition. tests/ui/test_platform_overlay_close_refetch.py runs it.
+function NV_overlayClosed(wasOpen, isOpen) {
+  return !!wasOpen && !isOpen;
+}
+
 // A row created from a form the Platform page hosts: refresh the cards
 // behind and open the new row's own detail overlay (where a toolset's source
 // or a trigger's subscriptions are edited), which is where the legacy list
@@ -1102,6 +1110,13 @@ function NV_PlatPage() {
     },
     { pollMs: 15000, deps: [nav] }
   );
+  // ADM-16: closing an overlay refreshes the list behind it (see NV_overlayClosed).
+  var overlayOpen = !!con.overlay;
+  var overlayWasOpen = React.useRef(overlayOpen);
+  React.useEffect(function () {
+    if (NV_overlayClosed(overlayWasOpen.current, overlayOpen)) res.refetch();
+    overlayWasOpen.current = overlayOpen;
+  }, [overlayOpen]);
   var items = (res.data && res.data.items) || [];
 
   var cards = items.map(function (row) {
