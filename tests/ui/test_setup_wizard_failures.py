@@ -359,6 +359,14 @@ def test_ollama_behind_auth_is_a_key_problem_too(real) -> None:
     assert _failure(real["ollama_401"], "ollama", "")["title"] == NEEDS_KEY
 
 
+def test_ollamas_trailing_status_beats_httpx_wording_quoted_in_the_servers_words() -> None:
+    """The suffix is ollama's own, so it is read before the httpx ``Server error 'n Reason'`` phrase that the server's words may quote."""
+    detail = "ollama probe failed: upstream said Server error '502 Bad Gateway' (status code: 401)"
+
+    assert _failure(detail, "ollama", "k")["title"] == REJECTED
+    assert _failure(detail, "ollama", "")["title"] == NEEDS_KEY
+
+
 # ---- the HTTP status is read before bare words ------------------------------------------------------------------------------------------------------------------------
 
 
