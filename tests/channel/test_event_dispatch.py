@@ -68,9 +68,10 @@ class _FireSpy:
         return _R()
 
 
-async def _provider(tmp_path):
+async def _provider(tmp_path, async_closers):
     p = SqliteStorageProvider(SqliteConfig(path=tmp_path / "ev.sqlite"))
     await p.initialize()
+    async_closers.push_async_callback(p.aclose)
     return p
 
 
@@ -109,8 +110,8 @@ def _deps(p):
 
 
 @pytest.mark.asyncio
-async def test_correlation_session_reply_wins_over_rules(tmp_path: Path):
-    p = await _provider(tmp_path)
+async def test_correlation_session_reply_wins_over_rules(tmp_path: Path, async_closers):
+    p = await _provider(tmp_path, async_closers)
     ch = await _channel(p)
     store = CorrelationStore(p)
     await store.upsert_session(
@@ -137,9 +138,9 @@ async def test_correlation_session_reply_wins_over_rules(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_no_correlation_fires_channel_triggers_channel_scoped_and_provider_wide(
-    tmp_path: Path,
+    tmp_path: Path, async_closers,
 ):
-    p = await _provider(tmp_path)
+    p = await _provider(tmp_path, async_closers)
     ch = await _channel(p)
     store = CorrelationStore(p)
     # Channel-scoped trigger (channel_id == ch.id).
@@ -178,11 +179,11 @@ async def test_no_correlation_fires_channel_triggers_channel_scoped_and_provider
 
 
 @pytest.mark.asyncio
-async def test_normalizer_none_event_is_ignored(tmp_path: Path):
+async def test_normalizer_none_event_is_ignored(tmp_path: Path, async_closers):
     """A normalizer returning None means no event -> no correlation lookup,
     no fire. The guard lives in the factory wrapper; we model it here by
     simply never calling route_event when normalize() returns None."""
-    p = await _provider(tmp_path)
+    p = await _provider(tmp_path, async_closers)
     ch = await _channel(p)
     store = CorrelationStore(p)
     bus = _RecordingBus()

@@ -5,9 +5,10 @@ from primer.model.provider import SqliteConfig
 from primer.storage.sqlite import SqliteStorageProvider
 
 @pytest.mark.asyncio
-async def test_channel_correlation_round_trip(tmp_path: Path):
+async def test_channel_correlation_round_trip(tmp_path: Path, async_closers):
     sp = SqliteStorageProvider(SqliteConfig(path=tmp_path / "x.sqlite"))
     await sp.initialize()
+    async_closers.push_async_callback(sp.aclose)
     st = sp.get_storage(ChannelCorrelation)
     row = ChannelCorrelation(id="channel-correlation-1", channel_id="ch-1",
                              anchor="th-1", kind="session", workspace_id="ws-1",

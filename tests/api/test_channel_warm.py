@@ -39,8 +39,16 @@ def _factory_isolation():
     clear_factories_for_tests()
 
 
+@pytest.fixture
+async def p(tmp_path: Path):
+    provider = SqliteStorageProvider(SqliteConfig(path=tmp_path / "r.sqlite"))
+    await provider.initialize()
+    yield provider
+    await provider.aclose()
+
+
 @pytest.mark.asyncio
-async def test_warm_starts_enabled_chat_adapters(tmp_path: Path):
+async def test_warm_starts_enabled_chat_adapters(p: SqliteStorageProvider):
     started: list[str] = []
 
     async def _factory(provider_row, channel_row, inbox, **_kw):
@@ -51,8 +59,6 @@ async def test_warm_starts_enabled_chat_adapters(tmp_path: Path):
 
     register_adapter_factory(ChannelProviderType.TELEGRAM, _factory)
 
-    p = SqliteStorageProvider(SqliteConfig(path=tmp_path / "r.sqlite"))
-    await p.initialize()
     cp = p.get_storage(ChannelProvider)
     ch = p.get_storage(Channel)
     await cp.create(ChannelProvider(
@@ -92,9 +98,7 @@ async def test_warm_starts_enabled_chat_adapters(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_warm_noop_without_storage_provider(tmp_path: Path):
-    p = SqliteStorageProvider(SqliteConfig(path=tmp_path / "r.sqlite"))
-    await p.initialize()
+async def test_warm_noop_without_storage_provider(p: SqliteStorageProvider):
     reg = ChannelRegistry(
         channel_storage=p.get_storage(Channel),
         channel_provider_storage=p.get_storage(ChannelProvider),

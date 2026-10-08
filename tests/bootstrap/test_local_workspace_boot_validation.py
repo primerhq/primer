@@ -30,9 +30,13 @@ def _config(db_path: Path, **overrides) -> AppConfig:
 
 async def test_boot_fails_when_the_default_template_is_on_a_refused_local_provider(tmp_path) -> None:
     app = create_app(_config(tmp_path / "db.sqlite", local_workspaces={"refuse_when_distributed": True}))
-    with pytest.raises(ConfigError, match="default_workspace_template 'local-default'"):
-        async with app.router.lifespan_context(app):
-            pytest.fail("the app must not start")
+    try:
+        with pytest.raises(ConfigError, match="default_workspace_template 'local-default'"):
+            async with app.router.lifespan_context(app):
+                pytest.fail("the app must not start")
+    finally:
+        # A boot that fails leaves the storage provider it opened open (the process exits); a test's process does not.
+        await app.state.storage_provider.aclose()
 
 
 async def test_boot_succeeds_with_the_switch_off_even_when_distributed(tmp_path, caplog) -> None:

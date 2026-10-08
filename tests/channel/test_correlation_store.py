@@ -9,22 +9,22 @@ from primer.channel.correlation import (
 from primer.model.provider import SqliteConfig
 from primer.storage.sqlite import SqliteStorageProvider
 
-async def _store(tmp_path):
+@pytest.fixture
+async def s(tmp_path):
     sp = SqliteStorageProvider(SqliteConfig(path=tmp_path / "c.sqlite"))
     await sp.initialize()
-    return CorrelationStore(sp)
+    yield CorrelationStore(sp)
+    await sp.aclose()
 
 @pytest.mark.asyncio
-async def test_upsert_and_lookup_session(tmp_path: Path):
-    s = await _store(tmp_path)
+async def test_upsert_and_lookup_session(s: CorrelationStore):
     await s.upsert_session(channel_id="ch-1", anchor="th-1", workspace_id="ws-1",
                            session_id="s-1", tool_call_id="tc-1")
     rec = await s.lookup("ch-1", "th-1")
     assert rec.kind == "session" and rec.session_id == "s-1" and rec.tool_call_id == "tc-1"
 
 @pytest.mark.asyncio
-async def test_upsert_updates_tool_call_same_anchor(tmp_path: Path):
-    s = await _store(tmp_path)
+async def test_upsert_updates_tool_call_same_anchor(s: CorrelationStore):
     await s.upsert_session(channel_id="ch-1", anchor="th-1", workspace_id="ws-1",
                            session_id="s-1", tool_call_id="tc-1")
     await s.upsert_session(channel_id="ch-1", anchor="th-1", workspace_id="ws-1",
@@ -36,8 +36,7 @@ async def test_upsert_updates_tool_call_same_anchor(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_upsert_thread_session_and_clear(tmp_path: Path):
-    s = await _store(tmp_path)
+async def test_upsert_thread_session_and_clear(s: CorrelationStore):
     await s.upsert_thread_session(
         channel_id="ch-1", anchor="th-9", workspace_id="ws-9",
         session_id="sess-9",
@@ -47,15 +46,13 @@ async def test_upsert_thread_session_and_clear(tmp_path: Path):
     assert await s.lookup("ch-1", "th-9") is None
 
 @pytest.mark.asyncio
-async def test_lookup_missing_returns_none(tmp_path: Path):
-    s = await _store(tmp_path)
+async def test_lookup_missing_returns_none(s: CorrelationStore):
     assert await s.lookup("ch-x", "nope") is None
 
 
 @pytest.mark.asyncio
-async def test_unique_index_created_on_channel_anchor(tmp_path: Path):
+async def test_unique_index_created_on_channel_anchor(s: CorrelationStore):
     """The (channel_id, anchor) unique index is created on first upsert."""
-    s = await _store(tmp_path)
     await s.upsert_session(channel_id="ch-1", anchor="th-1", workspace_id="ws-1",
                            session_id="s-1", tool_call_id="tc-1")
     cur = await s._sp.connection.execute(
@@ -72,10 +69,9 @@ async def test_unique_index_created_on_channel_anchor(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_concurrent_upsert_session_resolves_to_single_row(tmp_path: Path):
+async def test_concurrent_upsert_session_resolves_to_single_row(s: CorrelationStore):
     """Two concurrent upserts on the same (channel_id, anchor) converge to
     one row -- the double-resume race is closed (the ON CONFLICT path)."""
-    s = await _store(tmp_path)
     # Pre-create the index so neither coroutine loses the DDL race; the
     # atomic INSERT ... ON CONFLICT is what we are exercising here.
     await s._ensure_unique_index()
@@ -98,9 +94,8 @@ async def test_concurrent_upsert_session_resolves_to_single_row(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_concurrent_upsert_thread_session_resolves_to_single_row(
-    tmp_path: Path,
+    s: CorrelationStore,
 ):
-    s = await _store(tmp_path)
     await s._ensure_unique_index()
 
     async def _w(sid: str):
@@ -116,9 +111,8 @@ async def test_concurrent_upsert_thread_session_resolves_to_single_row(
 
 
 @pytest.mark.asyncio
-async def test_upsert_preserves_id_on_conflict(tmp_path: Path):
+async def test_upsert_preserves_id_on_conflict(s: CorrelationStore):
     """ON CONFLICT keeps the original row id (not the second writer's)."""
-    s = await _store(tmp_path)
     first = await s.upsert_session(channel_id="ch-1", anchor="th-1",
                                    workspace_id="ws-1", session_id="s-1",
                                    tool_call_id="tc-1")

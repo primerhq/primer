@@ -76,9 +76,10 @@ def _png_bytes(w, h):
     return buf.getvalue()
 
 
-async def _setup(tmp_path, *, with_artifacts=True):
+async def _setup(tmp_path, async_closers, *, with_artifacts=True):
     p = SqliteStorageProvider(SqliteConfig(path=tmp_path / "r.sqlite"))
     await p.initialize()
+    async_closers.push_async_callback(p.aclose)
     await p.get_storage(Agent).create(Agent(
         id="agent-x", description="X",
         model={"profile_id": "lp--m"}))
@@ -108,8 +109,8 @@ async def _user_parts(p, chat_id):
 
 
 @pytest.mark.asyncio
-async def test_image_attachment_persists_image_part(tmp_path: Path):
-    p, adapter, store = await _setup(tmp_path)
+async def test_image_attachment_persists_image_part(tmp_path: Path, async_closers):
+    p, adapter, store = await _setup(tmp_path, async_closers)
     att = _FakeAttachment(
         data=_png_bytes(64, 64), content_type="image/png", filename="pic.png")
     parts = await adapter.collect_inbound_media(
@@ -120,8 +121,8 @@ async def test_image_attachment_persists_image_part(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_document_attachment_persists_document_part(tmp_path: Path):
-    p, adapter, store = await _setup(tmp_path)
+async def test_document_attachment_persists_document_part(tmp_path: Path, async_closers):
+    p, adapter, store = await _setup(tmp_path, async_closers)
     att = _FakeAttachment(
         data=b"%PDF-1.4 hello", content_type="application/pdf",
         filename="report.pdf")
@@ -134,8 +135,8 @@ async def test_document_attachment_persists_document_part(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_oversized_attachment_skipped_text_still_lands(tmp_path: Path):
-    p, adapter, store = await _setup(tmp_path)
+async def test_oversized_attachment_skipped_text_still_lands(tmp_path: Path, async_closers):
+    p, adapter, store = await _setup(tmp_path, async_closers)
     big = b"a" * (21 * 1024 * 1024)  # over the 20 MiB default cap
     att = _FakeAttachment(
         data=big, content_type="application/pdf", filename="huge.pdf")
@@ -147,8 +148,8 @@ async def test_oversized_attachment_skipped_text_still_lands(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_no_artifact_registry_skips_media(tmp_path: Path):
-    p, adapter, _store = await _setup(tmp_path, with_artifacts=False)
+async def test_no_artifact_registry_skips_media(tmp_path: Path, async_closers):
+    p, adapter, _store = await _setup(tmp_path, async_closers, with_artifacts=False)
     att = _FakeAttachment(
         data=_png_bytes(32, 32), content_type="image/png", filename="pic.png")
     parts = await adapter.collect_inbound_media(

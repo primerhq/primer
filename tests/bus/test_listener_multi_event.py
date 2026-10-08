@@ -24,14 +24,16 @@ class _Event:
         self.payload = payload
 
 
-async def _build(tmp_path: Path):
+@pytest.fixture
+async def world(tmp_path: Path):
     provider = SqliteStorageProvider(SqliteConfig(path=tmp_path / "t.sqlite"))
     await provider.initialize()
     storage = provider.get_storage(WorkspaceSession)
     engine = InMemoryClaimEngine(
         adapters={ClaimKind.SESSION: SessionClaimAdapter(session_storage=storage)})
     listener = YieldEventListener(bus=None, session_storage=storage, engine=engine)
-    return storage, engine, listener
+    yield storage, engine, listener
+    await provider.aclose()
 
 
 def _multi(keys, primary):
@@ -46,8 +48,8 @@ def _multi(keys, primary):
     return s
 
 
-async def test_wakes_on_non_primary_member_key(tmp_path):
-    storage, engine, listener = await _build(tmp_path)
+async def test_wakes_on_non_primary_member_key(world):
+    storage, engine, listener = world
     await storage.create(_multi(["ask_user:s1:tc1", "ask_user:s1:tc2"], "ask_user:s1:tc1"))
     # Fire the SECOND key (not the primary parked_event_key).
     await listener._handle_event(_Event("ask_user:s1:tc2", {"response": "blue"}))
@@ -57,11 +59,11 @@ async def test_wakes_on_non_primary_member_key(tmp_path):
     assert got.parked_state["resume_event_payload"] == {"response": "blue"}
 
 
-async def test_non_member_key_does_not_wake_multi_event_park(tmp_path):
+async def test_non_member_key_does_not_wake_multi_event_park(world):
     # A multi-event park must NOT wake on a key absent from its
     # parked_event_keys array: the CONTAINS fallback must match exactly,
     # not over-match. Guards the jsonb ``?`` containment semantics.
-    storage, engine, listener = await _build(tmp_path)
+    storage, engine, listener = world
     await storage.create(
         _multi(["ask_user:s1:tc1", "ask_user:s1:tc2"], "ask_user:s1:tc1")
     )
@@ -70,8 +72,8 @@ async def test_non_member_key_does_not_wake_multi_event_park(tmp_path):
     assert got.parked_status == "parked"  # untouched
 
 
-async def test_single_event_path_unchanged_records_fired_key(tmp_path):
-    storage, engine, listener = await _build(tmp_path)
+async def test_single_event_path_unchanged_records_fired_key(world):
+    storage, engine, listener = world
     s = WorkspaceSession(
         id="s2", workspace_id="w1", binding=AgentSessionBinding(agent_id="a1"),
         status=SessionStatus.WAITING, created_at=datetime.now(timezone.utc))
@@ -86,10 +88,10 @@ async def test_single_event_path_unchanged_records_fired_key(tmp_path):
     assert got.parked_state["resume_event_key"] == "ask_user:s2:tc9"
 
 
-async def test_multi_event_accumulates_concurrent_replies(tmp_path):
+async def test_multi_event_accumulates_concurrent_replies(world):
     """Two replies to a multi-event park (the 2nd while already 'resumable')
     are both recorded in resume_event_payloads, not dropped/overwritten."""
-    storage, engine, listener = await _build(tmp_path)
+    storage, engine, listener = world
     await storage.create(_multi(["ask_user:s1:tc1", "ask_user:s1:tc2"], "ask_user:s1:tc1"))
     # Reply 1 (primary, while parked) -> flips to resumable.
     await listener._handle_event(_Event("ask_user:s1:tc1", {"response": "fruit"}))
@@ -102,10 +104,10 @@ async def test_multi_event_accumulates_concurrent_replies(tmp_path):
     assert payloads["tc2"]["payload"] == {"response": "color"}
 
 
-async def test_single_event_does_not_accumulate(tmp_path):
+async def test_single_event_does_not_accumulate(world):
     """A single-event park keeps the singular field, no map, only advances
     from 'parked' (unchanged behavior)."""
-    storage, engine, listener = await _build(tmp_path)
+    storage, engine, listener = world
     s = WorkspaceSession(
         id="s9", workspace_id="w1", binding=AgentSessionBinding(agent_id="a1"),
         status=SessionStatus.WAITING, created_at=datetime.now(timezone.utc))
@@ -120,14 +122,14 @@ async def test_single_event_does_not_accumulate(tmp_path):
     assert got.parked_state["resume_event_payload"] == {"response": "x"}
 
 
-async def test_colliding_fanout_siblings_both_land_and_route(tmp_path):
+async def test_colliding_fanout_siblings_both_land_and_route(world):
     """01a0518f: two concurrent fan-out siblings can legitimately share a
     raw provider tool_call_id ("call_0"). Their node-qualified event_keys
     ("<kind>:<session_id>:<node_id>:<tool_call_id>") still differ, and the
     resume_event_payloads dict must key on the FULL disambiguated tail
     (_dispatch_key_for) - not the bare tool_call_id - or the second
     sibling's reply silently overwrites the first's."""
-    storage, engine, listener = await _build(tmp_path)
+    storage, engine, listener = world
     keys = ["ask_user:s1:worker[0]:call_0", "ask_user:s1:worker[1]:call_0"]
     await storage.create(_multi(keys, keys[0]))
     await listener._handle_event(_Event(keys[0], {"response": "region 0"}))
@@ -139,13 +141,13 @@ async def test_colliding_fanout_siblings_both_land_and_route(tmp_path):
     assert payloads["worker[1]:call_0"]["payload"] == {"response": "region 1"}
 
 
-async def test_mixed_legacy_and_scoped_keys_do_not_cross_route(tmp_path):
+async def test_mixed_legacy_and_scoped_keys_do_not_cross_route(world):
     """01a0518f: a multi-event park whose keys are a MIX of the legacy
     bare-tool_call_id shape (a pending item that predates the scoping fix,
     or a non-graph park) and the new node-qualified shape must accumulate
     both under their own distinct dispatch keys, with neither clobbering
     or being mistaken for the other."""
-    storage, engine, listener = await _build(tmp_path)
+    storage, engine, listener = world
     keys = ["ask_user:s1:tc-legacy", "ask_user:s1:worker[0]:call_0"]
     await storage.create(_multi(keys, keys[0]))
     await listener._handle_event(_Event(keys[0], {"response": "legacy"}))
@@ -157,7 +159,7 @@ async def test_mixed_legacy_and_scoped_keys_do_not_cross_route(tmp_path):
     assert payloads["worker[0]:call_0"]["payload"] == {"response": "scoped"}
 
 
-async def test_dispatch_key_identical_via_rest_handler_and_bus_listener(tmp_path):
+async def test_dispatch_key_identical_via_rest_handler_and_bus_listener(world):
     """01a0518f: the durable flip is one shared function
     (durably_mark_session_resumable) - assert directly that calling it
     (the REST handlers' own path) and driving the same event through the
@@ -169,7 +171,7 @@ async def test_dispatch_key_identical_via_rest_handler_and_bus_listener(tmp_path
     closing in an earlier version of this test."""
     from primer.session.yields import durably_mark_session_resumable
 
-    storage, _engine, listener = await _build(tmp_path)
+    storage, _engine, listener = world
 
     sess_a = _multi(["ask_user:sA:tc1", "ask_user:sA:tc2"], "ask_user:sA:tc1")
     sess_a.id = "sA"

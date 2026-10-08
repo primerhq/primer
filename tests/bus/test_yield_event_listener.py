@@ -65,15 +65,17 @@ def _make_parked_session(session_id: str, event_key: str) -> WorkspaceSession:
     return sess
 
 
-async def _build(tmp_path: Path):
-    """Return (storage, engine) with a real SQLite-backed storage."""
+@pytest.fixture
+async def world(tmp_path: Path):
+    """(storage, engine) with a real SQLite-backed storage."""
     provider = SqliteStorageProvider(SqliteConfig(path=tmp_path / "test.sqlite"))
     await provider.initialize()
     storage = provider.get_storage(WorkspaceSession)
     engine = InMemoryClaimEngine(
         adapters={ClaimKind.SESSION: SessionClaimAdapter(session_storage=storage)},
     )
-    return storage, engine
+    yield storage, engine
+    await provider.aclose()
 
 
 async def _seed_parked(storage, session_id: str, event_key: str) -> None:
@@ -85,9 +87,9 @@ async def _seed_parked(storage, session_id: str, event_key: str) -> None:
 # Tests
 # ---------------------------------------------------------------------------
 
-async def test_handle_event_flips_row_and_rearms_lease(tmp_path: Path) -> None:
+async def test_handle_event_flips_row_and_rearms_lease(world) -> None:
     """_handle_event flips a parked row to resumable, stamps payload, re-arms lease."""
-    storage, engine = await _build(tmp_path)
+    storage, engine = world
     ek = "ask_user:sess-1:tc-1"
     await _seed_parked(storage, "sess-1", ek)
 
@@ -104,18 +106,18 @@ async def test_handle_event_flips_row_and_rearms_lease(tmp_path: Path) -> None:
     assert "sess-1" in [le.entity_id for le in leases]
 
 
-async def test_handle_event_no_match_is_noop(tmp_path: Path) -> None:
+async def test_handle_event_no_match_is_noop(world) -> None:
     """_handle_event with no matching parked row must not raise."""
-    storage, engine = await _build(tmp_path)
+    storage, engine = world
 
     listener = YieldEventListener(bus=None, session_storage=storage, engine=engine)
     # Must not raise even when there are zero matching rows.
     await listener._handle_event(_Event("nope:1:2", {}))
 
 
-async def test_handle_event_idempotent_second_fire(tmp_path: Path) -> None:
+async def test_handle_event_idempotent_second_fire(world) -> None:
     """A second event for the same key does NOT overwrite the already-stamped payload."""
-    storage, engine = await _build(tmp_path)
+    storage, engine = world
     ek = "ask_user:sess-1:tc-1"
     await _seed_parked(storage, "sess-1", ek)
 

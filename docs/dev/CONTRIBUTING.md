@@ -214,6 +214,14 @@ a one-line reason; it may not simply be omitted.
 - Do not inline secrets in tests. Why: committed keys and tokens are a leak and the
   hygiene suite flags them. How: read API keys and bearer tokens from env vars and
   skip the test when the var is unset.
+- Do not leave a `SqliteStorageProvider` open at the end of a test. Why: an unclosed
+  aiosqlite connection is finished by the garbage collector inside whichever test
+  runs next, where its worker thread dies with "Event loop is closed" and the
+  warning lands on the wrong test; one still referenced at exit keeps pytest from
+  exiting. How: build the provider in a fixture that yields and awaits `aclose()`,
+  or push `provider.aclose` on the `async_closers` fixture from a helper. The
+  autouse guard in `tests/conftest.py` fails the test that leaks and names the
+  `initialize()` call.
 
 ## 5. Where to find things
 
