@@ -912,7 +912,7 @@ function NV_LifecycleRow(props) {
       {label ? <span className="nv-lifecycle-dot">{label}</span> : null}
       {row.kind === "done" || row.kind === "cancelled" ? (
         <button type="button" className="nv-trace-toggle"
-          title="View trace"
+          title="View trace" aria-label="View trace for this turn"
           data-testid={"nv-trace-open:" + row.seq}
           onClick={function () { props.onTrace(row); }}>
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none"
