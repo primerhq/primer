@@ -5,7 +5,9 @@ fetch URLs chosen by a user or by an agent that may be prompt-injected. Without 
 platform process can reach: cloud metadata (169.254.169.254), the
 Kubernetes API, the Postgres host, localhost admin ports.
 
-The rule, applied to every connection (so to every redirect hop too):
+The rule, applied to every new connection (so to every redirect hop of a
+client that follows redirects; ``http_request`` and ``download`` do not,
+the local ``web_fetch`` adapter does):
 
 * resolve the host to ALL its A/AAAA records;
 * refuse when ANY record is not a public unicast address (loopback,
@@ -39,9 +41,11 @@ import asyncio
 import ipaddress
 import re
 import socket
+import ssl
 from collections.abc import Iterable
 from typing import Any
 
+import anyio
 import httpcore
 import httpx
 from aiohttp.abc import AbstractResolver, ResolveResult
@@ -215,6 +219,13 @@ class GuardedNetworkBackend(httpcore.AsyncNetworkBackend):
     a reused pooled connection was vetted when it was opened. The TLS
     handshake that follows still gets the original name as SNI, so the
     certificate is checked against the name, not the IP.
+
+    ``timeout`` (httpx's connect timeout) is ONE budget for the whole call:
+    the resolution runs inside it, and the vetted addresses are tried in
+    order with the time left split evenly across the attempts still to
+    make (the last one gets all that remains). A blackholed first address
+    therefore costs a share of the budget, not all of it. Addresses are
+    tried one after another, not raced.
     """
 
     def __init__(self, inner: httpcore.AsyncNetworkBackend | None = None) -> None:
@@ -228,17 +239,37 @@ class GuardedNetworkBackend(httpcore.AsyncNetworkBackend):
         local_address: str | None = None,
         socket_options: Iterable[Any] | None = None,
     ) -> httpcore.AsyncNetworkStream:
-        addrs = await vet_host(host, port)
+        deadline = None if timeout is None else anyio.current_time() + timeout
+        try:
+            with anyio.fail_after(timeout):
+                addrs = await vet_host(host, port)
+        except TimeoutError as exc:
+            raise httpcore.ConnectTimeout(
+                f"resolving {host} exceeded the {timeout}s connect timeout"
+            ) from exc
         last: Exception | None = None
-        for addr in addrs:
+        for i, addr in enumerate(addrs):
+            attempt_timeout: float | None = None
+            if deadline is not None:
+                remaining = deadline - anyio.current_time()
+                if remaining <= 0:
+                    break
+                attempt_timeout = remaining / (len(addrs) - i)
             try:
-                return await self._inner.connect_tcp(
-                    addr, port, timeout=timeout,
-                    local_address=local_address, socket_options=socket_options,
-                )
+                with anyio.fail_after(attempt_timeout):
+                    return await self._inner.connect_tcp(
+                        addr, port, timeout=attempt_timeout,
+                        local_address=local_address, socket_options=socket_options,
+                    )
+            except TimeoutError as exc:
+                last = httpcore.ConnectTimeout(f"connecting to {addr} timed out")
+                last.__cause__ = exc
             except (httpcore.ConnectError, httpcore.ConnectTimeout, OSError) as exc:
                 last = exc
-        assert last is not None
+        if last is None:
+            raise httpcore.ConnectTimeout(
+                f"connecting to {host} exceeded the {timeout}s connect timeout"
+            )
         raise last
 
     async def connect_unix_socket(self, path, timeout=None, socket_options=None):
@@ -251,6 +282,8 @@ class GuardedNetworkBackend(httpcore.AsyncNetworkBackend):
 def guarded_async_client(
     *,
     network_backend: httpcore.AsyncNetworkBackend | None = None,
+    verify: ssl.SSLContext | str | bool = True,
+    trust_env: bool = True,
     **client_kwargs: Any,
 ) -> httpx.AsyncClient:
     """An :class:`httpx.AsyncClient` whose connections all pass :func:`vet_host`.
@@ -258,19 +291,29 @@ def guarded_async_client(
     ``network_backend`` is the backend the vetted connection is opened on
     (tests pass an httpcore mock). An explicit transport also means httpx
     ignores the ``HTTP(S)_PROXY`` environment, so the guard always sees
-    the real destination.
+    the real destination. ``verify`` and ``trust_env`` reach the TLS
+    context as they would on a plain httpx client (``trust_env`` there only
+    means ``SSL_CERT_FILE`` / ``SSL_CERT_DIR``).
     """
-    transport = httpx.AsyncHTTPTransport()
+    transport = httpx.AsyncHTTPTransport(verify=verify, trust_env=trust_env)
     # httpx exposes no network_backend knob; swap in a pool built with one.
-    # The pool keeps httpx's defaults (verified TLS, HTTP/1.1, default limits).
+    # Fail loudly if an httpx upgrade changes what the transport holds, rather
+    # than silently keeping an unguarded pool.
+    if not isinstance(transport._pool, httpcore.AsyncConnectionPool):  # noqa: SLF001
+        raise RuntimeError(
+            "netguard: httpx.AsyncHTTPTransport._pool is "
+            f"{type(transport._pool).__name__}, not httpcore.AsyncConnectionPool; "  # noqa: SLF001
+            "the egress guard cannot be installed"
+        )
+    # The pool keeps httpx's defaults (HTTP/1.1, default limits).
     transport._pool = httpcore.AsyncConnectionPool(  # noqa: SLF001
-        ssl_context=httpx.create_ssl_context(),
+        ssl_context=httpx.create_ssl_context(verify=verify, trust_env=trust_env),
         max_connections=100,
         max_keepalive_connections=20,
         keepalive_expiry=5.0,
         network_backend=GuardedNetworkBackend(network_backend),
     )
-    return httpx.AsyncClient(transport=transport, **client_kwargs)
+    return httpx.AsyncClient(transport=transport, trust_env=trust_env, **client_kwargs)
 
 
 # ---- aiohttp -----------------------------------------------------------------
