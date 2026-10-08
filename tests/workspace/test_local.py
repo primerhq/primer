@@ -1077,6 +1077,28 @@ class TestWorkspaceAclose:
 
         assert await live.status() == SessionStatus.ENDED and await done.status() == SessionStatus.ENDED
 
+    async def test_end_all_sessions_goes_on_past_a_session_that_cannot_be_ended(
+        self, provider: LocalWorkspaceBackend, caplog,
+    ) -> None:
+        """#488 review: the sandbox variant logs one session's failure and carries on; a destroy must not stop ending the rest
+        because the first session's state repo is already broken."""
+        import logging
+
+        ws = await provider.create(_template())
+        first = await ws.start_session(_binding())
+        second = await ws.start_session(_binding())
+
+        async def cannot_be_ended():
+            raise OSError("the state repo is gone")
+
+        first.aclose = cannot_be_ended  # type: ignore[method-assign]
+
+        with caplog.at_level(logging.WARNING):
+            await ws.end_all_sessions()
+
+        assert await second.status() == SessionStatus.ENDED, "one failing session stopped the rest from being ended"
+        assert any("ending a session failed" in r.getMessage() for r in caplog.records)
+
     async def test_aclose_idempotent_via_destroy(
         self, provider: LocalWorkspaceBackend
     ) -> None:
