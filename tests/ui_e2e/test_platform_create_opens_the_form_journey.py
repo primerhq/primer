@@ -138,3 +138,37 @@ def test_cancelling_the_new_service_form_leaves_the_card_grid_and_the_url_alone(
     expect(page.locator(".modal-overlay")).to_have_count(0)
     expect(page.get_by_test_id("nv-overlay-body")).to_have_count(0)
     assert page.url == before, (before, page.url)
+
+
+def test_new_harness_opens_the_register_dialog_with_no_list_behind_it(page, console_url: str) -> None:
+    _open_platform_page(page, console_url, "harnesses")
+    before = page.url
+
+    page.get_by_test_id("nv-plat-create").click()
+
+    dialog = page.locator(".modal-overlay")
+    expect(dialog).to_contain_text("Register harness", timeout=10_000)
+    expect(page.get_by_test_id("nv-overlay-body")).to_have_count(0)
+    assert "overlay=" not in page.url, page.url
+
+    dialog.get_by_role("button", name="Cancel").click()
+    expect(page.locator(".modal-overlay")).to_have_count(0)
+    expect(page.get_by_test_id("nv-overlay-body")).to_have_count(0)
+    assert page.url == before, (before, page.url)
+
+
+def test_build_outbound_opens_the_outbound_builder_with_no_list_behind_it(page, console_url: str) -> None:
+    """The legacy list offered this beside "Register from git"; reaching it must not need the legacy list."""
+    _open_platform_page(page, console_url, "harnesses")
+    before = page.url
+
+    page.get_by_test_id("nv-plat-extra").click()
+
+    dialog = page.locator(".modal-overlay")
+    expect(dialog).to_contain_text("Build outbound harness", timeout=10_000)
+    expect(page.get_by_test_id("nv-overlay-body")).to_have_count(0)
+    assert "overlay=" not in page.url, page.url
+
+    dialog.get_by_role("button", name="Cancel").click()
+    expect(page.locator(".modal-overlay")).to_have_count(0)
+    assert page.url == before, (before, page.url)

@@ -38,13 +38,13 @@ EXPECTED_CREATE = {
     "services": ("modal", "service"),
     "collections": ("modal", "collection"),
     "channels": ("modal", "channel"),
+    "harnesses": ("modal", "harness"),
     # the entity's own create overlay (workspaces) or its list with the form stacked on top (section "new")
     "workspaces": ("overlay", "new-workspace", None),
     "agents": ("overlay", "agents", "new"),
     "graphs": ("overlay", "graphs", "new"),
     "approvals": ("overlay", "approvals", "new"),
     # still the legacy list first (their own change each)
-    "harnesses": ("overlay", "harnesses", None),
 }
 
 _OPEN_CONTEXTS: list = []
@@ -146,5 +146,62 @@ def test_the_platform_page_hosts_the_existing_dialogs() -> None:
         block = shown.group(0)
         assert block.count("setModal(null)") >= 2, f"{kind}: the dialog must close on Cancel and on a created row"
         assert re.search(r"NV_createdRow\(con, [\s\S]{0,60}\"" + nav + r"\", row\)", block), (
+            f"{kind}: a created row must go through the tested hand-off, with the page's own nav"
+        )
+
+
+# ---- harnesses: two hosted forms (register from git, build outbound) ---------------------------------------------------------------
+
+HARNESSES = (UI / "components" / "harnesses.jsx").read_text(encoding="utf-8")
+OUTBOUND_BUILDER = (UI / "components" / "harness_outbound_builder.jsx").read_text(encoding="utf-8")
+
+
+def test_a_created_harness_refreshes_the_cards_and_opens_its_detail() -> None:
+    ctx = _ctx()
+    ctx.eval("function refetch() { refetched++; }")
+
+    ctx.eval('NV_createdRow(con, refetch, "harnesses", { id: "h-new" });')
+
+    assert _js(ctx, "refetched") == 1
+    assert _js(ctx, "overlays") == [["harnesses", None, "h-new"]]
+
+
+def test_build_outbound_is_the_harnesses_page_second_hosted_form() -> None:
+    """The legacy list offered "Register from git" and "Build outbound" side by side; one press of each is one form here too."""
+    ctx = _ctx()
+
+    ctx.eval('NV_PLAT_PAGES.harnesses.extraNav.run(con, setModal);')
+
+    assert _js(ctx, "NV_PLAT_PAGES.harnesses.extraNav.label") == "Build outbound"
+    assert _js(ctx, "modals") == [{"kind": "harness-outbound"}]
+    assert _js(ctx, "overlays") == [], "a hosted form must not also open an overlay"
+
+
+def test_the_channels_rules_button_still_opens_its_overlay() -> None:
+    """The secondary button now receives setModal too; the one page that uses it for an overlay must not change."""
+    ctx = _ctx()
+
+    ctx.eval('NV_PLAT_PAGES.channels.extraNav.run(con, setModal);')
+
+    assert _js(ctx, "overlays") == [["channels", "rules", None]]
+    assert _js(ctx, "modals") == []
+
+
+def test_the_page_hands_setmodal_to_its_secondary_button() -> None:
+    assert re.search(r"page\.extraNav\.run\(con, setModal\)", PLAT), "the secondary button must be able to host a form"
+
+
+def test_the_platform_page_hosts_both_harness_dialogs() -> None:
+    assert "window.HarnessRegisterDialog = HarnessRegisterDialog;" in HARNESSES
+    assert "window.HarnessOutboundBuilder = HarnessOutboundBuilder;" in OUTBOUND_BUILDER
+    host = re.search(r"function NV_HarnessCreateHost[\s\S]{0,500}", PLAT)
+    assert host, "the page needs a host for the harness dialogs"
+    assert "window.HarnessRegisterDialog" in host.group(0) and "window.HarnessOutboundBuilder" in host.group(0)
+    for kind in ("harness", "harness-outbound"):
+        shown = re.search(r"modal\.kind === \"" + kind + r"\"[\s\S]{0,600}", PLAT)
+        assert shown and "<NV_HarnessCreateHost" in shown.group(0), kind
+        block = shown.group(0)
+        assert block.count("setModal(null)") >= 2, f"{kind}: the dialog must close on Cancel and on a created row"
+        assert re.search(r"NV_createdRow\(con, [\s\S]{0,60}\"harnesses\", row\)", block), (
             f"{kind}: a created row must go through the tested hand-off, with the page's own nav"
         )
