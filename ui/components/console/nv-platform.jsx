@@ -1083,10 +1083,20 @@ function NV_ProvidersPlatPage() {
   );
 }
 
+// The Platform page for the open nav. This function only chooses: the page that has hooks is NV_PlatListPage, keyed on the nav so each nav is
+// its own instance that mounts and unmounts whole. Returning Providers from the SAME instance that otherwise calls a dozen hooks (the early
+// return used to sit before them) left the page just left with hooks that never ran again, so their cleanups never ran and its list went on
+// polling every 15 s while Providers stayed open (admin review 2026-10-08; tests/ui/test_platform_page_hooks.py).
 function NV_PlatPage() {
   var con = NV_useConsole();
   var nav = con.view.nav || "providers";
   if (nav === "providers") return <NV_ProvidersPlatPage />;
+  return <NV_PlatListPage key={nav} nav={nav} />;
+}
+
+function NV_PlatListPage(props) {
+  var con = NV_useConsole();
+  var nav = props.nav;
   var apiFetch = window.primerApi.apiFetch;
   var qState = React.useState("");
   var q = qState[0];
