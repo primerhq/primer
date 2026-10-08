@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
+import asyncio
+
 import pytest
 
 from primer.agent.invoke import invocation_depth_guard, run_subagent
@@ -95,3 +97,52 @@ async def test_a_subagent_whose_stream_raises_after_streaming_text_keeps_the_tex
 
     writer = await _recording(work)
     assert [text for text, _run_id in _tokens(writer)] == ["half an answer", "second run"], _tokens(writer)
+
+
+class _Blocks:
+    """A model that streams a chunk and then never answers; it records that the chunk went out."""
+
+    def __init__(self) -> None:
+        self.streamed = asyncio.Event()
+
+    def stream(self, *, model, messages, **kwargs):  # noqa: ANN001
+        async def _gen() -> AsyncIterator:
+            yield StreamStart(model="m1")
+            yield TextDelta(index=0, text="half an answer")
+            self.streamed.set()
+            await asyncio.Event().wait()
+
+        return _gen()
+
+
+class _CountingBus:
+    def __init__(self) -> None:
+        self.published: list = []
+
+    async def publish(self, key, payload) -> None:
+        self.published.append((key, payload))
+
+
+@pytest.mark.parametrize("reason", ["lease_lost_preempted", None])
+async def test_a_subagent_cancelled_mid_stream_leaves_the_log_alone_and_ticks_nothing(reason) -> None:
+    """A turn that is preempted (its lease was lost) or cancelled without the row being flagged must not write to the session at all: the session may belong to
+    another worker now. The invoke loop's ``finally`` used to flush the run's buffered text (and the recorder published a tick) on EVERY exit, cancellation included."""
+    from primer.model.yield_ import CANCEL_REASON_PREEMPTED
+
+    llm = _Blocks()
+    storage = _StorageProvider(agent=_agent(tools=[]), provider_row=_provider_row())
+    registry = _ProviderRegistry(llm=llm, toolset=None)
+    writer, bus = _Writer(), _CountingBus()
+    token = set_delegation_sink(DelegationRecorder(writer=writer, event_bus=bus, session_id="sess-1"))
+    try:
+        task = asyncio.ensure_future(_run(storage, registry, writer))
+        await asyncio.wait_for(llm.streamed.wait(), 5.0)
+        await asyncio.sleep(0.05)                                   # the text has reached the recorder's buffer
+        task.cancel(CANCEL_REASON_PREEMPTED if reason else None)
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 5.0)
+    finally:
+        reset_delegation_sink(token)
+
+    assert writer.records == [], f"records were appended after the cancel: {[r.kind.value for r in writer.records]}"
+    assert bus.published == [], "and a tick was published"

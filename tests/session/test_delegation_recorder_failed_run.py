@@ -30,6 +30,14 @@ class _Bus:
         return None
 
 
+class _CountingBus:
+    def __init__(self) -> None:
+        self.published: list = []
+
+    async def publish(self, key, payload) -> None:
+        self.published.append((key, payload))
+
+
 def _run(n: int) -> dict:
     return {"delegate_tool_call_id": "call_0", "delegate_run_id": f"run-{n}", "delegate_parent_run_id": None, "delegate_depth": 1}
 
@@ -121,6 +129,33 @@ async def test_finish_run_with_nothing_buffered_or_for_an_unknown_run_writes_not
     await rec.finish_run(**_run(1))
     await rec.finish_run(**_run(9))
     assert len(w.records) == before
+    assert rec._states == {}, "a finished run's coalescing state is forgotten"
+
+
+async def test_finish_run_forgets_the_state_of_a_run_that_had_text_to_flush() -> None:
+    rec, w = _recorder()
+    await rec.on_event(TextDelta(index=0, text="half an answer"), **_run(1))
+    await rec.finish_run(**_run(1))
+    assert rec._states == {} and len(w.records) == 1
+
+
+async def test_a_run_that_ends_by_a_cancellation_is_forgotten_and_nothing_is_written_or_ticked() -> None:
+    """A hard cancel the turn must not land (a lost lease, an unflagged cancel, a force-deleted row) leaves the log alone: dispatch's cancelled exit decides what
+    partial output is the turn's to land. finish_run(flush=False) only forgets the run."""
+    writer, bus = _Writer(), _CountingBus()
+    rec = DelegationRecorder(writer=writer, event_bus=bus, session_id="s")
+    await rec.on_event(TextDelta(index=0, text="half an answer"), **_run(1))
+    await rec.finish_run(flush=False, **_run(1))
+    assert writer.records == [] and bus.published == []
+    assert rec._states == {}
+
+
+async def test_the_state_is_created_once_per_run_not_once_per_event() -> None:
+    rec, _w = _recorder()
+    await rec.on_event(TextDelta(index=0, text="a"), **_run(1))
+    first = rec._states["run-1"]
+    await rec.on_event(TextDelta(index=0, text="b"), **_run(1))
+    assert rec._states["run-1"] is first
 
 
 async def test_finish_run_writes_nothing_once_the_call_was_abandoned() -> None:
