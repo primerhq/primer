@@ -35,6 +35,7 @@ from primer.model.except_ import (
     ToolsetUnreachableError,
     UnsupportedContentError,
     ValidationError,
+    WorkspaceUnreachableError,
 )
 from primer.model.problem_details import ProblemDetails
 from primer.model.workspace_refusal import WorkspaceRefusedError
@@ -73,6 +74,9 @@ _PRIMER_ERROR_MAP: list[tuple[type[PrimerError], int, str, str]] = [
     (ServerError, 502, "/errors/provider-server-error", "Provider Server Error"),
     (ProviderError, 502, "/errors/provider-error", "Provider Error"),
     (NetworkError, 504, "/errors/network-error", "Network Error"),
+    # The workspace's runtime did not answer a read of a session's files: not an empty log and not a missing one. The data is
+    # presumably intact and a retry may work.
+    (WorkspaceUnreachableError, 503, "/errors/workspace-unreachable", "Workspace Unreachable"),
     # A prompt that cannot be made to fit the context window is not the service being unavailable:
     # it says what is too large, and retrying the same turn cannot help. Before its base, ConfigError.
     (ContextOverflowUnrecoverable, 413, "/errors/context-overflow-unrecoverable", "Context Overflow Unrecoverable"),

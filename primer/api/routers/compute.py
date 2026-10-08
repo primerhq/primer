@@ -181,7 +181,7 @@ graph_router = make_crud_router(
 @graph_router.get(
     "/graphs/{graph_id}/status",
     summary="Validate the graph's external references",
-    responses=common_responses(404, 500),
+    responses=common_responses(404, 500, 503),
 )
 async def graph_status(
     graph_id: str = Path(..., description="Graph id"),
@@ -221,7 +221,7 @@ async def graph_status(
 @graph_router.get(
     "/graphs/{graph_id}/runs/{run_id}/turn_log",
     summary="Read graph-level turn log (superstep events)",
-    responses=common_responses(404, 500),
+    responses=common_responses(404, 500, 503),
 )
 async def get_graph_run_turn_log(
     graph_id: str = Path(..., description="Graph id"),
@@ -505,6 +505,8 @@ async def _serve_graph_turn_log(
             limit=limit,
             offset=offset,
             since_seq=since_seq,
+            workspace_id=sess.workspace_id,
+            session_id=run_id,
         )
 
     # 2. GraphThread (storage-backed graph)

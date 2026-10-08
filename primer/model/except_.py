@@ -249,6 +249,16 @@ class NetworkError(PrimerError):
     """
 
 
+class WorkspaceUnreachableError(PrimerError):
+    """A session's workspace exists, but its files cannot be read right now.
+
+    Its runtime does not answer, a connection broke, a mount is gone. Distinct from :class:`NotFoundError` (the file is not there: the
+    session has written no log yet, which is a normal empty log) and from ``WorkspaceRefusedError`` (the deployment refuses the
+    workspace on purpose). The data is presumably intact and a retry may work, so the API answers 503 and no reader of a session's log may
+    treat this as an empty log.
+    """
+
+
 class NotFoundError(PrimerError):
     """Storage lookup found no entity matching the request.
 
