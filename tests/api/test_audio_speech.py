@@ -136,7 +136,8 @@ async def test_the_agent_override_beats_the_active_config_voice(client, app) -> 
         json={
             "id": "agent-voice",
             "description": "voiced agent",
-            "model": {"profile_id": "prov--m"},
+            # A profile the fake storage carries (tests/conftest.py _TEST_PROFILE_IDS): the create refuses one that is not stored.
+            "model": {"profile_id": "prov--model"},
             "tts_voice": "af_bella",
         },
     )
