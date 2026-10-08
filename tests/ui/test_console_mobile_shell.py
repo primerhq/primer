@@ -550,7 +550,7 @@ def test_file_row_opens_via_con_set_doc_not_local_state() -> None:
 
 
 def test_file_and_diff_docs_take_over_the_whole_shell_like_the_session_fallback() -> None:
-    m = re.search(r"function NV_MobileShell\(\)[\s\S]{0,4500}", MOBILE)
+    m = re.search(r"function NV_MobileShell\(\)[\s\S]*?\nwindow\.NV_MobileShell = ", MOBILE)
     assert m
     body = m.group(0)
     assert 'con.doc.kind === "file" || con.doc.kind === "diff"' in body
@@ -760,7 +760,7 @@ def test_url_mapping_intercepts_platform_overlays_to_the_fact_sheet() -> None:
     workspace are not NV_PLAT_PAGES keys, so they fall through
     untouched - M4's own FAB flow is what mobile actually uses to
     create a session."""
-    m = re.search(r"function NV_MobileShell\(\)[\s\S]{0,2700}", MOBILE)
+    m = re.search(r"function NV_MobileShell\(\)[\s\S]*?\nwindow\.NV_MobileShell = ", MOBILE)
     assert m
     body = m.group(0)
     assert "con.overlay && con.overlay.name" in body

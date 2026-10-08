@@ -1221,13 +1221,16 @@ function NV_MobileShell() {
 
   // A pasted ?view=platform:<nav> link (or the palette's Platform verb) lands on the More tab with that section open; it used to
   // leave the shell on Inbox. ?view=system:* is a full-screen takeover below.
+  // Keyed on the view OBJECT, not its name and nav: the shell's goView hands over a new object on every call, so running the same
+  // link again after Back (the URL still names the section) is a navigation and opens it again. Watching only the two values saw
+  // no change there and did nothing. A re-render with the same object is not a navigation, so Back still sticks.
   React.useEffect(function () {
     if (!(con.view && con.view.name === "platform")) return;
     setActiveTab("more");
     if (con.view.nav && window.NV_PLAT_PAGES && window.NV_PLAT_PAGES[con.view.nav]) {
       setPendingFactSheet({ kind: con.view.nav, id: null });
     }
-  }, [con.view && con.view.name, con.view && con.view.nav]);
+  }, [con.view]);
 
   var tabs = [
     {
