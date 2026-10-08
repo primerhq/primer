@@ -193,6 +193,11 @@ class WorkspaceTool(ABC):
     waits for such a call and records its real result, and abandons it only if
     the grace expires. Everything else (``exec`` above all) is cancelled."""
 
+    preview_args: ClassVar[tuple[str, ...] | None] = None
+    """Dotted paths into this tool's arguments that an approval card may show (the Inbox preview allowlist, ``primer/common/preview_paths.py``).
+    ``None`` declares nothing (the default rule applies: only arguments whose schema is a closed set are shown); ``()`` shows no value. Carried
+    onto the tool's descriptor (``Tool.preview_args``); the operator's ``ToolApprovalPolicy.preview_args`` overrides it."""
+
     @abstractmethod
     def parameters(self) -> type[BaseModel]:
         """Return the Pydantic class describing this tool's arguments.

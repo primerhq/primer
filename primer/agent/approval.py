@@ -23,6 +23,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from primer.agent.rego import RegoCompileError, RegoEvaluator
+from primer.common.preview_paths import closed_set_names
 from primer.int.storage import Storage
 from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 from primer.model.tool_approval import (
@@ -37,6 +38,7 @@ from primer.model.tool_approval import (
 
 if TYPE_CHECKING:
     from primer.api.registries.provider_registry import ProviderRegistry
+    from primer.model.chat import Tool
 
 
 logger = logging.getLogger(__name__)
@@ -167,7 +169,23 @@ def _choose_policy(rows: Sequence[ToolApprovalPolicy], *, toolset_id: str, tool_
 
 
 # The keys other code trusts on an approval park; a site's own keys must not collide with them.
-_RESUME_METADATA_KEYS = frozenset({"policy_id", "approval_type", "gate_reason", "approvers", "original_call"})
+_RESUME_METADATA_KEYS = frozenset({"policy_id", "approval_type", "gate_reason", "approvers", "original_call", "preview"})
+
+
+def resolve_preview(*, policy: ToolApprovalPolicy, tool: "Tool | None") -> dict[str, Any]:
+    """Which arguments of a gated call its approval card may show, as the stamp ``approval_resume_metadata`` carries
+    (``{"paths": [...], "source": "policy" | "tool" | "default"}``; design note 01a11cd3-66b0, rulings D1 and D2).
+
+    Precedence: the operator's policy list, else the tool's own declaration, else the default rule: the top-level arguments of the tool's
+    schema that are a closed set (a boolean, number, enum or const; ``primer/common/preview_paths.py``). An empty list on either layer is a
+    declaration (show no value), not an absence. With no descriptor to take a schema from the default shows nothing: a schema that cannot
+    be seen cannot be proven closed.
+    """
+    if policy.preview_args is not None:
+        return {"paths": list(policy.preview_args), "source": "policy"}
+    if tool is not None and tool.preview_args is not None:
+        return {"paths": list(tool.preview_args), "source": "tool"}
+    return {"paths": closed_set_names(tool.args_schema) if tool is not None else [], "source": "default"}
 
 
 def approval_resume_metadata(
@@ -175,6 +193,7 @@ def approval_resume_metadata(
     policy: ToolApprovalPolicy,
     verdict: ApprovalVerdict,
     original_call: dict[str, Any],
+    preview: dict[str, Any] | None = None,
     **extra: Any,
 ) -> dict[str, Any]:
     """The ``resume_metadata`` of an approval park, built in ONE place for EVERY site that parks for approval.
@@ -184,12 +203,16 @@ def approval_resume_metadata(
     "anyone". Every path that answers a gate judges the answer against this stamp (:func:`primer.session.approvers.may_decide`), so a
     park site that built its own dict and left the stamp out (the ``call_tool`` meta-dispatch did) silently let any user decide a
     restricted gate. ``extra`` carries a site's own keys (``via_call_tool``); a key that collides with a stamped one raises ``ValueError``.
+
+    ``preview`` is the Inbox card's allowlist (:func:`resolve_preview`), resolved by the site that has the tool and the policy in hand and read
+    back by ``GET /v1/yields/pending``, which has neither. A site that passes nothing leaves the row unstamped: the route then applies the
+    default rule to it (design ruling D5).
     """
     clash = sorted(set(extra) & _RESUME_METADATA_KEYS)
     if clash:
         raise ValueError(f"approval_resume_metadata: extra keys {clash} would overwrite stamped ones")
     approvers = effective_approvers(policy, verdict)
-    return {
+    metadata = {
         **extra,
         # After ``extra`` and not overridable by it (the check above refuses a clash; the order is the second line of defence).
         "policy_id": policy.id,
@@ -198,6 +221,9 @@ def approval_resume_metadata(
         "approvers": approvers.model_dump() if approvers is not None else None,
         "original_call": original_call,
     }
+    if preview is not None:
+        metadata["preview"] = preview
+    return metadata
 
 
 class ApprovalResolver:

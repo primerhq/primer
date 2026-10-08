@@ -199,8 +199,13 @@ def test_a_workspace_tools_class_declaration_reaches_its_descriptor() -> None:
 
 
 def test_a_workspace_tool_that_declares_nothing_has_no_declaration_on_its_descriptor() -> None:
-    class _Plain(_FakeWorkspaceTool):
-        preview_args = None
+    class _Plain:
+        id = "plain"
+        description = "d"
+        examples: list = []
+        interruptible = True        # no preview_args attribute at all: a duck-typed tool, as the neighbouring descriptor code already tolerates
 
-    del _Plain.preview_args  # a duck-typed tool with no attribute at all, as the neighbouring descriptor code already tolerates
+        def parameters(self):
+            return _Args
+
     assert _workspace_tool_descriptor(_Plain(), scoped_id="workspace__plain").preview_args is None
