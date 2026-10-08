@@ -138,6 +138,15 @@ The transitions are driven via REST routes and the matching
 
 The worker pool reads these flags between turns and acts on them.
 
+Every session row also serves `session_state`, one derived value
+(`waiting`, `running`, `parked` or `ended`) computed from those fields.
+`running` means a turn is in flight right now; `parked` covers a session
+parked on a yielding tool and one resting between turns. To list the
+sessions that are working at this moment, ask for
+`GET /v1/sessions?session_state=running`, not `status=running`, which also
+returns a session parked on a yielding tool and one queued for a worker that
+has not claimed it yet. The filters AND together.
+
 Stop is a separate control that none of the flags above is: it stops the
 turn a session is running and leaves the session alive in `WAITING`
 (`POST .../sessions/{session_id}/interrupt` and
