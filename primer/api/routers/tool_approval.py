@@ -23,7 +23,8 @@ from fastapi import HTTPException
 from primer.api.errors import common_responses
 from primer.api.routers._crud import make_crud_router
 from primer.int.claim import ClaimEngine
-from primer.agent.approval_checks import check_approval_config, check_policy_unique
+from primer.agent.approval_checks import check_approval_config, check_policy_unique, check_preview_args
+from primer.agent.tool_schemas import find_tool_schema
 from primer.common.entity_checks import EntityCheckError
 from primer.int.event_bus import EventBus
 from primer.model.except_ import ConflictError, NotFoundError
@@ -82,6 +83,18 @@ async def _validate_approval_config(
 ) -> None:
     try:
         await check_approval_config(entity, storage_provider=storage_provider)
+    except EntityCheckError as exc:
+        raise _as_rest_error(exc) from exc
+
+
+async def _validate_preview_args(entity: ToolApprovalPolicy, *, provider_registry) -> None:
+    """Every ``preview_args`` path must name an argument of the gated tool (shared check, primer/agent/approval_checks.py)."""
+
+    async def schema_of(toolset_id: str, tool_name: str):
+        return await find_tool_schema(provider_registry, toolset_id, tool_name)
+
+    try:
+        await check_preview_args(entity, tool_schema_of=schema_of)
     except EntityCheckError as exc:
         raise _as_rest_error(exc) from exc
 
@@ -336,6 +349,7 @@ def make_tool_approval_router() -> APIRouter:
         await _validate_uniqueness(entity, storage_provider=storage_provider)
         # The config check reads provider rows through the registry's own storage provider, as it always did.
         await _validate_approval_config(entity, storage_provider=provider_registry._sp)  # noqa: SLF001
+        await _validate_preview_args(entity, provider_registry=provider_registry)
 
     async def on_pre_update(
         entity: ToolApprovalPolicy,
@@ -346,6 +360,7 @@ def make_tool_approval_router() -> APIRouter:
         provider_registry = get_provider_registry(request)
         await _validate_uniqueness(entity, storage_provider=storage_provider, skip_id=existing.id)
         await _validate_approval_config(entity, storage_provider=provider_registry._sp)  # noqa: SLF001
+        await _validate_preview_args(entity, provider_registry=provider_registry)
 
     crud = make_crud_router(
         model_cls=ToolApprovalPolicy,

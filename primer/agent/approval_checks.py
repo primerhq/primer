@@ -11,9 +11,11 @@ The order is the router's: uniqueness first, then the approval config.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any
 
 from primer.common.entity_checks import EntityCheckError
+from primer.common.preview_paths import missing_paths
 from primer.model.model_profile import ModelProfile
 from primer.model.provider import LLMProvider
 from primer.model.storage import OffsetPage
@@ -22,6 +24,9 @@ from primer.storage.q import Q
 
 if TYPE_CHECKING:
     from primer.int.storage_provider import StorageProvider
+
+# ``(toolset_id, tool_name) -> the tool's args_schema``, or None when the tool cannot be found (primer/agent/tool_schemas.py ``find_tool_schema``).
+ToolSchemaOf = Callable[[str, str], Awaitable["dict[str, Any] | None"]]
 
 
 async def check_policy_unique(
@@ -98,12 +103,41 @@ async def published_model_names(storage_provider: "StorageProvider", provider_id
         offset += 200
 
 
+async def check_preview_args(entity: ToolApprovalPolicy, *, tool_schema_of: "ToolSchemaOf | None") -> None:
+    """Every path of ``preview_args`` must name an argument of the tool the policy gates (design note 01a11cd3-66b0). A path that names nothing is a typo, and a typo
+    hides more than the operator meant, silently. A policy with no paths (``None`` or ``[]``) is never checked, so a policy on a tool that is not in the catalogue
+    right now stays writable. Paths with a tool that cannot be found cannot be checked: the operator is told so rather than trusted."""
+    paths = entity.preview_args
+    if not paths:
+        return
+    if tool_schema_of is None:
+        raise EntityCheckError("validation", "preview_args cannot be checked here: no way to find the tool's arguments was given", field="preview_args")
+    schema = await tool_schema_of(entity.toolset_id, entity.tool_name)
+    if schema is None:
+        raise EntityCheckError(
+            "validation",
+            f"tool {entity.tool_name!r} of toolset {entity.toolset_id!r} is not in the catalogue right now, so preview_args cannot be checked against its arguments; "
+            "set preview_args once the tool is reachable",
+            field="preview_args",
+        )
+    gone = missing_paths(schema, paths)
+    if gone:
+        names = sorted(schema.get("properties") or {})
+        raise EntityCheckError(
+            "validation",
+            f"preview_args {gone} name no argument of the tool {entity.tool_name!r} of toolset {entity.toolset_id!r} (top-level arguments: {names})",
+            field="preview_args",
+        )
+
+
 async def check_policy(
-    entity: ToolApprovalPolicy, *, storage_provider: "StorageProvider", skip_id: str | None = None,
+    entity: ToolApprovalPolicy, *, storage_provider: "StorageProvider", skip_id: str | None = None, tool_schema_of: "ToolSchemaOf | None" = None,
 ) -> None:
-    """Every pre-write check for a policy, in the router's order (``skip_id`` is the row being updated)."""
+    """Every pre-write check for a policy, in the router's order (``skip_id`` is the row being updated). ``tool_schema_of`` finds the gated tool's schema for the
+    ``preview_args`` check; a caller whose policies name no path may omit it."""
     await check_policy_unique(entity, storage_provider=storage_provider, skip_id=skip_id)
     await check_approval_config(entity, storage_provider=storage_provider)
+    await check_preview_args(entity, tool_schema_of=tool_schema_of)
 
 
-__all__ = ["check_approval_config", "check_policy", "check_policy_unique", "published_model_names"]
+__all__ = ["ToolSchemaOf", "check_approval_config", "check_policy", "check_policy_unique", "check_preview_args", "published_model_names"]

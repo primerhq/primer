@@ -92,7 +92,7 @@ def make_tool(
                 raise ValueError(f"tool {id!r}: {problem}")
         gone = missing_paths(args_schema, declared)
         if gone:
-            names = sorted((args_schema.get("properties") or {}))
+            names = sorted(args_schema.get("properties") or {})
             raise ValueError(f"tool {id!r}: preview_args {gone} name no argument of its schema (top-level arguments: {names})")
     body = f"{purpose}\n\n{when}"
     return Tool(
