@@ -157,9 +157,9 @@ class BaseWorkspaceBackend(WorkspaceBackend):
         gone ``gone`` -- the runtime self-evicts on a 404 handshake but the
         cache would otherwise keep handing out the dead handle. The gone client
         has already closed its own WS + aiohttp session when it gave up; what
-        is left to do is the handle's ``aclose``, which ends its live sessions
-        over that dead connection (each fails at once, as a closed client
-        refuses a request), run through ``close_shielded`` so a failure is
+        is left to do is the handle's ``aclose``, which only RELEASES the
+        handle (it ends no session since A-24, so it makes no request on that
+        dead connection), run through ``close_shielded`` so a failure is
         logged and the wait is bounded.
         """
         async with self._lock:
@@ -174,10 +174,9 @@ class BaseWorkspaceBackend(WorkspaceBackend):
             "%s: cached workspace %s is gone; evicting and re-attaching",
             type(self).__name__, workspace_id,
         )
-        # ``aclose`` ends the handle's live sessions, each a state commit over the very connection that is gone. A closed
-        # ``RuntimeClient`` (which a gone one is) refuses the request at once, but a client that is only disconnected, a slow
-        # peer or a silent one still waits with no bound of its own, and ``get`` is on the caller's path. ``close_shielded``
-        # bounds it and logs a failure.
+        # ``aclose`` only releases the handle: it ends no session (A-24; it used to, with a state commit over the very connection
+        # that is gone, which a client that is only disconnected, a slow peer or a silent one answers with no bound of its own).
+        # ``get`` is on the caller's path, so it still goes through ``close_shielded``, which bounds the wait and logs a failure.
         await close_shielded(
             cached, what=f"{type(self).__name__}: evicted gone workspace {workspace_id}",
         )

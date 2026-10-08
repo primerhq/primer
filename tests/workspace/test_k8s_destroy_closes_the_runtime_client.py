@@ -1,10 +1,11 @@
 """The k8s backend's ``destroy`` closes the workspace's runtime client, bounded, before it deletes the pod.
 
 The comment said "close the runtime WS first so reconnect attempts don't fire while we tear the Pod down underneath them", but
-the call was the workspace's own ``aclose``, which only ends its sessions: the connection is the sandbox's ``RuntimeClient``
-and nothing closed it, so the pod went away under a client that kept reconnecting (only a 404 handshake makes it give up; a
-cluster-internal service that is gone answers with a DNS or connection error instead). Both closes also waited without a bound
-for a peer that may be silent, in front of the deletion of the StatefulSet.
+the call was the workspace's own ``aclose``, which then only ended its sessions (since A-24 it only releases the handle, and
+``destroy`` ends the sessions by name). The connection is the sandbox's ``RuntimeClient`` and nothing closed it, so the pod went
+away under a client that kept reconnecting (only a 404 handshake makes it give up; a cluster-internal service that is gone answers
+with a DNS or connection error instead). Both closes also waited without a bound for a peer that may be silent, in front of the
+deletion of the StatefulSet.
 """
 
 from __future__ import annotations

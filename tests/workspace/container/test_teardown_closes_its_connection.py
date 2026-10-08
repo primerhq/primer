@@ -2,11 +2,13 @@
 
 ``stop()`` and ``remove()`` only reach the container daemon. The connection (the sandbox's ``RuntimeClient``: an aiohttp
 session and a WebSocket that reconnects on every drop and gives up only on a 404 handshake) outlives them unless something
-closes it, and a workspace's own ``aclose`` only ends its sessions. ``destroy`` closed nothing: not the workspace's own
+closes it, and a workspace's own ``aclose`` only releases its handle (it ended its sessions until A-24, which is why the eviction
+tests below used to need a bound; it makes no request on the connection now). ``destroy`` closed nothing: not the workspace's own
 sandbox, not the new one ``get_sandbox`` hands out on every call, so the client of a container that no longer exists kept
 reconnecting to it. Two older closes waited without a bound for a peer that may be silent: the ``create`` rollback (in front
-of the container's removal) and the eviction of a gone cached handle (``aclose`` ends the handle's sessions, each a state
-commit on a connection that is gone, and a request on a disconnected client waits for a reconnect that never comes).
+of the container's removal) and the eviction of a gone cached handle (whose ``aclose`` used to end the handle's sessions, each a
+state commit on a connection that is gone, and a request on a disconnected client waits for a reconnect that never comes; since
+A-24 it ends none and attempts nothing on that connection).
 """
 
 from __future__ import annotations
