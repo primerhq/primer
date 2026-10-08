@@ -208,6 +208,8 @@ class BoundedTurnLogWriter(TurnLogWriter):
             return 0
 
     async def aclose(self) -> None:
+        if self._broken:
+            return          # the connection was declared dead: closing the inner log would only wait the bound again
         try:
             async with asyncio.timeout(self._timeout_s):
                 await self._inner.aclose()

@@ -18,10 +18,13 @@ in the seqs (a seq nobody wrote), which readers already tolerate.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-__all__ = ["reserve_seq"]
+logger = logging.getLogger(__name__)
+
+__all__ = ["advance_last_seq", "reserve_seq"]
 
 
 async def reserve_seq(
@@ -39,3 +42,26 @@ async def reserve_seq(
         session_id, {"last_seq": last_seq + 1}, where={**where, "last_seq": [last_seq]},
     )
     return None if written is None else written.last_seq
+
+
+async def advance_last_seq(sessions: Any, session_id: str, seq: int, *, attempts: int = 5) -> bool:
+    """Raise ``last_seq`` of ``session_id`` to ``seq``; never lower it. True when this call wrote it.
+
+    A writer that has numbered records of its own (a turn's writer, a resume drain's) tells the row where it got to, so the next writer
+    seeds past them. ONE field-scoped ``patch_if`` of ``last_seq`` alone, fenced on the value just read: a writer that moved the row
+    since (a steer took a higher seq, a park wrote its columns) is never written over, which a ``get`` + whole-document ``update`` from
+    that snapshot cannot promise. A rejected fence means the row changed under us, so it is read again and decided again (a row that
+    is now at or past ``seq`` is left alone); after ``attempts`` rejections the call gives up and logs, because the writers that keep
+    winning the race are advancing ``last_seq`` themselves. A row that is gone, or already at or past ``seq``, is not an error.
+    """
+    for _ in range(attempts):
+        fresh = await sessions.get(session_id)
+        if fresh is None or fresh.last_seq >= seq:
+            return False
+        written = await sessions.patch_if(session_id, {"last_seq": seq}, where={"last_seq": [fresh.last_seq]})
+        if written is not None:
+            return True
+    logger.warning(
+        "session %s: last_seq stayed behind %d after %d rejected fences (another writer kept moving the row)", session_id, seq, attempts,
+    )
+    return False
