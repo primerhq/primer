@@ -1021,12 +1021,12 @@ class TestAttentionRowsDescribeTheCall:
     async def test_a_short_call_is_shown_whole_and_not_marked_truncated(self, client, sp) -> None:
         call = {"id": "tc-2", "name": "bash", "arguments": {"command": "ls -la"}}
         row = await self._row(client, sp, "sess-d-2", _approval_state("tc-2", call))
-        assert row["approval"] == {"tool_name": "bash", "arguments": "command=ls -la", "truncated": False}
+        assert row["approval"] == {"tool_name": "bash", "arguments": "command=ls -la", "truncated": False, "argument_keys": ["command"]}
 
     @pytest.mark.asyncio
     async def test_a_call_with_no_arguments_has_an_empty_preview(self, client, sp) -> None:
         row = await self._row(client, sp, "sess-d-3", _approval_state("tc-3", {"id": "tc-3", "name": "bash", "arguments": {}}))
-        assert row["approval"] == {"tool_name": "bash", "arguments": "", "truncated": False}
+        assert row["approval"] == {"tool_name": "bash", "arguments": "", "truncated": False, "argument_keys": []}
 
     @pytest.mark.asyncio
     async def test_an_approval_whose_call_is_unknown_has_no_preview_so_the_card_cannot_offer_a_blind_approve(self, client, sp) -> None:
@@ -1103,7 +1103,7 @@ class TestApprovalPreview:
 
     def test_arguments_that_are_not_a_mapping_are_shown_as_text(self) -> None:
         got = self._preview({"name": "t", "arguments": "raw string"})
-        assert got == {"tool_name": "t", "arguments": "raw string", "truncated": False}
+        assert got == {"tool_name": "t", "arguments": "raw string", "truncated": False, "argument_keys": []}
 
     def test_secret_looking_arguments_are_redacted_and_the_preview_says_something_was_left_out(self) -> None:
         """The preview shows in every console's rail without anyone asking; a key or a header must not (review of PR 503)."""
@@ -1130,7 +1130,7 @@ class TestApprovalPreview:
 
     def test_arguments_that_are_not_json_at_all_are_shown_as_text_after_the_same_cut(self) -> None:
         got = self._preview({"name": "t", "arguments": "not { json"})
-        assert got == {"tool_name": "t", "arguments": "not { json", "truncated": False}
+        assert got == {"tool_name": "t", "arguments": "not { json", "truncated": False, "argument_keys": []}
 
     def test_newlines_and_tabs_collapse_so_a_preview_is_one_line(self) -> None:
         got = self._preview({"name": "bash", "arguments": {"command": "echo a\nrm -rf /\t&& ls"}})
@@ -1140,3 +1140,204 @@ class TestApprovalPreview:
     def test_non_ascii_text_is_kept_not_escaped(self) -> None:
         got = self._preview({"name": "t", "arguments": {"label": "caf\u00e9", "meta": {"city": "Z\u00fcrich"}}})
         assert got["arguments"] == 'label=caf\u00e9, meta={"city": "Z\u00fcrich"}'
+
+
+class TestApprovalPreviewScrubsWhatItShows:
+    """Round 2 of the PR 503 review: a credential must not ride in the preview under a harmless key, in a header pair, in a command line,
+    in a JSON string, or in a raw-text argument. The preview is shoulder-surfing protection (the card shows values to the person deciding),
+    not access control: "show all" and the session's own pending-yields route still return the whole call."""
+
+    def _args(self, arguments, **extra):
+        from primer.api.routers.workspaces import _approval_preview
+
+        return _approval_preview({"name": "t", "arguments": arguments, **extra})
+
+    # --- value shapes under harmless keys ---------------------------------------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        ("secret", "core"),
+        [
+            ("sk-abcdefghij1234567890", "abcdefghij1234567890"),
+            ("sk-ant-api03-AbCdEfGhIjKlMnOp", "AbCdEfGhIjKlMnOp"),
+            ("ghp_abcdefghijklmnopqrstuvwxyz0123456789", "abcdefghijklmnopqrstuvwxyz0123456789"),
+            ("gho_ABCDEFGHIJKLMNOPQRSTUV123456", "ABCDEFGHIJKLMNOPQRSTUV123456"),
+            ("xoxb-1234567890-abcdefghij", "abcdefghij"),
+            ("AKIAIOSFODNN7EXAMPLE", "IOSFODNN7EXAMPLE"),
+            ("Bearer abc.def.ghi", "abc.def.ghi"),
+            ("Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"),
+            ("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2lnbmF0dXJl", "eyJzdWIiOiIxMjM0In0"),
+            ("d41d8cd98f00b204e9800998ecf8427e1234abcd", "d41d8cd98f00b204e9800998ecf8427e1234abcd"),
+            ("aGVsbG8gd29ybGQgdGhpcyBpcyBhIGxvbmcgYmxvYjEyMzQ", "aGVsbG8gd29ybGQgdGhpcyBpcyBhIGxvbmcgYmxvYjEyMzQ"),
+        ],
+    )
+    def test_a_secret_shaped_value_is_scrubbed_even_under_a_harmless_key(self, secret: str, core: str) -> None:
+        got = self._args({"note": secret})
+        assert core not in got["arguments"], got
+        assert "<redacted>" in got["arguments"] and got["truncated"] is True
+
+    def test_a_bearer_value_keeps_the_scheme_word_and_loses_the_credential(self) -> None:
+        assert self._args({"note": "Bearer sk-live-abcdef123456"})["arguments"] == "note=Bearer <redacted>"
+
+    def test_credentials_in_a_url_are_scrubbed_and_the_host_stays(self) -> None:
+        got = self._args({"url": "https://ana:hunter2@host.test/x"})
+        assert "hunter2" not in got["arguments"] and "ana" not in got["arguments"].replace("host.test", "")
+        assert "host.test/x" in got["arguments"] and got["truncated"] is True
+
+    @pytest.mark.parametrize(
+        "kept",
+        [
+            "/var/tmp/review-2026-10-08/console-core/notes/plan.md",
+            "a-very-long-descriptive-file-name-without-any-digits-at-all.md",
+            "https://example.com/a/b",
+            "tc-1",
+            "d41d8cd98f00b204e9800998ecf8427e",
+            "ls -la /home/ana",
+        ],
+    )
+    def test_ordinary_targets_are_not_mistaken_for_secrets(self, kept: str) -> None:
+        got = self._args({"command": kept})
+        assert got["arguments"] == "command=" + kept and got["truncated"] is False
+
+    def test_a_blob_is_over_32_characters_not_32(self) -> None:
+        assert self._args({"h": "f" * 32})["arguments"] == "h=" + "f" * 32
+        assert self._args({"h": "f" * 33})["arguments"] == "h=<redacted>"
+
+    # --- header pairs, lists, nested JSON ----------------------------------------------------------------------------------------
+
+    def test_a_header_written_as_name_and_value_has_its_value_redacted(self) -> None:
+        from primer.api.routers.workspaces import _redact
+
+        assert _redact({"name": "Authorization", "value": "Bearer abc"}) == ({"name": "Authorization", "value": "<redacted>"}, True)
+        assert _redact({"header": "X-Api-Key", "value": "z1"}) == ({"header": "X-Api-Key", "value": "<redacted>"}, True)
+        assert _redact({"key": "Cookie", "value": "sid=1"})[0]["value"] == "<redacted>"
+        assert _redact({"name": "Accept", "value": "json"}) == ({"name": "Accept", "value": "json"}, False)
+
+    def test_a_header_written_as_a_pair_has_its_value_redacted(self) -> None:
+        from primer.api.routers.workspaces import _redact
+
+        got, changed = _redact([["Authorization", "Bearer abc"], ["Accept", "json"]])
+        assert got == [["Authorization", "<redacted>"], ["Accept", "json"]] and changed is True
+        assert _redact(["--token", "abc123xyz"]) == (["--token", "<redacted>"], True)
+
+    def test_the_list_branch_redacts_inside_list_members_and_reports_change_only_when_something_changed(self) -> None:
+        from primer.api.routers.workspaces import _redact
+
+        assert _redact(["a", {"password": "p"}]) == (["a", {"password": "<redacted>"}], True)
+        assert _redact(["a", "b", {"n": 1}]) == (["a", "b", {"n": 1}], False)
+
+    def test_headers_in_a_list_of_pairs_are_redacted_through_the_preview(self) -> None:
+        got = self._args({"h": [["Authorization", "Bearer abc"]]})
+        assert got["arguments"] == 'h=[["Authorization", "<redacted>"]]' and got["truncated"] is True
+
+    def test_a_json_string_inside_a_harmless_key_is_parsed_and_redacted(self) -> None:
+        got = self._args({"payload": '{"api_key": "abc", "ok": 1}'})
+        assert got["arguments"] == 'payload={"api_key": "<redacted>", "ok": 1}' and got["truncated"] is True
+
+    def test_a_json_string_inside_a_json_string_is_parsed_at_every_depth(self) -> None:
+        import json
+
+        got = self._args({"payload": json.dumps({"inner": json.dumps({"password": "p4ss"})})})
+        assert "p4ss" not in got["arguments"] and "<redacted>" in got["arguments"]
+
+    def test_nesting_deeper_than_the_walker_goes_is_hidden_not_passed_through(self) -> None:
+        import json
+
+        from primer.api.routers.workspaces import _redact
+
+        deep: object = {"password": "p4ss", "n": "leaf-secret-value-zzzz"}
+        for _ in range(40):
+            deep = {"x": deep}
+        got, changed = _redact(deep)
+        assert changed is True
+        assert "p4ss" not in json.dumps(got) and "leaf-secret" not in json.dumps(got), "what the walker does not look at must not be shown"
+
+    def test_pathological_nesting_never_raises(self) -> None:
+        for text in ("[" * 5000 + "]" * 5000, '{"a":' * 5000 + "1" + "}" * 5000):
+            got = self._args(text)
+            assert got is not None and isinstance(got["arguments"], str)
+            got = self._args({"d": text})
+            assert got is not None and isinstance(got["arguments"], str)
+
+    # --- key names ----------------------------------------------------------------------------------------------------------------
+
+    def test_key_cookie_and_session_credential_names_are_redacted_but_a_session_id_is_a_target(self) -> None:
+        got = self._args({"key": "abc123", "cookie": "sid=xyz", "session_token": "t", "sessionid": "s", "session_id": "ses-1"})
+        assert got["arguments"] == (
+            "cookie=<redacted>, key=<redacted>, session_id=ses-1, session_token=<redacted>, sessionid=<redacted>"
+        )
+
+    def test_a_key_name_is_a_whole_word_not_a_substring(self) -> None:
+        assert self._args({"keyword": "k", "monkey": "m", "turkey": "t"})["truncated"] is False
+
+    # --- command lines and raw text -----------------------------------------------------------------------------------------------
+
+    def test_a_curl_header_inside_a_command_is_scrubbed_before_the_cut(self) -> None:
+        got = self._args({"command": "curl -H 'Authorization: Bearer sk-live-abcdef123456' https://x.test"})
+        assert got["arguments"] == "command=curl -H 'Authorization: <redacted>' https://x.test" and got["truncated"] is True
+
+    @pytest.mark.parametrize(
+        ("command", "secret"),
+        [
+            ("deploy --password hunter2 --env prod", "hunter2"),
+            ("export API_KEY=abc123def456 && run", "abc123def456"),
+            ("fetch https://x.test/?token=abc123def456&a=1", "abc123def456"),
+        ],
+    )
+    def test_secret_flags_and_assignments_in_a_command_are_scrubbed(self, command: str, secret: str) -> None:
+        got = self._args({"command": command})
+        assert secret not in got["arguments"] and "<redacted>" in got["arguments"]
+
+    def test_a_secret_that_straddles_the_cut_is_scrubbed_before_it_is_cut(self) -> None:
+        got = self._args({"command": "x" * 70 + " Bearer sk-live-abcdef123456"})
+        assert "sk-live" not in got["arguments"] and "sk-" not in got["arguments"].replace("Bearer", "")
+
+    def test_a_list_of_arguments_is_scrubbed_like_a_mapping(self) -> None:
+        got = self._args('["Bearer abcdefgh", "ok"]')
+        assert got["arguments"] == '["Bearer <redacted>", "ok"]' and got["truncated"] is True
+
+    def test_arguments_that_are_a_python_list_are_scrubbed_too(self) -> None:
+        got = self._args(["--api-key", "abc123"])
+        assert "abc123" not in got["arguments"]
+
+    def test_malformed_json_is_scrubbed_as_text_not_passed_through(self) -> None:
+        got = self._args('{"api_key": "abcdef123", ')
+        assert "abcdef123" not in got["arguments"] and "<redacted>" in got["arguments"] and got["truncated"] is True
+
+    def test_raw_text_arguments_are_scrubbed(self) -> None:
+        got = self._args("Authorization: Bearer abcdefgh12345")
+        assert got["arguments"] == "Authorization: <redacted>" and got["truncated"] is True
+
+    # --- one line -----------------------------------------------------------------------------------------------------------------
+
+    def test_unicode_line_separators_collapse_like_newlines(self) -> None:
+        got = self._args({"command": "a b c\u0085d\x0be"})
+        assert got["arguments"] == "command=a b c d e"
+
+    # --- the keys the passive rail line shows ------------------------------------------------------------------------------------
+
+    def test_the_preview_lists_the_argument_names_in_display_order(self) -> None:
+        got = self._args({"path": "p", "content": "c", "api_key": "k", "zeta": 1})
+        assert got["argument_keys"] == ["path", "api_key", "zeta", "content"]
+
+    def test_the_argument_names_are_bounded(self) -> None:
+        got = self._args({f"k{i:02d}": 1 for i in range(40)} | {"l" * 100: 1})
+        assert len(got["argument_keys"]) <= 12 and all(len(k) <= 40 for k in got["argument_keys"])
+
+    def test_no_argument_names_when_the_arguments_are_not_a_mapping(self) -> None:
+        assert self._args("raw")["argument_keys"] == [] and self._args(None)["argument_keys"] == []
+
+
+class TestAttentionRowsScrubTheirProse:
+    @pytest.mark.asyncio
+    async def test_a_question_or_wait_that_carries_a_credential_is_scrubbed(self, client, sp) -> None:
+        state = _approval_state("tc-s1", None, tool_name="ask_user")
+        state["yielded"]["resume_metadata"]["prompt"] = "Use Bearer sk-live-abcdef123456 to call the API?"
+        row = await TestAttentionRowsDescribeTheCall._row(client, sp, "sess-s-1", state)
+        assert row["prompt"] == "Use Bearer <redacted> to call the API?"
+
+    @pytest.mark.asyncio
+    async def test_the_aggregate_row_carries_the_argument_names(self, client, sp) -> None:
+        call = {"id": "tc-s2", "name": "http_get", "arguments": {"url": "https://x.test", "api_key": "sk-abcdefghij1234567890"}}
+        row = await TestAttentionRowsDescribeTheCall._row(client, sp, "sess-s-2", _approval_state("tc-s2", call))
+        assert row["approval"]["argument_keys"] == ["url", "api_key"]
+        assert "sk-abcdefghij1234567890" not in str(row)

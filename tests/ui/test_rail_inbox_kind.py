@@ -80,8 +80,13 @@ def test_a_rail_row_says_what_it_is_about() -> None:
         def line(item):
             return ctx.eval("NV_Rail_inboxLine(" + json.dumps(item) + ")")
 
-        approval = {"kind": "approval", "approval": {"tool_name": "bash", "arguments": "command=ls -la", "truncated": False}}
-        assert line(approval) == "bash command=ls -la"
+        approval = {"kind": "approval", "approval": {
+            "tool_name": "bash", "arguments": "command=ls -la", "truncated": False, "argument_keys": ["command"],
+        }}
+        assert line(approval) == "bash (command)", "the tool and the NAMES of its arguments, never their values"
+        two = {"kind": "approval", "approval": {"tool_name": "write", "arguments": "path=a, content=<5 chars>", "argument_keys": ["path", "content"]}}
+        assert line(two) == "write (path, content)"
+        assert line({"kind": "approval", "approval": {"tool_name": "bash", "arguments": "", "argument_keys": []}}) == "bash"
         assert line({"kind": "approval", "approval": {"tool_name": "bash", "arguments": ""}}) == "bash"
         assert line({"kind": "approval", "approval": None}) == "", "nothing to say, so no line is drawn"
         assert line({"kind": "ask", "prompt": "Which environment?"}) == "Which environment?"
@@ -93,3 +98,36 @@ def test_a_rail_row_says_what_it_is_about() -> None:
 def test_the_rail_draws_the_line_only_when_there_is_one() -> None:
     assert 'data-testid={"nv-rail-inbox-line:" + it.session_id}' in RAIL
     assert "NV_Rail_inboxLine(it) ? (" in RAIL
+
+
+def test_the_passive_rail_line_never_shows_an_argument_value() -> None:
+    """Console review C-033, PR 503 round 2: the rail line is drawn in every open console without anyone asking, so it carries the
+    tool and the argument NAMES only. A value (a header, a command line, a token under any key) never rides in it, whatever the
+    server put in ``arguments``; the phone card, where the user is deciding, is the surface that shows (scrubbed) values."""
+    import json
+
+    ctx = _line()
+    try:
+        leaky = {
+            "kind": "approval",
+            "approval": {
+                "tool_name": "http_get",
+                "arguments": "command=curl -H 'Authorization: Bearer sk-LEAK-123456' https://x.test, note=hunter2",
+                "truncated": True,
+                "argument_keys": ["command", "note"],
+            },
+        }
+        got = ctx.eval("NV_Rail_inboxLine(" + json.dumps(leaky) + ")")
+        assert got == "http_get (command, note)"
+        for value in ("sk-LEAK", "hunter2", "curl", "Bearer", "x.test"):
+            assert value not in got
+        older_server = {"kind": "approval", "approval": {"tool_name": "http_get", "arguments": "note=hunter2", "truncated": True}}
+        assert ctx.eval("NV_Rail_inboxLine(" + json.dumps(older_server) + ")") == "http_get", "no names from the server: the tool alone, not the values"
+    finally:
+        ctx.close()
+
+
+def test_the_rail_line_source_never_reads_the_arguments_string() -> None:
+    start = RAIL.index("function NV_Rail_inboxLine")
+    body = RAIL[start:RAIL.index("\n}\n", start)]
+    assert "a.arguments" not in body and ".arguments" not in body
