@@ -136,61 +136,16 @@ const Modal = ({ title, onClose, children, footer, danger, width }) => {
   const isMobile = !!vp.isMobile;
   const dialogRef = React.useRef(null);
 
-  // Remember the element that opened the modal. Captured lazily on the FIRST
-  // render (before the dialog commits/steals focus) so focus can be restored
-  // to the real opener on close — not to whatever ends up focused inside.
-  const openerRef = React.useRef(null);
-  if (openerRef.current === null && typeof document !== "undefined") {
-    openerRef.current = document.activeElement;
-  }
-
   React.useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose && onClose(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  // FC5a — focus trap + focus restore. Keep Tab / Shift+Tab cycling inside the
-  // dialog so keyboard users can't tab out into the (inert) page behind it, and
-  // return focus to the opener when the dialog unmounts.
-  React.useEffect(() => {
-    const node = dialogRef.current;
-    if (!node) return undefined;
-    const SELECTOR =
-      'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
-    const focusables = () =>
-      Array.prototype.slice
-        .call(node.querySelectorAll(SELECTOR))
-        .filter((el) => el.offsetParent !== null || el === document.activeElement);
-    // Pull focus in only if it isn't already inside — preserves autoFocus'd
-    // inputs (e.g. the rename dialog) and ConfirmHost's delayed input focus.
-    if (!node.contains(document.activeElement)) {
-      const first = focusables()[0] || node;
-      if (first && first.focus) first.focus();
-    }
-    const onKeyDown = (e) => {
-      if (e.key !== "Tab") return;
-      const items = focusables();
-      if (items.length === 0) { e.preventDefault(); if (node.focus) node.focus(); return; }
-      const first = items[0];
-      const last = items[items.length - 1];
-      const active = document.activeElement;
-      if (e.shiftKey) {
-        if (active === first || !node.contains(active)) { e.preventDefault(); last.focus(); }
-      } else if (active === last || !node.contains(active)) {
-        e.preventDefault();
-        first.focus();
-      }
-    };
-    node.addEventListener("keydown", onKeyDown);
-    return () => {
-      node.removeEventListener("keydown", onKeyDown);
-      const opener = openerRef.current;
-      if (opener && typeof opener.focus === "function" && document.contains(opener)) {
-        opener.focus();
-      }
-    };
-  }, [isMobile]);
+  // FC5a - focus trap + focus restore, shared with the console's overlays and the bottom sheet (foundation/focus-trap.js): Tab and
+  // Shift+Tab cycle inside the dialog, focus moves in on open (an autoFocus'd input and ConfirmHost's delayed input focus are kept) and
+  // returns to the opener on close. Re-attached when the dialog's node changes between the desktop and phone trees.
+  window.primerApi.useFocusTrap(dialogRef, true, null, [isMobile]);
 
   React.useEffect(() => {
     if (!isMobile) return undefined;
@@ -206,6 +161,7 @@ const Modal = ({ title, onClose, children, footer, danger, width }) => {
           className="sheet"
           role="dialog"
           aria-modal="true"
+          aria-label={typeof title === "string" ? title : undefined}
           tabIndex={-1}
           ref={dialogRef}
           onClick={(e) => e.stopPropagation()}
@@ -228,6 +184,7 @@ const Modal = ({ title, onClose, children, footer, danger, width }) => {
         className="modal"
         role="dialog"
         aria-modal="true"
+        aria-label={typeof title === "string" ? title : undefined}
         tabIndex={-1}
         ref={dialogRef}
         style={width ? { width } : undefined}

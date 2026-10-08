@@ -31,9 +31,12 @@ def test_fc2_st_utility_classes_defined_and_used() -> None:
 
 def test_fc5_modal_traps_and_restores_focus() -> None:
     assert 'aria-modal="true"' in SHARED
-    assert "openerRef" in SHARED          # remembers the opener
-    assert "focusables" in SHARED         # trap cycles within these
     assert 'tabIndex={-1}' in SHARED      # dialog is focusable as a fallback
+    # The trap itself moved to the shared hook (C-028), which the console's overlays and the bottom sheet use as well.
+    assert "useFocusTrap(dialogRef" in SHARED
+    hook = (Path(__file__).resolve().parents[2] / "ui" / "foundation" / "focus-trap.js").read_text(encoding="utf-8")
+    assert "openerRef" in hook            # remembers the opener
+    assert "focusables" in hook           # trap cycles within these
 
 
 # ---- FC5b: --text-4 contrast bump ------------------------------------------

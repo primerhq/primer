@@ -1,6 +1,10 @@
 /* global React, Icon */
 
 function BottomSheet({ open, onClose, title, footer, children }) {
+  const sheetRef = React.useRef(null);
+  // Focus moves into the open sheet, Tab cycles inside it and focus returns to the opener on close (foundation/focus-trap.js). The sheet
+  // stays mounted while closed, so the trap is gated on `open`.
+  window.primerApi.useFocusTrap(sheetRef, !!open);
   React.useEffect(() => {
     if (!open) return undefined;
     const onKey = (e) => { if (e.key === "Escape" && onClose) onClose(); };
@@ -20,6 +24,9 @@ function BottomSheet({ open, onClose, title, footer, children }) {
         className="sheet"
         role="dialog"
         aria-modal="true"
+        aria-label={typeof title === "string" ? title : undefined}
+        tabIndex={-1}
+        ref={sheetRef}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="sheet-handle" />
