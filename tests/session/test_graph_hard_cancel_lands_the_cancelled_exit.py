@@ -9,11 +9,20 @@ answers, flags the row, and cancels the turn task the way the pool's ``cancel_on
 What must hold: the cancel is absorbed into the cancelled exit (no ``CancelledError`` reaches the pool), the node's partial text is a durable
 record attributed to its node ahead of CANCELLED, the node's blocked model call is actually cancelled (no task left running behind the
 ended session), and the row, the tick and the terminal event are those of any other Cancel.
+
+WHO cancels the node's model call. Only the superstep loop's own cleanup does, and only because it calls ``t.cancel()`` on each node task it
+still holds (``_run_superstep_loop``'s ``finally``, ``primer/graph/base.py``). The cancellation delivered to the turn task lands at the loop's
+``queue.get()``, so it never reaches the nodes by itself, and dispatch's ``turn_events.aclose()`` runs after that cleanup, not instead of it. The
+cleanup then ``await``s each node task, and a task awaiting another task DIRECTLY passes a second ``cancel()`` on to it. So if the explicit cancel
+is missing, the turn hangs in that ``await``, and any LATER cancel of the turn task (a ``wait_for`` timeout is one) reaches the node through it
+and makes the outcome look right, only late. That is why the tests below do not wait on the turn task with a ``wait_for`` (whose timeout is such a
+cancel): they use ``_finished``, which waits without cancelling and fails by name when the turn does not finish by itself.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -69,6 +78,28 @@ def _graph() -> Graph:
     )
 
 
+# A backstop for a hang, not a measure of speed: the turn finishes in milliseconds when the cleanup runs and never when it does not.
+_HANG_BACKSTOP_S = 10.0
+
+
+async def _finished(task: "asyncio.Task") -> "asyncio.Task":
+    """Wait for the turn task WITHOUT ever cancelling it; fail by name if it does not finish within the backstop.
+
+    ``asyncio.wait_for`` cannot be used for this: its timeout cancels the task, and that cancel reaches a node through the superstep loop's
+    ``await t`` (a task awaiting a task passes a cancel on), which hides a missing node cancel as a slow success or a TimeoutError.
+    """
+    done, _pending = await asyncio.wait({task}, timeout=_HANG_BACKSTOP_S)
+    if not done:
+        task.cancel()                                # not to leak it: this is cleanup after the verdict, not part of it
+        with contextlib.suppress(BaseException):
+            await asyncio.wait({task}, timeout=5.0)
+        pytest.fail(
+            f"the turn task was still running {_HANG_BACKSTOP_S:.0f} s after the Cancel: the superstep loop's cleanup awaits each node task "
+            "and nothing cancelled the blocked ones (the `t.cancel()` in _run_superstep_loop's finally, primer/graph/base.py)",
+        )
+    return task
+
+
 async def _seed_graph_session(storage_provider, sid: str = "gs1") -> WorkspaceSession:
     sess = WorkspaceSession(
         id=sid, workspace_id="w1", binding=GraphSessionBinding(graph_id="g-hard-cancel"),
@@ -108,7 +139,7 @@ class TestAUserCancelOfAGraphSession:
         sid, llm, task, _before = await _run_and_cancel(
             tmp_path, fake_storage_provider, fake_workspace_io, fake_event_bus, flag_the_row=True,
         )
-        outcome = await asyncio.wait_for(task, 10.0)           # a CancelledError here is the bug
+        outcome = (await _finished(task)).result()             # a CancelledError here is the bug
 
         assert outcome.success and outcome.drop_lease
         assert task.cancelling() == 0
@@ -129,10 +160,13 @@ class TestAUserCancelOfAGraphSession:
         _sid, llm, task, before = await _run_and_cancel(
             tmp_path, fake_storage_provider, fake_workspace_io, fake_event_bus, flag_the_row=True,
         )
-        await asyncio.wait_for(task, 10.0)
+        (await _finished(task)).result()
         await asyncio.sleep(0.2)
 
-        assert llm.cancelled.is_set(), "the node's model call was never cancelled: the superstep loop's cleanup did not run"
+        assert llm.cancelled.is_set(), (
+            "the node's model call was never cancelled: nothing cancelled the node task (the superstep loop's cleanup does, by an explicit "
+            "t.cancel(); dispatch's aclose() does not reach the node, and a cancel of the turn task stops at the loop's queue.get())"
+        )
         leaked = [t for t in asyncio.all_tasks() - before if not t.done() and t is not asyncio.current_task()]
         assert not leaked, f"tasks left running behind a cancelled graph session: {leaked}"
 
@@ -143,11 +177,13 @@ class TestAUserCancelOfAGraphSession:
         sid, llm, task, _before = await _run_and_cancel(
             tmp_path, fake_storage_provider, fake_workspace_io, fake_event_bus, flag_the_row=False,
         )
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, 10.0)
+        await _finished(task)
+        assert task.cancelled(), "an unflagged cancel (a lease steal, the drain timeout) must reach the pool as a cancellation"
 
         row = await fake_storage_provider.get_storage(WorkspaceSession).get(sid)
         assert row.status != SessionStatus.ENDED
         assert SessionMessageKind.CANCELLED not in [r["kind"] for r in _records(fake_workspace_io, sid)]
-        await asyncio.sleep(0.2)
-        assert llm.cancelled.is_set(), "the node's model call must still be cancelled when the cancellation propagates"
+        assert llm.cancelled.is_set(), (
+            "the node's model call must still be cancelled when the cancellation propagates: the superstep loop's cleanup awaits the node "
+            "task only after cancelling it, and the turn task is already finished here"
+        )
