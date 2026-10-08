@@ -8,7 +8,8 @@ ways:
 
 * it says ``completed`` for a row that ended some other way. The dispatch mirror (``_sync_agent_session_ended``) writes
   ``completed`` for any reason outside the four an ``AgentSession`` accepts, and a closed workspace handle
-  (``Workspace.aclose``) ends every cached slot as ``completed`` whatever the row says;
+  (``Workspace.aclose``) USED TO end every cached slot as ``completed`` whatever the row says (fixed in A-24: it only releases the handle
+  now, but slots it ended before that fix are still on disk, which is why this overlay stays);
 * it still says ``running`` or ``waiting`` for a row that was ended by a path that never touches the slot (the stuck-session
   sweeper, the pool's ``_end_session``, the reconciler);
 * it says ``ended`` for a row that is alive (a handle closed under a parked session).
@@ -22,7 +23,9 @@ PAUSED under a RUNNING row, a slot RUNNING under a CREATED row) is left alone on
 the slot first, nothing shows the row is more current there, and the claim here is about how a session ENDED, not a general merge. A slot with no row, or whose row belongs to another workspace, is served unchanged: there is nothing to derive it from.
 
 This does not rewrite ``session.json``. Readers that DECIDE something from the slot (``WorkspaceAgentExecutor.invoke``, a wake's
-``append_instruction``) still read it directly; the write side is a separate finding.
+``append_instruction``) still read it directly. The write side (A-24) stopped one cause of a wrong slot, a handle close ending live
+slots; the others in the list above (the sweeper, the pool's ``_end_session``, the dispatch mirror's fallback) still leave the file
+behind the row.
 """
 
 from __future__ import annotations
