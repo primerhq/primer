@@ -105,6 +105,19 @@ network).
 - `http_request` and `download` do not follow redirects; `web_fetch`
   does, checking every hop. A redirect to an internal address fails on
   that hop.
+- `http_request`'s `timeout_seconds` is the deadline of the WHOLE call, the
+  request and the response body, not of one network read: a server that
+  sends a byte at a time is given up on at that deadline
+  (`http-request timed out after Ns`), and `web_fetch` gives up on the same
+  terms (a transient failure, so an aggregated fetch tries the next
+  provider).
+- A response body is read only up to the tool's cap, counting the bytes after
+  decompression: `http_request` returns the first 1 MB and sets
+  `truncated`; `download` refuses a file over its cap and writes nothing.
+  The tools accept ONE `gzip` or `deflate` layer (they ask for no other);
+  a response with any other `Content-Encoding` (`br`, `zstd`, a stacked
+  `gzip, gzip`) is refused with `unsupported content-encoding`. Pass your
+  own `Accept-Encoding` header to `http_request` only if you can accept that.
 
 ## Related
 

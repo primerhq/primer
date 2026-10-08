@@ -17,8 +17,9 @@ import logging
 
 import httpx
 
-from primer.common.bounded_read import read_capped
+from primer.common.bounded_read import ACCEPT_ENCODING, UnsupportedContentEncoding, read_capped
 from primer.common.netguard import EgressRefused, guarded_async_client
+from primer.model.except_ import UnsupportedContentError
 
 from primer.web_fetch.adapter import (
     THIN_CONTENT_THRESHOLD,
@@ -33,6 +34,10 @@ logger = logging.getLogger(__name__)
 
 # Raw-response cap (pre-extraction); larger than http-request's 1 MB to fit PDFs.
 DEFAULT_RAW_BYTE_CAP = 5 * 1024 * 1024
+
+# Redirects are followed by hand (see ``LocalAdapter._get``): the hops are bounded, and a 3xx body is never read.
+_MAX_REDIRECTS = 10
+_REDIRECTS = frozenset({301, 302, 303, 307, 308})
 
 # Many hosts (Wikipedia, Cloudflare-fronted sites) reject httpx's default
 # ``python-httpx/x.y`` User-Agent with a 403. Present a mainstream browser UA
@@ -72,31 +77,11 @@ class LocalAdapter(WebFetchAdapter):
 
     async def fetch(self, *, url: str) -> FetchedPage:
         try:
-            # One deadline for the request AND the body (the client's timeout is per operation, so a body that drips never trips it), and
-            # the body is read only to the cap: ``r.content`` would hold a response that streams gigabytes in memory (architecture review
-            # A-10). The status is judged before the body is touched, so an error page is not read at all.
+            # One deadline for the whole fetch (every hop and the body: the client's timeout is per operation, so a body that drips never trips
+            # it). The body is read only to the cap and bounded per decode step (``read_capped``); ``r.content`` would hold a response that streams
+            # gigabytes. The status is judged before the body is touched, so an error page is not read at all.
             async with asyncio.timeout(self._timeout):
-                async with self._client.stream(
-                    "GET",
-                    url,
-                    follow_redirects=True,
-                    timeout=self._timeout,
-                    headers={"User-Agent": self._user_agent},
-                ) as r:
-                    if r.status_code == 429:
-                        raise WebFetchUnavailable("local fetch rate-limited (HTTP 429)")
-                    if r.status_code >= 500:
-                        raise WebFetchUnavailable(f"local fetch server error (HTTP {r.status_code})")
-                    if r.status_code in (401, 403):
-                        raise WebFetchProviderError(f"local fetch forbidden (HTTP {r.status_code})")
-                    if r.status_code >= 400:
-                        raise WebFetchProviderError(
-                            f"local fetch unexpected status {r.status_code}"
-                        )
-                    raw, _ = await read_capped(r, self._raw_byte_cap)
-                    ct = r.headers.get("content-type", "").split(";")[0].strip().lower()
-                    final_url = str(r.url)
-                    status = r.status_code
+                raw, ct, final_url, status = await self._get(url)
         except EgressRefused as exc:
             # Not transient: the target is internal. A remote provider in
             # an aggregated chain may still fetch it from its own network.
@@ -109,6 +94,8 @@ class LocalAdapter(WebFetchAdapter):
             raise WebFetchUnavailable(
                 f"local fetch timed out after {self._timeout:g}s"
             ) from exc
+        except UnsupportedContentEncoding as exc:
+            raise WebFetchProviderError(f"local fetch: {exc}") from exc
 
         if ct in ("text/html", "application/xhtml+xml", ""):
             return self._extract_html(raw, ct, final_url, status)
@@ -138,6 +125,37 @@ class LocalAdapter(WebFetchAdapter):
         raise WebFetchProviderError(
             f"unsupported content type {ct!r}; use http-request for raw bytes"
         )
+
+    async def _get(self, url: str) -> tuple[bytes, str, str, int]:
+        """GET ``url``, following redirects BY HAND, and return ``(body, content type, final url, status)``.
+
+        ``follow_redirects=True`` makes httpx read the whole body of every 3xx before it follows it (a 302 offering 40 MiB was pulled
+        whole). Each hop here is its own streamed request on the same guarded client, so a 3xx is closed unread and every hop passes the
+        egress guard on its own connection; the hops are bounded (``_MAX_REDIRECTS``) and share the caller's deadline.
+        """
+        for _hop in range(_MAX_REDIRECTS + 1):
+            async with self._client.stream(
+                "GET",
+                url,
+                follow_redirects=False,
+                timeout=self._timeout,
+                headers={"User-Agent": self._user_agent, "Accept-Encoding": ACCEPT_ENCODING},
+            ) as r:
+                if r.status_code in _REDIRECTS and r.headers.get("location"):
+                    url = str(r.url.join(r.headers["location"]))
+                    continue
+                if r.status_code == 429:
+                    raise WebFetchUnavailable("local fetch rate-limited (HTTP 429)")
+                if r.status_code >= 500:
+                    raise WebFetchUnavailable(f"local fetch server error (HTTP {r.status_code})")
+                if r.status_code in (401, 403):
+                    raise WebFetchProviderError(f"local fetch forbidden (HTTP {r.status_code})")
+                if r.status_code >= 400:
+                    raise WebFetchProviderError(f"local fetch unexpected status {r.status_code}")
+                raw, _ = await read_capped(r, self._raw_byte_cap)
+                ct = r.headers.get("content-type", "").split(";")[0].strip().lower()
+                return raw, ct, str(r.url), r.status_code
+        raise WebFetchProviderError(f"local fetch: too many redirects (more than {_MAX_REDIRECTS})")
 
     def _extract_html(
         self, raw: bytes, ct: str, final_url: str, status: int,
