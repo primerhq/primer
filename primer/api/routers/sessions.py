@@ -1183,10 +1183,27 @@ def _dedupe_legacy_user_input(
 
 
 # A workspace outage is logged ONCE with its traceback, not once per read: the console polls these routes every couple of seconds, so a
-# per-read traceback is a traceback every 2 s for as long as the outage lasts. Per workspace; a read that succeeds ends the outage (the
-# next one logs its own traceback), and a long outage repeats it every _OUTAGE_LOG_WINDOW_S.
+# per-read traceback is a traceback every 2 s for as long as the outage lasts. One outage is one (workspace, file): a poll cycle reads
+# several files of the same workspace, and a file that is simply absent must not end the outage of the one that is failing. A read of
+# that file that is answered (it returns, or it is not there) ends its outage (the next failure logs its own traceback), and a long
+# outage repeats the traceback every _OUTAGE_LOG_WINDOW_S (300 s).
 _OUTAGE_LOG_WINDOW_S = 300.0
-_outage_logged_at: dict[str, float] = {}
+_outage_logged_at: dict[tuple[str, str], float] = {}
+
+
+def _now() -> float:
+    """The outage log's clock: a module function so a test moves it without patching ``time.monotonic`` for everything else."""
+    return time.monotonic()
+
+
+@cache
+def _runtime_client_error() -> "type[BaseException] | None":
+    """The runtime client's own error class, or ``None`` when its extras are not installed (then no runtime can be unreachable)."""
+    try:
+        from primer.workspace.runtime.runtime_client import RuntimeError as RuntimeClientError
+    except ImportError:
+        return None
+    return RuntimeClientError
 
 
 @cache
@@ -1194,28 +1211,44 @@ def _outage_errors() -> tuple[type[BaseException], ...]:
     """What a workspace read raises when its runtime does not answer: OS and transport failures (``OSError`` covers connection and
     permission errors), a timeout, and, when the runtime extras are installed, the runtime client's own errors and aiohttp's."""
     types: list[type[BaseException]] = [OSError, TimeoutError]
+    runtime_error = _runtime_client_error()
     try:
         import aiohttp
-        from primer.workspace.runtime.runtime_client import RuntimeError as RuntimeClientError
 
-        types += [aiohttp.ClientError, RuntimeClientError]
-    except ImportError:  # the runtime client's extras are not installed: no runtime can be unreachable
+        types.append(aiohttp.ClientError)
+    except ImportError:
         pass
+    if runtime_error is not None:
+        types.append(runtime_error)
     return tuple(types)
 
 
+# The runtime client's error codes that mean "the runtime did not answer or broke" (EPROTOCOL: the connection or the framing, ETIMEDOUT,
+# EINTERNAL). The others (EACCES, EISDIR, ENOTDIR, EEXIST, EUNSUPPORTED...) are answers the runtime gave to a request it understood and refused.
+_RUNTIME_TRANSPORT_CODES = frozenset({"EPROTOCOL", "ETIMEDOUT", "EINTERNAL"})
+
+
+def _is_an_outage(exc: BaseException) -> bool:
+    """Whether ``exc`` (already one of :func:`_outage_errors`) means the runtime did not answer: any of them, except a runtime error whose
+    code says the runtime answered and refused."""
+    runtime_error = _runtime_client_error()
+    if runtime_error is not None and isinstance(exc, runtime_error):
+        return str(getattr(exc, "code", "")) in _RUNTIME_TRANSPORT_CODES
+    return True
+
+
 def _log_outage(workspace_id: str | None, relative_path: str, exc: BaseException) -> None:
-    key = workspace_id or "?"
-    now = time.monotonic()
+    key = (workspace_id or "?", relative_path)
+    now = _now()
     last = _outage_logged_at.get(key)
     if last is None or now - last >= _OUTAGE_LOG_WINDOW_S:
         _outage_logged_at[key] = now
         logger.warning(
             "workspace %s could not be read for %s (%s): %s",
-            key, relative_path, type(exc).__name__, exc, exc_info=True,
+            key[0], relative_path, type(exc).__name__, exc, exc_info=True,
         )
     else:
-        logger.debug("workspace %s is still unreachable (%s: %s)", key, type(exc).__name__, exc)
+        logger.debug("workspace %s is still unreachable for %s (%s: %s)", key[0], relative_path, type(exc).__name__, exc)
 
 
 async def _read_log_bytes(
@@ -1234,7 +1267,7 @@ async def _read_log_bytes(
     outage): it is logged (once per outage, :func:`_log_outage`) and raised as :class:`WorkspaceUnreachableError` (a typed 503).
     Anything else is a bug and propagates as one.
     """
-    key = workspace_id or "?"
+    key = (workspace_id or "?", relative_path)
     try:
         data = await workspace.read_file(relative_path)
     except NotFoundError:
@@ -1243,6 +1276,8 @@ async def _read_log_bytes(
     except PrimerError:
         raise
     except _outage_errors() as exc:
+        if not _is_an_outage(exc):
+            raise                              # the runtime answered: a request it understood and refused
         _log_outage(workspace_id, relative_path, exc)
         what = f"the log of session {session_id}" if session_id else "this log"
         where = f"Workspace {workspace_id!r}" if workspace_id else "The workspace"
