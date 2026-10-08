@@ -17,6 +17,7 @@ What this does NOT check: that a real model follows the prompts (the agents are 
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -115,6 +116,10 @@ def test_a_router_on_a_node_without_a_response_format_and_an_unbounded_cycle_are
 # ---- the research cookbook's graph, run ---------------------------------------------------------------------------------------
 
 
+_RUNAWAY_CALLS = 30
+_RUN_TIMEOUT_S = 30
+
+
 class _Scripted:
     """One agent's model: answers with its next scripted reply (the last one repeats) and records every call."""
 
@@ -126,6 +131,9 @@ class _Scripted:
         return ["m"]
 
     def stream(self, *, model: str, messages: list[Message], **kwargs: Any):
+        # A page that loses its max_iterations would loop forever on an always-failing verdict: fail loudly instead of hanging the lane.
+        if len(self.calls) >= _RUNAWAY_CALLS:
+            raise AssertionError(f"more than {_RUNAWAY_CALLS} calls to one agent: the graph is looping without a bound")
         reply = self._replies[min(len(self.calls), len(self._replies) - 1)]
         self.calls.append({"messages": list(messages), **kwargs})
         return self._events(reply)
@@ -160,6 +168,7 @@ async def _run(
     graph_input: Any = None,
     max_iterations: int | None = None,
     land_on_writer: bool = True,
+    unbounded: bool = False,
 ):
     """Run the cookbook graph with one scripted model per agent; return (thread, per-agent models, the order agents were called in).
 
@@ -169,6 +178,8 @@ async def _run(
         graph = graph.model_copy(update={"max_iterations": max_iterations})
     if not land_on_writer:
         graph = graph.model_copy(update={"on_max_iterations": None})
+    if unbounded:
+        graph = graph.model_copy(update={"max_iterations": None, "on_max_iterations": None})
     models = {agent_id: _Scripted(script) for agent_id, script in replies.items()}
     order: list[str] = []
 
@@ -189,7 +200,8 @@ async def _run(
         graph=graph, agent_resolver=agent_resolver, llm_resolver=llm_resolver,
         thread_storage=threads, message_storage=messages, graph_thread_id=thread.id,
     )
-    _ = [event async for event in executor.invoke({"question": question} if graph_input is None else graph_input)]
+    async with asyncio.timeout(_RUN_TIMEOUT_S):  # the body is bounded too: a run that never ends fails here, it does not hang
+        _ = [event async for event in executor.invoke({"question": question} if graph_input is None else graph_input)]
     return await threads.get(thread.id), models, order
 
 
@@ -319,3 +331,17 @@ async def test_a_graph_input_without_a_question_fails_the_run_before_any_agent_a
 
     assert thread.ended_reason == "failed", (thread.ended_reason, thread.ended_detail)
     assert not models["researcher"].calls
+
+
+@pytest.mark.asyncio
+async def test_a_loop_that_loses_its_bound_is_stopped_by_the_test_not_left_to_hang(fake_storage_provider) -> None:
+    """The page's graph with its cap removed would loop forever on an always-failing verdict. The scripted agents refuse to be called without end, so a
+    page that loses max_iterations fails these tests quickly instead of hanging the lane."""
+    thread, models, _ = await _run(
+        fake_storage_provider,
+        {"researcher": [A], "fact-checker": ["bad"], "verdict": [verdict([], [A])], "writer": ["# Report"]},
+        unbounded=True,
+    )
+
+    assert thread.ended_reason == "failed", (thread.ended_reason, thread.ended_detail)
+    assert len(models["researcher"].calls) == _RUNAWAY_CALLS
