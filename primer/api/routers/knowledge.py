@@ -126,12 +126,17 @@ class _CollectionSearchBody(BaseModel):
 # ---- Collection router -----------------------------------------------------
 
 
+def _system_flag_refusal(exc: EntityCheckError) -> HTTPException:
+    """The 403 for a client write to ``system``: the plain message as the problem's detail and the stable code in its extensions."""
+    return HTTPException(status_code=403, detail={"error": exc.code, "message": exc.message})
+
+
 async def _collection_on_pre_create(entity: Collection, request: Request) -> None:
     """Refuse a create that sets the ``system`` flag (403): the platform writes system collections to storage, not through here."""
     try:
         check_collection_system_flag(entity)
     except EntityCheckError as exc:
-        raise HTTPException(status_code=403, detail=exc.message) from exc
+        raise _system_flag_refusal(exc) from exc
 
 
 async def _collection_on_pre_update(entity: Collection, existing: Collection, request: Request) -> None:
@@ -139,7 +144,7 @@ async def _collection_on_pre_update(entity: Collection, existing: Collection, re
     try:
         check_collection_system_flag(entity, existing)
     except EntityCheckError as exc:
-        raise HTTPException(status_code=403, detail=exc.message) from exc
+        raise _system_flag_refusal(exc) from exc
 
 
 async def _collection_on_pre_delete(existing: Collection, request: Request) -> None:
