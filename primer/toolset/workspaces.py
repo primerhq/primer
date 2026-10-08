@@ -125,10 +125,22 @@ def _err_from_primer(exc: PrimerError, *, error_type: str) -> ToolCallResult:
 
 
 def _caller_is_admin(ctx: ToolContext | None) -> bool:
-    """The run's ``initiated_by`` under the floor's own predicate (an admin,
-    or the internal ``system`` / ``trigger`` actors). No ToolContext (the
-    MCP endpoint dispatches without one) means no known role: not admin."""
-    return ctx is not None and _role_allows(ctx.initiated_by, "admin")
+    """Whether the caller of this tool call is an admin: the ONE rule for every admin check in this toolset (the reserved ``.state`` /
+    ``.tmp`` reads of A-22 and the admin-only template fields).
+
+    A call dispatched with a ToolContext (an agent run, a task) is judged by that run's ``initiated_by`` and by nothing else: a context
+    that carries no initiator is an unknown caller, NOT the request's, so a task spawned from an MCP request does not inherit that
+    request's actor. A call dispatched with NO ToolContext (the MCP endpoint) is judged by the request's actor
+    (``mcp.server.current_actor``). With neither the caller is unknown and the answer is no (fail closed). The floor is ``_role_allows``,
+    the tool role floor's own predicate: an admin passes, the internal ``system`` actor always passes, and since A-20 a ``trigger``-typed
+    actor is ranked by its role like any other (it used to be waved through).
+    """
+    if ctx is not None:
+        actor: Any = ctx.initiated_by
+    else:
+        from primer.mcp.server import current_actor
+        actor = current_actor.get()
+    return _role_allows(actor, "admin")
 
 
 def _refuse_reserved_read(
@@ -148,22 +160,9 @@ def _refuse_reserved_read(
     )
 
 
-def _tool_caller_is_admin(ctx: ToolContext | None) -> bool:
-    """Whether the caller of this tool call is an admin (the same rule as the tool role floor, ``_role_allows``).
-
-    An agent run carries its invoker on the tool context; an MCP call carries it on the request's actor. With neither
-    the caller is unknown and the answer is no (fail closed).
-    """
-    actor: Any = ctx.initiated_by if ctx is not None else None
-    if actor is None:
-        from primer.mcp.server import current_actor
-        actor = current_actor.get()
-    return _role_allows(actor, "admin")
-
-
 def _refuse_non_admin(fields: list[str], ctx: ToolContext | None) -> ToolCallResult | None:
     """The REST rule on admin-only template fields (security review 2026-10-08): refuse a non-admin that writes them."""
-    if fields and not _tool_caller_is_admin(ctx):
+    if fields and not _caller_is_admin(ctx):
         return _err(refusal_message(fields), error_type="forbidden")
     return None
 
@@ -173,7 +172,7 @@ def _template_delete_refusal(
 ) -> ToolCallResult | None:
     """Deleting a template that holds admin-only settings is admin-only too, as on REST."""
     held = admin_only_settings_held(existing)
-    if held and not _tool_caller_is_admin(ctx):
+    if held and not _caller_is_admin(ctx):
         return _err(held_refusal_message(held, "delete"), error_type="forbidden")
     return None
 
@@ -186,7 +185,7 @@ def _template_refusal(
     A stored template that HOLDS an admin-only value is not user-editable at all, as on REST.
     """
     held = admin_only_settings_held(existing)
-    if held and not _tool_caller_is_admin(ctx):
+    if held and not _caller_is_admin(ctx):
         return _err(held_refusal_message(held), error_type="forbidden")
     refusal = _refuse_non_admin(admin_only_template_changes(entity, existing), ctx)
     if refusal is not None:
