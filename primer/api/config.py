@@ -235,6 +235,16 @@ class AppConfig(BaseSettings):
             "Where workspaces on a local provider may be used; see LocalWorkspacesConfig."
         ),
     )
+    workspace_allow_private_url_sources: bool = Field(
+        default=False,
+        description=(
+            "Let a workspace template's kind=url file source fetch from private, loopback, link-local and other "
+            "non-global addresses (refused by default: the platform fetches the URL, so any template author could "
+            "otherwise read an internal endpoint such as the cloud metadata service). Turn it on only when every "
+            "template author is trusted with the platform's network position, e.g. a deployment seeding workspaces "
+            "from an internal file server, or the e2e suite. Env: PRIMER_WORKSPACE_ALLOW_PRIVATE_URL_SOURCES."
+        ),
+    )
 
     limits: RequestLimitsConfig = Field(
         default_factory=RequestLimitsConfig,
