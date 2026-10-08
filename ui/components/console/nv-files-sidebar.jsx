@@ -81,12 +81,20 @@ function NV_FileContextMenu(props) {
   );
 }
 
+// How often the Files tree re-reads the workspace (console review C-038): fast while one of its sessions is running (an agent writes
+// files), slow otherwise. The session list it asks is the rail's own (same cache key, no extra request).
+function NV_useFilesPollMs(wid) {
+  var sessions = window.NV_useSessionList();
+  return window.NV_anySessionRunning(sessions.data, wid) ? 5000 : 15000;
+}
+
 function NV_FilesSubtree(props) {
   var con = NV_useConsole();
+  var filesPollMs = NV_useFilesPollMs(con.wid);
   var tree = window.primerApi.useResource(
     SH_api.keys.tree(con.wid, props.path),
     function (signal) { return SH_api.filesTree(con.wid, props.path, signal); },
-    { pollMs: 5000, deps: [con.wid, props.path] }
+    { pollMs: filesPollMs, deps: [con.wid, props.path] }
   );
   var items = (tree.data && tree.data.items) || [];
   return (
@@ -100,10 +108,11 @@ function NV_FilesSubtree(props) {
 
 function NV_FilesSidebar() {
   var con = NV_useConsole();
+  var filesPollMs = NV_useFilesPollMs(con.wid);
   var tree = window.primerApi.useResource(
     SH_api.keys.tree(con.wid, "."),
     function (signal) { return SH_api.filesTree(con.wid, ".", signal); },
-    { pollMs: 5000, deps: [con.wid] }
+    { pollMs: filesPollMs, deps: [con.wid] }
   );
   var commits = window.primerApi.useResource(
     SH_api.keys.log(con.wid),

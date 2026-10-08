@@ -30,6 +30,28 @@ function NV_historyProblem(error) {
 // user's message before the row flips to claimable) never loses its strip to one stale read.
 var NV_STALE_STATUS_MS = 4000;
 
+// How often an idle session document re-reads what the live tap already delivers (console review C-038). One open session that was doing
+// nothing made about 110 requests a minute: the row every 2 s, the pending yields every 5 s, the external-tool banner every 5 s, and the
+// session list, the Files tree and the workspace list every 5 to 15 s. With the tap connected and nothing in flight the poll is only the
+// catch-up leg, so it slows to this; anything running, pending or unknown keeps the fast cadence.
+var NV_CALM_POLL_MS = 15000;
+// How long a session must have been calm, continuously, before the slow cadence starts. A turn's last frame can arrive before the row
+// shows where the session came to rest (the park is written after the terminal event), so the first seconds after activity are read
+// fast; without this a stale "waiting" chip stayed up for a whole slow interval.
+var NV_CALM_AFTER_MS = 5000;
+
+// True when an open session document can poll slowly: the live tap is connected (it delivers every change, and a frame, a Stop or a send
+// brings the fast cadence back at once), no live status is showing, no send or Stop is waiting for the row, and the row itself says it is
+// at rest. A row that does not say so (no turn_status, not loaded yet) says nothing, so the answer is no.
+function NV_sessionIsCalm(o) {
+  if (!o.tapLive || o.live || o.optimistic || o.stopPending) return false;
+  var row = o.row;
+  if (!row || row.turn_status !== "idle") return false;
+  if (row.status === "running") return false;
+  if (row.interrupt_requested || row.pause_requested || row.cancel_requested) return false;
+  return true;
+}
+
 // The session row is the truth about whether a turn is executing; the store's live status is only what the tap last said, and
 // only a terminal frame clears it. True when the row says no turn is running (it is ended, or served turn_status "idle")
 // while a live status is showing. The "sending" leg of a send in flight is never stale: a send into an ended session reopens
@@ -1981,12 +2003,26 @@ function NV_SessionDoc(props) {
   // the doc the moment the live signal cleared the optimistic flag.
   var live = SH_statusFromTap(tap.events, sid, Date.now());
   var pollStopped = terminalRef.current && !optimistic && !live;
+  // Calm (C-038): slow polling, only once the session has been at rest for NV_CALM_AFTER_MS (see below the resources); until then and
+  // whenever anything stirs, the fast cadence.
+  var calmState = React.useState(false);
+  var calm = calmState[0];
+  var setCalm = calmState[1];
   var detail = window.primerApi.useResource(
     SH_api.keys.session(sid),
     function (signal) { return SH_api.session(sid, signal); },
-    { pollMs: pollStopped ? 0 : 2000, deps: [sid], ignoreIdle: true }
+    { pollMs: pollStopped ? 0 : (calm ? NV_CALM_POLL_MS : 2000), deps: [sid], ignoreIdle: true }
   );
   terminalRef.current = !!(detail.data && NV_sessionIsOver(detail.data));
+  var atRest = NV_sessionIsCalm({
+    tapLive: !!(gatesSnap && gatesSnap.connState === "live"), live: !!live, optimistic: !!optimistic,
+    stopPending: stopPending, row: detail.data,
+  });
+  React.useEffect(function () {
+    if (!atRest) { setCalm(false); return undefined; }
+    var timer = setTimeout(function () { setCalm(true); }, NV_CALM_AFTER_MS);
+    return function () { clearTimeout(timer); };
+  }, [atRest]);
   // C3 poll demotion: once the tap is live the REST history poll is the
   // slow catch-up leg, not the live source; the store gets frames from
   // the hub. Keep the detail poll at 2000ms (turn_status / parked rows).
@@ -2001,7 +2037,7 @@ function NV_SessionDoc(props) {
     function (signal) {
       return SH_api.sessionPendingYields(con.wid, sid, signal);
     },
-    { pollMs: 5000, deps: [con.wid, sid] }
+    { pollMs: calm ? NV_CALM_POLL_MS : 5000, deps: [con.wid, sid] }
   );
   // uiv2 Wave 3 (resolved-card renderer): this session's own resolved
   // approval history - a park's pending yield disappears the moment a
@@ -2024,6 +2060,8 @@ function NV_SessionDoc(props) {
         && (ev["class"] === "yielded"
             || ev["class"] === "resumed"
             || ev["class"] === "done")) {
+      // The row too: with the poll slowed (C-038) a frame must not wait for the next one.
+      detail.refetch();
       gates.refetch();
       // A decide fires "resumed" the same tick the pending yield
       // clears - refetch here too, or the resolved card wouldn't
@@ -2804,6 +2842,7 @@ function NV_SessionDoc(props) {
         : null}
       {typeof window.ExternalPendingBanner === "function" ? (
         <window.ExternalPendingBanner sessionId={sid}
+          pollMs={calm ? NV_CALM_POLL_MS : 5000}
           pushToast={window.primerApi.toastPush} />
       ) : null}
       <NV_SessionHeader sid={sid} session={session} usage={usage}

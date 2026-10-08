@@ -1,9 +1,11 @@
 """Journey: an open, idle session document asks the server for little (console review 2026-10-08, C-038).
 
 The review's probe counted 82 requests in 45 s (about 110 a minute) from one open session that was doing nothing. With the live tap
-connected and nothing in flight, the session row, the pending yields, the external-tool banner, the session list and the Files tree now
-poll at 15 s instead of 2 to 5 s, and the workspace list is one poll instead of two. The window below is 30 s after the document settles:
-the old behaviour makes about 55 requests in it, the new one about 25.
+connected and nothing in flight, the session row, the pending yields, the external-tool banner and the Files tree now poll at 15 s
+instead of 2 to 5 s, and the workspace list is one poll instead of two (the session list stays at 5 s: a session created elsewhere emits no
+tap frame). The slow cadence starts once the tap has delivered its
+first frame (about 15 s after load) and the session has been at rest for 5 s, so the window opens 22 s after the document settles and runs
+30 s: the old behaviour makes about 55 requests in it, the new one about 25 to 30.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from playwright.sync_api import Page, expect
 from tests.ui_e2e._shell_helpers import open_doc
 
 _WINDOW_S = 30
-_LIMIT = 40
+_LIMIT = 35
 
 
 @pytest.mark.timeout(150)
@@ -33,7 +35,7 @@ def test_an_idle_session_document_stays_quiet(page: Page, base_url: str, console
     page.on("request", lambda req: requests.append((time.time(), req.url.split("?")[0])) if "/v1/" in req.url else None)
     open_doc(page, console_url, wid, "session", sid)
     expect(page.get_by_test_id(f"nv-session-doc:{sid}")).to_be_visible(timeout=20_000)
-    page.wait_for_timeout(8_000)             # the first load and the tap's connect settle
+    page.wait_for_timeout(22_000)            # the tap's first frame and the 5 s of rest before the slow cadence starts
 
     mark = len(requests)
     page.wait_for_timeout(_WINDOW_S * 1_000)
@@ -43,4 +45,5 @@ def test_an_idle_session_document_stays_quiet(page: Page, base_url: str, console
         key = path.rsplit("/v1/", 1)[-1]
         by_path[key] = by_path.get(key, 0) + 1
     busiest = sorted(by_path.items(), key=lambda kv: -kv[1])[:6]
+    print(f"idle session document: {len(window)} requests in {_WINDOW_S}s; busiest: {busiest}")
     assert len(window) <= _LIMIT, f"{len(window)} requests in {_WINDOW_S}s from one idle session document; busiest: {busiest}"

@@ -198,11 +198,7 @@ function NV_Shell() {
   // resolveSessionMeta for NV_TabGroups' session tabs: reuses the rail's
   // OWN cache key (nv-rail.jsx) - use-resource.js keys its cache by
   // string across components, so this costs one fetch, not two.
-  var railSessions = window.primerApi.useResource(
-    "nv-rail-all-sessions",
-    function (signal) { return SH_api.allSessions(signal); },
-    { pollMs: 5000, deps: [] }
-  );
+  var railSessions = window.NV_useSessionList();
   // F1 (2026-08-29 UI review): generalized from the wid-only seam this
   // used to be - session tabs also want the name (label, instead of the
   // bare id) and binding (NV_identity's glyph/color), and both already
