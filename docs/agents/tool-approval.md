@@ -95,13 +95,17 @@ A policy itself has no lifecycle beyond `enabled / disabled`. The
   field; null = no timeout), the worker injects a
   `YieldTimeout`, the resume hook produces a synthetic rejection,
   and the LLM continues.
-- **superseded (rejected).** If a new user turn arrives at the session
-  while an approval is pending, the pending approval is auto-rejected
-  with reason "superseded by new user input" - the user's next
-  message takes priority over the stalled approval.
+- **not superseded by a new message.** A message sent to a session
+  that is parked on an approval does NOT decide it: the session counts
+  as busy, so the message is queued as the next turn and the approval
+  stays pending until it is decided or times out. (Only a pending
+  external-tool call is cancelled by a new message, with reason
+  "superseded by new user message".)
 - **cancelled (rejected).** Operator explicitly cancels the pending
   approval from the console. Same effect as rejected but with reason
-  "cancelled by operator".
+  "cancelled by operator". Cancelling the yield is deciding the gate,
+  so only a user the gate's approvers admit (or an admin) can do it;
+  see "Who may decide a gate" under Gotchas.
 
 ## Pending-approval HTTP endpoints
 
@@ -212,17 +216,16 @@ but require human review for any other host.
   always decide), and a Rego or judge verdict can route one call to others. The effective spec is recorded when the call parks,
   for every park (the agent loop and `call_tool` alike), and EVERY way of deciding it is checked against it: `POST
   .../tool_approval/respond`, `POST .../yields/{tool_call_id}/cancel` on an approval gate (a cancel is a rejection) and a reply
-  from a channel. A user the spec does not admit gets `403 approver_mismatch`. **A channel reply is refused on a gate restricted
+  from a channel. A user the spec does not admit gets `403 approver_mismatch`. The spec checked is the stamp of the specific gate the `tool_call_id` names, also on a graph park (where the session's first gate is not necessarily the one named); a cancel whose gate cannot be found is admin-only. **A session owner who is not an approver can therefore no longer cancel their own approval yield** (cancelling the whole session still works for them). **A channel reply is refused on a gate restricted
   to specific approvers**: a Slack, Discord or Telegram user is not an identified primer user, so such a gate is decided in the
   console by an approver or an admin; a gate with no restriction can still be decided from the channel. A spec that cannot be
   read is admin-only, and so is a `call_tool` gate that was parked before approvers were recorded. When several enabled policies
   exist for one tool, the gate trips unconditionally and only an admin decides it until the extra row is deleted.
-- **A new user turn supersedes a pending approval.** If a session is
-  parked on approval and the user sends another message, the approval
-  is auto-rejected with reason "superseded by new user input". The
-  rationale: the user's later message implicitly redirects intent;
-  honouring the old approval after the user already moved on creates
-  surprising history rewriting.
+- **A new user message does not supersede a pending approval.** If a
+  session is parked on approval and the user sends another message,
+  the message is queued behind the open turn and the approval stays
+  pending (no auto-rejection). To abandon the gated call, cancel its
+  yield (an approver or an admin) or cancel the session.
 - **MCP exposure silently hides approval-gated tools.** Adding a
   `required` policy to a tool that's in `mcp_exposure.allowed_tools`
   removes it from MCP `tools/list` until the policy is dropped.
