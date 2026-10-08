@@ -195,23 +195,38 @@ function ADM_AdminUsersPage() {
 // account out with an unrecoverable client-generated password).
 // Reset-with-a-typed-password stays in the Edit dialog, unchanged.
 // What "Disable" asks before it fires (admin review ADM-26): null for an
-// already-disabled account, because Enable only restores access. A disabled
-// account is treated as unauthenticated from its very next request on every
-// path (primer/api/middleware/auth.py: cookie, API key and MCP alike), so the
-// prompt says when it takes effect, that an API key of theirs stops working
-// too, and that nothing is deleted. It does not claim the session is
-// destroyed: the middleware refuses the requests, it does not end the session.
+// already-disabled account, because Enable only restores access. The auth
+// middleware (primer/api/middleware/auth.py) treats a disabled account as
+// unauthenticated, on the cookie path, the API-key path and over MCP alike,
+// but it checks ONCE when a request or a connection opens. So the prompt
+// says that new requests and connections are refused from the very next one
+// (an API key of theirs included), that a connection already open, such as a
+// terminal, is NOT cut off, and that nothing is deleted. It does not claim the
+// session is destroyed: the middleware refuses the requests, it does not end
+// the session, so the existing sign-in works again after Enable.
 // Pure: tests/ui/test_admin_users_disable_confirm.py runs it in MiniRacer.
 function ADM_toggleConfirm(user) {
   if (user.disabled) return null;
   return {
     title: "Disable " + user.username + "?",
-    message: "Every request this account makes is refused from its very "
-      + "next request, including with an API key, until you enable it "
-      + "again. Nothing is deleted: Enable restores access.",
+    message: "New requests and connections from this account are refused "
+      + "from its very next request, including with an API key; a "
+      + "connection already open, such as a terminal, is not cut off. "
+      + "Nothing is deleted: Enable restores access, and their existing "
+      + "sign-in works again.",
     confirmLabel: "Disable",
     danger: true,
   };
+}
+
+// What a click on a row's Disable/Enable does: nothing while a prompt is
+// already open (a double-click must not stack a second dialog; the row is not
+// busy until the answer is yes), otherwise ask with the prompt above, or send
+// straight away when there is none. Pure, run in MiniRacer by the same test.
+function ADM_toggleStep(user, asking) {
+  if (asking) return { kind: "ignore" };
+  const prompt = ADM_toggleConfirm(user);
+  return prompt ? { kind: "ask", prompt: prompt } : { kind: "send" };
 }
 
 function ADM_UserRow({ user, onEdit, onDelete, onKeys, onChanged }) {
@@ -219,10 +234,22 @@ function ADM_UserRow({ user, onEdit, onDelete, onKeys, onChanged }) {
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState(null);
   const [rotated, setRotated] = React.useState(null); // plaintext password | null
+  // A ref, not state: the second click of a double-click must see it before React re-renders.
+  const asking = React.useRef(false);
 
   const toggleDisabled = async () => {
-    const prompt = ADM_toggleConfirm(user);
-    if (prompt && !(await confirmDialog(prompt))) return;
+    const step = ADM_toggleStep(user, asking.current);
+    if (step.kind === "ignore") return;
+    if (step.kind === "ask") {
+      asking.current = true;
+      let confirmed = false;
+      try {
+        confirmed = await confirmDialog(step.prompt);
+      } finally {
+        asking.current = false;
+      }
+      if (!confirmed) return;
+    }
     setBusy(true);
     setError(null);
     try {
