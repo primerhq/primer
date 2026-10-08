@@ -37,7 +37,7 @@ Limits, stated on purpose:
   waiting. An attacker who locks 64 keys of their own and then fills the table (``max_entries`` requests, one counted attempt each) can
   steer eviction onto the oldest waiting key, which may be the one it wants released: that key loses its wait and its count and gets its
   free attempts back. The wait it loses is usually short (a key's wait grows only by attempts made after the previous wait elapsed), but
-  this is a hole in "a locked key stays locked" and is NOT closed here (ticket 01a118e0).
+  this is a hole in "a locked key stays locked" and is NOT closed here (ticket 01a11a82-af8b).
 """
 
 from __future__ import annotations
@@ -129,7 +129,8 @@ class LoginThrottle:
         True once per wait, then False until a counted attempt sets the next one, so a caller that logs a refusal logs one line per wait
         and not one per request: a client hammering a locked key costs the log nothing more than the wait already set. Call it right
         after a :meth:`reserve` that returned a wait (it never awaits, so nothing can interleave); a key that is not waiting is not
-        announced.
+        announced. It reads the clock again to tell "still waiting" from "expired", so a wait that expires between the two calls (two
+        clock reads, no await between them, so only a clock tick apart) is not announced either; that costs one missing log line.
         """
         entry = self._entries.get((username[:_USERNAME_KEY_LIMIT], client))
         if entry is None or entry.announced or entry.blocked_until <= self._clock():
