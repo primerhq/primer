@@ -5,8 +5,10 @@ and a failed release does not bump ``turn_no`` (``SessionClaimAdapter.on_release
 (a message to the failed session reopens it) writes its envelope under the SAME ``turn_no``: one group, one run, whose last event is the second
 turn's ``completed``. The failed turn's trace then read "completed", and every later window was served another turn's envelope.
 
-A ``turn_no`` that has already ended (completed, failed, cancelled, yielded) and then restarts (``started``, or the ``resumed`` that precedes it)
-is a new envelope. The last test drives the production writers: a turn that fails, its release, a message that reopens the session, the next turn.
+A new envelope opens at an own event (no ``node_id``) that is a ``resumed``, or a ``started`` that does not directly follow an own ``resumed``
+(a resume writes ``resumed`` and then ``started`` for ONE envelope; a ``started`` after a turn that never wrote its end entry is a new turn). A run of
+envelopes is one logical turn when a group's last own END event is ``yielded`` and the next group carries a later ``turn_no``. The last two tests drive
+the production writers: turns that fail and succeed, each released as the pool releases it, each after the first started by a message to the session.
 """
 
 from __future__ import annotations
@@ -38,6 +40,13 @@ def _ev(seq, kind, turn_no, **extra):
 
 def _kinds(group):
     return [e["kind"] for e in group]
+
+
+def _times(group):
+    """What the timeline reports for an envelope: its first `started` and its last end event (a `phase` can follow it)."""
+    started = next(e["ts"] for e in group if e["kind"] == "started")
+    ended = next(e["ts"] for e in reversed(group) if e["kind"] in {"completed", "failed", "cancelled"})
+    return started, ended
 
 
 def test_a_started_after_a_failed_on_the_same_turn_no_is_a_new_envelope():
@@ -103,8 +112,22 @@ def test_a_park_and_its_continuation_under_the_next_turn_no_are_one_run_even_wit
     assert _kinds(envelopes_for_window(groups, 1)[0]) == ["started", "completed"]
 
 
+def test_a_park_and_its_continuation_without_a_resumed_are_one_run():
+    """The production shape of a continuation: `started` alone under a later `turn_no` (`resumed` is written only when `parked_at` is set)."""
+    groups = turn_envelopes([
+        _ev(1, "started", 3), _ev(2, "phase", 3), _ev(3, "yielded", 3, yield_kind="ask_user", event_key="k"), _ev(4, "phase", 3),
+        _ev(5, "started", 4), _ev(6, "phase", 4), _ev(7, "completed", 4),
+        _ev(8, "started", 5), _ev(9, "completed", 5),
+    ])
+
+    run0 = envelopes_for_window(groups, 0)
+    assert [_kinds(g) for g in run0] == [["started", "phase", "yielded", "phase"], ["started", "phase", "completed"]]
+    assert _kinds(envelopes_for_window(groups, 1)[0]) == ["started", "completed"]
+
+
 def test_a_yielded_then_resumed_on_one_turn_no_is_two_runs():
-    """No production path writes it except `abandon_session_gate`, which continues the session as a NEW turn: two turns, two runs."""
+    """`abandon_session_gate` clears the park but leaves `parked_at` set, and writes no turn-log event and no release: the next turn writes
+    `resumed` (then `started`) on the `turn_no` the park never bumped. That continues the session as a NEW turn: two turns, two runs."""
     groups = turn_envelopes([
         _ev(1, "started", 3), _ev(2, "yielded", 3, yield_kind="ask_user", event_key="k"),
         _ev(3, "resumed", 3, wait_ms=5, resume_kind="event_fired"), _ev(4, "started", 3), _ev(5, "completed", 3),
@@ -259,11 +282,17 @@ async def test_interim_mapping_after_a_failed_turn_fail_retry_fail(fake_storage_
     """
     message_lines, turn_log_lines, _ = await _play(fake_storage_provider, fake_event_bus, ["fail", "ok", "fail"])
 
-    statuses = []
+    timelines = []
     for n in range(8):
         timeline = build_turn_timeline(message_lines=message_lines, turn_log_lines=turn_log_lines, turn_no=n)
         if timeline is None:
             break
-        statuses.append(timeline["status"])
+        timelines.append(timeline)
 
-    assert statuses == ["failed", "completed", "failed", "failed", "failed"], statuses
+    assert [t["status"] for t in timelines] == ["failed", "completed", "failed", "failed", "failed"]
+    # Window 2 is B's turn, served C's envelope: it carries C's times, not B's.
+    envelopes = turn_envelopes(turn_log_lines)
+    assert len(envelopes) == 3, "premise: one envelope per turn"
+    b_times, c_times = _times(envelopes[1]), _times(envelopes[2])
+    assert c_times != b_times, "premise: the two envelopes have distinct times"
+    assert (timelines[2]["started_at"], timelines[2]["ended_at"]) == c_times

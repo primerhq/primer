@@ -36,17 +36,18 @@ _YIELDED_RECORD = SessionMessageKind.YIELDED.value
 # turn-log envelope event, not a messages.jsonl row.
 _YIELDED = TurnLogKind.YIELDED.value
 
-# The turn-log kinds that end a turn (the session's own run, not a graph node's), and the ones that open one: a resume writes ``resumed`` and then
-# ``started``. An ENVELOPE ends at a terminal or at the ``yielded`` of a park.
+# The turn-log kinds that end a turn (the session's own run, not a graph node's), and the ones that open an envelope: a resume writes ``resumed`` and
+# then ``started`` for ONE envelope, a fresh run writes ``started`` alone. ``turn_envelopes`` opens a new envelope at an own event whose kind is in
+# _RESUME_EVENT_KINDS, except a ``started`` that directly follows an own ``resumed``; ``_waits`` dates a resume by the first of them. An ENVELOPE ends
+# at a terminal or at the ``yielded`` of a park.
+_RESUMED = TurnLogKind.RESUMED.value
+_STARTED = TurnLogKind.STARTED.value
 _TURN_LOG_TERMINALS = frozenset({
     TurnLogKind.COMPLETED.value,
     TurnLogKind.FAILED.value,
     TurnLogKind.CANCELLED.value,
 })
-_RESUME_EVENT_KINDS = frozenset({
-    TurnLogKind.RESUMED.value,
-    TurnLogKind.STARTED.value,
-})
+_RESUME_EVENT_KINDS = frozenset({_RESUMED, _STARTED})
 _ENVELOPE_ENDS = _TURN_LOG_TERMINALS | {_YIELDED}
 
 
@@ -133,10 +134,15 @@ def turn_envelopes(turn_log_lines: list[str]) -> list[list[dict[str, Any]]]:
     ``completed``, so the failed turn's trace read "completed" and every later
     window was served another turn's envelope (ticket 01a11ce4). A new
     envelope opens at an own event (no ``node_id``: a graph node's events never
-    split anything) that is a ``resumed``, or a ``started`` that does not
-    directly follow an own ``resumed`` (a resume writes ``resumed`` and then
-    ``started`` for ONE envelope). Whether two envelopes are ONE turn is
-    :func:`envelopes_for_window`'s question.
+    split anything) whose kind is in ``_RESUME_EVENT_KINDS``, except a
+    ``started`` that directly follows an own ``resumed`` (a resume writes
+    ``resumed`` and then ``started`` for ONE envelope). Whether two envelopes
+    are ONE turn is :func:`envelopes_for_window`'s question.
+
+    The node scoping covers the GROUPING (and :func:`_last_own_end`) only: a
+    group's status, times and waits (:func:`_turn_status`, :func:`_started_at`,
+    :func:`_ended_at`, :func:`_waits`) still read every event in it, a graph
+    node's included.
     """
     by_turn: dict[int, list[dict[str, Any]]] = {}
     for line in turn_log_lines:
@@ -154,15 +160,13 @@ def turn_envelopes(turn_log_lines: list[str]) -> list[list[dict[str, Any]]]:
             continue
         by_turn.setdefault(turn_no, []).append(obj)
     groups: list[list[dict[str, Any]]] = []
-    resumed_kind = TurnLogKind.RESUMED.value
-    started_kind = TurnLogKind.STARTED.value
     for turn_no in sorted(by_turn):
         current: list[dict[str, Any]] = []
         previous_own: str | None = None
         for event in sorted(by_turn[turn_no], key=lambda e: e.get("seq") or 0):
             kind = event.get("kind")
             own = event.get("node_id") is None
-            if own and current and (kind == resumed_kind or (kind == started_kind and previous_own != resumed_kind)):
+            if own and current and kind in _RESUME_EVENT_KINDS and not (kind == _STARTED and previous_own == _RESUMED):
                 groups.append(current)
                 current = []
             current.append(event)
@@ -196,8 +200,11 @@ def envelopes_for_window(
     last END event (``phase`` events follow a ``yielded``, so not simply its
     last event) is ``yielded`` is continued by the next group, which carries a
     later ``turn_no``. A ``yielded`` followed by a ``resumed`` on the SAME
-    ``turn_no`` is not that: the only writer is ``abandon_session_gate``, which
-    continues the session as a new turn, so those are two runs.
+    ``turn_no`` is not that: ``abandon_session_gate`` clears the park but leaves
+    ``parked_at`` set and writes no turn-log event and no release, so the next
+    ``run_one_session_turn`` writes ``resumed`` on the ``turn_no`` the park
+    never bumped. That continues the session as a new turn, so those are two
+    runs.
     """
     runs: list[list[list[dict[str, Any]]]] = []
     current: list[list[dict[str, Any]]] = []
