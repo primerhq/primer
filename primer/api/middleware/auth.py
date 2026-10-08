@@ -20,7 +20,10 @@ through the same scope state, so handlers see a consistent view.
 
 We re-fetch the user every request so a deleted/disabled account can't
 keep using a still-valid cookie or token. The hot-path cost is one
-indexed read per auth path.
+indexed read per auth path. A connection that is already OPEN (a terminal
+WebSocket, a tap or MCP stream) is re-checked at ``auth.revalidate_interval_s``
+and closed when its account stops being valid; see
+:mod:`primer.api.middleware.revalidate`.
 
 The ``last_used_at`` update on bearer auth is fire-and-forget via
 :func:`asyncio.create_task` — best-effort, doesn't block the request.
@@ -162,6 +165,21 @@ class AuthMiddleware:
                     role=user.role,
                     source=session_src or "local",
                 )
+
+        # The user was read once, when this request or WebSocket opened. A connection that outlives ``auth.revalidate_interval_s`` (a terminal
+        # shell, a tap or MCP stream) is re-checked against its account at that interval and ended when the account stops being valid
+        # (security ticket 01a11b97; see :mod:`primer.api.middleware.revalidate`). A request that finishes sooner never has a watcher.
+        interval_s = float(getattr(config.auth, "revalidate_interval_s", 0) or 0)
+        if user is not None and interval_s > 0:
+            from primer.api.middleware.revalidate import AuthSnapshot, run_with_revalidation
+
+            await run_with_revalidation(
+                self.app, scope, receive, send,
+                storage_provider=storage_provider,
+                snapshot=AuthSnapshot.of(user, api_token),
+                interval_s=interval_s,
+            )
+            return
 
         await self.app(scope, receive, send)
 
