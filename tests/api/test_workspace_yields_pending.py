@@ -975,3 +975,122 @@ class TestListPendingAttention:
         assert resp.status_code == 200, resp.text
         item = resp.json()["items"][0]
         assert item["created_at"] == sess.created_at.isoformat()
+
+
+def _approval_state(tcid: str, original_call: dict | None, *, tool_name: str = "_approval") -> dict:
+    meta: dict = {"tool_call_id": tcid}
+    if original_call is not None:
+        meta["original_call"] = original_call
+    return {
+        "tool_call_id": tcid,
+        "yielded": {"tool_name": tool_name, "event_key": f"approval:x:{tcid}", "resume_metadata": meta},
+    }
+
+
+class TestAttentionRowsDescribeTheCall:
+    """The Inbox row says WHAT it is waiting on (console review C-033).
+
+    The mobile Inbox offers an inline Approve; before this the aggregate row carried only the session, the workspace and the kind, so
+    the card could not say which tool it was asking about, and the button approved a call the card did not describe. The row now
+    carries the parked ``tool_call_id`` (so a decision names exactly the call the card showed), a short preview of an approval's
+    tool and decisive arguments, and the question or wait prompt of the other kinds.
+    """
+
+    @staticmethod
+    async def _row(client, sp, sid: str, state: dict) -> dict:
+        wid = await _create_workspace(client)
+        await sp.get_storage(WorkspaceSession).create(
+            _make_session(sid, wid, parked_status="parked", parked_state=state),
+        )
+        resp = await client.get("/v1/yields/pending")
+        assert resp.status_code == 200, resp.text
+        return {i["session_id"]: i for i in resp.json()["items"]}[sid]
+
+    @pytest.mark.asyncio
+    async def test_an_approval_row_names_the_tool_its_call_id_and_the_decisive_arguments(self, client, sp) -> None:
+        call = {"id": "tc-1", "name": "workspaces__write_workspace_file", "arguments": {"content": "x" * 3000, "path": "src/config/webhooks.ts"}}
+        row = await self._row(client, sp, "sess-d-1", _approval_state("tc-1", call))
+        assert row["tool_call_id"] == "tc-1"
+        assert row["approval"]["tool_name"] == "workspaces__write_workspace_file"
+        assert row["approval"]["arguments"] == "path=src/config/webhooks.ts, content=<3000 chars>", (
+            "the target leads and bulky content is counted, not shipped"
+        )
+        assert row["approval"]["truncated"] is True, "something was left out, so the card offers 'show all'"
+
+    @pytest.mark.asyncio
+    async def test_a_short_call_is_shown_whole_and_not_marked_truncated(self, client, sp) -> None:
+        call = {"id": "tc-2", "name": "bash", "arguments": {"command": "ls -la"}}
+        row = await self._row(client, sp, "sess-d-2", _approval_state("tc-2", call))
+        assert row["approval"] == {"tool_name": "bash", "arguments": "command=ls -la", "truncated": False}
+
+    @pytest.mark.asyncio
+    async def test_a_call_with_no_arguments_has_an_empty_preview(self, client, sp) -> None:
+        row = await self._row(client, sp, "sess-d-3", _approval_state("tc-3", {"id": "tc-3", "name": "bash", "arguments": {}}))
+        assert row["approval"] == {"tool_name": "bash", "arguments": "", "truncated": False}
+
+    @pytest.mark.asyncio
+    async def test_an_approval_whose_call_is_unknown_has_no_preview_so_the_card_cannot_offer_a_blind_approve(self, client, sp) -> None:
+        row = await self._row(client, sp, "sess-d-4", _approval_state("tc-4", None))
+        assert row["kind"] == "approval" and row["tool_call_id"] == "tc-4"
+        assert row.get("approval") is None
+
+    @pytest.mark.asyncio
+    async def test_a_question_row_carries_the_question(self, client, sp) -> None:
+        state = _approval_state("tc-5", None, tool_name="ask_user")
+        state["yielded"]["resume_metadata"]["prompt"] = "Which environment should I deploy to?"
+        row = await self._row(client, sp, "sess-d-5", state)
+        assert row["kind"] == "ask" and row["prompt"] == "Which environment should I deploy to?"
+        assert row.get("approval") is None
+
+    @pytest.mark.asyncio
+    async def test_a_long_question_is_cut_with_an_ellipsis(self, client, sp) -> None:
+        state = _approval_state("tc-6", None, tool_name="ask_user")
+        state["yielded"]["resume_metadata"]["prompt"] = "q" * 1000
+        row = await self._row(client, sp, "sess-d-6", state)
+        assert len(row["prompt"]) <= 240 and row["prompt"].endswith("…")
+
+    @pytest.mark.asyncio
+    async def test_a_parked_wait_carries_what_it_is_waiting_for(self, client, sp) -> None:
+        state = _approval_state("tc-7", None, tool_name="watch_files")
+        state["yielded"]["resume_metadata"]["paths"] = ["README.md", "docs/a.md"]
+        row = await self._row(client, sp, "sess-d-7", state)
+        assert row["kind"] == "parked" and row["prompt"] == "README.md, docs/a.md"
+
+
+class TestApprovalPreview:
+    """The preview helper on its own: which arguments lead, how bulky ones are counted, where it cuts."""
+
+    def _preview(self, call):
+        from primer.api.routers.workspaces import _approval_preview
+
+        return _approval_preview(call)
+
+    def test_no_call_or_no_name_is_no_preview(self) -> None:
+        assert self._preview(None) is None
+        assert self._preview({}) is None
+        assert self._preview({"arguments": {"a": 1}}) is None
+
+    def test_lead_keys_come_first_in_a_fixed_order_then_the_rest_alphabetically(self) -> None:
+        got = self._preview({"name": "t", "arguments": {"zeta": "z", "alpha": "a", "command": "c", "path": "p"}})
+        assert got["arguments"] == "path=p, command=c, alpha=a, zeta=z"
+
+    def test_bulky_keys_are_counted_and_listed_last(self) -> None:
+        got = self._preview({"name": "t", "arguments": {"content": "hello", "path": "p"}})
+        assert got["arguments"] == "path=p, content=<5 chars>" and got["truncated"] is True
+
+    def test_a_long_value_is_cut_and_marks_the_preview_truncated(self) -> None:
+        got = self._preview({"name": "t", "arguments": {"command": "x" * 200}})
+        assert got["arguments"] == "command=" + "x" * 79 + "…" and got["truncated"] is True
+
+    def test_a_non_string_value_is_rendered_as_json(self) -> None:
+        got = self._preview({"name": "t", "arguments": {"flags": {"force": True}, "n": 3}})
+        assert got["arguments"] == 'flags={"force": true}, n=3' and got["truncated"] is False
+
+    def test_the_whole_preview_is_capped(self) -> None:
+        args = {f"k{i:02d}": "v" * 60 for i in range(10)}
+        got = self._preview({"name": "t", "arguments": args})
+        assert len(got["arguments"]) <= 240 and got["arguments"].endswith("…") and got["truncated"] is True
+
+    def test_arguments_that_are_not_a_mapping_are_shown_as_text(self) -> None:
+        got = self._preview({"name": "t", "arguments": "raw string"})
+        assert got == {"tool_name": "t", "arguments": "raw string", "truncated": False}
