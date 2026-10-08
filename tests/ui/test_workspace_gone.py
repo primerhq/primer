@@ -87,7 +87,7 @@ def test_the_card_offers_a_way_back_to_each_real_workspace(card) -> None:
     assert ctx.eval('MR.find("nv-ws-gone-open:w1") !== null') and ctx.eval('MR.find("nv-ws-gone-open:w2") !== null')
     assert "Alpha" in ctx.eval("MR.texts().join(' ')") and "w2" in ctx.eval("MR.texts().join(' ')")
     ctx.eval('MR.click("nv-ws-gone-open:w2");')
-    assert ctx.eval("OPENED") == ["w2"]
+    assert json.loads(ctx.eval("JSON.stringify(OPENED)")) == ["w2"]
 
 
 def test_the_card_with_no_workspace_to_go_to_offers_no_buttons(card) -> None:
