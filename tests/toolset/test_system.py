@@ -39,6 +39,7 @@ from primer.model.storage import (
     OffsetPageResponse,
 )
 from primer.toolset.system import SYSTEM_TOOLSET_ID, build_system_toolset
+from tests._support.agent_check_rows import profile_row
 from tests._support.caller import ADMIN_CALLER
 
 
@@ -953,10 +954,14 @@ def _graph_thread() -> dict:
 )
 @pytest.mark.asyncio
 async def test_crud_smoke_per_entity(
-    system_toolset, create_tool, delete_tool, body_factory
+    system_toolset, sp, create_tool, delete_tool, body_factory
 ) -> None:
     body = body_factory()
     eid = body["id"]
+    if create_tool == "create_agent":
+        # An agent must name a stored profile: the tool refuses a dangling one, as the REST route does (A-09).
+        profile = profile_row(body["model"]["profile_id"])
+        await sp.get_storage(type(profile)).create(profile)
     # An admin writes the rows: a stdio MCP toolset (``_toolset_body``) is refused to anyone else, and to a call with no identity.
     create = await system_toolset.call(
         tool_name=create_tool, arguments={"entity": body}, ctx=ADMIN_CALLER

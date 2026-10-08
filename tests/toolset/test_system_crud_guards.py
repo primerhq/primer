@@ -162,6 +162,10 @@ class TestHarnessManagedRowsAreNotWritableThroughATool:
     async def test_an_unmanaged_row_is_created_updated_and_deleted_as_before(self, world, kind) -> None:
         sp, toolset, _ = world
         model, body, entity_id = MANAGED_KINDS[kind]
+        if kind == "agent":
+            # An agent must name a stored profile: the tool refuses a dangling one, as the REST route does (A-09).
+            profile_id = body()["model"]["profile_id"]
+            await sp.get_storage(ModelProfile).create(_profile(profile_id, model_name="claude-sonnet-4-6"))
 
         created_error, _ = await _call(toolset, f"create_{kind}", entity=body())
         _, served = await _call(toolset, f"get_{kind}", id=entity_id)

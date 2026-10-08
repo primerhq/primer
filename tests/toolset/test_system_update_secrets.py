@@ -16,6 +16,7 @@ import json
 import pytest
 
 from primer.model.provider import EmbeddingProvider, LLMProvider, Toolset
+from tests._support.agent_check_rows import profile_row
 from tests._support.caller import ADMIN_CALLER
 from tests.toolset.test_system import _emb, _llm, _toolset_body, pr, sp, system_toolset  # noqa: F401  (fixtures)
 
@@ -229,6 +230,9 @@ class TestAnEntityWithoutSecretsIsUnaffected:
         from tests.toolset.test_system import _agent
 
         body = _agent().model_dump(mode="json")
+        # An agent must name a stored profile: the tool refuses a dangling one, as the REST route does (A-09).
+        profile = profile_row(body["model"]["profile_id"])
+        await sp.get_storage(type(profile)).create(profile)
         await _create(system_toolset, "agent", body)
         served = await _served(system_toolset, "agent", "agt-1")
         served["description"] = "edited"

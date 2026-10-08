@@ -70,6 +70,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
+from primer.agent.agent_checks import agent_pre_checks
 from primer.agent.approval import ApprovalResolver
 from primer.agent.approval_checks import check_policy
 from primer.agent.invoke import (
@@ -333,6 +334,9 @@ def build_system_toolset(
 
     pre_checks_by_label: dict[str, tuple[Any, Any]] = {
         "collection": (_collection_pre_create, _collection_pre_update),
+        # The agent's profile and toolset references are looked up before the write, as the REST route does (A-09); the builder's
+        # ``crud`` toolset takes the same pair from the same function.
+        "agent": agent_pre_checks(storage_provider),
         "tool_approval_policy": (_policy_pre_create, _policy_pre_update),
         "toolset": (_toolset_pre_create, _toolset_pre_update),
         "model_profile": (_profile_pre_create, _profile_pre_update),

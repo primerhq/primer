@@ -22,8 +22,10 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from pydantic import BaseModel
+
+from primer.agent.agent_checks import check_agent_on_create, check_agent_on_update, missing_toolset_ids
 
 from primer.api.deps import (
     get_agent_storage,
@@ -36,17 +38,43 @@ from primer.api.deps import (
     get_workspace_registry,
 )
 from primer.api.errors import common_responses
-from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
-from primer.model.problem_details import record_without_traceback
 from primer.api.routers._crud import make_crud_router
 from primer.common.context_overflow import output_cap_warning
+from primer.common.entity_checks import EntityCheckError
 from primer.model.agent import Agent
 from primer.model.except_ import NotFoundError, PrimerError
 from primer.model.graph import Graph
+from primer.model.problem_details import record_without_traceback
 from primer.model.workspace_session import GraphSessionBinding, WorkspaceSession
 
 
 # ---- Agent router ----------------------------------------------------------
+
+
+def _agent_check_as_rest_error(exc: EntityCheckError) -> HTTPException:
+    """The 422 the profile and channel routers raise for a refused reference: ``{error, field, message}``."""
+    return HTTPException(
+        status_code=422, detail={"error": exc.code or "", "field": exc.field or "", "message": exc.message},
+    )
+
+
+# The checks are shared with the system tools and the builder's ``crud`` toolset (primer/agent/agent_checks.py): these adapters call
+# the shared check and re-raise it in the router's shape.
+
+
+async def _agent_pre_create(entity: Agent, request: Request) -> None:
+    try:
+        await check_agent_on_create(entity, storage_provider=request.app.state.storage_provider)
+    except EntityCheckError as exc:
+        raise _agent_check_as_rest_error(exc) from exc
+
+
+async def _agent_pre_update(entity: Agent, existing: Agent, request: Request) -> None:
+    try:
+        await check_agent_on_update(entity, existing, storage_provider=request.app.state.storage_provider)
+    except EntityCheckError as exc:
+        raise _agent_check_as_rest_error(exc) from exc
+
 
 agent_router = make_crud_router(
     model_cls=Agent,
@@ -56,6 +84,8 @@ agent_router = make_crud_router(
     cdc_kind="agent",
     managed_by_field="harness_id",
     search_fields=["id", "description"],
+    on_pre_create=_agent_pre_create,
+    on_pre_update=_agent_pre_update,
 )
 
 
@@ -141,24 +171,12 @@ async def agent_status(
     # owning Toolset row exists. Group by toolset to avoid issuing the
     # same lookup twice when an agent references several tools from one
     # toolset.
-    seen_toolset_ids: set[str] = set()
-    missing_toolset_ids: set[str] = set()
-    for tool_id in agent.tools:
-        if "__" in tool_id:
-            toolset_id = tool_id.rpartition("__")[0]
-        else:
-            toolset_id = tool_id
-        if toolset_id in seen_toolset_ids:
-            continue
-        seen_toolset_ids.add(toolset_id)
-        # Built-in toolsets (web / search / system / workspaces / misc /
-        # harness) are always resolvable by the live registry — they
-        # don't have a Toolset storage row. Skip those.
-        if toolset_id in RESERVED_TOOLSET_IDS:
-            continue
-        if await toolsets.get(toolset_id) is None:
-            missing_toolset_ids.add(toolset_id)
-    for ts_id in sorted(missing_toolset_ids):
+    # The resolution is the one the create / update check uses
+    # (primer/agent/agent_checks.py): a built-in toolset (system /
+    # workspaces / misc / web / harness ..., including their retired
+    # underscore-prefixed ids) has no Toolset row and is skipped; any
+    # other must have one.
+    for ts_id in await missing_toolset_ids(agent.tools, toolsets=toolsets):
         issues.append(
             f"Toolset {ts_id!r} referenced by tools does not exist"
         )

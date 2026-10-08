@@ -30,6 +30,7 @@ from primer.model.common import Identifiable
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.storage import CursorPageResponse, OffsetPageResponse
 from primer.toolset.system import build_system_toolset
+from tests._support.agent_check_rows import profile_row
 
 
 class _Storage:
@@ -116,7 +117,12 @@ class _SP:
 
 @pytest.fixture
 def sp() -> _SP:
-    return _SP()
+    provider = _SP()
+    # The agents these tests write name this profile, and the create / update tools refuse a profile that is not stored, as the
+    # REST route does (A-09). Seeded into the fake the way tests/conftest.py seeds its own.
+    profile = profile_row("anthropic-1--claude-sonnet-4-6")
+    provider.get_storage(type(profile))._data[profile.id] = profile
+    return provider
 
 
 @pytest.fixture
