@@ -63,6 +63,7 @@
   --attention-fg: oklch(0.16 0.03 45);
   --green: oklch(0.78 0.15 155); --green-dim: oklch(0.78 0.15 155 / 0.13);
   --red: oklch(0.69 0.19 22);    --red-dim: oklch(0.69 0.19 22 / 0.14);
+  --danger: var(--red);
   --amber: oklch(0.83 0.14 92);  --amber-dim: oklch(0.83 0.14 92 / 0.14);
   --blue: oklch(0.74 0.11 240);  --blue-dim: oklch(0.74 0.11 240 / 0.14);
   --violet: oklch(0.73 0.13 300);--violet-dim: oklch(0.73 0.13 300 / 0.14);
@@ -100,6 +101,7 @@
   --attention-fg: oklch(0.99 0.003 110);
   --green: oklch(0.52 0.13 152); --green-dim: oklch(0.52 0.13 152 / 0.11);
   --red: oklch(0.54 0.2 24);     --red-dim: oklch(0.54 0.2 24 / 0.1);
+  --danger: var(--red);
   --amber: oklch(0.58 0.12 90);  --amber-dim: oklch(0.58 0.12 90 / 0.14);
   --blue: oklch(0.5 0.13 240);   --blue-dim: oklch(0.5 0.13 240 / 0.1);
   --violet: oklch(0.5 0.14 300); --violet-dim: oklch(0.5 0.14 300 / 0.1);
