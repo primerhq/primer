@@ -685,7 +685,7 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
                 />
                 {isEdit && (
                   <div className="field-help warn" data-testid="toolset-url-secrets-reenter">
-                    Changing the URL? Re-enter the header values below in the same save: the stored secrets are only kept for the URL they were set for. Without the admin role, a new URL with masked headers gets a 403.
+                    Changing the URL or the OAuth endpoints (redirect URI, resource URI)? Re-enter the header values below and the OAuth client secret in the same save: the stored secrets are only kept for the endpoint they were set for. Without the admin role, a new endpoint with masked secrets gets a 403.
                   </div>
                 )}
                 {fieldErrors["body.config.config.url"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.config.config.url"]}</div>}
