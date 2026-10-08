@@ -533,8 +533,9 @@ def translate_stream_event(
     |                      |   recurse with node_id=event.extended.node_id   |
     | Done                 | flush reasoning + text buffers, then DONE       |
     |                      |   payload includes usage envelope when present  |
-    | Error                | ERROR                                           |
-    | _GraphErrorEvent     | ERROR (graph runtime terminal failure)          |
+    | Error (fatal)        | flush reasoning + text buffers, then ERROR      |
+    | Error (not fatal)    | ERROR                                           |
+    | _GraphErrorEvent     | flush every node's buffers, then ERROR          |
     | _GraphTransitionEvent | GRAPH_TRANSITION (node enter/exit boundary)    |
     | _GraphEndOutputEvent | ASSISTANT_TOKEN (graph End-node output)         |
     | (others)             | None — silently dropped                         |
@@ -616,7 +617,7 @@ def translate_stream_event(
         )
 
     if isinstance(event, _GraphErrorEvent):
-        return SessionMessageRecord(
+        graph_error_record = SessionMessageRecord(
             seq=1,  # WorkspaceMessageWriter overwrites
             kind=SessionMessageKind.ERROR,
             payload={
@@ -628,6 +629,7 @@ def translate_stream_event(
             node_id=event.node_id,
             created_at=now,
         )
+        return _after_the_partial_output(graph_error_record, state, delta_sink, turn_no)
 
     if isinstance(event, _GraphEndOutputEvent):
         # Live finding 01a064d3: two suppressions, both approved rulings,
@@ -984,18 +986,35 @@ def translate_stream_event(
         return done_record
 
     if isinstance(event, Error):
-        return SessionMessageRecord(
+        error_record = SessionMessageRecord(
             seq=1,
             kind=SessionMessageKind.ERROR,
             payload={"message": event.message, "code": event.code, "fatal": event.fatal},
             node_id=node_id,
             created_at=now,
         )
+        return _after_the_partial_output(error_record, state, delta_sink, turn_no) if event.fatal else error_record
 
     # All other events (StreamStart, ToolCallDelta, MediaDelta,
     # ExtendedEvent without _ExecutorToolResult / _GraphNodeEvent) — silently
     # dropped. (ToolCallStart is handled above: it records the tool name.)
     return None
+
+
+def _after_the_partial_output(
+    record: "SessionMessageRecord",
+    state: "_CoalesceState",
+    delta_sink: "_DeltaSink | None",
+    turn_no: int,
+) -> "SessionMessageRecord | list[SessionMessageRecord]":
+    """``record`` preceded by whatever the turn had streamed and not yet written, or alone when nothing is buffered.
+
+    A terminal ERROR reaches neither a tool call nor ``Done``, the only places the coalesce buffers become records, so without this the
+    answer a model streamed before it died existed only in the live view and vanished on refresh. The text lands BEFORE the error, as it
+    does before a ``cancelled`` record (the caller of ``flush_partial_output`` on a Stop or Cancel).
+    """
+    partial = flush_partial_output(state, delta_sink=delta_sink, turn_no=turn_no)
+    return [*partial, record] if partial else record
 
 
 def flush_partial_output(
