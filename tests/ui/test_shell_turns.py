@@ -476,3 +476,72 @@ def test_a_non_fatal_error_mid_turn_is_numbered_the_way_the_servers_timeline_num
     ctx = _ctx()
     got = json.loads(ctx.eval("JSON.stringify(SH_turnOfSeq(SA_toTranscript(" + json.dumps(records) + ", null)))"))
     assert {seq: got[seq] for seq in expected} == expected
+
+
+def _both_ordinals(records: list[dict]) -> tuple[dict[int, int], dict[int, int]]:
+    """(the server's window ordinal per seq, the console's) for the same records. The console numbers what it really draws:
+    ``SH_nestSubagentRows(SA_toTranscript(records))``, in which the failure fold has removed the copies and the marker."""
+    from primer.session.terminals import closes_turn
+
+    server: dict[int, int] = {}
+    ordinal = 0
+    for rec in records:
+        server[rec["seq"]] = ordinal
+        if closes_turn(rec):
+            ordinal += 1
+    ctx = _ctx()
+    got = json.loads(ctx.eval(
+        "JSON.stringify(SH_turnOfSeq(SH_nestSubagentRows(SA_toTranscript(" + json.dumps(records) + ", null))))"
+    ))
+    return server, {int(seq): n for seq, n in got.items()}
+
+
+def _r(seq: int, kind: str, **payload) -> dict:
+    return {"seq": seq, "kind": kind, "payload": payload, "created_at": f"t{seq}"}
+
+
+def _following_turn(first_seq: int) -> list[dict]:
+    return [
+        _r(first_seq, "user_input", text="again"),
+        _r(first_seq + 1, "assistant_token", text="fine this time"),
+        _r(first_seq + 2, "done", stop_reason="stop"),
+    ]
+
+
+def test_a_failed_turn_with_its_release_marker_leaves_the_next_turn_numbered_as_the_server_numbers_it() -> None:
+    """The release path writes a bare terminal marker after a failure, and the server counts it as a turn end of its own; the failure fold
+    removes it from what the console draws, so the console undercounted every turn after a failed one and asked the trace for the wrong window."""
+    records = [
+        _r(1, "user_input", text="go"),
+        _r(2, "error", message="boom", code="server_error"),
+        _r(3, "error", reason="unknown", terminal=True),
+        *_following_turn(4),
+    ]
+    server, console = _both_ordinals(records)
+    assert {seq: console[seq] for seq in console} == {seq: server[seq] for seq in console}, (server, console)
+
+
+def test_a_stream_error_its_dispatch_copy_and_the_marker_all_end_the_turn_on_the_server_and_in_the_console() -> None:
+    records = [
+        _r(1, "user_input", text="go"),
+        _r(2, "error", message="boom", code="server_error", fatal=True),
+        _r(3, "error", message="boom", code="/errors/internal"),
+        _r(4, "error", reason="unknown", terminal=True),
+        *_following_turn(5),
+    ]
+    server, console = _both_ordinals(records)
+    assert {seq: console[seq] for seq in console} == {seq: server[seq] for seq in console}, (server, console)
+
+
+def test_a_subagents_failure_does_not_shift_the_sessions_turn_numbers() -> None:
+    sub = {"delegated": True, "delegate_tool_call_id": "call-1", "delegate_run_id": "run-1"}
+    records = [
+        _r(1, "user_input", text="go"),
+        _r(2, "error", message="boom", code="server_error", fatal=True, **sub),
+        _r(3, "error", message="boom", code="server_error", fatal=True, **sub),
+        _r(4, "assistant_token", text="the parent carries on"),
+        _r(5, "done", stop_reason="stop"),
+        *_following_turn(6),
+    ]
+    server, console = _both_ordinals(records)
+    assert {seq: console[seq] for seq in console} == {seq: server[seq] for seq in console}, (server, console)
