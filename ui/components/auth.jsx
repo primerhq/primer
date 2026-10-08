@@ -11,23 +11,96 @@
 // language matches the rest of the console — uses the .auth-* class
 // system from styles.css; no inline style soup.
 
+// How long the gate waits before it asks again after a failed status read.
+const AUTH_RETRY_MS = 5000;
+
+// What a failed ``GET /v1/auth/status`` says. Pure. It states what failed and that the gate is retrying; it never says anything about
+// whether an account exists, because a failed read cannot know.
+function AUTH_failureView(err) {
+  const status = err && typeof err.status === "number" ? err.status : null;
+  const requestId = (err && (err.requestId || err.request_id)) || null;
+  // apiFetch reports a failed fetch as an ApiError with status 0 (see foundation/api.js); a bare TypeError has no status at all.
+  if (!status) {
+    return {
+      title: "Cannot reach the server",
+      detail: "Check your connection. Retrying automatically.",
+      requestId,
+    };
+  }
+  if (status >= 500) {
+    return {
+      title: "The server is not ready",
+      detail: "It answered with an error (" + status + "). Retrying automatically.",
+      requestId,
+    };
+  }
+  return {
+    title: "The server gave an unexpected answer",
+    detail: "It answered " + status + ". Retrying automatically.",
+    requestId,
+  };
+}
+
+function AuthUnreachableScreen({ failure, onRetry }) {
+  return (
+    <div className="auth-shell">
+      <div className="auth-wrap">
+        <_AuthBrand />
+        <div className="auth-card">
+          <div className="auth-h">
+            <h1 className="title" data-testid="auth-unreachable">{failure.title}</h1>
+            <div className="sub">
+              {failure.detail}
+              {failure.requestId ? <> Request <span className="mono">{failure.requestId}</span>.</> : null}
+            </div>
+          </div>
+          <div className="auth-body">
+            <button type="button" className="auth-submit touch-target" data-testid="auth-retry" onClick={onRetry}>
+              <span>Try again</span>
+            </button>
+          </div>
+        </div>
+        <_AuthFooter />
+      </div>
+    </div>
+  );
+}
+
 function AuthGate({ children }) {
   const [status, setStatus] = React.useState(null);
+  // A failed read of the status. Not a status: a failure says nothing about whether an account exists or setup is done, so the gate
+  // shows it and asks again instead of guessing (it used to fabricate "no user, setup incomplete" and offer to create the operator
+  // account on an install that has users).
+  const [failure, setFailure] = React.useState(null);
+  const [attempt, setAttempt] = React.useState(0);
 
   React.useEffect(() => {
     let cancelled = false;
+    let retry = null;
     (async () => {
       try {
         const r = await window.primerApi.apiFetch("GET", "/auth/status", null, {});
-        if (!cancelled) setStatus(r);
-      } catch {
-        if (!cancelled) setStatus({ has_user: false, authenticated: false, setup_complete: false, setup_missing: [] });
+        if (!cancelled) {
+          setFailure(null);
+          setStatus(r);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setFailure(AUTH_failureView(err));
+          retry = setTimeout(() => setAttempt((n) => n + 1), AUTH_RETRY_MS);
+        }
       }
     })();
-    return () => { cancelled = true; };
-  }, []);
+    return () => {
+      cancelled = true;
+      if (retry) clearTimeout(retry);
+    };
+  }, [attempt]);
 
   if (status == null) {
+    if (failure) {
+      return <AuthUnreachableScreen failure={failure} onRetry={() => setAttempt((n) => n + 1)} />;
+    }
     return (
       <div className="auth-shell">
         <div className="muted">Loading…</div>

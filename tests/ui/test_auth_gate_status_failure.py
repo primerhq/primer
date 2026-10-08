@@ -41,6 +41,12 @@ def test_a_network_failure_says_the_server_cannot_be_reached(failure_view) -> No
     assert "Failed to fetch" not in got["title"] + got["detail"], "the browser's own wording is not user language"
 
 
+def test_the_shape_apifetch_gives_a_dead_connection_is_a_network_failure(failure_view) -> None:
+    """foundation/api.js turns a failed fetch into an ApiError with status 0, which is not "an unexpected answer"."""
+    got = failure_view({"name": "ApiError", "status": 0, "type": "/errors/network-error"})
+    assert got["title"] == "Cannot reach the server"
+
+
 def test_a_server_error_says_the_server_answered_with_an_error_and_keeps_the_request_id(failure_view) -> None:
     got = failure_view({"name": "ApiError", "status": 503, "requestId": "req-9"})
     assert got["title"] == "The server is not ready"
