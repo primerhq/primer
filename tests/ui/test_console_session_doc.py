@@ -1755,7 +1755,9 @@ def test_a_session_that_merely_rests_is_not_labelled_parked():
     assert view({"session_state": "parked", "status": "running", "parked_status": "parked", "turn_no": 3}) == {
         "state": "parked", "label": "Parked", "resting": False,
     }, "waiting on an approval, an answer or a timer is still Parked"
-    assert view({"session_state": "parked", "status": "running", "parked_status": "resumable", "turn_no": 3})["label"] == "Parked"
+    assert view({"session_state": "parked", "status": "running", "parked_status": "resumable", "turn_no": 3}) == {
+        "state": "parked", "label": "Parked", "resting": False,
+    }
     assert view({"session_state": "parked", "status": "paused", "parked_status": None, "turn_no": 3}) == {
         "state": "parked", "label": "Paused", "resting": False,
     }, "an operator pause needs the operator, so it is not Ready"
@@ -1766,12 +1768,18 @@ def test_a_session_that_merely_rests_is_not_labelled_parked():
     assert view({"session_state": "ended", "status": "ended", "turn_no": 2})["label"] == "Ended"
     assert view(None) == {"state": "waiting", "label": "Waiting", "resting": False}, "nothing polled yet"
     assert view({"session_state": "weird"}) == {"state": "weird", "label": "weird", "resting": False}, "an unknown state shows as itself"
+    ctx.close()
 
 
 def test_the_resting_chip_is_neutral_and_the_served_state_attribute_is_unchanged():
     chip = DOC[DOC.index("function NV_SessionStateChip"):DOC.index("function NV_SessionHeader")]
     assert "data-state={view.state}" in chip, "data-state stays the served state (the e2e journeys and tools read it)"
     assert 'data-resting={view.resting ? "true" : "false"}' in chip
-    assert '.nv-session-state-chip[data-resting="true"]' in STYLES
-    rule = STYLES[STYLES.index('.nv-session-state-chip[data-resting="true"]'):][:200]
-    assert "var(--warn" not in rule, "a resting session must not read as a warning"
+    # The override must beat the amber `parked` rule BY SPECIFICITY, not by coming later in the file: `[data-state="parked"]` and
+    # `[data-resting="true"]` are both one attribute selector, so the resting rule carries a second one (`[data-state]`).
+    parked = '.nv-session-state-chip[data-state="parked"]'
+    resting = '.nv-session-state-chip[data-state][data-resting="true"]'
+    assert resting in STYLES and parked in STYLES
+    assert resting.count("[") > parked.count("["), "the resting rule has strictly more attribute selectors than the parked rule"
+    assert "var(--warn" not in STYLES[STYLES.index(resting):][:200], "a resting session must not read as a warning"
+    assert resting + " .nv-session-state-dot" in STYLES, "the dot is overridden at the same specificity"
