@@ -227,6 +227,10 @@ class _SessionMessagesArgs(_WorkspaceSessionArgs):
         description="Return only records with seq above this (poll with the last seq you saw).",
     )
     limit: int = Field(default=200, ge=1, le=1000)
+    offset: int = Field(
+        default=0, ge=0,
+        description="Skip this many records (from the end when ``tail`` is true), as the REST route.",
+    )
     tail: bool = Field(
         default=False,
         description="Return the most recent ``limit`` records instead of the oldest.",
@@ -1566,7 +1570,7 @@ def build_workspaces_toolset(
                 workspace=ws,
                 relative_path=f"{state_path}/sessions/{args.session_id}/messages.jsonl",
                 limit=args.limit,
-                offset=0,
+                offset=args.offset,
                 since_seq=args.after_seq,
                 tail=args.tail,
                 dedupe_legacy_user_input=True,
@@ -1589,7 +1593,9 @@ def build_workspaces_toolset(
             "``{items, total, offset, limit}``, each item a record "
             "``{seq, kind, payload, created_at}`` (user_input, "
             "assistant_token, tool_call, tool_result, done, error, ...). "
-            "Same data and rule as ``GET /v1/sessions/{id}/messages``."
+            "Same reader and access rule as ``GET /v1/sessions/{id}/messages`` "
+            "(no ``visible`` fold; a workspace that is not available is "
+            "``not-found`` where REST returns an empty page)."
         ),
         (
             "Use when you need what a session said or did, e.g. to poll "
