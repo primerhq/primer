@@ -91,6 +91,16 @@ class AuthConfig(BaseModel):
     cookie_name: str = "primer_session"
     cookie_secure: bool = False
     cookie_samesite: str = "lax"
+    revalidate_interval_s: float = Field(
+        default=5.0,
+        ge=0,
+        description=(
+            "How often, in seconds, a connection that is still open is checked against its account (default 5; 0 turns the check off). "
+            "Auth is read when a request or WebSocket opens; a terminal shell, a tap or MCP stream can outlive the account that opened it. "
+            "Every request that lives longer than this is re-checked at this interval, and is closed when its user was disabled or deleted, "
+            "its session epoch moved (sign-out-everywhere, a password change), its role changed, or its API token was revoked or expired."
+        ),
+    )
 
 
 class RequestLimitsConfig(BaseModel):
