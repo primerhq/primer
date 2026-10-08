@@ -74,11 +74,37 @@ var NV_SETUP_AGENT_IDS = ["operator", "builder"];
 
 // What one card's delete prompt says. Deleting a setup agent locks every
 // user out of the console, so that prompt names the consequence and the
-// way back; every other entity keeps the plain prompt.
+// way back. The entities that HOLD data say what the delete takes with them
+// (admin review ADM-31), each read from the code or doc that states it:
+// docs/agents/workspaces.md (destroy, workspace_lost), docs/agents/knowledge.md
+// (the delete cascade), docs/agents/triggers-and-subscriptions.md
+// (trigger::delete cascade-deletes subscriptions) and the services router
+// (every version and its artifacts go first). They have no "referenced"
+// refusal, so the plain sentence would be untrue for them. Every other
+// entity keeps the plain prompt.
 function NV_deleteConfirm(nav, row) {
   var id = row.id || row.name;
   var message = "Permanently delete " + id
     + "? Referenced entities refuse deletion.";
+  if (nav === "workspaces") {
+    message = "Permanently delete " + id + "? This tears down the "
+      + "workspace's environment (the container, or on Kubernetes the pod "
+      + "and its storage) and ends every open session on it as "
+      + "workspace_lost; those sessions cannot be resumed.";
+  } else if (nav === "collections") {
+    message = "Permanently delete " + id + "? Every document in it, their "
+      + "content and its search index are deleted with it, and this cannot "
+      + "be undone. A new collection with the same id starts empty.";
+  } else if (nav === "triggers") {
+    message = "Permanently delete " + id + "? Its subscriptions are deleted "
+      + "with it, so nothing that trigger was routing will run again.";
+  } else if (nav === "services") {
+    // The public URL is built from the name, and the card shows the
+    // generated id: the prompt gives the name the operator knows.
+    var svc = row.name || id;
+    message = "Permanently delete " + svc + "? Every published version and "
+      + "its files are deleted, and /svc/" + svc + "/ stops answering.";
+  }
   if (nav === "agents" && NV_SETUP_AGENT_IDS.indexOf(row.id) !== -1) {
     message = id + " is a built-in agent that setup checks for. "
       + "Deleting it marks this install as not set up: admins are sent to "
