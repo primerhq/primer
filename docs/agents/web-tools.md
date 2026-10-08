@@ -43,7 +43,10 @@ provider passes an egress guard:
 - otherwise the connection goes to the address that was checked, so a
   name cannot resolve to a public address for the check and an internal
   one for the connection;
-- the check runs again on every redirect hop.
+- `http_request` and `download` do NOT follow redirects: `http_request`
+  returns the 3xx response (read its `location` header and decide), and
+  `download` fails on it. Only `web_fetch` (the local provider) follows
+  redirects, and it re-checks every hop.
 
 Only `http` and `https` URLs are accepted.
 
@@ -99,8 +102,9 @@ network).
 - To reach a service inside your own workspace, use the workspace tools
   (for example a shell command in the workspace), not the web tools: the
   web tools run on the platform, not in the workspace.
-- `http_request` does not follow redirects; it returns the 3xx response.
-  `web_fetch` follows them, checking every hop.
+- `http_request` and `download` do not follow redirects; `web_fetch`
+  does, checking every hop. A redirect to an internal address fails on
+  that hop.
 
 ## Related
 
