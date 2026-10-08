@@ -178,6 +178,17 @@ async def test_changing_git_url_without_a_new_token_is_refused(client, app):
     assert stored.git_token.get_secret_value() == "admin-secret-token"
 
 
+async def test_git_token_required_is_a_problem_json_response(client, app):
+    harness = await _put_harness(app)
+    resp = await client.put(f"/v1/harnesses/{harness.id}", json={"git_url": "https://evil.example/repo"})
+    assert resp.status_code == 422
+    assert resp.headers["content-type"].startswith("application/problem+json"), resp.headers["content-type"]
+    body = resp.json()
+    assert body["status"] == 422
+    assert "git_token" in body["detail"]
+    assert "git_token_required" in resp.text
+
+
 async def test_changing_git_url_with_the_masked_token_is_refused(client, app):
     harness = await _put_harness(app)
     resp = await client.put(
