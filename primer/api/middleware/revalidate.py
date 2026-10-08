@@ -11,13 +11,19 @@ the user, and the API token for a bearer connection, and ends the connection whe
 
 * the user is gone or disabled;
 * a cookie session's ``session_epoch`` is no longer the one it was opened with (a cookie's epoch equals the user's at open, the middleware checked);
-* the user's role changed (a demoted admin must not keep the authority the connection was gated with; reconnecting re-runs the role gate);
+* the user's role was WEAKENED (a demoted admin must not keep the authority the connection was gated with; reconnecting re-runs the role gate). A
+  promotion adds authority and cuts nothing; a role the ranking does not know cannot be shown to be no weaker, so any change from or to one cuts;
+* a cookie connection outlived the cookie: the cookie is valid for ``session_ttl_days`` from when it was signed, and a connection opened just before
+  that moment must not stay open past it;
 * a bearer connection's API token is gone, revoked or expired.
 
 Ending a connection cancels the downstream app (its ``finally`` blocks run: a terminal tears its PTY down) and then closes it properly: a WebSocket
 gets close code 4401 ``auth_revoked`` (the code the handlers already use for "authentication required"), an HTTP stream is completed rather than left
 half-written, so the client sees a clean end and its reconnect meets the ordinary 401. A storage error is tolerated for ``_MAX_UNKNOWN_CHECKS - 1``
-consecutive checks (one blip must not drop every open shell), then fails closed. The worst case between an account change and the close is one interval.
+consecutive checks (one blip must not drop every open shell), then fails closed for what is OPEN-ENDED: a WebSocket and a GET/HEAD/OPTIONS stream. A
+POST, PUT, PATCH or DELETE in flight is left to finish: the outage is the moment its own write is most likely to fail by itself, and cancelling it
+mid-write on a guess is worse than letting it end. (A real revocation, a disabled account or a moved epoch, still ends a write: that is not a guess.)
+The worst case between an account change and the close is one interval.
 """
 
 from __future__ import annotations
@@ -40,6 +46,33 @@ _CANCEL_GRACE_S = 5.0
 
 WS_CLOSE_AUTH_REVOKED = 4401
 
+# Role strength, weakest first (the same ranking ``require_role_ws`` uses). A role missing from it is unknown.
+_ROLE_RANK = {"restricted": 0, "user": 1, "admin": 2}
+# HTTP methods whose in-flight request is cut when storage cannot vouch for the account. Anything else is a write and is left to finish.
+_OPEN_ENDED_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def _now() -> datetime:
+    """The clock the cookie lifetime is judged by (one place, so a test can move it)."""
+    return datetime.now(timezone.utc)
+
+
+def role_was_weakened(opened_as: str, now_is: str) -> bool:
+    """True when the role the connection was opened with is stronger than the user's role now, or cannot be compared.
+
+    A promotion is not a reason to close anything. A role outside the known ranking fails closed: any change from or to it is treated as a weakening.
+    """
+    if opened_as == now_is:
+        return False
+    if opened_as not in _ROLE_RANK or now_is not in _ROLE_RANK:
+        return True
+    return _ROLE_RANK[now_is] < _ROLE_RANK[opened_as]
+
+
+def _fails_closed_on_outage(scope: dict) -> bool:
+    """Whether a storage outage may cut this connection: a WebSocket and a GET/HEAD/OPTIONS stream may, a write in flight may not."""
+    return scope["type"] != "http" or scope.get("method", "GET").upper() in _OPEN_ENDED_METHODS
+
 
 @dataclass(frozen=True)
 class AuthSnapshot:
@@ -49,14 +82,17 @@ class AuthSnapshot:
     role: str
     session_epoch: int
     api_token_id: str | None
+    # When the session cookie this connection was opened with stops being valid; None for a bearer connection and for a cookie that carries no issue time.
+    session_expires_at: datetime | None = None
 
     @classmethod
-    def of(cls, user: Any, api_token: Any) -> "AuthSnapshot":
+    def of(cls, user: Any, api_token: Any, session_expires_at: datetime | None = None) -> "AuthSnapshot":
         return cls(
             user_id=user.id,
             role=user.role,
             session_epoch=user.session_epoch,
             api_token_id=api_token.id if api_token is not None else None,
+            session_expires_at=session_expires_at if api_token is None else None,
         )
 
 
@@ -65,6 +101,8 @@ async def account_verdict(storage_provider: Any, snapshot: AuthSnapshot) -> tupl
     from primer.model.api_token import ApiToken
     from primer.model.user import User
 
+    if snapshot.session_expires_at is not None and _now() >= snapshot.session_expires_at:
+        return "revoked", "session_expired"
     try:
         user = await storage_provider.get_storage(User).get(snapshot.user_id)
     except Exception:  # noqa: BLE001 - a storage error is "unknown", not "revoked"
@@ -76,8 +114,8 @@ async def account_verdict(storage_provider: Any, snapshot: AuthSnapshot) -> tupl
         return "revoked", "user_disabled"
     if snapshot.api_token_id is None and user.session_epoch != snapshot.session_epoch:
         return "revoked", "session_epoch_moved"
-    if user.role != snapshot.role:
-        return "revoked", "role_changed"
+    if role_was_weakened(snapshot.role, user.role):
+        return "revoked", "role_weakened"
     if snapshot.api_token_id is not None:
         try:
             token = await storage_provider.get_storage(ApiToken).get(snapshot.api_token_id)
@@ -88,7 +126,7 @@ async def account_verdict(storage_provider: Any, snapshot: AuthSnapshot) -> tupl
             return "revoked", "token_gone"
         if token.revoked_at is not None:
             return "revoked", "token_revoked"
-        if token.expires_at is not None and token.expires_at <= datetime.now(timezone.utc):
+        if token.expires_at is not None and token.expires_at <= _now():
             return "revoked", "token_expired"
     return "valid", ""
 
@@ -136,6 +174,11 @@ class _Tracker:
             logger.debug("open connection: could not send the closing frame", exc_info=True)
 
 
+def _retrieve(task: "asyncio.Future[Any]") -> None:
+    if not task.cancelled():
+        task.exception()
+
+
 async def run_with_revalidation(
     app: Any,
     scope: dict,
@@ -156,7 +199,9 @@ async def run_with_revalidation(
             verdict, why = await account_verdict(storage_provider, snapshot)
             if verdict == "unknown":
                 unknown_in_a_row += 1
-                if unknown_in_a_row >= _MAX_UNKNOWN_CHECKS:
+                if unknown_in_a_row == _MAX_UNKNOWN_CHECKS and not _fails_closed_on_outage(scope):
+                    logger.debug("open %s request of user %s: storage unavailable, leaving it to finish", scope["type"], snapshot.user_id)
+                if unknown_in_a_row >= _MAX_UNKNOWN_CHECKS and _fails_closed_on_outage(scope):
                     verdict, why = "revoked", "storage_unavailable"
             else:
                 unknown_in_a_row = 0
@@ -166,8 +211,12 @@ async def run_with_revalidation(
                 )
                 app_task.cancel()
                 await asyncio.wait({app_task}, timeout=_CANCEL_GRACE_S)
-                if app_task.done() and not app_task.cancelled():
-                    app_task.exception()       # retrieved, so it is never logged as "never retrieved"
+                if not app_task.done():
+                    logger.debug(
+                        "open %s connection of user %s: the app is still running %.1fs after it was cancelled; closing the connection over it",
+                        scope["type"], snapshot.user_id, _CANCEL_GRACE_S,
+                    )
+                app_task.add_done_callback(_retrieve)   # whenever it ends, its exception is retrieved, so it is never logged as "never retrieved"
                 await tracker.finish_revoked(scope["type"])
                 return
             done, _ = await asyncio.wait({app_task}, timeout=interval_s)

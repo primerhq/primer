@@ -29,7 +29,8 @@ to look up.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 
 from itsdangerous import (
     BadSignature,
@@ -49,6 +50,8 @@ class SessionPayload:
     username: str
     src: str = "local"
     epoch: int = 0
+    # When the cookie was signed (UTC), from the signature's own timestamp. Not part of what two payloads equal: it says when, not who.
+    issued_at: datetime | None = field(default=None, compare=False)
 
 
 def sign_session(
@@ -72,7 +75,7 @@ def verify_session(
         return None
     s = URLSafeTimedSerializer(secret, salt=_SALT)
     try:
-        payload = s.loads(token, max_age=max_age_seconds)
+        payload, issued_at = s.loads(token, max_age=max_age_seconds, return_timestamp=True)
     except (SignatureExpired, BadSignature):
         return None
     if not isinstance(payload, dict):
@@ -88,4 +91,4 @@ def verify_session(
     # bool is an int subclass; a signed cookie never carries one, so treat it as malformed.
     if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 0:
         return None
-    return SessionPayload(user_id=uid, username=username, src=src, epoch=epoch)
+    return SessionPayload(user_id=uid, username=username, src=src, epoch=epoch, issued_at=issued_at)
