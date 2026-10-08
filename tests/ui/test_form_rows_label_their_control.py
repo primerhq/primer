@@ -52,11 +52,17 @@ React.createElement = function (type, props) {
   if (typeof type === "string") ELS.push({ type: type, props: el.props });   // the element's own props object: a clone is matched to its original by it
   return el;
 };
+function __text(n) {
+  if (n == null || typeof n === "boolean") return "";
+  if (typeof n === "string" || typeof n === "number") return String(n);
+  if (Array.isArray(n)) return n.map(__text).join("");
+  return n.props ? __text(n.props.children) : "";
+}
 function __view() {
   return JSON.stringify(ELS.map(function (e) {
     var p = e.props;
     return { type: e.type, id: p.id, htmlFor: p.htmlFor, role: p.role, className: p.className, labelledBy: p["aria-labelledby"],
-             invalid: p["aria-invalid"], describedBy: p["aria-describedby"] };
+             invalid: p["aria-invalid"], describedBy: p["aria-describedby"], text: __text(p.children) };
   }));
 }
 """
@@ -93,7 +99,7 @@ def _runner(component: str, made: list):
             f"function Host() {{ return React.createElement(React.Fragment, null, {', '.join([one] * copies)}); }}"
             " MR.mount(Host, {}); ELS.length = 0; MR.rerender();"
         )
-        return [{k: e.get(k) for k in ("type", "id", "htmlFor", "role", "className", "labelledBy", "invalid", "describedBy")} for e in json.loads(ctx.eval("__view()"))]
+        return [{k: e.get(k) for k in ("type", "id", "htmlFor", "role", "className", "labelledBy", "invalid", "describedBy", "text")} for e in json.loads(ctx.eval("__view()"))]
 
     return go
 
@@ -198,6 +204,18 @@ def test_two_rows_never_share_an_id(row) -> None:
 
 def _help_lines(view: list[dict]) -> list[dict]:
     return [e for e in view if "field-help" in (e["className"] or "") and e["role"] != "alert"]
+
+
+def test_a_hint_is_a_word_of_its_own_in_the_labels_text(row) -> None:
+    """``Name`` + ``optional`` must read "Name optional" to a screen reader, not "Nameoptional": the row puts a space before the hint (the journey asserts it in Chrome, this
+    pins it where a mutation of the row can reach it)."""
+    view = row("React.createElement('input', {})", {"label": "Name", "hint": "optional"})
+    assert _one(view, "label")["text"] == "Name optional", view
+    assert _one(view, "label")["text"] != "Nameoptional"
+
+
+def test_a_label_without_a_hint_is_just_its_text(row) -> None:
+    assert _one(row("React.createElement('input', {})", {"label": "Name"}), "label")["text"] == "Name"
 
 
 def test_a_help_line_follows_the_control_and_describes_it(row) -> None:
