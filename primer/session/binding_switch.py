@@ -137,6 +137,11 @@ async def apply_binding_switch(
     the next record any writer appends takes the marker's seq
     (``tests/api/test_session_binding_reservation.py``, the strict xfail).
 
+    An ADVISORY record that reserves its seq between this reservation and the closing write (a ``PAUSE_SUPERSEDED`` record of
+    ``wake_session`` or the pending-steer cap, a failed release's marker: ``reserve_next_seq``, ticket 01a11cd8) moves ``last_seq``
+    past the reserved seq, so the closing write's ``last_seq == the reserved seq`` term rejects: a new cause of the same
+    "marker stays in the log unapplied" outcome.
+
     Declared, pre-existing: the closing write sets ``next_unprocessed_seq`` to
     ``seq + 1`` unconditionally, so when a steer's USER_INPUT at ``seq - 1`` is
     still unprocessed the drain cursor passes it. Advancing only when the cursor
