@@ -94,7 +94,9 @@ async def test_an_archive_that_lies_about_its_sizes_is_refused_cleanly(tree, mon
     """The declared sizes pass the pre-check; the bytes actually inflated do not match."""
     monkeypatch.setattr(importer, "MAX_UNCOMPRESSED_BYTES", 1000)
     data = _lie_about_sizes(_zip({"bomb.md": b"a" * 5000}), claimed=10)
-    with pytest.raises((PayloadTooLargeError, BadRequestError)):
+    # The declared-size pre-check passes (10 bytes); the bounded read then gets only the 10 declared bytes
+    # from zipfile, whose CRC does not match, so it is the corrupt-entry guard (400) that fires.
+    with pytest.raises(BadRequestError, match="cannot be read"):
         await import_zip(tree, collection_id="c1", data=data)
     await _nothing_created(tree, "bomb")
 
@@ -121,3 +123,34 @@ async def test_import_accepts_a_spooled_file(tree):
     spool = io.BytesIO(_zip({"x.md": b"hello"}))
     report = await import_zip(tree, collection_id="c1", data=spool)
     assert report.created == ["x"]
+
+
+def _never(*a, **k):
+    raise AssertionError("the central directory was parsed")
+
+
+async def test_the_entry_count_is_read_from_the_eocd_before_the_central_directory_is_parsed(tree, monkeypatch):
+    """A huge central directory is refused from the end record alone, before zipfile parses it."""
+    monkeypatch.setattr(importer, "MAX_ENTRIES", 3)
+    data = _zip({f"d{i}.md": b"x" for i in range(4)})
+    monkeypatch.setattr(importer.zipfile, "ZipFile", _never)
+    with pytest.raises(PayloadTooLargeError) as exc:
+        await import_zip(tree, collection_id="c1", data=data)
+    assert exc.value.limit_entries == 3
+
+
+async def test_the_eocd_count_is_read_from_a_zip64_end_record(tree, monkeypatch):
+    monkeypatch.setattr(importer, "MAX_ENTRIES", 3)
+    raw = bytearray(_zip({f"d{i}.md": b"x" for i in range(4)}))
+    # Rewrite it as a zip64 archive: classic EOCD counts 0xFFFF, plus a zip64 end record and locator.
+    eocd = raw.rfind(b"PK\x05\x06")
+    cd_size, cd_offset = struct.unpack_from("<II", raw, eocd + 12)
+    rec = struct.pack("<4sQHHIIQQQQ", b"PK\x06\x06", 44, 45, 45, 0, 0, 4, 4, cd_size, cd_offset)
+    loc = struct.pack("<4sIQI", b"PK\x06\x07", 0, eocd, 1)
+    end = bytearray(raw[eocd:])
+    struct.pack_into("<HH", end, 8, 0xFFFF, 0xFFFF)
+    data = bytes(raw[:eocd]) + rec + loc + bytes(end)
+    monkeypatch.setattr(importer.zipfile, "ZipFile", _never)
+    with pytest.raises(PayloadTooLargeError) as exc:
+        await import_zip(tree, collection_id="c1", data=data)
+    assert exc.value.limit_entries == 3

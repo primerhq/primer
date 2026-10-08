@@ -30,6 +30,12 @@ def _app(limits: RequestLimitsConfig) -> FastAPI:
     async def echo(request: Request) -> dict:
         return {"n": len(await request.body())}
 
+    @app.post("/v1/noread")
+    async def noread() -> dict:
+        return {"ok": True}
+
+    app.mount("/v1/raw", _draining_asgi_app)
+
     @app.put("/v1/workspaces/{wid}/files")
     async def put_file(request: Request) -> dict:
         return {"n": len(await request.body())}
@@ -39,6 +45,16 @@ def _app(limits: RequestLimitsConfig) -> FastAPI:
         return {"n": len(await request.body())}
 
     return app
+
+
+async def _draining_asgi_app(scope, receive, send) -> None:
+    """A bare ASGI app that drains the body itself, outside FastAPI's body parsing."""
+    while True:
+        message = await receive()
+        if not message.get("more_body"):
+            break
+    await send({"type": "http.response.start", "status": 200, "headers": []})
+    await send({"type": "http.response.body", "body": b"read"})
 
 
 _LIMITS = RequestLimitsConfig(
@@ -129,3 +145,35 @@ async def test_create_test_app_installs_the_default_limit(app: FastAPI) -> None:
     found = [m for m in app.user_middleware if m.cls is BodySizeLimitMiddleware]
     assert len(found) == 1
     assert found[0].kwargs == body_limit_options(RequestLimitsConfig())
+
+
+async def test_the_declared_length_is_refused_even_when_the_route_never_reads_the_body() -> None:
+    """The Content-Length check runs before the route: nothing depends on the route reading."""
+    async with await _client(_app(_LIMITS)) as c:
+        ok = await c.post("/v1/noread", content=b"x" * 100)
+        big = await c.post("/v1/noread", content=b"x" * 101)
+    assert ok.status_code == 200, ok.text
+    _assert_413(big, 100)
+
+
+async def _chunks(n: int, size: int):
+    for _ in range(n):
+        yield b"x" * size
+
+
+async def test_a_mounted_asgi_app_reading_a_streamed_body_gets_a_413() -> None:
+    async with await _client(_app(_LIMITS)) as c:
+        ok = await c.post("/v1/raw/x", content=_chunks(2, 40))
+        big = await c.post("/v1/raw/x", content=_chunks(5, 40))
+    assert ok.status_code == 200 and ok.text == "read"
+    _assert_413(big, 100)
+
+
+async def test_the_backstop_answers_when_no_exception_handler_catches_the_refusal() -> None:
+    """Wrapped round a bare ASGI app (no exception middleware at all), the middleware itself answers."""
+    app = BodySizeLimitMiddleware(_draining_asgi_app, max_body_bytes=100)
+    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        ok = await c.post("/anything", content=_chunks(2, 40))
+        big = await c.post("/anything", content=_chunks(5, 40))
+    assert ok.status_code == 200 and ok.text == "read"
+    _assert_413(big, 100)
