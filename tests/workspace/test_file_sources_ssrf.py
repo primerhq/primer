@@ -223,3 +223,66 @@ def test_the_fetch_timeout_is_a_minute() -> None:
     import primer.workspace.files as files
 
     assert files._FETCH_TIMEOUT_S == 60.0
+
+
+# ---- CI e2e on #473: a refusal is a client error; operators may opt private sources back in ----------------------
+
+
+async def test_a_refusal_is_a_semantic_validation_error(monkeypatch) -> None:
+    """The REST error map turns a ValidationError into a 422 problem; a bare RuntimeError was a 500."""
+    from primer.model.except_ import ValidationError as SemanticValidationError
+
+    monkeypatch.setattr("primer.workspace.files._http_session", _no_session)
+
+    with pytest.raises(SemanticValidationError) as ei:
+        await resolve_file_sources([_url_mount("http://127.0.0.1:9/x")])
+    assert "127.0.0.1" in str(ei.value)
+    assert isinstance(ei.value, RuntimeError)  # callers that caught RuntimeError still do
+
+
+@pytest.fixture
+def _allow_private():
+    from primer.common import ssrf
+
+    ssrf.configure_allow_private_destinations(True)
+    yield
+    ssrf.configure_allow_private_destinations(False)
+
+
+def test_the_opt_in_lets_a_private_literal_through(_allow_private) -> None:
+    from primer.common.ssrf import refuse_private_literal
+
+    refuse_private_literal("http://127.0.0.1:36471/seed-content")  # does not raise
+
+
+async def test_the_opt_in_lets_a_name_resolving_private_through(_allow_private) -> None:
+    from primer.common.ssrf import PublicOnlyResolver
+
+    class _Inner:
+        async def resolve(self, host, port=0, family=socket.AF_INET):
+            return [{"hostname": host, "host": "10.1.2.3", "port": port, "family": family, "proto": 0, "flags": 0}]
+
+        async def close(self):
+            return None
+
+    out = await PublicOnlyResolver(inner=_Inner()).resolve("internal.example", 80)
+    assert [r["host"] for r in out] == ["10.1.2.3"]
+
+
+def test_the_opt_in_is_off_by_default_and_read_from_config(monkeypatch) -> None:
+    from primer.api.config import AppConfig
+
+    assert AppConfig().workspace_allow_private_url_sources is False
+    monkeypatch.setenv("PRIMER_WORKSPACE_ALLOW_PRIVATE_URL_SOURCES", "1")
+    assert AppConfig().workspace_allow_private_url_sources is True
+
+
+def test_the_e2e_bringup_opts_in_through_the_config_file() -> None:
+    """tests/_support/restart.py relaunches with the same config.yaml, so a config field survives a restart where a
+    bringup-only environment variable would not (#478)."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    assert "workspace_allow_private_url_sources: true" in (root / "scripts" / "e2e" / "bringup.sh").read_text()
+    restart = (root / "tests" / "_support" / "restart.py").read_text()
+    assert '"--config", str(_CONFIG)' in restart
