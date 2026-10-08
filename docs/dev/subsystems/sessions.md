@@ -80,13 +80,27 @@ Four rules make that safe:
   checkpoint and of the route share ONE deadline,
   `mutation_lock.IN_LOCK_IO_TIMEOUT_S` (10 s; the cancelled exit's
   `_CANCELLED_RECORD_WRITE_TIMEOUT_S` is the same value): an unreachable
-  workspace must not hold the lock Cancel and every steer queue behind. A
+  workspace must not hold the lock Cancel and every steer queue behind. The
+  deadline covers the whole protocol, the guarded `patch_if`s included, so a
+  timeout that lands just after the closing write committed still answers the
+  route's 409 although the switch took effect (a retry then writes one more
+  marker and bumps the epoch again); on the abandon-then-switch branch the 409
+  says the gate is already closed (its parked turn was rejected). A
   timeout leaves the switch queued and a reserved gap in the seqs (readers
   tolerate gaps); a marker that lands late after its timeout can precede a
   second marker of the same epoch on the next attempt (declared; the retry's
-  orphan detection is the next change). A rejected closing write (a park
-  committed after the reservation) is the multi-process residual: the marker
-  stays in the log unapplied.
+  orphan detection is the next change). A rejected closing write leaves
+  the marker in the log unapplied. A park committed by another process does
+  that, and so does, in ONE process, the busy-queue branch of
+  `switch_session_binding`, which still writes the WHOLE row outside the lock
+  from a row it read earlier (S2a PR-12b makes it a `patch_if` of
+  `pending_binding_switch` alone): a stale write landing after the reservation,
+  or after the closing write, puts `last_seq` back below the marker, so the
+  next record any writer appends takes the marker's seq. It is pinned as a
+  strict xfail in `tests/api/test_session_binding_reservation.py`. Also
+  declared, and older than this change: the closing write sets
+  `next_unprocessed_seq` to `seq + 1` unconditionally, so when a steer's
+  USER_INPUT at `seq - 1` is still unprocessed the drain cursor passes it.
 - **Epochs fence stale writes.** A terminal status, a park and a resume
   each carry the epoch they began under; the row rejects a write from an
   epoch it has moved past, so a turn finishing under a replaced binding
