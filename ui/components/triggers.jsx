@@ -69,6 +69,35 @@ function TR_validateSlug(v) {
   return "";
 }
 
+// A CONSERVATIVE shape check of a cron expression, run when leaving step 2 (admin review ADM-21). The server's validator (croniter) accepts the
+// aliases (@daily, @hourly, ...) and 5 to 7 space-separated fields, so anything else is certainly refused and can be said at once; whether the
+// VALUES are valid (a 60 in the minute field) is the server's call and comes back as cron_invalid, which returns to the cron field
+// (TR_scheduleFault). It must never refuse what the server accepts. "" means "looks fine".
+// tests/ui/test_trigger_wizard_schedule_errors.py checks that against the real croniter.
+function TR_cronShapeError(expr) {
+  var s = String(expr || "").trim();
+  if (!s) return "Enter a cron expression, for example 0 9 * * 1 for 09:00 every Monday.";
+  if (s.charAt(0) === "@") return "";
+  var n = s.split(/\s+/).length;
+  if (n >= 5 && n <= 7) return "";
+  return "A cron expression has 5 fields: minute, hour, day of month, month and day of week (0 9 * * 1 is 09:00 every Monday). This one has "
+    + n + (n === 1 ? " field." : " fields.");
+}
+
+// The schedule refusal of a failed create as {field, message} (field "cron" or "timezone"), or null when the failure is about something
+// else. The API puts the code in the problem envelope's extensions (an HTTPException with a {code, message} detail; `detail` itself is then
+// a plain string); older shapes had it in detail.code.
+function TR_scheduleFault(err) {
+  var env = err && err.envelope;
+  if (!env) return null;
+  var ext = env.extensions || {};
+  var det = env.detail && typeof env.detail === "object" ? env.detail : {};
+  var code = ext.code || det.code || null;
+  if (code !== "cron_invalid" && code !== "timezone_invalid") return null;
+  var message = ext.message || det.message || (typeof err.detail === "string" ? err.detail : "") || err.message || "";
+  return { field: code === "cron_invalid" ? "cron" : "timezone", message: message };
+}
+
 // Auto-slug a free-text name (lowercase, hyphenate, trim length).
 function TR_autoSlug(str) {
   return (str || "")
@@ -479,6 +508,8 @@ function TR_CreateTriggerDialog({ onClose, onCreated }) {
   const [name, setName] = React.useState("");
   const [description, setDescription] = React.useState("");
   const [slugError, setSlugError] = React.useState("");
+  // A refused schedule, shown under its field on step 2: {field: "cron" | "timezone", message} | null (admin review ADM-21).
+  const [scheduleError, setScheduleError] = React.useState(null);
 
   // Submit state
   const [submitError, setSubmitError] = React.useState(null); // {code, message} | string
@@ -552,6 +583,13 @@ function TR_CreateTriggerDialog({ onClose, onCreated }) {
       onCreated(created);
     } catch (err) {
       if (!mountedRef.current) return;
+      // A refused schedule goes back to the step where it can be fixed, with what was typed on step 3 kept (admin review ADM-21).
+      const fault = TR_scheduleFault(err);
+      if (fault) {
+        setScheduleError(fault);
+        setStep(2);
+        return;
+      }
       // Server error shape: {detail: {code, message}} (see _raise_code).
       // FastAPI unwraps `detail` into envelope.detail when status != 422.
       // The ApiError stores envelope.detail as `detail` directly, which
@@ -570,6 +608,15 @@ function TR_CreateTriggerDialog({ onClose, onCreated }) {
     } finally {
       if (mountedRef.current) setBusy(false);
     }
+  };
+
+  const goNext = () => {
+    if (step === 2 && kind === "scheduled") {
+      const shape = TR_cronShapeError(cron);
+      if (shape) { setScheduleError({ field: "cron", message: shape }); return; }
+    }
+    setScheduleError(null);
+    setStep(step + 1);
   };
 
   const stepTitle = step === 1
@@ -592,7 +639,7 @@ function TR_CreateTriggerDialog({ onClose, onCreated }) {
             <Btn
               kind="primary"
               icon="chevron-right"
-              onClick={() => setStep(step + 1)}
+              onClick={goNext}
               disabled={step === 1 ? !step1Valid : !step2Valid}
             >
               Next
@@ -668,10 +715,13 @@ function TR_CreateTriggerDialog({ onClose, onCreated }) {
               id="tr-cron"
               className="input mono"
               value={cron}
-              onChange={(e) => setCron(e.target.value)}
+              onChange={(e) => { setCron(e.target.value); setScheduleError(null); }}
               placeholder="0 * * * *"
               style={{ width: "100%" }}
             />
+            {scheduleError && scheduleError.field === "cron" && (
+              <div className="field-help" style={{ color: "var(--red)" }} data-testid="tr-cron-error">{scheduleError.message}</div>
+            )}
           </div>
           <div className="field">
             <label className="field-label" htmlFor="tr-timezone">
@@ -681,13 +731,16 @@ function TR_CreateTriggerDialog({ onClose, onCreated }) {
               id="tr-timezone"
               className="input mono"
               value={timezone}
-              onChange={(e) => setTimezone(e.target.value)}
+              onChange={(e) => { setTimezone(e.target.value); setScheduleError(null); }}
               style={{ width: "100%" }}
             >
               {timezones.map((tz) => (
                 <option key={tz} value={tz}>{tz}</option>
               ))}
             </select>
+            {scheduleError && scheduleError.field === "timezone" && (
+              <div className="field-help" style={{ color: "var(--red)" }} data-testid="tr-timezone-error">{scheduleError.message}</div>
+            )}
           </div>
           <div className="field">
             <label className="field-label" htmlFor="tr-catchup">
@@ -747,7 +800,7 @@ function TR_CreateTriggerDialog({ onClose, onCreated }) {
           </div>
           <div className="field">
             <label className="field-label" htmlFor="tr-slug">
-              Slug <span className="hint">^[a-z][a-z0-9-]{1,63}$</span>
+              Slug <span className="hint" style={{ textTransform: "none" }}>lowercase letters, digits and hyphens, starting with a letter, 2 to 64 characters</span>
             </label>
             <input
               id="tr-slug"
