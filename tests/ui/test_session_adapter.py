@@ -591,3 +591,57 @@ def test_two_graph_nodes_failing_with_the_same_words_are_both_kept(error_rows) -
     b = _STREAM_ERR.replace("seq: 3", "seq: 4").replace('payload:', 'node_id: "n2", payload:')
     rows = error_rows("[" + _USER + ", " + a + ", " + b + "]")
     assert [r["seq"] for r in rows] == [3, 4], rows
+
+
+# --- delegated (subagent) failures fold only with their own run, and a non-fatal error is a row like any other (follow-up to #480) ----
+
+_DELEGATED = (
+    '{seq: 3, kind: "error", created_at: "t3", payload: {message: "Ollama server error (500)", code: "server_error", fatal: true, '
+    'delegated: true, delegate_tool_call_id: "call-1", delegate_run_id: "run-1"}}'
+)
+_PARENT_ERR = (
+    '{seq: 5, kind: "error", created_at: "t5", payload: {message: "Ollama server error (500)", code: "/errors/internal", '
+    'title: "TurnStreamFailure", status: 500}}'
+)
+
+
+def test_a_subagents_failure_is_not_a_copy_of_the_parents_with_the_same_words(error_rows) -> None:
+    """Both can hit the same provider error in one turn. A subagent's row is drawn inside its own block; if the parent's failure were folded
+    into it the turn would fail with NO card of its own at the top level."""
+    rows = error_rows("[" + _USER + ", " + _DELEGATED + ", " + _PARENT_ERR + "]")
+    assert [r["seq"] for r in rows] == [3, 5], rows
+
+
+def test_the_same_holds_when_the_parent_row_comes_first(error_rows) -> None:
+    rows = error_rows("[" + _USER + ", " + _PARENT_ERR.replace("seq: 5", "seq: 2") + ", " + _DELEGATED + "]")
+    assert [r["seq"] for r in rows] == [2, 3], rows
+
+
+def test_one_subagent_run_failing_twice_with_the_same_words_is_one_card(error_rows) -> None:
+    again = _DELEGATED.replace("seq: 3", "seq: 4")
+    rows = error_rows("[" + _USER + ", " + _DELEGATED + ", " + again + "]")
+    assert [r["seq"] for r in rows] == [3], rows
+
+
+def test_two_subagent_runs_failing_with_the_same_words_are_both_kept(error_rows) -> None:
+    other = _DELEGATED.replace("seq: 3", "seq: 4").replace("call-1", "call-2").replace("run-1", "run-2")
+    rows = error_rows("[" + _USER + ", " + _DELEGATED + ", " + other + "]")
+    assert [r["seq"] for r in rows] == [3, 4], rows
+
+
+def test_a_bare_terminal_marker_is_not_swallowed_by_a_subagents_cause(error_rows) -> None:
+    """The marker is the PARENT turn's; only a cause of the parent's own explains it."""
+    marker = _MARKER.replace("seq: 4", "seq: 6")
+    rows = error_rows("[" + _USER + ", " + _DELEGATED + ", " + marker + "]")
+    assert [r["seq"] for r in rows] == [3, 6], rows
+
+
+def test_a_non_fatal_error_is_a_row_like_any_other_and_the_fatal_one_with_the_same_words_folds_into_it(error_rows) -> None:
+    """A recoverable error ({fatal: false}) is persisted as an error row and drawn as one. When the stream then fails for good with the same
+    words the two are one failure: the first row is kept, so the card may carry fatal=false. (Pinned as it is; a retry notice that is
+    followed by recovery still draws a card, tracked separately.)"""
+    nonfatal = '{seq: 2, kind: "error", created_at: "t2", payload: {message: "Ollama server error (500)", code: "server_error", fatal: false}}'
+    fatal = '{seq: 3, kind: "error", created_at: "t3", payload: {message: "Ollama server error (500)", code: "server_error", fatal: true}}'
+    rows = error_rows("[" + _USER + ", " + nonfatal + ", " + fatal + "]")
+    assert [r["seq"] for r in rows] == [2], rows
+    assert rows[0]["payload"]["fatal"] is False
