@@ -3,7 +3,8 @@
 The server now refuses a PUT or a rotate_token on a webhook trigger by anyone but its owner or an admin: a 403 whose ``title`` is "Forbidden" and
 whose ``detail`` says WHY. The console's Clear HMAC swallowed the refusal (``catch (_e) { /* ignore */ }``: the secret stayed and nothing said
 so), and Rotate token and the Set HMAC dialog showed only the title. ``TR_writeErrorText`` is the one place that picks the words: the server's
-explanation first, then its title, then a fallback. Evaluated in V8; the page is driven by ``tests/ui_e2e/test_trigger_secret_refusal_journey.py``.
+explanation first, then its title, then a fallback. It now delegates to ``TR_refusalText`` (the #572 review: one reader for every trigger write error), so the V8
+context loads that whole chain. Evaluated in V8; the page is driven by ``tests/ui_e2e/test_trigger_secret_refusal_journey.py``.
 """
 
 from __future__ import annotations
@@ -22,7 +23,8 @@ def words():
 
     ctx = MiniRacer()
     start = TRIGGERS.index("function TR_writeErrorText(")
-    ctx.eval(TRIGGERS[start:TRIGGERS.index("\n}\n", start) + len("\n}\n")])
+    end = TRIGGERS.index("\n}\n", TRIGGERS.index("function TR_refusalText(", start)) + len("\n}\n")
+    ctx.eval(TRIGGERS[start:end])
     try:
         yield lambda err, fallback: ctx.eval(f"TR_writeErrorText({json.dumps(err)}, {json.dumps(fallback)})")
     finally:
