@@ -3711,6 +3711,9 @@ input, textarea, select { font: inherit; color: inherit; }
 }
 .nv-tab-close:hover { background: var(--bg-active); color: var(--text); }
 .nv-doc-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* A workspace that does not exist (C-019): fills the center in place of the tab groups. */
+.nv-ws-gone { flex: 1; justify-content: center; align-items: center; gap: 8px; }
+.nv-ws-gone-title { font-size: 14px; color: var(--text-2); overflow-wrap: anywhere; }
 .nv-center-empty {
   flex: 1;
   display: flex;

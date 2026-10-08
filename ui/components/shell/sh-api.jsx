@@ -10,6 +10,13 @@ var SH_api = {
       { signal: signal });
   },
 
+  // One workspace's row: a 404 is the authoritative "no such workspace" (the list is capped and polled, so a workspace created a moment
+  // ago is not in it yet).
+  workspace: function (wid, signal) {
+    return window.primerApi.apiFetch(
+      "GET", "/workspaces/" + encodeURIComponent(wid), null, { signal: signal });
+  },
+
   sessions: function (wid, signal) {
     return window.primerApi.apiFetch(
       "GET", "/workspaces/" + encodeURIComponent(wid) + "/sessions?limit=200",
@@ -437,6 +444,7 @@ var SH_api = {
 
   // ---- cache keys ---------------------------------------------------------
   keys: {
+    workspace: function (wid) { return "shell-workspace:" + wid; },
     sessions: function (wid) { return "shell-sessions:" + wid; },
     allSessions: function () { return "shell-all-sessions"; },
     session: function (sid) { return "shell-session:" + sid; },
