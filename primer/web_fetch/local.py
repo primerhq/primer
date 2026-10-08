@@ -11,11 +11,13 @@ primer.common.netguard) -> content-type routing:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
 import httpx
 
+from primer.common.bounded_read import read_capped
 from primer.common.netguard import EgressRefused, guarded_async_client
 
 from primer.web_fetch.adapter import (
@@ -70,12 +72,31 @@ class LocalAdapter(WebFetchAdapter):
 
     async def fetch(self, *, url: str) -> FetchedPage:
         try:
-            r = await self._client.get(
-                url,
-                follow_redirects=True,
-                timeout=self._timeout,
-                headers={"User-Agent": self._user_agent},
-            )
+            # One deadline for the request AND the body (the client's timeout is per operation, so a body that drips never trips it), and
+            # the body is read only to the cap: ``r.content`` would hold a response that streams gigabytes in memory (architecture review
+            # A-10). The status is judged before the body is touched, so an error page is not read at all.
+            async with asyncio.timeout(self._timeout):
+                async with self._client.stream(
+                    "GET",
+                    url,
+                    follow_redirects=True,
+                    timeout=self._timeout,
+                    headers={"User-Agent": self._user_agent},
+                ) as r:
+                    if r.status_code == 429:
+                        raise WebFetchUnavailable("local fetch rate-limited (HTTP 429)")
+                    if r.status_code >= 500:
+                        raise WebFetchUnavailable(f"local fetch server error (HTTP {r.status_code})")
+                    if r.status_code in (401, 403):
+                        raise WebFetchProviderError(f"local fetch forbidden (HTTP {r.status_code})")
+                    if r.status_code >= 400:
+                        raise WebFetchProviderError(
+                            f"local fetch unexpected status {r.status_code}"
+                        )
+                    raw, _ = await read_capped(r, self._raw_byte_cap)
+                    ct = r.headers.get("content-type", "").split(";")[0].strip().lower()
+                    final_url = str(r.url)
+                    status = r.status_code
         except EgressRefused as exc:
             # Not transient: the target is internal. A remote provider in
             # an aggregated chain may still fetch it from its own network.
@@ -84,29 +105,18 @@ class LocalAdapter(WebFetchAdapter):
             raise WebFetchUnavailable(
                 f"local transport: {type(exc).__name__}: {exc}"
             ) from exc
-
-        if r.status_code == 429:
-            raise WebFetchUnavailable("local fetch rate-limited (HTTP 429)")
-        if r.status_code >= 500:
-            raise WebFetchUnavailable(f"local fetch server error (HTTP {r.status_code})")
-        if r.status_code in (401, 403):
-            raise WebFetchProviderError(f"local fetch forbidden (HTTP {r.status_code})")
-        if r.status_code >= 400:
-            raise WebFetchProviderError(
-                f"local fetch unexpected status {r.status_code}"
-            )
-
-        raw = (r.content or b"")[: self._raw_byte_cap]
-        ct = r.headers.get("content-type", "").split(";")[0].strip().lower()
-        final_url = str(r.url)
+        except TimeoutError as exc:
+            raise WebFetchUnavailable(
+                f"local fetch timed out after {self._timeout:g}s"
+            ) from exc
 
         if ct in ("text/html", "application/xhtml+xml", ""):
-            return self._extract_html(raw, ct, final_url, r.status_code)
+            return self._extract_html(raw, ct, final_url, status)
         if ct == "application/pdf":
             md = await _extract_pdf(raw)
             return FetchedPage(
                 final_url=final_url, title="", content_markdown=md,
-                content_type=ct, status=r.status_code,
+                content_type=ct, status=status,
             )
         if ct == "application/json":
             text = raw.decode("utf-8", errors="replace")
@@ -117,13 +127,13 @@ class LocalAdapter(WebFetchAdapter):
             return FetchedPage(
                 final_url=final_url, title="",
                 content_markdown=f"```json\n{pretty}\n```",
-                content_type=ct, status=r.status_code,
+                content_type=ct, status=status,
             )
         if ct.startswith("text/"):
             return FetchedPage(
                 final_url=final_url, title="",
                 content_markdown=raw.decode("utf-8", errors="replace"),
-                content_type=ct, status=r.status_code,
+                content_type=ct, status=status,
             )
         raise WebFetchProviderError(
             f"unsupported content type {ct!r}; use http-request for raw bytes"
