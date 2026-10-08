@@ -352,6 +352,17 @@ async def test_slow_resolution_counts_against_the_connect_timeout(monkeypatch):
     assert backend.log["connect"] == []
 
 
+def test_an_unexpected_httpx_transport_shape_fails_loudly(monkeypatch):
+    class _OtherTransport(httpx.AsyncHTTPTransport):
+        def __init__(self, **kw):
+            super().__init__(**kw)
+            self._pool = object()
+
+    monkeypatch.setattr(netguard.httpx, "AsyncHTTPTransport", _OtherTransport)
+    with pytest.raises(RuntimeError, match="egress guard cannot be installed"):
+        netguard.guarded_async_client()
+
+
 def test_egress_refused_is_an_httpx_request_error():
     """Existing ``except httpx.RequestError`` handlers catch a refusal."""
     assert issubclass(EgressRefused, httpx.RequestError)
