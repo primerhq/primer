@@ -112,6 +112,56 @@ def _use(monkeypatch, script: _Script) -> _Script:
     return script
 
 
+class _Hangs(_Attempt):
+    """A client whose ``connect`` never returns: it waits on a gate nothing sets."""
+
+    def __init__(self, gate: asyncio.Event) -> None:
+        super().__init__(None)
+        self.gate = gate
+        self.entered = False
+
+    async def connect(self) -> None:
+        self.entered = True
+        await self.gate.wait()
+
+
+def _use_hanging_clients(monkeypatch) -> list[_Hangs]:
+    """Every client built hangs in ``connect``. A SECOND client is a retry after a cancel: building it fails the test at once
+    (an AssertionError raised before the ``try``, so it escapes the loop) instead of leaving a second hanging attempt that only the
+    pytest timeout would end, which kills the xdist worker and hangs the lane."""
+    gate = asyncio.Event()  # never set
+    made: list[_Hangs] = []
+
+    def factory(**kwargs) -> _Hangs:
+        if made:
+            raise AssertionError("retried after a cancel: a second client was built")
+        made.append(_Hangs(gate))
+        return made[-1]
+
+    monkeypatch.setattr(k8s_backend, "RuntimeClient", factory)
+    return made
+
+
+async def _wait_until(predicate, what: str) -> None:
+    for _ in range(200):
+        if predicate():
+            return
+        await asyncio.sleep(0.01)
+    pytest.fail(f"never reached: {what}")
+
+
+async def _cancel_and_wait(task: asyncio.Task) -> None:
+    """Cancel ``task`` and require it to END as cancelled within HARD_BOUND_S. A build that swallows the cancel and carries on fails
+    here after the bound instead of hanging (``await task`` has no bound of its own), and one that ends any other way re-raises that."""
+    task.cancel()
+    done, _ = await asyncio.wait({task}, timeout=HARD_BOUND_S)
+    if not done:
+        task.cancel()
+        pytest.fail(f"the build swallowed a cancel and was still running {HARD_BOUND_S:g}s later")
+    if not task.cancelled():
+        raise task.exception() or AssertionError("the build returned after it was cancelled")
+
+
 # ---- the race itself ----------------------------------------------------------------------------------------------------------
 
 
@@ -242,18 +292,13 @@ async def test_a_create_that_gives_up_rolls_back_the_cluster_objects_it_made(mon
 async def test_a_cancel_while_waiting_between_attempts_closes_the_failed_client_and_propagates(monkeypatch, build) -> None:
     monkeypatch.setattr(k8s_backend, "_RUNTIME_READY_POLL_S", 5.0)       # park the build in its sleep between attempts
     monkeypatch.setattr(k8s_backend, "_RUNTIME_READY_MAX_POLL_S", 5.0)
-    script = _use(monkeypatch, _Script(REFUSED))
+    script = _use(monkeypatch, _Script(REFUSED, max_attempts=1))         # a second attempt after the cancel fails the test at once
     backend = _backend()
     task = asyncio.create_task(build(backend))
-    for _ in range(200):
-        if script.made and script.made[0].closed:
-            break
-        await asyncio.sleep(0.01)
-    assert script.made and script.made[0].closed == 1, "the build did not reach its wait"
+    await _wait_until(lambda: bool(script.made and script.made[0].closed), "the build's wait between attempts")
+    assert script.made[0].closed == 1
 
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    await _cancel_and_wait(task)
 
     assert len(script.made) == 1 and script.made[0].closed == 1, "no second client, and the first is not closed twice"
     assert backend._workspaces == {}
@@ -261,29 +306,13 @@ async def test_a_cancel_while_waiting_between_attempts_closes_the_failed_client_
 
 @BUILDS
 async def test_a_cancel_during_an_attempt_closes_that_client_and_does_not_retry(monkeypatch, build) -> None:
-    gate = asyncio.Event()
-
-    class _Hangs(_Attempt):
-        async def connect(self) -> None:
-            self.entered = True
-            await gate.wait()
-
-    made: list[_Hangs] = []
-
-    def factory(**kwargs):
-        made.append(_Hangs(None))
-        return made[-1]
-
-    monkeypatch.setattr(k8s_backend, "RuntimeClient", factory)
+    made = _use_hanging_clients(monkeypatch)
     backend = _backend()
     task = asyncio.create_task(build(backend))
-    for _ in range(200):
-        if made and getattr(made[0], "entered", False):
-            break
-        await asyncio.sleep(0.01)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    await _wait_until(lambda: bool(made and made[0].entered), "the first attempt's connect()")
+
+    await _cancel_and_wait(task)
+
     assert len(made) == 1 and made[0].closed == 1
 
 
@@ -292,51 +321,46 @@ async def test_a_cancel_during_an_attempt_closes_that_client_and_does_not_retry(
 # Ticket 01a11b02 said the connect loop's ``except BaseException`` swallows the CancelledError a cancel or an ``asyncio.timeout``
 # injects and keeps retrying until its own deadline. It does not: the handler closes the failed client and re-raises everything that
 # is not an ``Exception`` (and ``_runtime_not_serving_yet`` is False for a CancelledError anyway). The two tests above pin
-# ``task.cancel()``; these pin the other two ways the same thing reaches the loop, so a change to the handler cannot reintroduce
-# the retry-after-cancel without a red test.
+# ``task.cancel()``; these pin the other ways the same thing reaches the loop, so a change to the handler cannot reintroduce the
+# retry-after-cancel without a red test. Every body is bounded by an OUTER ``asyncio.timeout(HARD_BOUND_S)`` that is not the timeout
+# under test, and a second client fails the test at once: under the regression these guard (a retried CancelledError) a bare wait
+# would sit until pytest's per-test timeout killed the xdist worker.
 
 
 @BUILDS
-async def test_a_callers_timeout_ends_a_connect_that_is_refused_for_ever_promptly(monkeypatch, build) -> None:
+async def test_a_callers_timeout_ends_the_wait_between_attempts_promptly(monkeypatch, build) -> None:
+    """Exercises ONLY the cancel that lands in the sleep between attempts (outside the loop's ``try``), never its except handler: the
+    next two tests do that. A regression that swallowed the cancel in the sleep would carry on to the loop's own deadline, which is
+    patched down so it fails here in seconds instead of after a minute."""
     monkeypatch.setattr(k8s_backend, "_RUNTIME_READY_POLL_S", 5.0)       # the build sleeps between attempts
     monkeypatch.setattr(k8s_backend, "_RUNTIME_READY_MAX_POLL_S", 5.0)
-    script = _use(monkeypatch, _Script(REFUSED))
+    monkeypatch.setattr(k8s_backend, "_RUNTIME_READY_TIMEOUT_S", 1.5)
+    script = _use(monkeypatch, _Script(REFUSED, max_attempts=1))
     backend = _backend()
 
-    started = time.monotonic()
-    with pytest.raises(TimeoutError):
-        async with asyncio.timeout(0.3):
-            await build(backend)
-    elapsed = time.monotonic() - started
+    async with asyncio.timeout(HARD_BOUND_S):                             # bounds the body; NOT the timeout under test
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.3):
+                await build(backend)
 
-    assert elapsed < 2.0, f"the caller's timeout took {elapsed:.1f}s to take effect (the loop kept retrying?)"
+    # No wall clock: a loop that swallowed the cancel would build a second client (an AssertionError from the script), or reach
+    # the patched deadline (a ConfigError), or hit the outer bound; each fails here, none passes.
     assert len(script.made) == 1 and script.made[0].closed == 1, "no further attempt after the timeout, and the client is closed once"
     assert backend._workspaces == {}
 
 
 @BUILDS
 async def test_a_callers_timeout_during_an_attempt_closes_the_client_and_does_not_retry(monkeypatch, build) -> None:
-    gate = asyncio.Event()
-
-    class _Hangs(_Attempt):
-        async def connect(self) -> None:
-            await gate.wait()
-
-    made: list[_Hangs] = []
-
-    def factory(**kwargs):
-        made.append(_Hangs(None))
-        return made[-1]
-
-    monkeypatch.setattr(k8s_backend, "RuntimeClient", factory)
+    """The cancel lands INSIDE ``connect()``, i.e. in the loop's except handler: the failed client is closed and the cancel is
+    re-raised (turned into the caller's TimeoutError), not treated as "the runtime is not serving yet"."""
+    made = _use_hanging_clients(monkeypatch)
     backend = _backend()
 
-    started = time.monotonic()
-    with pytest.raises(TimeoutError):
-        async with asyncio.timeout(0.3):
-            await build(backend)
+    async with asyncio.timeout(HARD_BOUND_S):                             # bounds the body; NOT the timeout under test
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.3):
+                await build(backend)
 
-    assert time.monotonic() - started < 2.0
     assert len(made) == 1 and made[0].closed == 1
     assert backend._workspaces == {}
 
@@ -345,7 +369,7 @@ async def test_a_callers_timeout_during_an_attempt_closes_the_client_and_does_no
 async def test_a_cancellation_raised_by_the_connect_itself_is_not_retried(monkeypatch, build) -> None:
     """A CancelledError that comes out of ``connect()`` (an inner cancel scope, a library's own cancel) is still a CancelledError:
     the client is closed and it propagates, instead of being treated as "the runtime is not serving yet"."""
-    script = _use(monkeypatch, _Script(asyncio.CancelledError()))
+    script = _use(monkeypatch, _Script(asyncio.CancelledError(), max_attempts=1))
     backend = _backend()
 
     with pytest.raises(asyncio.CancelledError):
