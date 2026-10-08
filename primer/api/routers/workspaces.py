@@ -605,6 +605,16 @@ def _check_template_privilege(entity: WorkspaceTemplate, existing: WorkspaceTemp
         raise SemanticValidationError(str(exc)) from exc
 
 
+async def _workspace_template_pre_delete(existing, request: Request) -> None:
+    """Deleting a template that holds admin-only settings is admin-only too (lead re-review of #473)."""
+    held = admin_only_settings_held(existing)
+    if held and not _caller_is_admin(request):
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "forbidden_role", "fields": held, "message": held_refusal_message(held, "delete")},
+        )
+
+
 async def _workspace_template_pre_create(entity, request: Request) -> None:
     await _reject_reserved_workspace_template_create(entity, request)
     _check_template_privilege(entity, None, request)
@@ -625,7 +635,9 @@ template_router = make_crud_router(
     # 403: a non-admin writing admin-only fields, or updating a template that holds them.
     extra_create_responses=common_responses(403),
     extra_update_responses=common_responses(403),
+    extra_delete_responses=common_responses(403),
     on_pre_delete_id=_reject_reserved_workspace_template_delete,
+    on_pre_delete=_workspace_template_pre_delete,
     # Deliberately NO reference guard here: a template is a snapshot
     # consumed at materialization (spec section 12, pinned by e2e
     # T0223) - deleting it must not strand live workspaces, and they

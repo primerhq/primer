@@ -20,6 +20,7 @@ discriminated source fields and the destination ``path`` / ``mode``.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 from dataclasses import dataclass
@@ -62,9 +63,21 @@ def _http_session() -> aiohttp.ClientSession:
 
 _MAX_REDIRECTS = 5
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+# The whole fetch (every redirect hop and the body) is bounded, so a slow url source cannot hold workspace
+# materialisation open (lead re-review of #473).
+_FETCH_TIMEOUT_S = 60.0
 
 
 async def _fetch_url(url: str) -> bytes:
+    """GET ``url`` within :data:`_FETCH_TIMEOUT_S` seconds in total; a timeout fails materialisation."""
+    try:
+        async with asyncio.timeout(_FETCH_TIMEOUT_S):
+            return await _fetch_url_unbounded(url)
+    except TimeoutError as exc:
+        raise RuntimeError(f"FileSource url={url!r} timed out after {_FETCH_TIMEOUT_S:g}s") from exc
+
+
+async def _fetch_url_unbounded(url: str) -> bytes:
     """GET ``url``, following redirects by hand so every hop's IP literal is checked (aiohttp skips the resolver for one)."""
     try:
         refuse_private_literal(url)

@@ -168,6 +168,16 @@ def _refuse_non_admin(fields: list[str], ctx: ToolContext | None) -> ToolCallRes
     return None
 
 
+def _template_delete_refusal(
+    _entity: None, existing: WorkspaceTemplate, ctx: ToolContext | None,
+) -> ToolCallResult | None:
+    """Deleting a template that holds admin-only settings is admin-only too, as on REST."""
+    held = admin_only_settings_held(existing)
+    if held and not _tool_caller_is_admin(ctx):
+        return _err(held_refusal_message(held, "delete"), error_type="forbidden")
+    return None
+
+
 def _template_refusal(
     entity: WorkspaceTemplate, existing: WorkspaceTemplate | None, ctx: ToolContext | None,
 ) -> ToolCallResult | None:
@@ -557,10 +567,11 @@ def _make_delete_handler(
     storage_provider: "StorageProvider",
     on_delete: _OnMutate = None,
     guards: CrudGuards | None = None,
+    privilege_check: _PrivilegeCheck = None,
 ) -> ToolHandler:
     guards = guards or CrudGuards(kind=cls_name)
 
-    async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _IdArgs.model_validate(arguments)
         except ValidationError as exc:
@@ -576,6 +587,8 @@ def _make_delete_handler(
                 f"{cls_name} {args.id!r} does not exist", error_type="not-found"
             )
         refusal = refuse_delete(guards, existing)
+        if refusal is None and privilege_check is not None:
+            refusal = privilege_check(None, existing, ctx)
         if refusal is None:
             refusal = await refuse_delete_if_referenced(guards, existing, storage_provider)
         if refusal is not None:
@@ -1120,6 +1133,7 @@ def build_workspaces_toolset(
         _IdArgs,
         _make_delete_handler(
             _template_storage, "WorkspaceTemplate", storage_provider=storage_provider, guards=template_guards,
+            privilege_check=_template_delete_refusal,
         ),
         examples=[
             ToolExample(args={"id": "py-base"}, returns="{deleted: true, id: ...}"),

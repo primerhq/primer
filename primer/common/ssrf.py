@@ -25,6 +25,7 @@ from yarl import URL
 
 _NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
 _IPV4_COMPATIBLE = ipaddress.IPv6Network("::/96")
+_IPV4_TRANSLATED = ipaddress.IPv6Network("::ffff:0:0:0/96")
 
 
 class BlockedDestinationError(ValueError):
@@ -40,10 +41,11 @@ def blocked_reason(address: str) -> str | None:
     if isinstance(ip, ipaddress.IPv6Address):
         # An IPv6 address that carries an IPv4 one is judged by that IPv4: IPv4-mapped (::ffff:a.b.c.d), the NAT64
         # well-known prefix (64:ff9b::/96, which a NAT64 gateway translates to the embedded address) and the
-        # deprecated IPv4-compatible form (::a.b.c.d; :: and ::1 unwrap to 0.0.0.0 and 0.0.0.1, both refused).
+        # deprecated IPv4-compatible form (::a.b.c.d; :: and ::1 unwrap to 0.0.0.0 and 0.0.0.1, both refused), and the
+        # SIIT IPv4-translated form (::ffff:0:a.b.c.d).
         if ip.ipv4_mapped is not None:
             ip = ip.ipv4_mapped
-        elif ip in _NAT64_WELL_KNOWN or ip in _IPV4_COMPATIBLE:
+        elif ip in _NAT64_WELL_KNOWN or ip in _IPV4_COMPATIBLE or ip in _IPV4_TRANSLATED:
             ip = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
     if ip.is_unspecified:
         return "unspecified"
