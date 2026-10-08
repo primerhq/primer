@@ -164,8 +164,13 @@ it's called from a context with no implicit session.
   was started by an admin (over MCP: unless the caller is an admin).
   A template that already holds any of them can only be updated by
   an admin, whatever the update changes (`type=forbidden`, "holds
-  admin-only settings"); a template without them stays yours to
-  edit. `create_workspace` refuses a `secret` file in
+  admin-only settings"), and so can only be deleted by an admin; a
+  template without them stays yours to edit. This does not stop a
+  non-admin from creating a workspace from such a template and
+  running code (for example their own `init_commands` overrides)
+  next to its mounts and secret files, so an admin must not put
+  host-privileged mounts or secrets in a template ordinary users
+  may instantiate. `create_workspace` refuses a `secret` file in
   `overrides.files` the same way.
 - Kubernetes overlays must stay on an allowlist, whoever calls:
   volumes are `emptyDir` or `configMap` only, mounts carry `name`,
@@ -175,7 +180,8 @@ it's called from a context with no implicit session.
   `type=validation-error` naming the key.
 - A `url` file source is fetched by the platform and must not point
   at a private, loopback, link-local or metadata address (checked on
-  every redirect too); such a workspace fails to materialise.
+  every redirect too); such a workspace fails to materialise. The
+  whole fetch must finish within 60 seconds, or it fails too.
 
 ### Files and logs
 
