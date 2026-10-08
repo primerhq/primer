@@ -496,8 +496,11 @@ def _both_ordinals(records: list[dict]) -> tuple[dict[int, int], dict[int, int]]
     return server, {int(seq): n for seq, n in got.items()}
 
 
-def _r(seq: int, kind: str, **payload) -> dict:
-    return {"seq": seq, "kind": kind, "payload": payload, "created_at": f"t{seq}"}
+def _r(seq: int, kind: str, node_id: str | None = None, **payload) -> dict:
+    rec = {"seq": seq, "kind": kind, "payload": payload, "created_at": f"t{seq}"}
+    if node_id:
+        rec["node_id"] = node_id
+    return rec
 
 
 def _following_turn(first_seq: int) -> list[dict]:
@@ -564,3 +567,61 @@ def test_the_real_producers_failure_sequence_is_numbered_as_the_server_numbers_i
     assert 3 not in console, "the notice was absorbed by the failure with the same words"
     assert {seq: console[seq] for seq in console} == {seq: server[seq] for seq in console}, (server, console)
     assert console[6] == 3 and console[8] == 3, "and the following turn is the fourth window, as on the server"
+
+
+def _same_ordinals(records: list[dict]) -> None:
+    server, console = _both_ordinals(records)
+    assert {seq: console[seq] for seq in console} == {seq: server[seq] for seq in console}, (server, console)
+
+
+def test_text_streamed_between_a_failure_and_its_copy_keeps_its_own_ordinal() -> None:
+    """The count of folded terminals used to be added at the SURVIVING row's position, so every drawn row between the cause and a copy folded into it was
+    numbered too high (server: the text is in the failure's window; the copy ends a LATER window)."""
+    _same_ordinals([
+        _r(1, "user_input", text="go"),
+        _r(2, "error", message="boom", code="server_error", fatal=True),
+        _r(3, "assistant_token", text="a sentence between"),
+        _r(4, "error", message="boom", code="/errors/internal"),
+        _r(5, "error", reason="unknown", terminal=True),
+        *_following_turn(6),
+    ])
+
+
+def test_the_graph_superstep_failure_keeps_a_siblings_rows_in_their_own_window() -> None:
+    """A failed node's error is written live, a sibling streams on, and the graph's copy of the error (same words, same node) comes after the superstep."""
+    _same_ordinals([
+        _r(1, "user_input", text="go"),
+        _r(2, "llm_call"),
+        _r(3, "error", node_id="A", message="boom", code="server_error", fatal=True),
+        _r(4, "graph_transition", node_id="A", phase="exit", status="failed"),
+        _r(5, "assistant_token", node_id="B", text="b answers"),
+        _r(6, "llm_call", node_id="B"),
+        _r(7, "done", node_id="B", stop_reason="stop"),
+        _r(8, "graph_transition", node_id="B", phase="exit", status="completed"),
+        _r(9, "error", node_id="A", message="boom", code="server_error"),
+        *_following_turn(10),
+    ])
+
+
+def test_a_marker_written_before_its_cause_is_numbered_as_the_server_numbers_it() -> None:
+    _same_ordinals([
+        _r(1, "user_input", text="go"),
+        _r(2, "error", reason="unknown", terminal=True),
+        _r(3, "assistant_token", text="x"),
+        _r(4, "error", message="boom", code="server_error"),
+        *_following_turn(5),
+    ])
+
+
+def test_two_failed_turns_in_a_row_are_numbered_as_the_server_numbers_them() -> None:
+    _same_ordinals([
+        _r(1, "user_input", text="go"),
+        _r(2, "error", message="boom", code="server_error", fatal=True),
+        _r(3, "error", message="boom", code="/errors/internal"),
+        _r(4, "error", reason="unknown", terminal=True),
+        _r(5, "user_input", text="again"),
+        _r(6, "error", message="boom", code="server_error", fatal=True),
+        _r(7, "error", message="boom", code="/errors/internal"),
+        _r(8, "error", reason="unknown", terminal=True),
+        *_following_turn(9),
+    ])
