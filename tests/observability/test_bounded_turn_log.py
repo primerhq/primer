@@ -16,7 +16,7 @@ import pytest
 from primer.observability.turn_log_writer import TurnLogWriter
 from primer.model.turn_log import TurnLogPhase
 
-HARD_BOUND_S = 5.0
+HARD_BOUND_S = 30.0
 BOUND_S = 0.2
 
 

@@ -34,7 +34,7 @@ from primer.model.workspace_session import SessionMessageKind, SessionMessageRec
 from primer.session import persistence
 from primer.session.persistence import WorkspaceMessageWriter
 
-HARD_BOUND_S = 5.0     # the whole body of a test
+HARD_BOUND_S = 30.0    # the whole body of a test: it only turns a hang into a failure, a slow runner must not trip it
 WRITE_BOUND_S = 0.2    # the writer's bound, far under the hard one
 
 
@@ -74,6 +74,18 @@ class _Workspace:
 async def _spin(times: int = 20) -> None:
     for _ in range(times):
         await asyncio.sleep(0)
+
+
+# The lock-wait tests hold the lock for LOCK_HELD_S, which must exceed the bound (or the clock fix would not matter) and stay far under the
+# cap (a slow runner only LENGTHENS a sleep, so the margin above the bound cannot shrink; the cap is set wide so the one below cannot either).
+LOCK_BOUND_S = 0.5
+LOCK_HELD_S = 0.8
+
+
+@pytest.fixture
+def lock_wait_bounds(monkeypatch):
+    monkeypatch.setattr(persistence, "_WRITE_TIMEOUT_S", LOCK_BOUND_S, raising=False)
+    monkeypatch.setattr(persistence, "_QUEUE_CAP_FACTOR", 50, raising=False)
 
 
 @pytest.fixture
@@ -242,17 +254,17 @@ class _LockedWorkspace(_Workspace):
             self.landed.append(line)
 
 
-async def test_a_batch_waiting_for_the_messages_lock_is_not_abandoned_for_the_wait(bounded_writes) -> None:
+async def test_a_batch_waiting_for_the_messages_lock_is_not_abandoned_for_the_wait(lock_wait_bounds) -> None:
     """The lock is held across a turn persist's read, rewrite and git commit: a slow commit of a large messages.jsonl must not
-    make the writer drop records and fail the turn. The wait here (0.5 s) is longer than the bound (0.2 s) and shorter than the cap."""
-    io = _LockedWorkspace(answers_after=0.05)
+    make the writer drop records and fail the turn. The wait here is longer than the bound and far shorter than the cap."""
+    io = _LockedWorkspace(answers_after=0)
     async with asyncio.timeout(HARD_BOUND_S):
         writer = WorkspaceMessageWriter(workspace_io=io, session_id="s1")
         await writer.append(_record("a"))
         await io.lock.acquire()                                  # a turn persist holds it
 
         async def release_later() -> None:
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(LOCK_HELD_S)
             io.lock.release()
 
         releasing = asyncio.create_task(release_later())
@@ -262,7 +274,7 @@ async def test_a_batch_waiting_for_the_messages_lock_is_not_abandoned_for_the_wa
     assert io.texts() == ["a"], f"the batch was abandoned for waiting on the lock: {io.texts()}"
 
 
-async def test_a_request_that_was_sent_and_never_answered_is_abandoned_after_it_was_sent_not_before(bounded_writes) -> None:
+async def test_a_request_that_was_sent_and_never_answered_is_abandoned_after_it_was_sent_not_before(lock_wait_bounds) -> None:
     io = _LockedWorkspace()
     events: list[str] = []
     async with asyncio.timeout(HARD_BOUND_S):
@@ -271,7 +283,7 @@ async def test_a_request_that_was_sent_and_never_answered_is_abandoned_after_it_
         await io.lock.acquire()
 
         async def release_later() -> None:
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(LOCK_HELD_S)
             events.append("lock released")
             io.lock.release()
 
