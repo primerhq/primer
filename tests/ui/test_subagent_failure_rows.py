@@ -47,7 +47,8 @@ def _compiled() -> str:
 
 
 def _context():
-    return mini_react_context(_compiled(), "function NV_toolCallWithRows() { return null; }")
+    turns = (ROOT / "ui" / "foundation" / "shell-turns.js").read_text(encoding="utf-8")   # NV_subagentRows asks it which notice the failed call quotes
+    return mini_react_context(_compiled(), "function NV_toolCallWithRows() { return null; }\n" + turns)
 
 
 @pytest.fixture
