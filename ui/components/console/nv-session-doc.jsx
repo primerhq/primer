@@ -1171,16 +1171,22 @@ function NV_toolCallElement(row, result, running) {
 function NV_subagentRows(row, resultFor, running) {
   var kids = (row && row.children) || [];
   if (!kids.length) return null;
+  // The recorder stamps no agent_id on the records it writes, so every child of this call is under the agent the CALL names (the delegating
+  // system__invoke_agent call's argument); a record that does carry one keeps it.
+  var callAgent = (row.payload && row.payload.arguments && row.payload.arguments.agent_id) || "subagent";
+  // What became of the delegating call. The only producer of a non-fatal Error (the OpenResponses stream) makes the agent loop hold the Error, yield the
+  // Done first and the Error last, and raise, so the call is answered with an ERROR result and the delegated scope gets no failure record of its own.
+  var callResult = resultFor ? resultFor(row) : null;
+  var callFailed = !!(callResult && callResult.payload && callResult.payload.error);
   return (
     <div className="nv-subagent-rows" data-testid={"nv-subagent-rows:" + row.seq}>
       {kids.map(function (child) {
+        var agentName = (child.payload && child.payload.agent_id) || callAgent;
         if (child.kind === "tool_call") {
           return (
             <div key={child.seq} className="nv-subagent">
               <div className="nv-subagent-head">
-                <span className="nv-subagent-name">
-                  {(child.payload && child.payload.agent_id) || "subagent"}
-                </span>
+                <span className="nv-subagent-name">{agentName}</span>
               </div>
               {NV_toolCallWithRows(child, resultFor, running)}
             </div>
@@ -1188,33 +1194,36 @@ function NV_subagentRows(row, resultFor, running) {
         }
         // A failure and a recoverable problem carry no label (their words are in payload.message), so the label rule below dropped them and a
         // subagent that failed showed nothing in its block (ticket 01a11c1e). They are drawn as the main transcript draws them, with the same words
-        // (NV_errorView, NV_noticeView), inside the subagent's box and under its name. Neither is announced as an alert: it arrives inside a block the
-        // reader may not be looking at, and the parent turn's own failure is what the page announces. No trace button: a trace belongs to the session's turn.
+        // (NV_errorView, NV_noticeView), inside the subagent's box and under its name. A notice whose delegating call FAILED is the failure: it is
+        // drawn as the red card in its own words (there is no fatal record of the scope for it to be absorbed by). A notice whose call has any
+        // other result never says the turn is continuing: the call is over. Neither is announced as an alert (it arrives inside a block the reader
+        // may not be looking at, and the parent turn's own failure is what the page announces) and neither has a trace button (a trace belongs to
+        // the session's turn).
         if (child.kind === "error" || child.kind === "retry_notice") {
-          var isFailure = child.kind === "error";
-          var failureView = isFailure ? NV_errorView(child) : NV_noticeView(child);
+          var asFailure = child.kind === "error" || callFailed;
+          var settled = callResult != null && child.noticeState === "retrying"
+            ? Object.assign({}, child, { noticeState: "recovered" }) : child;
+          var view = asFailure ? NV_errorView(child) : NV_noticeView(settled);
           return (
             <div key={child.seq} className="nv-subagent"
-              data-testid={(isFailure ? "nv-subagent-failure:" : "nv-subagent-notice:") + child.seq}>
+              data-testid={(asFailure ? "nv-subagent-failure:" : "nv-subagent-notice:") + child.seq}>
               <div className="nv-subagent-head">
-                <span className="nv-subagent-name">
-                  {(child.payload && child.payload.agent_id) || "subagent"}
-                </span>
+                <span className="nv-subagent-name">{agentName}</span>
               </div>
-              {isFailure ? (
+              {asFailure ? (
                 <div className="nv-turn-error nv-turn-error-nested">
                   <span className="nv-turn-error-body">
-                    <span>{failureView.text}</span>
-                    {failureView.detail ? (
-                      <span className="nv-turn-error-detail">{failureView.detail}</span>
+                    <span>{view.text}</span>
+                    {view.detail ? (
+                      <span className="nv-turn-error-detail">{view.detail}</span>
                     ) : null}
                   </span>
                 </div>
               ) : (
-                <div className="nv-turn-note nv-turn-note-nested" data-state={child.noticeState}>
-                  <span>{failureView.text}</span>
-                  {failureView.detail ? (
-                    <span className="nv-turn-note-detail">{failureView.detail}</span>
+                <div className="nv-turn-note nv-turn-note-nested" data-state={settled.noticeState}>
+                  <span>{view.text}</span>
+                  {view.detail ? (
+                    <span className="nv-turn-note-detail">{view.detail}</span>
                   ) : null}
                 </div>
               )}
@@ -1225,9 +1234,7 @@ function NV_subagentRows(row, resultFor, running) {
         return (
           <div key={child.seq} className="nv-subagent">
             <div className="nv-subagent-head">
-              <span className="nv-subagent-name">
-                {(child.payload && child.payload.agent_id) || "subagent"}
-              </span>
+              <span className="nv-subagent-name">{agentName}</span>
             </div>
             <div className="nv-turn-text">{child.label}</div>
           </div>
