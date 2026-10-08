@@ -46,3 +46,14 @@ def test_the_file_is_still_loaded_before_the_overlays() -> None:
     assert INDEX.read_text(encoding="utf-8").count(tag) == 1
     html = INDEX.read_text(encoding="utf-8")
     assert html.index(tag) < html.index('src="components/console/nv-overlays.jsx"')
+
+
+def test_the_switch_toggle_css_keeps_its_accessibility_floor() -> None:
+    """The ``.switch-toggle`` presentation the create form used (``role="switch"``). No JSX uses it now (the overlay's autonomy control is ``.nv-seg``); the pin stays so a
+    switch added later starts from a keyboard-visible, reduced-motion-safe, 44px control."""
+    css = (UI / "styles.css").read_text(encoding="utf-8")
+    assert ".switch-toggle {" in css
+    assert ".switch-toggle.on" in css
+    assert ".switch-toggle:focus-visible" in css, "keyboard focus must be visible"
+    assert "min-height: 44px;" in css.split(".switch-row {")[1][:200], "the row must clear the 44px touch-target floor"
+    assert any(".switch-toggle" in blk for blk in css.split("@media (prefers-reduced-motion: reduce)")[1:])

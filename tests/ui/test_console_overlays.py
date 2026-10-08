@@ -3,7 +3,7 @@
 Static pins over nv-overlays.jsx: the URL-addressed host dispatches the
 two designer panels plus the re-hosted legacy surfaces, the create verbs
 open the same overlays the URL grammar addresses, and the submit bodies
-keep the SharedNewSessionForm / WorkspaceCreateBody contracts.
+keep the create-session / WorkspaceCreateBody contracts.
 """
 
 from __future__ import annotations

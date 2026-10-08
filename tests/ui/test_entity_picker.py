@@ -17,16 +17,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
 PICKER = UI / "components" / "shared" / "entity-picker.jsx"
-NEW_SESSION = UI / "components" / "new-session-form.jsx"
 INDEX = UI / "index.html"
 
 
 def _picker_src() -> str:
     return PICKER.read_text(encoding="utf-8")
 
-
-def _new_session_src() -> str:
-    return NEW_SESSION.read_text(encoding="utf-8")
 
 
 # ---- The component exists + is defined -------------------------------------
@@ -100,40 +96,8 @@ def test_loads_after_pager_before_consumers() -> None:
     picker_at = order.index("components/shared/entity-picker.jsx")
     assert picker_at > order.index("components/shared.jsx")
     assert picker_at > order.index("components/shared/pager.jsx")
-    for consumer in ("components/new-session-form.jsx",):
+    for consumer in ("components/graph-builder/gb-palette.jsx", "components/graph-builder/gb-inspector.jsx"):
         assert order.index(consumer) > picker_at, f"{consumer} loads before entity-picker.jsx"
-
-
-# ---- new-session-form.jsx wires the picker, not a bare <select> -----------
-
-
-def _agent_graph_field_block(src: str) -> str:
-    start = src.index('{kind === "agent" ? "Agent" : "Graph"}')
-    end = src.index("noBinding &&", start)
-    return src[start:end]
-
-
-def test_new_session_form_uses_entity_picker_for_agent_and_graph() -> None:
-    block = _agent_graph_field_block(_new_session_src())
-    assert block.count("<EntityPicker") == 2
-    assert 'path="/agents"' in block
-    assert 'path="/graphs"' in block
-    assert "<select" not in block, "agent/graph binding should use EntityPicker, not a bare <select>"
-
-
-def test_new_session_form_picker_wired_to_existing_state() -> None:
-    block = _agent_graph_field_block(_new_session_src())
-    assert "value={agentId}" in block and "onChange={setAgentId}" in block
-    assert "value={graphId}" in block and "onChange={setGraphId}" in block
-
-
-def test_new_session_form_still_resolves_selected_graph_for_begin_schema() -> None:
-    # The graph binding drives a dependent Begin.input_schema dynamic form
-    # (selectedGraph lookup); dropping the select must not drop this.
-    src = _new_session_src()
-    assert "selectedGraph" in src
-    assert "graphItems.find" in src
-    assert "input_schema" in src and "graph_input" in src
 
 
 # ---- Transpile checks -------------------------------------------------------
@@ -144,14 +108,6 @@ def test_entity_picker_jsx_transpiles() -> None:
 
     b = JSXBundler(ui_dir=UI, babel_source=(UI / "vendor" / "babel.min.js").read_text())
     code = b._transform(_picker_src(), "components/shared/entity-picker.jsx")
-    assert code and "EntityPicker" in code
-
-
-def test_new_session_form_jsx_transpiles() -> None:
-    from primer.api._jsx_bundle import JSXBundler
-
-    b = JSXBundler(ui_dir=UI, babel_source=(UI / "vendor" / "babel.min.js").read_text())
-    code = b._transform(_new_session_src(), "components/new-session-form.jsx")
     assert code and "EntityPicker" in code
 
 
