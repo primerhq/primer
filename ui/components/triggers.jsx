@@ -1532,7 +1532,7 @@ function TR_TriggerDetail({ id }) {
         <TR_HmacSecretDialog
           triggerId={id}
           onClose={() => setHmacDialogOpen(false)}
-          onSaved={() => { setHmacDialogOpen(false); refetchAll(); }}
+          onSaved={() => { setHmacDialogOpen(false); setHmacError(null); refetchAll(); }}
         />
       )}
 
