@@ -83,12 +83,14 @@ class ReferenceCheck:
     def from_spec(cls, spec: ReferenceSpec) -> "ReferenceCheck":
         """Build the check for a declaration shared with the system tools (:mod:`primer.storage.references`)."""
 
-        def _storage(request: Request) -> Any:
+        # Not named ``_storage``: the whole-document session writer scan (tests/_support/session_writer_scan.py) resolves a
+        # ``self._storage()`` call by the function's name, and a second ``_storage`` here made ``CorrelationStore``'s unresolvable.
+        def _child_storage_of(request: Request) -> Any:
             return request.app.state.storage_provider.get_storage(spec.child_model)
 
         return cls(
             child_kind=spec.child_kind,
-            child_storage=_storage,
+            child_storage=_child_storage_of,
             child_field=spec.child_field,
             op=spec.op,
             lookup=spec.lookup,
