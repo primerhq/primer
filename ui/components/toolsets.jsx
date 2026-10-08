@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Modal, Banner, CardList, Card, Fab, relativeTime, CapabilityBadges */
+/* global React, Icon, Btn, Modal, Banner, CardList, Card, Fab, relativeTime, CapabilityBadges, FormField */
 
 // Toolsets page + detail wired to the real API. The Designer's mock-data
 // scaffold was replaced in Phase 2 — every fetch goes through
@@ -594,11 +594,7 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
           </div>
         </div>
       )}
-      <div className="field">
-        <label className="field-label">ID {isEdit
-          ? <span className="hint">locked — id cannot change after create</span>
-          : <span className="hint">optional — backend assigns if blank</span>}
-        </label>
+      <FormField label="ID" hint={isEdit ? "locked \u2014 id cannot change after create" : "optional \u2014 backend assigns if blank"} err={fieldErrors["body.id"]}>
         <input
           className="input"
           data-testid="toolset-id-input"
@@ -608,11 +604,9 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
           disabled={isEdit}
           style={{ width: "100%" }}
         />
-        {fieldErrors["body.id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.id"]}</div>}
-      </div>
+      </FormField>
 
-      <div className="field">
-        <label className="field-label">Provider</label>
+      <FormField label="Provider" err={fieldErrors["body.provider"]}>
         <select
           className="select"
           data-testid="toolset-provider-select"
@@ -626,18 +620,16 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
         <div className="field-help">
           Internal toolsets (<span className="mono">system</span>, <span className="mono">workspaces</span>, <span className="mono">misc</span>, <span className="mono">search</span>, <span className="mono">web</span>) are runtime built-ins — they cannot be created via this form.
         </div>
-        {fieldErrors["body.provider"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.provider"]}</div>}
         {provider === "python" && (
           <div className="field-help warn" data-testid="toolset-python-admin-only">
             Admin only: a python toolset runs its source on the Primer host, so creating or changing one needs the admin role. Any other role gets a 403 on save.
           </div>
         )}
-      </div>
+      </FormField>
 
       {provider === "mcp" && (
         <>
-          <div className="field">
-            <label className="field-label">Transport</label>
+          <FormField label="Transport">
             <div className="chip-group" style={{ display: "inline-flex" }}>
               <span
                 className={`chip ${transport === "stdio" ? "active" : ""}`}
@@ -656,12 +648,11 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
               http = streamable HTTP (modern); sse = legacy HTTP+SSE. Both use the
               same URL / headers / OAuth below.
             </div>
-          </div>
+          </FormField>
 
           {transport === "stdio" ? (
             <>
-              <div className="field">
-                <label className="field-label">Command</label>
+              <FormField label="Command" err={fieldErrors["body.config.config.command"]}>
                 <input
                   className="input mono"
                   data-testid="toolset-command-input"
@@ -683,8 +674,7 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
                 <div className="field-help warn" data-testid="toolset-stdio-admin-only">
                   Admin only: a stdio toolset launches this command on the Primer host, so creating or changing one needs the admin role. Any other role gets a 403 on save.
                 </div>
-                {fieldErrors["body.config.config.command"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.config.config.command"]}</div>}
-              </div>
+              </FormField>
               <TS_KvEditor
                 label="Environment"
                 hint="optional · env vars set when launching the subprocess"
@@ -696,8 +686,7 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
             </>
           ) : (
             <>
-              <div className="field">
-                <label className="field-label">URL</label>
+              <FormField label="URL" err={fieldErrors["body.config.config.url"]}>
                 <input
                   className="input mono"
                   value={url}
@@ -710,8 +699,7 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
                     Changing the URL or the OAuth endpoints (redirect URI, resource URI)? Re-enter the header values below and the OAuth client secret in the same save: the stored secrets are only kept for the endpoint they were set for. Without the admin role, a new endpoint with masked secrets gets a 403.
                   </div>
                 )}
-                {fieldErrors["body.config.config.url"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.config.config.url"]}</div>}
-              </div>
+              </FormField>
               <TS_KvEditor
                 label="Headers"
                 hint="optional · sent on every request to the MCP server"
@@ -736,14 +724,14 @@ function TS_KvEditor({ label, hint, pairs, onChange, keyPlaceholder, valuePlaceh
   const removeAt = (i) => onChange(pairs.filter((_, idx) => idx !== i));
   const add = () => onChange([...pairs, { key: "", value: "" }]);
   return (
-    <div className="field">
-      <label className="field-label">{label} {hint && <span className="hint">{hint}</span>}</label>
+    <FormField label={label} hint={hint}>
       {pairs.length === 0 && <div className="field-help muted">— none —</div>}
       {pairs.map((p, i) => (
         <div key={i} style={{ display: "flex", gap: 6, marginTop: 4 }}>
           <input
             className="input mono"
             value={p.key}
+            aria-label={label + " key " + (i + 1)}
             onChange={(e) => updateAt(i, { key: e.target.value })}
             placeholder={keyPlaceholder}
             style={{ flex: 1 }}
@@ -751,6 +739,7 @@ function TS_KvEditor({ label, hint, pairs, onChange, keyPlaceholder, valuePlaceh
           <input
             className="input mono"
             value={p.value}
+            aria-label={label + " value " + (i + 1)}
             onChange={(e) => updateAt(i, { value: e.target.value })}
             placeholder={valuePlaceholder}
             style={{ flex: 2 }}
@@ -761,7 +750,7 @@ function TS_KvEditor({ label, hint, pairs, onChange, keyPlaceholder, valuePlaceh
       <div style={{ marginTop: 6 }}>
         <Btn size="sm" kind="ghost" icon="plus" onClick={add}>Add {label.toLowerCase().replace(/s$/, "")}</Btn>
       </div>
-    </div>
+    </FormField>
   );
 }
 
