@@ -50,10 +50,23 @@ function LA_fmtDate(iso) {
 // LA_LinkedAccountsPage — top-level list view + link-provider entry points
 // ============================================================================
 
+// What the empty state says under "No linked accounts yet" (admin review ADM-27). It used to point at a list "below" that does not exist when
+// no provider is configured. Nothing is said until the providers are KNOWN (they load separately, and the first render has none), and a
+// failed read leaves them unknown, so an outage is never reported as "none configured". tests/ui/test_profile_page_messages.py runs this.
+function LA_emptyHint(providers, loaded) {
+  if (!loaded) return "";
+  if (!providers || !providers.length) {
+    return "No single sign-on provider is configured on this server. An administrator adds them under System > SSO.";
+  }
+  return "Link a single sign-on provider below to sign in without a password.";
+}
+
 function LA_LinkedAccountsPage() {
   const { useResource, apiFetch } = window.primerApi;
   const [confirmUnlink, setConfirmUnlink] = React.useState(null); // identity | null
   const [providers, setProviders] = React.useState([]);
+  // False until the providers read has ANSWERED (a failed read leaves it false: an outage is not "none configured").
+  const [providersLoaded, setProvidersLoaded] = React.useState(false);
 
   const list = useResource(
     "linked-accounts:list",
@@ -70,7 +83,7 @@ function LA_LinkedAccountsPage() {
     (async () => {
       try {
         const r = await apiFetch("GET", "/auth/sso/providers", null, {});
-        if (!cancelled && Array.isArray(r)) setProviders(r);
+        if (!cancelled && Array.isArray(r)) { setProviders(r); setProvidersLoaded(true); }
       } catch {
         // No providers configured, or the endpoint isn't reachable yet —
         // degrade to just the linked-identities table (no crash).
@@ -106,10 +119,9 @@ function LA_LinkedAccountsPage() {
         <div className="empty" style={{ padding: "40px 20px" }} data-testid="linked-accounts-empty">
           <div className="ico-wrap"><Icon name="key" size={22} /></div>
           <div className="head">No linked accounts yet</div>
-          <div className="sub">
-            Link a single sign-on provider below to sign in without a
-            password.
-          </div>
+          {LA_emptyHint(providers, providersLoaded) ? (
+            <div className="sub">{LA_emptyHint(providers, providersLoaded)}</div>
+          ) : null}
         </div>
       )}
 

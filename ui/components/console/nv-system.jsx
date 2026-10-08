@@ -360,6 +360,23 @@ function NV_SysDashboard() {
 // gate above) becomes the admin all-users token table instead - the two
 // surfaces now share AT_ApiTokensPage's machinery via its mode prop
 // rather than duplicating table/row/dialog code.
+// The sentence for a failed password change (admin review ADM-25). POST /auth/change-password answers a wrong current password with 401 and
+// the code invalid_credentials (in the problem envelope's detail and in extensions.error), which the page used to print as it came. The same
+// code also answers an account that has no password (single sign-on only) and a lost race with another change, so the sentence says "not
+// right" and names that case. The mapping is on the CODE: an expired session answers 401 too, with another detail, and keeps the server's own
+// words. A bare machine code that is not known is never the sentence. tests/ui/test_profile_page_messages.py runs this in MiniRacer.
+function NV_passwordChangeMessage(err) {
+  var env = err && err.envelope;
+  var code = (env && env.extensions && env.extensions.error) || (err && typeof err.detail === "string" ? err.detail : "");
+  if (code === "invalid_credentials") {
+    return "The current password is not right. (An account that only signs in through single sign-on has no password to change.)";
+  }
+  var text = (err && typeof err.detail === "string" && err.detail) || (err && err.message) || "";
+  if (!text) return "Could not change the password.";
+  if (/^[a-z][a-z0-9]*(_[a-z0-9]+)+$/.test(text)) return "Could not change the password (" + text + ").";
+  return text;
+}
+
 function NV_SysProfile() {
   var con = NV_useConsole();
   var curState = React.useState("");
@@ -399,7 +416,7 @@ function NV_SysProfile() {
       </div>
       <div className="nv-sys-subtitle">Change password</div>
       {err ? (
-        <div className="nv-form-error">{err.detail || err.message}</div>
+        <div className="nv-form-error">{NV_passwordChangeMessage(err)}</div>
       ) : null}
       <div className="nv-profile-pw">
         <input className="nv-input" type="password" value={cur}
