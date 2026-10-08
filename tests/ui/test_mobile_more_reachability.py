@@ -24,19 +24,25 @@ SHELL = ROOT / "ui" / "components" / "console" / "nv-mobile-shell.jsx"
 
 # What the file's globals need to exist; each is the smallest stand-in that lets the real component render.
 _PRELUDE = r"""
-var LOG = { fetches: [], reloads: 0, overlays: [], views: [], closedOverlays: 0, navReports: [], consumed: 0, tabs: [] };
+var LOG = { fetches: [], reloads: 0, overlays: [], views: [], closedOverlays: 0, navReports: [], consumed: 0, tabs: [], cleared: 0 };
 var ITEMS = [];
 var LOADING = false;
 var __con = {
   username: "ana", role: "admin", wid: "w1", doc: null, overlay: null, view: { name: "studio", nav: null },
   openOverlay: function (name) { LOG.overlays.push(name); },
+  clearView: function () { LOG.cleared += 1; URLVIEW = { name: "studio", nav: null }; __con = Object.assign({}, __con, { view: fresh() }); },
   closeOverlay: function () { LOG.closedOverlays += 1; },
   goView: function (name, nav) { LOG.views.push([name, nav || null]); },
   toast: function () {}, bump: function () {},
 };
 function NV_useConsole() { return __con; }
-// What the shell's goView does: a NEW view object on every call, even for the same name and nav.
-function navigate(name, nav) { __con = Object.assign({}, __con, { view: { name: name, nav: nav || null } }); }
+// The view as the URL names it, and what the shell does with it. goView writes the URL and hands over a NEW view object; a hashchange or
+// popstate (nv-shell's onNav) re-parses the URL into another FRESH object without any goView; clearView drops the view from state, and
+// so from the URL, as a replace (no history entry).
+var URLVIEW = { name: "studio", nav: null };
+function fresh() { return { name: URLVIEW.name, nav: URLVIEW.nav }; }
+function navigate(name, nav) { URLVIEW = { name: name, nav: nav || null }; __con = Object.assign({}, __con, { view: fresh() }); }
+function reparse() { __con = Object.assign({}, __con, { view: fresh() }); }
 var NV_HealthCards = function () { return React.createElement("div", { "data-testid": "health-cards" }); };
 var NV_PLAT_GROUPS = [{ label: "Build", ids: ["agents", "toolsets"] }];
 window.NV_PLAT_PAGES = {
@@ -56,6 +62,7 @@ window.BottomSheet = function (props) {
 };
 window.MobileTabs = function (props) {
   LOG.tabs.push(props.active);
+  window.__selectTab = props.onSelect;
   var tab = props.tabs.filter(function (t) { return t.id === props.active; })[0];
   return React.createElement("div", { "data-testid": "tabs:" + props.active }, tab.content);
 };
@@ -107,7 +114,19 @@ def app(code):
             return ctx.eval("MR.find(" + json.dumps(testid) + ").props[" + json.dumps(name) + "]")
 
         def navigate(self, name: str, nav: str | None = None) -> None:
+            """A goView call: the URL names the view, and the shell hands over a new view object."""
             ctx.eval("navigate(" + json.dumps(name) + ", " + json.dumps(nav) + "); MR.rerender();")
+
+        def reparse(self) -> None:
+            """A popstate or hashchange re-parsing whatever the URL says now into a fresh view object, with no goView."""
+            ctx.eval("reparse(); MR.rerender();")
+
+        def paste(self, name: str, nav: str | None = None) -> None:
+            """A link pasted into the address bar of an open console: the URL changes under the shell, which only sees a hashchange."""
+            ctx.eval("URLVIEW = " + json.dumps({"name": name, "nav": nav}) + "; reparse(); MR.rerender();")
+
+        def select_tab(self, tab: str) -> None:
+            ctx.eval("window.__selectTab(" + json.dumps(tab) + "); MR.rerender();")
 
     try:
         yield App()
@@ -265,6 +284,74 @@ def test_running_the_same_platform_link_again_after_back_opens_the_section_again
     app.click("nv-mob-plat-back")
     app.navigate("platform", "agents")
     assert app.has("nv-mob-plat-page:agents"), "and every time after that"
+
+
+def test_a_handled_platform_link_is_consumed_so_nothing_can_replay_it(app) -> None:
+    """On a phone nothing cleared ``view=platform:<x>`` from the URL, and nv-shell's onNav re-parses the URL into a fresh view object
+    on EVERY hashchange or popstate, so a later Android back gesture re-opened the section behind whatever the user had moved on to.
+    Once the shell has acted on the link it drops the view from the URL (a replace, no history entry)."""
+    app.js('navigate("platform", "agents");')
+    app.mount("NV_MobileShell")
+    assert app.has("nv-mob-plat-page:agents")
+    assert app.js("LOG.cleared") == 1 and app.js("URLVIEW.name") == "studio", "the URL no longer names the view"
+
+
+def test_a_popstate_that_reparses_the_url_after_back_does_not_reopen_the_section(app) -> None:
+    app.js('navigate("platform", "agents");')
+    app.mount("NV_MobileShell")
+    app.click("nv-mob-plat-back")
+    assert app.has("nv-mob-plat-sections")
+    app.reparse()
+    assert app.has("nv-mob-plat-sections") and not app.has("nv-mob-plat-page:agents"), "the section must stay closed"
+    app.reparse()
+    assert app.has("nv-mob-plat-sections"), "and again, however many times the URL is re-parsed"
+
+
+def test_a_popstate_does_not_pull_the_phone_back_to_the_more_tab(app) -> None:
+    """Back, Inbox, open a session, back gesture: the tab the user is on is theirs; a re-parsed URL does not move it."""
+    app.js('navigate("platform", "agents");')
+    app.mount("NV_MobileShell")
+    app.click("nv-mob-plat-back")
+    app.select_tab("inbox")
+    assert app.has("tabs:inbox")
+    app.reparse()
+    assert app.has("tabs:inbox") and not app.has("nv-mob-plat-page:agents")
+
+
+def test_a_link_run_through_goview_still_pulls_the_phone_to_the_section_from_another_tab(app) -> None:
+    app.js('navigate("platform", "agents");')
+    app.mount("NV_MobileShell")
+    app.click("nv-mob-plat-back")
+    app.select_tab("inbox")
+    app.navigate("platform", "agents")
+    assert app.has("tabs:more") and app.has("nv-mob-plat-page:agents")
+    assert app.js("LOG.cleared") == 2, "consumed again"
+
+
+def test_a_link_pasted_into_an_open_console_opens_the_section(app) -> None:
+    """The shell only sees a hashchange here, exactly as it does for a back gesture: the two cannot be told apart by the event, which
+    is why the link is consumed once handled instead of the effect trying to guess which events are navigations."""
+    app.mount("NV_MobileShell")
+    assert app.has("tabs:inbox")
+    app.paste("platform", "agents")
+    assert app.has("tabs:more") and app.has("nv-mob-plat-page:agents")
+    app.click("nv-mob-plat-back")
+    app.paste("platform", "agents")
+    assert app.has("nv-mob-plat-page:agents"), "a second paste of the same link opens it again"
+
+
+def test_a_link_to_the_whole_platform_is_consumed_too(app) -> None:
+    app.js('navigate("platform", null);')
+    app.mount("NV_MobileShell")
+    assert app.has("nv-mob-plat-sections")
+    assert app.js("LOG.cleared") == 1
+
+
+def test_a_system_view_is_not_consumed_because_it_is_the_screen_itself(app) -> None:
+    app.js('navigate("system", null);')
+    app.mount("NV_MobileShell")
+    assert app.has("nv-mob-system-screen")
+    assert app.js("LOG.cleared") == 0 and app.js("URLVIEW.name") == "system"
 
 
 def test_a_platform_link_for_another_section_switches_to_it(app) -> None:
