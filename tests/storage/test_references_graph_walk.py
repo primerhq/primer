@@ -183,6 +183,18 @@ async def test_the_query_the_docs_give_finds_the_row_the_warning_points_at(sqlit
     assert await references.first_graph_with_agent_node(sqlite_provider.get_storage(Graph), "ag-1") is None
 
 
+def test_the_table_the_docs_name_on_postgres_is_the_schema_qualified_one_the_storage_builds() -> None:
+    """docs: on PostgreSQL the graph rows are in ``"<schema>"."graph"`` (``db_schema``, default ``public``), not a bare ``graph``, which only
+    resolves when the schema is on the search path. Built the way the storage builds it, with no database."""
+    from types import SimpleNamespace
+
+    from primer.storage.postgres import PostgresStorage
+
+    qualified = PostgresStorage(SimpleNamespace(schema="tenant_a"), Graph)._qualified  # noqa: SLF001 - the reference the SQL uses
+
+    assert qualified == '"tenant_a"."graph"'
+
+
 @pytest.mark.asyncio
 async def test_the_query_for_a_first_row_that_is_corrupt(sqlite_provider) -> None:
     await insert_unreadable_graph(sqlite_provider, "a-0")
