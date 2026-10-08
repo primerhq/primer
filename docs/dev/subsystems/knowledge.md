@@ -79,7 +79,7 @@ Entity rows go through the normal `Storage` interface. Bodies live in the conten
 | `POST /v1/collections/{id}/docs/move` | Move a node and its subtree. |
 | `DELETE /v1/collections/{id}/docs?path=&recursive=` | Delete, optionally recursively. |
 | `GET /v1/collections/{id}/grep?q=&path_prefix=` | Regex line search over bodies. |
-| `POST /v1/collections/{id}/import` | Import a zip archive as a tree. |
+| `POST /v1/collections/{id}/import` | Import a zip archive as a tree. Zip-bomb caps (FS-04) answer 413 `payload-too-large`: the upload is copied in chunks to a spool and refused past `MAX_ARCHIVE_BYTES` (32 MiB) while it is read; an archive listing more than `MAX_ENTRIES` (10,000) entries or declaring more than `MAX_UNCOMPRESSED_BYTES` (128 MiB) in total is refused before anything is written; each entry is inflated through a bounded read that counts the bytes actually decompressed against the same total, and an entry whose sizes or CRC do not match its headers is a 400. Entry names whose segments slugify to nothing (`..`, `.`) are rejected per entry, so a traversal name cannot climb above `parent`. |
 | `PUT/GET/DELETE /v1/collections/{id}/search` | Enable, report, disable semantic search. |
 | `collections` toolset | `collections_list`, `collection_tree`, `read_document`, `grep_collection`, `semantic_search`, and the write tools. |
 
