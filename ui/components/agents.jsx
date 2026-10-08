@@ -499,6 +499,23 @@ function AG_SessionsPanel({ agentId }) {
   );
 }
 
+// What the CREATE form refuses before it posts (admin review ADM-14), as a map under the server's own field paths so a client refusal and a
+// server 422 share one display. The id is optional (the backend assigns agent-<hex> when it is blank), but a typed one is permanent and sits
+// in URLs and references, so it is lowercase letters, digits, hyphens and underscores, starting with a letter or digit, at most 63 characters;
+// surrounding spaces are not part of it, and a whitespace-only id is a blank one. The description is required: it is how OTHER agents find
+// an agent. Create only: an existing agent keeps what it has, and the model is not changed. tests/ui/test_agent_form_validation.py runs this.
+function AG_validateNewAgent(id, description) {
+  var problems = {};
+  var name = String(id || "").trim();
+  if (name && !/^[a-z0-9][a-z0-9_-]{0,62}$/.test(name)) {
+    problems["body.id"] = "Use lowercase letters, digits, hyphens and underscores, starting with a letter or digit (up to 63 characters), for example refund-triage. The name cannot change after the agent is created.";
+  }
+  if (!String(description || "").trim()) {
+    problems["body.description"] = "Describe what this agent is for: other agents find it by its description.";
+  }
+  return problems;
+}
+
 function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDelete, onChat, chatLoading }) {
   // Same modal serves both create (existing == null) and edit
   // (existing == agent row). In edit mode the id field is locked,
@@ -640,6 +657,10 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
   const submit = async () => {
     setFieldErrors({});
     setResponseFormatError(null);
+    if (!isEdit) {
+      const problems = AG_validateNewAgent(id, description);
+      if (Object.keys(problems).length) { setFieldErrors(problems); return; }
+    }
     // response_format: parse the textarea once here so a malformed
     // schema is caught client-side (jump to Advanced + show the error)
     // before the request goes out. Empty text == no structured output.
@@ -658,7 +679,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
     const tools = [...selectedScopedIds].sort();
     const body = {
       // On edit the id is locked but still sent (PUT-replace contract).
-      ...(isEdit ? { id: existing.id } : (id ? { id } : {})),
+      ...(isEdit ? { id: existing.id } : (id.trim() ? { id: id.trim() } : {})),
       description: description || "(no description)",
       model: { profile_id: profileId },
       tools,
@@ -777,11 +798,15 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
               id="na-id"
               className="input"
               value={id}
-              onChange={(e) => setId(e.target.value)}
+              onChange={(e) => { setId(e.target.value); setFieldErrors((m) => ({ ...m, "body.id": undefined })); }}
               placeholder="e.g. refund-triage"
+              aria-invalid={!!fieldErrors["body.id"]}
               disabled={isEdit}
               style={{ width: "100%" }}
             />
+            {fieldErrors["body.id"] && (
+              <div className="field-help" style={{ color: "var(--red)" }} data-testid="na-id-error">{fieldErrors["body.id"]}</div>
+            )}
           </div>
           <div className="field">
             <label className="field-label" htmlFor="na-description">Description</label>
@@ -789,11 +814,12 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
               id="na-description"
               className="input"
               value={description}
-              onChange={(e) => setDescription(e.target.value)}
+              onChange={(e) => { setDescription(e.target.value); setFieldErrors((m) => ({ ...m, "body.description": undefined })); }}
+              aria-invalid={!!fieldErrors["body.description"]}
               style={{ width: "100%" }}
             />
             {fieldErrors["body.description"] && (
-              <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.description"]}</div>
+              <div className="field-help" style={{ color: "var(--red)" }} data-testid="na-description-error">{fieldErrors["body.description"]}</div>
             )}
           </div>
           <div className="field">
@@ -1219,8 +1245,8 @@ function AG_StatusPanel({ id, status }) {
                   ? "All references resolve"
                   : `${issues.length} issue${issues.length === 1 ? "" : "s"} blocking new sessions`}
           </div>
-          <div className="muted text-sm">
-            <span className="mono">GET /v1/agents/{id}/status</span> · last checked just now · polled every 30s
+          <div className="muted text-sm" data-testid="agent-status-note" title={`GET /v1/agents/${id}/status, polled every 30s`}>
+            Checked automatically while this window is open
             {status.error && (
               <> · <span style={{ color: "var(--red)" }}>{status.error.title || status.error.message}</span></>
             )}
