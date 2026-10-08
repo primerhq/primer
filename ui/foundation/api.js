@@ -64,6 +64,105 @@
     }
   }
 
+  // ---- the ONE reader for a refused write (ticket 01a11cd1-7aaf) --------------------------------------------------------------------------------------
+  // Five components used to read {code, message} out of the problem envelope their own way and disagreed. The API puts a refusal's pieces in four places:
+  // extensions.code (routers raise HTTPException(detail={code, message}); `detail` is then the message STRING), extensions.error (the auth gate, which sends
+  // no message so `detail` is the code itself, and the agent/profile pre-write 422s {error, field, message}), extensions.errors[] (request validation: one
+  // entry per field, `type` is the code and `loc` the field) and, for a reference block, only the sentence ("in_use_by: ...").
+
+  const _SNAKE_CODE = /^[a-z][a-z0-9]*(_[a-z0-9]+)+$/;
+
+  // What to say when the server sent a code and no sentence: the auth gate answers a session that ended, a reset password or a sign-out everywhere (401)
+  // and a role that may not do this (403) with only the code.
+  const _BARE_SENTENCES = {
+    auth_required: "Your session has ended; sign in again.",
+    forbidden_role: "Your role does not allow this.",
+  };
+
+  // "in_use_by: 1 agent(s) reference 'p-1' (first: 'builder')" (primer/api/routers/_references.py): the count is the size of a one-row page, so it only
+  // means "at least one". Quotes are Python's repr, which uses double quotes for a value that holds a single quote.
+  const _IN_USE_BY = /^in_use_by:\s*\d+\s+(.+?)\(s\)\s+reference\s+(['"])(.+?)\2\s+\(first:\s*(['"])(.+?)\4\)\s*$/;
+  // "Channel with provider_id='rev-slack', external_id='C0AAAA0001' already exists (id='channel-1')" (primer/channel/checks.py).
+  const _ALREADY_EXISTS = /^(\w[\w ]*?) with (.+?) already exists \(id=(['"])(.+?)\3\)\s*$/;
+  const _ASSIGNMENT = /(\w+)=(['"])(.*?)\2/g;
+
+  const _PLAIN_MAX = 500;
+
+  function _article(word) {
+    return /^[aeiou]/i.test(word) ? "an" : "a";
+  }
+
+  // The server's sentence as a person reads it. Two sentences are code-shaped (admin review ADM-12 and ADM-20); every other sentence is returned as it is.
+  function _plainSentence(sentence) {
+    // Both shapes are short (two ids and a kind); a long sentence is somebody else's text, and the lazy parts of the patterns are not meant for it.
+    if (sentence.length > _PLAIN_MAX) return sentence;
+    const block = sentence.startsWith("in_use_by:") ? _IN_USE_BY.exec(sentence) : null;
+    if (block) {
+      const kind = block[1];
+      return `${block[2]}${block[3]}${block[2]} is still in use by ${_article(kind)} ${kind}, for example ${block[5]}. Remove or change that first.`;
+    }
+    if (/^in_use_by:\s*\S/.test(sentence)) {
+      const rest = sentence.replace(/^in_use_by:\s*/, "").trim();
+      return rest.charAt(0).toUpperCase() + rest.slice(1);
+    }
+    const dup = sentence.includes(" already exists (id=") ? _ALREADY_EXISTS.exec(sentence) : null;
+    if (dup) {
+      const pairs = [];
+      let m;
+      _ASSIGNMENT.lastIndex = 0;
+      while ((m = _ASSIGNMENT.exec(dup[2])) !== null) pairs.push([m[0], m[1], m[3]]);
+      if (pairs.length > 0 && pairs.map((p) => p[0]).join(", ") === dup[2]) {
+        const kind = dup[1].charAt(0).toLowerCase() + dup[1].slice(1);
+        return `${_article(kind).replace(/^a/, "A")} ${kind} with ${pairs.map((p) => `${p[1]} ${p[2]}`).join(" and ")} already exists: ${dup[4]}.`;
+      }
+    }
+    return sentence;
+  }
+
+  // {code, field, sentence, message} of a failed request, from the thrown ApiError (or any Error).
+  //   code      the machine code, or null.
+  //   field     the field the refusal is about (dotted, no "body."), or null.
+  //   sentence  the server's own words, or "" when it sent none or only the code. A message equal to the code is not a sentence; one that merely looks like
+  //             a code is kept when the code is known and different (a not-found message is a bare id, and an id may hold an underscore).
+  //   message   what a person reads: the sentence (said plainly, see _plainSentence); else the sentence for a known bare code; else, for request
+  //             validation, ApiError's "Missing or invalid: a, b."; else the HTTP title, the error's message, the caller's fallback, "Request failed".
+  function readRefusal(err, fallback) {
+    const env = err && err.envelope;
+    const ext = (env && env.extensions) || {};
+    const det = env && env.detail && typeof env.detail === "object" ? env.detail : {};
+    const errors = Array.isArray(ext.errors) && ext.errors.length > 0 ? ext.errors : null;
+    const text = err && typeof err.detail === "string" ? err.detail.trim() : "";
+
+    let code = ext.code || ext.error || det.code || det.error || (errors && errors[0] && errors[0].type) || null;
+    if (!code) {
+      if (/^in_use_by:/.test(text)) code = "in_use_by";
+      else if (_SNAKE_CODE.test(text)) code = text;
+    }
+    code = code ? String(code) : null;
+
+    let field = null;
+    if (ext.field) field = String(ext.field);
+    else if (errors && Array.isArray(errors[0].loc) && errors[0].loc.length > 0) field = _humanizeFieldPath(errors[0].loc);
+
+    let sentence = "";
+    if (!errors) {
+      const options = [ext.message, det.message, err && typeof err.detail === "string" ? err.detail : ""];
+      for (const m of options) {
+        if (typeof m === "string" && m.trim() && m.trim() !== code) {
+          sentence = m;
+          break;
+        }
+      }
+    }
+
+    let message;
+    if (sentence) message = _plainSentence(sentence);
+    else if (code && _BARE_SENTENCES[code]) message = _BARE_SENTENCES[code];
+    else if (errors && text) message = text;
+    else message = (err && (err.title || err.message)) || fallback || "Request failed";
+    return { code, field, sentence, message };
+  }
+
   function resolvePath(path) {
     if (typeof path !== "string" || path.length === 0) {
       throw new TypeError("apiFetch: path must be a non-empty string");
@@ -167,4 +266,5 @@
   ns.apiFetch = apiFetch;
   ns.resolvePath = resolvePath;
   ns.ApiError = ApiError;
+  ns.readRefusal = readRefusal;
 })();

@@ -45,6 +45,8 @@ def _call(expression: str):
     end = SRC.index("\n}\n", SRC.index("function TR_scheduleFault(", start)) + 3
     ctx = MiniRacer()
     _OPEN_CONTEXTS.append(ctx)
+    ctx.eval("var window = {};")
+    ctx.eval((ROOT / "ui" / "foundation" / "api.js").read_text(encoding="utf-8"))   # TR_scheduleFault reads the code through the one reader
     ctx.eval(SRC[start:end])
     return json.loads(ctx.eval(f"JSON.stringify({expression})"))
 

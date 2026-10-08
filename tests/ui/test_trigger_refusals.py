@@ -28,6 +28,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 SRC = (ROOT / "ui" / "components" / "triggers.jsx").read_text(encoding="utf-8")
 ROUTER = (ROOT / "primer" / "api" / "routers" / "triggers.py").read_text(encoding="utf-8")
+# The helpers delegate to the one reader in the foundation (ticket 01a11cd1-7aaf), so the context loads it.
+API = (ROOT / "ui" / "foundation" / "api.js").read_text(encoding="utf-8")
 
 _OPEN_CONTEXTS: list = []
 
@@ -46,6 +48,8 @@ def _ctx():
     end = SRC.index("\n}\n", SRC.index("function TR_refusalText(", start)) + 3
     ctx = MiniRacer()
     _OPEN_CONTEXTS.append(ctx)
+    ctx.eval("var window = {};")
+    ctx.eval(API)
     ctx.eval(SRC[start:end])
     return ctx
 

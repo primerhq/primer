@@ -60,27 +60,11 @@ function AT_statusOf(token) {
   return "active";
 }
 
-// Extract a {code, message} from an ApiError envelope. The server wraps
-// every 4xx with {detail: {code, message}} (see _raise_code). FastAPI
-// unwraps `detail` to the envelope; ApiError stores it on `.detail` or
-// `.envelope.detail`. Mirrors the parser used by triggers.jsx.
-// R5 fix: envelope.detail is a STRING (primer/api/errors.py's
-// _detail_from_mapping reduces a raw HTTPException({code, message}) dict
-// to RFC7807's own string `detail`); the {code, message} dict survives
-// verbatim under `envelope.extensions`, not `envelope.detail`. See
-// ADM_extractError's fuller note in admin_users.jsx.
+// {code, message} of a failed request, from the ONE reader in ui/foundation/api.js (window.primerApi.readRefusal: ticket 01a11cd1-7aaf). It looks in
+// every place the API puts a refusal's pieces, so this page cannot disagree with the others about where the code is or what a bare auth code means.
 function AT_extractError(err) {
-  const env = err && err.envelope;
-  const ext = env && env.extensions;
-  let code = null;
-  let msg = null;
-  if (ext && typeof ext === "object") {
-    code = ext.code || ext.error || null;
-    msg = ext.message || null;
-  }
-  if (!msg && typeof err.detail === "string") msg = err.detail;
-  if (!msg) msg = (err && (err.title || err.message)) || "Request failed";
-  return { code, message: msg };
+  const r = window.primerApi.readRefusal(err);
+  return { code: r.code, message: r.message };
 }
 
 // ============================================================================

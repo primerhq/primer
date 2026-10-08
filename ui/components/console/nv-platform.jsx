@@ -146,7 +146,7 @@ function NV_deleteRow(env, nav, row, path) {
       env.refetch();
       return true;
     }, function (e) {
-      env.toast("Delete refused: " + (e.detail || e.message),
+      env.toast("Delete refused: " + window.primerApi.readRefusal(e).message,
         { kind: "error", requestId: e.requestId });
       return false;
     });

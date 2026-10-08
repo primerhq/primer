@@ -62,9 +62,12 @@ def test_extract_error_reads_extensions_not_detail():
     is always a STRING (primer/api/errors.py's _http_exception_handler),
     never the {code, message} dict this used to check `typeof ... ===
     "object"` against - code was always null."""
-    src = _src()
-    start = src.index("function AT_extractError(")
-    end = src.index("\n}", start)
-    body = src[start:end]
-    assert "env.extensions" in body
-    assert "env.detail" not in body
+    # Now one reader (ui/foundation/api.js readRefusal, ticket 01a11cd1-7aaf): run the page's function on the shape the handler really sends.
+    from tests._support.refusal_reader_js import call_extractor
+
+    envelope = {"type": "/errors/conflict", "title": "Conflict", "status": 409, "detail": "a token named 'ci' already exists",
+                "extensions": {"code": "token_name_taken", "message": "a token named 'ci' already exists"}}
+
+    assert call_extractor("components/api_tokens.jsx", "AT_extractError", envelope) == {
+        "code": "token_name_taken", "message": "a token named 'ci' already exists",
+    }

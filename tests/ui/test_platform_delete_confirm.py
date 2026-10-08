@@ -22,6 +22,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 PLAT = (ROOT / "ui" / "components" / "console" / "nv-platform.jsx").read_text(encoding="utf-8")
+# The refusal toast reads the refusal through the one reader of the foundation (ticket 01a11cd1-7aaf).
+API = (ROOT / "ui" / "foundation" / "api.js").read_text(encoding="utf-8")
 
 # Every V8 isolate this file creates, closed after each test (tests/ui peaks at over a gigabyte for the
 # isolates nobody disposes).
@@ -37,7 +39,7 @@ def _close_isolates():
 
 def _helpers_src() -> str:
     """The pure helpers: from NV_fact (the first helper in the file) up to the page table. No JSX, no
-    window.* dependency, so they are evaluated in isolation rather than transpiling the whole file."""
+    window.* dependency but the foundation's reader, so they are evaluated in isolation rather than transpiling the whole file."""
     start = PLAT.index("function NV_fact(")
     end = PLAT.index("// Per-entity page config.")
     return PLAT[start:end]
@@ -54,6 +56,8 @@ def _ctx(*, confirm: bool = True, rejects: bool = False, rejection: str = _REFUS
 
     ctx = MiniRacer()
     _OPEN_CONTEXTS.append(ctx)
+    ctx.eval("var window = {};")
+    ctx.eval(API)
     ctx.eval(
         "var dialogs = [], calls = [], toasts = [], refetched = 0;"
         "var env = {"

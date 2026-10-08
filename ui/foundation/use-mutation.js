@@ -70,10 +70,12 @@
         } else {
           const push = ns.toastPush;
           if (typeof push === "function") {
+            // The one reader says a code-shaped refusal ("in_use_by: ...", "X with a='b' already exists (id=...)") in words (admin review ADM-12, ADM-20).
+            const refusal = typeof ns.readRefusal === "function" ? ns.readRefusal(err) : null;
             push({
               kind: "error",
               title: (err && err.title) || "Request failed",
-              detail: (err && (err.detail || err.message)) || "",
+              detail: (refusal && refusal.message) || (err && (err.detail || err.message)) || "",
               requestId: (err && err.requestId) || null,
             });
           }

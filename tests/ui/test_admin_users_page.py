@@ -102,12 +102,16 @@ def test_extract_error_reads_extensions_not_detail() -> None:
     === "object"` check on `envelope.detail` could never be true, so `code`
     was always null (message still rendered via the string fallback, so
     this was invisible in the UI)."""
-    src = _src()
-    start = src.index("function ADM_extractError(")
-    end = src.index("\n}", start)
-    body = src[start:end]
-    assert "env.extensions" in body
-    assert "env.detail" not in body
+    # Now one reader (ui/foundation/api.js readRefusal, ticket 01a11cd1-7aaf): run the page's function on the shape the handler really sends
+    # ({error, message}: the anti-lockout refusal).
+    from tests._support.refusal_reader_js import call_extractor
+
+    envelope = {"type": "/errors/forbidden", "title": "Forbidden", "status": 403, "detail": "promote or enable another admin first",
+                "extensions": {"error": "last_admin_protected", "message": "promote or enable another admin first"}}
+
+    assert call_extractor("components/admin_users.jsx", "ADM_extractError", envelope) == {
+        "code": "last_admin_protected", "message": "promote or enable another admin first",
+    }
 
 
 def test_disable_quick_action_present() -> None:

@@ -25,20 +25,11 @@
 // Helpers
 // ============================================================================
 
-// {code, message} out of an ApiError envelope. Mirrors ADM_extractError
-// in admin_users.jsx / AT_extractError in api_tokens.jsx.
+// {code, message} of a failed request, from the ONE reader in ui/foundation/api.js (window.primerApi.readRefusal: ticket 01a11cd1-7aaf). It looks in
+// every place the API puts a refusal's pieces, so this page cannot disagree with the others about where the code is or what a bare auth code means.
 function SSO_extractError(err) {
-  const env = err && err.envelope;
-  const envDetail = env && env.detail;
-  let code = null;
-  let msg = null;
-  if (envDetail && typeof envDetail === "object") {
-    code = envDetail.error || envDetail.code || null;
-    msg = envDetail.message || null;
-  }
-  if (!msg && typeof err.detail === "string") msg = err.detail;
-  if (!msg) msg = (err && (err.title || err.message)) || "Request failed";
-  return { code, message: msg };
+  const r = window.primerApi.readRefusal(err);
+  return { code: r.code, message: r.message };
 }
 
 function SSO_parseScopes(raw) {
