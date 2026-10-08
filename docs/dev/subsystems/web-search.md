@@ -251,15 +251,22 @@ default).
 **Outbound request guard (SSRF).** `http_request`, the workspace-only
 `download`, and the `local` web-fetch adapter build their default
 `httpx.AsyncClient` with `guarded_async_client` from
-`primer/common/netguard.py`. Its httpcore network backend vets every new
-connection, so every redirect hop: it resolves the host to all its A/AAAA
+`primer/common/netguard.py`. `http_request` and `download` do NOT follow
+redirects (httpx's default `follow_redirects=False`; the 3xx comes back to the
+agent, and `download` fails on it); only the local web-fetch adapter follows
+them, and each hop to a new origin opens a new connection, which is checked
+again. The httpcore network backend vets every new connection: it resolves the host to all its A/AAAA
 records and refuses the request when ANY of them is not a public unicast
 address (loopback, RFC1918, link-local including the cloud metadata address
 169.254.169.254, CGNAT 100.64/10, ULA fc00::/7, fe80::/10, multicast,
 unspecified, reserved, and the IPv4-mapped, NAT64 and 6to4 forms of those). It
 then opens the socket to the vetted address itself, so a second DNS answer
 cannot swap in an internal one (DNS rebinding); the Host header and the TLS
-SNI and certificate check keep the original name. The refusal is
+SNI and certificate check keep the original name. The connect timeout is one
+budget for the whole connect: the resolution runs inside it, and the vetted
+addresses are tried in order, each with an even share of the time left (no
+racing), so a blackholed first address cannot use up the whole timeout. The
+refusal is
 `EgressRefused` (an `httpx.RequestError`), and the tool returns
 `refused: <host> resolves to a private address (<ip>); an operator can allow it
 with PRIMER_EGRESS_ALLOW` as an `is_error` result. The module also carries an
