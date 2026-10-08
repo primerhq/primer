@@ -16,6 +16,13 @@ The rule, in :func:`may_decide`:
 * a stored spec that cannot be read fails CLOSED to admin-only (it is stamped by our own code, so this is corruption; admins are always
   admitted, so it cannot wedge a park);
 * a ``call_tool`` park (it carries ``via_call_tool``) whose ``approvers`` KEY is absent was parked before the stamp existed: admin-only too.
+
+What to pass as ``metadata``: the ``resume_metadata`` of the SPECIFIC pending gate, taken from
+:func:`primer.session.pending_gates.resolve_pending_gate` (a graph park can hold several gates, each with its own stamp). NEVER judge the
+top-level ``parked_state["yielded"]`` of a graph park directly: it is a projection of the primary gate
+(``_CheckpointMixin._build_pending_park_yield``) and, when that primary is a ToolCall node's approval, it carries ``original_call`` and
+nothing else, so it is key-less (no ``approvers``, no ``via_call_tool``) and reads as "anyone" whatever the gate says. A caller that
+cannot resolve the gate has nothing to judge and passes :data:`ADMIN_ONLY_METADATA`, which fails closed.
 """
 
 from __future__ import annotations
@@ -31,6 +38,12 @@ logger = logging.getLogger(__name__)
 
 #: The REST error code for a refused decider (``403`` body ``{"error": "approver_mismatch"}``).
 APPROVER_MISMATCH = "approver_mismatch"
+
+#: The spec only an admin satisfies (no role and no user is named; admins are always admitted).
+ADMIN_ONLY_SPEC: dict[str, Any] = {"kind": "roles", "roles": [], "users": []}
+
+#: What to judge a decider against when the gate cannot be resolved or read: admin-only, never open.
+ADMIN_ONLY_METADATA: dict[str, Any] = {"approvers": ADMIN_ONLY_SPEC}
 
 
 class ApproverRefusedError(PrimerError):
@@ -48,7 +61,7 @@ def may_decide(metadata: Mapping[str, Any] | None, *, username: str | None, role
         # A call_tool park written before the stamp existed (only that park writes `via_call_tool`): the key is ABSENT, not None, and
         # absent used to read as anyone, leaving the gate open to every user until it timed out. Whether it was restricted cannot be
         # known now, so it fails closed. An explicit None means anyone; agent-loop parks have always written the key since P6.
-        raw = {"kind": "roles", "roles": [], "users": []}
+        raw = ADMIN_ONLY_SPEC
     if not raw:
         return True
     try:
@@ -72,4 +85,4 @@ def ensure_may_decide(metadata: Mapping[str, Any] | None, *, username: str | Non
         )
 
 
-__all__ = ["APPROVER_MISMATCH", "ApproverRefusedError", "ensure_may_decide", "may_decide"]
+__all__ = ["ADMIN_ONLY_METADATA", "ADMIN_ONLY_SPEC", "APPROVER_MISMATCH", "ApproverRefusedError", "ensure_may_decide", "may_decide"]

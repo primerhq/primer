@@ -49,6 +49,8 @@ from primer.model.except_ import (
     ValidationError,
 )
 from primer.model.workspace_session import WorkspaceSession
+from primer.session.approvers import ADMIN_ONLY_METADATA
+from primer.session.pending_gates import resolve_pending_gate
 from primer.session.yields import durably_wake_session
 from primer.worker.yield_runtime import make_cancelled_payload
 
@@ -479,7 +481,9 @@ async def post_cancel_yielded_tool(
 
     An ``_approval`` gate is the exception to "tool-agnostic": its cancel payload is classified as a REJECTION, so cancelling it IS
     deciding it. It is therefore judged by the same approver check as the respond route (403 ``approver_mismatch`` for a user the gate's
-    stamped spec does not admit), before anything is published.
+    stamped spec does not admit), before anything is published. The spec is read from the gate resolved by ``tool_call_id`` (the pending
+    entry that carries the stamp), NOT from the top-level ``yielded`` projection, which for a graph park whose primary is a ToolCall
+    node's approval holds ``original_call`` only. A gate that cannot be resolved is admin-only.
 
     Distinct from cancel-session (§9.2 of the spec): the tool's
     resume hook IS called with a :class:`YieldCancelled` payload and
@@ -512,7 +516,8 @@ async def post_cancel_yielded_tool(
             f"Session {session_id!r} park is missing event_key"
         )
     if yielded.get("tool_name") == "_approval":
-        enforce_approvers(yielded.get("resume_metadata") or {}, user)
+        gate = resolve_pending_gate(blob, tool_call_id=tool_call_id, kind="_approval")
+        enforce_approvers(gate["resume_metadata"] if gate is not None else ADMIN_ONLY_METADATA, user)
     payload = make_cancelled_payload(reason=body.reason)
     await event_bus.publish(event_key, payload)
     # An _external park additionally resolves its audit row so the

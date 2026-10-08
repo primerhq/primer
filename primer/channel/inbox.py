@@ -16,12 +16,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# env.kind -> the pending-entry tool_name(s) that answer it. A "tool_approval"
-# reply can resolve either an agent-side/internal approval gate (tool_name
-# "_approval") or a legacy park predating the tool_name field (None).
-_KIND_TOOL_NAMES: dict[str, frozenset[str | None]] = {
+# env.kind -> the pending-entry tool_name(s) that answer it. A "tool_approval" reply resolves an approval gate (tool_name "_approval").
+# A nameless entry is deliberately NOT an approval gate: the gate resolver (primer.session.pending_gates) never reads one, so a name
+# match here would publish a reply that no approver check had judged.
+_KIND_TOOL_NAMES: dict[str, frozenset[str]] = {
     "ask_user": frozenset({"ask_user"}),
-    "tool_approval": frozenset({"_approval", None}),
+    "tool_approval": frozenset({"_approval"}),
 }
 
 
@@ -171,7 +171,9 @@ class ChannelInbox:
         Returns ``{"gate", "agent_id", "parked_at"}``, or ``None`` when there is no gate to judge: no storage_provider wired (a
         lightweight test app; production always wires one), no such session (a chat surface), or no pending ``_approval`` entry for the
         tool_call_id (a park shape this lookup does not model, answered as before). A lookup that FAILS raises (ticket 01a11b64): it
-        cannot be shown that the gate is unrestricted, so the reply is refused and nothing is published.
+        cannot be shown that the gate is unrestricted, so the reply is refused and nothing is published. So does a row whose checkpoint
+        NAMES a gate for the tool_call_id (:func:`_matching_event_keys` finds it) when no pending entry carrying a spec resolves: the
+        spec of that gate cannot be read, and the event-key lookup that follows would publish with no check at all.
         """
         if self._storage_provider is None:
             return None
@@ -185,6 +187,16 @@ class ChannelInbox:
             getattr(row, "parked_state", None) or {}, tool_call_id=env.tool_call_id, kind="_approval",
         )
         if gate is None:
+            if _matching_event_keys(row, env):
+                from primer.session.approvers import ApproverRefusedError
+
+                logger.warning(
+                    "channel inbox: refused a %s reply for session=%s tool_call=%s: the checkpoint names the gate but no pending "
+                    "entry carries its approver spec", env.decision, env.session_id, env.tool_call_id,
+                )
+                raise ApproverRefusedError(
+                    "this approval gate's approver spec cannot be read; decide it in the console as an approver or an admin"
+                )
             return None
         return {
             "gate": gate,
