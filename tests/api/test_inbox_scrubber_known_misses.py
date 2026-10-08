@@ -26,6 +26,13 @@ def _preview(arguments) -> dict:
     return _approval_preview({"name": "t", "arguments": arguments})
 
 
+def _assert_hidden(got: str, secret: str) -> None:
+    """Every whitespace-separated PIECE of the secret is absent, not just the whole string: a partial leak ("<redacted> horse battery staple") passes a
+    whole-string check."""
+    leaked = [piece for piece in secret.split() if piece in got]
+    assert not leaked, f"{leaked} of {secret!r} still show in {got!r}"
+
+
 # --- names that are credentials without a secret word ---------------------------------------------------------------------------
 
 
@@ -44,7 +51,8 @@ def _preview(arguments) -> dict:
 )
 def test_a_name_with_pass_or_pw_as_a_component_hides_its_value(text: str, secret: str) -> None:
     got = _scrub_text(text)
-    assert secret not in got and "<redacted>" in got, got
+    _assert_hidden(got, secret)
+    assert "<redacted>" in got, got
 
 
 @pytest.mark.parametrize(
@@ -83,7 +91,7 @@ def test_an_argument_with_pass_inside_a_longer_word_is_shown(key: str) -> None:
     ("command", "secret"),
     [
         ("mysql -u root -phunter2 appdb", "hunter2"),
-        ("mysqldump -h db -u root -p'my secret' appdb > out.sql", "my secret"),
+        ("mysqldump -h db -u root -p'correct horse' appdb > out.sql", "correct horse"),
         ('mariadb -u root -p"hunter two" appdb', "hunter two"),
         ("mysql -phunter2", "hunter2"),
         ("MYSQL -u root -phunter2 x", "hunter2"),
@@ -92,7 +100,8 @@ def test_an_argument_with_pass_inside_a_longer_word_is_shown(key: str) -> None:
 )
 def test_an_attached_p_after_a_mysql_command_is_its_password(command: str, secret: str) -> None:
     got = _scrub_text(command)
-    assert secret not in got and "-p<redacted>" in got, got
+    _assert_hidden(got, secret)
+    assert "-p<redacted>" in got, got
 
 
 @pytest.mark.parametrize(
@@ -127,7 +136,8 @@ def test_other_attached_p_flags_are_left_alone(command: str) -> None:
 )
 def test_a_user_and_password_after_u_or_user_is_a_credential(command: str, secret: str) -> None:
     got = _scrub_text(command)
-    assert secret not in got and "<redacted>" in got, got
+    _assert_hidden(got, secret)
+    assert "<redacted>" in got, got
     assert "https://x.test" in got, "the target is still readable"
 
 
@@ -144,3 +154,73 @@ def test_a_user_and_password_after_u_or_user_is_a_credential(command: str, secre
 )
 def test_other_uses_of_u_are_left_alone(command: str) -> None:
     assert _scrub_text(command) == command
+
+
+# --- review of the first version (PR 577): the rules leaked through shapes they claimed to cover -------------------------------------------------
+
+
+def test_a_capital_p_port_flag_does_not_eat_the_anchor_of_the_password_that_follows() -> None:
+    """``-P3306`` is mysql's PORT. The case-insensitive rule matched it as ``-p`` and hid the port, then the real ``-pS3cr3t`` after it was shown."""
+    got = _scrub_text("mysql -h db -P3306 -u root -pS3cr3t app")
+    _assert_hidden(got, "S3cr3t")
+    assert "-P3306" in got, got
+
+
+def test_the_command_name_is_case_insensitive_but_the_flag_is_not() -> None:
+    _assert_hidden(_scrub_text("MySQL -u root -phunter2"), "hunter2")
+    assert _scrub_text("mysql -P3306 -h db") == "mysql -P3306 -h db"
+
+
+def test_a_quoted_user_password_with_spaces_is_hidden_to_its_last_word() -> None:
+    got = _scrub_text("curl -u 'deploy:correct horse battery staple' https://x.test")
+    _assert_hidden(got, "correct horse battery staple")
+    assert "https://x.test" in got
+    dq = _scrub_text('curl --user "deploy:correct horse battery staple" https://x.test')
+    _assert_hidden(dq, "correct horse battery staple")
+
+
+@pytest.mark.parametrize(
+    ("command", "secret"),
+    [
+        ("curl -uadmin:hunter2 -T f https://x", "hunter2"),
+        ("curl -u:hunter2 https://x", "hunter2"),
+        ("curl -u :hunter2 https://x", "hunter2"),
+        ("curl -U admin:hunter2 https://x", "hunter2"),
+        ("curl -Uadmin:hunter2 https://x", "hunter2"),
+        ("curl -u 4242:hunter2 https://x", "hunter2"),
+        ("curl --user=deploy:hunter2 https://x", "hunter2"),
+        ("curl -s -u admin:hunter2 https://x", "hunter2"),
+    ],
+)
+def test_an_attached_or_empty_user_or_a_numeric_user_is_still_a_credential(command: str, secret: str) -> None:
+    _assert_hidden(_scrub_text(command), secret)
+
+
+@pytest.mark.parametrize("command", ["docker run -u 1000:1000 img", "docker run -u=1000:1000 img", "docker run --user 1000:1000 img"])
+def test_only_a_digits_colon_digits_value_is_a_uid_and_gid(command: str) -> None:
+    assert _scrub_text(command) == command
+
+
+@pytest.mark.parametrize("command", ["mariadb-dump -u root -pS3cr3t app", "mariadb-admin -pS3cr3t status", "mysqldump -pS3cr3t app", "mysql_upgrade -pS3cr3t"])
+def test_every_mysql_family_command_name_is_a_command(command: str) -> None:
+    _assert_hidden(_scrub_text(command), "S3cr3t")
+
+
+def test_a_long_mysqldump_line_is_covered_up_to_a_generous_window() -> None:
+    options = " ".join(f"--opt{i}" for i in range(20))
+    got = _scrub_text(f"mysqldump {options} -u root -pS3cr3t appdb")
+    _assert_hidden(got, "S3cr3t")
+
+
+@pytest.mark.parametrize("key", ["dbPass", "adminPw", "rootPwd", "sshPass", "userPswd"])
+def test_a_camel_case_name_with_a_password_component_is_never_shown(key: str) -> None:
+    got = _preview({key: "hunter2", "path": "/tmp/x"})
+    assert "hunter2" not in got["arguments"], got
+    assert "path=/tmp/x" in got["arguments"]
+    _assert_hidden(_scrub_text(f"{key}=hunter2 run"), "hunter2")
+
+
+@pytest.mark.parametrize("key", ["bypass", "Bypass", "compass", "passenger", "Passenger", "trespass", "keyword"])
+def test_a_longer_word_with_pass_inside_is_not_a_camel_case_password(key: str) -> None:
+    assert f"{key}=ok" in _preview({key: "ok"})["arguments"]
+    assert _scrub_text(f"{key}=ok") == f"{key}=ok"
