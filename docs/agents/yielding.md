@@ -261,8 +261,15 @@ session.
   values, OAuth `client_secret`, provider `api_key`, channel tokens,
   any key that looks like a key, token, secret or password) is replaced
   with `•••redacted•••`, the same masking `GET /v1/events` applies.
-  Map keys (header and env NAMES) stay readable. You cannot read a
-  secret back through an event; ask the operator if a task needs one.
+  Map keys (header and env NAMES) stay readable. The key-name rule is
+  deliberately broad: any field whose name ends in `_key`, `_token`,
+  `_secret` (and similar) is masked even when it is not a secret, so
+  `parked_event_key`, `event_key` or `idempotency_key` in a payload
+  also come back as `•••redacted•••`. Your `fields` / `expr` filter
+  still matches the unmasked values; only the envelope returned to you
+  is masked, so read such a field through the entity's own tool. You cannot
+  read a secret back through an event; ask the operator if a task
+  needs one.
 
 ## Related
 
