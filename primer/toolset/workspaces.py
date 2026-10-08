@@ -763,6 +763,27 @@ def build_workspaces_toolset(
 
         return storage_provider.get_storage(WorkspaceSession)
 
+    def _session_rows_or_none():
+        """The session row store, or ``None`` when the storage provider cannot hand it out: the overlay is advisory, so an
+        unreachable store serves the slot as it is (and says so) and never turns into a tool error."""
+        try:
+            return _session_row_storage()
+        except Exception:  # noqa: BLE001 -- advisory: the slot is still an answer
+            logger.warning("workspace session tools: the session row store is unavailable; serving the slot as it is", exc_info=True)
+            return None
+
+    async def _overlay_row(info, workspace_id: str):
+        rows = _session_rows_or_none()
+        if rows is None:
+            return info
+        return await overlay_row_on_slot_info(info, rows, workspace_id=workspace_id)
+
+    async def _overlay_rows(infos, workspace_id: str):
+        rows = _session_rows_or_none()
+        if rows is None:
+            return list(infos)
+        return await overlay_rows_on_infos(infos, rows, workspace_id=workspace_id)
+
     async def _inv_provider(eid: str) -> None:
         await workspace_registry.invalidate(eid)
 
@@ -1395,7 +1416,7 @@ def build_workspaces_toolset(
         sessions = await ws.list_sessions()
         sliced = sessions[args.offset : args.offset + args.limit]
         # The lifecycle fields come from the durable row, the one truth (primer.session.slot_view), not from the slot.
-        reconciled = await overlay_rows_on_infos(sliced, _session_row_storage(), workspace_id=args.workspace_id)
+        reconciled = await _overlay_rows(sliced, args.workspace_id)
         return _ok(
             {
                 "items": [s.model_dump(mode="json") for s in reconciled],
@@ -1446,9 +1467,7 @@ def build_workspaces_toolset(
                 f"workspace {args.workspace_id!r}",
                 error_type="not-found",
             )
-        info = await overlay_row_on_slot_info(
-            await session.info(), _session_row_storage(), workspace_id=args.workspace_id,
-        )
+        info = await _overlay_row(await session.info(), args.workspace_id)
         status = info.status
         return _ok(
             {
