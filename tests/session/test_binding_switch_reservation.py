@@ -24,7 +24,10 @@ from primer.model.workspace_session import AgentSessionBinding, SessionStatus, W
 from primer.session.dispatch import apply_queued_binding_switch
 from primer.session.mutation_lock import session_lifecycle_lock
 
+from tests._support.in_lock_deadline import InLockDeadline
 from tests.conftest import _FakeStorageProvider
+
+BODY_BOUND_S = 30.0   # a hang fails the test; a slow runner must not
 
 SID = "s-switch-reserve"
 REQUEST = {"kind": "agent", "agent_id": "agent-b", "graph_id": None, "profile_id": None, "actor": "user"}
@@ -39,7 +42,9 @@ class _IO:
 
     async def append_message_line(self, session_id: str, line: bytes) -> None:
         if self.hang:
-            await asyncio.Event().wait()  # an unreachable workspace: never answers
+            # an unreachable workspace: never answers. `hang` is True (waits for ever) or an InLockDeadline (which first expires the
+            # in-lock deadline that bounds the caller, so the test needs no wall-clock).
+            await (self.hang.hang() if hasattr(self.hang, "hang") else asyncio.Event().wait())
         self.lines.append(line)
 
     def records(self) -> list[dict]:
@@ -109,7 +114,7 @@ async def test_the_checkpoint_switch_waits_for_the_lifecycle_lock():
         task = asyncio.create_task(apply_queued_binding_switch(storage_provider=provider, workspace_io=io, session_id=SID))
         await asyncio.sleep(0.1)
         assert io.lines == [] and not task.done(), "the checkpoint switch wrote while another writer held the lifecycle lock"
-    await asyncio.wait_for(task, 2.0)
+    await asyncio.wait_for(task, BODY_BOUND_S)
 
     assert [r["kind"] for r in io.records()] == ["agent_marker"]
     assert (await sessions.get(SID)).binding.agent_id == "agent-b"
@@ -119,17 +124,13 @@ async def test_the_checkpoint_switch_waits_for_the_lifecycle_lock():
 async def test_the_checkpoint_switch_times_out_without_holding_the_lock(monkeypatch):
     """An unreachable workspace must not hold the lock Cancel and every steer need: the in-lock I/O has a bound; the
     switch stays pending for the next checkpoint."""
-    import primer.session.mutation_lock as mutation_lock
-
-    monkeypatch.setattr(mutation_lock, "IN_LOCK_IO_TIMEOUT_S", 0.2)
+    deadline = InLockDeadline(monkeypatch)       # the in-lock deadline expires when the write hangs, not after a wall-clock
     provider, sessions, io = await _seeded()
-    io.hang = True
+    io.hang = deadline
 
-    await asyncio.wait_for(
-        apply_queued_binding_switch(storage_provider=provider, workspace_io=io, session_id=SID), 3.0,
-    )
+    async with asyncio.timeout(BODY_BOUND_S):    # generous: it only turns a hang into a failure, it never races the code
+        await apply_queued_binding_switch(storage_provider=provider, workspace_io=io, session_id=SID)
 
-    async with asyncio.timeout(1.0):
         async with session_lifecycle_lock().acquire(SID):
             pass  # the lock is free: Cancel's C1 would proceed
     row = await sessions.get(SID)
