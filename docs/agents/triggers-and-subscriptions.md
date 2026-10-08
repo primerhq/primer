@@ -249,7 +249,7 @@ of the `summarise-overnight-alerts` agent in workspace `ws-ops`.
 {
   "tool": "trigger::create_subscription",
   "arguments": {
-    "trigger_id": "tg-morning-summary",
+    "trigger_id": "<id from step 1>",
     "config": {
       "kind": "agent_fresh_session",
       "agent_id": "summarise-overnight-alerts",
@@ -303,7 +303,7 @@ off the `triage-incident` agent.
 {
   "tool": "system::create_channel_binding",
   "arguments": {
-    "trigger_id": "slack-incident-anchor",
+    "trigger_id": "<id from step 1>",
     "event_matcher": {
       "event_type": "message.posted",
       "text_pattern": "incident"

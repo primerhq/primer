@@ -404,13 +404,17 @@ Returns the workspace row; `reply_binding` is either
 }
 ```
 
+The response is the created trigger. Its `id` is a surrogate (here
+`tr-3f2a9c1d4b7e`), not the slug; the binding and
+`workspace_ext::subscribe_to_channel_event` look the trigger up by that id.
+
 2. Create the binding that maps the matcher to the action. Request:
 
 ```json
 {
   "tool": "system::create_channel_binding",
   "arguments": {
-    "trigger_id": "slack-deploy-anchor",
+    "trigger_id": "tr-3f2a9c1d4b7e",
     "event_matcher": {
       "event_type": "command.invoked",
       "command_name": "deploy"
@@ -430,7 +434,7 @@ Response (the created Subscription):
 ```json
 {
   "id": "sub-deploy-1",
-  "trigger_id": "slack-deploy-anchor",
+  "trigger_id": "tr-3f2a9c1d4b7e",
   "event_matcher": {
     "event_type": "command.invoked",
     "command_name": "deploy"
@@ -459,7 +463,7 @@ matching `approve` arrives, then resumes.
 {
   "tool": "workspace_ext::subscribe_to_channel_event",
   "arguments": {
-    "trigger_id": "slack-deploy-anchor",
+    "trigger_id": "tr-3f2a9c1d4b7e",
     "event_matcher": {
       "event_type": "command.invoked",
       "command_name": "approve"

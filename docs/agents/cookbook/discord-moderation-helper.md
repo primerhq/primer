@@ -102,13 +102,19 @@ Create the `channel` trigger that anchors inbound events for the room:
   "enabled": true
 }
 ```
+Response (the created trigger):
+```json
+{ "id": "tr-3f2a9c1d4b7e", "slug": "general-mod-anchor", "name": "Discord #general", "enabled": true }
+```
+Thread `id` ("tr-3f2a9c1d4b7e", the surrogate id, not the slug) into the binding.
+
 Then the binding that maps a matcher to an action:
 
 `system::create_channel_binding`
 ```json
 {
-  "trigger_id": "general-mod-anchor",
-  "event_matcher": { "event_type": "message.posted", "surface": "channel" },
+  "trigger_id": "tr-3f2a9c1d4b7e",
+  "event_matcher": { "event_type": "message.posted", "surface": ["channel"] },
   "config": { "kind": "agent_fresh_session", "workspace_id": "ws-1", "agent_id": "moderator" },
   "reply_target": "source_thread",
   "payload_template": "{{ event.text }}",
