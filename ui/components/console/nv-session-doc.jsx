@@ -3345,6 +3345,7 @@ window.NV_focusedSessionRow = function () {
   return (inst && inst.session) || null;
 };
 window.NV_DecisionCard = NV_DecisionCard;
+window.NV_sessionStateChipView = NV_sessionStateChipView;
 window.NV_AskCard = NV_AskCard;
 window.NV_TraceSplit = NV_TraceSplit;
 window.NV_Composer = NV_Composer;

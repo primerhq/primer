@@ -28,10 +28,11 @@ SESSIONS = 14
 STATE_WORDS = ("Running", "Waiting", "Parked", "Paused", "Ready", "Ended")
 
 
-@pytest.fixture
-def spaces(page: Page, base_url: str, console_url: str, mock_llm_lan, tmp_path: Path) -> tuple[Page, str]:
+@pytest.fixture(scope="module")
+def seeded_workspace(base_url: str, mock_llm_lan, tmp_path_factory) -> str:
+    """One workspace with 14 named, never-started sessions, created once for the module (a session costs an API round trip each)."""
     _registry, mock_base_url = mock_llm_lan
-    ids = _seed(base_url, mock_base_url, uuid.uuid4().hex[:8], tmp_path)
+    ids = _seed(base_url, mock_base_url, uuid.uuid4().hex[:8], tmp_path_factory.mktemp("phone-spaces"))
     wid = ids["workspace"]
     with httpx.Client(base_url=base_url, timeout=30.0) as client:
         for i in range(SESSIONS):
@@ -39,6 +40,12 @@ def spaces(page: Page, base_url: str, console_url: str, mock_llm_lan, tmp_path: 
                 "binding": {"kind": "agent", "agent_id": ids["agent"]}, "name": f"phone-list-{i:02d}", "auto_start": False,
             })
             assert r.status_code == 201, f"seed session {i}: {r.status_code} {r.text}"
+    return wid
+
+
+@pytest.fixture
+def spaces(page: Page, console_url: str, seeded_workspace: str) -> tuple[Page, str]:
+    wid = seeded_workspace
     page.set_viewport_size(PHONE)
     open_mobile_tab(page, console_url, "spaces")
     page.get_by_test_id(f"nv-mob-ws:{wid}").click()
