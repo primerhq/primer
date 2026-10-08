@@ -94,7 +94,7 @@ def test_a_provider_row_can_be_created_and_deleted(page, console_url) -> None:
     form_locator.wait_for(state="hidden", timeout=15_000)
 
     # Coverage (01a063ab): the header Filter input narrows the visible
-    # cards by name/kind, client-side, without touching the "N entities"
+    # cards by name/kind, client-side, without touching the "N providers"
     # count (that count reflects the class's real total, not the
     # filtered subset - PC_InstanceGrid's own documented behavior).
     count_before = page.get_by_test_id("provider-entity-count").inner_text()

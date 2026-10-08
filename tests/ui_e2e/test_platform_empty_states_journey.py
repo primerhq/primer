@@ -2,7 +2,8 @@
 
 An EMPTY Platform list said "Nothing here yet." even while a filter was hiding rows (and offered "New ..." as if nothing existed); on mobile an
 empty list said "No matches." with no filter at all; the header counted "1 entity" / "3 entities". These journeys drive the real desktop
-Platform page: Triggers, which the lane's fresh instance has none of, and Toolsets with one seeded through the API.
+Platform page and, at a phone viewport, the mobile Platform list (More tab): Triggers, which the lane's fresh instance has none of, and
+Toolsets with one seeded through the API.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ import httpx
 from playwright.sync_api import expect
 
 from tests._support.smk import smk
-from tests.ui_e2e._shell_helpers import open_view
+from tests.ui_e2e._shell_helpers import open_mobile_platform_nav, open_view
 
 pytestmark = smk("SMK-UI-03", status="partial")
 
@@ -73,6 +74,46 @@ def test_a_filter_that_hides_every_card_says_nothing_matches_and_clears(page, ba
         expect(page.get_by_test_id("nv-plat-empty")).to_have_count(0)
         expect(page.get_by_test_id("nv-plat-filter")).to_have_value("")
         expect(page.get_by_test_id("nv-plat-count")).not_to_contain_text(" of ")
+    finally:
+        with httpx.Client(base_url=base_url, timeout=30.0) as c:
+            c.delete(f"/v1/toolsets/{toolset_id}")
+
+
+def _phone(page) -> None:
+    page.set_viewport_size({"width": 390, "height": 844})
+
+
+def test_the_phone_list_says_empty_not_no_matches_when_there_is_no_filter(page, base_url: str, console_url: str) -> None:
+    """The lead's screenshot: the Triggers list on a phone said "No matches." with nothing typed in the filter."""
+    with httpx.Client(base_url=base_url, timeout=30.0) as c:
+        existing = c.get("/v1/triggers", params={"limit": 1}).json()
+    if existing.get("items"):
+        import pytest
+
+        pytest.skip("this instance already has triggers, so the list is not empty")
+    _phone(page)
+    open_mobile_platform_nav(page, console_url, "triggers")
+
+    empty = page.get_by_test_id("nv-mob-plat-empty:triggers")
+    expect(empty).to_have_text("No triggers yet.", timeout=15_000)
+
+    page.get_by_test_id("nv-mob-plat-filter").fill("zzz")
+    expect(empty).to_have_text("No triggers yet.")
+
+
+def test_the_phone_list_says_nothing_matches_a_filter_that_hides_every_row(page, base_url: str, console_url: str, unique_suffix: str) -> None:
+    toolset_id = f"ts-m3m-{unique_suffix}"
+    body = {"id": toolset_id, "provider": "mcp", "config": {"transport": "stdio", "config": {"command": ["echo"]}}}
+    try:
+        with httpx.Client(base_url=base_url, timeout=30.0) as c:
+            assert c.post("/v1/toolsets", json=body).status_code == 201
+        _phone(page)
+        open_mobile_platform_nav(page, console_url, "toolsets")
+        expect(page.get_by_test_id(f"nv-mob-plat-row:{toolset_id}")).to_be_visible(timeout=15_000)
+
+        page.get_by_test_id("nv-mob-plat-filter").fill("zzz-no-such-toolset")
+
+        expect(page.get_by_test_id("nv-mob-plat-empty:toolsets")).to_have_text('No toolsets match "zzz-no-such-toolset".', timeout=10_000)
     finally:
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
             c.delete(f"/v1/toolsets/{toolset_id}")

@@ -1054,7 +1054,7 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
       <div className="row" style={{ alignItems: "center", gap: 16, flexWrap: "wrap" }}>
         <h2 className="text-lg" style={{ margin: 0 }}>Providers</h2>
         <span className="muted text-sm" data-testid="provider-entity-count">
-          {entityCount} {entityCount === 1 ? "entity" : "entities"}
+          {entityCount} {entityCount === 1 ? "provider" : "providers"}
         </span>
         <span style={{ flex: 1 }} />
         <input

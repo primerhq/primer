@@ -130,6 +130,21 @@ function NV_createdRow(con, refetch, nav, row) {
   if (row && row.id) con.openOverlay(nav, null, row.id);
 }
 
+// What a list says when it has nothing to show. "Empty" and "a filter hides every row" are different: only the second is a matter of
+// matching. `noun` is a page's [singular, plural]; `total` is how many rows exist before the filter.
+function NV_emptyText(noun, query, total) {
+  var q = String(query || "").trim();
+  if (q && total > 0) return "No " + noun[1] + ' match "' + q + '".';
+  return "No " + noun[1] + " yet.";
+}
+
+// "12 agents", "1 agent", or "3 of 12 agents" while a filter hides some.
+function NV_countText(noun, shown, total) {
+  var word = (total === 1 ? noun[0] : noun[1]);
+  if (shown !== total) return shown + " of " + total + " " + word;
+  return shown + " " + (shown === 1 ? noun[0] : noun[1]);
+}
+
 // Per-entity page config. list() returns a promise of {items}; card()
 // maps a row to the prototype's card VM; open() addresses the shared
 // overlays; create() either hosts the entity's form on this page
@@ -139,7 +154,7 @@ function NV_createdRow(con, refetch, nav, row) {
 // the catalog owns lifecycle).
 var NV_PLAT_PAGES = {
   profiles: {
-    title: "Model profiles", createLabel: "New profile",
+    title: "Model profiles", noun: ["model profile", "model profiles"], createLabel: "New profile",
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/model_profiles?limit=200", null, { signal: signal });
     },
@@ -168,7 +183,7 @@ var NV_PLAT_PAGES = {
     delPath: function (row) { return "/model_profiles/" + encodeURIComponent(row.id); },
   },
   agents: {
-    title: "Agents", createLabel: "New agent",
+    title: "Agents", noun: ["agent", "agents"], createLabel: "New agent",
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/agents?limit=200", null, { signal: signal });
     },
@@ -195,7 +210,7 @@ var NV_PLAT_PAGES = {
     delPath: function (row) { return "/agents/" + encodeURIComponent(row.id); },
   },
   graphs: {
-    title: "Graphs", createLabel: "New graph",
+    title: "Graphs", noun: ["graph", "graphs"], createLabel: "New graph",
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/graphs?limit=200", null, { signal: signal });
     },
@@ -215,7 +230,7 @@ var NV_PLAT_PAGES = {
     delPath: function (row) { return "/graphs/" + encodeURIComponent(row.id); },
   },
   workspaces: {
-    title: "Workspaces", createLabel: "New workspace",
+    title: "Workspaces", noun: ["workspace", "workspaces"], createLabel: "New workspace",
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/workspaces?limit=200", null, { signal: signal });
     },
@@ -235,7 +250,7 @@ var NV_PLAT_PAGES = {
     delPath: function (row) { return "/workspaces/" + encodeURIComponent(row.id); },
   },
   toolsets: {
-    title: "Toolsets", createLabel: "New toolset",
+    title: "Toolsets", noun: ["toolset", "toolsets"], createLabel: "New toolset",
     // GET /tools is the CATALOGUE: built-ins (system, workspaces, web,
     // ...) and registered rows alike. Listing only the DB table hid
     // every internal toolset from the cards (live finding 2026-08-26).
@@ -294,7 +309,7 @@ var NV_PLAT_PAGES = {
     },
   },
   templates: {
-    title: "Workspace templates", createLabel: "New template",
+    title: "Workspace templates", noun: ["workspace template", "workspace templates"], createLabel: "New template",
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/workspace_templates?limit=200", null,
         { signal: signal });
@@ -321,7 +336,7 @@ var NV_PLAT_PAGES = {
     },
   },
   collections: {
-    title: "Collections", createLabel: "New collection",
+    title: "Collections", noun: ["collection", "collections"], createLabel: "New collection",
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/collections?limit=200", null, { signal: signal });
     },
@@ -345,7 +360,7 @@ var NV_PLAT_PAGES = {
     },
   },
   triggers: {
-    title: "Triggers", createLabel: "New trigger",
+    title: "Triggers", noun: ["trigger", "triggers"], createLabel: "New trigger",
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/triggers?limit=200", null, { signal: signal });
     },
@@ -368,6 +383,7 @@ var NV_PLAT_PAGES = {
   },
   channels: {
     title: "Channels — rooms & rules", createLabel: "New channel",
+    noun: ["channel", "channels"],
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/channels?limit=200", null, { signal: signal });
     },
@@ -390,7 +406,7 @@ var NV_PLAT_PAGES = {
     extraNav: { label: "Rules", run: function (con) { con.openOverlay("channels", "rules", null); } },
   },
   harnesses: {
-    title: "Harnesses", createLabel: "New harness",
+    title: "Harnesses", noun: ["harness", "harnesses"], createLabel: "New harness",
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/harnesses?limit=200", null, { signal: signal });
     },
@@ -409,7 +425,7 @@ var NV_PLAT_PAGES = {
     delPath: function (row) { return "/harnesses/" + encodeURIComponent(row.id); },
   },
   services: {
-    title: "Services", createLabel: "New service",
+    title: "Services", noun: ["service", "services"], createLabel: "New service",
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/services?limit=200", null, { signal: signal });
     },
@@ -431,7 +447,7 @@ var NV_PLAT_PAGES = {
     delPath: function (row) { return "/services/" + encodeURIComponent(row.id); },
   },
   approvals: {
-    title: "Approval policies", createLabel: "New policy",
+    title: "Approval policies", noun: ["approval policy", "approval policies"], createLabel: "New policy",
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/tool_approval_policies?limit=200", null,
         { signal: signal });
@@ -1149,6 +1165,7 @@ function NV_PlatListPage(props) {
   var cards = items.map(function (row) {
     return page.card(row);
   }).map(function (c, i) { c._row = items[i]; return c; });
+  var total = cards.length;
   var ql = q.trim().toLowerCase();
   if (ql) {
     cards = cards.filter(function (c) {
@@ -1183,8 +1200,8 @@ function NV_PlatListPage(props) {
       <div className="nv-plat-wrap" data-testid={"nv-plat-page:" + nav}>
         <div className="nv-plat-head">
           <div className="nv-plat-title">{title}</div>
-          <span className="nv-plat-count">
-            {cards.length}{cards.length === 1 ? " entity" : " entities"}
+          <span className="nv-plat-count" data-testid="nv-plat-count">
+            {NV_countText(page.noun, cards.length, total)}
           </span>
           <span style={{ flex: 1 }} />
           {page && page.extraNav ? (
@@ -1218,8 +1235,13 @@ function NV_PlatListPage(props) {
         ) : null}
         {!visible.length && !res.loading && !res.error ? (
           <div className="nv-plat-empty" data-testid="nv-plat-empty">
-            <div>Nothing here yet.</div>
-            {createLabel ? (
+            <div>{NV_emptyText(page.noun, q, total)}</div>
+            {ql && total > 0 ? (
+              <button type="button" className="nv-btn-secondary"
+                onClick={function () { setQ(""); setPageNo(0); }}>
+                Clear filter
+              </button>
+            ) : createLabel ? (
               <button type="button" className="nv-btn-primary"
                 onClick={runCreate}>{createLabel}</button>
             ) : null}
@@ -1308,4 +1330,6 @@ function NV_Platform() {
 }
 
 window.NV_PLAT_PAGES = NV_PLAT_PAGES;
+window.NV_emptyText = NV_emptyText;
+window.NV_countText = NV_countText;
 window.NV_Platform = NV_Platform;

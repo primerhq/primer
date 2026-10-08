@@ -324,7 +324,10 @@ function NV_CreateSessionOverlay() {
                   );
                 })}
                 {!visible.length ? (
-                  <div className="nv-bind-empty">No agent or graph matches.</div>
+                  <div className="nv-bind-empty">
+                    {window.NV_emptyText(
+                      ["agent or graph", "agents or graphs"], q, rows.length)}
+                  </div>
                 ) : null}
               </div>
             </div>

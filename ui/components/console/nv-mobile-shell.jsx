@@ -777,7 +777,10 @@ function NV_MobileCreateSessionSheet(props) {
               );
             })}
             {!visible.length ? (
-              <div className="card-list-empty">No agent or graph matches.</div>
+              <div className="card-list-empty">
+                {window.NV_emptyText(
+                  ["agent or graph", "agents or graphs"], q, rows.length)}
+              </div>
             ) : null}
           </div>
         </React.Fragment>
@@ -1217,7 +1220,10 @@ function NV_MobilePlatform(props) {
         value={q} onChange={function (ev) { setQ(ev.target.value); }} />
       <div className="card-list" data-testid={"nv-mob-plat-rows:" + nav}>
         {!visible.length ? (
-          <div className="card-list-empty">No matches.</div>
+          <div className="card-list-empty"
+            data-testid={"nv-mob-plat-empty:" + nav}>
+            {window.NV_emptyText(page.noun, q, items.length)}
+          </div>
         ) : null}
         {visible.map(function (row) {
           var vm = page.card(row);
