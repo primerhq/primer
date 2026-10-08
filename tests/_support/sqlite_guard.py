@@ -1,0 +1,77 @@
+"""Fail the test that leaves a ``SqliteStorageProvider`` open (ticket 01a11a8b), instead of letting some later test pay for it.
+
+An aiosqlite connection owns a worker thread. A provider a test never ``aclose()``d is finished by the garbage collector, at an arbitrary
+moment, inside whichever test happens to be running: ``Connection.__del__`` asks the worker to stop through a future created on the loop that is
+current THEN, and the worker thread delivers the answer with ``future.get_loop().call_soon_threadsafe``. When that loop has been closed the worker
+dies with ``RuntimeError: Event loop is closed`` and pytest reports a ``PytestUnhandledThreadExceptionWarning`` against the innocent test. A
+connection that is still referenced at exit is worse: its worker is a non-daemon thread, so the interpreter never finishes and the pytest process
+hangs after its last test.
+
+:class:`OpenSqliteProviders` records every provider a test initialises and forgets it when it is closed. :meth:`close_leaked` closes the survivors on
+a private event loop (in its own thread, so the test loop and the loop policy are untouched) and returns where each was opened, for the failure
+message. Wired as an autouse fixture in ``tests/conftest.py``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import sys
+import threading
+from pathlib import Path
+
+import pytest
+
+_THIS_FILE = Path(__file__).resolve()
+_CLOSE_JOIN_S = 30.0
+
+
+def _opened_at() -> str:
+    """The first frame under ``tests/`` that is awaiting the ``initialize`` being tracked: the test, or the helper it built the provider in."""
+    frame = sys._getframe(2)
+    while frame is not None:
+        filename = frame.f_code.co_filename
+        if f"{os.sep}tests{os.sep}" in filename and Path(filename).resolve() != _THIS_FILE:
+            return f"{Path(filename).name}:{frame.f_lineno} ({frame.f_code.co_name})"
+        frame = frame.f_back
+    return "a frame outside tests/"
+
+
+class OpenSqliteProviders:
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from primer.storage.sqlite import SqliteStorageProvider
+
+        self._open: dict[int, tuple[SqliteStorageProvider, str]] = {}
+        real_initialize = SqliteStorageProvider.initialize
+        real_aclose = SqliteStorageProvider.aclose
+        open_ = self._open
+
+        async def initialize(provider: SqliteStorageProvider) -> None:
+            await real_initialize(provider)
+            open_.setdefault(id(provider), (provider, _opened_at()))
+
+        async def aclose(provider: SqliteStorageProvider) -> None:
+            try:
+                await real_aclose(provider)
+            finally:
+                open_.pop(id(provider), None)
+
+        monkeypatch.setattr(SqliteStorageProvider, "initialize", initialize)
+        monkeypatch.setattr(SqliteStorageProvider, "aclose", aclose)
+
+    def close_leaked(self) -> list[str]:
+        """Close every provider still open and return where each was opened (empty when the test closed its own)."""
+        leaked = list(self._open.values())
+        self._open.clear()
+        if leaked:
+            _close_on_a_private_loop([provider for provider, _ in leaked])
+        return [site for _, site in leaked]
+
+
+def _close_on_a_private_loop(providers) -> None:
+    async def close_all() -> None:
+        await asyncio.gather(*(provider.aclose() for provider in providers), return_exceptions=True)
+
+    closer = threading.Thread(target=lambda: asyncio.run(close_all()), name="close-leaked-sqlite-providers", daemon=True)
+    closer.start()
+    closer.join(_CLOSE_JOIN_S)
