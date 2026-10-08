@@ -97,9 +97,15 @@ A `Subscription` row:
   resolved target becomes the session's reply binding.
 - `parallelism` - `skip | queue`. With `skip` (default), if the
   prior fire is still being processed, the new fire is a no-op for
-  this sub. With `queue`, always fire. A fire that carries an inbound
-  channel event is exempt: it never skips, so for a channel binding
-  the two values behave the same.
+  this sub. With `queue`, always fire. That busy check belongs to the
+  fresh-session kinds (`agent_fresh_session`, `graph_fresh_session`),
+  and a fire that carries an inbound channel event is exempt from it:
+  for a channel binding of those kinds the two values behave the same.
+  A `session_append` subscription is different: it honours
+  `parallelism` whatever fired it. With `skip`, a steer that arrives
+  while the target session is mid-turn is dropped; with `queue` it is
+  stored and delivered at the session's next checkpoint, so use
+  `queue` there if every message must reach the session.
 - `enabled` - bool.
 
 ### The `channel` trigger kind
@@ -322,11 +328,12 @@ off the `triage-incident` agent.
 ```
 
 Every matching message in a thread that has no session yet produces
-its own session, even if a prior triage is still running: a channel
-event never busy-skips, so no `parallelism` setting is needed. (A
-message in a thread that already has a session goes to that session.)
-The fire context carries the firing event under `event`, so the
-payload template can reference `event.text`.
+its own session, even if a prior triage is still running: for an
+`agent_fresh_session` binding a channel event never busy-skips, so no
+`parallelism` setting is needed. (A message in a thread that already
+has a session is steered into that session instead, queued behind its
+running turn.) The fire context carries the firing event under
+`event`, so the payload template can reference `event.text`.
 
 ### Workflow 3 - inbound webhook fires a fresh agent session
 
@@ -399,10 +406,13 @@ To rotate the token: `POST /v1/triggers/{id}/rotate_token` (the old URL stops wo
   each subscription decides whether to act on that fire. `skip`
   drops the fire for that sub if its prior invocation is still
   running; `queue` always acts. So a high-frequency trigger with
-  `skip` subs effectively rate-limits per-sub. The exception is a fire
-  that carries an inbound channel event (a channel binding): it never
-  skips, because a skip there would silently drop the first message of
-  a new thread.
+  `skip` subs effectively rate-limits per-sub. Two exceptions. A
+  fresh-session subscription (`agent_fresh_session`,
+  `graph_fresh_session`) fired by an inbound channel event never skips,
+  because a skip there would silently drop the first message of a new
+  thread. And a `session_append` subscription honours `skip` even for
+  channel events: a steer that lands while its target is mid-turn is
+  dropped, so give it `queue` if no message may be lost.
 - **`parked_session` subscriptions are dynamic and one-shot.** They
   exist only between the moment a `subscribe_to_trigger` yields
   and the moment the trigger fires (or the timeout sweeper times
