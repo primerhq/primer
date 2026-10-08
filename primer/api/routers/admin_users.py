@@ -60,6 +60,7 @@ from pydantic import BaseModel, Field
 
 from primer.api.deps import get_user_storage
 from primer.auth.passwords import hash_password
+from primer.auth.user_writes import write_user_fields
 from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 from primer.model.user import User
 
@@ -394,17 +395,16 @@ async def update_admin_user(
         updated.disabled = body.disabled
 
     plaintext = None
+    password_reset = False
     if "generate_password" in provided and body.generate_password:
         plaintext = _generate_password()
         updated.password_hash = await hash_password(plaintext)
         updated.must_change_password = True
-        # A reset ends every session of the account (SEC-05): cookies minted under the old epoch,
-        # including a stolen one, stop working on the next request.
-        updated.session_epoch += 1
+        password_reset = True
     elif "password" in provided and body.password:
         updated.password_hash = await hash_password(body.password)
         updated.must_change_password = True
-        updated.session_epoch += 1
+        password_reset = True
 
     # Anti-lockout: only fires when *existing* currently counts as a
     # protected admin but *updated* would not. existing is still in
@@ -414,7 +414,15 @@ async def update_admin_user(
         if await _count_protected_admins(storage) <= 1:
             _raise_last_admin()
 
-    saved = await storage.update(updated)
+    # Write ONLY the fields this edit changed (SEC-05 review): a whole-document write of the row read
+    # before the slow hash would put back a session_epoch a concurrent sign-out-everywhere moved. A
+    # reset also bumps the epoch, ending every session of the account (a stolen cookie included).
+    fields = {
+        name: getattr(updated, name)
+        for name in ("email", "role", "disabled", "password_hash", "must_change_password")
+        if getattr(updated, name) != getattr(existing, name)
+    }
+    saved = await write_user_fields(storage, user_id, fields, bump_epoch=password_reset)
     logger.info("admin_users.update id=%s", saved.id)
     return AdminUserOut.from_user(saved, generated_password=plaintext)
 

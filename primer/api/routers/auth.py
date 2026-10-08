@@ -38,6 +38,7 @@ from primer.api.errors import common_responses
 from primer.auth.passwords import hash_password, verify_password
 from primer.auth.throttle import LoginThrottle
 from primer.auth.tokens import sign_session
+from primer.auth.user_writes import stamp_login, write_user_fields
 from primer.model.user import User
 from primer.storage._predicate import FieldRef, Op, Predicate, Value
 from primer.model.storage import OffsetPage
@@ -339,11 +340,20 @@ async def login(
 
     throttle.succeeded(username, client)
 
-    # Stamp last_login_at.
-    user.last_login_at = datetime.now(timezone.utc)
+    # Stamp ONLY last_login_at (SEC-05 review): a whole-document write of the row read before the
+    # slow password check would put back the session_epoch a concurrent sign-out-everywhere or
+    # password change had moved, re-validating revoked cookies. The guard also refuses the login if
+    # the password changed or the account was disabled while the hash was being verified.
     storage = get_storage_provider(request).get_storage(User)
-    await storage.update(user)
-    _set_session_cookie(request, response, user, remember=body.remember)
+    stored = await stamp_login(storage, user, at=datetime.now(timezone.utc))
+    if stored is None:
+        logger.info("auth.login fail (changed during verify) username=%s", username)
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "invalid_credentials"},
+        )
+    # Signed with the epoch the row holds NOW, so a login that finishes after a revocation is valid.
+    _set_session_cookie(request, response, stored, remember=body.remember)
     logger.info(
         "auth.login success username=%s remember=%s", username, body.remember,
     )
@@ -379,10 +389,10 @@ async def logout_all(
     """
     cfg = request.app.state.config.auth
     storage = get_storage_provider(request).get_storage(User)
-    stored = await storage.get(user.id)
-    if stored is not None:
+    if await storage.get(user.id) is not None:
         # None only for the synthetic user of an auth-disabled deployment, which has no sessions.
-        await storage.update(stored.model_copy(update={"session_epoch": stored.session_epoch + 1}))
+        # Field-scoped compare-and-set on the epoch: no other field of the row is written.
+        await write_user_fields(storage, user.id, {}, bump_epoch=True)
     response.delete_cookie(key=cfg.cookie_name, path="/")
     logger.info("auth.logout_all username=%s", user.username)
 
@@ -421,14 +431,25 @@ async def change_password(
             status_code=401,
             detail={"error": "invalid_credentials"},
         )
-    user.password_hash = await hash_password(body.new_password)
-    user.must_change_password = False
-    user.session_epoch += 1
+    verified_hash = user.password_hash
+    new_hash = await hash_password(body.new_password)
+
+    def _still_verified(current: User) -> None:
+        # The password the caller proved is no longer the stored one: another change won the race.
+        if current.password_hash != verified_hash:
+            raise HTTPException(status_code=401, detail={"error": "invalid_credentials"})
+
     storage = get_storage_provider(request).get_storage(User)
-    await storage.update(user)
-    actor = getattr(request.state, "actor", None)
-    _set_session_cookie(
-        request, response, user, src=getattr(actor, "source", None) or "local",
+    saved = await write_user_fields(
+        storage, user.id,
+        {"password_hash": new_hash, "must_change_password": False},
+        bump_epoch=True, check=_still_verified,
     )
+    if getattr(request.state, "api_token", None) is None:
+        # Only a cookie session gets a fresh cookie; a bearer-token caller never had one.
+        actor = getattr(request.state, "actor", None)
+        _set_session_cookie(
+            request, response, saved, src=getattr(actor, "source", None) or "local",
+        )
     logger.info("auth.change_password success username=%s", user.username)
     return AuthOk(username=user.username)
