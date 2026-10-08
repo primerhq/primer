@@ -81,3 +81,26 @@ def test_each_nav_gets_its_own_instance_of_the_page_that_has_the_hooks() -> None
 def test_the_list_page_stays_between_the_chooser_and_the_platform_shell() -> None:
     """Other tests slice the source from ``function NV_PlatPage(`` to ``function NV_Platform(`` to look at the page's hooks and mounts."""
     assert PLAT.index("function NV_PlatPage(") < PLAT.index("function NV_PlatListPage(") < PLAT.index("function NV_Platform(")
+
+
+def test_a_section_switch_resets_the_filter_the_page_and_the_form_by_remounting_not_by_an_effect() -> None:
+    """``key={nav}`` makes every section a fresh instance, so the effect that used to reset ``q``, ``pageNo`` and ``modal`` when ``nav`` changed can never see a change: it is dead
+    code that also hides whether the key still works (the lead's review of #547). The behaviour is pinned by ``test_a_filter_typed_on_one_section_is_empty_on_the_next`` in the nav-switch
+    journey, which is only meaningful with the effect gone."""
+    list_page = _body("NV_PlatListPage")
+
+    assert not re.search(r'React\.useEffect\(function \(\) \{\s*setQ\(""\);\s*setPageNo\(0\);\s*setModal\(null\);\s*\}, \[nav\]\);', list_page), "the reset effect is dead behind key={nav}"
+    assert 'setQ("")' not in list_page, "nothing else resets the filter either: a fresh instance starts empty"
+    assert re.search(r"React\.useEffect\(function \(\) \{ setPageNo\(0\); \}, \[q\]\);", list_page), "typing a filter still sends the page back to the first one"
+
+
+def test_the_polling_interval_the_leak_journey_waits_out_is_the_one_the_page_uses() -> None:
+    """The journey measures one poll interval (``POLL_SECONDS``) and passes only if no further fetch happens inside it. If the page's interval changed and the constant did not, the journey
+    could pass without testing anything."""
+    journey = (ROOT / "tests" / "ui_e2e" / "test_platform_nav_switch_journey.py").read_text(encoding="utf-8")
+    seconds = re.search(r"^POLL_SECONDS = (\d+)$", journey, re.M)
+    assert seconds, "the journey's constant is gone"
+
+    poll = re.search(r"pollMs: (\d+), deps: \[nav\]", _body("NV_PlatListPage"))
+    assert poll, "the list page's useResource options changed shape"
+    assert int(poll.group(1)) == int(seconds.group(1)) * 1000

@@ -77,3 +77,20 @@ def test_switching_between_providers_and_the_other_pages_renders_each_and_raises
 
     hooks = [m for m in raised if "hook" in m.lower()]
     assert hooks == [], f"React reported a hook-order error while switching pages: {hooks[:2]}"
+
+
+def test_a_filter_typed_on_one_section_is_empty_on_the_next(page: Page, console_url: str) -> None:
+    """Each section is a fresh instance (``key={nav}``), which is the ONLY thing that clears a filter on a section switch now that the reset effect is gone: this is the behavioural
+    guard for the key, where ``tests/ui/test_platform_page_hooks.py`` pins only its text. Agents and Graphs are two list pages with the same component, so without the key
+    the second would inherit the first's state."""
+    _open_providers(page, console_url)
+    _go(page, "agents")
+    typed = "zzz-nothing-matches-this"
+    page.get_by_test_id("nv-plat-filter").fill(typed)
+    expect(page.get_by_test_id("nv-plat-filter")).to_have_value(typed)
+
+    _go(page, "graphs")
+    expect(page.get_by_test_id("nv-plat-filter")).to_have_value("")
+
+    _go(page, "agents")
+    expect(page.get_by_test_id("nv-plat-filter")).to_have_value("")
