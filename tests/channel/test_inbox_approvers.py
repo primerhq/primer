@@ -125,3 +125,82 @@ async def test_a_reply_for_a_session_that_does_not_exist_is_published_as_before(
 
     event = await world.published()
     assert event is not None and event.event_key == "tool_approval:chat-1:tc-1"
+
+
+# ---- each gate by its OWN spec, and the publish bound to the gate that was checked (follow-up of #536) -----------------------------
+
+
+def _gate_metadata(tool_call_id: str, approvers: dict | None) -> dict:
+    return {
+        "policy_id": "pol", "approval_type": "required", "gate_reason": None, "approvers": approvers,
+        "original_call": {"id": tool_call_id, "name": "delete_workspace", "arguments": {}},
+    }
+
+
+def _graph_park(session_id: str, *, toolcalls: list[tuple[str, str, dict | None]], agent_yields: list[tuple[str, str, dict | None]] = ()) -> WorkspaceSession:
+    """A graph park whose checkpoint holds the given gates: ``(tool_call_id, event_key, approvers)`` in ``pending_toolcalls`` (a ToolCall
+    node's gate) and in ``pending_agent_yields`` (an agent node's ``_approval`` yield)."""
+    now = datetime.now(UTC)
+    calls = [
+        {
+            "node_id": f"node-{tcid}", "tool_call_id": tcid, "parked_event_key": key, "arguments": {}, "tool_name": "_approval",
+            "resume_metadata": _gate_metadata(tcid, approvers), "scoped_tool_call_id": None,
+        }
+        for tcid, key, approvers in toolcalls
+    ]
+    yields = [
+        {
+            "node_id": f"agent-{tcid}", "tool_call_id": tcid, "event_key": key, "tool_name": "_approval",
+            "resume_metadata": _gate_metadata(tcid, approvers),
+        }
+        for tcid, key, approvers in agent_yields
+    ]
+    primary = "primary-gate"
+    return WorkspaceSession(
+        id=session_id, workspace_id="ws-1", binding=AgentSessionBinding(kind="agent", agent_id="agt"), status=SessionStatus.RUNNING,
+        created_at=now, parked_status="parked", parked_at=now, parked_event_key=f"tool_approval:{session_id}:{primary}",
+        parked_state={
+            "tool_call_id": primary,
+            "yielded": {"tool_name": "_approval", "event_key": f"tool_approval:{session_id}:{primary}", "resume_metadata": {}},
+            "graph_checkpoint": {"pending_toolcalls": calls, "pending_agent_yields": yields, "pending_dispatch": []},
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_reply_to_an_unrestricted_gate_is_published_while_its_restricted_sibling_is_refused(world) -> None:
+    """One park, two gates: call-0 routed to alice, call-1 to anyone. Judging every gate by the PRIMARY's spec (call-0's) would refuse
+    call-1; judging by the last, or by none, would let call-0 through. Each reply is judged by its own gate."""
+    await world.sp.get_storage(WorkspaceSession).create(_graph_park("s-m", toolcalls=[
+        ("call-0", "tool_approval:s-m:call-0", {"kind": "users", "users": ["alice"]}),
+        ("call-1", "tool_approval:s-m:call-1", {"kind": "anyone"}),
+    ]))
+
+    with pytest.raises(ApproverRefusedError):
+        await world.inbox.handle_response(_reply("s-m", tool_call_id="call-0"))
+    assert await world.published() is None
+
+    await world.inbox.handle_response(_reply("s-m", tool_call_id="call-1"))
+    event = await world.published()
+    assert event is not None and event.event_key == "tool_approval:s-m:call-1"
+
+
+@pytest.mark.asyncio
+async def test_the_reply_is_published_to_the_event_key_of_the_gate_that_was_checked(world) -> None:
+    """Two gates share a raw tool_call_id (two fan-out siblings can): a ToolCall gate that anyone may decide and an agent node's
+    ``_approval`` yield restricted to alice. The reply is judged against ONE entry and must be published to THAT entry's own key; the
+    inbox used to check one entry and publish to the key of another (the first by a second matcher), so a reply admitted by the open
+    gate could wake the restricted one."""
+    await world.sp.get_storage(WorkspaceSession).create(_graph_park(
+        "s-b",
+        toolcalls=[("dup", "tool_approval:s-b:open-node:dup", {"kind": "anyone"})],
+        agent_yields=[("dup", "tool_approval:s-b:restricted-node:dup", {"kind": "users", "users": ["alice"]})],
+    ))
+
+    await world.inbox.handle_response(_reply("s-b", tool_call_id="dup"))
+
+    event = await world.published()
+    assert event is not None
+    assert event.event_key == "tool_approval:s-b:open-node:dup", (
+        f"the reply was admitted by the open gate but published to {event.event_key!r}"
+    )

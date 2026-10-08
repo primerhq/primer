@@ -64,3 +64,33 @@ def test_ensure_may_decide_raises_for_a_refused_decider_and_is_silent_for_an_adm
 
     assert isinstance(caught.value, PrimerError)
     assert "approver" in str(caught.value)
+
+
+# ---- a call_tool park written before the stamp existed (follow-up of #536) -----------------------------------------------------------
+#
+# Before the stamp, the `call_tool` park wrote no `approvers` KEY at all, and "no key" reads as anyone: a gate parked before the upgrade
+# stays open to every user until it times out. Its metadata is recognisable (`via_call_tool` is written only by that park), so a call_tool
+# park with the key ABSENT is decided by an admin only. Agent-loop parks have written the key since P6, so an absent key there is a
+# park from before routing existed and stays open; an EXPLICIT None is "anyone" for both.
+
+LEGACY_CALL_TOOL_PARK = {"via_call_tool": {"toolset_id": "system", "principal": None}, "original_call": {"id": "tc", "name": "x", "arguments": {}}}
+
+
+def test_a_call_tool_park_without_the_approvers_key_is_decided_by_an_admin_only():
+    assert may_decide(LEGACY_CALL_TOOL_PARK, username="root", role="admin")
+    assert not may_decide(LEGACY_CALL_TOOL_PARK, username="bob", role="user")
+    assert not may_decide(LEGACY_CALL_TOOL_PARK, username=None, role=None)
+
+
+def test_a_call_tool_park_that_stamped_none_explicitly_is_decided_by_anyone():
+    stamped = {**LEGACY_CALL_TOOL_PARK, "approvers": None}
+
+    assert may_decide(stamped, username="bob", role="user")
+    assert may_decide(stamped, username=None, role=None)
+
+
+def test_an_agent_loop_park_without_the_key_stays_open():
+    """No `via_call_tool`: a park from before approver routing existed, which has no restriction to honour."""
+    legacy = {"original_call": {"id": "tc", "name": "x", "arguments": {}}}
+
+    assert may_decide(legacy, username="bob", role="user")

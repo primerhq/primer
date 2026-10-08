@@ -7,6 +7,7 @@ import pytest
 from primer.agent.approval import ApprovalResolver
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.model.tool_approval import (
+    ApproverSpec,
     RequiredApprovalConfig,
     ToolApprovalPolicy,
 )
@@ -249,3 +250,27 @@ async def test_concurrent_fanout_siblings_sharing_a_raw_id_get_distinct_event_ke
     )
     assert keys["worker[0]"] == f"tool_approval:{sess.session_id}:worker[0]:call_0"
     assert keys["worker[1]"] == f"tool_approval:{sess.session_id}:worker[1]:call_0"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "approvers",
+    [None, ApproverSpec(kind="users", users=["alice"]), ApproverSpec(kind="roles", roles=["ops"])],
+    ids=["none", "users", "roles"],
+)
+async def test_the_agent_loop_park_stamps_the_policys_approvers(tool_manager_with_test_tools, approvers):
+    """Ticket 01a11b64 (f): the stamp the respond route and the channel inbox enforce is written by the agent loop's own park, for every
+    spec the policy can carry, and as an explicit None when it carries none (the key is always present)."""
+    tm = tool_manager_with_test_tools
+    tm._approval_resolver = _PoliciesOnlyResolver([
+        ToolApprovalPolicy(id="p", toolset_id="_test", tool_name="echo", approval=RequiredApprovalConfig(), approvers=approvers),
+    ])
+    from primer.model.chat import ToolCallPart
+
+    with pytest.raises(YieldToWorker) as parked:
+        await tm.execute(ToolCallPart(id="c9", name=_SCOPED_NAME, arguments={"x": 9}))
+
+    md = parked.value.yielded.resume_metadata
+    assert "approvers" in md
+    assert md["approvers"] == (approvers.model_dump() if approvers is not None else None)
+    assert md["policy_id"] == "p" and md["approval_type"] == "required"
