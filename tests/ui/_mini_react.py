@@ -11,6 +11,16 @@ What it deliberately is not: a DOM, a scheduler, or a reconciler. State lives pe
 leaves the tree runs its cleanups and loses its state, and the whole tree is re-rendered on every change. That is enough to drive
 a component through "mount, click, props change" and read what it rendered or called.
 
+Where it differs from React, so a green test here is not read as more than it is:
+
+* Effects run PARENT-FIRST, in render order. React runs a child's effects before its parent's.
+* There is no batching: every state change marks the tree dirty and the loop re-renders once after the current pass, so a handler
+  that sets two states re-renders once, but effects see each intermediate pass.
+* A setter that belongs to an instance that has since left the tree still marks the tree dirty and re-renders it. React ignores
+  such a call.
+* No strict-mode double render or double effect, no ``key`` reordering, no refs to DOM nodes, no context (callers stub the hooks
+  that read it, such as ``NV_useConsole``).
+
 Driver API, inside the context (``MR``): ``MR.mount(Component, props)``, ``MR.rerender(props?)``, ``MR.find(testid)`` (the element
 or null), ``MR.findAll(prefix)``, ``MR.click(testid)``, ``MR.texts()``. The caller owns ``ctx.close()``.
 """
