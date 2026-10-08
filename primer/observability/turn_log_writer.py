@@ -32,6 +32,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 from collections.abc import Awaitable, Callable
 
+from primer.common.log import redact_url_secrets
 from primer.model.except_ import (
     AuthenticationError,
     AuthRequiredError,
@@ -101,37 +102,51 @@ def to_problem_details(exc: BaseException) -> ProblemDetails:
 
     The envelope is served to every reader of the session (the messages
     ERROR record, the turn log, the tap), so it never carries the
-    traceback: that is logged here, once, at ERROR under the same
-    ``error_id`` so an operator can find it in the server log.
+    traceback, and its ``detail`` passes through ``redact_url_secrets``
+    (an upstream error message can embed a ``?key=`` URL). The failure is
+    logged here, once, under the same ``error_id``: a mapped
+    ``PrimerError`` subclass (an expected failure class) as one WARNING
+    without a traceback; anything else, the bare ``PrimerError``
+    catch-all included, at ERROR with the traceback.
     """
     error_id = uuid.uuid4().hex
-    logger.error(
-        "error_id=%s %s: %s", error_id, type(exc).__name__, exc,
-        exc_info=(type(exc), exc, exc.__traceback__),
-    )
     for exc_cls, status, type_uri, title in _PRIMER_ERROR_MAP:
         if isinstance(exc, exc_cls):
+            if exc_cls is PrimerError:
+                _log_unexpected(error_id, exc)
+            else:
+                logger.warning(
+                    "error_id=%s %s: %s", error_id, type(exc).__name__, exc,
+                )
             detail = exc.message if isinstance(exc, PrimerError) else str(exc)
             return ProblemDetails(
                 type=type_uri,
                 title=title,
                 status=status,
-                detail=detail,
+                detail=redact_url_secrets(detail),
                 extensions={
                     "exception_class": type(exc).__name__,
                     "error_id": error_id,
                     **(getattr(exc, "problem_extensions", None) or {}),
                 },
             )
+    _log_unexpected(error_id, exc)
     return ProblemDetails(
         type="/errors/internal",
         title=type(exc).__name__,
         status=500,
-        detail=str(exc),
+        detail=redact_url_secrets(str(exc)),
         extensions={
             "exception_class": type(exc).__name__,
             "error_id": error_id,
         },
+    )
+
+
+def _log_unexpected(error_id: str, exc: BaseException) -> None:
+    logger.error(
+        "error_id=%s %s: %s", error_id, type(exc).__name__, exc,
+        exc_info=(type(exc), exc, exc.__traceback__),
     )
 
 
