@@ -239,6 +239,11 @@ async def workspace_terminal_ws(
             if not task.cancelled():
                 task.exception()
     finally:
+        # The handler can be cancelled while it waits (the auth middleware ends a connection whose account was disabled): the two loops
+        # must not be left running behind it.
+        for task in (recv_task, send_task):
+            if not task.done():
+                task.cancel()
         # Always tear the PTY down on disconnect (child terminated, fd freed).
         await session.close()
 
