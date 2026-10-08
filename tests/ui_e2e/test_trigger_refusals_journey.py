@@ -93,7 +93,7 @@ def test_a_failed_fire_shows_the_servers_explanation_and_a_plain_title(page: Pag
         banner = page.locator(".banner, [role='alert']").filter(has_text="Fire failed")
         expect(banner.first).to_be_visible(timeout=15_000)
         shown = banner.first.inner_text()
-        assert "was not found" in shown and "Refresh the list." in shown, shown
+        assert "was not found" in shown and "Go back to the triggers list." in shown, shown
         assert "trigger_not_found" not in shown and "Fire failed (" not in shown, shown
     finally:
         _remove(base_url, slug)
