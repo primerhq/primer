@@ -442,3 +442,15 @@ async def test_report_worker_load_does_not_touch_the_heartbeat(sched):
 
     [after] = [w for w in await sched.list_workers() if w.id == "w1"]
     assert after.last_heartbeat == before.last_heartbeat, "load is reported beside the heartbeat, it is not a heartbeat"
+
+
+async def test_initialize_does_not_lock_the_workers_table_once_it_has_the_load_column(sched, storage_provider):
+    """#484 review. ``ALTER TABLE ... ADD COLUMN IF NOT EXISTS`` takes an ACCESS EXCLUSIVE lock before it finds there is nothing to do, so
+    running it on every boot would queue behind (and then block) every heartbeat and health read. With the column already there,
+    initialize must not reach for that lock: it completes while another connection holds the table open."""
+    import asyncio
+
+    async with storage_provider.pool.acquire() as holder:
+        async with holder.transaction():
+            await holder.fetch("SELECT * FROM workers")  # an ACCESS SHARE lock, held until the transaction ends
+            await asyncio.wait_for(sched.initialize(), timeout=3.0)
