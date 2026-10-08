@@ -17,10 +17,24 @@ check raises :class:`~primer.common.entity_checks.EntityCheckError`; the router'
 channel routers use, the tools answer ``validation-error`` with the field path in front.
 
 The profile is reported before the toolsets, and every missing toolset is named once, sorted, in one message.
+
+Two field rules come first (ticket 01a11c1c; the console's agent form enforced them alone until then):
+
+* a NEW agent's id must match ``AGENT_ID_PATTERN`` (code ``agent_id_invalid``, field ``id``). The id is optional and an omitted one is
+  generated as ``agent-<hex>``, which satisfies the rule. It sits in URLs (``/v1/agents/{id}``) and in references (a graph agent node,
+  a session binding, a trigger subscription) and is never part of a qualified ``<toolset>__<tool>`` name, so the rule is what a URL path
+  needs and nothing more. It applies on CREATE only: an id is immutable, a deployment may hold ids older than the rule, and the seeded
+  and harness-managed agents are written straight to storage;
+* the description must not be blank (code ``agent_description_blank``, field ``description``), on create and on an update that MAKES it
+  blank. An agent whose description is already blank can be edited without describing it, like any other reference it already had.
+
+The id is reported before the description. On the route these two answer a request-validation 422 at ``body.id`` / ``body.description``
+(see ``AGENT_FIELD_CODES``), the shape the console's field errors read.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable, Iterable
 from typing import TYPE_CHECKING
 
@@ -32,6 +46,24 @@ from primer.model.provider import Toolset
 if TYPE_CHECKING:
     from primer.int.storage import Storage
     from primer.int.storage_provider import StorageProvider
+
+
+# The id of a NEW agent: URL-safe without escaping, never mistaken for something else. ui/components/agents.jsx (AG_validateNewAgent) holds a copy
+# and tests/ui/test_agent_form_validation.py fails when the two differ.
+AGENT_ID_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,62}$"
+_AGENT_ID_RE = re.compile(AGENT_ID_PATTERN)
+
+# The codes of the two field refusals. The route answers them as request-validation errors at body.<field>; the other codes keep the
+# {error, field, message} 422 of the profile and channel routers.
+AGENT_FIELD_CODES = frozenset({"agent_id_invalid", "agent_description_blank"})
+
+# Appended to the create and update descriptors of the agent tools (the system toolset and the builder's crud toolset): the model reads
+# the rule before it writes.
+AGENT_WRITE_NOTE = (
+    "A new agent's ``id`` is optional (leave it out to have ``agent-<hex>`` generated); when you send one it must start with a lowercase "
+    "letter or a digit and use only lowercase letters, digits, hyphens and underscores, at most 63 characters, and an update cannot change "
+    "it. The ``description`` must not be blank: other agents find an agent by it."
+)
 
 
 def toolset_id_of(tool_id: str) -> str:
@@ -72,6 +104,32 @@ def _refuse(code: str, field: str, message: str) -> EntityCheckError:
     return EntityCheckError("validation", message, code=code, field=field)
 
 
+def _shown(agent_id: str) -> str:
+    """The id as the message quotes it: a very long one is cut, so a hostile body cannot make a long answer."""
+    return repr(agent_id) if len(agent_id) <= 40 else repr(agent_id[:40]) + "..."
+
+
+def check_agent_fields(entity: Agent, *, existing: Agent | None = None) -> None:
+    """The id (a NEW agent only) must be a name, then the description must not be blank (see the module docstring).
+
+    With ``existing`` (an update) the id is not checked, and a blank description is refused only when the stored one was not blank.
+    """
+    if existing is None and _AGENT_ID_RE.fullmatch(entity.id or "") is None:
+        raise _refuse(
+            "agent_id_invalid",
+            "id",
+            f"{_shown(entity.id or '')} is not a valid agent id: it must start with a lowercase letter or a digit and use only "
+            "lowercase letters, digits, hyphens and underscores, at most 63 characters (for example refund-triage); "
+            "leave the id out to have one generated",
+        )
+    if not entity.description.strip() and (existing is None or existing.description.strip()):
+        raise _refuse(
+            "agent_description_blank",
+            "description",
+            "the description must not be blank: other agents find an agent by its description",
+        )
+
+
 async def check_profile_exists(entity: Agent, *, storage_provider: "StorageProvider") -> None:
     """``model.profile_id`` must name a stored ModelProfile."""
     profile_id = entity.model.profile_id
@@ -103,13 +161,15 @@ async def check_toolsets_exist(
 
 
 async def check_agent_on_create(entity: Agent, *, storage_provider: "StorageProvider") -> None:
-    """Every pre-write check for a new agent: the profile, then the toolsets."""
+    """Every pre-write check for a new agent: the id and the description, then the profile, then the toolsets."""
+    check_agent_fields(entity)
     await check_profile_exists(entity, storage_provider=storage_provider)
     await check_toolsets_exist(entity, storage_provider=storage_provider)
 
 
 async def check_agent_on_update(entity: Agent, existing: Agent, *, storage_provider: "StorageProvider") -> None:
     """Every pre-write check for an edit: a profile the agent already had, and toolsets it already named, are not re-checked."""
+    check_agent_fields(entity, existing=existing)
     if entity.model.profile_id != existing.model.profile_id:
         await check_profile_exists(entity, storage_provider=storage_provider)
     await check_toolsets_exist(entity, storage_provider=storage_provider, existing=existing)
@@ -130,7 +190,11 @@ def agent_pre_checks(
 
 
 __all__ = [
+    "AGENT_FIELD_CODES",
+    "AGENT_ID_PATTERN",
+    "AGENT_WRITE_NOTE",
     "agent_pre_checks",
+    "check_agent_fields",
     "check_agent_on_create",
     "check_agent_on_update",
     "check_profile_exists",
