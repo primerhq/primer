@@ -1415,6 +1415,10 @@ input, textarea, select { font: inherit; color: inherit; }
   z-index: 100;
   max-width: 380px;
 }
+/* The two live regions of the toast stack (polite and assertive) lay their toasts out like the stack itself; an empty one gives back
+   the stack's gap so it takes no room. */
+.toast-region { display: flex; flex-direction: column; gap: 8px; }
+.toast-region:empty { margin-top: -8px; }
 .toast {
   background: var(--bg-elev);
   border: 1px solid var(--border-strong);
