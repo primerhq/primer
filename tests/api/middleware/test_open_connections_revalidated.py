@@ -514,18 +514,36 @@ async def test_a_bearer_stream_without_an_expiry_is_not_cut_by_the_cookie_lifeti
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(60)
+async def test_a_valid_cookie_of_a_gone_user_that_falls_through_to_a_bearer_does_not_lend_it_the_cookies_expiry(probed, monkeypatch) -> None:
+    """The middleware tries the cookie first. A cookie that verifies but whose user row is gone authenticates nobody, so the request falls through to
+    the bearer, and the cookie's lifetime (already read from its signature) must not follow it there: an API token has its own expiry."""
+    admin_cookie, other_cookie = await _cookies(probed)
+    plaintext, _ = await _bearer_for(probed, "tapuser")
+    other = await _user(probed, "other")
+    await probed.state.storage_provider.get_storage(User).delete(other.id)
+    headers = [*_cookie_header(other_cookie), (b"authorization", f"Bearer {plaintext}".encode())]
+    async with _Http(probed, "/v1/_probe/stream", headers) as conn:
+        assert conn.status == 200, "the bearer authenticated the request"
+        _eight_days_on(monkeypatch)
+        await asyncio.sleep(INTERVAL * 8)
+        assert not conn.task.done(), "the cookie's expiry was applied to a bearer connection"
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)
 async def test_an_app_that_outlives_the_cancel_grace_is_logged_at_debug(probed, monkeypatch, caplog) -> None:
     """The connection is closed over an app that has not finished unwinding; that is worth a debug line, not silence."""
     from primer.api.middleware import revalidate
 
     monkeypatch.setattr(revalidate, "_CANCEL_GRACE_S", 0.1)
     _, other_cookie = await _cookies(probed)
-    finish = asyncio.Event()
+    finish, reached = asyncio.Event(), asyncio.Event()
 
     async def stubborn(scope, receive, send):                        # raw ASGI: one plain cancel, then a slow unwind
         await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"text/event-stream")]})
         await send({"type": "http.response.body", "body": b"x", "more_body": True})
         try:
+            reached.set()                                           # from here a cancel lands in the handler that swallows it
             await asyncio.sleep(3600)
         except asyncio.CancelledError:
             while not finish.is_set():                               # swallow every cancel (a task group re-delivers its own) until released
@@ -540,6 +558,7 @@ async def test_an_app_that_outlives_the_cancel_grace_is_logged_at_debug(probed, 
         with caplog.at_level(logging.DEBUG, logger="primer.api.middleware.revalidate"):
             async with _Http(probed, "/v1/_probe_stubborn/s", _cookie_header(other_cookie)) as conn:
                 assert conn.status == 200
+                await asyncio.wait_for(reached.wait(), WITHIN)      # a cancel that lands BEFORE this unwinds at once and logs nothing (one flake seen under load)
                 await _change(probed, "other", disabled=True)
                 assert await conn.ended_within(), "the connection was held open by an app that would not unwind"
                 lines = [r for r in caplog.records if "still running" in r.getMessage()]
