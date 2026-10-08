@@ -62,13 +62,10 @@ function NV_ToastHost() {
     };
   }, []);
 
-  return (
-    <div className="toast-stack" data-testid="nv-toasts" role="status" aria-live="polite">
-      {toasts.map(function (t) {
+  var renderToast = function (t) {
         var rid = t.requestId || t.reqId;
         return (
-          <div key={t.id} className={"toast toast-" + (t.kind || "info")}
-            role={t.kind === "error" ? "alert" : undefined}>
+          <div key={t.id} className={"toast toast-" + (t.kind || "info")}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div className="title">{t.title || t.text}</div>
               {t.detail ? <div className="detail">{t.detail}</div> : null}
@@ -116,7 +113,18 @@ function NV_ToastHost() {
               onClick={function () { removeToast(t.id); }}>x</button>
           </div>
         );
-      })}
+  };
+  // Two sibling live regions, both always in the page so a toast inserted into either is announced: errors are assertive, everything else
+  // polite. An alert nested inside a polite status region was announced twice by some screen readers (console review C-029).
+  var isError = function (t) { return t.kind === "error"; };
+  return (
+    <div className="toast-stack" data-testid="nv-toasts">
+      <div className="toast-region" role="status" aria-live="polite" data-testid="nv-toasts-status">
+        {toasts.filter(function (t) { return !isError(t); }).map(renderToast)}
+      </div>
+      <div className="toast-region" role="alert" data-testid="nv-toasts-alert">
+        {toasts.filter(isError).map(renderToast)}
+      </div>
     </div>
   );
 }

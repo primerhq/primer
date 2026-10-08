@@ -27,11 +27,15 @@ function SH_elapsedText(seconds) {
   return Math.floor(s / 60) + "m " + SH_pad2(s % 60) + "s";
 }
 
-function SH_statusLine(status) {
+// The strip's words without its clock ("running: thinking"): what a screen reader may be told; the clock ticks every second and is not news.
+function SH_statusWords(status) {
   var st = status || {};
   var verb = st.verb || "thinking";
   var object = st.object ? " " + st.object : "";
-  return "running: " + verb + object + " — " + SH_elapsedText(st.elapsedSec);
+  return "running: " + verb + object;
+}
+function SH_statusLine(status) {
+  return SH_statusWords(status) + " — " + SH_elapsedText((status || {}).elapsedSec);
 }
 
 // UX reconcile wave 1 (audit A item 10): the OTHER status-strip form -
@@ -209,6 +213,7 @@ window.SH_canStop = SH_canStop;
 window.SH_stoppingLine = SH_stoppingLine;
 window.SH_lifecycleLabel = SH_lifecycleLabel;
 window.SH_statusLine = SH_statusLine;
+window.SH_statusWords = SH_statusWords;
 window.SH_waitLine = SH_waitLine;
 window.SH_parkedStatusLine = SH_parkedStatusLine;
 window.SH_eventStartedMs = SH_eventStartedMs;

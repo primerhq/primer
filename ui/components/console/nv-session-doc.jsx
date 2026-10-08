@@ -745,6 +745,9 @@ function NV_ToolBlock(props) {
 // ---------------------------------------------------------------------------
 // Cards
 // ---------------------------------------------------------------------------
+// props.live: this approval appeared while the document was open. Only then is it an assertive announcement (role="alert"), and never once
+// the session is over (props.ended): a card that was already there when the document loaded is history, and opening a session must not
+// shout every approval it ever asked for (console review C-029).
 function NV_DecisionCard(props) {
   var con = NV_useConsole();
   var item = props.item;
@@ -761,7 +764,8 @@ function NV_DecisionCard(props) {
   // told the viewer whether THEY could act on it.
   var routing = SH_routingLine(item, { username: con.username, role: con.role });
   return (
-    <div className="nv-card nv-card-attention" data-kind="approval" role="alert"
+    <div className="nv-card nv-card-attention" data-kind="approval"
+      role={props.live && !props.ended ? "alert" : undefined}
       data-testid={"nv-decision:" + item.toolCallId}>
       <div className="nv-card-head">
         <span className="nv-dot-attention" />
@@ -1453,10 +1457,17 @@ function NV_StatusStrip(props) {
       elapsedSec: Math.round((Date.now() - shown.startedMs) / 1000),
     });
   if (!line) return null;
+  // Only the words are a live region. The strip's text ends in an elapsed time that ticks every second, and a status region is atomic:
+  // with the role on the whole strip a screen reader re-read it about once a second for the whole turn (console review C-029).
+  var words = props.stopping ? line : window.SH_statusWords(shown);
+  var clock = props.stopping ? "" : line.slice(words.length);
   return (
-    <div className="nv-status-strip" data-testid="nv-status-strip" role="status">
+    <div className="nv-status-strip" data-testid="nv-status-strip">
       <span className="nv-dot-pulse" />
-      <span className="nv-status-verb">{line}</span>
+      <span className="nv-status-verb">
+        <span role="status" data-testid="nv-status-live">{words}</span>
+        {clock ? <span data-testid="nv-status-clock">{clock}</span> : null}
+      </span>
       <span style={{ flex: 1 }} />
       {props.canStop || props.stopping ? (
         <button type="button" className="nv-interrupt-btn"
@@ -1530,7 +1541,7 @@ function NV_Composer(props) {
   var composerHint = props.terminal
     ? "Send to reopen this session…"
     : props.running && !props.waitNote
-      ? "Steer mid-run — queues to the turn boundary"
+      ? "Steer mid-run - queues to the turn boundary"
       : "Message " + (props.agentName || "agent") + "…";
   var con = NV_useConsole();
   var valState = React.useState(function () { return NV_DRAFTS[props.sid] || ""; });
@@ -1949,6 +1960,23 @@ function NV_Composer(props) {
 // straight through to NV_Composer - see its own comment; every other
 // caller (desktop's NV_renderStudioDoc) omits it and keeps "Queue".
 // ---------------------------------------------------------------------------
+// The keys present the first time `loaded` is true, frozen from then on ({key: true}), or null before that. Live regions announce what is
+// INSERTED into the page, so role="alert" belongs only on a failure or an approval that arrives while the document is open: what the first
+// load brought is history. Opening a session with three past failed turns must not fire three assertive announcements (console review C-029).
+function NV_useFirstLoadKeys(loaded, keys) {
+  var ref = React.useRef(null);
+  if (loaded && ref.current === null) {
+    var seen = {};
+    for (var i = 0; i < keys.length; i++) seen[keys[i]] = true;
+    ref.current = seen;
+  }
+  return ref.current;
+}
+
+function NV_arrivedLive(firstLoad, key) {
+  return firstLoad !== null && firstLoad[key] !== true;
+}
+
 function NV_SessionDoc(props) {
   var con = NV_useConsole();
   var sid = props.sid;
@@ -2521,6 +2549,9 @@ function NV_SessionDoc(props) {
     pending: (gates.data && gates.data.items) || [],
     records: (resolvedRecords.data && resolvedRecords.data.items) || [],
   });
+  // What the first load of the history and of the pending gates brought is not announced; what arrives after it is.
+  var historyFirstLoad = NV_useFirstLoadKeys(!!history.data, ((history.data && history.data.items) || []).map(function (it) { return it.seq; }));
+  var gatesFirstLoad = NV_useFirstLoadKeys(!!gates.data, gateItems.map(function (it) { return it.id; }));
   var agentId = session && session.binding
     ? (session.binding.agent_id || session.binding.graph_id)
     : null;
@@ -2712,7 +2743,8 @@ function NV_SessionDoc(props) {
         || (row.payload && (row.payload.message || row.payload.code))
         || "turn failed";
       return (
-        <div key={row.seq} className="nv-turn-error" role="alert"
+        <div key={row.seq} className="nv-turn-error"
+          role={NV_arrivedLive(historyFirstLoad, row.seq) ? "alert" : undefined}
           data-testid={"nv-turn:" + row.seq}>
           <span>{msg}</span>
           <span style={{ flex: 1 }} />
@@ -2921,6 +2953,7 @@ function NV_SessionDoc(props) {
               }
               return item.kind === "approval" ? (
                 <NV_DecisionCard key={item.id} item={item} ended={ended}
+                  live={NV_arrivedLive(gatesFirstLoad, item.id)}
                   onResolved={refetchAll} />
               ) : (
                 <NV_AskCard key={item.id} item={item} ended={ended}
