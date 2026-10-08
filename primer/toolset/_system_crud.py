@@ -1485,8 +1485,9 @@ def _document_service_factory(
             from primer.knowledge.indexing import make_document_path_rewriter, make_document_unindexer
 
             # The same best-effort hooks the tree service gets (ticket 01a1131f), so a delete or a move through this service
-            # reaches the vector store; today the tools use it for put_document and the reads, but nothing should have to
-            # remember to add them when a delete does.
+            # reaches the vector store. Today the tools use it for put_document, move_document (its move) and the reads; the
+            # delete tools go through the tree service, but nothing should have to remember to add the hooks when one starts
+            # calling this service's delete.
             unindexer = make_document_unindexer(
                 storage_provider=storage_provider, semantic_search_registry=semantic_search_registry,
             )
