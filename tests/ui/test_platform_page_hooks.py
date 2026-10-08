@@ -112,6 +112,9 @@ def test_the_handler_stripper_removes_a_click_handler_and_keeps_an_effect_and_th
     assert 'setQ("")' in _without_user_handlers(in_effect + clicked)
     assert 'setQ("")' in _without_user_handlers(in_render + clicked)
     assert 'setQ("")' not in _without_user_handlers('<a onClick={function () { f({ a: 1 }); setQ(""); }}>x</a>'), "nested braces are matched"
+    assert 'setQ("")' in _without_user_handlers(clicked + in_effect), "an effect after a click handler is kept"
+    assert 'setQ("")' in _without_user_handlers(clicked + in_render), "render code after a click handler is kept"
+    assert 'setQ("")' in _without_user_handlers(clicked + in_effect + clicked), "an effect between two click handlers is kept"
 
 
 def test_a_section_switch_resets_the_filter_the_page_and_the_form_by_remounting_not_by_an_effect() -> None:
