@@ -380,12 +380,18 @@ function SA_toTranscript(records, session) {
   //
   // The server counts every ERROR record that is not a non-fatal one, and not a subagent's, as the end of a window (terminals.closes_turn),
   // folded copies and markers included, and the console asks the trace for that window ordinal (SH_turnOfSeq). A row that absorbed such
-  // records carries their number (foldedTerminals) so the ordinal still agrees; a notice, absorbed or not, is not one.
+  // records carries their SEQS (foldedSeqs), not a count: a drawn row between the cause and a copy sits in a window the copy's end comes after, so the
+  // ordinal has to step at the copy's own place; a notice, absorbed or not, is not one.
   var turnCauses = [];
   var turnMarkers = {};
   var turnNotices = [];
-  function foldedInto(cause, scope) {
-    if (cause.row && scope === null) cause.row.foldedTerminals = (cause.row.foldedTerminals || 0) + 1;
+  function foldedInto(cause, scope, seq) {
+    if (cause.row && scope === null) (cause.row.foldedSeqs = cause.row.foldedSeqs || []).push(seq);
+  }
+  // dispatch's failure row carries only the generic /errors/internal; the provider's own code was on the notice it absorbs, and it is what the card's words are
+  // chosen by. A code the failure row has of its own wins. The payload is copied, never edited: it is the record's own.
+  function adoptCode(row, code) {
+    if (code && (!row.payload.code || row.payload.code === "/errors/internal")) row.payload = Object.assign({}, row.payload, { code: code });
   }
   for (var i = 0; i < visible.length; i++) {
     var rec = visible[i];
@@ -401,32 +407,39 @@ function SA_toTranscript(records, session) {
       var n = rec.node_id || null;
       return !!m && c.scope === scope && c.message === m && (!c.node || !n || c.node === n);
     };
-    if (notice && turnCauses.some(sameWords)) continue;           // a failure with these words already stands in this turn: this is its first half
+    if (notice) {
+      var standing = turnCauses.filter(sameWords)[0];
+      if (standing) {                                              // a failure with these words already stands in this turn: this is its first half
+        if (standing.row) adoptCode(standing.row, (rec.payload || {}).code);
+        continue;
+      }
+    }
     if (rec.kind === "error" && !notice) {
       var message = (rec.payload || {}).message || null;
       if (bare) {
         // A marker with a cause of its own scope anywhere in its turn is that cause's marker. A marker with none is the only evidence and stays.
         var own = turnCauses.filter(function (c) { return c.scope === scope; });
-        if (own.length) { foldedInto(own[own.length - 1], scope); continue; }
+        if (own.length) { foldedInto(own[own.length - 1], scope, rec.seq); continue; }
       } else {
         var node = rec.node_id || null;
         var copyOf = message ? turnCauses.filter(sameWords)[0] : null;
-        if (copyOf) { foldedInto(copyOf, scope); continue; }
+        if (copyOf) { foldedInto(copyOf, scope, rec.seq); continue; }
         thisCause = { message: message, node: node, scope: scope, row: null };
         turnCauses.push(thisCause);
         // A notice of this scope with the same words was this failure's first half: it gives way to the failure.
         turnNotices = turnNotices.filter(function (nt) {
-          if (!(message && nt.scope === scope && nt.message === message && (!nt.node || !node || nt.node === node))) return true;
+          if (!sameWords(nt)) return true;
           var gone = out.indexOf(nt.row);
           if (gone >= 0) out.splice(gone, 1);
+          thisCause.adoptedCode = thisCause.adoptedCode || nt.code;
           return false;
         });
         // A marker of this scope that came first gives way to the cause that follows it.
         if (turnMarkers[scopeKey]) {
           var at = out.indexOf(turnMarkers[scopeKey]);
           if (at >= 0) out.splice(at, 1);
+          thisCause.markerSeq = turnMarkers[scopeKey].seq;
           delete turnMarkers[scopeKey];
-          thisCause.markerFirst = true;
         }
       }
     }
@@ -459,10 +472,11 @@ function SA_toTranscript(records, session) {
     out.push(row);
     if (thisCause) {
       thisCause.row = row;
-      if (thisCause.markerFirst) foldedInto(thisCause, scope);   // the marker that gave way to this cause was a terminal of its own
+      if (thisCause.markerSeq != null) foldedInto(thisCause, scope, thisCause.markerSeq);   // the marker that gave way to this cause was a terminal of its own
+      adoptCode(row, thisCause.adoptedCode);
     }
     if (notice) {
-      turnNotices.push({ row: row, message: (rec.payload || {}).message || null, node: rec.node_id || null, scope: scope });
+      turnNotices.push({ row: row, message: (rec.payload || {}).message || null, node: rec.node_id || null, scope: scope, code: (rec.payload || {}).code || null });
     }
     if (rec.kind === "error" && bare) turnMarkers[scopeKey] = row;
   }

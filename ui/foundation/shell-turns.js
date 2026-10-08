@@ -264,11 +264,17 @@ function SH_closesTurn(row) {
 function SH_turnOfSeq(rows) {
   var out = {};
   var ordinal = 0;
+  // The seqs of the terminals the failure fold removed (session-adapter.jsx: a copy of the failure, the release marker), kept on the row that absorbed them
+  // (foldedSeqs). The server counts each as a window end AT ITS OWN PLACE, so the ordinal steps when the walk passes that seq, not where the surviving row is:
+  // a drawn row between the cause and a copy (a sibling node's answer, streamed text) belongs to a window the copy's end comes after.
+  var folded = [];
+  for (var k = 0; k < (rows || []).length; k++) folded = folded.concat(rows[k].foldedSeqs || []);
+  folded.sort(function (a, b) { return a - b; });
+  var f = 0;
   for (var i = 0; i < (rows || []).length; i++) {
+    while (f < folded.length && folded[f] < rows[i].seq) { ordinal += 1; f += 1; }
     out[rows[i].seq] = ordinal;
-    // A row that absorbed records the failure fold removed (foldedTerminals: a copy, the release marker) stands for each of them too: the
-    // server counts every one as a window end.
-    if (SH_closesTurn(rows[i])) ordinal += 1 + (rows[i].foldedTerminals || 0);
+    if (SH_closesTurn(rows[i])) ordinal += 1;
   }
   return out;
 }
