@@ -166,6 +166,10 @@ def _choose_policy(rows: Sequence[ToolApprovalPolicy], *, toolset_id: str, tool_
     return chosen
 
 
+# The keys other code trusts on an approval park; a site's own keys must not collide with them.
+_RESUME_METADATA_KEYS = frozenset({"policy_id", "approval_type", "gate_reason", "approvers", "original_call"})
+
+
 def approval_resume_metadata(
     *,
     policy: ToolApprovalPolicy,
@@ -179,15 +183,19 @@ def approval_resume_metadata(
     DECIDE it: the effective approver spec (the evaluator's per-call routing, else the policy row's), stamped as a dict or ``None`` for
     "anyone". Every path that answers a gate judges the answer against this stamp (:func:`primer.session.approvers.may_decide`), so a
     park site that built its own dict and left the stamp out (the ``call_tool`` meta-dispatch did) silently let any user decide a
-    restricted gate. ``extra`` carries a site's own keys (``via_call_tool``).
+    restricted gate. ``extra`` carries a site's own keys (``via_call_tool``); a key that collides with a stamped one raises ``ValueError``.
     """
+    clash = sorted(set(extra) & _RESUME_METADATA_KEYS)
+    if clash:
+        raise ValueError(f"approval_resume_metadata: extra keys {clash} would overwrite stamped ones")
     approvers = effective_approvers(policy, verdict)
     return {
+        **extra,
+        # After ``extra`` and not overridable by it (the check above refuses a clash; the order is the second line of defence).
         "policy_id": policy.id,
         "approval_type": policy.approval.type.value,
         "gate_reason": verdict.reason,
         "approvers": approvers.model_dump() if approvers is not None else None,
-        **extra,
         "original_call": original_call,
     }
 

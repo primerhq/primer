@@ -14,7 +14,8 @@ The rule, in :func:`may_decide`:
 * an UNIDENTIFIED decider (a chat-platform user whose id maps to no primer account) is admitted only when the spec is ``anyone``: a
   restricted gate cannot be proven to be answered by someone it admits, so it fails closed and is decided in the console;
 * a stored spec that cannot be read fails CLOSED to admin-only (it is stamped by our own code, so this is corruption; admins are always
-  admitted, so it cannot wedge a park).
+  admitted, so it cannot wedge a park);
+* a ``call_tool`` park (it carries ``via_call_tool``) whose ``approvers`` KEY is absent was parked before the stamp existed: admin-only too.
 """
 
 from __future__ import annotations
@@ -41,7 +42,13 @@ def may_decide(metadata: Mapping[str, Any] | None, *, username: str | None, role
 
     ``username`` / ``role`` are ``None`` for a decider that is not a known primer user (see the module docstring).
     """
-    raw = (metadata or {}).get("approvers")
+    meta = metadata or {}
+    raw = meta.get("approvers")
+    if "approvers" not in meta and "via_call_tool" in meta:
+        # A call_tool park written before the stamp existed (only that park writes `via_call_tool`): the key is ABSENT, not None, and
+        # absent used to read as anyone, leaving the gate open to every user until it timed out. Whether it was restricted cannot be
+        # known now, so it fails closed. An explicit None means anyone; agent-loop parks have always written the key since P6.
+        raw = {"kind": "roles", "roles": [], "users": []}
     if not raw:
         return True
     try:
