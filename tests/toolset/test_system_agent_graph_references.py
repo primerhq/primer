@@ -22,6 +22,7 @@ from tests._support.compute_rows import (
     graph_naming_agent,
     graph_naming_graph,
     graph_row,
+    insert_unreadable_graph,
     session_bound_to_agent,
     session_bound_to_graph,
     subscription_for_agent,
@@ -188,3 +189,33 @@ async def test_when_everything_blocks_the_tool_names_a_graph_first_then_a_sessio
     await sp.get_storage(WorkspaceSession).delete("s-1")
     _, answer = await _call(toolset, "delete_agent", id="ag-1")
     assert "1 trigger subscription(s) reference 'ag-1' (first: 'sub-1')" in answer["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_disabled_subscription_still_blocks_the_agent_for_the_tool(world) -> None:
+    sp, toolset, _ = world
+    await _seed(sp, agent_row("ag-1"))
+    await _seed(sp, subscription_for_agent("sub-1", "ag-1").model_copy(update={"enabled": False}))
+
+    is_error, answer = await _call(toolset, "delete_agent", id="ag-1")
+
+    assert is_error and answer["type"] == "conflict", answer
+    assert await sp.get_storage(Agent).get("ag-1") is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_id,kind,parent", [("delete_agent", Agent, "ag-1"), ("delete_graph", Graph, "g-2")])
+async def test_a_graph_row_that_cannot_be_read_blocks_the_tool_instead_of_failing_it(world, tool_id: str, kind, parent: str) -> None:
+    """On the real SQLite store: the row is in the table and reading the page that holds it raises. The delete is refused as a
+    ``conflict`` naming the readable graph before it, not a validation error that stops every delete."""
+    sp, toolset, _ = world
+    await _seed(sp, agent_row("ag-1"))
+    await _seed(sp, graph_row("g-1"))
+    await _seed(sp, graph_row("g-2"))
+    await insert_unreadable_graph(sp, "g-9")
+
+    is_error, answer = await _call(toolset, tool_id, id=parent)
+
+    assert is_error and answer["type"] == "conflict", answer
+    assert "unreadable graph row after g-2" in answer["message"], answer
+    assert await sp.get_storage(kind).get(parent) is not None, "the row was deleted anyway"
