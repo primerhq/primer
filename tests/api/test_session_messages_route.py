@@ -319,3 +319,89 @@ async def test_wake_persists_one_user_input_retrievable_via_endpoint(
     user_inputs = [it for it in items if it["kind"] == "user_input"]
     assert len(user_inputs) == 1, f"expected exactly one USER_INPUT, got {items!r}"
     assert user_inputs[0]["payload"]["text"] == "do the thing"
+
+
+# ---------------------------------------------------------------------------
+# A-08 (architecture review 2026-10-08): a workspace that cannot be READ is not an empty conversation
+# ---------------------------------------------------------------------------
+
+
+class _UnreachableWorkspace(_FakeWorkspace):
+    """The workspace row exists but its runtime does not answer: every read fails with something that is not 'file not found'."""
+
+    async def read_file(self, path: str) -> bytes:
+        raise ConnectionError("runtime connection refused")
+
+
+async def _unreachable(app, fake_storage_provider, sid: str):
+    from primer.model.workspace_session import SessionStatus
+
+    await _seed_session(fake_storage_provider, sid, SessionStatus.ENDED)
+    ws = _UnreachableWorkspace()
+
+    async def _get(wid):
+        return ws if wid == "ws-1" else None
+    app.state.workspace_registry.get_workspace = _get  # type: ignore[assignment]
+
+
+_PATHS = {
+    "messages": "/v1/sessions/{sid}/messages",
+    "turn log": "/v1/sessions/{sid}/turn_log",
+    "timeline": "/v1/sessions/{sid}/turns/0/timeline",
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("which", sorted(_PATHS))
+async def test_an_unreachable_workspace_is_a_typed_503_not_an_empty_log(client, app, fake_storage_provider, which):
+    """It used to answer 200 {items: []} (the messages and the turn log) or 404 "has no turn 0" (the timeline): byte-identical to a
+    session that had written nothing, so the console showed the history as gone and a retry loop could not tell loss from outage."""
+    sid = "s-down"
+    await _unreachable(app, fake_storage_provider, sid)
+
+    r = await client.get(_PATHS[which].format(sid=sid))
+
+    assert r.status_code == 503, (r.status_code, r.text)
+    assert r.headers["content-type"].startswith("application/problem+json")
+    body = r.json()
+    assert body["type"] == "/errors/workspace-unreachable"
+    assert body["title"] == "Workspace Unreachable"
+    assert sid in body["detail"] or "ws-1" in body["detail"], "the problem names what could not be reached"
+    assert "runtime connection refused" not in body["detail"], "the transport's own words are for the log, not the operator"
+
+
+@pytest.mark.asyncio
+async def test_the_unreachable_workspace_is_logged_once_per_read(client, app, fake_storage_provider, caplog):
+    import logging
+
+    await _unreachable(app, fake_storage_provider, "s-down2")
+    with caplog.at_level(logging.WARNING):
+        await client.get("/v1/sessions/s-down2/messages")
+    hits = [r for r in caplog.records if "could not be read" in r.getMessage()]
+    assert len(hits) == 1 and hits[0].exc_info, "one warning with the traceback, so an outage is findable in the log"
+
+
+@pytest.mark.asyncio
+async def test_a_log_that_was_never_written_is_still_empty_not_an_error(client, app, fake_storage_provider):
+    """The distinction the 503 depends on: NotFound (no log yet) stays an empty 200 for every reader of it."""
+    from primer.model.workspace_session import SessionStatus
+
+    await _seed_session(fake_storage_provider, "s-fresh", SessionStatus.RUNNING)
+    ws = _FakeWorkspace()
+
+    async def _get(wid):
+        return ws if wid == "ws-1" else None
+    app.state.workspace_registry.get_workspace = _get  # type: ignore[assignment]
+
+    for path in ("/v1/sessions/s-fresh/messages", "/v1/sessions/s-fresh/turn_log"):
+        r = await client.get(path)
+        assert r.status_code == 200 and r.json()["items"] == [], path
+    assert (await client.get("/v1/sessions/s-fresh/turns/0/timeline")).status_code == 404, "no such turn is still a 404"
+
+
+@pytest.mark.asyncio
+async def test_the_503_is_documented_on_the_three_readers(app):
+    spec = app.openapi()
+    for path in ("/v1/sessions/{session_id}/messages", "/v1/sessions/{session_id}/turn_log",
+                 "/v1/sessions/{session_id}/turns/{turn_no}/timeline"):
+        assert "503" in spec["paths"][path]["get"]["responses"], path
