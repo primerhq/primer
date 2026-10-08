@@ -1105,8 +1105,12 @@ function NV_AnsweredAskCard(props) {
 // no `result` yet - the live "attention" surface owns that state via
 // NV_AskCard/gateItems, not this row) keeps the generic tool block.
 function NV_toolCallElement(row, result, running) {
+  // A call that FAILED (a wrong argument name: the tool's validation error, flagged error) has no answer to show. It used to get the green "Resolved" card
+  // with the raw error JSON where the answer belongs (console review C-013); it is an ordinary failed tool block now, with the "failed" tag every other failed
+  // call has. A timed-out or cancelled ask is not a failure of the call: the tool returned it on purpose (error false) and keeps its card.
+  var failed = !!(result && result.payload && result.payload.error);
   var isAnsweredAsk = !!(row.payload && row.payload.name === "system__ask_user")
-    && result != null;
+    && result != null && !failed;
   return isAnsweredAsk
     ? <NV_AnsweredAskCard key={row.seq} row={row} result={result} />
     : <NV_ToolBlock key={row.seq} row={row} result={result} running={running} />;
