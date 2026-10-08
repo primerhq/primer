@@ -3062,27 +3062,48 @@ def _bounded(text: str, limit: int) -> str:
     return head[:i] if i > 0 else head
 
 
-def _blob_or_text(match: "re.Match[str]") -> str:
+def _hidden(piece: str, mark: "str | None") -> str:
+    """What a rule leaves of a piece it hides: ``<redacted>``, or, for the marking scrub, as many ``mark`` characters as the piece had."""
+    return _REDACTED if mark is None else mark * len(piece)
+
+
+def _hide_after_lead(match: "re.Match[str]", mark: "str | None") -> str:
+    lead = match.group("lead")
+    return lead + _hidden(match.group(0)[len(lead) :], mark)
+
+
+def _hide_after_word(match: "re.Match[str]", mark: "str | None") -> str:
+    """``Bearer x``: the word stays, the gap after it stays (a plain space for the plain scrub), the credential goes."""
+    head = match.group(1)
+    rest = match.group(0)[len(head) :]
+    token = rest.lstrip()
+    return head + (" " if mark is None else rest[: len(rest) - len(token)]) + _hidden(token, mark)
+
+
+def _blob_or_text(match: "re.Match[str]", mark: "str | None" = None) -> str:
     run = match.group(0)
     if _UUID.fullmatch(run):
         return run
     looks_encoded = _HEX.fullmatch(run) or (re.search(r"\d", run) and re.search(r"[A-Za-z]", run))
-    return _REDACTED if looks_encoded else run
+    return _hidden(run, mark) if looks_encoded else run
 
 
-def _scrub_text(text: str) -> str:
+def _scrub_text(text: str, mark: "str | None" = None) -> str:
     """``text`` with every secret-shaped piece replaced: a value after a secret-looking name or flag, a mysql ``-p`` password, a ``user:password``
     after ``-u``/``--user``, a bearer or basic credential, URL userinfo, a well-known token prefix (sk-, ghp_, gho_, xox?-, AKIA, a JWT) and any
-    long base64 or hex run."""
-    text = _SECRET_ASSIGNMENT.sub(lambda m: m.group("lead") + _REDACTED, text)
-    text = _SECRET_FLAG.sub(lambda m: m.group("lead") + _REDACTED, text)
-    text = _MYSQL_ATTACHED_PASSWORD.sub(lambda m: m.group("lead") + _REDACTED, text)
-    text = _USER_PASSWORD_FLAG.sub(lambda m: m.group("lead") + _REDACTED, text)
-    text = _BEARER.sub(lambda m: m.group(1) + " " + _REDACTED, text)
-    text = _BASIC.sub(lambda m: m.group(1) + " " + _REDACTED, text)
-    text = _URL_USERINFO.sub(_REDACTED + "@", text)
-    text = _SECRET_TOKEN_SHAPES.sub(_REDACTED, text)
-    return _BLOB.sub(_blob_or_text, text)
+    long base64 or hex run.
+
+    With ``mark`` (one character) each piece is replaced by as many marks as it had instead of ``<redacted>``: the result has the length of ``text``, so
+    WHERE the marks fall says which characters a rule hid (``_redact_command_line`` reads them per word)."""
+    text = _SECRET_ASSIGNMENT.sub(lambda m: _hide_after_lead(m, mark), text)
+    text = _SECRET_FLAG.sub(lambda m: _hide_after_lead(m, mark), text)
+    text = _MYSQL_ATTACHED_PASSWORD.sub(lambda m: _hide_after_lead(m, mark), text)
+    text = _USER_PASSWORD_FLAG.sub(lambda m: _hide_after_lead(m, mark), text)
+    text = _BEARER.sub(lambda m: _hide_after_word(m, mark), text)
+    text = _BASIC.sub(lambda m: _hide_after_word(m, mark), text)
+    text = _URL_USERINFO.sub(lambda m: _hidden(m.group(0)[:-1], mark) + "@", text)
+    text = _SECRET_TOKEN_SHAPES.sub(lambda m: _hidden(m.group(0), mark), text)
+    return _BLOB.sub(lambda m: _blob_or_text(m, mark), text)
 
 
 def _display_name(key: Any) -> str:
@@ -3127,15 +3148,29 @@ def _pair_names_a_secret(mapping: dict) -> bool:
     )
 
 
-# The words of a command line are joined with U+001F (the unit separator) for the scrubber. It is whitespace to every rule (``str.isspace()``, so ``\\s`` and ``\\b`` see a gap),
-# a word never holds one, and unlike a space it lets the scrubbed line be cut back into the SAME words after the rules have replaced parts of them. A quote character inside a
-# word that has no whitespace is swapped for a private-use stand-in for the scan, so a ``'`` in the middle of a secret (``abc'hunter2``) does not end the value the unquoted
-# alternatives match; a word WITH whitespace and a quote is an inner command line (``sh -c "..."``) and keeps its quotes, which its rules need. A word that is a structure
-# (an object, a list, a JSON document) was already walked key by key: it enters the line as one opaque stand-in, so its position still counts and its text is not scanned twice.
+# The words of a command line are joined with U+001F (the unit separator) for the LINE pass. It is whitespace to every rule (``str.isspace()``, so ``\\s`` and ``\\b`` see a gap).
+# A word with whitespace and no quote is wrapped in single quotes in the line (so ``-u 'deploy:correct horse'`` is one value); a quote character inside a word with no
+# whitespace is swapped for a private-use stand-in in the line (so a ``'`` in the middle of a secret, ``abc'hunter2``, does not end the value the unquoted alternatives
+# match); a word with both is an inner command line (``sh -c "..."``) and enters the line as it is. A word that is a structure (an object, a list, a JSON document) was
+# walked key by key: it enters the line as one opaque stand-in, so its position still counts and its text is not scanned twice. The line is scrubbed with a MARK (see
+# ``_scrub_text``), and the marks are read per word; nothing of the line is ever shown.
 _WORD_SEP = "\x1f"
 _OPAQUE_WORD = "\ue002"
+_LINE_MARK = "\ue003"
 _QUOTES_HIDDEN = str.maketrans({"'": "\ue000", '"': "\ue001"})
 _QUOTES_BACK = str.maketrans({"\ue000": "'", "\ue001": '"'})
+_WHITESPACE = re.compile(r"\s")
+
+
+def _line_word(text: str) -> "tuple[str, bool, bool]":
+    """``text`` as it enters the line, and whether it was wrapped in quotes or had its quotes swapped (both are taken off again to compare it with the word alone)."""
+    quoted = "'" in text or '"' in text
+    spaced = _WHITESPACE.search(text) is not None
+    if spaced and not quoted:
+        return f"'{text}'", True, False
+    if quoted and not spaced and "\ue000" not in text and "\ue001" not in text:
+        return text.translate(_QUOTES_HIDDEN), False, True
+    return text, False, False
 
 
 def _is_command_line(members: "list | tuple") -> bool:
@@ -3147,96 +3182,76 @@ def _is_command_line(members: "list | tuple") -> bool:
     return any(isinstance(m, str) for m in itertools.islice(members, _REDACT_MAX_ITEMS))
 
 
+def _adds_marks(found: str, alone: str) -> bool:
+    """Whether the line marked a character of a word that the word alone does not mark. A line that marks LESS than the word alone adds nothing (the floor already hides
+    what the word alone shows a rule); lengths that differ cannot be compared, so they count as an addition."""
+    if found == alone:
+        return False
+    return len(found) != len(alone) or any(f == _LINE_MARK and a != _LINE_MARK for f, a in zip(found, alone, strict=True))
+
+
 def _redact_command_line(members: "list | tuple", depth: int, budget: "list[int]") -> tuple[Any, bool]:
     """A list of words scrubbed as the command line it is: ``["mysql", "-u", "root", "-phunter2"]``.
 
     The flag rules (``-p<value>`` after mysql, ``-u user:password``, ``--pass value``, ``Bearer value``) read TEXT, so walking the members one by one showed each rule a single
-    word and none of them matched. Two scrubs, so the result is never worse than the member-by-member walk was:
+    word and none of them matched. Safe by construction: the result is always a LIST with one entry per word, and an entry is only ever
 
-    * the FLOOR: every word is scrubbed alone, as it always was (a string by ``_scrub_text``, a JSON document or an object or list by the walk);
-    * the LINE: the ORIGINAL words (not the floor's output: a partly hidden word would leave a residue the rules cannot match) are joined with ``_WORD_SEP`` (a word with
-      spaces and no quote is wrapped in single quotes for the line only, so ``-u 'deploy:correct horse'`` is one value) and scrubbed ONCE, which finds what only the neighbours show.
+    * the FLOOR: what ``_redact`` gives the member on its own, exactly as the member-by-member walk always did (a string by ``_scrub_text``, a JSON document or an object or
+      list by the walk, a number as it is), or
+    * the literal ``<redacted>``.
 
-    Nothing new found: the list comes back as the floor left it. Something found: the list comes back with the scrubbed words (``["mysql", "-u", "root", "-p<redacted>", "db"]``),
-    each cut back at ``_WORD_SEP`` and given the floor on top; when the cut gives another number of words (``_BEARER`` and ``_BASIC`` write a plain space, and
-    ``Authorization: Bearer x`` is one match) the scrubbed line itself comes back as a string. A word is never rewritten otherwise: no shell parser touches it. Either way the
-    preview was changed, so it is marked as truncated.
+    The second happens when the LINE finds something in the word that the word alone does not: the ORIGINAL words (not the floors: a half-hidden word would leave a residue
+    the rules cannot match) are joined into one line and scrubbed ONCE with a length-preserving mark, and a word with a mark on a character that its own text does not get
+    alone is hidden whole. Text derived from the line is never shown, so whatever the line pass does, the result hides at least what the floor hides. A word the line pass finds the
+    same things in as the word alone (``sh -c "export DB_PASSWORD=x; run"``) keeps its floor, with the secret replaced and the rest readable.
 
-    Bounded like the rest of the walk: at most ``_REDACT_MAX_ITEMS`` words, each cut to ``_REDACT_MAX_TEXT``; the floor of a word is charged to ``budget`` as a string's is; the line
-    handed to the scrubber is at most ``_REDACT_MAX_TEXT`` characters (the ceiling a single string has; a preview draws 240) and is charged too. A word that does not fit is not
-    looked at, so it is not shown: the result ends in ``<N more>`` for the words left out.
+    Bounded by construction, from constants: at most ``_REDACT_MAX_ITEMS`` words, and only as many as fit in ``_REDACT_MAX_TEXT`` characters of line (the rest are counted in a final
+    ``<N more>``: what is not looked at is not shown); every word's text is cut to ``_REDACT_MAX_TEXT`` first, and everything handed to the scrubber (the floor's text, the word
+    alone, the line) is charged to ``budget`` as a string's is. Nothing is expanded or re-serialised, so no input can make the work grow.
     """
-    kept: list[Any] = []        # per word taken: what comes back when the line finds nothing new (the member, or its floor)
-    texts: list[str] = []       # per word taken: its text in the line
-    plain: list[str] = []       # per word taken: the line text it has when nothing touched it
-    wrapped: list[bool] = []
-    swapped: list[bool] = []
-    kinds: list[str] = []       # "text", "opaque" or "scalar"
-    used = 0
+    shown: list[Any] = []                                    # per word taken: its floor
+    words: list[tuple[int, int, bool, bool, str]] = []       # per word taken: its span in the line, how it was dressed for the line, and what the scrub finds in it ALONE
+    pieces: list[str] = []
+    length = 0
     changed = False
     for member in members:
-        if len(kept) >= _REDACT_MAX_ITEMS or budget[0] <= 0:
+        if len(shown) >= _REDACT_MAX_ITEMS or budget[0] - _REDACT_MEMBER_COST <= 0:
             break
-        budget[0] -= _REDACT_MEMBER_COST
-        kind = "text"
         if isinstance(member, str):
-            text = _bounded(member, min(_REDACT_MAX_TEXT, max(budget[0], 1)))
-            budget[0] -= len(text)
-            document = _parse_container(text)
-            if document is not None:
-                inner, inner_changed = _redact(document, depth + 1, budget)
-                value: Any = json.dumps(inner, ensure_ascii=False, default=str) if inner_changed else member
-                changed, kind, word = changed or inner_changed or len(text) < len(member), "opaque", _OPAQUE_WORD
-            else:
-                floor = _scrub_text(text)
-                changed = changed or len(text) < len(member) or floor != text
-                value, word = (member if floor == member else floor), text.replace(_WORD_SEP, " ")
+            text = _bounded(member, min(_REDACT_MAX_TEXT, budget[0] - _REDACT_MEMBER_COST))      # the text _redact is about to look at
+            text = _OPAQUE_WORD if _parse_container(text) is not None else text
         elif isinstance(member, (dict, list, tuple)):
-            inner, inner_changed = _redact(member, depth + 1, budget)
-            value, changed, kind, word = inner, changed or inner_changed, "opaque", _OPAQUE_WORD
+            text = _OPAQUE_WORD
         else:
-            value, kind, word = member, "scalar", json.dumps(member, default=str)
-        spaced = any(ch.isspace() for ch in word)
-        quoted = "'" in word or '"' in word
-        wrap = kind == "text" and spaced and not quoted
-        swap = kind == "text" and quoted and not spaced and "\ue000" not in word and "\ue001" not in word
-        text_in_line = f"'{word}'" if wrap else (word.translate(_QUOTES_HIDDEN) if swap else word)
-        if used + len(text_in_line) + 1 > _REDACT_MAX_TEXT:
-            if texts:
+            text = json.dumps(member, default=str)[:_NAME_SCAN_CHARS]
+        word, wrapped, swapped = _line_word(text)
+        start = length + 1 if pieces else 0
+        if start + len(word) > _REDACT_MAX_TEXT:
+            if pieces:
                 break
-            word = _bounded(word, _REDACT_MAX_TEXT)         # one word that alone is past the ceiling: its head is all there is
-            text_in_line, wrap, swap, value, changed = word, False, False, word, True
-        kept.append(value)
-        texts.append(text_in_line)
-        plain.append(text_in_line)
-        wrapped.append(wrap)
-        swapped.append(swap)
-        kinds.append(kind)
-        used += len(text_in_line) + 1
-    left_out = len(members) - len(kept)
-    marker = [f"<{left_out} more>"] if left_out else []
-    line = _WORD_SEP.join(texts)
-    budget[0] -= len(line)
-    scrubbed = _scrub_text(line)
-    if scrubbed == line:
-        return kept + marker, changed or bool(left_out)
-    parts = scrubbed.split(_WORD_SEP)
-    if len(parts) != len(kept):
-        stand_ins = iter([json.dumps(v, ensure_ascii=False, default=str) for v, k in zip(kept, kinds) if k == "opaque"])
-        text = re.sub(_OPAQUE_WORD, lambda _m: next(stand_ins, "{...}"), scrubbed.replace(_WORD_SEP, " ")).translate(_QUOTES_BACK)
-        return " ".join([_scrub_text(text), *marker]), True
-    out: list[Any] = []
-    for value, was_plain, was_wrapped, was_swapped, kind, part in zip(kept, plain, wrapped, swapped, kinds, parts):
-        if part == was_plain:
-            out.append(value)           # the line left it alone: the floor's result (or the member itself)
-            continue
-        if was_wrapped:
-            part = part[1:] if part.startswith("'") else part
-            part = part[:-1] if part.endswith("'") else part
-        if was_swapped:
-            part = part.translate(_QUOTES_BACK)
-        out.append(_scrub_text(part) if kind == "text" else part)
-    return out + marker, True
+            word, wrapped, swapped = text, False, False         # the first word alone is at most the ceiling: it never needs its dress
+        budget[0] -= _REDACT_MEMBER_COST
+        value, inner_changed = _redact(member, depth + 1, budget)
+        budget[0] -= len(text) + len(word) + 1                # the word alone and its place in the line
+        shown.append(value)
+        pieces.append(word)
+        words.append((start, start + len(word), wrapped, swapped, _scrub_text(text, _LINE_MARK)))
+        length = start + len(word)
+        changed = changed or inner_changed
+    marked = _scrub_text(_WORD_SEP.join(pieces), _LINE_MARK)
+    for index, (start, end, wrapped, swapped, alone) in enumerate(words):
+        found = marked[start:end]
+        if wrapped:
+            found = found[1:-1]
+        if swapped:
+            found = found.translate(_QUOTES_BACK)
+        if _adds_marks(found, alone):
+            shown[index], changed = _REDACTED, True
+    left_out = len(members) - len(shown)
+    if left_out:
+        shown.append(f"<{left_out} more>")
+        changed = True
+    return shown, changed
 
 
 def _redact(value: Any, depth: int = 0, budget: "list[int] | None" = None) -> tuple[Any, bool]:
