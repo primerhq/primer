@@ -1694,7 +1694,10 @@ _SLOT_MIRROR_TIMEOUT_S = 10.0
 # lease release come after them. Shorter than the others so the whole exit adds up to _TERMINAL_EXIT_GRACE_S:
 # _CANCELLED_RECORD_WRITE_TIMEOUT_S + _SLOT_MIRROR_TIMEOUT_S under the lock, then two of these (10 + 10 + 5 + 5 = 30)
 # with NO margin, so a step that is merely slow lets the grace cancel the tail; what that skips is only what comes
-# after the terminal publish. (The build-failure path is not this exit, but it can hold the lock for two
+# after the terminal publish. That tail now includes the drain checkpoint (``_apply_pending_switch_at_checkpoint``, then the
+# steer realize), whose switch takes the lifecycle lock itself and has its own IN_LOCK_IO_TIMEOUT_S on top of the 30 above, plus the
+# wait for another in-lock writer to let go: past the grace it is cancelled, and a switch it did not finish stays queued for the
+# next checkpoint. (The build-failure path is not this exit, but it can hold the lock for two
 # _SLOT_MIRROR_TIMEOUT_S bounds: loading the slot through the registry, then the mirror.)
 _BEST_EFFORT_IO_TIMEOUT_S = 5.0
 
