@@ -43,8 +43,7 @@ def test_modal_falls_back_to_textarea_without_schema() -> None:
 def _schema_field_fn_src() -> str:
     src = _src()
     start = src.index("function SharedNewSessionSchemaField(")
-    end = src.index("// Read a File as raw base64")
-    return src[start:end]
+    return src[start:src.index("\n}\n", start) + len("\n}\n")]
 
 
 def test_plain_string_field_without_maxlength_defaults_to_a_textarea() -> None:
