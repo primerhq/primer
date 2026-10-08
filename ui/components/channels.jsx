@@ -1,4 +1,4 @@
-/* global React, Icon, StatusPill, Btn, Modal, Banner, CardList, Card, Fab, relativeTime */
+/* global React, Icon, StatusPill, Btn, Modal, Banner, CardList, Card, Fab, relativeTime, FormField */
 
 // Top-level scope is shared with the babel-standalone IIFE; prefix all
 // consts with CH_ to avoid clashes with other components (notably the
@@ -318,11 +318,7 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing }) {
         </>
       }
     >
-      <div className="field">
-        <label className="field-label">id {isEdit
-          ? <span className="hint">locked — id cannot change after create</span>
-          : <span className="hint">auto-generated if blank</span>}
-        </label>
+      <FormField label="id" hint={isEdit ? "locked \u2014 id cannot change after create" : "auto-generated if blank"} err={fieldErrors["body.id"]}>
         <input
           className="input mono"
           placeholder="auto-generated"
@@ -331,10 +327,8 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing }) {
           disabled={isEdit}
           style={{ width: "100%" }}
         />
-        {fieldErrors["body.id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.id"]}</div>}
-      </div>
-      <div className="field">
-        <label className="field-label">platform {isEdit && <span className="hint">locked — recreate to change platform</span>}</label>
+      </FormField>
+      <FormField label="platform" hint={isEdit ? "locked \u2014 recreate to change platform" : undefined} err={fieldErrors["body.provider"]}>
         <select
           className="select mono"
           value={provider}
@@ -346,8 +340,7 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing }) {
           <option value="telegram">Telegram</option>
           <option value="discord">Discord</option>
         </select>
-        {fieldErrors["body.provider"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.provider"]}</div>}
-      </div>
+      </FormField>
       <div style={{ borderTop: "1px dashed var(--border)", paddingTop: 12, marginTop: 4 }}>
         <div className="mono" style={{ fontSize: 10.5, fontWeight: 600, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10 }}>{provider} config</div>
         {fields.map((f) => {
@@ -360,11 +353,7 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing }) {
           const errKey = `body.${f.key}`;
           const err = fieldErrors[errKey];
           return (
-            <div className="field" key={f.key}>
-              <label className="field-label">
-                {f.label}
-                {f.required && <span className="hint" style={{ color: "var(--amber)" }}>required</span>}
-              </label>
+            <FormField key={f.key} label={f.label} hint={f.required ? <span style={{ color: "var(--amber)" }}>required</span> : undefined} err={err}>
               {f.type === "checkbox" ? (
                 <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
                   <input
@@ -393,8 +382,7 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing }) {
                 />
               )}
               {f.hint && f.type !== "checkbox" && <div className="field-help">{f.hint}</div>}
-              {err && <div className="field-help" style={{ color: "var(--red)" }}>{err}</div>}
-            </div>
+            </FormField>
           );
         })}
       </div>
@@ -924,11 +912,7 @@ function NewChannelModal({ providers, onClose, onCreated, pushToast, existing })
         </>
       }
     >
-      <div className="field">
-        <label className="field-label">id {isEdit
-          ? <span className="hint">locked</span>
-          : <span className="hint">auto</span>}
-        </label>
+      <FormField label="id" hint={isEdit ? "locked" : "auto"} err={fieldErrors["body.id"]}>
         <input
           className="input mono"
           placeholder="auto-generated"
@@ -937,10 +921,8 @@ function NewChannelModal({ providers, onClose, onCreated, pushToast, existing })
           disabled={isEdit}
           style={{ width: "100%" }}
         />
-        {fieldErrors["body.id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.id"]}</div>}
-      </div>
-      <div className="field">
-        <label className="field-label">provider {isEdit && <span className="hint">locked — recreate to change provider</span>}</label>
+      </FormField>
+      <FormField label="provider" hint={isEdit ? "locked \u2014 recreate to change provider" : undefined} err={fieldErrors["body.provider_id"]}>
         <select
           className="select mono"
           value={providerId}
@@ -950,10 +932,8 @@ function NewChannelModal({ providers, onClose, onCreated, pushToast, existing })
         >
           {providers.map((p) => <option key={p.id} value={p.id}>{p.id} ({p.provider})</option>)}
         </select>
-        {fieldErrors["body.provider_id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.provider_id"]}</div>}
-      </div>
-      <div className="field">
-        <label className="field-label">external id</label>
+      </FormField>
+      <FormField label="external id" help="Slack: channel ID · Telegram: chat ID · Discord: snowflake" err={fieldErrors["body.external_id"]}>
         <input
           className="input mono"
           placeholder="C0123ABC456 / chat-id / snowflake"
@@ -961,11 +941,8 @@ function NewChannelModal({ providers, onClose, onCreated, pushToast, existing })
           onChange={(e) => setExternalId(e.target.value)}
           style={{ width: "100%" }}
         />
-        <div className="field-help">Slack: channel ID · Telegram: chat ID · Discord: snowflake</div>
-        {fieldErrors["body.external_id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.external_id"]}</div>}
-      </div>
-      <div className="field">
-        <label className="field-label">label <span className="hint">optional · ≤200 chars</span></label>
+      </FormField>
+      <FormField label="label" hint="optional · ≤200 chars" err={fieldErrors["body.label"]}>
         <input
           className="input"
           placeholder="#ops-alerts"
@@ -973,8 +950,7 @@ function NewChannelModal({ providers, onClose, onCreated, pushToast, existing })
           onChange={(e) => setLabel(e.target.value)}
           style={{ width: "100%" }}
         />
-        {fieldErrors["body.label"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.label"]}</div>}
-      </div>
+      </FormField>
 
       <div style={{ borderTop: "1px dashed var(--border)", paddingTop: 12, marginTop: 4 }}>
         <div className="mono" style={{ fontSize: 10.5, fontWeight: 600, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10 }} title="config.chats">Inbound messages</div>
@@ -989,8 +965,7 @@ function NewChannelModal({ providers, onClose, onCreated, pushToast, existing })
         </div>
         {chatsEnabled && (
           <>
-            <div className="field">
-              <label className="field-label">relay mode</label>
+            <FormField label="relay mode">
               <select
                 className="select mono"
                 value={chatsRelayMode}
@@ -1000,7 +975,7 @@ function NewChannelModal({ providers, onClose, onCreated, pushToast, existing })
                 <option value="final">final — only relay the last agent message</option>
                 <option value="all">all — relay every agent message</option>
               </select>
-            </div>
+            </FormField>
           </>
         )}
       </div>
