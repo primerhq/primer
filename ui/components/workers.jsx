@@ -21,6 +21,16 @@ function WK_fleetLoad(workers) {
   return out;
 }
 
+// How many workers did not report their load, with the verb phrase agreeing in number.
+function WK_unreportedText(n) {
+  return n === 1 ? "1 worker not reporting its load" : n + " workers not reporting their load";
+}
+// What the drain dialog says it will wait for. A worker that has not reported its load has an UNKNOWN number of in-flight sessions.
+function WK_inFlightText(inFlight) {
+  if (inFlight == null) return "Its in-flight sessions";
+  return inFlight + " in-flight session" + (inFlight === 1 ? "" : "s");
+}
+
 function WorkersPage({ pushToast }) {
   const { useResource, useMutation, useViewport, apiFetch } = window.primerApi;
   const { isMobile } = useViewport();
@@ -206,7 +216,7 @@ function WorkersPage({ pushToast }) {
           value={load.known ? `${totals.flight} / ${totals.cap}` : `? / ${totals.cap}`}
           sub={load.known
             ? `${totals.flight} task${totals.flight === 1 ? "" : "s"} · ${totals.cap} parallel slot${totals.cap === 1 ? "" : "s"}`
-            : `${load.unknown} worker${load.unknown === 1 ? "" : "s"} not reporting its load · ${totals.cap} parallel slot${totals.cap === 1 ? "" : "s"}`}
+            : `${WK_unreportedText(load.unknown)} · ${totals.cap} parallel slot${totals.cap === 1 ? "" : "s"}`}
           accent={!load.known ? undefined : totals.cap > 0 && totals.flight / totals.cap > 0.8 ? "amber" : "green"}
           title={
             "Left number: how many leases (agent turns, graph runs, harness ops, "
@@ -368,9 +378,7 @@ function WorkersPage({ pushToast }) {
           Sending a drain signal to <strong className="mono" style={{ fontFamily: "inherit" }}>{drainTarget.id}</strong>.
           <ul>
             <li>
-              {drainTarget.in_flight == null
-                ? <strong>Its in-flight sessions</strong>
-                : <strong>{drainTarget.in_flight} in-flight session{drainTarget.in_flight === 1 ? "" : "s"}</strong>}
+              <strong>{WK_inFlightText(drainTarget.in_flight)}</strong>
               {" "}on this worker will finish before drain completes.
             </li>
             <li>The scheduler will stop assigning new sessions to this worker.</li>
