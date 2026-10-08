@@ -4250,6 +4250,11 @@ input, textarea, select { font: inherit; color: inherit; }
    width to color edge-to-edge, so the card-level padding moves onto
    each line instead (mirrors .nv-diff-lines' own padding convention). */
 .nv-card-preview.nv-card-preview-diff { padding: 4px 0; }
+/* Console review C-035 (the running and asking states): on the phone the session header's binding chip, a decision or question card's buttons and the status strip's
+   inline interrupt are tap-sized (--tap-min). The interrupt sits in a slim strip, so it takes the extra back as a negative margin and the strip does not grow. */
+.nv-mobile-chat .nv-bind-chip { min-height: var(--tap-min); }
+.nv-mobile-chat .nv-card-actions button { min-height: var(--tap-min); }
+.nv-mobile-chat .nv-interrupt-btn { box-sizing: border-box; min-height: var(--tap-min); margin-block: -11px; }
 .nv-card-actions { display: flex; gap: 8px; margin-top: 10px; align-items: center; flex-wrap: wrap; }
 .nv-btn-reject {
   padding: 5px 14px;

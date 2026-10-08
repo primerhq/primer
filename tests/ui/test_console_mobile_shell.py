@@ -322,13 +322,13 @@ def test_hit_token_bumped_to_44px_for_the_mobile_shell_composer() -> None:
     assert "--hit: 44px" in m.group(1)
 
 
-def test_mobile_gets_the_compact_queue_label_desktop_keeps_queue() -> None:
+def test_mobile_and_desktop_both_read_queue_on_the_mid_run_send_button() -> None:
     """The send button's queue BEHAVIOR (data-mode="queue", the desktop's
     own steer-while-running semantics) is unconditional and unchanged -
-    queueLabel only overrides its TEXT. NV_MobileChatScreen passes "+Q"
-    (the mockup's compact mobile treatment); every other caller (desktop's
-    NV_renderStudioDoc) passes nothing and keeps "Queue" - one send
-    button implementation, not a mobile fork."""
+    queueLabel only overrides its TEXT. NV_MobileChatScreen used to pass
+    "+Q" (the mockup's compact mobile treatment: console review C-035 found
+    it cryptic) and now passes nothing, so every caller keeps "Queue" - one
+    send button implementation, not a mobile fork."""
     doc = (
         Path(__file__).resolve().parents[2] / "ui" / "components" / "console"
         / "nv-session-doc.jsx"
@@ -336,7 +336,8 @@ def test_mobile_gets_the_compact_queue_label_desktop_keeps_queue() -> None:
     assert 'data-mode={props.running ? "queue" : "send"}' in doc
     assert "props.running ? (props.queueLabel || \"Queue\") : \"Send\"" in doc
     assert "queueLabel={props.queueLabel}" in doc
-    assert 'window.NV_SessionDoc key={sid} sid={sid} queueLabel="+Q"' in MOBILE
+    assert 'window.NV_SessionDoc key={sid} sid={sid} />' in MOBILE
+    assert 'queueLabel="+Q"' not in MOBILE
 
 
 def test_single_implementation_guard_no_forked_session_doc_internals() -> None:

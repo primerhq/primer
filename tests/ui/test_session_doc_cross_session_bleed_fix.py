@@ -67,7 +67,7 @@ def test_sibling_doc_kinds_get_the_same_keyed_fix() -> None:
 
 def test_mobile_session_doc_mount_is_keyed_by_sid() -> None:
     src = _mobile_src()
-    assert '<window.NV_SessionDoc key={sid} sid={sid} queueLabel="+Q" />' in src
+    assert '<window.NV_SessionDoc key={sid} sid={sid} />' in src
 
 
 # ---- Defense in depth: stamp session_id before SS_apply --------------------

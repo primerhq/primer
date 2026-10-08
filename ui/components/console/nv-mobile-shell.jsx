@@ -349,12 +349,9 @@ function NV_MobileChatScreen(props) {
       </div>
       <div className="nv-mob-screen-body nv-mobile-chat">
         {typeof window.NV_SessionDoc === "function" ? (
-          // queueLabel: the mockup's compact "+Q" for the mid-run send
-          // button - the queue BEHAVIOR itself (data-mode="queue", the
-          // desktop's own steer-while-running semantics) is unchanged,
-          // this only overrides the button's text (nv-session-doc.jsx's
-          // NV_Composer, default "Queue" for every other caller).
-          <window.NV_SessionDoc key={sid} sid={sid} queueLabel="+Q" />
+          // The mid-run send button reads "Queue", as on the desktop (the mockup's compact "+Q" told a reader nothing, console review C-035);
+          // NV_SessionDoc still takes a queueLabel prop for a caller that wants another word.
+          <window.NV_SessionDoc key={sid} sid={sid} />
         ) : null}
       </div>
     </div>
