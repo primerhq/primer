@@ -159,7 +159,7 @@ Tool approval forwarding works identically, producing a
 A channel reply can decide a tool-approval gate only when the gate has no approver restriction. A gate whose policy (or
 verdict) routes it to specific users or roles, or to admins only, is refused when answered from Slack, Discord or Telegram
 (nothing is published and no decision is recorded): the platform user cannot be tied to a primer user, so the gate is decided
-in the console by an approver or an admin. See [tool-approval](tool-approval.md).
+in the console by an approver or an admin. A reply for a gate whose approver spec cannot be read is refused the same way. See [tool-approval](tool-approval.md).
 
 ## Lifecycle and states
 
