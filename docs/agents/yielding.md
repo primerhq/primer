@@ -255,6 +255,14 @@ session.
   only sets a flag that is read at that timeout wake, so it does not
   take effect sooner. If you meet one, report it to the operator
   instead of waiting on it.
+- **`wait_for_event` returns the event with stored secrets masked.**
+  A CRUD event's payload is the entity's stored row; before it reaches
+  your transcript every secret-bearing field (MCP `headers` and `env`
+  values, OAuth `client_secret`, provider `api_key`, channel tokens,
+  any key that looks like a key, token, secret or password) is replaced
+  with `•••redacted•••`, the same masking `GET /v1/events` applies.
+  Map keys (header and env NAMES) stay readable. You cannot read a
+  secret back through an event; ask the operator if a task needs one.
 
 ## Related
 
