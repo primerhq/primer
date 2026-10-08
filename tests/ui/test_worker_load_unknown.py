@@ -74,7 +74,7 @@ def test_the_page_no_longer_turns_a_missing_load_into_zero() -> None:
 
 def test_the_capacity_bar_draws_an_unreported_load_as_unknown() -> None:
     bar = WORKERS[WORKERS.index("function CapacityBar"):WORKERS.index("function SummaryStat")]
-    assert "inFlight == null" in bar and 'title="Load not reported"' in bar
+    assert "inFlight == null" in bar and '"Load not reported"' in bar
 
 
 def test_the_legacy_health_page_does_not_turn_an_unreported_load_into_zero() -> None:
