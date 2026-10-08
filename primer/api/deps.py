@@ -492,7 +492,10 @@ def require_auth(request: Request = None) -> User | None:  # type: ignore[assign
     HTTP 401 if the request didn't carry a valid signed cookie.
     Apply this to routers whose endpoints require authentication
     (i.e. everything under /v1/* except the auth router itself plus
-    /v1/health, /metrics, and the env-gated /v1/_test/*).
+    /v1/health and the env-gated /v1/_test/*). ``/metrics`` is NOT in that
+    list any more: it is a mount outside every router, so this dependency
+    never runs on it, but ``MetricsGate`` (``primer/api/metrics_gate.py``)
+    requires a signed-in admin there unless ``observability.metrics_public``.
 
     When a router serves BOTH HTTP and WebSocket endpoints, applying
     this dep at ``include_router(dependencies=...)`` time only catches
