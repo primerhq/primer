@@ -16,7 +16,7 @@ import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
+from primer.model.storage import CursorPage, FieldRef, Op, Predicate, Value
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
 
 if TYPE_CHECKING:
@@ -26,6 +26,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _LIST_PAGE_SIZE = 200
+
+# A session is open while it is anything but ENDED. Spelled as "not ended" so a status added later is open by default (the safe direction here).
+# It is part of the query, not a filter on the page: ENDED rows must not use up the pages that hold the open ones.
+_NOT_ENDED = Predicate(left=FieldRef(name="status"), op=Op.NE, right=Value(value=SessionStatus.ENDED.value))
 
 
 async def reconcile_sessions_to_workspace_lost(
@@ -37,6 +41,11 @@ async def reconcile_sessions_to_workspace_lost(
     rather than raised, since callers must not fail their own operation
     (a probe tick, a workspace destroy) because one session row couldn't
     be updated. Returns the number of sessions reconciled.
+
+    Every open session is read before any is changed (the ticket 01a11b93 bug: one page of 200 rows, ENDED ones included, so a workspace with more
+    sessions than that kept its open ones past page 1 running against a workspace the destroy was about to delete). The read pages by cursor
+    over "this workspace AND not ended"; nothing is written while it pages, so ending a row cannot move the cursor under it. If a later page
+    cannot be read, the sessions already read are still reconciled and the failure is logged.
     """
     try:
         session_storage = sp.get_storage(WorkspaceSession)
@@ -47,24 +56,32 @@ async def reconcile_sessions_to_workspace_lost(
         )
         return 0
 
+    match = Predicate(
+        left=Predicate(left=FieldRef(name="workspace_id"), op=Op.EQ, right=Value(value=workspace_id)),
+        op=Op.AND,
+        right=_NOT_ENDED,
+    )
+    open_sessions: list[WorkspaceSession] = []
+    cursor: str | None = None
+    seen_cursors: set[str] = set()
     try:
-        page = await session_storage.find(
-            Predicate(
-                left=FieldRef(name="workspace_id"),
-                op=Op.EQ,
-                right=Value(value=workspace_id),
-            ),
-            OffsetPage(offset=0, length=_LIST_PAGE_SIZE),
-        )
+        while True:
+            page = await session_storage.find(match, CursorPage(cursor=cursor, length=_LIST_PAGE_SIZE))
+            open_sessions.extend(page.items)
+            # A backend that hands back a cursor it has already given would loop forever.
+            if page.next_cursor is None or page.next_cursor in seen_cursors:
+                break
+            seen_cursors.add(page.next_cursor)
+            cursor = page.next_cursor
     except Exception:  # noqa: BLE001 -- find unavailable
         logger.exception(
-            "session reconcile: failed to query sessions on %s", workspace_id,
+            "session reconcile: failed to query sessions on %s (reconciling the %d already read)",
+            workspace_id, len(open_sessions),
         )
-        return 0
 
     now = datetime.now(timezone.utc)
     reconciled = 0
-    for sess in page.items:
+    for sess in open_sessions:
         if sess.status == SessionStatus.ENDED:
             continue
         updated_sess = sess.model_copy(update={

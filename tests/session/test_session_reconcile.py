@@ -221,3 +221,32 @@ async def test_the_first_page_failing_reconciles_nothing_and_does_not_raise(fake
     storage.find = broken_find
 
     assert await reconcile_sessions_to_workspace_lost(fake_storage_provider, "w-gone") == 0
+
+
+@pytest.mark.asyncio
+async def test_the_same_on_a_real_sqlite_store(tmp_path) -> None:
+    """The fake pages by offset; the real backends page by key. Ending rows between pages must not move a key cursor, and the predicate (this workspace AND not
+    ended) must run in the database, so the same shape as the first test is repeated on a real SQLite store."""
+    from primer.storage.sqlite import SqliteConfig, SqliteStorageProvider
+
+    sp = SqliteStorageProvider(SqliteConfig(path=tmp_path / "t.sqlite"))
+    await sp.initialize()
+    try:
+        storage = sp.get_storage(WorkspaceSession)
+        for i in range(250):
+            await storage.create(_row(f"a-{i:04d}", "w-gone", SessionStatus.ENDED))
+        for i in range(450):
+            await storage.create(_row(f"b-{i:04d}", "w-gone", SessionStatus.RUNNING))
+        for i in range(30):
+            await storage.create(_row(f"c-{i:04d}", "w-kept", SessionStatus.RUNNING))
+
+        reconciled = await reconcile_sessions_to_workspace_lost(sp, "w-gone")
+
+        assert reconciled == 450
+        gone = await _statuses(storage, "w-gone")
+        assert all(status == SessionStatus.ENDED for status, _ in gone.values())
+        assert all(reason == "completed" for i, (_, reason) in gone.items() if i.startswith("a-"))
+        kept = await _statuses(storage, "w-kept")
+        assert len(kept) == 30 and all(status == SessionStatus.RUNNING for status, _ in kept.values())
+    finally:
+        await sp.aclose()
