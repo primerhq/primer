@@ -144,6 +144,7 @@ The entities:
 - `HttpRequestArgs` (sibling `http_request` tool): `url` (`HttpUrl`), `method`
   (HTTP verb literal, default `GET`), optional `headers` (`dict[str, str]`),
   optional `body` (str), `timeout_seconds` (default 30.0, `gt=0`, `le=300`).
+- **A response body is read as a stream, only up to its cap, under one total deadline (architecture review A-10).** `http_request` (default cap 1 MB) and the `local` web-fetch adapter (`DEFAULT_RAW_BYTE_CAP`, 5 MiB) read through `primer/common/bounded_read.py::read_capped` and close the response at the cap; the cap counts the DECODED bytes (`aiter_bytes` inflates a gzip or deflate body as it goes), so a decompression bomb is bounded as well. The old code read the whole body (`response.content`) and only then trimmed it. `timeout_seconds` (and the adapter's `timeout`) is the deadline of the WHOLE call, the request and the body, through `asyncio.timeout`: httpx's own timeouts are per operation, and a body that drips a byte at a time never trips them. On the deadline `http_request` answers an error `http-request timed out after Ns` and the adapter raises `WebFetchUnavailable` (transient, so an aggregated chain tries the next provider). The adapter judges the status before it reads anything, so the body of an error page is not read at all.
 - `RESERVED_WEB_SEARCH_IDS = {'DuckDuckGo'}` gates the router create / delete
   paths; `ACTIVE_WEB_SEARCH_CONFIG_ID = '_active_web_search_config'` is the
   underscore-prefixed singleton id (matching the `_internal_collections_config`

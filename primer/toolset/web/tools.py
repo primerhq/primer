@@ -19,6 +19,7 @@ the executor crashing.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -28,6 +29,7 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import BaseModel, Field, HttpUrl, ValidationError
 
+from primer.common.bounded_read import read_capped
 from primer.common.netguard import EgressRefused
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.model.except_ import BadRequestError, NotFoundError
@@ -120,7 +122,7 @@ class HttpRequestArgs(BaseModel):
         default=30.0,
         gt=0,
         le=300,
-        description="Per-request timeout in seconds.",
+        description="Total time allowed for the request and the response body, in seconds.",
     )
 
 
@@ -342,13 +344,18 @@ def make_http_request_handler(
             ) from exc
 
         try:
-            response = await http_client.request(
-                method=args.method,
-                url=str(args.url),
-                headers=args.headers,
-                content=args.body,
-                timeout=args.timeout_seconds,
-            )
+            # The body is read only to the cap and the whole call has one deadline: ``timeout`` is per operation in httpx, so a body that
+            # drips a byte at a time would never trip it (architecture review A-10).
+            async with asyncio.timeout(args.timeout_seconds):
+                async with http_client.stream(
+                    method=args.method,
+                    url=str(args.url),
+                    headers=args.headers,
+                    content=args.body,
+                    timeout=args.timeout_seconds,
+                ) as response:
+                    status_code, response_headers = response.status_code, dict(response.headers.items())
+                    body_bytes, truncated = await read_capped(response, response_body_byte_cap)
         except EgressRefused as exc:
             return ToolCallResult(output=f"http-request {exc}", is_error=True)
         except httpx.RequestError as exc:
@@ -364,16 +371,17 @@ def make_http_request_handler(
                 output=f"http-request failed: {type(exc).__name__}: {exc}",
                 is_error=True,
             )
+        except TimeoutError:
+            return ToolCallResult(
+                output=f"http-request timed out after {args.timeout_seconds:g}s",
+                is_error=True,
+            )
 
-        body_bytes = response.content or b""
-        truncated = len(body_bytes) > response_body_byte_cap
-        if truncated:
-            body_bytes = body_bytes[:response_body_byte_cap]
         body_text = body_bytes.decode("utf-8", errors="replace")
 
         payload = {
-            "status": response.status_code,
-            "headers": dict(response.headers.items()),
+            "status": status_code,
+            "headers": response_headers,
             "body": body_text,
             "truncated": truncated,
         }
