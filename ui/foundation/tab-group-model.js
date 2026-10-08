@@ -311,6 +311,7 @@ var TG_STORE_VERSION = 1;
 var TG_STORE_MAX_GROUPS = 6;
 var TG_STORE_MAX_TABS = 60;
 var TG_STORE_MAX_REF = 1024;
+var TG_STORE_GROUP_ID_RE = /^[A-Za-z0-9_-]{1,32}$/;
 
 // The part of a model worth keeping. JSON-safe.
 function TG_serialize(model) {
@@ -356,7 +357,8 @@ function TG_restore(saved, validKinds) {
       budget -= 1;
     }
     if (!tabs.length) continue;
-    var gid = typeof sg.id === "string" && sg.id && !seenGroups[sg.id] ? sg.id : TG_newGroupId();
+    // A stored id is reused only when it is a short plain token (what TG_newGroupId makes, or a test's "g1"); anything else is replaced by a fresh one.
+    var gid = typeof sg.id === "string" && TG_STORE_GROUP_ID_RE.test(sg.id) && !seenGroups[sg.id] ? sg.id : TG_newGroupId();
     while (seenGroups[gid]) gid = TG_newGroupId();
     seenGroups[gid] = true;
     var active = tabs[tabs.length - 1].id;
