@@ -405,7 +405,11 @@ To rotate the token: `POST /v1/triggers/{id}/rotate_token` (the old URL stops wo
   owners were recorded, or saved over MCP (which carries no run
   identity to the tool), fires as an ordinary user; an admin re-saving
   both rows restores admin rank. Saving a row makes you its owner, so
-  editing someone else's subscription hands it your rank, not theirs.
+  editing someone else's subscription hands it your rank, not theirs,
+  and a row you save from inside a run is capped at that run's rank
+  for good (re-saving cannot raise it). A `session_append` or
+  `parked_session` subscription cannot steer a session that runs above
+  the fire's rank: the fire fails with `steer_outranks_fire`.
 - **Per-subscription parallelism is independent of trigger
   fires.** A trigger always fires when its conditions are met. But
   each subscription decides whether to act on that fire. `skip`
