@@ -38,6 +38,7 @@ from primer.agent.approval import (
     ApprovalContext,
     ApprovalResolver,
     evaluate_approval_gate,
+    resolve_preview,
 )
 from primer.authz import _role_allows
 from primer.int.toolset import ToolsetProvider
@@ -233,6 +234,10 @@ class ToolExecutionManager:
         # Separate map so dispatch can look up the WorkspaceTool from
         # ``_workspace_tools`` (still keyed by bare name).
         self._workspace_scoped: dict[str, str] = {}
+        # Scoped tool id -> its descriptor, EVERY tool the toolsets and the workspace offer, visible to this agent or not (like the routing table
+        # and ``_uninterruptible``): the approval park resolves the card's allowlist from the descriptor (``resolve_preview``), and a tool reached
+        # through ``call_tool`` was never in the visible catalogue.
+        self._descriptors: dict[str, Tool] = {}
         self._catalogue: list[Tool] | None = None
         self._index_lock = asyncio.Lock()
 
@@ -421,6 +426,7 @@ class ToolExecutionManager:
                     # allowlist hit still resolves; the visible
                     # catalogue is filtered below.
                     self._tool_to_toolset[scoped_id] = (toolset_id, t.id)
+                    self._descriptors[scoped_id] = t
                     # Recorded before the allowlist filter, like the routing table: a tool this agent
                     # cannot call directly can still be reached through ``call_tool``.
                     if not t.interruptible:
@@ -453,9 +459,9 @@ class ToolExecutionManager:
                 scoped_id = (
                     f"{WORKSPACE_TOOLSET_ID}{_SCOPE_SEPARATOR}{ws_tool.id}"
                 )
-                catalogue.append(
-                    _workspace_tool_descriptor(ws_tool, scoped_id=scoped_id)
-                )
+                descriptor = _workspace_tool_descriptor(ws_tool, scoped_id=scoped_id)
+                catalogue.append(descriptor)
+                self._descriptors[scoped_id] = descriptor
                 self._workspace_scoped[scoped_id] = ws_tool.id
                 # getattr: the ABC always has it, but tests (and embedders) hand in duck-typed tools.
                 if not getattr(ws_tool, "interruptible", True):
@@ -695,6 +701,9 @@ class ToolExecutionManager:
                                     "name": call.name,
                                     "arguments": call.arguments or {},
                                 },
+                                # Which arguments the Inbox card may show, resolved here where the descriptor and the policy
+                                # are both in hand: the route that draws the card reads only this blob.
+                                preview=resolve_preview(policy=policy, tool=self._descriptors.get(call.name)),
                             ),
                         ),
                         tool_call_id=call.id,
@@ -975,6 +984,7 @@ def _workspace_tool_descriptor(
         args_schema=ws_tool.parameters().model_json_schema(),
         examples=ws_tool.examples,
         interruptible=getattr(ws_tool, "interruptible", True),
+        preview_args=getattr(ws_tool, "preview_args", None),
     )
 
 
