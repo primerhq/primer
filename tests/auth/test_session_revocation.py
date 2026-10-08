@@ -190,3 +190,186 @@ async def test_logout_all_ends_every_session_of_the_user(client, app, fake_stora
 async def test_logout_all_needs_a_session(client):
     r = await client.post("/v1/auth/logout-all")
     assert r.status_code == 401
+
+
+# ---- review of #495: lost updates, bearer re-issue, SSO src, ep shapes ----------
+
+
+import asyncio  # noqa: E402
+
+from primer.api.routers import admin_users as _admin_users_router  # noqa: E402
+from primer.api.routers import auth as _auth_router  # noqa: E402
+
+
+@pytest.mark.parametrize("ep", [-1, True, False, 1.0, None, [1]])
+def test_a_negative_bool_or_non_int_epoch_is_rejected(ep) -> None:
+    secret = "x" * 32
+    token = URLSafeTimedSerializer(secret, salt="primer.session.v1").dumps(
+        {"uid": "u1", "username": "alice", "ep": ep}
+    )
+    assert verify_session(token=token, secret=secret, max_age_seconds=60) is None
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_cookie_with_no_epoch_authenticates_against_epoch_zero(client, app):
+    await _register_admin(client)
+    user = await _user(app.state.storage_provider, "alice")
+    legacy = URLSafeTimedSerializer(app.state.session_secret, salt="primer.session.v1").dumps(
+        {"uid": user.id, "username": "alice", "src": "local"}
+    )
+    assert await _authenticated(app, legacy)
+    # ...and is revoked like any other once the epoch moves.
+    assert (await client.post("/v1/auth/logout-all")).status_code == 204
+    assert not await _authenticated(app, legacy)
+
+
+@pytest.mark.asyncio
+async def test_an_admin_reset_with_an_explicit_password_ends_the_users_sessions(client, app):
+    await _register_admin(client)
+    created = await client.post(
+        "/v1/admin/users", json={"username": "bob", "password": "bobpassword", "role": "user"},
+    )
+    bob_id = created.json()["id"]
+    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as bob:
+        login = await bob.post("/v1/auth/login", json={"username": "bob", "password": "bobpassword"})
+        bob_cookie = login.cookies[_COOKIE]
+    reset = await client.patch(f"/v1/admin/users/{bob_id}", json={"password": "brandnewpass"})
+    assert reset.status_code == 200, reset.text
+    assert not await _authenticated(app, bob_cookie)
+
+
+@pytest.mark.asyncio
+async def test_change_password_keeps_the_sso_src_on_the_reissued_cookie(client, app):
+    await _register_admin(client)
+    user = await _user(app.state.storage_provider, "alice")
+    sso_cookie = sign_session(
+        user_id=user.id, username="alice", secret=app.state.session_secret, src="oidc-corp", epoch=0,
+    )
+    async with _replay(app, sso_cookie) as c:
+        r = await c.post(
+            "/v1/auth/change-password",
+            json={"current_password": "supersecret", "new_password": "newsecret123"},
+        )
+    assert r.status_code == 200, r.text
+    fresh = verify_session(token=r.cookies[_COOKIE], secret=app.state.session_secret, max_age_seconds=60)
+    assert fresh is not None and fresh.src == "oidc-corp" and fresh.epoch == 1
+
+
+@pytest.mark.asyncio
+async def test_change_password_over_a_bearer_token_sets_no_cookie(client, app):
+    await _register_admin(client)
+    minted = await client.post("/v1/auth/tokens", json={"name": "cli", "scopes": []})
+    assert minted.status_code in (200, 201), minted.text
+    bearer = minted.json()["plaintext"]
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test",
+        headers={"Authorization": f"Bearer {bearer}"},
+    ) as c:
+        r = await c.post(
+            "/v1/auth/change-password",
+            json={"current_password": "supersecret", "new_password": "newsecret123"},
+        )
+    assert r.status_code == 200, r.text
+    assert "set-cookie" not in r.headers
+    # The epoch still moved: the cookie sessions of the account are over.
+    assert (await _user(app.state.storage_provider, "alice")).session_epoch == 1
+
+
+def _hold(monkeypatch, module, name):
+    """Replace ``module.name`` (an async callable) with one that blocks until released."""
+    real = getattr(module, name)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def held(*a, **k):
+        entered.set()
+        await release.wait()
+        return await real(*a, **k)
+
+    monkeypatch.setattr(module, name, held)
+    return entered, release
+
+
+@pytest.mark.asyncio
+async def test_a_login_held_across_a_logout_all_does_not_undo_it(client, app, monkeypatch):
+    """The login read the row at epoch 0; its write must not put epoch 0 back after logout-all made it 1."""
+    stolen = await _register_admin(client)
+    entered, release = _hold(monkeypatch, _auth_router, "verify_password")
+    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as other:
+        login = asyncio.create_task(
+            other.post("/v1/auth/login", json={"username": "alice", "password": "supersecret"})
+        )
+        await asyncio.wait_for(entered.wait(), 5)
+        assert (await client.post("/v1/auth/logout-all")).status_code == 204
+        release.set()
+        r = await asyncio.wait_for(login, 5)
+    assert r.status_code == 200, r.text
+    assert (await _user(app.state.storage_provider, "alice")).session_epoch == 1
+    assert not await _authenticated(app, stolen)
+    # The login that finished after the revocation got a cookie of the current epoch.
+    assert await _authenticated(app, r.cookies[_COOKIE])
+
+
+@pytest.mark.asyncio
+async def test_an_admin_reset_held_across_a_logout_all_still_ends_the_newer_sessions(client, app, monkeypatch):
+    """A stale admin write must not land on the epoch a logout-all already reached."""
+    await _register_admin(client)
+    created = await client.post(
+        "/v1/admin/users", json={"username": "bob", "password": "bobpassword", "role": "user"},
+    )
+    bob_id = created.json()["id"]
+    entered, release = _hold(monkeypatch, _admin_users_router, "hash_password")
+    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as bob:
+        await bob.post("/v1/auth/login", json={"username": "bob", "password": "bobpassword"})
+        reset = asyncio.create_task(
+            client.patch(f"/v1/admin/users/{bob_id}", json={"password": "brandnewpass"})
+        )
+        await asyncio.wait_for(entered.wait(), 5)
+        assert (await bob.post("/v1/auth/logout-all")).status_code == 204
+        relogin = await bob.post("/v1/auth/login", json={"username": "bob", "password": "bobpassword"})
+        newer = relogin.cookies[_COOKIE]
+        assert await _authenticated(app, newer)
+        release.set()
+        r = await asyncio.wait_for(reset, 5)
+    assert r.status_code == 200, r.text
+    assert (await _user(app.state.storage_provider, "bob")).session_epoch == 2
+    assert not await _authenticated(app, newer)
+
+
+@pytest.mark.asyncio
+async def test_an_admin_edit_held_across_a_logout_all_does_not_undo_it(client, app, monkeypatch):
+    """An email-only edit read the row before the logout-all; it must write only the email."""
+    await _register_admin(client)
+    created = await client.post(
+        "/v1/admin/users", json={"username": "bob", "password": "bobpassword", "role": "user"},
+    )
+    bob_id = created.json()["id"]
+    storage = app.state.storage_provider.get_storage(User)
+    real_get = storage.get
+    entered, release = asyncio.Event(), asyncio.Event()
+    first = {"done": False}
+
+    async def held_get(id, **k):  # noqa: A002
+        row = await real_get(id, **k)
+        if id == bob_id and not first["done"]:
+            first["done"] = True
+            entered.set()
+            await release.wait()
+        return row
+
+    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as bob:
+        login = await bob.post("/v1/auth/login", json={"username": "bob", "password": "bobpassword"})
+        bob_cookie = login.cookies[_COOKIE]
+        monkeypatch.setattr(storage, "get", held_get)
+        edit = asyncio.create_task(
+            client.patch(f"/v1/admin/users/{bob_id}", json={"email": "bob@example.com"})
+        )
+        await asyncio.wait_for(entered.wait(), 5)
+        monkeypatch.setattr(storage, "get", real_get)
+        assert (await bob.post("/v1/auth/logout-all")).status_code == 204
+        release.set()
+        r = await asyncio.wait_for(edit, 5)
+    assert r.status_code == 200, r.text
+    stored = await _user(app.state.storage_provider, "bob")
+    assert stored.session_epoch == 1
+    assert stored.email == "bob@example.com"
+    assert not await _authenticated(app, bob_cookie)
