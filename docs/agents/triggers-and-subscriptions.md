@@ -391,6 +391,21 @@ To rotate the token: `POST /v1/triggers/{id}/rotate_token` (the old URL stops wo
 
 ## Gotchas
 
+- **A fired run runs as whoever saved the subscription, at no more
+  than the trigger owner's rank.** Each trigger and subscription
+  records an `owner`: the caller that last created or updated it (the
+  logged-in user over REST, your own run's identity when you use the
+  `trigger__*` tools or `system__create_channel_binding`). A
+  fresh-session run is attributed to the subscription's owner and
+  ranked by the lower of the two owners' CURRENT roles, so it can only
+  call the tools those people could. An admin-only tool such as
+  `system__create_toolset` with a stdio command is refused
+  (`type=forbidden`, or "access denied ... requires the 'admin' role")
+  unless both owners are admins. A trigger or subscription saved before
+  owners were recorded, or saved over MCP (which carries no run
+  identity to the tool), fires as an ordinary user; an admin re-saving
+  both rows restores admin rank. Saving a row makes you its owner, so
+  editing someone else's subscription hands it your rank, not theirs.
 - **Per-subscription parallelism is independent of trigger
   fires.** A trigger always fires when its conditions are met. But
   each subscription decides whether to act on that fire. `skip`
