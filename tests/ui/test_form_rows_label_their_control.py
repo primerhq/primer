@@ -25,6 +25,8 @@ ROOT = Path(__file__).resolve().parents[2]
 FORM_PATH = ROOT / "ui" / "components" / "shared" / "form-field.jsx"
 SHARED = (ROOT / "ui" / "components" / "workspaces" / "shared.jsx").read_text(encoding="utf-8")
 SEARCH = (ROOT / "ui" / "components" / "semantic-search.jsx").read_text(encoding="utf-8")
+OVERLAYS = (ROOT / "ui" / "components" / "console" / "nv-overlays.jsx").read_text(encoding="utf-8")
+NEW_SESSION = (ROOT / "ui" / "components" / "new-session-form.jsx").read_text(encoding="utf-8")
 INDEX = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
 
 _PRELUDE = r"""
@@ -72,33 +74,58 @@ def _compiled() -> str:
     ui = ROOT / "ui"
     bundler = JSXBundler(ui_dir=ui, babel_source=(ui / "vendor" / "babel.min.js").read_text())
     form = FORM_PATH.read_text(encoding="utf-8")
-    source = "\n".join([_fn(form, "FF_fieldControls"), _fn(form, "FormField"), _fn(SHARED, "WS_FieldRow"), _fn(SEARCH, "FieldRow")])
+    source = "\n".join([_fn(form, "FF_fieldControls"), _fn(form, "FormField"), _fn(SHARED, "WS_FieldRow"), _fn(SEARCH, "FieldRow"),
+                        _fn(OVERLAYS, "NV_Field"), _fn(NEW_SESSION, "SharedNewSessionSchemaField")])
     try:
         return bundler._transform(source, "snippet.jsx")
     finally:
         bundler._ctx.close()
 
 
-@pytest.fixture(params=["FormField", "WS_FieldRow", "FieldRow"])
-def row(request):
-    """``row(children_js, props_js)`` -> the host elements the component drew."""
-    made = []
+def _runner(component: str, made: list):
+    """``go(children_js, props)`` -> the host elements ``component`` drew (``copies`` of it side by side)."""
 
     def go(children_js: str, props: dict | None = None, copies: int = 1) -> list[dict]:
         ctx = mini_react_context(_compiled(), _PRELUDE)
         made.append(ctx)
-        one = f"React.createElement({request.param}, {json.dumps({'label': 'name', **(props or {})})}, {children_js})"
+        one = f"React.createElement({component}, {json.dumps({'label': 'name', **(props or {})})}, {children_js})"
         ctx.eval(
             f"function Host() {{ return React.createElement(React.Fragment, null, {', '.join([one] * copies)}); }}"
             " MR.mount(Host, {}); ELS.length = 0; MR.rerender();"
         )
         return [{k: e.get(k) for k in ("type", "id", "htmlFor", "role", "className", "labelledBy", "invalid", "describedBy")} for e in json.loads(ctx.eval("__view()"))]
 
+    return go
+
+
+def _fixture_for(component: str):
+    made: list = []
     try:
-        yield go
+        yield _runner(component, made)
     finally:
         for c in made:
             c.close()
+
+
+@pytest.fixture(params=["FormField", "WS_FieldRow", "FieldRow", "NV_Field"])
+def row(request):
+    """``row(children_js, props_js)`` -> the host elements the component drew; every labelled row of the console behaves the same."""
+    yield from _fixture_for(request.param)
+
+
+@pytest.fixture
+def form_field():
+    yield from _fixture_for("FormField")
+
+
+@pytest.fixture
+def nv_field():
+    yield from _fixture_for("NV_Field")
+
+
+@pytest.fixture
+def schema_field():
+    yield from _fixture_for("SharedNewSessionSchemaField")
 
 
 def _one(view: list[dict], type_: str) -> dict:
@@ -165,13 +192,48 @@ def test_two_rows_never_share_an_id(row) -> None:
     assert [lab["htmlFor"] for lab in labels] == [i["id"] for i in inputs]
 
 
+
+# ---- a help line ------------------------------------------------------------------------------------------------------------------------------------
+
+
+def _help_lines(view: list[dict]) -> list[dict]:
+    return [e for e in view if "field-help" in (e["className"] or "") and e["role"] != "alert"]
+
+
+def test_a_help_line_follows_the_control_and_describes_it(row) -> None:
+    view = row("React.createElement('input', {})", {"help": "what the field means"})
+    lines = _help_lines(view)
+    assert len(lines) == 1 and lines[0]["id"], view
+    assert _one(view, "input")["describedBy"] == lines[0]["id"]
+
+
+def test_a_row_without_help_draws_no_help_line(row) -> None:
+    assert _help_lines(row("React.createElement('input', {})")) == []
+
+
+def test_the_help_line_comes_before_the_error_in_what_describes_the_control(row) -> None:
+    view = row("React.createElement('input', {})", {"help": "about", "err": "bad"})
+    help_line, alert = _help_lines(view)[0], next(e for e in view if e["role"] == "alert")
+    assert _one(view, "input")["describedBy"] == f"{help_line['id']} {alert['id']}"
+
+
+def test_a_described_by_the_control_already_has_stays_first_before_the_help(row) -> None:
+    view = row("React.createElement('input', { 'aria-describedby': 'hint-1' })", {"help": "about"})
+    assert _one(view, "input")["describedBy"] == f"hint-1 {_help_lines(view)[0]['id']}"
+
+
+def test_a_group_row_is_described_by_its_help(row) -> None:
+    view = row("React.createElement('div', { className: 'custom-picker' })", {"help": "about"})
+    group = next(e for e in view if e["role"] == "group")
+    assert group["describedBy"] == _help_lines(view)[0]["id"], view
+
 # ---- one implementation ----------------------------------------------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("name", ["WS_FieldRow", "FieldRow"])
+@pytest.mark.parametrize("name", ["WS_FieldRow", "FieldRow", "NV_Field"])
 def test_the_older_row_names_are_one_line_wrappers_of_form_field(name: str) -> None:
-    body = _fn({"WS_FieldRow": SHARED, "FieldRow": SEARCH}[name], name)
-    assert re.search(r"<FormField\s+\{\.\.\.props\}\s*/>", body), body
+    body = _fn({"WS_FieldRow": SHARED, "FieldRow": SEARCH, "NV_Field": OVERLAYS}[name], name)
+    assert re.search(r"<FormField\s[^>]*\{\.\.\.props\}[^>]*/>", body), body
     assert "<label" not in body and "useId" not in body and "cloneElement" not in body, "a second copy of the row"
 
 
@@ -192,3 +254,53 @@ def test_form_field_is_registered_before_the_pages_that_use_it() -> None:
     for later in ("components/workspaces/shared.jsx", "components/semantic-search.jsx"):
         assert INDEX.index(tag) < INDEX.index(f'src="{later}"'), f"form-field.jsx must load before {later}"
     assert "window.FormField = FormField" in FORM_PATH.read_text(encoding="utf-8"), "pages built outside the bundle's scope reach it as window.FormField"
+
+
+# ---- the row's class names, and the console overlays' field ---------------------------------------------------------------------------------------
+
+
+def test_a_row_draws_the_form_class_names_unless_the_caller_names_its_own(form_field) -> None:
+    view = form_field("React.createElement('input', {})", {"hint": "optional"})
+    assert _one(view, "label")["className"] == "field-label"
+    assert next(e for e in view if e["type"] == "div")["className"] == "field"
+    assert next(e for e in view if e["type"] == "span")["className"] == "hint"
+    own = form_field("React.createElement('input', {})", {"hint": "optional", "className": "nv-field", "labelClassName": "nv-field-label", "hintClassName": "nv-field-hint"})
+    assert _one(own, "label")["className"] == "nv-field-label"
+    assert next(e for e in own if e["type"] == "div")["className"] == "nv-field"
+    assert next(e for e in own if e["type"] == "span")["className"] == "nv-field-hint"
+
+
+def test_the_overlay_field_label_is_a_label_element_with_the_overlay_classes(nv_field) -> None:
+    """``NV_Field`` drew ``<div class="nv-field-label">``: nothing in the New session / New agent overlays named its control."""
+    view = nv_field("React.createElement('input', { className: 'nv-input' })", {"label": "Name", "hint": "optional"})
+    label, control = _one(view, "label"), _one(view, "input")
+    assert label["className"] == "nv-field-label" and control["id"] and label["htmlFor"] == control["id"], view
+    assert next(e for e in view if e["type"] == "div")["className"] == "nv-field"
+    assert next(e for e in view if e["type"] == "span")["className"] == "nv-field-hint"
+    assert not [e for e in view if e["className"] == "nv-field-label" and e["type"] != "label"], "a div label is the defect"
+
+
+def test_an_overlay_field_around_a_custom_widget_is_a_group_named_by_its_label(nv_field) -> None:
+    view = nv_field("React.createElement('div', { className: 'nv-seg' })", {"label": "Autonomy", "hint": "when it starts"})
+    label = _one(view, "label")
+    group = next(e for e in view if e["role"] == "group")
+    assert not label["htmlFor"] and group["labelledBy"] == label["id"], view
+
+
+@pytest.mark.parametrize(
+    ("schema", "control"),
+    [
+        ({"type": "string", "title": "Question", "description": "What to ask"}, "textarea"),
+        ({"type": "string", "title": "Question", "maxLength": 40, "description": "What to ask"}, "input"),
+        ({"type": "integer", "title": "Question", "description": "What to ask"}, "input"),
+        ({"type": "string", "title": "Question", "enum": ["a", "b"], "description": "What to ask"}, "select"),
+        ({"type": "boolean", "title": "Question", "description": "What to ask"}, "input"),
+    ],
+)
+def test_a_graph_input_row_is_labelled_and_its_description_describes_the_control(schema_field, schema: dict, control: str) -> None:
+    """The live helper of the New session overlay's graph-input form (``SharedNewSessionSchemaField``)."""
+    view = schema_field("undefined", {"label": None, "propKey": "q", "schema": schema, "value": ""})
+    label, ctrl = _one(view, "label"), _one(view, control)
+    assert ctrl["id"] and label["htmlFor"] == ctrl["id"], view
+    description = _help_lines(view)
+    assert len(description) == 1 and ctrl["describedBy"] == description[0]["id"], view
