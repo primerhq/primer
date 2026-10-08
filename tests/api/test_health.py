@@ -100,6 +100,59 @@ async def test_health_worker_pool_capacity_falls_back_to_scheduler_registry(
     assert body["worker_pool"]["capacity"] == 7
 
 
+async def _register_fleet(app) -> None:
+    sched = app.state.scheduler
+    await sched.register_worker(worker_id="w1", host="h1", pid=1, capacity=3)
+    await sched.register_worker(worker_id="w2", host="h2", pid=2, capacity=4)
+    await sched.register_worker(worker_id="w3", host="h3", pid=3, capacity=99)
+
+
+@pytest.mark.asyncio
+async def test_health_worker_pool_in_flight_is_the_live_fleets_reported_load(app, client) -> None:
+    """Lead sweep M2: an API-only process reported ``in_flight: null`` ("n/a of 6 capacity") although the workers were busy,
+    because load was never persisted. Each worker now reports it with its heartbeat; health sums the LIVE workers' reports
+    (a dead worker's last report is stale and does not count), the same population its capacity sums."""
+    await _register_fleet(app)
+    sched = app.state.scheduler
+    await sched.report_worker_load("w1", in_flight=2)
+    await sched.report_worker_load("w2", in_flight=1)
+    await sched.report_worker_load("w3", in_flight=50)
+    sched.mark_worker_dead_for_test("w3")
+
+    body = (await client.get("/v1/health")).json()
+
+    assert body["worker_pool"]["in_flight"] == 3
+    assert body["worker_pool"]["capacity"] == 7
+
+
+@pytest.mark.asyncio
+async def test_health_worker_pool_in_flight_is_unknown_while_a_live_worker_has_not_reported(app, client) -> None:
+    """A worker that predates load reporting (a rolling upgrade) must not be counted as idle: the total would be an
+    undercount that looks like a measurement. ``null`` says it is unknown; capacity is still known."""
+    await _register_fleet(app)
+    sched = app.state.scheduler
+    await sched.report_worker_load("w1", in_flight=2)
+    await sched.report_worker_load("w3", in_flight=0)
+    sched.mark_worker_dead_for_test("w3")
+
+    body = (await client.get("/v1/health")).json()
+
+    assert body["worker_pool"]["in_flight"] is None
+    assert body["worker_pool"]["capacity"] == 7
+
+
+@pytest.mark.asyncio
+async def test_health_worker_pool_in_flight_is_zero_for_an_idle_reporting_fleet(app, client) -> None:
+    await _register_fleet(app)
+    sched = app.state.scheduler
+    for wid in ("w1", "w2", "w3"):
+        await sched.report_worker_load(wid, in_flight=0)
+
+    body = (await client.get("/v1/health")).json()
+
+    assert body["worker_pool"]["in_flight"] == 0, "an idle fleet is 0 of N, not n/a"
+
+
 @pytest.mark.asyncio
 async def test_health_worker_pool_capacity_null_without_scheduler(app, client) -> None:
     """No local pool and no scheduler at all: capacity has nothing to
