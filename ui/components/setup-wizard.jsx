@@ -164,9 +164,12 @@ function SW_missingField(type, url, apiKey) {
   return null;
 }
 
-// A backend detail without the links and pydantic's "[type=..., input_value=..., input_type=...]" noise (which also echoes the input).
+// A backend detail without the links, pydantic's "[type=..., input_value=..., input_type=...]" noise (which also echoes the input) and
+// the credentials of any URL in it: a Base URL such as http://user:pass@host/v1 comes back in httpx's error message, and a secret must not
+// be printed into a banner. The userinfo runs to the LAST "@" before the first "/", because a password may contain one.
 function SW_tidy(text) {
   return String(text || "")
+    .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\/\s'"]*@/gi, "$1")
     .replace(/\s*For further information visit \S+/g, "")
     .replace(/\s*For more information check: \S+/g, "")
     .replace(/\s*\[type=[^\n]*?input_type=[^\]\n]*\]/g, "")
@@ -183,9 +186,17 @@ function SW_validationFields(text) {
   return out;
 }
 
+// The HTTP status a backend detail reports ("HTTP 404 ...", httpx's "Client error '404 Not Found' for url ...", ollama's
+// "(status code: 401)"), or "" when it names none.
+function SW_httpStatus(raw) {
+  var m = /HTTP\s+(\d{3})\b/.exec(raw) || /'(\d{3}) [A-Za-z ]+'/.exec(raw) || /status code:\s*(\d{3})/.exec(raw);
+  return m ? m[1] : "";
+}
+
 // {title, detail, field, message} for a failed probe: the title says what failed; a problem with one input is shown under that input
-// (field "url" | "apiKey", with its message) instead of in a banner; anything else keeps its tidied detail in the banner.
-function SW_probeFailure(err, type) {
+// (field "url" | "apiKey", with its message) instead of in a banner; anything else keeps its tidied detail in the banner. apiKey is the
+// key that was SENT: a 401 or 403 with none is a missing key, not a rejected one.
+function SW_probeFailure(err, type, apiKey) {
   var raw = String((err && (err.detail || err.message)) || "").trim();
   if (/^(Draft provider failed validation|invalid [\w ]+ config):/i.test(raw)) {
     var fields = SW_validationFields(raw);
@@ -193,10 +204,11 @@ function SW_probeFailure(err, type) {
     var keyProblem = fields.filter(function (f) { return /(^|\.)api_key$/.test(f.loc); })[0];
     if (urlProblem) {
       var missing = /Field required/i.test(urlProblem.reason);
+      var example = SW_urlHint(type);
       return {
         field: "url", detail: "",
         title: missing ? "Enter the server's address" : "That address is not valid",
-        message: "A full URL, for example " + (SW_urlHint(type) || "http://localhost:11434"),
+        message: example ? "A full URL, for example " + example : "A full URL, starting with http:// or https://",
       };
     }
     if (keyProblem) {
@@ -209,12 +221,25 @@ function SW_probeFailure(err, type) {
         : SW_tidy(raw.replace(/^[^:]+:\s*/, "")),
     };
   }
-  if (/HTTP\s+40[13]\b|'40[13] |status code:\s*40[13]|unauthori[sz]ed|forbidden|key invalid/i.test(raw)) {
-    return { field: null, message: "", title: "The provider rejected the API key", detail: "Check the key and connect again." };
+  // The HTTP status comes first: a body that merely CONTAINS "unauthorized" or "forbidden" (a 404 page, a 500 trace) is not a key problem.
+  // The words only count when there is no status at all, and only as whole words.
+  var code = SW_httpStatus(raw);
+  var denied = code === "401" || code === "403" ||
+    (!code && /\b(?:unauthori[sz]ed|forbidden)\b|\bkey invalid\b/i.test(raw));
+  if (denied) {
+    // A server that wants a key, reached without one (the self-hosted types may run without), is a MISSING key, shown under the field.
+    if (!String(apiKey || "").trim()) {
+      return {
+        field: "apiKey", title: "This provider needs an API key", detail: SW_tidy(raw),
+        message: "The server refused a request that carried no key. Paste the key it expects.",
+      };
+    }
+    // The server's own words follow the advice: a proxy or WAF that answers 403 is not necessarily talking about the key.
+    return { field: null, message: "", title: "The provider rejected the API key", detail: ("Check the key and connect again. " + SW_tidy(raw)).trim() };
   }
-  var status = /HTTP\s+(\d{3})\b/.exec(raw) || /'(\d{3}) [A-Za-z ]+'/.exec(raw) || /status code:\s*(\d{3})/.exec(raw);
-  if (status) {
-    var more = status[1] === "404"
+  if (code) {
+    // The /v1 hint is for a type whose Base URL ends in /v1 (the OpenAI-compatible ones): not Ollama, not a hosted provider with no Base URL.
+    var more = code === "404" && /\/v1$/.test(SW_urlHint(type))
       ? " Check the Base URL: an OpenAI-compatible server usually answers at an address ending in /v1."
       : "";
     return { field: null, message: "", title: "The provider answered with an error", detail: SW_tidy(raw) + more };
@@ -271,6 +296,14 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
 
   const spec = SETUP_PROVIDER_TYPES.find((t) => t.id === type);
 
+  // Editing a field (or the type) answers a failure that was about a field: the message under it goes, and so does the banner that named it.
+  // A banner that is not about a field (the resume notice, an unreachable provider) stays.
+  const clearFieldFailure = () => {
+    if (Object.keys(fieldErr).length === 0) return;
+    setFieldErr({});
+    setErr(null);
+  };
+
   // Step 1: a successful draft probe IS the proof that the provider works, so the provider row is only persisted once the probe
   // returns models. The save is idempotent (an existing row is updated), and each phase reports under its own title.
   const submitProvider = async (e) => {
@@ -296,7 +329,7 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
         models = (probe && probe.models) || [];
       } catch (e2) {
         // The title says what failed (SW_probeFailure reads the backend's text); a bad input is shown under that input.
-        const failure = SW_probeFailure(e2, type);
+        const failure = SW_probeFailure(e2, type, apiKey);
         setErr({ title: failure.title, detail: failure.detail });
         if (failure.field) setFieldErr({ [failure.field]: failure.message });
         return;
@@ -375,7 +408,7 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
               id="setup-type"
               className="mono"
               value={type}
-              onChange={(e) => { setType(e.target.value); setFieldErr({}); }}
+              onChange={(e) => { setType(e.target.value); clearFieldFailure(); }}
             >
               {SETUP_PROVIDER_TYPES.map((t) => (
                 <option key={t.id} value={t.id}>{t.label}</option>
@@ -389,7 +422,7 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
                 id="setup-url"
                 className="mono"
                 value={url}
-                onChange={(e) => { setUrl(e.target.value); setFieldErr({}); }}
+                onChange={(e) => { setUrl(e.target.value); clearFieldFailure(); }}
                 placeholder={SW_urlHint(type)}
                 aria-invalid={!!fieldErr.url}
                 autoFocus
@@ -404,7 +437,7 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
               className="mono"
               type="password"
               value={apiKey}
-              onChange={(e) => { setApiKey(e.target.value); setFieldErr({}); }}
+              onChange={(e) => { setApiKey(e.target.value); clearFieldFailure(); }}
               placeholder={SW_keyHint(type)}
               aria-invalid={!!fieldErr.apiKey}
             />
