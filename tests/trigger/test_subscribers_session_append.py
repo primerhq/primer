@@ -9,7 +9,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
 import primer.trigger.subscribers.session_append as sa
+from primer.model.storage import OffsetPage
 from primer.model.trigger import SessionAppendSubConfig, Subscription
 from primer.session.steer_delivery import (
     DELIVERED_MISSING,
@@ -82,12 +85,13 @@ async def test_queued_is_a_successful_delivery(monkeypatch):
 
 
 async def test_busy_skip_is_a_non_failing_skip(monkeypatch):
-    res, _ = await _dispatch(
+    res, captured = await _dispatch(
         monkeypatch, DELIVERED_SKIPPED_BUSY, parallelism="skip"
     )
     assert res.ok is True
     assert res.skipped is True
     assert res.error_code == "skipped_session_busy"
+    assert captured["parallelism"] == "skip", "the subscription's parallelism must reach deliver_steer unchanged"
 
 
 async def test_missing_target_is_a_non_failing_skip(monkeypatch):
@@ -111,3 +115,79 @@ async def test_absent_workspace_registry_fails_loudly():
     )
     assert res.ok is False
     assert res.error_code == "dispatch_failed"
+
+
+# ---- the real routing, not a stubbed deliver_steer (ticket 01a11b55) --------------------------------------------------------------
+#
+# The stubbed tests above only see what the dispatcher PASSES to deliver_steer. A mutant that hard-coded `parallelism="queue"` there left
+# them green while the docs say a skip subscription skips a busy target. These run the real `deliver_steer` over a real busy row: the
+# outcome is decided by what is stored, so the subscription's own `parallelism` is the only thing that can make the two cases differ.
+
+
+async def _busy_target(sp, **row_fields):
+    from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
+
+    fields = dict(
+        id="s1", workspace_id="ws-1", binding=AgentSessionBinding(agent_id="agent-a"), status=SessionStatus.RUNNING,
+        created_at=datetime.now(UTC), turn_status="running", last_seq=4,
+    )
+    fields.update(row_fields)
+    await sp.get_storage(WorkspaceSession).create(WorkspaceSession(**fields))
+
+
+async def _pending_texts(sp) -> list[str]:
+    from primer.model.workspace_session import PendingSessionMessage
+
+    page = await sp.get_storage(PendingSessionMessage).list(OffsetPage(offset=0, length=50))
+    return [part["text"] for row in page.items if row.session_id == "s1" for part in row.parts]
+
+
+class _MustNotBeTouched:
+    """The wake path's collaborators: using any of them means the dispatcher woke or armed a turn it must have left alone."""
+
+    def __getattr__(self, name):
+        raise AssertionError(f"a busy target was woken: {name} was used")
+
+
+def _real_deps(sp) -> DispatchDeps:
+    return DispatchDeps(
+        storage_provider=sp, claim_engine=_MustNotBeTouched(), scheduler=_MustNotBeTouched(),
+        workspace_registry=_MustNotBeTouched(), event_bus=None,
+    )
+
+
+BUSY_ROWS = pytest.mark.parametrize(
+    "row_fields",
+    [{"turn_status": "running"}, {"turn_status": "claimable"}, {"turn_status": "idle", "parked_status": "parked"}],
+    ids=["running", "claimable", "parked"],
+)
+
+
+@BUSY_ROWS
+async def test_a_skip_subscription_on_a_busy_target_records_skipped_busy_and_appends_nothing(row_fields):
+    sp = _FakeStorageProvider()
+    await _busy_target(sp, **row_fields)
+
+    res = await sa.SessionAppendDispatcher().dispatch(
+        _sub("skip"), rendered_payload="do the thing", fire_context={"fire_id": "fire-1"}, fire_id="fire-1", deps=_real_deps(sp),
+    )
+
+    assert res.ok is True and res.skipped is True and res.error_code == "skipped_session_busy", res
+    assert await _pending_texts(sp) == [], "a skipped steer must not be queued"
+    from primer.model.workspace_session import WorkspaceSession
+
+    row = await sp.get_storage(WorkspaceSession).get("s1")
+    assert row.last_seq == 4 and row.turn_status == row_fields["turn_status"], "a skipped steer must not touch the session"
+
+
+@BUSY_ROWS
+async def test_a_queue_subscription_on_a_busy_target_queues_the_steer(row_fields):
+    sp = _FakeStorageProvider()
+    await _busy_target(sp, **row_fields)
+
+    res = await sa.SessionAppendDispatcher().dispatch(
+        _sub("queue"), rendered_payload="do the thing", fire_context={"fire_id": "fire-1"}, fire_id="fire-1", deps=_real_deps(sp),
+    )
+
+    assert res.ok is True and res.skipped is False and res.artefact_id == "s1", res
+    assert await _pending_texts(sp) == ["do the thing"], "the steer must wait for the open turn, once"
