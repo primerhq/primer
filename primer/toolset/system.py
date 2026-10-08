@@ -392,7 +392,8 @@ def build_system_toolset(
         "collection": (
             "Deleting a collection also deletes its documents, their content and its vector chunks (the vector namespace is dropped first, "
             "then the documents, then the collection). If the vector store cannot be reached the delete is refused with ``type=provider-error`` "
-            "and nothing is changed; disable the collection's search first (DELETE /v1/collections/{id}/search always works) to delete it anyway."
+            "and nothing is changed; disable the collection's search first (DELETE /v1/collections/{id}/search always works) to delete it anyway. "
+            "A system collection cannot be deleted (``type=forbidden``)."
         ),
         "agent": (
             f"Deleting the seeded ``{RESERVED_OPERATOR_AGENT}`` or ``{RESERVED_BUILDER_AGENT}`` agent marks the install as not set up: "
@@ -409,8 +410,15 @@ def build_system_toolset(
     # What REST does in the collection router's on_pre_delete (ticket 01a1131f "F"): the documents, their content rows and the vector
     # namespace go before the row, through the same function. With no semantic-search registry in this toolset (search off) there is no
     # vector side to drop.
-    async def _collection_pre_delete(existing: Collection) -> None:
+    async def _collection_pre_delete(existing: Collection) -> Any:
+        if existing.system:
+            # Read-only through every path (REST's 403, the document tools' forbidden); it is regenerated from platform state, and the
+            # cascade below would otherwise empty it.
+            return _err(
+                f"collection {existing.id!r} is system-owned and read-only; it is regenerated from platform state", error_type="forbidden",
+            )
         await purge_collection(storage_provider, semantic_search_registry, collection=existing)
+        return None
 
     pre_deletes_by_label: dict[str, Any] = {"collection": _collection_pre_delete}
     for label, plural, cls, on_c, on_u, on_d, role in crud_specs:

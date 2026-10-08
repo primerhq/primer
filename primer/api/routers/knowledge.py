@@ -125,13 +125,23 @@ class _CollectionSearchBody(BaseModel):
 
 
 async def _collection_on_pre_delete(existing: Collection, request: Request) -> None:
-    """Delete what the collection owns BEFORE its row goes (ticket 01a1131f "F").
+    """Delete what the collection owns BEFORE its row goes (ticket 01a1131f "F"); refuse a system collection (403).
 
     Runs after the managed-by guard, so a refused delete has emptied nothing. The documents, their content rows and the vector namespace
     are removed first and the row last, so a failure part-way leaves a collection that deleting again finishes. An unreachable vector
     store refuses the delete (502); see :func:`primer.knowledge.lifecycle.purge_collection`. The registry is read off ``app.state`` and
     is only needed for a collection with search configured.
     """
+    if existing.system:
+        # Read-only through every path, as the document routes already say (``_require_writable``): it is regenerated from platform
+        # state, and the cascade below would otherwise empty it.
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Collection {existing.id!r} is system-owned and read-only; "
+                "it is regenerated from platform state."
+            ),
+        )
     await purge_collection(
         request.app.state.storage_provider,
         getattr(request.app.state, "semantic_search_registry", None),

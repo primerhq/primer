@@ -265,7 +265,7 @@ _OnMutate = Callable[[str], Awaitable[None]] | None
 # gets the validated entity, an update hook the entity and the stored row.
 _PreCreate = Callable[[Any], Awaitable[None]] | None
 _PreUpdate = Callable[[Any, Any], Awaitable[None]] | None
-_PreDelete = Callable[[Any], Awaitable[None]] | None
+_PreDelete = Callable[[Any], Awaitable["ToolCallResult | None"]] | None
 
 
 def _refuse_unless_admin(ctx: ToolContext | None, note: str) -> ToolCallResult | None:
@@ -318,8 +318,8 @@ def _crud_tools_for(
     appended to the create and update descriptors so the agent knows the rule before it tries. Both must be given together.
 
     ``pre_delete(existing)`` is the entity's REST ``on_pre_delete`` work (a collection deletes its documents and vectors first): it runs
-    after the guards and the reference check and BEFORE the row is deleted, so the row is the last thing to go. A refusal
-    (:class:`EntityCheckError`) is a typed error; a :class:`ProviderError` (a vector store that cannot be reached) is
+    after the guards and the reference check and BEFORE the row is deleted, so the row is the last thing to go. It may return a ready
+    refusal (a :class:`ToolCallResult`, as the ``refuse_*`` guards do; ``None`` carries on). A refusal (:class:`EntityCheckError`) is a typed error; a :class:`ProviderError` (a vector store that cannot be reached) is
     ``type=provider-error``; either way the row is left alone. A delete with a ``pre_delete`` is several durable steps, so it is declared
     NOT interruptible (a Stop between them would leave a half-deleted entity).
 
@@ -596,7 +596,9 @@ def _crud_tools_for(
             return refusal
         if pre_delete is not None:
             try:
-                await pre_delete(existing)
+                refusal = await pre_delete(existing)
+                if refusal is not None:
+                    return refusal
             except EntityCheckError as exc:
                 return _err(exc.tool_message(), error_type=exc.tool_error_type)
             except ProviderError as exc:
