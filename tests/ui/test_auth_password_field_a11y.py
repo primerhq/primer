@@ -188,3 +188,19 @@ def test_the_server_banner_is_announced(code) -> None:
         assert banner[0]["role"] == "alert"
     finally:
         ctx.close()
+
+
+@pytest.mark.parametrize("screen_name", ["RegisterScreen", "LoginScreen"])
+def test_a_missing_username_is_announced_and_tied_to_the_username_input(code, screen_name) -> None:
+    ctx = _screen(code, screen_name)
+    try:
+        _submit(ctx)
+        view = _view(ctx)
+        errs = [e for e in view if "field-err" in (e["className"] or "") and e["text"] == "username is required"]
+        assert len(errs) == 1 and errs[0]["role"] == "alert" and errs[0]["id"], errs
+        owner = [i for i in view if i["type"] == "input" and i["describedBy"] == errs[0]["id"]]
+        assert len(owner) == 1 and owner[0]["ariaInvalid"] in ("true", True), owner
+        username_label = [e for e in view if e["type"] == "label" and e["text"] == "Username"][0]
+        assert owner[0]["id"] == username_label["htmlFor"], "the described input is the one the Username label names"
+    finally:
+        ctx.close()
