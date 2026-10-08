@@ -194,6 +194,15 @@ mcp_stdio_allowed_commands:
   - uv
 EOF
 
+# The e2e suite serves url file sources from a loopback HTTP server
+# (tests/e2e/test_workspace_template_features.py::test_seed_url_file), which
+# the url-source guard refuses by default (primer/common/ssrf.py). Opt it in
+# through the config FILE, not the environment: tests/_support/restart.py
+# relaunches the server with this same config.yaml and would drop an env var.
+cat >> "$CONFIG" <<EOF
+workspace_allow_private_url_sources: true
+EOF
+
 # Optionally disable auth. Some suites seed fixtures over plain httpx with
 # no login (e.g. tests/ui_e2e, which exercises the console UI and never
 # drives the auth flow). Opt in with PRIMER_E2E_AUTH_DISABLED=1; unset (the

@@ -28,6 +28,17 @@ _IPV4_COMPATIBLE = ipaddress.IPv6Network("::/96")
 _IPV4_TRANSLATED = ipaddress.IPv6Network("::ffff:0:0:0/96")
 
 
+# Operator opt-in (AppConfig.workspace_allow_private_url_sources, env PRIMER_WORKSPACE_ALLOW_PRIVATE_URL_SOURCES):
+# a deployment that seeds workspaces from an internal file server turns the refusal off. Set once at boot.
+_ALLOW_PRIVATE = False
+
+
+def configure_allow_private_destinations(enabled: bool) -> None:
+    """Turn the private-destination refusal off (``True``) or back on (``False``) for this process."""
+    global _ALLOW_PRIVATE
+    _ALLOW_PRIVATE = bool(enabled)
+
+
 class BlockedDestinationError(ValueError):
     """The destination is an address the platform must not fetch from."""
 
@@ -62,6 +73,8 @@ def blocked_reason(address: str) -> str | None:
 
 def refuse_private_literal(url: str) -> None:
     """Raise :class:`BlockedDestinationError` when ``url``'s host is an IP literal in a blocked range."""
+    if _ALLOW_PRIVATE:
+        return
     host = URL(url).host or ""
     try:
         ipaddress.ip_address(host.split("%", 1)[0])
@@ -85,6 +98,8 @@ class PublicOnlyResolver(AbstractResolver):
             from aiohttp.resolver import DefaultResolver
             self._inner = DefaultResolver()
         results = await self._inner.resolve(host, port, family=family)
+        if _ALLOW_PRIVATE:
+            return results
         for r in results:
             reason = blocked_reason(r["host"])
             if reason is not None:
@@ -96,4 +111,10 @@ class PublicOnlyResolver(AbstractResolver):
             await self._inner.close()
 
 
-__all__ = ["BlockedDestinationError", "PublicOnlyResolver", "blocked_reason", "refuse_private_literal"]
+__all__ = [
+    "BlockedDestinationError",
+    "PublicOnlyResolver",
+    "blocked_reason",
+    "configure_allow_private_destinations",
+    "refuse_private_literal",
+]

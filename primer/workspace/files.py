@@ -31,6 +31,7 @@ import aiohttp
 from yarl import URL
 
 from primer.common.ssrf import BlockedDestinationError, PublicOnlyResolver, refuse_private_literal
+from primer.model.except_ import ValidationError as SemanticValidationError
 
 if TYPE_CHECKING:
     from primer.model.workspace import FileMount
@@ -59,6 +60,11 @@ def _http_session() -> aiohttp.ClientSession:
     refused at connect time. ``trust_env`` stays off: no proxy from the environment sits between the check and the fetch.
     """
     return aiohttp.ClientSession(connector=aiohttp.TCPConnector(resolver=PublicOnlyResolver()))
+
+
+class UrlSourceRefusedError(SemanticValidationError, RuntimeError):
+    """A url file source points at a destination the guard refuses. It is the caller's input, so it is a 422
+    ``/errors/validation-error`` problem, not a 500; it stays a ``RuntimeError`` for callers that catch one."""
 
 
 _MAX_REDIRECTS = 5
@@ -95,7 +101,7 @@ async def _fetch_url_unbounded(url: str) -> bytes:
                         raise RuntimeError(f"FileSource url={url!r} returned {resp.status}")
                     return await resp.read()
     except BlockedDestinationError as exc:
-        raise RuntimeError(f"FileSource url={url!r} refused: {exc}") from exc
+        raise UrlSourceRefusedError(f"FileSource url={url!r} refused: {exc}") from exc
     raise RuntimeError(f"FileSource url={url!r}: more than {_MAX_REDIRECTS} redirects")
 
 

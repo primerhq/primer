@@ -196,6 +196,12 @@ def _make_lifespan(config: AppConfig):
         # can wake the worker on inbound chat messages.
         local_workspace_policy = config.local_workspace_policy()
         local_workspace_policy.log_boot()
+        from primer.common.ssrf import configure_allow_private_destinations
+        configure_allow_private_destinations(config.workspace_allow_private_url_sources)
+        if config.workspace_allow_private_url_sources:
+            logger.warning(
+                "workspace_allow_private_url_sources is on: url file sources may fetch private and loopback addresses"
+            )
         workspace_registry = WorkspaceRegistry(
             storage_provider,
             subprocess_timeout_seconds=config.subprocess_timeout_seconds,
