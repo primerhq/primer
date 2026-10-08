@@ -80,7 +80,6 @@ The shell is split by testability. Pure logic lives in `ui/foundation/shell-*.js
 - `shell-docs.js` - the tab model: open, pin, preview promotion, groups.
 - `shell-status.js`, `shell-turns.js` - the status line and the transcript's turn folding.
 - `shell-attention.js` - pending yields and approval records to attention items, tiered by consequence.
-- `shell-walkthrough.js` - the first-run checklist state.
 - `shell-router-shim.js` - `useRouter` over overlay state (see [ui-foundation.md](ui-foundation.md)).
 
 The React surfaces live in `ui/components/console/nv-*.jsx` (the three-view flag day deleted the `sh-*` shell): `nv-shell.jsx` (the root: URL sync, the verb registry and chord dispatcher, the toast and confirm hosts), `nv-chrome.jsx` (activity bar + topbar: workspace menu with settings, search field, panel toggles, profile menu), `nv-palette.jsx`, `nv-studio.jsx` (the studio frame and the pure band sort), `nv-sessions-sidebar.jsx` and `nv-files-sidebar.jsx`, `nv-doc-host.jsx`, `nv-session-doc.jsx` (transcript, binding chip, decision/ask cards, inline artifacts, trace split, composer, voice), `nv-file-docs.jsx`, `nv-terminal.jsx`, `nv-events-sidebar.jsx`, `nv-client-tools.jsx`, `nv-overlays.jsx` (the designer create panels plus the management-surface mount table), `nv-platform.jsx` and `nv-system.jsx`. Two shell-directory files survive: `sh-activity.jsx` (the events console the System view re-hosts) and **`sh-api.jsx`, the only file that names a URL**, so the endpoints the console depends on are enumerable in one place.
