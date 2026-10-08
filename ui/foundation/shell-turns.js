@@ -141,6 +141,28 @@ function SH_nestSubagentRows(rows) {
   return out;
 }
 
+// The transcript the console draws: the delegated rows nested under their calls, and the tool results indexed so a call can find its own. The
+// two are ONE step because the index has to be taken from the transcript as the adapter wrote it: nesting moves a delegated run's rows (its calls and
+// ITS results too) under the call that delegated to it, out of the top level.
+function SH_nestWithResults(transcript) {
+  var flat = SH_nestSubagentRows(transcript);
+  var resultsByCallId = {};
+  for (var ri = 0; ri < flat.length; ri++) {
+    if (flat[ri].kind === "tool_result") {
+      var cid = (flat[ri].payload || {}).call_id;
+      if (cid != null) resultsByCallId[cid] = flat[ri];
+    }
+  }
+  return { flat: flat, resultsByCallId: resultsByCallId };
+}
+
+// The result row that answers a tool call row, from SH_nestWithResults' index, or null while it is still running.
+function SH_resultForCall(resultsByCallId, row) {
+  var payload = row.payload || {};
+  var id = payload.id || payload.tool_call_id || null;
+  return id != null ? resultsByCallId[id] || null : null;
+}
+
 // UX reconcile wave 2 (audit A item 2): a short local-time label for a
 // turn's byline, next to the name. Same format as shared/transcript.jsx's
 // CT_formatTime (that file is not in this task's boundary, so this is a
@@ -341,6 +363,8 @@ function SH_collapseTurns(rows, opts) {
 window.SH_TOOL_VERBS = SH_TOOL_VERBS;
 window.SH_toolChipLabel = SH_toolChipLabel;
 window.SH_nestSubagentRows = SH_nestSubagentRows;
+window.SH_nestWithResults = SH_nestWithResults;
+window.SH_resultForCall = SH_resultForCall;
 window.SH_collapseTurns = SH_collapseTurns;
 window.SH_closesTurn = SH_closesTurn;
 window.SH_turnOfSeq = SH_turnOfSeq;

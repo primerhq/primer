@@ -2590,8 +2590,8 @@ function NV_SessionDoc(props) {
   var records = store.recordsBySeq;
   var shownActive = !!shown;
   var pipeline = React.useMemo(function () {
-    var flat = SH_nestSubagentRows(
-      window.SA_toTranscript(records, session));
+    var nested = SH_nestWithResults(window.SA_toTranscript(records, session));
+    var flat = nested.flat;
     // SEV-2 fix: a legacy `{role, parts}` placeholder (session-store.js's
     // SS_apply/store.legacyMessages - see its own comment) stands in for an
     // instruction not yet backed by a durable SessionMessageRecord - without
@@ -2688,14 +2688,8 @@ function NV_SessionDoc(props) {
 
     // tool_result rows render INSIDE their call's block, paired by call
     // id, never as standalone lines (they have no label and drew as
-    // empty chevron rows).
-    var resultsByCallId = {};
-    for (var ri = 0; ri < flat.length; ri++) {
-      if (flat[ri].kind === "tool_result") {
-        var cid = (flat[ri].payload || {}).call_id;
-        if (cid != null) resultsByCallId[cid] = flat[ri];
-      }
-    }
+    // empty chevron rows). The pairing is SH_nestWithResults' (shell-turns.js).
+    var resultsByCallId = nested.resultsByCallId;
 
     // 0-based turn ordinal per seq, matching the timeline endpoint's
     // terminal-counting contract (get_session_turn_timeline: turn_no is
@@ -2731,9 +2725,7 @@ function NV_SessionDoc(props) {
     return set;
   }, [records.length]);
   function resultFor(row) {
-    var id = (row.payload || {}).id
-      || (row.payload || {}).tool_call_id || null;
-    return id != null ? resultsByCallId[id] || null : null;
+    return SH_resultForCall(resultsByCallId, row);
   }
   function traceTurnFor(row) {
     if (row.turn_no != null) return row.turn_no;
