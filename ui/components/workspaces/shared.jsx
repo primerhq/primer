@@ -1,49 +1,9 @@
-/* global React, Icon */
+/* global React, Icon, FormField */
 
-// ---- WS_FieldRow / WS_Section: form-row helpers prefixed to avoid colliding
-// with the semantic-search.jsx file-local copies. Same visual contract as
-// the SSP modal so the look-and-feel matches across modals.
-// What makes a row's label mean something to assistive technology (console review C-003, beyond the auth forms): the label used to be a SIBLING of the control, with no
-// htmlFor and no id, so input.labels was empty and clicking the label focused nothing. The first native control among the row's direct children (input, select, textarea) gets
-// an id (its own when it has one) that the label points at, and an error is tied to it (aria-invalid, aria-describedby). A row whose control is a custom component or sits inside
-// a wrapper cannot be labelled by id: the caller makes the row a group named by its label instead (found is false).
-function WS_fieldControls(children, ids, hasErr) {
-  var kids = React.Children.toArray(children);
-  var firstIndex = -1;
-  for (var i = 0; i < kids.length; i++) {
-    var t = React.isValidElement(kids[i]) ? kids[i].type : null;
-    if (t === "input" || t === "select" || t === "textarea") { firstIndex = i; break; }
-  }
-  if (firstIndex < 0) return { children: kids, found: false, controlId: null };
-  var control = kids[firstIndex];
-  var controlId = control.props.id || ids.control;
-  var extra = { id: controlId };
-  if (hasErr) {
-    extra["aria-invalid"] = "true";
-    extra["aria-describedby"] = control.props["aria-describedby"] ? control.props["aria-describedby"] + " " + ids.err : ids.err;
-  }
-  kids[firstIndex] = React.cloneElement(control, extra);
-  return { children: kids, found: true, controlId: controlId };
-}
-window.WS_fieldControls = WS_fieldControls;
-
-function WS_FieldRow({ label, hint, err, children }) {
-  var uid = React.useId();
-  var ids = { label: uid + "l", control: uid + "c", err: uid + "e" };
-  var wired = WS_fieldControls(children, ids, !!err);
-  return (
-    <div className="field" role={wired.found ? undefined : "group"} aria-labelledby={wired.found ? undefined : ids.label}>
-      <label className="field-label" id={ids.label} htmlFor={wired.found ? wired.controlId : undefined}>
-        {label}
-        {hint && <span className="hint">{hint}</span>}
-      </label>
-      {wired.children}
-      {err && <div className="field-help" id={ids.err} role="alert" style={{ color: "var(--red)" }}>
-        <Icon name="x-circle" size={11} style={{ verticalAlign: -1, marginRight: 3 }} />
-        {err}
-      </div>}
-    </div>
-  );
+// ---- WS_FieldRow / WS_Section: form-row helpers prefixed to avoid colliding with the semantic-search.jsx file-local ones. Same visual contract as the SSP modal so the
+// look-and-feel matches across modals. WS_FieldRow is FormField (shared/form-field.jsx), the console's one labelled row, under the name the workspace pages already call.
+function WS_FieldRow(props) {
+  return <FormField {...props} />;
 }
 
 function WS_Section({ label, sub }) {
