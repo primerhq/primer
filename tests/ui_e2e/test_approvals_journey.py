@@ -372,6 +372,19 @@ def test_u0109_approvals_operator_journey(
         reason_input = decision_card.get_by_test_id("nv-reject-reason")
         expect(reason_input).to_be_visible(timeout=5_000)
 
+        # --- 2b. The open form says the button sends, and Cancel folds it (C-018) ---
+        expect(reject_btn).to_have_text("Send rejection")
+        cancel_btn = decision_card.get_by_test_id("nv-reject-cancel")
+        expect(cancel_btn).to_be_visible(timeout=2_000)
+        cancel_btn.click()
+        expect(reason_input).to_have_count(0)
+        expect(cancel_btn).to_have_count(0)
+        expect(reject_btn).to_have_text("Reject with feedback")
+        expect(reject_btn).to_be_enabled()
+        reject_btn.click()
+        expect(reason_input).to_be_visible(timeout=5_000)
+        expect(reason_input).to_have_value("")
+
         # --- 3. Reject stays disabled with an empty/whitespace reason --
         # Pins NV_DecisionCard's disabled={!!props.ended || (rejOpen &&
         # !reason.trim())} — a real regression found and fixed during
