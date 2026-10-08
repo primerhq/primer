@@ -1221,15 +1221,19 @@ function NV_MobileShell() {
 
   // A pasted ?view=platform:<nav> link (or the palette's Platform verb) lands on the More tab with that section open; it used to
   // leave the shell on Inbox. ?view=system:* is a full-screen takeover below.
-  // Keyed on the view OBJECT, not its name and nav: the shell's goView hands over a new object on every call, so running the same
-  // link again after Back (the URL still names the section) is a navigation and opens it again. Watching only the two values saw
-  // no change there and did nothing. A re-render with the same object is not a navigation, so Back still sticks.
+  // Keyed on the view OBJECT, not its name and nav: running the same link again after Back is a navigation that changes neither, and
+  // the shell's goView (or a pasted link, which arrives as a hashchange) hands over a fresh object each time. A fresh object also
+  // arrives on every popstate, though, and on a phone nothing else clears ?view=platform:<x>, so an Android back gesture used to
+  // re-open the section behind whatever the user had moved on to. So the link is CONSUMED once it has been acted on: the view is
+  // dropped from state and from the URL (a replace), and there is nothing left to replay. The system view is the screen itself and
+  // stays.
   React.useEffect(function () {
     if (!(con.view && con.view.name === "platform")) return;
     setActiveTab("more");
     if (con.view.nav && window.NV_PLAT_PAGES && window.NV_PLAT_PAGES[con.view.nav]) {
       setPendingFactSheet({ kind: con.view.nav, id: null });
     }
+    if (con.clearView) con.clearView();
   }, [con.view]);
 
   var tabs = [

@@ -352,6 +352,13 @@ function NV_Shell() {
     return function () { window.removeEventListener("keydown", onKey); };
   }, [registry]);
 
+  // Drops the view without a history entry (no markPush, so the URL write replaces the current entry). A surface that has acted on a
+  // view (the phone shell opening a Platform section) calls it, so the URL stops naming a view nothing will show: a later hashchange or
+  // popstate re-parses the URL into a fresh view object, and a link still in it would be replayed.
+  var clearView = React.useCallback(function () {
+    setView(null);
+  }, [setView]);
+
   var goView = React.useCallback(function (name, nav) {
     markPush();
     setView({ name: name, nav: nav || null });
@@ -454,6 +461,7 @@ function NV_Shell() {
       voiceRef: voiceRef,
       paletteRef: paletteRef,
       goView: goView,
+      clearView: clearView,
       tgModel: tgModel,
       resolveSessionMeta: resolveSessionMeta,
       stampSessionMeta: stampSessionMeta,
@@ -540,7 +548,7 @@ function NV_Shell() {
       },
     };
   }, [wid, view, doc, overlay, anchor, panels, openMenu, registry,
-    frecency, wsItems, status, caps, voiceRef, paletteRef, goView,
+    frecency, wsItems, status, caps, voiceRef, paletteRef, goView, clearView,
     tgModel, setTgModel, resolveSessionMeta, stampSessionMeta, setOpenMenu,
     setOverlay, setTick, markPush, setWid]);
 
