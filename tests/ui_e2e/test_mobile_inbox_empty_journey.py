@@ -34,7 +34,7 @@ def test_the_empty_inbox_offers_to_start_a_session_and_opens_the_create_sheet(pa
     expect(page.get_by_test_id("nv-mobile-panel:spaces")).to_be_visible(timeout=10_000)
     sheet = page.get_by_role("dialog")
     expect(sheet).to_be_visible(timeout=10_000)
-    expect(sheet).to_contain_text("Create session")
+    expect(sheet).to_contain_text("New session")
 
     # The request was consumed: leaving the sheet and coming back to Spaces does not open it again.
     page.keyboard.press("Escape")

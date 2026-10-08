@@ -259,7 +259,16 @@ function NV_MobileInboxPanel(props) {
           })}
         </div>
       ) : (
-        <div className="nv-mob-ib-empty">Nothing needs you right now.</div>
+        // A first-time user lands here with nothing else on the screen: say what the Inbox is for and offer the next step (console review C-040).
+        <div className="nv-mob-ib-empty" data-testid="nv-mob-ib-empty">
+          <p className="nv-mob-ib-empty-h">Nothing needs you right now.</p>
+          <p className="nv-mob-ib-empty-sub">Approvals and questions from your agents wait here. Start a session to put one to work.</p>
+          {props.onStart ? (
+            <button type="button" className="nv-mob-ib-start touch-target" data-testid="nv-mob-ib-start" onClick={props.onStart}>
+              Start a session
+            </button>
+          ) : null}
+        </div>
       )}
     </div>
   );
@@ -415,7 +424,9 @@ function NV_Mobile_Pulse(props) {
 // not a bespoke mobile navigation path.
 // ---------------------------------------------------------------------------
 
-function NV_MobileSpaces() {
+// props.startRequested: the Inbox's "Start a session" asked for the Create session sheet; the panel opens it and lowers the request
+// (props.onStartHandled) so it does not reopen the next time the tab shows. The sheet's state belongs here, with the FAB that also opens it.
+function NV_MobileSpaces(props) {
   var con = NV_useConsole();
   var workspaces = con.workspaces || [];
   var sessRes = window.primerApi.useResource(
@@ -440,6 +451,11 @@ function NV_MobileSpaces() {
   var createOpenState = React.useState(false);
   var createOpen = createOpenState[0];
   var setCreateOpen = createOpenState[1];
+  React.useEffect(function () {
+    if (!props.startRequested) return;
+    setCreateOpen(true);
+    if (props.onStartHandled) props.onStartHandled();
+  }, [props.startRequested]);
 
   var sessions = (sessRes.data && sessRes.data.items) || [];
   var inboxItems = (inboxRes.data && inboxRes.data.items) || [];
@@ -1301,6 +1317,10 @@ function NV_MobileShell() {
   // actually uses for session creation; a deep-linked overlay=new-session
   // still works via the existing desktop panel). An unmapped name was
   // already a no-op before this (NV_OverlayHost returns null), unchanged.
+  // The empty Inbox's "Start a session" (console review C-040): a request for the Create session sheet, which the Spaces panel owns.
+  var startRequestedState = React.useState(false);
+  var startRequested = startRequestedState[0];
+  var setStartRequested = startRequestedState[1];
   var pendingFactSheetState = React.useState(null);
   var pendingFactSheet = pendingFactSheetState[0];
   var setPendingFactSheet = pendingFactSheetState[1];
@@ -1334,13 +1354,14 @@ function NV_MobileShell() {
       id: "inbox",
       label: "Inbox" + (inboxItems.length > 0 ? " (" + inboxItems.length + ")" : ""),
       content: (
-        <NV_MobileInboxPanel items={inboxItems} onResolved={inboxRes.refetch} />
+        <NV_MobileInboxPanel items={inboxItems} onResolved={inboxRes.refetch}
+          onStart={function () { setStartRequested(true); setActiveTab("spaces"); }} />
       ),
     },
     {
       id: "spaces",
       label: "Spaces",
-      content: <NV_MobileSpaces />,
+      content: <NV_MobileSpaces startRequested={startRequested} onStartHandled={function () { setStartRequested(false); }} />,
     },
     {
       id: "files",
