@@ -1117,9 +1117,8 @@ function NV_PlatListPage(props) {
   var modalState = React.useState(null);
   var modal = modalState[0];
   var setModal = modalState[1];
-  React.useEffect(function () {
-    setQ(""); setPageNo(0); setModal(null);
-  }, [nav]);
+  // No reset-on-nav effect: NV_PlatPage keys this component on the nav, so a section switch is a fresh instance and the filter, the page number and
+  // the open form start empty by construction (and so does the scroll position). tests/ui_e2e/test_platform_nav_switch_journey.py holds that by behaviour.
   // R4 review finding 3: typing a search query narrowed the result set
   // but never reset pageNo, so `p = Math.min(pageNo, pages - 1)` below
   // clamped toward the END of the shrunk range rather than the start -
