@@ -1,12 +1,12 @@
-"""The Platform form rows tie their label to the control they name (console review C-003, the rest of the console).
+"""The labelled form row ties its label to the control it names (console review C-003), and there is ONE row implementation.
 
-``WS_FieldRow`` (workspace providers and templates) and ``FieldRow`` (the semantic-search provider forms) drew ``<label class="field-label">`` as a SIBLING of the input, with no
-``htmlFor`` and no ``id``: ``input.labels`` was empty, clicking the visible label focused nothing, and a screen reader landed on an unnamed edit field (72 fields in those
-three files). The row now gives its first native control (``input``, ``select``, ``textarea``) an id and points the label at it; a row whose control is a custom component
-(or sits inside a wrapper) cannot be labelled by id, so the row becomes a ``role="group"`` named by its label; an error is announced and tied to the control
-(``aria-invalid``, ``aria-describedby``, ``role="alert"``).
+``FormField`` (``ui/components/shared/form-field.jsx``) is the row. ``WS_FieldRow`` (workspace providers and templates) and ``FieldRow`` (the semantic-search provider forms) used to be
+two copies of it and are now one-line wrappers, so a form row anywhere in the console is labelled the same way. The row used to draw ``<label class="field-label">`` as a SIBLING of the input, with no
+``htmlFor`` and no ``id``: ``input.labels`` was empty, clicking the visible label focused nothing, and a screen reader landed on an unnamed edit field. The row now gives its first native
+control (``input``, ``select``, ``textarea``) an id and points the label at it; a row whose control is a custom component (or sits inside a wrapper) cannot be labelled by id, so the row
+becomes a ``role="group"`` named by its label; an error is announced and tied to the control (``aria-invalid``, ``aria-describedby``, ``role="alert"``).
 
-Both real components run in V8 on the hook runtime in ``tests/ui/_mini_react.py``, with the handful of React APIs they need (``useId``, ``Children``, ``cloneElement``)
+All three components run in V8 on the hook runtime in ``tests/ui/_mini_react.py``, with the handful of React APIs they need (``useId``, ``Children``, ``cloneElement``)
 stubbed on its ``React`` and ``createElement`` wrapped so the host elements a render produced (their ``id``, ``htmlFor``, ``role``, ``aria-*``) can be read.
 """
 
@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import functools
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -21,8 +22,10 @@ import pytest
 from tests.ui._mini_react import mini_react_context
 
 ROOT = Path(__file__).resolve().parents[2]
+FORM_PATH = ROOT / "ui" / "components" / "shared" / "form-field.jsx"
 SHARED = (ROOT / "ui" / "components" / "workspaces" / "shared.jsx").read_text(encoding="utf-8")
 SEARCH = (ROOT / "ui" / "components" / "semantic-search.jsx").read_text(encoding="utf-8")
+INDEX = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
 
 _PRELUDE = r"""
 function Icon() { return null; }
@@ -68,23 +71,21 @@ def _compiled() -> str:
 
     ui = ROOT / "ui"
     bundler = JSXBundler(ui_dir=ui, babel_source=(ui / "vendor" / "babel.min.js").read_text())
-    source = "\n".join([
-        _fn(SHARED, "WS_fieldControls") if "function WS_fieldControls(" in SHARED else "",
-        _fn(SHARED, "WS_FieldRow"), _fn(SEARCH, "FieldRow"),
-    ])
+    form = FORM_PATH.read_text(encoding="utf-8")
+    source = "\n".join([_fn(form, "FF_fieldControls"), _fn(form, "FormField"), _fn(SHARED, "WS_FieldRow"), _fn(SEARCH, "FieldRow")])
     try:
         return bundler._transform(source, "snippet.jsx")
     finally:
         bundler._ctx.close()
 
 
-@pytest.fixture(params=["WS_FieldRow", "FieldRow"])
+@pytest.fixture(params=["FormField", "WS_FieldRow", "FieldRow"])
 def row(request):
     """``row(children_js, props_js)`` -> the host elements the component drew."""
     made = []
 
     def go(children_js: str, props: dict | None = None, copies: int = 1) -> list[dict]:
-        ctx = mini_react_context(_compiled(), _PRELUDE + "\nwindow.WS_fieldControls = typeof WS_fieldControls === 'function' ? WS_fieldControls : undefined;")
+        ctx = mini_react_context(_compiled(), _PRELUDE)
         made.append(ctx)
         one = f"React.createElement({request.param}, {json.dumps({'label': 'name', **(props or {})})}, {children_js})"
         ctx.eval(
@@ -162,3 +163,32 @@ def test_two_rows_never_share_an_id(row) -> None:
     labels = [e for e in row("React.createElement('input', {})", copies=2) if e["type"] == "label"]
     assert len(inputs) == 2 and inputs[0]["id"] and inputs[1]["id"] and inputs[0]["id"] != inputs[1]["id"]
     assert [lab["htmlFor"] for lab in labels] == [i["id"] for i in inputs]
+
+
+# ---- one implementation ----------------------------------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["WS_FieldRow", "FieldRow"])
+def test_the_older_row_names_are_one_line_wrappers_of_form_field(name: str) -> None:
+    body = _fn({"WS_FieldRow": SHARED, "FieldRow": SEARCH}[name], name)
+    assert re.search(r"<FormField\s+\{\.\.\.props\}\s*/>", body), body
+    assert "<label" not in body and "useId" not in body and "cloneElement" not in body, "a second copy of the row"
+
+
+def test_the_labelled_row_is_drawn_in_one_file() -> None:
+    """Only ``form-field.jsx`` pairs a label with its control by id: a second ``useId`` + ``htmlFor`` row anywhere would be a copy to keep in step."""
+    drawn = []
+    for path in sorted((ROOT / "ui").rglob("*.jsx")):
+        src = path.read_text(encoding="utf-8")
+        if "FF_fieldControls(" in src:
+            drawn.append(path.relative_to(ROOT / "ui").as_posix())
+    assert drawn == ["components/shared/form-field.jsx"], drawn
+
+
+def test_form_field_is_registered_before_the_pages_that_use_it() -> None:
+    """The bundle is built from ``index.html``'s script tags in order: an unregistered file is a ``ReferenceError`` at the first form that renders."""
+    tag = 'src="components/shared/form-field.jsx"'
+    assert INDEX.count(tag) == 1, "form-field.jsx must be registered exactly once"
+    for later in ("components/workspaces/shared.jsx", "components/semantic-search.jsx"):
+        assert INDEX.index(tag) < INDEX.index(f'src="{later}"'), f"form-field.jsx must load before {later}"
+    assert "window.FormField = FormField" in FORM_PATH.read_text(encoding="utf-8"), "pages built outside the bundle's scope reach it as window.FormField"
