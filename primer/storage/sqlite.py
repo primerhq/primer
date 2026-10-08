@@ -80,6 +80,20 @@ from primer.storage._sqlite_predicate import (
 logger = logging.getLogger(__name__)
 
 
+async def _rollback_while_unwinding(conn) -> None:
+    """Roll back while an exception (an error or a cancellation) is already propagating, and never let a failing rollback replace it.
+
+    A rollback that raises inside an ``except`` block REPLACES the exception being handled. For an error that loses the real cause;
+    for a ``CancelledError`` it swallows the cancellation, and the task that was cancelled sees an ordinary failure instead. A failed
+    rollback is logged (the connection may now be left open, which the log line is the only trace of) and the caller re-raises what
+    it was already handling.
+    """
+    try:
+        await conn.rollback()
+    except Exception:
+        logger.warning("sqlite: rollback failed while unwinding; the original exception is propagated", exc_info=True)
+
+
 ModelT = TypeVar("ModelT", bound=Identifiable)
 
 
@@ -238,34 +252,40 @@ class SqliteStorageProvider(StorageProvider):
             try:
                 yield True
             except BaseException:
-                # This only protects writers that actually enter here.
-                # Known bypassers (this module's own system_state setters,
-                # e.g. set_default_agent_id, and primer.channel.
-                # correlation's raw upsert) execute + commit directly on
-                # the connection and can wedge it by the same mechanism.
-                # Routing them through this guard is its own PR: 01a070ea.
-                await self.connection.rollback()
+                # Every writer enters here: tests/storage/test_write_guard_coverage.py pins that structurally for this module and the
+                # correlation store (ticket 01a070ea routed the system_state setters and the correlation upsert through it), so while
+                # this lock is held no other writer has an uncommitted statement open on the connection. The rollback ends this
+                # unit's own implicit transaction and nothing else.
+                await _rollback_while_unwinding(self.connection)
                 raise
 
     @staticmethod
     async def _begin(conn) -> None:
         """Issue ``BEGIN`` so that a cancelled task cannot leave a transaction open.
 
-        aiosqlite runs the statement on a worker thread, so a task that is cancelled while it awaits (a browser that leaves a page
-        mid-request, a closed tab) can be cancelled AFTER the thread already ran ``BEGIN`` but before the task saw the result. The
-        task then unwinds before the ``try`` that rolls back, the write lock is released, and the connection stays inside a
+        aiosqlite hands the statement to a worker thread through a queue, and a statement that is queued cannot be recalled. A task
+        cancelled while it awaits the result (a browser that leaves a page mid-request, a closed tab) therefore unwinds without knowing
+        whether ``BEGIN`` has run: it may still be queued behind another statement, be running, or be done, and in every case it WILL
+        run. The task then leaves before the ``try`` that rolls back, the write lock is released, and the connection stays inside a
         transaction nothing tracks: every later ``BEGIN`` fails with "cannot start a transaction within a transaction" until the
         process restarts. So a CANCELLATION here rolls back. The rollback is queued behind the ``BEGIN`` on the same worker thread, so
-        it runs after it, and it is a no-op when ``BEGIN`` never ran.
+        it runs after it, and it is a no-op when there is nothing to roll back. The cancellation is always re-raised, even if the
+        rollback fails (:func:`_rollback_while_unwinding`).
 
-        Only a cancellation rolls back. A ``BEGIN`` that fails on its own (an ``OperationalError``) propagates and leaves any open
-        transaction alone, as before: rolling back there could discard a statement a bypassing writer has executed and not yet
-        committed on this shared connection (see :meth:`_write_guard`).
+        Why that cannot discard anyone else's work: this runs under ``_write_lock``, and every writer holds that lock from its first
+        statement to its commit (:meth:`_write_guard`, :meth:`transaction`; ``tests/storage/test_write_guard_coverage.py`` pins it
+        structurally for this module and the correlation store, ticket 01a070ea), so a transaction open here is this task's own.
+        Residual, stated plainly: a writer added later that executes on the shared connection WITHOUT the guard would have its
+        uncommitted statement rolled back here. It would already wedge the connection by the same mechanism, and the structural test
+        is what keeps that from happening.
+
+        Only a cancellation rolls back. A ``BEGIN`` that fails on its own (an ``OperationalError``) propagates untouched, as before;
+        healing a connection an earlier leak left open is a separate decision.
         """
         try:
             await conn.execute("BEGIN")
         except asyncio.CancelledError:
-            await conn.rollback()
+            await _rollback_while_unwinding(conn)
             raise
 
     @asynccontextmanager
@@ -303,7 +323,7 @@ class SqliteStorageProvider(StorageProvider):
                 yield conn
             except BaseException:
                 try:
-                    await conn.rollback()
+                    await _rollback_while_unwinding(conn)
                 finally:
                     self._txn_task = None
                 raise
@@ -343,7 +363,7 @@ class SqliteStorageProvider(StorageProvider):
             except BaseException:
                 # Read-only unit, but roll back to close the snapshot txn
                 # cleanly on error (mirrors :meth:`transaction`).
-                await conn.rollback()
+                await _rollback_while_unwinding(conn)
                 raise
             else:
                 # Nothing to persist, but COMMIT ends the snapshot transaction
