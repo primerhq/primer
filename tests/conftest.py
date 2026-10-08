@@ -709,6 +709,35 @@ def _no_swallowed_counter_bugs(request: pytest.FixtureRequest):
     )
 
 
+@pytest.fixture(autouse=True)
+def _no_unclosed_sqlite_providers(request: pytest.FixtureRequest):
+    """Fail the test that leaves a ``SqliteStorageProvider`` open, and close it.
+
+    An unclosed aiosqlite connection is finished by the garbage collector inside
+    whichever test happens to be running, where its worker thread dies with
+    ``RuntimeError: Event loop is closed`` and the warning lands on the wrong
+    test; one still referenced at exit keeps the pytest process from exiting.
+    Build the provider in a fixture that yields and awaits ``aclose()``, or close
+    it in a ``finally``. See ``tests/_support/sqlite_guard.py``.
+    """
+    from tests._support.sqlite_guard import OpenSqliteProviders
+
+    # Its own MonkeyPatch, not the test's: a test that calls ``monkeypatch.undo()`` would otherwise unhook the guard and have its
+    # ``aclose()`` go unseen (tests/harness/test_service.py::test_install_document_body_atomic does).
+    with pytest.MonkeyPatch.context() as guard_patches:
+        open_providers = OpenSqliteProviders(guard_patches)
+        yield
+        leaked = open_providers.close_leaked()
+    if leaked:
+        pytest.fail(
+            f"{request.node.nodeid} left {len(leaked)} SqliteStorageProvider(s) open (initialize() called at: {'; '.join(leaked)}). "
+            "Close it: build it in a fixture that yields and awaits aclose(), or close it in a finally. "
+            "Left open, the garbage collector finishes it inside some later test, whose run then reports "
+            "'Event loop is closed' from the connection's worker thread.",
+            pytrace=False,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Postgres lane anti-silent-skip guard (see tests/pg_gate.py)
 # ---------------------------------------------------------------------------
