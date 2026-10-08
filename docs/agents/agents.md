@@ -61,8 +61,12 @@ An `Agent` row carries:
   emit it directly; others join the segments with blank lines).
   Splitting into fragments lets the operator inject context (e.g. a
   workspace-specific preamble) without rewriting the base prompt.
-- `model` - `{provider_id, model_name}`. The provider must exist as
-  an `LLMProvider` row.
+- `model` - `{profile_id}`: the id of a stored `ModelProfile`, which carries
+  the provider and the model name. Creating or updating an agent that names a
+  profile that does not exist is refused (422 `model_profile_not_found`, field
+  `model.profile_id`); the system `create_agent` / `update_agent` tools answer
+  the same as a `validation-error`. An update checks the profile only when it
+  changes it.
 - `temperature` - optional sampling temperature; `null` defers to
   the LLM adapter's default.
 - `tools` - a list of scoped tool id strings, each of the form
@@ -70,7 +74,13 @@ An `Agent` row carries:
   exposes exactly the listed tools - never a whole toolset - and an
   empty list means no tools. (Workspace tools are not listed here;
   they are composed onto the agent automatically when it attaches to
-  a workspace.)
+  a workspace.) Every toolset a tool id names must resolve: it is a built-in
+  toolset (`system`, `workspaces`, `misc`, `web`, `harness`, `trigger`,
+  `collections`, `crud`) or a stored `Toolset` row (`search` is a stored row),
+  and a tool id with no `__` is its own toolset. A create naming a toolset
+  that does not exist is refused (422 `toolset_not_found`, field `tools`,
+  every missing id named once); an update refuses only a toolset it ADDS, so
+  an agent whose toolset was deleted later can still be edited.
 - `max_tool_turns` - cap on tool-call rounds within a single turn
   before the turn is force-stopped (default 50; `null` means
   unbounded).
