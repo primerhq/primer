@@ -143,9 +143,17 @@ async def _pending_texts(sp) -> list[str]:
 
 
 class _MustNotBeTouched:
-    """The wake path's collaborators: using any of them means the dispatcher woke or armed a turn it must have left alone."""
+    """The wake path's collaborators: using any of them means the dispatcher woke or armed a turn it must have left alone.
+
+    Every access is RECORDED (and raises), so a test can assert on ``touched`` and its message names what was used; the raise alone
+    would come back as the dispatcher's ``dispatch_failed`` envelope and read like an unrelated error.
+    """
+
+    def __init__(self) -> None:
+        object.__setattr__(self, "touched", [])
 
     def __getattr__(self, name):
+        self.touched.append(name)
         raise AssertionError(f"a busy target was woken: {name} was used")
 
 
@@ -154,6 +162,15 @@ def _real_deps(sp) -> DispatchDeps:
         storage_provider=sp, claim_engine=_MustNotBeTouched(), scheduler=_MustNotBeTouched(),
         workspace_registry=_MustNotBeTouched(), event_bus=None,
     )
+
+
+def _assert_not_woken(deps: DispatchDeps) -> None:
+    used = {
+        name: collaborator.touched
+        for name, collaborator in (("claim_engine", deps.claim_engine), ("scheduler", deps.scheduler), ("workspace_registry", deps.workspace_registry))
+        if collaborator.touched
+    }
+    assert not used, f"a busy target was woken: {used}"
 
 
 BUSY_ROWS = pytest.mark.parametrize(
@@ -168,10 +185,12 @@ async def test_a_skip_subscription_on_a_busy_target_records_skipped_busy_and_app
     sp = _FakeStorageProvider()
     await _busy_target(sp, **row_fields)
 
+    deps = _real_deps(sp)
     res = await sa.SessionAppendDispatcher().dispatch(
-        _sub("skip"), rendered_payload="do the thing", fire_context={"fire_id": "fire-1"}, fire_id="fire-1", deps=_real_deps(sp),
+        _sub("skip"), rendered_payload="do the thing", fire_context={"fire_id": "fire-1"}, fire_id="fire-1", deps=deps,
     )
 
+    _assert_not_woken(deps)
     assert res.ok is True and res.skipped is True and res.error_code == "skipped_session_busy", res
     assert await _pending_texts(sp) == [], "a skipped steer must not be queued"
     from primer.model.workspace_session import WorkspaceSession
@@ -185,9 +204,11 @@ async def test_a_queue_subscription_on_a_busy_target_queues_the_steer(row_fields
     sp = _FakeStorageProvider()
     await _busy_target(sp, **row_fields)
 
+    deps = _real_deps(sp)
     res = await sa.SessionAppendDispatcher().dispatch(
-        _sub("queue"), rendered_payload="do the thing", fire_context={"fire_id": "fire-1"}, fire_id="fire-1", deps=_real_deps(sp),
+        _sub("queue"), rendered_payload="do the thing", fire_context={"fire_id": "fire-1"}, fire_id="fire-1", deps=deps,
     )
 
+    _assert_not_woken(deps)
     assert res.ok is True and res.skipped is False and res.artefact_id == "s1", res
     assert await _pending_texts(sp) == ["do the thing"], "the steer must wait for the open turn, once"
