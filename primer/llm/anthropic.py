@@ -23,6 +23,7 @@ from pydantic import BaseModel as PydanticBaseModel
 
 from primer.common.anthropic_errors import classify_anthropic_exception
 from primer.int.llm import LLM
+from primer.llm._failure import describe_failure
 from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout, _open_with_connect_timeout
 from primer.llm._tokenizer.anthropic import count_tokens_anthropic_detailed
 from primer.model.chat import (
@@ -761,7 +762,7 @@ class AnthropicLLM(LLM):
                     except ProviderTimeoutError:
                         raise
                     except Exception as exc:
-                        err = classify_anthropic_exception(exc)
+                        err = describe_failure(classify_anthropic_exception(exc), exc, self._provider)
                         logger.error(
                             "Anthropic request failed before stream opened",
                             extra={
@@ -820,7 +821,7 @@ class AnthropicLLM(LLM):
                             code="stream_timeout",
                         ) from exc
                     except Exception as exc:
-                        err = classify_anthropic_exception(exc)
+                        err = describe_failure(classify_anthropic_exception(exc), exc, self._provider)
                         logger.error(
                             "Anthropic stream aborted",
                             extra={

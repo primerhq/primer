@@ -25,6 +25,7 @@ import ollama
 from pydantic import BaseModel as PydanticBaseModel
 
 from primer.int.llm import LLM
+from primer.llm._failure import describe_failure
 from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout, _open_with_connect_timeout
 from primer.llm._tokenizer._executor import run_counter
 from primer.llm._tokenizer.hf import count_tokens_hf_detailed
@@ -580,7 +581,7 @@ class OllamaLLM(LLM):
                     except ProviderTimeoutError:
                         raise
                     except Exception as exc:
-                        err = _classify_ollama_exception(exc)
+                        err = describe_failure(_classify_ollama_exception(exc), exc, self._provider)
                         logger.error(
                             "Ollama request failed before stream opened",
                             extra={
@@ -639,7 +640,7 @@ class OllamaLLM(LLM):
                             code="stream_timeout",
                         ) from exc
                     except Exception as exc:
-                        err = _classify_ollama_exception(exc)
+                        err = describe_failure(_classify_ollama_exception(exc), exc, self._provider)
                         logger.error(
                             "Ollama stream aborted",
                             extra={
