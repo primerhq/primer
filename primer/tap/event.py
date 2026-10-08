@@ -13,6 +13,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from primer.model.problem_details import without_traceback
 from primer.model.workspace_session import SessionMessageRecord
 
 
@@ -146,5 +147,6 @@ def record_to_tap_event(
         node_id=record.node_id,
         class_=TapEventClass(record.kind.value),
         ts=record.created_at,
-        payload=record.payload,
+        # A legacy ERROR row's extensions.traceback is never served.
+        payload=without_traceback(record.payload),
     )

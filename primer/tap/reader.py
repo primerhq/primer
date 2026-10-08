@@ -39,6 +39,7 @@ from primer.model.workspace_session import (
     SessionMessageRecord,
     WorkspaceSession,
 )
+from primer.model.problem_details import record_without_traceback
 from primer.model.storage import OffsetPage
 from primer.tap.event import TapEvent, record_to_tap_event
 from primer.tap.selector import event_matches, session_predicate_for_storage
@@ -155,7 +156,9 @@ def _parse_record(line: bytes) -> SessionMessageRecord | None:
     if not text:
         return None
     try:
-        record = SessionMessageRecord.model_validate(json.loads(text))
+        record = SessionMessageRecord.model_validate(
+            record_without_traceback(json.loads(text)),
+        )
     except (json.JSONDecodeError, ValueError):
         return None
     if record.kind == SessionMessageKind.COMPACTION_MARKER:

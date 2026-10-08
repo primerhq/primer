@@ -123,7 +123,13 @@ class _UrlSecretFilter(logging.Filter):
         # String extras (extra={"path": request.url.path}) are emitted
         # verbatim by _JsonFormatter.
         for key, value in list(record.__dict__.items()):
-            if key in _RESERVED_RECORD_ATTRS or not isinstance(value, str):
+            # '_'-prefixed attributes are private to a handler or library
+            # and never emitted by _JsonFormatter.
+            if (
+                key in _RESERVED_RECORD_ATTRS
+                or key.startswith("_")
+                or not isinstance(value, str)
+            ):
                 continue
             record.__dict__[key] = redact_url_secrets(value)
         if isinstance(record.args, tuple):

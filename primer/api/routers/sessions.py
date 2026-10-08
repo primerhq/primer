@@ -37,6 +37,7 @@ from primer.model.except_ import (
     WorkspaceUnreachableError,
 )
 from primer.session.default_binding import resolve_initial_binding
+from primer.model.problem_details import record_without_traceback
 from primer.model.workspace_session import (
     PendingSessionMessage,
     WorkspaceSession,
@@ -1207,21 +1208,6 @@ async def _read_log_bytes(
         ) from exc
 
 
-def _strip_legacy_traceback(obj: Any) -> None:
-    """Drop ``extensions.traceback`` from a row written before the error
-    envelope stopped carrying one: a messages ERROR record keeps it under
-    ``payload``, a turn-log FAILED event under ``error``. The traceback
-    exposes server paths and internals to any reader of the session; the
-    server log has it."""
-    if not isinstance(obj, dict):
-        return
-    for holder in (obj.get("payload"), obj.get("error")):
-        if isinstance(holder, dict):
-            ext = holder.get("extensions")
-            if isinstance(ext, dict):
-                ext.pop("traceback", None)
-
-
 async def _read_workspace_turn_log(
     *,
     workspace,
@@ -1281,8 +1267,8 @@ async def _read_workspace_turn_log(
             continue
         if since_seq is not None and int(obj.get("seq", 0)) <= since_seq:
             continue
-        _strip_legacy_traceback(obj)
-        items.append(obj)
+        # Legacy ERROR / FAILED rows still hold extensions.traceback on disk.
+        items.append(record_without_traceback(obj))
     if dedupe_legacy_user_input:
         # Before the visible fold: visible_records/_parse (primer/
         # session/replay.py) only keeps kind+seq shaped lines, so
