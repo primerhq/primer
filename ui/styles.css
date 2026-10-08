@@ -4150,6 +4150,12 @@ input, textarea, select { font: inherit; color: inherit; }
   font-size: 12.5px;
 }
 .nv-turn-error-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.nv-turn-error-retry {
+  border: 1px solid currentColor; background: transparent; color: inherit; cursor: pointer;
+  border-radius: var(--r-6); padding: 2px 10px; font-size: 11.5px; font-weight: 600; font-family: inherit; flex-shrink: 0;
+}
+.nv-turn-error-retry:hover { background: var(--bg-hover); }
+.nv-mobile-chat .nv-turn-error-retry { min-height: var(--tap-min); padding-inline: 14px; font-size: 12px; }
 .nv-turn-error-detail { font-size: 11px; opacity: 0.75; overflow-wrap: anywhere; }
 /* The end divider's explanation: why a session ended and what to do next (a failed one used to say only "failed"). */
 .nv-fold-note { text-align: center; font-size: 12px; color: var(--text-2); padding: 2px 16px 10px; }
