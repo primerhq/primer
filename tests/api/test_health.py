@@ -44,18 +44,22 @@ async def test_health_scheduler_not_degraded_by_default(client) -> None:
 
 @pytest.mark.asyncio
 async def test_health_surfaces_scheduler_degraded(app, client) -> None:
-    """When the wiring flags an unsafe scheduler/runtime-mode combo (e.g.
-    in-memory scheduler + external/multi-process worker), /v1/health surfaces
-    it via scheduler.degraded + scheduler.degraded_reason."""
+    """When the wiring flags an unsafe scheduler/runtime-mode combo (an
+    in-memory scheduler in a worker-only process), /v1/health surfaces it via
+    scheduler.degraded + scheduler.degraded_reason, and no detail."""
     reason = "in-memory scheduler with runtime_mode=worker is not safe"
     app.state.scheduler_degraded_reason = reason
+    # A stale healthy detail must not be served beside a degraded verdict.
+    app.state.scheduler_detail = "in-memory scheduler (single process)"
     try:
         response = await client.get("/v1/health")
         body = response.json()
         assert body["scheduler"]["degraded"] is True
         assert body["scheduler"]["degraded_reason"] == reason
+        assert body["scheduler"]["detail"] is None
     finally:
         app.state.scheduler_degraded_reason = None
+        app.state.scheduler_detail = None
 
 
 @pytest.mark.asyncio

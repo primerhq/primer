@@ -1241,6 +1241,68 @@ async def test_top_level_list_sessions_filtered_by_status(
     assert s.status == SessionStatus.RUNNING
 
 
+async def test_top_level_list_sessions_filtered_by_session_state(
+    sessions_client, seeded_workspace, seeded_agent, app,
+):
+    """C-036 (01a11d04): "running now" is ``session_state=running``, the derived
+    truth, because ``status=running`` also holds a session parked on a yielding
+    tool and one queued for a worker. ``status`` keeps its meaning."""
+    from primer.model.workspace_session import (
+        AgentSessionBinding, SessionStatus, WorkspaceSession,
+    )
+
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    now = datetime.now(timezone.utc)
+
+    async def seed(sid: str, **axes: Any) -> str:
+        await storage.create(WorkspaceSession(
+            id=sid, workspace_id=seeded_workspace.id,
+            binding=AgentSessionBinding(agent_id=seeded_agent.id),
+            created_at=now, **axes,
+        ))
+        return sid
+
+    in_flight = await seed(
+        "ss-in-flight", status=SessionStatus.RUNNING, turn_status="running", turn_no=1,
+    )
+    # Parked on a yielding tool: status stays RUNNING and the idle write may
+    # not have landed yet, so turn_status can still read "running".
+    parked = await seed(
+        "ss-parked", status=SessionStatus.RUNNING, parked_status="parked",
+        turn_status="running", turn_no=1,
+    )
+    rested = await seed("ss-rested", status=SessionStatus.WAITING, turn_no=2)
+    fresh = await seed("ss-fresh", status=SessionStatus.CREATED)
+    # An auto_start create: RUNNING and armed, but no worker has claimed it.
+    queued = await seed(
+        "ss-queued", status=SessionStatus.RUNNING, turn_status="claimable",
+    )
+    ended = await seed("ss-ended", status=SessionStatus.ENDED, turn_no=2)
+
+    async def listed(query: str) -> set[str]:
+        resp = await sessions_client.get(f"/v1/sessions?{query}")
+        assert resp.status_code == 200, resp.text
+        return {s["id"] for s in resp.json()["items"]}
+
+    assert await listed("session_state=running") == {in_flight}
+    assert await listed("session_state=parked") == {parked, rested}
+    assert await listed("session_state=waiting") == {fresh, queued}
+    assert await listed("session_state=ended") == {ended}
+
+    # What ``status=running`` means is unchanged: the stored axis, parked
+    # session included.
+    assert await listed("status=running") == {in_flight, parked, queued}
+    # The two filters AND together.
+    assert await listed("status=running&session_state=parked") == {parked}
+
+    # The row serves the state it was filtered by.
+    resp = await sessions_client.get("/v1/sessions?session_state=parked")
+    assert {s["session_state"] for s in resp.json()["items"]} == {"parked"}
+
+    bad = await sessions_client.get("/v1/sessions?session_state=sleeping")
+    assert bad.status_code == 422, bad.text
+
+
 async def test_top_level_list_sessions_filtered_by_agent_id(
     sessions_client, seeded_workspace, seeded_agent, app,
 ):
