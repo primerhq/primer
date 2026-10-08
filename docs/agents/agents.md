@@ -226,13 +226,14 @@ Agents are managed via standard CRUD plus the semantic search tool.
   graph row after g-2"). That row blocks every agent and graph delete until
   an administrator repairs or removes it in the database (table `graph`; the
   developer docs, `architecture/rest-api.md`, give the query), so report it
-  to one. Two residuals:
-  an ended session can be re-opened later with `reset_session` (back to
+  to one. The agent that is the system default (`default_agent_id`, the one a
+  session created without a binding runs) is refused the same way, except the
+  seeded `operator`, which is the default on every install and stays
+  deletable; no route or tool sets the default, so another agent is the
+  default only if it was written to the database directly. One residual: an
+  ended session can be re-opened later with `reset_session` (back to
   created) after its agent was deleted, and then fails at its next turn
-  (`POST .../resume` itself answers 409 for an ended session); and
-  the system default agent (`default_agent_id`, the seeded `operator` unless
-  changed) is not checked, so deleting it leaves session creation without a
-  binding failing until it is set again. Deleting the seeded `operator` or `builder` agent is
+  (`POST .../resume` itself answers 409 for an ended session). Deleting the seeded `operator` or `builder` agent is
   allowed but marks the install as not set up (admins are sent to the
   setup checklist, every other user waits on a setup screen) until
   `POST /v1/setup/seed` or the next server start re-creates it with its
