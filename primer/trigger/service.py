@@ -59,6 +59,10 @@ class TriggerSlugConflict(Exception):
     """A trigger with the requested slug already exists."""
 
 
+#: How pydantic serialises a set ``SecretStr`` (``hmac_secret``) in a read; a PUT that echoes it keeps the stored secret.
+_SECRET_MASK = "**********"
+
+
 class TriggerForbidden(Exception):
     """The caller may not change this trigger's secrets: only its owner or an admin may (lead review of #491, round 2)."""
 
@@ -280,11 +284,27 @@ async def update_trigger(
         # For webhook triggers, preserve the existing token unless the
         # caller has supplied a non-empty one (rotate path uses rotate_webhook_token
         # explicitly; update is only used for hmac_secret set/clear).
-        if config.kind == "webhook" and config.token in ("", WEBHOOK_TOKEN_MASK):
+        # An empty token, the mask, or the stored token echoed back from a
+        # read all mean "keep the stored one" -- and the stored one is what
+        # the previous owner knows, so the change-of-owner re-mint below
+        # still applies to it. Only a token that differs from the stored one
+        # is caller-chosen (nobody else knew it).
+        if config.kind == "webhook" and config.token in (
+            "", WEBHOOK_TOKEN_MASK, trigger.config.token,
+        ):
             config = config.model_copy(update={"token": trigger.config.token})
         elif config.kind == "webhook":
-            # A caller-chosen token is the new credential: nobody else knew it.
             adopted = False
+        # The hmac_secret mask (a SecretStr serialised by a read) round-trips
+        # to the stored secret, never to the literal mask.
+        if (
+            config.kind == "webhook"
+            and config.hmac_secret is not None
+            and config.hmac_secret.get_secret_value() == _SECRET_MASK
+        ):
+            config = config.model_copy(
+                update={"hmac_secret": trigger.config.hmac_secret},
+            )
         trigger.config = config
     if trigger.config.kind == "webhook" and adopted:
         trigger.config = trigger.config.model_copy(

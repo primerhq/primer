@@ -56,7 +56,7 @@ from primer.model.trigger import (
     TriggerConfig,
 )
 from primer.trigger.cron import CronInvalid, TimezoneInvalid
-from primer.trigger.owner import redact_for
+from primer.trigger.owner import view_for
 from primer.trigger.service import (
     ParkedSessionOnlyFromYield,
     ServiceDeps,
@@ -220,9 +220,8 @@ async def list_triggers_endpoint(
     # A webhook token is served only to the trigger's owner or an admin:
     # it is the credential that drives the trigger's runs (A-20 round 2).
     caller = _owner(request)
-    items = [await redact_for(t, caller, sp) for t in items]
     return {
-        "items": [t.model_dump(mode="json") for t in items],
+        "items": [await view_for(t, caller, sp) for t in items],
         "total": len(items),
     }
 
@@ -240,10 +239,9 @@ async def get_trigger_endpoint(
         trigger = await get_trigger(trigger_id=trigger_id, deps=deps)
     except TriggerNotFound as exc:
         _raise_code(404, "trigger_not_found", str(exc))
-    trigger = await redact_for(trigger, _owner(request), sp)
     return JSONResponse(
         status_code=200,
-        content=trigger.model_dump(mode="json"),
+        content=await view_for(trigger, _owner(request), sp),
     )
 
 
@@ -414,6 +412,7 @@ async def create_subscription_endpoint(
     summary="List subscriptions for a trigger",
 )
 async def list_subscriptions_endpoint(
+    request: Request,
     trigger_id: str = Path(...),
     sp=Depends(get_storage_provider),
     claim_engine=Depends(get_claim_engine),
@@ -427,8 +426,10 @@ async def list_subscriptions_endpoint(
     except TriggerNotFound as exc:
         _raise_code(404, "trigger_not_found", str(exc))
     items = await list_subscriptions(trigger_id=trigger_id, deps=deps)
+    # A non-manager sees only the owner's display and role (A-20).
+    caller = _owner(request)
     return {
-        "items": [s.model_dump(mode="json") for s in items],
+        "items": [await view_for(s, caller, sp) for s in items],
         "total": len(items),
     }
 
@@ -438,6 +439,7 @@ async def list_subscriptions_endpoint(
     summary="Get a subscription",
 )
 async def get_subscription_endpoint(
+    request: Request,
     trigger_id: str = Path(...),
     subscription_id: str = Path(...),
     sp=Depends(get_storage_provider),
@@ -455,7 +457,7 @@ async def get_subscription_endpoint(
         _raise_code(404, "subscription_not_found", str(exc))
     return JSONResponse(
         status_code=200,
-        content=sub.model_dump(mode="json"),
+        content=await view_for(sub, _owner(request), sp),
     )
 
 
