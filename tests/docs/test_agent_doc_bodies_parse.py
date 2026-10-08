@@ -26,6 +26,7 @@ import pytest
 from pydantic import ValidationError
 
 from primer.model.agent import Agent, AgentModel
+from primer.model.model_profile import ModelProfile
 
 REPO = Path(__file__).resolve().parents[2]
 AGENT_DOCS = sorted(p for p in (REPO / "docs" / "agents").rglob("*.md") if not p.name.startswith("_"))
@@ -79,6 +80,20 @@ def _whole_agent_problems(text: str) -> list[str]:
     return problems
 
 
+def _profile_problems(text: str) -> list[str]:
+    """A whole ModelProfile body (``id``, ``provider_id``, ``model_name`` and ``context_length``), such as the docs' ``create_model_profile``
+    example, must be a valid ModelProfile."""
+    problems = []
+    for block in _json_blocks(text):
+        for obj in _objects(block):
+            if {"id", "provider_id", "model_name", "context_length"} <= set(obj):
+                try:
+                    ModelProfile.model_validate(obj)
+                except ValidationError as exc:
+                    problems.append(f"profile {obj.get('id')!r} is not a ModelProfile: {exc.errors()[0]['msg']} ({exc.errors()[0]['loc']})")
+    return problems
+
+
 def _count_agent_bodies(text: str) -> int:
     return sum(1 for block in _json_blocks(text) for obj in _objects(block) if {"id", "model", "system_prompt"} <= set(obj))
 
@@ -100,6 +115,21 @@ def test_every_whole_agent_body_in_the_docs_is_an_agent(doc: Path) -> None:
     assert not problems, f"{doc.relative_to(REPO)}:\n" + "\n".join(f"  {p}" for p in problems)
 
 
+@pytest.mark.parametrize("doc", AGENT_DOCS, ids=lambda p: str(p.relative_to(REPO)))
+def test_every_model_profile_body_in_the_docs_is_a_model_profile(doc: Path) -> None:
+    problems = _profile_problems(doc.read_text(encoding="utf-8"))
+    assert not problems, f"{doc.relative_to(REPO)}:\n" + "\n".join(f"  {p}" for p in problems)
+
+
+def test_the_docs_show_a_model_profile_body_at_all() -> None:
+    total = sum(_count_profile_bodies(doc.read_text(encoding="utf-8")) for doc in AGENT_DOCS)
+    assert total >= 1, "no ModelProfile body in docs/agents/; the agents doc is meant to show how to create one"
+
+
+def _count_profile_bodies(text: str) -> int:
+    return sum(1 for block in _json_blocks(text) for obj in _objects(block) if {"id", "provider_id", "model_name", "context_length"} <= set(obj))
+
+
 # ---- the scans themselves -------------------------------------------------------------------------------------------------------
 
 
@@ -119,3 +149,11 @@ def test_a_block_that_is_not_json_and_a_model_that_is_not_an_agents_are_skipped(
     text = '```json\n{"id": "a", ...}\n```\n```json\n{"model": {"temperature": 1}}\n```'
 
     assert _agent_model_problems(text) == [] and _whole_agent_problems(text) == []
+
+
+def test_a_profile_body_is_checked_too() -> None:
+    valid = '```json\n{"id": "p--m", "description": "d", "provider_id": "p", "model_name": "m", "context_length": 1000}\n```'
+    invalid = valid.replace('"context_length": 1000', '"context_length": 0')
+
+    assert _profile_problems(valid) == []
+    assert len(_profile_problems(invalid)) == 1
