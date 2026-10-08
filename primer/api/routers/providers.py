@@ -158,6 +158,23 @@ class _DiscoverModelsBody(BaseModel):
     )
 
 
+def _validation_detail(exc: ValidationError) -> str:
+    """pydantic's own layout of a validation error WITHOUT the input.
+
+    ``N validation error(s) for <Model>``, each field on its own line with the reason indented under it and ``[type=..., input_type=...]`` (what
+    ``str(exc)`` prints with ``hide_input_in_errors``; the setup wizard parses the field and reason lines). ``str(exc)`` itself prints
+    ``input_value=<the value as typed>``, which pydantic cuts to the first 25 and the last 24 characters of a long value: that removes the "@" and
+    leaves a slice of a Base URL's password readable, and a raw "/", "?" or "#" in the password ends the userinfo for any URL-shaped mask. The input
+    adds nothing the person needs (they typed it), so it is never printed.
+    """
+    errors = exc.errors(include_url=False, include_context=False)
+    lines = [f"{len(errors)} validation error{'' if len(errors) == 1 else 's'} for {exc.title}"]
+    for err in errors:
+        lines.append(".".join(str(part) for part in err["loc"]))
+        lines.append(f"  {err['msg']} [type={err['type']}, input_type={type(err.get('input')).__name__}]")
+    return "\n".join(lines)
+
+
 def _probe_failure(message: str) -> BadRequestError:
     """The 400 a probe raises, with URL-borne credentials masked out of ``message``.
 
@@ -195,7 +212,7 @@ def _build_stub_provider(
         })
     except ValidationError as e:
         raise _probe_failure(
-            "Draft provider failed validation: " + str(e),
+            "Draft provider failed validation: " + _validation_detail(e),
         ) from e
 
 
@@ -715,7 +732,7 @@ async def _probe_llm_models(provider: str, config: dict[str, Any]) -> dict:
             draft = OpenRouterConfig.model_validate(config)
         except ValidationError as exc:
             raise _probe_failure(
-                f"invalid OpenRouter config: {exc}",
+                f"invalid OpenRouter config: {_validation_detail(exc)}",
             ) from exc
         try:
             catalogue = await _discover_openrouter_models(draft)
@@ -736,7 +753,7 @@ async def _probe_llm_models(provider: str, config: dict[str, Any]) -> dict:
             ant_draft = AnthropicConfig.model_validate(config)
         except ValidationError as exc:
             raise _probe_failure(
-                f"invalid Anthropic config: {exc}",
+                f"invalid Anthropic config: {_validation_detail(exc)}",
             ) from exc
         try:
             catalogue = await _discover_anthropic_models(ant_draft)
@@ -757,7 +774,7 @@ async def _probe_llm_models(provider: str, config: dict[str, Any]) -> dict:
             gem_draft = GoogleConfig.model_validate(config)
         except ValidationError as exc:
             raise _probe_failure(
-                f"invalid Gemini config: {exc}",
+                f"invalid Gemini config: {_validation_detail(exc)}",
             ) from exc
         try:
             catalogue = await _discover_gemini_models(gem_draft)
