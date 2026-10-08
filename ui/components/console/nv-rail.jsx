@@ -90,13 +90,17 @@ function NV_Rail_SessionPulse(props) {
 // ask_user yield through the (now live, primary) aggregate rendered
 // "parked on you" instead of "asking you". Both spellings map to the same
 // label; anything else parked on a human falls to "parked on you".
-// The one descriptive line under a rail Inbox row (console review C-033): what an approval is about (the tool and the target the
-// aggregate row previews) or what a question or wait says, so a row is never just "approval" with a session name. "" when the row
-// carries nothing (an older server's fallback rows), and then no line is drawn.
+// The one descriptive line under a rail Inbox row (console review C-033): what an approval is about (the tool and the NAMES of its
+// arguments) or what a question or wait says, so a row is never just "approval" with a session name. "" when the row carries nothing
+// (an older server's fallback rows), and then no line is drawn. This line is drawn in every open console without anyone asking for it,
+// so it never shows an argument VALUE, whatever the server put in `arguments` (scrubbed or not): the phone card, where the user is
+// deciding, is the surface that shows values. An older server that sends no `argument_keys` gets the tool alone.
 function NV_Rail_inboxLine(it) {
   if (it.kind === "approval") {
     var a = it.approval;
-    return a && a.tool_name ? a.tool_name + (a.arguments ? " " + a.arguments : "") : "";
+    if (!(a && a.tool_name)) return "";
+    var keys = Array.isArray(a.argument_keys) ? a.argument_keys : [];
+    return a.tool_name + (keys.length ? " (" + keys.join(", ") + ")" : "");
   }
   return it.prompt || "";
 }

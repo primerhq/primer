@@ -195,7 +195,7 @@ def test_the_desktop_rail_inbox_row_says_what_it_is_about(
             line = page.get_by_test_id(f"nv-rail-inbox-line:{sid}")
             expect(line).to_be_visible(timeout=30_000)
             expect(line).to_contain_text(WRITE)
-            expect(line).to_contain_text("(path, content)")
+            expect(line).to_contain_text("(path, workspace_id, content)")
             assert "notes/plan.md" not in line.inner_text(), "the passive rail line names the arguments and never shows their values"
         finally:
             client.delete(f"/v1/tool_approval_policies/{policy_id}")

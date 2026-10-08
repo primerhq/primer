@@ -2858,99 +2858,211 @@ async def list_pending_yields(
 
 # The Inbox row says what it is waiting on (console review C-033). An approval carries the tool and a short preview of its decisive
 # arguments, so a card (above all the phone's inline Approve) never asks for a decision on a call it does not describe; the other kinds
-# carry the question or the wait. Previews are bounded: this route is polled by every open console. They are also shown WITHOUT being
-# asked for (in the rail of every open console), so a secret never rides in one: see _SECRET_ARG_KEY.
+# carry the question or the wait. Previews are bounded: this route is polled by every open console.
+#
+# The preview is SHOULDER-SURFING protection, not access control: it keeps a credential from being drawn on a screen without anyone
+# asking (the phone card shows values to the person deciding, so they are scrubbed; the desktop rail, drawn in every open console, shows
+# only the tool and the argument NAMES: ``argument_keys``). It does not stop anyone who may read the call: "show all" and the session's
+# own pending-yields route return the whole of it. A scrubber is a heuristic, so it errs towards hiding: a false positive costs a "show
+# all", a false negative leaks a key.
 _ATTENTION_TEXT_CHARS = 240
 _ATTENTION_ARG_CHARS = 80
+_ATTENTION_KEY_COUNT = 12
+_ATTENTION_KEY_CHARS = 40
 # The arguments that say WHAT a call acts on, in the order they lead the preview.
 _LEAD_ARG_KEYS = ("path", "file_path", "filepath", "command", "cmd", "url", "target", "name", "id", "query")
 # Arguments that are payload, not target: counted as "<N chars>" instead of shipped.
 _BULKY_ARG_KEYS = frozenset({"content", "contents", "text", "body", "data", "new_string", "old_string", "patch", "diff", "input"})
 # An argument whose NAME looks like a credential is never shown in a preview, at any depth. A broad match on purpose (it also catches
-# "author"): a false positive costs a "show all", a false negative leaks a key into every console's rail.
+# "author"). "key" is a whole word (key, api_key, ssh-key; not keyword or monkey); "session_id" is a target, "session_token" is not.
 _SECRET_ARG_KEY = re.compile(
-    r"secret|token|password|passwd|api[_-]?key|authorization|auth|credential|private[_-]?key", re.IGNORECASE,
+    r"secret|token|passw|passphrase|\bpwd\b|api[_-]?key|access[_-]?key|private[_-]?key|authoriz|auth|credential|cookie"
+    r"|session[_-]?(?:token|key|cookie|secret)|sessionid|(?:^|[^a-z0-9])key(?:$|[^a-z0-9])",
+    re.IGNORECASE,
 )
+# A name/value pair written as {"name": "Authorization", "value": "..."}: the value is secret when the name is.
+_PAIR_NAME_KEYS = frozenset({"name", "key", "header", "field", "param", "variable", "var", "env", "label"})
+_PAIR_VALUE_KEYS = frozenset({"value", "val"})
 _REDACTED = "<redacted>"
-_LINE_BREAKS = re.compile(r"\s*[\r\n\t\v\f]+\s*")
+_LINE_BREAKS = re.compile("\\s*[\\r\\n\\t\\v\\f\\u2028\\u2029\\u0085]+\\s*")
+# The walker looks no deeper than this, at no more members than this, and at no more text than this; what it does not look at is hidden.
+_REDACT_MAX_DEPTH = 8
+_REDACT_MAX_ITEMS = 50
+_REDACT_MAX_TEXT = 4000
+
+_SECRET_WORDS = r"(?:secret|token|passw\w*|passphrase|pwd|api[_-]?key|access[_-]?key|private[_-]?key|authoriz\w*|credential\w*|cookie)"
+# "api_key=abc", "Authorization: Bearer abc", '"password": "x"', "?token=abc&": the value after a secret-looking name.
+_SECRET_ASSIGNMENT = re.compile(
+    r"(?P<lead>(?<!\w)[\w.\-]*" + _SECRET_WORDS + r"[\w.\-]*[\"']?\s*[=:]\s*)"
+    r"(?:(?:bearer|basic|digest)\s+)?(?:\"[^\"]*\"|'[^']*'|[^\s,;&\"'<>]+)",
+    re.IGNORECASE,
+)
+# "--password hunter2", "--api-key abc", "--key abc": the word after a secret-looking flag.
+_SECRET_FLAG = re.compile(
+    r"(?P<lead>(?<![\w\-])--?(?:[\w\-]*" + _SECRET_WORDS + r"[\w\-]*|key)\s+)(?!-)(?:\"[^\"]*\"|'[^']*'|[^\s\"'<>]+)",
+    re.IGNORECASE,
+)
+_BEARER = re.compile(r"\b(bearer)\s+[^\s'\"<>]+", re.IGNORECASE)
+# "Basic" is also a plain word: only a base64-looking word after it (with a digit, a capital or padding) is a credential.
+_BASIC = re.compile(r"\b(basic)\s+(?=[A-Za-z0-9+/_\-]*[0-9A-Z=+/])[A-Za-z0-9+/_\-]{6,}={0,2}", re.IGNORECASE)
+_URL_USERINFO = re.compile(r"(?<=://)[^/\s:@'\"<>]+:[^/\s@'\"<>]*@")
+_SECRET_TOKEN_SHAPES = re.compile(
+    r"\bsk-[A-Za-z0-9_\-]{8,}|\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{8,}|\bxox[a-z]-[A-Za-z0-9\-]{8,}|\b(?:AKIA|ASIA)[0-9A-Z]{12,}"
+    r"|\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}(?:\.[A-Za-z0-9_\-]*)?",
+)
+# A run of more than 32 base64/hex-looking characters is a blob (a key, a signature, a digest); a UUID and a plain word are not.
+_BLOB = re.compile(r"[A-Za-z0-9+_=\-]{33,}")
+_UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+_HEX = re.compile(r"[0-9a-fA-F]+")
 
 
 def _cut(text: str, limit: int) -> str:
     """``text`` cut to ``limit`` characters, ending in an ellipsis when it was cut."""
-    return text if len(text) <= limit else text[: limit - 1] + "\u2026"
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 def _one_line(text: str) -> str:
-    """Line breaks and tabs collapsed to a single space, so a multi-line value cannot pose as several arguments."""
+    """Line breaks (including U+2028, U+2029 and U+0085) and tabs collapsed to a single space, so a multi-line value cannot pose as
+    several arguments."""
     return _LINE_BREAKS.sub(" ", text)
 
 
-def _redact(value: Any) -> tuple[Any, bool]:
-    """``value`` with the value of every secret-looking key replaced at any depth, and whether anything was."""
+def _blob_or_text(match: "re.Match[str]") -> str:
+    run = match.group(0)
+    if _UUID.fullmatch(run):
+        return run
+    looks_encoded = _HEX.fullmatch(run) or (re.search(r"\d", run) and re.search(r"[A-Za-z]", run))
+    return _REDACTED if looks_encoded else run
+
+
+def _scrub_text(text: str) -> str:
+    """``text`` with every secret-shaped piece replaced: a value after a secret-looking name or flag, a bearer or basic credential,
+    URL userinfo, a well-known token prefix (sk-, ghp_, gho_, xox?-, AKIA, a JWT) and any long base64 or hex run."""
+    text = _SECRET_ASSIGNMENT.sub(lambda m: m.group("lead") + _REDACTED, text)
+    text = _SECRET_FLAG.sub(lambda m: m.group("lead") + _REDACTED, text)
+    text = _BEARER.sub(lambda m: m.group(1) + " " + _REDACTED, text)
+    text = _BASIC.sub(lambda m: m.group(1) + " " + _REDACTED, text)
+    text = _URL_USERINFO.sub(_REDACTED + "@", text)
+    text = _SECRET_TOKEN_SHAPES.sub(_REDACTED, text)
+    return _BLOB.sub(_blob_or_text, text)
+
+
+def _parse_container(text: str) -> "dict | list | None":
+    """The dict or list ``text`` is a JSON document of, else ``None`` (deeply nested text is not a document, it is a hazard)."""
+    if text.lstrip()[:1] not in ("{", "["):
+        return None
+    try:
+        parsed = json.loads(text)
+    except (ValueError, RecursionError):
+        return None
+    return parsed if isinstance(parsed, (dict, list)) else None
+
+
+def _redact(value: Any, depth: int = 0) -> tuple[Any, bool]:
+    """``value`` with every secret in it replaced, and whether anything was.
+
+    Secret-looking KEY names at any depth, a name/value pair (``{"name": "Authorization", "value": ...}``, ``["Authorization", ...]``)
+    whose name is secret, a JSON document inside a string at any depth, and secret-shaped text in any string (see ``_scrub_text``).
+    Bounded: nothing past ``_REDACT_MAX_DEPTH`` levels, ``_REDACT_MAX_ITEMS`` members or ``_REDACT_MAX_TEXT`` characters is shown.
+    """
     if isinstance(value, dict):
+        if depth > _REDACT_MAX_DEPTH:
+            return _REDACTED, True
+        pair_names_a_secret = any(
+            isinstance(inner, str) and _SECRET_ARG_KEY.search(inner) for key, inner in value.items() if str(key).lower() in _PAIR_NAME_KEYS
+        )
         out: dict[Any, Any] = {}
         changed = False
-        for key, inner in value.items():
-            if _SECRET_ARG_KEY.search(str(key)):
+        for index, (key, inner) in enumerate(value.items()):
+            if index >= _REDACT_MAX_ITEMS:
+                changed = True
+                break
+            name = str(key)
+            if _SECRET_ARG_KEY.search(name) or (pair_names_a_secret and name.lower() in _PAIR_VALUE_KEYS):
                 out[key], changed = _REDACTED, True
             else:
-                out[key], inner_changed = _redact(inner)
+                out[key], inner_changed = _redact(inner, depth + 1)
                 changed = changed or inner_changed
         return out, changed
-    if isinstance(value, list):
-        items = [_redact(v) for v in value]
-        return [v for v, _ in items], any(c for _, c in items)
+    if isinstance(value, (list, tuple)):
+        if depth > _REDACT_MAX_DEPTH:
+            return _REDACTED, True
+        if len(value) == 2 and isinstance(value[0], str) and _SECRET_ARG_KEY.search(value[0]):
+            return [value[0], _REDACTED], True
+        items = [_redact(v, depth + 1) for v in value[:_REDACT_MAX_ITEMS]]
+        return [v for v, _ in items], len(value) > _REDACT_MAX_ITEMS or any(c for _, c in items)
+    if isinstance(value, str):
+        if depth > _REDACT_MAX_DEPTH:
+            return _REDACTED, True
+        capped = len(value) > _REDACT_MAX_TEXT
+        text = value[:_REDACT_MAX_TEXT] if capped else value
+        document = _parse_container(text)
+        if document is not None:
+            inner, changed = _redact(document, depth + 1)
+            return (json.dumps(inner, ensure_ascii=False, default=str) if changed else text), changed or capped
+        scrubbed = _scrub_text(text)
+        return scrubbed, capped or scrubbed != text
     return value, False
 
 
 def _approval_preview(original_call: Any) -> dict[str, Any] | None:
-    """``{tool_name, arguments, truncated}`` for the call an ``_approval`` park is waiting on, or ``None`` when the park does not say.
+    """``{tool_name, arguments, truncated, argument_keys}`` for the call an ``_approval`` park is waiting on, or ``None`` when the
+    park does not say.
 
     ``arguments`` is a one-line ``key=value`` list: the keys that name a target lead (``path`` before ``command``...), the rest
-    follow alphabetically, payload keys (``content``, ``text``...) come last as ``<N chars>``, and a credential-looking key (at any
-    depth) shows ``<redacted>``. Line breaks collapse to a space, a value past 80 characters is cut and the whole line at 240.
-    ``truncated`` is true whenever anything was left out or hidden, which is what the card's "show all" keys on; the full call is one
+    follow alphabetically, payload keys (``content``, ``text``...) come last as ``<N chars>``, and every secret is scrubbed (see
+    ``_redact``). Line breaks collapse to a space, a value past 80 characters is cut and the whole line at 240. ``truncated`` is
+    true whenever anything was left out or hidden, which is what the card's "show all" keys on; the full call is one
     ``GET .../yields/pending`` away. ``arguments`` sent as a JSON string is parsed first so the same rules apply.
+
+    ``argument_keys`` is the argument NAMES in the same order (at most 12, each cut to 40 characters): what the passive desktop rail
+    line shows instead of any value.
     """
     if not isinstance(original_call, dict) or not original_call.get("name"):
         return None
     args = original_call.get("arguments")
     if isinstance(args, str):
-        try:
-            parsed = json.loads(args)
-        except ValueError:
-            parsed = None
-        if isinstance(parsed, dict):
-            args = parsed
+        document = _parse_container(args)
+        if document is not None:
+            args = document
     truncated = False
+    keys: list[str] = []
     if isinstance(args, dict):
         lead = [k for k in _LEAD_ARG_KEYS if k in args and k not in _BULKY_ARG_KEYS]
         rest = sorted(k for k in args if k not in lead and k not in _BULKY_ARG_KEYS)
         bulky = sorted(k for k in args if k in _BULKY_ARG_KEYS)
+        keys = [_cut(_one_line(str(k)), _ATTENTION_KEY_CHARS) for k in (lead + rest + bulky)[:_ATTENTION_KEY_COUNT]]
         parts: list[str] = []
+        size = 0
         for key in lead + rest:
+            if size > _ATTENTION_TEXT_CHARS:
+                truncated = True
+                break
             if _SECRET_ARG_KEY.search(str(key)):
                 parts.append(f"{key}={_REDACTED}")
                 truncated = True
-                continue
-            value, hidden = _redact(args[key])
-            truncated = truncated or hidden
-            text = _one_line(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False))
-            if len(text) > _ATTENTION_ARG_CHARS:
-                text, truncated = _cut(text, _ATTENTION_ARG_CHARS), True
-            parts.append(f"{key}={text}")
+            else:
+                value, hidden = _redact(args[key])
+                truncated = truncated or hidden
+                text = _one_line(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str))
+                if len(text) > _ATTENTION_ARG_CHARS:
+                    text, truncated = _cut(text, _ATTENTION_ARG_CHARS), True
+                parts.append(f"{key}={text}")
+            size += len(parts[-1]) + 2
         for key in bulky:
             value = args[key]
-            parts.append(f"{key}=<{len(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False))} chars>")
+            parts.append(f"{key}=<{len(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str))} chars>")
             truncated = True
         line = ", ".join(parts)
-    elif args in (None, ""):
+    elif args is None or args == "":
         line = ""
     else:
-        line = _one_line(str(args))
+        value, hidden = _redact(args)
+        truncated = hidden
+        line = _one_line(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str))
     if len(line) > _ATTENTION_TEXT_CHARS:
         line, truncated = _cut(line, _ATTENTION_TEXT_CHARS), True
-    return {"tool_name": str(original_call["name"]), "arguments": line, "truncated": truncated}
+    return {"tool_name": str(original_call["name"]), "arguments": line, "truncated": truncated, "argument_keys": keys}
 
 
 @yields_pending_router.get(
@@ -2987,7 +3099,8 @@ async def list_pending_attention(
                     "created_at": str,   # ISO-8601; parked_at, falling back
                                          # to the session's created_at
                     "tool_call_id": str | None,   # the parked call a decision names
-                    "approval": {"tool_name", "arguments", "truncated"} | None,
+                    "approval": {"tool_name", "arguments", "truncated",
+                                 "argument_keys"} | None,
                                          # approval rows only; None when the park
                                          # does not say what it is waiting on
                     "approvers": dict | None,   # approval rows only: who may decide
@@ -3072,7 +3185,7 @@ async def list_pending_attention(
             row["approval"] = _approval_preview(metadata.get("original_call"))
             row["approvers"] = metadata.get("approvers")
         else:
-            row["prompt"] = _cut(_extract_yield_prompt(tool_name, metadata), _ATTENTION_TEXT_CHARS)
+            row["prompt"] = _cut(_one_line(_scrub_text(str(_extract_yield_prompt(tool_name, metadata)))), _ATTENTION_TEXT_CHARS)
         rows.append((created_at, row))
 
     rows.sort(key=lambda row: row[0], reverse=True)
