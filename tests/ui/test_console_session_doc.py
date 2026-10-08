@@ -188,9 +188,11 @@ def test_composer_placeholder_per_state():
         parked share one branch rather than inventing a third string the
         reference never shows.
     """
-    start = DOC.index("placeholder={props.terminal")
-    end = DOC.index("onChange={function (ev) {", start)
+    # The ternary lives in `composerHint`, which is both the placeholder and the accessible name (console review C-029).
+    start = DOC.index("var composerHint = props.terminal")
+    end = DOC.index("var valState", start) if "var valState" in DOC[start:start + 600] else start + 400
     ternary = DOC[start:end]
+    assert "placeholder={composerHint}" in DOC and "aria-label={composerHint}" in DOC
     assert '"Send to reopen this session…"' in ternary
     assert "props.running && !props.waitNote" in ternary
     assert '"Steer mid-run — queues to the turn boundary"' in ternary

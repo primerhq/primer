@@ -761,7 +761,7 @@ function NV_DecisionCard(props) {
   // told the viewer whether THEY could act on it.
   var routing = SH_routingLine(item, { username: con.username, role: con.role });
   return (
-    <div className="nv-card nv-card-attention" data-kind="approval"
+    <div className="nv-card nv-card-attention" data-kind="approval" role="alert"
       data-testid={"nv-decision:" + item.toolCallId}>
       <div className="nv-card-head">
         <span className="nv-dot-attention" />
@@ -1454,7 +1454,7 @@ function NV_StatusStrip(props) {
     });
   if (!line) return null;
   return (
-    <div className="nv-status-strip" data-testid="nv-status-strip">
+    <div className="nv-status-strip" data-testid="nv-status-strip" role="status">
       <span className="nv-dot-pulse" />
       <span className="nv-status-verb">{line}</span>
       <span style={{ flex: 1 }} />
@@ -1525,6 +1525,13 @@ var NV_SESSION_INSTANCES = {};
 // same steer-while-running semantics) is unconditional either way; this
 // only ever changes the button's text.
 function NV_Composer(props) {
+  // What the composer says it will do, as its placeholder AND its accessible name: the placeholder changes with state and is not a name,
+  // so a screen reader met an unlabelled text area (console review C-029).
+  var composerHint = props.terminal
+    ? "Send to reopen this session…"
+    : props.running && !props.waitNote
+      ? "Steer mid-run — queues to the turn boundary"
+      : "Message " + (props.agentName || "agent") + "…";
   var con = NV_useConsole();
   var valState = React.useState(function () { return NV_DRAFTS[props.sid] || ""; });
   var val = valState[0];
@@ -1803,7 +1810,7 @@ function NV_Composer(props) {
           canStop={props.canStop}
           onInterrupt={props.onInterrupt} />
         {props.degraded ? (
-          <div className="nv-status-strip" data-testid="nv-reconnect">
+          <div className="nv-status-strip" data-testid="nv-reconnect" role="status">
             <span className="nv-dot-attention" />
             <span className="nv-status-verb">reconnecting…</span>
           </div>
@@ -1856,11 +1863,8 @@ function NV_Composer(props) {
             ) : null}
             <textarea ref={inputRef} value={val} rows={1}
               data-testid="nv-composer-input"
-              placeholder={props.terminal
-                ? "Send to reopen this session…"
-                : props.running && !props.waitNote
-                  ? "Steer mid-run — queues to the turn boundary"
-                  : "Message " + (props.agentName || "agent") + "…"}
+              aria-label={composerHint}
+              placeholder={composerHint}
               onChange={function (ev) {
                 var v = ev.target.value;
                 setVal(v);
@@ -2708,7 +2712,7 @@ function NV_SessionDoc(props) {
         || (row.payload && (row.payload.message || row.payload.code))
         || "turn failed";
       return (
-        <div key={row.seq} className="nv-turn-error"
+        <div key={row.seq} className="nv-turn-error" role="alert"
           data-testid={"nv-turn:" + row.seq}>
           <span>{msg}</span>
           <span style={{ flex: 1 }} />

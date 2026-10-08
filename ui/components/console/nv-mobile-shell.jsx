@@ -1079,6 +1079,7 @@ function NV_MobilePlatform(props) {
         <span className="nv-mob-screen-title">{page.title}</span>
       </div>
       <input className="nv-input" data-testid="nv-mob-plat-filter"
+        aria-label={"Filter " + page.title.toLowerCase()}
         placeholder={"Filter " + page.title.toLowerCase() + "…"}
         value={q} onChange={function (ev) { setQ(ev.target.value); }} />
       <div className="card-list" data-testid={"nv-mob-plat-rows:" + nav}>
@@ -1268,7 +1269,7 @@ function NV_MobileShell() {
   // way - one shell-level takeover point, dispatching on con.doc.kind,
   // rather than independent "hide the tabs" mechanisms per doc kind.
   return (
-    <div className="nv-mobile-shell" data-testid="nv-mobile-shell">
+    <div className="nv-mobile-shell" data-testid="nv-mobile-shell" role="main">
       {con.doc && con.doc.kind === "session" ? (
         <NV_MobileChatScreen doc={con.doc} />
       ) : con.doc && (con.doc.kind === "file" || con.doc.kind === "diff") ? (

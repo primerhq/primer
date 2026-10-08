@@ -104,7 +104,7 @@ function NV_Studio() {
 
   return (
     <div className="nv-studio" data-testid="nv-studio">
-      <div className="nv-rail" data-testid="nv-rail">
+      <div className="nv-rail" data-testid="nv-rail" role="navigation" aria-label="Sessions and workspaces">
         <window.NV_Rail
           selectedWorkspaceId={con.wid}
           onSelectWorkspace={function (wid) {

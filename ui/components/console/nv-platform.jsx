@@ -1159,6 +1159,7 @@ function NV_PlatPage() {
               <path d="M8 8 11 11" />
             </svg>
             <input value={q} placeholder="Filter…"
+              aria-label={"Filter " + (page.title || "list").toLowerCase()}
               data-testid="nv-plat-filter"
               onChange={function (ev) { setQ(ev.target.value); setPageNo(0); }} />
           </div>

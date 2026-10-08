@@ -217,7 +217,7 @@ function NV_FilesSidebar() {
   var ws = (con.workspaces || []).find(function (w) { return w.id === con.wid; });
 
   return (
-    <div className="nv-files-panel" data-testid="nv-files-panel">
+    <div className="nv-files-panel" data-testid="nv-files-panel" role="complementary" aria-label="Files">
       <div className="nv-rail-section-head">
         <span>Files</span>
         <span className="nv-rail-section-ws mono">{(ws && (ws.name || ws.id)) || con.wid}</span>
