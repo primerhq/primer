@@ -112,6 +112,12 @@ def effective_approvers(
 _CANDIDATES = 50
 
 
+class _DuplicateGate(RequiredApprovalConfig):
+    """The unconditional gate that stands in for several policies of one tool; ``reason`` is shown on the approval card and the record."""
+
+    reason: str
+
+
 def _choose_policy(rows: Sequence[ToolApprovalPolicy], *, toolset_id: str, tool_name: str) -> ToolApprovalPolicy | None:
     """The policy that gates ``(toolset_id, tool_name)`` among its ENABLED rows, by the set and never by the order they came in.
 
@@ -119,16 +125,20 @@ def _choose_policy(rows: Sequence[ToolApprovalPolicy], *, toolset_id: str, tool_
     constraint, so a raced pair of creates or a row from before the check can leave two. The old pick, the first row of an unordered
     ``find``, depended on the backend's row order: a weaker duplicate could shadow a strict one and the winner could change with no edit.
 
-    The rule is MOST RESTRICTIVE WINS (newest cannot be told: a policy carries no timestamp):
+    The rule is MOST RESTRICTIVE WINS, on both axes a policy controls (newest cannot be told: a policy carries no timestamp):
 
     * one row: that row, as stored;
-    * an unconditional gate (``required``) among them: it wins (the lowest id if several), so no duplicate can weaken it;
-    * only conditional policies (Rego, LLM judge): which is stricter depends on the call, which is not known here, so the tool is
-      GATED UNCONDITIONALLY, failing closed as the evaluator does for an error, under the identity, timeout and approvers of the
-      lowest-id row (a stored row, so the approval record and the card still name a real policy).
+    * WHETHER the call is gated: an unconditional (``required``) policy among them wins, and when all are conditional (Rego, LLM
+      judge) their strictness depends on the call, which is not known here, so the tool is gated unconditionally, failing closed as
+      the evaluator does for an error. The kinds are only required, policy and llm, so "a gate is required" is never weaker;
+    * WHO may decide it: a conditional verdict can route the call to specific approvers per call, which a replaced gate loses, and
+      rows may carry different ``approvers``. Unless every candidate is unconditional with one identical approver spec, ONLY AN ADMIN
+      may decide (``ApproverSpec`` always admits an admin whatever its kind, so this is never wider than any single duplicate; it can
+      be narrower than all of them, which is the safe side, until the extra row is deleted).
 
-    Either way the ids are logged, once per cache lifetime, so the operator deletes the extra row. Who may decide the call comes from
-    that one row; the duplicates' approvers are not merged.
+    The chosen copy keeps the identity and timeout of the lowest-id candidate (of the unconditional ones if there are any), a stored
+    row, so the approval record and the card still name a real policy; its gate reason names the duplicates. The ids are also logged,
+    at WARNING, on each cache miss (at most once per ``cache_ttl_seconds`` per key per process, and again after ``invalidate``).
     """
     if not rows:
         return None
@@ -137,17 +147,20 @@ def _choose_policy(rows: Sequence[ToolApprovalPolicy], *, toolset_id: str, tool_
     ordered = sorted(rows, key=lambda p: (p.approval.type is not ApprovalType.REQUIRED, p.id))
     first = ordered[0]
     ids = [p.id for p in ordered]
-    if first.approval.type is ApprovalType.REQUIRED:
-        chosen, outcome = first, f"using {first.id!r}, an unconditional gate"
-    else:
-        chosen = first.model_copy(update={"approval": RequiredApprovalConfig()})
-        outcome = (
-            f"none is unconditional and conditional policies cannot be compared without the call, so the tool is gated "
-            f"unconditionally under the settings of {first.id!r}"
-        )
+    all_unconditional = all(p.approval.type is ApprovalType.REQUIRED for p in ordered)
+    admin_only = not all_unconditional or any(p.approvers != first.approvers for p in ordered)
+    reason = f"duplicate approval policies for this tool ({', '.join(ids)}); delete the extra rows"
+    if admin_only:
+        reason += "; until then only an admin may decide it"
+    chosen = first.model_copy(update={
+        "approval": _DuplicateGate(reason=reason),
+        "approvers": ApproverSpec(kind="roles", roles=[]) if admin_only else first.approvers,
+    })
     logger.warning(
-        "tool approval: %d enabled policies for toolset_id=%r tool_name=%r (%s); %s%s. Delete the extra rows.",
-        len(rows), toolset_id, tool_name, ", ".join(ids), outcome,
+        "tool approval: %d enabled policies for toolset_id=%r tool_name=%r (%s); gated unconditionally under the settings of %r%s%s. "
+        "Delete the extra rows.",
+        len(rows), toolset_id, tool_name, ", ".join(ids), first.id,
+        ", decided by an admin only" if admin_only else "",
         "; more rows may exist than were read" if len(rows) >= _CANDIDATES else "",
     )
     return chosen
@@ -293,7 +306,8 @@ async def evaluate_approval_gate(
     cfg = policy.approval
     if cfg.type == ApprovalType.REQUIRED:
         assert isinstance(cfg, RequiredApprovalConfig)
-        return ApprovalVerdict(required=True, reason=None)
+        # Only the duplicate fallback (``_DuplicateGate``) carries a reason; a stored required policy has none.
+        return ApprovalVerdict(required=True, reason=getattr(cfg, "reason", None))
 
     if cfg.type == ApprovalType.POLICY:
         assert isinstance(cfg, PolicyApprovalConfig)
