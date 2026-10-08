@@ -212,7 +212,18 @@ Two read endpoints expose derived detail the scrape format cannot carry:
   children}`), built by `primer/session/timeline.py`. `turn_no` is the window
   ordinal counted over the UNFOLDED record stream, so a compaction or a rewind
   folds what a turn renders without renumbering the turns or retargeting a URL
-  already in circulation.
+  already in circulation. The tree's envelope is the window's RUN of `turns.jsonl`
+  envelopes (`envelopes_for_window`): window `n` takes the `n`-th run, so both sides
+  must count turns alike. `turn_envelopes` groups by `turn_no`, and a FAILED turn
+  does not bump it (the claim adapter bumps on success only), so the turn after a
+  failed one (a message reopens the session) writes under the same `turn_no`: an
+  envelope that has ended (completed, failed, cancelled, yielded) and meets the next
+  `started` or `resumed` of the session's own turn (no `node_id`) closes there, and
+  a park and its resume are put back together as one run (ticket 01a11ce4; before
+  it the failed turn's trace read as the turn that followed it). Declared: the join
+  is still by position, and a failed turn still counts as more than one window (the
+  stream's terminal, dispatch's ERROR, the release marker; ticket 01a11ca5), so the
+  windows after a failed turn run ahead of their envelopes until that lands.
 - `GET /v1/workers/stats` returns the per-lane task counters as JSON
   (`{worker, kind, status, tasks, duration_sum_seconds, duration_count}`), for the
   console's workers page. The Prometheus text format is a scrape target, not a UI
