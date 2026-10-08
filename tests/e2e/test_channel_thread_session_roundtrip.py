@@ -57,9 +57,10 @@ def _event(anchor: str, text: str) -> ChannelEvent:
 
 
 @pytest.mark.asyncio
-async def test_thread_roundtrip(tmp_path: Path, monkeypatch) -> None:
+async def test_thread_roundtrip(tmp_path: Path, monkeypatch, async_closers) -> None:
     p = SqliteStorageProvider(SqliteConfig(path=tmp_path / "s6rt.sqlite"))
     await p.initialize()
+    async_closers.push_async_callback(p.aclose)
 
     channel = Channel(
         id="ch-rt", provider_id="cp-rt",
