@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
 ADAPTER = UI / "components" / "session-adapter.jsx"
@@ -480,16 +482,29 @@ def test_result_count_label_is_null_for_non_grep_metadata() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _error_rows(records_js: str) -> list[dict]:
-    import json
-
+@pytest.fixture(scope="module")
+def _adapter_ctx():
+    """The adapter is pure, so one V8 context serves the module; closed when the module is done."""
     from py_mini_racer import MiniRacer
 
     ctx = MiniRacer()
     ctx.eval("var window = {};")
     ctx.eval(ADAPTER.read_text(encoding="utf-8"))
-    ctx.eval("var records = " + records_js + "; var out = window.SA_toTranscript(records, {id: 's1'});")
-    return json.loads(ctx.eval("JSON.stringify(out.filter(function (r) { return r.kind === 'error'; }))"))
+    try:
+        yield ctx
+    finally:
+        ctx.close()
+
+
+@pytest.fixture
+def error_rows(_adapter_ctx):
+    import json
+
+    def rows(records_js: str) -> list[dict]:
+        _adapter_ctx.eval("var records = " + records_js + "; var out = window.SA_toTranscript(records, {id: 's1'});")
+        return json.loads(_adapter_ctx.eval("JSON.stringify(out.filter(function (r) { return r.kind === 'error'; }))"))
+
+    return rows
 
 
 _CAUSE = '{seq: 3, kind: "error", created_at: "t3", payload: {message: "OpenAI server error", code: "/errors/provider-server-error", title: "Provider Server Error", status: 502}}'
@@ -497,34 +512,82 @@ _MARKER = '{seq: 4, kind: "error", created_at: "t4", payload: {reason: "unknown"
 _USER = '{seq: 1, kind: "user_input", created_at: "t1", payload: {text: "go"}}'
 
 
-def test_the_terminal_marker_after_the_cause_is_not_a_second_error_card() -> None:
+def test_the_terminal_marker_after_the_cause_is_not_a_second_error_card(error_rows) -> None:
     """A failed stream writes the error with its cause and then a bare terminal marker ({reason, terminal}) for the same failure.
     The marker has nothing to say, and rendered as its own red "turn failed" card under the real one."""
-    rows = _error_rows("[" + _USER + ", " + _CAUSE + ", " + _MARKER + "]")
+    rows = error_rows("[" + _USER + ", " + _CAUSE + ", " + _MARKER + "]")
     assert [r["seq"] for r in rows] == [3], rows
     assert rows[0]["payload"]["message"] == "OpenAI server error"
 
 
-def test_a_marker_that_comes_first_gives_way_to_the_cause_that_follows() -> None:
-    rows = _error_rows("[" + _USER + ", " + _MARKER.replace("seq: 4", "seq: 2") + ", " + _CAUSE + "]")
+def test_a_marker_that_comes_first_gives_way_to_the_cause_that_follows(error_rows) -> None:
+    rows = error_rows("[" + _USER + ", " + _MARKER.replace("seq: 4", "seq: 2") + ", " + _CAUSE + "]")
     assert [r["seq"] for r in rows] == [3], rows
 
 
-def test_a_terminal_marker_with_no_cause_is_still_shown() -> None:
+def test_a_terminal_marker_with_no_cause_is_still_shown(error_rows) -> None:
     """Nothing else says the turn failed: the marker is the only evidence and stays."""
-    rows = _error_rows("[" + _USER + ", " + _MARKER + "]")
+    rows = error_rows("[" + _USER + ", " + _MARKER + "]")
     assert [r["seq"] for r in rows] == [4], rows
 
 
-def test_two_errors_that_say_different_things_are_both_kept() -> None:
+def test_two_errors_that_say_different_things_are_both_kept(error_rows) -> None:
     other = _CAUSE.replace("seq: 3", "seq: 5").replace("OpenAI server error", "Tool failed: disk full")
-    rows = _error_rows("[" + _USER + ", " + _CAUSE + ", " + other + "]")
+    rows = error_rows("[" + _USER + ", " + _CAUSE + ", " + other + "]")
     assert [r["seq"] for r in rows] == [3, 5], rows
 
 
-def test_errors_of_separate_turns_are_not_merged() -> None:
+def test_errors_of_separate_turns_are_not_merged(error_rows) -> None:
     """A marker far from a cause (another turn between them) is not that cause's marker."""
     later = _MARKER.replace("seq: 4", "seq: 9")
     between = '{seq: 5, kind: "user_input", created_at: "t5", payload: {text: "again"}}'
-    rows = _error_rows("[" + _USER + ", " + _CAUSE + ", " + between + ", " + later + "]")
+    rows = error_rows("[" + _USER + ", " + _CAUSE + ", " + between + ", " + later + "]")
     assert [r["seq"] for r in rows] == [3, 9], rows
+
+
+# --- a mid-stream failure writes TWO error records: the stream's own Error row and dispatch's ProblemDetails one -----------------
+
+_STREAM_ERR = '{seq: 3, kind: "error", created_at: "t3", payload: {message: "Ollama server error (500)", code: "server_error", fatal: true}}'
+_DISPATCH_ERR = (
+    '{seq: 5, kind: "error", created_at: "t5", payload: {message: "Ollama server error (500)", code: "/errors/internal", '
+    'title: "TurnStreamFailure", status: 500, extensions: {}}}'
+)
+_TEXT = '{seq: 4, kind: "assistant_token", created_at: "t4", payload: {text: "partial answer"}}'
+
+
+def test_a_mid_stream_failure_is_one_card_not_the_stream_error_and_dispatchs_copy_of_it(error_rows) -> None:
+    """The model failing mid-stream is the common failure. persistence.py writes the stream's Error row (code server_error), then
+    the loop raises TurnStreamFailure and dispatch writes its own ERROR record with the SAME message, then the bare marker. That
+    was three red cards for one failure; the first carries the specific code, so it is the one kept."""
+    marker = _MARKER.replace("seq: 4", "seq: 6")
+    rows = error_rows("[" + _USER + ", " + _STREAM_ERR + ", " + _DISPATCH_ERR.replace("seq: 5", "seq: 4") + ", " + marker + "]")
+    assert [r["seq"] for r in rows] == [3], rows
+    assert rows[0]["payload"]["code"] == "server_error"
+
+
+def test_the_copy_is_folded_even_with_streamed_text_between_the_two_records(error_rows) -> None:
+    marker = _MARKER.replace("seq: 4", "seq: 6")
+    rows = error_rows("[" + _USER + ", " + _STREAM_ERR + ", " + _TEXT + ", " + _DISPATCH_ERR + ", " + marker + "]")
+    assert [r["seq"] for r in rows] == [3], rows
+
+
+def test_the_marker_is_dropped_when_the_cause_is_not_directly_before_it(error_rows) -> None:
+    """The bare marker belongs to the failure of its TURN, not only to the row written just before it."""
+    marker = _MARKER.replace("seq: 4", "seq: 6")
+    rows = error_rows("[" + _USER + ", " + _CAUSE + ", " + _TEXT.replace("seq: 4", "seq: 5") + ", " + marker + "]")
+    assert [r["seq"] for r in rows] == [3], rows
+
+
+def test_the_same_message_in_the_next_turn_is_a_new_failure(error_rows) -> None:
+    again = '{seq: 7, kind: "user_input", created_at: "t7", payload: {text: "try again"}}'
+    second = _STREAM_ERR.replace("seq: 3", "seq: 8")
+    rows = error_rows("[" + _USER + ", " + _STREAM_ERR + ", " + again + ", " + second + "]")
+    assert [r["seq"] for r in rows] == [3, 8], rows
+
+
+def test_two_graph_nodes_failing_with_the_same_words_are_both_kept(error_rows) -> None:
+    """Different nodes failed, so the fold must not merge them."""
+    a = _STREAM_ERR.replace('payload:', 'node_id: "n1", payload:')
+    b = _STREAM_ERR.replace("seq: 3", "seq: 4").replace('payload:', 'node_id: "n2", payload:')
+    rows = error_rows("[" + _USER + ", " + a + ", " + b + "]")
+    assert [r["seq"] for r in rows] == [3, 4], rows

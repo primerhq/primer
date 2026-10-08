@@ -8,6 +8,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
 CONSOLE = ROOT / "ui" / "components" / "console"
@@ -1793,15 +1795,27 @@ def test_the_resting_chip_is_neutral_and_the_served_state_attribute_is_unchanged
 # ---------------------------------------------------------------------------
 
 
-def _function_ctx(*names: str):
+@pytest.fixture
+def function_ctx():
+    """Builds V8 contexts holding named top-level functions of nv-session-doc.jsx and closes every one after the test."""
     from py_mini_racer import MiniRacer
 
-    ctx = MiniRacer()
-    for name in names:
-        start = DOC.index("function " + name)
-        end = DOC.index("\n}\n", start) + len("\n}\n")
-        ctx.eval(DOC[start:end])
-    return ctx
+    made = []
+
+    def build(*names: str):
+        ctx = MiniRacer()
+        made.append(ctx)
+        for name in names:
+            start = DOC.index("function " + name)
+            end = DOC.index("\n}\n", start) + len("\n}\n")
+            ctx.eval(DOC[start:end])
+        return ctx
+
+    try:
+        yield build
+    finally:
+        for ctx in made:
+            ctx.close()
 
 
 def _call(ctx, expression: str):
@@ -1810,11 +1824,11 @@ def _call(ctx, expression: str):
     return json.loads(ctx.eval("JSON.stringify(" + expression + ")"))
 
 
-def test_a_failed_session_says_why_in_user_language_and_what_to_do_next():
+def test_a_failed_session_says_why_in_user_language_and_what_to_do_next(function_ctx):
     """A2: the end divider read "session ended . failed" and nothing else, while the row knew why (ended_detail never_started)."""
     import json
 
-    ctx = _function_ctx("NV_endedLine")
+    ctx = function_ctx("NV_failureWords", "NV_endedLine")
 
     def line(session):
         return _call(ctx, "NV_endedLine(" + json.dumps(session) + ")")
@@ -1847,11 +1861,11 @@ def test_the_end_divider_renders_the_why_and_the_next_step():
     assert 'data-testid="nv-ended-note"' in divider
 
 
-def test_an_error_card_speaks_user_language_and_keeps_the_technical_detail_below_it():
+def test_an_error_card_speaks_user_language_and_keeps_the_technical_detail_below_it(function_ctx):
     """A3: "OpenAI network failure: APIConnectionError" is a class name. The card says it in words and keeps the provider's own text as detail."""
     import json
 
-    ctx = _function_ctx("NV_errorView")
+    ctx = function_ctx("NV_failureWords", "NV_errorView")
 
     def view(payload, label=""):
         return _call(ctx, "NV_errorView(" + json.dumps({"label": label, "payload": payload}) + ")")
@@ -1869,6 +1883,82 @@ def test_an_error_card_speaks_user_language_and_keeps_the_technical_detail_below
     }
     assert view({"reason": "unknown", "terminal": True}) == {"text": "The turn failed.", "detail": None}
     assert view({}, label="from the label")["text"] == "from the label"
+
+
+# What a failed LLM stream writes as the session's ended_detail and as the stream Error row's code (primer/llm/*, TurnStreamFailure):
+# the snake_case codes. (code, a phrase the plain "why" and the card must contain, a phrase the specific next step must contain)
+_STREAM_FAILURE_WORDS = [
+    ("server_error", "server error", "in a moment"),
+    ("network_error", "could not be reached", "address"),
+    ("rate_limit", "rate limiting", "wait a moment"),
+    ("auth_error", "rejected the credentials", "api key"),
+    ("stream_timeout", "stopped sending data", "overloaded"),
+    ("generation_timeout", "took longer than", "total time limit"),
+    ("context_overflow_unrecoverable", "context window", "new session"),
+    ("bad_request", "rejected the request", "settings"),
+    ("connect_timeout", "did not accept the connection", "running"),
+]
+_GENERIC_NEXT = "Open the turn's trace for the cause, or send a message to try again."
+
+
+@pytest.mark.parametrize(("code", "what", "next_step"), _STREAM_FAILURE_WORDS)
+def test_a_failed_llm_stream_ends_the_session_in_words_with_its_own_next_step(function_ctx, code, what, next_step):
+    """The most common failure is the model failing mid-stream, and TurnStreamFailure writes its snake_case code as ended_detail.
+    "It failed: the failure code is server_error" is not user language, and a generic next step does not help with a bad key."""
+    import json
+
+    ctx = function_ctx("NV_failureWords", "NV_endedLine")
+    got = _call(ctx, "NV_endedLine(" + json.dumps({"status": "ended", "ended_reason": "failed", "ended_detail": code}) + ")")
+    assert got["label"] == "failed"
+    assert got["why"].startswith("It failed: ") and what in got["why"].lower(), got
+    assert code not in got["why"] + got["next"], "the raw code is not user language"
+    assert next_step in got["next"].lower(), got
+    assert got["next"] != _GENERIC_NEXT, "each failure says what to do about THAT failure"
+
+
+@pytest.mark.parametrize(("code", "what", "next_step"), _STREAM_FAILURE_WORDS)
+def test_a_stream_error_card_speaks_user_language_for_the_snake_case_codes(function_ctx, code, what, next_step):
+    """The stream's own Error row carries the provider-classifier code (server_error, ...), not a problem-type URI, so the
+    problem-type table never matched it and the card showed the raw provider text."""
+    import json
+
+    ctx = function_ctx("NV_failureWords", "NV_errorView")
+    raw = "Ollama server error (500)"
+    got = _call(ctx, "NV_errorView(" + json.dumps({"label": raw, "payload": {"message": raw, "code": code, "fatal": True}}) + ")")
+    assert what in got["text"].lower(), got
+    assert code not in got["text"] and got["text"] != raw
+    assert got["detail"] == raw, "the provider's own text stays below the sentence"
+
+
+def test_a_stream_error_with_no_code_still_says_the_model_stopped_answering(function_ctx):
+    """An in-stream error the provider client could not classify has no code at all (the SDK's own text is all there is). The
+    stream Error row is fatal by definition, so the card says what happened and keeps the SDK's text below it."""
+    import json
+
+    ctx = function_ctx("NV_failureWords", "NV_errorView")
+    raw = "An error occurred during streaming"
+    got = _call(ctx, "NV_errorView(" + json.dumps({"label": raw, "payload": {"message": raw, "code": None, "fatal": True}}) + ")")
+    assert got == {"text": "The model stopped answering part-way through.", "detail": raw}
+    # A code-less error row that is not marked fatal keeps its own words.
+    kept = _call(ctx, "NV_errorView(" + json.dumps({"label": "disk full", "payload": {"message": "disk full"}}) + ")")
+    assert kept == {"text": "disk full", "detail": None}
+
+
+def test_the_session_overflow_menu_offers_rename_because_the_phone_hides_the_title():
+    """The mobile top bar names the session, so the header title is hidden there and click-to-rename went with it."""
+    header = DOC[DOC.index("function NV_SessionHeader"):DOC.index("function NV_Thought")]
+    menu = header[header.index('className="nv-menu nv-menu-right"'):]
+    assert 'data-testid="nv-session-rename"' in menu[:700], "Rename is the first row of the overflow menu"
+    assert "NV_doRename(con.wid, sid" in menu[:900]
+
+
+def test_the_two_tables_agree_on_which_codes_have_words(function_ctx):
+    """One table backs the end line and the card, so a code cannot be worded in one and raw in the other."""
+    ctx = function_ctx("NV_failureWords")
+    for code, _what, _next in _STREAM_FAILURE_WORDS:
+        assert _call(ctx, "NV_failureWords(" + repr(code) + ")"), code
+    assert _call(ctx, "NV_failureWords('weird_code_42')") is None
+    assert _call(ctx, "NV_failureWords(null)") is None
 
 
 def test_the_error_card_renders_the_view_and_its_detail():
