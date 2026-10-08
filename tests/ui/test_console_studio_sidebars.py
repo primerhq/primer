@@ -43,8 +43,10 @@ def test_session_context_menu_manages_the_row():
     for label in ('"Open"', '"Rename"', '"Interrupt"', '"Park"',
                   '"End"', '"Delete"'):
         assert label in RAIL, label
-    assert "confirmDialog" in RAIL, "delete confirms"
-    assert "deleteSession" in RAIL
+    # Park, End and Delete go through the shared helpers (nv-session-doc.jsx), which confirm where they should and report every
+    # outcome; the V8 tests in test_session_actions.py pin that behaviour.
+    for helper in ("window.NV_doPark(", "window.NV_doEnd(", "window.NV_doDelete("):
+        assert helper in RAIL, helper
 
 
 def test_workspace_row_session_count_spells_out_the_unit():

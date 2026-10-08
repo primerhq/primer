@@ -115,17 +115,19 @@ function NV_Rail_SessionContextMenu(props) {
   function act(label, fn, danger) {
     return { label: label, fn: fn, danger: !!danger };
   }
+  // Every row reports its outcome through the one toast stack: a failure used to vanish (the request had no catch).
+  function toast(msg, extra) {
+    if (window.primerApi && window.primerApi.toastPush) {
+      window.primerApi.toastPush({
+        kind: (extra && extra.kind) || "info", text: String(msg),
+        requestId: (extra && (extra.requestId || extra.request_id)) || null,
+      });
+    }
+  }
   var over = s.status === "ended";
   var rows = [
     act("Open", function () { props.onOpen(s); }),
-    act("Rename", function () {
-      window.promptDialog({
-        title: "Rename session", defaultValue: s.name || "",
-      }).then(function (name) {
-        if (name == null) return;
-        SH_api.renameSession(wid, sid, name || null).then(props.onChanged);
-      });
-    }),
+    act("Rename", function () { window.NV_doRename(wid, sid, s.name, props.onChanged, toast); }),
   ];
   if (!over) {
     // Only a running, non-parked turn can be stopped: a parked session answers 409 and an idle one answers
@@ -134,32 +136,14 @@ function NV_Rail_SessionContextMenu(props) {
       rows.push(act("Interrupt", function () {
         // The shared Stop path: toasts the acknowledgement or the failure (this used to fire the
         // request with no feedback and no error handling) and ignores a click while one is pending.
-        window.NV_doInterrupt(wid, sid, props.onChanged, function (msg, extra) {
-          if (window.primerApi && window.primerApi.toastPush) {
-            window.primerApi.toastPush({
-              kind: (extra && extra.kind) || "info", text: String(msg),
-              requestId: (extra && (extra.requestId || extra.request_id)) || null,
-            });
-          }
-        });
+        window.NV_doInterrupt(wid, sid, props.onChanged, toast);
       }));
     }
-    rows.push(act("Park", function () {
-      SH_api.pause(wid, sid).then(props.onChanged);
-    }));
-    rows.push(act("End", function () {
-      SH_api.cancel(wid, sid).then(props.onChanged);
-    }, true));
+    rows.push(act("Park", function () { window.NV_doPark(wid, sid, props.onChanged, toast); }));
+    rows.push(act("End", function () { window.NV_doEnd(wid, sid, s.name || sid, props.onChanged, toast); }, true));
   }
   rows.push(act("Delete", function () {
-    window.confirmDialog({
-      title: "Delete session",
-      message: "Permanently delete " + (s.name || sid) + "?",
-      danger: true,
-    }).then(function (ok) {
-      if (!ok) return;
-      SH_api.deleteSession(wid, sid).then(props.onChanged);
-    });
+    window.NV_doDelete(wid, sid, s.name || sid, props.onChanged, toast);
   }, true));
 
   // Bug found closing out R2's BDD pass: this menu positions off raw
