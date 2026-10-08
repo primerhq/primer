@@ -13,7 +13,7 @@ import logging
 import pytest
 
 from primer.workspace import base_backend
-from primer.workspace.base_backend import close_shielded
+from primer.workspace.base_backend import close_shielded, end_sessions_shielded
 
 
 class _Closable:
@@ -89,3 +89,50 @@ async def test_a_second_cancel_of_the_caller_leaves_the_close_running():
             break
         await asyncio.sleep(0.01)
     assert c.closed == 1
+
+
+# ---- end_sessions_shielded (architecture review A-24) ----------------------------------------------------------------------
+
+
+class _Workspace:
+    def __init__(self, *, gate: asyncio.Event | None = None, error: Exception | None = None) -> None:
+        self.gate, self.error = gate, error
+        self.ended = 0
+
+    async def end_all_sessions(self) -> None:
+        if self.gate is not None:
+            await self.gate.wait()
+        if self.error is not None:
+            raise self.error
+        self.ended += 1
+
+
+async def test_ending_the_sessions_of_a_workspace_is_awaited():
+    ws = _Workspace()
+    await end_sessions_shielded(ws, what="x")
+    assert ws.ended == 1 and not base_backend._PENDING_CLOSES  # noqa: SLF001
+
+
+async def test_a_workspace_without_a_session_ending_step_is_left_alone():
+    await end_sessions_shielded(object(), what="x")
+
+
+async def test_a_session_ending_that_fails_is_logged_and_not_raised(caplog):
+    ws = _Workspace(error=OSError("the runtime connection is gone"))
+    with caplog.at_level(logging.WARNING, logger="primer.workspace"):
+        await end_sessions_shielded(ws, what="the sessions of the test workspace")
+    assert any("the sessions of the test workspace: end sessions failed" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_session_ending_on_a_silent_peer_does_not_hold_the_teardown_past_the_bound(monkeypatch):
+    monkeypatch.setattr(base_backend, "_CLOSE_WAIT_S", 0.2)
+    gate = asyncio.Event()
+    ws = _Workspace(gate=gate)
+    await asyncio.wait_for(end_sessions_shielded(ws, what="the test workspace"), timeout=2.0)
+    assert ws.ended == 0, "still running in the background, not abandoned and not awaited"
+    gate.set()
+    for _ in range(100):
+        if ws.ended:
+            break
+        await asyncio.sleep(0.01)
+    assert ws.ended == 1

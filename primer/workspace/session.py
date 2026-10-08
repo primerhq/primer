@@ -882,10 +882,10 @@ class AgentSession:
         return all_messages[last_assistant_idx + 1 :]
 
     async def aclose(self) -> None:
-        """Release the session handle.
+        """End the session as ``completed``, unless it is already ended. Idempotent.
 
-        Equivalent to ``set_status(ENDED, ended_reason="completed")``
-        when the session isn't already ended. Idempotent.
+        This ENDS the session (``set_status(ENDED, ended_reason="completed")``); it is not a handle release. A workspace closing its
+        handle does not call it (``Workspace.aclose`` only releases); ``end_all_sessions`` does, for a workspace being destroyed.
         """
         if self._info.status == SessionStatus.ENDED:
             return

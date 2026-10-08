@@ -32,7 +32,7 @@ from primer.model.workspace import (
     WorkspaceTemplateOverrides,
     KubernetesTemplateConfig,
 )
-from primer.workspace.base_backend import BaseWorkspaceBackend, close_shielded, roll_back_shielded
+from primer.workspace.base_backend import BaseWorkspaceBackend, close_shielded, end_sessions_shielded, roll_back_shielded
 from primer.workspace.files import FileResolvers
 from primer.workspace.k8s.httproute import build_httproute_manifest
 from primer.workspace.k8s.naming import k8s_object_name
@@ -963,9 +963,13 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
         async with self._lock:
             ws = self._workspaces.pop(workspace_id, None)
         if ws is not None:
+            # The workspace is going away, so the sessions still on it end with it: that is this call's job, by name, because the
+            # workspace's own ``aclose`` only releases the handle (ending them there ended every live session at every shutdown,
+            # architecture review A-24). It commits ``session.json`` over the runtime connection, so it is bounded like the closes.
+            await end_sessions_shielded(ws, what=f"sessions of workspace {workspace_id} during destroy")
             # Close the runtime WS first so reconnect attempts don't fire
             # while we tear the Pod down underneath them. The workspace's own
-            # ``aclose`` only ends its sessions (over that connection); the
+            # ``aclose`` releases its handle; the
             # connection itself is its sandbox's client, which nothing else
             # closes, and one left open keeps reconnecting to a pod that no
             # longer exists (only a 404 handshake makes it give up). Both

@@ -63,8 +63,8 @@ async def test_a_close_that_hangs_does_not_hold_up_the_deletion(monkeypatch):
 
 
 async def test_sessions_that_cannot_be_ended_do_not_hold_up_the_deletion_or_leave_the_client_open(monkeypatch, client):
-    """The workspace's own ``aclose`` ends its sessions over the connection; on a connection that no longer answers that
-    waits for a reconnect that never comes."""
+    """Ending the sessions commits ``session.json`` over the connection; on a connection that no longer answers that waits for a
+    reconnect that never comes (since A-24 this is ``end_all_sessions``, not the workspace's ``aclose``, which only releases)."""
     monkeypatch.setattr(base_backend, "_CLOSE_WAIT_S", 0.05)
     backend = _backend()
     ws = await _create(backend)
@@ -74,7 +74,7 @@ async def test_sessions_that_cannot_be_ended_do_not_hold_up_the_deletion_or_leav
         ending.set()
         await ending_gate.wait()
 
-    ws.aclose = end_sessions_on_a_dead_connection
+    ws.end_all_sessions = end_sessions_on_a_dead_connection
     try:
         await asyncio.wait_for(backend.destroy("ws-1"), timeout=2)
         assert ending.is_set() and client.closed == 1

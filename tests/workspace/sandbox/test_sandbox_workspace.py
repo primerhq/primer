@@ -749,3 +749,28 @@ async def test_aclose_ends_no_session(tmp_path: Path) -> None:
     info = await again.info()
     assert (info.status, info.ended_reason) == (SessionStatus.RUNNING, None), "the slot on the pod was ended by a handle close"
     await again.append_instruction("a wake after the workspace handle was closed")
+
+
+@pytest.mark.asyncio
+async def test_end_all_sessions_ends_what_is_live_and_one_failure_does_not_skip_the_rest(tmp_path: Path, caplog) -> None:
+    import logging
+
+    from primer.model.workspace_session import SessionStatus
+
+    sb = FakeSandbox(root=tmp_path)
+    ws = await SandboxWorkspace.materialise(
+        workspace_id="ws-end", template=_template(), sandbox=sb, backend_kind="container", runtime_meta=_runtime_meta(),
+    )
+    first = await ws.start_session(_binding(), id="sess-end-1")
+    second = await ws.start_session(_binding(), id="sess-end-2")
+
+    async def cannot_end():
+        raise OSError("the pod's runtime connection is gone")
+
+    first.aclose = cannot_end  # type: ignore[method-assign]
+
+    with caplog.at_level(logging.WARNING):
+        await ws.end_all_sessions()
+
+    assert await second.status() == SessionStatus.ENDED, "a session that could not be ended must not skip the next one"
+    assert any("aclose on session failed" in r.getMessage() for r in caplog.records)

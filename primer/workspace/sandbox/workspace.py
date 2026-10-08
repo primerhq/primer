@@ -635,9 +635,16 @@ class SandboxWorkspace(Workspace):
         await self._sandbox.write_file(target, content)
 
     async def aclose(self) -> None:
-        """Tear down every live session. Errors from any one session must
-        not skip the rest -- log and continue, mirroring
-        :meth:`LocalWorkspaceBackend.aclose`."""
+        """Release this handle: forget the cached session handles. Ends NO session.
+
+        Closing a handle is a process event (shutdown, a provider invalidate), not a statement about the sessions on the pod; see
+        :meth:`LocalWorkspace.aclose`. :meth:`end_all_sessions` is for a workspace that is going away (architecture review A-24).
+        """
+        async with self._lock:
+            self._sessions.clear()
+
+    async def end_all_sessions(self) -> None:
+        """End every cached session that is not already ENDED. Errors from any one session must not skip the rest: log and continue."""
         async with self._lock:
             for session in list(self._sessions.values()):
                 try:
@@ -654,7 +661,6 @@ class SandboxWorkspace(Workspace):
                             "error": str(exc),
                         },
                     )
-            self._sessions.clear()
 
 
 __all__ = ["SandboxWorkspace"]
