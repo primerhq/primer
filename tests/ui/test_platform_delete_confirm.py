@@ -241,15 +241,24 @@ async def test_the_ids_the_console_warns_about_are_exactly_the_agents_whose_abse
 @pytest.mark.parametrize(
     "nav,row,must_say",
     [
-        # DELETE /v1/workspaces/{id} (docs/agents/workspaces.md): backend teardown, and every open session ends workspace_lost, permanently.
-        ("workspaces", {"id": "ws-1"}, ["tears down", "ends every open session", "workspace_lost", "cannot be resumed"]),
+        # DELETE /v1/workspaces/{id}: WorkspaceRegistry.destroy tears the backend down (docker: the container AND its volume, local: rmtree of the root,
+        # kubernetes: the PVC), which takes the workspace's files and every session's history (.state/sessions/<sid>/, closed sessions included) with it,
+        # and every open session ends workspace_lost, permanently. A workspace whose local provider is refused loses only its row (the files stay on disk),
+        # and the UI cannot tell the two apart, so the prompt says both.
+        (
+            "workspaces",
+            {"id": "ws-1"},
+            ["files", "every session's history", "tears down", "ends every open session", "workspace_lost", "cannot be resumed", "refused", "left on the provider's disk"],
+        ),
         # Deleting a Collection deletes its Documents, their content and its vector chunks (docs/agents/knowledge.md), with no 409 for a non-empty one;
         # a reused id starts empty (the T0336 e2e).
         ("collections", {"id": "wiki"}, ["Every document", "search index", "cannot be undone", "starts empty"]),
         # trigger::delete cascade-deletes subscriptions (docs/agents/triggers-and-subscriptions.md).
-        ("triggers", {"id": "tr-1"}, ["subscriptions are deleted with it", "will run again"]),
+        # A session parked on subscribe_to_trigger waits through a parked_session subscription, which the cascade deletes too: the fire can no longer wake it.
+        ("triggers", {"id": "tr-1"}, ["subscriptions are deleted with it", "will run again", "parked", "never be woken"]),
         # services router: every version (and its artifacts) is deleted before the service row; the public URL is /svc/{name}/.
-        ("services", {"id": "service-1", "name": "status-page"}, ["Every published version", "/svc/status-page/ stops answering"]),
+        # The resolver caches name -> service per process for RESOLVE_TTL_SECONDS (5 s, primer/service/serve.py), so the URL can answer briefly after the delete.
+        ("services", {"id": "service-1", "name": "status-page"}, ["Every version and its files", "/svc/status-page/ stops answering", "cache"]),
     ],
 )
 def test_deleting_an_entity_that_holds_data_says_what_goes_with_it(nav: str, row: dict, must_say: list[str]) -> None:

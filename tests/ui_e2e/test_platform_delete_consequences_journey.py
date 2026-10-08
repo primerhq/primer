@@ -76,7 +76,7 @@ def test_a_service_card_names_the_service_and_its_url_not_its_generated_id(page,
 
         dialog = page.locator(".modal-overlay")
         expect(dialog).to_contain_text(f"Permanently delete {name}?", timeout=5_000)
-        expect(dialog).to_contain_text("Every published version")
+        expect(dialog).to_contain_text("Every version and its files")
         expect(dialog).to_contain_text(f"/svc/{name}/ stops answering")
         expect(dialog).not_to_contain_text(service_id)
 
