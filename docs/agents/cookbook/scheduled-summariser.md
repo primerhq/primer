@@ -17,7 +17,7 @@ mcp_tools:
 Every weekday at 9 AM local time, a scheduled trigger starts a fresh agent session. The agent reads yesterday's log files from a sandbox workspace, summarises them, and posts the summary to a bound Slack channel. An `ask_user` prompt then waits for an operator approval before the session closes.
 
 ## Prerequisites
-- An LLM provider id for the summariser agent.
+- A ModelProfile for the summariser agent's model, e.g. `anthropic-1--claude-sonnet-4-6` (see "Model profiles" in `agents`).
 - A workspace provider id; the template mounts or has access to the log directory and a TTL of at least 60 minutes.
 - A Slack channel provider already configured, with a channel bound to the workspace by a reply binding (`system::set_reply_binding`), so the agent's `ask_user` prompt is delivered to Slack.
 
@@ -30,7 +30,7 @@ Every weekday at 9 AM local time, a scheduled trigger starts a fresh agent sessi
     "id": "log-summariser",
     "description": "Summarises yesterday's logs and posts to Slack",
     "system_prompt": ["Read yesterday's log files from the workspace, summarise the notable events, post the summary to the bound channel, then ask_user to approve before finishing."],
-    "model": { "provider_id": "anthropic-1", "model_name": "claude-sonnet-4-6" }
+    "model": { "profile_id": "anthropic-1--claude-sonnet-4-6" }
   }
 }
 ```
