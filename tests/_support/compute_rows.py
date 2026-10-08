@@ -105,11 +105,11 @@ GRAPH_BLOCKERS = {
 LIVE_STATUSES = [status for status in SessionStatus if status is not SessionStatus.ENDED]
 
 
-async def insert_unreadable_graph(storage_provider, graph_id: str) -> None:
-    """Put a row in the graph table that the model cannot decode (a shape that drifted, a hand edit): the row exists, reading a page that
-    holds it raises. Only for a real SQLite provider; the in-memory fakes never decode."""
+async def insert_unreadable_graph(storage_provider, graph_id: str, data: str = '{"nodes": "not a list"}') -> None:
+    """Put a row in the graph table that the model cannot decode (a shape that drifted, a hand edit, text that is not JSON, JSON that is
+    not an object): the row exists, reading a page that holds it raises. Only for a real SQLite provider; the in-memory fakes never decode."""
     storage = storage_provider.get_storage(Graph)
     await storage._ensure_table()  # noqa: SLF001 - the table is created lazily; a raw insert needs it
     connection = storage_provider.connection
-    await connection.execute(f'INSERT INTO "{storage._table}" (id, data) VALUES (?, ?)', (graph_id, '{"nodes": "not a list"}'))  # noqa: SLF001
+    await connection.execute(f'INSERT INTO "{storage._table}" (id, data) VALUES (?, ?)', (graph_id, data))  # noqa: SLF001
     await connection.commit()

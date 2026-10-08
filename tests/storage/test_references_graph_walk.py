@@ -47,6 +47,23 @@ async def test_an_unreadable_row_is_a_blocker_named_by_the_graph_before_it(sqlit
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stored",
+    ['{"nodes": "not a list"}', "this is not json", "[1, 2]", '"a json string"', "null"],
+    ids=["wrong shape", "not json", "json array", "json string", "json null"],
+)
+async def test_every_way_a_stored_row_can_fail_to_decode_is_a_blocker(sqlite_provider, stored: str) -> None:
+    """A model-validation failure and a JSON failure raise from the decode; JSON that is not an object fails one step earlier, when
+    the decode writes the id into it (a TypeError). All five are a row the walk cannot read."""
+    await _seed(sqlite_provider, graph_row("g-1"))
+    await insert_unreadable_graph(sqlite_provider, "g-9", stored)
+
+    found = await references.first_graph_with_agent_node(sqlite_provider.get_storage(Graph), "ag-1")
+
+    assert found is not None and "unreadable" in found.id and "g-1" in found.id, found
+
+
+@pytest.mark.asyncio
 async def test_an_unreadable_first_row_is_a_blocker_that_says_it_is_the_first(sqlite_provider) -> None:
     await insert_unreadable_graph(sqlite_provider, "a-0")
     await _seed(sqlite_provider, graph_row("g-1"))
