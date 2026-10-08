@@ -121,6 +121,20 @@ async def test_a_plain_user_cannot_repoint_a_toolset_while_its_oauth_client_secr
     assert (await raw_client.get("/v1/toolsets/ts-http")).json()["config"]["config"]["url"] == "http://127.0.0.1:9/mcp"
 
 
+async def test_a_plain_user_cannot_move_only_the_oauth_redirect_uri_while_the_client_secret_rides_along(raw_client, app):
+    """The URL stays put: only the OAuth endpoint moves, so the rule must compare it too."""
+    await _admin_creates(raw_client, app, _http("http://127.0.0.1:9/mcp", SECRET, client_secret=CLIENT_SECRET), **NO_PROBE)
+    await _as(raw_client, app, "user")
+    body = (await raw_client.get("/v1/toolsets/ts-http")).json()
+    body["config"]["config"]["oauth"]["redirect_uri"] = "http://evil.example/cb"
+
+    resp = await raw_client.put("/v1/toolsets/ts-http", json=body, params=NO_PROBE)
+
+    assert resp.status_code == 403, resp.text
+    stored = (await raw_client.get("/v1/toolsets/ts-http")).json()["config"]["config"]["oauth"]
+    assert stored["redirect_uri"] == "http://127.0.0.1:9/cb"
+
+
 async def test_a_plain_user_may_repoint_a_toolset_when_it_re_enters_the_secrets(raw_client, app):
     await _admin_creates(raw_client, app, _http("http://127.0.0.1:9/mcp", SECRET), **NO_PROBE)
     await _as(raw_client, app, "user")

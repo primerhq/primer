@@ -157,6 +157,27 @@ async def test_a_user_run_cannot_repoint_a_toolset_while_its_oauth_client_secret
     assert (await storage.get("ts-http")).config.config.url == "http://127.0.0.1:9/mcp"
 
 
+@pytest.mark.parametrize(
+    "oauth_change",
+    [{"redirect_uri": "http://evil.example/cb"}, {"resource_uri": "http://evil.example/mcp"}],
+    ids=["redirect_uri", "resource_uri"],
+)
+async def test_a_user_run_cannot_move_only_the_oauth_endpoints_while_the_client_secret_rides_along(toolset_and_storage, oauth_change):
+    """The URL stays put: only the OAuth endpoints count as the move, so the rule must compare them too."""
+    toolset, storage = toolset_and_storage
+    assert not (await _call(
+        toolset, "create_toolset", {"entity": _http("http://127.0.0.1:9/mcp", SECRET, client_secret=CLIENT_SECRET)}, _ctx("admin"),
+    )).is_error
+    body = _http("http://127.0.0.1:9/mcp", SECRET, client_secret=MASK)
+    body["config"]["config"]["oauth"].update(oauth_change)
+
+    result = await _call(toolset, "update_toolset", {"id": "ts-http", "entity": body}, _ctx("user"))
+
+    assert result.is_error and _error_type(result) == "forbidden", result.output
+    oauth = (await storage.get("ts-http")).config.config.oauth
+    assert (str(oauth.redirect_uri), oauth.resource_uri) == ("http://127.0.0.1:9/cb", None)
+
+
 async def test_a_user_run_may_repoint_a_toolset_when_it_re_enters_the_secrets(toolset_and_storage):
     toolset, storage = toolset_and_storage
     assert not (await _call(toolset, "create_toolset", {"entity": _http("http://127.0.0.1:9/mcp", SECRET)}, _ctx("admin"))).is_error
