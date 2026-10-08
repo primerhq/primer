@@ -1178,6 +1178,14 @@ function NV_subagentRows(row, resultFor, running) {
   // Done first and the Error last, and raise, so the call is answered with an ERROR result and the delegated scope gets no failure record of its own.
   var callResult = resultFor ? resultFor(row) : null;
   var callFailed = !!(callResult && callResult.payload && callResult.payload.error);
+  // The one notice a failed call ENDED ON is its failure: the last one whose words the call's error output quotes. Another notice of the same scope is a provider
+  // report the run went on from (two red cards would say the call failed twice), and a call that failed for a reason no notice names promotes none.
+  var endedOn = null;
+  if (callFailed) {
+    kids.forEach(function (c) {
+      if (c.kind === "retry_notice" && window.SH_callQuotesNotice(callResult, c)) endedOn = c;
+    });
+  }
   return (
     <div className="nv-subagent-rows" data-testid={"nv-subagent-rows:" + row.seq}>
       {kids.map(function (child) {
@@ -1200,7 +1208,7 @@ function NV_subagentRows(row, resultFor, running) {
         // may not be looking at, and the parent turn's own failure is what the page announces) and neither has a trace button (a trace belongs to
         // the session's turn).
         if (child.kind === "error" || child.kind === "retry_notice") {
-          var asFailure = child.kind === "error" || callFailed;
+          var asFailure = child.kind === "error" || child === endedOn;
           var settled = callResult != null && child.noticeState === "retrying"
             ? Object.assign({}, child, { noticeState: "recovered" }) : child;
           var view = asFailure ? NV_errorView(child) : NV_noticeView(settled);
