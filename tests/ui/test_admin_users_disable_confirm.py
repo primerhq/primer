@@ -106,7 +106,8 @@ def test_a_click_on_enable_sends_straight_away() -> None:
 
 @pytest.mark.parametrize("disabled", [False, True])
 def test_a_second_click_while_a_prompt_is_open_is_ignored(disabled: bool) -> None:
-    """A double-click on Disable must not stack a second confirmation dialog behind the first (the row is not busy until the answer is yes)."""
+    """A double-click on Disable must not call confirmDialog a second time (the row is not busy until the answer is yes). confirmDialog is one global slot, so the second
+    call would replace the first dialog and leave the first call's promise pending for good; ignoring it keeps the first dialog, and its handler, as the one that is answered."""
     assert _step({"id": "u-1", "username": "bob", "disabled": disabled}, asking=True) == {"kind": "ignore"}
 
 
@@ -128,7 +129,8 @@ def test_the_row_asks_before_it_sends_the_patch_and_sends_nothing_when_declined(
 
 
 def test_the_asking_flag_is_held_across_the_prompt_and_released_whatever_the_answer() -> None:
-    """A ref (not state): the second click must see it before React re-renders. Released in a finally so a dialog that throws cannot leave Disable dead."""
+    """A ref (not state): the second click must see it before React re-renders. Released in a finally, so an answer of yes or no, or a dialog that throws, cannot leave
+    Disable dead. Not covered: a promise that never settles (another confirmDialog call replacing this one in the global slot) would keep the flag set."""
     assert re.search(r"const asking = React\.useRef\(false\);", SRC), "the row keeps an `asking` ref"
     text = _handler()
     ask = re.search(
