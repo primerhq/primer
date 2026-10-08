@@ -65,6 +65,8 @@ everywhere" in the profile menu) bump the epoch, so every cookie of
 that account stops working on its next request. A plain `POST
 /v1/auth/logout` only clears the caller's own cookie. None of this
 touches bearer tokens: revoke those through the API-token routes.
+A stream that is already open (the workspace tap's SSE, a terminal
+WebSocket) is not cut by a revocation; it is refused when it reconnects.
 
 Route-level scope enforcement is via the `require_scope("mcp")`
 dependency. Cookie sessions bypass scope checks (they have implicit
