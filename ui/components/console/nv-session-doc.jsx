@@ -13,6 +13,26 @@ function NV_sessionIsOver(session) {
   return !!session && session.status === "ended";
 }
 
+// A session that does not exist (C-020): a mistyped link, or a session deleted elsewhere whose tab is restored. Only a 404 on the session
+// row says so; a blip, a refusal or a server error is not the session ceasing to exist, and the document keeps what it has and keeps
+// trying. The row's data may still be there (stale-while-error) when a later poll finds it deleted, so the error alone decides.
+function NV_isSessionGone(error) {
+  return !!error && error.status === 404;
+}
+
+// What the document shows instead of a live-looking empty transcript and a composer that accepts input for a session that is not there.
+function NV_SessionGone(props) {
+  return (
+    <div className="nv-session-gone nv-rail-empty" data-testid="nv-session-gone" role="status">
+      <div className="nv-session-gone-title">This session no longer exists</div>
+      <div className="nv-session-gone-sub">{props.sid} was deleted, or the link is wrong.</div>
+      <button type="button" className="nv-rail-iconbtn"
+        data-testid="nv-session-gone-close"
+        onClick={props.onClose}>Close this tab</button>
+    </div>
+  );
+}
+
 // A session whose workspace cannot be READ answers a typed 503 (/errors/workspace-unreachable) from the messages read (A-08); it used to
 // answer an empty list, which the console drew as an empty conversation. Only this typed error gets a banner: any other failure keeps
 // its old handling. The data is presumably intact, so say so, and say what to check.
@@ -2274,6 +2294,8 @@ function NV_SessionDoc(props) {
   var gatesSnap = window.useSessionStore(con.wid, sid, "gates");
   var phaseSnap = window.useSessionStore(con.wid, sid, "phase");
   var terminalRef = React.useRef(false);
+  // C-020: set from the session row's own 404 (below the resource, like terminalRef). Every poll of a session that is not there stops.
+  var goneRef = React.useRef(false);
   // Declared BEFORE the resources on purpose: a send into an ENDED
   // session REOPENS it server-side (steer's fourth behaviour), so the
   // ended-session poll stop must lift while a send is in flight - the
@@ -2294,7 +2316,7 @@ function NV_SessionDoc(props) {
   // poll gate must consult it - gating on the stale row alone froze
   // the doc the moment the live signal cleared the optimistic flag.
   var live = SH_statusFromTap(tap.events, sid, Date.now());
-  var pollStopped = terminalRef.current && !optimistic && !live;
+  var pollStopped = (terminalRef.current && !optimistic && !live) || goneRef.current;
   // Calm (C-038): slow polling, only once the session has been at rest for NV_CALM_AFTER_MS (see below the resources); until then and
   // whenever anything stirs, the fast cadence.
   var calmState = React.useState(false);
@@ -2306,6 +2328,7 @@ function NV_SessionDoc(props) {
     { pollMs: pollStopped ? 0 : (calm ? NV_CALM_POLL_MS : 2000), deps: [sid], ignoreIdle: true }
   );
   terminalRef.current = !!(detail.data && NV_sessionIsOver(detail.data));
+  goneRef.current = NV_isSessionGone(detail.error);
   var atRest = NV_sessionIsCalm({
     tapLive: !!(gatesSnap && gatesSnap.connState === "live"), live: !!live, optimistic: !!optimistic,
     stopPending: stopPending, row: detail.data,
@@ -2324,8 +2347,9 @@ function NV_SessionDoc(props) {
     function (signal) { return SH_api.messages(sid, 200, null, signal); },
     { pollMs: pollStopped ? 0 : (historyLive ? 15000 : 2000), deps: [sid], ignoreIdle: true }
   );
+  // No key (so no request) while the workspace is unresolved or the session is gone: a URL is never built from a null workspace id.
   var gates = window.primerApi.useResource(
-    SH_api.keys.sessionPending(sid),
+    con.wid && !goneRef.current ? SH_api.keys.sessionPending(sid) : null,
     function (signal) {
       return SH_api.sessionPendingYields(con.wid, sid, signal);
     },
@@ -3143,6 +3167,10 @@ function NV_SessionDoc(props) {
         </div>
       </div>
     );
+  }
+
+  if (goneRef.current) {
+    return <NV_SessionGone sid={sid} onClose={function () { con.setDoc(null); }} />;
   }
 
   return (

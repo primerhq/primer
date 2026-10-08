@@ -3460,6 +3460,9 @@ input, textarea, select { font: inherit; color: inherit; }
   gap: 10px;
   align-items: center;
 }
+.nv-session-gone { flex: 1; justify-content: center; align-items: center; gap: 8px; }
+.nv-session-gone-title { font-size: 14px; color: var(--text-2); }
+.nv-session-gone-sub { overflow-wrap: anywhere; }
 
 /* nv-rail-* additions (US-007 R2, nv-rail.jsx): Inbox + workspace tree.
    .nv-rail / .nv-rail-tabs / .nv-rail-tab / .nv-rail-iconbtn /
