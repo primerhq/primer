@@ -171,11 +171,6 @@ function AT_ApiTokensPage({ mode }) {
               ? "No user has minted an API token yet."
               : "Create a token to authenticate programmatic clients (e.g. the MCP bridge) without a browser session."}
           </div>
-          {!isAdmin && (
-            <div className="actions">
-              <Btn kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>Create token</Btn>
-            </div>
-          )}
         </div>
       )}
 
