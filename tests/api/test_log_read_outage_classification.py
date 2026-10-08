@@ -20,7 +20,7 @@ import httpx
 import pytest
 
 import primer.api.routers.sessions as sessions_router
-from primer.model.except_ import BadRequestError, ConflictError, WorkspaceUnreachableError
+from primer.model.except_ import BadRequestError, ConflictError, NotFoundError, WorkspaceUnreachableError
 from tests.api.test_session_messages_route import _FakeWorkspace, _seed_session
 
 
@@ -178,10 +178,94 @@ async def test_a_successful_read_ends_the_outage_so_the_next_one_logs_its_own_tr
 async def test_a_long_outage_logs_again_after_the_window(caplog, monkeypatch) -> None:
     ws = _RaisingWorkspace(ConnectionError("down"))
     clock = {"t": 1000.0}
-    monkeypatch.setattr(sessions_router.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(sessions_router, "_now", lambda: clock["t"])
     with caplog.at_level(logging.WARNING):
         for step in (0.0, 10.0, 301.0):
             clock["t"] = 1000.0 + step
             with pytest.raises(WorkspaceUnreachableError):
                 await sessions_router._read_log_bytes(ws, ".state/x.jsonl", workspace_id="ws-1")
     assert len(_warnings_with_traceback(caplog)) == 2, "a reminder with the traceback once the window has passed"
+
+
+# --- one outage is one (workspace, file), review of PR 521 -------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_file_that_is_not_there_ends_the_outage_so_the_next_failure_logs_its_own_traceback(caplog) -> None:
+    """down -> NotFound -> down is two outages: the workspace answered in between."""
+    down = _RaisingWorkspace(ConnectionError("down"))
+    missing = _RaisingWorkspace(NotFoundError("no such file"))
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(WorkspaceUnreachableError):
+            await sessions_router._read_log_bytes(down, ".state/x.jsonl", workspace_id="ws-1")
+        assert await sessions_router._read_log_bytes(missing, ".state/x.jsonl", workspace_id="ws-1") == b""
+        with pytest.raises(WorkspaceUnreachableError):
+            await sessions_router._read_log_bytes(down, ".state/x.jsonl", workspace_id="ws-1")
+    assert len(_warnings_with_traceback(caplog)) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_different_file_that_answers_does_not_end_the_outage_of_this_one(caplog) -> None:
+    """A poll cycle reads several files of one workspace (messages, turn log, state). One that is simply absent used to reset the
+    dedupe key of the whole workspace, so the file that WAS failing logged a traceback again on the next poll."""
+    down = _RaisingWorkspace(ConnectionError("down"))
+    missing = _RaisingWorkspace(NotFoundError("no such file"))
+    up = _FakeWorkspace()
+    up.write(".state/other.jsonl", "")
+    with caplog.at_level(logging.DEBUG):
+        for _ in range(3):
+            with pytest.raises(WorkspaceUnreachableError):
+                await sessions_router._read_log_bytes(down, ".state/messages.jsonl", workspace_id="ws-1")
+            assert await sessions_router._read_log_bytes(missing, ".state/turn_log.jsonl", workspace_id="ws-1") == b""
+            await sessions_router._read_log_bytes(up, ".state/other.jsonl", workspace_id="ws-1")
+    assert len(_warnings_with_traceback(caplog)) == 1, "the failing file logged one traceback for the whole outage"
+
+
+@pytest.mark.asyncio
+async def test_two_files_failing_in_one_workspace_each_get_their_own_traceback(caplog) -> None:
+    ws = _RaisingWorkspace(ConnectionError("down"))
+    with caplog.at_level(logging.WARNING):
+        for path in (".state/a.jsonl", ".state/b.jsonl", ".state/a.jsonl", ".state/b.jsonl"):
+            with pytest.raises(WorkspaceUnreachableError):
+                await sessions_router._read_log_bytes(ws, path, workspace_id="ws-1")
+    assert len(_warnings_with_traceback(caplog)) == 2
+
+
+@pytest.mark.asyncio
+async def test_the_short_line_names_the_file(caplog) -> None:
+    ws = _RaisingWorkspace(ConnectionError("down"))
+    with caplog.at_level(logging.DEBUG):
+        for _ in range(2):
+            with pytest.raises(WorkspaceUnreachableError):
+                await sessions_router._read_log_bytes(ws, ".state/messages.jsonl", workspace_id="ws-1")
+    short = [r.getMessage() for r in caplog.records if "still unreachable" in r.getMessage()]
+    assert len(short) == 1 and ".state/messages.jsonl" in short[0]
+
+
+def test_the_clock_is_one_function_a_test_can_move() -> None:
+    assert callable(getattr(sessions_router, "_now", None))
+    assert isinstance(sessions_router._now(), float)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["EPROTOCOL", "ETIMEDOUT", "EINTERNAL"])
+async def test_a_runtime_error_of_a_transport_kind_is_an_outage(code: str) -> None:
+    from primer.workspace.runtime.protocol import ErrorCode
+    from primer.workspace.runtime.runtime_client import RuntimeError as RuntimeClientError
+
+    ws = _RaisingWorkspace(RuntimeClientError(ErrorCode(code), "the runtime did not answer"))
+    with pytest.raises(WorkspaceUnreachableError):
+        await sessions_router._read_log_bytes(ws, ".state/x.jsonl", workspace_id="ws-1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["EACCES", "EISDIR", "ENOTDIR", "EEXIST", "EUNSUPPORTED"])
+async def test_a_runtime_error_that_is_an_answer_is_not_an_outage(code: str) -> None:
+    """The runtime understood the request and refused it (a log that is a directory, a file it may not read): that is not the same
+    as a runtime that did not answer, and a retry loop would be told to wait for something that will not come back."""
+    from primer.workspace.runtime.protocol import ErrorCode
+    from primer.workspace.runtime.runtime_client import RuntimeError as RuntimeClientError
+
+    ws = _RaisingWorkspace(RuntimeClientError(ErrorCode(code), "refused"))
+    with pytest.raises(RuntimeClientError):
+        await sessions_router._read_log_bytes(ws, ".state/x.jsonl", workspace_id="ws-1")
