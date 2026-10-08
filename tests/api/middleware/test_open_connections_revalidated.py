@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -81,8 +82,9 @@ def probed(app):  # noqa: F811
 class _Http:
     """One HTTP request driven straight through the ASGI app, recording what the app sends and when it ends."""
 
-    def __init__(self, app, path: str, headers: list[tuple[bytes, bytes]]) -> None:
-        self.app, self.path, self.headers = app, path, headers
+    def __init__(self, app, path: str, headers: list[tuple[bytes, bytes]], method: str = "GET", wait_for_start: bool = True) -> None:
+        self.app, self.path, self.headers, self.method = app, path, headers, method
+        self.wait_for_start = wait_for_start        # False for a request whose response starts only when its work is done
         self.messages: list[dict] = []
         self.task: asyncio.Task | None = None
         self.disconnect = asyncio.Event()
@@ -91,12 +93,17 @@ class _Http:
     async def __aenter__(self) -> "_Http":
         raw, _, query = self.path.partition("?")
         scope = {
-            "type": "http", "asgi": {"version": "3.0", "spec_version": "2.3"}, "http_version": "1.1", "method": "GET",
+            "type": "http", "asgi": {"version": "3.0", "spec_version": "2.3"}, "http_version": "1.1", "method": self.method,
             "scheme": "http", "path": raw, "raw_path": raw.encode(), "query_string": query.encode(),
             "headers": [(b"host", b"test"), *self.headers], "client": ("127.0.0.1", 1), "server": ("test", 80), "app": self.app,
         }
 
+        delivered = {"body": False}
+
         async def receive():
+            if not delivered["body"]:
+                delivered["body"] = True
+                return {"type": "http.request", "body": b"", "more_body": False}
             await self.disconnect.wait()
             return {"type": "http.disconnect"}
 
@@ -113,7 +120,7 @@ class _Http:
 
         self.task = asyncio.create_task(run())
         deadline = time.monotonic() + WITHIN
-        while not any(m["type"] == "http.response.start" for m in self.messages):
+        while self.wait_for_start and not any(m["type"] == "http.response.start" for m in self.messages):
             if self.task.done() or time.monotonic() > deadline:
                 break
             await asyncio.sleep(0.01)
@@ -143,6 +150,16 @@ class _Http:
         assert self.task is not None
         done, _ = await asyncio.wait({self.task}, timeout=seconds)
         return bool(done)
+
+
+async def _until(predicate, seconds: float = WITHIN) -> bool:
+    """Wait for ``predicate()`` to become true (polling every 10 ms); False when it did not within ``seconds``. Tests wait on COUNTS of checks, not on guesses of elapsed time."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(0.01)
+    return predicate()
 
 
 def _cookie_header(cookie: str) -> list[tuple[bytes, bytes]]:
@@ -350,27 +367,32 @@ async def test_an_interval_of_zero_turns_the_watcher_off(probed) -> None:
 @pytest.mark.asyncio
 @pytest.mark.timeout(60)
 async def test_a_storage_error_is_tolerated_a_few_times_then_fails_closed(probed) -> None:
+    """Counted, not timed: how many checks failed decides what must still be open, not how long the test slept."""
     _, other_cookie = await _cookies(probed)
     storage = probed.state.storage_provider.get_storage(User)
     real_get = storage.get
-    state = {"fail": False}
+    seen = {"fail": False, "failed": 0, "good": 0}
 
     async def flaky_get(entity_id):
-        if state["fail"]:
+        if seen["fail"]:
+            seen["failed"] += 1
             raise RuntimeError("storage unavailable")
+        seen["good"] += 1
         return await real_get(entity_id)
 
     storage.get = flaky_get
     try:
         async with _Http(probed, "/v1/_probe/stream", _cookie_header(other_cookie)) as conn:
-            state["fail"] = True
-            await asyncio.sleep(INTERVAL * 2.2)         # one or two failed checks: not enough to cut a connection off
-            assert not conn.task.done(), "one blip in storage must not close an open shell"
-            state["fail"] = False
-            await asyncio.sleep(INTERVAL * 4)           # a good check resets the count
+            seen["fail"] = True
+            assert await _until(lambda: seen["failed"] >= 2), "the watcher never ran two checks"
+            assert not conn.task.done(), "two failed checks are not enough to cut a connection off: one blip must not close an open shell"
+            seen["fail"] = False
+            good_before = seen["good"]
+            assert await _until(lambda: seen["good"] >= good_before + 2), "the watcher stopped checking"
             assert not conn.task.done()
-            state["fail"] = True
+            seen["fail"], seen["failed"] = True, 0                  # a good check reset the count: it takes three NEW failures
             assert await conn.ended_within(), "storage that keeps failing is a connection nobody can vouch for: fail closed"
+            assert seen["failed"] >= 3, f"it closed after {seen['failed']} failed checks"
     finally:
         storage.get = real_get
 
@@ -417,6 +439,169 @@ async def test_an_app_that_raises_still_raises_through_the_watcher(probed) -> No
     async with _Http(probed, "/v1/_probe/boom", _cookie_header(other_cookie)) as conn:
         await conn.ended_within()
         assert conn.status == 500, "an exception in a slow handler is still a 500, not swallowed by the watcher"
+
+
+# --- follow-up: role direction, cookie lifetime, the cancel grace, writes in flight ---------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)
+async def test_a_stream_is_not_cut_when_its_user_is_promoted(probed) -> None:
+    """A promotion adds authority; the connection was opened with less than the user now has, and nothing it holds is unsafe."""
+    _, other_cookie = await _cookies(probed)
+    async with _Http(probed, "/v1/_probe/stream", _cookie_header(other_cookie)) as conn:
+        await _change(probed, "other", role="admin")
+        await asyncio.sleep(INTERVAL * 8)
+        assert not conn.task.done(), "a promotion disconnected the user"
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(("start", "end"), [("admin", "user"), ("admin", "restricted"), ("user", "restricted")])
+async def test_a_stream_is_cut_on_every_kind_of_downgrade(probed, start: str, end: str) -> None:
+    _, other_cookie = await _cookies(probed)
+    await _change(probed, "other", role=start)                  # the role the connection is opened with
+    async with _Http(probed, "/v1/_probe/stream", _cookie_header(other_cookie)) as conn:
+        await _change(probed, "other", role=end)
+        assert await conn.ended_within(), f"{start} -> {end} kept its open stream"
+
+
+@pytest.mark.parametrize(("old", "new", "cut"), [
+    ("admin", "user", True), ("admin", "restricted", True), ("user", "restricted", True),
+    ("user", "admin", False), ("restricted", "user", False), ("restricted", "admin", False),
+    ("user", "user", False),
+    ("user", "superuser", True),          # a role the ranking does not know cannot be shown to be no weaker: fail closed
+    ("superuser", "admin", True),         # nor can one it never knew
+])
+def test_which_role_changes_end_a_connection(old: str, new: str, cut: bool) -> None:
+    from primer.api.middleware.revalidate import role_was_weakened
+
+    assert role_was_weakened(old, new) is cut
+
+
+def _eight_days_on(monkeypatch) -> None:
+    """Move the revalidation clock past a 7-day cookie lifetime (the default ``session_ttl_days``)."""
+    from primer.api.middleware import revalidate
+
+    real = revalidate._now
+    monkeypatch.setattr(revalidate, "_now", lambda: real() + timedelta(days=8))
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)
+async def test_a_cookie_stream_ends_when_the_cookies_own_lifetime_runs_out(probed, monkeypatch) -> None:
+    """A cookie is valid for ``session_ttl_days`` from when it was issued, and a connection opened just before the end used to outlive it forever."""
+    _, other_cookie = await _cookies(probed)
+    async with _Http(probed, "/v1/_probe/stream", _cookie_header(other_cookie)) as conn:
+        assert conn.status == 200
+        await asyncio.sleep(INTERVAL * 3)
+        assert not conn.task.done()
+        _eight_days_on(monkeypatch)
+        assert await conn.ended_within(), "a stream outlived the session cookie that opened it"
+        assert conn.completed
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)
+async def test_a_bearer_stream_without_an_expiry_is_not_cut_by_the_cookie_lifetime(probed, monkeypatch) -> None:
+    await _cookies(probed)
+    plaintext, _ = await _bearer_for(probed, "other")
+    async with _Http(probed, "/v1/_probe/stream", [(b"authorization", f"Bearer {plaintext}".encode())]) as conn:
+        _eight_days_on(monkeypatch)
+        await asyncio.sleep(INTERVAL * 8)
+        assert not conn.task.done(), "an API token that never expires was treated like a cookie"
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)
+async def test_an_app_that_outlives_the_cancel_grace_is_logged_at_debug(probed, monkeypatch, caplog) -> None:
+    """The connection is closed over an app that has not finished unwinding; that is worth a debug line, not silence."""
+    from primer.api.middleware import revalidate
+
+    monkeypatch.setattr(revalidate, "_CANCEL_GRACE_S", 0.1)
+    _, other_cookie = await _cookies(probed)
+    finish = asyncio.Event()
+
+    async def stubborn(scope, receive, send):                        # raw ASGI: one plain cancel, then a slow unwind
+        await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"text/event-stream")]})
+        await send({"type": "http.response.body", "body": b"x", "more_body": True})
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            while not finish.is_set():                               # swallow every cancel (a task group re-delivers its own) until released
+                try:
+                    await asyncio.sleep(0.01)
+                except asyncio.CancelledError:
+                    pass
+            raise
+
+    probed.mount("/v1/_probe_stubborn", stubborn)
+    try:
+        with caplog.at_level(logging.DEBUG, logger="primer.api.middleware.revalidate"):
+            async with _Http(probed, "/v1/_probe_stubborn/s", _cookie_header(other_cookie)) as conn:
+                assert conn.status == 200
+                await _change(probed, "other", disabled=True)
+                assert await conn.ended_within(), "the connection was held open by an app that would not unwind"
+                lines = [r for r in caplog.records if "still running" in r.getMessage()]
+                assert lines, "no line said the app outlived the grace"
+                assert all(r.levelno == logging.DEBUG for r in lines)
+    finally:
+        finish.set()                                                # let the stubborn task end so nothing leaks past the test
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)
+async def test_a_write_in_flight_is_not_cancelled_by_a_storage_outage(probed) -> None:
+    """Failing closed on a storage outage ends streams and sockets. A POST that is merely slow would be cancelled MID-WRITE, and storage being
+    down is exactly when it fails by itself, so it is left alone."""
+    _, other_cookie = await _cookies(probed)
+    entered, finished = asyncio.Event(), asyncio.Event()
+
+    async def slow_write():
+        entered.set()
+        await asyncio.sleep(INTERVAL * 12)
+        finished.set()
+        return {"ok": True}
+
+    probed.add_api_route("/v1/_probe/slow_write", slow_write, methods=["POST"])
+    storage = probed.state.storage_provider.get_storage(User)
+    real_get = storage.get
+    seen = {"failed": 0}
+
+    async def failing_get(entity_id):
+        seen["failed"] += 1
+        raise RuntimeError("storage unavailable")
+
+    async with _Http(probed, "/v1/_probe/slow_write", _cookie_header(other_cookie), method="POST", wait_for_start=False) as conn:
+        await asyncio.wait_for(entered.wait(), WITHIN)             # the request is past the middleware's own read of the user
+        storage.get = failing_get
+        try:
+            assert await _until(lambda: seen["failed"] >= 5, seconds=INTERVAL * 11), "the watcher stopped checking before five failed checks"
+            assert await conn.ended_within(), "the write never ended"
+        finally:
+            storage.get = real_get
+        assert finished.is_set(), "a write in flight was cancelled by a storage outage"
+        assert conn.status == 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)
+async def test_a_write_in_flight_IS_cancelled_when_its_account_is_disabled(probed) -> None:
+    """A real revocation is not a storage guess: it ends whatever the account was doing, writes included (documented)."""
+    _, other_cookie = await _cookies(probed)
+
+    entered = asyncio.Event()
+
+    async def long_write():
+        entered.set()
+        await asyncio.sleep(30)
+        return {"ok": True}
+
+    probed.add_api_route("/v1/_probe/long_write", long_write, methods=["POST"])
+    async with _Http(probed, "/v1/_probe/long_write", _cookie_header(other_cookie), method="POST", wait_for_start=False) as conn:
+        await asyncio.wait_for(entered.wait(), WITHIN)
+        await _change(probed, "other", disabled=True)
+        assert await conn.ended_within()
 
 
 # --- the real terminal WebSocket --------------------------------------------------------------------------------------------------------
