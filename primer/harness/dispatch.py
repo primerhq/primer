@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import jsonschema
 import jsonschema.exceptions
@@ -663,6 +664,34 @@ def _slice_overrides_along_path(
     return cursor
 
 
+def _origin(url: str | None) -> tuple[str, str, int | None] | None:
+    """``(scheme, host, port)`` of ``url`` (host lowercased), or None when it has no host."""
+    if not url:
+        return None
+    try:
+        parsed = urlparse(url)
+        host, port = parsed.hostname, parsed.port
+    except ValueError:
+        return None
+    if not host:
+        return None
+    return parsed.scheme.lower(), host.lower(), port
+
+
+def _token_for_dependency(parent_url: str | None, dep_url: str, token: str | None) -> str | None:
+    """The token a dependency clone may carry: the parent's, only when the dependency is on the parent's own origin.
+
+    A dependency declared in a harness.yaml can point anywhere, so the parent's credential is sent only to the same scheme,
+    host and port the operator gave it for; any other dependency is cloned with no token (security review 2026-10-08).
+    """
+    if token is None:
+        return None
+    parent_origin = _origin(parent_url)
+    if parent_origin is None or parent_origin != _origin(dep_url):
+        return None
+    return token
+
+
 async def _render_sub_bundle(
     *,
     dep: ResolvedDependency,
@@ -822,7 +851,7 @@ async def _do_install(
                     dep_path = _dep_path_for(dep, harness.dependencies_resolved)
                     sub_files = await _render_sub_bundle(
                         dep=dep,
-                        token=token,
+                        token=_token_for_dependency(harness.git_url, dep.git_url, token),
                         overrides=dep_overrides,
                         dep_path=dep_path,
                     )
@@ -1024,7 +1053,7 @@ async def _do_sync(
                     dep_path = _dep_path_for(dep, harness.dependencies_resolved)
                     sub_files = await _render_sub_bundle(
                         dep=dep,
-                        token=token,
+                        token=_token_for_dependency(harness.git_url, dep.git_url, token),
                         overrides=dep_overrides,
                         dep_path=dep_path,
                     )
