@@ -62,16 +62,6 @@ _URL_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         ),
         r"\1[REDACTED]",
     ),
-    # Userinfo of a URL: https://user:password@host/... httpx prints a Base URL
-    # whole, credentials included, in an error ("Server error '500 ...' for url
-    # '...'") and in its INFO request line. The userinfo runs to the LAST "@"
-    # before the first "/", "?" or "#", because a password may hold an apostrophe
-    # and, in a hand-built string, a raw "@". An "@" after the authority (a path,
-    # a query, a fragment) is not userinfo. The scheme and the host stay.
-    (
-        re.compile(r'(\b[a-z][a-z0-9+.-]*://)[^/?#\s"]*@', re.IGNORECASE),
-        r"\1[REDACTED]@",
-    ),
     # Telegram Bot API: https://api.telegram.org/bot<id>:<secret>/method
     (re.compile(r"(/bot)\d+:[A-Za-z0-9_-]+"), r"\1[REDACTED]"),
     # Webhook capability tokens: keep the last 4 chars for correlation.
@@ -81,10 +71,24 @@ _URL_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
 )
 
+# Userinfo of a URL: https://user:password@host/... httpx prints a Base URL whole, credentials included, in an error ("Server error '500 ...' for url
+# '...'") and in its INFO request line. The userinfo runs to the LAST "@" before the first "/", "?" or "#", because a password may hold an
+# apostrophe and, in a hand-built string, a raw "@". An "@" after the authority (a path, a query, a fragment) is not userinfo. The scheme and the host
+# stay.
+#
+# The scheme is `[a-z][a-z0-9]*`, NOT `[a-z][a-z0-9+.-]*`: with "+", "." and "-" in the class every letter after one of them is a new word start (\b), so
+# a run like "a.a.a." is rescanned from each start and the match is QUADRATIC (100k characters took 24 s). This runs on every log record, including
+# uvicorn.access, which logs the request path of an unauthenticated request. Without the extras the output is the same for git+ssh, mongodb+srv and
+# postgresql+asyncpg: the scheme is kept as it is and only the part after the last "+" is matched.
+_USERINFO = re.compile(r'(\b[a-z][a-z0-9]*://)[^/?#\s"]*@', re.IGNORECASE)
+
 
 def redact_url_secrets(text: str) -> str:
     """Mask URL-borne credentials (userinfo, query keys, Telegram bot
     tokens, webhook capability tokens) in ``text``."""
+    # Userinfo needs both "://" and "@": a substring test is far cheaper than the regex on the text of every record.
+    if "@" in text and "://" in text:
+        text = _USERINFO.sub(r"\1[REDACTED]@", text)
     for pattern, repl in _URL_SECRET_PATTERNS:
         text = pattern.sub(repl, text)
     return text
