@@ -33,10 +33,11 @@ def _modal_src() -> str:
 # ---- verb chip --------------------------------------------------------
 
 
-def test_modal_has_a_verb_chip() -> None:
+def test_modal_has_no_verb_chip() -> None:
+    """The palette verb was a designer's annotation that shipped as UI (lead sweep L3); the title carries the agent's id in edit mode."""
     modal = _modal_src()
-    assert 'data-testid="agent-modal-verb-chip"' in modal
-    assert 'verb: {isEdit ? "Edit" : "Create"} Agent' in modal
+    assert "verb-chip" not in modal and "verb:" not in modal
+    assert "Agent \u2014 ${existing.id}" in modal
 
 
 # ---- Tools: footnote + already-live y/w/r/n badges ----------------------

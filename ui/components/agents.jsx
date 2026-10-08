@@ -700,21 +700,11 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
   };
 
   const selectedCount = selectedScopedIds.size;
-  const verbChip = (
-    <span className="pc-modal-chip mono text-sm muted"
-      data-testid="agent-modal-verb-chip"
-      style={{ marginLeft: 10, marginBottom: 0, verticalAlign: "middle" }}>
-      verb: {isEdit ? "Edit" : "Create"} Agent
-    </span>
-  );
   // Edit mode identifies the specific row in the title itself (same
-  // "Noun — id" pattern as KN_CollectionDetail) - the verb chip alone
-  // ("Agent · verb: Edit Agent") lost the agent id when this overlay
-  // stopped delegating to NV_OverlayPanel's own id-bearing title.
+  // "Noun - id" pattern as KN_CollectionDetail).
   const modalTitle = (
     <h1 className="page-title" style={{ font: "inherit", margin: 0, display: "inline" }}>
       {isEdit ? `Agent — ${existing.id}` : "Agent"}
-      {verbChip}
     </h1>
   );
 

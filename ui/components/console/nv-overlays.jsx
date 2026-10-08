@@ -21,8 +21,8 @@
 // same place. That is the shared-overlay contract of the design.
 
 // ---------------------------------------------------------------------------
-// Panel primitive: scrim + centered panel + header (title, verb chip,
-// close) + scrolling body + optional footer. Esc and scrim-click close.
+// Panel primitive: scrim + centered panel + header (title, close) +
+// scrolling body + optional footer. Esc and scrim-click close.
 function NV_OverlayPanel(props) {
   var onClose = props.onClose;
   React.useEffect(function () {
@@ -45,9 +45,6 @@ function NV_OverlayPanel(props) {
               the e2e suite addresses surfaces by h1.page-title. */}
           <h1 className="nv-overlay-title page-title"
             data-testid="nv-overlay-title">{props.title}</h1>
-          {props.verb ? (
-            <span className="nv-verb-chip">verb: {props.verb}</span>
-          ) : null}
           <span style={{ flex: 1 }} />
           <button type="button" className="nv-overlay-close"
             data-testid="nv-overlay-close" title="Close (Esc)"
@@ -75,6 +72,15 @@ function NV_Field(props) {
       {props.children}
     </div>
   );
+}
+
+// The workspace a create dialog acts on (the selected one): its name, else its id, else null when none is selected. Named in the Create
+// session dialog because the dialog never said where the session would go.
+function NV_workspaceLabel(workspaces, wid) {
+  if (!wid) return null;
+  var list = Array.isArray(workspaces) ? workspaces : [];
+  var ws = list.find(function (w) { return w && w.id === wid; });
+  return (ws && ws.name) || wid;
 }
 
 function NV_errText(err) {
@@ -232,7 +238,7 @@ function NV_CreateSessionOverlay() {
   }
 
   return (
-    <NV_OverlayPanel title="Create session" verb="Create Session"
+    <NV_OverlayPanel title="Create session"
       testid="nv-overlay:new-session" onClose={con.closeOverlay}
       footer={(
         <React.Fragment>
@@ -250,6 +256,11 @@ function NV_CreateSessionOverlay() {
           {NV_errText(err)}
         </div>
       ) : null}
+      <div className="nv-ns-workspace" data-testid="nv-ns-workspace">
+        {NV_workspaceLabel(con.workspaces, con.wid)
+          ? "Creating in workspace " + NV_workspaceLabel(con.workspaces, con.wid)
+          : "Select a workspace first"}
+      </div>
       <NV_Field label="Bind to an agent or a graph">
         <div className="nv-bind-picker">
           <button type="button" className="nv-bind-btn"
@@ -458,7 +469,7 @@ function NV_CreateWorkspaceOverlay() {
   }
 
   return (
-    <NV_OverlayPanel title="Create workspace" verb="Create Workspace"
+    <NV_OverlayPanel title="Create workspace"
       testid="nv-overlay:new-workspace" onClose={con.closeOverlay}
       footer={(
         <React.Fragment>

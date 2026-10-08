@@ -73,10 +73,10 @@ def test_grid_has_an_empty_state() -> None:
 # ---- Item 2: create/edit modal --------------------------------------------
 
 
-def test_modal_has_a_verb_chip() -> None:
+def test_modal_has_no_verb_chip() -> None:
+    """The palette verb was a designer's annotation that shipped as UI (lead sweep L3)."""
     modal = _modal_src()
-    assert 'data-testid="profile-modal-verb-chip"' in modal
-    assert 'verb: {isEdit ? "Edit" : "Create"} Model Profile' in modal
+    assert "verb-chip" not in modal and "verb:" not in modal
 
 
 def test_modal_provider_column_is_a_row_picker() -> None:

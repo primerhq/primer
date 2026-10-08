@@ -406,18 +406,7 @@ function MP_ProfileModal({ open, onClose, onSaved, existing, providers, prefill,
   return (
     <Modal
       onClose={onClose}
-      title={
-        <>
-          {isEdit ? `Edit ${existing.id}` : "Model profile"}
-          {/* Item 2: verb chip, reusing P1a's .pc-modal-chip for visual
-              consistency across every create/edit modal. */}
-          <span className="pc-modal-chip mono text-sm muted"
-            data-testid="profile-modal-verb-chip"
-            style={{ marginLeft: 10, marginBottom: 0, verticalAlign: "middle" }}>
-            verb: {isEdit ? "Edit" : "Create"} Model Profile
-          </span>
-        </>
-      }
+      title={isEdit ? `Edit ${existing.id}` : "Model profile"}
       footer={
         <>
           <Btn onClick={onClose}>Cancel</Btn>
