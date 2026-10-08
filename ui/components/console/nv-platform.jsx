@@ -419,7 +419,7 @@ var NV_PLAT_PAGES = {
       };
     },
     open: function (con, row) { con.openOverlay("services", null, row.id); },
-    create: function (con) { con.openOverlay("services", null, null); },
+    create: function (con, setModal) { setModal({ kind: "service" }); },
     delPath: function (row) { return "/services/" + encodeURIComponent(row.id); },
   },
   approvals: {
@@ -695,7 +695,7 @@ function NV_PlatCard(props) {
 }
 
 // Hosts of the create dialogs the entity pages already own (toolsets.jsx,
-// triggers.jsx): the dialog is that page's form, unchanged; the Platform page
+// triggers.jsx, services.jsx): the dialog is that page's form, unchanged; the Platform page
 // only decides what happens when it closes or creates a row (NV_createdRow).
 function NV_ToolsetCreateHost(props) {
   var Dialog = window.TS_NewToolsetModal;
@@ -715,6 +715,11 @@ function NV_ToolsetCreateHost(props) {
 function NV_TriggerCreateHost(props) {
   var Dialog = window.TR_CreateTriggerDialog;
   return <Dialog onClose={props.onClose} onCreated={props.onCreated} />;
+}
+
+function NV_ServiceCreateHost(props) {
+  var Dialog = window.SV_ServiceModal;
+  return <Dialog onClose={props.onClose} onSaved={props.onCreated} />;
 }
 
 // Model-profile create/edit, inline on the platform page. The form is
@@ -1212,6 +1217,14 @@ function NV_PlatPage() {
             onCreated={function (row) {
               setModal(null);
               NV_createdRow(con, function () { res.refetch(); }, "triggers", row);
+            }} />
+        ) : null}
+        {modal && modal.kind === "service" ? (
+          <NV_ServiceCreateHost
+            onClose={function () { setModal(null); }}
+            onCreated={function (row) {
+              setModal(null);
+              NV_createdRow(con, function () { res.refetch(); }, "services", row);
             }} />
         ) : null}
         {cards.length > NV_PLAT_PAGE_SIZE ? (
