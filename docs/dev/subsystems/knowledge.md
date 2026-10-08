@@ -91,6 +91,8 @@ Writes to a system collection answer 403 on every one of these.
 
 The content store is the only body location. An entity row without a content row is not a document: it is neither served nor listed.
 
+**Both document surfaces reach the vector store on delete and move (ticket 01a1131f).** `DocumentTreeService` (the `/docs` routes and the collections toolset) always took a best-effort unindexer and a chunk path rewriter; `DocumentService` (the path-addressed `/documents?path=` routes and the system toolset's `put_document` / `get_document_content` / `list_documents` / `move_document`) took only an indexer, so deleting a document by path left its chunks searchable and a move left every chunk's `meta.path` at the old path. `DocumentService.delete` now calls the unindexer, and `move` the path rewriter, AFTER their transaction (and, for a delete, the event): the rows are the truth, so the hooks are best-effort and log and swallow their own failures, and nothing re-embeds on a move (metadata only). They are the shared `make_document_unindexer` / `make_document_path_rewriter` of `primer/knowledge/indexing.py`, passed by every place that builds the service: the REST dependency `get_document_service` and the toolset's `_document_service_factory` (when a semantic-search registry is wired). A service built with no hooks (search off, unit tests) deletes and moves exactly as before. Pinned by `tests/api/test_document_path_service_unindexes.py` and `tests/toolset/test_system_document_service_unindexes.py`.
+
 `chunk_id` is `str(index)`. No other shape exists.
 
 A miss carries alternatives. `DocumentTreeService.resolve` raises with the siblings of the parent it searched, and the toolset passes that message through, so a wrong guess teaches the right path.

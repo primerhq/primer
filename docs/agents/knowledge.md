@@ -204,7 +204,9 @@ and the vector index consistent.
   `prefix` (e.g. `concepts/`) to scope to a subtree.
 - `system::move_document` - args `collection_id`, `from`, `to`.
   Changes a document's path, preserving its body, title, and
-  metadata. Fails if the `to` path is already taken.
+  metadata. Fails if the `to` path is already taken. When search is on,
+  the document's chunks get the new path too (metadata only; nothing is
+  re-embedded), so search results show where the document is now.
 
 ### Per-collection extras
 
