@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from primer.authz import _ROLE_RANK
+from primer.events.redaction import MASK
 from primer.model.principal import PrincipalRef
 from primer.model.trigger import Subscription, Trigger
 
@@ -112,13 +113,88 @@ async def refuse_steer_above_fire(sub: Subscription, session: Any, storage_provi
     target = getattr(session, "initiated_by", None)
     if _rank(target) <= _rank(fire):
         return None
-    target_label = f"{target.type}:{target.id} ({target.role or target.type})" if target is not None else "unattributed"
     reason = (
-        f"session {session.id!r} runs as {target_label}, which outranks this fire "
-        f"({fire.type}:{fire.id}, {fire.role or fire.type}); a fire may only steer a session at or below its owners' rank"
+        f"the target session's rank ({_rank_label(target)}) outranks this fire's ({_rank_label(fire)}); "
+        "a fire may only steer a session at or below its owners' rank"
     )
-    logger.warning("trigger %s subscription %s refused: %s", sub.trigger_id, sub.id, reason)
+    logger.warning(
+        "trigger %s subscription %s refused to steer session %s: %s", sub.trigger_id, sub.id, session.id, reason,
+    )
     return reason
 
 
-__all__ = ["principal_for_fire", "refuse_steer_above_fire"]
+def _rank_label(ref: PrincipalRef | None) -> str:
+    """The rank of ``ref`` in words, without naming who it is (the reason is stored on the subscription row)."""
+    if ref is None:
+        return "user (unattributed)"
+    return "system" if ref.type == "system" else str(ref.role)
+
+
+# ---------------------------------------------------------------------------
+# Who may see or change a webhook trigger's token (lead review of #491, round 2)
+# ---------------------------------------------------------------------------
+
+#: What a caller who may not manage a webhook trigger sees in place of its token. A ``PUT`` body that sends it back keeps
+#: the stored token.
+WEBHOOK_TOKEN_MASK = MASK
+
+
+async def _user_id_of(ref: PrincipalRef, storage_provider: Any) -> str | None:
+    if ref.type == "user":
+        return ref.id
+    if ref.type == "api_token":
+        from primer.model.api_token import ApiToken
+
+        token = await storage_provider.get_storage(ApiToken).get(ref.id)
+        return token.user_id if token is not None else None
+    return None
+
+
+async def may_manage_trigger(trigger: Trigger, caller: PrincipalRef | None, storage_provider: Any) -> bool:
+    """True when ``caller`` may see and change ``trigger``'s secrets: an admin, the system principal, or its owner.
+
+    The webhook token is the webhook's only credential, and a webhook POST's body becomes the first message of every run the
+    trigger's subscriptions start at the owners' rank, so whoever holds it can drive those runs. The owner is matched by the
+    underlying user (a token resolves to its user) AND the caller may not rank below the role the owner was recorded with: a
+    capped run carrying an admin's id at ``user`` rank is not that admin. A caller with no identity (the MCP endpoint hands
+    tools no context) may not.
+    """
+    if caller is None:
+        return False
+    if caller.type == "system" or _ROLE_RANK.get(caller.role, -1) >= _ROLE_RANK["admin"]:
+        return True
+    owner = trigger.owner
+    if owner is None or owner.type == "system":
+        return False
+    if _ROLE_RANK.get(caller.role, -1) < _ROLE_RANK.get(owner.role, -1):
+        return False
+    caller_user = await _user_id_of(caller, storage_provider)
+    return caller_user is not None and caller_user == await _user_id_of(owner, storage_provider)
+
+
+async def redact_for(trigger: Trigger, caller: PrincipalRef | None, storage_provider: Any) -> Trigger:
+    """``trigger`` as ``caller`` may see it: the webhook token masked unless :func:`may_manage_trigger`."""
+    if trigger.config.kind != "webhook" or await may_manage_trigger(trigger, caller, storage_provider):
+        return trigger
+    return trigger.model_copy(update={"config": trigger.config.model_copy(update={"token": WEBHOOK_TOKEN_MASK})})
+
+
+async def same_owner(a: PrincipalRef | None, b: PrincipalRef | None, storage_provider: Any) -> bool:
+    """Whether two owner refs name the same actor: the same type and id, or the same underlying user (a token resolves to
+    its user). The role is not identity."""
+    if a is None or b is None:
+        return False
+    if (a.type, a.id) == (b.type, b.id):
+        return True
+    user_a = await _user_id_of(a, storage_provider)
+    return user_a is not None and user_a == await _user_id_of(b, storage_provider)
+
+
+__all__ = [
+    "WEBHOOK_TOKEN_MASK",
+    "may_manage_trigger",
+    "principal_for_fire",
+    "redact_for",
+    "refuse_steer_above_fire",
+    "same_owner",
+]

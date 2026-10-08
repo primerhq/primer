@@ -57,6 +57,10 @@ class SessionAppendDispatcher:
         target = await deps.storage_provider.get_storage(
             WorkspaceSession,
         ).get(sub.config.session_id)
+        # A missing target skips the guard on purpose: deliver_steer finds the
+        # same absence and reports DELIVERED_MISSING, mapped below to a
+        # non-failing skip. Nothing is delivered either way, so there is no
+        # rank to protect.
         if target is not None:
             reason = await refuse_steer_above_fire(
                 sub, target, deps.storage_provider,

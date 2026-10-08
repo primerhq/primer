@@ -59,6 +59,10 @@ class TriggerSlugConflict(Exception):
     """A trigger with the requested slug already exists."""
 
 
+class TriggerForbidden(Exception):
+    """The caller may not change this trigger's secrets: only its owner or an admin may (lead review of #491, round 2)."""
+
+
 class WebhookTokenNotFound(Exception):
     """No trigger found for the supplied webhook token."""
 
@@ -234,6 +238,15 @@ async def update_trigger(
     runs are ranked by. ``owner=None`` (a call with no identity) clears it,
     so the trigger fires as an ordinary user.
 
+    A webhook trigger is changed only by its owner or an admin
+    (:func:`primer.trigger.owner.may_manage_trigger`; :class:`TriggerForbidden`
+    otherwise): the save hands the caller the token in the response, and the
+    token is the credential that drives the trigger's runs. When the save
+    hands the trigger to a different owner a new token is minted, so nobody
+    who knew the old one rides along at the new owner's rank. A token equal
+    to the mask (a body round-tripped from a masked read) keeps the stored
+    one.
+
     Changing the trigger's ``config.kind`` discriminator is rejected
     with :class:`TriggerKindImmutable` (delete + recreate is the
     operator path for kind changes).
@@ -246,6 +259,15 @@ async def update_trigger(
         raise TriggerKindImmutable(
             f"cannot change kind from {trigger.config.kind!r} to {config.kind!r}"
         )
+    from primer.trigger.owner import WEBHOOK_TOKEN_MASK, may_manage_trigger, same_owner
+
+    if trigger.config.kind == "webhook" and not await may_manage_trigger(
+        trigger, owner, deps.storage_provider,
+    ):
+        raise TriggerForbidden(
+            "only the trigger's owner or an admin may change a webhook trigger"
+        )
+    adopted = not await same_owner(trigger.owner, owner, deps.storage_provider)
     trigger.owner = owner
     if name is not None:
         trigger.name = name
@@ -258,9 +280,16 @@ async def update_trigger(
         # For webhook triggers, preserve the existing token unless the
         # caller has supplied a non-empty one (rotate path uses rotate_webhook_token
         # explicitly; update is only used for hmac_secret set/clear).
-        if config.kind == "webhook" and not config.token:
+        if config.kind == "webhook" and config.token in ("", WEBHOOK_TOKEN_MASK):
             config = config.model_copy(update={"token": trigger.config.token})
+        elif config.kind == "webhook":
+            # A caller-chosen token is the new credential: nobody else knew it.
+            adopted = False
         trigger.config = config
+    if trigger.config.kind == "webhook" and adopted:
+        trigger.config = trigger.config.model_copy(
+            update={"token": _mint_webhook_token()},
+        )
 
     source = get_source(trigger.config.kind)
     trigger.next_fire_at = (
@@ -463,9 +492,13 @@ async def get_trigger_by_webhook_token(
 
 
 async def rotate_webhook_token(
-    *, trigger_id: str, deps: ServiceDeps,
+    *, trigger_id: str, owner: PrincipalRef | None = None, deps: ServiceDeps,
 ) -> Trigger:
     """Rotate the capability token of a webhook trigger.
+
+    Only the trigger's owner or an admin may (:class:`TriggerForbidden`
+    otherwise), and the caller becomes the owner: a rotate hands out the new
+    token, so it can never leave the trigger ranked as someone higher.
 
     Returns the updated trigger with the new token.
     Raises :class:`TriggerNotFound` if missing, or ``ValueError`` if the
@@ -479,8 +512,15 @@ async def rotate_webhook_token(
         raise ValueError(
             f"rotate_webhook_token requires kind='webhook', got {trigger.config.kind!r}"
         )
+    from primer.trigger.owner import may_manage_trigger
+
+    if not await may_manage_trigger(trigger, owner, deps.storage_provider):
+        raise TriggerForbidden(
+            "only the trigger's owner or an admin may rotate its webhook token"
+        )
     new_token = _mint_webhook_token()
     trigger.config = trigger.config.model_copy(update={"token": new_token})
+    trigger.owner = owner
     await storage.update(trigger)
     return trigger
 

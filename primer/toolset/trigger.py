@@ -55,10 +55,12 @@ from primer.toolset._describe import make_tool
 from primer.toolset._helpers import err as _err, ok as _ok
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 from primer.trigger.cron import CronInvalid, TimezoneInvalid
+from primer.trigger.owner import redact_for
 from primer.trigger.service import (
     ParkedSessionOnlyFromYield,
     ServiceDeps,
     SubscriptionNotFound,
+    TriggerForbidden,
     TriggerKindImmutable,
     TriggerNotFound,
     TriggerSlugConflict,
@@ -509,7 +511,9 @@ def _make_list_handler(
     claim_engine: Any,
     event_bus: Any,
 ) -> ToolHandler:
-    async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _handler(
+        arguments: dict[str, Any], *, ctx: ToolContext | None = None,
+    ) -> ToolCallResult:
         try:
             args = _ListArgs.model_validate(arguments)
         except ValidationError as exc:
@@ -518,7 +522,9 @@ def _make_list_handler(
         items = await list_triggers(
             kind=args.kind, enabled=args.enabled, deps=deps,
         )
-        return _ok(items)
+        # The webhook token only for its owner or an admin (A-20 round 2).
+        caller = _caller(ctx)
+        return _ok([await redact_for(t, caller, storage_provider) for t in items])
 
     return _handler
 
@@ -537,7 +543,9 @@ def _make_get_handler(
     claim_engine: Any,
     event_bus: Any,
 ) -> ToolHandler:
-    async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _handler(
+        arguments: dict[str, Any], *, ctx: ToolContext | None = None,
+    ) -> ToolCallResult:
         try:
             args = _IdArgs.model_validate(arguments)
         except ValidationError as exc:
@@ -547,7 +555,8 @@ def _make_get_handler(
             trigger = await get_trigger(trigger_id=args.id, deps=deps)
         except TriggerNotFound as exc:
             return _err(str(exc), error_type="trigger_not_found")
-        return _ok(trigger)
+        # The webhook token only for its owner or an admin (A-20 round 2).
+        return _ok(await redact_for(trigger, _caller(ctx), storage_provider))
 
     return _handler
 
@@ -613,6 +622,8 @@ def _make_update_handler(
             return _err(str(exc), error_type="trigger_not_found")
         except TriggerKindImmutable as exc:
             return _err(str(exc), error_type="trigger_kind_immutable")
+        except TriggerForbidden as exc:
+            return _err(str(exc), error_type="forbidden")
         except CronInvalid as exc:
             return _err(str(exc), error_type="cron_invalid")
         except TimezoneInvalid as exc:

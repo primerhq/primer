@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
+from primer.model.principal import PrincipalRef
 from primer.model.trigger import (
     ChannelTriggerConfig,
     DelayedTriggerConfig,
@@ -98,7 +99,7 @@ async def test_rotate_preserves_interactive_and_wait_cap(fake_storage_provider):
     # back the same Trigger instance rotate mutates, so comparing against
     # trigger.config afterwards compares the new token with itself.
     before = trigger.config.token
-    rotated = await rotate_webhook_token(trigger_id=trigger.id, deps=deps)
+    rotated = await rotate_webhook_token(trigger_id=trigger.id, owner=PrincipalRef.system(), deps=deps)
     assert rotated.config.token != before
     assert rotated.config.interactive is True
     assert rotated.config.wait_timeout_seconds == 7
@@ -112,11 +113,14 @@ async def test_update_preserves_token_and_new_fields(fake_storage_provider):
         description=None,
         config=WebhookTriggerConfig(),
         enabled=True,
+        owner=PrincipalRef.system(),
         deps=deps,
     )
+    # The same owner re-saves: a save that hands the trigger to someone else mints a new token.
     updated = await update_trigger(
         trigger_id=trigger.id,
         config=WebhookTriggerConfig(interactive=True, wait_timeout_seconds=9),
+        owner=PrincipalRef.system(),
         deps=deps,
     )
     assert updated.config.token == trigger.config.token
