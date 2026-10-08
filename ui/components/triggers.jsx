@@ -260,8 +260,8 @@ function TR_TriggerList() {
           <div className="head">No triggers configured</div>
           <div className="sub">
             Triggers fire on a delay, cron schedule, or inbound webhook POST
-            and dispatch to subscriptions (chat messages, fresh agent sessions,
-            fresh graph sessions).
+            and dispatch to subscriptions (steer an existing session, start a
+            fresh agent session or a fresh graph session).
           </div>
           <div className="actions">
             <Btn kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>Create trigger</Btn>

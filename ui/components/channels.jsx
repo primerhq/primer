@@ -977,13 +977,13 @@ function NewChannelModal({ providers, onClose, onCreated, pushToast, existing })
       </div>
 
       <div style={{ borderTop: "1px dashed var(--border)", paddingTop: 12, marginTop: 4 }}>
-        <div className="mono" style={{ fontSize: 10.5, fontWeight: 600, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10 }}>Chats config</div>
+        <div className="mono" style={{ fontSize: 10.5, fontWeight: 600, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10 }} title="config.chats">Inbound messages</div>
         <div className="field">
           <CH_Toggle
             checked={chatsEnabled}
             onChange={setChatsEnabled}
-            label="Chats enabled"
-            help="allow inbound chat messages on this channel"
+            label="Start sessions from inbound messages"
+            help="messages posted in this room start sessions; the channel's trigger decides which agent runs"
             testid="channel-chats-enabled"
           />
         </div>
