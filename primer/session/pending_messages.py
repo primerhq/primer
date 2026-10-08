@@ -59,10 +59,11 @@ async def store_pending_steer(
 ) -> PendingSessionMessage:
     """Queue a follow-up steer without touching the message log.
 
-    ``session`` (not just ``session_id``) is required so a capacity drop
-    (see ``_enforce_pending_cap`` below) can write its announcement record
-    at the right ``start_seq`` without a second storage round-trip -- every
-    real caller already has the row in hand.
+    ``session`` (not just ``session_id``) names the session a capacity drop
+    (see ``_enforce_pending_cap`` below) is announced for. The announcement's
+    seq is RESERVED on the stored row (``reserve_next_seq``: it reads the
+    row fresh and takes the next seq, so the snapshot passed in may be stale
+    and the row's ``last_seq`` moves), not taken from ``session.last_seq``.
     """
     now = datetime.now(UTC)
     row = PendingSessionMessage(

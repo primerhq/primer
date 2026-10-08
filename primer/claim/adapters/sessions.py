@@ -89,7 +89,8 @@ class SessionClaimAdapter(ClaimAdapter):
 
         Every branch is ONE field-scoped ``Storage.patch_if`` of only its own fields (the park columns,
         ``last_worker_id``, and on a successful turn ``turn_no`` / ``last_turn_at``). It never writes
-        ``turn_status``, ``last_seq``, ``status``, the cursor or the request flags: a whole-document
+        ``turn_status``, ``status``, the cursor or the request flags, and it writes ``last_seq`` only to
+        ADVANCE it past the failure marker it appends (``_write_terminal_record``): a whole-document
         ``update`` from the row read here used to put back whatever a concurrent writer (a ``wake_session``
         steer) committed between the read and the write, so its ``turn_status="claimable"`` and its
         ``last_seq`` regressed and the next turn's writer reused a seq.
@@ -203,8 +204,14 @@ class SessionClaimAdapter(ClaimAdapter):
         """Append a synthetic error-kind SessionMessageRecord to messages.jsonl.
 
         The record's seq is RESERVED on the row first, through the release's own ``conn`` (a separate connection would wait on the row
-        lock this transaction holds): ``on_release`` never writes ``last_seq`` otherwise, and the next writer on the row, seeded from
-        it, would put its record at the seq this one took (ticket 01a11cd8).
+        lock this transaction holds): the next writer on the row, seeded from ``last_seq``, would otherwise put its record at the seq
+        this one took (ticket 01a11cd8).
+
+        NOT covered: the reservation is part of the release transaction, the APPEND below is not (a workspace write), and the pool
+        bounds a release (the lease TTL minus a heartbeat, about 20 s) below the writer's bound (``_WRITE_TIMEOUT_S``, 30 s). A slow
+        workspace lets the bound cancel the release: the transaction ROLLS BACK, the reservation with it, while the marker can still
+        land at the seq it took, and the next writer repeats that seq (ticket 01a11d16). Writing the marker after the commit, with
+        its own committed reservation, is the alternative.
         """
         from primer.model.workspace_session import SessionMessageKind, SessionMessageRecord
         from primer.session.persistence import WorkspaceMessageWriter

@@ -79,8 +79,16 @@ async def test_a_row_that_is_gone_raises_not_found():
 @pytest.mark.asyncio
 async def test_concurrent_advisory_reservations_never_share_a_seq():
     sessions = await _sessions()
+    real_get = sessions.get
 
-    taken = await asyncio.gather(*(reserve_next_seq(sessions, "s") for _ in range(8)))
+    async def yielding_get(id, *, conn=None):
+        row = await real_get(id, conn=conn)
+        await asyncio.sleep(0)      # every reservation reads before any patches: the fence is what keeps them apart
+        return row
+
+    sessions.get = yielding_get
+
+    taken = await asyncio.gather(*(reserve_next_seq(sessions, "s", attempts=20) for _ in range(8)))
 
     assert sorted(taken) == list(range(7, 15))
     assert (await sessions.get("s")).last_seq == 14

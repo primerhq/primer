@@ -261,7 +261,8 @@ async def test_paused_session_non_human_wake_queues_and_holds_pause():
     """01a08c08 ruling: a non-human wake (trigger fire, agent-to-agent
     steer, a queued message's own replay) must NOT clear an operator's
     pause. The instruction is queued as a PendingSessionMessage instead,
-    and the row is left completely untouched."""
+    and the row's request flags and status are left as they were (only last_seq moves,
+    by the PAUSE_SUPERSEDED record's reserved seq)."""
     row = _row(SessionStatus.PAUSED)
     row.pause_requested = True
     deps, slot, sched, eng = _deps(row)
@@ -294,8 +295,8 @@ async def test_paused_session_non_human_wake_queues_and_holds_pause():
             deps=deps,
         )
 
-    # The row is untouched: still paused, no claimable flip, no status
-    # advance, no scheduler/claim-engine pulse.
+    # The row's request state is untouched: still paused, no claimable flip, no status
+    # advance, no scheduler/claim-engine pulse (only last_seq moves, by the reserved seq).
     assert out.status == SessionStatus.PAUSED
     assert out.pause_requested is True
     assert out.turn_status != "claimable"
