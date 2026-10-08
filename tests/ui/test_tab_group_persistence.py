@@ -185,3 +185,82 @@ def test_the_shell_stores_per_user_only_after_it_has_restored() -> None:
     helpers = SHELL[SHELL.index("function NV_loadTabs"):SHELL.index("function NV_Shell()")]
     assert helpers.count("try {") == 2 and helpers.count("catch") == 2, "storage can throw (private mode, quota) and hold anything: both accesses are guarded"
     assert "NV_loadTabs(tabsStoreKey)" in block and "NV_saveTabs(tabsStoreKey" in block
+
+
+# --- review of #610: the phone, the wrong user, the bounds ----------------------------------------------------------------------------------------------
+
+
+def _shell_fn(name: str) -> str:
+    start = SHELL.index("function " + name + "(")
+    return SHELL[start:SHELL.index("\n}\n", start) + len("\n}\n")]
+
+
+@pytest.fixture
+def keyctx():
+    from py_mini_racer import MiniRacer
+
+    c = MiniRacer()
+    c.eval("var window = globalThis;")
+    c.eval(_shell_fn("NV_tabsStoreKey"))
+    try:
+        yield c
+    finally:
+        c.close()
+
+
+@pytest.mark.parametrize("status", [
+    None, {}, {"authenticated": False, "username": "alice"}, {"authenticated": True}, {"authenticated": True, "username": ""},
+    {"authenticated": True, "username": None}, {"authenticated": "yes", "username": "alice"}, {"authenticated": True, "username": 7},
+])
+def test_there_is_no_store_key_unless_an_authenticated_user_has_a_name(keyctx, status) -> None:
+    """A signed-out refetch used to write to ...:anon, which is a legal username; an unauthenticated status names nobody."""
+    assert _js(keyctx, f"NV_tabsStoreKey({json.dumps(status)})") is None
+
+
+def test_each_user_has_their_own_store_key(keyctx) -> None:
+    alice = _js(keyctx, 'NV_tabsStoreKey({authenticated: true, username: "alice"})')
+    bob = _js(keyctx, 'NV_tabsStoreKey({authenticated: true, username: "bob"})')
+    assert alice and bob and alice != bob
+    assert alice.startswith("primer.console.tabs.v1:") and alice.endswith("alice")
+
+
+def test_the_install_with_auth_off_is_the_system_user(keyctx) -> None:
+    """`GET /v1/auth/status` answers authenticated: true, username: "system" when auth is disabled: that is a name like any other."""
+    assert _js(keyctx, 'NV_tabsStoreKey({authenticated: true, username: "system", has_user: false})').endswith(":system")
+
+
+def test_the_effects_skip_the_phone_and_never_write_under_another_key() -> None:
+    block = SHELL[SHELL.index("tabsStoreKey"):SHELL.index("// Menus close on any outside click.")]
+    restore = block[block.index("React.useEffect"):block.index("React.useEffect", block.index("React.useEffect") + 10)]
+    write = block[block.index("React.useEffect", block.index("React.useEffect") + 10):]
+    for effect in (restore, write):
+        assert "isMobile" in effect[:effect.index("function () {") + 400] or "isMobile" in effect, effect
+        assert "isMobile" in effect.split("}, [")[-1], "isMobile is in the effect's deps"
+    assert "tabsKeyRef" in restore and "tabsKeyRef.current" in write, "the write only ever uses the key the restore used"
+    assert "NV_tabsStoreKey(status.data)" in block
+
+
+def test_ten_groups_of_one_tab_restore_as_exactly_six(ctx) -> None:
+    saved = {"v": 1, "groups": [{"id": f"g{i}", "tabs": [{"kind": "session", "ref": f"s{i}"}]} for i in range(10)]}
+    restored = _restore(ctx, saved)
+    assert len(restored["groups"]) == 6 and [g["tabs"][0]["ref"] for g in restored["groups"]] == [f"s{i}" for i in range(6)]
+
+
+def test_a_bare_link_after_a_stored_set_keeps_the_stored_active_tab(ctx) -> None:
+    """The live model of a load with no document in the URL has no active tab: the restored set stands, active tab included."""
+    saved = {"v": 1, "groups": [{"id": "g1", "active": "session:a", "tabs": [{"kind": "session", "ref": "a"}, {"kind": "session", "ref": "b"}]}]}
+    merged = _js(ctx, f'TG_restoreInto(TG_init({{groupId: "live"}}), {json.dumps(saved)}, {json.dumps(KINDS)})')
+    assert [t["id"] for g in merged["groups"] for t in g["tabs"]] == ["session:a", "session:b"]
+    assert _js(ctx, f"TG_activeDoc({json.dumps(merged)})")["ref"] == "a"
+
+
+@pytest.mark.parametrize("gid", ["x" * 500, "has space", "<script>", "g-" + "z" * 80, "", 7, None])
+def test_a_stored_group_id_that_is_not_a_short_plain_token_is_replaced(ctx, gid) -> None:
+    saved = {"v": 1, "groups": [{"id": gid, "tabs": [{"kind": "session", "ref": "a"}]}]}
+    got = _restore(ctx, saved)["groups"][0]["id"]
+    assert isinstance(got, str) and 0 < len(got) <= 32 and got != gid
+
+
+def test_a_stored_group_id_in_the_models_own_format_is_kept(ctx) -> None:
+    saved = {"v": 1, "groups": [{"id": "g-abc123x", "tabs": [{"kind": "session", "ref": "a"}]}]}
+    assert _restore(ctx, saved)["groups"][0]["id"] == "g-abc123x"
