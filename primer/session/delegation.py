@@ -24,10 +24,14 @@ being replayed back into the parent's next turn.
 from __future__ import annotations
 
 import contextvars
+import logging
 from typing import Any
 
 from primer.agent.call_scope import current_call_scope
-from primer.session.persistence import _CoalesceState, translate_stream_event
+from primer.model.chat import Error
+from primer.session.persistence import _CoalesceState, flush_partial_output, translate_stream_event
+
+logger = logging.getLogger(__name__)
 
 _SINK: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
     "primer_delegation_sink", default=None,
@@ -57,9 +61,11 @@ def _abandoned() -> bool:
 class DelegationRecorder:
     """Translate subagent stream events into parent-session records.
 
-    Carries its own coalescing state so a subagent's text deltas
-    accumulate independently of the parent turn's, rather than
-    interleaving into one another's buffers.
+    Carries a coalescing state PER RUN (keyed by the run id, else the delegating call's id), so one subagent's text deltas accumulate independently of the
+    parent turn's AND of every other run's, rather than interleaving into one another's buffers. Text only becomes a record at a ``Done`` or a tool call;
+    a run that ends otherwise would lose what it had streamed, so a fatal ``Error`` flushes the run's buffers ahead of its own ERROR record, and
+    :meth:`finish_run` does the same for a run that ended by an exception or a Stop (the invoke loops call it in a ``finally``). Before this the state was
+    shared: a failed subagent's text surfaced later glued to the next run's, under the wrong run id (ticket 01a11ca9).
     """
 
     def __init__(
@@ -69,7 +75,29 @@ class DelegationRecorder:
         self._bus = event_bus
         self._session_id = session_id
         self._turn_no = turn_no
-        self._state = _CoalesceState()
+        self._states: dict[str, _CoalesceState] = {}
+
+    @staticmethod
+    def _run_key(delegate_tool_call_id: str | None, delegate_run_id: str | None) -> str:
+        """A run is told apart by its run id; a caller that predates run ids has only the delegating call's (not unique) id."""
+        return delegate_run_id or f"call:{delegate_tool_call_id}"
+
+    def _stamp(self, rec: Any, **ids: Any) -> None:
+        rec.payload["delegated"] = True
+        rec.payload["delegate_tool_call_id"] = ids["delegate_tool_call_id"]
+        for name in ("delegate_run_id", "delegate_parent_run_id", "delegate_depth"):
+            if ids.get(name) is not None:
+                rec.payload[name] = ids[name]
+
+    async def _append(self, records: list[Any], **ids: Any) -> None:
+        for rec in records:
+            if _abandoned():
+                return  # abandoned while an earlier record of this batch was being written
+            self._stamp(rec, **ids)
+            seq = await self._writer.append(rec)
+            await self._bus.publish(
+                f"session:{self._session_id}:tick", {"seq": seq},
+            )
 
     async def on_event(
         self,
@@ -96,25 +124,44 @@ class DelegationRecorder:
         # everything the call started, so it is the one thing every such event can be asked.
         if _abandoned():
             return
-        result = translate_stream_event(ev, self._state, turn_no=self._turn_no)
-        if result is None:
-            return  # coalesced or not persistable; most events land here
-        records = result if isinstance(result, list) else [result]
-        for rec in records:
-            if _abandoned():
-                return  # abandoned while an earlier record of this event was being written
-            rec.payload["delegated"] = True
-            rec.payload["delegate_tool_call_id"] = delegate_tool_call_id
-            if delegate_run_id is not None:
-                rec.payload["delegate_run_id"] = delegate_run_id
-            if delegate_parent_run_id is not None:
-                rec.payload["delegate_parent_run_id"] = delegate_parent_run_id
-            if delegate_depth is not None:
-                rec.payload["delegate_depth"] = delegate_depth
-            seq = await self._writer.append(rec)
-            await self._bus.publish(
-                f"session:{self._session_id}:tick", {"seq": seq},
+        state = self._states.setdefault(self._run_key(delegate_tool_call_id, delegate_run_id), _CoalesceState())
+        records: list[Any] = []
+        if isinstance(ev, Error) and ev.fatal:
+            # A fatal Error is the end of this run's stream: what it had streamed is not going to reach a Done, so it becomes its own record now,
+            # AHEAD of the error that explains why it stops (the main path does the same, see flush_partial_output).
+            records.extend(flush_partial_output(state, turn_no=self._turn_no))
+        result = translate_stream_event(ev, state, turn_no=self._turn_no)
+        if result is not None:  # None: coalesced or not persistable; most events land here
+            records.extend(result if isinstance(result, list) else [result])
+        await self._append(
+            records, delegate_tool_call_id=delegate_tool_call_id, delegate_run_id=delegate_run_id,
+            delegate_parent_run_id=delegate_parent_run_id, delegate_depth=delegate_depth,
+        )
+
+    async def finish_run(
+        self,
+        *,
+        delegate_tool_call_id: str | None,
+        delegate_run_id: str | None = None,
+        delegate_parent_run_id: str | None = None,
+        delegate_depth: int | None = None,
+    ) -> None:
+        """A run is over, however it ended: write what it streamed and never got to flush, and forget its coalescing state.
+
+        Called by the invoke loops in a ``finally``, so a run that raised, was stopped, or parked still leaves its text as its own record (a run that
+        reached its ``Done`` has nothing buffered and writes nothing). A call that was abandoned by a Stop writes nothing (stop slice B1). Best effort: a
+        failure to write must not replace the exception the run is already ending with.
+        """
+        state = self._states.pop(self._run_key(delegate_tool_call_id, delegate_run_id), None)
+        if state is None or _abandoned():
+            return
+        try:
+            await self._append(
+                flush_partial_output(state, turn_no=self._turn_no), delegate_tool_call_id=delegate_tool_call_id,
+                delegate_run_id=delegate_run_id, delegate_parent_run_id=delegate_parent_run_id, delegate_depth=delegate_depth,
             )
+        except Exception:  # noqa: BLE001 - best effort, see above
+            logger.warning("delegation: could not write the unflushed output of run %s", delegate_run_id, exc_info=True)
 
 
 __all__ = [
