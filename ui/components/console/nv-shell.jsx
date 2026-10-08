@@ -136,6 +136,14 @@ function NV_readUrl() {
 // Frozen module-level empty array: a fresh [] each render would defeat the ctx memo.
 var EMPTY_WS_ITEMS = Object.freeze([]);
 
+// The key the tab groups' working set is kept under: one per signed-in user, and none for anyone else. `GET /v1/auth/status` names the user only when authenticated
+// (an install with auth off answers authenticated: true, username: "system", a name like any other); a signed-out status, a status without a name or a stranger's shape
+// has no key, so nothing is read or written for it (a signed-out refetch used to land on ...:anon, a legal username).
+function NV_tabsStoreKey(status) {
+  if (!status || status.authenticated !== true) return null;
+  if (typeof status.username !== "string" || !status.username) return null;
+  return "primer.console.tabs.v1:" + status.username;
+}
 // The tab groups' working set, kept per user in this browser (console review C-023). Identity and layout only (TG_serialize); storage can be
 // unavailable or hold anything (private mode, quota, another version), so every access is guarded and a bad value is the same as no value.
 function NV_loadTabs(key) {
@@ -348,25 +356,30 @@ function NV_Shell() {
     overlay && overlay.name, overlay && overlay.section,
     overlay && overlay.id, anchor]);
 
-  // The working set survives a reload (console review C-023). The key names the user, who is known once the auth status has loaded; until then nothing is
-  // read or written. The restore runs once and merges into whatever the load already holds (the URL's document, opened as a tab, stays the active one); the
-  // write effect waits for it (tabsRestored), or the first render's one-tab model would overwrite the stored working set before it was read.
-  var tabsStoreKey = status.data ? "primer.console.tabs.v1:" + (status.data.username || "anon") : null;
+  // The working set survives a reload (console review C-023). Desktop only: the phone's shell shows any open document full screen and its Back closes the tab, so a
+  // restored desktop set would take the phone over and a phone's Back would delete what the desktop stored. The key names the signed-in user (NV_tabsStoreKey: none
+  // until the auth status says who), and the restore runs ONCE, under the key it read; the write only ever uses that same key (tabsKeyRef), so a later refetch that
+  // turns out to be another user (a window shown again after someone else signed in) can neither store the tabs on screen under that user nor read theirs. The
+  // restore merges into whatever the load already holds (the URL's document, opened as a tab, stays the active one); the write effect waits for it (tabsRestored),
+  // or the first render's one-tab model would overwrite the stored working set before it was read.
+  var tabsStoreKey = NV_tabsStoreKey(status.data);
+  var tabsKeyRef = React.useRef(null);
   var tabsRestoredState = React.useState(false);
   var tabsRestored = tabsRestoredState[0];
   var setTabsRestored = tabsRestoredState[1];
   React.useEffect(function () {
-    if (!tabsStoreKey || tabsRestored) return;
+    if (isMobile || !tabsStoreKey || tabsRestored) return;
+    tabsKeyRef.current = tabsStoreKey;
     var saved = NV_loadTabs(tabsStoreKey);
     if (saved) {
       setTgModel(function (live) { return window.TG_restoreInto(live, saved, window.SH_DOC_KINDS); });
     }
     setTabsRestored(true);
-  }, [tabsStoreKey, tabsRestored]);
+  }, [isMobile, tabsStoreKey, tabsRestored]);
   React.useEffect(function () {
-    if (!tabsStoreKey || !tabsRestored) return;
-    NV_saveTabs(tabsStoreKey, window.TG_serialize(tgModel));
-  }, [tgModel, tabsStoreKey, tabsRestored]);
+    if (isMobile || !tabsRestored || !tabsStoreKey || tabsStoreKey !== tabsKeyRef.current) return;
+    NV_saveTabs(tabsKeyRef.current, window.TG_serialize(tgModel));
+  }, [isMobile, tgModel, tabsStoreKey, tabsRestored]);
 
   // Menus close on any outside click.
   React.useEffect(function () {

@@ -180,11 +180,11 @@ def test_the_shell_stores_per_user_only_after_it_has_restored() -> None:
     restore = SHELL.index("TG_restoreInto(")
     write = SHELL.index("TG_serialize(")
     assert restore < write, "the restore effect comes before the write effect"
-    block = SHELL[SHELL.index("tabsStoreKey"):SHELL.index("// Menus close on any outside click.")]
+    block = SHELL[SHELL.index("var tabsStoreKey = "):SHELL.index("// Menus close on any outside click.")]
     assert "tabsRestored" in block, "the write waits for the restore"
     helpers = SHELL[SHELL.index("function NV_loadTabs"):SHELL.index("function NV_Shell()")]
     assert helpers.count("try {") == 2 and helpers.count("catch") == 2, "storage can throw (private mode, quota) and hold anything: both accesses are guarded"
-    assert "NV_loadTabs(tabsStoreKey)" in block and "NV_saveTabs(tabsStoreKey" in block
+    assert "NV_loadTabs(tabsStoreKey)" in block and "NV_saveTabs(tabsKeyRef.current" in block
 
 
 # --- review of #610: the phone, the wrong user, the bounds ----------------------------------------------------------------------------------------------
@@ -230,11 +230,11 @@ def test_the_install_with_auth_off_is_the_system_user(keyctx) -> None:
 
 
 def test_the_effects_skip_the_phone_and_never_write_under_another_key() -> None:
-    block = SHELL[SHELL.index("tabsStoreKey"):SHELL.index("// Menus close on any outside click.")]
+    block = SHELL[SHELL.index("var tabsStoreKey = "):SHELL.index("// Menus close on any outside click.")]
     restore = block[block.index("React.useEffect"):block.index("React.useEffect", block.index("React.useEffect") + 10)]
     write = block[block.index("React.useEffect", block.index("React.useEffect") + 10):]
     for effect in (restore, write):
-        assert "isMobile" in effect[:effect.index("function () {") + 400] or "isMobile" in effect, effect
+        assert "if (isMobile ||" in effect, "the phone skips the effect"
         assert "isMobile" in effect.split("}, [")[-1], "isMobile is in the effect's deps"
     assert "tabsKeyRef" in restore and "tabsKeyRef.current" in write, "the write only ever uses the key the restore used"
     assert "NV_tabsStoreKey(status.data)" in block
