@@ -2,12 +2,13 @@
 
 ADM-14: ``Bad Name!`` was accepted as an agent id (``POST /v1/agents`` answers 201; the model has no id pattern), and one press of Create on an empty form made a nameless agent whose
 description the form had quietly replaced with ``(no description)``. An id is permanent and sits in URLs and in references, so a typo can only be fixed by delete and recreate, and a
-description is how OTHER agents find an agent. The check is client side and for CREATING only (an existing agent keeps whatever it has, and the model is not changed):
+description is how OTHER agents find an agent. The check is client side (the model is not changed); the id is checked when CREATING only (an existing agent's id is locked), the description when creating AND when editing:
 
 * the id is optional (the backend assigns ``agent-<hex>`` when it is blank), but when it is typed it is lowercase letters, digits, hyphens and underscores, starting with a letter or digit,
   at most 63 characters, so it needs no URL escaping and cannot be mistaken for something else; surrounding spaces are not part of it and a whitespace-only id is a blank one (it used to be
   sent as the id ``"  "``, which the server accepts);
-* the description is required.
+* the description is required, on create AND on edit: clearing it on an existing agent used to save the literal "(no description)", and what is sent is the TRIMMED description (the lead's review
+  of #566).
 
 The messages go into the form's existing ``fieldErrors`` map under the server's own paths (``body.id``, ``body.description``), so a client refusal and a server 422 share one display, and a
 server 422 on ``body.id`` finally has somewhere to show (it had no field).
@@ -107,14 +108,28 @@ def _modal() -> str:
     return SRC[start:SRC.index("function AG_StatusPanel(", start)]
 
 
-def test_creating_checks_before_it_posts_and_editing_does_not() -> None:
+def test_creating_and_editing_both_check_before_they_post_and_only_creating_checks_the_id() -> None:
     body = _modal()
     submit = body[body.index("const submit = async () => {"):]
 
-    check = re.search(r"if \(!isEdit\) \{\s*const problems = AG_validateNewAgent\(id, description\);\s*if \(Object\.keys\(problems\)\.length\) \{ setFieldErrors\(problems\); return; \}\s*\}", submit)
-    assert check, "a create must stop on a client refusal and show it through the form's own field errors"
+    check = re.search(r'const problems = AG_validateNewAgent\(isEdit \? "" : id, description\);\s*if \(Object\.keys\(problems\)\.length\) \{ setFieldErrors\(problems\); return; \}', submit)
+    assert check, "both modes stop on a refusal, and an edit passes a blank id so only its description is checked"
+    assert "if (!isEdit) {\n      const problems" not in submit, "the check is no longer create-only"
     assert check.start() < submit.index("body = {"), "before the body is built, so nothing is sent"
     assert check.start() < submit.index("await "), "and before any request"
+
+
+def test_the_description_sent_is_the_trimmed_one_and_no_placeholder_is_ever_substituted() -> None:
+    body = _modal()
+
+    assert "description: description.trim()," in body
+    assert '"(no description)"' not in body, "a blank description is refused, not replaced by a placeholder that is then saved"
+
+
+def test_an_edit_that_clears_the_description_is_refused_and_one_that_keeps_it_is_not() -> None:
+    """What the edit path passes to the check: a blank id (an existing agent's id is locked), so only the description can be refused."""
+    assert list(_check("", "")) == ["body.description"]
+    assert _check("", "an existing description") == {}
 
 
 def test_the_id_sent_is_the_trimmed_one() -> None:

@@ -8,9 +8,12 @@
 
 from __future__ import annotations
 
+import time
+
 import httpx
 from playwright.sync_api import Page, expect
 
+from tests._support.model_profiles import agent_model, seed_llm_provider_with
 from tests._support.smk import smk
 from tests.ui_e2e._shell_helpers import open_legacy_route
 
@@ -76,3 +79,51 @@ def test_an_existing_agents_status_strip_does_not_print_the_endpoint_or_the_poll
     for developer_text in ("GET /v1/agents", "polled every", "last checked just now"):
         assert developer_text not in shown, f"{developer_text!r} is still printed"
     assert "polled every 30s" in (note.get_attribute("title") or ""), "the technical detail is a tooltip"
+
+
+def test_editing_an_agent_refuses_a_blank_description_and_saves_the_trimmed_one(page: Page, base_url: str, console_url: str, unique_suffix: str) -> None:
+    """Clearing the description of an EXISTING agent used to save the literal "(no description)" (the lead's review of #566): the edit refuses it like the create does, shows why under the
+    field, sends nothing, and what it finally saves is the trimmed text. A dedicated agent is seeded and removed (never the shared operator): a regression would otherwise rewrite a real one."""
+    provider_id = f"llm-agf-{unique_suffix}"
+    agent_id = f"ag-agf-{unique_suffix}"
+    puts: list[str] = []
+    page.on("request", lambda r: puts.append(r.url) if r.method == "PUT" and r.url.rstrip("/").endswith(f"/v1/agents/{agent_id}") else None)
+    with httpx.Client(base_url=base_url, timeout=30.0) as c:
+        r = seed_llm_provider_with(c, {
+            "id": provider_id, "provider": "ollama", "config": {"url": "http://127.0.0.1:9999"},
+            "models": [{"name": "fake-model", "context_length": 4096}], "limits": {"max_concurrency": 1},
+        })
+        assert r.status_code == 201, r.text
+        r = c.post("/v1/agents", json={
+            "id": agent_id, "description": "before the journey", "model": agent_model(provider_id, "fake-model"), "tools": [], "system_prompt": ["test"],
+        })
+        assert r.status_code == 201, r.text
+    try:
+        open_legacy_route(page, console_url, f"agents/{agent_id}")
+        expect(page.locator("#na-id")).to_have_value(agent_id, timeout=15_000)
+        description = page.locator("#na-description")
+
+        description.fill("   ")
+        page.get_by_role("button", name="Save changes").click()
+        expect(page.get_by_test_id("na-description-error")).to_contain_text("Describe", timeout=5_000)
+        assert puts == [], "a blank description must not be sent on an edit either"
+        with httpx.Client(base_url=base_url, timeout=30.0) as c:
+            assert c.get(f"/v1/agents/{agent_id}").json()["description"] == "before the journey"
+
+        description.fill("  edited by the journey  ")
+        expect(page.get_by_test_id("na-description-error")).to_have_count(0)
+        page.get_by_role("button", name="Save changes").click()
+
+        deadline = time.time() + 15
+        saved = ""
+        while time.time() < deadline:
+            with httpx.Client(base_url=base_url, timeout=30.0) as c:
+                saved = c.get(f"/v1/agents/{agent_id}").json()["description"]
+            if saved != "before the journey":
+                break
+            page.wait_for_timeout(300)
+        assert saved == "edited by the journey", f"the saved description is {saved!r}: it must be the trimmed text"
+    finally:
+        with httpx.Client(base_url=base_url, timeout=30.0) as c:
+            c.delete(f"/v1/agents/{agent_id}")
+            c.delete(f"/v1/llm_providers/{provider_id}")
