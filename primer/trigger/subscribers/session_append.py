@@ -12,11 +12,13 @@ from __future__ import annotations
 import logging
 
 from primer.model.trigger import Subscription
+from primer.model.workspace_session import WorkspaceSession
 from primer.session.steer_delivery import (
     DELIVERED_MISSING,
     DELIVERED_SKIPPED_BUSY,
     deliver_steer,
 )
+from primer.trigger.owner import refuse_steer_above_fire
 from primer.trigger.subscribers import (
     DispatchDeps,
     SubscriptionDispatchResult,
@@ -50,6 +52,21 @@ class SessionAppendDispatcher:
                     "not thread one"
                 ),
             )
+        # The steered session runs at its own initiator's rank: a fire
+        # ranked below it must not drive it (security review A-20).
+        target = await deps.storage_provider.get_storage(
+            WorkspaceSession,
+        ).get(sub.config.session_id)
+        if target is not None:
+            reason = await refuse_steer_above_fire(
+                sub, target, deps.storage_provider,
+            )
+            if reason is not None:
+                return SubscriptionDispatchResult(
+                    ok=False,
+                    error_code="steer_outranks_fire",
+                    error_message=reason,
+                )
         try:
             delivery = await deliver_steer(
                 session_id=sub.config.session_id,

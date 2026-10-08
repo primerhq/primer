@@ -34,6 +34,7 @@ import logging
 from primer.model.trigger import Subscription
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
 from primer.session.yields import RespondToYieldDeps, respond_to_yield
+from primer.trigger.owner import refuse_steer_above_fire
 from primer.trigger.subscribers import (
     DispatchDeps,
     SubscriptionDispatchResult,
@@ -95,6 +96,20 @@ class ParkedSessionDispatcher:
                 error_message=(
                     "session parked on a different tool_call_id"
                 ),
+            )
+
+        # The woken session runs at its own initiator's rank: a fire ranked
+        # below it must not drive it (security review A-20). The row is
+        # kept: the refusal is recorded as a failed fire, and the session
+        # stays parked until its yield cap or a fire that may wake it.
+        reason = await refuse_steer_above_fire(
+            sub, session, deps.storage_provider,
+        )
+        if reason is not None:
+            return SubscriptionDispatchResult(
+                ok=False,
+                error_code="steer_outranks_fire",
+                error_message=reason,
             )
 
         # Build the tool result envelope. The rendered payload, when
