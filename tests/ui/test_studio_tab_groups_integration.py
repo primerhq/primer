@@ -102,7 +102,11 @@ def test_on_tg_model_change_only_pushes_for_open() -> None:
 
 
 def test_resolve_session_wid_reuses_the_rails_own_cache_key() -> None:
-    assert '"nv-rail-all-sessions"' in SHELL
+    """The shell reads the session list through the rail's own hook (NV_useSessionList), which owns the cache key and its cadence, so the
+    two cannot drift (console review C-038); it no longer repeats the key."""
+    assert "window.NV_useSessionList()" in SHELL
+    rail = (Path(__file__).resolve().parents[2] / "ui" / "components" / "console" / "nv-rail.jsx").read_text(encoding="utf-8")
+    assert '"nv-rail-all-sessions"' in rail[rail.index("function NV_useSessionList"):]
 
 
 def test_studio_mounts_rail_and_tab_groups_unconditionally() -> None:
