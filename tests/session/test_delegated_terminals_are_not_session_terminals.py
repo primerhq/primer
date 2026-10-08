@@ -38,6 +38,12 @@ def _kinds(records: list[dict]) -> list[tuple[int, str]]:
     return [(r["seq"], r["kind"]) for r in records]
 
 
+def _through_the_last_delegated_done(records: list[dict]) -> list[dict]:
+    """The log up to and including the last delegated run's ``done`` (cut by what the record is, not by a position the seed's record count would move)."""
+    last = max(i for i, r in enumerate(records) if r["kind"] == "done" and r["payload"].get("delegated"))
+    return records[: last + 1]
+
+
 def _with_the_parents_tool_round_done(records: list[dict]) -> list[dict]:
     """The log a real parent turn leaves: the model call that issued the delegating tool call ENDS with its own
     ``done(stop_reason=tool_use)`` (persistence writes one per model call), before the tool runs and the delegated
@@ -92,8 +98,7 @@ def test_a_subagents_failure_does_not_mark_the_running_parent_turn_failed(kind, 
 
 
 def test_a_subagents_done_does_not_mark_the_running_parent_turn_completed(seeded) -> None:
-    through_the_delegated_done = seeded[:8]
-    before_the_final_done = through_the_delegated_done
+    before_the_final_done = _through_the_last_delegated_done(seeded)
     assert before_the_final_done[-1]["kind"] == "done" and before_the_final_done[-1]["payload"].get("delegated")
     assert _turn_status([], before_the_final_done) == "running"
     assert _turn_status([], seeded) == "completed"
@@ -154,7 +159,7 @@ def test_a_parent_that_died_after_a_delegated_done_has_no_final_result(seeded) -
     """The parent's turn never ended (its ``cancelled``/``error`` write is best-effort and can be skipped), and the last
     thing in the log is a delegated run's ``done``. That ``done`` used to be the last boundary, so the SUBAGENT's last
     words were relayed as the session's result."""
-    crashed = _with_the_parents_tool_round_done(seeded)[:9]
+    crashed = _through_the_last_delegated_done(_with_the_parents_tool_round_done(seeded))
     assert _kinds(crashed)[-1][1] == "done" and crashed[-1]["payload"].get("delegated")
     assert derive_session_final_text(crashed) is None
 
