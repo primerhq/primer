@@ -204,11 +204,13 @@ Two read endpoints expose derived detail the scrape format cannot carry:
   does not bump it (the claim adapter bumps on success only), so the turn after a
   failed one (a message reopens the session) writes under the same `turn_no`; so
   does a turn whose end entry never landed (a worker crash, a lost lease). A new
-  envelope therefore opens at an own event (no `node_id`) that is a `resumed`, or a
-  `started` that does not directly follow an own `resumed`. A group whose last END
+  envelope therefore opens at an own event (no `node_id`) that is a `resumed` or a
+  `started`, except a `started` that directly follows an own `resumed`. The node
+  scoping covers the grouping only: a group's status, times and waits still read
+  every event in it, a graph node's included. A group whose last END
   event (`phase` events follow a `yielded`) is `yielded` is continued by the next
   group when that carries a later `turn_no` (a park and its resume); a `yielded` and
-  a `resumed` on ONE `turn_no` (only `abandon_session_gate` writes that) are two
+  a `resumed` on ONE `turn_no` (`abandon_session_gate` leaves `parked_at` set and writes no event or release, so the next turn writes `resumed` on the `turn_no` the park never bumped) are two
   runs (ticket 01a11ce4; before it the failed turn's trace read as the turn that
   followed it). **Declared, and pinned by
   `test_interim_mapping_after_a_failed_turn_fail_retry_fail`:** this makes the RUNS
