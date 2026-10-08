@@ -1,4 +1,4 @@
-/* global React, Modal, Btn, Icon, EntityPicker */
+/* global React, Modal, Btn, Icon, EntityPicker, FormField */
 // ---------------------------------------------------------------------------
 // SharedNewSessionForm (FD2) — the ONE create-session form.
 //
@@ -130,13 +130,7 @@ function SharedNewSessionSchemaField({ propKey, schema, value, onChange }) {
     );
   }
 
-  return (
-    <div className="field">
-      <label className="field-label">{label}</label>
-      {control}
-      {help && <div className="field-help">{help}</div>}
-    </div>
-  );
+  return <FormField label={label} help={help}>{control}</FormField>;
 }
 
 // Read a File as raw base64 — the data: URL payload minus its
