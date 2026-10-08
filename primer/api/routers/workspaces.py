@@ -25,6 +25,7 @@ from __future__ import annotations
 import base64
 import email.utils
 import hashlib
+import itertools
 import json
 import logging
 import posixpath
@@ -2884,22 +2885,35 @@ _SECRET_ARG_KEY = re.compile(
 _PAIR_NAME_KEYS = frozenset({"name", "key", "header", "field", "param", "variable", "var", "env", "label"})
 _PAIR_VALUE_KEYS = frozenset({"value", "val"})
 _REDACTED = "<redacted>"
-_LINE_BREAKS = re.compile("\\s*[\\r\\n\\t\\v\\f\\u2028\\u2029\\u0085]+\\s*")
-# The walker looks no deeper than this, at no more members than this, and at no more text than this; what it does not look at is hidden.
+# A match starts where a whitespace run starts: a bare leading \\s* rescans the rest of the run from every space in it (quadratic).
+_LINE_BREAKS = re.compile("(?<!\\s)\\s*[\\r\\n\\t\\v\\f\\u2028\\u2029\\u0085]+\\s*")
+# The walker looks no deeper than this, at no more members than this, at no more text per string than this, and at no more than _REDACT_BUDGET
+# characters (a member costs _REDACT_MEMBER_COST) in one walk; what it does not look at is hidden, and a container it cut says how many it left out.
+# This route runs synchronously on the event loop for every open console on every poll, so its work has to be bounded by constants, not by the
+# size of whatever a tool call or a question happened to contain.
 _REDACT_MAX_DEPTH = 8
 _REDACT_MAX_ITEMS = 50
-_REDACT_MAX_TEXT = 4000
+_REDACT_MAX_TEXT = 2000
+_REDACT_BUDGET = 12000
+_REDACT_MEMBER_COST = 16
+_PROMPT_SCAN_CHARS = 1000          # an ask/wait prompt is cut to this BEFORE it is scrubbed (only 240 characters are ever shown)
+_NAME_SCAN_CHARS = 200             # and so is an argument name
+_BIG_DOCUMENT_CHARS = 1_000_000    # a JSON string bigger than this is text, not a document to parse
 
 _SECRET_WORDS = r"(?:secret|token|passw\w*|passphrase|pwd|api[_-]?key|access[_-]?key|private[_-]?key|authoriz\w*|credential\w*|cookie)"
 # "api_key=abc", "Authorization: Bearer abc", '"password": "x"', "?token=abc&": the value after a secret-looking name.
+#
+# LINEAR on purpose (the first version was quadratic: `token` x 8000 took seconds). The name is matched once per run of name characters (the
+# lookbehind stops a start after every `.` or `-`), and its secret word is found inside an ATOMIC group, so a name that has the word but no `=` or `:`
+# after it is abandoned instead of being retried at every other occurrence of the word.
 _SECRET_ASSIGNMENT = re.compile(
-    r"(?P<lead>(?<!\w)[\w.\-]*" + _SECRET_WORDS + r"[\w.\-]*[\"']?\s*[=:]\s*)"
+    r"(?P<lead>(?<![\w.\-])(?>[\w.\-]*?" + _SECRET_WORDS + r"[\w.\-]*+)[\"']?\s*[=:]\s*)"
     r"(?:(?:bearer|basic|digest)\s+)?(?:\"[^\"]*\"|'[^']*'|[^\s,;&\"'<>]+)",
     re.IGNORECASE,
 )
 # "--password hunter2", "--api-key abc", "--key abc": the word after a secret-looking flag.
 _SECRET_FLAG = re.compile(
-    r"(?P<lead>(?<![\w\-])--?(?:[\w\-]*" + _SECRET_WORDS + r"[\w\-]*|key)\s+)(?!-)(?:\"[^\"]*\"|'[^']*'|[^\s\"'<>]+)",
+    r"(?P<lead>(?<![\w\-])--?(?>[\w\-]*?" + _SECRET_WORDS + r"[\w\-]*+|key)\s+)(?!-)(?:\"[^\"]*\"|'[^']*'|[^\s\"'<>]+)",
     re.IGNORECASE,
 )
 _BEARER = re.compile(r"\b(bearer)\s+[^\s'\"<>]+", re.IGNORECASE)
@@ -2908,7 +2922,7 @@ _BASIC = re.compile(r"\b(basic)\s+(?=[A-Za-z0-9+/_\-]*[0-9A-Z=+/])[A-Za-z0-9+/_\
 _URL_USERINFO = re.compile(r"(?<=://)[^/\s:@'\"<>]+:[^/\s@'\"<>]*@")
 _SECRET_TOKEN_SHAPES = re.compile(
     r"\bsk-[A-Za-z0-9_\-]{8,}|\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{8,}|\bxox[a-z]-[A-Za-z0-9\-]{8,}|\b(?:AKIA|ASIA)[0-9A-Z]{12,}"
-    r"|\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}(?:\.[A-Za-z0-9_\-]*)?",
+    r"|(?<![A-Za-z0-9_\-])eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}(?:\.[A-Za-z0-9_\-]*)?",
 )
 # A run of more than 32 base64/hex-looking characters is a blob (a key, a signature, a digest); a UUID and a plain word are not.
 _BLOB = re.compile(r"[A-Za-z0-9+_=\-]{33,}")
@@ -2947,6 +2961,28 @@ def _scrub_text(text: str) -> str:
     return _BLOB.sub(_blob_or_text, text)
 
 
+def _display_name(key: Any) -> str:
+    """An argument NAME as the preview may show it: cut before it is scrubbed (a name can be anything), scrubbed like a value (a token used as
+    a key must not show in the line or in the rail's list of names), then one line and short."""
+    return _cut(_one_line(_scrub_text(str(key)[:_NAME_SCAN_CHARS])), _ATTENTION_KEY_CHARS)
+
+
+def _attention_prompt(prompt: Any) -> str:
+    """The question or wait of an ask or parked row as the Inbox shows it: cut to ``_PROMPT_SCAN_CHARS`` BEFORE it is scrubbed (it is
+    unbounded text from a tool; scrubbing all of it blocked the event loop), scrubbed, one line, and cut to what is drawn."""
+    return _cut(_one_line(_scrub_text(str(prompt)[:_PROMPT_SCAN_CHARS])), _ATTENTION_TEXT_CHARS)
+
+
+def _chars_of(value: Any) -> str:
+    """The size of a payload argument for its ``<N chars>`` stand-in; a structure too deep to measure is "many"."""
+    if isinstance(value, str):
+        return str(len(value))
+    try:
+        return str(len(json.dumps(value, ensure_ascii=False, default=str)))
+    except (ValueError, TypeError, RecursionError):
+        return "many"
+
+
 def _parse_container(text: str) -> "dict | list | None":
     """The dict or list ``text`` is a JSON document of, else ``None`` (deeply nested text is not a document, it is a hazard)."""
     if text.lstrip()[:1] not in ("{", "["):
@@ -2958,47 +2994,70 @@ def _parse_container(text: str) -> "dict | list | None":
     return parsed if isinstance(parsed, (dict, list)) else None
 
 
-def _redact(value: Any, depth: int = 0) -> tuple[Any, bool]:
+def _redact(value: Any, depth: int = 0, budget: "list[int] | None" = None) -> tuple[Any, bool]:
     """``value`` with every secret in it replaced, and whether anything was.
 
     Secret-looking KEY names at any depth, a name/value pair (``{"name": "Authorization", "value": ...}``, ``["Authorization", ...]``)
-    whose name is secret, a JSON document inside a string at any depth, and secret-shaped text in any string (see ``_scrub_text``).
-    Bounded: nothing past ``_REDACT_MAX_DEPTH`` levels, ``_REDACT_MAX_ITEMS`` members or ``_REDACT_MAX_TEXT`` characters is shown.
+    whose name is secret, a JSON document inside a string at any depth, secret-shaped text in any string (see ``_scrub_text``), and a
+    credential used as a NAME. Bounded by constants: nothing past ``_REDACT_MAX_DEPTH`` levels, ``_REDACT_MAX_ITEMS`` members (a cut
+    container ends in a "<N more>" marker), ``_REDACT_MAX_TEXT`` characters of one string, or ``budget`` (a one-element list holding the
+    characters one walk may still look at; callers walking several values share one) is looked at, and what is not looked at is hidden.
     """
+    if budget is None:
+        budget = [_REDACT_BUDGET]
     if isinstance(value, dict):
         if depth > _REDACT_MAX_DEPTH:
             return _REDACTED, True
         pair_names_a_secret = any(
-            isinstance(inner, str) and _SECRET_ARG_KEY.search(inner) for key, inner in value.items() if str(key).lower() in _PAIR_NAME_KEYS
+            isinstance(inner, str) and _SECRET_ARG_KEY.search(inner[:_NAME_SCAN_CHARS])
+            for key, inner in itertools.islice(value.items(), _REDACT_MAX_ITEMS)
+            if str(key)[:_NAME_SCAN_CHARS].lower() in _PAIR_NAME_KEYS
         )
         out: dict[Any, Any] = {}
         changed = False
         for index, (key, inner) in enumerate(value.items()):
-            if index >= _REDACT_MAX_ITEMS:
+            if index >= _REDACT_MAX_ITEMS or budget[0] <= 0:
+                out["..."] = f"<{len(value) - index} more>"
                 changed = True
                 break
-            name = str(key)
+            budget[0] -= _REDACT_MEMBER_COST
+            name = str(key)[:_NAME_SCAN_CHARS]
+            shown = _display_name(key)
+            if shown != key:                      # a credential used as a name, or a name cut short: the original text must not be passed on
+                changed = True
             if _SECRET_ARG_KEY.search(name) or (pair_names_a_secret and name.lower() in _PAIR_VALUE_KEYS):
-                out[key], changed = _REDACTED, True
+                out[shown], changed = _REDACTED, True
             else:
-                out[key], inner_changed = _redact(inner, depth + 1)
+                out[shown], inner_changed = _redact(inner, depth + 1, budget)
                 changed = changed or inner_changed
         return out, changed
     if isinstance(value, (list, tuple)):
         if depth > _REDACT_MAX_DEPTH:
             return _REDACTED, True
-        if len(value) == 2 and isinstance(value[0], str) and _SECRET_ARG_KEY.search(value[0]):
-            return [value[0], _REDACTED], True
-        items = [_redact(v, depth + 1) for v in value[:_REDACT_MAX_ITEMS]]
-        return [v for v, _ in items], len(value) > _REDACT_MAX_ITEMS or any(c for _, c in items)
+        if len(value) == 2 and isinstance(value[0], str) and _SECRET_ARG_KEY.search(value[0][:_NAME_SCAN_CHARS]):
+            return [_display_name(value[0]), _REDACTED], True
+        items: list[Any] = []
+        changed = False
+        for index, member in enumerate(value):
+            if index >= _REDACT_MAX_ITEMS or budget[0] <= 0:
+                items.append(f"<{len(value) - index} more>")
+                changed = True
+                break
+            budget[0] -= _REDACT_MEMBER_COST
+            inner, inner_changed = _redact(member, depth + 1, budget)
+            items.append(inner)
+            changed = changed or inner_changed
+        return items, changed
     if isinstance(value, str):
-        if depth > _REDACT_MAX_DEPTH:
+        if depth > _REDACT_MAX_DEPTH or budget[0] <= 0:
             return _REDACTED, True
-        capped = len(value) > _REDACT_MAX_TEXT
-        text = value[:_REDACT_MAX_TEXT] if capped else value
+        take = min(len(value), _REDACT_MAX_TEXT, budget[0])
+        capped = take < len(value)
+        text = value[:take]
+        budget[0] -= take
         document = _parse_container(text)
         if document is not None:
-            inner, changed = _redact(document, depth + 1)
+            inner, changed = _redact(document, depth + 1, budget)
             return (json.dumps(inner, ensure_ascii=False, default=str) if changed else text), changed or capped
         scrubbed = _scrub_text(text)
         return scrubbed, capped or scrubbed != text
@@ -3021,43 +3080,44 @@ def _approval_preview(original_call: Any) -> dict[str, Any] | None:
     if not isinstance(original_call, dict) or not original_call.get("name"):
         return None
     args = original_call.get("arguments")
-    if isinstance(args, str):
+    if isinstance(args, str) and len(args) <= _BIG_DOCUMENT_CHARS:
         document = _parse_container(args)
         if document is not None:
             args = document
+    budget = [_REDACT_BUDGET]          # one budget for the whole preview, however many arguments there are
     truncated = False
     keys: list[str] = []
     if isinstance(args, dict):
         lead = [k for k in _LEAD_ARG_KEYS if k in args and k not in _BULKY_ARG_KEYS]
         rest = sorted(k for k in args if k not in lead and k not in _BULKY_ARG_KEYS)
         bulky = sorted(k for k in args if k in _BULKY_ARG_KEYS)
-        keys = [_cut(_one_line(str(k)), _ATTENTION_KEY_CHARS) for k in (lead + rest + bulky)[:_ATTENTION_KEY_COUNT]]
+        keys = [_display_name(k) for k in (lead + rest + bulky)[:_ATTENTION_KEY_COUNT]]
         parts: list[str] = []
         size = 0
         for key in lead + rest:
             if size > _ATTENTION_TEXT_CHARS:
                 truncated = True
                 break
-            if _SECRET_ARG_KEY.search(str(key)):
-                parts.append(f"{key}={_REDACTED}")
+            shown = _display_name(key)
+            if _SECRET_ARG_KEY.search(str(key)[:_NAME_SCAN_CHARS]):
+                parts.append(f"{shown}={_REDACTED}")
                 truncated = True
             else:
-                value, hidden = _redact(args[key])
+                value, hidden = _redact(args[key], 0, budget)
                 truncated = truncated or hidden
                 text = _one_line(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str))
                 if len(text) > _ATTENTION_ARG_CHARS:
                     text, truncated = _cut(text, _ATTENTION_ARG_CHARS), True
-                parts.append(f"{key}={text}")
+                parts.append(f"{shown}={text}")
             size += len(parts[-1]) + 2
         for key in bulky:
-            value = args[key]
-            parts.append(f"{key}=<{len(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str))} chars>")
+            parts.append(f"{_display_name(key)}=<{_chars_of(args[key])} chars>")
             truncated = True
         line = ", ".join(parts)
     elif args is None or args == "":
         line = ""
     else:
-        value, hidden = _redact(args)
+        value, hidden = _redact(args, 0, budget)
         truncated = hidden
         line = _one_line(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str))
     if len(line) > _ATTENTION_TEXT_CHARS:
@@ -3185,7 +3245,7 @@ async def list_pending_attention(
             row["approval"] = _approval_preview(metadata.get("original_call"))
             row["approvers"] = metadata.get("approvers")
         else:
-            row["prompt"] = _cut(_one_line(_scrub_text(str(_extract_yield_prompt(tool_name, metadata)))), _ATTENTION_TEXT_CHARS)
+            row["prompt"] = _attention_prompt(_extract_yield_prompt(tool_name, metadata))
         rows.append((created_at, row))
 
     rows.sort(key=lambda row: row[0], reverse=True)
