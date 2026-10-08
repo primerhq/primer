@@ -228,6 +228,32 @@ def test_an_autofocused_input_inside_keeps_focus_but_the_opener_is_still_restore
     assert out == {"kept": "middle", "after": "opener"}
 
 
+def test_the_opener_is_captured_once_when_the_dialog_becomes_active_not_on_every_render(ctx) -> None:
+    """The guard is ``active && !wasActiveRef.current``: while the dialog stays open it renders again and again, and focus is inside it by
+    then, so capturing on every render would make the "opener" an element INSIDE the dialog and close would send focus there."""
+    out = _ev(ctx, """(function () {
+      var s = scene(), ref = open(s); commit();            // opened from the opener; focus moved to the first element
+      s.middle.focus();                                     // the user tabs on
+      render(ref, true, null, []); commit();                // the dialog re-renders while it is still open
+      render(ref, true, null, []); commit();
+      render(ref, false, null, []); commit();               // closed
+      return document.activeElement.name;
+    })()""")
+    assert out == "opener", "focus must go back to what had it when the dialog OPENED, not to something that had it while it was open"
+
+
+def test_a_dialog_reopened_after_closing_captures_its_new_opener(ctx) -> None:
+    out = _ev(ctx, """(function () {
+      var s = scene(), ref = open(s); commit();
+      render(ref, false, null, []); commit();               // closed: focus back on the opener
+      s.after.focus();                                      // the user goes elsewhere and opens the dialog again from there
+      render(ref, true, null, []); commit();
+      render(ref, false, null, []); commit();
+      return document.activeElement.name;
+    })()""")
+    assert out == "after", "the second opening remembers the second opener"
+
+
 def test_a_closed_dialog_does_not_trap_and_does_not_steal_focus(ctx) -> None:
     out = _ev(ctx, """(function () {
       var s = scene(), ref = { current: s.dialog };
