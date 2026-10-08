@@ -51,6 +51,9 @@ def restart_server(base_url: str, *, timeout: float = 60.0) -> None:
             stdout=out,
             stderr=subprocess.STDOUT,
             cwd=str(_REPO),
+            # The same file:// opt-in bringup.sh launches with: the harness suites that run after a restart register
+            # file:// bare repos, which the server refuses without it.
+            env={**os.environ, "PRIMER_HARNESS_ALLOW_FILE_URLS": "1"},
         )
     _PID_FILE.write_text(str(proc.pid), encoding="utf-8")
 
