@@ -404,13 +404,14 @@ class LocalWorkspace(Workspace):
 
     async def write_file(self, path: str, content: bytes) -> None:
         target = self._resolve_path(path)
+        # Refuse writes inside the reserved state / tmp paths so the
+        # API can't corrupt the backend's bookkeeping. Before the is_dir
+        # check, so the error does not reveal what exists there (A-22).
+        self._refuse_reserved(target, path)
         if await asyncio.to_thread(target.is_dir):
             raise BadRequestError(
                 f"{path!r} is a directory; cannot overwrite with file content"
             )
-        # Refuse writes inside the reserved state / tmp paths so the
-        # API can't corrupt the backend's bookkeeping.
-        self._refuse_reserved(target, path)
         parent = target.parent
         _t0 = time.monotonic()
         try:
