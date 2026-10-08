@@ -103,7 +103,9 @@ def to_problem_details(exc: BaseException) -> ProblemDetails:
     The envelope is served to every reader of the session (the messages
     ERROR record, the turn log, the tap), so it never carries the
     traceback, and its ``detail`` passes through ``redact_url_secrets``
-    (an upstream error message can embed a ``?key=`` URL). The failure is
+    (an upstream error message can embed a ``?key=`` URL), as do the
+    top-level string values of ``problem_extensions`` (nested dict or
+    list values are not walked). The failure is
     logged here, once, under the same ``error_id``: a mapped
     ``PrimerError`` subclass (an expected failure class) as one WARNING
     without a traceback; anything else, the bare ``PrimerError``
@@ -128,7 +130,9 @@ def to_problem_details(exc: BaseException) -> ProblemDetails:
                     "exception_class": type(exc).__name__,
                     "error_id": error_id,
                     # Served with the envelope: string values get the same
-                    # URL-credential redaction as the detail.
+                    # URL-credential redaction as the detail. Top-level
+                    # strings only: a nested dict or list value is passed
+                    # through unredacted.
                     **{
                         k: redact_url_secrets(v) if isinstance(v, str) else v
                         for k, v in (
