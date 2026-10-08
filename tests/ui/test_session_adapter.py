@@ -721,12 +721,68 @@ def test_the_notice_says_whether_the_turn_recovered(transcript, after, state: st
     assert rows[1]["kind"] == "retry_notice" and rows[1]["noticeState"] == state, rows
 
 
-def test_a_failure_with_the_same_words_after_the_notice_is_its_own_red_card(transcript) -> None:
-    """The notice was never the cause, so the failure does not fold into it: the card carries fatal=true and the notice says the turn ended."""
+def test_a_failure_with_the_same_words_absorbs_the_notice_so_the_turn_shows_one_red_card(transcript) -> None:
+    """The real producer holds the stream's first Error (the agent loop treats any held Error as the call's end), raises, and dispatch writes
+    its own ERROR with the SAME words and then a bare marker: [done(error), error{M, fatal: false}, error{M}, marker]. That is ONE failure, and
+    a quiet 'nothing followed it' line above a red card with the same words reported it twice. The failure row is the survivor (it is the
+    row the server counts as the turn's end)."""
+    done = _r(2, "done", stop_reason="error")
+    notice = _r(3, "error", **_NOTICE)
+    failure = _r(4, "error", message="Provider hiccup", code="/errors/internal", title="TurnStreamFailure", status=500)
+    marker = _r(5, "error", reason="unknown", terminal=True)
+    rows = transcript(_records(_USER, done, notice, failure, marker))
+    assert _kinds(rows) == ["user_message", "done", "error"], rows
+    assert rows[2]["seq"] == 4 and "fatal" not in rows[2]["payload"], "the survivor is dispatch's failure row, not the notice"
+
+
+def test_a_fatal_stream_error_with_the_same_words_absorbs_the_notice_too(transcript) -> None:
     fatal = _r(3, "error", message="Provider hiccup", code="server_error", fatal=True)
     rows = transcript(_records(_USER, _r(2, "error", **_NOTICE), fatal))
+    assert _kinds(rows) == ["user_message", "error"], rows
+    assert rows[1]["payload"]["fatal"] is True
+
+
+def test_a_failure_that_was_written_before_the_notice_absorbs_it_as_well(transcript) -> None:
+    failure = _r(2, "error", message="Provider hiccup", code="/errors/internal")
+    rows = transcript(_records(_USER, failure, _r(3, "error", **_NOTICE)))
+    assert _kinds(rows) == ["user_message", "error"], rows
+
+
+def test_a_failure_with_other_words_leaves_the_notice_as_the_turn_ended_without_recovering(transcript) -> None:
+    failure = _r(3, "error", message="disk full", code="tool_failed", fatal=True)
+    rows = transcript(_records(_USER, _r(2, "error", **_NOTICE), failure))
     assert _kinds(rows) == ["user_message", "retry_notice", "error"], rows
-    assert rows[1]["noticeState"] == "ended" and rows[2]["payload"]["fatal"] is True
+    assert rows[1]["noticeState"] == "ended"
+
+
+def test_a_failure_in_the_next_turn_does_not_absorb_this_turns_notice(transcript) -> None:
+    again = _r(3, "user_input", text="again")
+    failure = _r(4, "error", message="Provider hiccup", code="server_error", fatal=True)
+    rows = transcript(_records(_USER, _r(2, "error", **_NOTICE), again, failure))
+    assert _kinds(rows) == ["user_message", "retry_notice", "user_message", "error"], rows
+
+
+def test_two_graph_nodes_with_the_same_words_do_not_absorb_each_other(transcript) -> None:
+    notice = _r(2, "error", node_id="n1", **_NOTICE)
+    failure = _r(3, "error", node_id="n2", message="Provider hiccup", code="server_error", fatal=True)
+    assert _kinds(transcript(_records(_USER, notice, failure))) == ["user_message", "retry_notice", "error"]
+    same = _r(3, "error", node_id="n1", message="Provider hiccup", code="server_error", fatal=True)
+    assert _kinds(transcript(_records(_USER, notice, same))) == ["user_message", "error"]
+
+
+def test_a_subagents_failure_with_the_same_words_does_not_absorb_the_parents_notice(transcript) -> None:
+    """Different scopes: the parent's notice stays, and the subagent's failure is its own row."""
+    failure = _r(3, "error", message="Provider hiccup", code="server_error", fatal=True, **_SUB)
+    rows = transcript(_records(_USER, _r(2, "error", **_NOTICE), failure))
+    assert _kinds(rows) == ["user_message", "retry_notice", "error"], rows
+
+
+def test_output_after_a_failure_still_settles_an_earlier_notice_as_recovered(transcript) -> None:
+    """notice -> failure (other words) -> output: the output wins, whatever came between. A scan that stopped at the failure would say 'ended'."""
+    rows = transcript(_records(
+        _USER, _r(2, "error", **_NOTICE), _r(3, "error", message="disk full", code="x", fatal=True), _r(4, "assistant_token", text="carried on"),
+    ))
+    assert rows[1]["kind"] == "retry_notice" and rows[1]["noticeState"] == "recovered", rows
 
 
 def test_output_after_the_notice_wins_over_a_later_unrelated_failure(transcript) -> None:
@@ -770,3 +826,35 @@ def test_a_notice_is_never_the_cause_a_subagents_failure_folds_into(transcript) 
     """Both parent and subagent, same words: the notice (parent scope) and the subagent's red card are two rows."""
     rows = transcript(_records(_USER, _r(2, "error", **_NOTICE), _r(3, "error", message="Provider hiccup", code="server_error", fatal=True, **_SUB)))
     assert _kinds(rows) == ["user_message", "retry_notice", "error"], rows
+
+
+# --- the terminals a fold removes still end the turn on the server (so the console's turn ordinals line up with its timeline) -----------
+
+
+def _terminals_folded(transcript, *parts: str) -> dict:
+    rows = transcript(_records(*parts))
+    return {r["seq"]: r.get("foldedTerminals", 0) for r in rows}
+
+
+def test_a_failure_remembers_the_terminal_marker_that_was_folded_into_it(transcript) -> None:
+    cause = _r(2, "error", message="x", code="server_error")
+    marker = _r(3, "error", reason="unknown", terminal=True)
+    assert _terminals_folded(transcript, _USER, cause, marker) == {1: 0, 2: 1}
+
+
+def test_a_failure_remembers_the_copy_and_the_marker_folded_into_it(transcript) -> None:
+    stream = _r(2, "error", message="x", code="server_error", fatal=True)
+    copy = _r(3, "error", message="x", code="/errors/internal")
+    marker = _r(4, "error", reason="unknown", terminal=True)
+    assert _terminals_folded(transcript, _USER, stream, copy, marker) == {1: 0, 2: 2}
+
+
+def test_a_delegated_copy_is_not_a_terminal_of_the_session(transcript) -> None:
+    sub = _r(2, "error", message="x", code="server_error", fatal=True, **_SUB)
+    sub_copy = _r(3, "error", message="x", code="server_error", fatal=True, **_SUB)
+    assert _terminals_folded(transcript, _USER, sub, sub_copy)[2] == 0
+
+
+def test_an_absorbed_notice_is_not_counted_because_a_non_fatal_error_is_not_a_terminal(transcript) -> None:
+    failure = _r(3, "error", message="Provider hiccup", code="/errors/internal")
+    assert _terminals_folded(transcript, _USER, _r(2, "error", **_NOTICE), failure) == {1: 0, 3: 0}
