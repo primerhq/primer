@@ -35,6 +35,18 @@ PAIRS: list[tuple[str, str, float]] = [
     ("--text-4", "--bg", 4.5),
     ("--accent-fg", "--accent", 4.5),
     ("--attention-fg", "--attention", 4.5),
+    # The status colours the console draws as text on a surface (the parked chip, a failed tool call, a failed turn, an attachment that
+    # did not upload). They were never declared: the stylesheet used `var(--warn, #d9a441)` and `var(--danger, #e06c5f)`, so the light theme
+    # got the dark theme's literal at 2.1:1 and 3.0:1 (console review C-030). `--danger` is now an alias of `--red` (declared as `var(--red)`, which this
+    # parser does not read), so the danger text is held to AA through `--red`'s own pairs.
+    ("--warn", "--bg", 4.5),
+    ("--warn", "--bg-1", 4.5),
+    ("--warn", "--bg-2", 4.5),
+    ("--warn", "--bg-elev", 4.5),
+    ("--red", "--bg", 4.5),
+    ("--red", "--bg-1", 4.5),
+    ("--red", "--bg-2", 4.5),
+    ("--red", "--bg-elev", 4.5),
 ]
 
 _BLOCK_RE = {
@@ -95,3 +107,16 @@ def test_token_pairs_meet_wcag(theme):
                 f"{theme}: {fg} on {bg} = {ratio:.2f} (needs {floor})"
             )
     assert not failures, "\n".join(failures)
+
+
+_VAR_WITH_COLOR_FALLBACK_RE = re.compile(r"var\(\s*(--[a-z0-9-]+)\s*,\s*(?:#[0-9a-fA-F]{3,8}|rgba?\(|hsla?\(|oklch\()")
+_DECLARED_RE = re.compile(r"(--[a-z0-9-]+)\s*:")
+
+
+def test_no_color_in_the_stylesheet_depends_on_the_fallback_of_an_undeclared_token():
+    """`var(--x, #hex)` with `--x` declared nowhere is the same colour in every theme: it passes review in the dark theme and is wrong in the
+    light one (C-030: the parked chip, 2.1:1). A colour token the stylesheet uses with a literal fallback must be declared."""
+    css = STYLES.read_text(encoding="utf-8")
+    declared = set(_DECLARED_RE.findall(css))
+    undeclared = sorted({name for name in _VAR_WITH_COLOR_FALLBACK_RE.findall(css) if name not in declared})
+    assert not undeclared, f"colour tokens used with a literal fallback but declared in no theme block: {undeclared}"
