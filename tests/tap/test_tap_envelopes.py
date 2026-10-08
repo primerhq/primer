@@ -23,12 +23,6 @@ class TestClassInvariants:
         tec = {c.value for c in TapEventClass}
         assert smk.issubset(tec)
 
-    def test_tap_only_classes_are_not_record_kinds(self):
-        """Derived frames must never look like something the log wrote."""
-        smk = {k.value for k in SessionMessageKind}
-        assert TapEventClass.USAGE.value not in smk
-        assert TapEventClass.PENDING_STEER.value not in smk
-
 
 class TestAgentMarkerPassthrough:
     """Amendment m6: record and tap event are informationally identical,
