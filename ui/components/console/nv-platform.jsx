@@ -3,8 +3,11 @@
 // config-driven card page per entity, ported from the prototype's
 // PLATFORM region. Cards open the SHARED overlays (the same component
 // whether reached from a card, the palette, or a pasted link), create
-// buttons open the same overlays' create flows, delete is inline with
-// confirm - a referenced entity's 409/422 surfaces as the refusal toast.
+// buttons open the entity's own form (hosted on this page for model
+// profiles, templates, toolsets and triggers; the entity's create overlay
+// for the rest: tests/ui/test_platform_create_opens_the_form.py tabulates
+// it), delete is inline with confirm - a referenced entity's 409/422
+// surfaces as the refusal toast.
 //
 // Providers get the family pills over the REAL per-class plurals (the
 // S4 catalog's registry) and open the catalog overlay at that class;
