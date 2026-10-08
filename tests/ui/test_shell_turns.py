@@ -454,9 +454,9 @@ def test_a_write_chip_carries_the_path_it_opens() -> None:
 
 
 def test_a_non_fatal_error_mid_turn_is_numbered_the_way_the_servers_timeline_numbers_it() -> None:
-    """The adapter draws a non-fatal stream Error as a retry notice instead of an error card (ticket 01a11bcc). The server still counts the
-    ERROR record as a turn end (``terminals.TERMINAL_KINDS``), and the console asks the trace for the server's window ordinal, so the
-    notice row has to count as a turn end in ``SH_turnOfSeq`` too. Compared against the real ``closes_turn`` over the same records."""
+    """The adapter draws a non-fatal stream Error as a retry notice instead of an error card (ticket 01a11bcc). The server does not count an ERROR with an
+    explicit ``fatal: false`` as a turn end (ticket 01a11bf6), and the console asks the trace for the server's window ordinal, so the notice row must not count
+    in ``SH_turnOfSeq`` either. Compared against the real ``closes_turn`` over the same records."""
     from primer.session.terminals import closes_turn
 
     records = [
@@ -545,3 +545,22 @@ def test_a_subagents_failure_does_not_shift_the_sessions_turn_numbers() -> None:
     ]
     server, console = _both_ordinals(records)
     assert {seq: console[seq] for seq in console} == {seq: server[seq] for seq in console}, (server, console)
+
+
+def test_the_real_producers_failure_sequence_is_numbered_as_the_server_numbers_it() -> None:
+    """What the agent loop and dispatch really write for a non-fatal stream Error: the loop holds it, raises when the stream ends, and dispatch writes
+    its own ERROR with the same words and then the release marker: [done(error), error{M, fatal: false}, error{M}, marker]. The console draws ONE red card
+    (the failure absorbs the notice) and must still number the turn after it as the server does: the server counts the done, the failure and the marker as
+    three window ends and the notice as none."""
+    records = [
+        _r(1, "user_input", text="go"),
+        _r(2, "done", stop_reason="error"),
+        _r(3, "error", message="boom", code="server_error", fatal=False),
+        _r(4, "error", message="boom", code="/errors/internal"),
+        _r(5, "error", reason="unknown", terminal=True),
+        *_following_turn(6),
+    ]
+    server, console = _both_ordinals(records)
+    assert 3 not in console, "the notice was absorbed by the failure with the same words"
+    assert {seq: console[seq] for seq in console} == {seq: server[seq] for seq in console}, (server, console)
+    assert console[6] == 3 and console[8] == 3, "and the following turn is the fourth window, as on the server"
