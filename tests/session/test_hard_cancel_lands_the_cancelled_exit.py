@@ -122,6 +122,44 @@ class TestAUserCancelThatPreemptsTheStream:
         assert row.status != SessionStatus.ENDED and not row.cancel_requested
         assert SessionMessageKind.CANCELLED not in [r["kind"] for r in _records(fake_workspace_io, sid)]
 
+    async def test_a_lost_lease_cancel_is_not_landed_even_when_the_row_is_flagged(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+    ) -> None:
+        """The heartbeat cancels with the reason ``preempted`` when this worker lost its lease: the session may belong to another
+        worker now, so this execution must not write a CANCELLED record, a terminal event or a status on its way out (the rule
+        ``agent/base.py`` applies to its own cleanup). It propagates, flag or no flag, and the pool's convergence is what it was."""
+        from primer.model.yield_ import CANCEL_REASON_PREEMPTED
+
+        sid = seeded_session.id
+        executor = _BlocksInTheModelCall()
+        task = await _start(sid, fake_storage_provider, fake_workspace_io, fake_event_bus, executor)
+
+        await _flag_cancel(fake_storage_provider, sid)
+        task.cancel(CANCEL_REASON_PREEMPTED)
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 5.0)
+
+        row = await fake_storage_provider.get_storage(WorkspaceSession).get(sid)
+        assert row.status != SessionStatus.ENDED, "a worker that lost the lease must not end the session"
+        assert SessionMessageKind.CANCELLED not in [r["kind"] for r in _records(fake_workspace_io, sid)]
+
+    async def test_a_drain_timeout_cancel_on_a_flagged_row_is_landed(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+    ) -> None:
+        """A drain timeout (``worker_drain_timeout``) cancels every in-flight turn of a worker that still holds its leases: on a
+        row that carries a Cancel the user asked for, landing it is right, and the exit's grace bounds what it costs the drain."""
+        sid = seeded_session.id
+        executor = _BlocksInTheModelCall()
+        task = await _start(sid, fake_storage_provider, fake_workspace_io, fake_event_bus, executor)
+
+        await _flag_cancel(fake_storage_provider, sid)
+        task.cancel("worker_drain_timeout")
+        outcome = await asyncio.wait_for(task, 5.0)
+
+        assert outcome.success and outcome.drop_lease
+        row = await fake_storage_provider.get_storage(WorkspaceSession).get(sid)
+        assert row.status == SessionStatus.ENDED and row.ended_reason == "cancelled"
+
     async def test_a_force_deleted_row_is_left_to_the_delete(
         self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
     ) -> None:

@@ -56,7 +56,7 @@ from primer.model.turn_log import (
     TurnLogStarted,
     TurnLogYielded,
 )
-from primer.model.yield_ import YIELD_KIND_PREFIXES, ToolWaitPark, YieldToWorker
+from primer.model.yield_ import CANCEL_REASON_PREEMPTED, YIELD_KIND_PREFIXES, ToolWaitPark, YieldToWorker
 from primer.session.autonomy import session_is_autonomous
 from primer.session.enqueue import SessionWakeDeps
 from primer.session.delegation import (
@@ -1179,8 +1179,18 @@ async def run_one_session_turn(
         # (one that never yields the event loop's cancel_event a look) this way, via ``_cancel_loop`` / the row reconciler's
         # ``cancel_once``. It used to leave here without the cancelled exit: the pool's convergence ended the row, but no
         # CANCELLED record, tick, terminal event, turn-log entry or metric was written and the turn's streamed text was lost, so no
-        # client ever heard the turn had ended (console review 2026-10-08, C-011). The ROW tells a user Cancel from the other
-        # causes, as the pool's convergence does; only a Cancel is this turn's to land.
+        # client ever heard the turn had ended (console review 2026-10-08, C-011).
+        #
+        # Three things tell a user Cancel from the other causes of this exception, and only a Cancel is this turn's to land:
+        # * the REASON: a lost lease (``CANCEL_REASON_PREEMPTED``, from the heartbeat) means the session may belong to another worker
+        #   now, so this execution must not write to it on its way out (the rule ``agent/base.py`` applies to its own cleanup). It
+        #   propagates even when the row is flagged, and the pool's convergence handles it as before. A drain timeout
+        #   (``worker_drain_timeout``) is different: this worker still holds the lease, so a flagged row is landed;
+        # * the ROW, as the pool's convergence reads it: ``cancel_requested`` set and the row not ended (a force-deleted row is
+        #   already ENDED and is left to the delete);
+        # * a row that cannot be read decides nothing, and must not turn the cancellation into its own error.
+        if preempt.args[:1] == (CANCEL_REASON_PREEMPTED,):
+            raise preempt
         try:
             is_user_cancel = await _row_holds_a_cancel(session_storage, session_id)
         except Exception:  # noqa: BLE001 - an unreadable row must not turn the cancellation into its own error
@@ -1191,13 +1201,14 @@ async def run_one_session_turn(
             is_user_cancel = False
         if not is_user_cancel:
             raise preempt
-        # Make the streamed-but-unrecorded output durable in the cleanup below, then take the one exit after it. The
-        # cancellation is consumed DELIBERATELY, down to what the task carried on entry: left counted, every
-        # ``asyncio.timeout()`` in the landing (the bounded CANCELLED write, the best-effort I/O) would find the task still
-        # "cancelling" and raise ``CancelledError`` instead of ``TimeoutError``. A later preempt (the reconciler, the lost-lease
-        # verdict) is then absorbed by ``_finish_despite_cancel`` around the exit, which runs it as its own task. The exit's
-        # outcome is returned rather than the cancellation re-raised, as for every other cancelled exit: a re-raise would drop
-        # it, the pool's convergence skips a row that is already ENDED, and ``on_release`` would write a terminal ERROR record.
+        # Make the streamed-but-unrecorded output durable in the cleanup below, then take the one exit after it. The cancellation is
+        # consumed DELIBERATELY, down to what the task carried on entry, so that code which checks ``cancelling()`` afterwards
+        # (``_finish_despite_cancel`` takes its own entry count from it, and whoever awaits this task sees the count it had before
+        # the cancel was absorbed) does not read a cancel that was already handled as one still pending. A later preempt (a second
+        # ``cancel_once`` from the reconciler, the drain timeout) is absorbed by ``_finish_despite_cancel`` around the exit, which
+        # runs it as its own task. The exit's outcome is returned rather than the cancellation re-raised, as for every other
+        # cancelled exit: a re-raise would drop it, the pool's convergence skips a row that is already ENDED, and ``on_release``
+        # would write a terminal ERROR record.
         cancel_requested = True
         if _task_now is not None:
             while _task_now.cancelling() > _entered_cancelling:

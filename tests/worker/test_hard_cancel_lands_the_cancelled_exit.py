@@ -176,3 +176,26 @@ async def test_a_second_hard_cancel_during_the_landing_does_not_cut_it(tmp_path)
     assert _terminal_events(run["published"], run["sid"]) == [{"status": "ended", "ended_reason": "cancelled"}]
     assert metrics.turns_total.labels(run["ref"], "cancelled")._value.get() == 1.0
     assert not run["reclaimable"]
+
+
+async def test_a_lost_lease_preempt_of_a_flagged_row_is_left_to_the_pools_convergence(tmp_path) -> None:
+    """The heartbeat's lost-lease verdict (``scope.cancel("preempted")``) on a row the user flagged: the dispatch must NOT land the
+    exit (another worker may own the session), so the pool converges the row exactly as it always did: ENDED/cancelled by
+    ``_end_session``, with no CANCELLED record and no terminal event from this worker's dispatch."""
+    from primer.model.yield_ import CANCEL_REASON_PREEMPTED
+
+    def lose_the_lease_instead(scope) -> None:
+        # The heartbeat's verdict, delivered where the user's cancel would be.
+        def cancel_once(reason: str) -> bool:
+            scope.cancel(CANCEL_REASON_PREEMPTED)
+            return True
+
+        scope.cancel_once = cancel_once
+
+    run = await _run_a_cancelled_turn(tmp_path, during_the_landing=lose_the_lease_instead)
+
+    row = run["row"]
+    assert row.status == SessionStatus.ENDED and row.ended_reason == "cancelled", "the pool's convergence ended the flagged row"
+    kinds = [r["kind"] for r in run["records"]]
+    assert SessionMessageKind.CANCELLED not in kinds, "this execution wrote nothing on its way out"
+    assert _terminal_events(run["published"], run["sid"]) == [], "and published no terminal event"
