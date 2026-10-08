@@ -437,8 +437,11 @@ class TestCatalog:
         # 28 minus watch_files + invoke_graph (both moved to the
         # ``workspace_ext`` toolset) = 26, plus workspace_tap = 27, plus
         # restart_workspace_session (Task 8) = 28, plus interrupt_workspace_session
-        # (task 01a10871, Stop as a system tool) = 29.
-        assert len(names) == 29
+        # (task 01a10871, Stop as a system tool) = 29, plus
+        # read_workspace_session_messages (A-22: the supported transcript
+        # reader, since raw .state reads are admin-only) = 30.
+        assert len(names) == 30
+        assert "read_workspace_session_messages" in names
         assert "create_workspace_session" in names
         assert "interrupt_workspace_session" in names
         assert "cancel_workspace_session" in names
@@ -539,8 +542,10 @@ class TestBootstrapIngestsWorkspacesTools:
         }
         # 28 minus watch_files + invoke_graph (moved to workspace_ext) = 26,
         # plus workspace_tap = 27, plus restart_workspace_session (Task 8)
-        # = 28, plus interrupt_workspace_session (task 01a10871) = 29.
-        assert len(ws_ingested) == 29
+        # = 28, plus interrupt_workspace_session (task 01a10871) = 29,
+        # plus read_workspace_session_messages (A-22) = 30.
+        assert len(ws_ingested) == 30
+        assert "workspaces::read_workspace_session_messages" in ws_ingested
         for expected in (
             "workspaces::list_workspace_providers",
             "workspaces::create_workspace_template",

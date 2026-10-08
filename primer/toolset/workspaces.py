@@ -221,6 +221,18 @@ class _WorkspaceSessionArgs(BaseModel):
     session_id: str = Field(..., min_length=1)
 
 
+class _SessionMessagesArgs(_WorkspaceSessionArgs):
+    after_seq: int | None = Field(
+        default=None, ge=0,
+        description="Return only records with seq above this (poll with the last seq you saw).",
+    )
+    limit: int = Field(default=200, ge=1, le=1000)
+    tail: bool = Field(
+        default=False,
+        description="Return the most recent ``limit`` records instead of the oldest.",
+    )
+
+
 class _SteerArgs(_WorkspaceSessionArgs):
     instruction: str = Field(..., min_length=1)
 
@@ -1526,6 +1538,77 @@ def build_workspaces_toolset(
             ToolExample(
                 args={"workspace_id": "ws-1", "session_id": "sess-1"},
                 returns="{info, status}",
+            ),
+        ],
+        required_role="user",
+    )
+    registry[name] = entry
+
+    async def _session_messages(arguments: dict[str, Any]) -> ToolCallResult:
+        # The supported transcript reader (A-22): the raw .state path is
+        # refused to non-admins, so this is the same rule and the same
+        # reader as GET /v1/sessions/{sid}/messages.
+        from primer.api.routers.sessions import _read_workspace_turn_log
+
+        try:
+            args = _SessionMessagesArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        row = await storage_provider.get_storage(WorkspaceSession).get(args.session_id)
+        if row is None or row.workspace_id != args.workspace_id:
+            return _err(
+                f"Session {args.session_id!r} does not exist on "
+                f"workspace {args.workspace_id!r}",
+                error_type="not-found",
+            )
+        try:
+            ws = await workspace_registry.get_workspace(args.workspace_id)
+            if ws is None:
+                raise NotFoundError(f"Workspace {args.workspace_id!r} is not available")
+            state_path = getattr(ws, "state_path", ".state")
+            page = await _read_workspace_turn_log(
+                workspace=ws,
+                relative_path=f"{state_path}/sessions/{args.session_id}/messages.jsonl",
+                limit=args.limit,
+                offset=0,
+                since_seq=args.after_seq,
+                tail=args.tail,
+                dedupe_legacy_user_input=True,
+                fallback_created_at=(
+                    row.created_at.isoformat() if row.created_at else None
+                ),
+                workspace_id=args.workspace_id,
+                session_id=args.session_id,
+            )
+        except NotFoundError as exc:
+            return _err_from_primer(exc, error_type="not-found")
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="unavailable")
+        return _ok(page)
+
+    name, entry = _tool(
+        "read_workspace_session_messages",
+        (
+            "Read a session's recorded transcript (the messages log): "
+            "``{items, total, offset, limit}``, each item a record "
+            "``{seq, kind, payload, created_at}`` (user_input, "
+            "assistant_token, tool_call, tool_result, done, error, ...). "
+            "Same data and rule as ``GET /v1/sessions/{id}/messages``."
+        ),
+        (
+            "Use when you need what a session said or did, e.g. to poll "
+            "for its reply with ``after_seq``; not for its lifecycle state "
+            "(use ``get_workspace_session``). Never read "
+            "``.state/sessions/<id>/messages.jsonl`` with "
+            "``read_workspace_file``: raw ``.state`` reads are refused "
+            "unless the caller is an admin."
+        ),
+        _SessionMessagesArgs,
+        _session_messages,
+        examples=[
+            ToolExample(
+                args={"workspace_id": "ws-1", "session_id": "sess-1", "after_seq": 4},
+                returns="{items: [records with seq > 4], total, offset, limit}",
             ),
         ],
         required_role="user",
