@@ -530,7 +530,7 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
         ) : (
           <>
             <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-            <Btn kind="primary" icon={isEdit ? "check" : "plus"} onClick={submit} disabled={!canSubmit || create.loading}>
+            <Btn kind="primary" icon={isEdit ? "check" : "plus"} onClick={submit} disabled={!canSubmit || create.loading} data-testid="toolset-create-btn">
               {create.loading ? (isEdit ? "Saving…" : "Creating…") : (isEdit ? "Save changes" : "Create")}
             </Btn>
           </>
@@ -582,6 +582,7 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
         </label>
         <input
           className="input"
+          data-testid="toolset-id-input"
           value={id}
           onChange={(e) => setId(e.target.value)}
           placeholder="auto-generated"
@@ -595,6 +596,7 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
         <label className="field-label">Provider</label>
         <select
           className="select"
+          data-testid="toolset-provider-select"
           value={provider}
           onChange={(e) => setProvider(e.target.value)}
           style={{ width: "100%" }}
@@ -643,6 +645,7 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
                 <label className="field-label">Command</label>
                 <input
                   className="input mono"
+                  data-testid="toolset-command-input"
                   value={command}
                   onChange={(e) => setCommand(e.target.value)}
                   placeholder="npx @modelcontextprotocol/server-github"
