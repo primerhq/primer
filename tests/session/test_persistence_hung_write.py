@@ -12,7 +12,11 @@ What is pinned here, as the writer and the file would show it:
   it holds can overtake the abandoned batch in the file (the next turn builds a new writer, which probes the workspace afresh);
 * the abandoned batch is never re-sent: if the workspace answers late it is in the file exactly once, and the records that were
   buffered behind it are never written;
-* a healthy slow write is not abandoned, and a write that FAILS still raises as itself.
+* a healthy slow write is not abandoned, and a write that FAILS still raises as itself;
+* the bound runs from when the request is SENT: a batch waiting for the session's ``messages_lock`` (held across a turn persist and its
+  git commit) is not hung, though a lock that is never released is abandoned at a cap of four bounds; the bound is a setting
+  (``PRIMER_SESSION_MESSAGE_WRITE_TIMEOUT_SECONDS``) and each abandoned batch is counted (``message_write_abandoned_total``);
+* the error is a 503 (``WorkspaceUnreachableError``), not a 500.
 
 Every test body is bounded: no path may hang the lane.
 """
@@ -212,3 +216,156 @@ async def test_a_write_that_fails_still_raises_as_itself_and_does_not_break_the_
 
 async def test_the_timeout_is_a_timeout_error() -> None:
     assert issubclass(persistence.WorkspaceWriteTimeout, TimeoutError)
+
+
+# ---- the clock starts when the request is sent, not while it waits for the messages lock (review of #545, B4) ----------------------
+
+
+class _LockedWorkspace(_Workspace):
+    """What the local and sandbox workspaces do: take the session's ``messages_lock`` and only then send the request."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.lock = asyncio.Lock()
+        self.sent = asyncio.Event()
+
+    async def append_message_line(self, session_id: str, line: bytes) -> None:
+        from primer.session.write_clock import locked_for_write       # imported here: its absence fails THIS test, not the file
+
+        self.started.append(line)
+        async with locked_for_write(self.lock):
+            self.sent.set()
+            if self.answers_after is not None:
+                await asyncio.sleep(self.answers_after)
+            else:
+                await self.release.wait()
+            self.landed.append(line)
+
+
+async def test_a_batch_waiting_for_the_messages_lock_is_not_abandoned_for_the_wait(bounded_writes) -> None:
+    """The lock is held across a turn persist's read, rewrite and git commit: a slow commit of a large messages.jsonl must not
+    make the writer drop records and fail the turn. The wait here (0.5 s) is longer than the bound (0.2 s) and shorter than the cap."""
+    io = _LockedWorkspace(answers_after=0.05)
+    async with asyncio.timeout(HARD_BOUND_S):
+        writer = WorkspaceMessageWriter(workspace_io=io, session_id="s1")
+        await writer.append(_record("a"))
+        await io.lock.acquire()                                  # a turn persist holds it
+
+        async def release_later() -> None:
+            await asyncio.sleep(0.5)
+            io.lock.release()
+
+        releasing = asyncio.create_task(release_later())
+        await writer.flush()
+        await releasing
+
+    assert io.texts() == ["a"], f"the batch was abandoned for waiting on the lock: {io.texts()}"
+
+
+async def test_a_request_that_was_sent_and_never_answered_is_abandoned_after_it_was_sent_not_before(bounded_writes) -> None:
+    io = _LockedWorkspace()
+    events: list[str] = []
+    async with asyncio.timeout(HARD_BOUND_S):
+        writer = WorkspaceMessageWriter(workspace_io=io, session_id="s1")
+        await writer.append(_record("a"))
+        await io.lock.acquire()
+
+        async def release_later() -> None:
+            await asyncio.sleep(0.5)
+            events.append("lock released")
+            io.lock.release()
+
+        releasing = asyncio.create_task(release_later())
+        try:
+            with pytest.raises(TimeoutError):
+                await writer.flush()
+            events.append("abandoned")
+        finally:
+            io.release.set()
+        await releasing
+
+    assert io.sent.is_set()
+    assert events == ["lock released", "abandoned"], f"the batch was abandoned while it still waited for the lock: {events}"
+
+
+async def test_a_lock_that_is_never_released_is_abandoned_at_the_cap(bounded_writes) -> None:
+    """A holder hung on the same dead connection never lets go: waiting for it without limit would be the original hang again."""
+    io = _LockedWorkspace()
+    async with asyncio.timeout(HARD_BOUND_S):
+        writer = WorkspaceMessageWriter(workspace_io=io, session_id="s1")
+        await writer.append(_record("a"))
+        await io.lock.acquire()
+        with pytest.raises(TimeoutError):
+            await writer.flush()
+
+    assert not io.sent.is_set()
+
+
+# ---- each abandoned batch is counted -----------------------------------------------------------------------------------------------
+
+
+async def test_an_abandoned_batch_is_counted_once_however_many_flushes_were_waiting(bounded_writes) -> None:
+    import primer.observability.metrics as metrics
+
+    metrics.reset_for_test()
+    io = _Workspace()
+    try:
+        async with asyncio.timeout(HARD_BOUND_S):
+            writer = WorkspaceMessageWriter(workspace_io=io, session_id="s1")
+            await writer.append(_record("a"))
+            first = asyncio.create_task(writer.flush())
+            await _spin()
+            second = asyncio.create_task(writer.flush())
+            await asyncio.gather(first, second, return_exceptions=True)
+            with pytest.raises(TimeoutError):
+                await writer.flush()                              # the broken writer's own refusals are not new abandonments
+    finally:
+        io.release.set()
+
+    assert metrics.message_write_abandoned_total._value.get() == 1.0
+
+
+# ---- the bound is a setting ----------------------------------------------------------------------------------------------------------
+
+
+def test_the_write_bound_is_an_app_setting_with_an_env_override(monkeypatch) -> None:
+    from primer.api.config import AppConfig
+
+    monkeypatch.delenv("PRIMER_SESSION_MESSAGE_WRITE_TIMEOUT_SECONDS", raising=False)
+    assert AppConfig().session_message_write_timeout_seconds == 30.0
+    monkeypatch.setenv("PRIMER_SESSION_MESSAGE_WRITE_TIMEOUT_SECONDS", "45")
+    assert AppConfig().session_message_write_timeout_seconds == 45.0
+    with pytest.raises(ValueError):
+        AppConfig(session_message_write_timeout_seconds=0)
+
+
+def test_creating_the_app_applies_the_setting_to_the_writer(monkeypatch) -> None:
+    from primer.api.app import create_app
+    from primer.api.config import AppConfig
+
+    monkeypatch.setattr(persistence, "_WRITE_TIMEOUT_S", 99.0, raising=False)
+    create_app(AppConfig(session_message_write_timeout_seconds=7.0))
+
+    assert persistence._WRITE_TIMEOUT_S == 7.0
+
+
+def test_the_write_bound_cannot_be_set_to_nothing(monkeypatch) -> None:
+    monkeypatch.setattr(persistence, "_WRITE_TIMEOUT_S", 12.0, raising=False)
+    for bad in (0, -1, float("nan")):
+        with pytest.raises(ValueError):
+            persistence.configure_write_timeout(bad)
+    assert persistence._WRITE_TIMEOUT_S == 12.0
+
+
+# ---- the error is a 503 (nit of the review of #545) ------------------------------------------------------------------------------------
+
+
+def test_a_write_timeout_is_a_503_not_a_500() -> None:
+    from primer.api.errors import _PRIMER_ERROR_MAP
+    from primer.model.except_ import WorkspaceUnreachableError
+
+    exc = persistence.WorkspaceWriteTimeout("the workspace did not accept a batch")
+    assert isinstance(exc, WorkspaceUnreachableError) and isinstance(exc, TimeoutError)
+    status = next(status for cls, status, _uri, _title in _PRIMER_ERROR_MAP if isinstance(exc, cls))
+    assert status == 503
+    assert exc.message == "the workspace did not accept a batch" and exc.status_code is None
