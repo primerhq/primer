@@ -410,6 +410,12 @@ To rotate the token: `POST /v1/triggers/{id}/rotate_token` (the old URL stops wo
   for good (re-saving cannot raise it). A `session_append` or
   `parked_session` subscription cannot steer a session that runs above
   the fire's rank: the fire fails with `steer_outranks_fire`.
+- **A webhook trigger's token is visible only to its owner or an
+  admin.** Everyone else (and any call over MCP) sees `•••redacted•••`
+  in `config.token`. `trigger__update` on someone else's webhook
+  trigger fails with `type=forbidden`. When an admin re-saves a
+  webhook trigger someone else owns, the token is rotated: hand the
+  new URL to whoever calls it.
 - **Per-subscription parallelism is independent of trigger
   fires.** A trigger always fires when its conditions are met. But
   each subscription decides whether to act on that fire. `skip`
