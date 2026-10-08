@@ -133,16 +133,26 @@ function NV_createdRow(con, refetch, nav, row) {
 // What a list says when it has nothing to show. "Empty" and "a filter hides every row" are different: only the second is a matter of
 // matching. `noun` is a page's [singular, plural]; `total` is how many rows exist before the filter.
 function NV_emptyText(noun, query, total) {
+  var n = NV_nounOf(noun);
   var q = String(query || "").trim();
-  if (q && total > 0) return "No " + noun[1] + ' match "' + q + '".';
-  return "No " + noun[1] + " yet.";
+  if (q && total > 0) return "No " + n[1] + ' match "' + q + '".';
+  return "No " + n[1] + " yet.";
 }
 
 // "12 agents", "1 agent", or "3 of 12 agents" while a filter hides some.
 function NV_countText(noun, shown, total) {
-  var word = (total === 1 ? noun[0] : noun[1]);
+  var n = NV_nounOf(noun);
+  var word = (total === 1 ? n[0] : n[1]);
   if (shown !== total) return shown + " of " + total + " " + word;
-  return shown + " " + (shown === 1 ? noun[0] : noun[1]);
+  return shown + " " + (shown === 1 ? n[0] : n[1]);
+}
+
+// A page that forgets its noun (or declares a malformed one) says "item" / "items": the two helpers above run on every
+// render of every page and nothing catches a throw there, so a missing noun must not be able to blank the console.
+function NV_nounOf(noun) {
+  var ok = Array.isArray(noun) && typeof noun[0] === "string" && noun[0]
+    && typeof noun[1] === "string" && noun[1];
+  return ok ? noun : ["item", "items"];
 }
 
 // Per-entity page config. list() returns a promise of {items}; card()
@@ -284,7 +294,7 @@ var NV_PLAT_PAGES = {
     },
   },
   tools: {
-    title: "Tools",
+    title: "Tools", noun: ["tool", "tools"],
     // Flat catalogue of every tool on the install, searchable and
     // paged like any platform page. Approval policies point here.
     list: function (apiFetch, signal) {
@@ -1238,6 +1248,7 @@ function NV_PlatListPage(props) {
             <div>{NV_emptyText(page.noun, q, total)}</div>
             {ql && total > 0 ? (
               <button type="button" className="nv-btn-secondary"
+                data-testid="nv-plat-clear-filter"
                 onClick={function () { setQ(""); setPageNo(0); }}>
                 Clear filter
               </button>
