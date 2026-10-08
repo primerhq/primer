@@ -181,3 +181,57 @@ async def test_a_cancel_whose_gate_cannot_be_resolved_is_admin_only(client, app)
     assert login.status_code == 200, login.text
     accepted = await client.post(_cancel_url("cy-6", "tc-6"), json={})
     assert accepted.status_code == 202, accepted.text
+
+
+# ---- a graph park's top-level tool_name is "_approval" whatever its primary is (review round 2 of #540) -----------------------------
+
+
+def _graph_park_with_a_primary_that_is_not_an_approval(session_id: str, *, tool_call_id: str, where: str, tool_name: str) -> WorkspaceSession:
+    """A graph park whose primary gate is NOT an approval, shaped as production writes it.
+
+    ``_CheckpointMixin._build_pending_park_yield`` hard-codes the top-level ``yielded.tool_name`` to ``"_approval"`` for EVERY graph
+    park, whatever the primary is, so an agent node's ``ask_user`` yield (``pending_agent_yields``), a value-yielding ToolCall node
+    (``pending_toolcalls`` with its own ``tool_name``) or a node waiting on an external tool all look like an approval from the top.
+    The pending entry carries the real kind.
+    """
+    now = datetime.now(UTC)
+    event_key = f"{tool_name}:{session_id}:{tool_call_id}"
+    metadata = {"prompt": "which one?"}
+    if where == "toolcalls":
+        entry = {"node_id": "worker", "tool_call_id": tool_call_id, "parked_event_key": event_key, "arguments": {}, "tool_name": tool_name,
+                 "resume_metadata": metadata, "scoped_tool_call_id": None}
+        checkpoint = {"pending_toolcalls": [entry], "pending_agent_yields": [], "pending_dispatch": []}
+    else:
+        entry = {"node_id": "worker", "tool_call_id": tool_call_id, "event_key": event_key, "tool_name": tool_name, "resume_metadata": metadata}
+        checkpoint = {"pending_toolcalls": [], "pending_agent_yields": [entry], "pending_dispatch": []}
+    return WorkspaceSession(
+        id=session_id, workspace_id="ws", binding=AgentSessionBinding(kind="agent", agent_id="agt"), status=SessionStatus.RUNNING,
+        created_at=now, parked_status="parked", parked_at=now, parked_event_key=event_key, parked_event_keys=[event_key],
+        parked_state={
+            "tool_call_id": tool_call_id,
+            "yielded": {"tool_name": "_approval", "event_key": event_key, "resume_metadata": dict(metadata), "event_keys": [event_key]},
+            "graph_checkpoint": checkpoint,
+        },
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("where", "tool_name"),
+    [("agent_yields", "ask_user"), ("toolcalls", "ask_user"), ("agent_yields", "_external")],
+    ids=["agent-ask-user", "toolcall-value-yield", "agent-external-wait"],
+)
+async def test_a_plain_user_can_still_cancel_a_graph_parks_primary_that_is_not_an_approval(client, app, where, tool_name) -> None:
+    """Resolving the gate as an ``_approval`` made every graph park whose primary is something else resolve to nothing, which fails
+    closed to admin-only: the session owner's cancel of a plain question became a 403. Only an approval is judged."""
+    await _register_admin(client)
+    await app.state.storage_provider.get_storage(WorkspaceSession).create(
+        _graph_park_with_a_primary_that_is_not_an_approval("cy-7", tool_call_id="tc-7", where=where, tool_name=tool_name),
+    )
+    published = _Published(app.state.event_bus)
+
+    await _login_user(client, app, "bob")
+    accepted = await client.post(_cancel_url("cy-7", "tc-7"), json={"reason": "never mind"})
+
+    assert accepted.status_code == 202, f"a plain user could not cancel a {tool_name} yield of a graph park: {accepted.text}"
+    assert [key for key, _ in published.events] == [f"{tool_name}:cy-7:tc-7"]

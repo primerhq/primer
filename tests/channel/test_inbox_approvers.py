@@ -252,3 +252,34 @@ async def test_a_park_with_no_tool_name_is_not_matched_as_an_approval_gate(world
     event = await world.published()
     assert event is not None
     assert event.event_key == "tool_approval:s-n:tc-1", f"the reply was matched to a nameless park and published to {event.event_key!r}"
+
+
+@pytest.mark.asyncio
+async def test_a_nameless_park_whose_key_is_the_reconstructed_one_is_not_woken_unchecked(world) -> None:
+    """A park with no ``tool_name`` is not an approval gate and is not matched by name, but when its own event key IS the key the inbox
+    would reconstruct (``tool_approval:<sid>:<tcid>``), publishing to the reconstructed key wakes it all the same, with no check of a
+    spec the resolver never read. Its spec cannot be known, so the reply is refused."""
+    row = _parked("s-k", approvers={"kind": "users", "users": ["alice"]})
+    row.parked_state["yielded"]["tool_name"] = None
+    await world.sp.get_storage(WorkspaceSession).create(row)
+    assert row.parked_state["yielded"]["event_key"] == "tool_approval:s-k:tc-1"
+
+    with pytest.raises(ApproverRefusedError):
+        await world.inbox.handle_response(_reply("s-k"))
+
+    assert await world.published() is None, "a nameless park was woken through the reconstructed key with no check"
+
+
+@pytest.mark.asyncio
+async def test_a_pending_toolcall_with_an_unregistered_non_approval_name_is_refused(world) -> None:
+    """Declared: a pending ToolCall whose ``tool_name`` is neither ``_approval`` nor a registered value-yielding tool gets an
+    approval-shaped ``pending_dispatch`` prompt (``_toolcall_dispatch_entry``) but its pending entry is not an ``_approval`` gate, so
+    no spec can be read for it. A channel reply to that prompt is refused instead of being published unchecked (it was)."""
+    park = _graph_park("s-u", toolcalls=[("tc-1", "tool_approval:s-u:tc-1", None)])
+    park.parked_state["graph_checkpoint"]["pending_toolcalls"][0]["tool_name"] = "custom_yielding_tool"
+    await world.sp.get_storage(WorkspaceSession).create(park)
+
+    with pytest.raises(ApproverRefusedError):
+        await world.inbox.handle_response(_reply("s-u"))
+
+    assert await world.published() is None
