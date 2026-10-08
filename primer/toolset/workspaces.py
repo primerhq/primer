@@ -1265,8 +1265,12 @@ def build_workspaces_toolset(
                 metadata=args.metadata,
                 parent_session_id=args.parent_session_id,
                 autonomous=args.autonomous,
+                # No ctx (the MCP endpoint hands handlers none) means no
+                # known caller: fail closed to an ordinary user, never the
+                # system principal that clears every role floor (A-20).
                 initiated_by=(
-                    getattr(ctx, "initiated_by", None) or PrincipalRef.system()
+                    getattr(ctx, "initiated_by", None)
+                    or PrincipalRef.unattributed()
                 ),
                 deps=deps,
             )

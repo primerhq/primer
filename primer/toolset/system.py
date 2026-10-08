@@ -101,6 +101,7 @@ from primer.model.channel import (
     ChannelProvider,
 )
 from primer.model.event_matcher import EventMatcher
+from primer.model.principal import PrincipalRef
 from primer.channel.reply_binding import ReplyTarget
 from primer.model.trigger import SubscriptionConfig
 from primer.trigger.service import (
@@ -634,7 +635,7 @@ def build_system_toolset(
         return ServiceDeps(storage_provider=storage_provider)
 
     async def _create_channel_binding_handler(
-        arguments: dict[str, Any],
+        arguments: dict[str, Any], *, ctx: ToolContext | None = None,
     ) -> ToolCallResult:
         try:
             args = _CreateChannelBindingArgs.model_validate(arguments)
@@ -650,6 +651,10 @@ def build_system_toolset(
                 parallelism=args.parallelism,
                 description=args.description,
                 enabled=args.enabled,
+                # The calling run owns the binding; its fresh-session runs
+                # are ranked no higher (security review A-20). No ctx (the
+                # MCP endpoint) records no owner: fails closed.
+                owner=ctx.initiated_by if ctx is not None else None,
                 deps=_binding_deps(),
             )
         except TriggerNotFound as exc:
@@ -866,7 +871,15 @@ def build_system_toolset(
                     workspace_id=getattr(ctx, "workspace_id", None),
                     chat_id=getattr(ctx, "chat_id", None),
                     invoke_tool_call_id=getattr(ctx, "tool_call_id", None),
-                    identity=getattr(ctx, "initiated_by", None),
+                    # No ctx (the MCP endpoint hands handlers none) means no
+                    # known caller: the subagent ranks as an ordinary user.
+                    # Left None, run_subagent's builder would fall back to the
+                    # system principal, which clears every admin floor for a
+                    # role=user MCP caller (security review A-20).
+                    identity=(
+                        getattr(ctx, "initiated_by", None)
+                        or PrincipalRef.unattributed()
+                    ),
                     turn_no=getattr(ctx, "turn_no", None),
                 )
         except InvocationDepthExceeded as exc:

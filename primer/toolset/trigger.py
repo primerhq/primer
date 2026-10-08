@@ -78,6 +78,7 @@ from primer.trigger.service import (
 
 if TYPE_CHECKING:
     from primer.int.storage_provider import StorageProvider
+    from primer.model.principal import PrincipalRef
 
 
 logger = logging.getLogger(__name__)
@@ -522,6 +523,15 @@ def _make_list_handler(
     return _handler
 
 
+def _caller(ctx: ToolContext | None) -> "PrincipalRef | None":
+    """The calling run's identity, recorded as the owner of the trigger or subscription it saves (security review A-20).
+
+    A call with no ``ToolContext`` (the MCP endpoint dispatches handlers without one) records no owner, so what it saves fires
+    as an ordinary user: fail closed.
+    """
+    return ctx.initiated_by if ctx is not None else None
+
+
 def _make_get_handler(
     storage_provider: "StorageProvider",
     claim_engine: Any,
@@ -547,7 +557,9 @@ def _make_create_handler(
     claim_engine: Any,
     event_bus: Any,
 ) -> ToolHandler:
-    async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _handler(
+        arguments: dict[str, Any], *, ctx: ToolContext | None = None,
+    ) -> ToolCallResult:
         try:
             args = _CreateArgs.model_validate(arguments)
         except ValidationError as exc:
@@ -560,6 +572,7 @@ def _make_create_handler(
                 description=args.description,
                 config=args.config,
                 enabled=args.enabled,
+                owner=_caller(ctx),
                 deps=deps,
             )
         except TriggerSlugConflict as exc:
@@ -578,7 +591,9 @@ def _make_update_handler(
     claim_engine: Any,
     event_bus: Any,
 ) -> ToolHandler:
-    async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _handler(
+        arguments: dict[str, Any], *, ctx: ToolContext | None = None,
+    ) -> ToolCallResult:
         try:
             args = _UpdateArgs.model_validate(arguments)
         except ValidationError as exc:
@@ -591,6 +606,7 @@ def _make_update_handler(
                 description=args.description,
                 enabled=args.enabled,
                 config=args.config,
+                owner=_caller(ctx),
                 deps=deps,
             )
         except TriggerNotFound as exc:
@@ -704,7 +720,9 @@ def _make_create_sub_handler(
     claim_engine: Any,
     event_bus: Any,
 ) -> ToolHandler:
-    async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _handler(
+        arguments: dict[str, Any], *, ctx: ToolContext | None = None,
+    ) -> ToolCallResult:
         try:
             args = _SubCreateArgs.model_validate(arguments)
         except ValidationError as exc:
@@ -718,6 +736,7 @@ def _make_create_sub_handler(
                 parallelism=args.parallelism,
                 description=args.description,
                 enabled=args.enabled,
+                owner=_caller(ctx),
                 deps=deps,
             )
         except TriggerNotFound as exc:
@@ -734,7 +753,9 @@ def _make_update_sub_handler(
     claim_engine: Any,
     event_bus: Any,
 ) -> ToolHandler:
-    async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _handler(
+        arguments: dict[str, Any], *, ctx: ToolContext | None = None,
+    ) -> ToolCallResult:
         try:
             args = _SubUpdateArgs.model_validate(arguments)
         except ValidationError as exc:
@@ -757,6 +778,7 @@ def _make_update_sub_handler(
             sub = await update_subscription(
                 trigger_id=args.trigger_id,
                 subscription_id=args.subscription_id,
+                owner=_caller(ctx),
                 deps=deps,
                 **kwargs,
             )
@@ -849,6 +871,7 @@ def _make_subscribe_handler(
             parallelism="skip",  # field unused for parked_session
             enabled=True,
             created_at=datetime.now(timezone.utc),
+            owner=_caller(ctx),
         )
         await storage_provider.get_storage(Subscription).create(sub)
         return Yielded(
@@ -928,6 +951,7 @@ def _make_subscribe_channel_handler(
             parallelism="skip",  # field unused for parked_session
             enabled=True,
             created_at=datetime.now(timezone.utc),
+            owner=_caller(ctx),
         )
         await storage_provider.get_storage(Subscription).create(sub)
         return Yielded(

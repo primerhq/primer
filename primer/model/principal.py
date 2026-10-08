@@ -86,5 +86,20 @@ class PrincipalRef(BaseModel):
             source="internal",
         )
 
+    @classmethod
+    def unattributed(cls) -> "PrincipalRef":
+        """The fail-closed stand-in for a run whose initiator is unknown.
+
+        Ranked as an ordinary ``user``: a run nobody can be named for must
+        never clear an admin floor the way :meth:`system` does (security
+        review A-20). Used where a user-reachable path has no identity to
+        thread: a session row saved before attribution landed, and a tool
+        called over the MCP endpoint, which hands handlers no context.
+        """
+        return cls(
+            type="user", id="unattributed", display="unattributed",
+            role="user", source="internal",
+        )
+
 
 __all__ = ["Principal", "PrincipalRef"]

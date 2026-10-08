@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 from primer.model.common import Identifiable
 from primer.model.event_matcher import EventMatcher
+from primer.model.principal import PrincipalRef
 
 # NOTE: ``Subscription.reply_target`` carries a ``ReplyTarget`` defined in a
 # later part. Pydantic 2.13 rejects an unresolved string forward-ref on import,
@@ -129,6 +130,16 @@ class Trigger(Identifiable):
     last_fired_id: str | None = None  # fire_id of the last dispatched fire (dedup)
     last_fire_error: str | None = None  # JSON-encoded {code, message}
     created_at: datetime
+    owner: PrincipalRef | None = Field(
+        default=None,
+        description=(
+            "Who last saved this trigger (server-set from the caller on "
+            "create and update; a request body cannot choose it). A fired "
+            "run is ranked no higher than this owner's current role. None "
+            "on rows saved before owners were recorded: those fire as an "
+            "ordinary user."
+        ),
+    )
 
     @field_validator("slug")
     @classmethod
@@ -208,6 +219,16 @@ class Subscription(Identifiable):
     last_fired_at: datetime | None = None
     last_fire_error: str | None = None
     created_at: datetime
+    owner: PrincipalRef | None = Field(
+        default=None,
+        description=(
+            "Who last saved this subscription (server-set from the caller on "
+            "create and update). A fresh-session run it fires is attributed "
+            "to this owner, ranked by the lower of this owner's and the "
+            "trigger owner's current roles. None on rows saved before owners "
+            "were recorded: those fire as an ordinary user."
+        ),
+    )
 
 
 __all__ = [

@@ -852,6 +852,7 @@ async def create_workspace(
             )
         raise
 
+    from primer.model.principal import PrincipalRef
     from primer.session.default_binding import resolve_initial_binding
     from primer.workspace.session_factory import (
         SessionFactoryDeps,
@@ -895,6 +896,14 @@ async def create_workspace(
             auto_start=False,
             metadata=None,
             name="main",
+            # The seeded session runs as whoever created the workspace.
+            # Unattributed it used to run as the system principal, which
+            # clears every role floor (security review A-20).
+            initiated_by=(
+                PrincipalRef.from_principal(request.state.actor)
+                if getattr(request.state, "actor", None) is not None
+                else None
+            ),
             deps=SessionFactoryDeps(
                 storage_provider=storage_provider,
                 claim_engine=engine,

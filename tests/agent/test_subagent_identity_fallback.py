@@ -1,39 +1,58 @@
-"""A subagent with no inherited identity fails closed (security review A-20).
+"""``system__invoke_agent`` called with no run identity starts a subagent ranked as an ordinary user (security review A-20).
 
-``system__invoke_agent`` is a ``user``-floor tool. Over the MCP endpoint the handler gets no ``ToolContext``, so the subagent's
-resume context carries no ``initiated_by``. :func:`primer.agent.invoke.build_subagent_toolmanager` used to fall back to the
-system principal, which clears every role floor: a ``role=user`` MCP caller could invoke an agent whose tools include admin-only
-system tools and have them run. The fallback is now an ordinary-user rank.
+``invoke_agent`` is a ``user``-floor tool. Over the MCP endpoint the handler gets no ``ToolContext``, so it used to pass
+``identity=None`` to :func:`primer.agent.invoke.run_subagent`, whose tool-manager builder falls back to the system principal,
+which clears every role floor: a ``role=user`` MCP caller could invoke an agent whose tools include admin-only system tools and
+have them run. The handler now passes :meth:`PrincipalRef.unattributed` when it has no identity. (The builder's own fallback is
+left alone: every other caller threads a real identity; see the PR's fallback audit.)
 """
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+import pytest
 
-from primer.agent.invoke import build_subagent_toolmanager
+import primer.toolset.system as system_module
+from primer.api.registries import ProviderRegistry
 from primer.authz import _role_allows
 from primer.model.principal import PrincipalRef
+from primer.toolset.system import build_system_toolset
+from tests._support.caller import caller
 
 
-def _context(initiated_by):
-    return SimpleNamespace(
-        tools=[], session_id=None, workspace_id=None, chat_id="chat-1", principal=None,
-        initiated_by=initiated_by, turn_no=None,
+@pytest.fixture
+def captured(monkeypatch, fake_storage_provider):
+    seen: dict = {}
+
+    async def _fake_run_subagent(**kwargs):
+        seen.update(kwargs)
+        return "done"
+
+    monkeypatch.setattr(system_module, "run_subagent", _fake_run_subagent)
+    registry = ProviderRegistry(
+        fake_storage_provider, llm_factory=lambda p: object(), embedder_factory=lambda p: object(),
+        cross_encoder_factory=lambda p: object(), toolset_factory=lambda p: object(),
     )
+    return build_system_toolset(storage_provider=fake_storage_provider, provider_registry=registry), seen
 
 
-async def test_a_subagent_with_no_inherited_identity_is_not_ranked_as_system() -> None:
-    manager = await build_subagent_toolmanager(_context(None), provider_registry=None)
+async def test_invoke_agent_with_no_identity_starts_a_user_ranked_subagent(captured) -> None:
+    toolset, seen = captured
 
-    who = manager._initiated_by  # noqa: SLF001
+    result = await toolset.call(tool_name="invoke_agent", arguments={"agent_id": "ag-1", "prompt": "go"}, ctx=None)
+
+    assert not result.is_error, result.output
+    who = seen["identity"]
     assert who is not None and who.type != "system"
     assert who.role == "user"
     assert not _role_allows(who, "admin")
 
 
-async def test_an_inherited_identity_is_kept() -> None:
-    admin = PrincipalRef(type="user", id="u-1", display="u", role="admin", source="local")
+async def test_invoke_agent_keeps_the_calling_runs_identity(captured) -> None:
+    toolset, seen = captured
+    ctx = caller("admin")
 
-    manager = await build_subagent_toolmanager(_context(admin), provider_registry=None)
+    result = await toolset.call(tool_name="invoke_agent", arguments={"agent_id": "ag-1", "prompt": "go"}, ctx=ctx)
 
-    assert manager._initiated_by == admin  # noqa: SLF001
+    assert not result.is_error, result.output
+    assert seen["identity"] == ctx.initiated_by
+    assert isinstance(seen["identity"], PrincipalRef)
