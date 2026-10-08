@@ -36,13 +36,13 @@ EXPECTED_CREATE = {
     "toolsets": ("modal", "toolset"),
     "triggers": ("modal", "trigger"),
     "services": ("modal", "service"),
+    "collections": ("modal", "collection"),
     # the entity's own create overlay (workspaces) or its list with the form stacked on top (section "new")
     "workspaces": ("overlay", "new-workspace", None),
     "agents": ("overlay", "agents", "new"),
     "graphs": ("overlay", "graphs", "new"),
     "approvals": ("overlay", "approvals", "new"),
     # still the legacy list first (their own change each)
-    "collections": ("overlay", "collections", None),
     "channels": ("overlay", "channels", None),
     "harnesses": ("overlay", "harnesses", None),
 }
