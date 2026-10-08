@@ -19,6 +19,7 @@ import respx
 # test_admin_users.py for the same import pattern).
 from tests.api.conftest import raw_client as client, app, fake_provider_registry  # noqa: F401
 
+from primer.auth import oidc
 from primer.auth.passwords import hash_password
 from primer.model.oidc import OidcProvider
 from primer.model.user import User
@@ -33,6 +34,13 @@ _BODY = {
     "scopes": ["openid", "email", "profile"],
     "enabled": True,
 }
+
+
+@pytest.fixture(autouse=True)
+def _empty_discovery_cache(monkeypatch):
+    """``oidc.discover`` caches a document per URL for an hour, process-wide: start every test from an empty cache so one test's fetch
+    cannot answer another's (the same fixture as tests/api/test_oidc_provider_discovery_check.py)."""
+    monkeypatch.setattr(oidc, "_discovery_cache", {})
 
 
 @pytest.fixture(autouse=True)
