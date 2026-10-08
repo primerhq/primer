@@ -60,3 +60,4 @@ async def test_any_other_failure_still_raises() -> None:
 def test_the_notice_says_where_to_decide_it() -> None:
     notice = adapter_module.APPROVAL_ROUTED_NOTICE
     assert "console" in notice and "routed to specific approvers" in notice
+    assert len(notice) <= 200, "Telegram's alert on a callback query takes no more than 200 characters"

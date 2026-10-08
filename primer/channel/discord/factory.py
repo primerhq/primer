@@ -16,6 +16,7 @@ from primer.channel.discord.views import (
     build_reject_modal,
     decode_custom_id,
 )
+from primer.channel.adapter import APPROVAL_ROUTED_NOTICE
 from primer.channel.factory import register_adapter_factory
 from primer.model.channel import (
     Channel, ChannelProvider, ChannelProviderType,
@@ -122,10 +123,27 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
         if verb == "approve":
             if adapter is None:
                 return
-            # Ack + strip the buttons first (Discord drops any interaction not
-            # answered within ~3s), then record the decision.
+            # Discord drops any interaction not answered within ~3s, so the click is acknowledged with a DEFERRAL (nothing visible
+            # changes), the decision is recorded, and only an ACCEPTED decision edits the message: the edit used to be the
+            # acknowledgement and went out first, so a refused approval still read "Approved by".
             try:
-                await interaction.response.edit_message(
+                await interaction.response.defer()
+            except Exception:
+                logger.exception("discord: deferring the approve click failed")
+            accepted = await adapter._handle_decision(
+                workspace_id=ws, session_id=sid, tool_call_id=tcid,
+                decision="approved", reason=None,
+                user_id=interaction.user.id if interaction.user else None,
+            )
+            if not accepted:
+                # Refused: the gate is routed to specific approvers. Only the clicker is told; the message is left as it is.
+                try:
+                    await interaction.followup.send(APPROVAL_ROUTED_NOTICE, ephemeral=True)
+                except Exception:
+                    logger.exception("discord: telling the clicker the approval is routed elsewhere failed")
+                return
+            try:
+                await interaction.edit_original_response(
                     content=(
                         (interaction.message.content or "")
                         + "\n\n✓ Approved by <@" + str(interaction.user.id) + ">"
@@ -133,12 +151,7 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
                     view=None,
                 )
             except Exception:
-                logger.exception("discord: edit_message failed")
-            await adapter._handle_decision(
-                workspace_id=ws, session_id=sid, tool_call_id=tcid,
-                decision="approved", reason=None,
-                user_id=interaction.user.id if interaction.user else None,
-            )
+                logger.exception("discord: edit_original_response failed")
             return
 
         if verb == "reject":
@@ -149,19 +162,29 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
             original_message = interaction.message
 
             async def _on_modal_submit(submitted: discord.Interaction, reason_text: str):
-                # Ack the modal submission first (3s window), then record the
-                # decision and strip the buttons on the original message.
+                # Defer the modal submission first (3s window), then record the
+                # decision. Only an ACCEPTED rejection is confirmed to the clicker
+                # and strips the buttons on the original message.
                 try:
-                    await submitted.response.send_message(
-                        content="✗ Rejection recorded.", ephemeral=True,
-                    )
+                    await submitted.response.defer(ephemeral=True)
                 except Exception:
                     logger.exception("discord: modal ack failed")
-                await adapter._handle_decision(
+                accepted = await adapter._handle_decision(
                     workspace_id=ws, session_id=sid, tool_call_id=tcid,
                     decision="rejected", reason=reason_text or None,
                     user_id=submitted.user.id if submitted.user else None,
                 )
+                if not accepted:
+                    # Refused: the gate is routed to specific approvers. Say so; the original message is left as it is.
+                    try:
+                        await submitted.followup.send(APPROVAL_ROUTED_NOTICE, ephemeral=True)
+                    except Exception:
+                        logger.exception("discord: telling the clicker the rejection is routed elsewhere failed")
+                    return
+                try:
+                    await submitted.followup.send("✗ Rejection recorded.", ephemeral=True)
+                except Exception:
+                    logger.exception("discord: modal confirmation failed")
                 try:
                     if original_message is not None:
                         note = (
@@ -196,11 +219,16 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
                 for c in (row or {}).get("components", []):
                     if c.get("custom_id") == "reason" or c.get("type") == 4:
                         reason = c.get("value") or reason
-            await adapter._handle_decision(
+            accepted = await adapter._handle_decision(
                 workspace_id=ws, session_id=sid, tool_call_id=tcid,
                 decision="rejected", reason=reason or None,
                 user_id=interaction.user.id if interaction.user else None,
             )
+            if not accepted:
+                try:
+                    await interaction.response.send_message(APPROVAL_ROUTED_NOTICE, ephemeral=True)
+                except Exception:
+                    logger.exception("discord: telling the clicker the rejection is routed elsewhere failed")
 
     async def _on_message(message: discord.Message):
         if message.author and message.author.bot:
