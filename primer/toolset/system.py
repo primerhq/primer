@@ -401,7 +401,9 @@ def build_system_toolset(
             "Deleting a collection also deletes its documents, their content and its vector chunks (the vector namespace is dropped first, "
             "then the documents, then the collection). If the vector store cannot be reached the delete is refused with ``type=provider-error`` "
             "and nothing is changed; disable the collection's search first (DELETE /v1/collections/{id}/search always works) to delete it anyway. "
-            "A system collection cannot be deleted (``type=forbidden``)."
+            "A system collection cannot be deleted (``type=forbidden``). If something keeps adding documents while it runs, the delete is "
+            "refused with ``type=conflict``: stop the writer and delete again. After a delete fails part-way, search on the collection returns "
+            "nothing until you retry (its vectors are dropped first); the documents that remain are intact and deleting again finishes the job."
         ),
         "agent": (
             f"Deleting the seeded ``{RESERVED_OPERATOR_AGENT}`` or ``{RESERVED_BUILDER_AGENT}`` agent marks the install as not set up: "

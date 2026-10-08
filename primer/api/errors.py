@@ -103,6 +103,16 @@ _RESPONSES_BY_CODE.setdefault(
         "content": {PROBLEM_JSON_MEDIA_TYPE: {}},
     },
 )
+# 403 is raised as a bare HTTPException by the guards (a system collection, a reserved id), not as a PrimerError, so no row of
+# _PRIMER_ERROR_MAP carries it; it renders as the same problem envelope (_HTTP_STATUS_PROBLEM) and routes may document it.
+_RESPONSES_BY_CODE.setdefault(
+    403,
+    {
+        "model": ProblemDetails,
+        "description": "Forbidden",
+        "content": {PROBLEM_JSON_MEDIA_TYPE: {}},
+    },
+)
 
 
 def common_responses(*codes: int) -> dict[int, dict[str, Any]]:

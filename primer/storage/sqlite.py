@@ -1488,6 +1488,23 @@ class SqliteDocumentContentStore(DocumentContentStore):
                 exc, model_name="document_content", op="delete",
             ) from exc
 
+    async def delete_collection(self, collection_id: str, *, conn: Any | None = None) -> int:
+        del conn
+        try:
+            async with self._provider._write_guard() as should_commit:  # noqa: SLF001
+                cur = await self._conn.execute(
+                    "DELETE FROM document_content WHERE collection_id = ?",
+                    (collection_id,),
+                )
+                rowcount = cur.rowcount
+                if should_commit:
+                    await self._conn.commit()
+        except Exception as exc:
+            raise _wrap_sqlite_error(
+                exc, model_name="document_content", op="delete_collection",
+            ) from exc
+        return max(rowcount, 0)
+
     async def move(
         self, document_id: str, new_path: str, *, conn: Any | None = None
     ) -> None:

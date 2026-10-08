@@ -1451,6 +1451,16 @@ class PostgresDocumentContentStore(DocumentContentStore):
         except Exception as exc:
             raise _wrap_content_error(exc, op="delete") from exc
 
+    async def delete_collection(self, collection_id: str, *, conn: Any | None = None) -> int:
+        sql = f'DELETE FROM {self._qualified} WHERE collection_id = $1'
+        try:
+            async with self._acquire_or_use(conn) as c:
+                result = await c.execute(sql, collection_id)
+        except Exception as exc:
+            raise _wrap_content_error(exc, op="delete_collection") from exc
+        # asyncpg returns the command tag, e.g. "DELETE 3".
+        return int(result.rsplit(" ", 1)[-1])
+
     async def move(
         self, document_id: str, new_path: str, *, conn: Any | None = None
     ) -> None:

@@ -320,7 +320,8 @@ def _crud_tools_for(
     ``pre_delete(existing)`` is the entity's REST ``on_pre_delete`` work (a collection deletes its documents and vectors first): it runs
     after the guards and the reference check and BEFORE the row is deleted, so the row is the last thing to go. It may return a ready
     refusal (a :class:`ToolCallResult`, as the ``refuse_*`` guards do; ``None`` carries on). A refusal (:class:`EntityCheckError`) is a typed error; a :class:`ProviderError` (a vector store that cannot be reached) is
-    ``type=provider-error``; either way the row is left alone. A delete with a ``pre_delete`` is several durable steps, so it is declared
+    ``type=provider-error``, a :class:`ConflictError` (a writer that will not stop) ``type=conflict``; either way the row is left alone.
+    A delete with a ``pre_delete`` is several durable steps, so it is declared
     NOT interruptible (a Stop between them would leave a half-deleted entity).
 
     ``delete_note`` is appended to the delete descriptor only: a consequence of removing the row that the agent should read before it
@@ -601,6 +602,8 @@ def _crud_tools_for(
                     return refusal
             except EntityCheckError as exc:
                 return _err(exc.tool_message(), error_type=exc.tool_error_type)
+            except ConflictError as exc:
+                return _err_from_primer(exc, error_type="conflict")
             except ProviderError as exc:
                 return _err_from_primer(exc, error_type="provider-error")
             except PrimerError as exc:
