@@ -18,6 +18,7 @@ import pytest
 from httpx import ASGITransport
 
 from primer.api.app import create_test_app
+from tests._support.reconcile_guard import reconcile_query_must_not_fail  # noqa: F401  (autouse: see the module)
 from primer.api.registries import (
     ProviderRegistry,
     WorkspaceRegistry,
@@ -29,7 +30,7 @@ from primer.model.except_ import (
     NotFoundError,
 )
 from primer.model.workspace_session import SessionInfo, SessionStatus
-from primer.model.storage import OffsetPage, OffsetPageResponse
+from primer.model.storage import CursorPageResponse, OffsetPage, OffsetPageResponse
 from pydantic import SecretStr
 
 from primer.model.workspace import (
@@ -110,12 +111,18 @@ class _Storage:
                 total=len(items),
                 items=items[page.offset : page.offset + page.length],
             )
-        return OffsetPageResponse(
-            offset=0, length=len(items), total=len(items), items=items
-        )
+        # A CursorPage gets a cursor response (this fake holds a handful of rows, so one page is all of them), like a real backend.
+        return CursorPageResponse(next_cursor=None, items=items)
 
     async def find(self, predicate, page, *, order_by=None):
-        return await self.list(page, order_by=order_by)
+        # The predicate is APPLIED, as a backend does: callers such as the session reconcile filter by workspace and status in the query.
+        from tests.conftest import _eval_predicate
+
+        matching = [e for e in self._data.values() if _eval_predicate(e, predicate)] if predicate is not None else list(self._data.values())
+        if isinstance(page, OffsetPage):
+            sliced = matching[page.offset : page.offset + page.length]
+            return OffsetPageResponse(offset=page.offset, length=len(sliced), total=len(matching), items=sliced)
+        return CursorPageResponse(next_cursor=None, items=matching)
 
 
 class _SP:
