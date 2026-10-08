@@ -127,7 +127,7 @@ def test_composer_never_locks_and_dictation_never_sends():
     # non-terminal state; the mid-run steer/queue behavior it described
     # now has its own dedicated placeholder instead - see
     # test_composer_placeholder_per_state below for the full table.
-    assert "Steer mid-run — queues to the turn boundary" in DOC
+    assert "Steer mid-run - queues to the turn boundary" in DOC
     # rec\.onstop = function specifically (not just the word "onstop") -
     # the R3 review's mic-unmount-cleanup fix added a prose comment that
     # also happens to say "onstop", which an unscoped search landed on
@@ -179,8 +179,8 @@ def test_composer_placeholder_per_state():
     vs one generic form for everything else) - the reference screenshots
     show distinct copy per state instead. Final table:
       terminal -> "Send to reopen this session…" (unchanged)
-      running (no gate item)  -> "Steer mid-run — queues to the turn
-        boundary" (exact reference copy)
+      running (no gate item)  -> "Steer mid-run - queues to the turn
+        boundary" (the reference copy, with a hyphen where it had a dash)
       idle / parked (any other case, incl. a gate item pending even
         while turn_status still reads "running") -> "Message {agentName}…"
         - both reference screenshots of a parked session show this exact
@@ -190,12 +190,13 @@ def test_composer_placeholder_per_state():
     """
     # The ternary lives in `composerHint`, which is both the placeholder and the accessible name (console review C-029).
     start = DOC.index("var composerHint = props.terminal")
-    end = DOC.index("var valState", start) if "var valState" in DOC[start:start + 600] else start + 400
-    ternary = DOC[start:end]
+    assert "var valState" in DOC[start:], "the slice end moved: re-anchor this test"
+    ternary = DOC[start:DOC.index("var valState", start)]
+    assert 0 < len(ternary) < 700, "the slice is the ternary and nothing else"
     assert "placeholder={composerHint}" in DOC and "aria-label={composerHint}" in DOC
     assert '"Send to reopen this session…"' in ternary
     assert "props.running && !props.waitNote" in ternary
-    assert '"Steer mid-run — queues to the turn boundary"' in ternary
+    assert '"Steer mid-run - queues to the turn boundary"' in ternary
     assert '"Message " + (props.agentName || "agent") + "…"' in ternary
 
     # agentName is threaded from the same agentId this file already

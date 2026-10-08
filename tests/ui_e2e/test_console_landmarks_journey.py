@@ -56,14 +56,20 @@ def test_the_studio_has_landmarks_a_heading_and_a_labelled_composer(page: Page, 
 def test_toasts_are_announced_and_an_error_toast_interrupts(page: Page, base_url: str, console_url: str) -> None:
     wid, _sid = _first_workspace_and_session(base_url)
     open_view(page, console_url, wid, "studio")
-    stack = page.get_by_test_id("nv-toasts")
-    expect(stack).to_have_attribute("role", "status")
-    expect(stack).to_have_attribute("aria-live", "polite")
+    # Two sibling live regions inside a stack that is not one itself: polite for news, assertive for errors, never one inside the other.
+    expect(page.get_by_test_id("nv-toasts")).not_to_have_attribute("role", re.compile(".+"))
+    status = page.get_by_test_id("nv-toasts-status")
+    alert = page.get_by_test_id("nv-toasts-alert")
+    expect(status).to_have_attribute("role", "status")
+    expect(status).to_have_attribute("aria-live", "polite")
+    expect(alert).to_have_attribute("role", "alert")
 
     page.evaluate("() => window.primerApi.toastPush({ kind: 'info', text: 'Saved the thing' })")
-    expect(stack.locator(".toast", has_text="Saved the thing")).not_to_have_attribute("role", "alert")
+    expect(status.locator(".toast", has_text="Saved the thing")).to_be_visible(timeout=10_000)
+    expect(alert.locator(".toast", has_text="Saved the thing")).to_have_count(0)
     page.evaluate("() => window.primerApi.toastPush({ kind: 'error', text: 'Could not save' })")
-    expect(stack.locator(".toast", has_text="Could not save")).to_have_attribute("role", "alert", timeout=10_000)
+    expect(alert.locator(".toast", has_text="Could not save")).to_be_visible(timeout=10_000)
+    expect(status.locator(".toast", has_text="Could not save")).to_have_count(0)
 
 
 @pytest.mark.ui_e2e
