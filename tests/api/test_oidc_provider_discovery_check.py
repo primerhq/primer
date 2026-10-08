@@ -9,7 +9,10 @@ URL changed while enabled, must have its discovery document fetched and parsed t
 A DISABLED provider saves with no network call, and an unrelated edit to an enabled provider does not refetch, so an IdP outage never
 blocks a rename.
 
-The IdP is faked with respx at the HTTP level (each test on its own host: ``primer.auth.oidc`` TTL-caches discovery per URL).
+The IdP is faked with respx at the HTTP level. ``primer.auth.oidc.discover`` caches a document per URL for an hour, process-wide, so
+every test starts with an empty cache (an autouse fixture), and a test that depends on whether a save REACHES the IdP clears it
+between its steps: a stored provider's create step fetches and caches the document, and a refetch after that is answered from the
+cache, never reaching the route the test is watching. (The first version of the rename test missed exactly that.)
 """
 
 from __future__ import annotations
@@ -20,8 +23,15 @@ import httpx
 import pytest
 import respx
 
+from primer.auth import oidc
+
 # Convention: shared API test fixtures (same import pattern as test_oidc_providers_router.py).
 from tests.api.conftest import raw_client as client, app, fake_provider_registry  # noqa: F401
+
+
+@pytest.fixture(autouse=True)
+def _empty_discovery_cache(monkeypatch):
+    monkeypatch.setattr(oidc, "_discovery_cache", {})
 
 
 def _host() -> str:
@@ -60,8 +70,11 @@ async def _stored_ids(client) -> list[str]:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("enabled", [True, False])
-@pytest.mark.parametrize("url", ["not-a-url", "ftp://idp.example.com/x", "https://", "  "])
+@pytest.mark.parametrize(
+    "url", ["not-a-url", "ftp://idp.example.com/x", "https://", "  ", "https://[idp.example.com/x", "https://idp.example.com]/x"],
+)
 async def test_a_discovery_url_that_is_not_a_full_http_url_is_refused_whether_or_not_it_is_enabled(client, url, enabled) -> None:
+    """The bracketed hosts are the ones ``urlsplit`` itself raises ``ValueError`` on ("Invalid IPv6 URL"): a 500, not a 422, if uncaught."""
     await _admin(client)
 
     with respx.mock(assert_all_called=False) as router:
@@ -170,6 +183,9 @@ async def test_renaming_an_enabled_provider_does_not_refetch_while_its_idp_is_do
     with respx.mock(assert_all_called=False) as router:
         router.get(_url(host)).mock(return_value=httpx.Response(200, json=_doc(host)))
         assert (await client.post("/v1/admin/oidc-providers", json=body)).status_code == 201
+    # The create above fetched and CACHED the document. Forget it, or a refetch on the rename would be answered from the cache and
+    # never reach the route below, and this test could not tell "does not refetch" from "refetches".
+    oidc._discovery_cache.clear()
 
     with respx.mock(assert_all_called=False) as router:
         down = router.get(_url(host)).mock(side_effect=httpx.ConnectError("outage"))
@@ -188,6 +204,7 @@ async def test_changing_the_discovery_url_of_an_enabled_provider_checks_the_new_
     with respx.mock(assert_all_called=False) as router:
         router.get(_url(host)).mock(return_value=httpx.Response(200, json=_doc(host)))
         assert (await client.post("/v1/admin/oidc-providers", json=body)).status_code == 201
+    oidc._discovery_cache.clear()
 
     with respx.mock(assert_all_called=False) as router:
         router.get(_url(other)).mock(side_effect=httpx.ConnectError("down"))
@@ -195,3 +212,76 @@ async def test_changing_the_discovery_url_of_an_enabled_provider_checks_the_new_
 
     assert resp.status_code == 422, resp.text
     assert (await client.get(f"/v1/admin/oidc-providers/{body['id']}")).json()["discovery_url"] == _url(host)
+
+
+@pytest.mark.asyncio
+async def test_enabling_a_provider_whose_document_was_fetched_within_the_hour_does_not_reach_the_idp_again(client) -> None:
+    """The check is ``oidc.discover``, the code the login flow uses, so it shares that function's one-hour cache: an IdP that answered
+    a minute ago still counts as answering. Pinned because the docs say so, and so the cache's presence is a visible fact, not a surprise."""
+    await _admin(client)
+    host = _host()
+    body = _body(host, enabled=False)
+    with respx.mock(assert_all_called=False) as router:
+        router.get(_url(host)).mock(return_value=httpx.Response(200, json=_doc(host)))
+        assert (await client.post("/v1/admin/oidc-providers", json=body)).status_code == 201
+        await oidc.discover(_url(host))                      # the login flow (or an earlier save) fetched it a minute ago
+
+    with respx.mock(assert_all_called=False) as router:
+        down = router.get(_url(host)).mock(side_effect=httpx.ConnectError("down since"))
+        resp = await client.put(f"/v1/admin/oidc-providers/{body['id']}", json={**body, "enabled": True})
+        assert not down.called
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["enabled"] is True
+
+
+# ---- the shape check on update, and the whitespace strip -----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize("url", ["not-a-url", "https://[idp.example.com/x"])
+async def test_updating_a_stored_provider_to_a_malformed_url_is_refused_by_shape(client, url, enabled) -> None:
+    await _admin(client)
+    host = _host()
+    body = _body(host, enabled=False)
+    with respx.mock(assert_all_called=False):
+        assert (await client.post("/v1/admin/oidc-providers", json=body)).status_code == 201
+
+    with respx.mock(assert_all_called=False) as router:
+        resp = await client.put(f"/v1/admin/oidc-providers/{body['id']}", json={**body, "discovery_url": url, "enabled": enabled})
+        assert not router.calls, "a malformed URL is refused by its shape, without any network call"
+
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["extensions"]["error"] == "discovery_url_invalid"
+    assert (await client.get(f"/v1/admin/oidc-providers/{body['id']}")).json()["discovery_url"] == _url(host)
+
+
+@pytest.mark.asyncio
+async def test_whitespace_around_a_discovery_url_is_trimmed_before_it_is_checked_and_stored(client) -> None:
+    await _admin(client)
+    host = _host()
+
+    with respx.mock(assert_all_called=False) as router:
+        route = router.get(_url(host)).mock(return_value=httpx.Response(200, json=_doc(host)))
+        resp = await client.post("/v1/admin/oidc-providers", json=_body(host, discovery_url=f"  {_url(host)}\n"))
+        assert route.called, "the document is fetched from the trimmed URL"
+
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["discovery_url"] == _url(host)
+    assert (await client.get(f"/v1/admin/oidc-providers/{resp.json()['id']}")).json()["discovery_url"] == _url(host)
+
+
+@pytest.mark.asyncio
+async def test_whitespace_around_a_discovery_url_is_trimmed_on_update_too(client) -> None:
+    await _admin(client)
+    host, other = _host(), _host()
+    body = _body(host, enabled=False)
+    with respx.mock(assert_all_called=False):
+        assert (await client.post("/v1/admin/oidc-providers", json=body)).status_code == 201
+
+    resp = await client.put(f"/v1/admin/oidc-providers/{body['id']}", json={**body, "discovery_url": f"\t{_url(other)}  "})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["discovery_url"] == _url(other)
+    assert (await client.get(f"/v1/admin/oidc-providers/{body['id']}")).json()["discovery_url"] == _url(other)
