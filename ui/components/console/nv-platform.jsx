@@ -491,8 +491,13 @@ var NV_PLAT_PAGES = {
       };
     },
     open: function (con, row) { con.openOverlay("harnesses", null, row.id); },
-    create: function (con) { con.openOverlay("harnesses", null, null); },
+    create: function (con, setModal) { setModal({ kind: "harness" }); },
     delPath: function (row) { return "/harnesses/" + encodeURIComponent(row.id); },
+    // The legacy list offered a second create beside "Register from git".
+    extraNav: {
+      label: "Build outbound",
+      run: function (con, setModal) { setModal({ kind: "harness-outbound" }); },
+    },
   },
   services: {
     title: "Services", noun: ["service", "services"], createLabel: "New service",
@@ -892,6 +897,14 @@ function NV_ChannelCreateHost(props) {
       </div>
     </Modal>
   );
+}
+
+// Register-from-git or the outbound builder; both pass the created row to
+// onCreated once the harness is installed.
+function NV_HarnessCreateHost(props) {
+  var Dialog = props.outbound
+    ? window.HarnessOutboundBuilder : window.HarnessRegisterDialog;
+  return <Dialog onClose={props.onClose} onCreated={props.onCreated} />;
 }
 
 // Model-profile create/edit, inline on the platform page. The form is
@@ -1337,7 +1350,7 @@ function NV_PlatListPage(props) {
           {page && page.extraNav ? (
             <button type="button" className="nv-btn-secondary"
               data-testid="nv-plat-extra"
-              onClick={function () { page.extraNav.run(con); }}>
+              onClick={function () { page.extraNav.run(con, setModal); }}>
               {page.extraNav.label}
             </button>
           ) : null}
@@ -1435,6 +1448,22 @@ function NV_PlatListPage(props) {
           <NV_ChannelCreateHost con={con}
             onClose={function () { setModal(null); }}
             onCreated={function () { setModal(null); res.refetch(); }} />
+        ) : null}
+        {modal && modal.kind === "harness" ? (
+          <NV_HarnessCreateHost
+            onClose={function () { setModal(null); }}
+            onCreated={function (row) {
+              setModal(null);
+              NV_createdRow(con, function () { res.refetch(); }, "harnesses", row);
+            }} />
+        ) : null}
+        {modal && modal.kind === "harness-outbound" ? (
+          <NV_HarnessCreateHost outbound
+            onClose={function () { setModal(null); }}
+            onCreated={function (row) {
+              setModal(null);
+              NV_createdRow(con, function () { res.refetch(); }, "harnesses", row);
+            }} />
         ) : null}
         {cards.length > NV_PLAT_PAGE_SIZE ? (
           <div className="nv-pager">
