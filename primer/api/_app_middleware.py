@@ -22,6 +22,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import GZipMiddleware
+from starlette.responses import Response
 
 from primer.api._jsx_bundle import build_jsx_bundle
 from primer.api.config import AppConfig
@@ -45,6 +46,22 @@ class _GZipExceptMcp(GZipMiddleware):
             await self.app(scope, receive, send)
             return
         await super().__call__(scope, receive, send)
+
+
+async def _next_unless_the_client_left(request, call_next):
+    """``call_next``, except that "no response" from a client that has gone away is not an error (console review C-010).
+
+    A stream whose first chunk is late (the workspace tap) can lose its client before the app has sent anything. The app then finishes without a response, and
+    Starlette's ``BaseHTTPMiddleware`` raises ``RuntimeError("No response returned.")`` in every layer, which reached the unhandled-exception handler and was
+    logged at ERROR with a traceback once per closed tap connection. When the client really is gone nobody receives the answer, so an empty 499 (the
+    "client closed request" status) stands in for it, quietly; when the client is still there the error is raised as before, so a real bug stays loud.
+    """
+    try:
+        return await call_next(request)
+    except RuntimeError as exc:
+        if str(exc) != "No response returned." or not await request.is_disconnected():
+            raise
+        return Response(status_code=499)
 
 
 def _mount_metrics(app: FastAPI, config: AppConfig) -> None:
@@ -112,7 +129,7 @@ def _install_security_headers(app: FastAPI) -> None:
     """
     @app.middleware("http")
     async def _security_headers(request, call_next):  # noqa: ARG001
-        response = await call_next(request)
+        response = await _next_unless_the_client_left(request, call_next)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault(
@@ -191,7 +208,7 @@ def _install_console_csp(app: FastAPI) -> None:
     """
     @app.middleware("http")
     async def _console_csp(request, call_next):
-        response = await call_next(request)
+        response = await _next_unless_the_client_left(request, call_next)
         if request.url.path.startswith("/console"):
             # Direct assignment, not setdefault — the policy is strict
             # by intent; no downstream handler should be loosening it.
@@ -269,7 +286,7 @@ def _install_request_id(app: FastAPI) -> None:
         else:
             rid = "req-" + _uuid.uuid4().hex[:12]
         request.state.request_id = rid
-        response = await call_next(request)
+        response = await _next_unless_the_client_left(request, call_next)
         response.headers["X-Request-Id"] = rid
         return response
 
