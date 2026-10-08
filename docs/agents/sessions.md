@@ -477,6 +477,10 @@ endpoints answer a graph session parked mid-run on an `ask_user` node (see
 - **Ended is terminal.** A session that ended (clean, error, or
   operator-cancel) is not resumable. Create a fresh session if
   you want to continue from there.
+- **A failed model call's error record says which provider and what it said.** The `error` record's `message` names the provider by its
+  configured id and kind (`Model provider 'lm-studio-box' (openchat/lmstudio) had a server error (HTTP 500): ...`) and carries the provider's
+  own text, capped at 300 characters with credentials masked. Branch on the record's `code` (`server_error`, `rate_limit`, `auth_error`,
+  `network_error`, `bad_request`, the timeouts), not on the sentence.
 - **Yield-cancellation differs from session-end.** Cancelling a
   yield produces a `tool_cancelled` result; the agent continues
   the turn. Ending the session stops the agent entirely.
