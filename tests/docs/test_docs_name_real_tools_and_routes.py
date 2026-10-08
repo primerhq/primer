@@ -3,8 +3,8 @@
 The agent-facing docs (``docs/agents/``) are ingested into ``_internal_ai_docs`` and served to agents by search, so a tool name in them is
 acted on: ``docs/agents/workspaces.md`` told an agent to bind a workspace to a channel with ``system::set_workspace_channel_association`` and
 ``system::clear_workspace_channel_association``, neither of which has been a tool since the field became a reply binding
-(``set_reply_binding`` / ``clear_reply_binding``), and a cookbook sent the agent to ``trigger::subscribe_to_trigger``, which has never been the
-tool's name (``create_subscription``). Nothing checked, so nothing noticed. Two checks:
+(``set_reply_binding`` / ``clear_reply_binding``), and three docs sent the agent to ``trigger::subscribe_to_trigger``, a yielding tool that lives in
+the ``workspace_ext`` toolset (``workspace_ext::subscribe_to_trigger``). Nothing checked, so nothing noticed. Two checks:
 
 * every ``<toolset>::<tool>`` or ``<toolset>__<tool>`` in ``docs/agents/`` and ``docs/dev/`` (not the vision documents) whose toolset is built in
   here is a tool that toolset has. A name that ends in ``_`` is a documented stem (``find_<kind>``), not a tool;
@@ -58,7 +58,9 @@ def _tool_references(doc: Path) -> list[tuple[int, str, str]]:
 
 def test_the_built_in_toolsets_are_not_empty_so_the_check_cannot_pass_vacuously() -> None:
     tools = _built_in_tools()
-    assert {"system", "workspaces", "trigger", "web"} <= set(tools)
+    assert {"system", "workspaces", "workspace_ext", "trigger", "harness", "crud", "web", "misc"} <= set(tools)
+    empty = [toolset_id for toolset_id, names in tools.items() if not names]
+    assert not empty, f"these toolsets built with no tools, so every doc reference to them would read as stale: {empty}"
     assert len(tools["system"]) > 50 and "set_reply_binding" in tools["system"]
 
 
@@ -84,7 +86,12 @@ def test_the_tool_reference_scan_finds_references_at_all() -> None:
 
 # ---- endpoints ------------------------------------------------------------------------------------------------------------------
 
-_ROUTE = re.compile(r"\b(GET|POST|PUT|PATCH|DELETE)\s+(/v1/[A-Za-z0-9_\-/{}<>.:*]+)")
+# One or more methods, joined by "," "/" "and" "or" or "&" and optionally backticked ("`GET` and `POST /v1/x`"), then the path they share.
+_METHOD = r"\b(?:GET|POST|PUT|PATCH|DELETE)\b"
+_ROUTE = re.compile(
+    rf"(?P<methods>{_METHOD}`?(?:\s*(?:,|/|and|or|&)\s*`?{_METHOD}`?)*)\s+`?(?P<path>/v1/[A-Za-z0-9_\-/{{}}<>.:*]+)"
+)
+_METHOD_WORD = re.compile(r"GET|POST|PUT|PATCH|DELETE")
 _METHODS = ("get", "post", "put", "patch", "delete")
 
 # Documents that describe intent, not the contract.
@@ -125,13 +132,14 @@ def _route_refs_in(text: str) -> list[tuple[int, str, str]]:
     """``(line, METHOD, normalised path)`` for every endpoint a document names that the live schema is expected to have."""
     found = []
     for number, line in enumerate(text.splitlines(), 1):
-        for method, path in _ROUTE.findall(line):
-            normalised = _normalise(path)
-            if _is_a_placeholder(normalised) or (method, normalised) in _OUTSIDE_THE_SCHEMA:
-                continue
-            if normalised.startswith(_OUTSIDE_THE_SCHEMA_PREFIXES):
-                continue
-            found.append((number, method, normalised))
+        for match in _ROUTE.finditer(line):
+            normalised = _normalise(match["path"])
+            for method in _METHOD_WORD.findall(match["methods"]):
+                if _is_a_placeholder(normalised) or (method, normalised) in _OUTSIDE_THE_SCHEMA:
+                    continue
+                if normalised.startswith(_OUTSIDE_THE_SCHEMA_PREFIXES):
+                    continue
+                found.append((number, method, normalised))
     return found
 
 
@@ -194,3 +202,13 @@ def test_a_vision_document_is_not_a_contract() -> None:
 
     assert _route_refs_in(vision.read_text(encoding="utf-8")), "the fixture must name a route, or this test proves nothing"
     assert _route_references(vision) == []
+
+
+def test_methods_that_share_a_path_are_each_checked() -> None:
+    """Prose such as "`GET` and `POST /v1/x`" names two operations on one path; each is a reference."""
+    refs = _route_refs_in("see `GET` and `POST /v1/nope/{id}` and PUT, DELETE /v1/other and `PATCH` or `GET /v1/third`")
+
+    assert sorted((method, path) for _, method, path in refs) == [
+        ("DELETE", "/v1/other"), ("GET", "/v1/nope/{}"), ("GET", "/v1/third"), ("PATCH", "/v1/third"),
+        ("POST", "/v1/nope/{}"), ("PUT", "/v1/other"),
+    ]
