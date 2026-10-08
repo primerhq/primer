@@ -194,17 +194,24 @@ def test_the_page_hands_setmodal_to_its_secondary_button() -> None:
 def test_the_platform_page_hosts_both_harness_dialogs() -> None:
     assert "window.HarnessRegisterDialog = HarnessRegisterDialog;" in HARNESSES
     assert "window.HarnessOutboundBuilder = HarnessOutboundBuilder;" in OUTBOUND_BUILDER
-    host = re.search(r"function NV_HarnessCreateHost[\s\S]{0,500}", PLAT)
+    host = re.search(r"function NV_HarnessCreateHost\([\s\S]*?\n\}\n", PLAT)  # bounded at the function's own closing brace
     assert host, "the page needs a host for the harness dialogs"
     assert "window.HarnessRegisterDialog" in host.group(0) and "window.HarnessOutboundBuilder" in host.group(0)
     for kind in ("harness", "harness-outbound"):
-        shown = re.search(r"modal\.kind === \"" + kind + r"\"[\s\S]{0,600}", PLAT)
+        # Each mount is bounded to ITS OWN block (up to its `) : null}`): a wider window ran from the register mount into the outbound one, so the
+        # outbound mount's lines satisfied the register mount's assertions.
+        shown = re.search(r"modal\.kind === \"" + kind + r"\" \? \([\s\S]*?\) : null\}", PLAT)
         assert shown and "<NV_HarnessCreateHost" in shown.group(0), kind
         block = shown.group(0)
-        assert block.count("setModal(null)") >= 2, f"{kind}: the dialog must close on Cancel and on a created row"
-        assert re.search(r"NV_createdRow\(con, [\s\S]{0,60}\"harnesses\", row\)", block), (
-            f"{kind}: a created row must go through the tested hand-off, with the page's own nav"
+        # Closing the dialog (Cancel, or the X) refetches the cards: the register wizard creates its DRAFT row at step 1 and a cancelled wizard leaves it
+        # behind, invisible until a reload, and a builder that failed after its create leaves one too.
+        assert re.search(r"onClose=\{function \(\) \{ setModal\(null\); res\.refetch\(\); \}\}", block), (
+            f"{kind}: closing the dialog must close it AND refetch the cards"
         )
+        # A created row closes the dialog, then goes through the tested hand-off with the page's own nav.
+        assert re.search(
+            r"onCreated=\{function \(row\) \{\s*setModal\(null\);\s*NV_createdRow\(con, function \(\) \{ res\.refetch\(\); \}, \"harnesses\", row\);\s*\}\}", block
+        ), f"{kind}: a created row must close the dialog and go through NV_createdRow with the page's own nav"
 
 
 def test_only_the_build_outbound_mount_asks_the_host_for_the_outbound_builder() -> None:
@@ -216,5 +223,5 @@ def test_only_the_build_outbound_mount_asks_the_host_for_the_outbound_builder() 
     assert all(mounts.values()), mounts
     assert "<NV_HarnessCreateHost outbound" in mounts["harness-outbound"].group(0)
     assert "outbound" not in mounts["harness"].group(0).replace("onCreated", "")
-    host = re.search(r"function NV_HarnessCreateHost[\s\S]{0,300}", PLAT).group(0)
+    host = re.search(r"function NV_HarnessCreateHost\([\s\S]*?\n\}\n", PLAT).group(0)
     assert re.search(r"props\.outbound\s*\?\s*window\.HarnessOutboundBuilder\s*:\s*window\.HarnessRegisterDialog", host), host
