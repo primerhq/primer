@@ -5,8 +5,8 @@ own filter, Refresh and "+ New toolset" over the card grid, and only a second pr
 button: a form directly (model profiles, workspaces, templates), a form stacked on the legacy table (agents, graphs, approval policies),
 and the legacy table first (the rest).
 
-Now toolsets and triggers host the entity's EXISTING create dialog (``TS_NewToolsetModal``, ``TR_CreateTriggerDialog``) on the Platform
-page itself, the way model profiles already do, and a created row lands on its detail overlay with the card grid refreshed behind it.
+Now toolsets, triggers and services host the entity's EXISTING create dialog (``TS_NewToolsetModal``, ``TR_CreateTriggerDialog``,
+``SV_ServiceModal``) on the Platform page itself, the way model profiles already do, and a created row lands on its detail overlay with the card grid refreshed behind it.
 
 The page table (``NV_PLAT_PAGES``) and the hand-off (``NV_createdRow``) are plain JS with no JSX, so they run here in MiniRacer against
 the real source. ``EXPECTED_CREATE`` is the whole IA in one place: each later surface moves from the "legacy list" group into
@@ -26,6 +26,7 @@ UI = ROOT / "ui"
 PLAT = (UI / "components" / "console" / "nv-platform.jsx").read_text(encoding="utf-8")
 TOOLSETS = (UI / "components" / "toolsets.jsx").read_text(encoding="utf-8")
 TRIGGERS = (UI / "components" / "triggers.jsx").read_text(encoding="utf-8")
+SERVICES = (UI / "components" / "services.jsx").read_text(encoding="utf-8")
 
 # What each page's create does: ("modal", kind) hosts a form on the page; ("overlay", name, section) opens a management overlay.
 EXPECTED_CREATE = {
@@ -34,6 +35,7 @@ EXPECTED_CREATE = {
     "templates": ("modal", "template"),
     "toolsets": ("modal", "toolset"),
     "triggers": ("modal", "trigger"),
+    "services": ("modal", "service"),
     # the entity's own create overlay (workspaces) or its list with the form stacked on top (section "new")
     "workspaces": ("overlay", "new-workspace", None),
     "agents": ("overlay", "agents", "new"),
@@ -43,7 +45,6 @@ EXPECTED_CREATE = {
     "collections": ("overlay", "collections", None),
     "channels": ("overlay", "channels", None),
     "harnesses": ("overlay", "harnesses", None),
-    "services": ("overlay", "services", None),
 }
 
 _OPEN_CONTEXTS: list = []
@@ -104,7 +105,7 @@ def test_the_table_covers_every_page_that_has_a_new_button() -> None:
     assert with_button == set(EXPECTED_CREATE), "a page gained or lost a New button without saying what it opens here"
 
 
-@pytest.mark.parametrize("nav", ["toolsets", "triggers"])
+@pytest.mark.parametrize("nav", ["toolsets", "triggers", "services"])
 def test_a_created_row_refreshes_the_cards_and_opens_its_detail(nav: str) -> None:
     ctx = _ctx()
     ctx.eval("function refetch() { refetched++; }")
@@ -126,14 +127,20 @@ def test_a_created_row_without_an_id_only_refreshes_the_cards() -> None:
     assert _js(ctx, "overlays") == [], "an overlay for the id 'undefined' is a broken page"
 
 
-def test_the_platform_page_hosts_the_two_existing_dialogs() -> None:
+def test_the_platform_page_hosts_the_existing_dialogs() -> None:
     assert "window.TS_NewToolsetModal = TS_NewToolsetModal;" in TOOLSETS, "the toolset dialog must be reachable from the Platform page"
     assert "window.TR_CreateTriggerDialog = TR_CreateTriggerDialog;" in TRIGGERS
+    assert "window.SV_ServiceModal = SV_ServiceModal;" in SERVICES
     # The host components render the entity page's own dialog, unchanged.
     assert re.search(r"function NV_ToolsetCreateHost[\s\S]{0,300}window\.TS_NewToolsetModal", PLAT)
     assert re.search(r"function NV_TriggerCreateHost[\s\S]{0,200}window\.TR_CreateTriggerDialog", PLAT)
+    assert re.search(r"function NV_ServiceCreateHost[\s\S]{0,300}window\.SV_ServiceModal", PLAT)
     # The page shows the host for its modal kind, closes it on Cancel and on a created row, and hands the row to the tested helper.
-    for kind, host, nav in (("toolset", "NV_ToolsetCreateHost", "toolsets"), ("trigger", "NV_TriggerCreateHost", "triggers")):
+    for kind, host, nav in (
+        ("toolset", "NV_ToolsetCreateHost", "toolsets"),
+        ("trigger", "NV_TriggerCreateHost", "triggers"),
+        ("service", "NV_ServiceCreateHost", "services"),
+    ):
         shown = re.search(r"modal\.kind === \"" + kind + r"\"[\s\S]{0,600}", PLAT)
         assert shown and f"<{host}" in shown.group(0), kind
         block = shown.group(0)
