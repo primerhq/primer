@@ -59,15 +59,20 @@ def _mount_metrics(app: FastAPI, config: AppConfig) -> None:
     When ``config.observability.metrics_enabled`` is *False* or
     ``config.observability.enabled`` is *False* the mount is skipped
     entirely and ``GET /metrics`` returns a 404.
+
+    The mount sits outside every router, so no auth dependency ran on it; :class:`~primer.api.metrics_gate.MetricsGate` wraps it and
+    requires an authenticated admin unless ``observability.metrics_public`` is true.
     """
     if not config.observability.enabled or not config.observability.metrics_enabled:
         return
 
     from prometheus_client import make_asgi_app as _make_metrics_asgi
+    from primer.api.metrics_gate import MetricsGate
     from primer.observability.metrics import registry as _metrics_registry
 
     metrics_app = _make_metrics_asgi(registry=_metrics_registry)
-    app.mount("/metrics", metrics_app)
+    # Behind the same authentication as /v1 and the admin role, unless the deployment says it is public (A-11).
+    app.mount("/metrics", MetricsGate(metrics_app, public=config.observability.metrics_public))
 
 
 def _install_root_redirect(app: FastAPI) -> None:

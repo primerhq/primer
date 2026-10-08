@@ -18,9 +18,12 @@ from primer.model.scheduler import RuntimeMode
 def sqlite_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AppConfig:
     """AppConfig that uses a fresh SQLite DB in tmp_path; API-only mode."""
     monkeypatch.setenv("HOME", str(tmp_path))
+    # These tests read /metrics with no credentials, which is what ``metrics_public`` is for; the default (an admin only) is pinned by
+    # tests/observability/test_metrics_gate.py (architecture review A-11).
     return AppConfig(
         runtime_mode=RuntimeMode.API,
         auto_bootstrap=False,
+        observability=ObservabilityConfig(metrics_public=True),
     )
 
 

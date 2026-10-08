@@ -61,6 +61,10 @@ class ObservabilityConfig(BaseModel):
     enabled: bool = True
     traces_enabled: bool = True
     metrics_enabled: bool = True
+    # ``GET /metrics`` needs a signed-in admin (a session cookie, or an admin's API token as a bearer token, which is what a Prometheus
+    # ``authorization`` block sends) unless this is true (architecture review A-11). The registry names workspaces, providers, profiles,
+    # models, tools and workers and how busy each is. Set it only where the network already protects the port.
+    metrics_public: bool = False
     trace_llm_io: bool = False
     otlp_endpoint: str | None = None
     otlp_headers: dict[str, str] = Field(default_factory=dict)
