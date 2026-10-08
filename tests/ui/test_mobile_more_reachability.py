@@ -21,6 +21,7 @@ from tests.ui._mini_react import mini_react_context, transpile
 
 ROOT = Path(__file__).resolve().parents[2]
 SHELL = ROOT / "ui" / "components" / "console" / "nv-mobile-shell.jsx"
+PLATFORM = ROOT / "ui" / "components" / "console" / "nv-platform.jsx"
 
 # What the file's globals need to exist; each is the smallest stand-in that lets the real component render.
 _PRELUDE = r"""
@@ -86,6 +87,19 @@ function PlatformHost(p) {
 """
 
 
+def _platform_helpers() -> str:
+    """The REAL ``NV_emptyText``, ``NV_countText`` and ``NV_nounOf`` from ``nv-platform.jsx``, exported on ``window`` the way that file does.
+
+    The mobile Platform list and the new-session picker read them from ``window`` (the console loads ``nv-platform.jsx`` before the shell). A stand-in
+    that returned a fixed string would let a test pass against wording the console never says, so the harness takes the real functions: the slice runs
+    from the first helper to the comment that opens the page table, the same boundary ``tests/ui/test_console_empty_lists.py`` slices.
+    """
+    src = PLATFORM.read_text(encoding="utf-8")
+    start = src.index("function NV_emptyText(")
+    end = src.index("// Per-entity page config.")
+    return src[start:end] + "\nwindow.NV_emptyText = NV_emptyText;\nwindow.NV_countText = NV_countText;\n"
+
+
 @pytest.fixture(scope="module")
 def code() -> str:
     return transpile(SHELL)
@@ -94,7 +108,7 @@ def code() -> str:
 @pytest.fixture
 def app(code):
     """A fresh V8 context with the real shell loaded; closed after the test."""
-    ctx = mini_react_context(code, _PRELUDE)
+    ctx = mini_react_context(code, _PRELUDE + _platform_helpers())
 
     class App:
         def js(self, expr: str):
