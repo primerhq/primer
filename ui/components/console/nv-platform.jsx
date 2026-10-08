@@ -900,7 +900,10 @@ function NV_ChannelCreateHost(props) {
 }
 
 // Register-from-git or the outbound builder; both pass the created row to
-// onCreated once the harness is installed.
+// onCreated once the harness is installed. Closing either one refetches the
+// cards (the page's mounts): the register wizard creates its DRAFT row at
+// step 1, so a cancelled wizard leaves one that would stay invisible until a
+// reload.
 function NV_HarnessCreateHost(props) {
   var Dialog = props.outbound
     ? window.HarnessOutboundBuilder : window.HarnessRegisterDialog;
@@ -1451,7 +1454,7 @@ function NV_PlatListPage(props) {
         ) : null}
         {modal && modal.kind === "harness" ? (
           <NV_HarnessCreateHost
-            onClose={function () { setModal(null); }}
+            onClose={function () { setModal(null); res.refetch(); }}
             onCreated={function (row) {
               setModal(null);
               NV_createdRow(con, function () { res.refetch(); }, "harnesses", row);
@@ -1459,7 +1462,7 @@ function NV_PlatListPage(props) {
         ) : null}
         {modal && modal.kind === "harness-outbound" ? (
           <NV_HarnessCreateHost outbound
-            onClose={function () { setModal(null); }}
+            onClose={function () { setModal(null); res.refetch(); }}
             onCreated={function (row) {
               setModal(null);
               NV_createdRow(con, function () { res.refetch(); }, "harnesses", row);
