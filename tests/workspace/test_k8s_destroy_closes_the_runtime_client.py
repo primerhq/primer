@@ -84,6 +84,24 @@ async def test_sessions_that_cannot_be_ended_do_not_hold_up_the_deletion_or_leav
         await asyncio.sleep(0.05)
 
 
+async def test_destroy_ends_the_sessions_of_a_cached_workspace(client):
+    """Architecture review A-24: the workspace's ``aclose`` no longer ends its sessions (closing a handle at shutdown must not
+    end live ones), so a destroy, where the workspace is going away, ends them itself."""
+    backend = _backend()
+    ws = await _create(backend)
+    ended = []
+
+    async def end_all_sessions():
+        ended.append(True)
+
+    ws.end_all_sessions = end_all_sessions
+
+    await backend.destroy("ws-1")
+
+    assert ended == [True], "destroy did not end the sessions on the workspace it tore down"
+    backend._apps_v1.delete_namespaced_stateful_set.assert_awaited_once()
+
+
 async def test_destroy_of_a_workspace_that_is_not_cached_opens_no_connection(client):
     backend = _backend()
     await backend.destroy("ws-1")
