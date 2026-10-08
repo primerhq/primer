@@ -226,7 +226,9 @@ async def purge_collection(storage_provider, ssr, *, collection: Collection) -> 
     :class:`~primer.model.except_.ConflictError` and the collection is left whole for a later retry. The content rows are swept last, by
     collection id, so a row with no document entity cannot keep a path of the reused id taken. What this does NOT close: a write that
     lands in the instant between that last look and the row delete by the caller; it would need a tombstone state on the collection that
-    refuses writes while it is being deleted (ticketed, not built).
+    refuses writes while it is being deleted (ticketed, not built, 01a11a68-4d28). The same window has a second face: the sweep by collection id
+    also deletes the body of a document created after the last look, so that document survives as an entity row with no body (torn content)
+    until it is written again.
 
     After a failure part-way the vector namespace is already gone, so search on the collection finds nothing until the delete is
     retried; the rows that remain are intact.
