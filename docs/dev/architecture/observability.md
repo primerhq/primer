@@ -332,6 +332,7 @@ leave its families behind:
   is counted once as `status="overridden"` and emits no `session.replied`
   (ticket 01a1134b-2cb8), so `completed` is not inflated by sessions that were
   ended under the turn.
+  A failed turn is announced on the event log as `session.turn_failed` with `{code, ended}` (`primer/session/dispatch.py::_end_turn_failed`, `code` = the failure's code: the model call's own, `llm_stream_error` when the stream gave none, `turn_failed` for a crash), whether the session then ended or, for a transport failure of an interactive session, RESTS (C-024; `ended` is false then): `session.ended` is only for an ended one, so an automation that watches for failed turns watches this. Counted in `turns_total{status="failed"}` as before.
   `binding_ref` is the bound agent or graph id,
   bounded by the number of definitions rather than by session volume.
 - `sessions_active{workspace_id}` is inc/dec'd around the turn body in the same

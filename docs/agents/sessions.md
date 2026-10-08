@@ -121,6 +121,15 @@ create sessions in batches and start them on demand.
   this state until `request_resume()` lifts it.
 - `ENDED` - terminal. Either the agent stopped, the operator ended
   it, or an unrecoverable error occurred. No further work runs.
+  A transient failure of the model call (a provider 5xx, a rate limit,
+  a dropped connection, a stalled or too-slow generation) does NOT end an
+  interactive session once the retries are spent: it rests `WAITING`, the
+  row's `last_turn_error` (`{code, at}`) says the turn failed, and your
+  next message continues the same session. A graph, a trigger- or
+  webhook-started session, a rejected request (bad credentials, a bad
+  request, an overflowing context) and a crash still end it. Watch
+  `session.turn_failed` (`{code, ended}`) for failed turns, not only
+  `session.ended`.
 
 Transitions:
 - `RUNNING ↔ WAITING` - yield enters; resume exits.
