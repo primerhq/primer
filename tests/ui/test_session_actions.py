@@ -94,6 +94,14 @@ def test_park_pauses_the_session_and_says_how_to_get_it_back(actions) -> None:
     assert got["refetches"] == 1
 
 
+def test_parking_a_running_session_says_it_pauses_when_the_turn_ends(actions) -> None:
+    """For a running session the pause route only sets a flag the worker honours at the next turn boundary, so 'paused' would be a lie."""
+    got = actions.run('NV_doPark("w1", "sess-1", refetch, toast, true)')
+    assert got["result"] == {"ok": True}
+    text = got["toasts"][0][0].lower()
+    assert "requested" in text and "turn" in text and "paused." not in text, got["toasts"]
+
+
 def test_park_that_fails_says_so_with_the_servers_reason_and_the_request_id(actions) -> None:
     actions.set(fail=_CONFLICT | {"detail": "Session 'sess-1' has ended"})
     got = actions.run('NV_doPark("w1", "sess-1", refetch, toast)')

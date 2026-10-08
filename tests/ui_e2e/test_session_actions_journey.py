@@ -89,6 +89,11 @@ def test_deleting_a_running_session_says_why_and_it_can_be_ended_then_deleted(
     assert _status(base_url, sid) == "running", "the 409 left the session alone"
     expect(page.get_by_test_id(f"nv-session-doc:{sid}")).to_be_visible()
 
+    # Parking a RUNNING session only flags it (the worker pauses it at the turn boundary), and the toast says so.
+    page.get_by_test_id("nv-session-overflow").click()
+    page.get_by_test_id("nv-session-park").click()
+    expect(page.locator(".toast", has_text="Pause requested")).to_be_visible(timeout=10_000)
+
     # The rail's right-click menu goes through the same path: it asks, then says what happened.
     row = session_row(page, sid, ids["workspace"])
     row.first.click(button="right")
