@@ -1,4 +1,4 @@
-"""Count the form labels that name nothing: ``<label className="field-label">`` with no ``htmlFor``.
+"""Count the form labels that name nothing: ``<label className="field-label">`` with no ``htmlFor``, and a ``div``/``span`` only styled as one.
 
 A bare ``field-label`` is a SIBLING of its input, so ``input.labels`` is empty, clicking the visible text focuses nothing and a screen reader lands on an unnamed edit field
 (console review C-003). ``FormField`` (``ui/components/shared/form-field.jsx``) ties the label to its control; a form row uses it instead of a hand-drawn label.
@@ -49,6 +49,9 @@ def _tag_end(src: str, start: int) -> int:
 _NATIVE_CONTROL = re.compile(r"<(input|select|textarea)\b")
 _COMMENT_BLOCK = re.compile(r"^[ \t]*/\*.*?\*/", re.S | re.M)
 _COMMENT_LINE = re.compile(r"^[ \t]*//.*$", re.M)
+_OPEN_TAG = re.compile(r"<(label|div|span)(?=[ \t\r\n])")
+_CLASS_LITERAL = re.compile(r'className="([^"]*)"')
+_LABEL_CLASSES = {"field-label", "nv-field-label"}
 
 
 def _without_comment_lines(src: str) -> str:
@@ -57,29 +60,41 @@ def _without_comment_lines(src: str) -> str:
 
 
 def count_bare_labels(src: str) -> int:
-    """The ``<label ... field-label ...>`` tags with no ``htmlFor`` that do not wrap a native control (a label around its checkbox names it implicitly)."""
+    """The form labels that name nothing:
+
+    * a ``<label ... field-label ...>`` with no ``htmlFor`` that does not wrap a native control (a label around its checkbox names it implicitly);
+    * a ``<div>`` or ``<span>`` whose ``className`` literal carries the ``field-label`` / ``nv-field-label`` class: an element only STYLED as a label is not one (the console
+      overlays' ``NV_Field`` drew its label as a div, and every field of every overlay went unnamed). A class that merely contains the name (``field-label-row``) is another class,
+      and a component handed ``labelClassName="nv-field-label"`` draws no such element itself.
+    """
     src = _without_comment_lines(src)
     count = 0
     pos = 0
     while True:
-        at = src.find("<label", pos)
-        if at < 0:
+        m = _OPEN_TAG.search(src, pos)
+        if m is None:
             return count
-        end = _tag_end(src, at + len("<label"))
-        tag = src[at:end]
+        end = _tag_end(src, m.end())
+        tag = src[m.start():end]
         pos = end
-        if src[at + len("<label")] not in " \t\r\n" or "field-label" not in tag or "htmlFor" in tag:
+        if m.group(1) != "label":
+            cls = _CLASS_LITERAL.search(tag)
+            if cls and _LABEL_CLASSES & set(cls.group(1).split()):
+                count += 1
+            continue
+        if "field-label" not in tag or "htmlFor" in tag:
             continue
         close = src.find("</label>", end)
         if not _NATIVE_CONTROL.search(src[end:close if close >= 0 else len(src)]):
             count += 1
 
 
-def scan() -> dict[str, int]:
-    """Bare labels per file (only files that have any), keyed by the posix path under ``ui/``."""
+def scan(root: Path | None = None) -> dict[str, int]:
+    """Bare labels per file (only files that have any), keyed by the posix path under ``root`` (``ui/``; a test passes a synthetic tree)."""
+    root = root or UI
     out: dict[str, int] = {}
-    for path in sorted(UI.rglob("*.jsx")):
-        rel = path.relative_to(UI)
+    for path in sorted(root.rglob("*.jsx")):
+        rel = path.relative_to(root)
         if rel.parts[0] in SKIPPED_DIRS:
             continue
         n = count_bare_labels(path.read_text(encoding="utf-8"))

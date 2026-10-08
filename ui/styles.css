@@ -1575,7 +1575,7 @@ input, textarea, select { font: inherit; color: inherit; }
   margin-bottom: 5px;
   letter-spacing: 0.005em;
 }
-.field-label .hint { color: var(--text-4); font-weight: 400; margin-left: 6px; }
+.field-label .hint { color: var(--text-4); font-weight: 400; margin-left: 3px; }
 .field-help { font-size: 11.5px; color: var(--text-3); margin-top: 4px; }
 .field-help.warn { color: var(--amber); }
 
@@ -4632,12 +4632,13 @@ button.nv-trace-line { cursor: pointer; }
 /* --- form primitives ---------------------------------------------------- */
 .nv-field { margin-bottom: 14px; }
 .nv-field-label {
+  display: block;
   font-size: 11.5px;
   font-weight: 600;
   color: var(--text-2);
   margin-bottom: 5px;
 }
-.nv-field-hint { font-weight: 400; color: var(--text-4); margin-left: 6px; }
+.nv-field-hint { font-weight: 400; color: var(--text-4); margin-left: 3px; }
 .nv-input,
 .nv-textarea {
   width: 100%;

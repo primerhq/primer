@@ -1,5 +1,5 @@
 /* global React, SH_api, NV_useConsole, NV_identity,
-   SharedNewSessionSchemaField */
+   SharedNewSessionSchemaField, FormField */
 // Overlays (wiring plan P3 T9). Three tiers behind one URL-addressed
 // host:
 //
@@ -73,17 +73,10 @@ function NV_OverlayPanel(props) {
   );
 }
 
-// Field primitive: label + optional hint above any control.
+// Field primitive: label + optional hint above any control. FormField (shared/form-field.jsx) with the overlays' class names, so the label is a <label> that points at the
+// field's control (a field around a custom widget is a group named by its label); it was a div that named nothing.
 function NV_Field(props) {
-  return (
-    <div className="nv-field">
-      <div className="nv-field-label">
-        {props.label}
-        {props.hint ? <span className="nv-field-hint">{props.hint}</span> : null}
-      </div>
-      {props.children}
-    </div>
-  );
+  return <FormField {...props} className="nv-field" labelClassName="nv-field-label" hintClassName="nv-field-hint" />;
 }
 
 // The workspace a create dialog acts on (the selected one): its name, else its id, else null when none is selected. Named in the Create
