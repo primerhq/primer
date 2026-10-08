@@ -620,7 +620,7 @@ def test_fab_is_lifted_above_the_sticky_bottom_tab_bar() -> None:
 def test_more_tab_composes_profile_health_and_platform() -> None:
     assert "function NV_MobileMore(props)" in MOBILE
     assert '"nv-mobile-panel:more"' in MOBILE
-    m = re.search(r"function NV_MobileMore\(props\)[\s\S]{0,2400}", MOBILE)
+    m = re.search(r"function NV_MobileMore\(props\)[\s\S]*?\n\}\n", MOBILE)
     assert m
     body = m.group(0)
     assert "<NV_MobileProfileTheme" in body
@@ -663,7 +663,7 @@ def test_health_cards_reused_directly_not_refetched() -> None:
 
 
 def test_platform_sections_reuse_the_desktop_nav_groups_and_cache_key() -> None:
-    m = re.search(r"function NV_MobilePlatform\(props\)[\s\S]{0,2800}", MOBILE)
+    m = re.search(r"function NV_MobilePlatform\(props\)[\s\S]*?\n\}\n", MOBILE)
     assert m
     body = m.group(0)
     assert "NV_PLAT_GROUPS.map" in body
@@ -679,7 +679,7 @@ def test_platform_sections_skip_providers_no_generic_page_entry() -> None:
     shape every other nav uses. Confirm the filter is real (matches
     nv-platform.jsx's own key set) rather than an assumption."""
     assert "providers" not in re.findall(r"^  (\w+): \{", PLATFORM, re.M)
-    m = re.search(r"function NV_MobilePlatform\(props\)[\s\S]{0,2800}", MOBILE)
+    m = re.search(r"function NV_MobilePlatform\(props\)[\s\S]*?\n\}\n", MOBILE)
     assert m
     assert "g.ids.filter(function (id) { return window.NV_PLAT_PAGES[id]; })" \
         in m.group(0)
