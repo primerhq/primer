@@ -155,6 +155,8 @@ Internal toolset `primer/toolset/trigger.py`, toolset id `trigger`, built by `bu
 
 The operator UI is `ui/components/triggers.jsx` (TR_-prefixed components) hosted by the shell's `triggers` overlay: list grid, three-step create wizard (now includes webhook kind), detail page with a Fire now button and (for webhook triggers) a copyable URL, HMAC secret set/clear dialog (`TR_HmacSecretDialog`), and a rotate token action. The cron preview is computed client-side.
 
+On the wire the code of a trigger refusal is in the RFC 7807 envelope's `extensions.code` (with `extensions.message`), and `detail` is the message string, not the `{code, message}` object the router raises: a client that reads `detail.code` finds nothing (the create wizard did, and so could not tell a refused cron from any other failure). The wizard now reads `extensions.code` for `cron_invalid` and `timezone_invalid` and returns to its schedule step with the message under the field; it also checks the shape of a cron expression locally on Next (the aliases or 5 to 7 fields, never stricter than croniter), leaving invalid VALUES to the server.
+
 ## 9. Internal contracts
 
 `Source` (in `primer/trigger/sources/`) exposes `kind`, `eligible_for_claim`, `compute_next_fire_at(trigger, now)`, and `build_fire_context(trigger, fired_at, scheduled_for)`; looked up via `get_source(kind)`. The time-based sources (`delayed`, `scheduled`) set `eligible_for_claim = True`; `webhook` and `channel` set it `False` and are fired from their own inbound paths. `ChannelSource.build_fire_context` additionally accepts an `event` kwarg (the firing `ChannelEvent`) and serializes it into the context under `event`.
