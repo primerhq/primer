@@ -177,9 +177,11 @@ async def test_the_create_rollback_closes_the_connection_and_removes_the_contain
 
 # ---- the eviction of a gone cached handle ----------------------------------------------------------------------------------------
 
-async def test_get_does_not_wait_out_the_session_ends_of_a_gone_handle(tmp_path, monkeypatch):
-    """The handle's connection is gone, so ending its live session (a state commit on it) never answers; the eviction must
-    not hold ``get`` for it, and the workspace is re-attached over a fresh connection meanwhile."""
+async def test_evicting_a_gone_handle_attempts_no_session_end_and_does_not_hold_get(tmp_path, monkeypatch):
+    """The handle's connection is gone, so a state commit on it (what ending its live session is) never answers. Evicting the
+    handle only RELEASES it (architecture review A-24: ``aclose`` ends no session), so no such commit is attempted at all, and
+    the workspace is re-attached over a fresh connection meanwhile. Before A-24 the eviction did try the commit and relied on its
+    own bound to get past it; the hanging commit below stays as a tripwire for anything that tries again."""
     monkeypatch.setattr(base_backend, "_CLOSE_WAIT_S", 0.05)
     backend, adapter = await _backend(tmp_path)
     ws = await backend.create(_template(), workspace_id=WORKSPACE_ID)
@@ -194,18 +196,18 @@ async def test_get_does_not_wait_out_the_session_ends_of_a_gone_handle(tmp_path,
     ws.sandbox.gone = True
     try:
         fresh = await asyncio.wait_for(backend.get(WORKSPACE_ID, template=_template()), timeout=2)
-        assert commit_entered.is_set(), "the eviction really did wait on the gone connection"
+        assert not commit_entered.is_set(), "evicting a gone handle tried to end its session over the dead connection"
         assert fresh is not None and fresh is not ws and backend._workspaces == {WORKSPACE_ID: fresh}
     finally:
         commit_gate.set()
         await asyncio.sleep(0.05)
 
 
-async def test_the_bounded_close_of_an_evicted_gone_handle_finishes_and_leaves_nothing_pending(tmp_path, monkeypatch):
-    """Past its bound the close of an evicted handle carries on in the background (``_PENDING_CLOSES``). Over a REAL closed
-    ``RuntimeClient`` (what a gone client is) ending the handle's session fails at once, so that close finishes; it used to
-    wait for ever on a connection that could not come back, one leaked task per eviction holding the handle and its lock."""
-    from primer.workspace.runtime.protocol import ErrorCode
+async def test_the_close_of_an_evicted_gone_handle_finishes_and_leaves_nothing_pending(tmp_path, monkeypatch):
+    """The close of an evicted handle never stays in the background (``_PENDING_CLOSES``). Over a REAL closed ``RuntimeClient``
+    (what a gone client is), a close that tried to end the handle's session used to fail at once on it and finish; before that
+    fix it waited for ever on a connection that could not come back, one leaked task per eviction holding the handle and its
+    lock. Since A-24 the close ends no session, so NOTHING is attempted over the closed client, and it finishes all the same."""
     from primer.workspace.runtime.runtime_client import RuntimeClient
     from primer.workspace.runtime.runtime_client import RuntimeError as RuntimeClientError
 
@@ -232,6 +234,5 @@ async def test_the_bounded_close_of_an_evicted_gone_handle_finishes_and_leaves_n
     fresh = await asyncio.wait_for(backend.get(WORKSPACE_ID, template=_template()), timeout=2)
     assert fresh is not None and fresh is not ws and backend._workspaces == {WORKSPACE_ID: fresh}
     await _until(lambda: set(base_backend._PENDING_CLOSES) <= already_pending, "the eviction's close finished")
-    # ... because the session end really reached the closed client and was refused (not because nothing was attempted)
-    assert attempts and len(refused) == len(attempts)
-    assert {exc.code for exc in refused} == {ErrorCode.EPROTOCOL}
+    # ... and it did so without touching the closed client: no session end was attempted over it (the A-24 contract)
+    assert attempts == [] and refused == []
