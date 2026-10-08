@@ -11,7 +11,12 @@ Templates are user-tier, but a few fields reach the host or the cluster, or read
 A non-admin write that sets one of them to a non-empty value, or changes it from the stored value, is refused. The REST
 routes answer 403 ``forbidden_role``; the ``workspaces`` tools answer ``type=forbidden``. A template that HOLDS any of
 them is not user-editable at all (keeping the admin's mount but swapping the image would run user code with it); an
-admin-free template stays fully user-editable. ``init_commands`` are NOT gated: on the local backend they run in a host shell, but a role=user caller
+admin-free template stays fully user-editable. Deleting a template that holds them is admin-only too.
+
+What the held rule does NOT do: it stops a non-admin from REWRITING (or deleting) an admin-held template, not from
+creating a workspace FROM it. A user may still instantiate such a template, with their own user-tier
+``init_commands`` overrides, and run code alongside its mounts and secret files. So an admin must not put host-privileged
+mounts or secrets in a template that ordinary users may instantiate. ``init_commands`` are NOT gated: on the local backend they run in a host shell, but a role=user caller
 already runs any command in that same shell through a workspace session's exec tool, so gating them closes nothing.
 
 The Kubernetes overlays are also checked against an allowlist for every caller (``primer.workspace.k8s.backend``).
@@ -70,9 +75,9 @@ def admin_only_settings_held(template: WorkspaceTemplate | None) -> list[str]:
     return [field for field, value in _gated_values(template).items() if value is not None]
 
 
-def held_refusal_message(fields: list[str]) -> str:
+def held_refusal_message(fields: list[str], action: str = "update") -> str:
     return (
-        f"this template holds admin-only settings ({', '.join(fields)}); only an admin may update it"
+        f"this template holds admin-only settings ({', '.join(fields)}); only an admin may {action} it"
     )
 
 
