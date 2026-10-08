@@ -67,7 +67,7 @@ def test_the_gate_no_longer_guesses_an_install_state_when_the_read_fails() -> No
     catch = gate[gate.index("} catch"):]
     catch = catch[:catch.index("})();")]
     assert "setStatus" not in catch and "has_user" not in catch and "setup_complete" not in catch
-    assert "setFailure(AUTH_failureView(" in catch
+    assert "AUTH_failureView(err)" in catch and "setFailure(view)" in catch
 
 
 def test_the_gate_shows_the_failure_and_retries_on_its_own_and_on_a_click() -> None:
