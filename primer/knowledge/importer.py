@@ -59,13 +59,19 @@ _EOCD_MIN = 22
 _EOCD_SEARCH = _EOCD_MIN + 0xFFFF  # the record plus the longest possible archive comment
 
 
-def _eocd_entry_count(source: BinaryIO) -> int | None:
-    """The total entry count from the end-of-central-directory record, or None when it cannot be read.
+_CENTRAL_HEADER_MIN = 46  # a central directory file header with an empty name, extra and comment
 
-    Read before ``zipfile.ZipFile`` parses the central directory, which builds one ZipInfo per entry:
-    an archive listing millions of tiny entries is refused from a few bytes at its end. A zip64
-    archive (classic count 0xFFFF) is followed to its zip64 end record. Anything malformed returns
-    None and is left to zipfile, after which the parsed count is checked again.
+
+def _central_directory_bounds(source: BinaryIO) -> tuple[int, int] | None:
+    """``(entry count, central directory size)`` from the end records, or None when they cannot be read.
+
+    Read before ``zipfile.ZipFile`` parses the central directory, which builds one ZipInfo per entry, so
+    an archive listing millions of tiny entries is refused from a few bytes at its end. This mirrors how
+    zipfile finds them: the last end-of-central-directory record in the tail, and the zip64 end record
+    whenever a zip64 locator sits right before it, whatever the classic count says. zipfile walks the
+    directory by its SIZE and never reads the count fields, so the caller bounds the size too. Anything
+    unreadable returns None and is left to zipfile (which then refuses it, or parses it and has its count
+    checked after); no input may raise here.
     """
     try:
         source.seek(0, io.SEEK_END)
@@ -76,29 +82,29 @@ def _eocd_entry_count(source: BinaryIO) -> int | None:
         pos = tail.rfind(_EOCD_SIG)
         if pos < 0 or len(tail) - pos < _EOCD_MIN:
             return None
-        (total,) = struct.unpack_from("<H", tail, pos + 10)
-        if total != 0xFFFF:
-            return total
+        total, cd_size = struct.unpack_from("<HI", tail, pos + 10)
         loc = start + pos - 20
         if loc < 0:
-            return None
+            return total, cd_size
         source.seek(loc)
         locator = source.read(20)
         if len(locator) != 20 or locator[:4] != _ZIP64_LOCATOR_SIG:
-            return None
+            return total, cd_size
         (rec_offset,) = struct.unpack_from("<Q", locator, 8)
+        if rec_offset + 56 > size:
+            return None
         source.seek(rec_offset)
         record = source.read(56)
         if len(record) != 56 or record[:4] != _ZIP64_EOCD_SIG:
-            return None
-        (total64,) = struct.unpack_from("<Q", record, 32)
-        return total64
-    except (OSError, struct.error, ValueError):
+            return total, cd_size
+        total64, cd_size64 = struct.unpack_from("<QQ", record, 32)
+        return total64, cd_size64
+    except (OSError, struct.error, ValueError, ArithmeticError):
         return None
     finally:
         try:
             source.seek(0)
-        except (OSError, ValueError):
+        except (OSError, ValueError, ArithmeticError):
             pass
 
 
@@ -165,9 +171,12 @@ async def import_zip(
     bytes actually decompressed against the same cap.
     """
     source = io.BytesIO(data) if isinstance(data, (bytes, bytearray)) else data
-    eocd_count = _eocd_entry_count(source)
-    if eocd_count is not None:
-        _refuse_entry_count(eocd_count)
+    bounds = _central_directory_bounds(source)
+    if bounds is not None:
+        count, cd_size = bounds
+        # Every central header is at least 46 bytes, so the directory's size bounds how many entries
+        # zipfile will build, whatever the (unchecked, forgeable) count fields claim.
+        _refuse_entry_count(max(count, cd_size // _CENTRAL_HEADER_MIN))
     try:
         zf = zipfile.ZipFile(source)
     except zipfile.BadZipFile as exc:
