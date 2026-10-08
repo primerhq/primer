@@ -86,17 +86,17 @@ async def test_the_route_does_not_switch_over_a_steer_that_landed_after_its_read
     assert row.binding.agent_id == "agent-a"
 
 
-async def _idle_session(app, sid: str):
+async def _idle_session(app, sid: str, **over):
     from primer.model.agent import Agent, AgentModel
 
     sp = app.state.storage_provider
-    for aid in ("agent-a", "agent-b"):
+    for aid in ("agent-a", "agent-b", "agent-c"):
         if await sp.get_storage(Agent).get(aid) is None:
             await sp.get_storage(Agent).create(
                 Agent(id=aid, description=aid, model=AgentModel(profile_id="p--m"), tools=[], system_prompt=[])
             )
     sessions = sp.get_storage(WorkspaceSession)
-    await sessions.create(_row(id=sid))
+    await sessions.create(_row(id=sid, **over))
     ws = _FakeWorkspace()
 
     async def _get_ws(wid):
@@ -147,3 +147,73 @@ async def test_an_unreachable_workspace_gives_a_409_and_frees_the_lock(client, a
             pass
     stored = await sessions.get("b-hang")
     assert stored.binding.agent_id == "agent-a" and stored.binding_epoch == 0
+
+
+@pytest.mark.asyncio
+async def test_a_timeout_after_the_gate_was_closed_says_the_gate_is_closed(client, app, monkeypatch):
+    """The abandon-then-switch branch closes the gate FIRST. If the marker then times out, the 409 must not read like a no-op: the
+    parked turn is already rejected and cannot be resumed, only the switch is outstanding."""
+    import primer.session.mutation_lock as mutation_lock
+
+    monkeypatch.setattr(mutation_lock, "IN_LOCK_IO_TIMEOUT_S", 0.2)
+    sessions, ws = await _idle_session(
+        app, "b-gate", parked_status="parked", parked_state={"tool_call_id": "tc-9", "mode": "ask_user"},
+    )
+    real_append = ws.append_message_line
+
+    async def hang_on_the_marker(session_id: str, line: bytes) -> None:
+        if b'"agent_marker"' in line:
+            await asyncio.Event().wait()
+        await real_append(session_id, line)
+
+    ws.append_message_line = hang_on_the_marker  # type: ignore[method-assign]
+
+    response = await asyncio.wait_for(
+        client.post("/v1/workspaces/ws-1/sessions/b-gate/binding", json={"kind": "agent", "agent_id": "agent-b"}), 3.0,
+    )
+
+    assert response.status_code == 409, response.text
+    assert "gate is already closed" in response.json()["detail"], response.text
+    stored = await sessions.get("b-gate")
+    assert stored.parked_status is None, "the precondition of the message: the gate really was closed"
+    assert stored.binding.agent_id == "agent-a" and stored.binding_epoch == 0
+
+
+@pytest.mark.xfail(
+    strict=True, raises=AssertionError,
+    reason="S2a PR-12b: the busy-queue branch of switch_session_binding still writes the WHOLE row, outside the lifecycle lock, "
+           "from a row read before it, so it can regress last_seq below a marker the checkpoint just wrote",
+)
+@pytest.mark.asyncio
+async def test_the_busy_queue_write_does_not_regress_last_seq_below_a_marker_the_checkpoint_wrote(client, app):
+    """The declared residual of PR-12a, as an executable witness (it flips when PR-12b makes the queue write a patch_if).
+
+    A busy session (a turn claimable or running) with a switch A queued. POST /binding B reads the row, then the checkpoint applies A
+    under the lock (reserves seq 7, writes the marker at 7, closes with last_seq 7), then the route writes its stale row back whole:
+    last_seq is 6 again and A's binding and epoch are erased. The next record any writer appends takes seq 7, the marker's seq.
+    """
+    from primer.session.dispatch import apply_queued_binding_switch
+
+    request_a = {"kind": "agent", "agent_id": "agent-b", "graph_id": None, "profile_id": None, "actor": "user"}
+    sessions, ws = await _idle_session(app, "b-queue", turn_status="claimable", pending_binding_switch=request_a)
+    real_get = sessions.get
+    ran = {"done": False}
+
+    async def checkpoint_after_the_route_read(session_id):
+        row = await real_get(session_id)
+        if session_id == "b-queue" and not ran["done"]:
+            ran["done"] = True
+            await apply_queued_binding_switch(storage_provider=app.state.storage_provider, workspace_io=ws, session_id=session_id)
+        return row
+
+    sessions.get = checkpoint_after_the_route_read  # type: ignore[method-assign]
+
+    response = await client.post("/v1/workspaces/ws-1/sessions/b-queue/binding", json={"kind": "agent", "agent_id": "agent-c"})
+
+    assert response.status_code == 200, response.text
+    markers = [r for r in ws.records("b-queue") if r["kind"] == "agent_marker"]
+    assert len(markers) == 1, "precondition: the checkpoint applied switch A and wrote its marker"
+    row = await real_get("b-queue")
+    assert row.last_seq >= markers[0]["seq"], (
+        f"last_seq is {row.last_seq} but the log already holds a marker at seq {markers[0]['seq']}: the next record collides with it"
+    )
