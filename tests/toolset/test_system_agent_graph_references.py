@@ -13,7 +13,7 @@ import pytest
 
 from primer.model.agent import Agent
 from primer.model.graph import Graph
-from primer.model.workspace_session import SessionStatus
+from primer.model.workspace_session import SessionStatus, WorkspaceSession
 from tests._support.compute_rows import (
     AGENT_BLOCKERS,
     GRAPH_BLOCKERS,
@@ -169,3 +169,22 @@ async def test_other_tools_do_not_claim_that_refusal(world, tool_id: str) -> Non
     _, toolset, _ = world
 
     assert "session that is not ended" not in await _description(toolset, tool_id)
+
+
+@pytest.mark.asyncio
+async def test_when_everything_blocks_the_tool_names_a_graph_first_then_a_session_then_a_subscription(world) -> None:
+    """The same declared order as the REST route (``primer.storage.references``): graph, session, trigger subscription."""
+    sp, toolset, _ = world
+    await _seed(sp, agent_row("ag-1"))
+    await _seed(sp, subscription_for_agent("sub-1", "ag-1"))
+    await _seed(sp, session_bound_to_agent("s-1", "ag-1", SessionStatus.WAITING))
+    await _seed(sp, graph_naming_agent("g-1", "ag-1"))
+
+    _, answer = await _call(toolset, "delete_agent", id="ag-1")
+    assert "1 graph(s) reference 'ag-1' (first: 'g-1')" in answer["message"]
+    await _call(toolset, "delete_graph", id="g-1")
+    _, answer = await _call(toolset, "delete_agent", id="ag-1")
+    assert "1 session(s) reference 'ag-1' (first: 's-1')" in answer["message"]
+    await sp.get_storage(WorkspaceSession).delete("s-1")
+    _, answer = await _call(toolset, "delete_agent", id="ag-1")
+    assert "1 trigger subscription(s) reference 'ag-1' (first: 'sub-1')" in answer["message"]

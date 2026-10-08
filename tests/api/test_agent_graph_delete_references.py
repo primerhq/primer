@@ -197,3 +197,21 @@ async def test_the_blocking_row_is_not_touched_by_the_refusal(client, app) -> No
 
     session = await app.state.storage_provider.get_storage(WorkspaceSession).get("s-1")
     assert session is not None and session.binding.agent_id == "ag-1" and session.status == SessionStatus.WAITING
+
+
+# ---- several blockers at once ---------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_when_everything_blocks_the_answer_names_a_graph_first_then_a_session_then_a_subscription(client, app) -> None:
+    """The first blocker found is named, in the declared order: graph, session, trigger subscription. Each is removed in turn."""
+    await _seed(app, agent_row("ag-1"))
+    await _seed(app, subscription_for_agent("sub-1", "ag-1"))
+    await _seed(app, session_bound_to_agent("s-1", "ag-1", SessionStatus.WAITING))
+    await _seed(app, graph_naming_agent("g-1", "ag-1"))
+
+    assert "1 graph(s) reference 'ag-1' (first: 'g-1')" in (await _delete(client, "agents", "ag-1")).json()["detail"]
+    assert (await client.delete("/v1/graphs/g-1")).status_code == 204
+    assert "1 session(s) reference 'ag-1' (first: 's-1')" in (await _delete(client, "agents", "ag-1")).json()["detail"]
+    await app.state.storage_provider.get_storage(WorkspaceSession).delete("s-1")
+    assert "1 trigger subscription(s) reference 'ag-1' (first: 'sub-1')" in (await _delete(client, "agents", "ag-1")).json()["detail"]
