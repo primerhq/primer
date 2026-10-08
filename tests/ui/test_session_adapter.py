@@ -832,29 +832,63 @@ def test_a_notice_is_never_the_cause_a_subagents_failure_folds_into(transcript) 
 
 
 def _terminals_folded(transcript, *parts: str) -> dict:
+    """seq -> the SEQS of the terminal records the fold removed into that row. The seqs, not a count: a drawn row between the cause and a copy is a row the
+    copy came AFTER, and the server's window ordinal of that row does not include the copy's window end."""
     rows = transcript(_records(*parts))
-    return {r["seq"]: r.get("foldedTerminals", 0) for r in rows}
+    return {r["seq"]: r.get("foldedSeqs", []) for r in rows}
 
 
-def test_a_failure_remembers_the_terminal_marker_that_was_folded_into_it(transcript) -> None:
+def test_a_failure_remembers_the_seq_of_the_terminal_marker_that_was_folded_into_it(transcript) -> None:
     cause = _r(2, "error", message="x", code="server_error")
     marker = _r(3, "error", reason="unknown", terminal=True)
-    assert _terminals_folded(transcript, _USER, cause, marker) == {1: 0, 2: 1}
+    assert _terminals_folded(transcript, _USER, cause, marker) == {1: [], 2: [3]}
 
 
-def test_a_failure_remembers_the_copy_and_the_marker_folded_into_it(transcript) -> None:
+def test_a_failure_remembers_the_seqs_of_the_copy_and_the_marker_folded_into_it(transcript) -> None:
     stream = _r(2, "error", message="x", code="server_error", fatal=True)
     copy = _r(3, "error", message="x", code="/errors/internal")
     marker = _r(4, "error", reason="unknown", terminal=True)
-    assert _terminals_folded(transcript, _USER, stream, copy, marker) == {1: 0, 2: 2}
+    assert _terminals_folded(transcript, _USER, stream, copy, marker) == {1: [], 2: [3, 4]}
+
+
+def test_a_copy_that_comes_after_drawn_rows_is_remembered_at_its_own_seq(transcript) -> None:
+    """The graph superstep: the failed node's error, a sibling's answer, then the graph's copy of the error. The copy's window end is AFTER the sibling's rows."""
+    stream = _r(2, "error", node_id="A", message="x", code="server_error", fatal=True)
+    sibling = _r(3, "assistant_token", node_id="B", text="b")
+    copy = _r(4, "error", node_id="A", message="x", code="server_error")
+    folded = _terminals_folded(transcript, _USER, stream, sibling, copy)
+    assert folded[2] == [4] and folded[3] == []
+
+
+def test_a_marker_written_before_its_cause_is_remembered_at_its_own_seq(transcript) -> None:
+    marker = _r(2, "error", reason="unknown", terminal=True)
+    cause = _r(3, "error", message="x", code="server_error")
+    assert _terminals_folded(transcript, _USER, marker, cause) == {1: [], 3: [2]}
 
 
 def test_a_delegated_copy_is_not_a_terminal_of_the_session(transcript) -> None:
     sub = _r(2, "error", message="x", code="server_error", fatal=True, **_SUB)
     sub_copy = _r(3, "error", message="x", code="server_error", fatal=True, **_SUB)
-    assert _terminals_folded(transcript, _USER, sub, sub_copy)[2] == 0
+    assert _terminals_folded(transcript, _USER, sub, sub_copy)[2] == []
 
 
-def test_an_absorbed_notice_is_not_counted_because_a_non_fatal_error_is_not_a_terminal(transcript) -> None:
+def test_an_absorbed_notice_is_not_remembered_because_a_non_fatal_error_is_not_a_terminal(transcript) -> None:
     failure = _r(3, "error", message="Provider hiccup", code="/errors/internal")
-    assert _terminals_folded(transcript, _USER, _r(2, "error", **_NOTICE), failure) == {1: 0, 3: 0}
+    assert _terminals_folded(transcript, _USER, _r(2, "error", **_NOTICE), failure) == {1: [], 3: []}
+
+
+def test_a_failure_that_absorbs_a_notice_keeps_the_notices_specific_code_when_it_only_has_the_generic_one(transcript) -> None:
+    """dispatch's failure row carries /errors/internal; the provider's own code was on the notice, and it is what the card's words are chosen by."""
+    notice = _r(2, "error", message="Provider hiccup", code="rate_limit", fatal=False)
+    failure = _r(3, "error", message="Provider hiccup", code="/errors/internal")
+    rows = transcript(_records(_USER, notice, failure))
+    assert [r["kind"] for r in rows] == ["user_message", "error"] and rows[1]["payload"]["code"] == "rate_limit", rows
+    specific = _r(3, "error", message="Provider hiccup", code="/errors/provider-server-error")
+    assert transcript(_records(_USER, notice, specific))[1]["payload"]["code"] == "/errors/provider-server-error", "a specific code of its own wins"
+
+
+def test_a_notice_is_absorbed_by_its_failure_even_with_output_in_between(transcript) -> None:
+    notice = _r(2, "error", **_NOTICE)
+    text = _r(3, "assistant_token", text="partial")
+    failure = _r(4, "error", message="Provider hiccup", code="/errors/internal")
+    assert _kinds(transcript(_records(_USER, notice, text, failure))) == ["user_message", "assistant_message", "error"]
