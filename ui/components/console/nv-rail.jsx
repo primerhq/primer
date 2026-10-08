@@ -139,7 +139,7 @@ function NV_Rail_SessionContextMenu(props) {
         window.NV_doInterrupt(wid, sid, props.onChanged, toast);
       }));
     }
-    rows.push(act("Park", function () { window.NV_doPark(wid, sid, props.onChanged, toast); }));
+    rows.push(act("Park", function () { window.NV_doPark(wid, sid, props.onChanged, toast, s.status === "running"); }));
     rows.push(act("End", function () { window.NV_doEnd(wid, sid, s.name || sid, props.onChanged, toast); }, true));
   }
   rows.push(act("Delete", function () {

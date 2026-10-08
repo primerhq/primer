@@ -147,10 +147,13 @@ function NV_failToast(toast, what, err) {
 }
 // Park, End and Delete back the rail's context menu, the session header's overflow menu (the only menu a phone has) and the
 // palette verbs. Each resolves {ok: true}, {cancelled: true} (the user said no) or {failed: true} (already toasted); none rejects.
-// Park is the pause route and asks nothing first: sending a message resumes the session.
-function NV_doPark(wid, sid, refetchAll, toast) {
+// Park is the pause route and asks nothing first: sending a message resumes the session. A RUNNING session is only flagged (the
+// worker pauses it at its next turn boundary), so `running` selects the honest wording.
+function NV_doPark(wid, sid, refetchAll, toast, running) {
   return SH_api.pause(wid, sid).then(function () {
-    toast("Session paused. Send a message to resume it.");
+    toast(running
+      ? "Pause requested: the session pauses when its current turn ends. Send a message to resume it."
+      : "Session paused. Send a message to resume it.");
     if (refetchAll) refetchAll();
     return { ok: true };
   }, function (err) {
@@ -568,7 +571,7 @@ function NV_SessionHeader(props) {
                 data-testid="nv-session-park" data-verb="session.park"
                 onClick={function () {
                   setOvf(false);
-                  NV_doPark(con.wid, sid, props.onChanged, con.toast);
+                  NV_doPark(con.wid, sid, props.onChanged, con.toast, !!session && session.status === "running");
                 }}>Park</button>
             ) : null}
             {!NV_sessionIsOver(session) ? (
@@ -2154,7 +2157,8 @@ function NV_SessionDoc(props) {
       surfaces: ["palette", "tab-menu"],
       run: function () {
         var f = focused(); if (!f) return;
-        NV_doPark(f.wid, f.sid, f.refetchAll, f.con.toast);
+        var inst = NV_SESSION_INSTANCES[f.sid] || {};
+        NV_doPark(f.wid, f.sid, f.refetchAll, f.con.toast, !!inst.session && inst.session.status === "running");
       },
     });
     reg({
