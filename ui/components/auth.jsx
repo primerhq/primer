@@ -190,14 +190,22 @@ function _EyeIcon({ open }) {
   );
 }
 
-function _PasswordField({ label, value, onChange, placeholder, autoComplete, hasErr, errMsg, autoFocus }) {
+// `id` is required: it ties the <label> to the input (clicking the label focuses it, a screen reader names it) and names the error
+// the input is described by. `revealName` is what the eye button calls the field ("Show confirmation"); it defaults to the label.
+function _PasswordField({ id, label, revealName, value, onChange, placeholder, autoComplete, hasErr, errMsg, autoFocus }) {
   const [show, setShow] = React.useState(false);
+  const noun = revealName || label.toLowerCase();
+  const errId = id + "-err";
+  const described = !!(hasErr && errMsg);
   return (
     <div className={"auth-field" + (hasErr ? " has-err" : "")}>
-      <label>{label}</label>
+      <label htmlFor={id}>{label}</label>
       <div className="auth-pwd-row">
         <input
+          id={id}
           className="mono"
+          aria-invalid={hasErr ? "true" : undefined}
+          aria-describedby={described ? errId : undefined}
           type={show ? "text" : "password"}
           value={value}
           onChange={(e) => onChange(e.target.value)}
@@ -208,13 +216,13 @@ function _PasswordField({ label, value, onChange, placeholder, autoComplete, has
         <button
           type="button"
           className="toggle touch-target"
-          aria-label={show ? "Hide password" : "Show password"}
+          aria-label={(show ? "Hide " : "Show ") + noun}
           onClick={() => setShow((s) => !s)}
         >
           <_EyeIcon open={!show} />
         </button>
       </div>
-      {hasErr && errMsg && <div className="field-err">{errMsg}</div>}
+      {described && <div className="field-err" id={errId} role="alert">{errMsg}</div>}
     </div>
   );
 }
@@ -222,7 +230,7 @@ function _PasswordField({ label, value, onChange, placeholder, autoComplete, has
 function _ServerBanner({ title, detail, requestId }) {
   if (!title) return null;
   return (
-    <div className="auth-banner">
+    <div className="auth-banner" role="alert">
       <div style={{ marginTop: 1 }}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <circle cx="12" cy="12" r="9" />
@@ -403,11 +411,14 @@ function RegisterScreen({ onDone }) {
                 autoFocus
                 autoComplete="username"
                 placeholder="lowercase letters, digits, . _ -"
+                aria-invalid={fieldErrs.username ? "true" : undefined}
+                aria-describedby={fieldErrs.username ? "username-err" : undefined}
               />
-              {fieldErrs.username && <div className="field-err">{fieldErrs.username}</div>}
+              {fieldErrs.username && <div className="field-err" id="username-err" role="alert">{fieldErrs.username}</div>}
             </div>
 
             <_PasswordField
+              id="register-password"
               label="Password"
               value={password}
               onChange={(v) => { setPassword(v); if (fieldErrs.password) setFieldErrs((p) => ({ ...p, password: undefined })); }}
@@ -418,7 +429,9 @@ function RegisterScreen({ onDone }) {
             />
 
             <_PasswordField
+              id="register-confirm"
               label="Confirm password"
+              revealName="confirmation"
               value={confirm}
               onChange={(v) => { setConfirm(v); if (fieldErrs.confirm) setFieldErrs((p) => ({ ...p, confirm: undefined })); }}
               autoComplete="new-password"
@@ -564,11 +577,14 @@ function LoginScreen({ onDone }) {
                 autoFocus
                 autoComplete="username"
                 placeholder="your operator handle"
+                aria-invalid={fieldErrs.username ? "true" : undefined}
+                aria-describedby={fieldErrs.username ? "login-username-err" : undefined}
               />
-              {fieldErrs.username && <div className="field-err">{fieldErrs.username}</div>}
+              {fieldErrs.username && <div className="field-err" id="login-username-err" role="alert">{fieldErrs.username}</div>}
             </div>
 
             <_PasswordField
+              id="login-password"
               label="Password"
               value={password}
               onChange={(v) => { setPassword(v); if (fieldErrs.password) setFieldErrs((p) => ({ ...p, password: undefined })); }}
@@ -650,6 +666,7 @@ function ADM_MustChangePasswordScreen({ onDone }) {
           <form className="auth-body" onSubmit={submit} noValidate>
             <_ServerBanner {...(server || {})} />
             <_PasswordField
+              id="change-current"
               label="Current password"
               value={current}
               onChange={(v) => { setCurrent(v); if (fieldErrs.current) setFieldErrs((p) => ({ ...p, current: undefined })); }}
@@ -659,6 +676,7 @@ function ADM_MustChangePasswordScreen({ onDone }) {
               autoFocus
             />
             <_PasswordField
+              id="change-new"
               label="New password"
               value={next}
               onChange={(v) => { setNext(v); if (fieldErrs.next) setFieldErrs((p) => ({ ...p, next: undefined })); }}
@@ -668,7 +686,9 @@ function ADM_MustChangePasswordScreen({ onDone }) {
               errMsg={fieldErrs.next}
             />
             <_PasswordField
+              id="change-confirm"
               label="Confirm new password"
+              revealName="confirmation"
               value={confirm}
               onChange={(v) => { setConfirm(v); if (fieldErrs.confirm) setFieldErrs((p) => ({ ...p, confirm: undefined })); }}
               autoComplete="new-password"
