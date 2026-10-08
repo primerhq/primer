@@ -9,6 +9,8 @@ mounted, and that no native dialogs remain at those call sites.
 
 from __future__ import annotations
 
+import re
+
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -47,7 +49,8 @@ def test_the_shell_mounts_confirm_host() -> None:
 def test_session_doc_avoids_native_confirm() -> None:
     """No surface may block the shell on the browser's own dialog."""
     src = SESSION_DOC.read_text(encoding="utf-8")
-    assert "window.confirm" not in src
+    # The browser's own `window.confirm(`, not the themed `window.confirmDialog(` (which the session actions use).
+    assert not re.search(r"window\.confirm(?!Dialog)", src)
 
 
 def test_triggers_use_confirm_dialog_not_native() -> None:
