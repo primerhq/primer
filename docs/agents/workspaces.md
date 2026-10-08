@@ -160,7 +160,15 @@ it's called from a context with no implicit session.
 
 - `workspaces::read_workspace_file` - read file from a workspace
   by relative path. Body: `workspace_id`, `path`. Returns text
-  content. 404 on missing file.
+  content. 404 on missing file. Paths inside the runtime's own
+  `.state/` and `.tmp/` trees (after normalisation, so `./.state/x`
+  and `a/../.state/x` count) are refused with `type=forbidden` unless
+  the run was started by an admin (or by the system / a trigger). A
+  call over MCP carries no run identity, so it is always refused
+  there. The same rule applies to `get_workspace_file_info` and
+  `list_workspace_files`; a recursive listing simply leaves those
+  entries out. Session-bound tools (`read`, `ls`, `write` inside a
+  session) are not affected: Workflow 2 below still works.
 - `workspaces::write_workspace_file` - write file. Body:
   `workspace_id`, `path`, `content`, optional `mode`
   ("0644" etc.). Refuses to overwrite a file the current session
