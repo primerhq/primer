@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from primer.knowledge.document_service import DocumentService
+from primer.model.collection import Document
 
 # Re-export so pytest can resolve the sqlite-backed app, client and search-enabled collection fixtures.
 from tests.api.test_knowledge_documents_by_path import app, client, collection_id, provider  # noqa: F401
@@ -205,6 +206,7 @@ async def test_a_delete_that_fails_never_reaches_the_unindexer(provider, monkeyp
 
     service = DocumentService(provider, unindexer=unindexer)
     await service.upsert(collection_id="kb-x", path="a.md", content="x")
+    doc_id = await provider.get_content_store().resolve_id("kb-x", "a.md")
 
     async def broken(*args, **kwargs):
         raise RuntimeError("the delete failed")
@@ -215,4 +217,8 @@ async def test_a_delete_that_fails_never_reaches_the_unindexer(provider, monkeyp
         await service.delete(collection_id="kb-x", path="a.md")
 
     assert calls == []
-    assert await provider.get_content_store().resolve_id("kb-x", "a.md") is not None, "the failed delete was not rolled back"
+    # What a rollback restores is the Document ENTITY: `delete` removes it first (docs.delete) and the broken content delete then
+    # raises inside the same transaction. The content row is not evidence: the patched delete raises before it touches that row, so
+    # it survives with or without a rollback.
+    assert await provider.get_storage(Document).get(doc_id) is not None, "the failed delete was not rolled back: the entity is gone"
+    assert (await service.read(collection_id="kb-x", path="a.md")).content == "x"
