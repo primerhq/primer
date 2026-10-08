@@ -21,7 +21,9 @@ def test_the_admin_only_note_is_shown_on_both_groups() -> None:
     assert SRC.count('data-testid="ws-template-admin-only-note"') == 2
     assert SRC.count("{WT_ADMIN_ONLY_NOTE}") == 2
     # Lead review of #473: a template that holds any of them is admin-only to edit at all.
-    assert "only an admin can edit a template that has any of them set" in SRC
+    assert "only an admin can edit or delete a template that has any of them set" in SRC
+    # Lead re-review: the held rule does not stop instantiation, so the note warns the admin.
+    assert "do not put host-privileged mounts or secrets in a template ordinary users may use" in SRC
 
 
 def test_each_gated_field_hint_says_admin_only() -> None:
