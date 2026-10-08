@@ -30,6 +30,27 @@ function SV_extractError(err) {
   return { code, message: msg };
 }
 
+// The request behind SV_ServiceModal: a create (POST) or an edit (PUT the
+// existing row with the form's three fields replaced). Resolves to the
+// server's answer, the saved row, so a host can tell WHICH row was saved (the
+// Platform page opens its detail). Pure: tests/ui/test_services_save.py runs
+// it in MiniRacer.
+function SV_saveService(apiFetch, existing, fields) {
+  if (existing) {
+    return apiFetch("PUT", "/services/" + encodeURIComponent(existing.id), {
+      ...existing,
+      name: fields.name,
+      description: fields.description,
+      viewer_auth: fields.viewer_auth,
+    });
+  }
+  return apiFetch("POST", "/services", {
+    name: fields.name,
+    description: fields.description,
+    viewer_auth: fields.viewer_auth,
+  });
+}
+
 function SV_AuthPill({ mode }) {
   const anon = mode === "none";
   return (
@@ -203,16 +224,10 @@ function SV_ServiceModal({ existing, onClose, onSaved }) {
     setBusy(true);
     setError(null);
     try {
-      if (existing) {
-        await apiFetch("PUT", "/services/" + encodeURIComponent(existing.id), {
-          ...existing, name, description, viewer_auth: viewerAuth,
-        });
-      } else {
-        await apiFetch("POST", "/services", {
-          name, description, viewer_auth: viewerAuth,
-        });
-      }
-      onSaved && onSaved();
+      const saved = await SV_saveService(apiFetch, existing, {
+        name, description, viewer_auth: viewerAuth,
+      });
+      onSaved && onSaved(saved);
     } catch (err) {
       setError(SV_extractError(err));
       setBusy(false);
