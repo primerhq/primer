@@ -14,6 +14,7 @@ import json
 
 import pytest
 
+from primer.mcp.server import current_actor
 from primer.toolset.workspaces import build_workspaces_toolset
 from tests._support.caller import caller
 from tests.api.test_workspace_state_reads_guarded import (
@@ -171,3 +172,13 @@ async def test_the_same_listings_drop_the_reserved_trees_for_a_user_run_and_for_
     assert await _list(ts, caller("user")) == ["src"]
     assert mcp_root == ["src"]
     assert mcp_recursive == ["src", "src/main.py"]
+
+
+async def test_a_listing_with_no_tool_context_and_no_mcp_actor_drops_the_reserved_trees():
+    """The fail-closed side of the one predicate: a call dispatched with no ToolContext OUTSIDE the MCP endpoint (the system ``call_tool``, the
+    ``yield_runtime`` resume) has no actor either, so it is not an admin and is not shown the runtime's own trees."""
+    ts, _ = _toolset()
+    assert current_actor.get() is None, "the premise: nothing set the MCP actor for this call"
+
+    assert await _list(ts, None) == ["src"]
+    assert await _list(ts, None, recursive=True) == ["src", "src/main.py"]
