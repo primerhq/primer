@@ -39,10 +39,10 @@ def _list_src() -> str:
 # ---- Item 6: create modal -------------------------------------------------
 
 
-def test_modal_has_a_verb_chip() -> None:
+def test_modal_has_no_verb_chip() -> None:
+    """The palette verb was a designer's annotation that shipped as UI (lead sweep L3)."""
     modal = _modal_src()
-    assert 'data-testid="workspace-modal-verb-chip"' in modal
-    assert "verb: Create Workspace" in modal
+    assert "verb-chip" not in modal and "verb:" not in modal
 
 
 def test_template_picker_is_rows_not_a_select() -> None:

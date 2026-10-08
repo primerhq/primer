@@ -164,13 +164,14 @@ def test_u0006_new_agent_modal_creates_row_and_closes(
             # it transitions in place to the new agent's edit view
             # (still one `.modal`, new content). Confirm the
             # transition landed on the right row: the Name field is
-            # now locked and holds the new agent's id, and the verb
-            # chip reads "Edit Agent" instead of "Create Agent".
+            # now locked and holds the new agent's id, and the modal's
+            # title names the row ("Agent - <id>") where it said just
+            # "Agent" while creating. (There is no verb chip any more.)
             expect(modal.locator("#na-id")).to_have_value(
                 agent_id, timeout=10_000,
             )
-            expect(modal.get_by_test_id("agent-modal-verb-chip")).to_contain_text(
-                "Edit", timeout=5_000,
+            expect(modal.locator("h1.page-title")).to_contain_text(
+                agent_id, timeout=5_000,
             )
 
             # Success toast appears. Toast container is portal'd

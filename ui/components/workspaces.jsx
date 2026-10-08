@@ -390,18 +390,7 @@ function WS_NewWorkspaceModal({ onClose, pushToast, onCreated }) {
 
   return (
     <Modal
-      title={
-        <>
-          Create workspace
-          {/* Platform wave P1b item 6: verb chip, reusing P1a's
-              .pc-modal-chip for visual consistency. */}
-          <span className="pc-modal-chip mono text-sm muted"
-            data-testid="workspace-modal-verb-chip"
-            style={{ marginLeft: 10, marginBottom: 0, verticalAlign: "middle" }}>
-            verb: Create Workspace
-          </span>
-        </>
-      }
+      title="Create workspace"
       onClose={onClose}
       footer={
         <>
