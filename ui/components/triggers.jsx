@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Modal, Banner */
+/* global React, Icon, Btn, Modal, Banner, FormField */
 // Triggers list + detail (stub) + create wizard.
 // Prefix TR_ to avoid global name collisions.
 
@@ -2012,11 +2012,7 @@ function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
     >
       <div data-testid="tr-sub-dialog">
         {/* Kind picker — create mode only; locked in edit mode. */}
-        <div className="field">
-          <label className="field-label">
-            Kind
-            {isEdit && <span className="hint"> locked — config is immutable</span>}
-          </label>
+        <FormField label="Kind" hint={isEdit ? "locked \u2014 config is immutable" : undefined}>
           {isEdit ? (
             <div className="mono" style={{ padding: "6px 8px", border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-1)" }}>
               {kind}
@@ -2049,7 +2045,7 @@ function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
               </div>
             </div>
           )}
-        </div>
+        </FormField>
 
         {/* Per-kind config */}
         {(kind === "agent_fresh_session" || kind === "graph_fresh_session") && !isEdit && (
@@ -2154,12 +2150,11 @@ function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
 
         {/* In edit mode, display the locked config summary in lieu of pickers. */}
         {isEdit && (
-          <div className="field">
-            <label className="field-label">Target <span className="hint">locked</span></label>
+          <FormField label="Target" hint="locked">
             <div className="mono" style={{ padding: "6px 8px", border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-1)" }}>
               <TR_SubTargetLabel sub={initial} />
             </div>
-          </div>
+          </FormField>
         )}
 
         {/* Payload template */}
@@ -2185,8 +2180,7 @@ function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
         </div>
 
         {/* Parallelism */}
-        <div className="field">
-          <label className="field-label">Parallelism</label>
+        <FormField label="Parallelism">
           <div data-testid="tr-sub-parallelism" style={{ display: "flex", gap: 12 }}>
             <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
               <input
@@ -2209,7 +2203,7 @@ function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
               <span><span className="mono">queue</span> — always fire</span>
             </label>
           </div>
-        </div>
+        </FormField>
 
         {/* Description */}
         <div className="field">
