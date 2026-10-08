@@ -418,6 +418,14 @@ def build_system_toolset(
     # the run's identity; a call with no identity (the MCP endpoint) is refused. The rule is the one the REST router applies.
     admin_writes_by_label: dict[str, Any] = {"toolset": toolset_needs_admin}
 
+    # Rules about what a write may set, for the create and update descriptors (the agent reads them before it writes).
+    write_notes_by_label: dict[str, str] = {
+        "collection": (
+            "The ``system`` flag belongs to the platform: a create that sets it and an update that changes it return ``type=forbidden`` "
+            "and nothing is stored. When you replace a row, send back the stored value; leaving the field out counts as ``false``."
+        ),
+    }
+
     # What REST does in the collection router's on_pre_delete (ticket 01a1131f "F"): the documents, their content rows and the vector
     # namespace go before the row, through the same function. With no semantic-search registry in this toolset (search off) there is no
     # vector side to drop.
@@ -451,6 +459,7 @@ def build_system_toolset(
                 admin_when=admin_writes_by_label.get(label),
                 admin_note=_ADMIN_WRITE_NOTES.get(label),
                 delete_note=delete_notes_by_label.get(label),
+                write_note=write_notes_by_label.get(label),
                 pre_delete=pre_deletes_by_label.get(label),
             )
         )

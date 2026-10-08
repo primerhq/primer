@@ -297,6 +297,7 @@ def _crud_tools_for(
     admin_when: Callable[[Any, Any | None], bool] | None = None,
     admin_note: str | None = None,
     delete_note: str | None = None,
+    write_note: str | None = None,
     pre_delete: _PreDelete = None,
 ) -> dict[str, tuple[Tool, ToolHandler]]:
     """Build ``list/get/create/update/delete/find_<entity>`` tools.
@@ -323,6 +324,9 @@ def _crud_tools_for(
     ``type=provider-error``, a :class:`ConflictError` (a writer that will not stop) ``type=conflict``; either way the row is left alone.
     A delete with a ``pre_delete`` is several durable steps, so it is declared
     NOT interruptible (a Stop between them would leave a half-deleted entity).
+
+    ``write_note`` is appended to the create AND update descriptors: a rule about what a write may set that the agent should read before
+    it writes, for an entity whose pre-write check can refuse with ``type=forbidden`` (a collection's ``system`` flag).
 
     ``delete_note`` is appended to the delete descriptor only: a consequence of removing the row that the agent should read before it
     acts, for a delete the tool still performs (it is not a refusal).
@@ -457,6 +461,8 @@ def _crud_tools_for(
 
     if admin_when is not None and admin_note:
         create_when += f" {admin_note}"
+    if write_note:
+        create_when += f" {write_note}"
 
     tools[f"create_{entity_label}"] = (
         make_tool(
@@ -549,6 +555,8 @@ def _crud_tools_for(
         update_when += " " + cache_note
     if admin_when is not None and admin_note:
         update_when += f" {admin_note}"
+    if write_note:
+        update_when += f" {write_note}"
 
     tools[f"update_{entity_label}"] = (
         make_tool(
