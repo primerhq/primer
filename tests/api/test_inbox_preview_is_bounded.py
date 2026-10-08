@@ -78,6 +78,11 @@ _HOSTILE = {
     "tabs after words": "a\t" * 20000,
     "newlines": "a\n" * 20000,
     "dotted words": ("token." * 6000),
+    "a secret word and then spaces": "token" + " " * 40000,
+    "quote openers": 'a="' * 13000,
+    "partial secret words": "passw" * 8000,
+    "key flags": "--key " * 6600,
+    "dashes": "-" * 40000,
 }
 
 
