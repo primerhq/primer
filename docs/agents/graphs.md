@@ -276,7 +276,13 @@ preserved).
 
 Cycles are allowed but require `max_iterations`; a callable router
 also requires it (its targets are not statically known). Without the
-cap a loopable graph is rejected at create time.
+cap a loopable graph still SAVES (an empty or partial graph is a valid
+draft), but it is not runnable: binding a session to it
+(`create_workspace_session`, `POST` on the workspace's sessions) answers
+422 with every problem found, e.g. `cyclic graph (or callable router)
+requires max_iterations to bound execution`. The same check requires
+exactly one `begin` node, at least one `end` node, and every `end`
+reachable from `begin`.
 
 ## MCP tools
 
@@ -650,7 +656,8 @@ re-parks until every pending decision is resolved, then advances.
   structured output flow, set its `response_format` and read
   `nodes.<id>.parsed`.
 - **Cycles and callable routers need `max_iterations`.** A loopable
-  graph without the cap is rejected at create time.
+  graph without the cap saves as a draft but is refused (422) when a
+  session binds to it; see "Lifecycle and states".
 - **Sub-graph references resolve at execution time.** Editing a
   sub-graph mid-flight: subsequent invocations see the edit.
 - **Callable routers are opaque.** They dispatch to callbacks
