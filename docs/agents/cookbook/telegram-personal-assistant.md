@@ -6,7 +6,8 @@ mcp_tools:
   - system::create_channel_provider
   - system::create_channel
   - system::create_agent
-  - system::set_workspace_channel_association
+  - trigger::create
+  - system::create_channel_binding
   - workspaces::create_workspace
   - workspaces::list_workspace_sessions
   - workspaces::get_workspace_session
@@ -47,7 +48,8 @@ Response:
     "provider_id": "tg-personal",
     "provider": "telegram",
     "external_id": "987654321",
-    "label": "personal-dm"
+    "label": "personal-dm",
+    "config": { "chats": { "enabled": true } }
   }
 }
 ```
@@ -55,7 +57,7 @@ Response:
 ```json
 { "id": "personal-dm" }
 ```
-`external_id` is your numeric Telegram user ID from `@userinfobot`. Binding to a single private user ID (not a group ID) keeps the bot from acting on group messages.
+`external_id` is your numeric Telegram user ID from `@userinfobot`. Binding to a single private user ID (not a group ID) keeps the bot from acting on group messages. `config.chats.enabled` lets messages in this room start sessions.
 
 ### 3. Create the workspace
 `workspaces::create_workspace`
@@ -66,7 +68,7 @@ Response:
 ```json
 { "id": "ws-1", "phase": "running" }
 ```
-Wait until `phase` is `running`. Thread `id` ("ws-1") into the association.
+Wait until `phase` is `running`. Thread `id` ("ws-1") into the binding below.
 
 ### 4. Create the personal assistant agent
 `system::create_agent`
@@ -76,7 +78,7 @@ Wait until `phase` is `running`. Thread `id` ("ws-1") into the association.
     "id": "personal-assistant",
     "description": "Concise personal assistant that tracks to-do items",
     "model": { "provider_id": "anthropic-1", "model_name": "claude-sonnet-4-6" },
-    "tools": ["web__search"],
+    "tools": ["web__web_search"],
     "system_prompt": ["You are a personal assistant. Be concise. Track to-do items the user mentions in the conversation."]
   }
 }
@@ -87,19 +89,31 @@ Response:
 ```
 Scope `tools` to the toolsets the assistant needs (here a `web` search tool). The thread's session carries history, so the agent sees prior turns without re-stating them.
 
-### 5. Bind the channel to the workspace
-`system::set_workspace_channel_association`
+### 5. Route your DMs to the assistant
+Create the `channel` trigger that anchors inbound events for the room:
+
+`trigger::create`
 ```json
 {
-  "workspace_id": "ws-1",
-  "channel_id": "personal-dm"
+  "slug": "personal-dm-anchor",
+  "name": "Telegram personal DM",
+  "config": { "kind": "channel", "provider_id": "tg-personal", "channel_id": "personal-dm" },
+  "enabled": true
 }
 ```
-Response:
+Then the binding that maps a matcher to an action:
+
+`system::create_channel_binding`
 ```json
-{ "ok": true, "workspace_id": "ws-1", "channel_id": "personal-dm" }
+{
+  "trigger_id": "personal-dm-anchor",
+  "event_matcher": { "event_type": "message.posted", "surface": "dm" },
+  "config": { "kind": "agent_fresh_session", "workspace_id": "ws-1", "agent_id": "personal-assistant" },
+  "reply_target": "source_thread",
+  "payload_template": "{{ event.text }}"
+}
 ```
-The association routes all session gates (`ask_user`, tool approval, `inform`) from sessions in `ws-1` to the Telegram channel. All gate types forward automatically; `ask_user` prompts from the agent are delivered to Telegram.
+Response: the created Subscription. A DM starts a `personal-assistant` session in `ws-1`, and later messages in the same Telegram conversation continue that session (a platform thread is one session). `reply_target: "source_thread"` posts the replies in the conversation and makes the session's gates (`ask_user`, tool approval, `inform`) forward to it, so `ask_user` prompts from the agent are delivered to Telegram.
 
 ### 6. Test the assistant
 DM the bot in Telegram. The adapter delivers the message and starts a session for the turn. Find it:

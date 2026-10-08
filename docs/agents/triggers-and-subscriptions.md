@@ -217,7 +217,7 @@ the kind-specific `config`.
 
 ### Yielding wait (not MCP-exposable)
 
-`trigger::subscribe_to_trigger` is a yielding tool - invisible from
+`workspace_ext::subscribe_to_trigger` is a yielding tool - invisible from
 MCP. For external agents that want event-driven behaviour, poll
 `trigger::list_subscriptions(trigger_id=X)` or inspect the trigger's
 `last_fired_at` to detect fires.

@@ -6,7 +6,7 @@ mcp_tools:
   - system::create_channel_provider
   - system::create_channel
   - system::create_agent
-  - system::create_workspace_channel_association
+  - system::set_reply_binding
   - system::create_tool_approval_policy
   - workspaces::create_workspace
   - workspaces::create_workspace_session
@@ -85,24 +85,18 @@ Response:
 Tell the agent in its prompt to handle a rejection gracefully so a rejected deploy ends the session cleanly rather than stalling.
 
 ### 4. Bind the channel to the workspace
-`system::create_workspace_channel_association`
+`system::set_reply_binding`
 ```json
 {
-  "entity": {
-    "id": "wca-deploys",
-    "workspace_id": "ws-1",
-    "channel_id": "deploys",
-    "enabled": true,
-    "forward_ask_user": false,
-    "forward_tool_approval": true
-  }
+  "workspace_id": "ws-1",
+  "channel_id": "deploys"
 }
 ```
 Response:
 ```json
-{ "id": "wca-deploys" }
+{ "ok": true, "workspace_id": "ws-1", "channel_id": "deploys", "anchor": null }
 ```
-`forward_tool_approval: true` surfaces the parked `deploy_prod` approval in Slack as well as the console.
+The reply binding surfaces the parked `deploy_prod` approval in Slack as well as the console. A binding forwards every gate of the workspace's sessions (`ask_user`, tool approval, `inform`); there are no per-gate flags.
 
 ### 5. Create the required approval policy on deploy_prod
 `system::create_tool_approval_policy`
@@ -147,7 +141,7 @@ Response:
 ```json
 { "id": "ses-1", "status": "waiting" }
 ```
-`status: "waiting"` means the session is parked on the `deploy_prod` approval. In production the inbound Slack message drives the session instead of `create_workspace_session`; the association routes it.
+`status: "waiting"` means the session is parked on the `deploy_prod` approval. In production the inbound Slack message drives the session instead of `create_workspace_session`: a `channel` trigger and a binding on it (`system::create_channel_binding`, see `channels`) start the session, and the reply binding above forwards its gates.
 
 ## Verify
 The session reaches `status: "waiting"` on the `deploy_prod` call and does not deploy until approved. There is no MCP approve tool: an operator approves or rejects from the console Approvals > Pending tab or via the REST respond endpoint. Approving resumes the session and dispatches `deploy_prod`; rejecting returns a clean error the agent reports back to `#deploys`.
@@ -156,7 +150,7 @@ The session reaches `status: "waiting"` on the `deploy_prod` call and does not d
 - Approving or rejecting a parked deploy is an operator/REST action, not an MCP call. The MCP tools here create the gate and observe the parked session.
 - `deploy_prod` is irreversible. Test the gate-pause path in a development session before enabling the policy in production.
 - A parked session holds a worker slot until decided. Rely on `timeout_seconds` to auto-reject stale calls and page on-call separately.
-- In a high-traffic Slack channel the forwarded approval prompt can scroll away. Pin approvals to a dedicated moderator channel via a second association with `forward_tool_approval: true` and `forward_ask_user: false`.
+- In a high-traffic Slack channel the forwarded approval prompt can scroll away. Point the workspace's reply binding at a dedicated moderator channel instead (a workspace has one standing binding, and it forwards every gate).
 
 ## Related
 - `agents`, `sessions`, `channels`, `tool-approval`
