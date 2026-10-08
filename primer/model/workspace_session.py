@@ -47,6 +47,20 @@ if TYPE_CHECKING:
 # ===========================================================================
 
 
+class LastTurnError(BaseModel):
+    """How the session's last turn failed: the code and the time (``WorkspaceSession.last_turn_error``)."""
+
+    code: str = Field(
+        ...,
+        description=(
+            "Why the turn failed: the model call's own code (``server_error``, ``rate_limit``, ``network_error``, ``auth_error``, the timeouts, "
+            "``bad_request``...) when it was a model call, ``llm_stream_error`` when the stream gave none, ``turn_failed`` for a turn that raised "
+            "something that is not a model error."
+        ),
+    )
+    at: datetime = Field(..., description="When the turn's failure was recorded (UTC).")
+
+
 class SessionStatus(str, Enum):
     """Lifecycle state of an :class:`AgentSession`.
 
@@ -554,6 +568,17 @@ class WorkspaceSession(Identifiable):
             "workspace and cannot be written. A refused session is intact and resumable once its workspace "
             "moves to a docker or kubernetes provider; it is never workspace_lost. Additive/optional, no "
             "migration: a row without it reads None, and an older build ignores the key."
+        ),
+    )
+
+    last_turn_error: LastTurnError | None = Field(
+        default=None,
+        description=(
+            "Set when the session's last turn FAILED, with the failure's code and time; cleared when the next turn starts and when a session is "
+            "reopened. It is how a row that is not ended still says that the turn it rests after failed: a failed turn does not bump ``turn_no`` and "
+            "its release drops the lease, so without it a resting session whose first turn failed looks like one that never started (the "
+            "stuck-session sweeper reads it for that), and the console reads it for its failed-turn indicator. Written by the failure exit with one "
+            "field-scoped patch. Additive/optional, no migration: a row without it reads None, and an older build ignores the key."
         ),
     )
 
