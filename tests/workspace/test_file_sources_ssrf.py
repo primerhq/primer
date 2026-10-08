@@ -90,8 +90,10 @@ async def test_the_resolver_refuses_a_name_that_resolves_to_a_private_address() 
 
     resolver = PublicOnlyResolver(inner=_Inner())
 
-    with pytest.raises(BlockedDestinationError, match="10.1.2.3"):
+    with pytest.raises(BlockedDestinationError, match="internal.example is not a public address") as ei:
         await resolver.resolve("internal.example", 80)
+    # Lead review: the resolved address is not echoed back (the 422 detail would be an internal-DNS oracle).
+    assert "10.1.2.3" not in str(ei.value)
 
 
 async def test_the_resolver_passes_a_public_address() -> None:
@@ -143,10 +145,13 @@ async def test_the_real_session_resolves_through_the_public_only_resolver() -> N
         await session.close()
 
 
-async def test_a_name_resolving_private_is_refused_through_the_real_session(monkeypatch) -> None:
+async def test_a_name_resolving_private_is_refused_through_the_real_session(monkeypatch, caplog) -> None:
     """Drives the real ``_http_session`` and ``_fetch_url``: the refusal the resolver raises during connect surfaces
     as the RuntimeError "refused". No DNS and no socket: aiohttp's default resolver is replaced by one that answers a
-    private address."""
+    private address. The resolved address goes to the server log only, never into the error a caller sees."""
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="primer.common.ssrf")
     import aiohttp.resolver
 
     class _PrivateResolver:
@@ -160,7 +165,9 @@ async def test_a_name_resolving_private_is_refused_through_the_real_session(monk
 
     with pytest.raises(RuntimeError, match="refused") as ei:
         await resolve_file_sources([_url_mount("http://internal.example/x")])
-    assert "10.9.8.7" in str(ei.value)
+    assert "internal.example is not a public address" in str(ei.value)
+    assert "10.9.8.7" not in str(ei.value)
+    assert any("10.9.8.7" in r.getMessage() for r in caplog.records), caplog.text
 
 
 @pytest.mark.parametrize("address", [
@@ -215,8 +222,13 @@ async def test_a_slow_url_source_times_out(monkeypatch) -> None:
     monkeypatch.setattr(files, "_FETCH_TIMEOUT_S", 0.05)
 
     async with asyncio.timeout(10):  # the test body is bounded too
-        with pytest.raises(RuntimeError, match="timed out"):
+        with pytest.raises(RuntimeError, match="timed out") as ei:
             await resolve_file_sources([_url_mount("https://example.com/slow")])
+    # A timeout is not the caller's bad input: it stays a plain RuntimeError (a 500), not the 422 ValidationError a
+    # refusal is.
+    from primer.model.except_ import ValidationError as SemanticValidationError
+
+    assert not isinstance(ei.value, SemanticValidationError)
 
 
 def test_the_fetch_timeout_is_a_minute() -> None:
