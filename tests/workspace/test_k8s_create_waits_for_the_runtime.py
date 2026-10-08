@@ -285,3 +285,71 @@ async def test_a_cancel_during_an_attempt_closes_that_client_and_does_not_retry(
     with pytest.raises(asyncio.CancelledError):
         await task
     assert len(made) == 1 and made[0].closed == 1
+
+
+# ---- a caller's asyncio.timeout, and a cancel that does not come from task.cancel() -------------------------------------------
+#
+# Ticket 01a11b02 said the connect loop's ``except BaseException`` swallows the CancelledError a cancel or an ``asyncio.timeout``
+# injects and keeps retrying until its own deadline. It does not: the handler closes the failed client and re-raises everything that
+# is not an ``Exception`` (and ``_runtime_not_serving_yet`` is False for a CancelledError anyway). The two tests above pin
+# ``task.cancel()``; these pin the other two ways the same thing reaches the loop, so a change to the handler cannot reintroduce
+# the retry-after-cancel without a red test.
+
+
+@BUILDS
+async def test_a_callers_timeout_ends_a_connect_that_is_refused_for_ever_promptly(monkeypatch, build) -> None:
+    monkeypatch.setattr(k8s_backend, "_RUNTIME_READY_POLL_S", 5.0)       # the build sleeps between attempts
+    monkeypatch.setattr(k8s_backend, "_RUNTIME_READY_MAX_POLL_S", 5.0)
+    script = _use(monkeypatch, _Script(REFUSED))
+    backend = _backend()
+
+    started = time.monotonic()
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.3):
+            await build(backend)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 2.0, f"the caller's timeout took {elapsed:.1f}s to take effect (the loop kept retrying?)"
+    assert len(script.made) == 1 and script.made[0].closed == 1, "no further attempt after the timeout, and the client is closed once"
+    assert backend._workspaces == {}
+
+
+@BUILDS
+async def test_a_callers_timeout_during_an_attempt_closes_the_client_and_does_not_retry(monkeypatch, build) -> None:
+    gate = asyncio.Event()
+
+    class _Hangs(_Attempt):
+        async def connect(self) -> None:
+            await gate.wait()
+
+    made: list[_Hangs] = []
+
+    def factory(**kwargs):
+        made.append(_Hangs(None))
+        return made[-1]
+
+    monkeypatch.setattr(k8s_backend, "RuntimeClient", factory)
+    backend = _backend()
+
+    started = time.monotonic()
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.3):
+            await build(backend)
+
+    assert time.monotonic() - started < 2.0
+    assert len(made) == 1 and made[0].closed == 1
+    assert backend._workspaces == {}
+
+
+@BUILDS
+async def test_a_cancellation_raised_by_the_connect_itself_is_not_retried(monkeypatch, build) -> None:
+    """A CancelledError that comes out of ``connect()`` (an inner cancel scope, a library's own cancel) is still a CancelledError:
+    the client is closed and it propagates, instead of being treated as "the runtime is not serving yet"."""
+    script = _use(monkeypatch, _Script(asyncio.CancelledError()))
+    backend = _backend()
+
+    with pytest.raises(asyncio.CancelledError):
+        await _bounded(build, backend)
+
+    assert len(script.made) == 1 and script.made[0].closed == 1
+    assert backend._workspaces == {}
