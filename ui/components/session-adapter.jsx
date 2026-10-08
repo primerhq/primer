@@ -328,6 +328,37 @@ function SA_failureScope(rec) {
   return String(p.delegate_run_id || p.delegate_tool_call_id || "delegated");
 }
 
+// A NON-fatal stream Error ({fatal: false}: "more events follow") is a retry notice, not a failure: the provider reported a problem and the stream
+// went on. Only an explicit false counts; a record with no flag (older ones) and {fatal: true} are failures.
+function SA_isRetryNotice(rec) {
+  return rec.kind === "error" && (rec.payload || {}).fatal === false && !SA_isBareTerminalError(rec);
+}
+
+// What came of each retry notice, read from the rows after it IN THE SAME TURN AND SCOPE (the parent's own, or one subagent run's):
+//   "recovered": the turn produced output after it (text, reasoning, a tool call or result) or ended done: the problem did not stop it;
+//   "ended":     the turn was over without output: a failure card or a cancel followed, or the next user message began another turn;
+//   "retrying":  nothing followed yet, so as far as the records say the turn is still going.
+// Output wins over a later ending: a turn that carried on and then failed for another reason still recovered from this one.
+var SA_NOTICE_OUTPUT = { assistant_message: true, reasoning: true, tool_call: true, tool_result: true, done: true };
+
+function SA_settleNotices(rows) {
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i].kind !== "retry_notice") continue;
+    var scope = SA_failureScope(rows[i]);
+    var state = "retrying";
+    for (var j = i + 1; j < rows.length; j++) {
+      var next = rows[j];
+      var nextScope = SA_failureScope(next);
+      // The parent's next user message ends the turn for the parent and for every subagent of it; a subagent's own never ends a parent's.
+      if (next.kind === "user_message" && (nextScope === null || nextScope === scope)) { state = "ended"; break; }
+      if (nextScope !== scope) continue;
+      if (SA_NOTICE_OUTPUT[next.kind]) { state = "recovered"; break; }
+      if (next.kind === "error" || next.kind === "cancelled") state = "ended";
+    }
+    rows[i].noticeState = state;
+  }
+}
+
 function SA_toTranscript(records, session) {
   var visible = SA_visibleRecords(records);
   var out = [];
@@ -342,8 +373,8 @@ function SA_toTranscript(records, session) {
   // so two graph nodes failing with the same words stay two cards only when both rows name their node.
   //
   // Scope: parent and subagent failures never fold into each other (SA_failureScope), and a bare marker belongs to the scope that wrote
-  // it. A non-fatal error ({fatal: false}, a retry notice) is an error row like any other: it is drawn, it can be the cause a later
-  // fatal row with the same words folds into, and then the card carries fatal=false.
+  // it. A non-fatal error ({fatal: false}, a retry notice) is not a failure and takes no part in the fold: it becomes a "retry_notice" row
+  // (settled below), never the cause a later failure folds into, so a failure with the same words stays a red card of its own.
   var turnCauses = [];
   var turnMarkers = {};
   for (var i = 0; i < visible.length; i++) {
@@ -353,7 +384,8 @@ function SA_toTranscript(records, session) {
     var bare = SA_isBareTerminalError(rec);
     var scope = SA_failureScope(rec);
     var scopeKey = scope === null ? "" : scope;
-    if (rec.kind === "error") {
+    var notice = SA_isRetryNotice(rec);
+    if (rec.kind === "error" && !notice) {
       var message = (rec.payload || {}).message || null;
       if (bare) {
         // A marker with a cause of its own scope anywhere in its turn is that cause's marker. A marker with none is the only evidence and stays.
@@ -381,7 +413,7 @@ function SA_toTranscript(records, session) {
     // many (live finding 2026-08-26).
     if (rec.kind === "done"
         && ((rec.payload || {}).stop_reason === "tool_use")) continue;
-    var kind = SA_KIND_TO_TRANSCRIPT[rec.kind] || "lifecycle";
+    var kind = notice ? "retry_notice" : (SA_KIND_TO_TRANSCRIPT[rec.kind] || "lifecycle");
     var row = {
       seq: rec.seq,
       kind: kind,
@@ -402,6 +434,7 @@ function SA_toTranscript(records, session) {
     out.push(row);
     if (rec.kind === "error" && bare) turnMarkers[scopeKey] = row;
   }
+  SA_settleNotices(out);
   return out;
 }
 

@@ -144,6 +144,20 @@ function NV_errorView(row) {
   return { text: raw || "The turn failed.", detail: null };
 }
 
+// What a retry notice says (ticket 01a11bcc): a NON-fatal stream Error is the provider reporting a problem while the stream goes on, so it is
+// worded as that, never as a failure. session-adapter.jsx settles which of three states it is in from the rows after it; the provider's own
+// words stay as the detail. It deliberately does not say "connection" or "retrying": the record carries only the provider's message and
+// code, not what the provider or primer did about it.
+function NV_noticeView(row) {
+  var p = (row && row.payload) || {};
+  var raw = (row && row.label) || p.message || p.code || null;
+  var state = row && row.noticeState;
+  var text = "The model reported a problem; the turn is continuing.";
+  if (state === "recovered") text = "The model reported a problem and then carried on.";
+  else if (state !== "retrying") text = "The model reported a problem; nothing followed it before the turn ended.";
+  return { text: text, detail: raw };
+}
+
 // How long the polled row must keep contradicting a live tap status before the status is dropped (C-008/C-011): the detail
 // resource polls every 2 s, so this is at least two polls that agree, and a turn that is just starting (the tap echoes the
 // user's message before the row flips to claimable) never loses its strip to one stale read.
@@ -2926,6 +2940,19 @@ function NV_SessionDoc(props) {
       return (
         <NV_LifecycleRow key={row.seq} row={row}
           onTrace={function (r) { setTraceTurn(traceTurnFor(r)); }} />
+      );
+    }
+    if (row.kind === "retry_notice") {
+      // Not a failure card: no red, no alert role, no trace button. Amber while the turn may still recover, grey once it has.
+      var noticeView = NV_noticeView(row);
+      return (
+        <div key={row.seq} className="nv-turn-note" data-state={row.noticeState}
+          data-testid={"nv-turn:" + row.seq}>
+          <span>{noticeView.text}</span>
+          {noticeView.detail ? (
+            <span className="nv-turn-note-detail">{noticeView.detail}</span>
+          ) : null}
+        </div>
       );
     }
     if (row.kind === "error") {

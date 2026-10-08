@@ -4149,6 +4149,14 @@ input, textarea, select { font: inherit; color: inherit; }
   border: 1px solid var(--danger, #e06c5f); color: var(--danger, #e06c5f);
   font-size: 12.5px;
 }
+/* A retry notice (a non-fatal stream Error): a quiet line, never the failure card. Amber while the turn may still recover, grey once it has. */
+.nv-turn-note {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px;
+  margin-left: 30px; padding: 2px 0; font-size: 11.5px; color: var(--text-3);
+}
+.nv-turn-note[data-state="retrying"] { color: var(--amber); }
+.nv-turn-note[data-state="recovered"] { opacity: 0.6; }
+.nv-turn-note-detail { font-family: var(--font-mono); font-size: 10.5px; opacity: 0.8; overflow-wrap: anywhere; }
 .nv-turn-error-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .nv-turn-error-detail { font-size: 11px; opacity: 0.75; overflow-wrap: anywhere; }
 /* The end divider's explanation: why a session ended and what to do next (a failed one used to say only "failed"). */
