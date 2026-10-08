@@ -68,6 +68,14 @@ def test_an_id_that_would_need_escaping_or_is_ambiguous_is_refused_with_the_rule
     assert "cannot change" in message, "and says why it matters now: the name is permanent"
 
 
+@pytest.mark.parametrize("id_", ["a__b", "acme__assistant", "x___y", "ends__"])
+def test_two_underscores_in_a_row_are_refused_because_a_harness_install_mints_them(id_: str) -> None:
+    """Harness installs mint ``<slug>__<template>`` ids (primer/harness/service.py resolved_id): a REST-created ``acme__assistant`` would collide with a later install."""
+    message = _check(id_, "does a thing")["body.id"]
+
+    assert "reserved" in message and "harness" in message, message
+
+
 def test_surrounding_spaces_are_not_part_of_the_id() -> None:
     assert "body.id" not in _check("  refund-triage  ", "does a thing")
 
