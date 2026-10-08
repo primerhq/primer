@@ -125,3 +125,21 @@ async def test_the_delete_is_not_interruptible_because_it_is_several_steps(world
     declared = {tool.id: tool.interruptible async for tool in toolset.list_tools()}
 
     assert declared["delete_collection"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_system_collection_cannot_be_deleted_and_nothing_is_cascaded(world) -> None:
+    """``world`` seeds ``sys-1`` as a system collection. The tool deleted it (RUN: deleted=True) although docs/agents/knowledge.md says the
+    CRUD layer refuses; with the cascade it would also have emptied it."""
+    sp, toolset, _ = world
+    doc = Document(id="doc-sys", collection_id="sys-1", slug="map", path="map.md", title="Map")
+    await sp.get_storage(Document).create(doc)
+    await sp.get_content_store().upsert(document_id=doc.id, collection_id="sys-1", path="map.md", content="regenerated")
+
+    is_error, body = await _call(toolset, "delete_collection", id="sys-1")
+
+    assert is_error and body["type"] == "forbidden", body
+    assert "system-owned and read-only" in body["message"]
+    assert await sp.get_storage(Collection).get("sys-1") is not None
+    assert [d.path for d in await _documents_of(sp, "sys-1")] == ["map.md"]
+    assert await sp.get_content_store().resolve_id("sys-1", "map.md") is not None
