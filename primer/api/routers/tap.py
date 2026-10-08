@@ -303,11 +303,11 @@ async def _stream_tap(
 # Derived envelopes
 # ---------------------------------------------------------------------------
 #
-# These are frames, not records. They are built from the session row plus
-# the log, never advance the tap cursor, and carry STATE rather than
-# deltas, so a client that reconnects re-derives the current snapshot
-# instead of replaying a historical one, and one that receives the same
-# frame twice renders it twice with no effect.
+# This is a frame, not a record. It is built from the session log,
+# never advances the tap cursor, and carries STATE rather than deltas,
+# so a client that reconnects re-derives the current snapshot instead
+# of replaying a historical one, and one that receives the same frame
+# twice renders it twice with no effect.
 
 
 def build_usage_frame(raw_lines: list[str]) -> dict:
@@ -324,62 +324,6 @@ def build_usage_frame(raw_lines: list[str]) -> dict:
         "total_output_tokens": usage.total_output_tokens,
         "total_cached_input_tokens": usage.total_cached_input_tokens,
         "total_reasoning_tokens": usage.total_reasoning_tokens,
-    }
-
-
-def build_compaction_frame(raw_lines: list[str]) -> dict | None:
-    """The newest visible compaction, or None if nothing is folded.
-
-    Derived from the marker rather than parsed off the wire: the tap
-    reader deliberately skips compaction_marker records, because the
-    executor assigns them a seq out of band and parsing one would let a
-    shared seq drop a real record. Deriving sidesteps that entirely.
-    """
-    from primer.model.workspace_session import SessionMessageKind
-    from primer.session.replay import visible_records
-
-    marker = None
-    for rec in visible_records(raw_lines):
-        if rec.get("kind") == SessionMessageKind.COMPACTION_MARKER.value:
-            marker = rec
-    if marker is None:
-        return None
-    payload = marker.get("payload") or {}
-    return {
-        "marker_seq": marker.get("seq"),
-        "summary": payload.get("summary"),
-        "replaced_from_seq": payload.get("replaced_from_seq"),
-        "replaced_to_seq": payload.get("replaced_to_seq"),
-        "tokens_before": payload.get("tokens_before"),
-        "tokens_after": payload.get("tokens_after"),
-        # The verdict (absent on a marker written before it was recorded): summarised, or insufficient
-        # when the summary stands and the prompt is still at or over the trigger.
-        "outcome": payload.get("outcome"),
-        "unreducible": payload.get("unreducible"),
-        "trigger_tokens": payload.get("trigger_tokens"),
-        "fixed_overhead_tokens": payload.get("fixed_overhead_tokens"),
-        # What was done to the summariser's input when its first call overflowed (null otherwise).
-        "summary_input_reduced": payload.get("summary_input_reduced"),
-    }
-
-
-def build_pending_steer_frame(rows: list) -> dict:
-    """Queued steers that have not been realized yet.
-
-    Always returns a frame, even when empty: the client has to be able
-    to watch the queue reach zero, which a frame emitted only when
-    non-empty could never express.
-    """
-    return {
-        "count": len(rows),
-        "items": [
-            {
-                "id": row.id,
-                "parts": list(row.parts or []),
-                "enqueued_at": row.enqueued_at.isoformat(),
-            }
-            for row in rows
-        ],
     }
 
 
