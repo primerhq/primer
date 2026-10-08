@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 import pytest
 
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
+from primer.session.mutation_lock import session_lifecycle_lock
 from tests._support.in_lock_deadline import InLockDeadline
 
 BODY_BOUND_S = 30.0   # a hang fails the test; a slow runner must not
@@ -160,6 +161,7 @@ async def test_an_unreachable_workspace_gives_a_409_and_frees_the_lock(client, a
         assert response.status_code == 409, response.text
         async with mutation_lock.session_lifecycle_lock().acquire("b-hang"):
             pass
+    deadline.assert_fired()                      # the route really bounded the write by the seam (and not by a swallowed error)
     stored = await sessions.get("b-hang")
     assert stored.binding.agent_id == "agent-a" and stored.binding_epoch == 0
 
@@ -184,7 +186,10 @@ async def test_a_timeout_after_the_gate_was_closed_says_the_gate_is_closed(clien
     async with asyncio.timeout(BODY_BOUND_S):    # generous: it only turns a hang into a failure, it never races the code
         response = await client.post("/v1/workspaces/ws-1/sessions/b-gate/binding", json={"kind": "agent", "agent_id": "agent-b"})
 
-    assert response.status_code == 409, response.text
+        assert response.status_code == 409, response.text
+        async with session_lifecycle_lock().acquire("b-gate"):      # the deadline freed the lifecycle lock
+            pass
+    deadline.assert_fired()                      # the route really bounded the write by the seam (and not by a swallowed error)
     assert "gate is already closed" in response.json()["detail"], response.text
     stored = await sessions.get("b-gate")
     assert stored.parked_status is None, "the precondition of the message: the gate really was closed"

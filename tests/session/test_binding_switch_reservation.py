@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import UTC, datetime
 
 import pytest
@@ -44,7 +45,7 @@ class _IO:
         if self.hang:
             # an unreachable workspace: never answers. `hang` is True (waits for ever) or an InLockDeadline (which first expires the
             # in-lock deadline that bounds the caller, so the test needs no wall-clock).
-            await (self.hang.hang() if hasattr(self.hang, "hang") else asyncio.Event().wait())
+            await (self.hang.hang() if isinstance(self.hang, InLockDeadline) else asyncio.Event().wait())
         self.lines.append(line)
 
     def records(self) -> list[dict]:
@@ -121,17 +122,24 @@ async def test_the_checkpoint_switch_waits_for_the_lifecycle_lock():
 
 
 @pytest.mark.asyncio
-async def test_the_checkpoint_switch_times_out_without_holding_the_lock(monkeypatch):
+async def test_the_checkpoint_switch_times_out_without_holding_the_lock(monkeypatch, caplog):
     """An unreachable workspace must not hold the lock Cancel and every steer need: the in-lock I/O has a bound; the
     switch stays pending for the next checkpoint."""
     deadline = InLockDeadline(monkeypatch)       # the in-lock deadline expires when the write hangs, not after a wall-clock
     provider, sessions, io = await _seeded()
     io.hang = deadline
 
-    async with asyncio.timeout(BODY_BOUND_S):    # generous: it only turns a hang into a failure, it never races the code
-        await apply_queued_binding_switch(storage_provider=provider, workspace_io=io, session_id=SID)
+    with caplog.at_level(logging.ERROR):
+        async with asyncio.timeout(BODY_BOUND_S):    # generous: it only turns a hang into a failure, it never races the code
+            await apply_queued_binding_switch(storage_provider=provider, workspace_io=io, session_id=SID)
 
-        async with session_lifecycle_lock().acquire(SID):
-            pass  # the lock is free: Cancel's C1 would proceed
+            async with session_lifecycle_lock().acquire(SID):
+                pass  # the lock is free: Cancel's C1 would proceed
+    # apply_queued_binding_switch swallows every failure (it logs and leaves the switch queued), so a green run proves nothing by itself:
+    # the deadline must really have fired, and the log must be the TIMEOUT's, not that of some other swallowed exception.
+    deadline.assert_fired()
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("timed out after" in m and SID in m for m in messages), f"no timeout was logged: {messages}"
+    assert not any("queued binding switch failed" in m for m in messages), f"the switch failed for another reason: {messages}"
     row = await sessions.get(SID)
     assert row.pending_binding_switch == REQUEST and row.binding.agent_id == "agent-a", "a timed-out switch must stay pending"
