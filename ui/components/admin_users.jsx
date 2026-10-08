@@ -219,10 +219,14 @@ function ADM_toggleConfirm(user) {
   };
 }
 
-// What a click on a row's Disable/Enable does: nothing while a prompt is
-// already open (a double-click must not stack a second dialog; the row is not
-// busy until the answer is yes), otherwise ask with the prompt above, or send
-// straight away when there is none. Pure, run in MiniRacer by the same test.
+// What a click on a row's Disable/Enable does: nothing while this row's prompt
+// is already open, otherwise ask with the prompt above, or send straight away
+// when there is none. The row is not busy until the answer is yes, so without
+// this a double-click calls confirmDialog twice; it is ONE global slot
+// (shared.jsx), so the second call replaces the first dialog and leaves the
+// first call's promise pending for good. Ignoring the second click keeps the
+// first dialog, and its handler, as the one that is answered.
+// Pure, run in MiniRacer by the same test.
 function ADM_toggleStep(user, asking) {
   if (asking) return { kind: "ignore" };
   const prompt = ADM_toggleConfirm(user);
