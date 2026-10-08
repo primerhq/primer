@@ -6,8 +6,8 @@ acted on: ``docs/agents/workspaces.md`` told an agent to bind a workspace to a c
 (``set_reply_binding`` / ``clear_reply_binding``), and a cookbook sent the agent to ``trigger::subscribe_to_trigger``, which has never been the
 tool's name (``create_subscription``). Nothing checked, so nothing noticed. Two checks:
 
-* every ``<toolset>::<tool>`` or ``<toolset>__<tool>`` in ``docs/agents/`` whose toolset is built in here is a tool that toolset has. A name that
-  ends in ``_`` is a documented stem (``find_<kind>``), not a tool;
+* every ``<toolset>::<tool>`` or ``<toolset>__<tool>`` in ``docs/agents/`` and ``docs/dev/`` (not the vision documents) whose toolset is built in
+  here is a tool that toolset has. A name that ends in ``_`` is a documented stem (``find_<kind>``), not a tool;
 * every ``METHOD /v1/...`` in ``docs/`` and ``AGENTS.md`` is an operation of the live OpenAPI schema, with ``{id}`` and ``<name>`` placeholders
   compared as one wildcard. Not checked, with the reason: the vision documents (``docs/dev/vision/``: the origin story and design
   philosophy, not a contract), placeholder paths the docs use to describe the factory (``/v1/{plural}``, ``/v1/x``), ``POST /v1/mcp`` (a mount
@@ -26,6 +26,9 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 AGENT_DOCS = sorted(p for p in (REPO / "docs" / "agents").rglob("*.md") if not p.name.startswith("_"))
+# The dev docs name tools too (``harness__list``, ``workspace_ext__invoke_graph``); the vision documents are not a contract.
+DEV_DOCS = sorted(p for p in (REPO / "docs" / "dev").rglob("*.md") if "vision" not in p.relative_to(REPO / "docs" / "dev").parts)
+TOOL_DOCS = [*AGENT_DOCS, *DEV_DOCS]
 
 
 # ---- tools ----------------------------------------------------------------------------------------------------------------------
@@ -73,11 +76,14 @@ def _built_in_tools() -> dict[str, frozenset[str]]:
         "misc": build_misc_toolset(),
     }
 
-    async def names(provider) -> frozenset[str]:
-        return frozenset([tool.id async for tool in provider.list_tools()])
+    async def names(toolset_id: str, provider) -> frozenset[str]:
+        # The harness toolset registers its tools under scoped ids (``harness__list``, called ``harness::harness__list`` in the agent docs
+        # and ``harness__list`` as a scoped id in the dev docs); the others use the bare name. Both spellings are the tool.
+        ids = [tool.id async for tool in provider.list_tools()]
+        return frozenset([*ids, *(tool_id.removeprefix(f"{toolset_id}__") for tool_id in ids)])
 
     async def collect() -> dict[str, frozenset[str]]:
-        return {toolset_id: await names(provider) for toolset_id, provider in providers.items()}
+        return {toolset_id: await names(toolset_id, provider) for toolset_id, provider in providers.items()}
 
     return asyncio.run(collect())
 
@@ -104,8 +110,8 @@ def test_the_built_in_toolsets_are_not_empty_so_the_check_cannot_pass_vacuously(
     assert len(tools["system"]) > 50 and "set_reply_binding" in tools["system"]
 
 
-@pytest.mark.parametrize("doc", AGENT_DOCS, ids=lambda p: str(p.relative_to(REPO)))
-def test_agent_docs_name_only_tools_that_exist(doc: Path) -> None:
+@pytest.mark.parametrize("doc", TOOL_DOCS, ids=lambda p: str(p.relative_to(REPO)))
+def test_docs_name_only_tools_that_exist(doc: Path) -> None:
     tools = _built_in_tools()
     missing = [
         f"  line {number}: {toolset_id}::{name}"
