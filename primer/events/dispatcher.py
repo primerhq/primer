@@ -27,6 +27,7 @@ from typing import Any
 from primer.bus.scheduler_tasks import _BackgroundTask
 from primer.events.filters import matches
 from primer.events.recorder import EVENTS_APPENDED_KEY
+from primer.events.redaction import redact_event
 from primer.int.coordinator import ROLE_EVENT_DISPATCHER, ROLE_EVENT_RETENTION
 from primer.model.event import (
     Event,
@@ -281,8 +282,10 @@ class EventDispatcher(_BackgroundTask):
                 sink.session_id, sub.id,
             )
             return False
+        # The envelope becomes the agent's tool result (wait_for_event):
+        # mask stored secrets exactly as GET /v1/events does (SEC-04).
         await self._bus.publish(
-            sink.event_key, event.model_dump(mode="json"),
+            sink.event_key, redact_event(event).model_dump(mode="json"),
         )
         if sink.one_shot:
             await self._complete_one_shot(sub)

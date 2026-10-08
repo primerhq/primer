@@ -539,10 +539,6 @@ async def run_one_session_turn(
     # hooks. Shared by the catch-all ``except Exception`` and the park arms, whose own TurnInvariantError (a
     # deterministic bookkeeping break while parking) is raised inside an except handler the catch-all never sees.
     async def _end_turn_failed(exc: BaseException) -> ReleaseOutcome:
-        logger.exception(
-            "session %s executor raised unexpected error; releasing claim",
-            session_id,
-        )
         # Build the ProblemDetails envelope once and reuse it for BOTH
         # the structured turn-log event and the messages.jsonl ERROR
         # record. Operators looking at the Messages tab now see the
@@ -551,6 +547,13 @@ async def run_one_session_turn(
         # generic string. Spec §6.1 called for the legacy string to go
         # away once the turn-log existed; this is that cutover.
         problem = to_problem_details(exc)
+        # to_problem_details logged the traceback under this error_id; the
+        # record served to session readers carries only the id.
+        logger.error(
+            "session %s executor raised unexpected error (error_id=%s);"
+            " releasing claim",
+            session_id, (problem.extensions or {}).get("error_id"),
+        )
         await _safe_turn_log(turn_log, TurnLogFailed(
             seq=0,
             ts=_now(),

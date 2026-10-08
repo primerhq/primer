@@ -371,7 +371,8 @@ class TestToProblemDetails:
         traceback. The traceback goes to the server log under that id."""
         try:
             raise ValueError("traceback test")
-        except ValueError as exc:
+        except ValueError as caught:
+            exc = caught
             with caplog.at_level(
                 logging.ERROR, logger="primer.observability.turn_log_writer",
             ):

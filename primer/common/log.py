@@ -20,6 +20,11 @@ call in primer code AND in dependencies (openai, anthropic, google.genai,
 ollama, httpx, etc.) inherits this configuration. The application can
 silence or re-route specific logger names afterwards via stdlib
 ``logging``.
+
+Credentials carried in URLs (``?key=``, ``?token=``, Telegram
+``/bot<token>/``, webhook ``/v1/webhooks/<token>``) are masked on the
+configured handler and on uvicorn's self-handled loggers, so the httpx
+INFO request line and the uvicorn access line never write them out.
 """
 
 from __future__ import annotations
@@ -27,6 +32,7 @@ from __future__ import annotations
 import json
 import logging
 import logging.handlers
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,6 +47,93 @@ _RESERVED_RECORD_ATTRS = frozenset({
     "funcName", "created", "msecs", "relativeCreated", "thread",
     "threadName", "processName", "process", "message", "taskName",
 })
+
+
+# Credentials that travel in URLs (SEC-06). httpx logs every request URL
+# at INFO and uvicorn logs every request path, so a URL-borne credential
+# would otherwise land in the server log on every call.
+_URL_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    # Query-string credentials: ?key=..., &access_token=..., etc.
+    (
+        re.compile(
+            r"(?i)([?&](?:key|api_key|apikey|api-key|token|access_token|"
+            r"refresh_token|id_token|client_secret|secret|password)=)"
+            r"[^&#\s'\"<>]+"
+        ),
+        r"\1[REDACTED]",
+    ),
+    # Telegram Bot API: https://api.telegram.org/bot<id>:<secret>/method
+    (re.compile(r"(/bot)\d+:[A-Za-z0-9_-]+"), r"\1[REDACTED]"),
+    # Webhook capability tokens: keep the last 4 chars for correlation.
+    (
+        re.compile(r"(/v1/webhooks/)[A-Za-z0-9_-]*([A-Za-z0-9_-]{4})\b"),
+        r"\1***\2",
+    ),
+)
+
+
+def redact_url_secrets(text: str) -> str:
+    """Mask URL-borne credentials (query keys, Telegram bot tokens,
+    webhook capability tokens) in ``text``."""
+    for pattern, repl in _URL_SECRET_PATTERNS:
+        text = pattern.sub(repl, text)
+    return text
+
+
+def _redact_arg(arg: Any) -> Any:
+    if arg is None or isinstance(arg, (bool, int, float)):
+        return arg
+    text = str(arg)
+    redacted = redact_url_secrets(text)
+    # Only replace the arg when something was masked, so %r / %d
+    # formatting of ordinary args is untouched.
+    return redacted if redacted != text else arg
+
+
+class _UrlSecretFilter(logging.Filter):
+    """Masks URL-borne credentials in a record's message, args and
+    exception text before any formatter sees it.
+
+    Rewrites args element-wise first rather than collapsing them into
+    the message: uvicorn's AccessFormatter unpacks a 5-tuple of args.
+    Only a credential that spans the format string and its args is
+    caught by collapsing the formatted message.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = redact_url_secrets(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(_redact_arg(a) for a in record.args)
+        elif isinstance(record.args, dict):
+            record.args = {k: _redact_arg(v) for k, v in record.args.items()}
+        if record.args:
+            # A URL split across the format string and its args (e.g.
+            # "...?%s=%s") is only visible once formatted: collapse it.
+            # uvicorn's access args are whole URLs, so they never get here.
+            try:
+                message = record.getMessage()
+            except Exception:  # noqa: BLE001 - a bad format is logging's to report
+                message = None
+            if message is not None:
+                redacted = redact_url_secrets(message)
+                if redacted != message:
+                    record.msg, record.args = redacted, None
+        if record.exc_info and not record.exc_text:
+            record.exc_text = logging.Formatter().formatException(
+                record.exc_info,
+            )
+        if record.exc_text:
+            record.exc_text = redact_url_secrets(record.exc_text)
+        return True
+
+
+_URL_SECRET_FILTER = _UrlSecretFilter()
+
+# Loggers that write through their own handlers (propagate=False under
+# uvicorn's logging config), so the root handler's filter never sees
+# their records: the filter goes on the logger itself.
+_SELF_HANDLED_LOGGERS = ("uvicorn.access", "uvicorn.error")
 
 
 class _JsonFormatter(logging.Formatter):
@@ -67,7 +160,10 @@ class _JsonFormatter(logging.Formatter):
                 continue
             payload[key] = value
         if record.exc_info:
-            payload["traceback"] = self.formatException(record.exc_info)
+            # exc_text is the (redacted) text _UrlSecretFilter cached.
+            payload["traceback"] = (
+                record.exc_text or self.formatException(record.exc_info)
+            )
         return json.dumps(payload, default=str)
 
 
@@ -129,7 +225,12 @@ def configure_logging(
     else:
         handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(_JsonFormatter() if json_format else _DevFormatter())
+    handler.addFilter(_URL_SECRET_FILTER)
     root.addHandler(handler)
+    for name in _SELF_HANDLED_LOGGERS:
+        logger_ = logging.getLogger(name)
+        if _URL_SECRET_FILTER not in logger_.filters:
+            logger_.addFilter(_URL_SECRET_FILTER)
     root.setLevel(level)
 
     # Per-library noise floors: even at DEBUG, these libraries produce

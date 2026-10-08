@@ -27,7 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import traceback
+import uuid
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 from collections.abc import Awaitable, Callable
@@ -96,10 +96,19 @@ def to_problem_details(exc: BaseException) -> ProblemDetails:
 
     For ``PrimerError`` subclasses uses the same map the FastAPI error
     handlers use. For unknown exceptions returns a generic 500 envelope
-    with the exception class name as the title. The exception class name
-    and a 4 KB-tail-truncated traceback land in ``extensions``.
+    with the exception class name as the title. ``extensions`` carries
+    the exception class name and a fresh ``error_id``.
+
+    The envelope is served to every reader of the session (the messages
+    ERROR record, the turn log, the tap), so it never carries the
+    traceback: that is logged here, once, at ERROR under the same
+    ``error_id`` so an operator can find it in the server log.
     """
-    tb_text = _truncate_traceback(exc)
+    error_id = uuid.uuid4().hex
+    logger.error(
+        "error_id=%s %s: %s", error_id, type(exc).__name__, exc,
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
     for exc_cls, status, type_uri, title in _PRIMER_ERROR_MAP:
         if isinstance(exc, exc_cls):
             detail = exc.message if isinstance(exc, PrimerError) else str(exc)
@@ -110,7 +119,7 @@ def to_problem_details(exc: BaseException) -> ProblemDetails:
                 detail=detail,
                 extensions={
                     "exception_class": type(exc).__name__,
-                    "traceback": tb_text,
+                    "error_id": error_id,
                     **(getattr(exc, "problem_extensions", None) or {}),
                 },
             )
@@ -121,16 +130,9 @@ def to_problem_details(exc: BaseException) -> ProblemDetails:
         detail=str(exc),
         extensions={
             "exception_class": type(exc).__name__,
-            "traceback": tb_text,
+            "error_id": error_id,
         },
     )
-
-
-def _truncate_traceback(exc: BaseException, max_bytes: int = 4096) -> str:
-    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-    if len(tb) > max_bytes:
-        return "...[truncated]...\n" + tb[-max_bytes:]
-    return tb
 
 
 AppendLine = Callable[[bytes], Awaitable[None]]
