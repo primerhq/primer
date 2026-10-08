@@ -226,6 +226,53 @@ async def test_failed_message_record_carries_problem_details(
 
 
 @pytest.mark.asyncio
+async def test_failed_message_record_carries_no_traceback(
+    fake_workspace_io, fake_event_bus, fake_storage_provider, caplog,
+):
+    """The ERROR record is served to every reader of the session (GET
+    /v1/sessions/{sid}/messages, the tap). It carries the exception type,
+    message and an error_id; the traceback (server file paths,
+    internals) stays in the server log under that error_id."""
+    import json
+    import logging
+
+    sess = await _seed_session(fake_storage_provider)
+    executor = _FakeExecutor([RuntimeError("kaboom internals")])
+    writer = _CapturingTurnLogWriter()
+    deps = _build_deps(
+        fake_storage_provider, fake_workspace_io, fake_event_bus,
+        executor, turn_log_writer=writer,
+    )
+    with caplog.at_level(logging.ERROR):
+        await run_one_session_turn(_make_lease(sess.id), deps)
+
+    raw = fake_workspace_io._data[sess.id].decode()
+    [rec] = [
+        json.loads(line) for line in raw.splitlines()
+        if line.strip() and json.loads(line)["kind"] == "error"
+    ]
+    ext = rec["payload"]["extensions"]
+    assert "traceback" not in ext
+    assert "Traceback (most recent call last)" not in raw
+    assert ".py" not in raw
+    assert ext["exception_class"] == "RuntimeError"
+    assert "kaboom internals" in rec["payload"]["message"]
+    error_id = ext["error_id"]
+    # The turn-log FAILED event carries the same envelope, same id.
+    failed = next(e for e in writer.events if e.kind == TurnLogKind.FAILED)
+    assert failed.error.extensions["error_id"] == error_id
+    assert "traceback" not in failed.error.extensions
+    # The server log keeps the traceback, findable by that id: exactly
+    # one record with the traceback attached.
+    with_tb = [
+        r for r in caplog.records
+        if r.exc_info and isinstance(r.exc_info[1], RuntimeError)
+    ]
+    assert len(with_tb) == 1
+    assert error_id in with_tb[0].getMessage()
+
+
+@pytest.mark.asyncio
 async def test_yielded_event_fires_before_park(
     fake_workspace_io, fake_event_bus, fake_storage_provider,
 ):

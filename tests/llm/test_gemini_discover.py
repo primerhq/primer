@@ -72,10 +72,14 @@ class TestDiscoverGeminiModels:
         assert out[1]["display_name"] == "gemini-2.5-pro"
         assert "context_length" not in out[1]
 
-        # The probe hits /v1beta/models with the key query param.
+        # The probe hits /v1beta/models with the key in the
+        # x-goog-api-key header, never in the URL: httpx logs every
+        # request URL at INFO (SEC-06).
         req = route.calls.last.request
         assert req.url.path == "/v1beta/models"
-        assert req.url.params["key"] == "test-key-123"
+        assert req.headers["x-goog-api-key"] == "test-key-123"
+        assert "key" not in req.url.params
+        assert "test-key-123" not in str(req.url)
 
     @respx.mock
     async def test_follows_next_page_token(self) -> None:
@@ -118,6 +122,7 @@ class TestDiscoverGeminiModels:
         ]
         assert len(route.calls) == 2
         assert "pageToken=PAGE2" in str(route.calls[1].request.url)
+        assert "test-key-123" not in str(route.calls[1].request.url)
 
     @respx.mock
     async def test_dedupes_by_id(self) -> None:
@@ -154,7 +159,8 @@ class TestDiscoverGeminiModels:
         out = await _discover_gemini_models(GoogleConfig())
 
         assert out == []
-        assert route.calls.last.request.url.params["key"] == ""
+        assert route.calls.last.request.headers["x-goog-api-key"] == ""
+        assert "key" not in route.calls.last.request.url.params
 
     @respx.mock
     async def test_401_raises_http_status_error(self) -> None:
