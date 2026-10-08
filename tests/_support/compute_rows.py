@@ -113,3 +113,11 @@ async def insert_unreadable_graph(storage_provider, graph_id: str, data: str = '
     connection = storage_provider.connection
     await connection.execute(f'INSERT INTO "{storage._table}" (id, data) VALUES (?, ?)', (graph_id, data))  # noqa: SLF001
     await connection.commit()
+
+
+def default_agent_detail(agent_id: str) -> str:
+    """The sentence both the route (409 detail) and the tool (message) answer with when the agent is the system default."""
+    return (
+        f"in_use_by: agent {agent_id!r} is the system default agent, which sessions created without a binding run; "
+        "point the default agent at another agent before deleting it"
+    )
