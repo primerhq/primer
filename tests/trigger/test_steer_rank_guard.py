@@ -26,8 +26,13 @@ def _ref(uid: str, role: str) -> PrincipalRef:
     return PrincipalRef(type="user", id=uid, display=uid, role=role, source="local")
 
 
-async def _seed(sp, *, session_by: PrincipalRef | None, owner: PrincipalRef | None, config) -> Subscription:
-    for uid, role in (("u-admin", "admin"), ("u-plain", "user")):
+_UNSET = object()
+
+
+async def _seed(sp, *, session_by: PrincipalRef | None, owner: PrincipalRef | None, config, trigger_owner=_UNSET) -> Subscription:
+    """``owner`` owns the subscription and, unless ``trigger_owner`` says otherwise, the trigger too."""
+    trigger_owner = owner if trigger_owner is _UNSET else trigger_owner
+    for uid, role in (("u-admin", "admin"), ("u-plain", "user"), ("u-restricted", "restricted")):
         await sp.get_storage(User).create(User(id=uid, username=uid, created_at=NOW, role=role))
     await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
         id="se-target", workspace_id="ws-1", binding=AgentSessionBinding(agent_id="ag-1"),
@@ -42,7 +47,7 @@ async def _seed(sp, *, session_by: PrincipalRef | None, owner: PrincipalRef | No
     await sp.get_storage(Trigger).create(Trigger.model_validate({
         "id": "tr-1", "slug": "steer-trigger", "name": "t", "created_at": NOW.isoformat(),
         "config": {"kind": "delayed", "fire_at": NOW.isoformat()},
-        "owner": owner.model_dump(mode="json") if owner else None,
+        "owner": trigger_owner.model_dump(mode="json") if trigger_owner else None,
     }))
     sub = Subscription.model_validate({
         "id": "sb-1", "trigger_id": "tr-1", "config": config.model_dump(mode="json"), "parallelism": "queue",
@@ -142,3 +147,46 @@ async def test_an_admin_fire_still_wakes_a_parked_admin_session(monkeypatch, fak
 
     assert res.ok is True, res
     assert len(woken) == 1
+
+
+async def test_an_admin_fire_cannot_append_to_a_system_session(monkeypatch, fake_storage_provider):
+    """``system`` outranks every role, ``admin`` included."""
+    sub = await _seed(fake_storage_provider, session_by=PrincipalRef.system(), owner=_ref("u-admin", "admin"), config=APPEND)
+
+    res, delivered = await _append(monkeypatch, fake_storage_provider, sub)
+
+    assert res.ok is False and res.error_code == "steer_outranks_fire", res
+    assert delivered == []
+
+
+async def test_an_admin_subscription_on_a_user_trigger_cannot_wake_a_parked_admin_session(monkeypatch, fake_storage_provider):
+    sub = await _seed(
+        fake_storage_provider, session_by=_ref("u-admin", "admin"), owner=_ref("u-admin", "admin"), config=PARKED,
+        trigger_owner=_ref("u-plain", "user"),
+    )
+
+    res, woken = await _wake(monkeypatch, fake_storage_provider, sub)
+
+    assert res.ok is False and res.error_code == "steer_outranks_fire", res
+    assert woken == []
+
+
+async def test_a_restricted_fire_cannot_append_to_an_unattributed_session(monkeypatch, fake_storage_provider):
+    """A session with no initiator counts as an ordinary user, which outranks a ``restricted`` owner's fire."""
+    restricted = _ref("u-restricted", "restricted")
+    sub = await _seed(fake_storage_provider, session_by=None, owner=restricted, config=APPEND)
+
+    res, delivered = await _append(monkeypatch, fake_storage_provider, sub)
+
+    assert res.ok is False and res.error_code == "steer_outranks_fire", res
+    assert delivered == []
+
+
+async def test_the_stored_refusal_reason_names_ranks_not_user_ids(monkeypatch, fake_storage_provider):
+    sub = await _seed(fake_storage_provider, session_by=_ref("u-admin", "admin"), owner=_ref("u-plain", "user"), config=APPEND)
+
+    res, _ = await _append(monkeypatch, fake_storage_provider, sub)
+
+    assert res.error_code == "steer_outranks_fire"
+    assert "u-admin" not in res.error_message and "u-plain" not in res.error_message
+    assert "admin" in res.error_message and "user" in res.error_message
