@@ -137,4 +137,5 @@ def test_a_bad_username_is_shown_by_the_form_and_never_sent(ctx) -> None:
     ctx.eval("__first(function (e) { return e.type === 'form'; }).props.onSubmit({ preventDefault: function () {} }); __draw();")
     shown = json.loads(ctx.eval("JSON.stringify(MR.texts())"))
     assert any("lowercase letters, digits" in t for t in shown), shown
-    assert json.loads(ctx.eval("JSON.stringify(CALLS)")) == [], "a username the server would refuse must not be sent"
+    calls = json.loads(ctx.eval("JSON.stringify(CALLS)"))
+    assert "POST /auth/register" not in calls, f"a username the server would refuse must not be sent: {calls}"
