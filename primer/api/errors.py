@@ -37,6 +37,7 @@ from primer.model.except_ import (
     ValidationError,
     WorkspaceUnreachableError,
 )
+from primer.model.payload_too_large import PayloadTooLargeError
 from primer.model.problem_details import ProblemDetails
 from primer.model.workspace_refusal import WorkspaceRefusedError
 
@@ -80,6 +81,9 @@ _PRIMER_ERROR_MAP: list[tuple[type[PrimerError], int, str, str]] = [
     # A prompt that cannot be made to fit the context window is not the service being unavailable:
     # it says what is too large, and retrying the same turn cannot help. Before its base, ConfigError.
     (ContextOverflowUnrecoverable, 413, "/errors/context-overflow-unrecoverable", "Context Overflow Unrecoverable"),
+    # A request body, an uploaded archive or what it inflates to over a cap (FS-04/FS-05). After the
+    # row above so the shared 413 OpenAPI description stays the one the compact route documents.
+    (PayloadTooLargeError, 413, "/errors/payload-too-large", "Payload Too Large"),
     (ConfigError, 503, "/errors/service-unavailable", "Service Unavailable"),
     (PrimerError, 500, "/errors/internal", "Internal Error"),
 ]
@@ -233,6 +237,9 @@ _HTTP_STATUS_PROBLEM: dict[int, tuple[str, str]] = {
     403: ("/errors/forbidden", "Forbidden"),
     404: ("/errors/not-found", "Not Found"),
     409: ("/errors/conflict", "Conflict"),
+    # The same type URI as PayloadTooLargeError, so a webhook's own 1 MB refusal and the app-wide
+    # body limit read alike (and not as the IANA phrase "request-entity-too-large").
+    413: ("/errors/payload-too-large", "Payload Too Large"),
     422: ("/errors/validation-error", "Validation Error"),
     429: ("/errors/rate-limited", "Rate Limited"),
     500: ("/errors/internal", "Internal Error"),
@@ -317,6 +324,26 @@ async def _http_exception_handler(
     )
 
 
+def payload_too_large_response(request: Request, *, limit_bytes: int) -> JSONResponse:
+    """The 413 problem+json for a body over ``limit_bytes``, for code outside the exception handlers.
+
+    The body-size middleware answers before a route runs (a declared Content-Length over the cap), so
+    no exception handler is in play there; it renders the same envelope a raised
+    :class:`PayloadTooLargeError` would.
+    """
+    exc = PayloadTooLargeError(
+        f"request body exceeds the {limit_bytes}-byte limit for this route", limit_bytes=limit_bytes,
+    )
+    return _problem_response(
+        request=request,
+        status=413,
+        type_uri="/errors/payload-too-large",
+        title="Payload Too Large",
+        detail=exc.message,
+        extensions=exc.problem_extensions,
+    )
+
+
 async def _bare_exception_handler(
     request: Request, exc: Exception
 ) -> JSONResponse:
@@ -362,5 +389,6 @@ __all__ = [
     "PROBLEM_JSON_MEDIA_TYPE",
     "ProblemDetails",
     "common_responses",
+    "payload_too_large_response",
     "register_error_handlers",
 ]

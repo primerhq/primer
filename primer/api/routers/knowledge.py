@@ -19,6 +19,7 @@ the "find collection by description" use case. The per-collection
 from __future__ import annotations
 
 import logging
+import tempfile
 from typing import Any, Literal
 
 from fastapi import (
@@ -64,7 +65,9 @@ from primer.model.except_ import (
 )
 from primer.common.entity_checks import EntityCheckError
 from primer.knowledge.checks import check_collection_system_flag
+from primer.model.payload_too_large import PayloadTooLargeError
 from primer.knowledge.grep import grep_collection
+from primer.knowledge import importer
 from primer.knowledge.importer import import_zip
 from primer.knowledge.lifecycle import (
     disable_search,
@@ -575,7 +578,7 @@ async def get_collection_search_status(
 @collection_router.post(
     "/collections/{collection_id}/import",
     summary="Import a zip archive's directory structure into the tree",
-    responses=common_responses(400, 404, 409, 500),
+    responses=common_responses(400, 404, 409, 413, 500),
 )
 async def import_collection_zip(
     collection_id: str = Path(..., description="Collection id"),
@@ -590,20 +593,31 @@ async def import_collection_zip(
     Directory segments and filenames are slugified, extensions dropped;
     binary or non-UTF-8 entries are reported rather than failing the whole
     import. ``conflict`` selects what happens at an existing path.
+
+    Size caps answer 413 (FS-04): an upload over ``MAX_ARCHIVE_BYTES``
+    (32 MiB), an archive listing more than ``MAX_ENTRIES`` entries, or one
+    inflating past ``MAX_UNCOMPRESSED_BYTES``; nothing is written then.
     """
     await _require_writable(collections, collection_id)
-    raw = await file.read()
-    if not raw:
-        raise BadRequestError("uploaded archive is empty")
-    # 32 MB cap, matching the single-file convert route.
-    if len(raw) > 32 * 1024 * 1024:
-        raise BadRequestError(
-            f"uploaded archive is too large ({len(raw)} bytes); cap is 32 MB."
+    cap = importer.MAX_ARCHIVE_BYTES
+    # Copy the upload in chunks into a spool that moves to disk past 1 MiB, refusing it the moment
+    # it passes the cap, rather than reading the whole of it into memory before checking.
+    with tempfile.SpooledTemporaryFile(max_size=1024 * 1024) as spool:
+        size = 0
+        while chunk := await file.read(1024 * 1024):
+            size += len(chunk)
+            if size > cap:
+                raise PayloadTooLargeError(
+                    f"uploaded archive is over the {cap}-byte cap", limit_bytes=cap,
+                )
+            spool.write(chunk)
+        if size == 0:
+            raise BadRequestError("uploaded archive is empty")
+        spool.seek(0)
+        report = await import_zip(
+            service, collection_id=collection_id, data=spool,
+            parent=parent, conflict=conflict,
         )
-    report = await import_zip(
-        service, collection_id=collection_id, data=raw,
-        parent=parent, conflict=conflict,
-    )
     return report.model_dump(mode="json")
 
 
