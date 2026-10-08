@@ -145,7 +145,9 @@ def _interaction(custom_id=None, parent_id=None, channel_id=100,
         channel_id=channel_id,
         response=SimpleNamespace(
             edit_message=AsyncMock(), send_modal=AsyncMock(),
-            send_message=AsyncMock()),
+            send_message=AsyncMock(), defer=AsyncMock()),
+        followup=SimpleNamespace(send=AsyncMock()),
+        edit_original_response=AsyncMock(),
         message=SimpleNamespace(content=msg_content),
         user=SimpleNamespace(id=user_id),
     )
@@ -343,7 +345,8 @@ async def test_on_interaction_approve(monkeypatch):
     _, client = _install(monkeypatch, _FakeEntry({"100": adapter}))
     inter = _interaction(custom_id="approve:w:s:t", parent_id=None, channel_id=100)
     await client.on_interaction(inter)
-    inter.response.edit_message.assert_awaited_once()
+    inter.response.defer.assert_awaited_once()
+    inter.edit_original_response.assert_awaited_once()
     adapter._handle_decision.assert_awaited_once()
     kw = adapter._handle_decision.await_args.kwargs
     assert kw["decision"] == "approved"
@@ -366,7 +369,8 @@ async def test_on_interaction_approve_unknown_channel_is_noop(monkeypatch):
     _, client = _install(monkeypatch, _FakeEntry({}))
     inter = _interaction(custom_id="approve:w:s:t")
     await client.on_interaction(inter)
-    inter.response.edit_message.assert_not_awaited()
+    inter.response.defer.assert_not_awaited()
+    inter.edit_original_response.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -431,7 +435,8 @@ async def test_on_interaction_no_entry_is_noop(monkeypatch):
     _, client = _install(monkeypatch, None)  # registry.entry -> None
     inter = _interaction(custom_id="approve:w:s:t")
     await client.on_interaction(inter)
-    inter.response.edit_message.assert_not_awaited()
+    inter.response.defer.assert_not_awaited()
+    inter.edit_original_response.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -593,3 +598,114 @@ async def test_discord_factory_without_connection_skips_handlers(monkeypatch):
         discord_factory, "DISCORD_CONNECTIONS", _FakeRegistry(None))
     await discord_factory._discord_factory(_provider("cp-e"), _channel(), object())
     assert installed == []
+
+
+# --------------------------------------------------------------------------- #
+# a refused approval is reported to the clicker, and nothing claims it was approved (ticket 01a11b6c)
+# --------------------------------------------------------------------------- #
+NOTICE = "routed to specific approvers"
+
+
+def _text_of(send_mock) -> str:
+    call = send_mock.await_args
+    return call.args[0] if call.args else call.kwargs["content"]
+
+
+@pytest.mark.asyncio
+async def test_on_interaction_approve_edits_the_message_only_after_the_decision_was_accepted(monkeypatch):
+    """Discord drops an interaction not answered within about 3 s, so the click is acknowledged with a deferral; the "Approved by"
+    edit used to be that acknowledgement and went out BEFORE the relay, so a refused approval still read "Approved"."""
+    order: list[str] = []
+    adapter = _mock_adapter()
+
+    async def decide(**kwargs):
+        order.append("decision")
+        return True
+
+    adapter._handle_decision = decide
+    _, client = _install(monkeypatch, _FakeEntry({"100": adapter}))
+    inter = _interaction(custom_id="approve:w:s:t", channel_id=100)
+    inter.response.defer = AsyncMock(side_effect=lambda *a, **k: order.append("defer"))
+    inter.edit_original_response = AsyncMock(side_effect=lambda *a, **k: order.append("edit"))
+
+    await client.on_interaction(inter)
+
+    assert order == ["defer", "decision", "edit"], f"the message was edited before the decision was accepted: {order}"
+    assert "Approved by" in inter.edit_original_response.await_args.kwargs["content"]
+    assert inter.edit_original_response.await_args.kwargs["view"] is None
+
+
+@pytest.mark.asyncio
+async def test_on_interaction_approve_refused_tells_only_the_clicker_and_leaves_the_message(monkeypatch):
+    adapter = _mock_adapter()
+    adapter._handle_decision = AsyncMock(return_value=False)
+    _, client = _install(monkeypatch, _FakeEntry({"100": adapter}))
+    inter = _interaction(custom_id="approve:w:s:t", channel_id=100)
+
+    await client.on_interaction(inter)
+
+    inter.response.edit_message.assert_not_awaited()
+    inter.edit_original_response.assert_not_awaited()
+    inter.followup.send.assert_awaited_once()
+    assert NOTICE in _text_of(inter.followup.send)
+    assert inter.followup.send.await_args.kwargs["ephemeral"] is True
+
+
+async def _open_reject_modal(monkeypatch, client, original):
+    """Click Reject and return the ``on_submit`` closure the factory built for the modal."""
+    captured: dict = {}
+
+    def build(ws, sid, tcid, on_submit):
+        captured["on_submit"] = on_submit
+        return SimpleNamespace(custom_id="reject-modal")
+
+    monkeypatch.setattr(discord_factory, "build_reject_modal", build)
+    click = _interaction(custom_id="reject:w:s:t", channel_id=100)
+    click.message = original
+    await client.on_interaction(click)
+    return captured["on_submit"]
+
+
+@pytest.mark.asyncio
+async def test_reject_modal_submit_refused_tells_the_clicker_and_does_not_edit_the_original(monkeypatch):
+    adapter = _mock_adapter()
+    adapter._handle_decision = AsyncMock(return_value=False)
+    _, client = _install(monkeypatch, _FakeEntry({"100": adapter}))
+    original = SimpleNamespace(content="gate", edit=AsyncMock())
+    on_submit = await _open_reject_modal(monkeypatch, client, original)
+    submitted = _interaction(custom_id="x", user_id=8)
+
+    await on_submit(submitted, "too risky")
+
+    original.edit.assert_not_awaited()
+    submitted.response.defer.assert_awaited_once()
+    submitted.followup.send.assert_awaited_once()
+    assert NOTICE in _text_of(submitted.followup.send)
+    assert "Rejection recorded" not in _text_of(submitted.followup.send)
+
+
+@pytest.mark.asyncio
+async def test_reject_modal_submit_accepted_confirms_and_edits_the_original_after_the_decision(monkeypatch):
+    order: list[str] = []
+    adapter = _mock_adapter()
+
+    async def decide(**kwargs):
+        order.append("decision")
+        return True
+
+    adapter._handle_decision = decide
+    _, client = _install(monkeypatch, _FakeEntry({"100": adapter}))
+
+    async def edit(**kwargs):
+        order.append("edit")
+
+    original = SimpleNamespace(content="gate", edit=edit)
+    on_submit = await _open_reject_modal(monkeypatch, client, original)
+    submitted = _interaction(custom_id="x", user_id=8)
+    submitted.response.defer = AsyncMock(side_effect=lambda *a, **k: order.append("defer"))
+
+    await on_submit(submitted, "too risky")
+
+    assert order == ["defer", "decision", "edit"], order
+    submitted.followup.send.assert_awaited_once()
+    assert "Rejection recorded" in _text_of(submitted.followup.send)
