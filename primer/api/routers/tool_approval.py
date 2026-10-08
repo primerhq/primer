@@ -27,14 +27,13 @@ from primer.agent.approval_checks import check_approval_config, check_policy_uni
 from primer.common.entity_checks import EntityCheckError
 from primer.int.event_bus import EventBus
 from primer.model.except_ import ConflictError, NotFoundError
-from primer.session.approvers import APPROVER_MISMATCH, may_decide
+from primer.api.approver_guard import enforce_approvers
 from primer.session.pending_gates import enumerate_pending_gates, resolve_pending_gate
 from primer.session.yields import durably_wake_session
 from primer.model.workspace_session import WorkspaceSession
 from primer.model.storage import OffsetPage, OffsetPageResponse, OrderBy
 from primer.storage.q import Q
 from primer.model.tool_approval import (
-    ApproverSpec,
     LlmApprovalConfig,
     PolicyApprovalConfig,
     ToolApprovalPolicy,
@@ -144,34 +143,6 @@ class ToolApprovalRespondBody(BaseModel):
     tool_call_id: str
     decision: Literal["approved", "rejected"]
     reason: str | None = Field(default=None, max_length=1024)
-
-
-def _enforce_approvers(metadata: dict, user: Any) -> None:
-    """403 ``approver_mismatch`` unless the caller may decide this gate.
-
-    ``metadata`` is the SPECIFIC pending gate's ``resume_metadata``
-    (from :func:`~primer.session.pending_gates.resolve_pending_gate`),
-    not necessarily the session's primary/top-level one -- a graph park
-    can have several pending approval gates at once, each with its own
-    resolved spec, so enforcement must check the gate actually being
-    decided rather than whichever one happens to be projected first.
-
-    The rule itself is :func:`primer.session.approvers.may_decide`, shared
-    with every other path that answers a gate (the channel inbox): no
-    stamped spec means anyone; admins always pass; a spec that cannot be
-    read fails CLOSED to admin-only.
-    """
-    if user is None:  # WS scope / auth-disabled synthetic admin absent
-        return
-    if not may_decide(
-        metadata,
-        username=getattr(user, "username", None),
-        role=getattr(user, "role", None),
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail={"error": APPROVER_MISMATCH},
-        )
 
 
 def _approval_blob_or_404(sess: Any, id_str: str) -> dict:
@@ -402,7 +373,7 @@ def make_tool_approval_ops_router() -> APIRouter:
     Deciding a gated call is ordinary operator work, so this router
     mounts at the user tier; who may decide a SPECIFIC call is the
     approver spec's business, enforced per park by
-    :func:`_enforce_approvers`. Policy CRUD (the factory above) stays
+    :func:`~primer.api.approver_guard.enforce_approvers`. Policy CRUD (the factory above) stays
     admin - configuring the gates is system policy.
     """
     router = APIRouter(tags=[_TAG])
@@ -454,7 +425,7 @@ def make_tool_approval_ops_router() -> APIRouter:
         # Approver routing (P6): 403 approver_mismatch before any state
         # moves; decided_by rides the wake payload into the durable
         # record the resume coordinator writes.
-        _enforce_approvers(gate.get("resume_metadata") or {}, user)
+        enforce_approvers(gate.get("resume_metadata") or {}, user)
         await _publish_decision(
             sess=sess,
             id_str=session_id,

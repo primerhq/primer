@@ -31,12 +31,14 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Body, Depends, Path
 from pydantic import BaseModel, Field
 
+from primer.api.approver_guard import enforce_approvers
 from primer.api.deps import (
     get_claim_engine,
     get_event_bus,
     get_external_tool_call_storage,
     get_session_storage,
     get_storage_provider,
+    require_user,
 )
 from primer.api.errors import common_responses
 from primer.int.claim import ClaimEngine
@@ -471,8 +473,13 @@ async def post_cancel_yielded_tool(
     session_storage=Depends(get_session_storage),
     event_bus: EventBus = Depends(get_event_bus),
     call_storage=Depends(get_external_tool_call_storage),
+    user=Depends(require_user),
 ) -> dict[str, str]:
     """Cancel a single yield without terminating the whole session.
+
+    An ``_approval`` gate is the exception to "tool-agnostic": its cancel payload is classified as a REJECTION, so cancelling it IS
+    deciding it. It is therefore judged by the same approver check as the respond route (403 ``approver_mismatch`` for a user the gate's
+    stamped spec does not admit), before anything is published.
 
     Distinct from cancel-session (§9.2 of the spec): the tool's
     resume hook IS called with a :class:`YieldCancelled` payload and
@@ -504,6 +511,8 @@ async def post_cancel_yielded_tool(
         raise NotFoundError(
             f"Session {session_id!r} park is missing event_key"
         )
+    if yielded.get("tool_name") == "_approval":
+        enforce_approvers(yielded.get("resume_metadata") or {}, user)
     payload = make_cancelled_payload(reason=body.reason)
     await event_bus.publish(event_key, payload)
     # An _external park additionally resolves its audit row so the
