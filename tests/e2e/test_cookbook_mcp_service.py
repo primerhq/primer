@@ -13,7 +13,7 @@ Surface exercised (the gap this recipe closes):
   * The session-drive tools over MCP:
     ``workspaces__create_workspace_session`` /
     ``workspaces__get_workspace_session`` /
-    ``workspaces__read_workspace_file`` /
+    ``workspaces__read_workspace_session_messages`` /
     ``workspaces__cancel_workspace_session``.
 
 Asserts (the recipe's verified outcomes):
@@ -22,7 +22,9 @@ Asserts (the recipe's verified outcomes):
   * ``create_workspace_session`` over MCP starts an agent session that RUNS to
     a terminal ``ended``/``completed`` -- retrievable over MCP via
     ``get_workspace_session`` AND mirrored by the REST row (thin-wrapper
-    parity), with the result readable over MCP via ``read_workspace_file``.
+    parity), with the reply readable over MCP via
+    ``read_workspace_session_messages`` (the supported transcript reader:
+    a raw ``.state/sessions/<sid>/messages.jsonl`` read is admin-only, A-22).
   * ``cancel_workspace_session`` transitions a session to terminal
     ``ended``/``cancelled``.
 
@@ -62,7 +64,7 @@ _ALLOWLIST = [
     "workspaces__create_workspace_session",
     "workspaces__cancel_workspace_session",
     "workspaces__get_workspace_session",
-    "workspaces__read_workspace_file",
+    "workspaces__read_workspace_session_messages",
 ]
 
 # A workspace tool that is deliberately NOT in the allowlist -- its absence
@@ -185,17 +187,22 @@ async def test_mcp_service_drives_a_session_end_to_end(
                 # of the status mirror - a directly MCP-visible, unambiguous
                 # signal that the turn actually completed, and the thing an
                 # MCP-as-a-service client cares about anyway.
+                # Through the supported transcript reader, not the raw
+                # .state/sessions/<sid>/messages.jsonl path: raw .state
+                # reads are admin-only (A-22) and this client is not one.
                 content = ""
                 for _ in range(120):
                     read_res = await sess.call_tool(
-                        "workspaces__read_workspace_file",
-                        arguments={
-                            "workspace_id": wid,
-                            "path": f".state/sessions/{sid}/messages.jsonl",
-                        },
+                        "workspaces__read_workspace_session_messages",
+                        arguments={"workspace_id": wid, "session_id": sid},
                     )
                     if not read_res.is_error:
-                        content = json.loads(_result_text(read_res))["content"]
+                        # The instruction itself says PONG: only the
+                        # agent's own records count as the reply.
+                        content = json.dumps([
+                            rec for rec in json.loads(_result_text(read_res))["items"]
+                            if rec.get("kind") != "user_input"
+                        ])
                         if "PONG" in content:
                             break
                     await asyncio.sleep(0.5)
