@@ -182,4 +182,6 @@ def test_the_shell_stores_per_user_only_after_it_has_restored() -> None:
     assert restore < write, "the restore effect comes before the write effect"
     block = SHELL[SHELL.index("tabsStoreKey"):SHELL.index("// Menus close on any outside click.")]
     assert "tabsRestored" in block, "the write waits for the restore"
-    assert "try {" in block and "catch" in block, "storage can throw (private mode, quota) and hold anything"
+    helpers = SHELL[SHELL.index("function NV_loadTabs"):SHELL.index("function NV_Shell()")]
+    assert helpers.count("try {") == 2 and helpers.count("catch") == 2, "storage can throw (private mode, quota) and hold anything: both accesses are guarded"
+    assert "NV_loadTabs(tabsStoreKey)" in block and "NV_saveTabs(tabsStoreKey" in block

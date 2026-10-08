@@ -300,6 +300,94 @@ function TG_activeDoc(model) {
 }
 
 // ---------------------------------------------------------------------------
+// Persistence (console review C-023): the working set survives a reload
+// ---------------------------------------------------------------------------
+// The URL names ONE document, so a reload used to keep one tab of three. The shell writes TG_serialize(model) to localStorage (per user) and reads it back
+// through TG_restoreInto at the next load; the URL's document stays the active one. What is stored is identity and layout only (a tab's kind and ref, its
+// group, the active tab, the split direction): never a name, a result or a file's content. TG_restore is the only code that reads what a browser kept, so it
+// trusts none of it.
+
+var TG_STORE_VERSION = 1;
+var TG_STORE_MAX_GROUPS = 6;
+var TG_STORE_MAX_TABS = 60;
+var TG_STORE_MAX_REF = 1024;
+
+// The part of a model worth keeping. JSON-safe.
+function TG_serialize(model) {
+  return {
+    v: TG_STORE_VERSION,
+    direction: model.direction,
+    focused: model.focusedGroupId,
+    groups: model.groups.map(function (g) {
+      return {
+        id: g.id,
+        active: g.activeTabId,
+        tabs: g.tabs.map(function (t) { return { kind: t.kind, ref: t.ref, preview: !!t.preview }; }),
+      };
+    }),
+  };
+}
+
+// A model from what TG_serialize wrote, or null when `saved` is not that or holds nothing. `validKinds` (an array) limits the document kinds the shell
+// can open; a tab of another kind, a tab without a usable ref, a duplicate (a kind and ref lives in ONE group), and anything past the bounds is dropped, a
+// second preview tab in a group is kept as an ordinary tab, and an active tab, a focused group or a direction that makes no sense is repaired.
+function TG_restore(saved, validKinds) {
+  if (!saved || typeof saved !== "object" || saved.v !== TG_STORE_VERSION || !Array.isArray(saved.groups)) return null;
+  var seenTabs = {};
+  var seenGroups = {};
+  var budget = TG_STORE_MAX_TABS;
+  var groups = [];
+  for (var i = 0; i < saved.groups.length && groups.length < TG_STORE_MAX_GROUPS; i++) {
+    var sg = saved.groups[i];
+    if (!sg || typeof sg !== "object" || !Array.isArray(sg.tabs)) continue;
+    var tabs = [];
+    var hasPreview = false;
+    for (var j = 0; j < sg.tabs.length && budget > 0; j++) {
+      var st = sg.tabs[j];
+      if (!st || typeof st !== "object") continue;
+      if (typeof st.kind !== "string" || typeof st.ref !== "string" || !st.ref || st.ref.length > TG_STORE_MAX_REF) continue;
+      if (validKinds && validKinds.indexOf(st.kind) < 0) continue;
+      var id = TG_tabId(st.kind, st.ref);
+      if (seenTabs[id]) continue;
+      seenTabs[id] = true;
+      var preview = st.preview === true && !hasPreview;
+      if (preview) hasPreview = true;
+      tabs.push({ id: id, kind: st.kind, ref: st.ref, preview: preview });
+      budget -= 1;
+    }
+    if (!tabs.length) continue;
+    var gid = typeof sg.id === "string" && sg.id && !seenGroups[sg.id] ? sg.id : TG_newGroupId();
+    while (seenGroups[gid]) gid = TG_newGroupId();
+    seenGroups[gid] = true;
+    var active = tabs[tabs.length - 1].id;
+    for (var k = 0; k < tabs.length; k++) if (tabs[k].id === sg.active) active = sg.active;
+    groups.push({ id: gid, tabs: tabs, activeTabId: active });
+  }
+  if (!groups.length) return null;
+  var focused = groups[0].id;
+  for (var g = 0; g < groups.length; g++) if (groups[g].id === saved.focused) focused = saved.focused;
+  return {
+    groups: groups,
+    direction: groups.length > 1 && saved.direction === "column" ? "column" : "row",
+    focusedGroupId: focused,
+  };
+}
+
+// The model for a load that already has one: `live` (the URL's document, opened as a tab) merged into the restored working set, with the live active
+// document active and focused. With nothing usable saved, `live` itself.
+function TG_restoreInto(live, saved, validKinds) {
+  var base = TG_restore(saved, validKinds);
+  if (!base) return live;
+  var out = base;
+  live.groups.forEach(function (g) {
+    g.tabs.forEach(function (t) { out = TG_openTab(out, { kind: t.kind, ref: t.ref }, { promote: !t.preview }); });
+  });
+  var active = TG_activeDoc(live);
+  if (active) out = TG_openTab(out, { kind: active.kind, ref: active.ref }, { promote: !active.preview });
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // No-build window exports
 // ---------------------------------------------------------------------------
 
@@ -312,3 +400,6 @@ window.TG_focusGroup = TG_focusGroup;
 window.TG_moveTab = TG_moveTab;
 window.TG_splitWith = TG_splitWith;
 window.TG_activeDoc = TG_activeDoc;
+window.TG_serialize = TG_serialize;
+window.TG_restore = TG_restore;
+window.TG_restoreInto = TG_restoreInto;

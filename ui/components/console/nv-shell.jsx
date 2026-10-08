@@ -136,6 +136,24 @@ function NV_readUrl() {
 // Frozen module-level empty array: a fresh [] each render would defeat the ctx memo.
 var EMPTY_WS_ITEMS = Object.freeze([]);
 
+// The tab groups' working set, kept per user in this browser (console review C-023). Identity and layout only (TG_serialize); storage can be
+// unavailable or hold anything (private mode, quota, another version), so every access is guarded and a bad value is the same as no value.
+function NV_loadTabs(key) {
+  try {
+    var raw = window.localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : null;
+  } catch (_e) {
+    return null;
+  }
+}
+function NV_saveTabs(key, saved) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(saved));
+  } catch (_e) {
+    // nothing to do: the working set is a convenience
+  }
+}
+
 function NV_Shell() {
   // US-014 M1: a distinct mobile UX (not squeezed desktop), same state
   // and resources - the swap below is purely which chrome renders.
@@ -329,6 +347,26 @@ function NV_Shell() {
     doc && doc.kind, doc && doc.ref,
     overlay && overlay.name, overlay && overlay.section,
     overlay && overlay.id, anchor]);
+
+  // The working set survives a reload (console review C-023). The key names the user, who is known once the auth status has loaded; until then nothing is
+  // read or written. The restore runs once and merges into whatever the load already holds (the URL's document, opened as a tab, stays the active one); the
+  // write effect waits for it (tabsRestored), or the first render's one-tab model would overwrite the stored working set before it was read.
+  var tabsStoreKey = status.data ? "primer.console.tabs.v1:" + (status.data.username || "anon") : null;
+  var tabsRestoredState = React.useState(false);
+  var tabsRestored = tabsRestoredState[0];
+  var setTabsRestored = tabsRestoredState[1];
+  React.useEffect(function () {
+    if (!tabsStoreKey || tabsRestored) return;
+    var saved = NV_loadTabs(tabsStoreKey);
+    if (saved) {
+      setTgModel(function (live) { return window.TG_restoreInto(live, saved, window.SH_DOC_KINDS); });
+    }
+    setTabsRestored(true);
+  }, [tabsStoreKey, tabsRestored]);
+  React.useEffect(function () {
+    if (!tabsStoreKey || !tabsRestored) return;
+    NV_saveTabs(tabsStoreKey, window.TG_serialize(tgModel));
+  }, [tgModel, tabsStoreKey, tabsRestored]);
 
   // Menus close on any outside click.
   React.useEffect(function () {
