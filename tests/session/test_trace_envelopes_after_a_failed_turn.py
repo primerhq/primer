@@ -51,6 +51,26 @@ def test_a_started_after_a_failed_on_the_same_turn_no_is_a_new_envelope():
     assert _kinds(envelopes_for_window(groups, 1)[0]) == ["started", "completed"]
 
 
+def test_a_started_after_a_cancelled_on_the_same_turn_no_is_a_new_envelope():
+    groups = turn_envelopes([
+        _ev(1, "started", 3), _ev(2, "cancelled", 3),
+        _ev(3, "started", 3), _ev(4, "completed", 3),
+    ])
+
+    assert [_kinds(g) for g in groups] == [["started", "cancelled"], ["started", "completed"]]
+
+
+def test_a_turn_whose_end_entry_never_landed_is_split_from_the_next():
+    """A worker crash or a lost lease writes the release marker but no turn-log `failed`: the next `started` is the only boundary."""
+    groups = turn_envelopes([
+        _ev(1, "started", 3), _ev(2, "phase", 3),
+        _ev(3, "started", 3), _ev(4, "completed", 3),
+    ])
+
+    assert [_kinds(g) for g in groups] == [["started", "phase"], ["started", "completed"]]
+    assert [len(envelopes_for_window(groups, i)) for i in range(3)] == [1, 1, 0]
+
+
 def test_a_late_phase_event_stays_with_the_envelope_it_belongs_to():
     groups = turn_envelopes([
         _ev(1, "started", 3), _ev(2, "failed", 3, error={}), _ev(3, "phase", 3),
@@ -60,17 +80,39 @@ def test_a_late_phase_event_stays_with_the_envelope_it_belongs_to():
     assert [_kinds(g) for g in groups] == [["started", "failed", "phase"], ["started", "completed"]]
 
 
-def test_a_parked_turn_resumed_on_the_same_turn_no_is_still_one_run():
-    """resumed + started after a yielded: two groups now, but the yielded one is continued by the next, so ONE run as before."""
+def test_a_resume_is_one_envelope_not_two():
+    """A resume writes `resumed` and then `started`: the `started` that directly follows a `resumed` opens nothing."""
     groups = turn_envelopes([
-        _ev(1, "started", 3), _ev(2, "yielded", 3, yield_kind="ask_user", event_key="k"),
-        _ev(3, "resumed", 3, wait_ms=5, resume_kind="event_fired"), _ev(4, "started", 3), _ev(5, "completed", 3),
-        _ev(6, "started", 4), _ev(7, "completed", 4),
+        _ev(1, "started", 4), _ev(2, "yielded", 4, yield_kind="ask_user", event_key="k"),
+        _ev(3, "resumed", 4, wait_ms=5, resume_kind="event_fired"), _ev(4, "started", 4), _ev(5, "completed", 4),
+    ])
+
+    assert [_kinds(g) for g in groups] == [["started", "yielded"], ["resumed", "started", "completed"]]
+
+
+def test_a_park_and_its_continuation_under_the_next_turn_no_are_one_run_even_with_phase_events_after_the_yield():
+    """`phase('waiting')` follows a `yielded` (dispatch.py), so the park's last event is not its end: the run is decided by the last END event."""
+    groups = turn_envelopes([
+        _ev(1, "started", 3), _ev(2, "phase", 3), _ev(3, "yielded", 3, yield_kind="ask_user", event_key="k"), _ev(4, "phase", 3),
+        _ev(5, "resumed", 4, wait_ms=5, resume_kind="event_fired"), _ev(6, "started", 4), _ev(7, "phase", 4), _ev(8, "completed", 4),
+        _ev(9, "started", 5), _ev(10, "completed", 5),
     ])
 
     run0 = envelopes_for_window(groups, 0)
-    assert [_kinds(g) for g in run0] == [["started", "yielded"], ["resumed", "started", "completed"]]
+    assert [_kinds(g) for g in run0] == [["started", "phase", "yielded", "phase"], ["resumed", "started", "phase", "completed"]]
     assert _kinds(envelopes_for_window(groups, 1)[0]) == ["started", "completed"]
+
+
+def test_a_yielded_then_resumed_on_one_turn_no_is_two_runs():
+    """No production path writes it except `abandon_session_gate`, which continues the session as a NEW turn: two turns, two runs."""
+    groups = turn_envelopes([
+        _ev(1, "started", 3), _ev(2, "yielded", 3, yield_kind="ask_user", event_key="k"),
+        _ev(3, "resumed", 3, wait_ms=5, resume_kind="event_fired"), _ev(4, "started", 3), _ev(5, "completed", 3),
+    ])
+
+    assert [len(envelopes_for_window(groups, i)) for i in range(3)] == [1, 1, 0]
+    assert _kinds(envelopes_for_window(groups, 0)[0]) == ["started", "yielded"]
+    assert _kinds(envelopes_for_window(groups, 1)[0]) == ["resumed", "started", "completed"]
 
 
 def test_a_graph_nodes_events_do_not_split_an_envelope():
@@ -80,6 +122,15 @@ def test_a_graph_nodes_events_do_not_split_an_envelope():
     ])
 
     assert len(groups) == 1
+
+
+def test_a_graph_nodes_events_between_two_turns_stay_with_the_turn_they_follow():
+    groups = turn_envelopes([
+        _ev(1, "started", 3), _ev(2, "failed", 3, error={}), _ev(3, "started", 3, node_id="n1"), _ev(4, "completed", 3, node_id="n1"),
+        _ev(5, "started", 3), _ev(6, "completed", 3),
+    ])
+
+    assert [_kinds(g) for g in groups] == [["started", "failed", "started", "completed"], ["started", "completed"]]
 
 
 # ---- the production writers -------------------------------------------------------------------------------------------------------------------
@@ -130,14 +181,24 @@ class _Engine:
     async def upsert(self, *args, **kwargs) -> None: ...
 
 
-@pytest.mark.asyncio
-async def test_the_timeline_of_a_failed_turn_is_its_own_envelope_not_the_next_turns(fake_storage_provider, fake_event_bus):
+async def _play(fake_storage_provider, fake_event_bus, plan: list[str]):
+    """Run the turns of ``plan`` ("fail" or "ok") through the production writers, one message per turn after the first.
+
+    Every turn is followed by the claim adapter's release as the pool makes it (a success bumps ``turn_no``, a failure writes the marker); every
+    turn after the first is started by a message to the session (``wake_session``), which reopens it when the last one failed. One turn-log
+    writer serves all of them, as the file does.
+    """
     sid = "s-trace"
     workspace, turn_log = _Workspace(), _TurnLog()
     await _seed_session(fake_storage_provider, sid)
     sessions = fake_storage_provider.get_storage(WorkspaceSession)
     row = await sessions.get(sid)
     await sessions.update(row.model_copy(update={"turn_no": 3, "completed_turn_no": 2}))
+    adapter = SessionClaimAdapter(session_storage=sessions, workspace_registry=_Registry(workspace), event_bus=fake_event_bus)
+    wake = SessionWakeDeps(
+        storage_provider=fake_storage_provider, scheduler=_Scheduler(), claim_engine=_Engine(),
+        workspace_registry=_Registry(workspace), event_bus=fake_event_bus,
+    )
 
     def deps_for(executor):
         async def build(_session):
@@ -148,26 +209,27 @@ async def test_the_timeline_of_a_failed_turn_is_its_own_envelope_not_the_next_tu
             build_executor=build, turn_log_writer_factory=lambda _io, _sid: turn_log,
         )
 
-    # the turn fails; its release (success=False) does not bump turn_no and writes the claim adapter's marker
-    failed = await run_one_session_turn(_make_lease(sid), deps_for(FakeExecutor([TextDelta(text="hi", index=0), RuntimeError("boom")])))
-    assert failed.success is False
-    adapter = SessionClaimAdapter(session_storage=sessions, workspace_registry=_Registry(workspace), event_bus=fake_event_bus)
-    await adapter.on_release(None, sid, outcome=failed)
-    # a message to the failed session reopens it; the next turn runs under the same turn_no and completes
-    await wake_session(
-        workspace_id=row.workspace_id, session_id=sid, instruction="try again", human_intent=True,
-        deps=SessionWakeDeps(
-            storage_provider=fake_storage_provider, scheduler=_Scheduler(), claim_engine=_Engine(),
-            workspace_registry=_Registry(workspace), event_bus=fake_event_bus,
-        ),
-    )
-    second = await run_one_session_turn(
-        _make_lease(sid), deps_for(FakeExecutor([TextDelta(text="done", index=0), Done(stop_reason="stop", raw_reason="stop")])),
-    )
-    assert second.success is True
+    outcomes = []
+    for n, kind in enumerate(plan):
+        if n:
+            await wake_session(
+                workspace_id=row.workspace_id, session_id=sid, instruction=f"message {n}", human_intent=True, deps=wake,
+            )
+        if kind == "fail":
+            executor = FakeExecutor([TextDelta(text="hi", index=0), RuntimeError("boom")])
+        else:
+            executor = FakeExecutor([TextDelta(text="done", index=0), Done(stop_reason="stop", raw_reason="stop")])
+        outcome = await run_one_session_turn(_make_lease(sid), deps_for(executor))
+        assert outcome.success is (kind == "ok")
+        await adapter.on_release(None, sid, outcome=outcome)         # the pool's release: bumps turn_no on success, writes the marker on failure
+        outcomes.append(outcome)
+    return workspace.read_lines(sid), [event.model_dump_json() for event in turn_log.events], turn_log
 
-    message_lines = workspace.read_lines(sid)
-    turn_log_lines = [event.model_dump_json() for event in turn_log.events]
+
+@pytest.mark.asyncio
+async def test_the_timeline_of_a_failed_turn_is_its_own_envelope_not_the_next_turns(fake_storage_provider, fake_event_bus):
+    message_lines, turn_log_lines, turn_log = await _play(fake_storage_provider, fake_event_bus, ["fail", "ok"])
+
     ends = [e.kind.value for e in turn_log.events if e.kind.value in {"failed", "completed"}]
     assert ends == ["failed", "completed"], ends
     assert len({e.turn_no for e in turn_log.events if e.kind.value in {"started", "failed", "completed"}}) == 1, (
@@ -178,3 +240,30 @@ async def test_the_timeline_of_a_failed_turn_is_its_own_envelope_not_the_next_tu
     assert first_turn["status"] == "failed", "the failed turn's trace reads as the turn after it"
     runs = [envelopes_for_window(turn_envelopes(turn_log_lines), i) for i in range(3)]
     assert [len(run) for run in runs] == [1, 1, 0], "one run per turn: the failed one, the one that followed, and no third"
+
+
+@pytest.mark.asyncio
+async def test_interim_mapping_after_a_failed_turn_fail_retry_fail(fake_storage_provider, fake_event_bus):
+    """PINS TODAY'S MAPPING, which is wrong after the first failure, so that the 01a11ca5 fold turns this test red on purpose.
+
+    A failed turn is two windows on the server (the failure exit's ERROR, then the release marker) and the timeline joins window ``n`` to the
+    ``n``-th envelope run by position. The runs are right (one per turn, see above); the windows are ahead of them. With fail, retry, fail the
+    windows are [A's ERROR, A's marker, B (the successful retry), C's ERROR, C's marker] and the runs [A, B, C]:
+
+      window 0 (A)        failed     right
+      window 1 (A marker) completed  WRONG: it is served B's envelope
+      window 2 (B)        failed     WRONG: it is served C's envelope (B succeeded; main read "completed" here by the accident of having no run)
+      window 3, 4         failed     no run left, so the records decide, which happens to be right
+
+    When 01a11ca5 makes a failed turn ONE window the expected list becomes ``["failed", "completed", "failed"]``; rewrite this test then.
+    """
+    message_lines, turn_log_lines, _ = await _play(fake_storage_provider, fake_event_bus, ["fail", "ok", "fail"])
+
+    statuses = []
+    for n in range(8):
+        timeline = build_turn_timeline(message_lines=message_lines, turn_log_lines=turn_log_lines, turn_no=n)
+        if timeline is None:
+            break
+        statuses.append(timeline["status"])
+
+    assert statuses == ["failed", "completed", "failed", "failed", "failed"], statuses
