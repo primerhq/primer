@@ -121,3 +121,76 @@ async def test_a_graph_deleted_between_two_pages_does_not_hide_the_one_that_name
     found = await references.first_graph_with_agent_node(storage, "ag-1")
 
     assert found is not None and found.id == "g-3", found
+
+
+# ---- what counts as "a row it cannot read", and the documented way to find and remove one -----------------------------------------
+
+
+class _RaisingStorage:
+    """A ``Storage`` whose ``list`` raises what its decode would, from a method named like the real backends' (``_from_row``), or from
+    somewhere else entirely."""
+
+    def __init__(self, error: BaseException, *, from_row_decode: bool) -> None:
+        self._error = error
+        self._from_row_decode = from_row_decode
+
+    def _from_row(self) -> None:
+        raise self._error
+
+    def _something_else(self) -> None:
+        raise self._error
+
+    async def list(self, page, **kwargs):
+        (self._from_row if self._from_row_decode else self._something_else)()
+
+
+@pytest.mark.asyncio
+async def test_a_type_error_that_is_not_a_row_decode_is_an_error_not_an_unreadable_row() -> None:
+    """A TypeError from a bug elsewhere in the storage call must not be reported as a corrupt graph row (it would block every delete and
+    point the operator at the wrong thing)."""
+    storage = _RaisingStorage(TypeError("a bug in the storage code"), from_row_decode=False)
+
+    with pytest.raises(TypeError, match="a bug in the storage code"):
+        await references.first_graph_with_agent_node(storage, "ag-1")
+
+
+@pytest.mark.asyncio
+async def test_a_type_error_raised_while_decoding_a_row_is_an_unreadable_row() -> None:
+    storage = _RaisingStorage(TypeError("'NoneType' object does not support item assignment"), from_row_decode=True)
+
+    found = await references.first_graph_with_agent_node(storage, "ag-1")
+
+    assert found is not None and "unreadable" in found.id
+
+
+@pytest.mark.asyncio
+async def test_the_query_the_docs_give_finds_the_row_the_warning_points_at(sqlite_provider) -> None:
+    """docs: the 409 and the logged warning name the readable graph BEFORE the corrupt row ("unreadable graph row after g-2"), and the row is
+    the first one after that id in id order, in the ``graph`` table. Run the documented SQL on a real store and delete what it finds."""
+    for graph_id in ("g-1", "g-2"):
+        await _seed(sqlite_provider, graph_row(graph_id))
+    await insert_unreadable_graph(sqlite_provider, "g-9")
+    found = await references.first_graph_with_agent_node(sqlite_provider.get_storage(Graph), "ag-1")
+    assert found is not None and found.id == "unreadable graph row after g-2"
+    connection = sqlite_provider.connection
+
+    cursor = await connection.execute("SELECT id FROM graph WHERE id > 'g-2' ORDER BY id LIMIT 1")
+    row = await cursor.fetchone()
+    assert row is not None and row[0] == "g-9"
+    await connection.execute("DELETE FROM graph WHERE id = ?", (row[0],))
+    await connection.commit()
+
+    assert await references.first_graph_with_agent_node(sqlite_provider.get_storage(Graph), "ag-1") is None
+
+
+@pytest.mark.asyncio
+async def test_the_query_for_a_first_row_that_is_corrupt(sqlite_provider) -> None:
+    await insert_unreadable_graph(sqlite_provider, "a-0")
+    await _seed(sqlite_provider, graph_row("g-1"))
+    found = await references.first_graph_with_agent_node(sqlite_provider.get_storage(Graph), "ag-1")
+    assert found is not None and found.id == "unreadable graph row that comes first"
+
+    cursor = await sqlite_provider.connection.execute("SELECT id FROM graph ORDER BY id LIMIT 1")
+    row = await cursor.fetchone()
+
+    assert row is not None and row[0] == "a-0"
