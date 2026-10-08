@@ -52,3 +52,18 @@ def test_a_link_to_a_missing_session_says_it_no_longer_exists_and_the_tab_can_be
     page.get_by_test_id("nv-session-gone-close").click()
     expect(page.get_by_test_id(f"nv-tg-tab:session:{BOGUS}")).to_have_count(0, timeout=10_000)
     expect(gone).to_have_count(0)
+
+
+@pytest.mark.ui_e2e
+def test_the_phone_shows_the_same_card_behind_its_back_button(page: Page, base_url: str, console_url: str) -> None:
+    wid = _a_workspace_id(base_url)
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.goto(f"{console_url}#/w/{wid}?doc=session:{BOGUS}")
+
+    screen = page.get_by_test_id("nv-mob-session-screen")
+    expect(screen).to_be_visible(timeout=20_000)
+    expect(screen.get_by_test_id("nv-session-gone")).to_be_visible(timeout=15_000)
+    expect(page.get_by_test_id("nv-composer")).to_have_count(0)
+
+    screen.get_by_test_id("nv-session-gone-close").click()
+    expect(screen).to_have_count(0, timeout=10_000)
