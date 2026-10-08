@@ -29,7 +29,7 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import BaseModel, Field, HttpUrl, ValidationError
 
-from primer.common.bounded_read import read_capped
+from primer.common.bounded_read import ACCEPT_ENCODING, UnsupportedContentEncoding, read_capped
 from primer.common.netguard import EgressRefused
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.model.except_ import BadRequestError, NotFoundError
@@ -319,6 +319,14 @@ def make_web_search_handler(service: "WebSearchService") -> ToolHandler:
     return _handle
 
 
+def _with_default_accept_encoding(headers: dict[str, str] | None) -> dict[str, str]:
+    """The agent's headers, plus the encodings the body reader can bound unless it chose its own ``Accept-Encoding``."""
+    chosen = dict(headers or {})
+    if not any(name.lower() == "accept-encoding" for name in chosen):
+        chosen["Accept-Encoding"] = ACCEPT_ENCODING
+    return chosen
+
+
 def make_http_request_handler(
     *,
     http_client: httpx.AsyncClient,
@@ -350,7 +358,7 @@ def make_http_request_handler(
                 async with http_client.stream(
                     method=args.method,
                     url=str(args.url),
-                    headers=args.headers,
+                    headers=_with_default_accept_encoding(args.headers),
                     content=args.body,
                     timeout=args.timeout_seconds,
                 ) as response:
@@ -372,10 +380,16 @@ def make_http_request_handler(
                 is_error=True,
             )
         except TimeoutError:
+            logger.warning(
+                "http-request timed out",
+                extra={"url": str(args.url), "method": args.method, "timeout_seconds": args.timeout_seconds},
+            )
             return ToolCallResult(
                 output=f"http-request timed out after {args.timeout_seconds:g}s",
                 is_error=True,
             )
+        except UnsupportedContentEncoding as exc:
+            return ToolCallResult(output=f"http-request failed: {exc}", is_error=True)
 
         body_text = body_bytes.decode("utf-8", errors="replace")
 
@@ -507,25 +521,21 @@ def make_download_handler(
 
         cap = args.max_bytes if args.max_bytes is not None else byte_cap
 
-        # Stream with a hard cap. A truncated file is corrupt, so reject
-        # (write nothing) the moment the running total exceeds the cap -
-        # do NOT read-all-then-truncate.
-        chunks: list[bytes] = []
-        total = 0
+        # Stream with a hard cap. A truncated file is corrupt, so reject (write nothing) when the DECODED body goes past the cap: the body is read
+        # through ``read_capped``, which bounds every decode step (a gzip chunk is not inflated whole before the cap can see it), and a stacked or
+        # unknown Content-Encoding is refused. Do NOT read-all-then-truncate.
         try:
-            async with http_client.stream("GET", url_str) as resp:
+            async with http_client.stream("GET", url_str, headers={"Accept-Encoding": ACCEPT_ENCODING}) as resp:
                 resp.raise_for_status()
-                async for chunk in resp.aiter_bytes():
-                    total += len(chunk)
-                    if total > cap:
-                        return ToolCallResult(
-                            output=(
-                                f"download: file exceeds the maximum of "
-                                f"{cap} bytes; nothing was written"
-                            ),
-                            is_error=True,
-                        )
-                    chunks.append(chunk)
+                data, over_the_cap = await read_capped(resp, cap)
+            if over_the_cap:
+                return ToolCallResult(
+                    output=(
+                        f"download: file exceeds the maximum of "
+                        f"{cap} bytes; nothing was written"
+                    ),
+                    is_error=True,
+                )
         except httpx.HTTPStatusError as exc:
             return ToolCallResult(
                 output=(
@@ -536,13 +546,14 @@ def make_download_handler(
             )
         except EgressRefused as exc:
             return ToolCallResult(output=f"download {exc}", is_error=True)
+        except UnsupportedContentEncoding as exc:
+            return ToolCallResult(output=f"download failed: {exc}", is_error=True)
         except httpx.RequestError as exc:
             return ToolCallResult(
                 output=f"download failed: {type(exc).__name__}: {exc}",
                 is_error=True,
             )
 
-        data = b"".join(chunks)
         try:
             ws = await workspace_registry.get_workspace(ctx.workspace_id)
             await ws.write_file(dest, data)
@@ -554,7 +565,7 @@ def make_download_handler(
 
         return ToolCallResult(
             output=json.dumps(
-                {"path": dest, "bytes": total, "url": url_str},
+                {"path": dest, "bytes": len(data), "url": url_str},
                 ensure_ascii=False,
             ),
             is_error=False,
