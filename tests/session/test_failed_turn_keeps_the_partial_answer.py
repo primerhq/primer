@@ -254,6 +254,30 @@ def test_the_healthy_sibling_keeps_its_answer_in_one_record_after_the_other_node
     assert part_id("node-b", KIND_TEXT, 1) in sink.closed, "its live part closes at its own Done"
 
 
+def test_a_node_scoped_fatal_error_flushes_a_nodes_reasoning_alone_and_leaves_the_siblings_reasoning() -> None:
+    """A node that was only thinking when it failed (no answer text yet): its REASONING record lands ahead of its ERROR; a sibling's
+    reasoning and live part are left alone."""
+    sink = _Sink()
+    state = _CoalesceState()
+    assert translate_stream_event(ReasoningDelta(text="a thinks", index=0), state, node_id="node-a", delta_sink=sink, turn_no=1) is None
+    assert translate_stream_event(ReasoningDelta(text="b thinks", index=0), state, node_id="node-b", delta_sink=sink, turn_no=1) is None
+
+    out = translate_stream_event(Error(code="server_error", message="boom", fatal=True), state, node_id="node-a", delta_sink=sink, turn_no=1)
+
+    assert isinstance(out, list) and [r.kind for r in out] == [SessionMessageKind.REASONING, SessionMessageKind.ERROR]
+    assert out[0].payload["text"] == "a thinks" and out[0].node_id == "node-a"
+    assert state.reasoning_buffers == {"node-b": "b thinks"}
+    assert part_id("node-a", KIND_REASONING, 1) in sink.closed and part_id("node-b", KIND_REASONING, 1) not in sink.closed
+
+
+def test_a_node_scoped_fatal_error_for_a_node_with_nothing_buffered_is_a_single_record_and_touches_nothing_else() -> None:
+    sink = _Sink()
+    state = _two_nodes_streaming(sink)
+    out = translate_stream_event(Error(code="server_error", message="boom", fatal=True), state, node_id="node-c", delta_sink=sink, turn_no=1)
+    assert not isinstance(out, list) and out.kind == SessionMessageKind.ERROR and out.node_id == "node-c"
+    assert state.text_buffers == {"node-a": "from a", "node-b": "from b"} and sink.closed == []
+
+
 def test_an_unscoped_fatal_error_still_flushes_every_buffer() -> None:
     """No node named: the agent-only path (one bucket) or a failure of the run itself, which ends every node's stream."""
     sink = _Sink()
@@ -396,13 +420,20 @@ async def test_a_delegated_runs_fatal_error_flushes_the_runs_own_text_and_stamps
 
     writer = _Writer()
     recorder = DelegationRecorder(writer=writer, event_bus=_Bus(), session_id="s1", turn_no=1)
+    another_run = DelegationRecorder(writer=writer, event_bus=_Bus(), session_id="s1", turn_no=1)
+    # What a parent turn holds: a coalesce state that no recorder is handed, so no delegated Error can reach it.
     parent = _CoalesceState()
     parent.text_buffers[None] = "the parent's own words"
+    assert recorder._state is not parent and recorder._state is not another_run._state, "a recorder must keep a coalesce state of its own"
 
     await recorder.on_event(TextDelta(text="sub says", index=0), delegate_tool_call_id="c1")
+    await another_run.on_event(TextDelta(text="a sibling run says", index=0), delegate_tool_call_id="c2")
+    assert recorder._state.text_buffers == {None: "sub says"}, "the delta is buffered in the recorder's own state"
     await recorder.on_event(Error(code="server_error", message="boom", fatal=True), delegate_tool_call_id="c1")
 
     assert [r.kind for r in writer.records] == [SessionMessageKind.ASSISTANT_TOKEN, SessionMessageKind.ERROR]
     assert writer.records[0].payload["text"] == "sub says"
     assert all(r.payload["delegated"] is True and r.payload["delegate_tool_call_id"] == "c1" for r in writer.records)
+    assert recorder._state.text_buffers == {}, "the failing run's own buffer was drained"
+    assert another_run._state.text_buffers == {None: "a sibling run says"}, "another delegated run's buffer was not touched"
     assert parent.text_buffers == {None: "the parent's own words"}
