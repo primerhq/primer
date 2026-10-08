@@ -37,6 +37,8 @@ from datetime import datetime, timezone
 from typing import Any
 from collections.abc import Awaitable, Callable
 
+from primer.authz import _ROLE_RANK
+
 logger = logging.getLogger(__name__)
 
 # Consecutive checks that could not read storage before the connection is closed anyway.
@@ -46,8 +48,7 @@ _CANCEL_GRACE_S = 5.0
 
 WS_CLOSE_AUTH_REVOKED = 4401
 
-# Role strength, weakest first (the same ranking ``require_role_ws`` uses). A role missing from it is unknown.
-_ROLE_RANK = {"restricted": 0, "user": 1, "admin": 2}
+# Role strength, weakest first: the one ranking every role floor in primer uses (``primer.authz``). A role missing from it is unknown.
 # HTTP methods whose in-flight request is cut when storage cannot vouch for the account. Anything else is a write and is left to finish.
 _OPEN_ENDED_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
