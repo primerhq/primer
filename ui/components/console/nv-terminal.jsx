@@ -29,6 +29,12 @@ function NV_Terminal() {
   var deniedState = React.useState(false);
   var denied = deniedState[0];
   var setDenied = deniedState[1];
+  // Close code 4401: the server ended the shell because the account behind it stopped being valid (disabled, signed out everywhere, a password
+  // change, a demotion, or the session cookie's own lifetime ran out; primer/api/middleware/revalidate.py), or the handler met no authentication
+  // at all. "Connection lost, usually transient" would be a lie there: reconnecting only works after signing in again.
+  var signedOutState = React.useState(false);
+  var signedOut = signedOutState[0];
+  var setSignedOut = signedOutState[1];
   var connLostState = React.useState(false);
   var connLost = connLostState[0];
   var setConnLost = connLostState[1];
@@ -52,6 +58,7 @@ function NV_Terminal() {
   React.useEffect(function () {
     if (!hostRef.current || !window.Terminal) return undefined;
     setDenied(false);
+    setSignedOut(false);
     setConnLost(false);
     setExit(null);
     // Guards against the close event our OWN cleanup's sock.close() fires
@@ -121,8 +128,10 @@ function NV_Terminal() {
       if (cancelled || gotExit) return;
       if (ev && ev.code === 4403) {
         setDenied(true);
+      } else if (ev && ev.code === 4401) {
+        setSignedOut(true);
       } else {
-        // Every OTHER close - auth/missing-workspace/internal-error close
+        // Every OTHER close - missing-workspace/internal-error close
         // codes and a bare network blip (browsers report an abnormal drop
         // as code 1006) alike - reads as "connection lost", never as a
         // permanent per-workspace refusal.
@@ -191,6 +200,7 @@ function NV_Terminal() {
 
   var retry = function () {
     setDenied(false);
+    setSignedOut(false);
     setConnLost(false);
     setRetryToken(function (n) { return n + 1; });
   };
@@ -223,6 +233,13 @@ function NV_Terminal() {
             The terminal is disabled for this workspace. An admin can
             enable per-workspace user access on the workspace's settings.
           </div>
+        </div>
+      ) : signedOut ? (
+        <div className="nv-rail-empty" data-testid="nv-terminal-signed-out" role="alert">
+          <div>You were signed out, so the shell was closed. Sign in again to use the terminal.</div>
+          <button type="button" className="nv-rail-iconbtn"
+            data-testid="nv-terminal-reconnect"
+            onClick={retry}>Reconnect</button>
         </div>
       ) : connLost ? (
         <div className="nv-rail-empty" data-testid="nv-terminal-conn-lost">
