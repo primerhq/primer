@@ -11,6 +11,7 @@ The service now takes the same best-effort unindexer and path rewriter, and ever
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 
 import pytest
@@ -143,3 +144,75 @@ async def test_a_service_built_without_the_hooks_still_deletes_and_moves(provide
     await service.delete(collection_id="kb-x", path="b.md")
 
     assert await provider.get_content_store().resolve_id("kb-x", "b.md") is None
+
+
+def _watch_transactions(provider, monkeypatch, log: list[str]) -> None:
+    """Log the bounds of every transaction the service opens on this provider."""
+    real = provider.transaction
+
+    @asynccontextmanager
+    async def transaction():
+        log.append("begin")
+        async with real() as conn:
+            yield conn
+        log.append("commit")
+
+    monkeypatch.setattr(provider, "transaction", transaction)
+
+
+@pytest.mark.asyncio
+async def test_the_unindex_runs_after_the_delete_has_committed(provider, monkeypatch):
+    """Not inside the transaction (a slow or failing vector store would hold the write lock, or roll the delete back), and not before
+    it (a failed delete would leave a document that is already gone from search)."""
+    log: list[str] = []
+
+    async def unindexer(*, document_id, collection_id):
+        log.append(f"unindex(row_gone={await provider.get_content_store().get(document_id) is None})")
+
+    service = DocumentService(provider, unindexer=unindexer)
+    await service.upsert(collection_id="kb-x", path="a.md", content="x")
+    _watch_transactions(provider, monkeypatch, log)
+
+    await service.delete(collection_id="kb-x", path="a.md")
+
+    assert log == ["begin", "commit", "unindex(row_gone=True)"], log
+
+
+@pytest.mark.asyncio
+async def test_the_path_rewrite_runs_after_the_move_has_committed(provider, monkeypatch):
+    log: list[str] = []
+
+    async def rewriter(*, document_id, collection_id, new_path):
+        row = await provider.get_content_store().get_by_path(collection_id, new_path)
+        log.append(f"rewrite(path_moved={row is not None and row.document_id == document_id})")
+
+    service = DocumentService(provider, path_rewriter=rewriter)
+    await service.upsert(collection_id="kb-x", path="a.md", content="x")
+    _watch_transactions(provider, monkeypatch, log)
+
+    await service.move(collection_id="kb-x", src="a.md", dst="b.md")
+
+    assert log == ["begin", "commit", "rewrite(path_moved=True)"], log
+
+
+@pytest.mark.asyncio
+async def test_a_delete_that_fails_never_reaches_the_unindexer(provider, monkeypatch):
+    """The other half of the order: an unindexer called before the commit would drop the chunks of a document that is still there."""
+    calls: list[str] = []
+
+    async def unindexer(*, document_id, collection_id):
+        calls.append(document_id)
+
+    service = DocumentService(provider, unindexer=unindexer)
+    await service.upsert(collection_id="kb-x", path="a.md", content="x")
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("the delete failed")
+
+    monkeypatch.setattr(service._content, "delete", broken)  # noqa: SLF001
+
+    with pytest.raises(RuntimeError):
+        await service.delete(collection_id="kb-x", path="a.md")
+
+    assert calls == []
+    assert await provider.get_content_store().resolve_id("kb-x", "a.md") is not None, "the failed delete was not rolled back"
