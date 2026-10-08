@@ -373,35 +373,60 @@ function SA_toTranscript(records, session) {
   // so two graph nodes failing with the same words stay two cards only when both rows name their node.
   //
   // Scope: parent and subagent failures never fold into each other (SA_failureScope), and a bare marker belongs to the scope that wrote
-  // it. A non-fatal error ({fatal: false}, a retry notice) is not a failure and takes no part in the fold: it becomes a "retry_notice" row
-  // (settled below), never the cause a later failure folds into, so a failure with the same words stays a red card of its own.
+  // it. A non-fatal error ({fatal: false}, a retry notice) is not a failure and is never the cause a later failure folds into: it becomes a
+  // "retry_notice" row (settled below). But it is usually the first half of a failure: the agent loop holds a stream's first Error and
+  // raises when the stream ends, so dispatch's own ERROR follows it with the SAME words. A failure of the same scope (and node, as for copies)
+  // with the same words ABSORBS the notice, in either order, so the turn shows one red card and not a quiet line above it saying the same thing.
+  //
+  // The server counts every ERROR record that is not a non-fatal one, and not a subagent's, as the end of a window (terminals.closes_turn),
+  // folded copies and markers included, and the console asks the trace for that window ordinal (SH_turnOfSeq). A row that absorbed such
+  // records carries their number (foldedTerminals) so the ordinal still agrees; a notice, absorbed or not, is not one.
   var turnCauses = [];
   var turnMarkers = {};
+  var turnNotices = [];
+  function foldedInto(cause, scope) {
+    if (cause.row && scope === null) cause.row.foldedTerminals = (cause.row.foldedTerminals || 0) + 1;
+  }
   for (var i = 0; i < visible.length; i++) {
     var rec = visible[i];
     if (SA_SKIP_IN_TRANSCRIPT[rec.kind]) continue;
-    if (rec.kind === "user_input") { turnCauses = []; turnMarkers = {}; }
+    if (rec.kind === "user_input") { turnCauses = []; turnMarkers = {}; turnNotices = []; }
     var bare = SA_isBareTerminalError(rec);
     var scope = SA_failureScope(rec);
     var scopeKey = scope === null ? "" : scope;
     var notice = SA_isRetryNotice(rec);
+    var thisCause = null;
+    var sameWords = function (c) {
+      var m = (rec.payload || {}).message || null;
+      var n = rec.node_id || null;
+      return !!m && c.scope === scope && c.message === m && (!c.node || !n || c.node === n);
+    };
+    if (notice && turnCauses.some(sameWords)) continue;           // a failure with these words already stands in this turn: this is its first half
     if (rec.kind === "error" && !notice) {
       var message = (rec.payload || {}).message || null;
       if (bare) {
         // A marker with a cause of its own scope anywhere in its turn is that cause's marker. A marker with none is the only evidence and stays.
-        if (turnCauses.some(function (c) { return c.scope === scope; })) continue;
+        var own = turnCauses.filter(function (c) { return c.scope === scope; });
+        if (own.length) { foldedInto(own[own.length - 1], scope); continue; }
       } else {
         var node = rec.node_id || null;
-        var copy = message && turnCauses.some(function (c) {
-          return c.scope === scope && c.message === message && (!c.node || !node || c.node === node);
+        var copyOf = message ? turnCauses.filter(sameWords)[0] : null;
+        if (copyOf) { foldedInto(copyOf, scope); continue; }
+        thisCause = { message: message, node: node, scope: scope, row: null };
+        turnCauses.push(thisCause);
+        // A notice of this scope with the same words was this failure's first half: it gives way to the failure.
+        turnNotices = turnNotices.filter(function (nt) {
+          if (!(message && nt.scope === scope && nt.message === message && (!nt.node || !node || nt.node === node))) return true;
+          var gone = out.indexOf(nt.row);
+          if (gone >= 0) out.splice(gone, 1);
+          return false;
         });
-        if (copy) continue;
-        turnCauses.push({ message: message, node: node, scope: scope });
         // A marker of this scope that came first gives way to the cause that follows it.
         if (turnMarkers[scopeKey]) {
           var at = out.indexOf(turnMarkers[scopeKey]);
           if (at >= 0) out.splice(at, 1);
           delete turnMarkers[scopeKey];
+          thisCause.markerFirst = true;
         }
       }
     }
@@ -432,6 +457,13 @@ function SA_toTranscript(records, session) {
       bare: bare,
     };
     out.push(row);
+    if (thisCause) {
+      thisCause.row = row;
+      if (thisCause.markerFirst) foldedInto(thisCause, scope);   // the marker that gave way to this cause was a terminal of its own
+    }
+    if (notice) {
+      turnNotices.push({ row: row, message: (rec.payload || {}).message || null, node: rec.node_id || null, scope: scope });
+    }
     if (rec.kind === "error" && bare) turnMarkers[scopeKey] = row;
   }
   SA_settleNotices(out);
