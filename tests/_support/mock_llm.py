@@ -60,6 +60,10 @@ class Rule:
     # instead of a streamed 200 (lets a scenario model force e.g. a 429).
     emit_status: int = 200
     emit_error_message: str | None = None
+    # A failure AFTER the answer has started: the text is streamed, then an OpenAI-style in-stream error event (what a provider
+    # sends when it dies mid-answer) instead of the finish chunk and [DONE]. The status is still 200, so the client is mid-stream
+    # when it fails, unlike ``emit_status`` which fails the request before any stream opens. Text rules only.
+    fail_mid_stream: str | None = None
     # Slow-streaming support (01a04d91-a7a0, refresh-mid-turn diagnosis):
     # every default rule above resolves in a single event loop tick, which
     # can never reproduce what a real multi-second LLM call does to
@@ -281,6 +285,10 @@ def build_app(registry: ScriptRegistry) -> Starlette:
                     yield _chunk(model, {"content": piece})
                     if rule.chunk_delay_s and i + step < len(words):
                         await asyncio.sleep(rule.chunk_delay_s)
+                if rule.fail_mid_stream:
+                    payload = {"error": {"message": rule.fail_mid_stream, "type": "server_error", "code": "server_error"}}
+                    yield f"data: {json.dumps(payload)}\n\n"
+                    return
                 yield _chunk(model, {}, finish="stop")
             usage = {
                 "id": "mock",

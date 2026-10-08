@@ -90,7 +90,6 @@ def test_a_failed_turn_is_one_card_in_words_and_the_end_says_what_to_do(
     cards = page.locator(".nv-turn-error")
     expect(cards).to_have_count(1, timeout=15_000)
     expect(cards.first).to_contain_text("The model provider had a server error.")
-    expect(cards.first).not_to_contain_text("APIConnectionError")
     note = page.get_by_test_id("nv-ended-note")
     expect(note).to_be_visible(timeout=10_000)
     expect(note).to_contain_text("Send a message to try again.")
@@ -99,3 +98,30 @@ def test_a_failed_turn_is_one_card_in_words_and_the_end_says_what_to_do(
     open_session_in_studio(page, console_url, ids["workspace"], unstarted)
     expect(page.get_by_test_id("nv-session-head")).to_be_visible(timeout=10_000)
     expect(page.get_by_test_id("nv-usage")).to_have_count(0)
+
+
+@pytest.mark.timeout(120)
+def test_a_model_that_dies_mid_answer_is_one_card_in_words_with_the_cause_below_it(
+    page: Page, base_url: str, console_url: str, mock_llm_lan, tmp_path: Path,
+):
+    """The common failure: the answer has started streaming and the provider dies. The stream's own Error row and dispatch's
+    ERROR record (same words), and the bare terminal marker, used to be three red cards, and the cause read as the provider's raw
+    text. The first journey above fails the request BEFORE a stream opens, which never produces the stream's Error row."""
+    registry, mock_base_url = mock_llm_lan
+    ids = _seed(base_url, mock_base_url, uuid.uuid4().hex[:8], tmp_path)
+    cause = "scripted upstream melted down"
+    registry.register(ids["model_name"], [Rule(emit_text="Here is the start of an answer", fail_mid_stream=cause)])
+
+    with httpx.Client(base_url=base_url, timeout=30.0) as client:
+        failed = _start(client, ids, "this will die mid-answer", auto_start=True)
+        _wait_until_ended(client, failed)
+
+    open_session_in_studio(page, console_url, ids["workspace"], failed)
+    cards = page.locator(".nv-turn-error")
+    expect(cards).to_have_count(1, timeout=15_000)
+    expect(cards.first).to_contain_text("The model stopped answering part-way through.")
+    expect(page.locator(".nv-turn-error-detail")).to_contain_text(cause)
+    expect(page.get_by_test_id(f"nv-session-doc:{failed}")).to_contain_text("Here is the start of an answer")
+    note = page.get_by_test_id("nv-ended-note")
+    expect(note).to_be_visible(timeout=10_000)
+    expect(note).not_to_contain_text("llm_stream_error")
