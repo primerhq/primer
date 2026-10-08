@@ -151,3 +151,82 @@ async def test_disabled_metrics_are_still_a_404_not_a_401(tmp_path, monkeypatch)
         resp = await client.get("/metrics")
 
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_keeps_the_auth_error_codes_in_the_problem_extensions(tmp_path, monkeypatch):
+    """Every other auth refusal in the API carries ``extensions.error`` (``auth_required`` / ``forbidden_role``); a client or a log filter
+    that keys on them must not have to special-case /metrics."""
+    async with _running(_config(tmp_path, monkeypatch)) as (app, client):
+        anonymous = await client.get("/metrics")
+        await _user(app, "alice", "user")
+        await _sign_in(client, "alice")
+        non_admin = await client.get("/metrics")
+
+    assert anonymous.status_code == 401 and anonymous.json()["extensions"]["error"] == "auth_required"
+    assert non_admin.status_code == 403 and non_admin.json()["extensions"]["error"] == "forbidden_role"
+
+
+class _Inner:
+    """The metrics app stand-in: records that it was reached."""
+
+    def __init__(self) -> None:
+        self.reached: list[str] = []
+
+    async def __call__(self, scope, receive, send) -> None:
+        self.reached.append(scope["type"])
+
+
+async def _drive(gate, scope) -> list[dict]:
+    sent: list[dict] = []
+
+    async def receive():
+        return {"type": "websocket.connect"}
+
+    async def send(message):
+        sent.append(message)
+
+    await gate(scope, receive, send)
+    return sent
+
+
+def _scope(kind: str, user=None) -> dict:
+    from starlette.datastructures import State
+
+    state = State()
+    state.user = user
+    return {"type": kind, "path": "/metrics/", "headers": [], "state": state, "query_string": b""}
+
+
+@pytest.mark.asyncio
+async def test_a_websocket_scope_is_refused_unless_the_endpoint_is_public():
+    """The gate only looked at http scopes and waved every other kind through, so a websocket upgrade reached the metrics app with no
+    check at all. The prometheus app speaks only http, but a gate must not depend on that."""
+    from primer.api.metrics_gate import MetricsGate
+
+    inner = _Inner()
+    sent = await _drive(MetricsGate(inner, public=False), _scope("websocket"))
+
+    assert inner.reached == [], "a websocket scope reached the metrics app past the gate"
+    assert sent and sent[0]["type"] == "websocket.close"
+
+
+@pytest.mark.asyncio
+async def test_a_websocket_scope_passes_when_the_endpoint_is_public():
+    from primer.api.metrics_gate import MetricsGate
+
+    inner = _Inner()
+    await _drive(MetricsGate(inner, public=True), _scope("websocket"))
+
+    assert inner.reached == ["websocket"]
+
+
+@pytest.mark.asyncio
+async def test_a_lifespan_scope_is_never_refused():
+    """A mount is not sent lifespan events, but if one ever were, refusing it would stall startup."""
+    from primer.api.metrics_gate import MetricsGate
+
+    inner = _Inner()
+    await _drive(MetricsGate(inner, public=False), _scope("lifespan"))
+
+    assert inner.reached == ["lifespan"]
