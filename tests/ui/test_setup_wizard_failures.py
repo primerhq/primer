@@ -439,10 +439,68 @@ def test_credentials_in_the_base_url_are_not_shown_in_an_error_detail(real) -> N
         ("no credentials at http://host:80/path?x=1", "no credentials at http://host:80/path?x=1"),
         ("write to someone@example.com about it", "write to someone@example.com about it"),
         ("http://host/path@x", "http://host/path@x"),
+        # RFC 3986 allows an apostrophe in userinfo, pydantic's HttpUrl accepts it unencoded and httpx keeps it raw in its error (the lead's review of #558).
+        (
+            "openai-compatible probe failed: HTTPStatusError: Server error '500 Internal Server Error' for url 'http://u:pa'ss@127.0.0.1:1/v1/models'",
+            "openai-compatible probe failed: HTTPStatusError: Server error '500 Internal Server Error' for url 'http://127.0.0.1:1/v1/models'",
+        ),
+        ("http://us'er:pass@host/x", "http://host/x"),
+        ("'http://u:p@host/a' and 'http://v:q'r@host2/b'", "'http://host/a' and 'http://host2/b'"),
+        ("a quoted 'http://host' then user@example.com/x", "a quoted 'http://host' then user@example.com/x"),
     ],
 )
 def test_tidy_strips_credentials_from_every_url_and_leaves_the_rest(text: str, expected: str) -> None:
     assert _call(f"SW_tidy({json.dumps(text)})") == expected
+
+
+def test_a_password_with_an_apostrophe_is_stripped_from_httpxs_real_message() -> None:
+    """Not a string I wrote: the message httpx itself builds for a 500 from a Base URL whose password contains an apostrophe (checked with a MockTransport)."""
+    import httpx
+
+    client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(500)))
+    try:
+        client.get("http://u:pa'ss@127.0.0.1:1/v1/models").raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        text = f"openai-compatible probe failed: {type(exc).__name__}: {exc}"
+    else:  # pragma: no cover
+        raise AssertionError("expected an error status")
+    assert "pa'ss" in text, "premise: httpx keeps the password raw in its message"
+
+    f = _failure(text)
+
+    assert f["title"] == ANSWERED
+    assert "pa'ss" not in _text(f) and "u:pa" not in _text(f) and "@127.0.0.1" not in _text(f), _text(f)
+    assert "127.0.0.1:1/v1/models" in f["detail"], "the address itself is still shown"
+
+
+# ---- the status is read from where the backend puts it ------------------------------------------------------------------------------------------------------------
+
+
+def test_ollamas_own_status_suffix_wins_over_a_status_quoted_in_the_servers_words() -> None:
+    """ollama's message is `<the server's words> (status code: n)`: the words may quote any other status, the suffix is the real one."""
+    detail = "ollama probe failed: ResponseError: the proxy in front said HTTP 502 and then refused (status code: 401)"
+
+    assert _failure(detail, "ollama", "k")["title"] == REJECTED
+    assert _failure(detail, "ollama", "")["title"] == NEEDS_KEY
+
+
+def test_a_status_quoted_in_a_body_does_not_replace_the_one_the_backend_reports() -> None:
+    f = _failure("Anthropic discover failed: HTTP 500 the body mentions HTTP 401 and (HTTP 403) too", "anthropic", "k")
+
+    assert f["title"] == ANSWERED and "500" in f["detail"]
+
+
+@pytest.mark.parametrize(
+    "detail,title",
+    [
+        ("Gemini API key invalid or unauthorized (HTTP 403); check the key from Google AI Studio.", REJECTED),
+        ("Gemini discover failed: HTTP 404 no such model list", ANSWERED),
+        ("openai-compatible probe failed: HTTPStatusError: Client error '401 Unauthorized' for url 'http://x/models'", REJECTED),
+        ("openai-compatible probe failed: HTTPStatusError: Server error '503 Service Unavailable' for url 'http://x/models'", ANSWERED),
+    ],
+)
+def test_every_wording_the_backend_really_uses_still_gives_its_status(detail: str, title: str) -> None:
+    assert _failure(detail, "openchat", "k")["title"] == title
 
 
 # ---- unreachable, and the rest -----------------------------------------------------------------------------------------------------------------------------------------
@@ -524,6 +582,14 @@ def test_a_failure_about_a_field_is_shown_under_that_field() -> None:
     body = _steps()
 
     assert "if (failure.field) setFieldErr({ [failure.field]: failure.message });" in body
+
+
+@pytest.mark.parametrize("title", ["Could not save the provider", "Could not register that model"])
+def test_the_other_failures_the_wizard_shows_are_cleaned_too(title: str) -> None:
+    """A failed save of the provider carries httpx or pydantic text just as a failed probe does: whatever the wizard shows goes through SW_tidy."""
+    body = _steps()
+
+    assert re.search(r'title: "' + title + r'", detail: SW_tidy\(', body), f"{title!r} must show a tidied detail"
 
 
 def test_each_field_shows_its_own_error_marks_itself_invalid_and_clears_it_when_edited() -> None:
