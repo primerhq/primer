@@ -28,6 +28,33 @@ SHELL_CONSOLE_IGNORES = [
 ]
 
 
+def shell_state(page) -> str:
+    """What the page looks like, for a failure message (ticket 01a11b72): its url, its hash, and how many ``nv-root``, ``nv-overlay-body`` and
+    setup-wizard elements it holds.
+
+    A journey that waits for an element which never comes says only "not visible" and nothing about WHY. This says which it was: the shell never
+    mounted (``nv-root=0``), the setup wizard was shown instead (``setup-wizard=1``: an install not past the gate), or the shell is up and the hash
+    it was given is gone or ignored. It reads a page-like object and never raises: it runs while a test is already failing, and a second exception
+    would bury the first.
+    """
+    try:
+        hash_now = repr(page.evaluate("window.location.hash"))
+    except Exception as exc:  # noqa: BLE001 - a closed page must not hide the failure being described
+        hash_now = f"<unreadable: {type(exc).__name__}>"
+    counts = {}
+    for name, locator in (("nv-root", lambda: page.get_by_test_id("nv-root")), ("nv-overlay-body", lambda: page.get_by_test_id("nv-overlay-body")),
+                          ("setup-wizard", lambda: page.get_by_text("Configure this install"))):
+        try:
+            counts[name] = locator().count()
+        except Exception:  # noqa: BLE001 - see above
+            counts[name] = "?"
+    try:
+        url = repr(page.url)
+    except Exception:  # noqa: BLE001 - see above
+        url = "<unreadable>"
+    return f"url={url} hash={hash_now} " + " ".join(f"{k}={v}" for k, v in counts.items())
+
+
 def shell_url(console_url: str, wid: str) -> str:
     return f"{console_url}#/w/{wid}"
 
