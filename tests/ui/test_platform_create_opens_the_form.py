@@ -205,3 +205,16 @@ def test_the_platform_page_hosts_both_harness_dialogs() -> None:
         assert re.search(r"NV_createdRow\(con, [\s\S]{0,60}\"harnesses\", row\)", block), (
             f"{kind}: a created row must go through the tested hand-off, with the page's own nav"
         )
+
+
+def test_only_the_build_outbound_mount_asks_the_host_for_the_outbound_builder() -> None:
+    """Swapping the flag would open the register dialog for "Build outbound" and the builder for "New harness"; only the journeys would notice."""
+    mounts = {
+        kind: re.search(r"modal\.kind === \"" + kind + r"\" \? \([\s\S]*?\) : null\}", PLAT)
+        for kind in ("harness", "harness-outbound")
+    }
+    assert all(mounts.values()), mounts
+    assert "<NV_HarnessCreateHost outbound" in mounts["harness-outbound"].group(0)
+    assert "outbound" not in mounts["harness"].group(0).replace("onCreated", "")
+    host = re.search(r"function NV_HarnessCreateHost[\s\S]{0,300}", PLAT).group(0)
+    assert re.search(r"props\.outbound\s*\?\s*window\.HarnessOutboundBuilder\s*:\s*window\.HarnessRegisterDialog", host), host
