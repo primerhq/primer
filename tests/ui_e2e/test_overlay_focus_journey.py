@@ -27,6 +27,32 @@ _FOCUS_STAYS_IN_DIALOG = """() => {
 }"""
 
 
+_COUNT_FOCUSABLES = "() => window.primerApi.focusablesOf(document.querySelector('[role=dialog]')).length"
+_IS = "(el) => document.activeElement === el"
+
+
+def _assert_the_trap_cycles(page: Page, what: str) -> int:
+    """Tab through the dialog once around and a little more: every press stays inside, and ``count`` presses come back to where they
+    started (a trap that merely stays inside, or one that lets focus run off the end, cannot do both). Then the same with Shift+Tab."""
+    count = page.evaluate(_COUNT_FOCUSABLES)
+    assert count >= 2, f"{what}: a dialog with {count} focusable element(s) cannot show a wrap"
+    start = page.evaluate_handle("() => document.activeElement")
+    for n in range(count):
+        page.keyboard.press("Tab")
+        assert page.evaluate(_FOCUS_STAYS_IN_DIALOG), f"{what}: Tab {n + 1} of {count} left the dialog"
+    assert page.evaluate(_IS, start), f"{what}: {count} Tabs did not wrap back to the element they started from"
+    for n in range(2):
+        page.keyboard.press("Tab")
+        assert page.evaluate(_FOCUS_STAYS_IN_DIALOG), f"{what}: Tab {count + n + 1} (past the wrap) left the dialog"
+    for _ in range(2):
+        page.keyboard.press("Shift+Tab")
+    for n in range(count):
+        page.keyboard.press("Shift+Tab")
+        assert page.evaluate(_FOCUS_STAYS_IN_DIALOG), f"{what}: Shift+Tab {n + 1} of {count} left the dialog"
+    assert page.evaluate(_IS, start), f"{what}: {count} Shift+Tabs did not wrap back to the element they started from"
+    return count
+
+
 def _a_workspace_id(base_url: str) -> str:
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
         return c.get("/v1/workspaces").json()["items"][0]["id"]
@@ -48,12 +74,7 @@ def test_a_console_overlay_takes_focus_traps_it_and_gives_it_back(page: Page, ba
 
     # Focus moved INTO the dialog (not onto the dialog box itself, and not left on the "+" behind the scrim).
     page.wait_for_function(_FOCUS_IN_DIALOG, timeout=5_000)
-    for n in range(14):
-        page.keyboard.press("Tab")
-        assert page.evaluate(_FOCUS_STAYS_IN_DIALOG), f"Tab {n + 1} left the dialog"
-    for n in range(4):
-        page.keyboard.press("Shift+Tab")
-        assert page.evaluate(_FOCUS_STAYS_IN_DIALOG), f"Shift+Tab {n + 1} left the dialog"
+    _assert_the_trap_cycles(page, "the Create session overlay")
 
     page.keyboard.press("Escape")
     expect(page.get_by_role("dialog")).to_have_count(0, timeout=10_000)
@@ -72,9 +93,7 @@ def test_the_phones_create_session_sheet_takes_focus_and_gives_it_back(page: Pag
     expect(sheet).to_be_visible(timeout=10_000)
     expect(sheet).to_have_attribute("aria-modal", "true")
     page.wait_for_function(_FOCUS_IN_DIALOG, timeout=5_000)
-    for n in range(12):
-        page.keyboard.press("Tab")
-        assert page.evaluate(_FOCUS_STAYS_IN_DIALOG), f"Tab {n + 1} left the sheet"
+    _assert_the_trap_cycles(page, "the phone's Create session sheet")
 
     page.keyboard.press("Escape")
     expect(page.get_by_role("dialog")).to_have_count(0, timeout=10_000)
@@ -86,13 +105,15 @@ def test_a_confirm_dialog_still_traps_and_restores_focus(page: Page, base_url: s
     """The shared Modal's trap moved into the shared hook; this pins that it still behaves."""
     wid = _a_workspace_id(base_url)
     open_shell(page, console_url, wid)
+    opener = page.get_by_test_id("nv-rail-create-session")
+    opener.focus()
+    expect(opener).to_be_focused()
     page.evaluate("() => { window.__confirm = window.confirmDialog({ title: 'Are you sure', message: 'Really?', danger: true }); }")
     dialog = page.get_by_role("dialog")
     expect(dialog).to_be_visible(timeout=10_000)
     expect(dialog).to_have_attribute("aria-label", re.compile("Are you sure"))
     page.wait_for_function(_FOCUS_IN_DIALOG, timeout=5_000)
-    for n in range(6):
-        page.keyboard.press("Tab")
-        assert page.evaluate(_FOCUS_STAYS_IN_DIALOG), f"Tab {n + 1} left the confirm dialog"
+    _assert_the_trap_cycles(page, "the confirm dialog")
     page.keyboard.press("Escape")
     expect(page.get_by_role("dialog")).to_have_count(0, timeout=10_000)
+    expect(opener).to_be_focused()
