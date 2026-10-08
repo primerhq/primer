@@ -13,8 +13,10 @@ Error last, then the helper's call to it is answered with an ERROR result that q
 
 from __future__ import annotations
 
+import copy
 import functools
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -140,3 +142,46 @@ def test_a_result_of_another_run_with_the_same_scoped_id_is_not_this_calls(rende
     calls = {r["seq"]: r["payload"]["id"] for r in seeded.records if r["kind"] == "tool_call"}
     assert calls[seeded.parent_call_seq] == calls[seeded.child_call_seq]
     assert ctx.eval("Object.keys(NESTED.resultsByCallId).length") == 2, "one result per (run, call id): the parent's and the helper's"
+
+
+def _before_run_ids(records: list[dict]) -> list[dict]:
+    """The log a deployment wrote before runs had ids: a delegated record carries ``delegated`` and the delegating call's raw id, and no run id."""
+    out = copy.deepcopy(records)
+    for r in out:
+        r["payload"].pop("delegate_run_id", None)
+        r["payload"].pop("delegate_parent_run_id", None)
+    return out
+
+
+@pytest.mark.parametrize("failures", [False, True])
+def test_records_from_before_run_ids_still_pair_each_call_with_its_own_result(render, failures: bool) -> None:
+    """With no run id the scope of a delegated record is the raw id of the call that delegated (``call:<id>``); the parent's own records have none.
+
+    The parent's call and the helper's call still share a scoped id (``x:tool:1:1``), so a reader with no scope for them would give both the result indexed last.
+    """
+    seeded = seed.build(failures=failures)
+    records = _before_run_ids(seeded.records)
+    assert not any("delegate_run_id" in r["payload"] for r in records)
+    assert any(r["payload"].get("delegated") and r["payload"].get("delegate_tool_call_id") for r in records), "the delegated records stay marked"
+    parent_call = next(r for r in records if r["seq"] == seeded.parent_call_seq)
+    child_call = next(r for r in records if r["seq"] == seeded.child_call_seq)
+    assert parent_call["payload"]["id"] == child_call["payload"]["id"]
+    parent_result = next(r["seq"] for r in records if r["kind"] == "tool_result" and not r["payload"].get("delegated") and r["payload"]["call_id"] == parent_call["payload"]["id"])
+    child_result = next(r["seq"] for r in records if r["kind"] == "tool_result" and r["payload"].get("delegated") and r["payload"]["call_id"] == child_call["payload"]["id"])
+
+    ctx = render(records, seeded.parent_call_seq)
+
+    assert _call_text(ctx, seeded.parent_call_seq) == f"[call {seeded.parent_call_seq} result={parent_result}:error=false]"
+    assert _call_text(ctx, seeded.child_call_seq) == f"[call {seeded.child_call_seq} result={child_result}:error={'true' if failures else 'false'}]"
+
+
+def test_the_session_doc_pairs_through_the_shared_pipeline_step_and_lookup() -> None:
+    """The V8 tests above run ``SH_nestWithResults`` / ``SH_resultForCall`` themselves; this pins that the session tab is wired to them.
+
+    A component that went back to indexing the top-level results by scoped id alone would pass every test above and fail the reader of a grandchild's notice.
+    """
+    body = _function("NV_SessionDoc")
+    assert re.search(r"SH_nestWithResults\(\s*window\.SA_toTranscript\(", body), "the pipeline's nesting is SH_nestWithResults over the adapter's transcript"
+    assert re.search(r"function resultFor\(row\)\s*\{\s*return SH_resultForCall\(resultsByCallId, row\);\s*\}", body), "a call's result is SH_resultForCall's"
+    assert "SH_nestSubagentRows(" not in body, "the rows are nested by the pipeline step, after the results are indexed"
+    assert not re.search(r"resultsByCallId\[[^\]]+\]\s*=", body), "no second hand-built index of results"
