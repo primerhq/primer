@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from primer.channel.adapter import APPROVAL_ROUTED_NOTICE
 from primer.channel.factory import register_adapter_factory
 from primer.channel.slack.adapter import (
     REJECT_MODAL_CALLBACK_ID,
@@ -71,6 +72,20 @@ async def _route_channel_event(adapter: Any, provider_id: str, event: dict) -> b
         return False
 
 
+async def _tell_the_approval_is_routed_elsewhere(client: Any, channel_id: str | None, user_id: str | None) -> None:
+    """Tell the clicker, and only the clicker (an ephemeral message), that the gate they tried to decide is routed to specific approvers.
+
+    The decision was refused by the inbox, so the original message is left as it is. Best-effort: a failure to post the notice is logged.
+    """
+    if not channel_id or not user_id:
+        logger.warning("slack: a refused approval could not be reported to the clicker (no channel or user id)")
+        return
+    try:
+        await client.chat_postEphemeral(channel=channel_id, user=user_id, text=APPROVAL_ROUTED_NOTICE)
+    except Exception:
+        logger.exception("slack: chat.postEphemeral for a refused approval failed")
+
+
 def _install_handlers(provider_id: str, app: Any) -> None:
     """One-shot handler installation per shared connection."""
     if provider_id in _HANDLERS_INSTALLED:
@@ -91,11 +106,15 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         if adapter is None:
             return
         user_id = body.get("user", {}).get("id")
-        await adapter._handle_decision(
+        accepted = await adapter._handle_decision(
             workspace_id=ws, session_id=sid, tool_call_id=tcid,
             decision="approved", reason=None,
             user_id=user_id,
         )
+        if not accepted:
+            # Refused: the gate is routed to specific approvers. Say so to the clicker; the message is not "Approved".
+            await _tell_the_approval_is_routed_elsewhere(client, channel_id, user_id)
+            return
         # Replace the buttons with an "Approved by @user" note.
         from primer.channel.slack.render import build_decided_blocks
         msg = body.get("message", {})
@@ -151,13 +170,17 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         entry = SLACK_CONNECTIONS.entry(provider_id)
         if entry is None:
             return
+        accepted = True
         for adapter in entry.adapters_by_channel_id.values():
-            await adapter._handle_decision(
+            accepted = await adapter._handle_decision(
                 workspace_id=ws, session_id=sid, tool_call_id=tcid,
                 decision="rejected", reason=reason,
                 user_id=user_id,
             )
             break  # first wins; the inbox dedupes anyway
+        if not accepted:
+            await _tell_the_approval_is_routed_elsewhere(client, channel_id, user_id)
+            return
         # Replace the buttons on the original message with a "Rejected" note.
         if channel_id and message_ts:
             from primer.channel.slack.render import build_decided_blocks

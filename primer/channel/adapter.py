@@ -91,6 +91,15 @@ def attribution_header(env: "PromptEnvelope") -> str:
     return f"\U0001F6E0 Workspace: {ws} · Session: {sess}\n"
 
 
+#: What a chat user is told when their approval click or rejection reason was refused because the gate is routed to specific approvers
+#: (``ChannelInbox`` raises ``ApproverRefusedError``: a messaging-platform user is not an identified primer user). Under 200 characters:
+#: Telegram's alert on a callback query takes no more.
+APPROVAL_ROUTED_NOTICE = (
+    "This approval is routed to specific approvers, so it cannot be decided from a chat. "
+    "Decide it in the console, as one of its approvers or an admin."
+)
+
+
 class ChannelAdapter(ABC):
     """Per-channel adapter instance.
 
@@ -152,28 +161,36 @@ class ChannelAdapter(ABC):
         workspace_id: str, session_id: str, tool_call_id: str,
         decision: str, reason: str | None,
         user_id: Any = None,
-    ) -> None:
+    ) -> bool:
         """Relay a tool-approval decision (Approve/Reject) to the inbox.
 
         The acting user's id is recorded under the provider-specific
         :meth:`_user_id_key` so renderers can attribute the decision.
 
-        Raises :class:`primer.session.approvers.ApproverRefusedError` when the
-        gate is routed to specific approvers: a messaging-platform user is not
-        a primer user the spec can admit, so such a gate is decided in the
-        console (see ``ChannelInbox._enforce_approvers``; the adapters'
-        feedback to the clicker is ticket 01a11b6c-b53b).
+        Returns ``True`` when the inbox accepted the decision and ``False`` when it
+        REFUSED it because the gate is routed to specific approvers
+        (:class:`primer.session.approvers.ApproverRefusedError`): a messaging-platform
+        user is not a primer user the spec can admit, so such a gate is decided in
+        the console (see ``ChannelInbox._enforce_approvers``). The caller then tells
+        the clicker with :data:`APPROVAL_ROUTED_NOTICE` and must not mark the message
+        decided. Any other failure still raises.
         """
-        await self._inbox.handle_response(ResponseEnvelope(
-            kind="tool_approval",
-            workspace_id=workspace_id, session_id=session_id,
-            tool_call_id=tool_call_id,
-            response=None, decision=decision, reason=reason,
-            platform_metadata={
-                self._user_id_key(): user_id
-                if user_id is not None else self._user_id_default(),
-            },
-        ))
+        from primer.session.approvers import ApproverRefusedError
+
+        try:
+            await self._inbox.handle_response(ResponseEnvelope(
+                kind="tool_approval",
+                workspace_id=workspace_id, session_id=session_id,
+                tool_call_id=tool_call_id,
+                response=None, decision=decision, reason=reason,
+                platform_metadata={
+                    self._user_id_key(): user_id
+                    if user_id is not None else self._user_id_default(),
+                },
+            ))
+        except ApproverRefusedError:
+            return False          # the inbox already logged the refusal with the platform metadata
+        return True
 
     async def _handle_text_reply(
         self, *,

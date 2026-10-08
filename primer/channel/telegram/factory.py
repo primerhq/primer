@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from primer.channel.adapter import APPROVAL_ROUTED_NOTICE
 from primer.channel.factory import register_adapter_factory
 from primer.channel.telegram.adapter import TelegramChannelAdapter
 from primer.channel.telegram.connection import TELEGRAM_CONNECTIONS
@@ -91,46 +92,58 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         cq = update.callback_query
         if cq is None:
             return
-        await cq.answer()
-        chat_id = str(cq.message.chat.id) if cq.message else ""
-        entry = TELEGRAM_CONNECTIONS.entry(provider_id)
-        if entry is None:
-            return
-        adapter = entry.adapters_by_chat_id.get(chat_id)
-        if adapter is None:
-            return
-        data = cq.data or ""
-        if data.startswith("a:"):
-            tag = data[2:]
-            ids = await adapter._resolve_tag(tag)
-            if ids is None:
+        # The click is answered ONCE, on the way out whatever the branch: a refused approval answers it with an alert only the clicker
+        # sees (the routing notice), anything else with the plain acknowledgement that stops the button's spinner.
+        notice: str | None = None
+        try:
+            chat_id = str(cq.message.chat.id) if cq.message else ""
+            entry = TELEGRAM_CONNECTIONS.entry(provider_id)
+            if entry is None:
                 return
-            await adapter._handle_decision(
-                **ids, decision="approved", reason=None,
-                user_id=cq.from_user.id if cq.from_user else None,
-            )
-            try:
-                await context.bot.edit_message_text(
-                    chat_id=cq.message.chat.id,
-                    message_id=cq.message.message_id,
-                    text=f"{cq.message.text}\n\n✓ Approved",
-                )
-            except Exception:
-                logger.exception("telegram: edit_message_text failed")
-        elif data.startswith("r:"):
-            tag = data[2:]
-            ids = await adapter._resolve_tag(tag)
-            if ids is None:
+            adapter = entry.adapters_by_chat_id.get(chat_id)
+            if adapter is None:
                 return
-            sent = await context.bot.send_message(
-                chat_id=cq.message.chat.id, **build_rejection_prompt(),
-            )
-            # The reason arrives as a reply to this prompt; correlate by id.
-            mid = getattr(sent, "message_id", 0)
-            if mid:
-                adapter.remember_reply_target(
-                    message_id=mid, ids=ids, kind="reject",
+            data = cq.data or ""
+            if data.startswith("a:"):
+                tag = data[2:]
+                ids = await adapter._resolve_tag(tag)
+                if ids is None:
+                    return
+                accepted = await adapter._handle_decision(
+                    **ids, decision="approved", reason=None,
+                    user_id=cq.from_user.id if cq.from_user else None,
                 )
+                if not accepted:
+                    # Refused: the gate is routed to specific approvers. The message is not marked approved.
+                    notice = APPROVAL_ROUTED_NOTICE
+                    return
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=cq.message.chat.id,
+                        message_id=cq.message.message_id,
+                        text=f"{cq.message.text}\n\n✓ Approved",
+                    )
+                except Exception:
+                    logger.exception("telegram: edit_message_text failed")
+            elif data.startswith("r:"):
+                tag = data[2:]
+                ids = await adapter._resolve_tag(tag)
+                if ids is None:
+                    return
+                sent = await context.bot.send_message(
+                    chat_id=cq.message.chat.id, **build_rejection_prompt(),
+                )
+                # The reason arrives as a reply to this prompt; correlate by id.
+                mid = getattr(sent, "message_id", 0)
+                if mid:
+                    adapter.remember_reply_target(
+                        message_id=mid, ids=ids, kind="reject",
+                    )
+        finally:
+            if notice is not None:
+                await cq.answer(text=notice, show_alert=True)
+            else:
+                await cq.answer()
 
     async def _on_message(update, context):
         msg = update.message
@@ -194,10 +207,15 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         kind = target.get("kind")
         ids = {k: target[k] for k in ("workspace_id", "session_id", "tool_call_id")}
         if kind == "reject":
-            await adapter._handle_decision(
+            accepted = await adapter._handle_decision(
                 **ids, decision="rejected", reason=msg.text or "",
                 user_id=user_id,
             )
+            if not accepted:
+                # Refused: the gate is routed to specific approvers. Reply to the reason, so the clicker is told.
+                await context.bot.send_message(
+                    chat_id=msg.chat.id, text=APPROVAL_ROUTED_NOTICE, reply_to_message_id=msg.message_id,
+                )
 
     app.add_handler(CallbackQueryHandler(_on_callback))
     # Text plus inbound media (photo/document/audio/voice/video). The caption
