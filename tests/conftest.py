@@ -734,7 +734,7 @@ def _no_unclosed_sqlite_providers(request: pytest.FixtureRequest):
     # Its own MonkeyPatch, not the test's: a test that calls ``monkeypatch.undo()`` would otherwise unhook the guard and have its
     # ``aclose()`` go unseen (tests/harness/test_service.py::test_install_document_body_atomic does).
     with pytest.MonkeyPatch.context() as guard_patches:
-        open_providers = OpenSqliteProviders(guard_patches)
+        open_providers = OpenSqliteProviders(guard_patches, test_file=request.node.path)
         yield
         leaked = open_providers.close_leaked()
     if leaked:
@@ -742,7 +742,8 @@ def _no_unclosed_sqlite_providers(request: pytest.FixtureRequest):
             f"{request.node.nodeid} left {len(leaked)} SqliteStorageProvider(s) open (initialize() called at: {'; '.join(leaked)}). "
             "Close it: build it in a fixture that yields and awaits aclose(), or close it in a finally. "
             "Left open, the garbage collector finishes it inside some later test, whose run then reports "
-            "'Event loop is closed' from the connection's worker thread.",
+            "'Event loop is closed' from the connection's worker thread."
+            + ("" if open_providers.close_finished else " The guard's own close did NOT finish in time, so the connection's worker thread may still be running."),
             pytrace=False,
         )
 

@@ -36,7 +36,9 @@ async def test_boot_fails_when_the_default_template_is_on_a_refused_local_provid
                 pytest.fail("the app must not start")
     finally:
         # A boot that fails leaves the storage provider it opened open (the process exits); a test's process does not.
-        await app.state.storage_provider.aclose()
+        provider = getattr(app.state, "storage_provider", None)
+        if provider is not None:
+            await provider.aclose()
 
 
 async def test_boot_succeeds_with_the_switch_off_even_when_distributed(tmp_path, caplog) -> None:
