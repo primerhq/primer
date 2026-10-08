@@ -373,3 +373,109 @@ async def test_an_admin_edit_held_across_a_logout_all_does_not_undo_it(client, a
     assert stored.session_epoch == 1
     assert stored.email == "bob@example.com"
     assert not await _authenticated(app, bob_cookie)
+
+
+# ---- review round 2: the guards themselves ----------------------------------------
+
+
+def _hold_first(monkeypatch, module, name):
+    """Block only the FIRST call of ``module.name`` until released; later calls run straight through."""
+    real = getattr(module, name)
+    entered, release = asyncio.Event(), asyncio.Event()
+    state = {"first": True}
+
+    async def held(*a, **k):
+        if state["first"]:
+            state["first"] = False
+            entered.set()
+            await release.wait()
+        return await real(*a, **k)
+
+    monkeypatch.setattr(module, name, held)
+    return entered, release
+
+
+@pytest.mark.asyncio
+async def test_a_login_held_across_a_password_change_is_refused(client, app, monkeypatch):
+    """The login verified the OLD password; stamp_login's password_hash guard must refuse it afterwards."""
+    await _register_admin(client)
+    entered, release = _hold_first(monkeypatch, _auth_router, "verify_password")
+    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as other:
+        login = asyncio.create_task(
+            other.post("/v1/auth/login", json={"username": "alice", "password": "supersecret"})
+        )
+        await asyncio.wait_for(entered.wait(), 5)
+        changed = await client.post(
+            "/v1/auth/change-password",
+            json={"current_password": "supersecret", "new_password": "newsecret123"},
+        )
+        release.set()
+        r = await asyncio.wait_for(login, 5)
+    assert changed.status_code == 200, changed.text
+    assert r.status_code == 401, r.text
+    assert "set-cookie" not in r.headers
+
+
+@pytest.mark.asyncio
+async def test_a_login_held_across_an_admin_reset_is_refused(client, app, monkeypatch):
+    await _register_admin(client)
+    created = await client.post(
+        "/v1/admin/users", json={"username": "bob", "password": "bobpassword", "role": "user"},
+    )
+    bob_id = created.json()["id"]
+    entered, release = _hold(monkeypatch, _auth_router, "verify_password")
+    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as bob:
+        login = asyncio.create_task(
+            bob.post("/v1/auth/login", json={"username": "bob", "password": "bobpassword"})
+        )
+        await asyncio.wait_for(entered.wait(), 5)
+        reset = await client.patch(f"/v1/admin/users/{bob_id}", json={"password": "brandnewpass"})
+        assert reset.status_code == 200, reset.text
+        release.set()
+        r = await asyncio.wait_for(login, 5)
+    assert r.status_code == 401, r.text
+
+
+@pytest.mark.asyncio
+async def test_two_concurrent_password_changes_cannot_both_win(client, app, monkeypatch):
+    """Both verified the same current password; the slower one must be refused, not overwrite the first."""
+    from primer.auth.passwords import verify_password
+
+    await _register_admin(client)
+    entered, release = _hold_first(monkeypatch, _auth_router, "hash_password")
+    first = asyncio.create_task(client.post(
+        "/v1/auth/change-password",
+        json={"current_password": "supersecret", "new_password": "firstnew123"},
+    ))
+    await asyncio.wait_for(entered.wait(), 5)
+    async with _replay(app, client.cookies[_COOKIE]) as c2:
+        second = await c2.post(
+            "/v1/auth/change-password",
+            json={"current_password": "supersecret", "new_password": "secondnew123"},
+        )
+    assert second.status_code == 200, second.text
+    release.set()
+    r = await asyncio.wait_for(first, 5)
+    assert r.status_code == 401, r.text
+    stored = await _user(app.state.storage_provider, "alice")
+    assert await verify_password("secondnew123", stored.password_hash)
+    assert stored.session_epoch == 1
+
+
+@pytest.mark.asyncio
+async def test_a_login_whose_user_is_deleted_mid_request_is_a_401(client, app, monkeypatch):
+    await _register_admin(client)
+    created = await client.post(
+        "/v1/admin/users", json={"username": "bob", "password": "bobpassword", "role": "user"},
+    )
+    bob_id = created.json()["id"]
+    entered, release = _hold(monkeypatch, _auth_router, "verify_password")
+    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as bob:
+        login = asyncio.create_task(
+            bob.post("/v1/auth/login", json={"username": "bob", "password": "bobpassword"})
+        )
+        await asyncio.wait_for(entered.wait(), 5)
+        await app.state.storage_provider.get_storage(User).delete(bob_id)
+        release.set()
+        r = await asyncio.wait_for(login, 5)
+    assert r.status_code == 401, r.text

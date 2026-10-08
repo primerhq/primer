@@ -173,3 +173,27 @@ async def test_noop_when_no_eligible_user(fake_storage_provider):
     await ensure_admin_exists(fake_storage_provider)
 
     assert (await storage.get("user-1")).role == "user"
+
+
+@pytest.mark.asyncio
+async def test_the_promotion_writes_only_the_role(fake_storage_provider, monkeypatch):
+    """SEC-05 review: a whole-document write of the row read at boot would put back a session_epoch that a
+    concurrent sign-out-everywhere (another replica, during a rolling deploy) had moved."""
+    storage = fake_storage_provider.get_storage(User)
+    await storage.create(_make_user(
+        id="user-1", username="alice", created_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+    ))
+    real_list = storage.list
+
+    async def list_then_bump(*a, **k):
+        page = await real_list(*a, **k)
+        current = await storage.get("user-1")
+        # The concurrent writer, after the boot read and before the promotion.
+        await storage.update(current.model_copy(update={"session_epoch": current.session_epoch + 1}))
+        return page
+
+    monkeypatch.setattr(storage, "list", list_then_bump)
+    await ensure_admin_exists(fake_storage_provider)
+    stored = await storage.get("user-1")
+    assert stored.role == "admin"
+    assert stored.session_epoch == 1
