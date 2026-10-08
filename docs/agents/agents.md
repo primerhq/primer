@@ -216,8 +216,11 @@ Agents are managed via standard CRUD plus the semantic search tool.
   harness-managed agent (`harness_id` set) returns a `conflict`
   error, and `create_agent` refuses a body that sets `harness_id`
   (`bad-request`); the same rule as the REST routes.
-- `system::delete_agent` - cascade-blocked if any session is bound to
-  the agent. Deleting the seeded `operator` or `builder` agent is
+- `system::delete_agent` - refused with a `conflict` error (`in_use_by`,
+  the same 409 the REST route answers) while a graph has an agent node
+  naming the agent, a session that is not ended is bound to it, or a
+  trigger subscription targets it; delete or end those first (an ended
+  session never blocks). Deleting the seeded `operator` or `builder` agent is
   allowed but marks the install as not set up (admins are sent to the
   setup checklist, every other user waits on a setup screen) until
   `POST /v1/setup/seed` or the next server start re-creates it with its
