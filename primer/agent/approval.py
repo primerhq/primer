@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -106,11 +107,58 @@ def effective_approvers(
     return verdict.approvers or policy.approvers
 
 
+# How many enabled candidates for one (toolset_id, tool_name) the resolver reads. One is the rule; more than one is a leftover
+# duplicate, and a handful is already pathological, so this is a bound on the read and not a limit anyone should meet.
+_CANDIDATES = 50
+
+
+def _choose_policy(rows: Sequence[ToolApprovalPolicy], *, toolset_id: str, tool_name: str) -> ToolApprovalPolicy | None:
+    """The policy that gates ``(toolset_id, tool_name)`` among its ENABLED rows, by the set and never by the order they came in.
+
+    Uniqueness per tool is refused at write time (REST and the system tools share ``check_policy_unique``) but is not a storage
+    constraint, so a raced pair of creates or a row from before the check can leave two. The old pick, the first row of an unordered
+    ``find``, depended on the backend's row order: a weaker duplicate could shadow a strict one and the winner could change with no edit.
+
+    The rule is MOST RESTRICTIVE WINS (newest cannot be told: a policy carries no timestamp):
+
+    * one row: that row, as stored;
+    * an unconditional gate (``required``) among them: it wins (the lowest id if several), so no duplicate can weaken it;
+    * only conditional policies (Rego, LLM judge): which is stricter depends on the call, which is not known here, so the tool is
+      GATED UNCONDITIONALLY, failing closed as the evaluator does for an error, under the identity, timeout and approvers of the
+      lowest-id row (a stored row, so the approval record and the card still name a real policy).
+
+    Either way the ids are logged, once per cache lifetime, so the operator deletes the extra row. Who may decide the call comes from
+    that one row; the duplicates' approvers are not merged.
+    """
+    if not rows:
+        return None
+    if len(rows) == 1:
+        return rows[0]
+    ordered = sorted(rows, key=lambda p: (p.approval.type is not ApprovalType.REQUIRED, p.id))
+    first = ordered[0]
+    ids = [p.id for p in ordered]
+    if first.approval.type is ApprovalType.REQUIRED:
+        chosen, outcome = first, f"using {first.id!r}, an unconditional gate"
+    else:
+        chosen = first.model_copy(update={"approval": RequiredApprovalConfig()})
+        outcome = (
+            f"none is unconditional and conditional policies cannot be compared without the call, so the tool is gated "
+            f"unconditionally under the settings of {first.id!r}"
+        )
+    logger.warning(
+        "tool approval: %d enabled policies for toolset_id=%r tool_name=%r (%s); %s%s. Delete the extra rows.",
+        len(rows), toolset_id, tool_name, ", ".join(ids), outcome,
+        "; more rows may exist than were read" if len(rows) >= _CANDIDATES else "",
+    )
+    return chosen
+
+
 class ApprovalResolver:
     """Per-app-instance lookup + cache for ToolApprovalPolicy rows.
 
-    Lookup key is ``(toolset_id, tool_name)``. The application-level
-    uniqueness constraint guarantees at most one match. Entries are
+    Lookup key is ``(toolset_id, tool_name)``. Uniqueness is refused at
+    write time, not by storage, so more than one enabled row can exist
+    (see :func:`_choose_policy` for what the lookup then does). Entries are
     cached in-process for ``cache_ttl_seconds`` (default 30 s) so
     operator edits propagate without a restart.
     """
@@ -174,9 +222,9 @@ class ApprovalResolver:
                 right=enabled_pred,
             )
             page = await self._storage.find(
-                predicate, OffsetPage(offset=0, length=1),
+                predicate, OffsetPage(offset=0, length=_CANDIDATES),
             )
-            policy = page.items[0] if page.items else None
+            policy = _choose_policy(page.items, toolset_id=toolset_id, tool_name=tool_name)
             self._cache[key] = (now + self._ttl, policy)
             return policy
 
