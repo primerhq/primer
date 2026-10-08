@@ -243,7 +243,7 @@ def test_u0030_session_cancel_button_transitions_row_to_terminal(
 
         # Re-pointed (flag day, then uiv2 R2): the console's End
         # affordance is the session row's context-menu verb (POST
-        # .../cancel, fired directly - no confirm); the old panel's
+        # .../cancel, asks first, then fires); the old panel's
         # ctrl-end died. R2 moved the row into the workspace tree
         # (collapsed by default) and the menu testid to the rail prefix.
         page.get_by_test_id(f"nv-rail-ws:{workspace_id}").click()
@@ -255,6 +255,8 @@ def test_u0030_session_cancel_button_transitions_row_to_terminal(
         menu = page.get_by_test_id(f"nv-rail-session-menu:{session_id}")
         menu.wait_for(state="visible", timeout=10_000)
         menu.get_by_text("End", exact=True).click()
+        # End asks first (C-012): the button is named after the action.
+        page.get_by_test_id("dialog-confirm").click()
 
         # The doc reflects the terminal state: the transcript folds with
         # "session ended [· reason]" within the polling cadence.

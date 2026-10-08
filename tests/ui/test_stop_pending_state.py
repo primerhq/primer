@@ -252,9 +252,10 @@ def test_the_rail_menu_offers_interrupt_only_on_a_session_that_can_be_stopped() 
 
 def test_the_rail_failure_toast_is_an_error_not_an_info() -> None:
     menu = _function_source(RAIL, "NV_Rail_SessionContextMenu")
-    callback = menu[menu.index("window.NV_doInterrupt("):]
-    assert "extra" in callback and "kind" in callback, "the rail must forward the toast's kind and request id"
-    assert 'kind: "info"' not in callback, "a failed Stop must not be an info toast"
+    toast = menu[menu.index("function toast(msg, extra)"):menu.index("var over = ")]
+    assert "extra" in toast and "kind" in toast and "requestId" in toast, "the rail must forward the toast's kind and request id"
+    assert "window.NV_doInterrupt(wid, sid, props.onChanged, toast)" in menu, "and the Stop row hands it the same toast"
+    assert 'kind: "info"' not in toast, "a failed Stop must not be an info toast"
 
 
 def test_a_refused_stop_shows_the_servers_honest_reason_and_clears_the_pending_state() -> None:

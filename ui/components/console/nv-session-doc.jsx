@@ -139,9 +139,65 @@ function NV_doInterrupt(wid, sid, refetchAll, toast) {
   pending.then(release, release);
   return pending;
 }
-function NV_doClose(wid, sid, refetchAll, toast) {
-  return SH_api.cancel(wid, sid).then(refetchAll, function (err) {
-    toast("Close failed: " + (err.detail || err.message));
+// A failure the user must see (console review C-012, C-022): one error toast with the server's own reason and the request id.
+function NV_failToast(toast, what, err) {
+  toast(what + " failed: " + ((err && (err.detail || err.message)) || "unknown error"), {
+    kind: "error", requestId: (err && (err.requestId || err.request_id)) || null,
+  });
+}
+// Park, End and Delete back the rail's context menu, the session header's overflow menu (the only menu a phone has) and the
+// palette verbs. Each resolves {ok: true}, {cancelled: true} (the user said no) or {failed: true} (already toasted); none rejects.
+// Park is the pause route and asks nothing first: sending a message resumes the session.
+function NV_doPark(wid, sid, refetchAll, toast) {
+  return SH_api.pause(wid, sid).then(function () {
+    toast("Session paused. Send a message to resume it.");
+    if (refetchAll) refetchAll();
+    return { ok: true };
+  }, function (err) {
+    NV_failToast(toast, "Park", err);
+    return { failed: true };
+  });
+}
+// End is the hard cancel. It asks first, because it cancels a running turn; the button is named after the action, and the
+// message says the session is not lost (a message sent later reopens it). A failed End re-reads the row, so a stale "running"
+// chip catches up with what the server says (a 409 on an already-ended session was silent).
+function NV_doEnd(wid, sid, label, refetchAll, toast) {
+  return window.confirmDialog({
+    title: "End session",
+    message: "End " + label + "? A running turn is cancelled. Sending a message later reopens the session.",
+    confirmLabel: "End session",
+    danger: true,
+  }).then(function (ok) {
+    if (!ok) return { cancelled: true };
+    return SH_api.cancel(wid, sid).then(function () {
+      toast("Session ended");
+      if (refetchAll) refetchAll();
+      return { ok: true };
+    }, function (err) {
+      NV_failToast(toast, "End", err);
+      if (refetchAll) refetchAll();
+      return { failed: true };
+    });
+  });
+}
+// Delete answers 409 for a running session; the server's reason ("end it first") is shown and the caller's onDeleted (which
+// closes the tab) does not run for a session that still exists.
+function NV_doDelete(wid, sid, label, onDeleted, toast) {
+  return window.confirmDialog({
+    title: "Delete session",
+    message: "Permanently delete " + label + "?",
+    confirmLabel: "Delete",
+    danger: true,
+  }).then(function (ok) {
+    if (!ok) return { cancelled: true };
+    return SH_api.deleteSession(wid, sid).then(function () {
+      toast("Session deleted");
+      if (onDeleted) onDeleted();
+      return { ok: true };
+    }, function (err) {
+      NV_failToast(toast, "Delete", err);
+      return { failed: true };
+    });
   });
 }
 function NV_doRename(wid, sid, currentName, refetchAll, toast) {
@@ -151,7 +207,7 @@ function NV_doRename(wid, sid, currentName, refetchAll, toast) {
     if (name == null) return;
     return SH_api.renameSession(wid, sid, name || null).then(
       refetchAll,
-      function (err) { toast("Rename failed: " + (err.detail || err.message)); }
+      function (err) { NV_failToast(toast, "Rename", err); }
     );
   });
 }
@@ -393,6 +449,8 @@ function NV_SessionHeader(props) {
   var setOvf = ovfState[1];
   var usage = props.usage || {};
   var pct = usage.pct || 0;
+  // A phone has one pane: tab-group splitting is a desktop verb and is not offered in its menu.
+  var isMobile = window.primerApi.useViewport().isMobile;
   var isGraph = session && session.binding
     && session.binding.kind === "graph";
 
@@ -474,13 +532,15 @@ function NV_SessionHeader(props) {
         {ovfOpen ? (
           <div className="nv-menu nv-menu-right"
             onClick={function (ev) { ev.stopPropagation(); }}>
-            <button type="button" className="nv-menu-row"
-              data-verb="session.splitRight"
-              onClick={function () {
-                setOvf(false);
-                var verb = con.registry.get("session.splitRight");
-                if (verb) verb.run();
-              }}>Split Right</button>
+            {!isMobile ? (
+              <button type="button" className="nv-menu-row"
+                data-verb="session.splitRight"
+                onClick={function () {
+                  setOvf(false);
+                  var verb = con.registry.get("session.splitRight");
+                  if (verb) verb.run();
+                }}>Split Right</button>
+            ) : null}
             <div className="nv-menu-sep" />
             {/* 01a052a5: "Rewind..." moved out of this menu entirely -
                 a per-message icon beside each eligible user message
@@ -503,28 +563,27 @@ function NV_SessionHeader(props) {
                 props.onExport();
               }}>Export transcript</button>
             <div className="nv-menu-sep" />
-            {!NV_sessionIsOver(session) ? (
-              <button type="button" className="nv-menu-row" data-danger="true"
-                data-verb="session.close"
+            {!NV_sessionIsOver(session) && !(session && session.status === "paused") ? (
+              <button type="button" className="nv-menu-row"
+                data-testid="nv-session-park" data-verb="session.park"
                 onClick={function () {
                   setOvf(false);
-                  var verb = con.registry.get("session.close");
-                  if (verb) verb.run();
-                }}>Close Session</button>
+                  NV_doPark(con.wid, sid, props.onChanged, con.toast);
+                }}>Park</button>
+            ) : null}
+            {!NV_sessionIsOver(session) ? (
+              <button type="button" className="nv-menu-row" data-danger="true"
+                data-testid="nv-session-end" data-verb="session.end"
+                onClick={function () {
+                  setOvf(false);
+                  NV_doEnd(con.wid, sid, (session && session.name) || sid, props.onChanged, con.toast);
+                }}>End session</button>
             ) : null}
             <button type="button" className="nv-menu-row" data-danger="true"
+              data-testid="nv-session-delete"
               onClick={function () {
                 setOvf(false);
-                confirmDialog({
-                  title: "Delete session",
-                  message: "Permanently delete this session?",
-                  danger: true,
-                }).then(function (ok) {
-                  if (ok) {
-                    SH_api.deleteSession(con.wid, sid)
-                      .then(props.onDeleted);
-                  }
-                });
+                NV_doDelete(con.wid, sid, (session && session.name) || sid, props.onDeleted, con.toast);
               }}>Delete session</button>
           </div>
         ) : null}
@@ -2068,15 +2127,13 @@ function NV_SessionDoc(props) {
     }
     // contexts: ["session"] hard-gates on docKind; requiresLive mirrors
     // nv-rail.jsx's NV_Rail_SessionContextMenu, the one place this
-    // business rule already existed (Interrupt/Close hide once a
+    // business rule already existed (Interrupt/End hide once a
     // session has ended, Rename/Split Right/Compact/Rewind do not).
-    // Park/Resume Session (01a052a5) removed from this menu entirely -
-    // dead post-flip: a clean stop now rests a session parked
-    // automatically (primer/session/dispatch.py's
-    // _CLEAN_TURN_RESTS_PARKED), and resuming one is just sending a
-    // message, which the composer already does - "Resume Session" never
-    // called a real endpoint even before the flip, it only focused the
-    // composer input.
+    // Resume Session (01a052a5) stays out of this menu: resuming a paused session is just sending a message, which the
+    // composer already does, and the old verb never called a real endpoint. Park Session is back (C-012), bound to the pause
+    // route the rail's menu already used: a clean stop rests a session parked on its own (_CLEAN_TURN_RESTS_PARKED), but
+    // pausing a RUNNING one at its next turn boundary is the user's call and had no way in except a right-click.
+    // End Session was "Close Session": it has always been the hard cancel, never a tab close, and now says so and asks first.
     reg({
       id: "session.interrupt", label: "Interrupt Session",
       contexts: ["session"], requiresLive: true,
@@ -2089,12 +2146,26 @@ function NV_SessionDoc(props) {
       },
     });
     reg({
-      id: "session.close", label: "Close Session",
+      id: "session.park", label: "Park Session", aliases: ["Pause"],
+      contexts: ["session"], requiresLive: true,
+      // Offered while the session can still be paused: the pause route answers 409 for an ended one and a paused one has
+      // nothing left to park.
+      available: function (ctx) { return !(ctx.session && ctx.session.status === "paused"); },
+      surfaces: ["palette", "tab-menu"],
+      run: function () {
+        var f = focused(); if (!f) return;
+        NV_doPark(f.wid, f.sid, f.refetchAll, f.con.toast);
+      },
+    });
+    reg({
+      id: "session.end", label: "End Session", aliases: ["Close"],
       contexts: ["session"], requiresLive: true,
       surfaces: ["palette", "tab-menu"],
       run: function () {
         var f = focused(); if (!f) return;
-        NV_doClose(f.wid, f.sid, f.refetchAll, f.con.toast);
+        var inst = NV_SESSION_INSTANCES[f.sid] || {};
+        var name = inst.session && inst.session.name;
+        NV_doEnd(f.wid, f.sid, name || f.sid, f.refetchAll, f.con.toast);
       },
     });
     reg({
@@ -2921,6 +2992,10 @@ function NV_SessionDoc(props) {
 
 window.NV_SessionDoc = NV_SessionDoc;
 window.NV_doInterrupt = NV_doInterrupt;
+window.NV_doRename = NV_doRename;
+window.NV_doPark = NV_doPark;
+window.NV_doEnd = NV_doEnd;
+window.NV_doDelete = NV_doDelete;
 // The focused session tab's latest row, or null when the focused doc is not a session. The palette hands it to
 // the verb registry so a verb's `available` predicate (Interrupt: a running, non-parked turn) can decide.
 window.NV_focusedSessionRow = function () {

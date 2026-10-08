@@ -17,7 +17,7 @@ var SH_SURFACES = [
 // Only these open a label. An allowlist is the one lint that actually
 // stops "Sessions" from shipping as a palette row.
 var SH_VERB_WORDS = [
-  "Open", "Close", "Switch", "Park", "Resume", "Split", "Approve",
+  "Open", "Close", "End", "Switch", "Park", "Resume", "Split", "Approve",
   "Reject", "Snooze", "Mute", "Resolve", "Create", "Delete", "Rename",
   "Copy", "Show", "Hide", "Run", "Stop", "Interrupt", "Rewind",
   "Compact", "Send", "Toggle", "Pin", "Unpin", "Focus", "Search",

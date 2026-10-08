@@ -200,6 +200,8 @@ def test_u0103_sessions_full_lifecycle_journey(
         menu = page.get_by_test_id(f"nv-rail-session-menu:{sid}")
         expect(menu).to_be_visible(timeout=10_000)
         menu.get_by_text("End", exact=True).click()
+        # End asks first (C-012): the button is named after the action.
+        page.get_by_test_id("dialog-confirm").click()
 
         # --- 4. The doc reflects the terminal state --------------------------
         # The transcript folds with "session ended" and the composer's
