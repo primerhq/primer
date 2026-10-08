@@ -322,16 +322,36 @@ function SA_isBareTerminalError(rec) {
 function SA_toTranscript(records, session) {
   var visible = SA_visibleRecords(records);
   var out = [];
+  // One failure is one card, within a turn. A failed model call writes the stream's own Error row, then (once the loop raises)
+  // dispatch writes its ERROR record with the same words, then a bare terminal marker; streamed text can sit between any two of
+  // them. The first row that carries the cause is the one kept (it has the specific code); a later row with the same message from
+  // the same node, or a bare marker, is a copy of it. A turn is whatever lies between two user messages.
+  var turnCauses = [];
+  var turnMarker = null;
   for (var i = 0; i < visible.length; i++) {
     var rec = visible[i];
     if (SA_SKIP_IN_TRANSCRIPT[rec.kind]) continue;
-    // One failure is one card: a bare terminal marker directly after (or directly before) the error that carries the cause is
-    // that error's marker, not a second failure. A marker with no cause beside it is the only evidence and stays.
+    if (rec.kind === "user_input") { turnCauses = []; turnMarker = null; }
     var bare = SA_isBareTerminalError(rec);
-    var previous = out.length ? out[out.length - 1] : null;
-    if (rec.kind === "error" && previous && previous.kind === "error") {
-      if (bare && !previous.bare) continue;
-      if (!bare && previous.bare) out.pop();
+    if (rec.kind === "error") {
+      var message = (rec.payload || {}).message || null;
+      if (bare) {
+        // A marker with a cause anywhere in its turn is that cause's marker. A marker with none is the only evidence and stays.
+        if (turnCauses.length) continue;
+      } else {
+        var node = rec.node_id || null;
+        var copy = message && turnCauses.some(function (c) {
+          return c.message === message && (!c.node || !node || c.node === node);
+        });
+        if (copy) continue;
+        turnCauses.push({ message: message, node: node });
+        // A marker that came first gives way to the cause that follows it.
+        if (turnMarker) {
+          var at = out.indexOf(turnMarker);
+          if (at >= 0) out.splice(at, 1);
+          turnMarker = null;
+        }
+      }
     }
     // A DONE carrying stop_reason="tool_use" ends one MODEL CALL, not
     // the turn: the loop runs the tools and calls the model again
@@ -342,7 +362,7 @@ function SA_toTranscript(records, session) {
     if (rec.kind === "done"
         && ((rec.payload || {}).stop_reason === "tool_use")) continue;
     var kind = SA_KIND_TO_TRANSCRIPT[rec.kind] || "lifecycle";
-    out.push({
+    var row = {
       seq: rec.seq,
       kind: kind,
       nodeId: rec.node_id || null,
@@ -358,7 +378,9 @@ function SA_toTranscript(records, session) {
       payload: rec.payload || {},
       createdAt: rec.created_at,
       bare: bare,
-    });
+    };
+    out.push(row);
+    if (rec.kind === "error" && bare) turnMarker = row;
   }
   return out;
 }

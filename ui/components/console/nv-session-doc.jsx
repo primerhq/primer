@@ -25,6 +25,51 @@ function NV_historyProblem(error) {
   };
 }
 
+// The words for the snake_case failure codes a model call carries (primer/llm/*): the ended_detail of a failed stream and the code of
+// the stream's own Error row. {what, next}: what happened, as a clause that follows "It failed: " (and, capitalised, opens a sentence
+// on an error card), and what to do about THAT failure rather than a generic retry. null for a code this table does not know.
+function NV_failureWords(code) {
+  var words = {
+    server_error: {
+      what: "the model provider had a server error",
+      next: "Send a message to try again in a moment. If it keeps happening, check the provider's status.",
+    },
+    network_error: {
+      what: "the model provider could not be reached (a connection problem)",
+      next: "Check that the provider's address is right and reachable, then send a message to try again.",
+    },
+    rate_limit: {
+      what: "the model provider is rate limiting requests",
+      next: "Wait a moment, then send a message to try again.",
+    },
+    auth_error: {
+      what: "the model provider rejected the credentials",
+      next: "Check the provider's API key, then send a message to try again.",
+    },
+    stream_timeout: {
+      what: "the model stopped sending data in the middle of its answer",
+      next: "Send a message to try again. If it keeps happening, the model may be overloaded or the provider's request timeout may be too short.",
+    },
+    generation_timeout: {
+      what: "the model took longer than the provider's total time limit to answer",
+      next: "Send a message to try again, ask for something smaller, or raise the provider's total time limit.",
+    },
+    context_overflow_unrecoverable: {
+      what: "the conversation no longer fits the model's context window",
+      next: "Start a new session, or switch the agent to a model with a larger context window.",
+    },
+    bad_request: {
+      what: "the model provider rejected the request",
+      next: "Open the turn's trace for the provider's message; the agent's model or settings may not suit this provider.",
+    },
+    connect_timeout: {
+      what: "the model provider did not accept the connection in time",
+      next: "Check that the provider is running and reachable, then send a message to try again.",
+    },
+  };
+  return code && Object.prototype.hasOwnProperty.call(words, code) ? words[code] : null;
+}
+
 // What the end divider says beyond "session ended . <reason>" (lead sweep A2): WHY, in user language, and what to do next. A
 // failed session used to read only "failed" while the row knew why (ended_detail "never_started"). A code this table does not
 // know is shown rather than hidden: the log is observability data, not a closed contract. Quiet endings (completed, cancelled,
@@ -50,8 +95,14 @@ function NV_endedLine(session) {
       out.why = "It never started: the workspace or the agent could not be prepared.";
       out.next = "Send a message to try again, or check the agent and the workspace.";
     } else if (detail) {
-      out.why = "It failed: " + (codes[detail] || "the failure code is " + detail) + ".";
-      out.next = "Open the turn's trace for the cause, or send a message to try again.";
+      var words = NV_failureWords(detail);
+      if (words) {
+        out.why = "It failed: " + words.what + ".";
+        out.next = words.next;
+      } else {
+        out.why = "It failed: " + (codes[detail] || "the failure code is " + detail) + ".";
+        out.next = "Open the turn's trace for the cause, or send a message to try again.";
+      }
     } else {
       out.why = "The turn failed; the error is in the transcript above.";
       out.next = "Send a message to try again.";
@@ -66,8 +117,8 @@ function NV_endedLine(session) {
   return out;
 }
 
-// What an error card says (lead sweep A3): the problem type in words, with the provider's own text kept as the detail below it. A
-// type this table does not know keeps the server's wording, and a bare terminal marker (nothing but {reason, terminal}) says the
+// What an error card says (lead sweep A3): the problem type (or the stream's snake_case code) in words, with the provider's own text
+// kept as the detail below it. A type this table does not know keeps the server's wording, and a bare terminal marker (nothing but {reason, terminal}) says the
 // turn failed.
 function NV_errorView(row) {
   var p = (row && row.payload) || {};
@@ -84,6 +135,11 @@ function NV_errorView(row) {
     "/errors/service-unavailable": "A service this turn needs is unavailable.",
   };
   var friendly = p.code ? byType[p.code] : null;
+  // The stream's own Error row carries the provider classifier's snake_case code, not a problem type; a fatal one with no code at
+  // all is a stream the provider client could not classify (the SDK's text is all there is).
+  var words = !friendly && p.code ? NV_failureWords(p.code) : null;
+  if (words) friendly = words.what.charAt(0).toUpperCase() + words.what.slice(1) + ".";
+  if (!friendly && !p.code && p.fatal === true) friendly = "The model stopped answering part-way through.";
   if (friendly) return { text: friendly, detail: raw && raw !== friendly ? raw : null };
   return { text: raw || "The turn failed.", detail: null };
 }
@@ -606,6 +662,13 @@ function NV_SessionHeader(props) {
         {ovfOpen ? (
           <div className="nv-menu nv-menu-right"
             onClick={function (ev) { ev.stopPropagation(); }}>
+            {/* The title above is click-to-rename, but the phone's top bar names the session and hides the title there. */}
+            <button type="button" className="nv-menu-row"
+              data-testid="nv-session-rename" data-verb="session.rename"
+              onClick={function () {
+                setOvf(false);
+                NV_doRename(con.wid, sid, session && session.name, props.onChanged, con.toast);
+              }}>Rename…</button>
             {!isMobile ? (
               <button type="button" className="nv-menu-row"
                 data-verb="session.splitRight"

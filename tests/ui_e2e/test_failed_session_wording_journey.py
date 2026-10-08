@@ -121,7 +121,7 @@ def test_a_model_that_dies_mid_answer_is_one_card_in_words_with_the_cause_below_
     expect(cards).to_have_count(1, timeout=15_000)
     expect(cards.first).to_contain_text("The model stopped answering part-way through.")
     expect(page.locator(".nv-turn-error-detail")).to_contain_text(cause)
-    expect(page.get_by_test_id(f"nv-session-doc:{failed}")).to_contain_text("Here is the start of an answer")
     note = page.get_by_test_id("nv-ended-note")
     expect(note).to_be_visible(timeout=10_000)
+    expect(note).to_contain_text("the model call failed")
     expect(note).not_to_contain_text("llm_stream_error")

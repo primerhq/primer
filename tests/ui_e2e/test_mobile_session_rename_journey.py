@@ -13,6 +13,7 @@ import httpx
 import pytest
 from playwright.sync_api import Page, expect
 
+from tests.ui_e2e._shell_helpers import shell_url
 from tests.ui_e2e.test_failed_session_wording_journey import _seed, _start
 
 PHONE = {"width": 390, "height": 844}
@@ -28,7 +29,7 @@ def test_a_session_is_renamed_from_the_overflow_menu_on_a_phone(
         sid = _start(client, ids, "rename me", auto_start=False)
 
     page.set_viewport_size(PHONE)
-    page.goto(f"{console_url}#/w/{ids['workspace']}?doc=session:{sid}")
+    page.goto(shell_url(console_url, ids["workspace"]) + f"?doc=session:{sid}")
     expect(page.get_by_test_id("nv-mob-session-screen")).to_be_visible(timeout=20_000)
     expect(page.get_by_test_id("nv-session-title")).to_be_hidden()   # the top bar names it; nothing here to click
 
