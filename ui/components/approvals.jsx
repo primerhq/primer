@@ -641,4 +641,5 @@ function ApprovalBanner({ data, scope, id, pushToast }) {
 
 window.ApprovalsPage = ApprovalsPage;
 window.AP_PolicyDetail = AP_PolicyDetail;
+window.AP_NewPolicyModal = AP_NewPolicyModal;
 window.ApprovalBanner = ApprovalBanner;

@@ -276,7 +276,7 @@ var NV_PLAT_PAGES = {
     // Section "new" tells the surface to open its create form
     // IMMEDIATELY - landing the operator on the list with a second
     // "new" button was a two-step detour (live finding 2026-08-26).
-    create: function (con) { con.openOverlay("agents", "new", null); },
+    create: function (con, setModal) { setModal({ kind: "agent" }); },
     delPath: function (row) { return "/agents/" + encodeURIComponent(row.id); },
   },
   graphs: {
@@ -296,7 +296,7 @@ var NV_PLAT_PAGES = {
       };
     },
     open: function (con, row) { con.openOverlay("graphs", null, row.id); },
-    create: function (con) { con.openOverlay("graphs", "new", null); },
+    create: function (con, setModal) { setModal({ kind: "graph" }); },
     delPath: function (row) { return "/graphs/" + encodeURIComponent(row.id); },
   },
   workspaces: {
@@ -552,7 +552,7 @@ var NV_PLAT_PAGES = {
     // of the generic records sheet. "new" mirrors AgentsPage's own
     // startCreate convention for an immediate create modal.
     open: function (con, row) { con.openOverlay("approvals", null, row.id); },
-    create: function (con) { con.openOverlay("approvals", "new", null); },
+    create: function (con, setModal) { setModal({ kind: "policy" }); },
     delPath: function (row) {
       return "/tool_approval_policies/" + encodeURIComponent(row.id);
     },
@@ -908,6 +908,46 @@ function NV_HarnessCreateHost(props) {
   var Dialog = props.outbound
     ? window.HarnessOutboundBuilder : window.HarnessRegisterDialog;
   return <Dialog onClose={props.onClose} onCreated={props.onCreated} />;
+}
+
+// The agent, graph and approval-policy dialogs used to be opened ON TOP of the
+// legacy list (the page opened that overlay with section "new" and the list's
+// startCreate effect opened the dialog), so the full table sat behind the
+// form. The agent dialog does not confirm itself (the legacy list toasted
+// "Agent created" in its own onCreate), so its host does. The policy dialog
+// has no onCreate: a created policy closes it, so the page refetches on close.
+function NV_AgentCreateHost(props) {
+  var Dialog = window.AG_NewAgentModal;
+  return (
+    <Dialog
+      pushToast={window.primerApi.toastPush}
+      onClose={props.onClose}
+      onCreate={function (row) {
+        window.primerApi.toastPush({
+          kind: "success", title: "Agent created", detail: row.id,
+        });
+        props.onCreated(row);
+      }} />
+  );
+}
+
+function NV_GraphCreateHost(props) {
+  var Dialog = window.GR_NewGraphModal;
+  return (
+    <Dialog
+      pushToast={window.primerApi.toastPush}
+      onClose={props.onClose}
+      onCreate={props.onCreated} />
+  );
+}
+
+function NV_PolicyCreateHost(props) {
+  var Dialog = window.AP_NewPolicyModal;
+  return (
+    <Dialog
+      pushToast={window.primerApi.toastPush}
+      onClose={props.onClose} />
+  );
 }
 
 // Model-profile create/edit, inline on the platform page. The form is
@@ -1467,6 +1507,26 @@ function NV_PlatListPage(props) {
               setModal(null);
               NV_createdRow(con, function () { res.refetch(); }, "harnesses", row);
             }} />
+        ) : null}
+        {modal && modal.kind === "agent" ? (
+          <NV_AgentCreateHost
+            onClose={function () { setModal(null); }}
+            onCreated={function (row) {
+              setModal(null);
+              NV_createdRow(con, function () { res.refetch(); }, "agents", row);
+            }} />
+        ) : null}
+        {modal && modal.kind === "graph" ? (
+          <NV_GraphCreateHost
+            onClose={function () { setModal(null); }}
+            onCreated={function (row) {
+              setModal(null);
+              NV_createdRow(con, function () { res.refetch(); }, "graphs", row);
+            }} />
+        ) : null}
+        {modal && modal.kind === "policy" ? (
+          <NV_PolicyCreateHost
+            onClose={function () { setModal(null); res.refetch(); }} />
         ) : null}
         {cards.length > NV_PLAT_PAGE_SIZE ? (
           <div className="nv-pager">
