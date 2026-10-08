@@ -636,6 +636,23 @@ def test_a_bare_terminal_marker_is_not_swallowed_by_a_subagents_cause(error_rows
     assert [r["seq"] for r in rows] == [3, 6], rows
 
 
+def test_two_runs_of_one_tool_call_failing_with_the_same_words_are_both_kept(error_rows) -> None:
+    """The run id is what tells two runs apart: one tool call (call-1) can start more than one run. A scope that preferred the call id over the
+    run id would treat the second run's failure as a copy of the first's, and a failed subagent would draw no card."""
+    other = _DELEGATED.replace("seq: 3", "seq: 4").replace("run-1", "run-2")
+    assert "call-1" in other and "run-2" in other
+    rows = error_rows("[" + _USER + ", " + _DELEGATED + ", " + other + "]")
+    assert [r["seq"] for r in rows] == [3, 4], rows
+
+
+def test_a_parent_marker_that_came_first_is_not_removed_by_a_subagents_cause(error_rows) -> None:
+    """The marker-removal rule is per scope: a cause arriving later gives way only the marker of its OWN scope. [user, parent bare marker,
+    subagent cause] keeps both; removing any marker the moment any cause arrived would leave the parent's failure with no card."""
+    marker = _MARKER.replace("seq: 4", "seq: 2")
+    rows = error_rows("[" + _USER + ", " + marker + ", " + _DELEGATED + "]")
+    assert [r["seq"] for r in rows] == [2, 3], rows
+
+
 def test_a_non_fatal_error_is_a_row_like_any_other_and_the_fatal_one_with_the_same_words_folds_into_it(error_rows) -> None:
     """A recoverable error ({fatal: false}) is persisted as an error row and drawn as one. When the stream then fails for good with the same
     words the two are one failure: the first row is kept, so the card may carry fatal=false. (Pinned as it is; a retry notice that is
