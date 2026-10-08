@@ -266,7 +266,9 @@ function SH_turnOfSeq(rows) {
   var ordinal = 0;
   for (var i = 0; i < (rows || []).length; i++) {
     out[rows[i].seq] = ordinal;
-    if (SH_closesTurn(rows[i])) ordinal += 1;
+    // A row that absorbed records the failure fold removed (foldedTerminals: a copy, the release marker) stands for each of them too: the
+    // server counts every one as a window end.
+    if (SH_closesTurn(rows[i])) ordinal += 1 + (rows[i].foldedTerminals || 0);
   }
   return out;
 }
