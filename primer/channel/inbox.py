@@ -187,11 +187,11 @@ class ChannelInbox:
             getattr(row, "parked_state", None) or {}, tool_call_id=env.tool_call_id, kind="_approval",
         )
         if gate is None:
-            if _matching_event_keys(row, env):
+            if _matching_event_keys(row, env) or self._is_nameless_park_at_reconstructed_key(row, env):
                 from primer.session.approvers import ApproverRefusedError
 
                 logger.warning(
-                    "channel inbox: refused a %s reply for session=%s tool_call=%s: the checkpoint names the gate but no pending "
+                    "channel inbox: refused a %s reply for session=%s tool_call=%s: the park names the gate but no pending "
                     "entry carries its approver spec", env.decision, env.session_id, env.tool_call_id,
                 )
                 raise ApproverRefusedError(
@@ -203,6 +203,20 @@ class ChannelInbox:
             "agent_id": getattr(row.binding, "agent_id", None),
             "parked_at": getattr(row, "parked_at", None),
         }
+
+    @staticmethod
+    def _is_nameless_park_at_reconstructed_key(row: Any, env: ResponseEnvelope) -> bool:
+        """True for a park with no ``tool_name`` whose own event key is the one the fallback publishes to.
+
+        A nameless park is not matched by name (the gate resolver never reads one), but the fallback key is
+        ``<kind>:<session_id>:<tool_call_id>``: when the park's key IS that, publishing to it wakes the park with no check of a spec
+        nobody read. Such a reply is refused.
+        """
+        yielded = (getattr(row, "parked_state", None) or {}).get("yielded") or {}
+        return (
+            not yielded.get("tool_name")
+            and yielded.get("event_key") == f"{env.kind}:{env.session_id}:{env.tool_call_id}"
+        )
 
     def _enforce_approvers(self, env: ResponseEnvelope, gate: dict) -> None:
         """Refuse a reply that the gate's stamped approver spec does not admit (ticket 01a11b64), BEFORE anything is published.
