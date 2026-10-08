@@ -281,7 +281,10 @@ REST:
   `VectorStore.search` directly. Note: this path does not yet run
   `CollectionSearcher`, so per-collection `Collection.search` (MMR / CER) toggles
   do not affect external clients today.
-- `/v1/internal_collections/config` (PUT / GET / DELETE),
+- `/v1/internal_collections/config` (PUT / GET / DELETE; `GET` answers 404 when
+  the subsystem is not configured, or `200 {"configured": false}` with
+  `?allow_missing=true`, which is how the console asks: the browser logs every 404
+  fetch as a red console error even when it is the expected "off" state),
   `POST /v1/internal_collections/bootstrap`, and
   `GET /v1/internal_collections/bootstrap/status` plus per-entity search routes
   (`primer/api/routers/internal_collections.py`).

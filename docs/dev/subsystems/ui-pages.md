@@ -126,7 +126,7 @@ Page-by-page index follows. The first column is the overlay target that reaches 
 | `new-session` | SharedNewSessionForm | `new-session-form.jsx` | `GET /v1/agents`, `/v1/graphs`, `POST .../sessions` |
 | `new-workspace` | NV_CreateWorkspaceOverlay | `console/nv-overlays.jsx` | `GET /v1/workspace_templates`, `POST /v1/workspaces` |
 | (System view navs) | NV_System re-hosts ADM_AdminUsersPage, AT_ApiTokensPage, SSO_ProvidersPage, MC_McpPage, InternalCollectionsPage, SH_ActivityPanel, SetupWizardSteps | `console/nv-system.jsx` | users, SSO, API tokens, MCP, internal collections, activity, setup, profile |
-| `collections` (subsystem view) | InternalCollectionsPage | `internal-collections.jsx` | `GET/PUT/DELETE /v1/internal_collections/config`, `/bootstrap[/status]` |
+| `collections` (subsystem view) | InternalCollectionsPage | `internal-collections.jsx` | `GET/PUT/DELETE /v1/internal_collections/config` (the `GET` with `?allow_missing=true`, so "not configured" is a 200 and not a console 404), `/bootstrap[/status]` |
 
 The user docs render at `/docs` outside the shell, served by `ui/components/docs.jsx`; they are a reader, not a console surface.
 
