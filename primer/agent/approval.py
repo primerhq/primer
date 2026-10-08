@@ -166,6 +166,32 @@ def _choose_policy(rows: Sequence[ToolApprovalPolicy], *, toolset_id: str, tool_
     return chosen
 
 
+def approval_resume_metadata(
+    *,
+    policy: ToolApprovalPolicy,
+    verdict: ApprovalVerdict,
+    original_call: dict[str, Any],
+    **extra: Any,
+) -> dict[str, Any]:
+    """The ``resume_metadata`` of an approval park, built in ONE place for EVERY site that parks for approval.
+
+    Carries the identity of the gate (``policy_id``, ``approval_type``, ``gate_reason``), the call it gates (``original_call``) and WHO MAY
+    DECIDE it: the effective approver spec (the evaluator's per-call routing, else the policy row's), stamped as a dict or ``None`` for
+    "anyone". Every path that answers a gate judges the answer against this stamp (:func:`primer.session.approvers.may_decide`), so a
+    park site that built its own dict and left the stamp out (the ``call_tool`` meta-dispatch did) silently let any user decide a
+    restricted gate. ``extra`` carries a site's own keys (``via_call_tool``).
+    """
+    approvers = effective_approvers(policy, verdict)
+    return {
+        "policy_id": policy.id,
+        "approval_type": policy.approval.type.value,
+        "gate_reason": verdict.reason,
+        "approvers": approvers.model_dump() if approvers is not None else None,
+        **extra,
+        "original_call": original_call,
+    }
+
+
 class ApprovalResolver:
     """Per-app-instance lookup + cache for ToolApprovalPolicy rows.
 
@@ -383,6 +409,7 @@ __all__ = [
     "ApprovalContext",
     "ApprovalResolver",
     "ApprovalVerdict",
+    "approval_resume_metadata",
     "effective_approvers",
     "evaluate_approval_gate",
 ]

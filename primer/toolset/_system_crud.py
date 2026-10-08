@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field, ValidationError, create_model
 from primer.agent.approval import (
     ApprovalContext,
     ApprovalResolver,
+    approval_resume_metadata,
     evaluate_approval_gate,
 )
 from primer.authz import _role_allows
@@ -949,23 +950,26 @@ def _call_tool_tool(
                             tool_name="_approval",
                             event_key=event_key,
                             timeout=policy.timeout_seconds,
-                            resume_metadata={
-                                "policy_id": policy.id,
-                                "approval_type": policy.approval.type.value,
-                                "gate_reason": verdict.reason,
-                                # Inner call re-dispatched via the owning
-                                # toolset provider on approve (not the agent
-                                # tool surface, which may not list this tool).
-                                "via_call_tool": {
-                                    "toolset_id": args.toolset_id,
-                                    "principal": args.principal,
-                                },
-                                "original_call": {
+                            # The one shared builder: it stamps who may
+                            # decide the gate (``approvers``), which this
+                            # park used to leave out, so the respond route
+                            # and the channel inbox could not enforce it.
+                            resume_metadata=approval_resume_metadata(
+                                policy=policy,
+                                verdict=verdict,
+                                original_call={
                                     "id": ctx.tool_call_id,
                                     "name": args.tool_name,
                                     "arguments": args.arguments or {},
                                 },
-                            },
+                                # Inner call re-dispatched via the owning
+                                # toolset provider on approve (not the agent
+                                # tool surface, which may not list this tool).
+                                via_call_tool={
+                                    "toolset_id": args.toolset_id,
+                                    "principal": args.principal,
+                                },
+                            ),
                         ),
                         tool_call_id=ctx.tool_call_id,
                     )

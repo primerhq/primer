@@ -640,7 +640,7 @@ class ToolExecutionManager:
                     provider_registry=self._provider_registry,
                 )
                 if verdict.required:
-                    from primer.agent.approval import effective_approvers
+                    from primer.agent.approval import approval_resume_metadata
                     # Lazy import: primer.graph (this contextvar's home
                     # package) imports primer.agent.tool_manager
                     # transitively at package-init time (base.py ->
@@ -651,7 +651,6 @@ class ToolExecutionManager:
                         current_graph_node_id,
                     )
 
-                    approvers = effective_approvers(policy, verdict)
                     session_or_chat = (
                         ctx.session_id or ctx.chat_id or "unknown"
                     )
@@ -684,24 +683,19 @@ class ToolExecutionManager:
                             tool_name="_approval",
                             event_key=event_key,
                             timeout=policy.timeout_seconds,
-                            resume_metadata={
-                                "policy_id": policy.id,
-                                "approval_type": policy.approval.type.value,
-                                "gate_reason": verdict.reason,
-                                # Who may decide (P6): the per-call spec
-                                # from the evaluator, else the policy
-                                # row's. None = anyone; the respond
-                                # route enforces this.
-                                "approvers": (
-                                    approvers.model_dump()
-                                    if approvers is not None else None
-                                ),
-                                "original_call": {
+                            # Built by the one shared builder, which
+                            # stamps who may decide (P6: the evaluator's
+                            # per-call spec, else the policy row's; None =
+                            # anyone) for every approval park alike.
+                            resume_metadata=approval_resume_metadata(
+                                policy=policy,
+                                verdict=verdict,
+                                original_call={
                                     "id": call.id,
                                     "name": call.name,
                                     "arguments": call.arguments or {},
                                 },
-                            },
+                            ),
                         ),
                         tool_call_id=call.id,
                     )

@@ -116,6 +116,8 @@ class ChannelInbox:
             raise BadRequestError(
                 f"unknown ResponseEnvelope kind {env.kind!r}"
             )
+        if env.kind == "tool_approval":
+            await self._enforce_approvers(env)
         event_key = await self._resolve_event_key(env)
         payload: dict = (
             {"response": env.response} if env.kind == "ask_user"
@@ -157,6 +159,42 @@ class ChannelInbox:
             await self._write_captured_record(
                 env, captured, event_key=event_key,
             )
+
+    async def _enforce_approvers(self, env: ResponseEnvelope) -> None:
+        """Refuse a reply that the gate's stamped approver spec does not admit (ticket 01a11b64), BEFORE anything is published.
+
+        The envelope carries only a chat-platform user id, which maps to no primer account, so the decider is UNIDENTIFIED and
+        :func:`primer.session.approvers.may_decide` admits it only on a gate with no restriction; a restricted gate (specific users,
+        a role, admins only, the duplicate-policy fallback included) is decided in the console. The spec is read from the SPECIFIC
+        gate the reply names (a graph park can hold several, each with its own), exactly as the REST respond route does.
+
+        A session that does not exist or has no such gate (a chat surface) has nothing to enforce here: the publish goes ahead as
+        before. A session lookup that FAILS refuses the reply (fail closed): it cannot be shown that the gate is unrestricted.
+        Without a storage_provider (a lightweight test app) there is no gate to read; production always wires one.
+        """
+        if self._storage_provider is None:
+            return
+        from primer.model.workspace_session import WorkspaceSession
+        from primer.session.approvers import ensure_may_decide
+        from primer.session.pending_gates import resolve_pending_gate
+
+        row = await self._storage_provider.get_storage(WorkspaceSession).get(env.session_id)
+        if row is None:
+            return
+        gate = resolve_pending_gate(
+            getattr(row, "parked_state", None) or {}, tool_call_id=env.tool_call_id, kind="_approval",
+        )
+        if gate is None:
+            return
+        try:
+            ensure_may_decide(gate.get("resume_metadata") or {}, username=None, role=None)
+        except Exception:
+            logger.warning(
+                "channel inbox: refused a %s reply for session=%s tool_call=%s: the gate is routed to specific approvers and a "
+                "chat-platform user is not one primer can identify (platform metadata: %s)",
+                env.decision, env.session_id, env.tool_call_id, env.platform_metadata,
+            )
+            raise
 
     async def _capture_gate_for_record(
         self, env: ResponseEnvelope,
