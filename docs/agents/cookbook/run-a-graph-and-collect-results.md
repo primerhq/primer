@@ -8,6 +8,7 @@ mcp_tools:
   - workspaces::create_workspace_session
   - workspaces::get_workspace_session
   - workspaces::read_workspace_file
+  - workspaces::read_workspace_session_messages
 ---
 
 ## Goal
@@ -76,10 +77,10 @@ Response:
 ```json
 { "path": "report.json", "content": "{...}" }
 ```
-Read the file the graph wrote. The full graph state is persisted under `.state/graphs/<session_id>` if you need the per-node trace.
+Read the file the graph wrote. For the run's trace, read the session's transcript with `workspaces::read_workspace_session_messages` (`{"workspace_id": "ws-1", "session_id": "ses-1"}`); the runtime's own `.state/graphs/<session_id>` tree is not client-readable (raw `.state` reads are admin-only).
 
 ## Verify
-`status` is `ended` with `ended_reason: "completed"`, and the graph state directory `.state/graphs/<session_id>` exists alongside your output file.
+`status` is `ended` with `ended_reason: "completed"`, your output file exists, and `workspaces::read_workspace_session_messages` returns the run's records.
 
 ## Gotchas
 - A graph runs straight through with no mid-graph pause (unlike an agent that can park on a yielding tool); see `graphs`.
