@@ -192,12 +192,32 @@ GRAPH_REFERENCES: tuple[ReferenceSpec, ...] = (
 )
 
 
+async def default_agent_refusal(storage_provider: Any, agent_id: str, *, exempt: str) -> str | None:
+    """The sentence refusing the delete of ``agent_id`` when it is the system default agent, or ``None`` when it may go.
+
+    ``SystemState.default_agent_id`` is the agent a session created WITHOUT a binding runs. It is a column of the ``system_state`` table,
+    read through the provider's ``get_system_state``, not a ``Storage`` entity, so it cannot be one of :data:`AGENT_REFERENCES`; the REST
+    route and the system tool both call this after those blocks. ``exempt`` is the seeded operator: it is the default on every install and
+    stays deletable (setup reopens without it and the seed re-creates it), so refusing it would make the install undeletable.
+    """
+    if agent_id == exempt:
+        return None
+    state = await storage_provider.get_system_state()
+    if getattr(state, "default_agent_id", None) != agent_id:
+        return None
+    return (
+        f"in_use_by: agent {agent_id!r} is the system default agent, which sessions created without a binding run; "
+        "point the default agent at another agent before deleting it"
+    )
+
+
 __all__ = [
     "AGENT_REFERENCES",
     "GRAPH_REFERENCES",
     "Lookup",
     "ReferenceSpec",
     "UnreadableRow",
+    "default_agent_refusal",
     "first_graph_with_agent_node",
     "first_graph_with_subgraph_node",
     "first_live_session_bound_to_agent",

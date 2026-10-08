@@ -23,6 +23,7 @@ One check is STRICTER than REST on purpose: an update that sets the managed fiel
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -34,6 +35,7 @@ from primer.storage.references import (
     GRAPH_REFERENCES,
     Lookup,
     ReferenceSpec,
+    default_agent_refusal,
     first_referencing_row,
 )
 from primer.toolset._helpers import err as _err
@@ -73,6 +75,9 @@ class CrudGuards:
     reserved_update_ids: frozenset[str] = frozenset()
     reserved_delete_ids: frozenset[str] = frozenset()
     references: tuple[ToolReference, ...] = field(default_factory=tuple)
+    # Delete blocks that are not a child row: ``async (storage_provider, entity) -> refusal sentence | None``, run after ``references``
+    # (the REST router's ``on_pre_delete`` hook, which runs after its reference blocks).
+    delete_blockers: tuple[Callable[[Any, Any], Awaitable[str | None]], ...] = field(default_factory=tuple)
 
 
 def refuse_create(guards: CrudGuards, entity: Any) -> ToolCallResult | None:
@@ -146,7 +151,20 @@ async def refuse_delete_if_referenced(
                 f"{reference.error_code}: 1 {reference.child_kind}(s) reference {existing.id!r} (first: {child.id!r})",
                 error_type="conflict",
             )
+    for blocker in guards.delete_blockers:
+        refusal = await blocker(storage_provider, existing)
+        if refusal is not None:
+            return _err(refusal, error_type="conflict")
     return None
+
+
+async def _default_agent_blocker(storage_provider: Any, existing: Any) -> str | None:
+    """The system default agent cannot be deleted while it is the default, except the seeded operator (the REST route's
+    ``_agent_pre_delete`` asks the same function)."""
+    # Function-local: ``primer.bootstrap`` imports the toolset layer, so a module-level import here would be a cycle.
+    from primer.bootstrap.defaults import RESERVED_OPERATOR_AGENT
+
+    return await default_agent_refusal(storage_provider, existing.id, exempt=RESERVED_OPERATOR_AGENT)
 
 
 # The managed-row declarations for the two entities whose generic create/update tools are exposed by MORE than one toolset: the system
@@ -156,7 +174,10 @@ async def refuse_delete_if_referenced(
 # What blocks their DELETE (a graph, a live session, a trigger subscription) is declared once in :mod:`primer.storage.references` and the
 # REST routers build their checks from the same lists, so the tool and the route cannot disagree about what blocks.
 AGENT_GUARDS = CrudGuards(
-    kind="agent", managed_by_field="harness_id", references=tuple(ToolReference.from_spec(s) for s in AGENT_REFERENCES),
+    kind="agent",
+    managed_by_field="harness_id",
+    references=tuple(ToolReference.from_spec(s) for s in AGENT_REFERENCES),
+    delete_blockers=(_default_agent_blocker,),
 )
 GRAPH_GUARDS = CrudGuards(
     kind="graph", managed_by_field="harness_id", references=tuple(ToolReference.from_spec(s) for s in GRAPH_REFERENCES),
