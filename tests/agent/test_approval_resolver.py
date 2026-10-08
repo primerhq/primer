@@ -194,7 +194,8 @@ async def test_on_real_storage_a_raced_duplicate_never_weakens_the_gate(tmp_path
         weak, strict = _policy("p-a-weak", _rego()), _policy("p-b-strict", RequiredApprovalConfig())
         for row in ((weak, strict) if weak_first else (strict, weak)):
             await storage.create(row)
-        await storage.create(_policy("p-c-disabled", RequiredApprovalConfig(), enabled=False))
+        # Disabled, unconditional and with the LOWEST id of all: were the `enabled` term dropped from the lookup it would win.
+        await storage.create(_policy("p-0-disabled", RequiredApprovalConfig(), enabled=False))
 
         chosen = await ApprovalResolver(storage=storage).find(toolset_id="system", tool_name="shell_exec")
 
