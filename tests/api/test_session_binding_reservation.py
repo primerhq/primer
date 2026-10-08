@@ -15,6 +15,9 @@ from datetime import UTC, datetime
 import pytest
 
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
+from tests._support.in_lock_deadline import InLockDeadline
+
+BODY_BOUND_S = 30.0   # a hang fails the test; a slow runner must not
 
 
 def _row(**over) -> WorkspaceSession:
@@ -143,20 +146,18 @@ async def test_the_route_switches_under_the_lifecycle_lock(client, app):
 async def test_an_unreachable_workspace_gives_a_409_and_frees_the_lock(client, app, monkeypatch):
     import primer.session.mutation_lock as mutation_lock
 
-    monkeypatch.setattr(mutation_lock, "IN_LOCK_IO_TIMEOUT_S", 0.2)
+    deadline = InLockDeadline(monkeypatch)       # the in-lock deadline expires when the write hangs, not after a wall-clock
     sessions, ws = await _idle_session(app, "b-hang")
 
     async def hang(session_id: str, line: bytes) -> None:
-        await asyncio.Event().wait()
+        await deadline.hang()
 
     ws.append_message_line = hang  # type: ignore[method-assign]
 
-    response = await asyncio.wait_for(
-        client.post("/v1/workspaces/ws-1/sessions/b-hang/binding", json={"kind": "agent", "agent_id": "agent-b"}), 3.0,
-    )
+    async with asyncio.timeout(BODY_BOUND_S):    # generous: it only turns a hang into a failure, it never races the code
+        response = await client.post("/v1/workspaces/ws-1/sessions/b-hang/binding", json={"kind": "agent", "agent_id": "agent-b"})
 
-    assert response.status_code == 409, response.text
-    async with asyncio.timeout(1.0):
+        assert response.status_code == 409, response.text
         async with mutation_lock.session_lifecycle_lock().acquire("b-hang"):
             pass
     stored = await sessions.get("b-hang")
@@ -167,9 +168,7 @@ async def test_an_unreachable_workspace_gives_a_409_and_frees_the_lock(client, a
 async def test_a_timeout_after_the_gate_was_closed_says_the_gate_is_closed(client, app, monkeypatch):
     """The abandon-then-switch branch closes the gate FIRST. If the marker then times out, the 409 must not read like a no-op: the
     parked turn is already rejected and cannot be resumed, only the switch is outstanding."""
-    import primer.session.mutation_lock as mutation_lock
-
-    monkeypatch.setattr(mutation_lock, "IN_LOCK_IO_TIMEOUT_S", 0.2)
+    deadline = InLockDeadline(monkeypatch)       # the in-lock deadline expires AT the marker, however slow the steps before it were
     sessions, ws = await _idle_session(
         app, "b-gate", parked_status="parked", parked_state={"tool_call_id": "tc-9", "mode": "ask_user"},
     )
@@ -177,14 +176,13 @@ async def test_a_timeout_after_the_gate_was_closed_says_the_gate_is_closed(clien
 
     async def hang_on_the_marker(session_id: str, line: bytes) -> None:
         if b'"agent_marker"' in line:
-            await asyncio.Event().wait()
+            await deadline.hang()
         await real_append(session_id, line)
 
     ws.append_message_line = hang_on_the_marker  # type: ignore[method-assign]
 
-    response = await asyncio.wait_for(
-        client.post("/v1/workspaces/ws-1/sessions/b-gate/binding", json={"kind": "agent", "agent_id": "agent-b"}), 3.0,
-    )
+    async with asyncio.timeout(BODY_BOUND_S):    # generous: it only turns a hang into a failure, it never races the code
+        response = await client.post("/v1/workspaces/ws-1/sessions/b-gate/binding", json={"kind": "agent", "agent_id": "agent-b"})
 
     assert response.status_code == 409, response.text
     assert "gate is already closed" in response.json()["detail"], response.text
