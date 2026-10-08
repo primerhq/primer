@@ -50,5 +50,7 @@ def test_the_real_clearView_does_not_push_a_history_entry() -> None:
 
 def test_clearView_is_what_the_context_hands_to_the_surfaces() -> None:
     assert "clearView: clearView," in SHELL, "the context value exports it"
-    deps = SHELL[SHELL.index("goView, clearView,"):][:80]
+    # The memo's dependency list is the array that closes the context value; it must name clearView, or a surface would keep a stale one.
+    memo = SHELL[SHELL.index("clearView: clearView,"):]
+    deps = memo[memo.index("}, ["):memo.index("]);", memo.index("}, ["))]
     assert "clearView" in deps, "and the context memo depends on it"

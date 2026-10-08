@@ -1,8 +1,7 @@
-"""Journey: deleting a session from the rail's right-click menu closes its tab (review of PR 501).
+"""Journey: deleting a session from the rail's right-click menu closes its tab (a pin, from the review of PR 501).
 
-The overflow menu's Delete closes the session's tab (the document's ``onDeleted``); the rail's menu did not, so the tab stayed open on a
-document whose session no longer existed and answered 404 on every poll. The tab can be open anywhere in the tab groups, not only on the
-active one, so the rail closes it by its tab id.
+The review asked whether the rail's Delete leaves the session's tab open on a document that answers 404 (the overflow menu's Delete closes it
+through the document's ``onDeleted``). It does not: the tab goes, a background one too, so nothing was fixed. This journey keeps it that way.
 """
 
 from __future__ import annotations
