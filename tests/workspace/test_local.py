@@ -1004,12 +1004,65 @@ class TestWorkspaceDownloadArchive:
 
 
 class TestWorkspaceAclose:
-    async def test_aclose_ends_running_sessions(
-        self, provider: LocalWorkspaceBackend
-    ) -> None:
+    """Closing a workspace HANDLE releases it; it ends no session (architecture review A-24).
+
+    ``aclose`` used to commit ``session.json`` as ENDED / ``completed`` for every cached live session, and it runs whenever a handle
+    is closed: at API and worker shutdown and on every workspace-provider invalidate. The durable row was untouched, so a parked or
+    running session came back with a dead slot, and a wake or a reclaimed turn then raised ``ConflictError``. A session ends when
+    its lifecycle says so (dispatch, cancel, delete); destroying the workspace ends the ones still on it, because the workspace
+    is going away.
+    """
+
+    async def test_aclose_ends_no_session(self, provider: LocalWorkspaceBackend) -> None:
         ws = await provider.create(_template())
         s = await ws.start_session(_binding())
+
         await ws.aclose()
+
+        assert await s.status() == SessionStatus.RUNNING
+        again = await (await provider.get(ws.id)).get_session(s.session_id)
+        info = await again.info()
+        assert (info.status, info.ended_reason) == (SessionStatus.RUNNING, None), "the slot on disk was ended by a handle close"
+        await again.append_instruction("a wake after the workspace handle was closed")
+
+    async def test_aclose_leaves_a_waiting_session_waiting(self, provider: LocalWorkspaceBackend) -> None:
+        from datetime import datetime, timezone
+
+        from primer.model.workspace_session import _UserInputWaiting  # type: ignore[attr-defined]
+
+        ws = await provider.create(_template())
+        s = await ws.start_session(_binding())
+        await s.set_status(
+            SessionStatus.WAITING, waiting_state=_UserInputWaiting(prompt="?", queued_at=datetime.now(timezone.utc)),
+        )
+
+        await ws.aclose()
+
+        again = await (await provider.get(ws.id)).get_session(s.session_id)
+        assert (await again.info()).status == SessionStatus.WAITING
+
+    async def test_backend_shutdown_leaves_live_sessions_live_for_the_next_process(self, tmp_path: Path) -> None:
+        first = LocalWorkspaceBackend(tmp_path / "provider_root")
+        await first.initialize()
+        ws = await first.create(_template())
+        s = await ws.start_session(_binding())
+        await first.aclose()
+
+        second = LocalWorkspaceBackend(tmp_path / "provider_root")
+        await second.initialize()
+        reattached = await second.get(ws.id, template=_template())
+        again = await reattached.get_session(s.session_id)
+
+        info = await again.info()
+        assert (info.status, info.ended_reason) == (SessionStatus.RUNNING, None), "a restart ended the sessions on the disk"
+        await again.append_instruction("a steer after the restart")
+
+    async def test_destroy_still_ends_the_sessions_on_the_workspace(self, provider: LocalWorkspaceBackend) -> None:
+        ws = await provider.create(_template())
+        s = await ws.start_session(_binding())
+
+        await provider.destroy(ws.id)
+
         assert await s.status() == SessionStatus.ENDED
 
     async def test_aclose_idempotent_via_destroy(

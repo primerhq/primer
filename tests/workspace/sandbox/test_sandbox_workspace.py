@@ -725,3 +725,27 @@ async def test_diagnostic_exec_timeout_returns_minus_one(
     result = await ws.diagnostic_exec("sleep 99", timeout_seconds=0.1)
     assert result.exit_code == -1
     assert "timed out" in result.stderr.lower()
+
+
+@pytest.mark.asyncio
+async def test_aclose_ends_no_session(tmp_path: Path) -> None:
+    """Architecture review A-24: closing the handle releases it; the sessions on the pod are not ended. A fresh wrapper over the
+    same sandbox (a restarted process) reads the slot as it was and can still be told something."""
+    from primer.model.workspace_session import SessionStatus
+
+    sb = FakeSandbox(root=tmp_path)
+    ws = await SandboxWorkspace.materialise(
+        workspace_id="ws-close", template=_template(), sandbox=sb, backend_kind="container", runtime_meta=_runtime_meta(),
+    )
+    session = await ws.start_session(_binding(), id="sess-live-1")
+
+    await ws.aclose()
+
+    assert await session.status() == SessionStatus.RUNNING
+    fresh = await SandboxWorkspace.materialise(
+        workspace_id="ws-close", template=_template(), sandbox=sb, backend_kind="container", runtime_meta=_runtime_meta(),
+    )
+    again = await fresh.get_session("sess-live-1")
+    info = await again.info()
+    assert (info.status, info.ended_reason) == (SessionStatus.RUNNING, None), "the slot on the pod was ended by a handle close"
+    await again.append_instruction("a wake after the workspace handle was closed")
