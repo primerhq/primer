@@ -13,14 +13,15 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-CheckKind = Literal["conflict", "validation"]
+CheckKind = Literal["conflict", "validation", "forbidden"]
 
 
 class EntityCheckError(Exception):
     """A pre-write check refused an entity.
 
-    ``kind`` is ``"conflict"`` (the write clashes with a stored row: REST 409, tool ``conflict``) or ``"validation"`` (the body is
-    well formed but semantically refused: REST 422, tool ``validation-error``). ``code`` is a stable machine name some REST bodies
+    ``kind`` is ``"conflict"`` (the write clashes with a stored row: REST 409, tool ``conflict``), ``"validation"`` (the body is
+    well formed but semantically refused: REST 422, tool ``validation-error``) or ``"forbidden"`` (the field is owned by the platform and a
+    client may not write it: REST 403, tool ``forbidden``). ``code`` is a stable machine name some REST bodies
     carry, ``field`` the dotted path of the offending field (``approval.policy``), and ``extra`` any additional fields the REST body
     carries (``lineno`` of a python registration error).
     """
@@ -47,6 +48,8 @@ class EntityCheckError(Exception):
 
     @property
     def tool_error_type(self) -> str:
+        if self.kind == "forbidden":
+            return "forbidden"
         return "conflict" if self.kind == "conflict" else "validation-error"
 
 
