@@ -98,3 +98,24 @@ async def test_a_graph_or_session_that_names_the_default_is_reported_first(clien
     assert "1 session(s) reference 'ag-1'" in (await client.delete("/v1/agents/ag-1")).json()["detail"]
     await app.state.storage_provider.get_storage(type(session_bound_to_agent("x", "ag-1", SessionStatus.WAITING))).delete("s-1")
     assert (await client.delete("/v1/agents/ag-1")).json()["detail"] == default_agent_detail("ag-1")
+
+
+@pytest.mark.asyncio
+async def test_the_default_agent_refusal_body(client, app) -> None:
+    """The whole 409 body, byte for byte as the other reference refusals (tests/api/test_agent_graph_reference_wire_bodies.py): status,
+    content type and the raw problem+json with the per-request id normalised. The body did not exist before, so it was taken from the
+    first green run and is the contract from here on."""
+    import re
+
+    await _seed(app, agent_row("ag-1"))
+    await app.state.storage_provider.set_default_agent_id("ag-1")
+
+    r = await client.delete("/v1/agents/ag-1")
+
+    expected = (
+        '{"type":"/errors/conflict","title":"Conflict","status":409,"detail":"' + default_agent_detail("ag-1")
+        + '","instance":"/v1/agents/ag-1","extensions":{"request_id":"req-<id>"}}'
+    )
+    assert (r.status_code, r.headers["content-type"], re.sub(r'"request_id":"req-[0-9a-f]+"', '"request_id":"req-<id>"', r.text)) == (
+        409, "application/problem+json", expected,
+    )
