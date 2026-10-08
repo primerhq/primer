@@ -5548,22 +5548,11 @@ button.nv-rail-ws-session {
 .pc-card-delete-confirm:hover { text-decoration: underline; }
 .pc-card-delete-confirm:disabled { opacity: 0.6; cursor: default; }
 
-/* Item 4: the create modal's schema-driven chip + two-column form + the
-   live probe panel's own small result list. */
-/* Designer reconciliation: the schema badge moved from its own line
-   inside the form body to INLINE beside the modal title (see the
-   `title` fragment ProviderCatalog now passes to Modal) - .pc-modal-chip
-   itself is dead (nothing renders it any more) but left defined in case
-   a future non-inline usage wants the original standalone-line look;
-   the active style is the -inline variant below. */
+/* Item 4: the create modal's two-column form + the live probe panel's own small result list. (The schema pill that used to sit beside the
+   modal title is gone: it was a developer annotation.) .pc-modal-chip is still used by knowledge.jsx. */
 .pc-modal-chip {
   border: 1px solid var(--border); border-radius: var(--r-4);
   padding: 2px 8px; display: inline-block; margin-bottom: 10px;
-}
-.pc-modal-chip-inline {
-  border: 1px solid var(--border); border-radius: var(--r-4);
-  padding: 1px 7px; margin-left: 10px; font-weight: 400;
-  vertical-align: middle;
 }
 .pc-form-right {
   border-left: 1px solid var(--border); padding-left: 16px;
