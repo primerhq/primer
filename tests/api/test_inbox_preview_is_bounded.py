@@ -108,6 +108,18 @@ _HOSTILE = {
     "user flags": "-u a:" * 10000,
     "user flags with values": "--user a:b " * 3600,
     "user flags without a colon": "-u ab " * 6600,
+    # the shapes the review of the first version found (PR 577): '=' in the user part, quotes, attached values, a long mysql window
+    "user flags with equals": "-u=" * 20000,
+    "long user flags with equals": "--user=" * 8000,
+    "a quote opener per user flag": '-u"' * 13000,
+    "an unclosed quote then colons": '-u"' + ":" * 40000,
+    "an unclosed single quote then colons": "-u'" + ":" * 40000,
+    "attached user flags": "-uab:" * 8000,
+    "capital user flags": "-U " * 13000,
+    "mysql with a long option run": "mysql" + " -x" * 13000,
+    "mysql dump family names": "mariadb-dump " * 3000,
+    "camel case components": "dbPass" * 6600,
+    "camel case assignments": "adminPw=" * 5000,
 }
 
 
