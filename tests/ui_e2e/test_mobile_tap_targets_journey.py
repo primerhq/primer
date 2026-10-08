@@ -21,6 +21,7 @@ from playwright.sync_api import Page, expect
 
 from tests._support.mock_llm import Rule
 from tests._support.smk import smk
+from tests.ui_e2e._shell_helpers import shell_url
 from tests.ui_e2e.test_trace_sidebar_journey import _seed, _wait_for_turn_to_settle
 
 pytestmark = smk("SMK-UI-06", status="partial")
@@ -88,7 +89,7 @@ def phone_session(page: Page, base_url: str, console_url: str, mock_llm_lan, tmp
         _wait_for_turn_to_settle(client, r.json()["id"])
         sid = r.json()["id"]
     page.set_viewport_size(PHONE)
-    page.goto(f"{console_url}#/w/{wid}?doc=session:{sid}")
+    page.goto(f"{shell_url(console_url, wid)}?doc=session:{sid}")
     expect(page.get_by_text("Based on the generated id")).to_be_visible(timeout=20_000)
     expect(page.locator(".nv-mobile-chat")).to_be_visible()
     return page
