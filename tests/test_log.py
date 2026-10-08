@@ -332,6 +332,15 @@ class TestUrlSecretRedaction:
         assert "Server error '500 Internal Server Error' for url " in out
         assert "http://[REDACTED]@127.0.0.1:8123/v1/models'" in out
 
+    @pytest.mark.parametrize("scheme", ["HTTP", "https", "git+ssh", "postgresql", "redis"])
+    def test_userinfo_is_hidden_whatever_the_scheme(self, scheme):
+        """A scheme may be upper case or carry ``+``: the pattern is not tied to http."""
+        from primer.common.log import redact_url_secrets
+
+        out = redact_url_secrets(f"failed {scheme}://svc:s3cr3t-pw@db.example:5432/app")
+        assert "s3cr3t-pw" not in out
+        assert out == f"failed {scheme}://[REDACTED]@db.example:5432/app"
+
     def test_userinfo_with_no_path_is_hidden(self):
         from primer.common.log import redact_url_secrets
 
