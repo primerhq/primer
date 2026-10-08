@@ -1050,19 +1050,20 @@ async def test_t0194_self_referential_graph_clean_envelope(
 
 
 # ============================================================================
-# T0384 — Agent referencing model name not in provider.models flips ok=false
+# T0384 - Agent naming a model the provider has no profile for is refused
 # ============================================================================
 
 
 @pytest.mark.asyncio
-async def test_t0384_agent_status_flags_model_not_in_provider_list(
+async def test_t0384_agent_create_with_model_not_in_provider_list_refused(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0384 — Create LLMProvider with models=["model-a"]; create
-    Agent referencing the SAME provider but with model_name="model-b"
-    (not in the provider's list). Pin: status returns clean envelope
-    (no /errors/internal). The walker may or may not enforce model
-    membership — record the observed contract.
+    """T0384 - Create LLMProvider with models=["model-a"] (so a profile for
+    model-a); create an Agent on the SAME provider but model "model-b", for
+    which no profile exists. The create is refused with a 422 naming the
+    missing profile (A-09), where it used to be accepted and only flagged by
+    ``/status``; nothing is stored, and the profile that does exist is still
+    accepted.
     """
     provider_id = f"llm-t0384-{unique_suffix}"
     agent_id = f"agent-t0384-{unique_suffix}"
@@ -1077,28 +1078,33 @@ async def test_t0384_agent_status_flags_model_not_in_provider_list(
     )
     assert pr.status_code == 201, pr.text
 
-    ag = await client.post(
-        "/v1/agents",
-        json={
-            "id": agent_id,
-            "description": "T0384",
-            "model": agent_model(provider_id, "model-b"),
-            "tools": [],
-        },
-    )
-    assert ag.status_code == 201, ag.text
     try:
-        status = await client.get(f"/v1/agents/{agent_id}/status")
-        assert status.status_code == 200, status.text
-        body = status.json()
-        assert body.get("type") != "/errors/internal", body
-        assert "ok" in body, body
-        assert isinstance(body.get("issues"), list), body
-        # Soft pin — log observed behaviour for spec
-        print(
-            f"[T0384] agent referencing model 'model-b' (not in provider): "
-            f"ok={body['ok']}, issues={body['issues']!r}"
+        refused = await client.post(
+            "/v1/agents",
+            json={
+                "id": agent_id,
+                "description": "T0384",
+                "model": agent_model(provider_id, "model-b"),
+                "tools": [],
+            },
         )
+        assert refused.status_code == 422, refused.text
+        problem = refused.json()
+        assert problem["extensions"]["error"] == "model_profile_not_found", problem
+        assert problem["extensions"]["field"] == "model.profile_id", problem
+        assert "model-b" in problem["detail"], problem
+        assert (await client.get(f"/v1/agents/{agent_id}")).status_code == 404
+
+        accepted = await client.post(
+            "/v1/agents",
+            json={
+                "id": agent_id,
+                "description": "T0384",
+                "model": agent_model(provider_id, "model-a"),
+                "tools": [],
+            },
+        )
+        assert accepted.status_code == 201, accepted.text
     finally:
         await client.delete(f"/v1/agents/{agent_id}")
         await client.delete(f"/v1/llm_providers/{provider_id}")

@@ -24,7 +24,7 @@ from primer.model.graph import Graph
 from primer.toolset.crud import build_crud_toolset
 
 KINDS = {
-    "agent": (Agent, {"id": "agent-m", "description": "managed", "model": {"profile_id": "prov--m"}}),
+    "agent": (Agent, {"id": "agent-m", "description": "managed", "model": {"profile_id": "prov--model"}}),
     "graph": (Graph, {"id": "graph-m", "description": "managed"}),
 }
 
