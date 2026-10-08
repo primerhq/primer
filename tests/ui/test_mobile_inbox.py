@@ -44,7 +44,7 @@ def inbox():
 
     ctx = MiniRacer()
     ctx.eval(_STUBS)
-    for name in ("NV_mobileInboxView", "NV_mobileInboxHeading", "NV_inboxDecide", "NV_inboxFullCall"):
+    for name in ("NV_mobileMayDecide", "NV_mobileInboxView", "NV_mobileInboxHeading", "NV_inboxDecide", "NV_inboxFullCall"):
         start = SHELL.index("function " + name)
         end = SHELL.index("\n}\n", start) + len("\n}\n")
         ctx.eval(SHELL[start:end])

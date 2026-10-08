@@ -5697,6 +5697,7 @@ button.nv-rail-ws-session {
 .nv-mob-ib-title { display: flex; align-items: center; gap: 6px; font-weight: 600; min-width: 0; }
 .nv-mob-ib-title > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nv-mob-ib-line { color: var(--text); overflow-wrap: anywhere; }
+.nv-mob-ib-note { color: var(--text-3); font-size: 12.5px; }
 .nv-mob-ib-args, .nv-mob-ib-full {
   font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; color: var(--text-2);
   background: var(--bg-2); border-radius: 6px; padding: 6px 8px; margin: 0; overflow-wrap: anywhere;

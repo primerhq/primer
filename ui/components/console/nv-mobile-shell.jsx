@@ -50,12 +50,24 @@ function NV_MobileStub(props) {
   );
 }
 
+// Whether this user may decide a gated call: the server's ApproverSpec.allows. Admins always; "anyone" and no spec admit everyone;
+// "roles" admits the listed roles; "users" the named usernames; a malformed spec fails open, as it does there. The route answers 403
+// approver_mismatch for anyone else, so the card does not offer a button that can only fail.
+function NV_mobileMayDecide(approvers, who) {
+  if (!approvers || !who) return true;
+  if (who.role === "admin") return true;
+  if (approvers.kind === "roles") return (approvers.roles || []).indexOf(who.role) >= 0;
+  if (approvers.kind === "users") return (approvers.users || []).indexOf(who.username) >= 0;
+  return true;
+}
+
 // The card's words (console review C-032, C-033). Pure, so V8 tests drive it: what the kind is called, the one descriptive line, the
-// decisive arguments of an approval, and whether the card may offer a decision inline. An Approve is offered only when the card shows
-// WHAT it approves (the tool, which the aggregate row now carries) and names the call (its id); otherwise the card says to open it.
-// Deny stays available whenever the call is named: refusing is the safe default.
-function NV_mobileInboxView(it) {
-  var view = { kindLabel: "Parked", line: "", args: "", truncated: false, canApprove: false, canDeny: false };
+// decisive arguments of an approval, and whether the card may offer a decision inline. An inline decision is offered only when the
+// card shows WHAT it decides (the tool, which the aggregate row carries), names the call (its id) and the user may decide it. A card
+// with no `approval` may not be a real _approval gate at all (a graph park whose primary gate is something else), so it gets neither
+// Approve nor Deny: it says to open the session.
+function NV_mobileInboxView(it, who) {
+  var view = { kindLabel: "Parked", line: "", args: "", truncated: false, canApprove: false, canDeny: false, notApprover: false, note: "" };
   if (it.kind === "approval") {
     var a = it.approval;
     view.kindLabel = "Approval";
@@ -64,8 +76,12 @@ function NV_mobileInboxView(it) {
       view.args = a.arguments || "";
       view.truncated = !!a.truncated;
     }
-    view.canApprove = !!(a && a.tool_name && it.tool_call_id);
-    view.canDeny = !!it.tool_call_id;
+    var decidable = !!(a && a.tool_name && it.tool_call_id);
+    var may = NV_mobileMayDecide(it.approvers, who);
+    view.canApprove = decidable && may;
+    view.canDeny = decidable && may;
+    view.notApprover = decidable && !may;
+    if (view.notApprover) view.note = "Only its approvers can decide this. You can still open it.";
   } else if (it.kind === "ask") {
     view.kindLabel = "Question";
     view.line = it.prompt || "The agent has a question for you";
@@ -146,7 +162,7 @@ function NV_MobileDecisionButton(props) {
 function NV_MobileInboxCard(props) {
   var con = NV_useConsole();
   var it = props.item;
-  var view = NV_mobileInboxView(it);
+  var view = NV_mobileInboxView(it, { username: con.username, role: con.role });
   var ident = NV_identity(it.agent_binding);
   var fullState = React.useState(null);
   var full = fullState[0];
@@ -177,6 +193,8 @@ function NV_MobileInboxCard(props) {
   // A question or a wait: the whole card is the Review link. An approval stays non-interactive at the card level, so the
   // decision buttons are the only things that act and tapping the text never decides anything.
   var whole = it.kind !== "approval";
+  // An approval that cannot be decided inline and is not merely off-limits to this user: the card says to open it.
+  var openToReview = it.kind === "approval" && !view.canApprove && !view.notApprover;
   return (
     <article className="nv-mob-ib-card" data-kind={it.kind}
       data-testid={"nv-mobile-inbox-card:" + it.session_id}
@@ -196,6 +214,7 @@ function NV_MobileInboxCard(props) {
         <span>{it.session_name || it.session_id}</span>
       </div>
       <div className="nv-mob-ib-line" data-testid="nv-mob-ib-line">{view.line}</div>
+      {view.note ? <div className="nv-mob-ib-note" data-testid="nv-mob-ib-note">{view.note}</div> : null}
       {view.args ? <div className="nv-mob-ib-args" data-testid="nv-mob-ib-args">{view.args}</div> : null}
       {view.truncated ? (
         <button type="button" className="nv-mob-ib-showall"
@@ -215,10 +234,10 @@ function NV_MobileInboxCard(props) {
           <NV_MobileDecisionButton decision="deny" item={it} onResolved={props.onResolved} />
         ) : null}
         <button type="button"
-          className={(it.kind === "approval" && !view.canApprove ? "nv-btn-primary" : "nv-btn-secondary") + " touch-target"}
+          className={(openToReview ? "nv-btn-primary" : "nv-btn-secondary") + " touch-target"}
           data-testid={"nv-mobile-inbox-review:" + it.session_id}
           onClick={function (ev) { ev.stopPropagation(); review(); }}>
-          {it.kind === "approval" && !view.canApprove ? "Open to review" : "Review…"}
+          {openToReview ? "Open to review" : "Review…"}
         </button>
       </div>
     </article>
