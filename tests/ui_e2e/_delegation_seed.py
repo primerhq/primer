@@ -9,19 +9,23 @@ The shape: a parent ``system__invoke_agent`` call (raw id ``call_0``) -> a child
 reusing the raw id ``call_0`` (providers that synthesise ids restart the numbering every stream), and finishes -> a grandchild run
 (R2, delegated to by the child's call, reusing ``call_0`` again) that says something. The parent then answers.
 
-The subagent's own tool RESULTS are not here on purpose: the recorder translates stream events only, and a tool result is not one,
-so the system never writes a delegated ``tool_result``.
+The subagent's own tool RESULTS are here too: ``run_agent_turn`` yields the ``_ExecutorToolResult`` of a subagent's call, ``run_subagent`` feeds it to the
+recorder, and ``translate_stream_event`` writes it as a ``tool_result`` stamped ``delegated`` with the run's ids (and the scoped call id the run's OWN coalescing state
+numbered, which restarts per run: a child's call and its parent's are both ``x:tool:1:1``). A reader that pairs a call with its result by the scoped id alone pairs
+a nested call with its PARENT's result; the run is part of the key. The result's output is the tool's own text, so a failed ``invoke_agent`` quotes the stream error
+(``primer/toolset/system.py``: ``subagent 'x' LLM stream failed: <message>``).
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from primer.model.chat import Done, Error, TextDelta, ToolCallEnd, ToolCallStart
+from primer.model.chat import Done, Error, ExtendedEvent, TextDelta, ToolCallEnd, ToolCallStart, _ExecutorToolResult
 from primer.model.workspace_session import SessionMessageKind, SessionMessageRecord
 from primer.session.delegation import DelegationRecorder
 from primer.session.persistence import _CoalesceState, translate_stream_event
@@ -37,6 +41,11 @@ PARENT_FINAL = "parent turn: all done"
 GRANDCHILD_FAILURE = "grandchild run: the model fell over"
 FAILED_TEXT = "flaky helper: working on it"
 CHILD_NOTICE = "flaky helper: provider hiccup"
+
+# What a failed ``invoke_agent`` answers (``_err`` in primer/toolset/_helpers.py: a ``{type, message}`` JSON text), quoting the subagent's stream error.
+def failed_invoke_output(agent: str, message: str) -> str:
+    return json.dumps({"type": "provider-error", "message": f"subagent {agent!r} LLM stream failed: {message}"})
+
 
 RUN_CHILD = "11111111111111111111111111111111"
 RUN_GRANDCHILD = "22222222222222222222222222222222"
@@ -128,6 +137,9 @@ def build(failures: bool = False) -> Seeded:
         else:
             await recorder.on_event(TextDelta(index=0, text=GRANDCHILD), **grandchild)
             await recorder.on_event(Done(stop_reason="stop", raw_reason="stop"), **grandchild)
+        # The child's call to the grandchild is answered, and the recorder writes that result as the CHILD run's own (error when the run failed).
+        child_output = failed_invoke_output("grand", GRANDCHILD_FAILURE) if failures else json.dumps({"output": GRANDCHILD})
+        await recorder.on_event(ExtendedEvent(extended=_ExecutorToolResult(call_id="call_0", output=child_output, error=failures)), **child)
         await recorder.on_event(TextDelta(index=0, text=CHILD_AFTER), **child)
         await recorder.on_event(Done(stop_reason="stop", raw_reason="stop"), **child)
         return child_call_seq
@@ -154,7 +166,7 @@ def build(failures: bool = False) -> Seeded:
         _run_to_completion(flaky())
         writer.add(SessionMessageRecord(
             seq=1, kind=SessionMessageKind.TOOL_RESULT, created_at=placeholder,
-            payload={"call_id": failed_call.payload["id"], "output": f"Error: subagent 'flaky' failed: {CHILD_NOTICE}", "error": True},
+            payload={"call_id": failed_call.payload["id"], "output": failed_invoke_output("flaky", CHILD_NOTICE), "error": True},
         ))
     parent(TextDelta(index=0, text=PARENT_FINAL))
     parent(Done(stop_reason="stop", raw_reason="stop"))
@@ -165,3 +177,62 @@ def build(failures: bool = False) -> Seeded:
     failure_seq = next((r["seq"] for r in records if r["kind"] == "error" and r["payload"].get("fatal") is True), None)
     notice_seq = next((r["seq"] for r in records if r["kind"] == "error" and r["payload"].get("fatal") is False), None)
     return Seeded(records, parent_call_seq, child_call_seq, delegated_assistant, top_assistant, failure_seq, notice_seq, failed_call_seq)
+
+
+GRAND_PARTIAL = "grand: partial"
+GRAND_NOTICE = "grand: provider hiccup"
+HELPER_AFTER = "helper: grand failed, did it myself"
+
+
+def build_nested_notice(helper_calls_something_first: bool = False) -> Seeded:
+    """A GRANDCHILD run that ends the way the OpenResponses stream ends it (the Done first, the held non-fatal Error last, then the loop raises).
+
+    parent turn -> a ``system__invoke_agent`` call (raw id ``call_0``) -> the helper run (R1), which calls ``system__invoke_agent`` again (raw id ``call_0`` again, as a
+    provider that numbers per stream does) -> the grand run (R2): text, ``Done(error)``, the notice. The helper's call is answered with an ERROR result that quotes the
+    notice (written by the recorder, as the helper's own), the helper says its piece, and the parent's call is answered with an OK result: a PARENT result that shares
+    its scoped id with the helper's call. With ``helper_calls_something_first`` the helper makes a successful ``workspace__read_file`` call before, so its failing
+    call is its SECOND (scoped id ``x:tool:1:2``, which no parent id shares): a reader that pairs by id alone finds no result for it and calls the notice "continuing".
+
+    ``Seeded.child_call_seq`` is the helper's call to grand (the call that FAILED), ``delegated_notice_seq`` grand's notice, ``parent_call_seq`` the parent's call.
+    """
+    writer = _Writer()
+    parent_state = _CoalesceState()
+
+    def parent(event) -> list[int]:
+        return [writer.add(r) for r in _as_list(translate_stream_event(event, parent_state, turn_no=1))]
+
+    placeholder = datetime(2026, 10, 6, tzinfo=timezone.utc)
+    writer.add(SessionMessageRecord(seq=1, kind=SessionMessageKind.USER_INPUT, payload={"text": USER_TEXT}, created_at=placeholder))
+    parent(ToolCallStart(id="call_0", name="system__invoke_agent", index=0))
+    (parent_call_seq,) = parent(ToolCallEnd(id="call_0", arguments={"agent_id": "helper", "prompt": "do it"}, index=0))
+    parent(Done(stop_reason="tool_use", raw_reason="tool_use"))
+    recorder = DelegationRecorder(writer=writer, event_bus=_Bus(), session_id="seed", turn_no=1)
+    helper = {"delegate_tool_call_id": "call_0", "delegate_run_id": RUN_CHILD, "delegate_parent_run_id": None, "delegate_depth": 1}
+    grand = {"delegate_tool_call_id": "call_0", "delegate_run_id": RUN_GRANDCHILD, "delegate_parent_run_id": RUN_CHILD, "delegate_depth": 2}
+    seqs: dict[str, int] = {}
+
+    async def delegated() -> None:
+        if helper_calls_something_first:
+            await recorder.on_event(ToolCallStart(id="call_0", name="workspace__read_file", index=0), **helper)
+            await recorder.on_event(ToolCallEnd(id="call_0", arguments={"path": "a.txt"}, index=0), **helper)
+            await recorder.on_event(Done(stop_reason="tool_use", raw_reason="tool_use"), **helper)
+            await recorder.on_event(ExtendedEvent(extended=_ExecutorToolResult(call_id="call_0", output="hello", error=False)), **helper)
+        await recorder.on_event(ToolCallStart(id="call_0", name="system__invoke_agent", index=0), **helper)
+        await recorder.on_event(ToolCallEnd(id="call_0", arguments={"agent_id": "grand", "prompt": "sub"}, index=0), **helper)
+        seqs["helper_call"] = len(writer.records)
+        await recorder.on_event(Done(stop_reason="tool_use", raw_reason="tool_use"), **helper)
+        await recorder.on_event(TextDelta(index=0, text=GRAND_PARTIAL), **grand)
+        await recorder.on_event(Done(stop_reason="error", raw_reason="failed"), **grand)
+        await recorder.on_event(Error(message=GRAND_NOTICE, code="provider_warning", fatal=False), **grand)
+        seqs["notice"] = len(writer.records)
+        await recorder.on_event(
+            ExtendedEvent(extended=_ExecutorToolResult(call_id="call_0", output=failed_invoke_output("grand", GRAND_NOTICE), error=True)), **helper)
+        await recorder.on_event(TextDelta(index=0, text=HELPER_AFTER), **helper)
+        await recorder.on_event(Done(stop_reason="stop", raw_reason="stop"), **helper)
+
+    _run_to_completion(delegated())
+    parent(ExtendedEvent(extended=_ExecutorToolResult(call_id="call_0", output=json.dumps({"output": "helper finished"}), error=False)))
+    parent(TextDelta(index=0, text=PARENT_FINAL))
+    parent(Done(stop_reason="stop", raw_reason="stop"))
+    records = [r.model_dump(mode="json") for r in writer.records]
+    return Seeded(records, parent_call_seq, seqs["helper_call"], delegated_notice_seq=seqs["notice"])

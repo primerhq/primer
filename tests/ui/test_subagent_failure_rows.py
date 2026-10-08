@@ -14,6 +14,7 @@ delegating call has failed is therefore drawn as the failure; one whose call has
 
 from __future__ import annotations
 
+import functools
 import json
 from pathlib import Path
 
@@ -30,7 +31,9 @@ def _function(name: str) -> str:
     return DOC[start:DOC.index("\n}\n", start) + len("\n}\n")]
 
 
-def _context():
+@functools.lru_cache(maxsize=1)
+def _compiled() -> str:
+    """The snippet, transpiled once for the module (the Babel bundler takes seconds to start)."""
     from primer.api._jsx_bundle import JSXBundler
 
     source = "\n".join(_function(n) for n in ("NV_failureWords", "NV_errorView", "NV_noticeView", "NV_subagentRows"))
@@ -40,7 +43,11 @@ def _context():
         code = bundler._transform(source, "snippet.jsx")
     finally:
         bundler._ctx.close()
-    return mini_react_context(code, "function NV_toolCallWithRows() { return null; }")
+    return code
+
+
+def _context():
+    return mini_react_context(_compiled(), "function NV_toolCallWithRows() { return null; }")
 
 
 @pytest.fixture
@@ -79,12 +86,20 @@ def _said(seq: int, text: str) -> dict:
     return {"seq": seq, "kind": "assistant_message", "label": text, "payload": dict(_SUB)}
 
 
-def _result(*, error: bool) -> dict:
-    return {"seq": 9, "kind": "tool_result", "createdAt": "t9", "payload": {"call_id": "call-1", "output": "subagent failed" if error else "done", "error": error}}
+def _failed_output(message: str) -> str:
+    """What a failed ``invoke_agent`` answers (``_err``: a ``{type, message}`` JSON text): it QUOTES the stream error the subagent ended on."""
+    return json.dumps({"type": "provider-error", "message": f"subagent 'helper' LLM stream failed: {message}"})
+
+
+def _result(*, error: bool, quoting: str = "provider hiccup") -> dict:
+    output = _failed_output(quoting) if error else json.dumps({"output": "done"})
+    return {"seq": 9, "kind": "tool_result", "createdAt": "t9", "payload": {"call_id": "call-1", "output": output, "error": error}}
 
 
 def _subtree(ctx, testid: str) -> list[dict]:
-    return json.loads(ctx.eval(f'JSON.stringify(MR.subtree("{testid}"))'))
+    nodes = json.loads(ctx.eval(f'JSON.stringify(MR.subtree("{testid}"))'))
+    assert nodes, f"nothing is drawn inside {testid}: a walk over it would pass on an empty box"
+    return nodes
 
 
 def _red_cards(ctx, testid: str) -> int:
@@ -167,3 +182,25 @@ def test_a_labelled_child_and_a_row_with_nothing_to_say_behave_as_before(block) 
     text = ctx.eval("MR.texts().join(' | ')")
     assert "hello from the subagent" in text
     assert ctx.eval('MR.findAll("nv-subagent-failure:").length') == 0 and ctx.eval('MR.findAll("nv-subagent-notice:").length') == 0
+
+
+def test_only_the_notice_the_failed_calls_error_quotes_is_the_failure(block) -> None:
+    """Two notices in one failed call's scope are two provider reports; the call's error output quotes the one it ended on, and that is the red card. The other stays
+    the quiet line (two red cards would say the call failed twice)."""
+    ctx = block([_notice(3, "recovered", "first hiccup"), _notice(4, "ended", "second hiccup")], result=_result(error=True, quoting="second hiccup"))
+    assert ctx.eval('MR.find("nv-subagent-failure:4") !== null') and ctx.eval('MR.find("nv-subagent-notice:4") === null')
+    assert ctx.eval('MR.find("nv-subagent-notice:3") !== null') and ctx.eval('MR.find("nv-subagent-failure:3") === null')
+    assert _red_cards(ctx, "nv-subagent-failure:4") == 1 and _notes(ctx, "nv-subagent-notice:3") == 1
+
+
+def test_a_failed_call_that_quotes_no_notice_promotes_none(block) -> None:
+    """The call failed for a reason the notice does not name (a tool error, a depth limit): the notice keeps its own state's words instead of being called the failure."""
+    ctx = block([_notice(3, "ended", "provider hiccup")], result=_result(error=True, quoting="something else entirely"))
+    assert ctx.eval('MR.find("nv-subagent-notice:3") !== null') and ctx.eval('MR.find("nv-subagent-failure:3") === null')
+    assert "continuing" not in ctx.eval("MR.texts().join(' | ')")
+
+
+def test_the_same_words_twice_still_make_one_red_card(block) -> None:
+    ctx = block([_notice(3, "recovered", "provider hiccup"), _notice(4, "ended", "provider hiccup")], result=_result(error=True))
+    assert len(json.loads(ctx.eval('JSON.stringify(MR.findAll("nv-subagent-failure:").map(function (e) { return e.props["data-testid"]; }))'))) == 1
+    assert ctx.eval('MR.find("nv-subagent-failure:4") !== null'), "the last one the output quotes is the call's failure"
