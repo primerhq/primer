@@ -125,3 +125,71 @@ async def test_flag_on_tap_stashes_and_eager_flushes(monkeypatch) -> None:
     scoped_id = "x:tool:0:1"
     assert scoped_id in tap.coalesce_state.tool_call_record_seq
     assert tap.coalesce_state.tool_call_record_name[scoped_id] == "tool_a"
+
+
+# ---- a drain that loses its writer still records the seqs it spent (review of #545, B3) --------------------------------------------
+
+
+class _HangingIO:
+    """The workspace's runtime connection dropped: every append waits for ``release``."""
+
+    def __init__(self) -> None:
+        import asyncio
+
+        self.release = asyncio.Event()
+
+    async def append_message_line(self, session_id: str, line: bytes) -> None:
+        await self.release.wait()
+
+
+async def _drain_world(monkeypatch):
+    from primer.session import persistence
+    from tests.conftest import _FakeStorageProvider
+
+    monkeypatch.setattr(persistence, "_WRITE_TIMEOUT_S", 0.2, raising=False)
+    io = _HangingIO()
+    pool = _FakePool()
+    pool._workspace_io = io
+    pool._storage = _FakeStorageProvider()
+    session = _session().model_copy(update={"last_seq": 5})
+    await pool._storage.get_storage(WorkspaceSession).create(session)
+    return io, pool, session
+
+
+@pytest.mark.asyncio
+async def test_a_tap_that_disables_itself_on_a_hung_append_still_persists_the_seqs_it_spent(monkeypatch) -> None:
+    """The eager flush of a TOOL_CALL record meets the dead workspace and the writer gives up: ``observe`` disables the tap
+    (``self._writer = None``) and ``finish`` used to return without writing ``last_seq``, so the row stayed at 5 while seq 6 was spent
+    and the next writer reused it (duplicate seqs; the tap and ``since_seq`` hide the new record)."""
+    import asyncio
+
+    io, pool, session = await _drain_world(monkeypatch)
+    tap = await _ResumeDrainTap.create(pool, session, node_tool_call_seq=None, tool_calls_as_claims_enabled=True)
+    try:
+        async with asyncio.timeout(5.0):
+            await tap.observe(ToolCallStart(id="call-1", name="tool_a", index=0))
+            await tap.observe(ToolCallEnd(id="call-1", arguments={}, index=0))
+            await tap.finish()
+    finally:
+        io.release.set()
+
+    row = await pool._storage.get_storage(WorkspaceSession).get(session.id)
+    assert row.last_seq == 6, f"the drain spent seq 6 and the row says {row.last_seq}: the next writer reuses it"
+
+
+@pytest.mark.asyncio
+async def test_finish_persists_last_seq_even_when_its_own_flush_gives_up(monkeypatch) -> None:
+    import asyncio
+
+    io, pool, session = await _drain_world(monkeypatch)
+    tap = await _ResumeDrainTap.create(pool, session, node_tool_call_seq=None)          # flag off: no eager flush
+    try:
+        async with asyncio.timeout(5.0):
+            await tap.observe(ToolCallStart(id="call-1", name="tool_a", index=0))
+            await tap.observe(ToolCallEnd(id="call-1", arguments={}, index=0))
+            await tap.finish()                                                         # its flush meets the dead workspace
+    finally:
+        io.release.set()
+
+    row = await pool._storage.get_storage(WorkspaceSession).get(session.id)
+    assert row.last_seq == 6, f"the flush failed and finish skipped last_seq: the row says {row.last_seq}"
