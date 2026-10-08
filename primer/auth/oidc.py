@@ -64,6 +64,13 @@ _DISCOVERY_TTL_SECONDS = 3600.0
 _JWKS_TTL_SECONDS = 3600.0
 _HTTP_TIMEOUT_SECONDS = 10.0
 
+# What an httpx call can raise while BUILDING a request for a URL it refuses: ``InvalidURL`` (a non-numeric port, ``host:80:90``, an
+# unclosed bracket, a NUL byte) is a plain ``Exception``, not an ``HTTPError``, and the IDNA codec raises ``idna.IDNAError`` (a
+# ``UnicodeError``, so a ``ValueError``) for a malformed internationalised host (``xn--``). The URLs come from an admin
+# (the discovery URL) and from the IdP's own documents (``jwks_uri``, ``token_endpoint``), so each must come back as an ``OidcError``
+# like any other unreachable IdP, never escape as a 500.
+_HTTP_CALL_ERRORS = (httpx.HTTPError, httpx.InvalidURL, ValueError)
+
 # Anti-abuse bound on fetch_jwks's unknown-kid-triggered refresh: without
 # this, an attacker sending id_tokens with random `kid`s could force a
 # JWKS network round-trip on every single login attempt (a DoS on us and
@@ -154,7 +161,7 @@ async def discover(discovery_url: str) -> OidcMetadata:
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS) as client:
         try:
             resp = await client.get(discovery_url)
-        except httpx.HTTPError as exc:
+        except _HTTP_CALL_ERRORS as exc:
             raise OidcError(
                 f"discovery request to {discovery_url!r} failed: {exc}", cause=exc
             ) from exc
@@ -250,7 +257,7 @@ async def fetch_jwks(jwks_uri: str, *, kid: str | None = None) -> dict:
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS) as client:
         try:
             resp = await client.get(jwks_uri)
-        except httpx.HTTPError as exc:
+        except _HTTP_CALL_ERRORS as exc:
             raise OidcError(
                 f"JWKS request to {jwks_uri!r} failed: {exc}", cause=exc
             ) from exc
@@ -435,7 +442,7 @@ async def exchange_code(
                 auth=auth,
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
-        except httpx.HTTPError as exc:
+        except _HTTP_CALL_ERRORS as exc:
             raise OidcError(
                 f"token exchange request failed: {exc}", cause=exc
             ) from exc
