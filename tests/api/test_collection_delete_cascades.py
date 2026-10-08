@@ -17,15 +17,17 @@ The tool side is pinned in ``tests/toolset/test_system_collection_delete.py``.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
 from primer.knowledge.document_service import DocumentService
 from primer.model.collection import Collection, CollectionEmbedder, CollectionSearchConfig, Document
-from primer.model.except_ import NotFoundError
+from primer.model.except_ import NotFoundError, PrimerError
 from primer.model.storage import OffsetPage
 from primer.storage.q import Q
+from primer.storage.sqlite import SqliteDocumentContentStore
 
 # Re-export so pytest can resolve the sqlite-backed app, client and search-enabled collection fixtures.
 from tests.api.test_knowledge_documents_by_path import app, client, collection_id, provider  # noqa: F401
@@ -40,6 +42,8 @@ class _Vectors:
         self.namespaces: set[str] = set()
         self.dropped: list[str] = []
         self.drop_error: Exception | None = None
+        self.drop_calls = 0
+        self.on_drop = None  # async callable(n): what happens while the n-th drop of a namespace is in flight
 
     async def create_collection(self, cid, *, dimensions, distance="cosine"):
         self.namespaces.add(cid)
@@ -54,6 +58,9 @@ class _Vectors:
         self.records = [r for r in self.records if not (r.collection_id == cid and r.document_id == document_id)]
 
     async def drop_collection(self, cid):
+        self.drop_calls += 1
+        if self.on_drop is not None:
+            await self.on_drop(self.drop_calls)
         if self.drop_error is not None:
             raise self.drop_error
         self.dropped.append(cid)
@@ -260,3 +267,207 @@ async def test_a_system_collection_cannot_be_deleted_and_nothing_is_cascaded(cli
     assert "system-owned and read-only" in resp.json()["detail"]
     assert await provider.get_storage(Collection).get("sys-1") is not None
     assert [d.path for d in await _documents_of(provider, "sys-1")] == ["map.md"]
+
+
+def _record_order(monkeypatch, provider, vectors) -> list[str]:
+    """Log, in call order, every step that removes something: the vector drop, each document, each content row, the collection row."""
+    log: list[str] = []
+
+    def around(label, real):
+        async def wrapper(*args, **kwargs):
+            log.append(label)
+            return await real(*args, **kwargs)
+        return wrapper
+
+    monkeypatch.setattr(vectors, "drop_collection", around("vectors", vectors.drop_collection))
+    docs, colls = provider.get_storage(Document), provider.get_storage(Collection)
+    monkeypatch.setattr(docs, "delete", around("document", docs.delete))
+    monkeypatch.setattr(colls, "delete", around("row", colls.delete))
+    real_content = SqliteDocumentContentStore.delete
+
+    async def content_delete(self, *args, **kwargs):
+        log.append("content")
+        return await real_content(self, *args, **kwargs)
+
+    monkeypatch.setattr(SqliteDocumentContentStore, "delete", content_delete)
+    return log
+
+
+@pytest.mark.asyncio
+async def test_the_cascade_runs_before_the_collection_row_is_deleted(client, provider, collection_id, vectors, monkeypatch):
+    """A failure part-way must leave a collection that deleting again finishes, never documents without a collection: the row goes last."""
+    await _put(client, collection_id, "a.md", "b.md")
+    log = _record_order(monkeypatch, provider, vectors)
+
+    assert (await client.delete(f"/v1/collections/{collection_id}")).status_code == 204
+
+    assert log.count("row") == 1 and log[-1] == "row", f"the row was not the last thing removed: {log}"
+    assert log[0] == "vectors", f"the vector namespace was not dropped first: {log}"
+    assert log.count("document") == 2 and log.count("content") == 2
+
+
+@pytest.mark.asyncio
+async def test_chunks_written_by_an_indexing_pass_that_lands_mid_purge_are_dropped_too(
+    client, provider, collection_id, vectors, monkeypatch,
+):
+    """A PUT whose indexing pass was in flight when the namespace was dropped recreates the namespace and its chunks after the drop;
+    left alone they are searchable orphans under an id that is about to be free."""
+    await _put(client, collection_id, "a.md")
+    docs = provider.get_storage(Document)
+    real, landed = docs.delete, []
+
+    async def indexing_lands(id, *, conn=None):
+        if not landed:
+            landed.append(id)
+            vectors.namespaces.add(collection_id)
+            vectors.records.append(SimpleNamespace(collection_id=collection_id, document_id=id, chunk_id="late"))
+        return await real(id, conn=conn)
+
+    monkeypatch.setattr(docs, "delete", indexing_lands)
+
+    resp = await client.delete(f"/v1/collections/{collection_id}")
+
+    assert resp.status_code == 204, resp.text
+    assert landed, "the scenario never ran"
+    assert vectors.chunks_of(collection_id) == [], "a chunk written mid-purge survived the delete"
+    assert collection_id not in vectors.namespaces
+    assert vectors.drop_calls >= 2, "the namespace was dropped only before the documents, not after"
+
+
+@pytest.mark.asyncio
+async def test_a_document_created_while_the_namespace_is_dropped_again_is_removed_too(client, provider, collection_id, vectors):
+    """The documents are re-checked just before the row goes, so a write that lands after the loop does not become an orphan."""
+    await _put(client, collection_id, "a.md")
+    created: list[int] = []
+
+    async def late_write(n):
+        if n == 2:
+            created.append(n)
+            await DocumentService(provider).upsert(collection_id=collection_id, path="late.md", content="arrived late")
+
+    vectors.on_drop = late_write
+
+    resp = await client.delete(f"/v1/collections/{collection_id}")
+
+    assert resp.status_code == 204, resp.text
+    assert created, "the namespace was dropped only once, so nothing re-checked the documents"
+    assert await _documents_of(provider, collection_id) == [], "a document written during the delete outlived its collection"
+    assert await _content_rows(provider, collection_id, ["a.md", "late.md"]) == []
+
+
+@pytest.mark.asyncio
+async def test_a_collection_that_keeps_receiving_documents_is_not_deleted_and_says_so(client, provider, collection_id, vectors):
+    """Bounded: the purge does not chase a writer for ever. It stops with a 409 that names the way out, and the row is still there."""
+    await _put(client, collection_id, "a.md")
+
+    async def writer_that_never_stops(n):
+        if n >= 2:
+            await DocumentService(provider).upsert(collection_id=collection_id, path=f"late-{n}.md", content="again")
+
+    vectors.on_drop = writer_that_never_stops
+
+    resp = await client.delete(f"/v1/collections/{collection_id}")
+
+    assert resp.status_code == 409, resp.text
+    assert collection_id in resp.json()["detail"]
+    assert vectors.drop_calls <= 6, "the purge chased the writer without a bound"
+    assert await provider.get_storage(Collection).get(collection_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_a_delete_that_removes_nothing_is_a_server_error_not_a_vector_store_fault(
+    client, provider, collection_id, vectors, monkeypatch,
+):
+    await _put(client, collection_id, "a.md")
+
+    async def removes_nothing(id, *, conn=None):
+        return None
+
+    monkeypatch.setattr(provider.get_storage(Document), "delete", removes_nothing)
+
+    resp = await client.delete(f"/v1/collections/{collection_id}")
+
+    assert resp.status_code == 500, f"a stuck document delete reads as {resp.status_code}: {resp.text}"
+    assert resp.json()["type"].endswith("/errors/internal"), resp.json()
+    assert await provider.get_storage(Collection).get(collection_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_a_document_deleted_concurrently_counts_as_already_deleted(client, provider, collection_id, vectors, monkeypatch):
+    """Another request deleting a document between the page read and the purge's own delete is the outcome the purge wants, not a 404."""
+    await _put(client, collection_id, "a.md", "b.md")
+    docs = provider.get_storage(Document)
+    real, raced = docs.delete, []
+
+    async def deleted_by_someone_else_first(id, *, conn=None):
+        if not raced:
+            raced.append(id)
+            await real(id)
+        return await real(id, conn=conn)
+
+    monkeypatch.setattr(docs, "delete", deleted_by_someone_else_first)
+
+    resp = await client.delete(f"/v1/collections/{collection_id}")
+
+    assert resp.status_code == 204, resp.text
+    assert raced, "the scenario never ran"
+    assert await _documents_of(provider, collection_id) == []
+    assert await _content_rows(provider, collection_id, ["a.md", "b.md"]) == []
+
+
+@pytest.mark.asyncio
+async def test_content_rows_with_no_document_entity_are_removed_with_the_collection(client, provider, collection_id, vectors):
+    """UNIQUE(collection_id, path) would make such a row block the path in a collection created later under the same id."""
+    content = provider.get_content_store()
+    await content.upsert(document_id="ghost-1", collection_id=collection_id, path="ghost.md", content="no entity row")
+    await content.upsert(document_id="ghost-2", collection_id="elsewhere", path="ghost.md", content="another collection's")
+
+    assert (await client.delete(f"/v1/collections/{collection_id}")).status_code == 204
+
+    assert await content.resolve_id(collection_id, "ghost.md") is None, "an entity-less content row outlived its collection"
+    assert await content.resolve_id("elsewhere", "ghost.md") == "ghost-2", "another collection's content row was removed"
+
+
+@pytest.mark.asyncio
+async def test_a_failure_part_way_leaves_a_collection_that_deleting_again_finishes(
+    client, provider, collection_id, vectors, monkeypatch,
+):
+    """Declared state after a failed delete: the vector namespace is already gone (so search on the collection finds nothing until the
+    retry), the batches that committed are gone, the rest and the row remain, and a second DELETE finishes the job."""
+    monkeypatch.setattr("primer.knowledge.lifecycle._PURGE_BATCH", 2)
+    await _put(client, collection_id, *[f"d{n}.md" for n in range(5)])
+    assert vectors.chunks_of(collection_id)
+    docs = provider.get_storage(Document)
+    real, calls = docs.delete, []
+
+    async def fails_in_the_second_batch(id, *, conn=None):
+        calls.append(id)
+        if len(calls) == 3:
+            raise PrimerError("the disk is full")
+        return await real(id, conn=conn)
+
+    monkeypatch.setattr(docs, "delete", fails_in_the_second_batch)
+
+    failed = await client.delete(f"/v1/collections/{collection_id}")
+
+    assert failed.status_code == 500, failed.text
+    assert await provider.get_storage(Collection).get(collection_id) is not None
+    assert len(await _documents_of(provider, collection_id)) == 3, "the first batch committed and the second rolled back"
+    assert vectors.chunks_of(collection_id) == [], "search on the collection is empty until the retry"
+
+    monkeypatch.setattr(docs, "delete", real)
+    retried = await client.delete(f"/v1/collections/{collection_id}")
+
+    assert retried.status_code == 204, retried.text
+    assert await _documents_of(provider, collection_id) == []
+
+
+@pytest.mark.asyncio
+async def test_the_delete_route_documents_the_refusals_a_client_can_get(app):
+    """403 (a system collection), 409 (managed, referenced or still being written) and 502 (an unreachable vector store) are answers the
+    route gives; the generated spec said only 404 and 500."""
+    spec = app.openapi()["paths"]["/v1/collections/{entity_id}"]
+
+    assert {"403", "404", "409", "500", "502"} <= set(spec["delete"]["responses"]), sorted(spec["delete"]["responses"])
+    assert "403" in spec["put"]["responses"], "the system-flag refusal is not documented on the update"
+    assert "403" in app.openapi()["paths"]["/v1/collections"]["post"]["responses"], "nor on the create"

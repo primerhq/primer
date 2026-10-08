@@ -181,3 +181,24 @@ async def test_delete_then_absent(content_store: DocumentContentStore) -> None:
 @pytest.mark.asyncio
 async def test_delete_absent_is_noop(content_store: DocumentContentStore) -> None:
     await content_store.delete("nope")  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_delete_collection_removes_every_row_of_that_collection_only(content_store: DocumentContentStore) -> None:
+    """One statement for the whole collection, whatever rows it holds (the purge uses it to sweep rows with no document entity)."""
+    await content_store.upsert(document_id="d1", collection_id="c", path="a.md", content="x")
+    await content_store.upsert(document_id="d2", collection_id="c", path="deep/b.md", content="y")
+    await content_store.upsert(document_id="d3", collection_id="other", path="a.md", content="z")
+
+    removed = await content_store.delete_collection("c")
+
+    assert removed == 2
+    assert await content_store.list("c") == []
+    assert await content_store.get("d1") is None and await content_store.get("d2") is None
+    assert await content_store.get("d3") == "z"
+    await content_store.upsert(document_id="d4", collection_id="c", path="a.md", content="again")  # the path is free again
+
+
+@pytest.mark.asyncio
+async def test_delete_collection_of_an_empty_or_unknown_collection_is_a_noop(content_store: DocumentContentStore) -> None:
+    assert await content_store.delete_collection("nope") == 0
