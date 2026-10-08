@@ -41,6 +41,7 @@ from primer.agent.approval import (
     resolve_preview,
 )
 from primer.authz import _role_allows
+from primer.common.preview_paths import closed_set_names
 from primer.int.toolset import ToolsetProvider
 from primer.model.chat import Tool, ToolCallPart, ToolCallResult, ToolResultPart, NOTIFYING_TOOL_RESULT
 from primer.model.except_ import (
@@ -63,6 +64,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 WORKSPACE_TOOLSET_ID = "workspace"
+# The meta-dispatch tool (``primer.toolset._system_crud._call_tool_tool``, toolset ``primer.toolset._system_common.SYSTEM_TOOLSET_ID``): a gate on IT is a gate on whatever
+# it runs, so its approval card also shows the inner tool's allowlisted arguments (``ToolExecutionManager._call_tool_inner_paths``).
+_CALL_TOOL = ("system", "call_tool")
 
 # Reserved toolset whose tools are workspace-session-only. An agent may
 # bind it like any other toolset, but its tools are registered into the
@@ -703,7 +707,7 @@ class ToolExecutionManager:
                                 },
                                 # Which arguments the Inbox card may show, resolved here where the descriptor and the policy
                                 # are both in hand: the route that draws the card reads only this blob.
-                                preview=resolve_preview(policy=policy, tool=self._descriptors.get(call.name)),
+                                preview=self._preview_for(policy, call, toolset_id=toolset_id, bare_name=bare_name),
                             ),
                         ),
                         tool_call_id=call.id,
@@ -718,6 +722,19 @@ class ToolExecutionManager:
             bare_name=bare_name,
             principal=principal,
         )
+
+    def _preview_for(self, policy: Any, call: ToolCallPart, *, toolset_id: str, bare_name: str) -> dict[str, Any]:
+        """The allowlist stamp of this call's approval card (:func:`primer.agent.approval.resolve_preview`). A gate on ``system::call_tool`` is a gate on the tool it runs: unless
+        the operator's own list decides, the inner tool's paths (its declaration, else its closed set) join the card as ``arguments.<path>`` when this manager holds the inner
+        descriptor; an inner tool it does not hold has its arguments withheld."""
+        preview = resolve_preview(policy=policy, tool=self._descriptors.get(call.name))
+        if (toolset_id, bare_name) == _CALL_TOOL and preview["source"] != "policy":
+            arguments = call.arguments if isinstance(call.arguments, dict) else {}
+            inner = self._descriptors.get(f"{arguments.get('toolset_id')}{_SCOPE_SEPARATOR}{arguments.get('tool_name')}")
+            if inner is not None:
+                inner_paths = list(inner.preview_args) if inner.preview_args is not None else closed_set_names(inner.args_schema)
+                preview["paths"].extend(f"arguments.{path}" for path in inner_paths)
+        return preview
 
     # ---- Internals -------------------------------------------------------
 

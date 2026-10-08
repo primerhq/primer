@@ -23,10 +23,12 @@ from primer.agent.approval import (
     ApprovalContext,
     ApprovalResolver,
     approval_resume_metadata,
+    resolve_preview,
     evaluate_approval_gate,
 )
 from primer.authz import _role_allows
 from primer.common.entity_checks import EntityCheckError
+from primer.agent.tool_schemas import find_tool
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import ok as _ok
@@ -970,6 +972,10 @@ def _call_tool_tool(
                                     "toolset_id": args.toolset_id,
                                     "principal": args.principal,
                                 },
+                                # The card filters the INNER call's arguments by the INNER tool's allowlist (design 01a11cd3-66b0). The
+                                # descriptor is looked up through the registry (under a clock); an inner tool that cannot be found has no
+                                # schema to prove anything closed, so every argument is withheld.
+                                preview=resolve_preview(policy=policy, tool=await find_tool(registry, args.toolset_id, args.tool_name)),
                             ),
                         ),
                         tool_call_id=ctx.tool_call_id,
@@ -1010,6 +1016,9 @@ def _call_tool_tool(
                 "for approval just like a normal agent tool call."
             ),
             args_schema=_CallToolArgs.model_json_schema(),
+            # An approval card for a gate on call_tool itself shows which tool it runs; the inner arguments are shown by the INNER tool's
+            # paths (ToolExecutionManager adds them as arguments.<path>) and the principal is never shown.
+            preview_args=("toolset_id", "tool_name"),
             examples=[
                 ToolExample(
                     args={
