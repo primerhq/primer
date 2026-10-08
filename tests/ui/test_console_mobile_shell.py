@@ -413,7 +413,7 @@ def test_spaces_tree_reuses_the_rail_and_shell_level_workspace_cache() -> None:
     con.workspaces is nv-shell.jsx's own "nv-workspaces" resource (free,
     no extra fetch); sessions/attention share the rail's own cache keys
     (nv-rail.jsx) rather than a third independent poll for the same data."""
-    m = re.search(r"function NV_MobileSpaces\(\)[\s\S]{0,1500}", MOBILE)
+    m = re.search(r"function NV_MobileSpaces\(props\)[\s\S]{0,1500}", MOBILE)
     assert m
     body = m.group(0)
     assert "con.workspaces" in body

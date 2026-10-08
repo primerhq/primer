@@ -5700,6 +5700,12 @@ button.nv-rail-ws-session {
 .nv-mob-ib-count { color: var(--text-3); font-size: 12.5px; }
 .nv-mob-ib-list { display: flex; flex-direction: column; gap: 10px; }
 .nv-mob-ib-empty { padding: 24px 0; color: var(--text-3); text-align: center; }
+.nv-mob-ib-empty-h { margin: 0 0 6px; color: var(--text-2); font-weight: 600; }
+.nv-mob-ib-empty-sub { margin: 0 auto 16px; max-width: 28ch; font-size: 13px; line-height: 1.45; }
+.nv-mob-ib-start {
+  min-height: 44px; padding: 0 20px; border-radius: 10px; border: 1px solid var(--border-strong);
+  background: var(--accent); color: var(--accent-fg, #fff); font-weight: 600; font-size: 14px;
+}
 .nv-mob-ib-card {
   box-sizing: border-box; width: 100%; min-width: 0;
   background: var(--bg-1); border: 1px solid var(--border); border-radius: 10px;
