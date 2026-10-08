@@ -29,6 +29,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from primer.agent.agent_checks import agent_pre_checks
 from primer.model.agent import Agent
 from primer.model.chat import Tool
 from primer.model.graph import Graph
@@ -80,11 +81,15 @@ def build_crud_toolset(
     passes it; ``None`` for standalone builds).
     """
     registry: dict[str, tuple[Tool, ToolHandler]] = {}
+    # The builder is the principal most likely to name a profile or toolset that does not exist, so its create / update run the
+    # same reference check as the route and the system toolset (A-09). A graph has no such pre-write check.
+    pre_checks_by_label = {"agent": agent_pre_checks(storage_provider)}
 
     for label, plural, model_cls, guards in (
         ("agent", "agents", Agent, AGENT_GUARDS),
         ("graph", "graphs", Graph, GRAPH_GUARDS),
     ):
+        pre_create, pre_update = pre_checks_by_label.get(label, (None, None))
         # The factory's default is NO guards, so they are passed here: a builder must not be able to create a row that claims a
         # harness, or edit and release a managed one, through a scope the system toolset's own guards do not cover.
         produced = _crud_tools_for(
@@ -94,6 +99,8 @@ def build_crud_toolset(
             storage_provider=storage_provider,
             required_role="user",
             guards=guards,
+            pre_create=pre_create,
+            pre_update=pre_update,
         )
         for bare in (f"create_{label}", f"update_{label}"):
             tool, handler = produced[bare]

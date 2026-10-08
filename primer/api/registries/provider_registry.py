@@ -253,6 +253,12 @@ _TOOLSET_ID_ALIASES: dict[str, str] = {
 }
 
 
+def canonical_toolset_id(toolset_id: str) -> str:
+    """The id the registry resolves ``toolset_id`` to: a retired underscore-prefixed id maps to its current one, any other id is
+    returned unchanged. Public so the agent reference check resolves a tool id's toolset exactly as a turn does."""
+    return _TOOLSET_ID_ALIASES.get(toolset_id, toolset_id)
+
+
 def _build_default_toolset_factory(
     *,
     allowed_stdio_commands: frozenset[str] | None = None,
@@ -526,7 +532,7 @@ class ProviderRegistry:
     async def get_toolset(self, toolset_id: str) -> ToolsetProvider:
         # Transparently resolve old `_*` ids to new prefix-less ids so
         # agent rows persisted before the rename continue to work.
-        toolset_id = _TOOLSET_ID_ALIASES.get(toolset_id, toolset_id)
+        toolset_id = canonical_toolset_id(toolset_id)
         # Reserved id `system` short-circuits storage. Returns the
         # singleton built at app startup; immutable, never re-created.
         if (
@@ -662,7 +668,7 @@ class ProviderRegistry:
 
     async def _invalidate_toolset_local(self, toolset_id: str) -> None:
         # Transparently resolve old `_*` ids to new prefix-less ids.
-        toolset_id = _TOOLSET_ID_ALIASES.get(toolset_id, toolset_id)
+        toolset_id = canonical_toolset_id(toolset_id)
         # The reserved internal toolsets are immutable; invalidation
         # is a no-op so the singletons survive any cascade triggered
         # by an accidental write to the reserved ids.
@@ -886,4 +892,5 @@ __all__ = [
     "RESERVED_TOOLSET_ROW_IDS",
     "RESERVED_TOOLSET_SCOPE_IDS",
     "RESERVED_WORKSPACE_PROVIDER_IDS",
+    "canonical_toolset_id",
 ]

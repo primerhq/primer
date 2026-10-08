@@ -32,7 +32,7 @@ async def test_create_agent_writes_a_row(fake_storage_provider):
             "entity": {
                 "id": "agent-x",
                 "description": "built by the builder",
-                "model": {"profile_id": "prov--m"},
+                "model": {"profile_id": "p--m"},
             }
         },
     )
@@ -49,7 +49,7 @@ async def test_update_agent_replaces_the_row(fake_storage_provider):
             "entity": {
                 "id": "agent-y",
                 "description": "first",
-                "model": {"profile_id": "prov--m"},
+                "model": {"profile_id": "p--m"},
             }
         },
     )
@@ -60,7 +60,7 @@ async def test_update_agent_replaces_the_row(fake_storage_provider):
             "entity": {
                 "id": "agent-y",
                 "description": "second",
-                "model": {"profile_id": "prov--m"},
+                "model": {"profile_id": "p--m"},
             },
         },
     )
@@ -85,7 +85,7 @@ async def test_unknown_agent_update_is_a_typed_error(fake_storage_provider):
             "entity": {
                 "id": "agent-nope",
                 "description": "x",
-                "model": {"profile_id": "prov--m"},
+                "model": {"profile_id": "p--m"},
             },
         },
     )
