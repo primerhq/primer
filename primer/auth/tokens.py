@@ -3,13 +3,20 @@
 The session cookie's value is a ``itsdangerous.URLSafeTimedSerializer``-
 produced string carrying a small JSON payload:
 
-    {"uid": "<user_id>", "username": "<lowercase>", "src": "<auth source>"}
+    {"uid": "<user_id>", "username": "<lowercase>", "src": "<auth source>",
+     "ep": <session epoch>}
 
 ``src`` records how the session was established: ``"local"`` for
 password login (the default), or an OIDC provider id (e.g.
 ``"oidc-provider-1"``) for SSO-minted sessions. Legacy cookies signed
 before this field existed have no ``src`` key; ``verify_session``
 defaults those to ``"local"`` rather than rejecting them.
+
+``ep`` is the user's :attr:`User.session_epoch` when the cookie was minted
+(SEC-05). The auth middleware rejects a cookie whose epoch is not the
+user's current one, so bumping the epoch revokes every outstanding cookie.
+A legacy cookie with no ``ep`` counts as epoch 0; a present but non-integer
+``ep`` is malformed and rejected.
 
 The serializer's HMAC-SHA256 signature is appended; ``verify_session``
 re-checks the signature and the max-age (``session_ttl_days``) on read.
@@ -41,14 +48,15 @@ class SessionPayload:
     user_id: str
     username: str
     src: str = "local"
+    epoch: int = 0
 
 
 def sign_session(
-    *, user_id: str, username: str, secret: str, src: str = "local",
+    *, user_id: str, username: str, secret: str, src: str = "local", epoch: int = 0,
 ) -> str:
-    """Produce a signed cookie value for the given user."""
+    """Produce a signed cookie value for the given user at session ``epoch``."""
     s = URLSafeTimedSerializer(secret, salt=_SALT)
-    return s.dumps({"uid": user_id, "username": username, "src": src})
+    return s.dumps({"uid": user_id, "username": username, "src": src, "ep": epoch})
 
 
 def verify_session(
@@ -76,4 +84,8 @@ def verify_session(
         return None
     if not isinstance(src, str):
         src = "local"
-    return SessionPayload(user_id=uid, username=username, src=src)
+    epoch = payload.get("ep", 0)
+    # bool is an int subclass; a signed cookie never carries one, so treat it as malformed.
+    if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 0:
+        return None
+    return SessionPayload(user_id=uid, username=username, src=src, epoch=epoch)

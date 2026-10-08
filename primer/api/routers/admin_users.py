@@ -398,9 +398,13 @@ async def update_admin_user(
         plaintext = _generate_password()
         updated.password_hash = await hash_password(plaintext)
         updated.must_change_password = True
+        # A reset ends every session of the account (SEC-05): cookies minted under the old epoch,
+        # including a stolen one, stop working on the next request.
+        updated.session_epoch += 1
     elif "password" in provided and body.password:
         updated.password_hash = await hash_password(body.password)
         updated.must_change_password = True
+        updated.session_epoch += 1
 
     # Anti-lockout: only fires when *existing* currently counts as a
     # protected admin but *updated* would not. existing is still in
