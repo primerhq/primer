@@ -132,6 +132,22 @@ function NV_ProfileMenu() {
             function () { window.location.reload(); }
           );
         }}>Log out</button>
+      <button type="button" className="nv-menu-row" data-testid="nv-logout-all"
+        title="End every session of this account, on every device"
+        onClick={async function () {
+          con.toggleMenu(null);
+          // Revokes every cookie of the account (SEC-05), not only this one, so it confirms first.
+          const ok = await window.confirmDialog({
+            title: "Sign out everywhere",
+            message: "This ends every session of your account, on every browser and device, including this one. API tokens are not affected.",
+            confirmLabel: "Sign out everywhere", danger: true,
+          });
+          if (!ok) return;
+          fetch("/v1/auth/logout-all", { method: "POST" }).then(
+            function () { window.location.reload(); },
+            function () { window.location.reload(); }
+          );
+        }}>Sign out everywhere</button>
     </div>
   );
 }
