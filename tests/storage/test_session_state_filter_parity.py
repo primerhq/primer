@@ -127,8 +127,9 @@ async def test_a_row_written_before_the_axes_existed_reads_waiting_or_ended(
     else:
         async with provider.pool.acquire() as c:
             await c.execute(
-                "UPDATE sessions SET data = data - 'turn_status' - 'turn_no' "
-                "- 'parked_status' WHERE id = ANY($1::text[])",
+                f'UPDATE "{provider.schema}".sessions SET data = data - '
+                "'turn_status' - 'turn_no' - 'parked_status' "
+                "WHERE id = ANY($1::text[])",
                 ids,
             )
     # The stripped document really lacks the keys, and the model reads defaults.
