@@ -398,6 +398,13 @@ def test_the_v1_hint_is_not_offered_to_a_provider_that_has_no_base_url(real) -> 
     assert "404" in f["detail"] and "/v1" not in f["detail"] and "Base URL" not in f["detail"]
 
 
+def test_the_v1_hint_is_not_offered_to_ollama_which_is_not_openai_compatible(real) -> None:
+    f = _failure(real["http_404"], "ollama")
+
+    assert f["title"] == ANSWERED
+    assert "404" in f["detail"] and "/v1" not in f["detail"]
+
+
 def test_any_other_error_status_is_reported_as_an_answer_not_as_silence(real) -> None:
     f = _failure(real["http_500"])
 
