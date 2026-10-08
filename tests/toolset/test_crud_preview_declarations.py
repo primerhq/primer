@@ -102,7 +102,8 @@ def test_a_graph_card_names_the_nodes_and_withholds_their_templates_and_argument
     drawn = card["arguments"] + " " + " ".join(card["hidden_keys"])
     assert "Zq7" not in drawn and "horse battery" not in drawn
     assert set(card["hidden_keys"]) == {"entity.nodes.input_template", "entity.nodes.arguments", "entity.nodes.arguments_template", "entity.nodes.output_template"}
-    assert "reviewer" in card["arguments"] or "a1" in card["arguments"], "the card still says which nodes there are"
+    # The line is cut at 80 characters per argument, as it always was, so only the start of a long entity is drawn; the rest is one "show all" away.
+    assert '"id": "pipeline"' in card["arguments"] and '"nodes": [{"kind": "begin"' in card["arguments"], card["arguments"]
 
 
 # ---- triggers ----------------------------------------------------------------------------------------------------------------------------------------------------
