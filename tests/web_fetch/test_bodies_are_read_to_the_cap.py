@@ -459,3 +459,166 @@ async def test_the_http_request_timeout_is_logged_like_a_transport_failure(caplo
     record = next((r for r in caplog.records if "timed out" in r.getMessage()), None)
     assert record is not None, [r.getMessage() for r in caplog.records]
     assert (record.url, record.method, record.timeout_seconds) == ("https://example.com/slow", "GET", 0.2)
+
+
+# ---- the end of a compressed stream, the download cap, empty bodies, a raw ceiling, a bad Location (security review of this PR) ----------------------
+
+TOOLS = ["http_request", "local_fetch", "download"]
+END_OF_STREAM = "data after the end of the compressed body"
+
+
+class _Trailing(httpx.AsyncByteStream):
+    """``head``, then ``trailing`` more bytes in pieces (stopping at ``HARD_STOP`` on its own); counts what was pulled."""
+
+    def __init__(self, head: bytes, trailing: int, piece: int = 64 * 1024, filler: bytes = b"x") -> None:
+        self._head, self._trailing, self._piece, self._filler = head, trailing, piece, filler
+        self.pulled = 0
+
+    async def __aiter__(self):
+        self.pulled += len(self._head)
+        yield self._head
+        sent = 0
+        while sent < min(self._trailing, HARD_STOP):
+            self.pulled += self._piece
+            sent += self._piece
+            yield self._filler * self._piece
+
+
+def _client_for(stream: httpx.AsyncByteStream, encoding: str | None, *, status: int = 200) -> httpx.AsyncClient:
+    def handler(request: httpx.Request) -> httpx.Response:
+        headers = {"content-type": "text/plain"}
+        if encoding:
+            headers["content-encoding"] = encoding
+        return httpx.Response(status, headers=headers, stream=stream)
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+async def _run(which: str, client: httpx.AsyncClient, *, cap: int = CAP, arguments: dict | None = None):
+    """``(failure text or None, files written)`` for the tool ``which`` run against ``client``."""
+    if which == "http_request":
+        result = await make_http_request_handler(http_client=client, response_body_byte_cap=cap)({"url": "https://example.com/", **(arguments or {})})
+        return (result.output if result.is_error else None), []
+    if which == "local_fetch":
+        try:
+            await LocalAdapter(client=client, raw_byte_cap=cap).fetch(url="https://example.com/x.txt")
+        except (WebFetchUnavailable, WebFetchProviderError) as exc:
+            return str(exc), []
+        return None, []
+    result, ws = await _download(client, cap=cap, arguments=arguments)
+    return (result.output if result.is_error else None), ws.writes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("which", TOOLS)
+@pytest.mark.parametrize("compress, encoding", [(_gzip, "gzip"), (_zlib, "deflate")], ids=["gzip", "deflate"])
+async def test_data_after_the_end_of_a_compressed_stream_is_refused_not_buffered(which, compress, encoding):
+    """Once zlib reaches the end of the stream every later byte lands in ``unused_data``, which is copied on each call and never decoded: a
+    16 MiB tail grew memory without bound (and quadratically in time). A finished decoder is never fed again."""
+    stream = _Trailing(compress(b"hello"), trailing=16 << 20)
+    tracemalloc.start()
+    try:
+        failure, writes = await asyncio.wait_for(_run(which, _client_for(stream, encoding)), 20)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert failure is not None and END_OF_STREAM in failure, failure
+    assert writes == []
+    assert stream.pulled <= 1 << 20, f"{stream.pulled} bytes were pulled after the end of the stream"
+    assert peak < 8 * CAP + (1 << 20), f"{peak} bytes were held"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("which", TOOLS)
+async def test_a_second_gzip_member_is_refused_not_silently_dropped(which):
+    two_members = _gzip(b"hello") + _gzip(b"world")
+
+    failure, writes = await _run(which, _encoded_client(two_members, "gzip"))
+
+    assert failure is not None and END_OF_STREAM in failure, failure
+    assert writes == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("which", TOOLS)
+async def test_a_compressed_body_cut_short_is_a_failure_not_a_complete_body(which):
+    """Under connection-close framing a dropped connection looks like the end of the body: a truncated gzip must not be returned (or written)."""
+    cut = _gzip(b"a downloadable file\n" * 100)[:-8]
+
+    failure, writes = await _run(which, _encoded_client(cut, "gzip"))
+
+    assert failure is not None and "ends before" in failure, failure
+    assert writes == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("which", TOOLS)
+@pytest.mark.parametrize("encoding", ["gzip", "deflate", "br", "gzip, gzip"])
+async def test_an_empty_body_is_an_empty_body_whatever_its_content_encoding_says(which, encoding):
+    """A HEAD reply, a 204 or a 304 carries the entity's Content-Encoding and no body: there is nothing to decode, so nothing to refuse."""
+    failure, writes = await _run(which, _encoded_client(b"", encoding))
+
+    assert failure is None, failure
+    assert writes in ([], [("file.bin", b"")])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("which", TOOLS)
+async def test_a_body_that_decodes_to_nothing_is_cut_off_by_a_raw_ceiling(which):
+    """A gzip header whose file name never ends produces no output however much is sent, so the DECODED cap never trips. The raw bytes read are
+    bounded too (a little over the cap: an honest body is no larger than what it decodes to)."""
+    endless_header = b"\x1f\x8b\x08\x08\x00\x00\x00\x00\x00\xff"       # FNAME set; the NUL that ends the name never comes
+    stream = _Trailing(endless_header, trailing=HARD_STOP, filler=b"A")
+
+    failure, writes = await asyncio.wait_for(_run(which, _client_for(stream, "gzip")), 20)
+
+    assert failure is not None and "larger than" in failure, failure
+    assert writes == []
+    assert stream.pulled <= 1 << 20, f"{stream.pulled} raw bytes were pulled for a {CAP}-byte cap"
+
+
+@pytest.mark.asyncio
+async def test_download_max_bytes_cannot_raise_the_operator_cap():
+    """``max_bytes`` overrides the cap DOWNWARD only. 256 KB of gzip inflates to 256 MiB; asking for 2**40 used to allow it."""
+    bomb = _bomb(64 << 20)
+    tracemalloc.start()
+    try:
+        result, ws = await asyncio.wait_for(_download(_encoded_client(bomb, "gzip"), cap=CAP, arguments={"max_bytes": 2**40}), 20)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert result.is_error and f"exceeds the maximum of {CAP} bytes" in result.output, result.output
+    assert ws.writes == []
+    assert peak < 8 * CAP + (1 << 20), f"{peak} bytes were held under an operator cap of {CAP}"
+
+
+@pytest.mark.asyncio
+async def test_download_max_bytes_can_lower_the_cap():
+    result, ws = await _download(_encoded_client(b"y" * 5000, None), cap=CAP, arguments={"max_bytes": 1000})
+
+    assert result.is_error and "exceeds the maximum of 1000 bytes" in result.output and ws.writes == []
+
+
+@pytest.mark.asyncio
+async def test_download_max_bytes_beyond_a_machine_word_is_not_an_overflow():
+    text = b"small file\n" * 10
+
+    result, ws = await _download(_encoded_client(_gzip(text), "gzip"), cap=CAP, arguments={"max_bytes": 2**64})
+
+    assert not result.is_error, result.output
+    assert ws.writes == [("file.bin", text)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("which", TOOLS)
+async def test_a_redirect_to_a_url_httpx_cannot_parse_is_a_failed_request_not_an_exception(which):
+    """`Location: data:...` makes httpx raise InvalidURL, which is not an HTTPError, even with redirects not followed."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"location": "data:text/plain,hi"})
+
+    failure, writes = await _run(which, httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+
+    assert failure is not None, "the redirect was treated as a success"
+    assert writes == []
