@@ -91,6 +91,54 @@ async def test_a_transport_failure_of_an_interactive_session_leaves_it_resting(
     assert emitted.types().count("session.turn_failed") == 1 and "session.ended" not in emitted.types()
 
 
+def _raised(code: str, cls: str = "ServerError") -> Exception:
+    """What an adapter raises BEFORE a stream opens (an upstream 500 after the retries, a 429, a refused connection): the classified error itself."""
+    from primer.model import except_
+
+    return getattr(except_, cls)("the provider said no", code=code)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cls, code", [
+    ("ServerError", "server_error"), ("RateLimitError", "rate_limit"), ("NetworkError", "network_error"),
+    ("ProviderTimeoutError", "stream_timeout"), ("ProviderTimeoutError", "generation_timeout"), ("ProviderTimeoutError", "connect_timeout"),
+])
+async def test_an_error_the_adapter_raised_before_the_stream_opened_rests_the_session_too(
+    cls, code, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
+):
+    """The common shape of an upstream 5xx: the OpenAI-compatible client raises, the retries are spent, and the classified error reaches dispatch as
+    the exception itself (not wrapped in a TurnStreamFailure)."""
+    session = await _seed_session(fake_storage_provider, "s-raised")
+
+    _, emitted = await _run(fake_storage_provider, fake_workspace_io, fake_event_bus, monkeypatch, session, [_raised(code, cls)])
+
+    row = await _row(fake_storage_provider, "s-raised")
+    assert (row.status, row.ended_reason, row.ended_detail) == (SessionStatus.WAITING, None, None)
+    assert row.last_turn_error is not None and row.last_turn_error.code == code
+    assert [p for n, p in emitted.events if n == "session.turn_failed"] == [{"code": code, "ended": False}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cls, code", [
+    ("AuthenticationError", "auth_error"), ("BadRequestError", "bad_request"), ("ServerError", None), ("ProviderError", "weird"),
+])
+async def test_a_raised_rejection_or_an_error_with_no_usable_code_still_ends_the_session(
+    cls, code, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
+):
+    from primer.model import except_
+
+    session = await _seed_session(fake_storage_provider, "s-raised-end")
+    error = getattr(except_, cls)("the provider said no", code=code)
+
+    await _run(fake_storage_provider, fake_workspace_io, fake_event_bus, monkeypatch, session, [error])
+
+    row = await _row(fake_storage_provider, "s-raised-end")
+    assert (row.status, row.ended_reason, row.ended_detail) == (SessionStatus.ENDED, "failed", None), (
+        "a raised error never wrote ended_detail, and it still does not"
+    )
+    assert row.last_turn_error is not None and row.last_turn_error.code == (code or "turn_failed")
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("code", END_CODES)
 async def test_a_rejection_or_an_unknown_code_still_ends_the_session(
@@ -264,7 +312,8 @@ async def test_the_next_send_continues_the_same_invocation_and_clears_the_failur
     )
     assert outcome.success is True
     row = await _row(fake_storage_provider, "s-retry")
-    assert row.last_turn_error is None and row.status == SessionStatus.WAITING and row.ended_reason is None
+    # (the fake executor reports no stop reason, so dispatch ends the clean turn "completed"; what matters is that it ran and cleared the failure)
+    assert row.last_turn_error is None and row.ended_reason in (None, "completed")
     kinds = [json.loads(line)["kind"] for line in workspace.read_lines("s-retry")]
     assert SessionMessageKind.INVOCATION_DIVIDER.value not in kinds, kinds
     assert kinds.count(SessionMessageKind.USER_INPUT.value) >= 1

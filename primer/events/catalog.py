@@ -19,6 +19,7 @@ ACTION_EVENT_TYPES: frozenset[str] = frozenset({
     "session.parked",
     "session.resumed",
     "session.ended",
+    "session.turn_failed",
     "collection.document_pushed",
     "collection.document_deleted",
     "approval.requested",

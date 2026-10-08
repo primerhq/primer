@@ -104,8 +104,8 @@ async def test_the_failure_exit_writes_it_with_one_field_scoped_patch_before_the
 
     writes = [c for c in calls if c == ("patch_if", frozenset({"last_turn_error"}))]
     assert len(writes) == 1, f"expected ONE patch_if of last_turn_error alone, saw {calls}"
-    ended = next(i for i, c in enumerate(calls) if c == ("update_unless", SessionStatus.ENDED))
-    assert calls.index(writes[0]) < ended, "the field is written before the row stops being a live one"
+    moved = next(i for i, c in enumerate(calls) if c[0] == "update_unless")
+    assert calls.index(writes[0]) < moved, "the field is written before the status moves (to ENDED, or to resting)"
 
 
 @pytest.mark.asyncio

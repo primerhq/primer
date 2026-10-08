@@ -36,7 +36,7 @@ from primer.int.event_bus import EventBus
 from primer.int.storage_provider import StorageProvider
 import primer.observability.metrics as _metrics
 from primer.model.envelope import RELAY_EVERY_TURN_KEY
-from primer.model.except_ import NotFoundError
+from primer.model.except_ import NotFoundError, PrimerError
 from primer.model.workspace_refusal import WorkspaceRefusedError
 from primer.model.workspace import Workspace
 from primer.model.workspace_session import (
@@ -101,6 +101,17 @@ class _NamesWhyItEndedTheTurn(Protocol):
 
     @property
     def ended_detail_code(self) -> str: ...
+
+
+#: The failure codes of a model call that leave an INTERACTIVE session resting instead of ending it (C-024, the lead's ruling 2026-10-09):
+#: transport failures, after the llm layer's own retries are spent (5xx, a 429, a dropped connection, a stream that stalled or never opened,
+#: a generation that ran out its total budget). Resting never retries by itself (only a ``claimable`` row is re-armed, and a failed turn leaves
+#: ``idle``); it keeps the session open so the next send continues the same invocation. Everything else ends the session: a rejection the
+#: operator has to fix (``auth_error``, ``bad_request``, ``model_not_found``, ``unsupported_content``, ``context_overflow_unrecoverable``), a code
+#: nobody classified, a stream that gave no code (``llm_stream_error``) and a turn that raised something that is not a model error.
+_RESTING_FAILURE_CODES: frozenset[str] = frozenset({
+    "server_error", "rate_limit", "network_error", "connect_timeout", "stream_timeout", "generation_timeout",
+})
 
 # How often a running turn re-reads its session row for a Stop whose bus message never
 # arrived (see _cancel_watcher). A fallback, so it only has to be quick enough that a Stop
@@ -627,21 +638,26 @@ async def run_one_session_turn(
                 " failure; session will still be transitioned to ENDED",
                 session_id,
             )
+        failure_code = _failure_code(exc)
+        # C-024: a transport failure of the model call leaves an interactive session RESTING (WAITING, no ended_reason); the row still says
+        # the turn failed (last_turn_error), so the next send continues the same invocation. An autonomous, graph or trigger session has no
+        # human to resume it (a resting one-shot would hold a parallelism="skip" gate shut forever), so it ends as before.
+        rests = failure_code in _RESTING_FAILURE_CODES and not session_is_autonomous(session)
         async with session_lifecycle_lock().acquire(session_id):
             # BEFORE the status moves: a reader that sees the row after the transition must see why (C-024).
-            await _record_last_turn_error(session_storage, session_id, exc, session.binding_epoch)
+            await _record_last_turn_error(session_storage, session_id, failure_code, session.binding_epoch)
             written = await _transition_session_status(
                 session_storage,
                 session,
-                new_status=SessionStatus.ENDED,
-                ended_reason="failed",
+                new_status=SessionStatus.WAITING if rests else SessionStatus.ENDED,
+                ended_reason=None if rests else "failed",
                 # 01a070d6: a TurnStreamFailure means the LLM stream itself
                 # is why the turn failed - ended_detail_code always resolves
                 # to something usable (a real classifier code, or its own
                 # fallback), so monitoring can tell "the LLM was
                 # unreachable" apart from "some other internal error"
                 # instead of both reading as an undifferentiated "failed".
-                ended_detail=exc.ended_detail_code if isinstance(exc, _NamesWhyItEndedTheTurn) else None,
+                ended_detail=None if rests else (exc.ended_detail_code if isinstance(exc, _NamesWhyItEndedTheTurn) else None),
                 executor=executor,
                 expected_epoch=session.binding_epoch,
             )
@@ -651,6 +667,14 @@ async def run_one_session_turn(
         # What the ROW says: if the session was ended by something else while the turn failed, that is
         # the reason the event log must carry (the turn's own failure is still counted below).
         await _publish_terminal(deps, session, written.status, written.ended_reason)
+        # Every failed turn is announced, ended or resting: ``session.ended`` is only for an ended one, and a session that rests after a
+        # transport failure would otherwise fail without a word on the event log (C-024).
+        await _event_recorder(deps).emit(
+            "session.turn_failed",
+            workspace_id=session.workspace_id,
+            session_id=session_id,
+            payload={"code": failure_code, "ended": written.status == SessionStatus.ENDED},
+        )
         await turn_log.aclose()
         await _apply_pending_switch_at_checkpoint(deps, session)
         await _realize_pending_at_checkpoint(deps, session)
@@ -2487,15 +2511,28 @@ async def _release_settled_row(session_storage, row: WorkspaceSession, where: st
 _RUNNING_FLIP_ATTEMPTS = 3
 
 
-async def _record_last_turn_error(session_storage, session_id: str, exc: BaseException, binding_epoch: int) -> None:
+def _failure_code(exc: BaseException) -> str:
+    """Why the turn failed, in one code.
+
+    A stream that failed carries its own (``TurnStreamFailure.ended_detail_code``: the stream's code, else ``llm_stream_error``). A model call
+    that RAISED before a stream opened (the adapter's classified error, e.g. an upstream 500 after the retries) carries it on the exception
+    (``ServerError.code == "server_error"``). Anything else, or a ``PrimerError`` that names no code, is ``turn_failed``: a turn that raised
+    something that is not a model error. The code of a raised error is not written as ``ended_detail`` (it never was): it is the row's
+    ``last_turn_error``, the event, and the rule for whether an interactive session rests.
+    """
+    if isinstance(exc, _NamesWhyItEndedTheTurn):
+        return exc.ended_detail_code
+    code = exc.code if isinstance(exc, PrimerError) else None
+    return code if isinstance(code, str) and code else "turn_failed"
+
+
+async def _record_last_turn_error(session_storage, session_id: str, code: str, binding_epoch: int) -> None:
     """Stamp ``last_turn_error`` (the failure's code and time) on the row: ONE ``patch_if`` of that field, guarded on the row not being ENDED and
     on the binding epoch the turn started under (a binding that switched while the turn ran is not this turn's failure to record).
 
-    The code is the model call's own (``TurnStreamFailure.ended_detail_code``: the stream's code, else ``llm_stream_error``), else ``turn_failed`` for
-    a turn that raised something that is not a model error. Advisory: the failure exit's job is to release the lease, so a write that cannot land is
-    logged and the exit goes on. Called under the lifecycle lock, before the status transition. Cleared by :func:`_flip_to_running` at the next turn.
+    ``code`` is :func:`_failure_code`. Advisory: the failure exit's job is to release the lease, so a write that cannot land is logged and the exit
+    goes on. Called under the lifecycle lock, before the status transition. Cleared by :func:`_flip_to_running` at the next turn.
     """
-    code = exc.ended_detail_code if isinstance(exc, _NamesWhyItEndedTheTurn) else "turn_failed"
     patch = to_jsonable_python({"last_turn_error": {"code": code, "at": _now()}})
     try:
         await session_storage.patch_if(

@@ -73,8 +73,20 @@ def _wait_until_ended(client: httpx.Client, sid: str, timeout_s: float = 30.0) -
     raise AssertionError(f"the session never ended, last observed: {last}")
 
 
+def _wait_until_failed(client: httpx.Client, sid: str, timeout_s: float = 30.0) -> dict:
+    """The turn failed. An upstream 5xx of an interactive session leaves it RESTING with ``last_turn_error`` set (C-024); other failures end it."""
+    deadline = time.monotonic() + timeout_s
+    last: dict = {}
+    while time.monotonic() < deadline:
+        last = client.get(f"/v1/sessions/{sid}").json()
+        if last.get("status") == "ended" or last.get("last_turn_error"):
+            return last
+        time.sleep(0.2)
+    raise AssertionError(f"the turn never failed, last observed: {last}")
+
+
 @pytest.mark.timeout(120)
-def test_a_failed_turn_is_one_card_in_words_and_the_end_says_what_to_do(
+def test_a_failed_upstream_turn_is_one_card_in_words_and_the_session_rests(
     page: Page, base_url: str, console_url: str, mock_llm_lan, tmp_path: Path,
 ):
     registry, mock_base_url = mock_llm_lan
@@ -83,16 +95,18 @@ def test_a_failed_turn_is_one_card_in_words_and_the_end_says_what_to_do(
 
     with httpx.Client(base_url=base_url, timeout=30.0) as client:
         failed = _start(client, ids, "this will fail upstream", auto_start=True)
-        _wait_until_ended(client, failed)
+        row = _wait_until_failed(client, failed)
         unstarted = _start(client, ids, "never started", auto_start=False)
+
+    # An upstream 500 is a transport failure: the session rests instead of ending (C-024), and the row still says the turn failed.
+    assert row["status"] == "waiting" and row["ended_reason"] is None, row
+    assert row["last_turn_error"]["code"] == "server_error", row
 
     open_session_in_studio(page, console_url, ids["workspace"], failed)
     cards = page.locator(".nv-turn-error")
     expect(cards).to_have_count(1, timeout=15_000)
     expect(cards.first).to_contain_text("The model provider had a server error.")
-    note = page.get_by_test_id("nv-ended-note")
-    expect(note).to_be_visible(timeout=10_000)
-    expect(note).to_contain_text("Send a message to try again.")
+    expect(page.get_by_test_id("nv-ended-note")).to_have_count(0)   # the session did not end, so it has no end divider and no ended note
 
     # A session that was never started has no usage: no meter at all, not an unlabelled empty bar.
     open_session_in_studio(page, console_url, ids["workspace"], unstarted)

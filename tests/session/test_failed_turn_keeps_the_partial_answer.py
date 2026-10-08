@@ -80,7 +80,9 @@ async def test_a_stream_error_keeps_the_text_that_streamed_before_it(
     token = next(r for r in records if r["kind"] == SessionMessageKind.ASSISTANT_TOKEN)
     assert token["payload"]["text"] == "partial"
     row = await fake_storage_provider.get_storage(WorkspaceSession).get(seeded_session.id)
-    assert row.status == SessionStatus.ENDED and row.ended_reason == "failed" and row.ended_detail == "server_error"
+    # a transport failure of an interactive session rests it (C-024); the row still says the turn failed
+    assert row.status == SessionStatus.WAITING and row.ended_reason is None
+    assert row.last_turn_error is not None and row.last_turn_error.code == "server_error"
 
 
 @pytest.mark.asyncio
