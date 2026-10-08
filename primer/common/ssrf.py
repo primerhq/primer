@@ -16,11 +16,14 @@ module may be folded into it.
 from __future__ import annotations
 
 import ipaddress
+import logging
 import socket
 from typing import Any
 
 from aiohttp.abc import AbstractResolver, ResolveResult
 from yarl import URL
+
+_log = logging.getLogger(__name__)
 
 
 _NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
@@ -82,7 +85,8 @@ def refuse_private_literal(url: str) -> None:
         return  # a host name: the resolver checks it at connect time
     reason = blocked_reason(host)
     if reason is not None:
-        raise BlockedDestinationError(f"destination {host} is {reason}")
+        _log.warning("url source refused: %s is %s", host, reason)
+        raise BlockedDestinationError(f"destination {host} is not a public address")
 
 
 class PublicOnlyResolver(AbstractResolver):
@@ -103,7 +107,10 @@ class PublicOnlyResolver(AbstractResolver):
         for r in results:
             reason = blocked_reason(r["host"])
             if reason is not None:
-                raise BlockedDestinationError(f"destination {host} resolves to {r['host']}, which is {reason}")
+                # The resolved address goes to the server log only: the error reaches the template author (a 422
+                # detail), and echoing it would make the platform an oracle for internal DNS.
+                _log.warning("url source refused: %s resolves to %s, which is %s", host, r["host"], reason)
+                raise BlockedDestinationError(f"destination {host} is not a public address")
         return results
 
     async def close(self) -> None:

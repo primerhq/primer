@@ -78,6 +78,14 @@ worker:
 #   refuse_when_distributed: false
 #   single_process: false
 
+# --- Workspace url file sources ----------------------------------------------
+# A template's kind=url file source is fetched by the platform, so by default a
+# private, loopback, link-local (cloud metadata) or other non-global
+# destination is refused. TRUSTED TEMPLATE AUTHORS ONLY: turning this on lets
+# anyone who can write a template read internal endpoints from the platform's
+# network position. Override via PRIMER_WORKSPACE_ALLOW_PRIVATE_URL_SOURCES.
+# workspace_allow_private_url_sources: false
+
 # --- Subprocess timeout (git + init_command) --------------------------------
 # Maximum seconds to wait for any git or init_command subprocess spawned by
 # the local workspace backend. A hung git (index.lock / NFS stall) or runaway
