@@ -4188,6 +4188,9 @@ input, textarea, select { font: inherit; color: inherit; }
 }
 .nv-subagent-head { display: flex; align-items: center; gap: 7px; font-size: 11.5px; }
 .nv-subagent-name { font-weight: 600; color: var(--violet); }
+/* A subagent's failure and its quiet notice sit in the subagent's own box: the transcript's 30px indent would double up. */
+.nv-turn-error-nested, .nv-turn-note-nested { margin-left: 0; margin-top: 6px; }
+.nv-turn-note-nested { padding: 0; }
 /* A tool call and the subagent rows nested under it (NV_toolCallWithRows): the call's block, then its rows, indented one step so a nested
    run reads as inside the call, each row in the .nv-subagent box above. A nested call draws ITS rows the same way, so the indent stacks. */
 .nv-call-with-subagents { display: block; }

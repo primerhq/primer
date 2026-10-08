@@ -101,8 +101,10 @@ def test_a_subagents_notice_is_the_quiet_line_for_its_state(block, state: str, w
 def test_neither_is_announced_as_an_alert(block) -> None:
     """A subagent's problem arrives inside a block the reader may not be looking at; the parent turn's own failure is what is announced."""
     ctx = block([_error(3), _notice(4, "ended")])
-    assert ctx.eval('MR.find("nv-subagent-failure:3").props.role') in (None, "")
-    assert ctx.eval('MR.find("nv-subagent-notice:4").props.role') in (None, "")
+    assert ctx.eval('typeof MR.find("nv-subagent-failure:3").props.role') == "undefined"
+    assert ctx.eval('typeof MR.find("nv-subagent-notice:4").props.role') == "undefined"
+    branch = DOC[DOC.index('if (child.kind === "error" || child.kind === "retry_notice") {'):DOC.index("if (!child.label) return null;")]
+    assert "role=" not in branch, "nothing inside the nested failure or notice is a live region either"
 
 
 def test_a_labelled_child_and_a_row_with_nothing_to_say_behave_as_before(block) -> None:
