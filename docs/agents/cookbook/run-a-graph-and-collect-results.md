@@ -77,10 +77,10 @@ Response:
 ```json
 { "path": "report.json", "content": "{...}" }
 ```
-Read the file the graph wrote. For the run's trace, read the session's transcript with `workspaces::read_workspace_session_messages` (`{"workspace_id": "ws-1", "session_id": "ses-1"}`); the runtime's own `.state/graphs/<session_id>` tree is not client-readable (raw `.state` reads are admin-only).
+Read the file the graph wrote. `workspaces::read_workspace_session_messages` (`{"workspace_id": "ws-1", "session_id": "ses-1"}`) returns the graph session's own records: the session-level stream, not each node's transcript. The per-node trace lives in the runtime's `.state/graphs/<session_id>` tree, which is not served to clients (raw `.state` reads are admin-only); an admin can read it.
 
 ## Verify
-`status` is `ended` with `ended_reason: "completed"`, your output file exists, and `workspaces::read_workspace_session_messages` returns the run's records.
+`status` is `ended` with `ended_reason: "completed"`, your output file exists, and `workspaces::read_workspace_session_messages` returns the session's records.
 
 ## Gotchas
 - A graph runs straight through with no mid-graph pause (unlike an agent that can park on a yielding tool); see `graphs`.
