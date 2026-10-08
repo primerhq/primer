@@ -263,9 +263,35 @@ function NV_Rail_WorkspaceContextMenu(props) {
   );
 }
 
+// The session list: ONE subscription for everything that reads it (console review C-038). The rail, the shell (session tab names) and the
+// Files sidebar share the cache key, and a resource takes the latest caller's pollMs, so they must agree on it: they all come through
+// here. It stays at 5 s: a session created elsewhere (the API, another tab, a channel) emits no tap frame, so the poll is how it shows up
+// in the rail, and the list is one request.
+var NV_RAIL_SESSIONS_POLL_MS = 5000;
+
+// True when a session of `wid` (any workspace when `wid` is falsy) is running; true too when the list is not known yet. The Files tree
+// keys its cadence off it: an agent writes files only while one of the workspace's sessions runs.
+function NV_anySessionRunning(data, wid) {
+  if (!data || !data.items) return true;
+  return data.items.some(function (s) {
+    if (wid && s.workspace_id !== wid) return false;
+    return s.status === "running" || s.session_state === "running" || s.turn_status === "running";
+  });
+}
+
+function NV_useSessionList() {
+  return window.primerApi.useResource(
+    "nv-rail-all-sessions",
+    function (signal) { return SH_api.allSessions(signal); },
+    { pollMs: NV_RAIL_SESSIONS_POLL_MS, deps: [] }
+  );
+}
+window.NV_useSessionList = NV_useSessionList;
+window.NV_anySessionRunning = NV_anySessionRunning;
+
 function NV_Rail(props) {
   var wsRes = window.primerApi.useResource(
-    "nv-rail-workspaces",
+    "nv-workspaces",
     function (signal) { return SH_api.workspaces(signal); },
     { pollMs: 15000, deps: [] }
   );
@@ -287,11 +313,7 @@ function NV_Rail(props) {
       wsRes.refetch();
     }
   }, [props.selectedWorkspaceId, wsRes.data]);
-  var sessRes = window.primerApi.useResource(
-    "nv-rail-all-sessions",
-    function (signal) { return SH_api.allSessions(signal); },
-    { pollMs: 5000, deps: [] }
-  );
+  var sessRes = NV_useSessionList();
   var inboxRes = window.primerApi.useResource(
     "nv-rail-inbox",
     function (signal) {

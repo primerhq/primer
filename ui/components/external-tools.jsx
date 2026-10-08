@@ -2,20 +2,20 @@
 // for one session or chat. Read-only + cancel: responding is the API
 // caller's job (tool_results on the invocation endpoint), so the console
 // only shows what the conversation is waiting on and lets an operator
-// abort a stuck call. Polls GET .../external_tools/pending (5s).
+// abort a stuck call. Polls GET .../external_tools/pending (5s by default; a caller that knows the conversation is idle passes a slower pollMs).
 /* global React */
 
 (function () {
   const { useResource, apiFetch } = window.primerApi;
 
-  function ExternalPendingBanner({ sessionId, chatId, pushToast }) {
+  function ExternalPendingBanner({ sessionId, chatId, pushToast, pollMs = 5000 }) {
     const owner = sessionId || chatId;
     const base = sessionId ? `/sessions/${sessionId}` : `/chats/${chatId}`;
     const res = useResource(
       `external-pending:${owner}`,
       (signal) =>
         apiFetch("GET", `${base}/external_tools/pending`, null, { signal }),
-      { pollMs: 5000 },
+      { pollMs },
     );
     const items = (res.data && res.data.items) || [];
     if (!items.length) return null;

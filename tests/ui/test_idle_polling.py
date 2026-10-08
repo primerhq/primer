@@ -28,7 +28,7 @@ EXTERNAL = (ROOT / "ui" / "components" / "external-tools.jsx").read_text(encodin
 
 
 def _function(src: str, name: str) -> str:
-    start = src.index("function " + name)
+    start = src.index("function " + name + "(")
     return src[start:src.index("\n}\n", start) + len("\n}\n")]
 
 
@@ -39,7 +39,7 @@ def ctx():
     c = MiniRacer()
     c.eval("var window = globalThis;")
     c.eval(_function(DOC, "NV_sessionIsCalm") + "var NV_CALM_POLL_MS = 15000;")
-    c.eval(_function(RAIL, "NV_anySessionRunning") + _function(RAIL, "NV_sessionsPollMs"))
+    c.eval(_function(RAIL, "NV_anySessionRunning"))
     try:
         yield c
     finally:
@@ -70,26 +70,14 @@ def test_a_session_at_rest_with_a_live_tap_is_calm(ctx) -> None:
     {"row": {"status": "waiting"}},                            # a row that does not say it is idle says nothing
     {"row": {"status": "waiting", "turn_status": "idle", "interrupt_requested": True}},
     {"row": {"status": "waiting", "turn_status": "idle", "pause_requested": True}},
-    {"row": {"status": "created", "turn_status": "idle"}},     # about to be claimed
 ])
 def test_anything_in_flight_or_unknown_keeps_the_fast_cadence(ctx, over) -> None:
     assert _calm(ctx, **over) is False, over
 
 
-def test_a_parked_or_paused_session_at_rest_is_calm(ctx) -> None:
-    for status in ("waiting", "paused"):
+def test_a_parked_paused_or_never_started_session_at_rest_is_calm(ctx) -> None:
+    for status in ("waiting", "paused", "created"):
         assert _calm(ctx, row={"status": status, "turn_status": "idle"}) is True, status
-
-
-def test_the_session_list_polls_fast_only_while_something_runs(ctx) -> None:
-    def ms(data) -> int:
-        return ctx.eval("NV_sessionsPollMs(" + json.dumps(data) + ")")
-
-    assert ms(None) == 5000, "until the list is known, stay fast"
-    assert ms({"items": []}) == 15000
-    assert ms({"items": [{"session_id": "a", "status": "waiting"}]}) == 15000
-    assert ms({"items": [{"session_id": "a", "status": "waiting"}, {"session_id": "b", "status": "running"}]}) == 5000
-    assert ms({"items": [{"session_id": "a", "status": "waiting", "session_state": "running"}]}) == 5000
 
 
 def test_a_workspace_is_busy_only_when_one_of_its_own_sessions_runs(ctx) -> None:
@@ -98,6 +86,9 @@ def test_a_workspace_is_busy_only_when_one_of_its_own_sessions_runs(ctx) -> None
 
     data = {"items": [{"session_id": "a", "workspace_id": "w1", "status": "running"}, {"session_id": "b", "workspace_id": "w2", "status": "waiting"}]}
     assert busy(data, "w1") is True and busy(data, "w2") is False
+    assert busy({"items": []}, "w1") is False
+    assert busy({"items": [{"session_id": "a", "workspace_id": "w1", "status": "waiting", "session_state": "running"}]}, "w1") is True
+    assert busy({"items": [{"session_id": "a", "workspace_id": "w1", "status": "waiting", "turn_status": "running"}]}, "w1") is True
     assert busy(data, None) is True, "no workspace named: any session counts"
     assert busy(None, "w2") is True, "unknown is treated as busy"
 
@@ -113,6 +104,17 @@ def test_the_session_row_and_the_pending_yields_follow_the_calm_state() -> None:
     assert "ignoreIdle: true" in head
 
 
+def test_the_slow_cadence_starts_only_after_the_session_has_been_at_rest_for_a_while() -> None:
+    """A turn's last frame can arrive before the row shows where the session came to rest, so a stale "waiting" chip stayed up for a whole
+    slow interval right after a turn (the phase-indicator journey caught it). Calm is a state set by a timer that restarts whenever the
+    session stirs, and cleared the moment it does."""
+    head = DOC[DOC.index("var calmState = React.useState(false);"):DOC.index("var gates = window.primerApi.useResource")]
+    assert "var NV_CALM_AFTER_MS = 5000;" in DOC
+    assert "setTimeout(function () { setCalm(true); }, NV_CALM_AFTER_MS)" in head
+    assert "if (!atRest) { setCalm(false); return undefined; }" in head
+    assert "return function () { clearTimeout(timer); };" in head
+
+
 def test_a_tap_frame_for_this_session_refetches_the_row_so_a_slow_poll_never_delays_it() -> None:
     listener = DOC[DOC.index("window.useWorkspaceTapListener(con.wid, function (ev) {"):]
     listener = listener[:listener.index("\n  });")]
@@ -126,13 +128,17 @@ def test_the_external_tool_banner_takes_its_cadence_from_the_session_doc() -> No
     assert "pollMs={calm ? NV_CALM_POLL_MS : 5000}" in mount[:300]
 
 
-def test_the_rail_the_shell_and_the_files_sidebar_share_one_session_list_cadence() -> None:
+def test_the_rail_the_shell_and_the_files_sidebar_share_one_session_list_subscription() -> None:
+    """One definition, so the three readers of the cache key cannot disagree about its cadence. It stays at 5 s: a session created
+    elsewhere emits no tap frame, so the poll is how it appears in the rail."""
     assert "function NV_useSessionList()" in RAIL and "window.NV_useSessionList = NV_useSessionList;" in RAIL
+    assert "var NV_RAIL_SESSIONS_POLL_MS = 5000;" in RAIL
     assert "NV_useSessionList()" in _function(RAIL, "NV_Rail")
     assert "window.NV_useSessionList()" in SHELL
     assert "window.NV_useSessionList()" in FILES
     for src, name in ((RAIL, "rail"), (SHELL, "shell")):
         assert '"nv-rail-all-sessions",\n    function (signal) { return SH_api.allSessions(signal); },\n    { pollMs: 5000' not in src, name
+    assert "NV_CALM" not in _function(RAIL, "NV_useSessionList"), "the list is never slowed"
 
 
 def test_the_files_tree_polls_slowly_when_no_session_of_the_workspace_runs() -> None:
