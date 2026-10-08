@@ -268,6 +268,8 @@ The `tests/ui_e2e/` suite (gated behind `PRIMER_RUN_UI_E2E=1`, with mobile suite
 
 - **The console has no page-level chrome, so the toast stack and the confirm host moved into the shell root.** Why: both are cross-cutting. `window.primerApi.toastPush` is what non-React callers such as `useMutation` use to report a failed write, and a queue nothing renders swallows exactly the errors an operator needs to see.
 
+- **The shell reads the address bar before it writes it.** Why: the URL write effect runs after the first render, so a hash that changed between that render and the effects (a link followed while the console boots, or a test that sets `location.hash` right after `goto`) was overwritten with the URL of the stale first-render state before its event could be read, and the navigation was lost for good (the ui-e2e flake on the `channels/rules` and `providers/*` routes). `nv-shell.jsx` keeps the address bar it last read or wrote in `ownHashRef`; when the bar differs from both that and the state's URL, the write effect calls the listener's reader (`readUrlRef`) and writes nothing, so the navigation is applied and the state, not the bar, gives way. Pinned by `tests/ui_e2e/test_shell_reads_an_early_hash_change_journey.py` (the hash moves the instant the shell registers its listener, silently and with an event) and the source pins in `tests/ui/test_shell_url_write_reads_first.py`.
+
 ## Cross-reference: external tools
 
 The shell's session document mounts `window.ExternalPendingBanner`
