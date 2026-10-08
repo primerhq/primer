@@ -140,6 +140,16 @@ def open_root(page: Page, console_url: str) -> None:
         page.goto(f"{console_url}{fragment}")
 
 
+def open_console_with_query(page: Page, console_url: str, query: str) -> None:
+    """Load the console root with a query string (``?sso_error=<code>`` is what the server sends a failed browser sign-in back to).
+
+    A FULL navigation on purpose: the query is read once, when the page loads, so a hash-only change would not carry it. The caller
+    waits for whatever it expects on the screen the page then shows (the login screen renders INSTEAD of the shell, so there is no
+    ``nv-root`` to wait on here).
+    """
+    page.goto(f"{console_url}{query}", wait_until="domcontentloaded")
+
+
 def open_setup_wizard(page: Page, console_url: str, *, timeout: int = 15_000) -> None:
     """Load the console root while the first-boot gate is showing and wait for the wizard card.
 
