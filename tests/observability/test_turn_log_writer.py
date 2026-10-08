@@ -421,6 +421,25 @@ class TestToProblemDetails:
             assert secret not in pd.detail
             assert "key=[REDACTED]" in pd.detail
 
+    def test_a_bare_primer_error_is_unexpected_and_logs_error_with_traceback(self, caplog):
+        """The PrimerError catch-all row (the generic 500) is not a mapped
+        failure class: ERROR with exc_info, not the WARNING split."""
+        from primer.model.except_ import PrimerError
+
+        try:
+            raise PrimerError("x")
+        except PrimerError as caught:
+            exc = caught
+            with caplog.at_level(
+                logging.DEBUG, logger="primer.observability.turn_log_writer",
+            ):
+                pd = to_problem_details(exc)
+        assert pd.status == 500
+        error_id = pd.extensions["error_id"]
+        [rec] = [r for r in caplog.records if error_id in r.getMessage()]
+        assert rec.levelno == logging.ERROR
+        assert rec.exc_info is not None and rec.exc_info[1] is exc
+
     def test_string_problem_extensions_are_redacted(self):
         """problem_extensions are merged into the served envelope too."""
         from primer.model.except_ import ProviderError
