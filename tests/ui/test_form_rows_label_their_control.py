@@ -34,15 +34,17 @@ React.Children = { toArray: function (c) {
   (function walk(n) { if (n == null || typeof n === "boolean") return; if (Array.isArray(n)) { n.forEach(walk); return; } out.push(n); })(c);
   return out;
 } };
+var ELS = [];
 React.cloneElement = function (el, extra) {
   var props = Object.assign({}, el.props, extra);
+  // the clone REPLACES the element it was made from in what the test reads (the original is what the caller created, before the row wired it)
+  for (var i = 0; i < ELS.length; i++) if (ELS[i].props === el.props) { ELS[i] = { type: el.type, props: props }; break; }
   return { __el: true, type: el.type, props: props, key: el.key, children: el.children, out: null };
 };
-var ELS = [];
 var __ce = React.createElement;
 React.createElement = function (type, props) {
   var el = __ce.apply(null, arguments);
-  if (typeof type === "string") ELS.push({ type: type, props: props || {} });
+  if (typeof type === "string") ELS.push({ type: type, props: el.props });   // the element's own props object: a clone is matched to its original by it
   return el;
 };
 function __view() {
@@ -81,11 +83,12 @@ def row(request):
     """``row(children_js, props_js)`` -> the host elements the component drew."""
     made = []
 
-    def go(children_js: str, props: dict | None = None) -> list[dict]:
+    def go(children_js: str, props: dict | None = None, copies: int = 1) -> list[dict]:
         ctx = mini_react_context(_compiled(), _PRELUDE + "\nwindow.WS_fieldControls = typeof WS_fieldControls === 'function' ? WS_fieldControls : undefined;")
         made.append(ctx)
+        one = f"React.createElement({request.param}, {json.dumps({'label': 'name', **(props or {})})}, {children_js})"
         ctx.eval(
-            f"function Host() {{ return React.createElement({request.param}, {json.dumps({'label': 'name', **(props or {})})}, {children_js}); }}"
+            f"function Host() {{ return React.createElement(React.Fragment, null, {', '.join([one] * copies)}); }}"
             " MR.mount(Host, {}); ELS.length = 0; MR.rerender();"
         )
         return [{k: e.get(k) for k in ("type", "id", "htmlFor", "role", "className", "labelledBy", "invalid", "describedBy")} for e in json.loads(ctx.eval("__view()"))]
@@ -155,6 +158,7 @@ def test_a_described_by_the_control_already_has_is_kept(row) -> None:
 
 
 def test_two_rows_never_share_an_id(row) -> None:
-    first = _one(row("React.createElement('input', {})"), "input")["id"]
-    second = _one(row("React.createElement('input', {})"), "input")["id"]
-    assert first and second and first != second
+    inputs = [e for e in row("React.createElement('input', {})", copies=2) if e["type"] == "input"]
+    labels = [e for e in row("React.createElement('input', {})", copies=2) if e["type"] == "label"]
+    assert len(inputs) == 2 and inputs[0]["id"] and inputs[1]["id"] and inputs[0]["id"] != inputs[1]["id"]
+    assert [lab["htmlFor"] for lab in labels] == [i["id"] for i in inputs]
