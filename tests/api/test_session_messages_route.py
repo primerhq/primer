@@ -326,6 +326,16 @@ async def test_wake_persists_one_user_input_retrievable_via_endpoint(
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _fresh_outage_log_state():
+    """An outage is logged once per workspace until a read succeeds (``_log_outage``), so the tests that count warnings start clean."""
+    from primer.api.routers import sessions as sessions_router
+
+    sessions_router._outage_logged_at.clear()
+    yield
+    sessions_router._outage_logged_at.clear()
+
+
 class _UnreachableWorkspace(_FakeWorkspace):
     """The workspace row exists but its runtime does not answer: every read fails with something that is not 'file not found'."""
 
