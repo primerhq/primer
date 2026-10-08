@@ -161,10 +161,10 @@ function TR_webhookUrl(trigger) {
   return `${origin}/v1/webhooks/${token}`;
 }
 
-// What a failed trigger write says: the server's own explanation first (a 403 on a webhook secret says WHY: only the trigger's owner or an
-// admin may change it), then its title, then the caller's fallback. The title alone ("Forbidden") tells the user nothing to act on.
+// What a failed trigger write says, for Rotate token, Clear HMAC and the HMAC dialog: the same text every other dialog shows (TR_refusalText), so a
+// 403 on a webhook secret says WHY and what to do, and the auth gate's bare code is never printed.
 function TR_writeErrorText(err, fallback) {
-  return (err && (err.detail || err.message || err.title)) || fallback;
+  return TR_refusalText(err, fallback);
 }
 
 // What to do about each refusal the triggers API can answer (ticket 01a11bf7-15b7). The CODE is never shown: it only picks the sentence, a template
@@ -172,30 +172,64 @@ function TR_writeErrorText(err, fallback) {
 // "tr-9fab..."). tests/ui/test_trigger_refusals.py checks the keys against the codes primer/api/routers/triggers.py raises, so the table cannot drift.
 var TR_REMEDIES = {
   trigger_slug_conflict: "{message}. Choose a different slug.",
-  trigger_not_found: "Trigger {message} was not found: it may have been deleted. Refresh the list.",
-  subscription_not_found: "Subscription {message} was not found: it may have been deleted. Refresh the list.",
+  trigger_not_found: "Trigger {message} was not found: it may have been deleted. Go back to the triggers list.",
+  subscription_not_found: "Subscription {message} was not found: it may have been deleted. Reload the trigger to see its current subscriptions.",
   trigger_kind_immutable: "{message}. To change the kind, create a new trigger.",
   forbidden_role: "{message}. Ask the trigger's owner or an administrator.",
   not_a_webhook_trigger: "{message}. Only a webhook trigger has a token.",
   parked_session_only_from_yield: "{message}. A session creates one itself when it waits on the trigger; it is not made from here.",
-  cron_invalid: "{message}. A cron expression has five fields: minute, hour, day of month, month, day of week.",
+  cron_invalid: "{message}. Check each field's range (minute 0-59, hour 0-23, day of month 1-31, month 1-12, weekday 0-6).",
   timezone_invalid: "{message}. Pick a timezone from the list.",
 };
 
-// The code and the message of a failed trigger write, from the thrown ApiError. The API raises HTTPException(detail={code, message}); the problem
-// envelope that reaches the browser has `detail` as the MESSAGE string and the code in extensions.code (an older shape had it in a detail object).
-function TR_refusal(err, fallback) {
+// What to say when the server sent a code and no sentence. The auth gate (require_user) answers {"error": "auth_required"} / {"error": "forbidden_role"}
+// with no message, and the problem's `detail` is then the code itself: a session that ended, a reset password or a sign-out everywhere (401), a
+// restricted role (403). tests/ui/test_trigger_refusals_real_envelopes.py feeds the real envelopes of that gate.
+var TR_BARE = {
+  auth_required: "Your session has ended; sign in again.",
+  forbidden_role: "Your role does not allow this.",
+};
+
+// The code of a failed write, from where the API puts it: extensions.code (the routers raise HTTPException(detail={code, message})), extensions.error (the
+// auth gate), an older detail object, or a `detail` that is only a snake_case code.
+function TR_codeOf(err) {
   var env = err && err.envelope;
   var ext = (env && env.extensions) || {};
   var det = env && env.detail && typeof env.detail === "object" ? env.detail : {};
-  var message = ext.message || det.message || (err && typeof err.detail === "string" && err.detail) || (err && (err.title || err.message)) || fallback || "Request failed";
-  return { code: ext.code || det.code || null, message: message };
+  var code = ext.code || ext.error || det.code || det.error;
+  if (code) return code;
+  var bare = err && typeof err.detail === "string" ? err.detail.trim() : "";
+  return /^[a-z][a-z0-9]*(_[a-z0-9]+)+$/.test(bare) ? bare : null;
+}
+
+// The server's own sentence for a refusal, or "" when it sent none or only the code. A message equal to the code is not a sentence; one that merely
+// looks like a code is kept when the code is known and different (the not-found message is a bare id, and an id may hold an underscore).
+function TR_serverSentence(err) {
+  var env = err && err.envelope;
+  var ext = (env && env.extensions) || {};
+  var det = env && env.detail && typeof env.detail === "object" ? env.detail : {};
+  var code = TR_codeOf(err);
+  var options = [ext.message, det.message, err && typeof err.detail === "string" ? err.detail : ""];
+  for (var i = 0; i < options.length; i++) {
+    var m = options[i];
+    if (typeof m === "string" && m.trim() && m.trim() !== code) return m;
+  }
+  return "";
+}
+
+// The code and the message of a failed trigger write, from the thrown ApiError. The API raises HTTPException(detail={code, message}); the problem
+// envelope that reaches the browser has `detail` as the MESSAGE string and the code in extensions.code (an older shape had it in a detail object, and
+// the auth gate puts it in extensions.error). With no sentence from the server the message is the HTTP title, then the error's message, then the fallback.
+function TR_refusal(err, fallback) {
+  var message = TR_serverSentence(err) || (err && (err.title || err.message)) || fallback || "Request failed";
+  return { code: TR_codeOf(err), message: message };
 }
 
 // The banner's detail for a refused write: the server's message worked into one sentence about what to do. A code with no template shows the
-// message alone; the code itself is never part of the text.
+// message alone; a code with no sentence from the server (the auth gate) gets its own sentence; the code itself is never part of the text.
 function TR_refusalText(err, fallback) {
   var r = TR_refusal(err, fallback);
+  if (!TR_serverSentence(err)) return (r.code && TR_BARE[r.code]) || r.message;
   var template = r.code ? TR_REMEDIES[r.code] : "";
   if (!template) return r.message;
   return template.replace("{message}", String(r.message).replace(/[.\s]+$/, ""));
@@ -1153,8 +1187,8 @@ function TR_SubscriptionsPanel({ trigger, subs, onChanged, onAdd, onEdit }) {
           <div style={{ padding: "8px 14px" }}>
             <Banner
               kind="error"
-              title={error.title || "Subscription update failed"}
-              detail={error.detail || error.message || ""}
+              title="Subscription update failed"
+              detail={TR_refusalText(error, "The subscription could not be updated.")}
             />
           </div>
         )}
@@ -1770,8 +1804,8 @@ function TR_TriggerDetail({ id }) {
           {deleteError && (
             <Banner
               kind="error"
-              title={deleteError.title || "Delete failed"}
-              detail={deleteError.detail || deleteError.message || ""}
+              title="Delete failed"
+              detail={TR_refusalText(deleteError, "The trigger could not be deleted.")}
             />
           )}
         </Modal>
