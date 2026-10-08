@@ -134,8 +134,8 @@ def test_sa_to_transcript_maps_records_via_mini_racer() -> None:
     assert ctx.eval("out[1].nodeId") == "n1"
     assert ctx.eval("out[2].kind") == "divider"
     assert ctx.eval("out[2].label") == "— invocation 3 —"
-    # A DONE record maps to Message()'s own "done" kind (muted "· done" row),
-    # not a generic "lifecycle" bucket.
+    # A DONE record maps to Message()'s own "done" kind (a slim lifecycle row
+    # that carries the turn's trace button), not a generic "lifecycle" bucket.
     assert ctx.eval("out[3].kind") == "done"
 
 

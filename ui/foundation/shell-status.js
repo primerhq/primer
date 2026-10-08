@@ -195,13 +195,24 @@ function SH_stoppingLine(status) {
 // record; only the reason tells them apart, and a Stop (the session stays alive) must not read
 // as the end-of-session wording. A turn that tripped the agent's max_tool_turns ends on a done
 // whose stop_reason is "tool_turn_cap": the work it started is unfinished, so it reads as a stop.
+// A done that ended CLEANLY has no label at all (console review C-016): "· done" printed an internal record's name after every answer, for
+// a fact the status chip and the answer already state, so the row stays for the turn's trace button and the word goes. A done that did NOT
+// end cleanly says why in words.
+var SH_UNCLEAN_DONE = {
+  max_tokens: "■ cut off at the output limit",
+  content_filter: "■ blocked by the content filter",
+  error: "■ ended with an error",
+  tool_turn_cap: "■ stopped at the tool-turn cap",
+};
+
 function SH_lifecycleLabel(kind, payload) {
   if (kind === "cancelled") {
     return payload && payload.reason === "operator_interrupt"
       ? "■ stopped" : "■ cancelled";
   }
-  if (kind === "done" && payload && payload.stop_reason === "tool_turn_cap") {
-    return "■ stopped at the tool-turn cap";
+  if (kind === "done") {
+    var why = payload && payload.stop_reason;
+    return Object.prototype.hasOwnProperty.call(SH_UNCLEAN_DONE, why) ? SH_UNCLEAN_DONE[why] : "";
   }
   return "· " + kind;
 }
