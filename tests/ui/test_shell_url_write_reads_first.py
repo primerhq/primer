@@ -31,3 +31,13 @@ def test_the_default_workspace_pick_is_a_functional_update_so_it_cannot_override
     effect = effect[:effect.index("}, [wid, wsItems.length]);")]
     assert "setWid(function (current) { return current || wsItems[0].id; })" in effect
     assert "if (!wid && wsItems.length)" not in effect, "the stale-closure test of wid is the bug"
+
+
+def test_the_listener_replaces_the_bar_with_the_canonical_form_of_what_it_parsed() -> None:
+    """Console review C-025: junk that parsed to the state already held moved no state value, so the write effect never ran and the junk stayed."""
+    listener = SHELL[SHELL.index("function onNav() {"):SHELL.index("readUrlRef.current = onNav;")]
+    assert "var canonical = SH_buildUrl(parsed);" in listener
+    assert "if (canonical !== current) {" in listener
+    assert "window.history.replaceState(null, \"\", canonical);" in listener
+    assert "pushState" not in listener, "the same navigation is not a second history entry"
+    assert listener.index("ownHashRef.current = canonical;") < listener.index("window.history.replaceState"), "the bar is recorded as seen before it is written"
