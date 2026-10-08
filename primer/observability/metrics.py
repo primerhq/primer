@@ -279,6 +279,15 @@ session_completed_turn_noop_total = Counter(
     registry=registry,
 )
 
+message_write_abandoned_total = Counter(
+    "message_write_abandoned_total",
+    "Batches of session message records the workspace did not accept within the write bound "
+    "(session_message_write_timeout_seconds). Each one is abandoned (its records are lost from the "
+    "transcript) and its writer closed. A rate above zero means the workspace's runtime connection is "
+    "dropping, or the bound is too tight for a slow reschedule.",
+    registry=registry,
+)
+
 tool_wait_malformed_scoped_id_total = Counter(
     "tool_wait_malformed_scoped_id_total",
     "Tool-call task ids that did not parse as a scoped id where a tool_wait wake key was needed, "
@@ -378,6 +387,7 @@ def reset_for_test() -> None:
     global session_interrupts_via_poll_total  # noqa: PLW0603
     global session_interrupt_publish_failures_total  # noqa: PLW0603
     global session_completed_turn_noop_total  # noqa: PLW0603
+    global message_write_abandoned_total  # noqa: PLW0603
     global llm_count_tokens_total, llm_count_tokens_seconds, llm_tokenizer_ready  # noqa: PLW0603
     global llm_prompt_estimate_ratio  # noqa: PLW0603
     global compaction_outcomes_total  # noqa: PLW0603
@@ -577,6 +587,14 @@ def reset_for_test() -> None:
         "calling the model again. Each one is a turn that would otherwise have run twice.",
         registry=registry,
     )
+    message_write_abandoned_total = Counter(
+        "message_write_abandoned_total",
+        "Batches of session message records the workspace did not accept within the write bound "
+        "(session_message_write_timeout_seconds). Each one is abandoned (its records are lost from the "
+        "transcript) and its writer closed. A rate above zero means the workspace's runtime connection is "
+        "dropping, or the bound is too tight for a slow reschedule.",
+        registry=registry,
+    )
     tool_wait_malformed_scoped_id_total = Counter(
         "tool_wait_malformed_scoped_id_total",
         "Tool-call task ids that did not parse as a scoped id where a tool_wait wake key was needed, "
@@ -624,6 +642,8 @@ __all__ = [
     "session_interrupt_publish_failures_total",
     # Completed-turn re-claim guard
     "session_completed_turn_noop_total",
+    # Message log writes
+    "message_write_abandoned_total",
     # Tool-call claims
     "tool_wait_malformed_scoped_id_total",
 ]

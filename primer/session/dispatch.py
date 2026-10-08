@@ -82,6 +82,7 @@ from primer.session.persistence import (
     translate_stream_event,
 )
 from primer.observability.turn_log_writer import (
+    BoundedTurnLogWriter,
     NoopTurnLogWriter,
     TurnLogWriter,
     safe_append as _safe_turn_log,
@@ -387,7 +388,12 @@ async def run_one_session_turn(
         # restarting at seq=1 and colliding with prior turns / USER_INPUT rows.
         start_seq=seed_seq,
     )
-    turn_log = deps.turn_log_writer_factory(deps.workspace_io, session_id)
+    # Bounded: the production turn log writes over the same workspace connection as the message log, so on a dead connection every
+    # entry (and its first-append bootstrap read) would hold the turn's exits, the park arms' first statement among them. The first
+    # one that misses the best-effort bound breaks it; the rest are skipped at once.
+    turn_log = BoundedTurnLogWriter(
+        deps.turn_log_writer_factory(deps.workspace_io, session_id), timeout_s=_BEST_EFFORT_IO_TIMEOUT_S,
+    )
     # A compaction marker the executor writes mid-turn takes its seq from this writer, so it cannot
     # collide with the events the writer buffers (an executor without the hook is left as it was).
     _bind_event_log = getattr(executor, "bind_event_log", None)
@@ -751,8 +757,7 @@ async def run_one_session_turn(
                 phase=_agent_phase,
             ))
         rec = _yielded_record(park)
-        await writer.append(rec)
-        await _flush_and_tick(deps, writer, session_id)
+        await _flush_and_tick(deps, writer, session_id, rec)
         await _event_recorder(deps).emit(
             "session.parked",
             workspace_id=session.workspace_id,
@@ -1010,8 +1015,7 @@ async def run_one_session_turn(
             ))
 
         rec = _tool_wait_yielded_record(tool_wait)
-        await writer.append(rec)
-        await _flush_and_tick(deps, writer, session_id)
+        await _flush_and_tick(deps, writer, session_id, rec)
         await _event_recorder(deps).emit(
             "session.parked",
             workspace_id=session.workspace_id,
@@ -1988,8 +1992,14 @@ async def _row_holds_a_cancel(session_storage: Any, session_id: str) -> bool:
 
 async def _flush_and_tick(
     deps: "SessionDispatchDeps", writer: "WorkspaceMessageWriter", session_id: str,
+    record: "SessionMessageRecord | None" = None,
 ) -> int:
     """Make everything the writer holds durable, THEN tell the tap how far the log now goes. Returns that seq.
+
+    ``record`` is appended first, UNDER THE SAME CATCH as the flush: a park arm's own record (YIELDED, tool_wait) is appended inside
+    an ``except YieldToWorker`` / ``except ToolWaitPark`` handler, where nothing catches a sibling error, and that append runs the
+    writer's age flush (the tool_call record buffered when the tool started is older than 100 ms by the time the park lands), so it
+    is the call that meets a dead batch. A park whose record is lost still parks: the row's park columns are what wake it.
 
     The tap reads the durable log when a ``session:{sid}:tick`` wakes it and has no reason to look again before the next
     one. The per-record tick right after ``append`` goes out while the record is still in the writer's buffer (100 ms or
@@ -2006,6 +2016,8 @@ async def _flush_and_tick(
     really goes. A write that FAILS (not a timeout) still raises, as before.
     """
     try:
+        if record is not None:
+            await writer.append(record)
         await writer.flush()
     except WorkspaceWriteTimeout:
         logger.warning(

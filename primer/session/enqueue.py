@@ -39,7 +39,7 @@ from primer.model.workspace_session import (
     WorkspaceSession,
 )
 from primer.session.mutation_lock import session_lifecycle_lock
-from primer.session.persistence import WorkspaceMessageWriter
+from primer.session.persistence import WorkspaceMessageWriter, WorkspaceWriteTimeout
 from primer.session.reset import _reopen_ended_locked
 from primer.session.title import derive_title_from_text
 
@@ -222,6 +222,10 @@ async def wake_session(
                     created_at=datetime.now(timezone.utc),
                 ))
                 await writer.flush()
+            except WorkspaceWriteTimeout:
+                # A TimeoutError is an OSError: without this the writer's "the workspace did not accept the write" would be reported
+                # as "the workspace was removed" (404). It is a 503 (WorkspaceUnreachableError) and passes through.
+                raise
             except OSError as exc:
                 raise NotFoundError(
                     f"workspace {workspace_id!r} was removed while writing "

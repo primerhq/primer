@@ -106,6 +106,11 @@ def create_app(config: AppConfig) -> FastAPI:
     """Production factory: builds the app + wires the lifespan handler."""
     import os
 
+    # The API and the worker both boot through here: the message writers' write bound is a deployment setting (ticket 01a11b58).
+    from primer.session.persistence import configure_write_timeout
+
+    configure_write_timeout(config.session_message_write_timeout_seconds)
+
     if os.environ.get("PRIMER_SERVE_ONLY") == "1":
         # Dedicated serving replica (services spec section 6): no worker
         # starts, and _mount_routers mounts only /svc plus the always-on

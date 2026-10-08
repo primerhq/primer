@@ -40,6 +40,7 @@ from primer.model.workspace import (
     WorkspaceStatus,
     WorkspaceTemplate,
 )
+from primer.session.write_clock import locked_for_write
 from primer.workspace._locks import WorkspaceLockTable
 from primer.workspace.local.cache import LocalTruncationStore
 from primer.workspace.local.state import LocalStateRepo, _GitCommandError
@@ -698,7 +699,9 @@ class LocalWorkspace(Workspace):
         # gaps and be truncated by the rewrite. The lock is keyed by
         # session id, so a flush for one session never waits on another
         # session's commit.
-        async with self._state.messages_lock(session_id):
+        # (locked_for_write tells the message writer when the lock was taken: its write bound starts there, not while a
+        # turn persist holds the lock.)
+        async with locked_for_write(self._state.messages_lock(session_id)):
             await asyncio.to_thread(_append)
 
     async def append_state_line(self, relative_path: str, line: bytes) -> None:

@@ -297,6 +297,22 @@ class AppConfig(BaseSettings):
         ),
     )
 
+    # --- Session message log ----------------------------------------------
+    session_message_write_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        allow_inf_nan=False,
+        description=(
+            "How long a write of session message records may stay unanswered by the workspace, counted from the moment the request is "
+            "sent (the wait for the session's messages lock, which a turn persist holds across its git commit, is not counted, up to "
+            "four times this value in all), before the writer abandons the batch and closes. An abandoned batch is lost from the "
+            "transcript for good (counted in message_write_abandoned_total, logged with its seq range) and the turn's exit lands "
+            "without it, so a workspace whose runtime connection dropped no longer holds a turn's exit for ever. A reconnect after a "
+            "pod reschedule counts as not answering: raise this where reschedules are slow. Override via "
+            "``PRIMER_SESSION_MESSAGE_WRITE_TIMEOUT_SECONDS``."
+        ),
+    )
+
     # --- Bootstrap -------------------------------------------------------
     auto_bootstrap: bool = Field(
         default=True,

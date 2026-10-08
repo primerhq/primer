@@ -28,6 +28,7 @@ from primer.model.workspace import (
     WorkspaceStatus,
     WorkspaceTemplate,
 )
+from primer.session.write_clock import locked_for_write
 from primer.workspace.sandbox.cache import SandboxTruncationStore
 from primer.workspace.sandbox.state import SandboxStateRepo
 from primer.workspace.sandbox.tools import (
@@ -628,7 +629,9 @@ class SandboxWorkspace(Workspace):
         # persist), which race with this append regardless of the append
         # primitive's own atomicity. Keyed by session id, so a flush for
         # one session never waits on another session's commit.
-        async with self._state_repo.messages_lock(session_id):
+        # (locked_for_write tells the message writer when the lock was taken: its write bound starts there, not while a
+        # turn persist holds the lock.)
+        async with locked_for_write(self._state_repo.messages_lock(session_id)):
             await self._sandbox.append_line(path, line)
 
     async def append_state_line(self, relative_path: str, line: bytes) -> None:
