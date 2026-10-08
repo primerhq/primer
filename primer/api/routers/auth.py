@@ -289,7 +289,9 @@ async def login(
 
     wait = throttle.reserve(username, client)
     if wait:
-        logger.info("auth.login throttled username=%s retry_after=%ss", username, wait)
+        # One line per wait, not per refused request: a client hammering a locked key must not fill the log.
+        if throttle.first_refusal(username, client):
+            logger.info("auth.login throttled username=%s retry_after=%ss", username, wait)
         raise HTTPException(
             status_code=429,
             detail={
