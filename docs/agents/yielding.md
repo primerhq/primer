@@ -45,15 +45,15 @@ A yielding tool's handler returns:
 ```python
 Yielded(
   tool_name="subscribe_to_trigger",  # the human-visible name
-  event_key="trigger:tg-foo",        # what we're waiting on
+  event_key="trigger:tr-3f9a1c0b7d42",  # what we're waiting on
   timeout=300,                       # seconds; None = wait forever
-  resume_metadata={"trigger_id": "tg-foo", "sub_id": "sub-bar"},
+  resume_metadata={"trigger_id": "tr-3f9a1c0b7d42", "subscription_id": "sb-5e8d2a6c9b10"},
 )
 ```
 
 The `event_key` is a free-form string. It's how the event bus matches
 fires to parked sessions: when something publishes
-`subscription_matched(event_key="trigger:tg-foo")`, every session
+`subscription_matched(event_key="trigger:tr-3f9a1c0b7d42")`, every session
 parked on that key is marked resumable. Multiple sessions can park on
 the same key; all of them resume.
 
@@ -163,20 +163,24 @@ The agent's tool call:
 ```json
 {
   "tool": "workspace_ext::subscribe_to_trigger",
-  "arguments": {"trigger_id": "tg-nightly-batch"}
+  "arguments": {"trigger_id": "tr-3f9a1c0b7d42"}
 }
 ```
 
+`trigger_id` is the trigger's `id` (`tr-` plus 12 hex digits, the `id` that
+`trigger::create` returned), not its slug; a slug answers
+`trigger_not_found_or_disabled`.
+
 What happens:
-1. The tool handler resolves `tg-nightly-batch`, creates a parked
+1. The tool handler resolves `tr-3f9a1c0b7d42`, creates a parked
    subscription row, and returns
-   `Yielded(event_key="trigger:tg-nightly-batch",
-   resume_metadata={"sub_id": "sub-X"})`.
+   `Yielded(event_key="trigger:tr-3f9a1c0b7d42",
+   resume_metadata={"subscription_id": "sb-X", "trigger_id": "tr-3f9a1c0b7d42"})`.
 2. The session parks. The worker lease is released. The worker moves
    on to other work.
 3. Cron midnight rolls around. The trigger dispatcher fires the
    trigger, sees the parked subscription, publishes
-   `subscription_matched("trigger:tg-nightly-batch")`, and the worker
+   `subscription_matched("trigger:tr-3f9a1c0b7d42")`, and the worker
    pool marks every parked session on that key resumable.
 4. A worker claims the resumable session, calls
    `subscribe_to_trigger.resume(metadata, fire_context)`. The resume

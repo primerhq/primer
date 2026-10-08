@@ -120,7 +120,7 @@ Then the binding that maps a matcher to an action:
   "payload_template": "{{ event.text }}"
 }
 ```
-Response: the created Subscription. A message that mentions the bot starts an `answer-bot` session in `ws-1`; `reply_target: "source_thread"` posts the answer in the originating thread and also makes the session's gates (`ask_user`, tool approval, `inform`) forward to it. To forward every session of the workspace to the channel regardless of how it started, also bind the workspace with `system::set_reply_binding`.
+Response: the created Subscription. A message that mentions the bot starts an `answer-bot` session in `ws-1` (a mention in another thread starts its own session even while an earlier one is still running: a channel event never busy-skips, so the default `parallelism: "skip"` does not drop it); `reply_target: "source_thread"` posts the answer in the originating thread and also makes the session's gates (`ask_user`, tool approval, `inform`) forward to it. To forward every session of the workspace to the channel regardless of how it started, also bind the workspace with `system::set_reply_binding`.
 
 ### 6. Test the bot
 Post `@answer-bot what is the SLA?` in the `#ops-help` Slack channel. The channel adapter delivers the message and starts a session. List the workspace's sessions to find it:

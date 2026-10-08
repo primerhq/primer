@@ -83,15 +83,15 @@ Thread `id` ("ws-1") into the subscription config. Wait until `phase` is `runnin
 ```
 Response:
 ```json
-{ "id": "trg-1", "slug": "pr-review-hourly" }
+{ "id": "tr-3f9a1c0b7d42", "slug": "pr-review-hourly" }
 ```
-`0 * * * *` fires at the top of every UTC hour. `catchup: "none"` stops missed ticks during downtime causing a burst of review runs. Thread `id` ("trg-1") into the subscription.
+`0 * * * *` fires at the top of every UTC hour. `catchup: "none"` stops missed ticks during downtime causing a burst of review runs. Thread `id` ("tr-3f9a1c0b7d42") into the subscription.
 
 ### 5. Attach an agent_fresh_session subscription
 `trigger::create_subscription`
 ```json
 {
-  "trigger_id": "trg-1",
+  "trigger_id": "tr-3f9a1c0b7d42",
   "config": {
     "kind": "agent_fresh_session",
     "agent_id": "pr-reviewer",
@@ -101,14 +101,14 @@ Response:
 ```
 Response:
 ```json
-{ "id": "sub-1", "trigger_id": "trg-1" }
+{ "id": "sub-1", "trigger_id": "tr-3f9a1c0b7d42" }
 ```
 Each tick starts a brand-new session bound to the agent in this workspace. Set `parallelism` to `skip` (via `update_subscription`) if a review run may still be in flight when the next tick arrives.
 
 ### 6. Test with Fire now
 `trigger::fire_now`
 ```json
-{ "id": "trg-1" }
+{ "id": "tr-3f9a1c0b7d42" }
 ```
 Response:
 ```json
