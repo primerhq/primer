@@ -28,7 +28,6 @@ import logging
 from typing import Any
 
 from primer.agent.call_scope import current_call_scope
-from primer.model.chat import Error
 from primer.session.persistence import _CoalesceState, flush_partial_output, translate_stream_event
 
 logger = logging.getLogger(__name__)
@@ -63,8 +62,8 @@ class DelegationRecorder:
 
     Carries a coalescing state PER RUN (keyed by the run id, else the delegating call's id), so one subagent's text deltas accumulate independently of the
     parent turn's AND of every other run's, rather than interleaving into one another's buffers. Text only becomes a record at a ``Done`` or a tool call;
-    a run that ends otherwise would lose what it had streamed, so a fatal ``Error`` flushes the run's buffers ahead of its own ERROR record, and
-    :meth:`finish_run` does the same for a run that ended by an exception or a Stop (the invoke loops call it in a ``finally``). Before this the state was
+    a run that ends otherwise would lose what it had streamed, so a fatal ``Error`` flushes the run's buffers ahead of its own ERROR record (the
+    translator does it), and :meth:`finish_run` does the same for a run that ended by an exception or a Stop (the invoke loops call it in a ``finally``). Before this the state was
     shared: a failed subagent's text surfaced later glued to the next run's, under the wrong run id (ticket 01a11ca9).
     """
 
@@ -129,10 +128,8 @@ class DelegationRecorder:
         if state is None:
             state = self._states[key] = _CoalesceState()
         records: list[Any] = []
-        if isinstance(ev, Error) and ev.fatal:
-            # A fatal Error is the end of this run's stream: what it had streamed is not going to reach a Done, so it becomes its own record now,
-            # AHEAD of the error that explains why it stops (the main path does the same, see flush_partial_output).
-            records.extend(flush_partial_output(state, turn_no=self._turn_no))
+        # A fatal Error ends this run's stream, and translate_stream_event itself flushes the run's buffers ahead of the ERROR record (the same
+        # translator the main path uses), so what the run had streamed is written before the error that explains why it stops.
         result = translate_stream_event(ev, state, turn_no=self._turn_no)
         if result is not None:  # None: coalesced or not persistable; most events land here
             records.extend(result if isinstance(result, list) else [result])

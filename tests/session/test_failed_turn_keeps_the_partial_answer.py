@@ -424,16 +424,19 @@ async def test_a_delegated_runs_fatal_error_flushes_the_runs_own_text_and_stamps
     # What a parent turn holds: a coalesce state that no recorder is handed, so no delegated Error can reach it.
     parent = _CoalesceState()
     parent.text_buffers[None] = "the parent's own words"
-    assert recorder._state is not parent and recorder._state is not another_run._state, "a recorder must keep a coalesce state of its own"
 
     await recorder.on_event(TextDelta(text="sub says", index=0), delegate_tool_call_id="c1")
     await another_run.on_event(TextDelta(text="a sibling run says", index=0), delegate_tool_call_id="c2")
-    assert recorder._state.text_buffers == {None: "sub says"}, "the delta is buffered in the recorder's own state"
+    # A recorder keeps a coalesce state PER RUN (keyed by the run id, else the delegating call's id: "call:<id>").
+    run_state = recorder._states["call:c1"]
+    sibling_state = another_run._states["call:c2"]
+    assert run_state is not parent and run_state is not sibling_state, "a delegated run must keep a coalesce state of its own"
+    assert run_state.text_buffers == {None: "sub says"}, "the delta is buffered in the run's own state"
     await recorder.on_event(Error(code="server_error", message="boom", fatal=True), delegate_tool_call_id="c1")
 
     assert [r.kind for r in writer.records] == [SessionMessageKind.ASSISTANT_TOKEN, SessionMessageKind.ERROR]
     assert writer.records[0].payload["text"] == "sub says"
     assert all(r.payload["delegated"] is True and r.payload["delegate_tool_call_id"] == "c1" for r in writer.records)
-    assert recorder._state.text_buffers == {}, "the failing run's own buffer was drained"
-    assert another_run._state.text_buffers == {None: "a sibling run says"}, "another delegated run's buffer was not touched"
+    assert run_state.text_buffers == {}, "the failing run's own buffer was drained"
+    assert sibling_state.text_buffers == {None: "a sibling run says"}, "another delegated run's buffer was not touched"
     assert parent.text_buffers == {None: "the parent's own words"}
