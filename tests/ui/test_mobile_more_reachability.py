@@ -36,6 +36,8 @@ var __con = {
   toast: function () {}, bump: function () {},
 };
 function NV_useConsole() { return __con; }
+// The Inbox card draws the agent glyph (nv-studio.jsx); a stand-in with the two fields the card reads.
+function NV_identity() { return { color: "#888", d: "M0 0" }; }
 // The view as the URL names it, and what the shell does with it. goView writes the URL and hands over a NEW view object; a hashchange or
 // popstate (nv-shell's onNav) re-parses the URL into another FRESH object without any goView; clearView drops the view from state, and
 // so from the URL, as a replace (no history entry).
