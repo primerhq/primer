@@ -35,6 +35,7 @@ window.primerApi = {
     if (method === "POST" && path.indexOf("/toolsets") === 0) {
       return Promise.resolve({ id: body.id || "ts-new", provider: body.provider, config: body.config });
     }
+    if (method === "PUT" && path.indexOf("/toolsets/") === 0) return Promise.resolve({ id: path.split("/")[2], provider: body.provider, config: body.config });
     if (method === "GET" && /\\/toolsets\\/[^/]+\\/tools$/.test(path)) return Promise.resolve({ tools: [{ id: "a" }, { id: "b" }] });
     return Promise.resolve({});
   },
@@ -79,6 +80,16 @@ def _settle(ctx, rounds: int = 6) -> None:
     """Promise continuations run between evals in MiniRacer, so draw, let them run, draw again."""
     for _ in range(rounds):
         ctx.eval("MR.rerender()")
+
+
+def _mount_edit(row: dict):
+    ctx = mini_react_context(transpile(TOOLSETS), _PRELUDE)
+    ctx.eval(_TEXT)
+    ctx.eval(
+        "MR.mount(TS_NewToolsetModal, { existing: " + json.dumps(row) + ", onClose: function () { __closed++; },"
+        " onCreate: function (row) { __created.push(row.id); }, pushToast: function (t) { __toasts.push(t); } });"
+    )
+    return ctx
 
 
 def _choose(ctx, provider: str, id_: str = "") -> None:
@@ -153,3 +164,54 @@ def test_an_mcp_create_still_probes_and_reports_the_connection(modal) -> None:
     assert "checking the connection" in shown and "Connected." in shown and "2 tools imported" in shown, shown
     done = modal.eval("__text(MR.find('toolset-connect-done'))")
     assert done == "Done", done
+
+
+# ---- EDITING a toolset is not creating one (the #609 review) ------------------------------------------------------------------------------------------------
+#
+# The same dialog serves Edit (the Edit button on any non-managed toolset). A Python toolset that is being edited may already have source and tools, and Done on
+# an edit only closes the dialog: the "you write its source next, the editor opens" wording is true of a CREATE only.
+
+_PY_ROW = {"id": "ts-py", "provider": "python", "config": {"source": "def hello(): pass", "source_version": 3}}
+
+
+def test_saving_an_edit_of_a_python_toolset_says_only_that_it_has_no_connection() -> None:
+    ctx = _mount_edit(_PY_ROW)
+    try:
+        _create(ctx)
+
+        note = ctx.eval("__text(MR.find('toolset-created-note'))")
+        assert note == "Saved ts-py. A Python toolset has no connection to check.", note
+        shown = ctx.eval("__shown()")
+        for create_only in ("write its source", "no tools", "editor opens", "Created"):
+            assert create_only not in shown, f"{create_only!r} on an EDIT of a toolset that may already have source and tools: {shown!r}"
+    finally:
+        ctx.close()
+
+
+def test_the_done_button_of_an_edit_of_a_python_toolset_is_done_and_runs_no_probe() -> None:
+    ctx = _mount_edit(_PY_ROW)
+    try:
+        _create(ctx)
+
+        assert ctx.eval("__text(MR.find('toolset-connect-done'))") == "Done", "Done only closes an edit; it opens no editor"
+        calls = _calls(ctx)
+        assert "PUT /toolsets/ts-py" in calls
+        assert not [c for c in calls if c.startswith("GET /toolsets/") and c.endswith("/tools")], f"a probe ran: {calls}"
+        ctx.eval("MR.click('toolset-connect-done')")
+        _settle(ctx, 2)
+        assert json.loads(ctx.eval("JSON.stringify(__created)")) == ["ts-py"]
+    finally:
+        ctx.close()
+
+
+def test_saving_an_edit_of_an_mcp_toolset_still_probes_and_says_done() -> None:
+    ctx = _mount_edit({"id": "gh", "provider": "mcp", "config": {"transport": "stdio", "config": {"command": ["npx", "x"], "env": {}}}})
+    try:
+        _create(ctx)
+
+        assert "GET /toolsets/gh/tools" in _calls(ctx)
+        shown = ctx.eval("__shown()")
+        assert "Saved" in shown and "checking the connection" in shown and "Connected." in shown, shown
+        assert ctx.eval("__text(MR.find('toolset-connect-done'))") == "Done"
+    finally:
+        ctx.close()
