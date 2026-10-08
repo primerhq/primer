@@ -446,6 +446,31 @@ class TestConfigCRUD:
         assert resp.json()["type"] == "/errors/not-found"
 
     @pytest.mark.asyncio
+    async def test_allow_missing_answers_200_not_configured_instead_of_404(self, client) -> None:
+        """The console probes this route on every open. A 404 there is a red "Failed to load resource" console error even though it is the
+        expected "off" state, so the console asks with ``allow_missing=true`` and gets a 200 that says so. The default stays 404."""
+        resp = await client.get("/v1/internal_collections/config", params={"allow_missing": "true"})
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"configured": False}
+
+    @pytest.mark.asyncio
+    async def test_allow_missing_does_not_change_a_configured_answer(self, client) -> None:
+        await client.put("/v1/internal_collections/config", json=_config_body())
+
+        with_flag = await client.get("/v1/internal_collections/config", params={"allow_missing": "true"})
+        without = await client.get("/v1/internal_collections/config")
+
+        assert with_flag.status_code == 200 and with_flag.json() == without.json()
+        assert "configured" not in with_flag.json() and with_flag.json()["embedding_provider_id"] == "hf-1"
+
+    @pytest.mark.asyncio
+    async def test_allow_missing_false_is_the_404(self, client) -> None:
+        resp = await client.get("/v1/internal_collections/config", params={"allow_missing": "false"})
+
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
     async def test_put_creates_and_get_returns(self, client) -> None:
         put = await client.put("/v1/internal_collections/config", json=_config_body())
         assert put.status_code == 200, put.text
