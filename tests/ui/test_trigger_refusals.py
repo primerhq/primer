@@ -183,6 +183,10 @@ def test_banner_titles_are_plain_and_never_compose_a_code() -> None:
         assert composed not in SRC, f"{composed!r}: a code in a banner title"
     for title in ('title="Create failed"', 'title="Save failed"', 'title="Fire failed"'):
         assert title in SRC, f"{title} is gone"
+    # the subscription dialog builds its title from the mode; no banner reads a code at all (the fire-error CHIP reads `error.code ||` from a recorded dispatcher error, a different thing)
+    for read in ("submitError.code", "fireError.code", "error.code ?"):
+        assert read not in SRC, f"{read!r}: a banner still reads a code"
+    assert 'title={`${isEdit ? "Save" : "Create"} failed`}' in SRC
 
 
 @pytest.mark.parametrize(

@@ -167,6 +167,40 @@ function TR_writeErrorText(err, fallback) {
   return (err && (err.detail || err.message || err.title)) || fallback;
 }
 
+// What to do about each refusal the triggers API can answer (ticket 01a11bf7-15b7). The CODE is never shown: it only picks the sentence, a template
+// with a {message} slot for the server's own words, because some messages are whole sentences and some are a bare id (trigger_not_found carries just
+// "tr-9fab..."). tests/ui/test_trigger_refusals.py checks the keys against the codes primer/api/routers/triggers.py raises, so the table cannot drift.
+var TR_REMEDIES = {
+  trigger_slug_conflict: "{message}. Choose a different slug.",
+  trigger_not_found: "Trigger {message} was not found: it may have been deleted. Refresh the list.",
+  subscription_not_found: "Subscription {message} was not found: it may have been deleted. Refresh the list.",
+  trigger_kind_immutable: "{message}. To change the kind, create a new trigger.",
+  forbidden_role: "{message}. Ask the trigger's owner or an administrator.",
+  not_a_webhook_trigger: "{message}. Only a webhook trigger has a token.",
+  parked_session_only_from_yield: "{message}. A session creates one itself when it waits on the trigger; it is not made from here.",
+  cron_invalid: "{message}. A cron expression has five fields: minute, hour, day of month, month, day of week.",
+  timezone_invalid: "{message}. Pick a timezone from the list.",
+};
+
+// The code and the message of a failed trigger write, from the thrown ApiError. The API raises HTTPException(detail={code, message}); the problem
+// envelope that reaches the browser has `detail` as the MESSAGE string and the code in extensions.code (an older shape had it in a detail object).
+function TR_refusal(err, fallback) {
+  var env = err && err.envelope;
+  var ext = (env && env.extensions) || {};
+  var det = env && env.detail && typeof env.detail === "object" ? env.detail : {};
+  var message = ext.message || det.message || (err && typeof err.detail === "string" && err.detail) || (err && (err.title || err.message)) || fallback || "Request failed";
+  return { code: ext.code || det.code || null, message: message };
+}
+
+// The banner's detail for a refused write: the server's message worked into one sentence about what to do. A code with no template shows the
+// message alone; the code itself is never part of the text.
+function TR_refusalText(err, fallback) {
+  var r = TR_refusal(err, fallback);
+  var template = r.code ? TR_REMEDIES[r.code] : "";
+  if (!template) return r.message;
+  return template.replace("{message}", String(r.message).replace(/[.\s]+$/, ""));
+}
+
 // Copy text to clipboard + flash a brief toast.
 function TR_CopyButton({ text, label, testId }) {
   const [copied, setCopied] = React.useState(false);
@@ -518,7 +552,7 @@ function TR_CreateTriggerDialog({ onClose, onCreated }) {
   const [scheduleError, setScheduleError] = React.useState(null);
 
   // Submit state
-  const [submitError, setSubmitError] = React.useState(null); // {code, message} | string
+  const [submitError, setSubmitError] = React.useState(null); // {message} | null
   const [busy, setBusy] = React.useState(false);
 
   const mountedRef = React.useRef(true);
@@ -596,21 +630,8 @@ function TR_CreateTriggerDialog({ onClose, onCreated }) {
         setStep(2);
         return;
       }
-      // Server error shape: {detail: {code, message}} (see _raise_code).
-      // FastAPI unwraps `detail` into envelope.detail when status != 422.
-      // The ApiError stores envelope.detail as `detail` directly, which
-      // may be an object {code, message} or a string.
-      const env = err && err.envelope;
-      const envDetail = env && env.detail;
-      let code = null;
-      let msg = null;
-      if (envDetail && typeof envDetail === "object") {
-        code = envDetail.code || null;
-        msg = envDetail.message || null;
-      }
-      if (!msg && typeof err.detail === "string") msg = err.detail;
-      if (!msg) msg = err.title || err.message || "Request failed";
-      setSubmitError({ code, message: msg });
+      // A refusal the server explains: its message worked into what to do about it; the code is never shown (TR_refusalText).
+      setSubmitError({ message: TR_refusalText(err, "Request failed") });
     } finally {
       if (mountedRef.current) setBusy(false);
     }
@@ -832,7 +853,7 @@ function TR_CreateTriggerDialog({ onClose, onCreated }) {
           {submitError && (
             <Banner
               kind="error"
-              title={submitError.code ? `Create failed (${submitError.code})` : "Create failed"}
+              title="Create failed"
               detail={submitError.message || ""}
             />
           )}
@@ -880,17 +901,8 @@ function TR_TriggerEditDialog({ trigger, onClose, onSaved }) {
       onSaved(updated);
     } catch (err) {
       if (!mountedRef.current) return;
-      const env = err && err.envelope;
-      const envDetail = env && env.detail;
-      let code = null;
-      let msg = null;
-      if (envDetail && typeof envDetail === "object") {
-        code = envDetail.code || null;
-        msg = envDetail.message || null;
-      }
-      if (!msg && typeof err.detail === "string") msg = err.detail;
-      if (!msg) msg = err.title || err.message || "Request failed";
-      setError({ code, message: msg });
+      // A refusal the server explains: its message worked into what to do about it; the code is never shown (TR_refusalText).
+      setError({ message: TR_refusalText(err, "Request failed") });
     } finally {
       if (mountedRef.current) setBusy(false);
     }
@@ -953,7 +965,7 @@ function TR_TriggerEditDialog({ trigger, onClose, onSaved }) {
         {error && (
           <Banner
             kind="error"
-            title={error.code ? `Save failed (${error.code})` : "Save failed"}
+            title="Save failed"
             detail={error.message || ""}
           />
         )}
@@ -1337,16 +1349,8 @@ function TR_TriggerDetail({ id }) {
       setFireResult(res);
       refetchAll();
     } catch (err) {
-      const env = err && err.envelope;
-      const envDetail = env && env.detail;
-      let code = null;
-      let msg = null;
-      if (envDetail && typeof envDetail === "object") {
-        code = envDetail.code || null;
-        msg = envDetail.message || null;
-      }
-      if (!msg) msg = err.title || err.message || "Fire failed";
-      setFireError({ code, message: msg });
+      // A refusal the server explains: its message worked into what to do about it; the code is never shown (TR_refusalText).
+      setFireError({ message: TR_refusalText(err, "Fire failed") });
     } finally {
       setFireBusy(false);
     }
@@ -1648,7 +1652,7 @@ function TR_TriggerDetail({ id }) {
             <div style={{ marginTop: 8 }}>
               <Banner
                 kind="error"
-                title={fireError.code ? `Fire failed (${fireError.code})` : "Fire failed"}
+                title="Fire failed"
                 detail={fireError.message || ""}
               />
             </div>
@@ -1945,17 +1949,8 @@ function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
       onSaved(sub);
     } catch (err) {
       if (!mountedRef.current) return;
-      const env = err && err.envelope;
-      const envDetail = env && env.detail;
-      let code = null;
-      let msg = null;
-      if (envDetail && typeof envDetail === "object") {
-        code = envDetail.code || null;
-        msg = envDetail.message || null;
-      }
-      if (!msg && typeof err.detail === "string") msg = err.detail;
-      if (!msg) msg = err.title || err.message || "Request failed";
-      setSubmitError({ code, message: msg });
+      // A refusal the server explains: its message worked into what to do about it; the code is never shown (TR_refusalText).
+      setSubmitError({ message: TR_refusalText(err, "Request failed") });
     } finally {
       if (mountedRef.current) setBusy(false);
     }
@@ -2215,7 +2210,7 @@ function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
         {submitError && (
           <Banner
             kind="error"
-            title={submitError.code ? `${isEdit ? "Save" : "Create"} failed (${submitError.code})` : `${isEdit ? "Save" : "Create"} failed`}
+            title={`${isEdit ? "Save" : "Create"} failed`}
             detail={submitError.message || ""}
           />
         )}
