@@ -108,21 +108,35 @@ async def _idle_session(app, sid: str, **over):
 
 @pytest.mark.asyncio
 async def test_the_route_switches_under_the_lifecycle_lock(client, app):
+    """The idle branch takes THIS session's lifecycle lock before it reads, reserves or writes anything.
+
+    Deterministic on purpose: the route is seen WAITING on the key (the lock's reference count for the session id reaches two: the
+    test's hold and the route's wait), so a route that takes a different key, or none, fails here at once instead of passing a
+    sleep. While the test holds the lock nothing is written (no marker, ``last_seq`` unchanged); once it lets go, the route finishes.
+    """
     from primer.session.mutation_lock import session_lifecycle_lock
 
     sessions, ws = await _idle_session(app, "b-lock")
+    before = (await sessions.get("b-lock")).last_seq
+    lock = session_lifecycle_lock()
 
-    async with session_lifecycle_lock().acquire("b-lock"):
-        request = asyncio.create_task(
-            client.post("/v1/workspaces/ws-1/sessions/b-lock/binding", json={"kind": "agent", "agent_id": "agent-b"})
-        )
-        await asyncio.sleep(0.15)
-        assert not request.done() and ws.records("b-lock") == [], "the route switched while another writer held the lock"
-    response = await asyncio.wait_for(request, 3.0)
+    async with asyncio.timeout(10.0):
+        async with lock.acquire("b-lock"):
+            request = asyncio.create_task(
+                client.post("/v1/workspaces/ws-1/sessions/b-lock/binding", json={"kind": "agent", "agent_id": "agent-b"})
+            )
+            while lock._refs.get("b-lock", 0) < 2:  # noqa: SLF001 - the reference count is how a waiter is observed
+                assert not request.done(), "the route finished without ever waiting for the session's lifecycle lock"
+                await asyncio.sleep(0.01)
+            await asyncio.sleep(0.1)  # a route that is NOT really blocked would have written by now
+            assert not request.done() and ws.records("b-lock") == [], "the route switched while another writer held the lock"
+            assert (await sessions.get("b-lock")).last_seq == before, "the route reserved a seq while another writer held the lock"
+        response = await request
 
     assert response.status_code == 200, response.text
     assert [r["kind"] for r in ws.records("b-lock")] == ["agent_marker"]
-    assert (await sessions.get("b-lock")).binding.agent_id == "agent-b"
+    stored = await sessions.get("b-lock")
+    assert stored.binding.agent_id == "agent-b" and stored.last_seq == before + 1
 
 
 @pytest.mark.asyncio
