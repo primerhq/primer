@@ -141,3 +141,103 @@ async def test_sync_that_adds_a_stdio_toolset_proceeds_for_an_admin(fake_storage
 
     assert error is None
     assert await fake_storage_provider.get_storage(Toolset).get("acme__ts") is not None
+
+
+# ---- python toolsets and repoints go through the same rule (toolset_admin_reason, #476) ---------------------------------
+
+_PYTHON = {
+    "provider": "python",
+    "config": {"source": "def hello() -> str:\n    \"\"\"Say hello.\"\"\"\n    return 'hi'\n", "source_version": 1},
+}
+
+
+async def _sync(sp, harness, entries):
+    return await apply_sync(
+        storage_provider=sp, harness=harness, new_entries=entries, rendered_files_by_name={},
+        bundle_hash="new", overrides_hash="oh", schema_hash=None,
+    )
+
+
+@pytest.mark.parametrize("requested_by", [_USER, None], ids=["user", "unknown"])
+async def test_install_of_a_python_toolset_is_refused_unless_an_admin_asked(fake_storage_provider, requested_by):
+    error = await _install(fake_storage_provider, _harness(requested_by), [_toolset_entry(_PYTHON), _agent_entry()])
+
+    assert error is not None and json.loads(error)["code"] == "toolset_needs_admin"
+    assert "python toolset" in json.loads(error)["message"]
+    assert await fake_storage_provider.get_storage(Toolset).get("acme__ts") is None
+    assert await fake_storage_provider.get_storage(Agent).get("acme__asst") is None, "the whole install must be refused"
+
+
+async def test_sync_that_adds_a_python_toolset_is_refused_for_a_user(fake_storage_provider):
+    await _seed_rendering(fake_storage_provider, [])
+
+    error = await _sync(fake_storage_provider, _harness(_USER), [_toolset_entry(_PYTHON), _agent_entry()])
+
+    assert error is not None and json.loads(error)["code"] == "toolset_needs_admin"
+    assert await fake_storage_provider.get_storage(Toolset).get("acme__ts") is None
+    assert await fake_storage_provider.get_storage(Agent).get("acme__asst") is None
+
+
+async def test_install_of_a_python_toolset_requested_by_an_admin_proceeds(fake_storage_provider):
+    error = await _install(fake_storage_provider, _harness(_ADMIN), [_toolset_entry(_PYTHON)])
+
+    assert error is None
+    stored = await fake_storage_provider.get_storage(Toolset).get("acme__ts")
+    assert stored is not None and stored.provider.value == "python"
+
+
+_HTTP_WITH_SECRET = {
+    "provider": "mcp",
+    "config": {"transport": "http", "config": {"url": "https://mcp.example/mcp", "headers": {"Authorization": "Bearer stored"}}},
+}
+
+
+def _http(url: str, header: str) -> dict:
+    return {"provider": "mcp", "config": {"transport": "http", "config": {"url": url, "headers": {"Authorization": header}}}}
+
+
+async def _installed_http_toolset(sp) -> None:
+    await _seed_rendering(sp, [_toolset_entry(_HTTP_WITH_SECRET, rendered_hash="r-old")])
+    await sp.get_storage(Toolset).create(
+        Toolset.model_validate({"id": "acme__ts", **_HTTP_WITH_SECRET, "harness_id": "acme-id"}),
+    )
+
+
+async def test_sync_that_repoints_a_toolset_keeping_its_masked_secret_is_refused_for_a_user(fake_storage_provider):
+    await _installed_http_toolset(fake_storage_provider)
+
+    error = await _sync(
+        fake_storage_provider, _harness(_USER),
+        [_toolset_entry(_http("https://elsewhere.example/mcp", "**********"), rendered_hash="r-new")],
+    )
+
+    assert error is not None and json.loads(error)["code"] == "toolset_needs_admin"
+    stored = await fake_storage_provider.get_storage(Toolset).get("acme__ts")
+    assert stored.config.config.url == "https://mcp.example/mcp"
+
+
+async def test_sync_that_repoints_a_toolset_with_its_secret_re_entered_needs_no_admin(fake_storage_provider):
+    await _installed_http_toolset(fake_storage_provider)
+
+    error = await _sync(
+        fake_storage_provider, _harness(_USER),
+        [_toolset_entry(_http("https://elsewhere.example/mcp", "Bearer fresh"), rendered_hash="r-new")],
+    )
+
+    assert error is None
+    stored = await fake_storage_provider.get_storage(Toolset).get("acme__ts")
+    assert stored.config.config.url == "https://elsewhere.example/mcp"
+
+
+async def test_sync_that_changes_a_stdio_toolsets_command_is_refused_for_a_user(fake_storage_provider):
+    await _seed_rendering(fake_storage_provider, [_toolset_entry(_STDIO, rendered_hash="r-old")])
+    await fake_storage_provider.get_storage(Toolset).create(
+        Toolset.model_validate({"id": "acme__ts", **_STDIO, "harness_id": "acme-id"}),
+    )
+    other_command = {"provider": "mcp", "config": {"transport": "stdio", "config": {"command": ["sh", "-c", "whoami"]}}}
+
+    error = await _sync(fake_storage_provider, _harness(_USER), [_toolset_entry(other_command, rendered_hash="r-new")])
+
+    assert error is not None and json.loads(error)["code"] == "toolset_needs_admin"
+    stored = await fake_storage_provider.get_storage(Toolset).get("acme__ts")
+    assert stored.config.config.command == ["sh", "-c", "id"]
