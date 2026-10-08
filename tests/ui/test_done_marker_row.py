@@ -6,6 +6,11 @@ and the word goes: a clean end draws the trace button alone, and an end that is 
 (the output limit cut the answer off, the content filter blocked it, the model call failed, the tool-turn cap stopped the work).
 
 ``SH_lifecycleLabel`` is pure; ``NV_LifecycleRow`` (the row itself) runs in V8 on the hook runtime in ``tests/ui/_mini_react.py``.
+
+Follow-ups to #594: a clean done draws the icon-only trace button alone, and a ``title`` on a button with no text of its own is not an accessible name,
+so the button carries an ``aria-label`` beside it; ``other`` is a real ``StopReason`` (``primer/model/chat.py``) that providers with many finish reasons
+collapse into, so an unclean done that ends for another reason now says so in words instead of reading as clean; and the clean-end pin is no longer only
+"no words" - it also asserts that no ``nv-lifecycle-dot`` element is drawn at all.
 """
 
 from __future__ import annotations
@@ -40,7 +45,7 @@ def _label(ctx, kind: str, payload) -> str:
     return json.loads(ctx.eval(f"JSON.stringify(SH_lifecycleLabel({json.dumps(kind)}, {json.dumps(payload)}))"))
 
 
-@pytest.mark.parametrize("payload", [{}, None, {"stop_reason": "stop"}, {"stop_reason": "stop_sequence"}, {"stop_reason": "other"}])
+@pytest.mark.parametrize("payload", [{}, None, {"stop_reason": "stop"}, {"stop_reason": "stop_sequence"}])
 def test_a_clean_done_has_no_label(ctx, payload) -> None:
     assert _label(ctx, "done", payload) == ""
 
@@ -52,6 +57,7 @@ def test_a_clean_done_has_no_label(ctx, payload) -> None:
         ("content_filter", "■ blocked by the content filter"),
         ("error", "■ ended with an error"),
         ("tool_turn_cap", "■ stopped at the tool-turn cap"),
+        ("other", "■ ended for another reason"),
     ],
 )
 def test_a_done_that_is_not_clean_says_why(ctx, reason: str, label: str) -> None:
@@ -110,3 +116,36 @@ def test_an_unclean_done_shows_its_reason_beside_the_trace_button(ctx) -> None:
 def test_a_stopped_turn_still_reads_stopped(ctx) -> None:
     _mount(ctx, "cancelled", {"reason": "operator_interrupt"})
     assert "■ stopped" in _texts(ctx)
+
+
+def _trace_button_props(ctx) -> dict:
+    return json.loads(ctx.eval("JSON.stringify((function () { var b = MR.find('nv-trace-open:7'); return b && b.props || null; })())"))
+
+
+def test_the_icon_only_trace_button_carries_an_accessible_name(ctx) -> None:
+    """A clean done draws the button alone: a title on a button with no text of its own is not an accessible name, so the button has an aria-label."""
+    _mount(ctx, "done", {"stop_reason": "stop"})
+
+    props = _trace_button_props(ctx)
+    assert props is not None
+    assert props["aria-label"] == "View trace for this turn"
+    assert props["title"] == "View trace", "the visible hint stays"
+
+
+def _dot_children(ctx) -> int:
+    return json.loads(ctx.eval(
+        "JSON.stringify((function () { var el = MR.find('nv-turn:7'); var kids = el && el.children || []; return kids.filter(function (c) {"
+        " return c && c.__el && c.type === 'span' && c.props && c.props.className === 'nv-lifecycle-dot'; }).length; })())"
+    ))
+
+
+def test_a_clean_done_draws_no_label_span_at_all(ctx) -> None:
+    """No words is not the whole pin: an empty span would still be a drawn element. A clean done draws no nv-lifecycle-dot at all."""
+    _mount(ctx, "done", {"stop_reason": "stop"})
+    assert _dot_children(ctx) == 0
+
+
+def test_an_unclean_done_draws_its_label_in_the_span(ctx) -> None:
+    """The span probe is not vacuous: an unclean done draws exactly one nv-lifecycle-dot."""
+    _mount(ctx, "done", {"stop_reason": "max_tokens"})
+    assert _dot_children(ctx) == 1
