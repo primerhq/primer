@@ -1888,18 +1888,18 @@ async def test_t0473_put_graph_with_live_session_clean_envelope(
 
 
 @pytest.mark.asyncio
-async def test_t0474_delete_graph_with_bound_session_orphan_tolerated(
+async def test_t0474_delete_graph_with_bound_session_is_refused_until_it_ends(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0474 — Mirror of T0157/T0265 (orphan-tolerated cascades) for
-    the Graph→Session FK. DELETE a graph while a session is bound
-    to it. Pin: DELETE returns 204 (graph gone); subsequent GET on
-    the session row still returns 200 with the orphaned binding
-    intact; never /errors/internal anywhere.
+    """T0474 - DELETE a graph while a session is bound to it (finding A-09).
 
-    Catches a regression where the graph DELETE cascade tries to
-    walk bound sessions and either 5xxs or silently corrupts the
-    session row.
+    A session that is not ended is a user of the graph, so the delete is
+    refused with 409 ``in_use_by`` naming the session; this test used to pin
+    "orphan tolerated: 204", which stranded the session on a deleted graph.
+    Pin: 409 (never /errors/internal); the graph and the session are
+    untouched; once the session is cancelled (ENDED, history) the delete
+    succeeds (204) and the ended session still reads 200 with its binding
+    intact.
     """
     import tempfile
     provider_id = f"llm-t0474-{unique_suffix}"
@@ -1962,26 +1962,48 @@ async def test_t0474_delete_graph_with_bound_session_orphan_tolerated(
             assert sess.status_code == 201, sess.text
             session_id = sess.json()["id"]
 
-            # DELETE the bound graph
+            # DELETE the bound graph while the session is live: refused
             rm = await client.delete(f"/v1/graphs/{graph_id}")
             envelope = rm.json() if rm.content else {}
             assert envelope.get("type") != "/errors/internal", (
                 f"DELETE graph with bound session leaked /errors/internal: "
                 f"{rm.text}"
             )
+            assert rm.status_code == 409, (
+                f"DELETE of a graph a live session is bound to should be "
+                f"refused with 409; got {rm.status_code}: {rm.text}"
+            )
+            assert "in_use_by" in rm.text and session_id in rm.text, rm.text
+
+            # Nothing changed: the graph is still there and the session
+            # is still bound to it.
+            still = await client.get(f"/v1/graphs/{graph_id}")
+            assert still.status_code == 200, still.text
+            got = await client.get(f"/v1/sessions/{session_id}")
+            assert got.status_code == 200, got.text
+            assert got.json()["binding"]["graph_id"] == graph_id, got.json()
+
+            # End the session (cancel from CREATED is instant): it is
+            # history now, no longer a user of the graph.
+            cancel = await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+            )
+            assert cancel.status_code in (200, 202, 204), cancel.text
+
+            rm = await client.delete(f"/v1/graphs/{graph_id}")
             assert rm.status_code == 204, (
-                f"DELETE graph should be orphan-tolerated 204; got "
+                f"DELETE should succeed once the session has ended; got "
                 f"{rm.status_code}: {rm.text}"
             )
 
-            # Session row still readable; orphaned binding intact
+            # The ended session row is still readable; its binding is intact
             got = await client.get(f"/v1/sessions/{session_id}")
             assert got.status_code == 200, got.text
             body = got.json()
             assert body["id"] == session_id
             assert body["binding"]["kind"] == "graph"
             assert body["binding"]["graph_id"] == graph_id, (
-                f"orphaned binding lost graph_id: {body['binding']!r}"
+                f"ended session lost its binding graph_id: {body['binding']!r}"
             )
         finally:
             if session_id is not None and workspace_id is not None:
@@ -4909,26 +4931,27 @@ async def test_t0623_graph_concurrent_put_replace_clean_envelopes(
 
 
 # ============================================================================
-# T0624 — Graph DELETEd then resume on graph-bound session: clean fatal-path
+# T0624 - Graph DELETE refused while a session is bound, then resume: clean
 # ============================================================================
 
 
 @pytest.mark.asyncio
-async def test_t0624_graph_deleted_then_resume_session_clean_fatal_path(
+async def test_t0624_graph_delete_refused_then_resume_session_clean(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:
-    """T0624 — Sequential graph cascade. Sequence:
+    """T0624 - Sequential graph cascade (finding A-09). Sequence:
         1. Create graph + workspace + graph-bound CREATED session
-        2. DELETE the graph row
+        2. DELETE the graph row: REFUSED (409 in_use_by), because a
+           session that is not ended is bound to it; this test used to
+           delete the row here and resume a session whose graph was gone
         3. Resume the session
 
-    The graph executor is implemented and resilient: deleting the graph
-    definition row after session creation does not kill an in-flight run
-    (the executor captures the graph definition at session-start time).
-    The session must converge to ENDED with a clean terminal ended_reason.
-    Hard pin: never /errors/internal at any step; resume returns a
-    documented status code; subsequent GET shows ended with ended_reason
-    in a clean terminal set (completed or failed).
+    The graph is intact, so the resumed session runs it. The session must
+    converge to ENDED with a clean terminal ended_reason.
+    Hard pin: never /errors/internal at any step; the refused delete leaves
+    the graph readable; resume returns a documented status code; subsequent
+    GET shows ended with ended_reason in a clean terminal set (completed or
+    failed).
     """
     import asyncio as _asyncio
     provider_id = f"llm-t0624-{unique_suffix}"
@@ -4987,12 +5010,16 @@ async def test_t0624_graph_deleted_then_resume_session_clean_fatal_path(
         assert sess.status_code == 201, sess.text
         session_id = sess.json()["id"]
 
-        # Delete the graph row BEFORE resume
+        # Delete the graph row BEFORE resume: refused, the bound session
+        # is a user of it, and the row stays.
         rm = await client.delete(f"/v1/graphs/{graph_id}")
-        assert rm.status_code == 204, rm.text
+        assert rm.status_code == 409, rm.text
+        assert "in_use_by" in rm.text and session_id in rm.text, rm.text
+        still = await client.get(f"/v1/graphs/{graph_id}")
+        assert still.status_code == 200, still.text
 
-        # Resume — worker claims, fails (graph missing AND/OR executor
-        # NotImplemented), routes through _handle_fatal
+        # Resume - the worker claims the session and runs the graph
+        # against the placeholder LLM, which fails it cleanly
         resume = await client.post(
             f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
         )
@@ -6104,29 +6131,28 @@ async def test_t0715_delete_llm_provider_then_agent_status_clean(
 
 
 # ============================================================================
-# T0414 — DELETE Agent referenced by a Graph node succeeds; Graph /status
-# flips ok=false (mirror of T0344 cascade for Agent→Graph)
+# T0414 - DELETE Agent referenced by a Graph node is refused (409 in_use_by);
+# the Graph /status stays ok (finding A-09; this used to pin the opposite)
 # ============================================================================
 
 
 @pytest.mark.asyncio
-async def test_t0414_delete_agent_flips_graph_status_to_failed(
+async def test_t0414_delete_agent_referenced_by_a_graph_is_refused(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0414 — Build LLMProvider→Agent→Graph, DELETE the Agent.
-    Graph's /status walker must surface the missing-Agent reference
-    in ``issues`` and flip ``ok=false``. Mirror of T0344 (which
-    deletes the provider one tier up) — T0414 hits the Agent tier
-    directly.
+    """T0414 - Build LLMProvider→Agent→Graph, DELETE the Agent (finding A-09).
 
-    Priority 1 (graph executor surface) + cascade integrity pin.
-    The graph executor not being wired yet (worker pool path is
-    NotImplementedError) is orthogonal: the /status endpoint walks
-    the model only, so this contract works today regardless.
+    A graph node names the agent, so the delete is refused with 409
+    ``in_use_by`` naming the graph. This test used to pin the opposite
+    (``204``, then the graph's /status flipping ok=false with the missing
+    agent in ``issues``); that stranded the graph. The /status walker still
+    reports a reference to an agent that does not exist
+    (``test_t0171_graph_status_flags_multiple_missing_references`` covers it
+    with a graph that names one that never did).
 
-    Defence: DELETE Agent returns 204 cleanly; the Graph row stays
-    intact (graphs are not cascade-deleted by agent loss); only
-    the /status walk surfaces the broken reference.
+    Defence: the refused DELETE changes nothing (the Agent row and the
+    Graph's /status stay as they were); once the Graph is deleted the Agent
+    can be deleted (204).
     """
     provider_id = f"llm-t0414-{unique_suffix}"
     agent_id = f"agent-t0414-{unique_suffix}"
@@ -6149,33 +6175,35 @@ async def test_t0414_delete_agent_flips_graph_status_to_failed(
         assert pre.status_code == 200, pre.text
         assert pre.json()["ok"] is True, pre.text
 
-        # DELETE the agent — should succeed (no provider cascade).
+        # DELETE the agent - refused: a graph node names it.
         rm = await client.delete(f"/v1/agents/{agent_id}")
-        assert rm.status_code == 204, (
-            f"DELETE Agent referenced by Graph should succeed; "
+        assert rm.status_code == 409, (
+            f"DELETE Agent referenced by Graph should be refused; "
             f"got {rm.status_code}: {rm.text}"
         )
+        assert "in_use_by" in rm.text and graph_id in rm.text, rm.text
 
-        # Graph row still exists.
-        gr_get = await client.get(f"/v1/graphs/{graph_id}")
-        assert gr_get.status_code == 200, gr_get.text
-
-        # Graph status flips ok=false with missing-Agent in issues.
+        # Nothing changed: the agent is still there and the graph is
+        # still healthy.
+        ag_get = await client.get(f"/v1/agents/{agent_id}")
+        assert ag_get.status_code == 200, ag_get.text
         post = await client.get(f"/v1/graphs/{graph_id}/status")
         assert post.status_code == 200, post.text
-        body = post.json()
-        assert body["ok"] is False, (
-            f"Graph status should flip ok=false after Agent deletion; "
-            f"got: {body}"
+        assert post.json()["ok"] is True, (
+            f"a refused delete must leave the graph status ok; got: {post.json()}"
         )
-        issues_str = " ".join(str(i) for i in body["issues"])
-        assert agent_id in issues_str, (
-            f"issues should reference missing agent {agent_id!r}; "
-            f"got {body['issues']!r}"
+
+        # Once the graph is gone nothing references the agent.
+        rm_graph = await client.delete(f"/v1/graphs/{graph_id}")
+        assert rm_graph.status_code == 204, rm_graph.text
+        rm = await client.delete(f"/v1/agents/{agent_id}")
+        assert rm.status_code == 204, (
+            f"DELETE Agent should succeed once no graph names it; "
+            f"got {rm.status_code}: {rm.text}"
         )
     finally:
         await client.delete(f"/v1/graphs/{graph_id}")
-        # agent already deleted (the body of the test)
+        await client.delete(f"/v1/agents/{agent_id}")
         await client.delete(f"/v1/llm_providers/{provider_id}")
 
 

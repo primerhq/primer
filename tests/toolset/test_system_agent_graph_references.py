@@ -135,3 +135,37 @@ async def test_an_ended_session_and_a_self_reference_do_not_block_the_graph_for_
     is_error, _ = await _call(toolset, "delete_graph", id="g-1")
 
     assert not is_error
+
+
+# ---- the descriptors tell an agent before it acts -------------------------------------------------------------------------------
+
+
+async def _description(toolset, tool_id: str) -> str:
+    descriptions = {tool.id: tool.description async for tool in toolset.list_tools()}
+    return descriptions[tool_id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool_id,blockers",
+    [
+        ("delete_agent", ("agent node", "session that is not ended", "trigger subscription")),
+        ("delete_graph", ("sub-graph node", "session that is not ended", "trigger subscription")),
+    ],
+)
+async def test_the_delete_descriptor_names_the_refusal_and_what_blocks(world, tool_id: str, blockers: tuple[str, ...]) -> None:
+    _, toolset, _ = world
+
+    text = await _description(toolset, tool_id)
+
+    assert "in_use_by" in text and "type=conflict" in text, "the descriptor must say the delete can be refused"
+    for blocker in blockers:
+        assert blocker in text, f"{tool_id}: the descriptor does not name {blocker!r}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_id", ["delete_collection", "delete_toolset", "update_agent", "update_graph", "get_agent"])
+async def test_other_tools_do_not_claim_that_refusal(world, tool_id: str) -> None:
+    _, toolset, _ = world
+
+    assert "session that is not ended" not in await _description(toolset, tool_id)
