@@ -122,7 +122,7 @@ def test_every_model_profile_body_in_the_docs_is_a_model_profile(doc: Path) -> N
 
 
 def test_the_docs_show_a_model_profile_body_at_all() -> None:
-    total = sum(len(_profile_problems(doc.read_text(encoding="utf-8"))) + _count_profile_bodies(doc.read_text(encoding="utf-8")) for doc in AGENT_DOCS)
+    total = sum(_count_profile_bodies(doc.read_text(encoding="utf-8")) for doc in AGENT_DOCS)
     assert total >= 1, "no ModelProfile body in docs/agents/; the agents doc is meant to show how to create one"
 
 
@@ -149,3 +149,11 @@ def test_a_block_that_is_not_json_and_a_model_that_is_not_an_agents_are_skipped(
     text = '```json\n{"id": "a", ...}\n```\n```json\n{"model": {"temperature": 1}}\n```'
 
     assert _agent_model_problems(text) == [] and _whole_agent_problems(text) == []
+
+
+def test_a_profile_body_is_checked_too() -> None:
+    valid = '```json\n{"id": "p--m", "description": "d", "provider_id": "p", "model_name": "m", "context_length": 1000}\n```'
+    invalid = valid.replace('"context_length": 1000', '"context_length": 0')
+
+    assert _profile_problems(valid) == []
+    assert len(_profile_problems(invalid)) == 1
