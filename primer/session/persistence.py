@@ -993,7 +993,12 @@ def translate_stream_event(
             node_id=node_id,
             created_at=now,
         )
-        return _after_the_partial_output(error_record, state, delta_sink, turn_no) if event.fatal else error_record
+        if not event.fatal:
+            return error_record
+        # A failure scoped to a node (a graph fan-out names it) ends THAT node's stream only: a healthy parallel sibling keeps its
+        # buffers and its live part, and flushes them at its own Done or tool call. Unscoped (the agent-only path, or the run itself
+        # failing) it ends every stream.
+        return _after_the_partial_output(error_record, state, delta_sink, turn_no, node_id=node_id if node_id is not None else _EVERY_NODE)
 
     # All other events (StreamStart, ToolCallDelta, MediaDelta,
     # ExtendedEvent without _ExecutorToolResult / _GraphNodeEvent) — silently
@@ -1001,19 +1006,25 @@ def translate_stream_event(
     return None
 
 
+# "Every node" for ``flush_partial_output``: ``None`` is a real node id (the agent-only path), so "no filter" needs its own marker.
+_EVERY_NODE: Any = object()
+
+
 def _after_the_partial_output(
     record: "SessionMessageRecord",
     state: "_CoalesceState",
     delta_sink: "_DeltaSink | None",
     turn_no: int,
+    node_id: "str | None | object" = _EVERY_NODE,
 ) -> "SessionMessageRecord | list[SessionMessageRecord]":
     """``record`` preceded by whatever the turn had streamed and not yet written, or alone when nothing is buffered.
 
     A terminal ERROR reaches neither a tool call nor ``Done``, the only places the coalesce buffers become records, so without this the
     answer a model streamed before it died existed only in the live view and vanished on refresh. The text lands BEFORE the error, as it
-    does before a ``cancelled`` record (the caller of ``flush_partial_output`` on a Stop or Cancel).
+    does before a ``cancelled`` record (the caller of ``flush_partial_output`` on a Stop or Cancel). ``node_id`` limits the flush to one
+    node's buffers (a node-scoped failure); the default, ``_EVERY_NODE``, drains them all.
     """
-    partial = flush_partial_output(state, delta_sink=delta_sink, turn_no=turn_no)
+    partial = flush_partial_output(state, delta_sink=delta_sink, turn_no=turn_no, node_id=node_id)
     return [*partial, record] if partial else record
 
 
@@ -1022,23 +1033,37 @@ def flush_partial_output(
     *,
     delta_sink: "_DeltaSink | None" = None,
     turn_no: int = 0,
+    node_id: "str | None | object" = _EVERY_NODE,
 ) -> list[SessionMessageRecord]:
-    """Drain the coalesce buffers into records when a turn is cut short (Stop or Cancel).
+    """Drain the coalesce buffers into records when a turn is cut short (Stop, Cancel or a failure).
 
     Text and reasoning are coalesced and only become a durable record at a tool call
-    (``ToolCallEnd``) or at ``Done``. A turn stopped mid-answer reaches neither, so what
+    (``ToolCallEnd``) or at ``Done``. A turn stopped or failed mid-answer reaches neither, so what
     the model had already streamed lived only in the live tap and vanished on refresh.
-    This turns whatever is buffered, for every node, into the same REASONING /
-    ASSISTANT_TOKEN records those flush points produce (thought before answer, as there),
-    and closes the live parts so the client stops showing them as still streaming. The
-    caller appends the records, then the CANCELLED record that explains why they end there.
+    This turns whatever is buffered into the same REASONING / ASSISTANT_TOKEN records those
+    flush points produce (thought before answer, as there), and closes the live parts so the
+    client stops showing them as still streaming. The caller appends the records, then the
+    CANCELLED or ERROR record that explains why they end there.
+
+    By default that is every node's buffers: the turn is over. ``node_id`` limits it to ONE
+    node's (``None`` names the agent-only path's single bucket) for a failure that is that
+    node's alone: a healthy parallel sibling keeps its buffers and its live part and flushes
+    them itself, at its own Done or tool call, instead of having its answer split in two.
+
+    The same translator serves a delegated (subagent) run, through ``DelegationRecorder``, which
+    keeps a coalesce state of its own: a subagent's fatal Error drains THAT state ahead of its
+    Error record and cannot reach the parent turn's buffers. The turn-level exits
+    (``_make_partial_output_durable`` in dispatch) flush only the parent's state.
 
     ``last_assistant_token`` is deliberately NOT set: it feeds the final-result relay of a
     turn that completed, and a stopped turn has no final result.
     """
     now = _now_utc()
     records: list[SessionMessageRecord] = []
-    node_ids = list(dict.fromkeys([*state.reasoning_buffers, *state.text_buffers]))
+    if node_id is _EVERY_NODE:
+        node_ids = list(dict.fromkeys([*state.reasoning_buffers, *state.text_buffers]))
+    else:
+        node_ids = [node_id] if node_id in state.reasoning_buffers or node_id in state.text_buffers else []
     for node_id in node_ids:
         thought = state.reasoning_buffers.pop(node_id, "")
         if thought:
