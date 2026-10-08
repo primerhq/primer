@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import ssl
-import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -150,10 +149,19 @@ async def test_a_real_aiohttp_connector_error_is_retried(monkeypatch, build) -> 
 
 @BUILDS
 async def test_a_runtime_that_is_already_up_is_connected_once_without_waiting(monkeypatch, build) -> None:
+    """Proved structurally, not by the clock: a build that waits has to go through ``asyncio.sleep`` (the pause between
+    attempts, or the pod-phase poll), so a recorder on it that stays empty means the build never entered a wait."""
     script = _use(monkeypatch, _Script(None))
-    started = time.monotonic()
+    real_sleep = asyncio.sleep
+    sleeps: list[float] = []
+
+    async def recording_sleep(delay, *args, **kwargs):
+        sleeps.append(delay)
+        return await real_sleep(delay, *args, **kwargs)
+
+    monkeypatch.setattr(k8s_backend.asyncio, "sleep", recording_sleep)
     await _bounded(build, _backend())
-    assert len(script.made) == 1 and time.monotonic() - started < 0.5
+    assert len(script.made) == 1 and sleeps == [], f"the build waited: sleeps {sleeps}"
 
 
 # ---- what is NOT retried ------------------------------------------------------------------------------------------------------
@@ -192,13 +200,11 @@ async def test_a_runtime_that_never_listens_fails_within_the_deadline_and_says_w
     monkeypatch.setattr(k8s_backend, "_RUNTIME_READY_TIMEOUT_S", 0.3)
     script = _use(monkeypatch, _Script(REFUSED))
     backend = _backend()
-    started = time.monotonic()
 
+    # Boundedness is proved by ``_bounded``: an unbounded wait raises its TimeoutError, not the ConfigError expected here.
     with pytest.raises(ConfigError) as raised:
         await _bounded(build, backend)
 
-    elapsed = time.monotonic() - started
-    assert elapsed < 2.0, f"the wait is not bounded: {elapsed:.1f}s"
     message = str(raised.value)
     assert "ws-1" in message and "did not accept a connection within 0.3s" in message
     assert "Connect call failed" in message and "5959" in message, "the last error must be in the message"
