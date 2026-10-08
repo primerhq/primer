@@ -143,7 +143,8 @@ function SH_nestSubagentRows(rows) {
 
 // The run a call or a result belongs to, as the key that pairs them: a delegated record carries its run's id; a record from before run ids carries only the
 // delegating call's raw id; the parent turn's own records carry neither. The scoped call id alone cannot pair them: the recorder numbers ids per run, so a child's call
-// and its parent's are both x:tool:1:1 (review of #575, round 2).
+// and its parent's are both x:tool:1:1 (review of #575, round 2). A delegated record that names no run and no delegating call belongs to the parent's scope here (""), where
+// SA_failureScope (session-adapter.jsx) gives it a bucket of its own: that one keeps unattributed failures from folding into the parent's, this one pairs a call with a result.
 function SH_callScope(payload) {
   if (payload.delegate_run_id) return payload.delegate_run_id;
   if (payload.delegated && payload.delegate_tool_call_id) return "call:" + payload.delegate_tool_call_id;
@@ -171,15 +172,23 @@ function SH_resultForCall(resultsByCallId, row) {
   return id != null ? resultsByCallId[SH_callScope(payload) + "|" + id] || null : null;
 }
 
-// True when a failed call's error output quotes this notice's own words: the call ended ON this notice. A failed invoke_agent answers
-// {"type", "message": "subagent 'x' LLM stream failed: <the stream error's message>"} (primer/toolset/system.py), so the stream error's words are in it.
+// True when a failed call's error output ENDS with this notice's own words: the call ended ON this notice. A failed invoke_agent answers
+// {"type", "message": "subagent 'x' LLM stream failed: <the stream error's message>"} (primer/toolset/system.py) and the resume path
+// {"error": "subagent LLM stream failed: <the stream error's message>"} (primer/worker/frames.py), so the stream error's words END the text, at a word boundary.
+// Anywhere else in the text they are just words: a short notice ("timeout") inside an unrelated failure did not end that call.
 function SH_callQuotesNotice(callResult, notice) {
-  var message = notice && notice.payload && notice.payload.message;
+  var message = notice && notice.payload && typeof notice.payload.message === "string" ? notice.payload.message.trim() : "";
   var output = callResult && callResult.payload && callResult.payload.output;
   if (!message || typeof output !== "string") return false;
   var quoted = output;
-  try { quoted = JSON.parse(output).message || output; } catch (_e) { quoted = output; }
-  return String(quoted).indexOf(message) >= 0 || output.indexOf(message) >= 0;
+  try {
+    var body = JSON.parse(output);
+    if (typeof body === "string") quoted = body;
+    else if (body && typeof body === "object") quoted = body.message || body.error || output;
+  } catch (_e) { quoted = output; }
+  quoted = String(quoted).trim();
+  var start = quoted.length - message.length;
+  return start >= 0 && quoted.slice(start) === message && (start === 0 || !/\w/.test(quoted.charAt(start - 1)));
 }
 
 // UX reconcile wave 2 (audit A item 2): a short local-time label for a

@@ -321,7 +321,8 @@ function SA_isBareTerminalError(rec) {
 
 // Whose failure an error row is: the PARENT turn's own (null), or one subagent run's. A subagent's records are drawn inside its own block
 // and carry payload.delegated (plus delegate_run_id, or delegate_tool_call_id on records written before runs had ids). Folding across the two
-// would make a turn whose subagent and parent hit the same provider error fail with no card of its own at the top level.
+// would make a turn whose subagent and parent hit the same provider error fail with no card of its own at the top level. Not SH_callScope (shell-turns.js): that one
+// pairs a call with its result and puts a delegated record with neither id in the parent's scope, where a failure with neither id needs a bucket of its own.
 function SA_failureScope(rec) {
   var p = rec.payload || {};
   if (!p.delegated) return null;
