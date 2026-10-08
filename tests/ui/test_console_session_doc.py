@@ -1967,6 +1967,55 @@ def test_the_error_card_renders_the_view_and_its_detail():
     assert 'className="nv-turn-error-detail"' in card
 
 
+def _notice(state: str, message="Provider hiccup", code="server_error") -> dict:
+    return {"kind": "retry_notice", "noticeState": state, "label": message, "payload": {"message": message, "code": code, "fatal": False}}
+
+
+def test_a_retry_notice_is_worded_for_what_the_turn_did_next(function_ctx):
+    """A non-fatal stream Error is not a failure (ticket 01a11bcc): it says the model reported a problem, and whether the turn went on."""
+    import json
+
+    ctx = function_ctx("NV_noticeView")
+    views = {st: _call(ctx, "NV_noticeView(" + json.dumps(_notice(st)) + ")") for st in ("retrying", "recovered", "ended")}
+    assert views["retrying"]["text"] == "The model reported a problem; the turn is continuing."
+    assert views["recovered"]["text"] == "The model reported a problem and then carried on."
+    assert views["ended"]["text"] == "The model reported a problem; nothing followed it before the turn ended."
+    assert len({v["text"] for v in views.values()}) == 3
+    for view in views.values():
+        assert view["detail"] == "Provider hiccup", "the provider's own words stay as the detail"
+        assert "failed" not in view["text"].lower() and "stopped" not in view["text"].lower(), "a notice never reads as a failure"
+
+
+def test_a_retry_notice_without_words_has_no_detail_and_an_unknown_state_reads_as_ended(function_ctx):
+    import json
+
+    ctx = function_ctx("NV_noticeView")
+    bare = {"kind": "retry_notice", "noticeState": "retrying", "label": "", "payload": {"fatal": False}}
+    assert _call(ctx, "NV_noticeView(" + json.dumps(bare) + ")")["detail"] is None
+    odd = _call(ctx, "NV_noticeView(" + json.dumps(_notice("something-new")) + ")")
+    assert odd["text"].startswith("The model reported a problem")
+
+
+def test_the_retry_notice_is_a_quiet_line_and_not_a_red_alert_card():
+    branch = DOC[DOC.index('if (row.kind === "retry_notice") {'):DOC.index('if (row.kind === "error") {')]
+    assert 'className="nv-turn-note"' in branch and "data-state={row.noticeState}" in branch
+    assert "NV_noticeView(row)" in branch
+    assert "role=" not in branch, "a retry notice is not announced as an alert"
+    assert "nv-turn-error" not in branch and "nv-trace-open" not in branch
+
+
+def test_the_retry_notice_is_styled_amber_while_it_may_still_recover_and_grey_once_it_has():
+    css = (ROOT / "ui" / "styles.css").read_text(encoding="utf-8")
+
+    def rule(selector: str) -> str:
+        start = css.index(selector + " {")
+        return css[start:css.index("}", start)]
+
+    assert "--danger" not in rule(".nv-turn-note"), "it must not borrow the failure colour"
+    assert "--amber" in rule('.nv-turn-note[data-state="retrying"]')
+    assert "opacity" in rule('.nv-turn-note[data-state="recovered"]')
+
+
 def test_the_header_meter_exists_only_when_there_is_usage_to_show():
     """A4: a session with no usage drew an unlabelled empty grey bar in its header, which reads as a stuck progress bar."""
     header = DOC[DOC.index("function NV_SessionHeader"):DOC.index("function NV_Thought")]
