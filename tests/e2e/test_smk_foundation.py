@@ -8,6 +8,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from tests._support.model_profiles import agent_model, seed_llm_provider
 from tests._support.restart import restart_server, under_bringup
 from tests._support.smk import smk
 
@@ -98,10 +99,24 @@ async def test_persistence_survives_restart(authed_client, base_url, unique_suff
     if not under_bringup():
         pytest.skip("restart persistence requires the bringup-managed server")
     aid = f"persist-{unique_suffix}"
-    await authed_client.post(
-        "/v1/agents",
-        json={"id": aid, "description": "persist", "model": {"profile_id": "p--m"}, "tools": []},
+    pid = f"p-persist-{unique_suffix}"
+    # The agent must name a STORED profile (the create is refused otherwise, A-09), so a provider that serves one model gives it one.
+    seeded = await seed_llm_provider(
+        authed_client,
+        {
+            "id": pid,
+            "provider": "openchat",
+            "models": [{"name": "m", "context_length": 8192}],
+            "config": {"url": "http://127.0.0.1:1/v1", "flavor": "lmstudio"},
+            "limits": {"max_concurrency": 1},
+        },
     )
+    assert seeded.status_code in (200, 201), seeded.text
+    created = await authed_client.post(
+        "/v1/agents",
+        json={"id": aid, "description": "persist", "model": agent_model(pid, "m"), "tools": []},
+    )
+    assert created.status_code == 201, created.text
     restart_server(base_url)
     got = await authed_client.get(f"/v1/agents/{aid}")
     assert got.status_code == 200
