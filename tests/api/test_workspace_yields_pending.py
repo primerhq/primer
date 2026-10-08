@@ -1035,6 +1035,16 @@ class TestAttentionRowsDescribeTheCall:
         assert row.get("approval") is None
 
     @pytest.mark.asyncio
+    async def test_an_approval_row_carries_who_may_decide_it(self, client, sp) -> None:
+        spec = {"kind": "users", "users": ["bob"], "roles": []}
+        state = _approval_state("tc-8", {"id": "tc-8", "name": "bash", "arguments": {"command": "ls"}})
+        state["yielded"]["resume_metadata"]["approvers"] = spec
+        row = await self._row(client, sp, "sess-d-8", state)
+        assert row["approvers"] == spec
+        open_row = await self._row(client, sp, "sess-d-9", _approval_state("tc-9", {"id": "tc-9", "name": "bash", "arguments": {}}))
+        assert open_row["approvers"] is None, "no spec means anyone"
+
+    @pytest.mark.asyncio
     async def test_a_question_row_carries_the_question(self, client, sp) -> None:
         state = _approval_state("tc-5", None, tool_name="ask_user")
         state["yielded"]["resume_metadata"]["prompt"] = "Which environment should I deploy to?"
@@ -1094,3 +1104,39 @@ class TestApprovalPreview:
     def test_arguments_that_are_not_a_mapping_are_shown_as_text(self) -> None:
         got = self._preview({"name": "t", "arguments": "raw string"})
         assert got == {"tool_name": "t", "arguments": "raw string", "truncated": False}
+
+    def test_secret_looking_arguments_are_redacted_and_the_preview_says_something_was_left_out(self) -> None:
+        """The preview shows in every console's rail without anyone asking; a key or a header must not (review of PR 503)."""
+        got = self._preview({"name": "http_get", "arguments": {
+            "url": "https://x.test/a", "api_key": "sk-123", "Authorization": "Bearer abc", "password": "hunter2",
+            "client_secret": "s", "access_token": "t", "private-key": "k", "credentials": "c", "user": "ana",
+        }})
+        assert got["arguments"] == (
+            "url=https://x.test/a, Authorization=<redacted>, access_token=<redacted>, api_key=<redacted>, "
+            "client_secret=<redacted>, credentials=<redacted>, password=<redacted>, private-key=<redacted>, user=ana"
+        )
+        assert got["truncated"] is True
+        for leaked in ("sk-123", "Bearer abc", "hunter2", "abc"):
+            assert leaked not in got["arguments"]
+
+    def test_secrets_nested_inside_a_value_are_redacted_too(self) -> None:
+        got = self._preview({"name": "http_get", "arguments": {"headers": {"Authorization": "Bearer abc", "accept": "json"}}})
+        assert got["arguments"] == 'headers={"Authorization": "<redacted>", "accept": "json"}'
+        assert got["truncated"] is True
+
+    def test_arguments_sent_as_a_json_string_get_the_same_treatment(self) -> None:
+        got = self._preview({"name": "t", "arguments": '{"path": "p", "password": "x", "content": "abc"}'})
+        assert got["arguments"] == "path=p, password=<redacted>, content=<3 chars>" and got["truncated"] is True
+
+    def test_arguments_that_are_not_json_at_all_are_shown_as_text_after_the_same_cut(self) -> None:
+        got = self._preview({"name": "t", "arguments": "not { json"})
+        assert got == {"tool_name": "t", "arguments": "not { json", "truncated": False}
+
+    def test_newlines_and_tabs_collapse_so_a_preview_is_one_line(self) -> None:
+        got = self._preview({"name": "bash", "arguments": {"command": "echo a\nrm -rf /\t&& ls"}})
+        assert "\n" not in got["arguments"] and "\t" not in got["arguments"]
+        assert got["arguments"] == "command=echo a rm -rf / && ls"
+
+    def test_non_ascii_text_is_kept_not_escaped(self) -> None:
+        got = self._preview({"name": "t", "arguments": {"label": "caf\u00e9", "meta": {"city": "Z\u00fcrich"}}})
+        assert got["arguments"] == 'label=caf\u00e9, meta={"city": "Z\u00fcrich"}'

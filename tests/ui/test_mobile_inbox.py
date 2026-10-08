@@ -89,10 +89,11 @@ def test_an_approval_card_names_the_tool_and_its_arguments_and_can_be_decided_in
     assert view["canApprove"] is True and view["canDeny"] is True
 
 
-def test_an_approval_that_does_not_say_what_it_approves_gets_no_inline_approve(inbox) -> None:
-    """Never blind: with nothing to show, the card says to open it. Deny stays one tap, because refusing is the safe default."""
+def test_an_approval_that_does_not_say_what_it_approves_gets_no_inline_decision(inbox) -> None:
+    """Never blind: with nothing to show, the card says to open it. Nor is Deny offered: a card with no ``approval`` may not be a real
+    ``_approval`` gate at all (a graph park whose primary gate is something else), and a Deny aimed at it would answer a misleading 404."""
     view = inbox.call("NV_mobileInboxView(" + json.dumps(_item("approval", approval=None)) + ")")
-    assert view["canApprove"] is False and view["canDeny"] is True
+    assert view["canApprove"] is False and view["canDeny"] is False
     assert "approval" in view["line"].lower() and view["args"] == ""
 
 
@@ -100,6 +101,35 @@ def test_an_approval_with_no_call_id_cannot_be_decided_inline_at_all(inbox) -> N
     """A decision names a call; without its id the card cannot say which call it decides."""
     view = inbox.call("NV_mobileInboxView(" + json.dumps(_item("approval", approval=_WRITE, tool_call_id=None)) + ")")
     assert view["canApprove"] is False and view["canDeny"] is False
+
+
+def _who(username: str = "ana", role: str = "user") -> str:
+    return json.dumps({"username": username, "role": role})
+
+
+def test_an_inline_decision_is_hidden_from_someone_who_may_not_decide_it(inbox) -> None:
+    """The route answers 403 approver_mismatch for a non-approver; the card does not offer a button that can only fail."""
+    only_bob = {"kind": "users", "users": ["bob"], "roles": []}
+    item = json.dumps(_item("approval", approval=_WRITE, approvers=only_bob))
+    mine = inbox.call("NV_mobileInboxView(" + item + ", " + _who("ana") + ")")
+    assert mine["canApprove"] is False and mine["canDeny"] is False and mine["notApprover"] is True
+    assert "approver" in mine["note"].lower()
+    bob = inbox.call("NV_mobileInboxView(" + item + ", " + _who("bob") + ")")
+    assert bob["canApprove"] is True and bob["canDeny"] is True and bob["notApprover"] is False
+
+
+def test_the_approver_rule_mirrors_the_servers(inbox) -> None:
+    """ApproverSpec.allows: admins always; ``anyone`` and no spec admit everyone; ``roles`` by role; ``users`` by name."""
+    def allowed(approvers, username="ana", role="user") -> bool:
+        item = json.dumps(_item("approval", approval=_WRITE, approvers=approvers))
+        return inbox.call("NV_mobileInboxView(" + item + ", " + _who(username, role) + ")")["canApprove"]
+
+    assert allowed(None) and allowed({"kind": "anyone"})
+    assert allowed({"kind": "users", "users": ["bob"]}, role="admin"), "an admin always passes"
+    assert allowed({"kind": "roles", "roles": ["reviewer"]}, role="reviewer")
+    assert not allowed({"kind": "roles", "roles": ["reviewer"]}, role="user")
+    assert allowed({"kind": "users", "users": ["ana"]}) and not allowed({"kind": "users", "users": ["bob"]})
+    assert allowed({"kind": "weird"}), "a malformed stored spec fails open, as the server does"
 
 
 def test_a_question_card_shows_the_question(inbox) -> None:
@@ -148,6 +178,15 @@ def test_deciding_a_call_that_has_moved_on_says_so_and_refreshes_instead_of_deci
     assert len(got["toasts"]) == 1 and "moved on" in got["toasts"][0][0] and "review" in got["toasts"][0][0].lower()
     assert got["resolved"] == 1, "the stale card is refreshed away"
     assert [c[0] for c in got["calls"]] == ["approve"], "and no other call is approved in its place"
+
+
+def test_a_409_is_treated_as_a_card_that_moved_on_too(inbox) -> None:
+    """The respond route answers 404 for a gate that is no longer pending; a 409 (the session changed state under the call) means the
+    same to the person holding the card, so it gets the same words and the same refresh."""
+    inbox.set(fail={"status": 409, "detail": "Session 'sess-1' changed state"})
+    got = inbox.run("NV_inboxDecide('deny', " + json.dumps(_item("approval", approval=_WRITE)) + ", toast, onResolved)")
+    assert got["result"] == {"stale": True} and got["resolved"] == 1
+    assert "moved on" in got["toasts"][0][0]
 
 
 def test_any_other_failure_is_an_error_toast_with_the_reason_and_the_request_id(inbox) -> None:
