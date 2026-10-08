@@ -177,6 +177,47 @@ class TurnLogWriter(ABC):
         """Release resources. Idempotent."""
 
 
+class BoundedTurnLogWriter(TurnLogWriter):
+    """Give every call of ``inner`` a bound, so a turn log over a dead connection cannot hold the turn's exits (ticket 01a11b58).
+
+    ``WorkspaceTurnLogWriter`` appends (and, on its first append, reads the existing file to find its seq) over the same runtime
+    connection as the message log; ``safe_append`` swallows errors but not a call that never returns. The first call that misses the
+    bound breaks this wrapper for the rest of the turn: it is logged once, and every later entry is skipped at once without touching
+    the connection (a turn log is best-effort observability, and each skipped entry would otherwise cost the bound again). Closing
+    never raises and never hangs, so a ``finally`` that closes the log cannot mask the exception it runs for. A failure that is not a
+    timeout is the inner writer's own and passes through, as it did (``safe_append`` logs it).
+    """
+
+    def __init__(self, inner: TurnLogWriter, *, timeout_s: float) -> None:
+        self._inner = inner
+        self._timeout_s = timeout_s
+        self._broken = False
+
+    async def append(self, event: TurnLogEvent) -> int:
+        if self._broken:
+            return 0
+        try:
+            async with asyncio.timeout(self._timeout_s):
+                return await self._inner.append(event)
+        except TimeoutError:
+            self._broken = True
+            logger.warning(
+                "turn_log: the workspace did not accept an entry (kind=%s) within %gs; the rest of this turn's entries are skipped",
+                getattr(event, "kind", "?"), self._timeout_s,
+            )
+            return 0
+
+    async def aclose(self) -> None:
+        try:
+            async with asyncio.timeout(self._timeout_s):
+                await self._inner.aclose()
+        except TimeoutError:
+            self._broken = True
+            logger.warning("turn_log: closing the turn log did not finish within %gs; carrying on", self._timeout_s)
+        except Exception:  # noqa: BLE001 - best-effort; a close in a finally must not mask the original exception
+            logger.exception("turn_log: closing the turn log failed; carrying on")
+
+
 class NoopTurnLogWriter(TurnLogWriter):
     """No-op writer. Default when no real writer is wired."""
 
@@ -344,6 +385,7 @@ async def safe_append(writer: TurnLogWriter, event: TurnLogEvent) -> None:
 
 __all__ = [
     "AppendLine",
+    "BoundedTurnLogWriter",
     "NoopTurnLogWriter",
     "StorageTurnLogWriter",
     "TurnLogWriter",

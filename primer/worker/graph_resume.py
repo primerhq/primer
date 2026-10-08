@@ -321,6 +321,10 @@ class _ResumeDrainTap:
         # to it, and the caller (resume_graph_from_checkpoint) already
         # has the executor in scope right where the tap is built.
         self._tool_calls_as_claims_enabled = tool_calls_as_claims_enabled
+        # The highest seq the writer had numbered when this tap disabled itself (``observe`` drops the writer on a failed append,
+        # including a workspace write that timed out). The seqs it spent are spent whether or not their records reached the log:
+        # ``finish`` still writes this back, or the row keeps the old ``last_seq`` and the next writer reuses them.
+        self._spent_seq: int | None = None
 
     @classmethod
     async def create(
@@ -405,23 +409,38 @@ class _ResumeDrainTap:
                 " disabling for the rest of this drain",
                 self._session.id,
             )
+            self._spent_seq = self._writer.last_seq
             self._writer = None
 
     async def finish(self) -> None:
-        if self._writer is None:
+        writer = self._writer
+        spent = self._spent_seq if writer is None else None
+        if writer is not None:
+            try:
+                await writer.flush()
+            except Exception:  # noqa: BLE001 - best-effort, see class docstring
+                logger.exception(
+                    "resume: failed to flush graph resume-drain tap for "
+                    "session %s",
+                    self._session.id,
+                )
+            spent = writer.last_seq
+        if spent is None:
             return
+        # Whatever the flush did, the seqs the writer numbered are spent: a row that keeps the old last_seq hands them to the next
+        # writer (duplicate seqs, and since_seq hides the new records). Re-read the row and only ADVANCE it, so the write cannot
+        # revert anything else that changed during the drain.
         try:
-            from primer.model.workspace_session import WorkspaceSession
-
-            await self._writer.flush()
             if self._pool._storage is not None:
+                from primer.model.workspace_session import WorkspaceSession
+
                 storage = self._pool._storage.get_storage(WorkspaceSession)
-                await storage.update(self._session.model_copy(
-                    update={"last_seq": self._writer.last_seq},
-                ))
+                fresh = await storage.get(self._session.id)
+                if fresh is not None and spent > fresh.last_seq:
+                    await storage.update(fresh.model_copy(update={"last_seq": spent}))
         except Exception:  # noqa: BLE001 - best-effort, see class docstring
             logger.exception(
-                "resume: failed to flush graph resume-drain tap for "
+                "resume: failed to persist last_seq for graph resume-drain tap of "
                 "session %s",
                 self._session.id,
             )
