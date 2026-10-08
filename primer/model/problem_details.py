@@ -45,4 +45,42 @@ class ProblemDetails(BaseModel):
     )
 
 
-__all__ = ["ProblemDetails"]
+def without_traceback(holder: Any) -> Any:
+    """Return ``holder`` with ``extensions.traceback`` removed.
+
+    The one place every reader of a served error record goes through:
+    ERROR records and turn-log FAILED events written before the envelope
+    stopped carrying a traceback still hold one on disk, and a traceback
+    exposes server paths and internals to any reader of the session (the
+    server log keeps it under the record's ``error_id``).
+
+    ``holder`` is a messages ERROR ``payload`` or a turn-log ``error``
+    dict. Returns it unchanged (same object) when there is nothing to
+    strip, otherwise a shallow copy, so a caller's record is never mutated.
+    """
+    if not isinstance(holder, dict):
+        return holder
+    ext = holder.get("extensions")
+    if not isinstance(ext, dict) or "traceback" not in ext:
+        return holder
+    return {
+        **holder,
+        "extensions": {k: v for k, v in ext.items() if k != "traceback"},
+    }
+
+
+def record_without_traceback(record: Any) -> Any:
+    """:func:`without_traceback` over a raw record dict's ``payload`` (a
+    messages.jsonl row) and ``error`` (a turns.jsonl row)."""
+    if not isinstance(record, dict):
+        return record
+    out = record
+    for key in ("payload", "error"):
+        if key in out:
+            cleaned = without_traceback(out[key])
+            if cleaned is not out[key]:
+                out = {**out, key: cleaned}
+    return out
+
+
+__all__ = ["ProblemDetails", "record_without_traceback", "without_traceback"]

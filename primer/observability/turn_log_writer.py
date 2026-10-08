@@ -127,7 +127,14 @@ def to_problem_details(exc: BaseException) -> ProblemDetails:
                 extensions={
                     "exception_class": type(exc).__name__,
                     "error_id": error_id,
-                    **(getattr(exc, "problem_extensions", None) or {}),
+                    # Served with the envelope: string values get the same
+                    # URL-credential redaction as the detail.
+                    **{
+                        k: redact_url_secrets(v) if isinstance(v, str) else v
+                        for k, v in (
+                            getattr(exc, "problem_extensions", None) or {}
+                        ).items()
+                    },
                 },
             )
     _log_unexpected(error_id, exc)
