@@ -481,9 +481,11 @@ async def post_cancel_yielded_tool(
 
     An ``_approval`` gate is the exception to "tool-agnostic": its cancel payload is classified as a REJECTION, so cancelling it IS
     deciding it. It is therefore judged by the same approver check as the respond route (403 ``approver_mismatch`` for a user the gate's
-    stamped spec does not admit), before anything is published. The spec is read from the gate resolved by ``tool_call_id`` (the pending
-    entry that carries the stamp), NOT from the top-level ``yielded`` projection, which for a graph park whose primary is a ToolCall
-    node's approval holds ``original_call`` only. A gate that cannot be resolved is admin-only.
+    stamped spec does not admit), before anything is published. The spec is read from the pending entry resolved by ``tool_call_id`` (the one
+    that carries the stamp), NOT from the top-level ``yielded`` projection, which for a graph park whose primary is a ToolCall node's
+    approval holds ``original_call`` only. A graph park's top-level ``tool_name`` is ``"_approval"`` whatever its primary is, so only an
+    entry whose own kind is ``_approval`` is judged (an agent's ``ask_user`` yield or an external wait is cancelled by its owner as
+    before). A park that claims to be an approval but resolves to no entry is admin-only.
 
     Distinct from cancel-session (§9.2 of the spec): the tool's
     resume hook IS called with a :class:`YieldCancelled` payload and
@@ -516,8 +518,15 @@ async def post_cancel_yielded_tool(
             f"Session {session_id!r} park is missing event_key"
         )
     if yielded.get("tool_name") == "_approval":
-        gate = resolve_pending_gate(blob, tool_call_id=tool_call_id, kind="_approval")
-        enforce_approvers(gate["resume_metadata"] if gate is not None else ADMIN_ONLY_METADATA, user)
+        # A graph park's top-level tool_name is "_approval" WHATEVER its primary is (`_build_pending_park_yield` hard-codes it), so
+        # the real kind is on the pending entry: resolve the entry by tool_call_id alone (the enumeration order is the primary pick's,
+        # so this is the entry whose key is published below) and judge only an approval. An unresolvable one cannot be shown to be
+        # anything but an approval, so it is admin-only.
+        gate = resolve_pending_gate(blob, tool_call_id=tool_call_id)
+        if gate is None:
+            enforce_approvers(ADMIN_ONLY_METADATA, user)
+        elif gate["kind"] == "_approval":
+            enforce_approvers(gate["resume_metadata"], user)
     payload = make_cancelled_payload(reason=body.reason)
     await event_bus.publish(event_key, payload)
     # An _external park additionally resolves its audit row so the
