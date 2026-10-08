@@ -16,16 +16,18 @@ A lost lease is deliberately not one of them: the session may belong to another 
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
 import pytest
 
 import primer.session.dispatch as dispatch
-from primer.model.chat import Error, ReasoningDelta, TextDelta, ToolCallEnd, ToolCallStart, TurnStreamFailure
+from primer.model.chat import Done, Error, ReasoningDelta, TextDelta, ToolCallEnd, ToolCallStart, TurnStreamFailure
 from primer.model.workspace_session import SessionMessageKind, SessionStatus, WorkspaceSession
 from primer.session.dispatch import SessionDispatchDeps, run_one_session_turn
 from primer.session.persistence import _CoalesceState, translate_stream_event
+from primer.tap.delta import KIND_REASONING, KIND_TEXT, part_id
 from tests.session.test_dispatch import (  # noqa: F401  (fixtures are used by name)
     FakeExecutor,
     FakeWorkspaceIO,
@@ -195,3 +197,212 @@ def test_a_graph_runtime_error_flushes_every_node_ahead_of_its_own_record() -> N
     assert isinstance(out, list)
     assert [r.kind for r in out] == [SessionMessageKind.ASSISTANT_TOKEN, SessionMessageKind.ASSISTANT_TOKEN, SessionMessageKind.ERROR]
     assert sorted(r.payload["text"] for r in out[:2]) == ["from a", "from b"]
+
+
+# --- a node-scoped failure belongs to that node alone ----------------------------------------------------------------------------
+
+
+class _Sink:
+    """The delta sink's two calls the translator makes, recorded."""
+
+    def __init__(self) -> None:
+        self.deltas: list[tuple[str, str]] = []
+        self.closed: list[str] = []
+
+    def on_delta(self, pid: str, kind: str, delta: str) -> None:
+        self.deltas.append((pid, delta))
+
+    def close(self, pid: str) -> None:
+        self.closed.append(pid)
+
+
+def _two_nodes_streaming(sink: _Sink) -> _CoalesceState:
+    state = _CoalesceState()
+    for node, text in (("node-a", "from a"), ("node-b", "from b")):
+        assert translate_stream_event(TextDelta(text=text, index=0), state, node_id=node, delta_sink=sink, turn_no=1) is None
+    return state
+
+
+def test_a_node_scoped_fatal_error_flushes_only_the_failing_nodes_buffers() -> None:
+    """Review of PR 511: the first version flushed and closed EVERY node's buffers, so a healthy parallel sibling (or a fan-out branch
+    under collect or drain_then_fail) had its answer split into two records and its live view frozen by a failure that was not its own."""
+    sink = _Sink()
+    state = _two_nodes_streaming(sink)
+
+    out = translate_stream_event(Error(code="server_error", message="boom", fatal=True), state, node_id="node-a", delta_sink=sink, turn_no=1)
+
+    assert isinstance(out, list) and [r.kind for r in out] == [SessionMessageKind.ASSISTANT_TOKEN, SessionMessageKind.ERROR]
+    assert [r.node_id for r in out] == ["node-a", "node-a"] and out[0].payload["text"] == "from a"
+    assert state.text_buffers == {"node-b": "from b"}, "the sibling's buffer is untouched"
+    assert part_id("node-a", KIND_TEXT, 1) in sink.closed, "the failing node's live part is closed"
+    assert part_id("node-b", KIND_TEXT, 1) not in sink.closed and part_id("node-b", KIND_REASONING, 1) not in sink.closed, (
+        "the sibling's live part must stay open: its answer is still streaming"
+    )
+
+
+def test_the_healthy_sibling_keeps_its_answer_in_one_record_after_the_other_node_failed() -> None:
+    sink = _Sink()
+    state = _two_nodes_streaming(sink)
+    translate_stream_event(Error(code="server_error", message="boom", fatal=True), state, node_id="node-a", delta_sink=sink, turn_no=1)
+
+    assert translate_stream_event(TextDelta(text=" and more", index=0), state, node_id="node-b", delta_sink=sink, turn_no=1) is None
+    out = translate_stream_event(Done(stop_reason="stop", raw_reason="stop"), state, node_id="node-b", delta_sink=sink, turn_no=1)
+
+    records = out if isinstance(out, list) else [out]
+    tokens = [r for r in records if r.kind == SessionMessageKind.ASSISTANT_TOKEN]
+    assert [t.payload["text"] for t in tokens] == ["from b and more"], "one record with the whole answer, not two halves"
+    assert part_id("node-b", KIND_TEXT, 1) in sink.closed, "its live part closes at its own Done"
+
+
+def test_an_unscoped_fatal_error_still_flushes_every_buffer() -> None:
+    """No node named: the agent-only path (one bucket) or a failure of the run itself, which ends every node's stream."""
+    sink = _Sink()
+    state = _two_nodes_streaming(sink)
+    out = translate_stream_event(Error(code="server_error", message="boom", fatal=True), state, delta_sink=sink, turn_no=1)
+    assert isinstance(out, list)
+    assert sorted(r.payload["text"] for r in out if r.kind == SessionMessageKind.ASSISTANT_TOKEN) == ["from a", "from b"]
+    assert not state.text_buffers
+
+
+def test_the_terminal_graph_error_still_flushes_every_node_and_closes_every_live_part() -> None:
+    from primer.graph.base import _GraphErrorEvent
+
+    sink = _Sink()
+    state = _two_nodes_streaming(sink)
+    out = translate_stream_event(_GraphErrorEvent(code="node_failed", message="boom", node_id="node-b"), state, delta_sink=sink, turn_no=1)
+    assert isinstance(out, list) and out[-1].kind == SessionMessageKind.ERROR
+    assert not state.text_buffers
+    assert {part_id("node-a", KIND_TEXT, 1), part_id("node-b", KIND_TEXT, 1)} <= set(sink.closed)
+
+
+# --- the other exits and the nits of the same review -----------------------------------------------------------------------------
+
+
+class _StreamsThenDies:
+    """Streams a partial answer, lets ``before_dying`` run (the test breaks the workspace there), then raises."""
+
+    def __init__(self, before_dying) -> None:
+        self._before_dying = before_dying
+
+    async def invoke(self, messages, **kwargs):
+        # A tool call leaves records in the writer's buffer; by the time the model dies they are older than the writer's age flush
+        # (100 ms), so the partial answer's own append is the one that flushes, and that flush is the write that can hang.
+        yield TextDelta(text="first round", index=0)
+        yield ToolCallStart(id="t1", name="x", index=0)
+        yield ToolCallEnd(id="t1", arguments={}, index=0)
+        yield TextDelta(text="the half answer", index=1)
+        await asyncio.sleep(0.25)
+        await self._before_dying()
+        raise RuntimeError("the model call blew up")
+
+
+@pytest.mark.asyncio
+async def test_a_workspace_that_hangs_on_the_partial_answer_is_given_up_on_within_the_bound_and_logged(
+    seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch, caplog,
+) -> None:
+    """The failure path's flush is bounded like the cancel path's. While the workspace's write hangs, the partial-output step gives up
+    after ``_BEST_EFFORT_IO_TIMEOUT_S`` and says so, instead of holding the exit open behind it; once the workspace answers, the
+    failure lands (the writer finishes the batch that was in flight, so the half answer may well land too: this pins the bound and the
+    line, not the loss)."""
+    monkeypatch.setattr(dispatch, "_BEST_EFFORT_IO_TIMEOUT_S", 0.2)
+    state = {"armed": False, "hung": False}
+    release = asyncio.Event()
+    real_append = fake_workspace_io.append_message_line
+
+    async def append_hanging_once_until_released(session_id: str, line: bytes) -> None:
+        if state["armed"] and not state["hung"]:
+            state["hung"] = True
+            await release.wait()
+        await real_append(session_id, line)
+
+    monkeypatch.setattr(fake_workspace_io, "append_message_line", append_hanging_once_until_released)
+
+    async def arm() -> None:
+        state["armed"] = True
+
+    async def build(_session: WorkspaceSession):
+        return _StreamsThenDies(arm)
+
+    deps = SessionDispatchDeps(storage_provider=fake_storage_provider, workspace_io=fake_workspace_io, event_bus=fake_event_bus, build_executor=build)
+    with caplog.at_level(logging.WARNING):
+        turn = asyncio.ensure_future(run_one_session_turn(_make_lease(seeded_session.id), deps))
+        try:
+            async with asyncio.timeout(5.0):
+                while not any("was not confirmed within" in r.getMessage() for r in caplog.records):
+                    await asyncio.sleep(0.02)
+            assert state["hung"], "the give-up line appeared without the write ever hanging"
+            assert "output streamed before the failure" in " | ".join(r.getMessage() for r in caplog.records)
+        finally:
+            release.set()
+        outcome = await asyncio.wait_for(turn, 10.0)
+
+    assert outcome.success is False
+    row = await fake_storage_provider.get_storage(WorkspaceSession).get(seeded_session.id)
+    assert row.status == SessionStatus.ENDED and row.ended_reason == "failed"
+    assert SessionMessageKind.ERROR in _shape(_records(fake_workspace_io, seeded_session.id))
+
+
+class _StreamsThenBlocks:
+    def __init__(self) -> None:
+        self.reached = asyncio.Event()
+
+    async def invoke(self, messages, **kwargs):
+        yield TextDelta(text="working on it", index=0)
+        self.reached.set()
+        await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_a_lost_lease_writes_none_of_the_streamed_text(
+    seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+) -> None:
+    """The heartbeat cancels with ``preempted`` when this worker lost its lease: the session may belong to another worker now, so this
+    execution must not append the half answer on its way out (the failure and Stop exits do)."""
+    from primer.model.yield_ import CANCEL_REASON_PREEMPTED
+
+    executor = _StreamsThenBlocks()
+
+    async def build(_session: WorkspaceSession):
+        return executor
+
+    deps = SessionDispatchDeps(storage_provider=fake_storage_provider, workspace_io=fake_workspace_io, event_bus=fake_event_bus, build_executor=build)
+    task = asyncio.ensure_future(run_one_session_turn(_make_lease(seeded_session.id), deps))
+    await asyncio.wait_for(executor.reached.wait(), 3.0)
+    task.cancel(CANCEL_REASON_PREEMPTED)
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 5.0)
+
+    kinds = [r["kind"] for r in _records(fake_workspace_io, seeded_session.id)]
+    assert SessionMessageKind.ASSISTANT_TOKEN not in kinds and SessionMessageKind.ERROR not in kinds
+
+
+@pytest.mark.asyncio
+async def test_a_delegated_runs_fatal_error_flushes_the_runs_own_text_and_stamps_both_records_delegated() -> None:
+    """A subagent's events go through ``DelegationRecorder`` with a coalesce state of its own: its fatal Error drains THAT state ahead of
+    the Error record (both stamped ``delegated``) and cannot touch the parent turn's buffers."""
+    from primer.session.delegation import DelegationRecorder
+
+    class _Writer:
+        def __init__(self) -> None:
+            self.records: list = []
+
+        async def append(self, record) -> int:
+            self.records.append(record)
+            return len(self.records)
+
+    class _Bus:
+        async def publish(self, key: str, payload: dict) -> None:
+            return None
+
+    writer = _Writer()
+    recorder = DelegationRecorder(writer=writer, event_bus=_Bus(), session_id="s1", turn_no=1)
+    parent = _CoalesceState()
+    parent.text_buffers[None] = "the parent's own words"
+
+    await recorder.on_event(TextDelta(text="sub says", index=0), delegate_tool_call_id="c1")
+    await recorder.on_event(Error(code="server_error", message="boom", fatal=True), delegate_tool_call_id="c1")
+
+    assert [r.kind for r in writer.records] == [SessionMessageKind.ASSISTANT_TOKEN, SessionMessageKind.ERROR]
+    assert writer.records[0].payload["text"] == "sub says"
+    assert all(r.payload["delegated"] is True and r.payload["delegate_tool_call_id"] == "c1" for r in writer.records)
+    assert parent.text_buffers == {None: "the parent's own words"}
