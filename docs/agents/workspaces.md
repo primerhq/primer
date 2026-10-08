@@ -162,8 +162,10 @@ it's called from a context with no implicit session.
   `source.kind` is `secret`. A call that sets one of them, or changes
   it from the stored value, answers `type=forbidden` unless the run
   was started by an admin (over MCP: unless the caller is an admin).
-  Keep an admin-set value unchanged and the rest of the template is
-  yours to edit. `create_workspace` refuses a `secret` file in
+  A template that already holds any of them can only be updated by
+  an admin, whatever the update changes (`type=forbidden`, "holds
+  admin-only settings"); a template without them stays yours to
+  edit. `create_workspace` refuses a `secret` file in
   `overrides.files` the same way.
 - Kubernetes overlays must stay on an allowlist, whoever calls:
   volumes are `emptyDir` or `configMap` only, mounts carry `name`,
