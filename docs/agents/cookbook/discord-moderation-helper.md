@@ -6,7 +6,8 @@ mcp_tools:
   - system::create_channel_provider
   - system::create_channel
   - system::create_agent
-  - system::set_workspace_channel_association
+  - trigger::create
+  - system::create_channel_binding
   - system::create_tool_approval_policy
   - workspaces::create_workspace
   - workspaces::list_workspace_sessions
@@ -48,7 +49,8 @@ Do not include the `Bot ` prefix in `bot_token`. Set `enable_dms: false` for a g
     "provider_id": "discord-mod",
     "provider": "discord",
     "external_id": "112233445566778899",
-    "label": "#general"
+    "label": "#general",
+    "config": { "chats": { "enabled": true } }
   }
 }
 ```
@@ -56,7 +58,7 @@ Response:
 ```json
 { "id": "general-mod" }
 ```
-`external_id` is the channel snowflake of the text channel to moderate.
+`external_id` is the channel snowflake of the text channel to moderate. `config.chats.enabled` lets messages in this room start sessions.
 
 ### 3. Create the workspace
 `workspaces::create_workspace`
@@ -67,7 +69,7 @@ Response:
 ```json
 { "id": "ws-1", "phase": "running" }
 ```
-Wait until `phase` is `running`. Thread `id` ("ws-1") into the association.
+Wait until `phase` is `running`. Thread `id` ("ws-1") into the binding below.
 
 ### 4. Create the moderator agent
 `system::create_agent`
@@ -88,19 +90,32 @@ Response:
 ```
 Instruct the agent in its prompt to skip its own messages; a pattern that matches the bot's own output creates a moderation loop.
 
-### 5. Bind the channel to the workspace
-`system::set_workspace_channel_association`
+### 5. Route every message in the channel to the moderator
+Create the `channel` trigger that anchors inbound events for the room:
+
+`trigger::create`
 ```json
 {
-  "workspace_id": "ws-1",
-  "channel_id": "general-mod"
+  "slug": "general-mod-anchor",
+  "name": "Discord #general",
+  "config": { "kind": "channel", "provider_id": "discord-mod", "channel_id": "general-mod" },
+  "enabled": true
 }
 ```
-Response:
+Then the binding that maps a matcher to an action:
+
+`system::create_channel_binding`
 ```json
-{ "ok": true, "workspace_id": "ws-1", "channel_id": "general-mod" }
+{
+  "trigger_id": "general-mod-anchor",
+  "event_matcher": { "event_type": "message.posted", "surface": "channel" },
+  "config": { "kind": "agent_fresh_session", "workspace_id": "ws-1", "agent_id": "moderator" },
+  "reply_target": "source_thread",
+  "payload_template": "{{ event.text }}",
+  "parallelism": "queue"
+}
 ```
-The association routes all session gates (`ask_user`, tool approval, `inform`) from sessions in `ws-1` to the Discord channel. Tool approval prompts for parked `delete_message` calls are delivered to Discord; all gate types forward automatically.
+Response: the created Subscription. Every message in the room starts a `moderator` session in `ws-1` (`parallelism: "queue"` gives each message its own session even while an earlier one is still running). `reply_target: "source_thread"` makes the session's gates (`ask_user`, tool approval, `inform`) forward to the Discord thread, so the approval prompt for a parked `delete_message` call is delivered there. To forward every session of the workspace to the channel regardless of how it started, also bind the workspace with `system::set_reply_binding`.
 
 ### 6. Create the required approval policy on delete_message
 `system::create_tool_approval_policy`

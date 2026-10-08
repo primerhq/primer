@@ -19,7 +19,7 @@ Every weekday at 9 AM local time, a scheduled trigger starts a fresh agent sessi
 ## Prerequisites
 - An LLM provider id for the summariser agent.
 - A workspace provider id; the template mounts or has access to the log directory and a TTL of at least 60 minutes.
-- A Slack channel provider already configured, with a channel bound to the workspace via an association that has **Forward ask_user** enabled (so the agent's `ask_user` prompt is delivered to Slack).
+- A Slack channel provider already configured, with a channel bound to the workspace by a reply binding (`system::set_reply_binding`), so the agent's `ask_user` prompt is delivered to Slack.
 
 ## Steps
 ### 1. Create the summariser agent
@@ -144,7 +144,7 @@ The fired session reaches `status: "waiting"` on the `ask_user` prompt, the summ
 - Workspace TTL must outlast the agent's longest turn. Default 30 minutes is usually fine; bump to 60 if log volume is large.
 - The Slack channel provider needs the `chat:write` and `chat:read` scopes; the OAuth flow surfaces this during provider setup.
 - Cron is evaluated in the trigger's `timezone`. Set it explicitly rather than relying on a default, and double-check the IANA value.
-- The `ask_user` prompt only reaches Slack if the workspace-channel association has **Forward ask_user** enabled.
+- The `ask_user` prompt only reaches Slack if the workspace has a reply binding to the Slack channel (`system::set_reply_binding`). There are no per-gate flags: a binding forwards every gate.
 
 ## Related
 - `triggers`, `agents`, `sessions`, `channels`, `workspaces`

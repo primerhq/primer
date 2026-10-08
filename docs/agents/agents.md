@@ -66,7 +66,7 @@ An `Agent` row carries:
 - `temperature` - optional sampling temperature; `null` defers to
   the LLM adapter's default.
 - `tools` - a list of scoped tool id strings, each of the form
-  `<toolset_id>__<tool_name>` (e.g. `system__list_files`). The runtime
+  `<toolset_id>__<tool_name>` (e.g. `system__list_agents`). The runtime
   exposes exactly the listed tools - never a whole toolset - and an
   empty list means no tools. (Workspace tools are not listed here;
   they are composed onto the agent automatically when it attaches to

@@ -41,6 +41,7 @@ def _built_in_tools() -> dict[str, frozenset[str]]:
     from primer.toolset.system import build_system_toolset
     from primer.toolset.trigger import build_trigger_toolset_provider
     from primer.toolset.web import build_web_toolset
+    from primer.toolset.workspace_ext import build_workspace_ext_toolset
     from primer.toolset.workspaces import build_workspaces_toolset
     from tests.conftest import _FakeStorageProvider
 
@@ -52,13 +53,23 @@ def _built_in_tools() -> dict[str, frozenset[str]]:
         cross_encoder_factory=lambda p: object(),
         toolset_factory=lambda t: object(),
     )
+    # Built with every optional collaborator wired (the real app wires them): a tool that exists only then, such as ``web::download``, which
+    # needs a workspace registry, is a real tool. A name is stale only if no wiring has it.
     providers = {
-        "system": build_system_toolset(storage_provider=sp, provider_registry=registry),
+        "system": build_system_toolset(
+            storage_provider=sp,
+            provider_registry=registry,
+            semantic_search_registry=MagicMock(),
+            workspace_registry=MagicMock(),
+        ),
         "crud": build_crud_toolset(storage_provider=sp),
         "harness": build_harness_toolset_provider(storage_provider=sp),
         "trigger": build_trigger_toolset_provider(storage_provider=sp),
         "workspaces": build_workspaces_toolset(storage_provider=sp, workspace_registry=MagicMock()),
-        "web": build_web_toolset(web_search_service=MagicMock(), web_fetch_service=MagicMock()),
+        "workspace_ext": build_workspace_ext_toolset(storage_provider=sp),
+        "web": build_web_toolset(
+            web_search_service=MagicMock(), web_fetch_service=MagicMock(), workspace_registry=MagicMock(),
+        ),
         "misc": build_misc_toolset(),
     }
 

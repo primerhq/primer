@@ -135,7 +135,7 @@ Yielding tools as a class are not exposed over MCP. The specific
 yields in primer:
 
 - `system::ask_user` - pause to ask a question of the operator.
-- `trigger::subscribe_to_trigger` - wait for a named trigger to
+- `workspace_ext::subscribe_to_trigger` - wait for a named trigger to
   fire.
 - `_approval` - internal yield used by tool approval (not a tool the
   agent can call directly; it's a side effect of the dispatch gate).
@@ -162,7 +162,7 @@ nightly cron trigger before proceeding.
 The agent's tool call:
 ```json
 {
-  "tool": "trigger::subscribe_to_trigger",
+  "tool": "workspace_ext::subscribe_to_trigger",
   "arguments": {"trigger_id": "tg-nightly-batch"}
 }
 ```

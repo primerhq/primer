@@ -29,8 +29,8 @@ mcp_tools:
   - workspaces::list_workspace_sessions
   - workspaces::cancel_workspace_session
   - workspaces::interrupt_workspace_session
-  - system::set_workspace_channel_association
-  - system::clear_workspace_channel_association
+  - system::set_reply_binding
+  - system::clear_reply_binding
 ---
 
 # Workspaces - execution sandboxes
@@ -72,14 +72,16 @@ Three rows make up the workspace surface:
   set. Workspaces created from a template start with the template's
   config; subsequent edits diverge.
 - `Workspace` - the live instance. `id`, `provider_id`,
-  `template_id` (nullable), `status`, and `channel_association`
+  `template_id` (nullable), `status`, and `reply_binding`
   (nullable). The actual filesystem + state repo are bound to this
-  row. `channel_association: {channel_id}` names the Channel that
+  row. `reply_binding: {channel_id, anchor?}` names the Channel that
   all session gates (`ask_user`, tool approval, `inform`) from this
   workspace's sessions forward to. It is mutable: set it at create
   time in the body, or update it later with
-  `system::set_workspace_channel_association` /
-  `system::clear_workspace_channel_association`.
+  `system::set_reply_binding` / `system::clear_reply_binding`.
+  (It was called `channel_association` before the unified reply
+  binding; a stored row that still carries the old key is read as
+  `reply_binding`.)
 
 The fixed directory layout under each workspace:
 - (workspace root) - files the agent reads and writes; arbitrary
@@ -183,23 +185,24 @@ it's called from a context with no implicit session.
 - `workspaces::delete_workspace_file` - remove a file.
 - `workspaces::get_workspace_log` - read the workspace log.
 
-### Channel association
+### Reply binding
 
-A workspace can be linked to a Channel so that all session gates
-(`ask_user`, tool approval, `inform`) from its sessions forward to
-that channel automatically.
+A workspace can carry a standing reply binding to a Channel so that
+all session gates (`ask_user`, tool approval, `inform`) from its
+sessions forward to that channel automatically.
 
-- `system::set_workspace_channel_association` - set or overwrite the
-  association. Body: `workspace_id`, `channel_id`. Returns
-  `{ok: true, workspace_id, channel_id}`. Both the workspace and
+- `system::set_reply_binding` - set or overwrite the binding. Body:
+  `workspace_id`, `channel_id`, optional `anchor` (a standing thread to
+  post under; omit it to post to the channel root). Returns
+  `{ok: true, workspace_id, channel_id, anchor}`. Both the workspace and
   the channel must exist (returns not-found error otherwise).
-- `system::clear_workspace_channel_association` - remove the
-  association (sets `channel_association` to null). Body:
+- `system::clear_reply_binding` - remove the binding (sets
+  `reply_binding` to null; a no-op when none is set). Body:
   `workspace_id`. Returns `{ok: true, workspace_id}`.
 
 The REST equivalents are:
-- `PUT /v1/workspaces/{id}/channel_association {"channel_id": "..."}`.
-- `DELETE /v1/workspaces/{id}/channel_association`.
+- `PUT /v1/workspaces/{id}/reply_binding {"channel_id": "..."}`.
+- `DELETE /v1/workspaces/{id}/reply_binding`.
 
 See [channels](channels.md) for how the Channel is configured and
 how the routing works.
