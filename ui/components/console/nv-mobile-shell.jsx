@@ -1178,7 +1178,13 @@ function NV_MobilePlatform(props) {
         placeholder={"Filter " + page.title.toLowerCase() + "…"}
         value={q} onChange={function (ev) { setQ(ev.target.value); }} />
       <div className="card-list" data-testid={"nv-mob-plat-rows:" + nav}>
-        {!visible.length ? (
+        {res.error ? (
+          <div className="card-list-empty"
+            data-testid={"nv-mob-plat-error:" + nav}>
+            {res.error.detail || res.error.message}
+          </div>
+        ) : null}
+        {!visible.length && !res.loading && !res.error ? (
           <div className="card-list-empty"
             data-testid={"nv-mob-plat-empty:" + nav}>
             {window.NV_emptyText(page.noun, q, items.length)}
