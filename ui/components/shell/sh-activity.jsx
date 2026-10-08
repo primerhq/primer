@@ -1,4 +1,29 @@
 /* global React, SH_api */
+
+// The OCCURRED cell (admin review ADM-32): the stored value, "2026-10-07T20:13:43.972680Z", is microseconds, a T and a Z in UTC on every row. This
+// is a short LOCAL time: "20:13:43" for an event on the same local date as the row above it, "7 Oct 20:13:43" for the first row and wherever
+// the local date changes, so a window that spans midnight stays readable. offsetOf(date) is minutes east of UTC and is asked of EACH row's own
+// date, so a window across a daylight-saving change does not shift half its rows; it is injected so tests do not depend on the machine's zone.
+// A timestamp with no zone is read as UTC (the API always sends one; JS would read it as local time). A missing value is an empty cell, and a
+// value that is not a date is shown as it is. tests/ui/test_activity_times.py runs this in MiniRacer.
+function SH_activityTime(iso, prevIso, offsetOf) {
+  var months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+  function parts(v) {
+    var s = String(v);
+    var d = new Date(/(Z|[+-]\d\d:?\d\d)$/.test(s) ? s : s + "Z");
+    if (isNaN(d.getTime())) return null;
+    var local = new Date(d.getTime() + offsetOf(d) * 60000);
+    return { y: local.getUTCFullYear(), mo: local.getUTCMonth(), d: local.getUTCDate(), h: local.getUTCHours(), mi: local.getUTCMinutes(), s: local.getUTCSeconds() };
+  }
+  if (!iso) return "";
+  var p = parts(iso);
+  if (!p) return String(iso);
+  var clock = pad(p.h) + ":" + pad(p.mi) + ":" + pad(p.s);
+  var prev = prevIso ? parts(prevIso) : null;
+  if (prev && prev.y === p.y && prev.mo === p.mo && prev.d === p.d) return clock;
+  return p.d + " " + months[p.mo] + " " + clock;
+}
 // The Activity console (revamp spec section 7): a filterable window
 // over the platform event log (GET /v1/events), closing the event-bus
 // arc's "console events UI" gap. A debugging window, not a tail -f:
@@ -95,7 +120,7 @@ function SH_ActivityPanel() {
             </tr>
           </thead>
           <tbody>
-            {rows.map(function (ev) {
+            {rows.map(function (ev, i) {
               return (
                 <tr key={ev.id} data-testid={"activity-row:" + ev.id}>
                   <td className="mono">{ev.id}</td>
@@ -105,7 +130,9 @@ function SH_ActivityPanel() {
                   </td>
                   <td>{ev.actor}</td>
                   <td className="mono">{ev.session_id || ""}</td>
-                  <td>{ev.occurred_at}</td>
+                  <td className="mono" title={ev.occurred_at}>
+                    {SH_activityTime(ev.occurred_at, i ? rows[i - 1].occurred_at : null, function (d) { return -d.getTimezoneOffset(); })}
+                  </td>
                 </tr>
               );
             })}
