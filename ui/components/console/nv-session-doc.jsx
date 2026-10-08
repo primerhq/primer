@@ -2871,6 +2871,18 @@ function NV_SessionDoc(props) {
 
   var usage = window.NV_usageOf ? window.NV_usageOf(session) : {};
 
+  // Send the failed turn's instruction again (console review C-024): the same path as the composer's send, so an ended session reopens as a fresh
+  // invocation and the store shows the message at once. A send already in flight is not doubled.
+  function retryFailedTurn(text) {
+    if (store.optimisticSendPending) return;
+    var clientId = "steer-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+    window.SS_sendUserMessage(store, text, clientId).then(function () {
+      setOptimistic(Date.now());
+      detail.refetch();
+      history.refetch();
+    }, function (err) { NV_failToast(con.toast, "Retry", err); });
+  }
+
   function renderTurn(row, depth) {
     if (row.kind === "section") {
       return (
@@ -2999,6 +3011,8 @@ function NV_SessionDoc(props) {
     }
     if (row.kind === "error") {
       var errorView = NV_errorView(row);
+      // Only the session's own failed turn can be sent again: a subagent's failure (nested, depth > 0) is not an instruction of the operator's.
+      var retryText = depth ? null : SH_retryInstruction(flat, row, session);
       return (
         <div key={row.seq} className="nv-turn-error"
           role={NV_arrivedLive(historyFirstLoad, row.seq) ? "alert" : undefined}
@@ -3010,6 +3024,12 @@ function NV_SessionDoc(props) {
             ) : null}
           </span>
           <span style={{ flex: 1 }} />
+          {retryText ? (
+            <button type="button" className="nv-turn-error-retry"
+              title="Send the failed instruction again"
+              data-testid={"nv-turn-retry:" + row.seq}
+              onClick={function () { retryFailedTurn(retryText); }}>Retry</button>
+          ) : null}
           <button type="button" className="nv-trace-toggle"
             title="View trace"
             data-testid={"nv-trace-open:" + row.seq}

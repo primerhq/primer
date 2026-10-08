@@ -309,6 +309,34 @@ function SH_closesTurn(row) {
   return true;
 }
 
+// The instruction a failed turn can be sent again with (console review C-024), or null when a resend would be wrong or impossible. `flat` is the
+// transcript's rows in order, `errorRow` the error card being drawn, `session` the polled row. The text of the user message that opened the turn
+// is returned when: the row is an error; the session is not running (a send would queue behind a turn in flight); nothing the operator would be
+// re-running over follows the error (a later user message, answer or tool call means the failure is history); and that message was plain text
+// (attachments and non-text parts do not survive a resend of the text, so a Retry would be a different instruction). Markers after the error
+// (the release `done`, the end divider) are not content.
+var SH_RETRY_BLOCKING_AFTER = { user_message: true, assistant_message: true, tool_call: true };
+function SH_retryInstruction(flat, errorRow, session) {
+  if (!errorRow || errorRow.kind !== "error" || !session || session.session_state === "running") return null;
+  var rows = flat || [];
+  var at = -1;
+  for (var i = rows.length - 1; i >= 0; i--) {
+    if (rows[i].seq === errorRow.seq) { at = i; break; }
+  }
+  if (at < 0) return null;
+  for (var j = at + 1; j < rows.length; j++) {
+    if (SH_RETRY_BLOCKING_AFTER[rows[j].kind]) return null;
+  }
+  for (var k = at - 1; k >= 0; k--) {
+    if (rows[k].kind !== "user_message") continue;
+    var payload = rows[k].payload || {};
+    var attached = (Array.isArray(payload.attachments) && payload.attachments.length) || (Array.isArray(payload.parts) && payload.parts.some(function (p) { return !p || p.type !== "text"; }));
+    var text = typeof rows[k].label === "string" ? rows[k].label.trim() : "";
+    return attached || !text ? null : text;
+  }
+  return null;
+}
+
 // 0-based turn ordinal per seq: the number of the session's own turn ends before the row (the row that ends a turn is part
 // of it), matching the timeline endpoint's window ordinal.
 function SH_turnOfSeq(rows) {
@@ -397,6 +425,7 @@ window.SH_callQuotesNotice = SH_callQuotesNotice;
 window.SH_collapseTurns = SH_collapseTurns;
 window.SH_closesTurn = SH_closesTurn;
 window.SH_turnOfSeq = SH_turnOfSeq;
+window.SH_retryInstruction = SH_retryInstruction;
 window.SH_shortTime = SH_shortTime;
 window.SH_traceHeaderLabel = SH_traceHeaderLabel;
 window.SH_thoughtLabel = SH_thoughtLabel;
