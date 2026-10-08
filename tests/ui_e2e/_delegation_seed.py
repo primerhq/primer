@@ -31,12 +31,16 @@ CHILD_BEFORE = "child run: looking into it"
 GRANDCHILD = "grandchild run: found the answer"
 CHILD_AFTER = "child run: wrapping up"
 PARENT_FINAL = "parent turn: all done"
-# ``build(failures=True)``: the grandchild run fails for good, and the child run's stream reports a recoverable problem and carries on.
+# ``build(failures=True)``: the grandchild run fails for good (a fatal Error, as most providers end a failed stream), and the parent makes a SECOND call whose run
+# ends the way the only producer of a non-fatal Error (the OpenResponses stream) ends it: the agent loop holds the Error, yields the Done first and the Error last,
+# then raises, so the call is answered with an ERROR result and the delegated scope never gets a fatal record of its own.
 GRANDCHILD_FAILURE = "grandchild run: the model fell over"
-CHILD_NOTICE = "child run: provider hiccup"
+FAILED_TEXT = "flaky helper: working on it"
+CHILD_NOTICE = "flaky helper: provider hiccup"
 
 RUN_CHILD = "11111111111111111111111111111111"
 RUN_GRANDCHILD = "22222222222222222222222222222222"
+RUN_FLAKY = "33333333333333333333333333333333"
 
 
 @dataclass
@@ -48,6 +52,7 @@ class Seeded:
     top_level_assistant_seqs: list[int] = field(default_factory=list)
     delegated_failure_seq: int | None = None
     delegated_notice_seq: int | None = None
+    failed_call_seq: int | None = None
 
 
 class _Writer:
@@ -93,7 +98,7 @@ def _run_to_completion(coro):
 
 
 def build(failures: bool = False) -> Seeded:
-    """The seeded session; with ``failures`` the grandchild run ends in a fatal Error and the child run's stream carries a non-fatal one."""
+    """The seeded session; with ``failures`` the grandchild run ends in a fatal Error and a second call's run ends the way the OpenResponses stream does."""
     writer = _Writer()
     parent_state = _CoalesceState()
 
@@ -123,8 +128,6 @@ def build(failures: bool = False) -> Seeded:
         else:
             await recorder.on_event(TextDelta(index=0, text=GRANDCHILD), **grandchild)
             await recorder.on_event(Done(stop_reason="stop", raw_reason="stop"), **grandchild)
-        if failures:
-            await recorder.on_event(Error(message=CHILD_NOTICE, code="provider_warning", fatal=False), **child)
         await recorder.on_event(TextDelta(index=0, text=CHILD_AFTER), **child)
         await recorder.on_event(Done(stop_reason="stop", raw_reason="stop"), **child)
         return child_call_seq
@@ -135,6 +138,24 @@ def build(failures: bool = False) -> Seeded:
         seq=1, kind=SessionMessageKind.TOOL_RESULT, created_at=placeholder,
         payload={"call_id": parent_call.payload["id"], "output": "helper finished", "error": False},
     ))
+    failed_call_seq = None
+    if failures:
+        parent(ToolCallStart(id="call_1", name="system__invoke_agent", index=1))
+        (failed_call_seq,) = parent(ToolCallEnd(id="call_1", arguments={"agent_id": "flaky", "prompt": "try"}, index=1))
+        failed_call = writer.records[failed_call_seq - 1]
+
+        async def flaky() -> None:
+            run = {"delegate_tool_call_id": "call_1", "delegate_run_id": RUN_FLAKY, "delegate_parent_run_id": None, "delegate_depth": 1}
+            await recorder.on_event(TextDelta(index=0, text=FAILED_TEXT), **run)
+            # The real loop's order for [Error(fatal=False), Done(error)]: the Done first, the held Error last, then it raises.
+            await recorder.on_event(Done(stop_reason="error", raw_reason="failed"), **run)
+            await recorder.on_event(Error(message=CHILD_NOTICE, code="provider_warning", fatal=False), **run)
+
+        _run_to_completion(flaky())
+        writer.add(SessionMessageRecord(
+            seq=1, kind=SessionMessageKind.TOOL_RESULT, created_at=placeholder,
+            payload={"call_id": failed_call.payload["id"], "output": f"Error: subagent 'flaky' failed: {CHILD_NOTICE}", "error": True},
+        ))
     parent(TextDelta(index=0, text=PARENT_FINAL))
     parent(Done(stop_reason="stop", raw_reason="stop"))
 
@@ -143,4 +164,4 @@ def build(failures: bool = False) -> Seeded:
     top_assistant = [r["seq"] for r in records if r["kind"] == "assistant_token" and not r["payload"].get("delegated")]
     failure_seq = next((r["seq"] for r in records if r["kind"] == "error" and r["payload"].get("fatal") is True), None)
     notice_seq = next((r["seq"] for r in records if r["kind"] == "error" and r["payload"].get("fatal") is False), None)
-    return Seeded(records, parent_call_seq, child_call_seq, delegated_assistant, top_assistant, failure_seq, notice_seq)
+    return Seeded(records, parent_call_seq, child_call_seq, delegated_assistant, top_assistant, failure_seq, notice_seq, failed_call_seq)
