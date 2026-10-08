@@ -9,7 +9,10 @@ Config (singleton row at id ``_internal_collections_config``):
   config. Body shape :class:`InternalCollectionsConfigBody` carries the
   embedding provider + model and optional cross-encoder + MMR knobs.
 * ``GET    /v1/internal_collections/config`` — read the row; 404 if
-  absent.
+  absent, unless ``?allow_missing=true``, which answers ``200
+  {"configured": false}`` instead (the console asks that way: a 404 is
+  a red "Failed to load resource" console error even when it is the
+  expected "off" state).
 * ``DELETE /v1/internal_collections/config`` — clear the row, detach
   the live subsystem, and drop the four reserved collections from the
   backing SSP so a subsequent re-PUT with a different embedding model
@@ -38,9 +41,9 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -243,16 +246,34 @@ async def put_config(
     return cfg
 
 
+class InternalCollectionsNotConfigured(BaseModel):
+    """The ``GET /internal_collections/config?allow_missing=true`` answer when the subsystem has no config row."""
+
+    configured: Literal[False] = Field(
+        default=False, description="Always false: no config row exists, so the subsystem is off.",
+    )
+
+
 @router.get(
     "/internal_collections/config",
     summary="Read the internal collections subsystem config",
-    response_model=InternalCollectionsConfig,
+    response_model=InternalCollectionsConfig | InternalCollectionsNotConfigured,
     responses=common_responses(404, 500),
 )
 async def get_config(
+    allow_missing: bool = Query(
+        default=False,
+        description=(
+            "Answer 200 {\"configured\": false} instead of 404 when the subsystem is not configured. For a caller (the console) that "
+            "probes this route on every open and treats \"not configured\" as an ordinary state: a 404 is logged by the browser as an "
+            "error. Does not change the answer for a configured subsystem."
+        ),
+    ),
     storage=Depends(get_internal_collections_config_storage),
-) -> InternalCollectionsConfig:
+) -> InternalCollectionsConfig | InternalCollectionsNotConfigured:
     row = await storage.get(INTERNAL_COLLECTIONS_CONFIG_ID)
+    if row is None and allow_missing:
+        return InternalCollectionsNotConfigured()
     if row is None:
         raise NotFoundError(
             "internal collections subsystem is not configured; PUT "

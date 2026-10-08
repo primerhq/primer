@@ -42,11 +42,14 @@ const IC_BOOTSTRAP_PHASES = [
   { id: "finalize", label: "Finalising" },
 ];
 
-// 404 → null suppression for the IC config probe.
+// The IC config probe: null means "not configured". It asks with allow_missing=true so the server answers 200 {configured: false}
+// instead of 404: the browser logs every 404 fetch as a red console error, even when it is the expected "off" state. A 404 from a
+// server that predates the flag is still read as "off".
 async function _icFetchConfig(signal) {
   const { apiFetch } = window.primerApi;
   try {
-    return await apiFetch("GET", "/internal_collections/config", null, { signal });
+    const row = await apiFetch("GET", "/internal_collections/config?allow_missing=true", null, { signal });
+    return row && row.configured === false ? null : row;
   } catch (err) {
     if (err && err.status === 404) return null;
     throw err;
@@ -147,10 +150,7 @@ function InactiveCard({ onRefresh, pushToast }) {
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: "-0.01em" }}>Internal Collections is not configured</div>
             <div className="muted text-sm" style={{ marginTop: 4, lineHeight: 1.55 }}>
-              Activate to enable semantic search across <span className="mono">agents</span>,{" "}
-              <span className="mono">graphs</span>, <span className="mono">collections</span>, and{" "}
-              <span className="mono">tools</span>. The four <span className="mono">/v1/{`{kind}`}/search</span>{" "}
-              routes return 503 until this subsystem is active.
+              Semantic search over your agents, graphs, collections and tools is off until you configure it.
             </div>
           </div>
           <Btn kind="primary" icon="settings" onClick={() => setConfigureOpen(true)}>Configure</Btn>
@@ -162,7 +162,7 @@ function InactiveCard({ onRefresh, pushToast }) {
           onClose={() => setConfigureOpen(false)}
           onSaved={() => {
             setConfigureOpen(false);
-            pushToast({ kind: "success", title: "Subsystem configured", detail: "Bootstrap required before search routes return results." });
+            pushToast({ kind: "success", title: "Subsystem configured", detail: "Run Bootstrap to build the search index; results appear once it finishes." });
             onRefresh();
           }}
           pushToast={pushToast}
