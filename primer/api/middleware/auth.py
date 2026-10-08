@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.cookies import SimpleCookie
 
 from starlette.datastructures import State
@@ -124,7 +124,7 @@ class AuthMiddleware:
             return
 
         # 1. Cookie path (primary).
-        user, session_src = await self._try_cookie_auth(
+        user, session_src, session_expires_at = await self._try_cookie_auth(
             scope, app_state, config, storage_provider,
         )
         api_token = None
@@ -176,7 +176,7 @@ class AuthMiddleware:
             await run_with_revalidation(
                 self.app, scope, receive, send,
                 storage_provider=storage_provider,
-                snapshot=AuthSnapshot.of(user, api_token),
+                snapshot=AuthSnapshot.of(user, api_token, session_expires_at),
                 interval_s=interval_s,
             )
             return
@@ -184,21 +184,21 @@ class AuthMiddleware:
         await self.app(scope, receive, send)
 
     async def _try_cookie_auth(self, scope, app_state, config, storage_provider):
-        """Existing cookie path. Returns (User, session src) or (None, None)."""
+        """Existing cookie path. Returns (User, session src, when the cookie's lifetime ends) or (None, None, None)."""
         secret = getattr(app_state, "session_secret", None)
         if not secret:
-            return None, None
+            return None, None, None
 
         token = _read_cookie(scope, config.auth.cookie_name)
         if not token:
-            return None, None
+            return None, None, None
 
         max_age = config.auth.session_ttl_days * 86400
         payload = verify_session(
             token=token, secret=secret, max_age_seconds=max_age,
         )
         if payload is None:
-            return None, None
+            return None, None, None
 
         try:
             from primer.model.user import User
@@ -206,15 +206,16 @@ class AuthMiddleware:
             user = await user_storage.get(payload.user_id)
         except Exception:  # noqa: BLE001
             logger.exception("auth middleware: user lookup failed")
-            return None, None
+            return None, None, None
 
         # Revocation (SEC-05): the user row is read on every request anyway, so comparing the
         # cookie's session epoch with the stored one costs nothing extra and takes effect on the
         # very next request after a password change, an admin reset or a sign-out-everywhere.
         if user is not None and payload.epoch != user.session_epoch:
-            return None, None
+            return None, None, None
 
-        return user, payload.src
+        expires_at = payload.issued_at + timedelta(seconds=max_age) if payload.issued_at is not None else None
+        return user, payload.src, expires_at
 
     async def _try_bearer_auth(self, scope, storage_provider):
         """Bearer fallback. Returns (User, ApiToken) or (None, None)."""
