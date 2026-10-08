@@ -110,7 +110,7 @@ def test_any_other_agent_keeps_the_plain_confirm(agent_id: str) -> None:
     )
 
 
-@pytest.mark.parametrize("nav", ["graphs", "toolsets", "workspaces", "triggers", "channels", "profiles"])
+@pytest.mark.parametrize("nav", ["graphs", "toolsets", "channels", "profiles"])
 def test_only_the_agents_page_warns_an_entity_named_operator_is_not_the_agent(nav: str) -> None:
     ctx = _ctx()
     _delete(ctx, nav, {"id": "operator"}, f"/{nav}/operator")
@@ -233,3 +233,52 @@ async def test_the_ids_the_console_warns_about_are_exactly_the_agents_whose_abse
 
     ctx = _ctx()
     assert set(_js(ctx, "NV_SETUP_AGENT_IDS")) == reopens
+
+
+# ---- entities that hold data say what the delete takes with them (ADM-31) -------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "nav,row,must_say",
+    [
+        # DELETE /v1/workspaces/{id} (docs/agents/workspaces.md): backend teardown, and every open session ends workspace_lost, permanently.
+        ("workspaces", {"id": "ws-1"}, ["tears down", "ends every open session", "workspace_lost", "cannot be resumed"]),
+        # Deleting a Collection deletes its Documents, their content and its vector chunks (docs/agents/knowledge.md), with no 409 for a non-empty one;
+        # a reused id starts empty (the T0336 e2e).
+        ("collections", {"id": "wiki"}, ["Every document", "search index", "cannot be undone", "starts empty"]),
+        # trigger::delete cascade-deletes subscriptions (docs/agents/triggers-and-subscriptions.md).
+        ("triggers", {"id": "tr-1"}, ["subscriptions are deleted with it", "will run again"]),
+        # services router: every version (and its artifacts) is deleted before the service row; the public URL is /svc/{name}/.
+        ("services", {"id": "service-1", "name": "status-page"}, ["Every published version", "/svc/status-page/ stops answering"]),
+    ],
+)
+def test_deleting_an_entity_that_holds_data_says_what_goes_with_it(nav: str, row: dict, must_say: list[str]) -> None:
+    ctx = _ctx()
+    _delete(ctx, nav, row, f"/{nav}/{row['id']}")
+
+    message = _js(ctx, "dialogs[0].message")
+    for phrase in must_say:
+        assert phrase in message, (nav, phrase, message)
+    assert message.startswith("Permanently delete "), message
+    # These four have no "referenced" refusal, so the generic sentence would state something untrue about them.
+    assert "Referenced entities refuse deletion" not in message, message
+
+
+def test_the_service_prompt_names_the_service_not_its_generated_id() -> None:
+    """The public URL is built from the name, and the card shows the generated id: the prompt has to give the name the operator knows."""
+    ctx = _ctx()
+    _delete(ctx, "services", {"id": "service-1b2c3d", "name": "status-page"}, "/services/service-1b2c3d")
+
+    message = _js(ctx, "dialogs[0].message")
+    assert message.startswith("Permanently delete status-page?"), message
+    assert "service-1b2c3d" not in message
+    assert _js(ctx, "dialogs[0].title") == "Delete status-page"
+
+
+@pytest.mark.parametrize("nav", ["graphs", "toolsets", "channels", "profiles", "templates", "harnesses", "approvals"])
+def test_every_other_entity_keeps_the_plain_prompt_this_change_only_names_what_it_checked(nav: str) -> None:
+    """Unchanged on purpose: only the four entities whose delete consequence was read from the code or the docs get their own copy."""
+    ctx = _ctx()
+    _delete(ctx, nav, {"id": "x-1"}, f"/{nav}/x-1")
+
+    assert _js(ctx, "dialogs[0].message") == "Permanently delete x-1? Referenced entities refuse deletion."
