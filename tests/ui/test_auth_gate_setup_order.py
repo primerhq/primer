@@ -36,7 +36,10 @@ def test_setup_gate_runs_after_the_password_gate_and_before_children() -> None:
     assert gate.index("status.setup_complete") < gate.index("return children")
 
 
-def test_gate_failure_defaults_to_incomplete_setup() -> None:
-    """The catch branch must not fabricate a complete install."""
+def test_gate_failure_does_not_fabricate_an_install_state() -> None:
+    """The catch branch must not invent a status at all. It used to default to "setup incomplete" (and to "no user"), which put a
+    wizard or a register form in front of an install that merely failed to answer; a failed read now shows an error with a retry
+    (tests/ui/test_auth_gate_status_failure.py)."""
     gate = _gate()
-    assert "setup_complete: false" in gate
+    assert "setup_complete: false" not in gate
+    assert "has_user: false" not in gate
