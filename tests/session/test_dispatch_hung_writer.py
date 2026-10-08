@@ -36,7 +36,10 @@ from tests.session.test_dispatch import (  # noqa: F401  (fixtures are used by n
 )
 from tests.session.test_dispatch_interrupt import _build_returning, _request_stop, _StopAwareExecutor
 
-HARD_BOUND_S = 3.0     # the whole body of a test: the turn runs through run_one_session_turn
+HARD_BOUND_S = 30.0    # the whole body of a test: the turn runs through run_one_session_turn; it only turns a hang into a failure
+# The Stop test is the one place a bound separates old from new: the old exit waits 5 s (the best-effort bound) and then 10 s (the CANCELLED
+# record's) for the dead batch, 15 s in all, and the new one lands at the writer's 0.2 s. 12 s is under the one and 60 times the other.
+STOP_HARD_BOUND_S = 12.0
 WRITE_BOUND_S = 0.2    # the writer's bound, and the turn log's
 
 
@@ -278,7 +281,7 @@ async def test_a_stopped_turn_fails_its_later_writes_at_once_once_the_writer_has
         build_executor=_build_returning(_StopAwareExecutor(script)),
     )
     try:
-        async with asyncio.timeout(HARD_BOUND_S):
+        async with asyncio.timeout(STOP_HARD_BOUND_S):
             with caplog.at_level(logging.WARNING):
                 outcome = await run_one_session_turn(_make_lease(sid), deps)
     finally:

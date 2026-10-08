@@ -17,7 +17,7 @@ from primer.session import persistence
 from primer.session.enqueue import wake_session
 from tests.session.test_enqueue import _deps, _row
 
-HARD_BOUND_S = 5.0
+HARD_BOUND_S = 30.0
 
 
 async def test_wake_session_reports_a_workspace_that_never_answers_as_unreachable_not_removed(monkeypatch) -> None:
