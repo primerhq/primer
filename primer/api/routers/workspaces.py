@@ -51,6 +51,7 @@ from primer.api.deps import (
     get_workspace_registry,
     get_workspace_storage,
     get_workspace_template_storage,
+    require_user,
 )
 import primer.observability.metrics as _metrics
 from primer.api.errors import PROBLEM_JSON_MEDIA_TYPE, common_responses
@@ -91,6 +92,7 @@ from primer.model.workspace import (
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
+from primer.workspace.reserved import reserved_tree, reserved_trees
 from primer.workspace.diagnostic import (
     DIAGNOSTIC_COMMANDS,
     DiagnosticCommandError,
@@ -2166,6 +2168,39 @@ def _is_runtime_marker(entry_path: str) -> bool:
     return posixpath.normpath(entry_path) == _RUNTIME_READY_MARKER
 
 
+def _is_admin(user: Any) -> bool:
+    """Same predicate as the events feed: ``require_user`` always yields a
+    user on HTTP; ``None`` only reaches here outside a request."""
+    return user is None or getattr(user, "role", None) == "admin"
+
+
+def _refuse_reserved_read(ws: Any, path: str, user: Any) -> None:
+    """403 ``forbidden_role`` when a non-admin names a path in the runtime's
+    ``.state`` / ``.tmp`` trees (A-22). Admins may read them, for debugging."""
+    if _is_admin(user):
+        return
+    tree = reserved_tree(path, reserved_trees(ws))
+    if tree is not None:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "forbidden_role",
+                "message": (
+                    f"{path!r} is inside the workspace runtime's reserved "
+                    f"{tree!r} tree; only an admin may read it"
+                ),
+            },
+        )
+
+
+def _visible_entries(ws: Any, entries: list, user: Any) -> list:
+    """Drop entries inside the reserved trees for a non-admin."""
+    if _is_admin(user):
+        return entries
+    trees = reserved_trees(ws)
+    return [e for e in entries if reserved_tree(e.path, trees) is None]
+
+
 @files_router.get(
     "/workspaces/{workspace_id}/files/tree",
     summary="Return a one-level directory tree",
@@ -2175,13 +2210,16 @@ async def file_tree(
     workspace_id: str = Path(...),
     path: str = Query(default=".", description="Workspace-relative path"),
     depth: int = Query(default=1, ge=1, description="Tree depth (only depth=1 is supported; deeper values are accepted but treated as 1)"),
-    hidden: bool = Query(default=False, description="Include hidden entries (e.g. .state)"),
+    hidden: bool = Query(default=False, description="Include hidden entries (e.g. .state; admins only)"),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
+    user=Depends(require_user),
 ) -> dict:
     ws = await registry.get_workspace(workspace_id)
+    _refuse_reserved_read(ws, path, user)
     # No origin decoration: with collection mounting retired, every entry
     # is workspace-native and nothing is collection-backed.
-    entries = await ws.list_files(path, recursive=False)
+    # hidden=true never reveals the reserved trees to a non-admin.
+    entries = _visible_entries(ws, await ws.list_files(path, recursive=False), user)
     items = []
     for entry in entries:
         name = entry.path.rsplit("/", 1)[-1] if "/" in entry.path else entry.path
@@ -2219,8 +2257,10 @@ async def list_files(
     limit: int = Query(default=200, ge=1, le=2000),
     offset: int = Query(default=0, ge=0),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
+    user=Depends(require_user),
 ) -> dict:
     ws = await registry.get_workspace(workspace_id)
+    _refuse_reserved_read(ws, path, user)
     # No origin decoration: with collection mounting retired, every
     # entry is workspace-native and nothing is collection-backed.
     #
@@ -2249,6 +2289,10 @@ async def list_files(
     )
     entries = await ws.list_files(path, recursive=recursive, max_entries=max_entries)
     entries = [e for e in entries if not _is_runtime_marker(e.path)]
+    # A recursive walk from the root descends into .state / .tmp: a
+    # non-admin's page drops those entries (A-22), so it can come back
+    # shorter than `limit` when they fill part of the capped walk.
+    entries = _visible_entries(ws, entries, user)
     sliced = entries[offset : offset + limit]
     return {
         "items": [e.model_dump(mode="json") for e in sliced],
@@ -2269,8 +2313,10 @@ async def file_info(
     workspace_id: str = Path(...),
     path: str = Query(..., description="Workspace-relative path"),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
+    user=Depends(require_user),
 ) -> FileEntry:
     ws = await registry.get_workspace(workspace_id)
+    _refuse_reserved_read(ws, path, user)
     return await ws.file_info(path)
 
 
@@ -2291,8 +2337,10 @@ async def read_file(
         ),
     ),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
+    user=Depends(require_user),
 ) -> FileReadResponse:
     ws = await registry.get_workspace(workspace_id)
+    _refuse_reserved_read(ws, path, user)
     raw = await ws.read_file(path)
     if encoding == "text":
         try:
@@ -2328,8 +2376,10 @@ async def download_file(
     workspace_id: str = Path(...),
     path: str = Query(..., description="Workspace-relative path"),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
+    user=Depends(require_user),
 ) -> StreamingResponse:
     ws = await registry.get_workspace(workspace_id)
+    _refuse_reserved_read(ws, path, user)
     raw = await ws.read_file(path)
 
     async def _gen():
@@ -2558,10 +2608,16 @@ async def workspace_show_commit(
     workspace_id: str = Path(...),
     sha: str = Path(..., min_length=7, max_length=64),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
+    user=Depends(require_user),
 ) -> dict:
     """Return the diff payload for a single commit in the workspace
     state repo. The returned shape is
     ``{sha, subject, body, parent, files: [{path, status, patch}]}``.
+
+    The state repo IS the ``.state`` tree (every path in it is runtime
+    state: transcripts with any legacy traceback, session.json,
+    mounts.json), so a non-admin gets the header with ``files: []`` and
+    ``files_hidden: true`` (A-22). Admins get the full diff.
     """
     ws = await registry.get_workspace(workspace_id)
     state_repo = getattr(ws, "_state", None)
@@ -2579,9 +2635,12 @@ async def workspace_show_commit(
             },
         )
     try:
-        return await show(sha)
+        detail = await show(sha)
     except FileNotFoundError as exc:
         raise NotFoundError(str(exc)) from exc
+    if not _is_admin(user):
+        detail = {**detail, "files": [], "files_hidden": True}
+    return detail
 
 
 # ===========================================================================
