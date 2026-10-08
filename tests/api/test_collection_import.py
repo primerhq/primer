@@ -64,3 +64,55 @@ async def test_import_into_system_collection_is_403(client, fake_storage_provide
         files={"file": ("kb.zip", data, "application/zip")},
     )
     assert resp.status_code == 403
+
+
+# ---- FS-04: the archive caps answer 413 problem+json ------------------------
+
+
+async def test_an_archive_over_the_upload_cap_is_413(client, monkeypatch):
+    from primer.knowledge import importer
+
+    monkeypatch.setattr(importer, "MAX_ARCHIVE_BYTES", 64)
+    cid = await _mk_collection(client)
+    data = _zip({"a.md": b"x" * 200})
+    assert len(data) > 64
+    r = await client.post(
+        f"/v1/collections/{cid}/import",
+        files={"file": ("kb.zip", data, "application/zip")},
+    )
+    assert r.status_code == 413, r.text
+    assert r.headers["content-type"].startswith("application/problem+json")
+    assert r.json()["type"] == "/errors/payload-too-large"
+    assert r.json()["extensions"]["limit_bytes"] == 64
+
+
+async def test_an_archive_with_too_many_entries_is_413(client, monkeypatch):
+    from primer.knowledge import importer
+
+    monkeypatch.setattr(importer, "MAX_ENTRIES", 2)
+    cid = await _mk_collection(client)
+    data = _zip({"a.md": b"1", "b.md": b"2", "c.md": b"3"})
+    r = await client.post(
+        f"/v1/collections/{cid}/import",
+        files={"file": ("kb.zip", data, "application/zip")},
+    )
+    assert r.status_code == 413, r.text
+    assert r.json()["type"] == "/errors/payload-too-large"
+    read = await client.get(f"/v1/collections/{cid}/docs", params={"path": "a"})
+    assert read.status_code == 404
+
+
+async def test_an_archive_that_inflates_past_the_cap_is_413(client, monkeypatch):
+    from primer.knowledge import importer
+
+    monkeypatch.setattr(importer, "MAX_UNCOMPRESSED_BYTES", 1000)
+    cid = await _mk_collection(client)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
+        z.writestr("bomb.md", b"a" * 100_000)
+    r = await client.post(
+        f"/v1/collections/{cid}/import",
+        files={"file": ("kb.zip", buf.getvalue(), "application/zip")},
+    )
+    assert r.status_code == 413, r.text
+    assert r.json()["extensions"]["limit_bytes"] == 1000
