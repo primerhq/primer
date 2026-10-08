@@ -56,9 +56,11 @@ routing between them (use a [graph](graphs.md) via
 
 An `Agent` row carries:
 - `id`, `description` (free text; embedded for search). A new agent's `id` is optional (omitted, the server
-  generates `agent-<hex>`); when you send one it must match `^[a-z0-9][a-z0-9_-]{0,62}$`: lowercase letters,
-  digits, hyphens and underscores, starting with a letter or digit, 63 characters at most, because an id sits in
-  URLs and in references. Anything else is refused on create (422 at `body.id`, error type `agent_id_invalid`;
+  generates `agent-<hex>`); when you send one it must match `^(?!.*__)[a-z0-9][a-z0-9_-]{0,62}$`: lowercase letters,
+  digits, hyphens and single underscores, starting with a letter or digit, 63 characters at most, because an id sits in
+  URLs and in references. Two underscores in a row are reserved: a harness install names its agents
+  `<harness slug>__<template name>`, and an `acme__assistant` made by hand would collide with a later install of `acme`.
+  Anything else is refused on create (422 at `body.id`, error type `agent_id_invalid`;
   the system `create_agent` tool and the builder's `crud` toolset answer a `validation-error` starting `id:`).
   The id cannot change afterwards, and an agent stored with an older id keeps working. A blank `description`
   (empty or only spaces) is refused on create, and on an update that makes it blank (422 at `body.description`,
