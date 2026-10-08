@@ -8,11 +8,16 @@ blocked for that long on every poll by one parked session.
 
 Three defences, each pinned here:
 
-* every pattern is linear (``test_every_scrub_step_is_linear_on_hostile_text``: 40 000 characters of each hostile shape in well under a
-  second; the work is done in a forked child with a hard kill, so a regression fails in seconds instead of hanging the suite);
+* every pattern is linear (``test_every_scrub_step_is_linear_on_hostile_text``: 40 000 characters of each hostile shape in milliseconds; the
+  work is done in a forked child with a hard kill, so a regression fails in seconds instead of hanging the suite);
 * text is bounded BEFORE it is scrubbed (the prompt) and a whole walk has a total character budget (``_approval_preview`` on many large
   strings);
-* the route itself answers a hostile row in under a second.
+* the route itself hands the scrubber a bounded amount of text for a hostile row.
+
+Time is a BACKSTOP in this file, never the check. A loaded shared runner takes 100 times longer than an idle machine over a few milliseconds of
+work (CI measured 1.27 s for a route answer that takes about 30 ms), so a tight wall-clock bound is a flake. What is pinned is the WORK (the
+characters the scrubber is handed, counted by a spy) and, for the regex steps, the growth: a linear pattern needs about 10 ms for these inputs, a
+quadratic one tens of seconds, and ``_LINEAR_BACKSTOP_S`` sits two orders of magnitude above the first and well below the second.
 
 The preview also never shows a credential used as a NAME: argument keys (the ``key=`` prefix and ``argument_keys``) and nested keys are scrubbed
 like values, and a container cut at its member cap says how many members it left out.
@@ -37,6 +42,12 @@ from tests.api.test_workspace_yields_pending import (  # noqa: F401  (fixtures a
     wsr,
 )
 from primer.model.workspace_session import WorkspaceSession
+
+
+# 40 000 characters of a hostile shape take about 10 ms through a linear pattern and tens of seconds through a quadratic one.
+_LINEAR_BACKSTOP_S = 2.0
+# Something that takes this long is hung or unbounded, whatever the machine.
+_HANG_BACKSTOP_S = 10.0
 
 
 def _timed_in_a_child(fn_name: str, *args: Any, kill_after_s: float = 6.0) -> float | None:
@@ -92,28 +103,42 @@ def test_every_scrub_step_is_linear_on_hostile_text(shape: str) -> None:
     assert len(text) >= 20_000
     elapsed = _timed_in_a_child("_scrub_text", text)
     assert elapsed is not None, f"_scrub_text was still running after 6 s on {shape!r} ({len(text)} chars)"
-    assert elapsed < 0.2, f"_scrub_text took {elapsed:.2f} s on {shape!r} ({len(text)} chars)"
+    assert elapsed < _LINEAR_BACKSTOP_S, f"_scrub_text took {elapsed:.2f} s on {shape!r} ({len(text)} chars)"
 
 
 @pytest.mark.parametrize("shape", ["spaces", "tabs after words", "newlines", "a secret word repeated"])
 def test_collapsing_line_breaks_is_linear_on_hostile_text(shape: str) -> None:
     elapsed = _timed_in_a_child("_one_line", _HOSTILE[shape])
-    assert elapsed is not None and elapsed < 0.2, f"_one_line took {elapsed} s on {shape!r}"
+    assert elapsed is not None and elapsed < _LINEAR_BACKSTOP_S, f"_one_line took {elapsed} s on {shape!r}"
 
 
-def test_a_preview_of_many_large_hostile_strings_is_bounded_by_a_total_budget() -> None:
+def test_a_preview_of_many_large_hostile_strings_is_bounded_by_a_total_budget(monkeypatch) -> None:
     """Each string is capped, and so is the whole walk: 400 members of 3 600 characters of the worst shape is not 1.4 MB of regex work."""
+    from primer.api.routers import workspaces as w
+
     arguments = {f"k{i:03d}": "-token" * 600 for i in range(400)}
     arguments["command"] = "token" * 8000
-    elapsed = _timed_in_a_child("_approval_preview", {"name": "t", "arguments": arguments})
+    call = {"name": "t", "arguments": arguments}
+    elapsed = _timed_in_a_child("_approval_preview", call)          # a backstop: a hang is killed here, so the in-process run below is safe
     assert elapsed is not None, "the preview was still running after 6 s"
-    assert elapsed < 1.0, f"the preview took {elapsed:.2f} s"
+    assert elapsed < _HANG_BACKSTOP_S, f"the preview took {elapsed:.2f} s"
+    seen = _recording_scrubber(monkeypatch)
+    w._approval_preview(call)
+    assert sum(seen) <= w._REDACT_BUDGET + 4000, f"{sum(seen)} characters were scrubbed for one preview"
+    assert max(seen) <= w._REDACT_MAX_TEXT
 
 
-def test_a_preview_of_a_huge_nested_blob_is_bounded() -> None:
+def test_a_preview_of_a_huge_nested_blob_is_bounded(monkeypatch) -> None:
+    from primer.api.routers import workspaces as w
+
     blob = {"rows": [["token" * 400] * 50 for _ in range(50)], "text": "sk-" * 20000}
-    elapsed = _timed_in_a_child("_approval_preview", {"name": "t", "arguments": {"note": blob}})
-    assert elapsed is not None and elapsed < 1.0, f"the preview took {elapsed} s"
+    call = {"name": "t", "arguments": {"note": blob}}
+    elapsed = _timed_in_a_child("_approval_preview", call)
+    assert elapsed is not None and elapsed < _HANG_BACKSTOP_S, f"the preview took {elapsed} s"
+    seen = _recording_scrubber(monkeypatch)
+    w._approval_preview(call)
+    assert sum(seen) <= w._REDACT_BUDGET + 4000, f"{sum(seen)} characters were scrubbed for one preview"
+    assert max(seen) <= w._REDACT_MAX_TEXT
 
 
 def test_the_ask_prompt_is_cut_before_it_is_scrubbed() -> None:
@@ -121,7 +146,7 @@ def test_the_ask_prompt_is_cut_before_it_is_scrubbed() -> None:
 
     assert hasattr(w, "_attention_prompt"), "the prompt needs one function that bounds and then scrubs it"
     elapsed = _timed_in_a_child("_attention_prompt", "token" * 40_000)
-    assert elapsed is not None and elapsed < 0.2, f"a 200 000-character prompt took {elapsed} s"
+    assert elapsed is not None and elapsed < _LINEAR_BACKSTOP_S, f"a 200 000-character prompt took {elapsed} s"
     assert w._attention_prompt("Use Bearer sk-live-abcdef123456 to call it") == "Use Bearer <redacted> to call it"
     assert len(w._attention_prompt("q" * 1000)) <= 240
 
@@ -138,8 +163,12 @@ def _nested(depth: int) -> dict:
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(30, method="thread")
-async def test_a_hostile_row_does_not_stall_the_poll_for_everyone(client, sp) -> None:
-    """One parked session with a 200 000-character prompt and an argument blob made of the worst shapes: the route still answers fast."""
+async def test_a_hostile_row_does_not_stall_the_poll_for_everyone(client, sp, monkeypatch) -> None:
+    """One parked session with a 200 000-character prompt and an argument blob made of the worst shapes: the route hands the scrubber a bounded
+    amount of text (the WORK is what is pinned; the clock only backstops a hang, since a loaded runner took 1.27 s for what takes milliseconds)."""
+    from primer.api.routers import workspaces as w
+
+    seen = _recording_scrubber(monkeypatch)
     wid = await _create_workspace(client)
     ask = _approval_state("tc-h1", None, tool_name="ask_user")
     ask["yielded"]["resume_metadata"]["prompt"] = "token" * 40_000
@@ -156,7 +185,10 @@ async def test_a_hostile_row_does_not_stall_the_poll_for_everyone(client, sp) ->
     assert resp.status_code == 200, resp.text[:300]
     rows = {i["session_id"]: i for i in resp.json()["items"]}
     assert len(rows["sess-h-1"]["prompt"]) <= 240 and len(rows["sess-h-2"]["approval"]["arguments"]) <= 240
-    assert elapsed < 1.0, f"the poll took {elapsed:.2f} s for one hostile row"
+    assert seen, "the scrubber was never reached, so nothing here was bounded by anything"
+    assert sum(seen) <= w._PROMPT_SCAN_CHARS + w._REDACT_BUDGET + 4000, f"{sum(seen)} characters were scrubbed for one poll of two rows"
+    assert max(seen) <= w._REDACT_MAX_TEXT, f"the scrubber was handed {max(seen)} characters at once"
+    assert elapsed < _HANG_BACKSTOP_S, f"the poll took {elapsed:.2f} s for one hostile row"
 
 
 @pytest.mark.asyncio
