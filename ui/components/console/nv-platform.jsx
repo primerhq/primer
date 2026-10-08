@@ -109,10 +109,23 @@ function NV_deleteRow(env, nav, row, path) {
   });
 }
 
+// A row created from a form the Platform page hosts: refresh the cards
+// behind and open the new row's own detail overlay (where a toolset's source
+// or a trigger's subscriptions are edited), which is where the legacy list
+// sent the operator after a create. A row with no id has no detail to open.
+// tests/ui/test_platform_create_opens_the_form.py runs this in MiniRacer.
+function NV_createdRow(con, refetch, nav, row) {
+  refetch();
+  if (row && row.id) con.openOverlay(nav, null, row.id);
+}
+
 // Per-entity page config. list() returns a promise of {items}; card()
-// maps a row to the prototype's card VM; open()/create() address the
-// shared overlays; delPath() names the DELETE route (null = no delete
-// from the card, e.g. providers where the catalog owns lifecycle).
+// maps a row to the prototype's card VM; open() addresses the shared
+// overlays; create() either hosts the entity's form on this page
+// (setModal) or opens a management overlay (tests/ui/
+// test_platform_create_opens_the_form.py tabulates which); delPath() names
+// the DELETE route (null = no delete from the card, e.g. providers where
+// the catalog owns lifecycle).
 var NV_PLAT_PAGES = {
   profiles: {
     title: "Model profiles", createLabel: "New profile",
@@ -235,7 +248,9 @@ var NV_PLAT_PAGES = {
       };
     },
     open: function (con, row) { con.openOverlay("toolsets", null, row.id); },
-    create: function (con) { con.openOverlay("toolsets", null, null); },
+    // The page's own create dialog (toolsets.jsx), hosted here: the legacy
+    // list overlay used to open first and the form only on a second press.
+    create: function (con, setModal) { setModal({ kind: "toolset" }); },
     // A built-in ships with the platform; only registered rows delete.
     delPath: function (row) {
       return row.builtin ? null
@@ -337,7 +352,7 @@ var NV_PLAT_PAGES = {
       };
     },
     open: function (con, row) { con.openOverlay("triggers", null, row.id); },
-    create: function (con) { con.openOverlay("triggers", null, null); },
+    create: function (con, setModal) { setModal({ kind: "trigger" }); },
     delPath: function (row) { return "/triggers/" + encodeURIComponent(row.id); },
   },
   channels: {
@@ -674,6 +689,29 @@ function NV_PlatCard(props) {
       </div>
     </div>
   );
+}
+
+// Hosts of the create dialogs the entity pages already own (toolsets.jsx,
+// triggers.jsx): the dialog is that page's form, unchanged; the Platform page
+// only decides what happens when it closes or creates a row (NV_createdRow).
+function NV_ToolsetCreateHost(props) {
+  var Dialog = window.TS_NewToolsetModal;
+  return (
+    <Dialog
+      pushToast={window.primerApi.toastPush}
+      onClose={props.onClose}
+      onCreate={function (row) {
+        window.primerApi.toastPush({
+          kind: "success", title: "Toolset created", detail: row.id,
+        });
+        props.onCreated(row);
+      }} />
+  );
+}
+
+function NV_TriggerCreateHost(props) {
+  var Dialog = window.TR_CreateTriggerDialog;
+  return <Dialog onClose={props.onClose} onCreated={props.onCreated} />;
 }
 
 // Model-profile create/edit, inline on the platform page. The form is
@@ -1156,6 +1194,22 @@ function NV_PlatPage() {
           <NV_TemplateModal row={modal.row}
             onClose={function () { setModal(null); }}
             onSaved={function () { setModal(null); res.refetch(); }} />
+        ) : null}
+        {modal && modal.kind === "toolset" ? (
+          <NV_ToolsetCreateHost
+            onClose={function () { setModal(null); }}
+            onCreated={function (row) {
+              setModal(null);
+              NV_createdRow(con, function () { res.refetch(); }, "toolsets", row);
+            }} />
+        ) : null}
+        {modal && modal.kind === "trigger" ? (
+          <NV_TriggerCreateHost
+            onClose={function () { setModal(null); }}
+            onCreated={function (row) {
+              setModal(null);
+              NV_createdRow(con, function () { res.refetch(); }, "triggers", row);
+            }} />
         ) : null}
         {cards.length > NV_PLAT_PAGE_SIZE ? (
           <div className="nv-pager">

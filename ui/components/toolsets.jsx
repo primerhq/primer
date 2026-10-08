@@ -1182,3 +1182,5 @@ function _tsPillCls(status) {
 
 window.ToolsetsPage = ToolsetsPage;
 window.ToolsetDetail = ToolsetDetail;
+// The create dialog is also hosted by the Platform page (nv-platform.jsx): "New toolset" there opens this form directly.
+window.TS_NewToolsetModal = TS_NewToolsetModal;

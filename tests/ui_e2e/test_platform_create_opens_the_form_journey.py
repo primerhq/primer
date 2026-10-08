@@ -55,6 +55,8 @@ def test_new_toolset_opens_the_create_form_with_no_list_behind_it(page, base_url
         expect(page.get_by_test_id("nv-overlay-body")).to_be_visible(timeout=15_000)
         expect(page.get_by_test_id("nv-overlay-body")).to_contain_text(toolset_id)
         assert f"overlay=toolsets::{toolset_id}" in page.url.replace("%3A", ":"), page.url
+        # The grid pages at six cards, so filter to the new id before looking for its card.
+        page.get_by_test_id("nv-plat-filter").fill(toolset_id)
         expect(page.get_by_test_id(f"nv-pcard-del:{toolset_id}")).to_be_attached(timeout=15_000)
     finally:
         with httpx.Client(base_url=base_url, timeout=30.0) as c:

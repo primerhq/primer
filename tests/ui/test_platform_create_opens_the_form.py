@@ -129,10 +129,15 @@ def test_a_created_row_without_an_id_only_refreshes_the_cards() -> None:
 def test_the_platform_page_hosts_the_two_existing_dialogs() -> None:
     assert "window.TS_NewToolsetModal = TS_NewToolsetModal;" in TOOLSETS, "the toolset dialog must be reachable from the Platform page"
     assert "window.TR_CreateTriggerDialog = TR_CreateTriggerDialog;" in TRIGGERS
-    toolset_host = re.search(r"modal\.kind === \"toolset\"[\s\S]{0,700}", PLAT)
-    trigger_host = re.search(r"modal\.kind === \"trigger\"[\s\S]{0,700}", PLAT)
-    assert toolset_host and "window.TS_NewToolsetModal" in toolset_host.group(0)
-    assert trigger_host and "window.TR_CreateTriggerDialog" in trigger_host.group(0)
-    for host in (toolset_host.group(0), trigger_host.group(0)):
-        assert "NV_createdRow(" in host, "a created row must go through the tested hand-off"
-        assert "setModal(null)" in host, "the dialog must close on Cancel and on Done"
+    # The host components render the entity page's own dialog, unchanged.
+    assert re.search(r"function NV_ToolsetCreateHost[\s\S]{0,300}window\.TS_NewToolsetModal", PLAT)
+    assert re.search(r"function NV_TriggerCreateHost[\s\S]{0,200}window\.TR_CreateTriggerDialog", PLAT)
+    # The page shows the host for its modal kind, closes it on Cancel and on a created row, and hands the row to the tested helper.
+    for kind, host, nav in (("toolset", "NV_ToolsetCreateHost", "toolsets"), ("trigger", "NV_TriggerCreateHost", "triggers")):
+        shown = re.search(r"modal\.kind === \"" + kind + r"\"[\s\S]{0,600}", PLAT)
+        assert shown and f"<{host}" in shown.group(0), kind
+        block = shown.group(0)
+        assert block.count("setModal(null)") >= 2, f"{kind}: the dialog must close on Cancel and on a created row"
+        assert re.search(r"NV_createdRow\(con, [\s\S]{0,60}\"" + nav + r"\", row\)", block), (
+            f"{kind}: a created row must go through the tested hand-off, with the page's own nav"
+        )
