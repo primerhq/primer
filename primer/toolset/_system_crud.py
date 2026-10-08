@@ -327,7 +327,8 @@ def _crud_tools_for(
     NOT interruptible (a Stop between them would leave a half-deleted entity).
 
     ``write_note`` is appended to the create AND update descriptors: a rule about what a write may set that the agent should read before
-    it writes, for an entity whose pre-write check can refuse with ``type=forbidden`` (a collection's ``system`` flag).
+    it writes, for an entity whose pre-write check can refuse a field rule: ``type=forbidden`` (a collection's ``system`` flag) or
+    ``type=validation-error`` (an agent's id and description, ticket 01a11c1c).
 
     ``delete_note`` is appended to the delete descriptor only: a consequence of removing the row that the agent should read before it
     acts, for a delete the tool still performs (it is not a refusal).

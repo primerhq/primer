@@ -501,7 +501,8 @@ function AG_SessionsPanel({ agentId }) {
 
 // What the CREATE form refuses before it posts (admin review ADM-14), as a map under the server's own field paths so a client refusal and a
 // server 422 share one display. The id is optional (the backend assigns agent-<hex> when it is blank), but a typed one is permanent and sits
-// in URLs and references, so it is lowercase letters, digits, hyphens and underscores, starting with a letter or digit, at most 63 characters;
+// in URLs and references, so it is lowercase letters, digits, hyphens and single underscores (two in a row are reserved for the ids a harness install
+// mints, <slug>__<template>), starting with a letter or digit, at most 63 characters;
 // surrounding spaces are not part of it, and a whitespace-only id is a blank one. The description is required: it is how OTHER agents find
 // an agent. The id is checked on CREATE only (an existing agent's id is locked, so the edit passes a blank one); the description on create and
 // on edit. The backend enforces the same rule on create (primer/agent/agent_checks.py, AGENT_ID_PATTERN); tests/ui/test_agent_form_validation.py
@@ -509,8 +510,8 @@ function AG_SessionsPanel({ agentId }) {
 function AG_validateNewAgent(id, description) {
   var problems = {};
   var name = String(id || "").trim();
-  if (name && !/^[a-z0-9][a-z0-9_-]{0,62}$/.test(name)) {
-    problems["body.id"] = "Use lowercase letters, digits, hyphens and underscores, starting with a letter or digit (up to 63 characters), for example refund-triage. The name cannot change after the agent is created.";
+  if (name && !/^(?!.*__)[a-z0-9][a-z0-9_-]{0,62}$/.test(name)) {
+    problems["body.id"] = "Use lowercase letters, digits, hyphens and underscores, starting with a letter or digit (up to 63 characters), for example refund-triage. Two underscores in a row are reserved for the agents a harness installs. The name cannot change after the agent is created.";
   }
   if (!String(description || "").trim()) {
     problems["body.description"] = "Describe what this agent is for: other agents find it by its description.";

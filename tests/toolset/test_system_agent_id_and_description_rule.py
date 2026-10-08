@@ -115,7 +115,7 @@ async def test_the_write_descriptors_tell_the_agent_the_rule_before_it_writes(wo
 
     described = {t.id: t.description async for t in provider.list_tools()}
 
-    assert "lowercase letters, digits, hyphens and underscores" in described[tool], described[tool]
+    assert "lowercase letters, digits, hyphens and single underscores" in described[tool], described[tool]
     assert "must not be blank" in described[tool], described[tool]
     assert "reserved for the agents a harness installs" in described[tool], described[tool]
 
