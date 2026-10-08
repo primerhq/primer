@@ -2,8 +2,8 @@
 
 ``#/w/nope`` (a deleted or mistyped workspace id) kept the previous page's session tab, headed the Files sidebar ``FILES nope`` and told the user
 "This workspace has no files yet" although the files request was a 404, and fired seven 404s (tree, log, tap, attach, yields) with no message naming the
-cause. The Studio now asks for the workspace row once; a 404 shows a not-found card with a way to a real workspace, and nothing else about the
-missing workspace is requested.
+cause. The Studio now asks for the workspace row; a 404 shows a not-found card with a way to a real workspace, and what polled the missing workspace
+is no longer mounted, so the requests stop.
 """
 
 from __future__ import annotations
@@ -40,12 +40,14 @@ def test_a_link_to_an_unknown_workspace_says_so_and_offers_the_real_ones(page: P
     expect(page.get_by_test_id("nv-tg-tab:session:sess-carried-c019")).to_have_count(0)
     expect(page.get_by_text("This workspace has no files yet")).to_have_count(0)
 
-    # Nothing about the missing workspace is requested but the one read that finds it missing.
-    page.wait_for_timeout(1_000)
-    about_it = [u for u in requests if f"/workspaces/{MISSING}" in u]
-    assert about_it, "the workspace row was never asked for"
-    assert all(u.split("?")[0].endswith(f"/workspaces/{MISSING}") for u in about_it), about_it
-    assert not [u for u in requests if "sess-carried-c019" in u], "the carried-over session was still requested"
+    # The first render asks optimistically (a valid link is the common case, so nothing waits on the workspace row). Once the card is up, the
+    # missing workspace and the carried-over session are not asked for again: nothing that polls them is still mounted.
+    assert [u for u in requests if f"/workspaces/{MISSING}" in u and u.split("?")[0].endswith(f"/workspaces/{MISSING}")], "the workspace row was never asked for"
+    page.wait_for_timeout(500)
+    seen = [u for u in requests if MISSING in u or "sess-carried-c019" in u]
+    page.wait_for_timeout(7_000)
+    later = [u for u in requests if MISSING in u or "sess-carried-c019" in u][len(seen):]
+    assert not later, f"still asking about the missing workspace after the card: {later}"
 
     gone.get_by_test_id(f"nv-ws-gone-open:{real}").click()
     expect(gone).to_have_count(0, timeout=10_000)
