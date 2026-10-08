@@ -11,7 +11,10 @@ Endpoints (all under ``/v1/auth/sso``):
   PKCE flow: discovers the provider, mints a fresh PKCE pair / state /
   nonce, stashes them (plus the resolved ``return_to``) in a signed,
   short-lived, HttpOnly cookie, and 302s the browser to the provider's
-  ``authorization_endpoint``.
+  ``authorization_endpoint``. A refusal (provider unreachable, unknown
+  provider) answers JSON, except to a browser navigation (``Accept:
+  text/html``), which gets a 303 to ``/console/?sso_error=<code>`` so the
+  login screen can explain it; the same holds for ``/callback`` below.
 * ``GET /{provider_id}/callback`` — completes the flow: verifies the
   signed state cookie, checks the returned ``state`` query param against
   the value bound inside that cookie, exchanges the code, validates the
@@ -164,6 +167,37 @@ def _safe_return_to(value: str | None) -> str:
     if parsed.scheme or parsed.netloc:
         return _DEFAULT_RETURN_TO
     return value
+
+
+# ---------------------------------------------------------------------------
+# Helpers: a failed browser sign-in goes back to the login screen
+# ---------------------------------------------------------------------------
+
+# The query parameter the console's login screen reads to say why a sign-in failed (ui/components/auth.jsx).
+_LOGIN_ERROR_PARAM = "sso_error"
+
+
+def _prefers_html(request: Request) -> bool:
+    """True for a browser navigation (``Accept: text/html,...``); an API client sends ``*/*`` or JSON."""
+    return "text/html" in request.headers.get("accept", "").lower()
+
+
+def _login_failure_for_browser(request: Request, exc: HTTPException) -> RedirectResponse | None:
+    """The ``303`` back to the login screen for a refusal in a browser LOGIN; ``None`` leaves the JSON answer alone.
+
+    ``/login`` and ``/callback`` are top-level navigations (the login button sets ``window.location`` and the IdP sends the
+    browser back), so a refusal there used to land on a bare RFC7807 page with no way back but the browser button. A request
+    that asks for HTML gets ``/console/?sso_error=<code>`` instead and the login screen explains it. Only the code goes in
+    the URL, never the message (it can carry an exception text). Any other client keeps the JSON status. A refusal in link
+    mode (an authenticated user attaching an identity, flagged by the callback once it has read the signed state) is not a
+    login: the login screen is the wrong place for that user, so it keeps its JSON too.
+    """
+    if not _prefers_html(request) or getattr(request.state, "sso_link_mode", False):
+        return None
+    code = exc.detail.get("error") if isinstance(exc.detail, dict) else None
+    if not isinstance(code, str):
+        return None
+    return RedirectResponse(url=f"{_DEFAULT_RETURN_TO}?{urlencode({_LOGIN_ERROR_PARAM: code})}", status_code=303)
 
 
 # ---------------------------------------------------------------------------
@@ -467,9 +501,15 @@ async def sso_login(
     return_to: str | None = Query(default=None),
     storage=Depends(get_oidc_provider_storage),
 ) -> RedirectResponse:
-    return await _begin_oidc_flow(
-        provider_id=provider_id, request=request, return_to=return_to, storage=storage,
-    )
+    try:
+        return await _begin_oidc_flow(
+            provider_id=provider_id, request=request, return_to=return_to, storage=storage,
+        )
+    except HTTPException as exc:
+        response = _login_failure_for_browser(request, exc)
+        if response is None:
+            raise
+        return response
 
 
 @sso_authed_router.get("/{provider_id}/link")
@@ -505,11 +545,43 @@ async def sso_callback(
     user_storage=Depends(get_user_storage),
     storage_provider=Depends(get_storage_provider),
 ) -> RedirectResponse:
+    try:
+        return await _complete_oidc_flow(
+            provider_id=provider_id,
+            request=request,
+            code=code,
+            state=state,
+            oidc_provider_storage=oidc_provider_storage,
+            user_identity_storage=user_identity_storage,
+            user_storage=user_storage,
+            storage_provider=storage_provider,
+        )
+    except HTTPException as exc:
+        response = _login_failure_for_browser(request, exc)
+        if response is None:
+            raise
+        return response
+
+
+async def _complete_oidc_flow(
+    *,
+    provider_id: str,
+    request: Request,
+    code: str | None,
+    state: str | None,
+    oidc_provider_storage,
+    user_identity_storage,
+    user_storage,
+    storage_provider,
+) -> RedirectResponse:
     secret = request.app.state.session_secret
     cookie_value = request.cookies.get(_STATE_COOKIE_NAME)
     state_payload = oidc.verify_state(cookie_value, secret, _STATE_MAX_AGE_SECONDS)
     if state_payload is None:
         raise _reject(400, "invalid_state", "missing, expired, or tampered state cookie")
+    # Read as soon as the signed state is trusted, before any later refusal (a cancelled link raises missing_code below):
+    # a refusal in link mode is not a login and must not be sent to the login screen (see _login_failure_for_browser).
+    request.state.sso_link_mode = state_payload.get("mode") == "link"
 
     # OAuth `state` query param, round-tripped by the IdP, bound against
     # the value carried inside the (already signature/expiry-verified)
