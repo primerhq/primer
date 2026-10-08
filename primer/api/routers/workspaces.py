@@ -2917,8 +2917,9 @@ _SECRET_FLAG = re.compile(
     re.IGNORECASE,
 )
 _BEARER = re.compile(r"\b(bearer)\s+[^\s'\"<>]+", re.IGNORECASE)
-# "Basic" is also a plain word: only a base64-looking word after it (with a digit, a capital or padding) is a credential.
-_BASIC = re.compile(r"\b(basic)\s+(?=[A-Za-z0-9+/_\-]*[0-9A-Z=+/])[A-Za-z0-9+/_\-]{6,}={0,2}", re.IGNORECASE)
+# "Basic" is also a plain word ("basic Authentication"): only a base64-looking word after it is a credential, one with a digit, padding, "+" or "/", or a
+# capital after its first letter. Case-insensitive for the word alone: under re.IGNORECASE the [A-Z] would match any letter and every word would qualify.
+_BASIC = re.compile(r"\b((?i:basic))\s+(?=[A-Za-z0-9+/_\-]*[0-9=+/]|[A-Za-z0-9+/_\-]+[A-Z])[A-Za-z0-9+/_\-]{6,}={0,2}")
 _URL_USERINFO = re.compile(r"(?<=://)[^/\s:@'\"<>]+:[^/\s@'\"<>]*@")
 _SECRET_TOKEN_SHAPES = re.compile(
     r"\bsk-[A-Za-z0-9_\-]{8,}|\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{8,}|\bxox[a-z]-[A-Za-z0-9\-]{8,}|\b(?:AKIA|ASIA)[0-9A-Z]{12,}"
@@ -2939,6 +2940,21 @@ def _one_line(text: str) -> str:
     """Line breaks (including U+2028, U+2029 and U+0085) and tabs collapsed to a single space, so a multi-line value cannot pose as
     several arguments."""
     return _LINE_BREAKS.sub(" ", text)
+
+
+def _bounded(text: str, limit: int) -> str:
+    """``text`` cut to at most ``limit`` characters, never ending on the front half of a token: a cut that lands inside a word goes back to
+    the whitespace before it (a 64-character digest cut after 21 is too short for the blob rule and would be drawn). One token longer than the
+    limit keeps its head, which is all there is."""
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    if text[limit].isspace():
+        return head
+    i = len(head) - 1
+    while i >= 0 and not head[i].isspace():
+        i -= 1
+    return head[:i] if i > 0 else head
 
 
 def _blob_or_text(match: "re.Match[str]") -> str:
@@ -2970,7 +2986,7 @@ def _display_name(key: Any) -> str:
 def _attention_prompt(prompt: Any) -> str:
     """The question or wait of an ask or parked row as the Inbox shows it: cut to ``_PROMPT_SCAN_CHARS`` BEFORE it is scrubbed (it is
     unbounded text from a tool; scrubbing all of it blocked the event loop), scrubbed, one line, and cut to what is drawn."""
-    return _cut(_one_line(_scrub_text(str(prompt)[:_PROMPT_SCAN_CHARS])), _ATTENTION_TEXT_CHARS)
+    return _cut(_one_line(_scrub_text(_bounded(str(prompt), _PROMPT_SCAN_CHARS))), _ATTENTION_TEXT_CHARS)
 
 
 def _chars_of(value: Any) -> str:
@@ -2994,6 +3010,15 @@ def _parse_container(text: str) -> "dict | list | None":
     return parsed if isinstance(parsed, (dict, list)) else None
 
 
+def _pair_names_a_secret(mapping: dict) -> bool:
+    """Whether ``mapping`` is a name/value pair (``{"name": "DB_PASSWORD", "value": ...}``) whose name is a secret, so its value must not show."""
+    return any(
+        isinstance(inner, str) and _SECRET_ARG_KEY.search(inner[:_NAME_SCAN_CHARS])
+        for key, inner in itertools.islice(mapping.items(), _REDACT_MAX_ITEMS)
+        if str(key)[:_NAME_SCAN_CHARS].lower() in _PAIR_NAME_KEYS
+    )
+
+
 def _redact(value: Any, depth: int = 0, budget: "list[int] | None" = None) -> tuple[Any, bool]:
     """``value`` with every secret in it replaced, and whether anything was.
 
@@ -3008,11 +3033,7 @@ def _redact(value: Any, depth: int = 0, budget: "list[int] | None" = None) -> tu
     if isinstance(value, dict):
         if depth > _REDACT_MAX_DEPTH:
             return _REDACTED, True
-        pair_names_a_secret = any(
-            isinstance(inner, str) and _SECRET_ARG_KEY.search(inner[:_NAME_SCAN_CHARS])
-            for key, inner in itertools.islice(value.items(), _REDACT_MAX_ITEMS)
-            if str(key)[:_NAME_SCAN_CHARS].lower() in _PAIR_NAME_KEYS
-        )
+        pair_names_a_secret = _pair_names_a_secret(value)
         out: dict[Any, Any] = {}
         changed = False
         for index, (key, inner) in enumerate(value.items()):
@@ -3051,10 +3072,9 @@ def _redact(value: Any, depth: int = 0, budget: "list[int] | None" = None) -> tu
     if isinstance(value, str):
         if depth > _REDACT_MAX_DEPTH or budget[0] <= 0:
             return _REDACTED, True
-        take = min(len(value), _REDACT_MAX_TEXT, budget[0])
-        capped = take < len(value)
-        text = value[:take]
-        budget[0] -= take
+        text = _bounded(value, min(_REDACT_MAX_TEXT, budget[0]))
+        capped = len(text) < len(value)
+        budget[0] -= len(text)
         document = _parse_container(text)
         if document is not None:
             inner, changed = _redact(document, depth + 1, budget)
@@ -3092,6 +3112,7 @@ def _approval_preview(original_call: Any) -> dict[str, Any] | None:
         rest = sorted(k for k in args if k not in lead and k not in _BULKY_ARG_KEYS)
         bulky = sorted(k for k in args if k in _BULKY_ARG_KEYS)
         keys = [_display_name(k) for k in (lead + rest + bulky)[:_ATTENTION_KEY_COUNT]]
+        pair_names_a_secret = _pair_names_a_secret(args)       # the arguments may themselves be one name/value pair
         parts: list[str] = []
         size = 0
         for key in lead + rest:
@@ -3099,7 +3120,7 @@ def _approval_preview(original_call: Any) -> dict[str, Any] | None:
                 truncated = True
                 break
             shown = _display_name(key)
-            if _SECRET_ARG_KEY.search(str(key)[:_NAME_SCAN_CHARS]):
+            if _SECRET_ARG_KEY.search(str(key)[:_NAME_SCAN_CHARS]) or (pair_names_a_secret and str(key).lower() in _PAIR_VALUE_KEYS):
                 parts.append(f"{shown}={_REDACTED}")
                 truncated = True
             else:
