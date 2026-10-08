@@ -216,14 +216,24 @@ Two read endpoints expose derived detail the scrape format cannot carry:
   envelopes (`envelopes_for_window`): window `n` takes the `n`-th run, so both sides
   must count turns alike. `turn_envelopes` groups by `turn_no`, and a FAILED turn
   does not bump it (the claim adapter bumps on success only), so the turn after a
-  failed one (a message reopens the session) writes under the same `turn_no`: an
-  envelope that has ended (completed, failed, cancelled, yielded) and meets the next
-  `started` or `resumed` of the session's own turn (no `node_id`) closes there, and
-  a park and its resume are put back together as one run (ticket 01a11ce4; before
-  it the failed turn's trace read as the turn that followed it). Declared: the join
-  is still by position, and a failed turn still counts as more than one window (the
-  stream's terminal, dispatch's ERROR, the release marker; ticket 01a11ca5), so the
-  windows after a failed turn run ahead of their envelopes until that lands.
+  failed one (a message reopens the session) writes under the same `turn_no`; so
+  does a turn whose end entry never landed (a worker crash, a lost lease). A new
+  envelope therefore opens at an own event (no `node_id`) that is a `resumed`, or a
+  `started` that does not directly follow an own `resumed`. A group whose last END
+  event (`phase` events follow a `yielded`) is `yielded` is continued by the next
+  group when that carries a later `turn_no` (a park and its resume); a `yielded` and
+  a `resumed` on ONE `turn_no` (only `abandon_session_gate` writes that) are two
+  runs (ticket 01a11ce4; before it the failed turn's trace read as the turn that
+  followed it). **Declared, and pinned by
+  `test_interim_mapping_after_a_failed_turn_fail_retry_fail`:** this makes the RUNS
+  right, one per turn, but the join is still by position and a failed turn is still
+  more than one WINDOW (the failure exit's `ERROR`, then the release marker;
+  ticket 01a11ca5), so after a failed turn the windows run ahead of their runs. With
+  fail, retry, fail the windows are `[A, A's marker, B, C, C's marker]` against the
+  runs `[A, B, C]`: A reads right, A's marker window reads B's envelope, and the
+  successful retry B reads C's (`failed` with C's times; before the split it read
+  `completed` only because it had no run at all). It moves the mis-join rather than
+  closing it; the fold of 01a11ca5 closes it.
 - `GET /v1/workers/stats` returns the per-lane task counters as JSON
   (`{worker, kind, status, tasks, duration_sum_seconds, duration_count}`), for the
   console's workers page. The Prometheus text format is a scrape target, not a UI

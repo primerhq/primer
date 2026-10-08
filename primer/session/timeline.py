@@ -36,6 +36,19 @@ _YIELDED_RECORD = SessionMessageKind.YIELDED.value
 # turn-log envelope event, not a messages.jsonl row.
 _YIELDED = TurnLogKind.YIELDED.value
 
+# The turn-log kinds that end a turn (the session's own run, not a graph node's), and the ones that open one: a resume writes ``resumed`` and then
+# ``started``. An ENVELOPE ends at a terminal or at the ``yielded`` of a park.
+_TURN_LOG_TERMINALS = frozenset({
+    TurnLogKind.COMPLETED.value,
+    TurnLogKind.FAILED.value,
+    TurnLogKind.CANCELLED.value,
+})
+_RESUME_EVENT_KINDS = frozenset({
+    TurnLogKind.RESUMED.value,
+    TurnLogKind.STARTED.value,
+})
+_ENVELOPE_ENDS = _TURN_LOG_TERMINALS | {_YIELDED}
+
 
 def _parse_records(message_lines: list[str]) -> list[dict[str, Any]]:
     """Every event-log record in file order, folded or not.
@@ -105,32 +118,25 @@ def turn_windows(message_lines: list[str]) -> list[dict[str, Any]]:
 
 
 
-# Turn-log kinds that end an envelope of the session's own turn, and the ones that begin the next. A park ends one (``yielded``) and its
-# resume begins the next with ``resumed`` and then ``started``.
-_ENVELOPE_ENDS = frozenset({
-    TurnLogKind.COMPLETED.value, TurnLogKind.FAILED.value, TurnLogKind.CANCELLED.value, TurnLogKind.YIELDED.value,
-})
-_ENVELOPE_STARTS = frozenset({TurnLogKind.STARTED.value, TurnLogKind.RESUMED.value})
-
-
 def turn_envelopes(turn_log_lines: list[str]) -> list[list[dict[str, Any]]]:
     """Group turn-log events into envelopes, ascending by ``turn_no``, seq-ordered within.
 
     The turn log is observability data, not a contract: unparseable lines
     and events with no turn_no are skipped rather than raising.
 
-    A ``turn_no`` can hold more than one envelope: a FAILED turn does not bump
+    A ``turn_no`` can hold more than one envelope. A FAILED turn does not bump
     it (``SessionClaimAdapter.on_release`` bumps on success only), so the turn
     that follows (a message to the failed session reopens it) writes under the
-    same one. An envelope that has ended (completed, failed, cancelled or
-    yielded) and meets a ``started`` or ``resumed`` of the session's own turn
-    (no ``node_id``) closes there and the event opens the next. Without that
-    the failed turn and its successor were one group whose last event is the
-    successor's ``completed``, so the failed turn's trace read "completed" and
-    every later window was served another turn's envelope (ticket 01a11ce4).
-    A park and its resume on one ``turn_no`` split the same way and are put
-    back together by :func:`envelopes_for_window` (a group that closes with
-    ``yielded`` is continued by the next).
+    same one; a turn whose end entry never landed (a worker crash, a lost
+    lease) leaves the same shape. Without a split the failed turn and its
+    successor were one group whose last event is the successor's
+    ``completed``, so the failed turn's trace read "completed" and every later
+    window was served another turn's envelope (ticket 01a11ce4). A new
+    envelope opens at an own event (no ``node_id``: a graph node's events never
+    split anything) that is a ``resumed``, or a ``started`` that does not
+    directly follow an own ``resumed`` (a resume writes ``resumed`` and then
+    ``started`` for ONE envelope). Whether two envelopes are ONE turn is
+    :func:`envelopes_for_window`'s question.
     """
     by_turn: dict[int, list[dict[str, Any]]] = {}
     for line in turn_log_lines:
@@ -148,19 +154,29 @@ def turn_envelopes(turn_log_lines: list[str]) -> list[list[dict[str, Any]]]:
             continue
         by_turn.setdefault(turn_no, []).append(obj)
     groups: list[list[dict[str, Any]]] = []
+    resumed_kind = TurnLogKind.RESUMED.value
+    started_kind = TurnLogKind.STARTED.value
     for turn_no in sorted(by_turn):
         current: list[dict[str, Any]] = []
-        ended = False
+        previous_own: str | None = None
         for event in sorted(by_turn[turn_no], key=lambda e: e.get("seq") or 0):
+            kind = event.get("kind")
             own = event.get("node_id") is None
-            if ended and own and event.get("kind") in _ENVELOPE_STARTS:
+            if own and current and (kind == resumed_kind or (kind == started_kind and previous_own != resumed_kind)):
                 groups.append(current)
-                current, ended = [], False
+                current = []
             current.append(event)
-            if own and event.get("kind") in _ENVELOPE_ENDS:
-                ended = True
+            if own:
+                previous_own = kind
         groups.append(current)
     return groups
+
+
+def _last_own_end(group: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The last event of ``group`` that ends the session's own envelope (not a ``phase``, not a graph node's event)."""
+    return next(
+        (e for e in reversed(group) if e.get("node_id") is None and e.get("kind") in _ENVELOPE_ENDS), None,
+    )
 
 
 def envelopes_for_window(
@@ -176,14 +192,24 @@ def envelopes_for_window(
     A park leaves turn_no untouched (the park branch of
     primer/claim/adapters/sessions.py returns before the bump) while the
     resume injection releases with success and no park, which DOES bump
-    it. One logical turn therefore spans a run of envelopes: every group
-    that closes with ``yielded`` is continued by the next one.
+    it. One logical turn therefore spans a run of envelopes: a group whose
+    last END event (``phase`` events follow a ``yielded``, so not simply its
+    last event) is ``yielded`` is continued by the next group, which carries a
+    later ``turn_no``. A ``yielded`` followed by a ``resumed`` on the SAME
+    ``turn_no`` is not that: the only writer is ``abandon_session_gate``, which
+    continues the session as a new turn, so those are two runs.
     """
     runs: list[list[list[dict[str, Any]]]] = []
     current: list[list[dict[str, Any]]] = []
-    for group in groups:
+    for position, group in enumerate(groups):
         current.append(group)
-        if (group[-1].get("kind") if group else None) != _YIELDED:
+        end = _last_own_end(group)
+        following = groups[position + 1] if position + 1 < len(groups) else None
+        continued = (
+            end is not None and end.get("kind") == _YIELDED and following is not None
+            and (following[0].get("turn_no") or 0) > (group[0].get("turn_no") or 0)
+        )
+        if not continued:
             runs.append(current)
             current = []
     if current:
@@ -199,12 +225,6 @@ _TOOL_RESULT = SessionMessageKind.TOOL_RESULT.value
 # S3's notifying-call delivery record, written into the same log one spec
 # earlier. A leaf under the call it delivered, not a root child.
 _CLIENT_ACTION = SessionMessageKind.CLIENT_ACTION.value
-
-_TURN_LOG_TERMINALS = frozenset({
-    TurnLogKind.COMPLETED.value,
-    TurnLogKind.FAILED.value,
-    TurnLogKind.CANCELLED.value,
-})
 
 # Dogfood round 2: the trace overlay's expanded form shows a call's
 # result alongside its arguments - a tool's output (a read's full file,
@@ -460,12 +480,6 @@ def _tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         _attach(entry, rec, payload, roots, nodes, calls, calls_by_raw_id, calls_by_run)
     return roots
-
-
-_RESUME_EVENT_KINDS = frozenset({
-    TurnLogKind.RESUMED.value,
-    TurnLogKind.STARTED.value,
-})
 
 
 def _waits(
