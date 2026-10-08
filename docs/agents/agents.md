@@ -55,7 +55,14 @@ routing between them (use a [graph](graphs.md) via
 ## Mental model
 
 An `Agent` row carries:
-- `id`, `description` (free text; embedded for search).
+- `id`, `description` (free text; embedded for search). A new agent's `id` is optional (omitted, the server
+  generates `agent-<hex>`); when you send one it must match `^[a-z0-9][a-z0-9_-]{0,62}$`: lowercase letters,
+  digits, hyphens and underscores, starting with a letter or digit, 63 characters at most, because an id sits in
+  URLs and in references. Anything else is refused on create (422 at `body.id`, error type `agent_id_invalid`;
+  the system `create_agent` tool and the builder's `crud` toolset answer a `validation-error` starting `id:`).
+  The id cannot change afterwards, and an agent stored with an older id keeps working. A blank `description`
+  (empty or only spaces) is refused on create, and on an update that makes it blank (422 at `body.description`,
+  type `agent_description_blank`): other agents find an agent by its description.
 - `system_prompt` - a list of strings, joined by the runtime at
   invoke time (adapters that support a multi-segment system prompt
   emit it directly; others join the segments with blank lines).

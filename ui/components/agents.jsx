@@ -504,7 +504,8 @@ function AG_SessionsPanel({ agentId }) {
 // in URLs and references, so it is lowercase letters, digits, hyphens and underscores, starting with a letter or digit, at most 63 characters;
 // surrounding spaces are not part of it, and a whitespace-only id is a blank one. The description is required: it is how OTHER agents find
 // an agent. The id is checked on CREATE only (an existing agent's id is locked, so the edit passes a blank one); the description on create and
-// on edit. The model is not changed. tests/ui/test_agent_form_validation.py runs this.
+// on edit. The backend enforces the same rule on create (primer/agent/agent_checks.py, AGENT_ID_PATTERN); tests/ui/test_agent_form_validation.py
+// runs this and fails when the two differ.
 function AG_validateNewAgent(id, description) {
   var problems = {};
   var name = String(id || "").trim();
