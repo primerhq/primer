@@ -630,7 +630,7 @@ function NV_MobileSpaces(props) {
 // own NV_CreateSessionOverlay (one form with an inline dropdown-style bind
 // picker): a touch list you scroll and tap reads better than a tiny
 // desktop dropdown, per the phase plan's "distinct mobile UX, not squeezed
-// desktop" principle. Submit body mirrors that overlay's SharedNewSessionForm
+// desktop" principle. Submit body mirrors that overlay's create-session
 // contract verbatim (omitting binding asks for the system default agent;
 // auto_start follows whether an instruction was typed) - deliberately NOT
 // the overlay's advanced/graph-input-schema section, which the brief does

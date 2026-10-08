@@ -94,8 +94,8 @@ function NV_errText(err) {
 }
 
 // ---------------------------------------------------------------------------
-// Create session. Submit-body semantics are the SharedNewSessionForm
-// contract verbatim: omitting binding asks for the system default agent;
+// Create session. Submit-body semantics are the create-session contract
+// of the form this overlay replaced, verbatim: omitting binding asks for the system default agent;
 // a graph with an object Begin.input_schema submits graph_input instead
 // of initial_instructions; auto_start follows typed instructions until
 // the operator states a preference.
@@ -144,8 +144,8 @@ function NV_CreateSessionOverlay() {
   var graphDraft = graphDraftState[0];
   var setGraphDraft = graphDraftState[1];
 
-  // Typing instructions implies intent to run (SharedNewSessionForm's
-  // rule): the toggle follows along until the operator touches it.
+  // Typing instructions implies intent to run (the create-session rule
+  // since the first form): the toggle follows along until the operator touches it.
   React.useEffect(function () {
     if (autoTouched.current) return;
     setAutoStart(instr.trim().length > 0);

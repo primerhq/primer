@@ -1,10 +1,7 @@
-"""When a graph binding is selected and the graph's Begin has input_schema,
-the shared new-session form renders a dynamic schema-driven form. Without
-input_schema, the free-text instructions textarea is preserved.
+"""The graph-input row of the New session overlay (``SharedNewSessionSchemaField``, ui/components/new-session-form.jsx).
 
-The form + submit logic was unified into ui/components/new-session-form.jsx
-(FD2); the old NewSessionModal (app.jsx) is now a thin wrapper that renders
-window.SharedNewSessionForm, so this schema behavior is asserted there."""
+When a graph's Begin declares an object input_schema the overlay draws one of these rows per property. The create form that once held them was removed (see
+tests/ui/test_retired_new_session_form.py); these pins are the helper's own."""
 
 from __future__ import annotations
 from pathlib import Path
@@ -14,20 +11,6 @@ SRC = Path(__file__).resolve().parents[2] / "ui" / "components" / "new-session-f
 
 def _src() -> str:
     return SRC.read_text(encoding="utf-8")
-
-
-def test_modal_reads_begin_input_schema() -> None:
-    src = _src()
-    assert "input_schema" in src and "begin" in src.lower()
-
-
-def test_modal_packages_into_graph_input_field() -> None:
-    assert "graph_input" in _src()
-
-
-def test_modal_falls_back_to_textarea_without_schema() -> None:
-    src = _src()
-    assert "initial_instructions" in src
 
 
 # ---------------------------------------------------------------------------

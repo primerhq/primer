@@ -485,7 +485,7 @@ def test_create_session_sheet_reuses_the_desktop_overlays_own_entity_cache() -> 
 def test_create_session_submit_body_matches_the_shared_new_session_contract() -> None:
     """auto_start follows whether an instruction was typed; a typed name
     is sent, omitting binding asks for the default agent - same
-    SharedNewSessionForm contract nv-overlays.jsx's own
+    create-session contract nv-overlays.jsx's own
     NV_CreateSessionOverlay submits, deliberately WITHOUT that overlay's
     advanced/graph-input-schema section, which the brief does not ask
     for."""
