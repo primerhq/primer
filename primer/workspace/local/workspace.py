@@ -789,7 +789,7 @@ class LocalWorkspace(Workspace):
                     pass
                 except Exception as exc:  # noqa: BLE001 - one broken session must not stop the others from being ended
                     logger.warning(
-                        "LocalWorkspace: ending a session failed",
+                        "LocalWorkspace: aclose on session failed",
                         extra={"workspace_id": self.id, "session_id": session.session_id, "error": str(exc)},
                     )
 
