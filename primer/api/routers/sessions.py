@@ -34,6 +34,7 @@ from primer.session.mutation_lock import session_lifecycle_lock
 from primer.session.timeline import build_turn_timeline
 from primer.storage import raw_generation
 from primer.model.except_ import (
+    BadRequestError,
     ConflictError,
     NotFoundError,
     PrimerError,
@@ -1223,18 +1224,21 @@ def _outage_errors() -> tuple[type[BaseException], ...]:
     return tuple(types)
 
 
-# The runtime client's error codes that mean "the runtime did not answer or broke" (EPROTOCOL: the connection or the framing, ETIMEDOUT,
-# EINTERNAL). The others (EACCES, EISDIR, ENOTDIR, EEXIST, EUNSUPPORTED...) are answers the runtime gave to a request it understood and refused.
-_RUNTIME_TRANSPORT_CODES = frozenset({"EPROTOCOL", "ETIMEDOUT", "EINTERNAL"})
-
-
-def _is_an_outage(exc: BaseException) -> bool:
-    """Whether ``exc`` (already one of :func:`_outage_errors`) means the runtime did not answer: any of them, except a runtime error whose
-    code says the runtime answered and refused."""
+def _runtime_verdict(exc: BaseException) -> str:
+    """How a failed read reads, for the runtime client's own error (a plain ``Exception``: never a ``PrimerError``, so passed on raw it is a 500
+    and a logged traceback on every poll): ``"missing"`` (``ENOENT``: the log was never written), ``"not_a_file"`` (``EISDIR``, ``ENOTDIR``: a
+    request the runtime understood and refused) or ``"outage"`` for every other code (``EPROTOCOL``, ``ETIMEDOUT``, ``EINTERNAL``, ``EACCES``, as a
+    local ``PermissionError`` is, ``EEXIST``, ``EUNSUPPORTED``, and a code this code has never heard of: an unknown failure defaults to an outage, not to a 500).
+    Anything that is not the runtime client's error is an outage here (it already passed :func:`_outage_errors`)."""
     runtime_error = _runtime_client_error()
-    if runtime_error is not None and isinstance(exc, runtime_error):
-        return str(getattr(exc, "code", "")) in _RUNTIME_TRANSPORT_CODES
-    return True
+    if runtime_error is None or not isinstance(exc, runtime_error):
+        return "outage"
+    code = str(getattr(exc, "code", ""))
+    if code == "ENOENT":
+        return "missing"
+    if code in ("EISDIR", "ENOTDIR"):
+        return "not_a_file"
+    return "outage"
 
 
 def _log_outage(workspace_id: str | None, relative_path: str, exc: BaseException) -> None:
@@ -1265,7 +1269,8 @@ async def _read_log_bytes(
     the transport or the OS (:func:`_outage_errors`) means the workspace's runtime did not answer, which is not the same thing as an
     empty log and must not look like it (an empty list read as "the history is gone", and a retry loop could not tell loss from
     outage): it is logged (once per outage, :func:`_log_outage`) and raised as :class:`WorkspaceUnreachableError` (a typed 503).
-    Anything else is a bug and propagates as one.
+    The runtime client's own error is read by its code (:func:`_runtime_verdict`): ``ENOENT`` is a missing log, ``EISDIR`` and ``ENOTDIR`` a
+    ``BadRequestError``, anything else an outage. Anything that is none of these is a bug and propagates as one.
     """
     key = (workspace_id or "?", relative_path)
     try:
@@ -1276,8 +1281,12 @@ async def _read_log_bytes(
     except PrimerError:
         raise
     except _outage_errors() as exc:
-        if not _is_an_outage(exc):
-            raise                              # the runtime answered: a request it understood and refused
+        verdict = _runtime_verdict(exc)
+        if verdict == "missing":
+            _outage_logged_at.pop(key, None)   # the runtime answered: the file is simply not there
+            return b""
+        if verdict == "not_a_file":
+            raise BadRequestError(f"{relative_path!r} is not a file") from exc
         _log_outage(workspace_id, relative_path, exc)
         what = f"the log of session {session_id}" if session_id else "this log"
         where = f"Workspace {workspace_id!r}" if workspace_id else "The workspace"
