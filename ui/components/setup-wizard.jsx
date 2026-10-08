@@ -120,7 +120,8 @@ function SW_loadResume(apiFetch) {
         return plan;
       },
       function (err) {
-        var why = (err && (err.detail || err.message)) || "no reason given";
+        // The probe error of a saved provider can carry its Base URL's credentials (httpx echoes the URL): clean it like every other failure.
+        var why = SW_tidy((err && (err.detail || err.message)) || "") || "no reason given";
         return { step: 1, prefill: prefill, notice: "The saved provider " + id + " did not answer: " + why + "." + edit };
       }
     );
@@ -178,6 +179,11 @@ function SW_tidy(text) {
     .trim();
 }
 
+// The text of an error shown on the Setup page or the gate: what the console always showed (the error's message, or the error itself as text), cleaned.
+function SW_errorText(err) {
+  return SW_tidy(err && err.message ? err.message : String(err));
+}
+
 // pydantic's "<loc>\n  <reason>" pairs from a validation dump: [{loc, reason}].
 function SW_validationFields(text) {
   var tidy = SW_tidy(text);
@@ -189,12 +195,14 @@ function SW_validationFields(text) {
 }
 
 // The HTTP status a backend detail reports, or "" when it names none. Each wording is read where the backend puts it, so a status quoted in
-// the SERVER'S words (a body, a proxy's page) cannot replace the real one: ollama's message ends in "(status code: n)" after the server's
-// words, so that suffix comes first; the hosted providers say "<X> discover failed: HTTP n ..."; Gemini's key message says "(HTTP n)"; and
-// httpx says "Client error 'n Reason' for url ..." (or Server or Redirect). tests/ui/test_setup_wizard_failures.py feeds it each wording.
+// the SERVER'S words (a body, a proxy's page) cannot replace the real one: the hosted providers say "<X> discover failed: HTTP n ..." at the
+// START of the message, so that is read first and only there (a hosted-looking phrase quoted mid-text, or a body that ends in "(status code:
+// n)", is not theirs); ollama's message ends in "(status code: n)" after the server's words, so that suffix comes next; Gemini's key message
+// says "(HTTP n)"; and httpx says "Client error 'n Reason' for url ..." (or Server or Redirect). tests/ui/test_setup_wizard_failures.py feeds
+// it each wording.
 function SW_httpStatus(raw) {
-  var m = /\(status code:\s*(\d{3})\)\s*$/.exec(raw)
-    || /\bfailed:\s+HTTP\s+(\d{3})\b/.exec(raw)
+  var m = /^\w+ discover failed:\s+HTTP\s+(\d{3})\b/.exec(raw)
+    || /\(status code:\s*(\d{3})\)\s*$/.exec(raw)
     || /\(HTTP\s+(\d{3})\)/.exec(raw)
     || /\b(?:Client|Server|Redirect) error '(\d{3}) [A-Za-z ]+'/.exec(raw);
   return m ? m[1] : "";
@@ -523,7 +531,7 @@ function SetupPredicatesList({ state, onConfigureProvider, onRerunSeed, busy, te
             </span>
             <span className="setup-predicate-label">{p.label}</span>
             {!p.ok && p.detail && (
-              <span className="setup-predicate-detail muted text-sm">{p.detail}</span>
+              <span className="setup-predicate-detail muted text-sm">{SW_tidy(p.detail)}</span>
             )}
             {!p.ok && (
               <button type="button" className="sh-verb setup-predicate-fix"
@@ -566,7 +574,7 @@ function NV_SetupPage() {
     setError(null);
     Promise.all([_fetchSetupState(), _fetchCapabilities()]).then(
       ([s, c]) => { setState(s); setCapabilities(c); },
-      (err) => setError(err && err.message ? err.message : String(err)),
+      (err) => setError(SW_errorText(err)),
     );
   }, []);
   React.useEffect(load, [load]);
@@ -574,14 +582,14 @@ function NV_SetupPage() {
   const rerunSeed = () => {
     setBusy("seed");
     window.primerApi.apiFetch("POST", "/setup/seed", null, {}).then(
-      load, (err) => setError(err && err.message ? err.message : String(err)),
+      load, (err) => setError(SW_errorText(err)),
     ).finally(() => setBusy(null));
   };
 
   const resetRoster = () => {
     setBusy("reset");
     window.primerApi.apiFetch("POST", "/setup/reset_agents", null, {}).then(
-      load, (err) => setError(err && err.message ? err.message : String(err)),
+      load, (err) => setError(SW_errorText(err)),
     ).finally(() => setBusy(null));
   };
 
@@ -686,7 +694,7 @@ function SetupWizardGate({ onDone }) {
   const load = React.useCallback(() => {
     setError(null);
     return _fetchSetupState().then(setState, (err) => (
-      setError(err && err.message ? err.message : String(err))
+      setError(SW_errorText(err))
     ));
   }, []);
   React.useEffect(() => { load(); }, [load]);
@@ -701,7 +709,7 @@ function SetupWizardGate({ onDone }) {
   const rerunSeed = () => {
     setBusy("seed");
     window.primerApi.apiFetch("POST", "/setup/seed", null, {}).then(
-      load, (err) => setError(err && err.message ? err.message : String(err)),
+      load, (err) => setError(SW_errorText(err)),
     ).finally(() => setBusy(null));
   };
 
