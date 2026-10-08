@@ -157,6 +157,12 @@ class ChannelAdapter(ABC):
 
         The acting user's id is recorded under the provider-specific
         :meth:`_user_id_key` so renderers can attribute the decision.
+
+        Raises :class:`primer.session.approvers.ApproverRefusedError` when the
+        gate is routed to specific approvers: a messaging-platform user is not
+        a primer user the spec can admit, so such a gate is decided in the
+        console (see ``ChannelInbox._enforce_approvers``; the adapters'
+        feedback to the clicker is ticket 01a11b6c-b53b).
         """
         await self._inbox.handle_response(ResponseEnvelope(
             kind="tool_approval",

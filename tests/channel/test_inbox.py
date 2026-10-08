@@ -502,46 +502,45 @@ async def test_respond_to_second_of_two_concurrent_graph_approvals_writes_the_ri
     assert rec.gate_event_key == "tool_approval:s-rec-2:call-1"
 
 
-@pytest.mark.asyncio
-async def test_record_write_failure_does_not_block_the_publish(monkeypatch, caplog):
-    """Design requirement: a record-write failure must never block or
-    delay the wake publish. Breaks the session lookup the record write
-    depends on (storage_provider present but raising) and asserts the
-    event still publishes via _resolve_event_key's own independent
-    fallback, while this function logs and swallows its own failure.
-
-    01a07be5 finding 4: the gate is now captured BEFORE the publish, so
-    a broken session lookup fails in _capture_gate_for_record (not the
-    post-publish write) -- same "never blocks the publish" property,
-    different failure point."""
-    from tests.conftest import _FakeStorageProvider
-
-    sp = _FakeStorageProvider()
-    await sp.get_storage(WorkspaceSession).create(_session(
-        "s-rec-3",
+def _approval_session(sid: str, tcid: str):
+    return _session(
+        sid,
         parked_state={
-            "tool_call_id": "tc-3",
+            "tool_call_id": tcid,
             "yielded": {
                 "tool_name": "_approval",
-                "event_key": "tool_approval:s-rec-3:tc-3",
+                "event_key": f"tool_approval:{sid}:{tcid}",
                 "resume_metadata": {
-                    "original_call": {
-                        "id": "tc-3", "name": "delete_workspace", "arguments": {},
-                    },
+                    "original_call": {"id": tcid, "name": "delete_workspace", "arguments": {}},
                 },
             },
         },
-    ))
+    )
 
-    class _BoomSessionStorage:
+
+@pytest.mark.asyncio
+async def test_record_write_failure_does_not_block_the_publish(monkeypatch, caplog):
+    """Design requirement: a record-write failure must never block or delay the wake publish. Breaks ONLY the record storage (the
+    session lookup, which also decides whether the reply is admitted, keeps working) and asserts the event still publishes while the
+    write logs and swallows its own failure."""
+    from primer.model.tool_approval import ToolApprovalRecord
+    from tests.conftest import _FakeStorageProvider
+
+    sp = _FakeStorageProvider()
+    await sp.get_storage(WorkspaceSession).create(_approval_session("s-rec-3", "tc-3"))
+
+    class _BoomRecordStorage:
+        async def create(self, *_a, **_kw):
+            raise RuntimeError("record storage down")
+
         async def get(self, *_a, **_kw):
-            raise RuntimeError("storage down")
+            return None
 
     original_get_storage = sp.get_storage
 
     def _get_storage(model_cls):
-        if model_cls is WorkspaceSession:
-            return _BoomSessionStorage()
+        if model_cls is ToolApprovalRecord:
+            return _BoomRecordStorage()
         return original_get_storage(model_cls)
 
     monkeypatch.setattr(sp, "get_storage", _get_storage)
@@ -550,7 +549,7 @@ async def test_record_write_failure_does_not_block_the_publish(monkeypatch, capl
     await bus.initialize()
     try:
         inbox = ChannelInbox(event_bus=bus, storage_provider=sp)
-        with caplog.at_level(logging.ERROR, logger="primer.channel.inbox"):
+        with caplog.at_level(logging.ERROR):
             event = await _handle_and_capture(
                 inbox,
                 ResponseEnvelope(
@@ -560,14 +559,49 @@ async def test_record_write_failure_does_not_block_the_publish(monkeypatch, capl
                 ),
                 bus,
             )
-        # _resolve_event_key hits the same broken storage independently,
-        # already-tested fallback: reconstructs the key and still publishes.
         assert event.event_key == "tool_approval:s-rec-3:tc-3"
         assert any(
-            "failed to capture gate data before publish" in r.message
+            "failed to persist record" in r.message
             for r in caplog.records
-        )
+        ), "the record write failure must be logged, not swallowed silently"
     finally:
+        await bus.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_session_lookup_failure_refuses_the_approval_reply_instead_of_publishing(monkeypatch):
+    """Ticket 01a11b64 (a contract change: this used to publish through a broken lookup). Admitting a reply needs the gate's stamped
+    approver spec; when the session cannot be read it cannot be shown that the gate is unrestricted, so the reply is refused and
+    nothing is published (the park cannot be resumed with storage down anyway, and the user can answer again)."""
+    from tests.conftest import _FakeStorageProvider
+
+    sp = _FakeStorageProvider()
+    await sp.get_storage(WorkspaceSession).create(_approval_session("s-rec-4", "tc-4"))
+
+    class _BoomSessionStorage:
+        async def get(self, *_a, **_kw):
+            raise RuntimeError("storage down")
+
+    original_get_storage = sp.get_storage
+    monkeypatch.setattr(
+        sp, "get_storage",
+        lambda model_cls: _BoomSessionStorage() if model_cls is WorkspaceSession else original_get_storage(model_cls),
+    )
+
+    bus = InMemoryEventBus()
+    await bus.initialize()
+    sub = bus.subscribe()
+    try:
+        inbox = ChannelInbox(event_bus=bus, storage_provider=sp)
+        with pytest.raises(RuntimeError, match="storage down"):
+            await inbox.handle_response(ResponseEnvelope(
+                kind="tool_approval", workspace_id="ws-1", session_id="s-rec-4",
+                tool_call_id="tc-4", response=None, decision="approved", reason=None,
+            ))
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(anext(sub), timeout=0.3)
+    finally:
+        await sub.aclose()
         await bus.aclose()
 
 
