@@ -244,3 +244,20 @@ async def test_a_harness_managed_collection_is_refused_and_nothing_is_cascaded(c
     assert await provider.get_storage(Collection).get("owned") is not None
     assert [d.path for d in await _documents_of(provider, "owned")] == ["a.md"]
     assert await _content_rows(provider, "owned", ["a.md"]) == ["a.md"]
+
+
+@pytest.mark.asyncio
+async def test_a_system_collection_cannot_be_deleted_and_nothing_is_cascaded(client, provider, vectors):
+    """The model promises a system collection is read-only through every path; the generic delete was the one that did not keep it
+    (RUN: 204), and with the cascade it would now also have emptied it. It is regenerated from platform state, not edited by hand."""
+    created = await client.post("/v1/collections", json=Collection(id="sys-1", description="system", system=True).model_dump(mode="json"))
+    assert created.status_code == 201, created.text
+    await DocumentService(provider).upsert(collection_id="sys-1", path="map.md", content="regenerated from platform state")
+
+    resp = await client.delete("/v1/collections/sys-1")
+
+    assert resp.status_code == 403, resp.text
+    assert resp.headers["content-type"].startswith("application/problem+json")
+    assert "system-owned and read-only" in resp.json()["detail"]
+    assert await provider.get_storage(Collection).get("sys-1") is not None
+    assert [d.path for d in await _documents_of(provider, "sys-1")] == ["map.md"]
