@@ -318,6 +318,15 @@ function NV_Shell() {
       }
       setOverlay(parsed.overlay);
       setAnchor(parsed.anchor);
+      // The address bar shows what was APPLIED (console review C-025). The write effect below only runs when a state value moved, so an
+      // unknown part that parsed to the state the console was already in (?overlay=bogus, ?view=bogus, ?foo=bar) changed nothing and
+      // stayed in the bar, and a shared link carried a parameter that meant nothing. A valid link is its own canonical form and is
+      // left alone; one with an unknown part is replaced (never pushed: it is the same navigation).
+      var canonical = SH_buildUrl(parsed);
+      if (canonical !== current) {
+        ownHashRef.current = canonical;
+        window.history.replaceState(null, "", canonical);
+      }
     }
     readUrlRef.current = onNav;
     window.addEventListener("hashchange", onNav);
