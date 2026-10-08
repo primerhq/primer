@@ -180,3 +180,76 @@ async def test_sandbox_write_guard_refuses_every_spelling(sandbox_ws, tmp_path, 
         await sandbox_ws.write_file(path, b"pwned")
     assert not (tmp_path / ".state" / "x").exists()
     assert not (tmp_path / ".tmp" / "x").exists()
+
+
+# ------------------------------------------ local delete / move ordering ---
+# LocalWorkspace.delete_file / move_file checked existence (404) before the
+# reserved refusal (400): a missing .state file answered 404 and an existing
+# one 400, which told a caller whether it exists. Both now answer the same.
+
+_EXISTING = ".state/sessions/s1/messages.jsonl"
+_MISSING = ".state/sessions/nope/messages.jsonl"
+
+
+async def _delete_as_user(ws, path: str):
+    app, registry = _app("user")
+    registry.ws = ws
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        return await c.delete("/v1/workspaces/w/files", params={"path": path})
+
+
+async def _move_as_user(ws, src: str, dst: str):
+    app, registry = _app("user")
+    registry.ws = ws
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        return await c.post(
+            "/v1/workspaces/w/files/move", params={"src": src, "dst": dst},
+        )
+
+
+async def test_rest_delete_of_a_reserved_path_answers_the_same_whether_it_exists(local_ws):
+    ws, root = local_ws
+    existing = await _delete_as_user(ws, _EXISTING)
+    missing = await _delete_as_user(ws, _MISSING)
+    assert existing.status_code == missing.status_code == 400, (existing.text, missing.text)
+    assert (root / _EXISTING).exists()
+
+
+async def test_rest_move_from_a_reserved_path_answers_the_same_whether_it_exists(local_ws):
+    ws, root = local_ws
+    existing = await _move_as_user(ws, _EXISTING, "out.jsonl")
+    missing = await _move_as_user(ws, _MISSING, "out.jsonl")
+    assert existing.status_code == missing.status_code == 400, (existing.text, missing.text)
+    assert (root / _EXISTING).exists()
+    assert not (root / "out.jsonl").exists()
+
+
+async def test_the_delete_tool_answers_the_same_whether_a_reserved_path_exists(local_ws):
+    import json
+
+    from primer.toolset.workspaces import build_workspaces_toolset
+    from tests._support.caller import caller
+    from tests.tap.test_mcp_tap_tool import _Provider
+
+    ws, root = local_ws
+
+    class _Reg:
+        async def get_workspace(self, workspace_id):
+            return ws
+
+    ts = build_workspaces_toolset(
+        storage_provider=_Provider(), workspace_registry=_Reg(), tap_router=None,
+    )
+    outs = []
+    for path in (_EXISTING, _MISSING):
+        res = await ts.call(
+            tool_name="delete_workspace_file",
+            arguments={"workspace_id": "w", "path": path},
+            principal=None, ctx=caller("user"),
+        )
+        assert res.is_error
+        outs.append(json.loads(res.output)["type"])
+    assert outs == ["bad-request", "bad-request"], outs
+    assert (root / _EXISTING).exists()
