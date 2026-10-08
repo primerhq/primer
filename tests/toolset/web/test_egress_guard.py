@@ -4,9 +4,10 @@ Each test drives the object the app actually builds (``build_web_toolset``
 and ``LocalAdapter()``, both with no injected client), so a regression that
 drops the guard from one of those constructors fails here.
 
-No external network: the targets are loopback literals (refused before any
-socket is opened once the guard is in place) or names routed through a
-monkeypatched resolver.
+No external network: the targets are loopback literals or names routed
+through a monkeypatched resolver. A refused target never gets a socket; the
+allowlist test does open one, to 127.0.0.1:1 where nothing listens, and
+expects the ConnectError.
 """
 
 from __future__ import annotations

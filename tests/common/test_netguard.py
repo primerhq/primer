@@ -7,6 +7,9 @@ which address a connection was opened to and which bytes were written.
 
 from __future__ import annotations
 
+import time
+
+import anyio
 import httpcore
 import httpx
 import pytest
@@ -111,6 +114,9 @@ BLOCKED = [
     ("::ffff:169.254.169.254", "IPv4-mapped metadata"),
     ("::ffff:10.0.0.1", "IPv4-mapped RFC1918"),
     ("0.1.2.3", "this-network 0/8"),
+    ("64:ff9b::7f00:1", "NAT64 of loopback"),
+    ("64:ff9b::a9fe:a9fe", "NAT64 of metadata"),
+    ("2002:7f00:1::", "6to4 of loopback"),
 ]
 
 
@@ -291,6 +297,58 @@ async def test_non_http_scheme_is_refused():
     async with _client(backend) as c:
         with pytest.raises(httpx.UnsupportedProtocol):
             await c.get("ftp://public.example/file")
+    assert backend.log["connect"] == []
+
+
+# ---- timeouts: resolution and every attempt share the connect deadline ------------
+
+
+class _DeadFirstBackend(httpcore.AsyncMockBackend):
+    """The first address is blackholed (waits out its timeout); others answer."""
+
+    def __init__(self, dead: str):
+        super().__init__([])
+        self._dead = dead
+        self.attempts: list[tuple[str, float | None]] = []
+
+    async def connect_tcp(self, host, port, timeout=None, local_address=None,
+                          socket_options=None):
+        self.attempts.append((host, timeout))
+        if host == self._dead:
+            await anyio.sleep(timeout if timeout is not None else 3600)
+            raise httpcore.ConnectTimeout("blackholed")
+        return httpcore.AsyncMockStream(list(_OK))
+
+
+async def test_a_dead_first_address_does_not_consume_the_whole_budget(monkeypatch):
+    _fake_dns(monkeypatch, {"two.example": ["203.0.113.250", PUBLIC_V4]})
+    # 203.0.113.0/24 is TEST-NET-3 (not global), so allowlist it: the test is
+    # about the timeout split, not the address rule.
+    netguard.configure_egress_allow(["203.0.113.250"])
+    backend = _DeadFirstBackend(dead="203.0.113.250")
+    started = time.monotonic()
+    async with _client(backend, timeout=httpx.Timeout(5.0, connect=0.6)) as c:
+        r = await c.get("http://two.example/")
+    elapsed = time.monotonic() - started
+    assert r.status_code == 200
+    assert [h for h, _ in backend.attempts] == ["203.0.113.250", PUBLIC_V4]
+    first_timeout = backend.attempts[0][1]
+    assert first_timeout is not None and first_timeout <= 0.31, backend.attempts
+    assert elapsed < 0.55, elapsed
+
+
+async def test_slow_resolution_counts_against_the_connect_timeout(monkeypatch):
+    async def _slow_resolve(host, port):
+        await anyio.sleep(5)
+        return [PUBLIC_V4]
+
+    monkeypatch.setattr(netguard, "_resolve", _slow_resolve)
+    backend = _RecordingBackend([_OK])
+    started = time.monotonic()
+    async with _client(backend, timeout=httpx.Timeout(5.0, connect=0.3)) as c:
+        with pytest.raises(httpx.ConnectTimeout):
+            await c.get("http://slow.example/")
+    assert time.monotonic() - started < 1.5
     assert backend.log["connect"] == []
 
 
