@@ -85,3 +85,13 @@ def test_fire_error_chip_decodes_the_json_encoded_string_the_backend_stores() ->
     assert "JSON.parse(error)" in chip
     # Falls back to the plain-string path when the string is not JSON.
     assert "plain-string message" in chip
+
+
+def test_detail_shows_the_owner_and_what_an_ownerless_trigger_fires_as() -> None:
+    """Security review A-20: a fired run ranks no higher than the trigger's
+    owner, and a trigger saved before owners were recorded fires as an
+    ordinary user. The detail page names the owner, or says so."""
+    src = _src()
+    assert 'data-testid="trigger-owner"' in src
+    assert "t.owner.display" in src
+    assert "fires as an ordinary user" in src

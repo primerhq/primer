@@ -1489,6 +1489,18 @@ function TR_TriggerDetail({ id }) {
                 <dd>{t.description}</dd>
               </>
             )}
+            {/* Who last saved the trigger. A fired run ranks no higher
+                than this owner's current role (security review A-20). */}
+            <dt>Owner</dt>
+            <dd data-testid="trigger-owner">
+              {t.owner ? (
+                <span className="mono">{t.owner.display || t.owner.id}</span>
+              ) : (
+                <span className="muted">
+                  none recorded: fires as an ordinary user until an admin re-saves it
+                </span>
+              )}
+            </dd>
           </dl>
         </div>
       </div>
