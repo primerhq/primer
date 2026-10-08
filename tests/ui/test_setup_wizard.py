@@ -399,3 +399,12 @@ def test_an_unreadable_stored_row_stops_the_update_instead_of_risking_the_key() 
     ctx, out = _save_with_a_stored_row('{url: "http://right"}', "null", get_fails=True)
     assert out["rejected"]["status"] == 500, out
     assert ctx.eval("put") is None, "a PUT without knowing what is stored could erase the key"
+
+
+def test_a_whitespace_only_key_counts_as_blank_and_carries_the_stored_mask() -> None:
+    """Declared behaviour: the wizard's key field is trimmed (a stray space is not a credential), so a key of only whitespace is blank
+    and the update keeps the stored key instead of replacing it with spaces."""
+    stored = '{id: "llm-openchat", provider: "openchat", config: {url: "http://wrong", api_key: "**********1234"}}'
+    ctx, out = _save_with_a_stored_row('{url: "http://right", api_key: "   "}', stored)
+    assert "ok" in out, out
+    assert ctx.eval("put.config.api_key") == "**********1234"
