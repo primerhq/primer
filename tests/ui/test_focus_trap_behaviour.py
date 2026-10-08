@@ -76,13 +76,15 @@ function unmount() {
 }
 
 // ---- the scene: opener | dialog(first, middle, last) | after ----
+// The dialog box is a tab stop of its own in document order (tabindex -1 makes it focusable, and it precedes its children), so a native
+// Shift+Tab from the box goes to the opener, OUTSIDE the dialog: only the trap can send it to the last element.
 function scene() {
   PAGE.length = 0;
   var opener = el('opener'), after = el('after');
   var dialog = el('dialog'); dialog.__node = true;
   var first = el('first', { parent: dialog }), middle = el('middle', { parent: dialog }), last = el('last', { parent: dialog });
   dialog.focusables = [first, middle, last];
-  [opener, first, middle, last, after].forEach(function (x) { PAGE.push(x); });
+  [opener, dialog, first, middle, last, after].forEach(function (x) { PAGE.push(x); });
   document.activeElement = opener;
   return { opener: opener, dialog: dialog, first: first, middle: middle, last: last, after: after };
 }
@@ -135,10 +137,23 @@ def test_shift_tab_with_focus_on_the_dialog_box_itself_goes_to_the_last_element(
     out = _ev(ctx, """(function () {
       var s = scene(), ref = open(s); commit();
       s.dialog.focus();
-      press(s.dialog, true);
-      return document.activeElement.name;
+      var ev = press(s.dialog, true);
+      return { prevented: ev.defaultPrevented, now: document.activeElement.name };
     })()""")
-    assert out == "last"
+    assert out == {"prevented": True, "now": "last"}, "the trap, not the browser's default, sent focus to the last element"
+
+
+def test_without_the_trap_a_native_shift_tab_from_the_dialog_box_leaves_the_dialog(ctx) -> None:
+    """The control for the test above: the same scene with no listener (a closed trap) walks to the opener, which is the escape the trap
+    exists to prevent; if the fake page ever stopped modelling that, the test above would pass for the wrong reason."""
+    out = _ev(ctx, """(function () {
+      var s = scene(), ref = { current: s.dialog };
+      render(ref, false, null, []); commit();
+      s.dialog.focus();
+      var ev = press(s.dialog, true);
+      return { prevented: ev.defaultPrevented, now: document.activeElement.name };
+    })()""")
+    assert out == {"prevented": False, "now": "opener"}
 
 
 def test_tab_between_the_ends_is_left_to_the_browser(ctx) -> None:
