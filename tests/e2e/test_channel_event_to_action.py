@@ -145,9 +145,10 @@ class _NoopWorkspaceRegistry:
         return _NoopWorkspace()
 
 
-async def _provider(tmp_path: Path) -> SqliteStorageProvider:
+async def _provider(tmp_path: Path, async_closers) -> SqliteStorageProvider:
     p = SqliteStorageProvider(SqliteConfig(path=tmp_path / "e2a.sqlite"))
     await p.initialize()
+    async_closers.push_async_callback(p.aclose)
     return p
 
 
@@ -217,7 +218,7 @@ def _command_event(
 
 
 @pytest.mark.asyncio
-async def test_command_event_starts_a_mapped_session(tmp_path: Path) -> None:
+async def test_command_event_starts_a_mapped_session(tmp_path: Path, async_closers) -> None:
     """A ``command.invoked`` event matching the binding's
     ``EventMatcher`` (command_name == "deploy") fires the channel
     trigger; the created session is mapped to the source
@@ -225,7 +226,7 @@ async def test_command_event_starts_a_mapped_session(tmp_path: Path) -> None:
     there (S6 section 5). A non-matching ``status`` command creates no
     session.
     """
-    p = await _provider(tmp_path)
+    p = await _provider(tmp_path, async_closers)
     agent = await _seed_agent(p)
     ch = await _seed_channel(p)
     store = CorrelationStore(p)
@@ -314,14 +315,14 @@ async def test_command_event_starts_a_mapped_session(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_command_event_starts_session_with_reply_binding(
-    tmp_path: Path,
+    tmp_path: Path, async_closers,
 ) -> None:
     """A matching ``command.invoked`` event fires an
     ``agent_fresh_session`` binding; a session is created attributed to
     the subscription and its resolved reply binding names the
     subscription's ``reply_target`` channel.
     """
-    p = await _provider(tmp_path)
+    p = await _provider(tmp_path, async_closers)
     agent = await _seed_agent(p)
     ch = await _seed_channel(p)
     store = CorrelationStore(p)

@@ -128,9 +128,10 @@ class _NoopWorkspaceRegistry:
         return _NoopWorkspace()
 
 
-async def _provider(tmp_path: Path) -> SqliteStorageProvider:
+async def _provider(tmp_path: Path, async_closers) -> SqliteStorageProvider:
     p = SqliteStorageProvider(SqliteConfig(path=tmp_path / "evj.sqlite"))
     await p.initialize()
+    async_closers.push_async_callback(p.aclose)
     return p
 
 
@@ -174,8 +175,8 @@ async def _seed_channel(p) -> Channel:
 
 
 @pytest.mark.asyncio
-async def test_channel_event_action_journey(tmp_path: Path) -> None:
-    p = await _provider(tmp_path)
+async def test_channel_event_action_journey(tmp_path: Path, async_closers) -> None:
+    p = await _provider(tmp_path, async_closers)
     agent = await _seed_agent(p)
     ws = await _seed_workspace(p)
     ch = await _seed_channel(p)
