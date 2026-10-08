@@ -180,8 +180,11 @@ it's called from a context with no implicit session.
   `type=validation-error` naming the key.
 - A `url` file source is fetched by the platform and must not point
   at a private, loopback, link-local or metadata address (checked on
-  every redirect too); such a workspace fails to materialise. The
-  whole fetch must finish within 60 seconds, or it fails too.
+  every redirect too); such a workspace fails to materialise
+  (`create_workspace` over REST answers 422 naming the refused
+  host). The whole fetch must finish within 60 seconds, or it fails
+  too. An operator can allow private sources for the whole
+  deployment with `workspace_allow_private_url_sources`.
 
 ### Files and logs
 
