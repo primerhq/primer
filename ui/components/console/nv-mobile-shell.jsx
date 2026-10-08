@@ -91,7 +91,9 @@ function NV_mobileInboxView(it, who) {
   return view;
 }
 
-function NV_mobileInboxHeading(count) {
+// known === false: the queue has not loaded (or its first fetch failed), so "Nothing waiting on you" would be a claim nobody has checked.
+function NV_mobileInboxHeading(count, known) {
+  if (!count && known === false) return { title: "Inbox", count: "" };
   return { title: "Inbox", count: count ? count + " waiting on you" : "Nothing waiting on you" };
 }
 
@@ -244,32 +246,55 @@ function NV_MobileInboxCard(props) {
   );
 }
 
+// props.loaded: the attention list has arrived at least once. The empty state ("Nothing needs you", and its call to action) is a claim about the
+// user's queue, so it needs the queue to have loaded: while the first fetch is in flight the panel says so, and when it failed it shows the error
+// with Try again (props.error, props.onRetry). A poll that fails AFTER a good load keeps what was loaded (stale-while-error).
 function NV_MobileInboxPanel(props) {
-  var heading = NV_mobileInboxHeading(props.items.length);
+  var heading = NV_mobileInboxHeading(props.items.length, props.loaded);
+  var body;
+  if (props.items.length) {
+    body = (
+      <div className="nv-mob-ib-list">
+        {props.items.map(function (it) {
+          return <NV_MobileInboxCard key={it.session_id} item={it} onResolved={props.onResolved} />;
+        })}
+      </div>
+    );
+  } else if (!props.loaded && props.error) {
+    body = (
+      <div className="nv-mob-ib-empty" data-testid="nv-mob-ib-error" role="alert">
+        <p className="nv-mob-ib-empty-h">Couldn't load your Inbox.</p>
+        <p className="nv-mob-ib-empty-sub">{NV_errText(props.error)}</p>
+        {props.onRetry ? (
+          <button type="button" className="nv-mob-ib-start touch-target" data-testid="nv-mob-ib-retry" onClick={props.onRetry}>
+            Try again
+          </button>
+        ) : null}
+      </div>
+    );
+  } else if (!props.loaded) {
+    body = <div className="nv-mob-ib-empty" data-testid="nv-mob-ib-loading" role="status">Loading…</div>;
+  } else {
+    // A first-time user lands here with nothing else on the screen: say what the Inbox is for and offer the next step (console review C-040).
+    body = (
+      <div className="nv-mob-ib-empty" data-testid="nv-mob-ib-empty">
+        <p className="nv-mob-ib-empty-h">Nothing needs you right now.</p>
+        <p className="nv-mob-ib-empty-sub">Approvals and questions from your agents wait here. Start a session to put one to work.</p>
+        {props.onStart ? (
+          <button type="button" className="nv-mob-ib-start touch-target" data-testid="nv-mob-ib-start" onClick={props.onStart}>
+            Start a session
+          </button>
+        ) : null}
+      </div>
+    );
+  }
   return (
     <div className="nv-mob-inbox" data-testid="nv-mobile-panel:inbox">
       <div className="nv-mob-ib-head">
         <h1 className="nv-mob-ib-h">{heading.title}</h1>
         <span className="nv-mob-ib-count" data-testid="nv-mob-ib-count">{heading.count}</span>
       </div>
-      {props.items.length ? (
-        <div className="nv-mob-ib-list">
-          {props.items.map(function (it) {
-            return <NV_MobileInboxCard key={it.session_id} item={it} onResolved={props.onResolved} />;
-          })}
-        </div>
-      ) : (
-        // A first-time user lands here with nothing else on the screen: say what the Inbox is for and offer the next step (console review C-040).
-        <div className="nv-mob-ib-empty" data-testid="nv-mob-ib-empty">
-          <p className="nv-mob-ib-empty-h">Nothing needs you right now.</p>
-          <p className="nv-mob-ib-empty-sub">Approvals and questions from your agents wait here. Start a session to put one to work.</p>
-          {props.onStart ? (
-            <button type="button" className="nv-mob-ib-start touch-target" data-testid="nv-mob-ib-start" onClick={props.onStart}>
-              Start a session
-            </button>
-          ) : null}
-        </div>
-      )}
+      {body}
     </div>
   );
 }
@@ -1355,6 +1380,7 @@ function NV_MobileShell() {
       label: "Inbox" + (inboxItems.length > 0 ? " (" + inboxItems.length + ")" : ""),
       content: (
         <NV_MobileInboxPanel items={inboxItems} onResolved={inboxRes.refetch}
+          loaded={inboxRes.data != null} error={inboxRes.error} onRetry={inboxRes.refetch}
           onStart={function () { setStartRequested(true); setActiveTab("spaces"); }} />
       ),
     },
