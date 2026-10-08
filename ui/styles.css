@@ -3503,6 +3503,7 @@ input, textarea, select { font: inherit; color: inherit; }
   color: var(--text-4);
 }
 .nv-rail-kind { color: var(--attention); }
+.nv-rail-line { font-size: 11.5px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nv-rail-ws-row {
   display: flex;
   align-items: center;
@@ -5690,10 +5691,39 @@ button.nv-rail-ws-session {
   padding: var(--mobile-pad-y) var(--mobile-pad-x);
   color: var(--text-2, var(--text));
 }
-/* US-014 M2: the Inbox card's Approve/Review action row. shared/
-   card-list.jsx's own .card-body only sets margin-top - this is the
-   one addition the mobile Inbox cards need on top of it. */
-.nv-mobile-inbox-actions { display: flex; gap: 8px; }
+/* The mobile Inbox (console review C-032, C-033): a heading, then full-width cards - kind label and workspace, the session, one
+   descriptive line, then a full-width action row. An approval's border is the attention colour. Own markup, not shared/card-list.jsx:
+   its interactive card drew a border narrower than itself and put the button over the title. */
+.nv-mob-inbox { padding: var(--mobile-pad-y) var(--mobile-pad-x); display: flex; flex-direction: column; gap: 10px; }
+.nv-mob-ib-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.nv-mob-ib-h { margin: 0; font-size: 20px; font-weight: 600; }
+.nv-mob-ib-count { color: var(--text-3); font-size: 12.5px; }
+.nv-mob-ib-list { display: flex; flex-direction: column; gap: 10px; }
+.nv-mob-ib-empty { padding: 24px 0; color: var(--text-3); text-align: center; }
+.nv-mob-ib-card {
+  box-sizing: border-box; width: 100%; min-width: 0;
+  background: var(--bg-1); border: 1px solid var(--border); border-radius: 10px;
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 6px;
+}
+.nv-mob-ib-card[data-kind="approval"] { border-color: var(--attention-border); }
+.nv-mob-ib-card[role="button"] { cursor: pointer; }
+.nv-mob-ib-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-width: 0; }
+.nv-mob-ib-kind { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--attention); }
+.nv-mob-ib-where { font-size: 12px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nv-mob-ib-title { display: flex; align-items: center; gap: 6px; font-weight: 600; min-width: 0; }
+.nv-mob-ib-title > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nv-mob-ib-line { color: var(--text); overflow-wrap: anywhere; }
+.nv-mob-ib-args, .nv-mob-ib-full {
+  font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; color: var(--text-2);
+  background: var(--bg-2); border-radius: 6px; padding: 6px 8px; margin: 0; overflow-wrap: anywhere;
+}
+.nv-mob-ib-full { white-space: pre-wrap; max-height: 40vh; overflow: auto; }
+.nv-mob-ib-showall {
+  align-self: flex-start; background: none; border: none; padding: 4px 0; min-height: var(--tap-min, 44px);
+  color: var(--accent); font: inherit; font-size: 13px; cursor: pointer;
+}
+.nv-mobile-inbox-actions { display: flex; gap: 8px; margin-top: 4px; }
+.nv-mobile-inbox-actions > button { flex: 1 1 0; min-width: 0; }
 
 /* US-014 M4: Spaces + Files tabs. */
 

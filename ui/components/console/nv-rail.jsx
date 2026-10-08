@@ -90,6 +90,17 @@ function NV_Rail_SessionPulse(props) {
 // ask_user yield through the (now live, primary) aggregate rendered
 // "parked on you" instead of "asking you". Both spellings map to the same
 // label; anything else parked on a human falls to "parked on you".
+// The one descriptive line under a rail Inbox row (console review C-033): what an approval is about (the tool and the target the
+// aggregate row previews) or what a question or wait says, so a row is never just "approval" with a session name. "" when the row
+// carries nothing (an older server's fallback rows), and then no line is drawn.
+function NV_Rail_inboxLine(it) {
+  if (it.kind === "approval") {
+    var a = it.approval;
+    return a && a.tool_name ? a.tool_name + (a.arguments ? " " + a.arguments : "") : "";
+  }
+  return it.prompt || "";
+}
+
 function NV_Rail_inboxKindLabel(kind) {
   if (kind === "approval") return "approval";
   if (kind === "ask" || kind === "ask_user") return "asking you";
@@ -413,6 +424,9 @@ function NV_Rail(props) {
                   <span className="nv-rail-kind">{NV_Rail_inboxKindLabel(it.kind)}</span>
                   <span>{ws ? ws.name : it.workspace_id}</span>
                 </div>
+                {NV_Rail_inboxLine(it) ? (
+                  <div className="nv-rail-line" data-testid={"nv-rail-inbox-line:" + it.session_id}>{NV_Rail_inboxLine(it)}</div>
+                ) : null}
               </div>
               {ident ? (
                 <svg width="11" height="11" viewBox="0 0 12 12" style={{ flexShrink: 0, color: ident.color }}>

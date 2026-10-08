@@ -157,35 +157,33 @@ def test_inbox_panel_renders_cards_or_an_empty_state() -> None:
     assert "Nothing needs you right now." in MOBILE
 
 
-def test_inbox_cards_use_the_shared_card_list_primitives() -> None:
-    """shared/card-list.jsx (CardList/Card) was already in-tree, unused
-    by the console - reuse it rather than hand-rolled .card/.card-row
-    markup, same "primitives already in-tree" principle as MobileTabs."""
-    assert "window.CardList" in MOBILE
-    assert "window.Card " in MOBILE or "window.Card\n" in MOBILE or "<window.Card" in MOBILE
+def test_inbox_cards_are_their_own_full_width_markup() -> None:
+    """The shared interactive Card drew a border narrower than the card and put the Review button over the title (console review
+    C-032), so the Inbox draws its own card. The behaviour of the cards is driven in V8 (tests/ui/test_mobile_inbox.py) and in a real
+    browser (tests/ui_e2e/test_mobile_inbox_journey.py); this pins the two CSS facts that keep the border the card's own."""
+    assert 'className="nv-mob-ib-card"' in MOBILE
+    assert "window.Card" not in MOBILE
+    rule = re.search(r"\.nv-mob-ib-card \{([^}]*)\}", CSS)
+    assert rule and "width: 100%" in rule.group(1) and "box-sizing: border-box" in rule.group(1)
 
 
-def test_approve_button_lazily_resolves_tool_call_id_on_press() -> None:
-    """No render-time per-item fetch (that was the rejected N+1 design) -
-    NV_MobileApproveButton only calls sessionPendingYields inside its own
-    click handler, then posts through the exact SH_api.approve the
-    desktop decision card uses, so it is recorded identically."""
-    m = re.search(r"function NV_MobileApproveButton\(props\)[\s\S]{0,1600}", MOBILE)
+def test_a_decision_names_the_cards_own_call_and_fetches_nothing_first() -> None:
+    """The old Approve fetched the session's first pending yield AFTER the tap and approved whatever it was (console review C-033).
+    NV_inboxDecide posts the call id the card was drawn from; the V8 tests assert the request list."""
+    m = re.search(r"function NV_inboxDecide\([\s\S]*?\n\}\n", MOBILE)
     assert m
     body = m.group(0)
-    assert "function press(" in body
-    assert "SH_api.sessionPendingYields(it.workspace_id, it.session_id)" in body
-    assert "SH_api.approve(it.session_id, row.tool_call_id)" in body
-    # Not a useResource hook - this must not run on every render/poll.
-    assert "useResource" not in body
+    assert "SH_api.approve(it.session_id, it.tool_call_id)" in body
+    assert "SH_api.reject(it.session_id, it.tool_call_id" in body
+    assert "sessionPendingYields" not in body
 
 
-def test_only_approval_cards_get_the_inline_approve_button() -> None:
-    m = re.search(r"function NV_MobileInboxCard\(props\)[\s\S]{0,2200}", MOBILE)
+def test_the_decision_buttons_are_gated_on_what_the_card_can_say() -> None:
+    m = re.search(r"function NV_MobileInboxCard\(props\)[\s\S]*?\n\}\n", MOBILE)
     assert m
     body = m.group(0)
-    assert 'it.kind === "approval"' in body
-    assert re.search(r"isApproval \?\s*\(?\s*\n?\s*<NV_MobileApproveButton", body)
+    assert re.search(r"view\.canApprove \?\s*\(?\s*\n?\s*<NV_MobileDecisionButton decision=\"approve\"", body)
+    assert re.search(r"view\.canDeny \?\s*\(?\s*\n?\s*<NV_MobileDecisionButton decision=\"deny\"", body)
 
 
 def test_ask_and_parked_cards_get_no_inline_decision_ui() -> None:
@@ -200,9 +198,11 @@ def test_ask_and_parked_cards_get_no_inline_decision_ui() -> None:
 
 
 def test_non_approval_cards_get_whole_card_tap_to_review() -> None:
-    m = re.search(r"<window\.Card[\s\S]{0,150}", MOBILE)
+    m = re.search(r"function NV_MobileInboxCard\(props\)[\s\S]*?\n\}\n", MOBILE)
     assert m
-    assert "onClick={isApproval ? undefined : review}" in m.group(0)
+    body = m.group(0)
+    assert 'var whole = it.kind !== "approval";' in body
+    assert "onClick={whole ? review : undefined}" in body
 
 
 def test_review_affordance_present_on_every_card() -> None:
@@ -221,9 +221,9 @@ def test_review_routes_through_the_single_push_combined_navigation() -> None:
 
 
 def test_inbox_action_buttons_carry_the_touch_target_class() -> None:
-    approve = re.search(r"function NV_MobileApproveButton\(props\)[\s\S]{0,1600}", MOBILE)
-    assert approve and "touch-target" in approve.group(0)
-    card = re.search(r"function NV_MobileInboxCard\(props\)[\s\S]{0,2200}", MOBILE)
+    decision = re.search(r"function NV_MobileDecisionButton\(props\)[\s\S]*?\n\}\n", MOBILE)
+    assert decision and "touch-target" in decision.group(0)
+    card = re.search(r"function NV_MobileInboxCard\(props\)[\s\S]*?\n\}\n", MOBILE)
     assert card and "touch-target" in card.group(0)
 
 

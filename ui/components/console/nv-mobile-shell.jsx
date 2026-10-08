@@ -18,19 +18,18 @@
 // until now) as cards (kind / workspace / agent identity).
 //
 // Deliberately the LIGHT shape (design ruling, 2026-08-29): the mobile
-// Inbox is a TRIAGE feed, not a squeezed decision screen - approval
-// cards get exactly two actions, an inline Approve button and a
-// Review… deep link; ask and parked cards get ONLY Review (whole-card
-// tap does the same thing) - no inline answer textarea, no inline
-// Reject-with-reason. Both belong to the full session, which Review
-// reaches. This also means the feed does zero extra fetches at render:
-// the aggregate row alone (workspace/session/agent) is enough to draw
-// every card. Approve is the one action that needs a tool_call_id the
-// aggregate row doesn't carry, so NV_MobileApproveButton resolves it
-// LAZILY on press (one SH_api.sessionPendingYields call for that single
-// session, same route nv-session-doc.jsx's own "gates" resource reads)
-// and then posts through SH_api.approve - the exact same respond call
-// the desktop decision card uses, so it is recorded identically.
+// Inbox is a TRIAGE feed, not a squeezed decision screen - no inline
+// answer textarea, no inline Reject-with-reason; those belong to the full
+// session, which Review reaches. That ruling is amended (console review
+// C-033): an inline Approve is never blind. The aggregate row (GET
+// /v1/yields/pending) now carries the parked tool_call_id and a short
+// preview of the call (tool, decisive arguments) or of the question, so
+// the feed still does zero extra fetches at render; the card shows what
+// it would approve, and Approve and Deny name that exact call (a card
+// that has gone stale answers 404 and is refreshed away rather than
+// approving whatever the session is parked on now). A card that cannot
+// say what it approves offers "Open to review" instead of Approve, and
+// "Show all" fetches the full arguments of that one call on demand.
 //
 // "Review…" opens a session via the same con.openInWorkspace +
 // promoteDoc combo the rail and palette already use (single history
@@ -40,8 +39,8 @@
 //
 // testids: nv-mobile-shell, nv-mobile-panel:{tabId},
 // nv-mobile-inbox-card:{sid}, nv-mobile-inbox-approve:{sid},
-// nv-mobile-inbox-review:{sid}, nv-mob-session-screen,
-// nv-mob-screen-back
+// nv-mobile-inbox-deny:{sid}, nv-mobile-inbox-review:{sid},
+// nv-mob-ib-showall:{sid}, nv-mob-session-screen, nv-mob-screen-back
 
 function NV_MobileStub(props) {
   return (
@@ -51,62 +50,107 @@ function NV_MobileStub(props) {
   );
 }
 
-function NV_MobileInboxKindLabel(kind) {
-  if (kind === "approval") return "approval";
-  if (kind === "ask") return "asking you";
-  return "parked on you";
+// The card's words (console review C-032, C-033). Pure, so V8 tests drive it: what the kind is called, the one descriptive line, the
+// decisive arguments of an approval, and whether the card may offer a decision inline. An Approve is offered only when the card shows
+// WHAT it approves (the tool, which the aggregate row now carries) and names the call (its id); otherwise the card says to open it.
+// Deny stays available whenever the call is named: refusing is the safe default.
+function NV_mobileInboxView(it) {
+  var view = { kindLabel: "Parked", line: "", args: "", truncated: false, canApprove: false, canDeny: false };
+  if (it.kind === "approval") {
+    var a = it.approval;
+    view.kindLabel = "Approval";
+    view.line = a && a.tool_name ? a.tool_name : "A tool call is waiting for your approval";
+    if (a && a.tool_name) {
+      view.args = a.arguments || "";
+      view.truncated = !!a.truncated;
+    }
+    view.canApprove = !!(a && a.tool_name && it.tool_call_id);
+    view.canDeny = !!it.tool_call_id;
+  } else if (it.kind === "ask") {
+    view.kindLabel = "Question";
+    view.line = it.prompt || "The agent has a question for you";
+  } else {
+    view.line = it.prompt || "Waiting on you";
+  }
+  return view;
 }
 
-function NV_MobileApproveButton(props) {
+function NV_mobileInboxHeading(count) {
+  return { title: "Inbox", count: count ? count + " waiting on you" : "Nothing waiting on you" };
+}
+
+// Approve or Deny the call a card showed. The decision names the card's own tool_call_id, so a session that has since parked on
+// something else answers 404 instead of having that other call approved (it used to fetch the session's first pending yield AFTER
+// the tap and approve whatever that was). Every outcome reaches the toast; a stale card is refreshed away.
+// Resolves {ok}, {stale} or {failed}; never rejects.
+function NV_inboxDecide(decision, it, toast, onResolved) {
+  var verb = decision === "approve" ? "Approve" : "Deny";
+  if (!it.tool_call_id) {
+    toast(verb + " failed: this approval does not name a call. Open it to review.", { kind: "error", requestId: null });
+    return Promise.resolve({ failed: true });
+  }
+  var request = decision === "approve"
+    ? SH_api.approve(it.session_id, it.tool_call_id)
+    : SH_api.reject(it.session_id, it.tool_call_id, "");
+  return request.then(function () {
+    toast((decision === "approve" ? "Approved " : "Denied ") + ((it.approval && it.approval.tool_name) || "the call"));
+    if (onResolved) onResolved();
+    return { ok: true };
+  }, function (err) {
+    if (err && (err.status === 404 || err.status === 409)) {
+      toast("That approval has moved on. Open the session to review what it is waiting on now.", {
+        kind: "error", requestId: err.requestId || err.request_id || null,
+      });
+      if (onResolved) onResolved();
+      return { stale: true };
+    }
+    toast(verb + " failed: " + ((err && (err.detail || err.message)) || "unknown error"), {
+      kind: "error", requestId: (err && (err.requestId || err.request_id)) || null,
+    });
+    return { failed: true };
+  });
+}
+
+// "Show all": the full arguments of the exact call the card names (one request, only when asked for).
+// Resolves {text}, {gone} (the session is no longer parked on that call) or {failed, error}; never rejects.
+function NV_inboxFullCall(it) {
+  return SH_api.sessionPendingYields(it.workspace_id, it.session_id).then(function (out) {
+    var row = ((out && out.items) || []).filter(function (r) { return r.tool_call_id === it.tool_call_id; })[0];
+    var call = row && row.resume_metadata && row.resume_metadata.original_call;
+    if (!call) return { gone: true };
+    return { text: JSON.stringify(call.arguments === undefined ? {} : call.arguments, null, 2) };
+  }, function (err) {
+    return { failed: true, error: (err && (err.detail || err.message)) || "unknown error" };
+  });
+}
+
+function NV_MobileDecisionButton(props) {
   var con = NV_useConsole();
   var it = props.item;
+  var approve = props.decision === "approve";
   var busyState = React.useState(false);
   var busy = busyState[0];
   var setBusy = busyState[1];
-
-  function press(ev) {
-    ev.stopPropagation();
-    setBusy(true);
-    // Lazy resolve: the aggregate row has no tool_call_id (it is
-    // workspace-shaped, not yield-shaped), so Approve fetches this ONE
-    // session's own pending yield only when pressed - zero extra
-    // fetches for cards nobody acts on.
-    SH_api.sessionPendingYields(it.workspace_id, it.session_id).then(
-      function (out) {
-        var row = ((out && out.items) || [])[0];
-        if (!row || !row.tool_call_id) {
-          setBusy(false);
-          con.toast("Nothing left to approve - it may have already resolved.");
-          if (props.onResolved) props.onResolved();
-          return null;
-        }
-        return SH_api.approve(it.session_id, row.tool_call_id).then(
-          function () {
-            setBusy(false);
-            if (props.onResolved) props.onResolved();
-          }
-        );
-      },
-      function (err) {
-        setBusy(false);
-        con.toast("Approve failed: " + ((err && (err.detail || err.message)) || "unknown error"));
-      }
-    );
-  }
-
   return (
-    <button type="button" className="nv-btn-primary touch-target"
-      data-testid={"nv-mobile-inbox-approve:" + it.session_id}
+    <button type="button" className={(approve ? "nv-btn-primary" : "nv-btn-secondary") + " touch-target"}
+      data-testid={"nv-mobile-inbox-" + props.decision + ":" + it.session_id}
       disabled={busy}
-      onClick={press}>{busy ? "Approving…" : "Approve"}</button>
+      onClick={function (ev) {
+        ev.stopPropagation();
+        setBusy(true);
+        NV_inboxDecide(props.decision, it, con.toast, props.onResolved).then(function () { setBusy(false); });
+      }}>{busy ? (approve ? "Approving…" : "Denying…") : (approve ? "Approve" : "Deny")}</button>
   );
 }
 
 function NV_MobileInboxCard(props) {
   var con = NV_useConsole();
   var it = props.item;
-  var isApproval = it.kind === "approval";
+  var view = NV_mobileInboxView(it);
   var ident = NV_identity(it.agent_binding);
+  var fullState = React.useState(null);
+  var full = fullState[0];
+  var setFull = fullState[1];
 
   function review() {
     if (con.openInWorkspace) {
@@ -117,58 +161,87 @@ function NV_MobileInboxCard(props) {
     if (con.promoteDoc) con.promoteDoc("session:" + it.session_id);
   }
 
-  var title = (
-    <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-      <svg width="11" height="11" viewBox="0 0 12 12" style={{ flexShrink: 0, color: ident.color }}>
-        <path d={ident.d} fill="currentColor" />
-      </svg>
-      <span>{it.session_name || it.session_id}</span>
-    </span>
-  );
-  var subtitle = NV_MobileInboxKindLabel(it.kind) + " · "
-    + (it.workspace_name || it.workspace_id);
+  function toggleFull(ev) {
+    ev.stopPropagation();
+    if (full) { setFull(null); return; }
+    setFull({ loading: true });
+    NV_inboxFullCall(it).then(function (res) {
+      if (res.text !== undefined) { setFull({ text: res.text }); return; }
+      setFull(null);
+      con.toast(res.gone
+        ? "That call has moved on. Open the session to review what it is waiting on now."
+        : "Could not load the full call: " + res.error, { kind: "error", requestId: null });
+    });
+  }
 
-  // Non-approval cards: whole-card tap is the same Review deep link
-  // (window.Card wires up role="button"/keyboard handling once onClick
-  // is set). Approval cards stay non-interactive at the card level -
-  // Approve and Review are the two explicit actions, no ambiguity about
-  // what tapping the card body itself would do.
-  // window.Card doesn't forward arbitrary props (no ...rest spread), so
-  // the per-card testid needs its own wrapper rather than a prop on it.
+  // A question or a wait: the whole card is the Review link. An approval stays non-interactive at the card level, so the
+  // decision buttons are the only things that act and tapping the text never decides anything.
+  var whole = it.kind !== "approval";
   return (
-    <div data-testid={"nv-mobile-inbox-card:" + it.session_id}>
-      <window.Card title={title} subtitle={subtitle}
-        onClick={isApproval ? undefined : review}>
-        <div className="nv-mobile-inbox-actions">
-          {isApproval ? (
-            <NV_MobileApproveButton item={it} onResolved={props.onResolved} />
-          ) : null}
-          <button type="button" className="nv-btn-secondary touch-target"
-            data-testid={"nv-mobile-inbox-review:" + it.session_id}
-            onClick={function (ev) { ev.stopPropagation(); review(); }}>
-            Review…
-          </button>
-        </div>
-      </window.Card>
-    </div>
+    <article className="nv-mob-ib-card" data-kind={it.kind}
+      data-testid={"nv-mobile-inbox-card:" + it.session_id}
+      role={whole ? "button" : undefined} tabIndex={whole ? 0 : undefined}
+      onClick={whole ? review : undefined}
+      onKeyDown={whole ? function (ev) {
+        if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); review(); }
+      } : undefined}>
+      <div className="nv-mob-ib-top">
+        <span className="nv-mob-ib-kind" data-testid="nv-mob-ib-kind">{view.kindLabel}</span>
+        <span className="nv-mob-ib-where">{it.workspace_name || it.workspace_id}</span>
+      </div>
+      <div className="nv-mob-ib-title">
+        <svg width="11" height="11" viewBox="0 0 12 12" style={{ flexShrink: 0, color: ident.color }}>
+          <path d={ident.d} fill="currentColor" />
+        </svg>
+        <span>{it.session_name || it.session_id}</span>
+      </div>
+      <div className="nv-mob-ib-line" data-testid="nv-mob-ib-line">{view.line}</div>
+      {view.args ? <div className="nv-mob-ib-args" data-testid="nv-mob-ib-args">{view.args}</div> : null}
+      {view.truncated ? (
+        <button type="button" className="nv-mob-ib-showall"
+          data-testid={"nv-mob-ib-showall:" + it.session_id}
+          onClick={toggleFull}>{full ? "Hide" : "Show all"}</button>
+      ) : null}
+      {full ? (
+        <pre className="nv-mob-ib-full" data-testid={"nv-mob-ib-full:" + it.session_id}>
+          {full.loading ? "Loading…" : full.text}
+        </pre>
+      ) : null}
+      <div className="nv-mobile-inbox-actions">
+        {view.canApprove ? (
+          <NV_MobileDecisionButton decision="approve" item={it} onResolved={props.onResolved} />
+        ) : null}
+        {view.canDeny ? (
+          <NV_MobileDecisionButton decision="deny" item={it} onResolved={props.onResolved} />
+        ) : null}
+        <button type="button"
+          className={(it.kind === "approval" && !view.canApprove ? "nv-btn-primary" : "nv-btn-secondary") + " touch-target"}
+          data-testid={"nv-mobile-inbox-review:" + it.session_id}
+          onClick={function (ev) { ev.stopPropagation(); review(); }}>
+          {it.kind === "approval" && !view.canApprove ? "Open to review" : "Review…"}
+        </button>
+      </div>
+    </article>
   );
 }
 
 function NV_MobileInboxPanel(props) {
-  // CardList keys its own wrapping Fragment off item.id (falling back to
-  // the array index) - the aggregate rows only carry session_id, so
-  // without this an item arriving/resolving at the front of the feed
-  // would reconcile by position instead of by session.
-  var items = props.items.map(function (it) {
-    return it.id != null ? it : Object.assign({}, it, { id: it.session_id });
-  });
+  var heading = NV_mobileInboxHeading(props.items.length);
   return (
-    <div data-testid="nv-mobile-panel:inbox">
-      <window.CardList items={items}
-        empty="Nothing needs you right now."
-        renderCard={function (it) {
-          return <NV_MobileInboxCard item={it} onResolved={props.onResolved} />;
-        }} />
+    <div className="nv-mob-inbox" data-testid="nv-mobile-panel:inbox">
+      <div className="nv-mob-ib-head">
+        <h1 className="nv-mob-ib-h">{heading.title}</h1>
+        <span className="nv-mob-ib-count" data-testid="nv-mob-ib-count">{heading.count}</span>
+      </div>
+      {props.items.length ? (
+        <div className="nv-mob-ib-list">
+          {props.items.map(function (it) {
+            return <NV_MobileInboxCard key={it.session_id} item={it} onResolved={props.onResolved} />;
+          })}
+        </div>
+      ) : (
+        <div className="nv-mob-ib-empty">Nothing needs you right now.</div>
+      )}
     </div>
   );
 }

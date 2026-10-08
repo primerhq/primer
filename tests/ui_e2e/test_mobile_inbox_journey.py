@@ -169,3 +169,33 @@ def test_the_inbox_names_what_it_asks_you_to_decide_and_deciding_is_acknowledged
         finally:
             client.delete(f"/v1/tool_approval_policies/{policy_id}")
             client.post("/v1/tool_approval_policies/invalidate")
+
+
+@pytest.mark.timeout(180)
+def test_the_desktop_rail_inbox_row_says_what_it_is_about(
+    page: Page, base_url: str, console_url: str, mock_llm_lan, tmp_path: Path,
+):
+    """The same aggregate row feeds the desktop rail, whose rows used to read only "approval" next to a session name."""
+    registry, mock_base_url = mock_llm_lan
+    suffix = uuid.uuid4().hex[:8]
+    ids = _seed(base_url, mock_base_url, suffix, tmp_path)
+    registry.register(ids["model_name"], [
+        Rule(when_tool_result=True, emit_text="done"),
+        Rule(when_last_user_contains="write the plan", emit_tool=WRITE, emit_args={"workspace_id": ids["workspace"], "path": "notes/plan.md", "content": "x" * 50}),
+        Rule(emit_text="ok"),
+    ])
+    policy_id = f"mi-pol-{suffix}"
+    with httpx.Client(base_url=base_url, timeout=30.0) as client:
+        _gate_writes(client, policy_id)
+        try:
+            sid = _start(client, ids, "please write the plan")
+            _attention_row(client, sid, "approval")
+            page.set_viewport_size({"width": 1440, "height": 900})
+            page.goto(console_url)
+            line = page.get_by_test_id(f"nv-rail-inbox-line:{sid}")
+            expect(line).to_be_visible(timeout=30_000)
+            expect(line).to_contain_text(WRITE)
+            expect(line).to_contain_text("path=notes/plan.md")
+        finally:
+            client.delete(f"/v1/tool_approval_policies/{policy_id}")
+            client.post("/v1/tool_approval_policies/invalidate")
