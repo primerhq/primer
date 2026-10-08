@@ -150,6 +150,12 @@ def open_console_with_query(page: Page, console_url: str, query: str) -> None:
     page.goto(f"{console_url}{query}", wait_until="domcontentloaded")
 
 
+def open_gate(page: Page, console_url: str) -> None:
+    """Load the console root without waiting for the shell: for journeys about what the gate shows INSTEAD of it (a failed status read,
+    a login, a wizard), where ``open_root`` would wait for a shell that is not meant to appear."""
+    page.goto(console_url, wait_until="domcontentloaded")
+
+
 def open_setup_wizard(page: Page, console_url: str, *, timeout: int = 15_000) -> None:
     """Load the console root while the first-boot gate is showing and wait for the wizard card.
 
