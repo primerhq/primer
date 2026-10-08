@@ -308,11 +308,27 @@ function TS_McpOAuthPanel({ id, ts }) {
   );
 }
 
+// Whether a freshly saved toolset has a connection to check. Only an MCP server does. A Python toolset's tools are the functions in the source the
+// operator writes AFTER the create, so probing it reports "0 tools" and a "Connected" that means nothing (ADM-11).
+function TS_hasConnection(row) {
+  return !!row && row.provider === "mcp";
+}
+
 // Post-registration connection result shown inside the New/Edit modal: a
 // loading state while we probe, then "connected · N tools" or the classified
 // connection error (so a bad URL / unreachable server is obvious immediately
 // instead of a silent save).
 function TS_ConnectResult({ row, isEdit, probing, probe }) {
+  if (!TS_hasConnection(row)) {
+    return (
+      <div style={{ padding: "4px 2px" }} data-testid="toolset-connect-result">
+        <div className="field-help" data-testid="toolset-created-note">
+          {isEdit ? "Saved" : "Created"} <span className="mono">{row.id}</span>.
+          {row.provider === "python" ? " A Python toolset" : " This toolset"} has no connection to check, and no tools until you write its source: the editor opens next.
+        </div>
+      </div>
+    );
+  }
   const spinner = (
     <span
       aria-hidden="true"
@@ -410,7 +426,8 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
   const [probe, setProbe] = React.useState(null); // {ok:true,count} | {ok:false,message}
 
   React.useEffect(() => {
-    if (!createdRow) return undefined;
+    // Only an MCP server has a connection to check (TS_hasConnection).
+    if (!createdRow || !TS_hasConnection(createdRow)) return undefined;
     let alive = true;
     setProbing(true);
     setProbe(null);
@@ -525,7 +542,7 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
       footer={
         createdRow ? (
           <Btn kind="primary" icon="check" onClick={() => onCreate(createdRow)} disabled={probing} data-testid="toolset-connect-done">
-            {probing ? "Connecting…" : "Done"}
+            {probing ? "Connecting…" : (TS_hasConnection(createdRow) ? "Done" : "Open the editor")}
           </Btn>
         ) : (
           <>
