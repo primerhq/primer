@@ -14,7 +14,8 @@ asks, asked before the write instead of after it:
 An UPDATE refuses only a reference it ADDS: an agent that already names a toolset (or a profile) that has since been deleted can
 still have its description edited, while pointing it at a missing profile or adding a tool of a missing toolset is refused. Each
 check raises :class:`~primer.common.entity_checks.EntityCheckError`; the router's hooks re-raise the 422 shape the profile and
-channel routers use, the tools answer ``validation-error`` with the field path in front.
+channel routers use for the two REFERENCE codes (the id and description rules below answer a request-validation 422 instead), the tools
+answer ``validation-error`` with the field path in front.
 
 The profile is reported before the toolsets, and every missing toolset is named once, sorted, in one message.
 
@@ -22,9 +23,11 @@ Two field rules come first (ticket 01a11c1c; the console's agent form enforced t
 
 * a NEW agent's id must match ``AGENT_ID_PATTERN`` (code ``agent_id_invalid``, field ``id``). The id is optional and an omitted one is
   generated as ``agent-<hex>``, which satisfies the rule. It sits in URLs (``/v1/agents/{id}``) and in references (a graph agent node,
-  a session binding, a trigger subscription) and is never part of a qualified ``<toolset>__<tool>`` name, so the rule is what a URL path
-  needs and nothing more. It applies on CREATE only: an id is immutable, a deployment may hold ids older than the rule, and the seeded
-  and harness-managed agents are written straight to storage;
+  a session binding, a trigger subscription) and is never part of a qualified ``<toolset>__<tool>`` name, so the characters are what a
+  URL path needs. Two underscores in a row are RESERVED: a harness install mints ``<slug>__<template>`` ids (``primer/harness/service.py``
+  ``resolved_id``), and a REST-created ``acme__assistant`` would collide with a later install of ``acme``. It applies on CREATE only: an
+  id is immutable, a deployment may hold ids older than the rule (a ``Legacy_Name``, or an ``old__style``), and the seeded and
+  harness-managed agents are written straight to storage, so an install is not subject to it;
 * the description must not be blank (code ``agent_description_blank``, field ``description``), on create and on an update that MAKES it
   blank. An agent whose description is already blank can be edited without describing it, like any other reference it already had.
 
@@ -50,7 +53,7 @@ if TYPE_CHECKING:
 
 # The id of a NEW agent: URL-safe without escaping, never mistaken for something else. ui/components/agents.jsx (AG_validateNewAgent) holds a copy
 # and tests/ui/test_agent_form_validation.py fails when the two differ.
-AGENT_ID_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,62}$"
+AGENT_ID_PATTERN = r"^(?!.*__)[a-z0-9][a-z0-9_-]{0,62}$"
 _AGENT_ID_RE = re.compile(AGENT_ID_PATTERN)
 
 # The codes of the two field refusals. The route answers them as request-validation errors at body.<field>; the other codes keep the
@@ -61,8 +64,9 @@ AGENT_FIELD_CODES = frozenset({"agent_id_invalid", "agent_description_blank"})
 # the rule before it writes.
 AGENT_WRITE_NOTE = (
     "A new agent's ``id`` is optional (leave it out to have ``agent-<hex>`` generated); when you send one it must start with a lowercase "
-    "letter or a digit and use only lowercase letters, digits, hyphens and underscores, at most 63 characters, and an update cannot change "
-    "it. The ``description`` must not be blank: other agents find an agent by it."
+    "letter or a digit and use only lowercase letters, digits, hyphens and single underscores (two underscores in a row, ``__``, are reserved for "
+    "the agents a harness installs), at most 63 characters, and an update cannot change it. The ``description`` must not be blank: other agents "
+    "find an agent by it."
 )
 
 
@@ -119,8 +123,8 @@ def check_agent_fields(entity: Agent, *, existing: Agent | None = None) -> None:
             "agent_id_invalid",
             "id",
             f"{_shown(entity.id or '')} is not a valid agent id: it must start with a lowercase letter or a digit and use only "
-            "lowercase letters, digits, hyphens and underscores, at most 63 characters (for example refund-triage); "
-            "leave the id out to have one generated",
+            "lowercase letters, digits, hyphens and single underscores (two in a row, __, are reserved for the agents a harness installs), "
+            "at most 63 characters (for example refund-triage); leave the id out to have one generated",
         )
     if not entity.description.strip() and (existing is None or existing.description.strip()):
         raise _refuse(
