@@ -1,5 +1,5 @@
 /* global React, SH_api, NV_useConsole, NV_identity, SH_statusFromTap,
-   SH_statusLine, SH_collapseTurns, SH_nestSubagentRows, SH_toolChipLabel, SH_turnOfSeq,
+   SH_statusLine, SH_collapseTurns, SH_nestWithResults, SH_resultForCall, SH_callQuotesNotice, SH_toolChipLabel, SH_turnOfSeq,
    SH_scrollDecision, SH_shortTime, SH_traceHeaderLabel, SH_thoughtLabel,
    SH_diffLineTone, SH_looksLikeDiff, SH_routingLine, SH_askOptionsOf */
 // The session tab (wiring plan P2 T7). DATA layer inherited from the
@@ -1183,7 +1183,7 @@ function NV_subagentRows(row, resultFor, running) {
   var endedOn = null;
   if (callFailed) {
     kids.forEach(function (c) {
-      if (c.kind === "retry_notice" && window.SH_callQuotesNotice(callResult, c)) endedOn = c;
+      if (c.kind === "retry_notice" && SH_callQuotesNotice(callResult, c)) endedOn = c;
     });
   }
   return (
