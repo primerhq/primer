@@ -152,7 +152,7 @@ def test_a_stop_marker_reads_stopped_and_a_cancel_reads_cancelled() -> None:
 
 def test_the_other_lifecycle_markers_keep_their_labels() -> None:
     ctx = _ctx()
-    assert _js(ctx, 'SH_lifecycleLabel("done", {})') == "· done"
+    # A clean done has no label since console review C-016 (tests/ui/test_done_marker_row.py).
     assert _js(ctx, 'SH_lifecycleLabel("yielded", {})') == "· yielded"
 
 

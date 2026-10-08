@@ -45,13 +45,14 @@ def _js(ctx, expr: str):
     return json.loads(ctx.eval(f"JSON.stringify({expr})"))
 
 
-def test_the_marker_reads_as_a_stop_at_the_cap_and_an_ordinary_done_keeps_its_label() -> None:
+def test_the_marker_reads_as_a_stop_at_the_cap_and_an_ordinary_done_has_no_label() -> None:
     ctx = _ctx(SHELL_STATUS)
 
     assert _js(ctx, 'SH_lifecycleLabel("done", {stop_reason: "tool_turn_cap"})') == "■ stopped at the tool-turn cap"
-    assert _js(ctx, 'SH_lifecycleLabel("done", {stop_reason: "stop"})') == "· done"
-    assert _js(ctx, 'SH_lifecycleLabel("done", {})') == "· done"
-    assert _js(ctx, 'SH_lifecycleLabel("done", null)') == "· done"
+    # An ordinary done names nothing (console review C-016): the row stays for the trace button, the word "done" goes.
+    assert _js(ctx, 'SH_lifecycleLabel("done", {stop_reason: "stop"})') == ""
+    assert _js(ctx, 'SH_lifecycleLabel("done", {})') == ""
+    assert _js(ctx, 'SH_lifecycleLabel("done", null)') == ""
 
 
 def test_the_transcript_keeps_the_marker_row_and_still_hides_a_tool_round_done() -> None:

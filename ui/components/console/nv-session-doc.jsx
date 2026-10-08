@@ -901,6 +901,30 @@ function NV_ToolBlock(props) {
 // props.live: this approval appeared while the document was open. Only then is it an assertive announcement (role="alert"), and never once
 // the session is over (props.ended): a card that was already there when the document loaded is history, and opening a session must not
 // shout every approval it ever asked for (console review C-029).
+// A lifecycle marker row: one slim muted line. A done or cancelled row is the turn boundary and carries the turn's trace button. A clean done has
+// no label (SH_lifecycleLabel returns ""), so it draws the button alone; the other markers say what they are.
+function NV_LifecycleRow(props) {
+  var row = props.row;
+  var label = window.SH_lifecycleLabel(row.kind, row.payload);
+  return (
+    <div className="nv-lifecycle"
+      data-kind={row.kind} data-testid={"nv-turn:" + row.seq}>
+      {label ? <span className="nv-lifecycle-dot">{label}</span> : null}
+      {row.kind === "done" || row.kind === "cancelled" ? (
+        <button type="button" className="nv-trace-toggle"
+          title="View trace"
+          data-testid={"nv-trace-open:" + row.seq}
+          onClick={function () { props.onTrace(row); }}>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none"
+            stroke="currentColor" strokeWidth="1.3">
+            <path d="M2 3.5h8M2 6h8M2 8.5h5" strokeLinecap="round" />
+          </svg>
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 function NV_DecisionCard(props) {
   var con = NV_useConsole();
   var item = props.item;
@@ -2900,23 +2924,8 @@ function NV_SessionDoc(props) {
     if (row.kind === "done" || row.kind === "yielded"
         || row.kind === "resumed" || row.kind === "cancelled") {
       return (
-        <div key={row.seq} className="nv-lifecycle"
-          data-kind={row.kind} data-testid={"nv-turn:" + row.seq}>
-          <span className="nv-lifecycle-dot">
-            {window.SH_lifecycleLabel(row.kind, row.payload)}
-          </span>
-          {row.kind === "done" || row.kind === "cancelled" ? (
-            <button type="button" className="nv-trace-toggle"
-              title="View trace"
-              data-testid={"nv-trace-open:" + row.seq}
-              onClick={function () { setTraceTurn(traceTurnFor(row)); }}>
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"
-                stroke="currentColor" strokeWidth="1.3">
-                <path d="M2 3.5h8M2 6h8M2 8.5h5" strokeLinecap="round" />
-              </svg>
-            </button>
-          ) : null}
-        </div>
+        <NV_LifecycleRow key={row.seq} row={row}
+          onTrace={function (r) { setTraceTurn(traceTurnFor(r)); }} />
       );
     }
     if (row.kind === "error") {
