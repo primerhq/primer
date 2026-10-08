@@ -304,6 +304,7 @@ async def run_subagent(
     interrupted: list[bool] = []
     capped: list[bool] = []
     run_token = _RUN_ID.set(run_id)
+    _sink = None
     try:
         from primer.session.delegation import current_delegation_sink
 
@@ -335,6 +336,13 @@ async def run_subagent(
         raise
     finally:
         _RUN_ID.reset(run_token)
+        if _sink is not None:
+            # However the run ended (an answer, an exception, a Stop, a park), what it streamed and never flushed becomes its own record, under its own
+            # run, instead of waiting in the recorder to be glued onto the next run's text (ticket 01a11ca9).
+            await _sink.finish_run(
+                delegate_tool_call_id=invoke_tool_call_id, delegate_run_id=run_id,
+                delegate_parent_run_id=parent_run_id, delegate_depth=_DEPTH.get(),
+            )
 
     if interrupted:
         # The subagent's turn ended because the Stop was set, not because it had an answer. What it produced so far is not
@@ -458,6 +466,7 @@ async def resume_subagent(
     run_id = getattr(context, "delegate_run_id", None) or uuid.uuid4().hex
     parent_run_id = getattr(context, "delegate_parent_run_id", None)
     run_token = _RUN_ID.set(run_id)
+    _sink = None
     try:
         with _depth_set(depth):
             from primer.session.delegation import current_delegation_sink
@@ -493,6 +502,11 @@ async def resume_subagent(
         raise
     finally:
         _RUN_ID.reset(run_token)
+        if _sink is not None:
+            await _sink.finish_run(
+                delegate_tool_call_id=invoke_tool_call_id, delegate_run_id=run_id,
+                delegate_parent_run_id=parent_run_id, delegate_depth=depth,
+            )
 
     if capped:
         raise ToolTurnCapReached.after(
