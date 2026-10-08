@@ -46,6 +46,7 @@ A `ToolApprovalPolicy` row has:
   deleting the row.
 - `approval` - a discriminated union with `type` ∈ {`required`,
   `policy`, `llm`}, each carrying its own config.
+- `preview_args` - optional dotted paths into the tool's arguments that the approval card may show (see "What an approval card shows").
 
 The dispatch path is:
 
@@ -77,6 +78,32 @@ The approval state lives on the session's parked-status fields:
 `parked_state_blob` carries the LLM message buffer, and the resume
 metadata embedded in the yield captures the original tool call. The
 worker picks all this back up when the resume event arrives.
+
+## What an approval card shows
+
+The Inbox card of a parked approval (the phone's Inbox tab, and the rail line on the desktop) draws the tool and a one-line preview of its arguments. The full call
+is never hidden from whoever may decide it ("Show all", and the session's own pending-yields route, return it whole); the card is the part drawn on a screen
+without anyone asking, so it draws only what is declared safe to draw:
+
+- **The tool declares it.** `make_tool(preview_args=("path", "mode"))` (in memory only, never serialized) lists dotted paths into the arguments; a path allows
+  its whole subtree and a list is transparent (`entity.nodes.agent_id` is the `agent_id` of every node). A path that names nothing is an error when the tool is
+  built. The nine tools the platform gates by default (the builder's `crud` toolset: create and update of agents, graphs and triggers, and the Python toolset
+  tools) declare the paths that say WHAT is created or changed and leave out the free text (an agent's system prompt, a graph node's templates, a webhook
+  trigger's token and HMAC secret, a Python toolset's source).
+- **The operator can override it.** `ToolApprovalPolicy.preview_args` (a list of the same paths) wins over the tool's declaration, and `[]` shows no value. This is the
+  only way to cover an MCP tool or a Python tool, whose author declared nothing. Each path must name an argument of the gated tool: the console and the system
+  `create_` / `update_tool_approval_policy` tools refuse a path that does not (a typo would hide more than meant, silently), and refuse paths for a tool that is not in
+  the catalogue right now (they cannot be checked).
+- **With neither, a default.** Only an argument whose schema is a closed set (a boolean, an integer, a number, `null`, an enum or a const) is shown; text, objects and
+  lists are not, and a schema that cannot be proven closed counts as text.
+- **Resolved at park time.** The tool manager resolves the effective list (policy, else tool, else default) when it parks the call and stamps it into the park as
+  `preview: {paths, source}`. A park from before the field, or a graph park without a stamp, takes the default rule by the value's type (a boolean, a number or `null`
+  is shown, the rest is not).
+- **What the card says.** An argument not allowed is drawn as its name and `<hidden>` and is never read (not stringified, not measured). `<redacted>` is a different
+  word: it means the scrubber FOUND a secret in a value the allowlist let through (the scrubber still runs on every shown value). The row carries `hidden_keys` (what was
+  withheld, as dotted paths) and `preview` (`policy`, `tool`, `default` or `unstamped`).
+- **`call_tool`.** A policy on the tool `call_tool` runs is filtered by THAT tool's list; a policy on `call_tool` itself shows `toolset_id` and `tool_name` and the inner tool's
+  paths, and withholds the arguments of an inner tool it cannot find.
 
 ## Lifecycle and states
 
