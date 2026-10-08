@@ -25,4 +25,6 @@ def test_the_url_field_says_to_re_enter_the_secrets_when_it_changes() -> None:
     headers = src.index('label="Headers"')
     assert url_label < note < headers, "the note must sit under the URL field, above the headers"
     assert "isEdit && (" in src[url_label:note], "the note is about editing a stored toolset"
-    assert "Re-enter the header values" in src[note:headers]
+    text = src[note:headers]
+    assert "Re-enter the header values" in text
+    assert "OAuth client secret" in text and "OAuth endpoints" in text, "the OAuth secret and endpoints move the same way"
