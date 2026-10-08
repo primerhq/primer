@@ -24,8 +24,8 @@ def quotes():
     ctx = mini_react_context("", TURNS)
 
     def go(output, message) -> bool:
-        call = "{ payload: { output: %s } }" % json.dumps(output)
-        notice = "{ payload: { message: %s } }" % json.dumps(message)
+        call = f"{{ payload: {{ output: {json.dumps(output)} }} }}"
+        notice = f"{{ payload: {{ message: {json.dumps(message)} }} }}"
         return bool(ctx.eval(f"SH_callQuotesNotice({call}, {notice})"))
 
     try:
