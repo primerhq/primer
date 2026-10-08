@@ -375,6 +375,21 @@ class TestUrlSecretRedaction:
         assert record["path"] == "/v1/webhooks/***cdef"
         assert record["count"] == 3
 
+    def test_underscore_attributes_are_left_alone(self):
+        """'_'-prefixed record attributes are private to a handler or
+        library (and never emitted by _JsonFormatter): not rewritten."""
+        from primer.common.log import _URL_SECRET_FILTER
+
+        value = f"https://g.example/m?key={_GEMINI_KEY}"
+        record = logging.LogRecord(
+            "primer.test", logging.INFO, __file__, 1, "msg", None, None,
+        )
+        record._private = value
+        record.public = value
+        _URL_SECRET_FILTER.filter(record)
+        assert record._private == value
+        assert _GEMINI_KEY not in record.public
+
     def test_a_non_str_msg_without_args_is_redacted(self):
         """logger.warning(exc): msg is the exception object itself."""
         buf = _configured_stream()

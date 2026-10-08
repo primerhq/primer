@@ -421,6 +421,21 @@ class TestToProblemDetails:
             assert secret not in pd.detail
             assert "key=[REDACTED]" in pd.detail
 
+    def test_string_problem_extensions_are_redacted(self):
+        """problem_extensions are merged into the served envelope too."""
+        from primer.model.except_ import ProviderError
+
+        secret = "AIzaSyD-EXT-SECRET"
+        exc = ProviderError("upstream failed")
+        exc.problem_extensions = {
+            "upstream_url": f"https://g.example/v1/models?key={secret}",
+            "attempts": 3,
+        }
+        pd = to_problem_details(exc)
+        assert secret not in pd.model_dump_json()
+        assert pd.extensions["upstream_url"].endswith("key=[REDACTED]")
+        assert pd.extensions["attempts"] == 3
+
     def test_each_envelope_gets_its_own_error_id(self):
         a = to_problem_details(RuntimeError("a")).extensions["error_id"]
         b = to_problem_details(RuntimeError("a")).extensions["error_id"]
