@@ -319,6 +319,11 @@ leave its families behind:
 - `session_completed_turn_noop_total` (no labels) counts session claims that found the previous turn completed
   (`completed_turn_no == turn_no`) but its release never committed, and released without calling the model
   again (`_noop_if_turn_already_completed` in `primer/session/dispatch.py`; see `docs/dev/subsystems/sessions.md`).
+- `message_write_abandoned_total` (no labels) counts batches of session message records the workspace did not accept within the write
+  bound (`session_message_write_timeout_seconds`, `PRIMER_SESSION_MESSAGE_WRITE_TIMEOUT_SECONDS`): each one is abandoned, its records are
+  lost from the transcript and its writer closed (`WorkspaceMessageWriter._break_on` in `primer/session/persistence.py`; the warning log
+  names the session and the seq range; see `docs/dev/subsystems/sessions.md`). A rate above zero means the workspace's runtime connection
+  is dropping, or the bound is too tight for a slow reschedule.
   That includes a claim that finds the row PAUSED or ENDED by another process (at the guard's first read or after a
   refused arming patch), which releases it without running the turn; a row that is gone (deleted) is NOT counted, it
   gets the vanished-before-dispatch outcome. Each one is a turn that would otherwise have run twice; a steady rate points at releases being abandoned at the
