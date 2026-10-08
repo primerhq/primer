@@ -253,3 +253,17 @@ async def test_the_delete_tool_answers_the_same_whether_a_reserved_path_exists(l
         outs.append(json.loads(res.output)["type"])
     assert outs == ["bad-request", "bad-request"], outs
     assert (root / _EXISTING).exists()
+
+
+async def test_a_local_write_into_a_reserved_dir_says_the_same_as_into_a_missing_one(local_ws):
+    """LocalWorkspace.write_file checked is_dir before the reserved refusal:
+    'is a directory' vs 'refusing to mutate' told a caller of the
+    write_workspace_file tool that .state/sessions exists."""
+    ws, _ = local_ws
+    messages = []
+    for path in (".state/sessions", ".state/nope"):
+        with pytest.raises(BadRequestError) as info:
+            await ws.write_file(path, b"x")
+        messages.append(str(info.value).split(":")[0])
+    assert messages[0] == messages[1], messages
+    assert "reserved tree" in messages[0]
