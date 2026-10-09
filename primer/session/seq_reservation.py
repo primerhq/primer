@@ -56,13 +56,16 @@ async def advance_last_seq(sessions: Any, session_id: str, seq: int, *, attempts
     since (a steer took a higher seq, a park wrote its columns) is never written over, which a ``get`` + whole-document ``update`` from
     that snapshot cannot promise. A rejected fence means the row changed under us, so it is read again and decided again (a row that
     is now at or past ``seq`` is left alone); after ``attempts`` rejections the call gives up and logs, because the writers that keep
-    winning the race are advancing ``last_seq`` themselves. A row that is gone, or already at or past ``seq``, is not an error.
+    winning the race are advancing ``last_seq`` themselves. A row that is gone (at the read, or deleted between the read and the patch, where ``patch_if`` raises ``NotFoundError``), or already at or past ``seq``, is not an error.
     """
     for _ in range(attempts):
         fresh = await sessions.get(session_id)
         if fresh is None or fresh.last_seq >= seq:
             return False
-        written = await sessions.patch_if(session_id, {"last_seq": seq}, where={"last_seq": [fresh.last_seq]})
+        try:
+            written = await sessions.patch_if(session_id, {"last_seq": seq}, where={"last_seq": [fresh.last_seq]})
+        except NotFoundError:
+            return False                                 # deleted between the read and the patch: nothing left to advance
         if written is not None:
             return True
     logger.warning(
