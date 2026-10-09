@@ -887,3 +887,75 @@ def test_the_dash_leading_value_misses_are_kept_on_purpose(argv, shown_word: str
     shown = json.dumps(_redact(argv)[0], ensure_ascii=False)
 
     assert shown_word in shown, shown
+
+
+# ---- review of #636, round 4: a document is parsed before the open-quote branch looks at it, and that branch hands the scrubber at most the ceiling -------------------------------
+
+
+_DOC_WITH_AN_ESCAPED_QUOTE = '{"auth": "s3cretZq1", "m": "a\\" "}'
+_PAIR_DOC_WITH_AN_ESCAPED_QUOTE = '{"name": "Authorization", "value": "tokZq123", "m": "a\\" "}'
+
+
+@pytest.mark.parametrize(
+    ("document", "secret"),
+    [(_DOC_WITH_AN_ESCAPED_QUOTE, "s3cretZq1"), (_PAIR_DOC_WITH_AN_ESCAPED_QUOTE, "tokZq123")],
+    ids=["a secret-named key", "a name/value pair"],
+)
+class TestAJsonDocumentWithAnEscapedQuoteIsStillAWalkedDocument:
+    """The open-quote scan does not know JSON escapes, so ``"a\\" "`` (a value that is ``a`` + a quote + a space) looked like a quote that never closed. The branch ran BEFORE
+    the document check, so a capped text that was ONE valid JSON document was scrubbed as text and the key-name and name/value rules never saw ``auth`` or ``name``: the
+    secret showed where main showed ``<redacted>``. Main's order is back: a document is walked first; the open-quote branch is for text that is NOT a document."""
+
+    def test_at_the_ceiling(self, document: str, secret: str) -> None:
+        got, truncated = _redact(document + " " + "x" * 3000)
+
+        assert secret not in str(got), got
+        assert truncated is True
+
+    def test_through_the_preview_line(self, document: str, secret: str) -> None:
+        got = _preview({"query": document + " " + "x" * 3000})
+
+        assert secret not in got["arguments"], got["arguments"]
+
+    def test_under_a_budget_cut(self, document: str, secret: str) -> None:
+        got, truncated = _redact(document + " " + "x" * 50, 0, [len(document) + 5])
+
+        assert secret not in str(got), got
+        assert truncated is True
+
+    def test_an_uncut_document_is_unchanged_in_behaviour(self, document: str, secret: str) -> None:
+        got, _ = _redact(document)
+
+        assert secret not in str(got), got
+
+
+def test_the_open_quote_branch_still_handles_text_that_is_not_a_document() -> None:
+    assert _redact("password='correct horse battery'", 0, [18]) == ("password=<redacted>", True)
+
+
+def test_the_scrubber_is_never_handed_more_than_the_ceiling_on_the_open_quote_branch(monkeypatch) -> None:
+    """The branch appends the closing quote for the rules: that was ``len(text) + 1`` characters, one past the ceiling a single string is given (and one past the budget it was
+    charged). The kept text is one character shorter when it is already at the limit."""
+    from primer.api.routers import workspaces as w
+
+    seen = _recording_scrubber(monkeypatch)
+    w._redact("'" + "x" * 3000)
+
+    assert seen and max(seen) <= w._REDACT_MAX_TEXT, f"the scrubber was handed {max(seen)} characters at once"
+
+
+def test_the_scrubber_is_never_handed_more_than_the_budget_it_was_charged_on_the_open_quote_branch(monkeypatch) -> None:
+    from primer.api.routers import workspaces as w
+
+    seen = _recording_scrubber(monkeypatch)
+    w._redact("a b 'c d e f g h i j k l m n o p", 0, [14])
+
+    assert seen and max(seen) <= 14, seen
+
+
+def test_a_quote_opened_by_an_apostrophe_inside_a_word_is_no_quote() -> None:
+    from primer.api.routers import workspaces as w
+
+    assert w._open_quote("it's fine") == ""
+    assert w._open_quote("don't 'quote this") == "'", "a real quote after a word with an apostrophe still opens"
+    assert w._open_quote("-p'correct horse") == "'" and w._open_quote("abc-p'x") == "", "directly after a short flag, not after any dash"
