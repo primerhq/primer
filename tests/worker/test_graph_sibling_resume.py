@@ -182,13 +182,18 @@ async def test_the_executor_falls_back_to_the_raw_id_when_the_fired_key_names_no
 
 
 @pytest.mark.asyncio
-async def test_the_executor_without_a_fired_key_resumes_every_entry_with_the_raw_id(monkeypatch) -> None:
+async def test_the_executor_without_a_fired_key_resumes_only_the_first_entry_with_the_raw_id(monkeypatch) -> None:
+    """A raw id with no key cannot say which sibling it answers: only the first entry that carries it (the primary the park projects) is resumed, the other
+    stays pending. It used to resume every entry with the raw id, so one reply drained both (#683 review, S-B)."""
     checkpoint, _first = await _two_parked_siblings(monkeypatch, _approval)
     ex = await _mk_parallel_executor()
     answer = Message(role="tool", parts=[ToolResultPart(id=RAW, output="approved")])
 
-    async for _ev in ex.resume_from_checkpoint(checkpoint, resumed_tcid=RAW, agent_tool_result=answer):
-        pass
+    with pytest.raises(YieldToWorker) as repark:
+        async for _ev in ex.resume_from_checkpoint(checkpoint, resumed_tcid=RAW, agent_tool_result=answer):
+            pass
+
+    assert _pending_nodes(repark.value) == ["B"]
 
 
 # ---- the gate and the audit record ------------------------------------------------------------------------------------------------------
