@@ -689,21 +689,23 @@ def test_a_token_cut_by_the_ceiling_alone_keeps_its_head_as_before() -> None:
         pytest.param(["mysqldump", "-u", "root", "-pcorrect horse battery", "db"], ["correct", "horse", "battery"], id="G10 mysqldump -p password with spaces"),
     ],
 )
-def test_a_spaced_word_that_starts_with_a_dash_is_a_flag_with_its_value_not_a_value(argv, secrets) -> None:
-    """The line wraps a word with spaces in single quotes so ``-u 'deploy:correct horse'`` is one value, and the quote hid the ``-p`` of ``-pcorrect horse`` from the rule
-    that needs a space before it. A word that starts with a dash is a flag, not a value: it enters the line as it is."""
+def test_a_spaced_flag_with_its_value_attached_is_hidden_although_the_line_wraps_it_in_quotes(argv, secrets) -> None:
+    """The line wraps a word with spaces in single quotes so ``-u 'deploy:correct horse'`` is one value, and the quote stood in front of the ``-p`` of ``-pcorrect horse``.
+    The mysql rule sees a ``-p`` behind that quote. (Leaving a dash-word unwrapped hid these three and LEAKED every secret value that starts with a dash: see below.)"""
     shown = json.dumps(_redact(argv)[0], ensure_ascii=False) + " || " + _preview({"command": argv})["arguments"]
 
     leaked = [s for s in secrets if s in shown]
     assert not leaked, f"{leaked} show: {shown}"
 
 
-def test_the_line_wraps_a_spaced_value_and_leaves_a_spaced_flag_alone() -> None:
+def test_the_line_wraps_every_word_that_has_spaces_and_no_quote() -> None:
+    """Whatever it starts with: ``_SECRET_FLAG`` refuses a value that starts with a dash (``(?!-)``), and the quote is what lets such a value through."""
     from primer.api.routers.workspaces import _line_word
 
     assert _line_word("correct horse") == ("'correct horse'", True)
-    assert _line_word("-pcorrect horse") == ("-pcorrect horse", False)
-    assert _line_word("--message=fix the bug") == ("--message=fix the bug", False)
+    assert _line_word("-pcorrect horse") == ("'-pcorrect horse'", True)
+    assert _line_word("--message=fix the bug") == ("'--message=fix the bug'", True)
+    assert _line_word("- leading dash phrase") == ("'- leading dash phrase'", True)
 
 
 def test_the_kept_misses_of_the_list_form_are_the_ones_the_docs_list() -> None:
@@ -714,9 +716,10 @@ def test_the_kept_misses_of_the_list_form_are_the_ones_the_docs_list() -> None:
     assert got[-1] == "tok123456"
 
 
-def test_the_marking_scrub_may_mark_what_the_plain_scrub_leaves_but_never_marks_less() -> None:
+def test_the_marking_scrub_may_mark_what_the_plain_scrub_leaves_and_marks_a_line_the_plain_scrub_changes() -> None:
     """A later rule sees a mark where the plain scrub shows ``<redacted>``, which no rule matches: after ``token:value`` is hidden, ``-u`` + ``token:`` is a user part with a
-    password the marking scrub still sees. So it can mark MORE than the plain scrub hides. A line the plain scrub changes is always marked (the fuzz above)."""
+    password the marking scrub still sees. So it can mark MORE than the plain scrub hides. A line the plain scrub changes has at least one mark (the fuzz above); the marks are not
+    the plain scrub's replacements position for position."""
     plain = _scrub_text("-utoken:mysqly")
     marked = _scrub_text("-utoken:mysqly", _MARK)
 
@@ -735,3 +738,61 @@ def test_no_literal_private_use_character_is_written_in_the_scrubber_or_its_test
         text = path.read_text(encoding="utf-8")
         found = [n for n, line in enumerate(text.split("\n"), 1) if re.search("[\ue000-\uf8ff]", line)]
         assert not found, f"{path.name}: a literal private-use character on line(s) {found}"
+
+
+# ---- review of #636: a secret VALUE that starts with a dash (the regression the first version of the dash-word change introduced) -----------------------------------------
+
+
+_PEM = "-----BEGIN RSA PRIVATE KEY-----\nMIIEow\nIBAAKCAQEA\n-----END RSA PRIVATE KEY-----"
+
+_DASH_VALUES = [
+    pytest.param(["deploy", "--password", "-p4ss word"], ["p4ss", "word"], id="--password '-p4ss word'"),
+    pytest.param(["vault", "login", "--token", "-tok en"], ["tok", "en"], id="--token '-tok en'"),
+    pytest.param(["deploy", "--pass", "- leading dash phrase"], ["leading", "dash", "phrase"], id="--pass '- leading dash phrase'"),
+    pytest.param(["ssh-add", "--private-key", _PEM], ["BEGIN", "MIIEow", "IBAAKCAQEA", "END RSA"], id="a PEM after --private-key"),
+    pytest.param(["curl", "-u", "-ad min:hunter2"], ["hunter2"], id="curl -u '-ad min:hunter2'"),
+    pytest.param(["curl", "-u", "-admin: pa ss"], ["pa ss"], id="curl -u '-admin: pa ss'"),
+    pytest.param(["x", "--secret", "-a b"], ["a b"], id="--secret '-a b'"),
+    pytest.param(["x", "--api-key", "-k e y"], ["k e y"], id="--api-key '-k e y'"),
+    pytest.param(["x", "token:", "-p4ss word"], ["p4ss"], id="token: '-p4ss word'"),
+    pytest.param(["x", "Bearer", "-tok en"], ["tok en"], id="Bearer '-tok en'"),
+]
+
+
+@pytest.mark.parametrize(("argv", "secrets"), _DASH_VALUES)
+def test_a_secret_value_that_starts_with_a_dash_and_has_spaces_is_hidden(argv, secrets) -> None:
+    """``_SECRET_FLAG`` does not take a value that starts with a dash (``--password --verbose`` is two flags), so a spaced dash-leading value is hidden only because the line
+    wraps it in quotes. Main's walk hid these (the PEM and ``-ad min:hunter2`` included); a version that left a dash-word unwrapped showed them with ``truncated`` false."""
+    got = _preview({"command": argv})
+
+    shown = json.dumps(_redact(argv)[0], ensure_ascii=False) + " || " + got["arguments"]
+    leaked = [s for s in secrets if s in shown]
+    assert not leaked, f"{leaked} show: {shown}"
+    assert got["truncated"] is True
+
+
+def test_the_mysql_rule_sees_a_p_flag_behind_a_quote() -> None:
+    """The line wraps ``-pcorrect horse`` in single quotes, so the rule that finds an attached ``-p<value>`` after a mysql command has to see a quote in front of the flag."""
+    assert "hunter2" not in _scrub_text("mysql -u root '-phunter2' db")
+    assert "correct" not in _scrub_text("mysqldump -u root '-pcorrect horse' db")
+    assert _scrub_text("ssh -p22 host") == "ssh -p22 host"                      # still only after a mysql-family command
+    assert _scrub_text("mysql -P3306 -h db") == "mysql -P3306 -h db"            # -P is the port
+
+
+# ---- a budget cut inside a quoted multi-word secret keeps its first word (main does the same: not a regression, but the cut is the preview's own) ----------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "budget"),
+    [
+        ("password='correct horse battery'", 18),
+        ("-u 'deploy:correct horse battery'", 18),
+        ('--password "correct horse"', 19),
+    ],
+)
+def test_a_cut_that_ends_inside_an_open_quote_is_redacted_whole(text: str, budget: int) -> None:
+    assert _redact(text, 0, [budget]) == ("<redacted>", True)
+
+
+def test_a_cut_that_leaves_every_quote_closed_keeps_what_it_kept() -> None:
+    assert _redact("echo 'a b' c d e", 0, [10]) == ("echo 'a b'", True)
