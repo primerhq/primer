@@ -518,7 +518,21 @@ class _BaseGraphExecutor(
         ):
             tc_pending = [e for e in tc_all if e.parked_event_key == resumed_event_key]
             ay_pending = [e for e in ay_all if e.event_key == resumed_event_key]
+        elif resumed_event_key is None:
+            # A raw id and no key cannot say which sibling it answers (two fan-out siblings can share the id): resume the FIRST entry that carries it,
+            # the one the park projects as its primary (tool calls before agent yields), and leave the others pending. It resumed every one, so a
+            # caller that knew only the id (a GraphFrame reply, before the leaf's key was threaded down) drained the siblings with one answer.
+            tc_match = [e for e in tc_all if e.tool_call_id == resumed_tcid]
+            ay_match = [e for e in ay_all if e.tool_call_id == resumed_tcid]
+            if len(tc_match) + len(ay_match) > 1:
+                logger.warning(
+                    "resume_from_checkpoint: %d pending entries share tool_call_id %r and no event key says which was answered; resuming the first",
+                    len(tc_match) + len(ay_match), resumed_tcid,
+                )
+            tc_pending = tc_match[:1]
+            ay_pending = [] if tc_match else ay_match[:1]
         else:
+            # A key that names no entry (a park written before keys were node-scoped): the raw id decides, as it always did.
             tc_pending = [e for e in tc_all if e.tool_call_id == resumed_tcid]
             ay_pending = [e for e in ay_all if e.tool_call_id == resumed_tcid]
         # tool_wait selection is readiness-based (resolved_tool_wait), not

@@ -533,7 +533,9 @@ def repark_graph_continuation(pool: "WorkerPool", session, parked, checkpoint, a
     leaf = outcome.leaf
     new_ck = deepcopy(checkpoint)
     for e in new_ck.get("pending_agent_yields") or []:
-        if e.get("tool_call_id") == ay.get("tool_call_id"):
+        # The entry the reply resolved: its node and its event key. The raw tool_call_id is not unique (two fan-out siblings parked inside a nested
+        # invoke_agent can share the outer one), and rewriting the first entry that carries it re-pointed the OTHER sibling at this node's deeper leaf.
+        if e.get("node_id") == ay.get("node_id") and e.get("event_key") == ay.get("event_key"):
             e["frames"] = frames_to_jsonable(list(outcome.frames))
             e["leaf"] = leaf.to_jsonable()
             # The node still awaits the SAME invoke_agent call, but the
