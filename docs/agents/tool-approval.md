@@ -113,7 +113,7 @@ without anyone asking, so it draws only what is declared safe to draw:
   at 50 members, and what is not walked is withheld and counted (`entity.nodes <30 more>` in `hidden_keys`).
 - **`call_tool`.** A policy on the tool `call_tool` runs is filtered by THAT tool's list; a policy on `call_tool` itself shows `toolset_id` and `tool_name` and the inner tool's
   paths, and withholds the arguments of an inner tool it cannot find.
-- **On the phone.** The Inbox card names what it withheld ("Hidden on this card: note, content"). A card that hides something nobody declared (the `default` rule, or a park without a stamp) is blind, so it does not offer Approve until Show all has put the whole call on the screen; a list the tool's author or the operator declared is trusted, and Deny is always offered. Open the session to review the call in full.
+- **On the phone.** The Inbox card names what it withheld ("Hidden on this card: note, content"). A card that hides ANYTHING is blind, whoever declared the list (the tool's author, the operator, the `default` rule or a park without a stamp): the declared list decides what is drawn, never whether a hidden argument is safe to approve unread (the python source of `update_python_toolset_source`, an agent's system prompt), so Approve is not offered until Show all has put the whole call on the screen for THIS park. Who declared the list only changes the note's words. A value withheld whole (a bare string or list as the arguments) is blind too, and so is a `hidden_keys` the card cannot read. Deny is always offered. Open the session to review the call in full.
 
 ## Lifecycle and states
 
