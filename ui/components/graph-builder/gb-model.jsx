@@ -425,12 +425,14 @@ function GB_importShapeOk(spec) {
   const texts = (v) => v == null || (Array.isArray(v) && v.every((s) => typeof s === "string"));
   const num = (v) => v == null || (typeof v === "number" && isFinite(v));
   const list = (v) => v == null || Array.isArray(v);
-  // a schema property is drawn by its type and description (the reference picker); `required` is read from the schema itself (the rows view and the inspector)
+  // a schema property is drawn by its type and description (the reference picker); `required` is read from the schema itself (the rows view and the inspector).
+  // JSON Schema allows a boolean as a subschema (`{"properties": {"ok": true}}`), and the components read nothing from one.
   const properties = (props) => {
     if (props == null) return true;
     if (!isObject(props)) return false;
     return Object.keys(props).every((key) => {
       const p = props[key];
+      if (p === true || p === false) return true;
       return isObject(p) && (text(p.type) || texts(p.type)) && text(p.description) && properties(p.properties);
     });
   };
