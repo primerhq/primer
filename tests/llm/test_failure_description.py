@@ -19,7 +19,7 @@ from pydantic import HttpUrl, SecretStr
 from primer.common.anthropic_errors import classify_anthropic_exception
 from primer.common.context_overflow import is_context_overflow
 from primer.common.openai_errors import classify_openai_exception
-from primer.llm._failure import UPSTREAM_TEXT_CAP, describe_failure
+from primer.llm._failure import UPSTREAM_TEXT_CAP, describe_failure, scrubbed_event_text
 from primer.model.except_ import (
     AuthenticationError,
     BadRequestError,
@@ -565,3 +565,37 @@ async def test_a_word_after_basic_that_decodes_to_text_without_a_colon_is_left_a
     err = _described(await _openai_sdk_error(401, {"error": {"message": sentence}}))
 
     assert err.message.endswith(sentence), err.message
+
+
+# ---- scrubbed_event_text: the provider's own words in a stream Error EVENT (no exception for describe_failure to rewrite) ------------------------------
+
+
+def test_an_event_text_masks_the_configured_key_even_with_a_nul_inside_it():
+    """The control characters are stripped BEFORE the scrub, so a NUL cannot split the key and defeat the exact match."""
+    echoed = f"refused: key {API_KEY[:9]}\x00{API_KEY[9:]} rejected"
+
+    out = scrubbed_event_text(echoed, _provider())
+
+    assert API_KEY not in out and API_KEY[:9] not in out and "\x00" not in out, out
+    assert "[REDACTED]" in out and out.startswith("refused: key ") and out.endswith(" rejected")
+
+
+def test_an_event_text_is_cut_at_4000_characters_with_an_ellipsis_and_no_sooner():
+    exactly = "x" * 4000
+    assert scrubbed_event_text(exactly, _provider()) == exactly
+
+    capped = scrubbed_event_text("x" * 5000, _provider())
+    assert len(capped) == 4000 and capped.endswith("...") and capped == "x" * 3997 + "..."
+    assert len(scrubbed_event_text("x" * 4001, _provider())) == 4000
+
+
+def test_an_event_text_keeps_the_providers_whitespace():
+    """Unlike an upstream body folded into one sentence, an event's own text is not collapsed."""
+    assert scrubbed_event_text("a  b\n\tc", _provider()) == "a  b\n\tc"
+
+
+def test_an_event_text_without_a_credential_comes_back_unchanged():
+    """Pins over-redaction on the adapter path: prose that mentions a key, a bearer or Basic auth, a number and a clean URL is left alone."""
+    plain = "rate limit exceeded: retry in 20s (request id req_abc123, 12345 tokens, Basic authentication is required, see https://example.com/docs?page=2)"
+
+    assert scrubbed_event_text(plain, _provider()) == plain
