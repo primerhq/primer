@@ -196,6 +196,7 @@ def test_the_ask_card_answers_with_its_gate_id(ask) -> None:
 
 def test_a_stale_answer_says_so_inline_and_reloads_the_list(ask) -> None:
     ask.eval("NEXT.fail = " + json.dumps(STALE) + "; MR.find('nv-ask-answer').props.onChange({ target: { value: 'EUR' } }); MR.rerender(); MR.click('nv-ask-submit');")
+    ask.eval("MR.rerender();")          # the refusal lands in a promise callback, after the click returned
     assert _js(ask, "MR.find('nv-ask-error').props.children") == "This question was replaced; the list is reloaded."
     assert _js(ask, "RESOLVED") == [1]
 
