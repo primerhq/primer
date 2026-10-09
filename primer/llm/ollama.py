@@ -120,7 +120,8 @@ def _classify_ollama_exception(exc: Exception) -> PrimerError:
             code="network_error",
             cause=exc,
         )
-    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
+    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError, ConnectionError)):
+        # (the ollama client raises a builtin ConnectionError, not an httpx error, when it cannot reach the server)
         return NetworkError(
             f"Ollama network failure: {type(exc).__name__}",
             code="network_error",
