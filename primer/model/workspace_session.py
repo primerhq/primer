@@ -507,7 +507,14 @@ class WorkspaceSession(Identifiable):
     )
 
     created_at: datetime
-    started_at: datetime | None = Field(default=None)
+    started_at: datetime | None = Field(
+        default=None,
+        description=(
+            "When the session was last started: set when it first runs, and restarted by a wake or a resume of a session that carries "
+            "``last_turn_error`` (a message to a rested failure). The stuck-session sweeper measures a first turn's age from it and fences its "
+            "write on it, so a restart protects the row for the sweeper's grace period."
+        ),
+    )
     last_turn_at: datetime | None = Field(default=None)
     ended_at: datetime | None = Field(default=None)
     ended_reason: Literal[
