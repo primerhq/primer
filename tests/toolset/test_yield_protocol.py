@@ -276,7 +276,7 @@ class TestSleepToolE2E:
                 ctx=ctx,
             )
         assert info.value.yielded.tool_name == "sleep"
-        assert info.value.yielded.event_key == "timer:tc-z"
+        assert info.value.yielded.event_key == "timer:s:tc-z"
         assert info.value.yielded.timeout == 30.0
         assert info.value.yielded.resume_metadata == {"requested_seconds": 30.0}
 

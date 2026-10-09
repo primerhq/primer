@@ -258,6 +258,9 @@ async def test_message_while_pending_cancels_with_synthetic_result(
     payload = row.parked_state["resume_event_payload"]
     assert payload["__yield_cancelled__"] is True
     assert payload["reason"] == "superseded by new user message"
+    # The route read the park to find the calls to cancel: its wake names that park, so a copy delivered after a re-park under the same key cannot cancel
+    # the new call (ticket 01a1208d, #702 review B2).
+    assert payload[WAKE_PARK_KEY] == row.parked_at.isoformat()
 
 
 @pytest.mark.asyncio

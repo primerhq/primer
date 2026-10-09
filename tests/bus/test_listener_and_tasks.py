@@ -135,7 +135,9 @@ class TestYieldEventListener:
         sess = _make_parked_session(
             session_id="sess-A",
             event_key="timer:tc-A",
-            parked_until=datetime.now(timezone.utc) + timedelta(seconds=30),
+            # The TimerScheduler publishes a timer's key once the park is due, and the flip refuses a timer fire for a park whose deadline is still ahead
+            # (ticket 01a12151-b225), so the park this test fires is due.
+            parked_until=datetime.now(timezone.utc) - timedelta(seconds=1),
         )
         await _seed_parked(storage, scheduler, sess)
 

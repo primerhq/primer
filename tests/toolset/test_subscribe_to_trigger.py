@@ -156,7 +156,7 @@ class TestSubscribeYields:
         # and routed off the trigger-specific event key.
         yielded = info.value.yielded
         assert yielded.tool_name == "subscribe_to_trigger"
-        assert yielded.event_key == f"trigger:{trigger_id}"
+        assert yielded.event_key == f"trigger:{ctx.session_id}:{trigger_id}"
         assert info.value.tool_call_id == ctx.tool_call_id
 
         # resume_metadata carries the subscription id + trigger id so

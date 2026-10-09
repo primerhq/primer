@@ -166,6 +166,37 @@ async def test_one_shot_wake_publishes_and_completes(sp):
     assert await d.drain_once() == 0
 
 
+async def test_a_session_wake_names_the_park_the_sink_read(sp):
+    """The sink read the row to learn it is parked on the key; its delivery is by key alone and at least once, so the envelope names that park and a copy
+    delivered after the session re-parked under the same key is refused by the flip (ticket 01a1208d, #702 review B2)."""
+    from datetime import datetime, timedelta, timezone
+
+    from primer.model.yield_ import WAKE_PARK_KEY
+
+    store = sp.get_event_store()
+    bus = _RecordingBus()
+    await _sub(
+        sp,
+        sink=SessionWakeSink(event_key="evwait:s1:c1", session_id="s1"),
+        filter_=EventFilter(event_types=["collection.document_pushed"]),
+    )
+    parked_at = datetime.now(timezone.utc) - timedelta(minutes=3)
+    row = WorkspaceSession(
+        id="s1", workspace_id="w", binding=AgentSessionBinding(agent_id="agent-a"), status=SessionStatus.WAITING, created_at=parked_at,
+        parked_status="parked", parked_event_key="evwait:s1:c1", parked_at=parked_at,
+    )
+    await sp.get_storage(WorkspaceSession).create(row)
+    d = _dispatcher(sp, bus=bus)
+    await d.drain_once()
+
+    await store.append(event_type="collection.document_pushed", entity_kind="document", entity_id="d1", payload={"collection_id": "kb"})
+    assert await d.drain_once() == 1
+
+    [(_key, payload)] = bus.published
+    assert payload[WAKE_PARK_KEY] == (await sp.get_storage(WorkspaceSession).get("s1")).parked_at.isoformat()
+    assert payload["event_type"] == "collection.document_pushed", "the envelope is still the agent's tool result"
+
+
 async def test_paused_subscription_is_untouched(sp):
     store = sp.get_event_store()
     row = EventSubscription(

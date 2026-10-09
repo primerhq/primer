@@ -103,7 +103,7 @@ async def test_parks_and_writes_channel_parked_subscription(
     )
 
     assert isinstance(result, Yielded)
-    assert result.event_key == "trigger:trg-ch-1"
+    assert result.event_key == "trigger:sess-1:trg-ch-1"
     assert result.tool_name == "subscribe_to_channel_event"
     sub_id = result.resume_metadata["subscription_id"]
     assert result.resume_metadata["trigger_id"] == "trg-ch-1"

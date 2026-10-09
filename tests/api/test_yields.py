@@ -32,6 +32,7 @@ from primer.model.workspace_session import (
     WorkspaceSession,
     SessionStatus,
 )
+from primer.model.yield_ import WAKE_PARK_KEY
 
 
 @pytest.fixture
@@ -122,6 +123,29 @@ def _make_parked_session(
                 "parked_at_iso": now.isoformat(),
             },
         },
+        "llm_messages": [],
+        "turn_no": 1,
+        "started_at": now.isoformat(),
+        "resume_event_payload": None,
+    }
+    return sess
+
+
+def _make_sleep_session(*, session_id: str, tool_call_id: str) -> WorkspaceSession:
+    """A session parked on a ``sleep``: a non-gate yield, whose cancel has no gate id to name."""
+    now = datetime.now(timezone.utc)
+    key = f"timer:{session_id}:{tool_call_id}"
+    sess = WorkspaceSession(
+        id=session_id, workspace_id="ws-x", binding=AgentSessionBinding(kind="agent", agent_id="ag-x"), status=SessionStatus.RUNNING, created_at=now,
+    )
+    sess.parked_status = "parked"
+    sess.parked_event_key = key
+    sess.parked_until = now + timedelta(seconds=600)
+    sess.parked_at = now
+    sess.parked_state = {
+        "schema_version": 1,
+        "tool_call_id": tool_call_id,
+        "yielded": {"tool_name": "sleep", "event_key": key, "timeout": 600.0, "resume_metadata": {"requested_seconds": 600.0, "parked_at_iso": now.isoformat()}},
         "llm_messages": [],
         "turn_no": 1,
         "started_at": now.isoformat(),
@@ -655,6 +679,23 @@ class TestCancelYieldedTool:
         payload = row.parked_state["resume_event_payload"]
         assert payload.get("__yield_cancelled__") is True
         assert payload.get("reason") == "operator skipped"
+
+    async def test_the_cancel_of_a_non_gate_yield_names_the_park_it_read(self, app, client):
+        """A cancel is delivered by key alone and at least once; one for an earlier park, delivered after the session re-parked under the same key, must not
+        cancel the new one (ticket 01a1208d, #702 review B2)."""
+        sess = _make_sleep_session(session_id="sess-cs", tool_call_id="tc-cs")
+        await _seed_session(app, sess)
+        resp = await client.post("/v1/sessions/sess-cs/yields/tc-cs/cancel", json={"reason": "operator skipped"})
+        assert resp.status_code == 202
+        storage = app.state.storage_provider.get_storage(WorkspaceSession)
+        row = None
+        for _ in range(50):
+            await asyncio.sleep(0.02)
+            row = await storage.get("sess-cs")
+            if row is not None and row.parked_status == "resumable":
+                break
+        assert row is not None and row.parked_status == "resumable"
+        assert row.parked_state["resume_event_payload"][WAKE_PARK_KEY] == row.parked_at.isoformat()
 
     async def test_cancel_works_without_reason(self, app, client):
         sess = _make_parked_session(
