@@ -221,10 +221,11 @@ def test_the_desktop_rail_inbox_row_says_what_it_is_about(
 
 
 @pytest.mark.timeout(240)
-def test_a_card_whose_list_the_operator_declared_offers_approve_at_once(
+def test_a_card_whose_list_the_operator_declared_is_still_blind_until_show_all(
     page: Page, base_url: str, console_url: str, mock_llm_lan, tmp_path: Path,
 ):
-    """The operator chose what matters (``preview_args: ["path"]``): the card shows the path, names what it withholds, and does not make the person tap Show all first."""
+    """The operator chose what the card DRAWS (``preview_args: ["path"]``): it shows the path and names what it withholds. That is not a reason to approve what it hides
+    unread (review of #643, ruling on D3): Approve waits for Show all, and the note says the operator chose the list."""
     registry, mock_base_url = mock_llm_lan
     suffix = uuid.uuid4().hex[:8]
     ids = _seed(base_url, mock_base_url, suffix, tmp_path)
@@ -249,7 +250,12 @@ def test_a_card_whose_list_the_operator_declared_offers_approve_at_once(
             expect(card).to_be_visible(timeout=30_000)
             expect(card).to_contain_text("path=notes/plan.md")
             expect(card.get_by_test_id("nv-mob-ib-withheld")).to_contain_text("content")
-            expect(card.get_by_test_id("nv-mob-ib-note")).to_have_count(0)
+            expect(card.get_by_test_id("nv-mob-ib-note")).to_contain_text("Show all")
+            expect(card.get_by_test_id(f"nv-mobile-inbox-approve:{sid}")).to_have_count(0)
+            expect(card.get_by_test_id(f"nv-mobile-inbox-deny:{sid}")).to_be_visible()
+
+            card.get_by_test_id(f"nv-mob-ib-showall:{sid}").click()
+            expect(page.get_by_test_id(f"nv-mob-ib-full:{sid}")).to_contain_text("zzzzzzzzzz", timeout=10_000)
             expect(card.get_by_test_id(f"nv-mobile-inbox-approve:{sid}")).to_be_visible()
 
             card.get_by_test_id(f"nv-mobile-inbox-approve:{sid}").click()
