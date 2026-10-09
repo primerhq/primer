@@ -14,9 +14,12 @@ Every log below is written by the real writers: a real ``GraphExecutor`` fan-out
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 import pytest
 
+from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
+from primer.session.steer_routing import ROUTE_PENDING, ROUTE_WAKE, route_steer
 from primer.session.terminals import CLOSES, COPY, INSIDE, TurnWindowScanner
 from primer.session.timeline import build_turn_timeline, turn_envelopes, turn_windows
 from primer.session.turns import count_turn_state, has_open_turn
@@ -220,3 +223,21 @@ async def test_a_graph_that_parks_and_resumes_is_still_one_window(monkeypatch):
     assert session_usage(lines).turns == 1
     assert has_open_turn(waiting, cursor=0) is True
     assert [w["terminal_seq"] for w in turn_windows(waiting)] == [None]
+
+
+def _idle_row() -> WorkspaceSession:
+    return WorkspaceSession(
+        id="s", workspace_id="w", binding=AgentSessionBinding(agent_id="a"), status=SessionStatus.WAITING, created_at=datetime.now(UTC), turn_status="idle",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_steer_that_arrives_while_the_graph_runs_is_queued_until_its_own_end(monkeypatch):
+    """``route_steer`` asks ``has_open_turn`` when the row says idle (the terminal record has not landed): once the first node had written its ``done`` the log read as no open turn,
+    so the steer was written as a SECOND user input in the middle of the graph. It is queued now, and wakes the session only after the graph's own end."""
+    records = await graph_turn(monkeypatch=monkeypatch)
+    after_first_node = _lines([r for r in records if r["seq"] <= _first_node_done(records)])
+    after_graph = _lines(records)
+
+    assert route_steer(_idle_row(), raw_lines=after_first_node) == ROUTE_PENDING
+    assert route_steer(_idle_row(), raw_lines=after_graph) == ROUTE_WAKE
