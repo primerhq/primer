@@ -141,6 +141,13 @@ function SH_routingLine(item, viewer) {
   return SH_viewerQualifies(approvers, viewer) ? base + " — you qualify" : base;
 }
 
+// The id of a pending gate card / table row: the gate (C-033), so a gate replaced under the same provider tool_call_id is a NEW card (a keyed
+// component does not inherit the old card's typed answer or rejection reason across the reload), and the session, so two sessions that happen to
+// carry the same provider id never share one. A row from before gates had ids falls back to the raw tool_call_id.
+function SH_pendingId(sessionId, gateId, toolCallId) {
+  return "pending:" + sessionId + ":" + (gateId || toolCallId);
+}
+
 function SH_toAttentionItems(input) {
   var pending = (input && input.pending) || [];
   var records = (input && input.records) || [];
@@ -149,7 +156,7 @@ function SH_toAttentionItems(input) {
   for (var i = 0; i < pending.length; i++) {
     var row = pending[i];
     var item = {
-      id: "pending:" + row.tool_call_id,
+      id: SH_pendingId(row.session_id, row.gate_id, row.tool_call_id),
       sessionId: row.session_id,
       toolCallId: row.tool_call_id,
       // The id of THIS gate, minted when it was created (C-033): a decision sends it back, because the provider repeats tool_call_id across
@@ -289,6 +296,7 @@ window.SH_TIERS = SH_TIERS;
 window.SH_tierFor = SH_tierFor;
 window.SH_yieldKind = SH_yieldKind;
 window.SH_toAttentionItems = SH_toAttentionItems;
+window.SH_pendingId = SH_pendingId;
 window.SH_askOptionsOf = SH_askOptionsOf;
 window.SH_viewerQualifies = SH_viewerQualifies;
 window.SH_routingLine = SH_routingLine;
