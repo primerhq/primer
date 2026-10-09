@@ -737,18 +737,21 @@ function PC_ActiveSpeechPanel() {
       </div>
       <input
         className="input mono"
+        aria-label="Speech-to-text provider id"
         placeholder="stt_provider_id"
         value={row.stt_provider_id || ""}
         onChange={(e) => setDraft({ ...row, stt_provider_id: e.target.value })}
       />
       <input
         className="input mono"
+        aria-label="Text-to-speech provider id"
         placeholder="tts_provider_id"
         value={row.tts_provider_id || ""}
         onChange={(e) => setDraft({ ...row, tts_provider_id: e.target.value })}
       />
       <select
         className="input"
+        aria-label="Voice"
         // The voice picker is the one control on this panel a caller
         // needs by name; the panel around it already had a handle.
         data-testid="active-speech-voice"
@@ -1060,6 +1063,7 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
         <input
           type="text"
           className="input"
+          aria-label="Filter providers"
           placeholder="Filter…"
           value={filterQuery}
           onChange={(e) => setFilterQuery(e.target.value)}

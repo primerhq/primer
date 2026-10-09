@@ -198,7 +198,7 @@ function ChannelRulesPage({ pushToast }) {
           <input className="input" placeholder="Filter rules…" value={q} onChange={(e) => setQ(e.target.value)} />
         </div>
         <div className="sep-v" />
-        <select className="select" value={provFilter} onChange={(e) => setProvFilter(e.target.value)}>
+        <select aria-label="Filter by provider" className="select" value={provFilter} onChange={(e) => setProvFilter(e.target.value)}>
           <option value="">all providers</option>
           {provs.map((p) => <option key={p.id} value={p.id}>{p.id}</option>)}
         </select>

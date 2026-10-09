@@ -881,12 +881,14 @@ function KN_NewCollectionModal({ pushToast, onClose, onCreate }) {
       <div className="col" style={{ gap: 10 }}>
         <input
           className="input mono"
+          aria-label="Collection id"
           placeholder="id (optional)"
           value={id}
           onChange={(e) => setId(e.target.value)}
         />
         <input
           className="input"
+          aria-label="Collection description"
           placeholder="Description"
           value={description}
           onChange={(e) => setDescription(e.target.value)}

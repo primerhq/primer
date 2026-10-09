@@ -267,6 +267,7 @@ function SSPListPage({ onOpen, pushToast }) {
             <Icon name="search" size={13} className="icon" />
             <input
               className="input"
+              aria-label="Filter providers"
               placeholder="Filter providers…"
               value={textQuery}
               onChange={(e) => setTextQuery(e.target.value)}

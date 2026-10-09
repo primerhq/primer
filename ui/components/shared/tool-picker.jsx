@@ -194,6 +194,7 @@ function ToolPicker({ selected, onChange, pageSize, mode }) {
           <Icon name="search" size={13} className="icon" />
           <input
             className="input"
+            aria-label="Search the tool catalog"
             placeholder="Search the catalog…"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
@@ -269,6 +270,7 @@ function ToolPicker({ selected, onChange, pageSize, mode }) {
                     }}>
                     {!single && (
                       <input type="checkbox" checked={allSelected}
+                        aria-label={"Select every tool of " + entry.id}
                         ref={(el) => { if (el) el.indeterminate = !allSelected && someSelected; }}
                         onChange={() => toggleGroup(entry, allSelected)}
                         disabled={entry.tools.length === 0}

@@ -87,6 +87,7 @@ function ToolsetsPage({ pushToast }) {
           <Icon name="search" size={13} className="icon" />
           <input
             className="input"
+            aria-label="Filter toolsets"
             placeholder="Filter toolsets…"
             value={textFilter}
             onChange={(e) => setTextFilter(e.target.value)}
@@ -95,6 +96,7 @@ function ToolsetsPage({ pushToast }) {
         <div className="sep-v" />
         <select
           className="select"
+          aria-label="Filter by kind"
           value={kindFilter}
           onChange={(e) => setKindFilter(e.target.value)}
         >
