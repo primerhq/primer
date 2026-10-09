@@ -281,7 +281,7 @@ function SV_ServiceModal({ existing, onClose, onSaved }) {
         {error && (
           <Banner
             kind="error"
-            title={error.code ? `Save failed (${error.code})` : "Save failed"}
+            title="Save failed"
             detail={error.message || ""}
           />
         )}
@@ -375,7 +375,7 @@ function SV_ServiceDetail({ serviceId }) {
       {error && (
         <Banner
           kind="error"
-          title={error.code ? `Action failed (${error.code})` : "Action failed"}
+          title="Action failed"
           detail={error.message || ""}
         />
       )}

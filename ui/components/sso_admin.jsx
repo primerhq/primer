@@ -437,7 +437,7 @@ function SSO_CreateProviderDialog({ onClose, onCreated }) {
         {submitError && (
           <Banner
             kind="error"
-            title={submitError.code ? `Create failed (${submitError.code})` : "Create failed"}
+            title="Create failed"
             detail={submitError.message || ""}
           />
         )}
@@ -543,7 +543,7 @@ function SSO_EditProviderDialog({ provider, onClose, onSaved }) {
         {submitError && (
           <Banner
             kind="error"
-            title={submitError.code ? `Save failed (${submitError.code})` : "Save failed"}
+            title="Save failed"
             detail={submitError.message || ""}
           />
         )}
@@ -612,7 +612,7 @@ function SSO_DeleteProviderDialog({ provider, onClose, onDeleted }) {
         {error && (
           <Banner
             kind="error"
-            title={error.code ? `Delete failed (${error.code})` : "Delete failed"}
+            title="Delete failed"
             detail={error.message || ""}
           />
         )}
@@ -731,7 +731,7 @@ function SSO_SettingsPanel() {
             {saveError && (
               <Banner
                 kind="error"
-                title={saveError.code ? `Save failed (${saveError.code})` : "Save failed"}
+                title="Save failed"
                 detail={saveError.message || ""}
               />
             )}

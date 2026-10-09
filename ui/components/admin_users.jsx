@@ -338,7 +338,7 @@ function ADM_UserRow({ user, onEdit, onDelete, onKeys, onChanged }) {
           <td colSpan={5} style={{ padding: "0 12px 8px" }}>
             <Banner
               kind="error"
-              title={error.code ? `Action refused (${error.code})` : "Action failed"}
+              title="Action failed"
               detail={error.message || ""}
             />
           </td>
@@ -610,7 +610,7 @@ function ADM_CreateUserDialog({ onClose, onCreated }) {
         {submitError && (
           <Banner
             kind="error"
-            title={submitError.code ? `Create failed (${submitError.code})` : "Create failed"}
+            title="Create failed"
             detail={submitError.message || ""}
           />
         )}
@@ -749,7 +749,7 @@ function ADM_EditUserDialog({ user, onClose, onSaved }) {
         {submitError && (
           <Banner
             kind="error"
-            title={submitError.code ? `Save failed (${submitError.code})` : "Save failed"}
+            title="Save failed"
             detail={submitError.message || ""}
           />
         )}
@@ -818,7 +818,7 @@ function ADM_DeleteUserDialog({ user, onClose, onDeleted }) {
         {error && (
           <Banner
             kind="error"
-            title={error.code ? `Delete failed (${error.code})` : "Delete failed"}
+            title="Delete failed"
             detail={error.message || ""}
           />
         )}
@@ -990,7 +990,7 @@ function ADM_UserKeyRow({ user, token, onRevoked, onConfirmStart, onConfirmEnd }
           <td colSpan={7} style={{ padding: "0 12px 8px" }}>
             <Banner
               kind="error"
-              title={error.code ? `Revoke failed (${error.code})` : "Revoke failed"}
+              title="Revoke failed"
               detail={error.message || ""}
             />
           </td>

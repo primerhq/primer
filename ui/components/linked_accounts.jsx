@@ -271,7 +271,7 @@ function LA_UnlinkConfirmDialog({ identity, onClose, onUnlinked }) {
         {error && (
           <Banner
             kind="error"
-            title={error.code ? `Unlink failed (${error.code})` : "Unlink failed"}
+            title="Unlink failed"
             detail={error.message || ""}
           />
         )}
