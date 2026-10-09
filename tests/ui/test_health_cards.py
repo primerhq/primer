@@ -29,6 +29,15 @@ window.primerApi = {
   apiFetch: function (method, path) { __asked.push([method, path]); return Promise.resolve({}); },
 };
 var SH_api = { pendingAttention: function () { __asked.push(["GET", "/yields/pending"]); return Promise.resolve({ total: 0 }); } };
+// the colour of each card's dot, in card order, as the last render drew them
+var __dots = [];
+(function () {
+  var make = React.createElement;
+  React.createElement = function (type, props) {
+    if (props && props.className === "nv-health-dot") __dots.push(props.style && props.style.background);
+    return make.apply(null, arguments);
+  };
+})();
 """
 
 _HEALTH_OK = {"scheduler": {"alive": True, "degraded": False, "degraded_reason": None, "detail": "in-memory scheduler (single process assumed)"}, "worker_pool": {"in_flight": 0, "capacity": 4}}
@@ -60,7 +69,13 @@ def cards():
         assert len(texts) == 12, texts   # four cards of: name, value, sub-line
         return {texts[i]: (texts[i + 1], texts[i + 2]) for i in range(0, 12, 3)}
 
+    def tones() -> dict[str, str]:
+        """The dot colour of each card, from the last render of the last context."""
+        dots = json.loads(made[-1].eval("JSON.stringify(__dots.slice(-4))"))
+        return dict(zip(("scheduler", "worker pool", "sessions active", "attention"), dots, strict=True))
+
     go.contexts = made   # type: ignore[attr-defined]
+    go.tones = tones   # type: ignore[attr-defined]
     try:
         yield go
     finally:
@@ -104,3 +119,36 @@ def test_a_degraded_scheduler_gives_its_reason_and_never_the_healthy_detail(card
 def test_no_scheduler_is_down(cards) -> None:
     health = {**_HEALTH_OK, "scheduler": {"alive": False, "degraded": False, "detail": None}}
     assert cards(health, {"total": 0})["scheduler"] == ("down", "no scheduler attached")
+
+
+def test_an_idle_install_shows_zero_and_not_an_ellipsis(cards) -> None:
+    """A total of 0 is an answer. A reading that treated it as missing would show the loading ellipsis on every idle install."""
+    assert cards(_HEALTH_OK, {"total": 0, "items": []})["sessions active"] == ("0", "running now")
+
+
+def test_the_total_wins_over_the_length_of_the_page(cards) -> None:
+    """The request asks for one row (``limit=1``): the card is the TOTAL, not the page."""
+    assert cards(_HEALTH_OK, {"total": 2, "items": [{}]})["sessions active"] == ("2", "running now")
+
+
+def test_while_the_health_check_loads_the_scheduler_card_says_it_is_checking_not_that_there_is_none(cards) -> None:
+    reading = cards(None, {"total": 0})["scheduler"]
+    assert reading == ("\u2026", "checking\u2026"), reading
+
+
+def test_while_the_health_check_loads_the_scheduler_dot_is_neutral(cards) -> None:
+    """Loading is not an alarm: no red, amber or green until the server has answered."""
+    cards(None, {"total": 0})
+    assert cards.tones()["scheduler"] not in ("var(--red)", "var(--amber)", "var(--green)"), cards.tones()
+
+
+def test_the_dots_still_mean_what_they_meant_once_the_server_has_answered(cards) -> None:
+    """The controls: healthy is green, degraded is amber, not alive is red."""
+    cards(_HEALTH_OK, {"total": 0})
+    assert cards.tones()["scheduler"] == "var(--green)"
+    degraded = {**_HEALTH_OK, "scheduler": {"alive": True, "degraded": True, "degraded_reason": "worker-only"}}
+    cards(degraded, {"total": 0})
+    assert cards.tones()["scheduler"] == "var(--amber)"
+    down = {**_HEALTH_OK, "scheduler": {"alive": False, "degraded": False}}
+    cards(down, {"total": 0})
+    assert cards.tones()["scheduler"] == "var(--red)"
