@@ -303,5 +303,23 @@ def test_the_text_loaded_for_one_park_does_not_unlock_a_later_park_that_reuses_t
     assert _full_for(loaded, "call_0", None) is None, "nor does a row with no park time unlock a state that has one"
 
 
+def test_two_missing_park_times_are_not_a_match() -> None:
+    """``undefined === undefined``: a state and a row that BOTH lack a park time matched on the call id alone, which is the key that is not unique across rounds. Without a park
+    time on both sides the text is not known to belong to this park, and the card stays locked (it fails closed; Open to review is still there)."""
+    for state in ({"text": "A's arguments", "callId": "call_0"}, {"text": "A's arguments", "callId": "call_0", "parkedAt": None}, {"loading": True, "callId": "call_0"}):
+        assert _full_for(state, "call_0", None) is None, state
+
+
 def test_the_card_draws_the_withheld_line() -> None:
     assert 'data-testid="nv-mob-ib-withheld"' in _card_source() and "view.withheld" in _card_source()
+
+
+def test_the_docs_do_not_call_a_declared_list_trusted() -> None:
+    """The card is blind whenever anything is withheld, whoever declared the list (review of #643): a sentence that says a declared list is trusted contradicts the rule and the code."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    for doc in ("docs/dev/subsystems/ui-pages.md", "docs/agents/tool-approval.md"):
+        text = (root / doc).read_text(encoding="utf-8")
+
+        assert "(`tool`, `policy`) is trusted" not in text and "declared is trusted" not in text, doc
