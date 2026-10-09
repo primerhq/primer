@@ -136,17 +136,20 @@ class EmbeddingProvider(Identifiable):
     @model_validator(mode="before")
     @classmethod
     def _coerce_config_to_provider(cls, data: object) -> object:
-        """Pre-validate: when ``config`` arrives as a dict, parse it with the concrete config class the ``provider`` names.
+        """Pre-validate: ``config`` becomes an instance of the concrete config class the ``provider`` names.
 
-        ``config`` is a plain union, and pydantic takes the FIRST member that validates: an ``openai`` row with an invalid or missing url failed ``OpenAIConfig`` and
-        ``HuggingFaceConfig`` (no token) and validated as ``GoogleConfig`` with the url dropped, so a row with no endpoint could be saved; a ``huggingface`` row with only a
-        url validated as an ``OpenAIConfig``. Keyed by the provider, the error is the config class's own, at the field (``config.url``). ``LLMProvider`` has the same
-        validator for the same reason. An unknown provider is left to the ``provider`` field's own error.
+        ``config`` is a plain union and pydantic's smart mode keeps the member that sets the most fields, whatever ``provider`` says: an ``openai`` row with an invalid or
+        missing url failed ``OpenAIConfig`` and ``HuggingFaceConfig`` (no token) and was left with ``GoogleConfig``, the url dropped, so a row with no endpoint could be saved; a
+        ``huggingface`` row with only a url validated as an ``OpenAIConfig``. Keyed by the provider, a dict is parsed by the config class's own validation and the error is that
+        class's own, at the field (``url``, ``token``: the ``loc`` of an error raised in a before-validator is the config class's, as ``LLMProvider``'s is). A config OBJECT of
+        another class is refused by name: it used to pass through the union as it was. Rows main stored with the wrong shape are repaired by migration 8
+        (``primer/storage/migrations/m008_embedding_provider_repair.py``). ``LLMProvider`` has the same validator for the same reason. An unknown provider is left to the
+        ``provider`` field's own error.
         """
         if not isinstance(data, dict):
             return data
         config = data.get("config")
-        if not isinstance(config, dict):
+        if not isinstance(config, (dict, BaseModel)):
             return data
         provider = data.get("provider")
         try:
@@ -158,4 +161,8 @@ class EmbeddingProvider(Identifiable):
             EmbeddingProviderType.HUGGINGFACE: HuggingFaceConfig,
             EmbeddingProviderType.GEMINI: GoogleConfig,
         }[kind]
+        if isinstance(config, BaseModel):
+            if not isinstance(config, config_cls):
+                raise ValueError(f"config for provider {kind.value!r} must be a {config_cls.__name__}, not a {type(config).__name__}")
+            return data
         return {**data, "config": config_cls.model_validate(config)}

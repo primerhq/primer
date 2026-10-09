@@ -205,13 +205,16 @@ async def test_a_database_with_no_embedding_provider_is_a_no_op(sp: StorageProvi
 async def test_the_log_names_the_id_and_the_provider_and_never_the_config(sp: StorageProvider, caplog: pytest.LogCaptureFixture) -> None:
     await _seed(sp)
 
-    with caplog.at_level(logging.DEBUG):
+    with caplog.at_level(logging.DEBUG, logger="primer"):
         await _migration().apply(sp)
 
-    everything = caplog.text + " ".join(str(record.__dict__) for record in caplog.records)
+    # Primer's own records: a third-party DEBUG logger (aiosqlite prints every statement with its data) is not this migration's log.
+    ours = [record for record in caplog.records if record.name.startswith("primer.")]
+    everything = " ".join(record.getMessage() + " " + str(record.__dict__) for record in ours)
+    assert ours, "the repair says what it did"
     for secret in (KEY, TOKEN, URL, "sk-secret", "hf_secret"):
         assert secret not in everything, f"the log carries {secret!r}"
-    repaired = {getattr(record, "provider_id", None): getattr(record, "provider", None) for record in caplog.records if getattr(record, "provider_id", None)}
+    repaired = {getattr(record, "provider_id", None): getattr(record, "provider", None) for record in ours if getattr(record, "provider_id", None)}
     assert repaired == {"hf-url-only": "huggingface", "openai-no-url": "openai", "openai-token-only": "openai"}
 
 
