@@ -2,11 +2,12 @@
 
 Three controls were ``<span onClick>``: "+ Add a path" (the branch builder), "Remove this connection" (the edge inspector) and "Delete this step" (the step inspector, behind an "Advanced" toggle that was
 a ``<div onClick>`` itself). A span has no role, no focus and no key handling, so a keyboard or screen-reader user could neither reach nor press them. Now each is a ``<button type="button">`` with a
-name that says what it acts on (two choices of one step, two steps with the same name and two connections between the same steps are told apart by the words, as the Remove this choice button is), the two
+name that starts with the words on the button and says what it acts on (two choices of one step are told apart by the words; two steps with the same name, or two connections between the same two steps, share a name,
+as any list of equal items does: the position tells them apart), the two
 destructive ones ask first through the console's own ``confirmDialog`` and drop the answer when the question is no longer about what is on screen, and the Advanced toggle says whether it is open
-(``aria-expanded``). The x of a condition and of a path were 8 by 13 px; they have a 24 by 24 px box (WCAG 2.2 SC 2.5.8) that does not move the glyph (the extra size is taken back by the margin) and does not reach into the control beside it.
+(``aria-expanded``). The x of a condition and of a path were 8 by 13 px; they have a 24 by 24 px box (WCAG 2.2 SC 2.5.8) that does not make the row taller or wider (the extra size is taken back by the margin; the glyph sits 2 px right of where the span had it) and does not reach into the control beside it.
 
-Round 2 (lead's review of #705): the names start with the visible text (WCAG 2.5.3 Label in Name); the Advanced toggle keeps its 11 px text; after a confirmed removal the keyboard lands somewhere that exists (the step's name field, or the 'Nothing selected' heading) instead of the body, where one more Tab left the overlay; the stale-answer guard for a connection is pinned with an undo while the question is open; a connection that is not edge 0 goes alone.
+Round 2 (lead's review of #705): the names start with the visible text (WCAG 2.5.3 Label in Name); the Advanced toggle keeps its 11 px text; after a confirmed removal the keyboard lands somewhere that exists (the step's name field, or the 'Nothing selected' heading) instead of the body (from the body a Tab went to the page behind the overlay); the stale-answer guard for a connection is pinned with an undo while the question is open; a connection that is not edge 0 goes alone.
 
 The REAL builder runs in V8 on the strict mini React (``tests/ui/_graph_builder_v8.py``). What the box measures in a browser is in ``tests/ui_e2e/test_builder_link_controls_journey.py``.
 """
@@ -249,7 +250,7 @@ def test_a_read_only_builder_has_no_delete_this_step(ctx) -> None:
 # ---- the x buttons ---------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 
-def test_the_x_of_a_condition_and_of_a_path_have_a_24_by_24_box_that_does_not_move_the_glyph(ctx) -> None:
+def test_the_x_of_a_condition_and_of_a_path_have_a_24_by_24_box_that_does_not_grow_the_row(ctx) -> None:
     """SC 2.5.8: the box is 24 px each way; the margin takes back what the box adds around the glyph, so the row does not get taller or wider."""
     spec = copy.deepcopy(BASE)
     spec["edges"][1]["router"]["branches"].append({"conditions": [{"path": "ok", "op": "eq", "value": False}], "to_node": "t"})
@@ -260,6 +261,12 @@ def test_the_x_of_a_condition_and_of_a_path_have_a_24_by_24_box_that_does_not_mo
             f" if (n.props && n.props['aria-label'] === {json.dumps(label)}) hit = n;"
             " else if (typeof n.type === 'function' && n.type !== React.Fragment) w(n.out); else w(n.children); })(MR.find('gb-builder')); return JSON.stringify(hit.props.style); })()"))
         assert style["width"] >= 24 and style["height"] >= 24, (label, style)
+        assert style["marginTop"] + style["marginBottom"] == -(24 - 13), f"the margin takes back what the box adds around a 13 px tall glyph: {label} {style}"
+        if label == "Branch 1: remove":
+            assert style["marginLeft"] + style["marginRight"] == -(24 - 8), f"the margin takes back what the box adds around an 8 px wide glyph: {style}"
+        else:
+            # the x of a condition is pushed to the end of its row by an auto margin, and its glyph stays where it was (flush with the row's end): -8 is what the box adds on that side
+            assert style["marginLeft"] == "auto" and style["marginRight"] == -8, style
         assert style["marginTop"] < 0 and style["marginBottom"] < 0 and style["marginRight"] < 0, (label, "the margin takes back the extra box", style)
         assert "margin" not in style, (label, "longhands only: React warns when a style mixes the shorthand with a longhand", style)
 
