@@ -49,6 +49,7 @@ function GB_Inspector(props) {
               sourceNode={source}
               dispatch={dispatch}
               readOnly={readOnly}
+              onJsonError={onJsonError}
               onAddResponseFormat={(nodeId, paths) => {
                 const props2 = {};
                 (paths || []).forEach((p, i) => { props2[p] = { type: i === 0 ? "boolean" : "string" }; });
@@ -229,6 +230,7 @@ function GB_Inspector(props) {
               sourceNode={node}
               dispatch={dispatch}
               readOnly={readOnly}
+              onJsonError={onJsonError}
               onAddResponseFormat={(nodeId, paths) => {
                 const props2 = {};
                 (paths || []).forEach((p, idx) => { props2[p] = { type: idx === 0 ? "boolean" : "string" }; });
