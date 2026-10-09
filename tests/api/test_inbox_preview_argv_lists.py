@@ -774,6 +774,7 @@ def test_the_mysql_rule_sees_a_p_flag_behind_a_quote() -> None:
     """The line wraps ``-pcorrect horse`` in single quotes, so the rule that finds an attached ``-p<value>`` after a mysql command has to see a quote in front of the flag."""
     assert "hunter2" not in _scrub_text("mysql -u root '-phunter2' db")
     assert "correct" not in _scrub_text("mysqldump -u root '-pcorrect horse' db")
+    assert "horse" not in _scrub_text("mysqldump -u root '-pcorrect horse' db")        # the whole quoted password goes, not its first word
     assert _scrub_text("ssh -p22 host") == "ssh -p22 host"                      # still only after a mysql-family command
     assert _scrub_text("mysql -P3306 -h db") == "mysql -P3306 -h db"            # -P is the port
 
@@ -782,16 +783,106 @@ def test_the_mysql_rule_sees_a_p_flag_behind_a_quote() -> None:
 
 
 @pytest.mark.parametrize(
-    ("text", "budget"),
+    ("text", "budget", "shown"),
     [
-        ("password='correct horse battery'", 18),
-        ("-u 'deploy:correct horse battery'", 18),
-        ('--password "correct horse"', 19),
+        ("password='correct horse battery'", 18, "password=<redacted>"),
+        ("-u 'deploy:correct horse battery'", 18, "-u <redacted>"),
+        ('--password "correct horse"', 19, "--password <redacted>"),
+        ("password='correct \"horse battery'", 24, "password=<redacted>"),          # the other kind of quote inside is just text
     ],
 )
-def test_a_cut_that_ends_inside_an_open_quote_is_redacted_whole(text: str, budget: int) -> None:
-    assert _redact(text, 0, [budget]) == ("<redacted>", True)
+def test_a_cut_that_ends_inside_an_open_quote_is_scrubbed_with_the_quote_closed(text: str, budget: int, shown: str) -> None:
+    """The rules see the whole quoted value the cut left open and hide it; the closing quote that was added for them is not shown (review of #636, round 3: hiding the whole
+    value took the head of every harmless long command with it)."""
+    assert _redact(text, 0, [budget]) == (shown, True)
+
+
+def test_a_cut_inside_an_open_quote_keeps_the_head_of_a_harmless_command() -> None:
+    got, truncated = _redact("bash -lc 'set -e; echo building the module; make all", 0, [30])
+
+    assert truncated is True and got.startswith("bash -lc 'set -e;") and "<redacted>" not in got, got
+    assert not got.endswith("''"), got
+
+
+def test_an_apostrophe_inside_a_word_opens_no_quote() -> None:
+    assert _redact("it's fine and done", 0, [12]) == ("it's fine", True)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "x password='correct horse battery staple' y",
+        'x --password "correct horse battery staple" y',
+        "curl -u 'deploy:correct horse battery staple' https://x",
+        "it's --password 'correct horse battery staple' done",
+        "echo token: 'correct horse battery staple' done",
+        'env DB_PASS="correct horse battery staple" run',
+        "mysqldump -u root -p'correct horse battery staple' db",
+        "curl -u'deploy:correct horse battery staple' https://x",
+        "deploy --password 'correct \"horse\" battery staple' done",
+    ],
+)
+def test_no_budget_cuts_a_quoted_secret_so_that_a_word_of_it_shows(text: str) -> None:
+    """At EVERY budget: the cut may land anywhere in the secret, and no word of it is drawn (a flag directly followed by its quote, ``-p'...'`` and ``-u'...'``, opens a quote too)."""
+    words = ("correct", "horse", "battery", "staple")
+    shown = {budget: str(_redact(text, 0, [budget])[0]) for budget in range(1, len(text) + 1)}
+
+    leaks = {budget: line for budget, line in shown.items() if any(word in line for word in words)}
+    assert not leaks, leaks
 
 
 def test_a_cut_that_leaves_every_quote_closed_keeps_what_it_kept() -> None:
     assert _redact("echo 'a b' c d e", 0, [10]) == ("echo 'a b'", True)
+
+
+# ---- review of #636, round 3: a quoted word that starts with -p is not the password, and a real -p<password> after it still hides ------------------------------------------------
+
+
+_DECOY_COMMANDS = [
+    pytest.param("mysql -h db -u app -e \"SELECT id FROM t WHERE code LIKE '-p%'\" -phunter2 appdb", id="text: LIKE '-p%' then -phunter2"),
+    pytest.param("mysqldump -u root -w '-price > 0' -phunter2 db", id="text: -w '-price > 0' then -phunter2"),
+    pytest.param(["sh", "-c", "mysqldump -u root -w '-price > 0' -phunter2 db"], id="sh -c: -w '-price > 0' then -phunter2"),
+    pytest.param(["sh", "-c", "mysql -h db -e \"SELECT 1 WHERE c LIKE '-p%'\" -phunter2 appdb"], id="sh -c: LIKE '-p%' then -phunter2"),
+    pytest.param(["mysqldump", "-u", "root", "--where", "-price > 0", "-phunter2", "db"], id="argv: --where '-price > 0' then -phunter2"),
+    pytest.param(["mysql", "-h", "db", "-e", "SELECT id FROM t WHERE code LIKE '-p%'", "-phunter2", "appdb"], id="argv: LIKE '-p%' then -phunter2"),
+]
+
+
+@pytest.mark.parametrize("command", _DECOY_COMMANDS)
+def test_a_quoted_word_starting_with_p_does_not_end_the_search_for_the_real_password(command) -> None:
+    """The quoted form of the mysql rule (``'-pcorrect horse'``, a spaced password the line wraps in quotes) matched a DECOY that merely starts with ``-p`` inside quotes, and
+    ``re.sub`` resumed after it, so a real ``-phunter2`` later in the command was shown. Main's rule hid it. The unquoted rule is main's again; the quoted form is a second pass."""
+    shown = json.dumps(_redact(command)[0], ensure_ascii=False) + " || " + _preview({"command": command})["arguments"]
+
+    assert "hunter2" not in shown, shown
+
+
+def test_the_unquoted_mysql_rule_is_mains_rule_and_the_quoted_form_is_a_second_pass() -> None:
+    from primer.api.routers import workspaces as w
+
+    assert w._MYSQL_ATTACHED_PASSWORD.pattern.endswith(r"\s+-p)(?=\S)(?:\"[^\"]*\"|'[^']*'|[^\s;&|]+)")
+    assert "'-p" in w._MYSQL_QUOTED_FLAG_PASSWORD.pattern
+
+
+def test_the_quoted_form_still_hides_a_spaced_password_after_a_decoy() -> None:
+    shown = _scrub_text("mysqldump -u root -w '-price > 0' '-pcorrect horse' db")
+
+    assert "correct" not in shown and "horse" not in shown, shown
+
+
+# ---- kept misses of the dash-leading values (listed in ui-pages.md; if one of these fails the miss is fixed: say so in the docs) ---------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("argv", "shown_word"),
+    [
+        pytest.param(["fetch", "Bearer", "-tok en"], "-tok en", id="Bearer '-tok en'"),
+        pytest.param(["x", "--password", "-p4ss"], "-p4ss", id="--password -p4ss"),
+    ],
+)
+def test_the_dash_leading_value_misses_are_kept_on_purpose(argv, shown_word: str) -> None:
+    """``_SECRET_FLAG`` refuses a value that starts with a dash (``--password --verbose`` is two flags), and the quote the line wraps a spaced word in is what keeps ``_BEARER`` from
+    reading it. A dash-leading value of one word after ``--password``, and a dash-leading spaced one after a bare ``Bearer`` word, are drawn."""
+    shown = json.dumps(_redact(argv)[0], ensure_ascii=False)
+
+    assert shown_word in shown, shown
