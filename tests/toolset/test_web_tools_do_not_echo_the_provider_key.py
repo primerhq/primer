@@ -20,6 +20,7 @@ transport that fails with the request in its text.
 
 from __future__ import annotations
 
+import ast
 import logging
 from pathlib import Path
 from typing import Any
@@ -301,12 +302,13 @@ def _assert_clean_logs(caplog: pytest.LogCaptureFixture, reason: str, secret: st
     assert not leaked, leaked
 
 
+@pytest.mark.parametrize("bad", sorted(BAD_KEYS))
 @pytest.mark.parametrize("mode", ["single", "aggregated"])
 @pytest.mark.parametrize("name", sorted(SEARCH_HEADER))
-async def test_the_web_search_tool_refuses_a_padded_key_and_says_why(name: str, mode: str, caplog: pytest.LogCaptureFixture) -> None:
+async def test_the_web_search_tool_refuses_a_padded_key_and_says_why(name: str, mode: str, bad: str, caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.DEBUG, logger="primer")
     async with closing_server() as server:
-        adapter = SEARCH_HEADER[name](BAD_KEYS["trailing-crlf"], base_url=server.url)
+        adapter = SEARCH_HEADER[name](BAD_KEYS[bad], base_url=server.url)
         try:
             result = await _search_handler(adapter, mode)({"query": "q", "count": 1})
         finally:
@@ -321,12 +323,13 @@ async def test_the_web_search_tool_refuses_a_padded_key_and_says_why(name: str, 
     _assert_clean_logs(caplog, REFUSAL, KEY_CORE)
 
 
+@pytest.mark.parametrize("bad", sorted(BAD_KEYS))
 @pytest.mark.parametrize("mode", ["single", "aggregated"])
 @pytest.mark.parametrize("name", sorted(FETCH_HEADER))
-async def test_the_web_fetch_tool_refuses_a_padded_key_and_says_why(name: str, mode: str, caplog: pytest.LogCaptureFixture) -> None:
+async def test_the_web_fetch_tool_refuses_a_padded_key_and_says_why(name: str, mode: str, bad: str, caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.DEBUG, logger="primer")
     async with closing_server() as server:
-        adapter = FETCH_HEADER[name](BAD_KEYS["trailing-crlf"], base_url=server.url)
+        adapter = FETCH_HEADER[name](BAD_KEYS[bad], base_url=server.url)
         try:
             result = await _fetch_handler(adapter, mode)({"url": "https://example.com/page"})
         finally:
@@ -378,21 +381,59 @@ _KEYED_ADAPTERS = (
 _HEADER_ADAPTERS = tuple(path for path in _KEYED_ADAPTERS if not path.endswith("tavily.py"))
 
 
-def _keyed_adapter_sources() -> dict[str, str]:
-    """The modules under primer/web_search and primer/web_fetch that mention ``api_key``: found, not listed, so a seventh keyed adapter is seen."""
-    root = Path(__file__).resolve().parents[2]
+def _keyed_adapter_sources(root: Path | None = None) -> dict[str, str]:
+    """The modules under primer/web_search and primer/web_fetch (and anything below them) that mention ``api_key``: found, not listed, so a seventh keyed adapter is seen."""
+    root = root or Path(__file__).resolve().parents[2]
     sources = {}
     for package in ("primer/web_search", "primer/web_fetch"):
-        for path in sorted((root / package).glob("*.py")):
+        for path in sorted((root / package).rglob("*.py")):
             text = path.read_text(encoding="utf-8")
             if "api_key" in text:
                 sources[str(path.relative_to(root))] = text
     return sources
 
 
+def _assert_the_keyed_adapters_are_covered(root: Path | None = None) -> None:
+    found = sorted(_keyed_adapter_sources(root))
+    assert found == sorted(_KEYED_ADAPTERS), f"keyed adapters this module does not cover (or lost): {sorted(set(found) ^ set(_KEYED_ADAPTERS))}"
+
+
 def test_the_keyed_adapters_are_the_six_this_module_covers() -> None:
     """A new keyed adapter has to be added to the lists above, with its tests, before this passes."""
-    assert sorted(_keyed_adapter_sources()) == sorted(_KEYED_ADAPTERS)
+    _assert_the_keyed_adapters_are_covered()
+
+
+def test_the_discovery_sees_a_seventh_keyed_adapter(tmp_path: Path) -> None:
+    """The guard itself is pinned: a tree holding the six AND a planted seventh module that mentions ``api_key`` (also one in a sub-package) fails it."""
+    for relative in _KEYED_ADAPTERS:
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("api_key = None\n", encoding="utf-8")
+    _assert_the_keyed_adapters_are_covered(tmp_path)          # the six alone pass
+
+    planted = tmp_path / "primer" / "web_search" / "brave.py"
+    planted.write_text("class BraveAdapter:\n    def __init__(self, config):\n        self.api_key = config.api_key\n", encoding="utf-8")
+    with pytest.raises(AssertionError, match="brave"):
+        _assert_the_keyed_adapters_are_covered(tmp_path)
+    planted.unlink()
+
+    nested = tmp_path / "primer" / "web_fetch" / "providers" / "brave.py"
+    nested.parent.mkdir()
+    nested.write_text("api_key = 1\n", encoding="utf-8")
+    with pytest.raises(AssertionError, match="brave"):
+        _assert_the_keyed_adapters_are_covered(tmp_path)
+
+
+def _chains_a_transport_failure(source: str) -> list[int]:
+    """Line numbers of ``raise ... transport_failure(...) from <anything but None>``, found in the syntax tree (not by looking at one line)."""
+    lines = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Raise) or node.cause is None or node.exc is None:
+            continue
+        calls_it = any(isinstance(sub, ast.Call) and getattr(sub.func, "id", getattr(sub.func, "attr", None)) == "transport_failure" for sub in ast.walk(node.exc))
+        if calls_it and not (isinstance(node.cause, ast.Constant) and node.cause.value is None):
+            lines.append(node.lineno)
+    return lines
 
 
 def test_no_keyed_adapter_formats_a_transport_error_unmasked() -> None:
@@ -400,8 +441,17 @@ def test_no_keyed_adapter_formats_a_transport_error_unmasked() -> None:
     for relative, source in _keyed_adapter_sources().items():
         assert "transport: {type(exc).__name__}: {exc}" not in source, f"{relative} puts the transport error's text in its message unmasked"
         assert "transport_failure(" in source, f"{relative} does not mask its transport errors"
-        chained = [line for line in source.splitlines() if "transport_failure(" in line and "from exc" in line]
-        assert not chained, f"{relative} chains the raw transport exception: {chained}"
+        assert not _chains_a_transport_failure(source), f"{relative} chains the raw transport exception (raise ... from exc) at lines {_chains_a_transport_failure(source)}"
+
+
+def test_the_chain_check_sees_a_from_exc_however_the_raise_is_laid_out() -> None:
+    one_line = "def f():\n    try:\n        pass\n    except Exception as exc:\n        raise E(transport_failure('x', exc, c)) from exc\n"
+    laid_out = "def f():\n    try:\n        pass\n    except Exception as exc:\n        raise E(\n            transport_failure('x', exc, c)\n        ) from (\n            exc\n        )\n"
+    clean = one_line.replace("from exc", "from None")
+
+    assert _chains_a_transport_failure(one_line) == [5]
+    assert _chains_a_transport_failure(laid_out) == [5]
+    assert _chains_a_transport_failure(clean) == []
 
 
 def test_every_header_adapter_checks_its_key_before_sending() -> None:

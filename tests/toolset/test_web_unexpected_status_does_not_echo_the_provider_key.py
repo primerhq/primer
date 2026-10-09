@@ -10,6 +10,7 @@ HERMETIC: a loopback server answers 400 with a body whose key starts at offset 1
 
 from __future__ import annotations
 
+import json
 import logging
 
 import pytest
@@ -107,3 +108,60 @@ async def test_the_web_fetch_tool_and_its_logs_carry_no_part_of_the_key(name: st
     assert result.is_error is True and result.output.startswith(f"web-fetch not available: {name} unexpected status 400: xxxx"), result.output
     assert _fragment_in(result.output, KEY) is None, result.output
     _assert_clean_logs(caplog, "unexpected status 400", KEY)
+
+
+# ---- the other vendor text an adapter raises: Firecrawl search's "200 with success false" ------------------------------------------------------------------------------------------
+
+SUCCESS_FALSE = json.dumps({"success": False, "error": "x" * 190 + KEY + " was rejected"})          # the key starts at offset 190 and runs past the cut
+
+
+async def test_firecrawl_search_scrubs_the_text_of_a_success_false_before_cutting_it() -> None:
+    """A 200 whose body says ``success: false`` raised ``f"firecrawl reported failure: {error}"`` with the vendor's text raw and uncapped (review of #686, round 2)."""
+    async with status_server(200, SUCCESS_FALSE) as server:
+        adapter = _search_firecrawl(KEY, base_url=server.url)
+        try:
+            with pytest.raises(WebSearchProviderError) as caught:
+                await _search(adapter)
+        finally:
+            await adapter.aclose()
+    text = str(caught.value)
+    prefix = "firecrawl reported failure: "
+    assert text.startswith(prefix + "xxxx"), text
+    assert _fragment_in(text, KEY) is None, text
+    assert len(text) == len(prefix) + 200, len(text)               # and it is cut, as the unexpected-status text is
+
+
+async def test_firecrawl_search_cuts_a_huge_success_false_text() -> None:
+    async with status_server(200, json.dumps({"success": False, "error": "y" * 1_000_000})) as server:
+        adapter = _search_firecrawl(KEY, base_url=server.url)
+        try:
+            with pytest.raises(WebSearchProviderError) as caught:
+                await _search(adapter)
+        finally:
+            await adapter.aclose()
+    assert len(str(caught.value)) == len("firecrawl reported failure: ") + 200
+
+
+async def test_firecrawl_search_without_an_error_message_still_says_so() -> None:
+    async with status_server(200, json.dumps({"success": False})) as server:
+        adapter = _search_firecrawl(KEY, base_url=server.url)
+        try:
+            with pytest.raises(WebSearchProviderError) as caught:
+                await _search(adapter)
+        finally:
+            await adapter.aclose()
+    assert str(caught.value) == "firecrawl reported failure: (no error message)"
+
+
+async def test_the_web_search_tool_and_its_logs_carry_no_part_of_the_key_of_a_success_false(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.DEBUG, logger="primer")
+    async with status_server(200, SUCCESS_FALSE) as server:
+        adapter = _search_firecrawl(KEY, base_url=server.url)
+        try:
+            result = await _search_handler(adapter, "single")({"query": "q", "count": 1})
+        finally:
+            await adapter.aclose()
+    assert result.is_error is True and result.output.startswith("web-search not available: firecrawl reported failure: xxxx"), result.output
+    assert _fragment_in(result.output, KEY) is None, result.output
+    assert len(result.output) == len("web-search not available: firecrawl reported failure: ") + 200
+    _assert_clean_logs(caplog, "firecrawl reported failure", KEY)
