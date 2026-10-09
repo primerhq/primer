@@ -6,9 +6,15 @@ admin started, can send that: ``update_llm_provider``, ``update_embedding_provid
 
 The rule now: a secret that sits next to an origin (a ``url`` / ``endpoint_url`` / ``apiserver_url`` / ``discovery_url`` / ``git_url`` / ``resource_uri``, or a ``hostname`` with its ``port``) is restored
 only when that origin (scheme, host and port; for a hostname the host and port) is the stored one. A mask sent back for another origin is REFUSED with a 422 (``re-enter the key: the stored one is kept
-only for the same host``); a real new secret is the person's change and is stored as sent; a different path, query, host case or the default port spelled out is the same origin. The refusal names no
-secret. Every family that keeps a secret beside an origin is in ``FAMILIES``: the LLM, embedding and speech providers, the S3 artifact store, the Kubernetes service-account connection, a harness and its
-dependencies, an OIDC provider, an HTTP MCP toolset (its headers) and the Postgres-shaped configs (the vector store and the storage provider).
+only for the same origin (scheme, host and port)``); a real new secret is the person's change and is stored as sent; a different path, query, host case or the default port spelled out is the same origin.
+The refusal names no secret. Every family that keeps a secret beside an origin is in ``FAMILIES``: the LLM, embedding and speech providers, the S3 artifact store, the Kubernetes service-account
+connection, a harness and its dependencies, an OIDC provider, an HTTP MCP toolset (its headers) and the Postgres-shaped configs (the vector store and the storage provider).
+
+WHICH ENTRIES ARE WRITTEN THROUGH ``preserve_masked_secrets`` (the REST ``PUT`` and the system ``update_*`` tools): the LLM, embedding and speech providers, the S3 artifact store, the Kubernetes
+service-account connection, the HTTP MCP toolset and the vector stores. FOUR ENTRIES ARE HELPER-LEVEL ONLY, and pin the rule of the helper, not of a route: ``OIDC provider`` (its route is
+``_preserve_client_secret_if_blank``, pinned in ``tests/api/test_oidc_client_secret_origin.py``), ``harness git token`` (the harness route uses ``apply_git_token_update``, which compares ``git_url``
+exactly and is stricter), ``harness dependency git token`` (a ``DependencyRef`` comes only from ``harness.yaml``) and ``storage provider postgres`` (the storage provider comes from the config file).
+An earlier version of this table presented all four as covered routes; the OIDC route was not bound at all (review of #711, round 1).
 """
 
 from __future__ import annotations
@@ -94,13 +100,14 @@ FAMILIES = {
     "text to speech": (_api(TextToSpeechConfig), _ONE, TAIL, "url"),
     "S3 artifact store": (_s3, [lambda m: m.access_key, lambda m: m.secret_key], BARE, "url"),
     "Kubernetes service account": (_k8s, [lambda m: m.token], BARE, "url"),
+    # HELPER-LEVEL ONLY: no route writes these through preserve_masked_secrets (see the module docstring for what does).
     "harness git token": (_harness, [lambda m: m.git_token], BARE, "url"),
     "harness dependency git token": (_dependency, [lambda m: m.git_token], BARE, "url"),
     "OIDC provider": (_oidc, [lambda m: m.client_secret], BARE, "url"),
     "MCP http headers": (_mcp, [lambda m: m.headers["Authorization"]], BARE, "url"),
     "vector store pgvector": (_pg(PgVectorConfig), [lambda m: m.password], BARE, "host"),
     "vector store pgvectorscale": (_pg(PgVectorScaleConfig), [lambda m: m.password], BARE, "host"),
-    "storage provider postgres": (_pg(PostgresConfig), [lambda m: m.password], BARE, "host"),
+    "storage provider postgres": (_pg(PostgresConfig), [lambda m: m.password], BARE, "host"),          # HELPER-LEVEL ONLY: the storage provider comes from the config file
 }
 IDS = sorted(FAMILIES)
 
