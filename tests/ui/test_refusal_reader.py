@@ -1,20 +1,22 @@
 """ONE reader for a refused write (ticket 01a11cd1-7aaf), and the two refusals it makes readable (admin review ADM-12 and ADM-20).
 
-Five components each read a failed write out of the RFC 7807 envelope their own way (``MC_extractError``, ``AT_extractError``, ``ADM_extractError``,
-``SSO_extractError`` and ``TR_refusal``), and they disagreed: the trigger reader knew the auth gate puts its code in ``extensions.error`` and sends no
+Seven components each read a failed write out of the RFC 7807 envelope their own way (``MC_extractError``, ``AT_extractError``, ``ADM_extractError``,
+``SSO_extractError``, ``SV_extractError``, ``LA_extractError`` and the trigger dialogs' own reader), and they disagreed: the trigger reader knew the auth gate puts its code in ``extensions.error`` and sends no
 message, the others printed the gate's bare ``auth_required`` as the message, and ``SSO_extractError`` still looked for the code in a ``detail`` object
 that the handler never sends (so its code was always null). ``window.primerApi.readRefusal`` (``ui/foundation/api.js``, next to ``ApiError``) is the one
 reader: ``{code, field, sentence, message}``.
 
-* ``code``: ``extensions.code`` (routers raise ``HTTPException(detail={code, message})``), ``extensions.error`` (the auth gate, and the agent/profile pre-write
-  422s ``{error, field, message}``), the first ``extensions.errors[]`` type (request validation), ``in_use_by`` for a reference block, an older ``detail`` object,
-  or a ``detail`` that is only a snake_case code.
-* ``field``: ``extensions.field`` or the dotted path of the first request-validation error (``body.`` dropped).
+* ``code``: ``extensions.code`` (routers raise ``HTTPException(detail={code, message})``), ``extensions.error`` (the auth gate, and the profile pre-write
+  422s ``{error, field, message}``), ``in_use_by`` for a reference block, an older ``detail`` object, or a ``detail`` that is only a snake_case code. A request-validation
+  error (``extensions.errors[]``) has NO code: its ``type`` is a pydantic type or the name of a check (``string_too_short``), which a banner must not print as a code.
+* ``field``: ``extensions.field`` or the dotted path of the first request-validation error (``body.`` dropped; an entry that is not an object has none).
 * ``sentence``: the server's own words, or ``""`` when it sent none or only the code. A message equal to the code is not a sentence; one that merely looks like a
-  code is kept when the code is known and different (the not-found message is a bare id, and an id may hold an underscore).
+  code is kept when the code is known and different (the not-found message is a bare id, and an id may hold an underscore). Exactly one request-validation error
+  is said in its own ``msg``; several are not (``Missing or invalid: a, b.``).
 * ``message``: what a person reads. The sentence, except that a reference block (``in_use_by: 1 agent(s) reference 'x' (first: 'y')``) and a duplicate
   (``Channel with provider_id='a', external_id='b' already exists (id='c')``) are said in plain words (ADM-12, ADM-20); with no sentence, a known bare code
-  (``auth_required``, ``forbidden_role``) gets its own sentence, else the HTTP title, then the error's message, then the caller's fallback.
+  (``auth_required``, ``forbidden_role``) gets its own sentence, else the HTTP title with the code after it (``Forbidden (scope_required)``), then the error's
+  message, then the caller's fallback.
 
 The envelopes are the REAL ones (``tests/_support/refusal_envelopes.py``: the real handlers and the real producers answer through ``TestClient``), and the
 browser side is the real ``ui/foundation/api.js`` and the real component functions in MiniRacer.
@@ -83,7 +85,10 @@ def _read(ctx, envelope: dict, fallback: str | None = None) -> dict:
 
 _IN_USE = "'llm-openchat--scripted:default' is still in use by an agent, for example builder. Remove or change that first."
 _IN_USE_SESSION = "'ag-1' is still in use by a session, for example sess-0001. Remove or change that first."
+_IN_USE_AGGREGATE = "'p-1' is still in use by a model profile (aggregate member), for example agg-1. Remove or change that first."
 _CHANNEL = "A channel with provider_id rev-slack and external_id C0AAAA0001 already exists: channel-fbf469c47c2a."
+_NO_PROFILE = "ModelProfile 'p-9' does not exist; create the profile first or name an existing one"
+_BLANK_DESCRIPTION = "the description must not be blank: other agents find an agent by its description"
 
 EXPECTED = {
     "session_ended": {"code": "auth_required", "field": None, "sentence": "", "message": "Your session has ended; sign in again."},
@@ -92,17 +97,19 @@ EXPECTED = {
         "code": "trigger_slug_conflict", "field": None, "sentence": "slug 'nightly' already in use", "message": "slug 'nightly' already in use",
     },
     "router_code_bare_id": {"code": "trigger_not_found", "field": None, "sentence": "nightly_job", "message": "nightly_job"},
-    "pre_write": {
-        "code": "profile_not_found", "field": "model.profile_id", "sentence": "profile 'p-9' does not exist", "message": "profile 'p-9' does not exist",
-    },
-    "agent_field": {"code": "agent_id_invalid", "field": "id", "sentence": "", "message": "Missing or invalid: id."},
-    "validated": {"code": "string_too_short", "field": "name", "sentence": "", "message": "Missing or invalid: name, count."},
+    "pre_write": {"code": "model_profile_not_found", "field": "model.profile_id", "sentence": _NO_PROFILE, "message": _NO_PROFILE},
+    "agent_field": {"code": None, "field": "description", "sentence": _BLANK_DESCRIPTION, "message": _BLANK_DESCRIPTION},
+    "validated": {"code": None, "field": "name", "sentence": "", "message": "Missing or invalid: name, count."},
     "in_use_by": {
         "code": "in_use_by", "field": None,
         "sentence": "in_use_by: 1 agent(s) reference 'llm-openchat--scripted:default' (first: 'builder')", "message": _IN_USE,
     },
     "in_use_by_session": {
         "code": "in_use_by", "field": None, "sentence": "in_use_by: 1 session(s) reference 'ag-1' (first: 'sess-0001')", "message": _IN_USE_SESSION,
+    },
+    "in_use_by_aggregate": {
+        "code": "in_use_by", "field": None,
+        "sentence": "in_use_by: 1 model_profile (aggregate member)(s) reference 'p-1' (first: 'agg-1')", "message": _IN_USE_AGGREGATE,
     },
     "channel_conflict": {
         "code": None, "field": None,
@@ -130,8 +137,9 @@ def test_the_real_envelopes_really_look_like_this(envelopes) -> None:
     gate, field, pre, block = envelopes["session_ended"], envelopes["agent_field"], envelopes["pre_write"], envelopes["in_use_by"]
 
     assert gate["detail"] == "auth_required" and gate["extensions"] == {"error": "auth_required"}
-    assert field["extensions"]["errors"][0]["type"] == "agent_id_invalid" and field["extensions"]["errors"][0]["loc"] == ["body", "id"]
-    assert pre["extensions"]["error"] == "profile_not_found" and pre["extensions"]["field"] == "model.profile_id"
+    assert field["extensions"]["errors"][0]["type"] == "agent_description_blank" and field["extensions"]["errors"][0]["loc"] == ["body", "description"]
+    assert field["extensions"]["errors"][0]["msg"] == _BLANK_DESCRIPTION
+    assert pre["extensions"]["error"] == "model_profile_not_found" and pre["extensions"]["field"] == "model.profile_id"
     assert block["status"] == 409 and "extensions" not in block and block["detail"].startswith("in_use_by: ")
 
 
@@ -150,13 +158,13 @@ def test_the_default_agent_block_is_a_reference_block_said_without_the_token(env
 def test_a_message_equal_to_the_code_is_not_a_sentence() -> None:
     env = {"type": "/errors/conflict", "title": "Conflict", "status": 409, "detail": "something_unheard_of", "extensions": {"code": "something_unheard_of"}}
 
-    assert _read(_context(), env) == {"code": "something_unheard_of", "field": None, "sentence": "", "message": "Conflict"}
+    assert _read(_context(), env) == {"code": "something_unheard_of", "field": None, "sentence": "", "message": "Conflict (something_unheard_of)"}
 
 
 def test_a_detail_that_is_only_a_snake_case_code_is_the_code() -> None:
     env = {"type": "/errors/bad-request", "title": "Bad Request", "status": 400, "detail": "payload_malformed"}
 
-    assert _read(_context(), env) == {"code": "payload_malformed", "field": None, "sentence": "", "message": "Bad Request"}
+    assert _read(_context(), env) == {"code": "payload_malformed", "field": None, "sentence": "", "message": "Bad Request (payload_malformed)"}
 
 
 def test_an_older_detail_object_still_reads() -> None:
@@ -201,6 +209,19 @@ def test_a_network_error_says_what_the_browser_said() -> None:
         ),
         ("in_use_by: 1 session(s) reference \"it's\" (first: 's-1')", "\"it's\" is still in use by a session, for example s-1. Remove or change that first."),
         ("in_use_by: something this reader has never seen", "Something this reader has never seen"),
+        # a kind is a Python identifier on the server: said as words (ADM-12, review of #625)
+        (
+            "in_use_by: 1 tool_approval_policy(s) reference 'x' (first: 'p-1')",
+            "'x' is still in use by a tool approval policy, for example p-1. Remove or change that first.",
+        ),
+        (
+            "in_use_by: 1 workspace_template(s) reference 'w-1' (first: 'ag-1')",
+            "'w-1' is still in use by a workspace template, for example ag-1. Remove or change that first.",
+        ),
+        (
+            "in_use_by: 1 model_profile (aggregate member)(s) reference 'p-1' (first: 'agg-1')",
+            "'p-1' is still in use by a model profile (aggregate member), for example agg-1. Remove or change that first.",
+        ),
     ],
 )
 def test_a_reference_block_is_said_in_plain_words(detail: str, message: str) -> None:
@@ -233,13 +254,15 @@ def test_a_duplicate_is_said_in_plain_words_and_other_sentences_are_left_alone(d
     assert _read(_context(), env)["message"] == message
 
 
-# ---- the five readers are the one reader -----------------------------------------------------------------------------------------------------------------
+# ---- the seven readers are the one reader -----------------------------------------------------------------------------------------------------------------
 
 _EXTRACTORS = [
     ("components/mcp.jsx", "MC_extractError"),
     ("components/api_tokens.jsx", "AT_extractError"),
     ("components/admin_users.jsx", "ADM_extractError"),
     ("components/sso_admin.jsx", "SSO_extractError"),
+    ("components/services.jsx", "SV_extractError"),
+    ("components/linked_accounts.jsx", "LA_extractError"),
 ]
 
 
@@ -263,9 +286,56 @@ def test_no_component_reader_prints_the_auth_gates_bare_code(envelopes, path: st
         assert got["message"] not in ("auth_required", "forbidden_role"), (name, key, got)
 
 
+# Every way a component can read a refusal out of the envelope itself: a field of the extensions block (``ext.code``, ``extensions?.field``,
+# ``env.extensions.error``, ``err.envelope?.extensions?.errors``) and a field of the older ``detail`` OBJECT the handler never sends (``envDetail.error``,
+# ``env.detail.message``, ``envelope.detail?.code``). The first version of this scan matched only the first form without optional chaining, and missed
+# two more copies of the reader (``SV_extractError`` and ``LA_extractError``, review of #625).
+_ENVELOPE_READS = [
+    re.compile(r"\bext(?:ensions)?\??\.(?:code|error|errors|message|field)\b"),
+    re.compile(r"(?:\benv(?:elope)?\??\.detail|\benvDetail)\??\.(?:code|error|message|field)\b"),
+]
+
+
+def _reads_a_refusal_out_of_the_envelope(line: str) -> bool:
+    code = line.split("//", 1)[0]
+    return any(pattern.search(code) for pattern in _ENVELOPE_READS)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "const f = err.envelope?.extensions?.field;",
+        "code = env.extensions.code;",
+        "if (ext.error) {",
+        "const e = ext?.errors;",
+        "const m = envDetail.message;",
+        "msg = env.detail.message || null;",
+        "code = envelope.detail?.code;",
+        "const k = e.envelope && e.envelope.extensions && e.envelope.extensions.errors;",
+        "code = envDetail.error || envDetail.code || null;",
+    ],
+)
+def test_the_scan_sees_every_way_to_read_a_refusal_out_of_the_envelope(line: str) -> None:
+    assert _reads_a_refusal_out_of_the_envelope(line)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "const r = window.primerApi.readRefusal(err);",
+        "return { code: r.code, message: r.message };",
+        "// env.extensions.code is read by the reader",
+        "const m = item.detail.message;",
+        "const fileExtensions = accept.extensions;",
+    ],
+)
+def test_the_scan_leaves_the_reader_and_other_details_alone(line: str) -> None:
+    assert not _reads_a_refusal_out_of_the_envelope(line)
+
+
 def test_the_foundation_reader_is_the_only_place_that_reads_a_refusal_out_of_an_envelope() -> None:
-    """A sixth copy is how this started. A component may read ``.envelope.extensions`` only to pick ONE field the reader does not return: the Python editor's
-    registration message (the line and function are the reason it is shown inline)."""
+    """A sixth copy is how this started (and a sixth and seventh were still there after the first fix). A component may read ``.envelope.extensions`` only to pick ONE field
+    the reader does not return: the Python editor's registration message (the line and function are the reason it is shown inline)."""
     allowed = {"components/toolsets/python-editor.jsx"}
     offenders = []
     for path in sorted((UI / "components").rglob("*.jsx")):
@@ -273,10 +343,16 @@ def test_the_foundation_reader_is_the_only_place_that_reads_a_refusal_out_of_an_
         if rel in allowed or rel.endswith("mock-data.jsx"):
             continue
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            code = line.split("//", 1)[0]
-            if re.search(r"\b(?:ext|extensions|env\.extensions|envelope\.extensions)\.(?:code|error|message|field)\b", code):
+            if _reads_a_refusal_out_of_the_envelope(line):
                 offenders.append(f"{rel}:{number}: {line.strip()[:110]}")
     assert not offenders, "a component reads a refusal out of the envelope itself instead of window.primerApi.readRefusal:\n" + "\n".join(offenders)
+
+
+@pytest.mark.parametrize(("path", "name"), [("components/services.jsx", "SV_extractError"), ("components/linked_accounts.jsx", "LA_extractError")])
+def test_the_two_copies_the_first_scan_missed_are_wrappers_over_the_reader(path: str, name: str) -> None:
+    source = _function(path, name)
+
+    assert "window.primerApi.readRefusal(" in source and len(source.splitlines()) <= 4, source
 
 
 _CHANNELS_PRELUDE = """
@@ -347,3 +423,85 @@ def test_the_default_error_toast_says_the_refusal_in_plain_words(envelopes) -> N
     pushed = json.loads(ctx.eval("JSON.stringify(pushed)"))
 
     assert pushed and pushed[0]["detail"] == _CHANNEL, pushed
+
+
+# ---- review of #625: the rewrites keep to what they match, the code of a validation error, one entry, a malformed entry -----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "in_use_by: 1 agent(s) reference 'p-1' (first: 'a', 'b')",
+        "in_use_by: 1 agent(s) reference 'p-1' (first: 'a'), 1 graph(s) reference 'p-1' (first: 'g')",
+        "in_use_by: 1 agent(s) reference 'p-1' (first: 'a') and more",
+    ],
+)
+def test_a_reference_block_with_more_in_it_than_one_id_is_left_in_the_servers_words(detail: str) -> None:
+    """The ids are quoted: an id never holds the quote that closes it, so a second id or a second block is not part of the first one (the lazy capture swallowed it)."""
+    env = {"type": "/errors/conflict", "title": "Conflict", "status": 409, "detail": detail}
+
+    message = _read(_context(), env)["message"]
+
+    assert message == detail.removeprefix("in_use_by: "), message
+    assert "for example" not in message
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "Channel with provider_id='a' already exists (id='c-1'), another (id='c-2')",
+        "Channel with provider_id='a' already exists (id='c-1') (id='c-2')",
+        "Channel with provider_id='a' and external_id='b' already exists (id='c')",
+        "Channel with provider_id='a', external_id=b already exists (id='c')",
+    ],
+)
+def test_a_duplicate_that_is_not_exactly_one_pair_list_and_one_id_is_left_in_the_servers_words(detail: str) -> None:
+    """The second id is not part of the first (the lazy capture swallowed it), and a pair list that does not read back as ``name='value', name='value'`` is not rewritten."""
+    env = {"type": "/errors/conflict", "title": "Conflict", "status": 409, "detail": detail}
+
+    assert _read(_context(), env)["message"] == detail
+
+
+@pytest.mark.parametrize(
+    ("status", "title", "code"),
+    [(422, "Validation Error", "managed_field_set"), (403, "Forbidden", "scope_required"), (409, "Conflict", "something_unheard_of")],
+)
+@pytest.mark.parametrize("where", ["code", "error"])
+def test_a_refusal_with_a_code_and_no_sentence_names_the_code_after_the_title(status: int, title: str, code: str, where: str) -> None:
+    """The server sent only a code: "Validation Error" alone tells nobody what was refused. A known bare code has its own sentence and does not get this."""
+    env = {"type": "/errors/x", "title": title, "status": status, "detail": code, "extensions": {where: code}}
+
+    got = _read(_context(), env)
+
+    assert got["sentence"] == "" and got["message"] == f"{title} ({code})"
+
+
+def test_a_request_validation_error_has_no_code_to_print(envelopes) -> None:
+    """The admin banners print ``Create failed (<code>)``: for a field error the ``type`` is a pydantic type (``string_too_short``) or a check's name, not a code."""
+    for key in ("validated", "agent_field"):
+        assert _read(_context(), envelopes[key])["code"] is None, key
+
+
+def test_exactly_one_validation_error_is_said_in_its_own_words() -> None:
+    env = {
+        "type": "/errors/validation-error", "title": "Validation Error", "status": 422, "detail": "One or more request parameters or body fields failed validation.",
+        "extensions": {"errors": [{"type": "missing", "loc": ["body", "name"], "msg": "Field required"}]},
+    }
+
+    assert _read(_context(), env) == {"code": None, "field": "name", "sentence": "Field required", "message": "Field required"}
+
+
+def test_several_validation_errors_are_not_said_as_one_of_them(envelopes) -> None:
+    got = _read(_context(), envelopes["validated"])
+
+    assert got["sentence"] == "" and got["message"] == "Missing or invalid: name, count."
+
+
+@pytest.mark.parametrize("errors", [[None], [42], [{}], [{"loc": "body"}], [{"loc": []}], [{"msg": 7}]])
+def test_a_malformed_validation_entry_does_not_break_the_reader(errors) -> None:
+    """The reader runs inside every error handler: a surprising entry must give an answer, never a TypeError."""
+    err = {"title": "Validation Error", "detail": "failed", "message": "failed", "envelope": {"extensions": {"errors": errors}}}
+
+    got = json.loads(_context().eval(f"JSON.stringify(window.primerApi.readRefusal({json.dumps(err)}))"))
+
+    assert got["code"] is None and got["field"] is None and got["message"] == "failed", got

@@ -5,8 +5,9 @@ Four blocks of ``triggers.jsx`` (the create wizard, the edit dialog, the detail 
 ``extensions.code``, so ``code`` was always null: the banners showed the message only, and the three that compose a title (``Create failed (<code>)``, ``Save failed (<code>)``, ``Fire failed (<code>)``)
 never showed a code by accident, not by design. Reading the code correctly would have turned them into ``Create failed (trigger_slug_conflict)``.
 
-* ``TR_refusal(err)`` reads the code where the API puts it (``extensions.code``, then an older ``detail.code``) and the message from the same place, then ``err.detail`` as a string, then the
-  error's title, then its message.
+* The code, the field and the server's own words are read by the ONE reader in the foundation (``window.primerApi.readRefusal``: ``extensions.code``, then an older ``detail.code``, the
+  message from the same place, then ``err.detail`` as a string, then the error's title, then its message); the dialogs have no reader of their own (``TR_refusal``, a wrapper nothing called,
+  is gone).
 * ``TR_refusalText(err, fallback)`` is the banner's detail: the server's own message worked into ONE sentence about what to do, picked by the code (``TR_REMEDIES``, a template per code with
   a ``{message}`` slot: some messages are whole sentences, some are a bare id: ``trigger_not_found`` carries just ``tr-9fab...``). The code itself is never in the text.
 * The fire block never read ``err.detail`` at all, so a failed Fire now showed only the HTTP title ("Not Found"); it now shows the server's explanation too.
@@ -62,6 +63,16 @@ def _text(err, fallback: str = "Request failed") -> str:
     return _call(f"TR_refusalText({json.dumps(err)}, {json.dumps(fallback)})")
 
 
+def _refusal(err) -> dict:
+    """The code and the message of a failed write, from the foundation's one reader."""
+    read = _call(f"window.primerApi.readRefusal({json.dumps(err)})")
+    return {"code": read["code"], "message": read["message"]}
+
+
+def test_the_dialogs_have_no_reader_of_their_own_besides_the_banner_text() -> None:
+    assert "function TR_refusal(" not in SRC, "TR_refusal was a wrapper over readRefusal that no dialog called: the dialogs call TR_refusalText"
+
+
 # The shapes of real responses (read from a live server): the code is in extensions, `detail` is the message string.
 def _envelope(status: int, code: str, message: str) -> dict:
     env = {"type": "/errors/x", "title": "Conflict", "status": status, "detail": message, "instance": "/v1/triggers", "extensions": {"code": code, "message": message, "request_id": "req-1"}}
@@ -77,13 +88,13 @@ NOT_FOUND = _envelope(404, "trigger_not_found", "tr-1")
 
 
 def test_the_code_and_the_message_are_read_from_the_envelope_extensions() -> None:
-    assert _call(f"TR_refusal({json.dumps(SLUG)})") == {"code": "trigger_slug_conflict", "message": "slug 'nightly' already in use"}
+    assert _refusal(SLUG) == {"code": "trigger_slug_conflict", "message": "slug 'nightly' already in use"}
 
 
 def test_an_older_envelope_with_the_code_in_a_detail_object_still_reads() -> None:
     err = {"envelope": {"status": 409, "detail": {"code": "trigger_kind_immutable", "message": "cannot change kind"}}}
 
-    assert _call(f"TR_refusal({json.dumps(err)})") == {"code": "trigger_kind_immutable", "message": "cannot change kind"}
+    assert _refusal(err) == {"code": "trigger_kind_immutable", "message": "cannot change kind"}
 
 
 @pytest.mark.parametrize(
@@ -97,7 +108,7 @@ def test_an_older_envelope_with_the_code_in_a_detail_object_still_reads() -> Non
     ],
 )
 def test_without_an_envelope_the_message_falls_back_in_order_and_there_is_no_code(err, expected: str) -> None:
-    refusal = _call(f"TR_refusal({json.dumps(err)})")
+    refusal = _refusal(err)
 
     assert refusal["code"] is None and refusal["message"] == expected
 
