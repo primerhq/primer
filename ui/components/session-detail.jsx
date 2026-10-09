@@ -1187,7 +1187,7 @@ function TurnLogRow({ e }) {
       {expanded && (
         <pre style={{
           fontSize: 11, marginTop: 8, padding: 8,
-          background: "var(--bg-0, var(--bg))",
+          background: "var(--bg)",
           border: "1px solid var(--border)",
           borderRadius: 4, overflow: "auto", maxHeight: 240,
           fontFamily: "IBM Plex Mono, monospace",
