@@ -11,6 +11,9 @@ What it deliberately is not: a DOM, a scheduler, or a reconciler. State lives pe
 leaves the tree runs its cleanups and loses its state, and the whole tree is re-rendered on every change. That is enough to drive
 a component through "mount, click, props change" and read what it rendered or called.
 
+Class components run too (``React.Component``, ``setState``, ``componentDidMount``/``componentDidUpdate``, and ``static getDerivedStateFromError`` makes one an error boundary), and an object
+handed over as a child THROWS, as it does in React ("Objects are not valid as a React child"), so a render test sees that whole class of crash.
+
 Where it differs from React, so a green test here is not read as more than it is:
 
 * Effects run PARENT-FIRST, in render order. React runs a child's effects before its parent's.
@@ -112,8 +115,14 @@ var window = globalThis;
       });
       return;
     }
-    if (!node.__el) return;
-    if (typeof node.type === "function" && node.type !== Fragment) {
+    if (!node.__el) {
+      // React refuses an object as a child (a function it only warns about); a render that hands one over must fail here as it does there
+      if (typeof node === "object") throw new Error("Objects are not valid as a React child (found: object with keys {" + Object.keys(node).join(", ") + "})");
+      return;
+    }
+    if (typeof node.type === "function" && node.type !== Fragment && node.type.prototype && node.type.prototype.isReactComponent) {
+      renderClass(node, path, visited);
+    } else if (typeof node.type === "function" && node.type !== Fragment) {
       var id = path + "/" + typeId(node.type) + (node.key != null ? "#" + node.key : "");
       var inst = instances[id] || (instances[id] = { hooks: [] });
       visited[id] = true;
@@ -128,6 +137,42 @@ var window = globalThis;
       renderNode(node.children, path + "/" + (typeof node.type === "string" ? node.type : "f"), visited);
     }
   }
+  // A class component: one instance per position, setState re-renders, and static getDerivedStateFromError makes it an error boundary (the render of everything below it is
+  // tried; a throw below swaps in the state the boundary derives from the error, and the boundary renders again). componentDidMount/componentDidUpdate run after the pass, like effects.
+  function renderClass(node, path, visited) {
+    var id = path + "/" + typeId(node.type) + (node.key != null ? "#" + node.key : "");
+    var inst = instances[id];
+    var fresh = !inst || !inst.obj;
+    if (!inst) inst = instances[id] = { hooks: [] };
+    visited[id] = true;
+    var prevProps = null;
+    if (fresh) {
+      inst.obj = new node.type(node.props);
+      inst.obj.__mr_dirty = function () { dirty = true; };
+    } else {
+      prevProps = inst.obj.props;
+    }
+    inst.obj.props = node.props;
+    var obj = inst.obj;
+    try {
+      node.out = obj.render();
+      renderNode(node.out, id, visited);
+    } catch (err) {
+      if (typeof node.type.getDerivedStateFromError !== "function") throw err;
+      obj.state = Object.assign({}, obj.state, node.type.getDerivedStateFromError(err));
+      node.out = obj.render();
+      renderNode(node.out, id, visited);
+    }
+    var hook = fresh ? obj.componentDidMount : obj.componentDidUpdate;
+    if (typeof hook === "function") pendingEffects.push({ slot: {}, fn: function () { if (fresh) obj.componentDidMount(); else obj.componentDidUpdate(prevProps); } });
+  }
+  function Component(props) { this.props = props; this.state = null; }
+  Component.prototype.isReactComponent = {};
+  Component.prototype.setState = function (partial) {
+    var next = typeof partial === "function" ? partial(this.state, this.props) : partial;
+    this.state = Object.assign({}, this.state, next);
+    this.__mr_dirty();
+  };
   function pass() {
     var visited = {};
     root.tree = createElement(root.type, root.props);
@@ -187,7 +232,7 @@ var window = globalThis;
     return out;
   }
   g.React = {
-    createElement: createElement, Fragment: Fragment, useState: useState, useReducer: useReducer, useRef: useRef,
+    createElement: createElement, Fragment: Fragment, Component: Component, useState: useState, useReducer: useReducer, useRef: useRef,
     useMemo: useMemo, useCallback: useCallback, useEffect: useEffect, useLayoutEffect: useEffect,
   };
   g.MR = {
