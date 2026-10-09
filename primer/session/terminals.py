@@ -28,6 +28,13 @@ the first error of a failure ends the window and the rest of the failure is file
 terminal of the session's own run" (a turn's status, the final text, the relay's boundaries) keeps using the per-record predicates, so a copy at
 the END of the log still reads as a terminal. Folded on read, so logs written before the rule fold the same way. The console's mirror is
 ``SH_newWindowScanner`` / ``SH_windowsOfSeq`` (ui/foundation/shell-turns.js); tests/ui/test_shell_turns.py compares the two over the shapes the writers produce.
+
+A GRAPH turn is one window too (ticket 01a11f35). Every node of a graph writes its own ``done`` (or ``error`` / ``cancelled``) and each such record carries the node's ``node_id``; the graph's
+own end is written by session dispatch after the executor's stream and carries none (the run's final ``done``, dispatch's failure exit, the claim adapter's release marker). A record with a
+``node_id`` is therefore INSIDE the window, exactly as a delegated record is: it ends nothing, is a copy of nothing and does not touch the scanner's state, so one fan-out of two workers is one
+window, closed by the graph's own end, instead of three. The per-record predicates are unchanged on purpose: the final-result relay reads the text between the last two session terminals and
+needs a node's ``done`` to stay one. A graph log written before records carried a ``node_id`` cannot be told from a non-graph log and keeps the windows it had. Folded on read like the rest,
+so old graph sessions renumber on the next read (the trace asks for the ordinal the console counted over the same records, so the two stay in step).
 """
 
 from __future__ import annotations
@@ -116,7 +123,8 @@ INSIDE = "inside"        # an ordinary record of the open window
 class TurnWindowScanner:
     """Feed the records of a log in order; it says which ones end a window, which are copies of a failure that did, and which are neither.
 
-    The rule, per record (a delegated record is always ``INSIDE``: a subagent's terminal and a subagent's failure are never the session's):
+    The rule, per record (a delegated record is always ``INSIDE``: a subagent's terminal and a subagent's failure are never the session's; so is a graph NODE's record, one that
+    carries a ``node_id``: the graph turn is not over until the graph's own end, the first record without a node):
 
     * ``user_input`` starts a new turn: nothing before it can be copied from.
     * ``done`` / ``cancelled`` (a ``done`` that is not a tool round's) ends a window. A ``done`` with ``stop_reason: "error"`` (OpenResponses
@@ -125,9 +133,7 @@ class TurnWindowScanner:
       cause that arrives AFTER the ``done(error)`` it belongs to (the agent loop holds the first Done / Error of a stream and yields it last).
     * a bare release marker is a ``COPY`` once the turn has failed, and the only evidence (so it ends the window) when nothing has.
     * dispatch's own failure ERROR (:func:`is_dispatch_failure_record`) is a ``COPY`` once the turn has failed, whatever its words.
-    * any other ``error`` ends a window, unless the turn has already failed and an earlier error of the turn has the same non-empty message
-      from the same node (a record that names no node matches any node's: records from before graphs named theirs carry none). Two NAMED nodes
-      that fail with the same words are two failures, as are two failures with different words.
+    * any other ``error`` ends a window, unless the turn has already failed and an earlier error of the turn has the same non-empty message.
 
     A notice alone does not make a turn failed: with no ``response.failed`` the dispatch error that follows it (same words) is the only end the
     turn has, so it ends the window instead of being filed as a copy of a notice.
@@ -135,21 +141,21 @@ class TurnWindowScanner:
 
     def __init__(self) -> None:
         self._failed = False
-        self._words: list[tuple[str, str | None]] = []
+        self._words: list[str] = []
 
     def _new_turn(self) -> None:
         self._failed = False
         self._words = []
 
-    def _remember(self, message: str | None, node: str | None) -> None:
+    def _remember(self, message: str | None) -> None:
         if message:
-            self._words.append((message, node))
+            self._words.append(message)
 
-    def _copies_an_earlier_error(self, message: str | None, node: str | None) -> bool:
-        return bool(message) and any(m == message and (not n or not node or n == node) for m, n in self._words)
+    def _copies_an_earlier_error(self, message: str | None) -> bool:
+        return bool(message) and message in self._words
 
     def feed(self, rec: dict[str, Any]) -> str:
-        if is_delegated(rec):
+        if is_delegated(rec) or rec.get("node_id"):          # a subagent's record, or a graph node's: the turn is the session's / the graph's, and it is not over
             return INSIDE
         kind = rec.get("kind")
         if kind == _USER_INPUT:
@@ -158,18 +164,17 @@ class TurnWindowScanner:
         if kind == _ERROR:
             payload = payload_of(rec)
             message = payload.get("message") if isinstance(payload.get("message"), str) else None
-            node = rec.get("node_id") or None
             if is_bare_marker(rec):
                 if self._failed:
                     return COPY
                 self._failed = True
                 return CLOSES
             if is_non_fatal_error(rec):
-                self._remember(message, node)
+                self._remember(message)
                 return INSIDE
-            if self._failed and (is_dispatch_failure_record(rec) or self._copies_an_earlier_error(message, node)):
+            if self._failed and (is_dispatch_failure_record(rec) or self._copies_an_earlier_error(message)):
                 return COPY
-            self._remember(message, node)
+            self._remember(message)
             self._failed = True
             return CLOSES
         if not closes_turn(rec):
