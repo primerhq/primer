@@ -572,3 +572,65 @@ async def test_message_reply_reject_refused_replies_with_the_notice(monkeypatch)
     ctx.bot.send_message.assert_awaited_once()
     kw = ctx.bot.send_message.await_args.kwargs
     assert kw["chat_id"] == 100 and NOTICE in kw["text"] and kw.get("reply_to_message_id") == 5
+
+
+# --------------------------------------------------------------------------- #
+# the click and the reply never fail on a notice (review of PR 555)
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_callback_is_answered_exactly_once_when_the_decision_raises_something_else(monkeypatch):
+    """A relay error that is not a refusal propagates (the library logs it), but the click is still answered, once, with no alert."""
+    adapter = _mock_adapter()
+    adapter._handle_decision = AsyncMock(side_effect=RuntimeError("relay down"))
+    adapter._resolve_tag = AsyncMock(return_value={"workspace_id": "w", "session_id": "s", "tool_call_id": "t"})
+    on_callback, _ = _install(monkeypatch, _FakeEntry({"100": adapter}))
+    cq = _cq("a:TAG")
+
+    with pytest.raises(RuntimeError, match="relay down"):
+        await on_callback(SimpleNamespace(callback_query=cq), _context())
+
+    cq.answer.assert_awaited_once()
+    assert not cq.answer.await_args.kwargs.get("show_alert")
+
+
+@pytest.mark.asyncio
+async def test_a_callback_answer_that_fails_is_logged_and_does_not_fail_the_handler(monkeypatch, caplog):
+    """Telegram refuses to answer a click that is too old; that must not turn an accepted approval into an error."""
+    adapter = _mock_adapter()
+    adapter._handle_decision = AsyncMock(return_value=True)
+    adapter._resolve_tag = AsyncMock(return_value={"workspace_id": "w", "session_id": "s", "tool_call_id": "t"})
+    on_callback, _ = _install(monkeypatch, _FakeEntry({"100": adapter}))
+    cq = _cq("a:TAG")
+    cq.answer = AsyncMock(side_effect=RuntimeError("query is too old"))
+
+    with caplog.at_level("ERROR"):
+        await on_callback(SimpleNamespace(callback_query=cq), _context())
+
+    assert any("answer" in record.getMessage() for record in caplog.records), "the failed answer was not logged"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_reason_whose_notice_cannot_be_sent_is_logged_and_does_not_fail_the_handler(monkeypatch, caplog):
+    adapter = _mock_adapter()
+    adapter._handle_decision = AsyncMock(return_value=False)
+    adapter.resolve_reply_target = MagicMock(return_value={
+        "kind": "reject", "workspace_id": "w", "session_id": "s", "tool_call_id": "t"})
+    _, on_message = _install(monkeypatch, _FakeEntry({"100": adapter}))
+
+    class Corr:
+        def __init__(self, sp):
+            pass
+
+        async def lookup(self, cid, key):
+            return None
+
+    monkeypatch.setattr("primer.channel.correlation.CorrelationStore", Corr)
+    ctx = _context()
+    ctx.bot.send_message = AsyncMock(side_effect=RuntimeError("chat gone"))
+    msg = _msg(text="because reasons", reply_to=SimpleNamespace(message_id=44))
+
+    with caplog.at_level("ERROR"):
+        await on_message(SimpleNamespace(message=msg), ctx)
+
+    assert any("notice" in record.getMessage() for record in caplog.records), "the failed notice was not logged"
+

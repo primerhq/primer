@@ -667,6 +667,15 @@ async def test_download_gives_up_on_a_body_that_drips_past_its_total_deadline():
     assert body.closed, "the response was left open"
 
 
+@pytest.mark.parametrize("timeout_seconds", [0, -1, -0.5])
+def test_download_refuses_a_deadline_that_is_not_positive(timeout_seconds):
+    """``asyncio.timeout(0)`` would expire every download at once and a negative one is a bug in the caller: refuse it when the handler is built."""
+    from primer.toolset.web.tools import make_download_handler
+
+    with pytest.raises(ValueError, match="timeout_seconds must be > 0"):
+        make_download_handler(http_client=_client(_Body()), workspace_registry=_WsRegistry(), byte_cap=CAP, timeout_seconds=timeout_seconds)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("which", TOOLS)
 @pytest.mark.parametrize("compress", [_gzip, _zlib, _raw_deflate], ids=["gzip", "deflate", "raw-deflate"])

@@ -664,3 +664,22 @@ async def test_a_failing_notice_does_not_break_the_handler(monkeypatch):
     await app.actions["approve"](AsyncMock(), body, client)          # must not raise
 
     client.chat_update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_view_reject_modal_with_no_adapter_to_relay_through_edits_nothing(monkeypatch):
+    """With no adapter under the provider nothing was relayed: the message must not be edited to say it was rejected."""
+    _, app = _install(monkeypatch, _FakeEntry({}))
+    client = SimpleNamespace(
+        conversations_history=AsyncMock(return_value={"messages": [{"blocks": []}]}),
+        chat_update=AsyncMock(), chat_postEphemeral=AsyncMock())
+    view = {
+        "private_metadata": "reject:ws:sid:tc:C123:111.2",
+        "state": {"values": {"reason": {"reason_text": {"value": "no good"}}}},
+    }
+
+    await app.views[slack_factory.REJECT_MODAL_CALLBACK_ID](AsyncMock(), {"user": {"id": "U1"}}, view, client)
+
+    client.chat_update.assert_not_awaited()
+    client.chat_postEphemeral.assert_not_awaited()
+

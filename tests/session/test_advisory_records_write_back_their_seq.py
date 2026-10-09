@@ -87,10 +87,12 @@ def _wake_deps(storage_provider, workspace, bus) -> SessionWakeDeps:
 
 
 def _isolating(sessions):
-    """Make the in-memory session storage hand out and keep COPIES, as a database does.
+    """Make the in-memory session storage hand out COPIES on ``get`` and keep COPIES on ``create`` / ``update``, as a database does.
 
     The fake returns the stored object itself, so a writer that changes the row it was handed in memory (``wake_session`` bumps ``row.last_seq`` on the
     object it returns) would also change what is "stored", and an assertion on the stored row could not tell a reserved seq from an in-memory bump.
+    The rows these tests read are read with ``get``; what ``create`` / ``update`` and an unwrapped ``patch_if`` RETURN is still the stored object
+    itself, so a test must not assert on the identity or the mutation of a returned row.
     """
     real_get, real_create, real_update = sessions.get, sessions.create, sessions.update
 
