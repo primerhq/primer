@@ -125,8 +125,11 @@ async def test_a_failed_session_that_is_written_to_again_has_an_open_turn(fake_s
     )
 
     lines = workspace.read_lines(sid)
-    kinds = [json.loads(line)["kind"] for line in lines if '"seq"' in line]
-    assert kinds[-1] == "user_input" and "error" in kinds, kinds
+    records = [json.loads(line) for line in lines if '"seq"' in line]
+    # The premise, pinned on the window the guard reads (kinds only: seqs repeat until 01a11cd8): the failed turn's terminal sits AT the cursor,
+    # ahead of the input that reopened the session. Checking the whole log would pass on an ERROR written below the cursor.
+    window = [record["kind"] for record in records if record["seq"] >= reopened.next_unprocessed_seq]
+    assert window == ["error", "invocation_divider", "user_input"], window
     assert has_open_turn(lines, cursor=reopened.next_unprocessed_seq) is True, (
         "the message that reopened the failed session is unanswered, but the failed turn's terminals at the cursor were counted against it"
     )
