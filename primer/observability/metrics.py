@@ -299,6 +299,14 @@ session_completed_turn_noop_total = Counter(
     registry=registry,
 )
 
+session_resume_noop_total = Counter(
+    "session_resume_noop_total",
+    "Session claims that found the resume of the parked turn already applied (resumed_park_at == "
+    "parked_at) but its release never committed (abandoned or rolled back), and released without "
+    "running the resume handler again. Each one is a reply injected, or an approved tool run, twice.",
+    registry=registry,
+)
+
 message_write_abandoned_total = Counter(
     "message_write_abandoned_total",
     "Batches of session message records the workspace did not accept within the write bound "
@@ -412,6 +420,7 @@ def reset_for_test() -> None:
     global session_interrupts_via_poll_total  # noqa: PLW0603
     global session_interrupt_publish_failures_total  # noqa: PLW0603
     global session_completed_turn_noop_total  # noqa: PLW0603
+    global session_resume_noop_total  # noqa: PLW0603
     global message_write_abandoned_total  # noqa: PLW0603
     global llm_count_tokens_total, llm_count_tokens_seconds, llm_tokenizer_ready  # noqa: PLW0603
     global llm_prompt_estimate_ratio  # noqa: PLW0603
@@ -626,6 +635,13 @@ def reset_for_test() -> None:
         "calling the model again. Each one is a turn that would otherwise have run twice.",
         registry=registry,
     )
+    session_resume_noop_total = Counter(
+        "session_resume_noop_total",
+        "Session claims that found the resume of the parked turn already applied (resumed_park_at == "
+        "parked_at) but its release never committed (abandoned or rolled back), and released without "
+        "running the resume handler again. Each one is a reply injected, or an approved tool run, twice.",
+        registry=registry,
+    )
     message_write_abandoned_total = Counter(
         "message_write_abandoned_total",
         "Batches of session message records the workspace did not accept within the write bound "
@@ -681,6 +697,7 @@ __all__ = [
     "session_interrupt_publish_failures_total",
     # Completed-turn re-claim guard
     "session_completed_turn_noop_total",
+    "session_resume_noop_total",
     # Message log writes
     "message_write_abandoned_total",
     # Tool-call claims

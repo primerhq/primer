@@ -400,10 +400,63 @@ async def inject_resume_and_continue(
         return await pool._end_session(session, reason="failed")
 
     await _persist_resume_tool_result_record(pool, session, parked, tool_result_part)
+    # AFTER the record write above: that write puts the pool-start ``session`` document back whole, which would
+    # overwrite the marker if it came first.
+    await _mark_resume_applied(pool, session)
 
     # Continuation: clear park (on_release) + keep the lease so the next
     # claim runs the continuation LLM turn.
     return ReleaseOutcome(success=True, drop_lease=False)
+
+
+def resume_already_applied(session) -> bool:
+    """Whether the park on ``session`` was already resumed, its release never having committed (ticket 01a10b54-425b).
+
+    ``resumed_park_at`` is written by the continue path of :func:`inject_resume_and_continue` once the resume's effects are
+    committed, and the release that follows clears the park. A row that still carries the park AND a marker naming it is
+    exactly a release that was abandoned or rolled back: the pool's resume branch must not run the handler again (it would
+    inject the reply a second time and re-run an approved tool). A marker that differs from ``parked_at`` names an older
+    park (a later park stamps a new ``parked_at``) and means nothing.
+    """
+    return session.resumed_park_at is not None and session.resumed_park_at == session.parked_at
+
+
+async def _mark_resume_applied(pool: "WorkerPool", session) -> None:
+    """Record that the park on ``session`` was resumed (``WorkspaceSession.resumed_park_at``).
+
+    One field-scoped ``patch_if`` fenced on the ``turn_no`` the resume ran at: it writes nothing else, and nothing if the
+    row has moved on to another turn. Best-effort, like ``completed_turn_no``: a rejected fence or a storage error is
+    logged and never fails the resume (without the marker a rolled-back release runs the handler again, as it did before).
+
+    Only the continue path calls this. A handler that re-parks (a yielding tool behind an approval, a graph that still has
+    pending siblings), ends the session or fails is NOT covered: its effects are not all committed before its release, so
+    there is nothing to skip to, and a rollback of its release still runs the handler again. ``tool_wait`` parks resume
+    through their own coordinator and are not covered either.
+    """
+    if pool._storage is None or session.parked_at is None:
+        return
+    from pydantic_core import to_jsonable_python
+
+    from primer.model.workspace_session import WorkspaceSession
+
+    storage = pool._storage.get_storage(WorkspaceSession)
+    try:
+        written = await storage.patch_if(
+            session.id,
+            to_jsonable_python({"resumed_park_at": session.parked_at}),
+            where={"turn_no": [session.turn_no]},
+        )
+    except Exception:  # noqa: BLE001 - best-effort; the resume's own outcome stands
+        logger.warning(
+            "resume: session %s: could not record the park as resumed; a rolled-back release would run the handler again",
+            session.id, exc_info=True,
+        )
+        return
+    if written is None:
+        logger.warning(
+            "resume: session %s: turn_no is no longer %d, so the park is not recorded as resumed",
+            session.id, session.turn_no,
+        )
 
 
 async def _persist_resume_tool_result_record(
