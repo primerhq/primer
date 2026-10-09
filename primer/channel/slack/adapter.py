@@ -163,6 +163,7 @@ class SlackChannelAdapter(ChannelAdapter):
                         workspace_id=envelope.workspace_id,
                         session_id=envelope.session_id,
                         tool_call_id=envelope.tool_call_id,
+                        gate_id=envelope.gate_id,
                     )
                 except Exception:
                     logger.warning(

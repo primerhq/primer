@@ -39,6 +39,7 @@ from primer.model.yield_ import (
     YieldCancelled,
     YieldTimeout,
     Yielded,
+    gate_id_of,
 )
 
 
@@ -856,6 +857,7 @@ def _build_prompt_envelope(
             timeout_at_iso=None,
             workspace_name=workspace_name,
             session_label=session_label,
+            gate_id=gate_id_of(metadata),
         )
     if kind == "_approval":
         original = metadata.get("original_call") or {}
@@ -879,6 +881,7 @@ def _build_prompt_envelope(
             tool_args=original.get("arguments") or {},
             workspace_name=workspace_name,
             session_label=session_label,
+            gate_id=gate_id_of(metadata),
         )
     return None
 

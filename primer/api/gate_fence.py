@@ -7,16 +7,15 @@ the pending responses serve it, and the respond routes take it back as ``gate_id
 is refused with a 409 ``approval_stale`` BEFORE anything moves.
 
 A respond that names none is still accepted (a client that predates the token, a channel tag minted before this release): logged once without
-the call's arguments and counted in ``gate_respond_total{token="absent"}``, so the flip to a 422 can be scheduled once that count is zero.
+the call's arguments and counted in ``gate_respond_total{token="absent"}`` (:func:`primer.session.gate_token.count_gate_token`, shared with the
+channel inbox), so the flip to a 422 can be scheduled once that count is zero.
 """
 
 from __future__ import annotations
 
-import logging
-
 from fastapi import HTTPException
 
-logger = logging.getLogger(__name__)
+from primer.session.gate_token import count_gate_token
 
 
 APPROVAL_STALE = "approval_stale"
@@ -34,19 +33,6 @@ def stale_gate_error(kind: str) -> HTTPException:
             "message": f"this {_NOUN.get(kind, 'request')} was replaced by a newer one; reload the pending list",
         },
     )
-
-
-def count_gate_token(*, kind: str, session_id: str, token: str | None, stale: bool = False) -> None:
-    """Count one respond by what it said about which gate it answers, and log a respond that said nothing.
-
-    ``stale`` marks a respond that named a gate that is not the pending one. The log line names the session and never the call's arguments.
-    """
-    import primer.observability.metrics as metrics
-
-    outcome = "stale" if stale else ("matched" if token is not None else "absent")
-    metrics.gate_respond_total.labels(kind=kind, token=outcome).inc()
-    if outcome == "absent":
-        logger.info("%s respond without a gate_id on session %s: accepted (a client that predates the token)", kind, session_id)
 
 
 __all__ = ["APPROVAL_STALE", "count_gate_token", "stale_gate_error"]

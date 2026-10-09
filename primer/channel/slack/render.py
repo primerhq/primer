@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from primer.channel.adapter import PromptEnvelope, format_tool_args
+from primer.channel.gate_tag import attach_gate_suffix
 
 
 REJECT_MODAL_CALLBACK_ID = "primer_reject_modal"
@@ -71,7 +72,8 @@ def _approval_info_blocks(envelope: PromptEnvelope) -> list[dict[str, Any]]:
 def build_tool_approval_message(
     *, channel_id: str, envelope: PromptEnvelope,
 ) -> dict[str, Any]:
-    suffix = f"{envelope.workspace_id}:{envelope.session_id}:{envelope.tool_call_id}"
+    # The gate id rides after the tool_call_id (C-033) so a click brings back which gate its button was drawn for; a button with no gate id is as before.
+    suffix = f"{envelope.workspace_id}:{envelope.session_id}:{attach_gate_suffix(envelope.tool_call_id, envelope.gate_id)}"
     return {
         "channel": channel_id,
         "text": envelope.prompt,
@@ -143,11 +145,12 @@ def build_reject_modal(
     *,
     workspace_id: str, session_id: str, tool_call_id: str,
     channel_id: str | None = None, message_ts: str | None = None,
+    gate_id: str | None = None,
 ) -> dict[str, Any]:
     # Thread the originating channel + message ts through private_metadata so
     # the modal-submit handler can chat.update the original message (modal
     # submissions don't carry the source message).
-    meta = f"reject:{workspace_id}:{session_id}:{tool_call_id}"
+    meta = f"reject:{workspace_id}:{session_id}:{attach_gate_suffix(tool_call_id, gate_id)}"
     meta += f":{channel_id or ''}:{message_ts or ''}"
     return {
         "type": "modal",

@@ -28,6 +28,14 @@ class ChannelCorrelation(Identifiable):
             "record is a plain thread-to-session mapping (S6 section 5)."
         ),
     )
+    gate_id: str | None = Field(
+        default=None,
+        description=(
+            "kind=session: the id of the gate ``tool_call_id`` names, as minted when it was created (resume_metadata.gate_id, C-033). A reply "
+            "brings it back so a reply to a prompt that has since been replaced under the same tool_call_id is refused. None when there is no "
+            "open gate, and for a row written before gates had ids."
+        ),
+    )
     updated_at: datetime | None = Field(default=None)
 
 

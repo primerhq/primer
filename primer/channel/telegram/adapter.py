@@ -144,12 +144,16 @@ class TelegramChannelAdapter(ChannelAdapter):
             workspace_id=envelope.workspace_id,
             session_id=envelope.session_id,
             tool_call_id=envelope.tool_call_id,
+            gate_id=envelope.gate_id,
         )
         ids = {
             "workspace_id": envelope.workspace_id,
             "session_id": envelope.session_id,
             "tool_call_id": envelope.tool_call_id,
         }
+        if envelope.gate_id:
+            # The full id lives in the tag's cache entry (callback_data is 64 bytes); a click on this button brings it back to the inbox (C-033).
+            ids["gate_id"] = envelope.gate_id
         self._tag_cache[tag] = ids
         msg = await self._app.bot.send_message(**body)
         message_id = getattr(msg, "message_id", 0)
@@ -165,6 +169,7 @@ class TelegramChannelAdapter(ChannelAdapter):
                         workspace_id=envelope.workspace_id,
                         session_id=envelope.session_id,
                         tool_call_id=envelope.tool_call_id,
+                        gate_id=envelope.gate_id,
                     )
                 except Exception:
                     logger.warning(

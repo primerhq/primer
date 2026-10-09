@@ -175,12 +175,12 @@ async def test_a_tokenless_respond_is_accepted_logged_without_arguments_and_coun
     storage = app.state.storage_provider.get_storage(WorkspaceSession)
     await storage.create(_approval_session(session_id="f-bare", tool_call_id="call_0", gate_id=G1))
 
-    with caplog.at_level(logging.INFO, logger="primer.api.gate_fence"):
+    with caplog.at_level(logging.INFO, logger="primer.session.gate_token"):
         resp = await client.post("/v1/sessions/f-bare/tool_approval/respond", json={"tool_call_id": "call_0", "decision": "approved"})
 
     assert resp.status_code == 202, resp.text
     assert (await storage.get("f-bare")).parked_status == "resumable"
-    lines = [r.getMessage() for r in caplog.records if r.name == "primer.api.gate_fence"]
+    lines = [r.getMessage() for r in caplog.records if r.name == "primer.session.gate_token"]
     assert len(lines) == 1 and "f-bare" in lines[0]
     assert "do-not-log-me" not in lines[0] and "delete_workspace" not in lines[0]       # a session id, never the call's arguments
     assert _count("approval", "absent") == 1

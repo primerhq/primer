@@ -37,6 +37,10 @@ class PromptEnvelope:
     # the session's reply binding when the session is thread-mapped; None
     # lets the adapter open or reuse its own per-session thread.
     thread_anchor: str | None = None
+    # The id of the gate this prompt asks about (resume_metadata["gate_id"], C-033): a platform keeps it with the button or message it posts and
+    # brings it back on the click, so a decision for a gate that has since been replaced under the same tool_call_id is refused. None for a park
+    # from before gates had ids and for informs.
+    gate_id: str | None = None
 
 
 @dataclass
@@ -51,6 +55,9 @@ class ResponseEnvelope:
     decision: str | None
     reason: str | None
     platform_metadata: dict[str, Any] = field(default_factory=dict)
+    # The gate id (or its first 12 characters, from a platform with a tight limit) the click or reply carried back; None for a button posted before
+    # gates had ids, and for a reply that answers whatever is pending in a thread.
+    gate_id: str | None = None
 
 
 RELAY_EVERY_TURN_KEY = "relay_every_turn"

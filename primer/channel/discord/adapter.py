@@ -124,6 +124,7 @@ class DiscordChannelAdapter(ChannelAdapter):
                 ws=envelope.workspace_id,
                 sid=envelope.session_id,
                 tcid=envelope.tool_call_id,
+                gate_id=envelope.gate_id,
             )
             msg = await thread.send(
                 content=header + format_approval_content(envelope), view=view,
@@ -141,6 +142,7 @@ class DiscordChannelAdapter(ChannelAdapter):
                         workspace_id=envelope.workspace_id,
                         session_id=envelope.session_id,
                         tool_call_id=envelope.tool_call_id,
+                        gate_id=envelope.gate_id,
                     )
                 except Exception:
                     logger.warning(

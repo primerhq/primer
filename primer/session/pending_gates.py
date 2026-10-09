@@ -49,6 +49,7 @@ import logging
 from typing import Any
 
 from primer.model.yield_ import gate_id_of
+from primer.session.gate_token import gate_token_matches
 from primer.session.yields import _tool_call_id_for
 
 
@@ -130,14 +131,16 @@ def resolve_pending_gate(
     tool_call_id, which only ``gate_id`` can disambiguate: a caller that
     names the gate it answers gets exactly that entry (``None`` when the
     id given belongs to no pending entry, e.g. a gate since replaced by
-    one under the same tool_call_id), and a caller that names none gets
+    one under the same tool_call_id; a token shorter than a full id, which
+    a platform with a tight limit sends, matches by prefix), and a caller
+    that names none gets
     the first match with a warning rather than an exception.
     """
     matches = [
         entry for entry in enumerate_pending_gates(blob)
         if entry.get("tool_call_id") == tool_call_id
         and (kind is None or entry.get("kind") == kind)
-        and (gate_id is None or gate_id_of(entry.get("resume_metadata")) == gate_id)
+        and (gate_id is None or gate_token_matches(gate_id_of(entry.get("resume_metadata")), gate_id))
     ]
     if len(matches) > 1:
         logger.warning(

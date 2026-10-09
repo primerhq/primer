@@ -2,7 +2,9 @@
 
 Each Button's ``custom_id`` carries the (verb, workspace_id,
 session_id, tool_call_id) tuple verbatim. Discord's 100-char
-limit on ``custom_id`` is plenty for short primer IDs.
+limit on ``custom_id`` is plenty for short primer IDs. The id of the
+gate the button was drawn for (C-033) rides after the tool_call_id as
+``#<first 12 characters>`` when that still fits in the limit.
 """
 
 from __future__ import annotations
@@ -12,14 +14,34 @@ from collections.abc import Callable, Coroutine, Awaitable
 import discord
 from discord import ButtonStyle, ui
 
+from primer.channel.gate_tag import attach_gate_suffix, split_gate_suffix
+from primer.session.gate_token import short_gate_token
+
 
 REJECT_MODAL_CUSTOM_ID_PREFIX = "primer_reject_modal"
 
 
+_CUSTOM_ID_MAX = 100
+"""Discord's limit on a component's (and a modal's) custom_id."""
+
+
+def _tcid_with_gate_token(ws: str, sid: str, tcid: str, gate_id: str | None) -> str:
+    """``tcid`` with ``#<first 12 characters of the gate id>`` after it, when the LONGEST of the three custom ids still fits in 100 characters.
+
+    The reject modal's id (``primer_reject_modal:ws:sid:tcid``) is the longest of the approve / reject / modal ids, so it decides for all three:
+    a token on Approve and none on Reject would be odd. Without a gate id, or when the token would not fit, the id is exactly what it was.
+    """
+    return attach_gate_suffix(
+        tcid, short_gate_token(gate_id),
+        max_len=_CUSTOM_ID_MAX, base_len=len(f"{REJECT_MODAL_CUSTOM_ID_PREFIX}:{ws}:{sid}:"),
+    )
+
+
 def build_approval_custom_ids(
-    *, ws: str, sid: str, tcid: str,
+    *, ws: str, sid: str, tcid: str, gate_id: str | None = None,
 ) -> tuple[str, str]:
-    return f"approve:{ws}:{sid}:{tcid}", f"reject:{ws}:{sid}:{tcid}"
+    tail = _tcid_with_gate_token(ws, sid, tcid, gate_id)
+    return f"approve:{ws}:{sid}:{tail}", f"reject:{ws}:{sid}:{tail}"
 
 
 def decode_custom_id(custom_id: str) -> tuple[str, str, str, str] | None:
@@ -32,13 +54,26 @@ def decode_custom_id(custom_id: str) -> tuple[str, str, str, str] | None:
     return parts[0], parts[1], parts[2], parts[3]
 
 
+def decode_custom_id_with_gate(custom_id: str) -> tuple[str, str, str, str, str | None] | None:
+    """Like :func:`decode_custom_id`, with the gate token (C-033) split off the tool_call_id: ``(verb, ws, sid, tcid, token)``.
+
+    ``token`` is ``None`` for a custom id posted before gates had ids.
+    """
+    parsed = decode_custom_id(custom_id)
+    if parsed is None:
+        return None
+    verb, ws, sid, tail = parsed
+    tcid, token = split_gate_suffix(tail)
+    return verb, ws, sid, tcid, token
+
+
 class ApprovalView(ui.View):
     """Persistent view — survives bot restarts via custom_id."""
 
-    def __init__(self, *, ws: str, sid: str, tcid: str) -> None:
+    def __init__(self, *, ws: str, sid: str, tcid: str, gate_id: str | None = None) -> None:
         super().__init__(timeout=None)
         approve_cid, reject_cid = build_approval_custom_ids(
-            ws=ws, sid=sid, tcid=tcid,
+            ws=ws, sid=sid, tcid=tcid, gate_id=gate_id,
         )
         self.add_item(ui.Button(
             label="Approve", style=ButtonStyle.success,
@@ -54,6 +89,7 @@ def build_reject_modal(
     *,
     ws: str, sid: str, tcid: str,
     on_submit: Callable[[discord.Interaction, str], Awaitable[None]],
+    gate_id: str | None = None,
 ) -> ui.Modal:
     """Construct a single-use modal whose custom_id round-trips the IDs."""
 
@@ -68,7 +104,7 @@ def build_reject_modal(
             await on_submit(interaction, str(self_inner.reason.value or ""))
 
     modal = _RejectModal(
-        custom_id=f"{REJECT_MODAL_CUSTOM_ID_PREFIX}:{ws}:{sid}:{tcid}",
+        custom_id=f"{REJECT_MODAL_CUSTOM_ID_PREFIX}:{ws}:{sid}:{_tcid_with_gate_token(ws, sid, tcid, gate_id)}",
     )
     return modal
 
@@ -109,4 +145,5 @@ __all__ = [
     "build_approval_custom_ids",
     "build_reject_modal",
     "decode_custom_id",
+    "decode_custom_id_with_gate",
 ]

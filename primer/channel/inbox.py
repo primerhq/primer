@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from primer.channel.adapter import ResponseEnvelope
 from primer.model.except_ import BadRequestError
+from primer.session.gate_token import StaleGateError, count_gate_token
 
 
 if TYPE_CHECKING:
@@ -123,6 +124,8 @@ class ChannelInbox:
             await self._resolve_approval_gate(env)
             if env.kind == "tool_approval" else None
         )
+        if env.kind == "ask_user":
+            await self._fence_ask_user(env)
         if captured is not None:
             self._enforce_approvers(env, captured["gate"])
         event_key = (
@@ -174,6 +177,9 @@ class ChannelInbox:
         cannot be shown that the gate is unrestricted, so the reply is refused and nothing is published. So does a row whose checkpoint
         NAMES a gate for the tool_call_id (:func:`_matching_event_keys` finds it) when no pending entry carrying a spec resolves: the
         spec of that gate cannot be read, and the event-key lookup that follows would publish with no check at all.
+
+        A reply that names a gate (``env.gate_id``, C-033) resolves the entry that carries it; one naming a gate that is no longer pending under the
+        call id raises :class:`StaleGateError` (nothing published or recorded). One naming none resolves the first match, as before, and is counted.
         """
         if self._storage_provider is None:
             return None
@@ -183,9 +189,18 @@ class ChannelInbox:
         row = await self._storage_provider.get_storage(WorkspaceSession).get(env.session_id)
         if row is None:
             return None
-        gate = resolve_pending_gate(
-            getattr(row, "parked_state", None) or {}, tool_call_id=env.tool_call_id, kind="_approval",
-        )
+        blob = getattr(row, "parked_state", None) or {}
+        gate = resolve_pending_gate(blob, tool_call_id=env.tool_call_id, kind="_approval", gate_id=env.gate_id)
+        if gate is None and env.gate_id is not None and resolve_pending_gate(
+            blob, tool_call_id=env.tool_call_id, kind="_approval",
+        ) is not None:
+            # The call id is pending but not under the gate the button named: the button is from an earlier round (C-033). Nothing is decided.
+            count_gate_token(kind="approval", session_id=env.session_id, token=env.gate_id, stale=True)
+            logger.warning(
+                "channel inbox: refused a stale %s reply for session=%s tool_call=%s: the gate it named has been replaced",
+                env.decision, env.session_id, env.tool_call_id,
+            )
+            raise StaleGateError("approval")
         if gate is None:
             if _matching_event_keys(row, env) or self._is_nameless_park_at_reconstructed_key(row, env):
                 from primer.session.approvers import ApproverRefusedError
@@ -198,11 +213,39 @@ class ChannelInbox:
                     "this approval gate's approver spec cannot be read; decide it in the console as an approver or an admin"
                 )
             return None
+        count_gate_token(kind="approval", session_id=env.session_id, token=env.gate_id)
         return {
             "gate": gate,
             "agent_id": getattr(row.binding, "agent_id", None),
             "parked_at": getattr(row, "parked_at", None),
         }
+
+    async def _fence_ask_user(self, env: ResponseEnvelope) -> None:
+        """Refuse an ask_user reply that names a prompt which is no longer the pending one (C-033), before anything is published.
+
+        Only a reply that carries a token is judged: a reply that names none answers whatever is pending (a thread reply on Slack or Discord has
+        no card to carry one, and answers the thread's current prompt by construction), so it is neither refused nor counted. A call id with no
+        pending ask_user entry at all is left to the lookup that follows.
+        """
+        if env.gate_id is None or self._storage_provider is None:
+            return
+        from primer.model.workspace_session import WorkspaceSession
+        from primer.session.pending_gates import resolve_pending_gate
+
+        row = await self._storage_provider.get_storage(WorkspaceSession).get(env.session_id)
+        if row is None:
+            return
+        blob = getattr(row, "parked_state", None) or {}
+        if resolve_pending_gate(blob, tool_call_id=env.tool_call_id, kind="ask_user", gate_id=env.gate_id) is not None:
+            count_gate_token(kind="ask_user", session_id=env.session_id, token=env.gate_id)
+            return
+        if resolve_pending_gate(blob, tool_call_id=env.tool_call_id, kind="ask_user") is not None:
+            count_gate_token(kind="ask_user", session_id=env.session_id, token=env.gate_id, stale=True)
+            logger.warning(
+                "channel inbox: refused a stale ask_user reply for session=%s tool_call=%s: the prompt it named has been replaced",
+                env.session_id, env.tool_call_id,
+            )
+            raise StaleGateError("ask_user")
 
     @staticmethod
     def _is_nameless_park_at_reconstructed_key(row: Any, env: ResponseEnvelope) -> bool:
