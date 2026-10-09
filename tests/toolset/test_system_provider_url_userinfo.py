@@ -68,15 +68,36 @@ async def test_updating_with_the_returned_body_keeps_the_stored_password(system_
 
 
 @pytest.mark.asyncio
-async def test_updating_with_a_new_host_and_the_mask_keeps_the_password(system_toolset, sp) -> None:
+async def test_updating_the_path_on_the_same_origin_with_the_mask_keeps_the_password(system_toolset, sp) -> None:
     await _create(system_toolset, _llm_body())
     served = json.loads((await system_toolset.call(tool_name="get_llm_provider", arguments={"id": "llm-px"})).output)
-    served["config"]["url"] = f"http://svc:{MASK}@other.local:9000/v2"
+    served["config"]["url"] = f"http://svc:{MASK}@proxy.local:8080/v2"
 
     result = await system_toolset.call(tool_name="update_llm_provider", arguments={"id": "llm-px", "entity": served})
 
     assert not result.is_error, result.output
-    assert str(sp.get_storage(LLMProvider)._data["llm-px"].config.url) == "http://svc:s3cr3t@other.local:9000/v2"
+    assert str(sp.get_storage(LLMProvider)._data["llm-px"].config.url) == "http://svc:s3cr3t@proxy.local:8080/v2"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "moved",
+    [
+        pytest.param(f"http://svc:{MASK}@attacker.example:9000/v2", id="another host"),
+        pytest.param(f"http://other:{MASK}@proxy.local:8080/v1", id="another username"),
+    ],
+)
+async def test_an_update_whose_mask_cannot_be_restored_is_refused_and_stores_nothing(system_toolset, sp, moved: str) -> None:
+    """The twin of the REST rule, for the tool an agent run can call: pointing the URL at another host (the prompt-injection shape) with the mask left alone is refused."""
+    await _create(system_toolset, _llm_body())
+    served = json.loads((await system_toolset.call(tool_name="get_llm_provider", arguments={"id": "llm-px"})).output)
+    served["config"]["url"] = moved
+
+    result = await system_toolset.call(tool_name="update_llm_provider", arguments={"id": "llm-px", "entity": served})
+
+    assert result.is_error, result.output
+    assert "re-enter the password" in result.output and "s3cr3t" not in result.output, result.output
+    assert str(sp.get_storage(LLMProvider)._data["llm-px"].config.url) == PROXY, "the stored row is untouched"
 
 
 @pytest.mark.asyncio

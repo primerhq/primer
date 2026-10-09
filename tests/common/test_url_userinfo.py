@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from primer.common.url_userinfo import MASK, mask_userinfo, restore_userinfo
+from primer.common.url_userinfo import MASK, MaskCannotBeRestored, carries_mask, mask_userinfo, restore_userinfo
 
 
 @pytest.mark.parametrize(
@@ -79,8 +79,10 @@ def test_masking_twice_is_masking_once() -> None:
     [
         # the served body comes back unchanged
         (f"http://svc:{MASK}@host/v1", "http://svc:s3cr3t@host/v1", "http://svc:s3cr3t@host/v1"),
-        # the host or path changed and the password was left alone
-        (f"http://svc:{MASK}@other.example:9000/v2", "http://svc:s3cr3t@host/v1", "http://svc:s3cr3t@other.example:9000/v2"),
+        # the path or query changed on the SAME origin and the password was left alone (the rest of the URL is the person's)
+        (f"http://svc:{MASK}@host/v2?x=1", "http://svc:s3cr3t@host/v1", "http://svc:s3cr3t@host/v2?x=1"),
+        # the same origin spelled with another case of the host
+        (f"http://svc:{MASK}@HOST/v1", "http://svc:s3cr3t@host/v1", "http://svc:s3cr3t@HOST/v1"),
         # a percent-encoded password is restored as stored
         (f"http://svc:{MASK}@host/", "http://svc:p%40ss@host/", "http://svc:p%40ss@host/"),
         # a lone userinfo
@@ -91,17 +93,54 @@ def test_a_served_mask_gets_the_stored_credential_back(incoming: str, stored: st
     assert restore_userinfo(incoming, stored) == restored
 
 
+# A mask the served row could have sent is restored ONLY for the origin and the user it was served for. Anything else is REFUSED, never stored as the literal mask (which would become
+# the password, served exactly like a real masked one) and never given to another host (an update that points the URL at a host the person controls would otherwise be sent the
+# stored credential on the next probe or call).
 @pytest.mark.parametrize(
     ("incoming", "stored"),
     [
-        (f"http://other:{MASK}@host/v1", "http://svc:s3cr3t@host/v1"),               # another username: not what was served for this row
-        (f"http://svc:{MASK}@host/v1", "http://host/v1"),                            # the stored URL never held a credential
-        (f"http://svc:{MASK}@host/v1", "https://TOKEN@host/v1"),                     # the stored one was a lone userinfo
-        (f"https://{MASK}@host/", "http://svc:s3cr3t@host/"),                        # an incoming lone mask for a stored user:password
-        ("http://svc:newpass@host/v1", "http://svc:s3cr3t@host/v1"),                 # a real new password is the person's change
-        ("http://host/v1", "http://svc:s3cr3t@host/v1"),                             # the credential was removed on purpose
-        ("not a url", "http://svc:s3cr3t@host/"),
+        pytest.param(f"http://other:{MASK}@host/v1", "http://svc:s3cr3t@host/v1", id="another username"),
+        pytest.param(f"http://svc:{MASK}@host/v1", "http://host/v1", id="the stored URL never held a credential"),
+        pytest.param(f"http://svc:{MASK}@host/v1", "http://TOKEN@host/v1", id="the stored one was a lone userinfo"),
+        pytest.param(f"https://{MASK}@host/", "https://svc:s3cr3t@host/", id="a lone mask for a stored user:password"),
+        pytest.param(f"http://svc:{MASK}@other.example/v1", "http://svc:s3cr3t@host/v1", id="the host changed"),
+        pytest.param(f"http://svc:{MASK}@host:9000/v1", "http://svc:s3cr3t@host/v1", id="the port changed"),
+        pytest.param(f"https://svc:{MASK}@host/v1", "http://svc:s3cr3t@host/v1", id="the scheme changed"),
+        pytest.param(f"https://{MASK}@evil.example/x.git", "https://ghp_abcdefghij@github.com/org/repo.git", id="a lone token pointed at another host"),
+        pytest.param(f"http://svc:{MASK}@host/v1", "not a url", id="the stored value is not a URL"),
     ],
 )
-def test_anything_else_is_left_as_sent(incoming: str, stored: str) -> None:
+def test_a_mask_that_cannot_be_restored_is_refused(incoming: str, stored: str) -> None:
+    with pytest.raises(MaskCannotBeRestored) as caught:
+        restore_userinfo(incoming, stored)
+    assert "s3cr3t" not in str(caught.value) and "ghp_abcdefghij" not in str(caught.value), "the refusal names no credential"
+
+
+@pytest.mark.parametrize(
+    ("incoming", "stored"),
+    [
+        ("http://svc:newpass@host/v1", "http://svc:s3cr3t@host/v1"),                 # a real new password is the person's change
+        ("http://host/v1", "http://svc:s3cr3t@host/v1"),                             # the credential was removed on purpose
+        ("https://newtoken@host/", "https://oldtoken@host/"),                        # a real new lone token
+        ("not a url", "http://svc:s3cr3t@host/"),
+        ("http://host/v1", "http://host/v1"),
+    ],
+)
+def test_a_url_that_carries_no_mask_is_left_as_sent(incoming: str, stored: str) -> None:
     assert restore_userinfo(incoming, stored) is None
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (f"http://svc:{MASK}@host/v1", True),
+        (f"https://{MASK}@host/", True),
+        ("http://svc:s3cr3t@host/v1", False),
+        ("https://TOKEN@host/", False),
+        ("http://host/v1", False),
+        ("not a url", False),
+        (f"http://host/{MASK}@x", False),                                             # the mask in a path is not the mask of a userinfo
+    ],
+)
+def test_carries_mask_says_whether_the_userinfo_is_the_served_mask(url: str, expected: bool) -> None:
+    assert carries_mask(url) is expected
