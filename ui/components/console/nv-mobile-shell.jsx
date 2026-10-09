@@ -135,13 +135,19 @@ function NV_inboxDecide(decision, it, toast, onResolved) {
     return Promise.resolve({ failed: true });
   }
   var request = decision === "approve"
-    ? SH_api.approve(it.session_id, it.tool_call_id)
-    : SH_api.reject(it.session_id, it.tool_call_id, "");
+    ? SH_api.approve(it.session_id, it.tool_call_id, it.gate_id)
+    : SH_api.reject(it.session_id, it.tool_call_id, "", it.gate_id);
   return request.then(function () {
     toast((decision === "approve" ? "Approved " : "Denied ") + ((it.approval && it.approval.tool_name) || "the call"));
     if (onResolved) onResolved();
     return { ok: true };
   }, function (err) {
+    // The card names the gate it was drawn from (C-033); a gate replaced since then is refused 409 approval_stale, said in the same words as the desktop card.
+    if (SH_isStaleGate(err)) {
+      toast(SH_staleGateWords("approval"), { kind: "error", requestId: err.requestId || err.request_id || null });
+      if (onResolved) onResolved();
+      return { stale: true };
+    }
     if (err && (err.status === 404 || err.status === 409)) {
       toast("That approval has moved on. Open the session to review what it is waiting on now.", {
         kind: "error", requestId: err.requestId || err.request_id || null,

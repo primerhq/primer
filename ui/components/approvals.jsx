@@ -547,15 +547,25 @@ function ApprovalBanner({ data, scope, id, pushToast }) {
         "approvals:parked-sessions",
       ].filter(Boolean),
       onSuccess: () => pushToast && pushToast({ kind: "success", title: "Decision sent" }),
-      onError: AP_toastErr(pushToast, "Respond failed"),
+      // A gate replaced since this banner was drawn is refused 409 approval_stale (C-033): say so in words. The mutation has already refetched
+      // the pending banner above (it refetches its keys on a failure too), so the list is reloaded.
+      onError: (err) => {
+        if (window.SH_isStaleGate && window.SH_isStaleGate(err)) {
+          if (pushToast) pushToast({ kind: "warning", title: window.SH_staleGateWords("approval") });
+          return;
+        }
+        AP_toastErr(pushToast, "Respond failed")(err);
+      },
     },
   );
 
   if (!data) return null;
-  const onApprove = () => respond.mutate({ tool_call_id: data.tool_call_id, decision: "approved" });
+  // The decision names the gate the banner was drawn from (C-033); a banner from before gates had ids sends none.
+  const gateBody = data.gate_id ? { gate_id: data.gate_id } : {};
+  const onApprove = () => respond.mutate({ tool_call_id: data.tool_call_id, decision: "approved", ...gateBody });
   const onReject = () => {
     if (!reason.trim()) return;
-    respond.mutate({ tool_call_id: data.tool_call_id, decision: "rejected", reason: reason.trim() });
+    respond.mutate({ tool_call_id: data.tool_call_id, decision: "rejected", reason: reason.trim(), ...gateBody });
     setRejecting(false);
     setReason("");
   };
