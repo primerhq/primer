@@ -313,6 +313,20 @@ def test_the_input_reports_its_invalid_state_to_the_builders_save_gate_and_clear
     assert _js(ctx, "__json_errors")[-1] == ["bv:0:0:0", None]
 
 
+def test_a_value_changed_from_outside_under_text_typed_in_the_comma_form_reports_nothing(v8) -> None:
+    """Until the redraw has replaced the typed text, the text means nothing against the NEW value: ``a,b`` typed over a comma-form list is not "invalid JSON" of the object list that arrives from
+    outside (an undo, another branch sliding in). The box must not flash an error, nor tell the Save gate, for the frame in between."""
+    ctx = v8()
+    _mount(ctx, ["a"], op="in")
+    _type(ctx, "a,b")
+    assert _js(ctx, "__commits") == [["a", "b"]]
+    ctx.eval("MR.rerender({ value: ['a', 'b'], op: 'in' });")             # the builder re-renders with what was committed
+    ctx.eval("MR.rerender({ value: [{ k: 1 }], op: 'in' });")             # then the value is replaced from outside
+    assert _input(ctx)["value"] == '[{"k":1}]'
+    assert _js(ctx, "__json_errors") == [], "no error was ever reported"
+    assert _alert(ctx) is None
+
+
 def test_a_valid_edit_never_reports_an_error(v8) -> None:
     ctx = v8()
     _mount(ctx, "ab")
@@ -370,6 +384,8 @@ def builder():
     c.eval("function boxes() { return MR.findAll('gb-branch-value').filter(function (el) { return el.type === 'input'; }); }")   # not the alert span, whose test id starts with the same words
     c.eval("function typeInto(i, text) { boxes()[i].props.onChange({ target: { value: text } }); MR.rerender(); }")
     c.eval("function saveDisabled() { return MR.find('gb-save').props.disabled; }")
+    c.eval("function findByProp(name, value) { var hit = null; (function w(n) { if (hit || n == null || typeof n !== 'object') return; if (Array.isArray(n)) { n.forEach(w); return; } if (!n.__el) return;"
+           " if (n.props && n.props[name] === value) hit = n; else if (typeof n.type === 'function' && n.type !== React.Fragment) w(n.out); else w(n.children); })(MR.find('gb-builder')); return hit; }")
     try:
         yield c
     finally:
@@ -382,6 +398,10 @@ def _open(ctx, spec: dict) -> None:
 
 def _shown(ctx) -> list[str]:
     return json.loads(ctx.eval("JSON.stringify(boxes().map(function (b) { return b.props.value; }))"))
+
+
+def _conditions_of_edge(ctx) -> list[dict]:
+    return json.loads(ctx.eval("JSON.stringify(draftOf().edges[1].router.branches)"))
 
 
 def _conditions(ctx, branch: int) -> list[dict]:
@@ -450,6 +470,41 @@ def test_the_edge_inspector_and_the_steps_inspector_both_report_a_half_typed_val
     builder.eval("__errs.length = 0; MR.mount(GB_Inspector, props(__draft.nodes.filter(function (n) { return n.id === 'a'; })[0], null)); typeInto(0, '{\"a\":1}x');")
     reports = json.loads(builder.eval("JSON.stringify(__errs)"))
     assert reports and reports[-1][0] == "bv:1:0:0" and reports[-1][1], "the step inspector's box did not report"
+
+
+def _two_equal_branches() -> dict:
+    """BASE with two branches on the conditional edge of step ``a``, whose first conditions hold the SAME object (so their boxes have the same canonical text)."""
+    spec = copy.deepcopy(BASE)
+    spec["edges"][1]["router"]["branches"] = [
+        {"conditions": [{"path": "ok", "op": "eq", "value": {"a": 1}}], "to_node": "f"},
+        {"conditions": [{"path": "n", "op": "eq", "value": {"a": 1}}], "to_node": "t"},
+    ]
+    return spec
+
+
+def test_deleting_a_branch_does_not_hand_its_half_typed_text_to_the_branch_that_slides_into_its_place(builder) -> None:
+    """The boxes are keyed by edge/branch/condition INDEX and DELETE_BRANCH filters by index, so the branch below slides into the deleted key. Its box had the same canonical text, kept the half-typed
+    text, the alert and the Save gate, and the alert's own advice ("clear the box first") then committed "" into the OTHER branch. The key carries the branch count, so adding or deleting a branch
+    remounts that edge's boxes (their unmount clears the gates; stored values are untouched)."""
+    _open(builder, _two_equal_branches())
+    builder.eval("typeInto(0, '{\"a\":1}x');")                                       # half-type into the first branch's box
+    assert builder.eval("MR.find('gb-branch-value-error') !== null") is True
+    builder.eval("(function () { var del = findByProp('title', 'Remove branch'); del.props.onClick({ preventDefault: function () {}, stopPropagation: function () {} }); MR.rerender(); })();")
+    branches = _conditions_of_edge(builder)
+    assert len(branches) == 1 and branches[0]["conditions"][0]["path"] == "n", "the first branch is gone, the second remains"
+    assert _shown(builder) == ['{"a":1}'], "the branch that slid up shows its own stored value, not the text typed into the deleted one"
+    assert builder.eval("MR.find('gb-branch-value-error') === null") is True, "and nothing is half-typed on it"
+    assert branches[0]["conditions"][0]["value"] == {"a": 1}, "the stored value of the remaining branch is untouched"
+
+
+def test_a_read_only_builder_does_not_point_the_boxes_at_a_help_line_it_does_not_draw(builder) -> None:
+    spec = {**_spec(), "harness_id": "managed"}                                    # a managed graph opens read-only
+    _open(builder, spec)
+    described = json.loads(builder.eval("JSON.stringify(boxes().map(function (b) { return b.props['aria-describedby'] || null; }))"))
+    assert described and all(d is None for d in described), described
+    _open(builder, _spec())
+    editable = json.loads(builder.eval("JSON.stringify(boxes().map(function (b) { return b.props['aria-describedby'] || null; }))"))
+    assert editable and all(editable), "an editable builder describes each box by its help line"
 
 
 def test_a_help_line_says_what_the_box_takes(builder) -> None:
