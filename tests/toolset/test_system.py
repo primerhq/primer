@@ -23,6 +23,7 @@ from primer.model.collection import (
     CollectionEmbedder,
     CollectionSearchConfig,
 )
+from primer.model.common import dump_for_storage
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.provider import (
     AnthropicConfig,
@@ -419,7 +420,7 @@ class TestCatalog:
 class TestLLMProviderTools:
     @pytest.mark.asyncio
     async def test_create_get_update_delete_roundtrip(self, system_toolset) -> None:
-        body = _llm().model_dump(mode="json")
+        body = dump_for_storage(_llm())
 
         result = await system_toolset.call(
             tool_name="create_llm_provider", arguments={"entity": body}
@@ -467,7 +468,7 @@ class TestLLMProviderTools:
 
     @pytest.mark.asyncio
     async def test_create_duplicate_returns_conflict(self, system_toolset) -> None:
-        body = _llm().model_dump(mode="json")
+        body = dump_for_storage(_llm())
         await system_toolset.call(
             tool_name="create_llm_provider", arguments={"entity": body}
         )
@@ -479,7 +480,7 @@ class TestLLMProviderTools:
 
     @pytest.mark.asyncio
     async def test_update_id_mismatch_returns_conflict(self, system_toolset) -> None:
-        body = _llm().model_dump(mode="json")
+        body = dump_for_storage(_llm())
         await system_toolset.call(
             tool_name="create_llm_provider", arguments={"entity": body}
         )
@@ -571,7 +572,7 @@ class TestCascadeInvalidation:
     async def test_update_invalidates_cached_llm_adapter(
         self, system_toolset, pr
     ) -> None:
-        body = _llm().model_dump(mode="json")
+        body = dump_for_storage(_llm())
         await system_toolset.call(
             tool_name="create_llm_provider", arguments={"entity": body}
         )
@@ -605,7 +606,7 @@ class TestCascadeInvalidation:
 class TestFetchModels:
     @pytest.mark.asyncio
     async def test_fetch_llm_provider_models(self, system_toolset, pr) -> None:
-        body = _llm().model_dump(mode="json")
+        body = dump_for_storage(_llm())
         await system_toolset.call(
             tool_name="create_llm_provider", arguments={"entity": body}
         )
@@ -653,7 +654,7 @@ class TestToolsetExtras:
 
     @pytest.mark.asyncio
     async def test_call_tool_dispatches_to_self(self, system_toolset) -> None:
-        body = _llm().model_dump(mode="json")
+        body = dump_for_storage(_llm())
         await system_toolset.call(
             tool_name="create_llm_provider", arguments={"entity": body}
         )
@@ -819,7 +820,7 @@ class TestPagination:
     @pytest.mark.asyncio
     async def test_default_pagination(self, system_toolset) -> None:
         for i in range(3):
-            body = _llm().model_dump(mode="json")
+            body = dump_for_storage(_llm())
             body["id"] = f"row-{i}"
             await system_toolset.call(
                 tool_name="create_llm_provider", arguments={"entity": body}
@@ -834,7 +835,7 @@ class TestPagination:
     @pytest.mark.asyncio
     async def test_offset_limit_combo(self, system_toolset) -> None:
         for i in range(5):
-            body = _llm().model_dump(mode="json")
+            body = dump_for_storage(_llm())
             body["id"] = f"row-{i}"
             await system_toolset.call(
                 tool_name="create_llm_provider", arguments={"entity": body}
@@ -939,7 +940,7 @@ def _graph_thread() -> dict:
         (
             "create_embedding_provider",
             "delete_embedding_provider",
-            lambda: _emb().model_dump(mode="json"),
+            lambda: dump_for_storage(_emb()),
         ),
         ("create_cross_encoder_provider", "delete_cross_encoder_provider", _ce),
         ("create_toolset", "delete_toolset", _toolset_body),
@@ -979,7 +980,7 @@ async def test_crud_smoke_per_entity(
 class TestFindPredicate:
     @pytest.mark.asyncio
     async def test_find_with_predicate_eq(self, system_toolset) -> None:
-        body = _llm().model_dump(mode="json")
+        body = dump_for_storage(_llm())
         await system_toolset.call(
             tool_name="create_llm_provider", arguments={"entity": body}
         )
@@ -1083,7 +1084,7 @@ class TestExtras:
 
     @pytest.mark.asyncio
     async def test_order_by_parses_field_only(self, system_toolset) -> None:
-        body = _llm().model_dump(mode="json")
+        body = dump_for_storage(_llm())
         await system_toolset.call(
             tool_name="create_llm_provider", arguments={"entity": body}
         )
@@ -1106,7 +1107,7 @@ class TestExtras:
     @pytest.mark.asyncio
     async def test_cursor_pagination(self, system_toolset) -> None:
         for i in range(3):
-            body = _llm().model_dump(mode="json")
+            body = dump_for_storage(_llm())
             body["id"] = f"row-{i}"
             await system_toolset.call(
                 tool_name="create_llm_provider", arguments={"entity": body}
@@ -1172,14 +1173,14 @@ class TestExtras:
     async def test_update_missing_id_arg(self, system_toolset) -> None:
         result = await system_toolset.call(
             tool_name="update_llm_provider",
-            arguments={"entity": _llm().model_dump(mode="json")},
+            arguments={"entity": dump_for_storage(_llm())},
         )
         assert result.is_error
         assert json.loads(result.output)["type"] == "bad-request"
 
     @pytest.mark.asyncio
     async def test_update_unknown_id_returns_not_found(self, system_toolset) -> None:
-        body = _llm().model_dump(mode="json")
+        body = dump_for_storage(_llm())
         body["id"] = "missing"
         result = await system_toolset.call(
             tool_name="update_llm_provider",
@@ -1298,7 +1299,7 @@ class TestSearchCollectionWired:
         # resolve the collection's embedder and search_provider_id.
         await wired_toolset.call(
             tool_name="create_embedding_provider",
-            arguments={"entity": _emb().model_dump(mode="json")},
+            arguments={"entity": dump_for_storage(_emb())},
         )
         await wired_toolset.call(
             tool_name="create_collection",
@@ -1378,7 +1379,7 @@ class TestCallToolApprovalGate:
         # (proves the yield is the gate, not a missing row).
         await system_toolset.call(
             tool_name="create_llm_provider",
-            arguments={"entity": _llm().model_dump(mode="json")},
+            arguments={"entity": dump_for_storage(_llm())},
         )
 
         with pytest.raises(YieldToWorker) as exc_info:
@@ -1407,7 +1408,7 @@ class TestCallToolApprovalGate:
         # No policy stored -> call_tool dispatches the inner tool unchanged.
         await system_toolset.call(
             tool_name="create_llm_provider",
-            arguments={"entity": _llm().model_dump(mode="json")},
+            arguments={"entity": dump_for_storage(_llm())},
         )
         result = await system_toolset.call(
             tool_name="call_tool",
@@ -1477,7 +1478,7 @@ class TestCallToolResolverSharing:
 
         await provider.call(
             tool_name="create_llm_provider",
-            arguments={"entity": _llm().model_dump(mode="json")},
+            arguments={"entity": dump_for_storage(_llm())},
         )
         call_args = {
             "toolset_id": SYSTEM_TOOLSET_ID,

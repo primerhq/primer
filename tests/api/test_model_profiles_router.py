@@ -8,10 +8,10 @@ one fetch, without a per-id endpoint or an N+1 query per row.
 from __future__ import annotations
 
 import pytest
-
 from pydantic import SecretStr
 
 from primer.model.agent import Agent, AgentModel
+from primer.model.common import dump_for_storage
 from primer.model.provider import AnthropicConfig, Limits, LLMProvider, LLMProviderType
 from tests._support.model_profiles import profile_body, seed_profile
 
@@ -30,12 +30,12 @@ def _agent(agent_id: str, profile_id: str, **overrides) -> dict:
 
 
 async def _seed_provider(client, provider_id: str) -> None:
-    body = LLMProvider(
+    body = dump_for_storage(LLMProvider(
         id=provider_id,
         provider=LLMProviderType.ANTHROPIC,
         config=AnthropicConfig(api_key=SecretStr("sk-test")),
         limits=Limits(max_concurrency=4),
-    ).model_dump(mode="json")
+    ))
     r = await client.post("/v1/llm_providers", json=body)
     assert r.status_code in (200, 201), r.text
 

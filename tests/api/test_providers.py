@@ -19,6 +19,7 @@ import pytest
 from pydantic import SecretStr
 
 from primer.api.registries import ProviderRegistry
+from primer.model.common import dump_for_storage
 from primer.model.provider import (
     AnthropicConfig,
     CrossEncoderModel,
@@ -91,7 +92,7 @@ def _toolset() -> Toolset:
 class TestLLMProviderCRUD:
     @pytest.mark.asyncio
     async def test_create_then_get_round_trip(self, client) -> None:
-        body = _llm().model_dump(mode="json")
+        body = dump_for_storage(_llm())
         resp = await client.post("/v1/llm_providers", json=body)
         assert resp.status_code == 201, resp.text
         assert resp.json()["id"] == "anthropic-1"
@@ -102,7 +103,7 @@ class TestLLMProviderCRUD:
 
     @pytest.mark.asyncio
     async def test_create_duplicate_returns_409_conflict(self, client) -> None:
-        body = _llm().model_dump(mode="json")
+        body = dump_for_storage(_llm())
         await client.post("/v1/llm_providers", json=body)
         dup = await client.post("/v1/llm_providers", json=body)
         assert dup.status_code == 409
@@ -116,7 +117,7 @@ class TestLLMProviderCRUD:
 
     @pytest.mark.asyncio
     async def test_put_updates_when_path_id_matches(self, client) -> None:
-        body = _llm().model_dump(mode="json")
+        body = dump_for_storage(_llm())
         await client.post("/v1/llm_providers", json=body)
         body["limits"]["max_concurrency"] = 8
         put = await client.put("/v1/llm_providers/anthropic-1", json=body)
@@ -125,20 +126,20 @@ class TestLLMProviderCRUD:
 
     @pytest.mark.asyncio
     async def test_put_with_mismatched_id_returns_409(self, client) -> None:
-        body = _llm().model_dump(mode="json")
+        body = dump_for_storage(_llm())
         await client.post("/v1/llm_providers", json=body)
         put = await client.put("/v1/llm_providers/different-id", json=body)
         assert put.status_code == 409
 
     @pytest.mark.asyncio
     async def test_put_unknown_returns_404(self, client) -> None:
-        body = _llm().model_dump(mode="json")
+        body = dump_for_storage(_llm())
         put = await client.put("/v1/llm_providers/anthropic-1", json=body)
         assert put.status_code == 404
 
     @pytest.mark.asyncio
     async def test_delete_then_get_returns_404(self, client) -> None:
-        body = _llm().model_dump(mode="json")
+        body = dump_for_storage(_llm())
         await client.post("/v1/llm_providers", json=body)
         delete = await client.delete("/v1/llm_providers/anthropic-1")
         assert delete.status_code == 204
@@ -153,7 +154,7 @@ class TestLLMProviderCRUD:
     @pytest.mark.asyncio
     async def test_list_paginates(self, client) -> None:
         for i in range(3):
-            body = _llm().model_dump(mode="json")
+            body = dump_for_storage(_llm())
             body["id"] = f"row-{i}"
             await client.post("/v1/llm_providers", json=body)
         listed = await client.get("/v1/llm_providers?limit=2&offset=0")
@@ -165,7 +166,7 @@ class TestLLMProviderCRUD:
 
     @pytest.mark.asyncio
     async def test_find_returns_offset_page(self, client) -> None:
-        body = _llm().model_dump(mode="json")
+        body = dump_for_storage(_llm())
         await client.post("/v1/llm_providers", json=body)
         find = await client.post(
             "/v1/llm_providers/find",
@@ -185,7 +186,7 @@ class TestCascadeInvalidation:
     async def test_put_invalidates_cached_llm(
         self, client, fake_provider_registry
     ) -> None:
-        body = _llm().model_dump(mode="json")
+        body = dump_for_storage(_llm())
         await client.post("/v1/llm_providers", json=body)
         registry: ProviderRegistry = fake_provider_registry
 
@@ -221,7 +222,7 @@ class TestLiveModelsEndpoint:
         provider serves, so this is a storage query. The live upstream
         probe is _discover_models.
         """
-        body = _llm().model_dump(mode="json")
+        body = dump_for_storage(_llm())
         await client.post("/v1/llm_providers", json=body)
         for pid, model in [
             ("anthropic-1--sonnet", "claude-sonnet-4-6"),
@@ -241,7 +242,7 @@ class TestLiveModelsEndpoint:
     @pytest.mark.asyncio
     async def test_two_profiles_on_one_model_dedupe(self, client) -> None:
         """Two profiles may share a model name; the list is distinct names."""
-        await client.post("/v1/llm_providers", json=_llm().model_dump(mode="json"))
+        await client.post("/v1/llm_providers", json=dump_for_storage(_llm()))
         for pid, reasoning in [("a-fast", "off"), ("a-think", "high")]:
             r = await client.post("/v1/model_profiles", json={
                 "id": pid, "description": f"sonnet {reasoning}.",
@@ -261,7 +262,7 @@ class TestLiveModelsEndpoint:
         this class's tests, so reusing anthropic-1 would see the profiles
         the sibling tests created.
         """
-        body = _llm().model_dump(mode="json")
+        body = dump_for_storage(_llm())
         body["id"] = "anthropic-no-profiles"
         await client.post("/v1/llm_providers", json=body)
         resp = await client.get("/v1/llm_providers/anthropic-no-profiles/models")
@@ -282,7 +283,7 @@ class TestLiveModelsEndpoint:
 class TestEmbeddingProviderSmoke:
     @pytest.mark.asyncio
     async def test_crud_round_trip(self, client) -> None:
-        body = _embedding().model_dump(mode="json")
+        body = dump_for_storage(_embedding())
         assert (await client.post("/v1/embedding_providers", json=body)).status_code == 201
         assert (await client.get("/v1/embedding_providers/hf-1")).status_code == 200
         assert (
@@ -291,7 +292,7 @@ class TestEmbeddingProviderSmoke:
 
     @pytest.mark.asyncio
     async def test_explicit_invalidate(self, client) -> None:
-        body = _embedding().model_dump(mode="json")
+        body = dump_for_storage(_embedding())
         await client.post("/v1/embedding_providers", json=body)
         resp = await client.post("/v1/embedding_providers/hf-1/invalidate")
         assert resp.status_code == 204
