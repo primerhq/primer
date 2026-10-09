@@ -617,7 +617,6 @@ function GR_ImportSpecModal({ currentDraft, onClose, onApply }) {
       description: currentDraft.description,
       nodes: (currentDraft.nodes || []).map(GR_stripCoords),
       edges: (currentDraft.edges || []).map((e) => ({ ...e })),
-      entry_node_id: currentDraft.entry_node_id,
       ...(currentDraft.max_iterations != null
         ? { max_iterations: currentDraft.max_iterations }
         : {}),
@@ -663,7 +662,7 @@ function GR_ImportSpecModal({ currentDraft, onClose, onApply }) {
           rows={18}
           value={text}
           onChange={(e) => { setText(e.target.value); if (error) setError(null); }}
-          placeholder={'{\n  "nodes": [ ... ],\n  "edges": [ ... ],\n  "entry_node_id": "begin"\n}'}
+          placeholder={'{\n  "nodes": [ ... ],\n  "edges": [ ... ]\n}'}
           style={{ width: "100%", fontFamily: "IBM Plex Mono", fontSize: 12 }}
           data-testid="graph-import-spec"
         />

@@ -401,9 +401,28 @@ function GB_stripAll(d) {
 // page simply scrolls as normal.
 const GB_BODY_STYLE = { flex: 1, minHeight: 520, height: "calc(100vh - 300px)" };
 
+// A pasted graph spec (the Import spec modal): the message for its first shape problem, else null. IMPORT_SPEC spreads whatever it is given into the draft, so an object where a
+// list is expected makes the validator and the dirty check throw during render, and the console has no error boundary: the whole draft would be lost.
+function GB_importProblem(spec) {
+  const isObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+  if (!isObject(spec)) return "Spec must be a JSON object with nodes and edges.";
+  if (!Array.isArray(spec.nodes)) return "`nodes` must be an array.";
+  if (spec.edges != null && !Array.isArray(spec.edges)) return "`edges` must be an array when present.";
+  if (!spec.nodes.every(isObject)) return "Every entry of `nodes` must be an object.";
+  if (spec.edges != null && !spec.edges.every(isObject)) return "Every entry of `edges` must be an object.";
+  return null;
+}
+
+// What the modal's Load button runs: a spec with the wrong shape throws its message (a string, which the modal draws inline) and the draft is not touched; otherwise IMPORT_SPEC.
+function GB_applyImport(spec, dispatch) {
+  const problem = GB_importProblem(spec);
+  if (problem) throw problem;
+  dispatch({ type: "IMPORT_SPEC", spec });
+}
+
 Object.assign(window, {
   GB_BODY_STYLE,
   GB_slug, GB_uniqueId, GB_defaultInput, GB_makeNode, GB_makeSplitPair,
   GB_renameStructural, GB_allLinks, GB_supersteps, GB_predecessors,
-  GB_reducer, GB_stripAll,
+  GB_reducer, GB_stripAll, GB_importProblem, GB_applyImport,
 });
