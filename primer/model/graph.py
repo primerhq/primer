@@ -25,6 +25,7 @@ from pydantic import (
     model_validator,
 )
 
+from primer.common.log import redact_credentials
 from primer.model.chat import Message
 from primer.model.common import Describeable, Identifiable
 from primer.model.principal import PrincipalRef
@@ -74,6 +75,14 @@ class NodeRuntimeState(BaseModel):
         description="Error message when ``status == FAILED``.",
     )
 
+    @field_validator("error")
+    @classmethod
+    def _error_carries_no_credentials(cls, value: str | None) -> str | None:
+        """The text is whatever the node's exception or error message printed (a tool's httpx error holds the request URL whole; a schema error
+        quotes the failing value), and this row is served by the node_states route and written to the git-committed state.json
+        (01a11fbc-ec5a): URL credentials, Bearer and Basic tokens are masked wherever the row is built."""
+        return redact_credentials(value) if isinstance(value, str) else value
+
 
 # ===========================================================================
 # NodeOutput + GraphContext (Jinja-rendering + router-input shape)
@@ -120,6 +129,13 @@ class NodeOutput(BaseModel):
             "NodeOutput is left in GraphContext.nodes."
         ),
     )
+
+    @field_validator("error")
+    @classmethod
+    def _error_carries_no_credentials(cls, value: str | None) -> str | None:
+        """A FanIn template renders ``n.error`` into the next prompt: URL credentials, Bearer and Basic tokens are masked wherever the output is
+        built (01a11fbc-ec5a)."""
+        return redact_credentials(value) if isinstance(value, str) else value
     ended_detail: str | None = Field(
         default=None,
         description=(

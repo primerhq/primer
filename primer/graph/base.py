@@ -51,6 +51,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from primer.common.log import redact_credentials
 from primer.agent.loop import run_agent_turn
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.graph.router import RouterRegistry
@@ -1722,7 +1723,7 @@ class _BaseGraphExecutor(
                                         type="/errors/graph-node-failed",
                                         title="Graph node failed",
                                         status=500,
-                                        detail=str(item.error),
+                                        detail=redact_credentials(str(item.error)),
                                         extensions={
                                             "ended_detail": (
                                                 item.ended_detail
