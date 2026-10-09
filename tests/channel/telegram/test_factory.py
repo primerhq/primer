@@ -594,6 +594,23 @@ async def test_callback_is_answered_exactly_once_when_the_decision_raises_someth
 
 
 @pytest.mark.asyncio
+async def test_a_failing_answer_does_not_replace_the_error_already_on_its_way_out(monkeypatch):
+    """The ``finally`` that answers the click must not mask what it runs for: when the decision raised AND the answer raises too, the decision's
+    error is the one that propagates."""
+    adapter = _mock_adapter()
+    adapter._handle_decision = AsyncMock(side_effect=RuntimeError("relay down"))
+    adapter._resolve_tag = AsyncMock(return_value={"workspace_id": "w", "session_id": "s", "tool_call_id": "t"})
+    on_callback, _ = _install(monkeypatch, _FakeEntry({"100": adapter}))
+    cq = _cq("a:TAG")
+    cq.answer = AsyncMock(side_effect=RuntimeError("query is too old"))
+
+    with pytest.raises(RuntimeError, match="relay down"):
+        await on_callback(SimpleNamespace(callback_query=cq), _context())
+
+    cq.answer.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_a_callback_answer_that_fails_is_logged_and_does_not_fail_the_handler(monkeypatch, caplog):
     """Telegram refuses to answer a click that is too old; that must not turn an accepted approval into an error."""
     adapter = _mock_adapter()
