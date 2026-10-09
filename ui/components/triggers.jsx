@@ -191,6 +191,19 @@ function TR_refusalText(err, fallback) {
   return template.replace("{message}", String(r.message).replace(/[.\s]+$/, ""));
 }
 
+// What a Fire now that the server ANSWERED says (the toast for it). POST /triggers/{id}/fire_now is a 200 in three cases: a disabled (or missing) trigger is
+// {skipped: true, fire_id: null, results: []} and nothing was fired; otherwise `results` is one row per subscription delivery attempted, {ok, skipped, error_code,
+// error_message ...}, and a delivery that failed is still a fire. A delivery that was skipped on purpose (no event match) is not a failure.
+function TR_fireOutcome(res, label) {
+  if (res && res.skipped) return { kind: "warning", title: "Not fired", detail: label + " is disabled; enable it to fire it." };
+  const attempted = ((res && res.results) || []).filter((r) => r && !r.skipped);
+  const failed = attempted.filter((r) => !r.ok);
+  if (failed.length) {
+    return { kind: "warning", title: "Fired, with failures", detail: label + ": " + failed.length + " of " + attempted.length + " deliveries failed; open the trigger to see why." };
+  }
+  return { kind: "success", title: "Trigger fired", detail: label };
+}
+
 // Copy text to clipboard + flash a brief toast.
 function TR_CopyButton({ text, label, testId }) {
   const [copied, setCopied] = React.useState(false);
@@ -372,23 +385,34 @@ function TR_TriggerRow({ trigger, onOpen, onChanged }) {
   const stop = (e) => { e.stopPropagation(); };
 
   // A refusal is said on the spot, in the words the detail page shows for the same refusal (the one reader): nothing is stored anywhere the detail page could read it from, and a
-  // refused fire or delete used to look like nothing had happened (ticket 01a11db6-44fd).
+  // refused fire or delete used to look like nothing had happened (ticket 01a11db6-44fd). A trigger that is already gone (trigger_not_found) is the one refusal worded for THIS row,
+  // not for the detail page ("go back to the triggers list"): the list is refreshed, so the stale row goes.
   const toast = (t) => window.primerApi.toastPush(t);
+  const label = trigger.name || trigger.slug || trigger.id;
+  const isGone = (err) => window.primerApi.readRefusal(err).code === "trigger_not_found";
 
   const fireNow = async (e) => {
     e.stopPropagation();
     setBusy(true);
-    let fired = false;
+    let res = null;
+    let refusal = null;
     try {
-      await apiFetch("POST", "/triggers/" + encodeURIComponent(trigger.id) + "/fire_now", {});
-      fired = true;
+      res = await apiFetch("POST", "/triggers/" + encodeURIComponent(trigger.id) + "/fire_now", {});
     } catch (err) {
-      toast({ kind: "error", title: "Fire failed", detail: TR_refusalText(err, "Fire failed"), requestId: err && err.requestId });
+      refusal = err;
     } finally { setBusy(false); }
-    if (fired) {
-      toast({ kind: "success", title: "Trigger fired", detail: trigger.name || trigger.slug });
-      onChanged && onChanged();
+    if (refusal) {
+      const gone = isGone(refusal);
+      toast({
+        kind: "error", title: "Fire failed", requestId: refusal && refusal.requestId,
+        detail: gone ? label + " no longer exists; the list has been refreshed." : TR_refusalText(refusal, "Fire failed"),
+      });
+      if (gone && onChanged) onChanged();
+      return;
     }
+    const outcome = TR_fireOutcome(res, label);
+    toast(outcome);
+    if (!(res && res.skipped) && onChanged) onChanged();
   };
 
   const remove = async (e) => {
@@ -401,13 +425,23 @@ function TR_TriggerRow({ trigger, onOpen, onChanged }) {
     }))) return;
     setBusy(true);
     let deleted = false;
+    let refusal = null;
     try {
       await apiFetch("DELETE", "/triggers/" + encodeURIComponent(trigger.id));
       deleted = true;
     } catch (err) {
-      toast({ kind: "error", title: "Delete failed", detail: TR_refusalText(err, "The trigger could not be deleted."), requestId: err && err.requestId });
+      refusal = err;
     } finally { setBusy(false); }
-    if (deleted) onChanged && onChanged();
+    if (refusal) {
+      if (isGone(refusal)) {
+        toast({ kind: "info", title: "Already deleted", detail: label + " was already deleted; the list has been refreshed.", requestId: refusal && refusal.requestId });
+        if (onChanged) onChanged();
+      } else {
+        toast({ kind: "error", title: "Delete failed", detail: TR_refusalText(refusal, "The trigger could not be deleted."), requestId: refusal && refusal.requestId });
+      }
+      return;
+    }
+    if (deleted && onChanged) onChanged();
   };
 
   return (
