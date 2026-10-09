@@ -58,7 +58,7 @@ def seed_session(base_url: str, tmp_path: Path, suffix: str, *, description: str
             sid = r.json()["id"]
             created.append(f"/v1/workspaces/{wid}/sessions/{sid}")
     except BaseException:
-        delete_paths(base_url, created)
+        delete_paths(base_url, created, transport=transport)
         raise
     return SeededSession(wid=wid, sid=sid, delete_paths=created)
 

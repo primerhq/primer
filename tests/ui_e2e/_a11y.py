@@ -291,7 +291,8 @@ class SweepDeadlineExceeded(Exception):
 class Budget:
     """The sweep-wide limit on waiting for stuck surfaces: 69 looks of 10 s and 40 forms of 25 s are ~1,700 s, more than the test may take, and a thread timeout kills the whole lane. After ``limit``
     looks that used their wait up, later waits are ``short_ms`` (a stuck look is still noted, it is just not waited out). With a ``deadline_s`` the sweep is bounded from inside: the clock starts at
-    the first wait, no wait runs past the deadline, past it every wait is 0 and ``check`` raises ``SweepDeadlineExceeded``. ``clock`` is for a test."""
+    the first wait (or the first ``check``: the test makes one before its seeds), no wait runs past the deadline, and past it both ``wait_ms`` and ``check`` raise ``SweepDeadlineExceeded``. ``wait_ms``
+    must raise and not return 0: Playwright treats ``timeout=0`` as no timeout at all, so a 0 handed out after the deadline waits for ever. ``clock`` is for a test."""
 
     def __init__(self, limit: int = 5, short_ms: int = 1000, deadline_s: float | None = None, clock: Callable[[], float] = time.monotonic) -> None:
         self.limit = limit
@@ -324,7 +325,11 @@ class Budget:
     def wait_ms(self, normal_ms: int) -> int:
         wait = min(normal_ms, self.short_ms) if self.exhausted else normal_ms
         remaining = self._remaining_ms()
-        return wait if remaining is None else min(wait, remaining)
+        if remaining is None:
+            return wait
+        if remaining <= 0:
+            raise SweepDeadlineExceeded(f"the sweep ran past its {self.deadline_s} s deadline before a wait of {normal_ms} ms")
+        return min(wait, remaining)
 
     def check(self, surface: str) -> None:
         if self.expired:

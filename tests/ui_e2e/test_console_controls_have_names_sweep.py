@@ -18,7 +18,7 @@ look waits until the ``/v1`` requests in flight have answered, so a form whose f
 loading (a spinner, ``aria-busy``, text that starts Loading, Checking or Reading in any case) and the banners the console draws (``.nv-form-error``, ``.banner-error``, ``.nv-doc-problem``,
 ``[role=alert]``, ``.sh-file-conflict``, ``.field-help.warn``, a red ``.nv-bind-empty``); a red span in a table row, a stuck title and an empty list that is really a failure have no shape a selector
 can know and are left to the network. The BODY of every surface (not its fixed chrome) holds at least its floor, and the numbers are printed on every run. Every wait is bounded and the bound is
-shared (``Budget``): once enough looks have used their wait up, the rest wait briefly and are noted, and the sweep has a wall-clock deadline of its own (600 s from the first look: past it every wait is 0 and the next surface raises an ordinary exception, so the findings are reported and the seeds deleted with a live browser); pytest-timeout stays only as the thread-method last resort above it (a signal timeout hangs Playwright's sync API). A broken install is reported, not waited out.
+shared (``Budget``): once enough looks have used their wait up, the rest wait briefly and are noted, and the sweep has a wall-clock deadline of its own (600 s from the start of the test, seeding included: past it no wait is handed out, the next one raises an ordinary exception, so the findings are reported and the seeds deleted with a live browser); pytest-timeout stays only as the thread-method last resort above it (a signal timeout hangs Playwright's sync API). A broken install is reported, not waited out.
 Only the FIRST kind of a provider class is swept (the first item of its register menu). NOT covered (listed in ``docs/dev/subsystems/ui-pages.md``): detail pages, edit forms, the confirm host,
 menus (the provider register menu is only opened to pick from it), the command palette, the Files sidebar and terminal, the phone's drill-downs and sheets, 422 states, the row actions of a
 populated list, the Platform and System nav rows, the setup wizard, the controls inside a closed ``<details>``, and what Chromium cannot be asked about: controls inside iframes and shadow
@@ -113,7 +113,8 @@ def _sweep_forms(page: Page, sweep: Sweep, kind: str, name: str, forms: list[For
     a note and an empty look (the floor reports it too), and the next form is tried."""
     for form in forms:
         surface = form_surface(kind, name, form.button)
-        reopen()
+        if not sweep.reach(surface, reopen):
+            continue
         if not sweep.arrive(kind, name):
             sweep.skip(surface, "its page never showed")
             continue
@@ -122,11 +123,11 @@ def _sweep_forms(page: Page, sweep: Sweep, kind: str, name: str, forms: list[For
             expect(new).to_be_visible(timeout=sweep.budget.wait_ms(15_000))
             expect(new).to_be_enabled(timeout=sweep.budget.wait_ms(5_000))
             expect(page.locator(form.root)).to_have_count(0, timeout=sweep.budget.wait_ms(5_000))   # a form root that is already there would be the page recorded as the form
-            new.click()
+            new.click(timeout=sweep.budget.wait_ms(10_000))
             if form.then:
                 item = page.locator(f"{scope} {form.then}").first
                 expect(item).to_be_visible(timeout=sweep.budget.wait_ms(15_000))
-                item.click()
+                item.click(timeout=sweep.budget.wait_ms(10_000))
             expect(page.locator(form.root).first).to_be_visible(timeout=sweep.budget.wait_ms(10_000))
         except (AssertionError, BrowserError) as exc:
             sweep.budget.spent()
@@ -144,7 +145,10 @@ def _sweep_forms(page: Page, sweep: Sweep, kind: str, name: str, forms: list[For
 
 def _sweep_page(page: Page, sweep: Sweep, kind: str, name: str, root: str, forms: list[Form], reopen, scope: str) -> None:
     """Go to a page, wait for ITS marker, look at it, and sweep the forms it has. A page that never shows is one note and an empty look for it and for each of its forms (the waits are not repeated)."""
-    reopen()
+    if not sweep.reach(f"{kind} {name}", reopen):
+        for form in forms:
+            sweep.skip(form_surface(kind, name, form.button), "its page could not be opened")
+        return
     if not sweep.arrive(kind, name):
         sweep.skip(f"{kind} {name}", "its page never showed")
         for form in forms:
@@ -157,14 +161,15 @@ def _sweep_page(page: Page, sweep: Sweep, kind: str, name: str, root: str, forms
 def _assert_register_menu_is_dead(page: Page, reopen, route: str, sweep: Sweep) -> None:
     """The page is excused from a form because its register menu lists no kinds (ticket 01a1214c): say so again here, so that fixing the page fails the sweep until it is swept through its form. The
     failure is a note (the sweep goes on to the other surfaces), and the test fails on it at the end."""
-    reopen()
     try:
+        reopen()
         page.locator(OVERLAY).get_by_role("button", name=re.compile(rf"^{re.escape(DEAD_REGISTER_MENUS[route])}\b")).first.click(timeout=sweep.budget.wait_ms(10_000))
         panel = page.locator(f'{OVERLAY} [data-testid="provider-register-panel"]')
         expect(panel).to_contain_text(DEAD_MENU_TEXT, timeout=sweep.budget.wait_ms(15_000))
-    except (AssertionError, BrowserError):
+    except (AssertionError, BrowserError) as exc:
         sweep.budget.spent()
-        sweep.notes.append(f"{route}: its register menu no longer says {DEAD_MENU_TEXT!r}: move the page back into LEGACY_FORMS with its menu item and drop it from DEAD_REGISTER_MENUS and NO_FORM")
+        sweep.notes.append(f"{route}: its register menu does not say {DEAD_MENU_TEXT!r} ({type(exc).__name__}): move the page back into LEGACY_FORMS with its menu item and drop it from DEAD_REGISTER_MENUS and NO_FORM")
+        page.keyboard.press("Escape")    # the menu may be open: the next surface starts from a page without one
         return
     page.keyboard.press("Escape")    # the menu is open: the next surface starts from a page without one
 
@@ -185,6 +190,7 @@ def test_no_visible_control_of_the_consoles_main_surfaces_is_without_a_name(base
     seeded = None
     made: list[str] = []
     try:
+        sweep.budget.check("seeding")    # the deadline is counted from here: the seeds and the page loads take time the 900 s thread timeout counts too
         seeded = seed_session(base_url, tmp_path, suffix, description="controls sweep probe")
         wid, sid = seeded.wid, seeded.sid
         steps = _seed_graph(base_url, graph_id, agent_id)
@@ -200,19 +206,19 @@ def test_no_visible_control_of_the_consoles_main_surfaces_is_without_a_name(base
         _session_log(tmp_path, wid, sid)
 
         # the Studio shell, a session document, the create overlays
-        open_shell(page, console_url, wid)
+        open_shell(page, console_url, wid, timeout=sweep.budget.wait_ms(20_000))
         sweep.at("studio", ready=['[data-testid="nv-root"]'])
-        open_session_in_studio(page, console_url, wid, sid, kind="agent")
-        expect(page.locator(".nv-turn-error").first).to_be_visible(timeout=20_000)
+        open_session_in_studio(page, console_url, wid, sid, kind="agent", timeout=sweep.budget.wait_ms(20_000))
+        expect(page.locator(".nv-turn-error").first).to_be_visible(timeout=sweep.budget.wait_ms(20_000))
         sweep.at("session document", ready=[".nv-turn-error"], check_page=False)   # its failed turn is the point of the page
         for name in OVERLAYS:
-            open_overlay(page, console_url, wid, name)
+            open_overlay(page, console_url, wid, name, timeout=sweep.budget.wait_ms(20_000))
             sweep.at(f"overlay {name}", f'[data-testid="nv-overlay:{name}"]', ready=[f'[data-testid="nv-overlay:{name}"] [data-testid="nv-overlay-body"]'])
 
         # every Platform page as an overlay (its legacy route), and the forms it opens
         for route, forms in LEGACY_FORMS.items():
             def reopen(route=route):
-                open_legacy_route(page, console_url, route)
+                open_legacy_route(page, console_url, route, timeout=sweep.budget.wait_ms(45_000))
             _sweep_page(page, sweep, "overlay-page", route, OVERLAY, forms, reopen, OVERLAY)
             if route in DEAD_REGISTER_MENUS:
                 _assert_register_menu_is_dead(page, reopen, route, sweep)
@@ -220,43 +226,43 @@ def test_no_visible_control_of_the_consoles_main_surfaces_is_without_a_name(base
         # every Platform VIEW (what every nav row of the Platform view opens), and the forms it opens
         for nav, forms in PLATFORM_FORMS.items():
             def reopen(nav=nav):
-                open_view(page, console_url, wid, f"platform:{nav}")
+                open_view(page, console_url, wid, f"platform:{nav}", timeout=sweep.budget.wait_ms(20_000))
             _sweep_page(page, sweep, "platform-view", nav, PLATFORM, forms, reopen, PLATFORM)
 
         # every System view, and the forms it opens
         for nav in SYSTEM_VIEWS:
             def reopen(nav=nav):
-                open_view(page, console_url, wid, f"system:{nav}")
+                open_view(page, console_url, wid, f"system:{nav}", timeout=sweep.budget.wait_ms(20_000))
             _sweep_page(page, sweep, "system-view", nav, SYSTEM, SYSTEM_FORMS.get(nav, []), reopen, SYSTEM)
 
         # the graph builder: a step of each kind, the JSON import, the palette
-        open_legacy_route(page, console_url, f"graphs/{graph_id}")
-        gb.wait_for_builder(page)
+        open_legacy_route(page, console_url, f"graphs/{graph_id}", timeout=sweep.budget.wait_ms(45_000))
+        gb.wait_for_builder(page, timeout=sweep.budget.wait_ms(20_000))
         rows = page.locator('[data-testid="gb-outline-row"]')
-        expect(rows).to_have_count(steps, timeout=15_000)
+        expect(rows).to_have_count(steps, timeout=sweep.budget.wait_ms(15_000))
         sweep.at("graph builder", gb.BUILDER, ready=[gb.OUTLINE, gb.CANVAS])
         for i in range(steps):
             node_id = rows.nth(i).get_attribute("data-node-id")
-            rows.nth(i).click()
+            rows.nth(i).click(timeout=sweep.budget.wait_ms(10_000))
             # the inspector shows the step that was clicked: its id is the mono text beside the step's name (not a word of the whole panel, whose option labels can name another step)
-            expect(page.get_by_test_id("gb-inspector-title").locator("xpath=..").locator(".mono")).to_have_text(node_id or "", timeout=10_000)
+            expect(page.get_by_test_id("gb-inspector-title").locator("xpath=..").locator(".mono")).to_have_text(node_id or "", timeout=sweep.budget.wait_ms(10_000))
             sweep.at(f"graph builder / step {i + 1}", gb.BUILDER, ready=[gb.INSPECTOR])
-        page.locator('[data-testid="gb-json-tab"]').click()
-        expect(page.locator(MODAL).first).to_be_visible(timeout=5_000)
+        page.locator('[data-testid="gb-json-tab"]').click(timeout=sweep.budget.wait_ms(10_000))
+        expect(page.locator(MODAL).first).to_be_visible(timeout=sweep.budget.wait_ms(5_000))
         sweep.at("graph builder / JSON import", MODAL, ready=[f"{MODAL} {FIRST_FIELD}:visible"])
-        page.locator(MODAL).get_by_role("button", name="Cancel", exact=True).click()
-        page.locator(gb.OUTLINE_ADD).first.click()
-        expect(page.locator(gb.PALETTE)).to_be_visible(timeout=5_000)
+        page.locator(MODAL).get_by_role("button", name="Cancel", exact=True).click(timeout=sweep.budget.wait_ms(10_000))
+        page.locator(gb.OUTLINE_ADD).first.click(timeout=sweep.budget.wait_ms(10_000))
+        expect(page.locator(gb.PALETTE)).to_be_visible(timeout=sweep.budget.wait_ms(5_000))
         sweep.at("graph builder / palette", gb.BUILDER, ready=[gb.PALETTE])
 
         # the phone: its four tabs
         # (the open session document would fill the phone screen, so the stored tabs are cleared and the console is loaded afresh at its root)
         page.set_viewport_size(PHONE)
         page.evaluate("() => { localStorage.clear(); sessionStorage.clear(); }")
-        page.goto(console_url)
-        expect(page.get_by_test_id("nv-mobile-shell")).to_be_visible(timeout=20_000)
+        page.goto(console_url, timeout=sweep.budget.wait_ms(30_000))
+        expect(page.get_by_test_id("nv-mobile-shell")).to_be_visible(timeout=sweep.budget.wait_ms(20_000))
         for tab in PHONE_TABS:
-            page.get_by_role("tab", name=tab).click()
+            page.get_by_role("tab", name=tab).click(timeout=sweep.budget.wait_ms(10_000))
             if sweep.arrive("phone", tab, surface=f"phone / {tab}"):
                 sweep.at(f"phone / {tab}", '[data-testid="nv-mobile-shell"]')
             else:
