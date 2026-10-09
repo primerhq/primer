@@ -6,6 +6,47 @@
 // inspector, and hosts the palette, readiness popover and dry-run drawer.
 // WIRING.md §3, §4, §12, §13.
 
+// A component below the builder that throws while it draws (a spec the import let through that no field check foresaw) would unmount the console's root and take the operator's unsaved
+// draft with it. This boundary shows GB_RenderError instead. The draft is GB_Builder's reducer state, ABOVE the boundary, so it survives; the boundary draws its children again when any of
+// `resetKeys` changes (Undo, Discard, a different selection) and not before, so a draft that still throws does not loop.
+class GB_ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error: error || new Error("the builder failed to draw") };
+  }
+
+  componentDidUpdate(prev) {
+    const before = prev.resetKeys || [];
+    const now = this.props.resetKeys || [];
+    if (this.state.error && (before.length !== now.length || before.some((v, i) => !Object.is(v, now[i])))) this.setState({ error: null });
+  }
+
+  render() {
+    return this.state.error ? this.props.fallback(this.state.error) : this.props.children;
+  }
+}
+
+function GB_RenderError({ error, canUndo, onUndo, onDiscard }) {
+  const detail = error && error.message ? error.message : String(error);
+  return (
+    <div className="col" data-testid="gb-render-error" role="alert" style={{ gap: 10, padding: 20, border: "1px solid var(--border)", borderRadius: 12, background: "var(--bg-1)" }}>
+      <div style={{ fontWeight: 600 }}>The graph builder could not draw this graph.</div>
+      <div className="muted" style={{ fontSize: "var(--fs-12)" }}>
+        Your draft is still here and nothing was saved. Undo the last change, or discard every unsaved change to go back to the saved graph.
+      </div>
+      <div className="mono" data-testid="gb-render-error-detail" style={{ fontSize: "var(--fs-11)", color: "var(--text-3)", wordBreak: "break-word" }}>{detail}</div>
+      <div className="row" style={{ gap: 8 }}>
+        <Btn size="sm" data-testid="gb-render-error-undo" disabled={!canUndo} onClick={onUndo}>Undo the last change</Btn>
+        <Btn size="sm" kind="ghost" data-testid="gb-render-error-discard" onClick={onDiscard}>Discard all changes</Btn>
+      </div>
+    </div>
+  );
+}
+
 function GB_Builder(props) {
   const { graphId, loaded, onSaved, onRefresh, pushToast, runId } = props;
   const { useState, useMemo, useReducer, useRef, useEffect, useCallback } = React;
@@ -33,6 +74,7 @@ function GB_Builder(props) {
   const [addEdgeMode, setAddEdgeMode] = useState(null);
   const [layoutNonce, setLayoutNonce] = useState(0);
   const [jsonErrors, setJsonErrors] = useState({});
+  const [retryNonce, setRetryNonce] = useState(0);
 
   // Undo stack - cheap because the reducer is pure and drafts are small.
   const undoRef = useRef([]);
@@ -59,16 +101,35 @@ function GB_Builder(props) {
 
   useEffect(() => { rawDispatch({ type: "SET_DRAFT", draft: seed }); undoRef.current = []; redoRef.current = []; }, [seed]);
 
+  // One step back, for Cmd-Z and for the render-error message.
+  const undo = useCallback(() => {
+    if (!undoRef.current.length) return;
+    const prev = undoRef.current[undoRef.current.length - 1];
+    undoRef.current = undoRef.current.slice(0, -1);
+    redoRef.current = [...redoRef.current, draftRef.current];
+    rawDispatch({ type: "SET_DRAFT", draft: prev });
+    setRetryNonce((n) => n + 1);
+  }, []);
+
+  // Throw away every staged edit and go back to the last saved state. Uses rawDispatch + clears the undo/redo stacks (the same reset the seed effect performs) so discarded work can't
+  // be half-restored with Cmd-Z.
+  const discard = useCallback(() => {
+    rawDispatch({ type: "SET_DRAFT", draft: seed });
+    undoRef.current = [];
+    redoRef.current = [];
+    setSelectedId(null);
+    setSelectedEdge(null);
+    setLayoutNonce((n) => n + 1);
+    setRetryNonce((n) => n + 1);
+  }, [seed]);
+
   useEffect(() => {
     const onKey = (e) => {
       const mod = e.metaKey || e.ctrlKey;
       if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); setPaletteAfter(selectedId || null); }
       if (mod && e.key.toLowerCase() === "z" && !e.shiftKey && undoRef.current.length) {
         e.preventDefault();
-        const prev = undoRef.current[undoRef.current.length - 1];
-        undoRef.current = undoRef.current.slice(0, -1);
-        redoRef.current = [...redoRef.current, draftRef.current];
-        rawDispatch({ type: "SET_DRAFT", draft: prev });
+        undo();
       }
       if (mod && e.key.toLowerCase() === "z" && e.shiftKey && redoRef.current.length) {
         e.preventDefault();
@@ -80,7 +141,7 @@ function GB_Builder(props) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selectedId]);
+  }, [selectedId, undo]);
 
   const dirty = useMemo(
     () => JSON.stringify(GB_stripAll(draft)) !== JSON.stringify(GB_stripAll(seed)),
@@ -238,7 +299,7 @@ function GB_Builder(props) {
   // An empty graph offers the six shapes instead of a blank canvas.
   const isEmpty = !(draft.nodes || []).length;
 
-  return (
+  const content = (
     <div className="col" data-testid="gb-builder" style={{ gap: 0, border: "1px solid var(--border)", borderRadius: 12, overflow: "hidden", background: "var(--bg-1)" }}>
       {/* Top bar */}
       <div
@@ -277,18 +338,7 @@ function GB_Builder(props) {
               kind="ghost"
               data-testid="gb-discard"
               disabled={!dirty || save.loading}
-              onClick={() => {
-                // Throw away every staged edit and go back to the last saved
-                // state. Uses rawDispatch + clears the undo/redo stacks (the
-                // same reset the seed effect performs) so discarded work can't
-                // be half-restored with Cmd-Z.
-                rawDispatch({ type: "SET_DRAFT", draft: seed });
-                undoRef.current = [];
-                redoRef.current = [];
-                setSelectedId(null);
-                setSelectedEdge(null);
-                setLayoutNonce((n) => n + 1);
-              }}
+              onClick={discard}
             >
               Discard
             </Btn>
@@ -487,10 +537,27 @@ function GB_Builder(props) {
         <GR_ImportSpecModal
           currentDraft={draft}
           onClose={() => setImportOpen(false)}
-          onApply={(spec) => { GB_applyImport(spec, dispatch); setImportOpen(false); setLayoutNonce((n) => n + 1); }}
+          onApply={(spec) => {
+            // validated with the options the builder renders with; a refused spec throws its message to the modal and nothing below runs. A Load replaces the graph, so the selected step
+            // and edge (which may be one the spec replaced) are let go.
+            GB_applyImport(spec, dispatch, { knownToolIds: tools.map((t) => t.id) });
+            setImportOpen(false);
+            setSelectedId(null);
+            setSelectedEdge(null);
+            setLayoutNonce((n) => n + 1);
+          }}
         />
       ) : null}
     </div>
+  );
+
+  return (
+    <GB_ErrorBoundary
+      resetKeys={[draft, selectedId, selectedEdge, retryNonce]}
+      fallback={(error) => <GB_RenderError error={error} canUndo={undoRef.current.length > 0} onUndo={undo} onDiscard={discard} />}
+    >
+      {content}
+    </GB_ErrorBoundary>
   );
 }
 
