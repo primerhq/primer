@@ -634,3 +634,15 @@ def test_a_command_line_is_scrubbed_in_bounded_work_whatever_its_words_hold(case
     got, _ = w._redact(command)
     assert max(seen) <= w._REDACT_MAX_TEXT and sum(seen) <= w._REDACT_BUDGET + 4000, (max(seen), sum(seen))
     assert len(json.dumps(got, default=str)) < 3 * w._REDACT_BUDGET, "what comes back is bounded too"
+
+
+def test_a_first_word_that_fills_the_ceiling_enters_the_line_without_its_quotes(monkeypatch) -> None:
+    """``"word " * 400`` is exactly the ceiling. A word with spaces and no quote is wrapped for the line, which would make it 2002 characters; the first word has nothing to
+    give way to, so it enters as it is, and the word after it is counted in ``<N more>``."""
+    from primer.api.routers import workspaces as w
+
+    seen = _recording_scrubber(monkeypatch)
+    got, changed = w._redact(["word " * 400, "-phunter2"])
+
+    assert max(seen) <= w._REDACT_MAX_TEXT, f"the scrubber was handed {max(seen)} characters at once"
+    assert (got[0], got[-1], changed) == ("word " * 400, "<1 more>", True)
