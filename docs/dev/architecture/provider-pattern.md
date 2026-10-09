@@ -126,7 +126,7 @@ The steps are the same across families. Using an LLM adapter as the worked examp
 
 Embedder, CrossEncoder, ToolsetProvider, WebSearchAdapter, and VectorStoreProvider follow the identical recipe in their own packages; the only differences are the abstract method set and which factory function gains the new branch.
 
-Serve the class's form metadata. Every provider class exposes
+Serve the class's form metadata. Every provider class with a console form exposes
 `GET /v1/{plural}/_types`, returning one entry per provider-type value with
 `{label, config_fields, row_fields, discoverable}` (plus `limits: true` when
 the class carries a limits block). Mount that helpers router BEFORE the CRUD
@@ -135,12 +135,15 @@ what this endpoint describes through one shared form
 (`ui/components/provider-form.jsx`); it carries no field table of its own, so
 a new provider type becomes usable in the UI the moment its enum and its
 `_types` entry land together.
-The artifact-storage class (`db`, `filesystem`, `s3`) serves its entry from
-`primer/api/routers/artifact_storage.py` (`artifact_storage_helpers_router`, mounted before the CRUD router);
-it had none until board ticket 01a1214c, so the console's Register provider menu on that page was empty and
-no provider of the class could be registered from it. `tests/api/test_artifact_storage_types.py` holds the
-served fields to the config models in `primer/model/providers/artifact.py` and builds a row from what the
-form is told to ask for.
+The classes that serve it are llm, embedding, cross_encoder, stt, tts, web_search, web_fetch, artifact_storage and
+ssp (`ssp/_types`); `channel_providers` and `workspace_providers` have panels of their own and serve none. The
+artifact-storage entry (`primer/api/routers/artifact_storage.py`, `artifact_storage_helpers_router`, mounted before
+the CRUD router) lists `db`, `filesystem` and `s3`, and its labels say what is true: only `db` is built
+(`build_artifact_storage`), and every consumer reads only the reserved `artifact-storage-default` row, so a
+`filesystem` or `s3` row can be stored and is never used (the label says "not implemented yet: stored, never used")
+and a `db` row registered from the menu is not the default. `tests/api/test_artifact_storage_types.py` holds the
+served fields to the config models in `primer/model/providers/artifact.py`, builds a row of each kind through the
+factory to keep the labels true, and builds a row from what the form is told to ask for.
 
 ## 5. Existing implementations
 
