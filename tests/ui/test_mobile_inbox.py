@@ -17,6 +17,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SHELL = (ROOT / "ui" / "components" / "console" / "nv-mobile-shell.jsx").read_text(encoding="utf-8")
+ATTENTION = (ROOT / "ui" / "foundation" / "shell-attention.js").read_text(encoding="utf-8")
 
 _STUBS = r"""
 var window = globalThis;
@@ -44,6 +45,7 @@ def inbox():
 
     ctx = MiniRacer()
     ctx.eval(_STUBS)
+    ctx.eval(ATTENTION)  # SH_isStaleGate / SH_staleGateWords, which the console loads before this file
     for name in ("NV_mobileMayDecide", "NV_mobileInboxView", "NV_mobileInboxHeading", "NV_inboxDecide", "NV_inboxFullCall"):
         start = SHELL.index("function " + name)
         end = SHELL.index("\n}\n", start) + len("\n}\n")
