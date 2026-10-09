@@ -46,6 +46,12 @@ def test_a_spec_of_the_wrong_type_is_refused_and_the_builder_keeps_its_draft(pag
         expect(page.locator(gb.BUILDER)).to_be_visible()   # the console root did not unmount
         expect(rows).to_have_count(2)                      # and the draft is as it was
 
+        # a wrong type deeper in a step (the inspector would have drawn the object as a child) is refused the same way
+        spec.fill(json.dumps({"nodes": [{"kind": "begin", "id": "begin"}, {"kind": "agent", "id": "a", "agent_id": {"x": 1}}], "edges": []}))
+        modal.get_by_role("button", name="Load into editor").click()
+        expect(modal.get_by_text("wrong type")).to_be_visible(timeout=5_000)
+        expect(rows).to_have_count(2)
+
         spec.fill(json.dumps({"description": "imported", "nodes": [{"kind": "begin", "id": "begin"}], "edges": []}))
         modal.get_by_role("button", name="Load into editor").click()
         expect(page.locator(".modal")).to_have_count(0, timeout=5_000)
