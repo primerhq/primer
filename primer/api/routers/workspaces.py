@@ -3006,10 +3006,11 @@ _SECRET_FLAG = re.compile(
 # "mysql -u root -phunter2 db": mysql's -p takes its password ATTACHED (a separate word would be the database), so after a mysql-family command
 # (mysql, mysqldump, mysqladmin, mariadb, mariadb-dump, ...: the command NAME is case-insensitive, the flag is NOT, because -P is the port) an attached
 # -p<value> is a password, digits included. Only after such a command: ssh -p22, nc -p80 and find -print are not. At most 32 words between the command and the
-# flag and none of them a command separator, so the scan is bounded and ends at "&&", ";" and "|". Known false positives, accepted (a click on "Show all"):
+# flag and none of them a command separator, so the scan is bounded and ends at "&&", ";" and "|". The flag may sit behind one quote ('-pcorrect horse' in an argv
+# list, whose spaced words are wrapped for the line). Known false positives, accepted (a click on "Show all"):
 # "find /var/lib/mysql -print" and "docker run -p3306:3306 mysql" read -p as the password.
 _MYSQL_ATTACHED_PASSWORD = re.compile(
-    r"(?P<lead>(?<![\w\-])(?i:mysql|mariadb)[\w\-]*(?:\s+[^\s;&|]+){0,32}?\s+-p)(?=\S)(?:\"[^\"]*\"|'[^']*'|[^\s;&|]+)",
+    r"(?P<lead>(?<![\w\-])(?i:mysql|mariadb)[\w\-]*(?:\s+[^\s;&|]+){0,32}?\s+'?-p)(?=\S)(?:\"[^\"]*\"|'[^']*'|[^\s;&|]+)",
 )
 # "curl -u admin:hunter2", "-uadmin:hunter2", "-u :hunter2", "-U user:pass" (short for --proxy-user), "--user admin:hunter2", "--user=admin:hunter2",
 # "--proxy-user ...": a user:password pair after the flag, quoted ("-u 'deploy:correct horse'") or not, with the user empty, attached or numeric. A match
@@ -3062,6 +3063,19 @@ def _bounded(text: str, limit: int) -> str:
     return head[:i] if i > 0 else head
 
 
+def _ends_inside_a_quote(text: str) -> bool:
+    """Whether ``text`` ends inside a quote it opened: ``password='correct horse`` does, ``echo 'a b'`` does not. A quote opens at the start or after a character that is not a
+    letter or a digit (``=``, a space, ``:``, ``(``), so the apostrophe of ``don't`` opens nothing; inside a quote the other kind is just text. One linear pass."""
+    quote = ""
+    for index, char in enumerate(text):
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in "'\"" and (index == 0 or not text[index - 1].isalnum()):
+            quote = char
+    return bool(quote)
+
+
 def _hidden(piece: str, mark: "str | None") -> str:
     """What a rule leaves of a piece it hides: ``<redacted>``, or, for the marking scrub, as many ``mark`` characters as the piece had."""
     return _REDACTED if mark is None else mark * len(piece)
@@ -3097,8 +3111,8 @@ def _scrub_text(text: str, mark: "str | None" = None) -> str:
     WHERE the marks fall says which characters a rule hid (``_redact_command_line`` reads them per word).
 
     The marks are the plain scrub's replacements. A later rule sees a mark where the plain scrub shows ``<redacted>`` (which no rule matches), so the marking scrub may mark MORE
-    than the plain scrub hides: once ``token:value`` is hidden, ``-utoken:value`` is still a user part with a password to a rule that sees marks. It never marks less: a line
-    the plain scrub changes always has a mark (``tests/api/test_inbox_preview_argv_lists.py`` pins both)."""
+    than the plain scrub hides: once ``token:value`` is hidden, ``-utoken:value`` is still a user part with a password to a rule that sees marks. A line the plain scrub
+    changes has at least one mark; the marks are not the plain scrub's replacements position for position (``tests/api/test_inbox_preview_argv_lists.py`` pins both)."""
     text = _SECRET_ASSIGNMENT.sub(lambda m: _hide_after_lead(m, mark), text)
     text = _SECRET_FLAG.sub(lambda m: _hide_after_lead(m, mark), text)
     text = _MYSQL_ATTACHED_PASSWORD.sub(lambda m: _hide_after_lead(m, mark), text)
@@ -3168,11 +3182,12 @@ _WHITESPACE = re.compile(r"\s")
 def _line_word(text: str) -> "tuple[str, bool]":
     """``text`` as it enters the line, and whether it was wrapped in quotes (the wrapping is cut off again to line the word up with itself alone; a swapped quote keeps its place).
 
-    A word with spaces and no quote is a VALUE (``-u 'deploy:correct horse'``) and is wrapped so it stays one. A word that starts with a dash is a FLAG with its value attached
-    (``-pcorrect horse``): wrapped, the quote would stand in front of its ``-p`` and hide it from the rule that needs a space there, so it enters the line as it is."""
+    A word with spaces and no quote is wrapped so it stays ONE value (``-u 'deploy:correct horse'``), whatever it starts with: ``_SECRET_FLAG`` refuses a value that starts with a
+    dash (``(?!-)``, ``--password --verbose`` is two flags), and the quote is what lets ``--password '-p4ss word'`` through. A flag with its value attached
+    (``'-pcorrect horse'``) is found by the mysql rule, which sees a ``-p`` behind the quote."""
     quoted = "'" in text or '"' in text
     spaced = _WHITESPACE.search(text) is not None
-    if spaced and not quoted and not text.startswith("-"):
+    if spaced and not quoted:
         return f"'{text}'", True
     if quoted and not spaced and "\ue000" not in text and "\ue001" not in text:
         return text.translate(_QUOTES_HIDDEN), False
@@ -3318,6 +3333,10 @@ def _redact(value: Any, depth: int = 0, budget: "list[int] | None" = None) -> tu
         if capped and limit < _REDACT_MAX_TEXT and not value[len(text)].isspace():
             # A token the BUDGET cut in two: its head is too short for the blob rule to know it (a 64-character digest cut after 18 was previewed), so it is not drawn.
             # A cut at a space keeps the whole tokens before it, and the ceiling is different: it leaves the blob rule 2000 characters to work with.
+            return _REDACTED, True
+        if capped and _ends_inside_a_quote(text):
+            # A cut that ends inside an open quote (password='correct horse battery' cut at its inner space) keeps the first word of a quoted secret: nothing closes the quote
+            # for the rules, and the rest of the secret is not looked at.
             return _REDACTED, True
         document = _parse_container(text)
         if document is not None:
