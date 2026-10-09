@@ -55,7 +55,7 @@ from tests.worker.test_engine_session_resume import (
     _build_engine,
     _build_pool,
     _make_resumable_session,
-    _NoopPersist,
+    _FakeWorkspaceIO as _RecordWritingWorkspace,
     _RecordingExecutor,
     _async_return,
 )
@@ -244,7 +244,8 @@ async def _resume_release_abandoned_then_reclaimed(monkeypatch) -> dict:
         llm_messages=[assistant.model_dump(mode="json")],
     ))
     executor = _RecordingExecutor()
-    monkeypatch.setattr(pool, "_load_workspace_for_persist", lambda _w: _async_return(_NoopPersist()))
+    # The production shape: the workspace ACCEPTS the TOOL_RESULT record, so the helper that writes it runs to the end (#681 review, B1).
+    monkeypatch.setattr(pool, "_load_workspace_for_persist", lambda _w: _async_return(_RecordWritingWorkspace()))
     monkeypatch.setattr(pool, "_build_agent_executor", lambda _s, _w: _async_return(executor))
 
     real_release = engine.release
@@ -282,6 +283,8 @@ async def test_scenario_a_resume_release_that_rolled_back_left_the_park_resumabl
     assert seen["abandoned"] == 1, "the resume release was not the abandoned one"
     assert seen["row_after_resume"].parked_status == "resumable", "the park was cleared by the handler, not the release"
     assert seen["injected_after_resume"] == 1, "the handler did not run before the release"
+    assert seen["row_after_resume"].last_seq == 1, "the TOOL_RESULT record was written and last_seq advanced"
+    assert seen["row_after_resume"].resumed_park_at is not None, "and the marker survived that write"
     assert seen["lease_holder"] == "wrk-engine-resume", "the old worker's lease should still be claimed"
 
 

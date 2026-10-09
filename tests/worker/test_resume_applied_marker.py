@@ -24,7 +24,7 @@ import pytest
 
 from primer.int.claim import ClaimKind
 from primer.model.chat import Message, ToolCallPart, ToolResultPart
-from primer.model.workspace_session import WorkspaceSession
+from primer.model.workspace_session import SessionStatus, WorkspaceSession
 from primer.observability import metrics
 from primer.worker.session_resume_coordinator import inject_resume_and_continue
 
@@ -33,6 +33,7 @@ from tests.worker.test_engine_session_resume import (
     _build_engine,
     _build_pool,
     _make_resumable_session,
+    _FakeWorkspaceIO,
     _NoopPersist,
     _RecordingExecutor,
     _async_return,
@@ -52,16 +53,25 @@ def _noops() -> float:
     return metrics.session_resume_noop_total._value.get()
 
 
+def _warnings(caplog, needle: str) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING and needle in r.getMessage()]
+
+
 class _World:
-    def __init__(self, monkeypatch, *, abandon_releases: int = 0, executor=None) -> None:
+    """The production shape: the workspace ACCEPTS the TOOL_RESULT record write (``_FakeWorkspaceIO``), so the helper that persists it runs to the end. The
+    first version of these tests used ``_NoopPersist``, whose record write fails, and so never exercised what that write does to the row (#681 review, B1)."""
+
+    def __init__(self, monkeypatch, *, abandon_releases: int = 0, executor=None, workspace=None) -> None:
         self.storage = _FakeStorageProvider()
         self.sessions = self.storage.get_storage(WorkspaceSession)
         self.engine = _build_engine(self.sessions)
         self.pool = _build_pool(self.storage, self.engine)
-        self.pool._release_timeout_seconds = 0.3
-        self.pool._release_probe_timeout_seconds = 0.3
+        if abandon_releases:        # a bound this short is only needed for an abandoned release, and it risks a flake on a slow host otherwise
+            self.pool._release_timeout_seconds = 0.3
+            self.pool._release_probe_timeout_seconds = 0.3
         self.executor = executor or _RecordingExecutor()
-        monkeypatch.setattr(self.pool, "_load_workspace_for_persist", lambda _w: _async_return(_NoopPersist()))
+        self.workspace = workspace if workspace is not None else _FakeWorkspaceIO()
+        monkeypatch.setattr(self.pool, "_load_workspace_for_persist", lambda _w: _async_return(self.workspace))
         monkeypatch.setattr(self.pool, "_build_agent_executor", lambda _s, _w: _async_return(self.executor))
         self.abandoned = 0
         real_release = self.engine.release
@@ -107,6 +117,20 @@ async def test_a_resume_that_continues_records_the_park_it_applied(monkeypatch):
     assert row.parked_status is None and row.turn_no == 1, "the resume did not release normally"
     assert row.resumed_park_at == seeded.parked_at, "the continue path must record which park it applied"
     assert len(world.executor.injected) == 1
+    assert row.last_seq == 1, "the TOOL_RESULT record was written and last_seq advanced past it"
+
+
+@pytest.mark.asyncio
+async def test_the_marker_and_the_advanced_last_seq_both_survive_an_abandoned_release(monkeypatch):
+    """B1: with a workspace that accepts the record, the abandoned release leaves BOTH writes on the row (the order of the two must not matter)."""
+    world = _World(monkeypatch, abandon_releases=1)
+    seeded = await world.seed()
+    await world.engine.mark_resumable(ClaimKind.SESSION, SID)
+
+    await world.claim_and_run("wrk-engine-resume")
+
+    row = await world.sessions.get(SID)
+    assert row.parked_status == "resumable" and row.last_seq == 1 and row.resumed_park_at == seeded.parked_at
 
 
 @pytest.mark.asyncio
@@ -122,8 +146,8 @@ async def test_the_skip_is_counted_and_logged_once(monkeypatch, caplog):
         await world.claim_and_run("wrk-engine-resume-2")
 
     assert _noops() == 1
-    text = "\n".join(r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
-    assert SID in text and "already applied" in text, text
+    lines = _warnings(caplog, "already applied")
+    assert len(lines) == 1 and SID in lines[0], "one WARNING for the one skip"
 
 
 @pytest.mark.asyncio
@@ -194,17 +218,44 @@ def _parked() -> SimpleNamespace:
     )
 
 
+async def _mark(world, snapshot) -> None:
+    from primer.worker.session_resume_coordinator import _mark_resume_applied
+
+    await _mark_resume_applied(world.pool, snapshot)
+
+
 @pytest.mark.asyncio
-async def test_the_marker_is_fenced_on_the_turn_it_was_written_for(monkeypatch):
-    """A row that has moved to another turn (the release committed meanwhile) is not given a marker for the old park."""
+async def test_the_marker_is_written_for_the_park_the_row_still_carries(monkeypatch):
     world = _World(monkeypatch)
     seeded = await world.seed()
-    moved = seeded.model_copy(update={"turn_no": 0})
-    await world.sessions.update(seeded.model_copy(update={"turn_no": 3}))
 
-    await inject_resume_and_continue(
-        world.pool, moved, world.executor, _parked(), ToolResultPart(id=TCID, output="{}", error=False),
-    )
+    await _mark(world, seeded)
+
+    assert (await world.sessions.get(SID)).resumed_park_at == seeded.parked_at
+
+
+@pytest.mark.asyncio
+async def test_the_marker_is_not_written_for_a_park_the_row_no_longer_carries(monkeypatch):
+    """B2: the fence is what the marker NAMES (the park, by ``parked_at``), not the turn: a row that parked again since (a new ``parked_at``) is not given
+    a marker for the old park, whatever its ``turn_no``."""
+    world = _World(monkeypatch)
+    seeded = await world.seed()
+    reparked = seeded.model_copy(update={"parked_at": seeded.parked_at + timedelta(seconds=30)})
+    await world.sessions.update(reparked)
+
+    await _mark(world, seeded)          # the snapshot is the pool-start row; the stored row is a later park
+
+    assert (await world.sessions.get(SID)).resumed_park_at is None
+
+
+@pytest.mark.asyncio
+async def test_the_marker_is_not_written_once_the_row_is_no_longer_resumable(monkeypatch):
+    """The release committed meanwhile (the park columns are cleared): there is nothing left to mark, and a marker would outlive its park."""
+    world = _World(monkeypatch)
+    seeded = await world.seed()
+    await world.sessions.update(seeded.model_copy(update={"parked_status": None, "parked_at": None, "turn_no": 1}))
+
+    await _mark(world, seeded)
 
     assert (await world.sessions.get(SID)).resumed_park_at is None
 
@@ -230,3 +281,124 @@ async def test_a_marker_that_cannot_be_written_does_not_fail_the_resume(monkeypa
     row = await world.sessions.get(SID)
     assert row.parked_status is None and row.turn_no == 1, "the resume must still complete"
     assert any("resumed" in r.getMessage() and SID in r.getMessage() for r in caplog.records)
+
+
+# ---- the root fix: the TOOL_RESULT record write touches last_seq and nothing else ----------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_resume_does_not_put_back_a_stop_the_pool_just_cleared(monkeypatch):
+    """P8 (main too): the pool clears a Stop recorded before the park it resolves, then the record write used to put the pool-start copy of the whole row back,
+    ``interrupt_requested`` included, so the continuation was killed at its first poll."""
+    world = _World(monkeypatch)
+    await world.seed(interrupt_requested=True)
+    await world.engine.mark_resumable(ClaimKind.SESSION, SID)
+
+    await world.claim_and_run("wrk-engine-resume")
+
+    assert (await world.sessions.get(SID)).interrupt_requested is False
+
+
+@pytest.mark.asyncio
+async def test_the_record_write_leaves_what_a_concurrent_writer_changed_alone(monkeypatch):
+    """A steer that lands while the handler runs sets ``turn_status`` to claimable; the record write used to put the pool-start value back."""
+
+    class _SteeredDuringTheHandler(_RecordingExecutor):
+        async def inject_resume_messages(self, messages):
+            await super().inject_resume_messages(messages)
+            await world.sessions.patch_if(SID, {"turn_status": "claimable"}, where={"workspace_id": [f"ws-{SID}"]})
+
+    world = _World(monkeypatch, executor=_SteeredDuringTheHandler())
+    await world.seed()
+    await world.engine.mark_resumable(ClaimKind.SESSION, SID)
+
+    await world.claim_and_run("wrk-engine-resume")
+
+    assert (await world.sessions.get(SID)).turn_status == "claimable"
+
+
+# ---- the skip's OUTCOME -------------------------------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_skip_clears_the_park_bumps_the_turn_and_the_continuation_runs_on_the_next_claim(monkeypatch):
+    calls: list[str] = []
+
+    async def fake_turn(lease, deps):
+        from primer.int.claim import ReleaseOutcome
+
+        calls.append(lease.entity_id)
+        return ReleaseOutcome(success=True, drop_lease=True)
+
+    monkeypatch.setattr("primer.worker.pool.run_one_session_turn", fake_turn)
+    world = _World(monkeypatch, abandon_releases=1)
+    seeded = await world.seed()
+    await world.engine.mark_resumable(ClaimKind.SESSION, SID)
+    await world.claim_and_run("wrk-engine-resume")
+    await world.expire_lease()
+    await world.claim_and_run("wrk-engine-resume-2")          # the skip
+
+    skipped = await world.sessions.get(SID)
+    assert (skipped.parked_status, skipped.parked_at, skipped.turn_no) == (None, None, 1)
+    assert skipped.resumed_park_at == seeded.parked_at and calls == [], "the skip itself ran no turn"
+
+    await world.claim_and_run("wrk-engine-resume-3")          # the continuation
+    assert calls == [SID], "the next claim runs the continuation turn"
+    assert len(world.executor.injected) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_requested_after_the_first_attempt_ends_the_session_instead_of_skipping(monkeypatch):
+    world = _World(monkeypatch, abandon_releases=1)
+    await world.seed()
+    await world.engine.mark_resumable(ClaimKind.SESSION, SID)
+    await world.claim_and_run("wrk-engine-resume")
+    await world.sessions.patch_if(SID, {"cancel_requested": True}, where={"workspace_id": [f"ws-{SID}"]})
+    await world.expire_lease()
+
+    await world.claim_and_run("wrk-engine-resume-2")
+
+    row = await world.sessions.get(SID)
+    assert row.status == SessionStatus.ENDED and row.ended_reason == "cancelled"
+    assert _noops() == 0 and len(world.executor.injected) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_pause_keeps_the_park_and_the_resume_after_it_skips_the_handler(monkeypatch):
+    world = _World(monkeypatch, abandon_releases=1)
+    seeded = await world.seed()
+    await world.engine.mark_resumable(ClaimKind.SESSION, SID)
+    await world.claim_and_run("wrk-engine-resume")
+    await world.sessions.patch_if(SID, {"pause_requested": True}, where={"workspace_id": [f"ws-{SID}"]})
+    await world.expire_lease()
+
+    await world.claim_and_run("wrk-engine-resume-2")          # the pause exit: PAUSED, the park is kept for /resume
+
+    paused = await world.sessions.get(SID)
+    assert paused.status == SessionStatus.PAUSED and paused.parked_status == "resumable"
+    assert paused.resumed_park_at == seeded.parked_at, "the pause route's field-scoped write leaves the marker"
+    await world.sessions.patch_if(SID, {"status": "running", "pause_requested": False}, where={"status": ["paused"]})
+    await world.engine.mark_resumable(ClaimKind.SESSION, SID)          # what /resume does
+
+    await world.claim_and_run("wrk-engine-resume-3")
+
+    assert len(world.executor.injected) == 1 and _noops() == 1, "the handler is not run again after /resume"
+    assert (await world.sessions.get(SID)).parked_status is None
+
+
+# ---- the guard ----------------------------------------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "marker,parked,expected",
+    [(None, None, False), (None, "t", False), ("t", None, False), ("t", "t", True), ("t1", "t2", False)],
+    ids=["neither", "no-marker", "no-park", "equal", "older-park"],
+)
+def test_resume_already_applied_is_true_only_for_a_marker_that_names_the_park(marker, parked, expected):
+    from primer.worker.session_resume_coordinator import resume_already_applied
+
+    t = datetime(2026, 10, 9, tzinfo=timezone.utc)
+    value = {None: None, "t": t, "t1": t, "t2": t + timedelta(seconds=1)}
+    row = SimpleNamespace(resumed_park_at=value[marker], parked_at=value[parked])
+
+    assert resume_already_applied(row) is expected
