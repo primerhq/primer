@@ -141,9 +141,14 @@ function selectNode(id) {
 function inspector() { return findType(MR.find("gb-builder") || MR.find("gb-render-error"), GB_Inspector); }
 function mountBuilder(loaded) { MR.mount(GB_Builder, { graphId: "g", loaded: loaded, pushToast: NOOP }); }
 function load(spec) { var m = openModal(); m.props.onApply(spec); MR.rerender(); }
-// A step the test can make fail: the inspector of a draft whose description is POISON throws.
+// A step the test can make fail: the inspector of a draft whose description is POISON throws, and so does the inspector of the step named in __POISON_NODE (a throw at click time).
 var __realInspector = GB_Inspector;
-GB_Inspector = function (p) { if (p.draft && p.draft.description === "POISON") throw new Error("poison in the inspector"); return __realInspector(p); };
+var __POISON_NODE = null;
+GB_Inspector = function (p) {
+  if (p.draft && p.draft.description === "POISON") throw new Error("poison in the inspector");
+  if (__POISON_NODE && p.node && p.node.id === __POISON_NODE) throw new Error("poison in the step " + __POISON_NODE);
+  return __realInspector(p);
+};
 """
 
 
@@ -319,3 +324,50 @@ def test_loading_a_spec_clears_the_selected_edge(ctx) -> None:
     assert ctx.eval("inspector().props.edgeIdx") == 0
     ctx.eval(f"load({json.dumps({'nodes': [{'kind': 'begin', 'id': 'z'}], 'edges': []})});")
     assert ctx.eval("inspector().props.edgeIdx") is None and ctx.eval("inspector().props.node") is None
+
+
+# ---------------------------------------------------------------------------
+# a boolean subschema is valid JSON Schema and is drawn
+# ---------------------------------------------------------------------------
+
+
+def test_a_boolean_subschema_is_accepted_and_drawn_by_every_part_of_the_builder(ctx) -> None:
+    spec = copy.deepcopy(BASE)
+    spec["nodes"][0]["input_schema"]["properties"].update({"ok": True, "no": False, "o": {"type": "object", "properties": {"deep": True}}})
+    r = json.loads(ctx.eval(f"JSON.stringify(probeDraft({json.dumps(BASE)}, {json.dumps(spec)}))"))
+    assert r["refused"] is None and r["crashes"] == {}, r
+
+
+# ---------------------------------------------------------------------------
+# a throw at click time: the message offers to let go of the selection
+# ---------------------------------------------------------------------------
+
+
+def test_a_step_that_throws_when_it_is_selected_offers_to_clear_the_selection(ctx) -> None:
+    ctx.eval(f"__POISON_NODE = 'a'; mountBuilder({json.dumps(BASE)}); selectNode('a');")
+    assert _has(ctx, "gb-render-error"), "the throw at selection reached the root"
+    clear = ctx.eval('MR.find("gb-render-error-clear") !== null')
+    assert clear, "the message offers Undo and Discard only, and both throw the import away"
+    ctx.eval('MR.click("gb-render-error-clear"); MR.rerender();')
+    assert not _has(ctx, "gb-render-error") and _has(ctx, "gb-builder")
+    assert ctx.eval("inspector().props.node") is None and ctx.eval("inspector().props.edgeIdx") is None
+    assert ctx.eval("inspector().props.draft.nodes.length") == len(BASE["nodes"]), "the draft is as it was"
+
+
+def test_clearing_the_selection_leaves_the_undo_history_alone(ctx) -> None:
+    ctx.eval(f"mountBuilder({json.dumps(BASE)});")
+    ctx.eval(f"load({json.dumps({**copy.deepcopy(BASE), 'description': 'imported'})});")   # something to undo
+    ctx.eval("__POISON_NODE = 'a'; selectNode('a');")
+    assert _has(ctx, "gb-render-error") and ctx.eval('MR.find("gb-render-error-undo").props.disabled') is False
+    ctx.eval('MR.click("gb-render-error-clear"); MR.rerender();')
+    assert ctx.eval("inspector().props.draft.description") == "imported"
+    ctx.eval("__POISON_NODE = null;")
+    ctx.eval('MR.click("gb-json-tab");')   # the builder is alive: its own controls still work
+
+
+def test_a_draft_that_throws_with_nothing_selected_has_no_clear_the_selection_button(ctx) -> None:
+    """Only a selection can be cleared: the import clears it, so the POISON description message is Undo and Discard alone."""
+    ctx.eval(f"mountBuilder({json.dumps(BASE)});")
+    ctx.eval(f"load({json.dumps(_poisoned())});")
+    assert _has(ctx, "gb-render-error")
+    assert ctx.eval('MR.find("gb-render-error-clear")') is None
