@@ -20,6 +20,7 @@ from primer.common.origin import origin_of
         pytest.param("https://home.example:443/v1", "https://home.example/v1", id="https default port spelled out"),
         pytest.param("http://home.example:80", "http://home.example", id="http default port spelled out"),
         pytest.param("wss://home.example:443/s", "wss://home.example/t", id="wss default port"),
+        pytest.param("ws://home.example:80/s", "ws://home.example/t", id="ws default port"),
         pytest.param("https://svc:pw@home.example/v1", "https://home.example/v1", id="userinfo is not part of an origin"),
         pytest.param("https://svc:pw@home.example/v1", "https://other:x@home.example/v1", id="another user, same origin"),
         pytest.param("tcp://docker:2375", "tcp://DOCKER:2375/x", id="a scheme with no default port"),
@@ -57,3 +58,26 @@ def test_another_origin(a: str, b: str) -> None:
 @pytest.mark.parametrize("value", ["", "   ", "home.example", "//home.example/x", "unix:///var/run/docker.sock", "http://h:99999", "http://h:notaport", "http://[::1"])
 def test_a_value_without_a_usable_host_is_its_own_origin_and_never_raises(value: str) -> None:
     assert origin_of(value) == ("text", value.strip())
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("https://attacker.example\\@home.example", id="a backslash before the @: urlsplit reads home.example, urllib3 and browsers read attacker.example"),
+        pytest.param("https://home.example\\.attacker.example/x", id="a backslash inside the host"),
+        pytest.param("https://home.example attacker.example/x", id="a space inside the authority"),
+        pytest.param("https://home.example\tattacker.example/x", id="a tab inside the authority"),
+        pytest.param("https://home.example\n.attacker.example/", id="a newline inside the authority"),
+    ],
+)
+def test_an_authority_that_parsers_read_differently_is_its_own_origin(value: str) -> None:
+    """A backslash or whitespace in the authority is read differently by ``urlsplit`` and by the client that makes the request, so the host it would name is not trusted: the value is compared as text
+    (the same text keeps the secret, anything else is another origin)."""
+    assert origin_of(value) == ("text", value.strip())
+    assert origin_of(value) != origin_of("https://home.example")
+    assert origin_of(value) != origin_of("https://attacker.example")
+
+
+def test_a_backslash_or_space_after_the_authority_is_only_part_of_the_path() -> None:
+    assert origin_of("https://home.example/a\\b c") == origin_of("https://home.example")
+    assert origin_of("https://home.example?q=a b") == origin_of("https://home.example")
