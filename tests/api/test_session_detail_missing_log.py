@@ -36,9 +36,10 @@ def _usage_errors(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
 async def test_missing_log_serves_the_zero_frame_without_an_error_log(
     client: httpx.AsyncClient, app, fake_storage_provider, caplog,
 ):
-    """A session that never ran a turn has no log: 200, the zero frame, no ERROR."""
+    """A session that never ran a turn has no log: 200, the zero frame, and nothing at WARNING or above."""
     from primer.api.routers.tap import build_usage_frame
 
+    caplog.set_level(logging.DEBUG)  # so the debug line the missing-log path should emit is captured
     await _seed_session(fake_storage_provider, "s-miss")
     await _seed_agent_and_profile(fake_storage_provider)
     ws = _FakeWorkspace()  # nothing written: messages.jsonl does not exist
@@ -50,7 +51,11 @@ async def test_missing_log_serves_the_zero_frame_without_an_error_log(
     r = await client.get("/v1/sessions/s-miss")
     assert r.status_code == 200, r.text
     assert r.json()["usage"] == build_usage_frame([])
-    assert _usage_errors(caplog) == []
+    assert [record for record in caplog.records if record.levelno >= logging.WARNING] == []
+    assert any(
+        "has no messages log yet" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio
