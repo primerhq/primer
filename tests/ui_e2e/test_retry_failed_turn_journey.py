@@ -1,7 +1,8 @@
 """Journey: a turn that failed can be sent again from its error card (console review C-024).
 
-The model answers HTTP 500, the loop's own retries run out, and the session ends as ``failed``: one error card and the line "Send a message to
-try again". The card now carries a Retry that sends the failed instruction again. The mock LLM is scripted to fail, and then (the test swaps the
+The model answers HTTP 500 and the loop's own retries run out. An interactive session now RESTS after that (C-024: ``waiting``, no ``ended_reason``,
+``last_turn_error`` on the row) instead of ending as ``failed``; either way the console shows one error card and the line "Send a message to
+try again". The card carries a Retry that sends the failed instruction again. The mock LLM is scripted to fail, and then (the test swaps the
 script before it clicks) to answer, so the click is the only thing between the failed state and a working one. Nothing in the console is mocked.
 """
 
@@ -40,10 +41,12 @@ def _failed_session(base_url: str, mock_llm_lan, tmp_path: Path) -> tuple[str, s
         row: dict = {}
         while time.monotonic() < deadline:
             row = client.get(f"/v1/sessions/{sid}").json()
-            if row.get("session_state") == "ended":
+            # the stamp is written BEFORE the status moves: wait for both, or a poll in between reads a failure exit still in flight
+            if row.get("last_turn_error") and row.get("status") != "running":
                 break
             time.sleep(0.5)
-        assert row.get("session_state") == "ended" and row.get("ended_reason") == "failed", row
+        assert row.get("status") == "waiting" and row.get("ended_reason") is None, row
+        assert row["last_turn_error"]["code"] == "server_error", row
     return wid, sid, registry, ids["model_name"]
 
 

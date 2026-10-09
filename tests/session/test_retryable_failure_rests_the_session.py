@@ -460,3 +460,15 @@ async def test_a_failure_the_clean_arm_ends_is_announced_too(
     row = await _row(fake_storage_provider, f"s-{reason}")
     assert (row.status, row.ended_reason) == (SessionStatus.ENDED, "failed")
     assert [p for n, p in emitted.events if n == "session.turn_failed"] == [{"code": reason, "ended": True}]
+
+
+@pytest.mark.asyncio
+async def test_turn_failed_is_announced_before_session_ended(fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch):
+    """A consumer that reacts to ``session.ended`` must already have the failure that ended it."""
+    session = await _seed_session(fake_storage_provider, "s-order")
+
+    _, emitted = await _run(fake_storage_provider, fake_workspace_io, fake_event_bus, monkeypatch, session, [_failure("auth_error")])
+
+    types = emitted.types()
+    assert types.index("session.turn_failed") < types.index("session.ended"), types
+

@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from tests._support.mock_llm import Rule
-from tests._support.runs import make_local_workspace, make_scripted_agent, start_agent_session, wait_terminal
+from tests._support.runs import make_local_workspace, make_scripted_agent, start_agent_session, wait_failed_turn
 
 _ANSWER = "Here is the start of an answer that the model never finished"
 
@@ -29,8 +29,10 @@ async def test_the_text_streamed_before_a_mid_answer_failure_is_in_the_log_befor
     workspace_id = await make_local_workspace(client, suffix=unique_suffix, root=tmp_path)
     session_id = await start_agent_session(client, workspace_id=workspace_id, agent_id=agent["agent_id"], instructions="answer me")
 
-    row = await wait_terminal(client, session_id)
-    assert row["status"] == "ended" and row["ended_reason"] == "failed", row
+    # A stream that died without a code rests an interactive session (C-024): it is not terminal, so wait for the failure exit to finish.
+    row = await wait_failed_turn(client, session_id)
+    assert row["status"] == "waiting" and row["ended_reason"] is None, row
+    assert row["last_turn_error"]["code"] == "llm_stream_error", row
 
     records = (await client.get(f"/v1/sessions/{session_id}/messages")).json()["items"]
     kinds = [r["kind"] for r in records]

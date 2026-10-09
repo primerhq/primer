@@ -143,6 +143,34 @@ async def test_the_next_send_after_a_rested_failure_is_accepted_and_the_model_an
 
 
 @pytest.mark.asyncio
+async def test_the_wake_reopens_a_slot_the_failure_exit_could_not(tmp_path, fake_storage_provider, fake_event_bus, monkeypatch):
+    """The failure exit's slot reopen is bounded and best effort (the workspace can be reconnecting). When it did not land, the slot is still ENDED
+    while the row rests, and the next send must reopen it itself, or it is a 409 on a session the row says is alive."""
+    import primer.session.dispatch as dispatch_module
+
+    async def reopen_that_does_not_land(executor) -> None:
+        return None
+
+    monkeypatch.setattr(dispatch_module, "_reopen_agent_session_slot", reopen_that_does_not_land)
+    backend, workspace, row = await _start(tmp_path, fake_storage_provider)
+    try:
+        llm = _llm("raised")
+        deps = _deps(workspace, llm, fake_storage_provider, fake_event_bus)
+        await run_one_session_turn(_make_lease(row.id), deps)
+        assert await (await workspace.get_session(row.id)).status() == SessionStatus.ENDED, "premise: the slot is still ENDED"
+
+        await wake_session(
+            workspace_id=workspace.id, session_id=row.id, instruction="try again", human_intent=True,
+            deps=_wake_deps(workspace, fake_storage_provider, fake_event_bus),
+        )
+        outcome = await run_one_session_turn(_make_lease(row.id), deps)
+
+        assert outcome.success is True and len(llm.calls) == 2, "the model was not called again"
+    finally:
+        await backend.aclose()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("shape", ["stream_error", "raised"])
 async def test_a_bare_resume_after_a_rested_failure_runs_the_turn_instead_of_ending_the_session(
     shape, tmp_path, fake_storage_provider, fake_event_bus,

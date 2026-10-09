@@ -232,6 +232,32 @@ async def wait_terminal(
     return last
 
 
+async def wait_failed_turn(
+    client: httpx.AsyncClient,
+    session_id: str,
+    *,
+    timeout_s: float = 60.0,
+    interval_s: float = 0.5,
+) -> dict:
+    """Poll until a turn has failed and its failure exit has FINISHED, however the session now surfaces.
+
+    C-024: a transport failure (or a stream that gave no code) of an interactive session leaves it RESTING (``waiting``, ``last_turn_error`` set,
+    no ``ended_reason``) instead of ending it, so :func:`wait_terminal` would burn its whole timeout; a failure that does not rest still ENDS.
+    The stamp is written BEFORE the status moves, so a row that carries ``last_turn_error`` and is still ``running`` is a failure exit in flight:
+    wait for the stamp AND a status that is not ``running``.
+    """
+    iters = max(1, int(timeout_s / interval_s))
+    last: dict = {}
+    for _ in range(iters):
+        resp = await client.get(f"/v1/sessions/{session_id}")
+        if resp.status_code == 200:
+            last = resp.json()
+            if last.get("status") in _TERMINAL or (last.get("last_turn_error") and last.get("status") != "running"):
+                return last
+        await asyncio.sleep(interval_s)
+    return last
+
+
 async def wait_completed(
     client: httpx.AsyncClient,
     session_id: str,
