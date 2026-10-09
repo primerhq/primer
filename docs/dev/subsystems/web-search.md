@@ -301,6 +301,7 @@ Python: `WebSearchAdapter`, `SearchHit`, the named exceptions (re-exported from
   `aclose()`. Concretes raise `WebSearchUnavailable` for transient / quota errors
   and `WebSearchProviderError` for misconfiguration; any other exception class is
   treated as a programmer bug and propagates unchanged.
+- **A keyed adapter masks its own credentials in the transport error it raises** (`primer/common/transport_text.py`, `transport_failure(label, exc, config)`; the Exa, Firecrawl and Tavily search adapters and the Exa, Firecrawl and Jina fetch adapters). A pasted API key often ends in a newline, h11 refuses it as a header value, and httpx raises `LocalProtocolError: Illegal header value b'<the key>\n'`; the adapters used to put that text in `WebSearchUnavailable` / `WebFetchUnavailable`, and the tools returned it to the AGENT (`web-search failed: ...`: the session transcript, the model vendor, every user of the session) while the services and tools logged it. The text now goes through `primer.llm._failure.scrubbed_event_text` with the adapter's own config (the rule the LLM adapters use: the configured `api_key` as itself, repr-escaped and whitespace-normalised, URL userinfo, `Bearer` and `Basic` tokens), so the reason (`LocalProtocolError`) is kept and the key is not, in the tool result, in the aggregated `all N providers failed: ...` summary and in every log line. The mask is at the source, not in the tools: a new keyed adapter raises through `transport_failure` too (a source test fails one that formats `{exc}` itself). The original exception stays as `__cause__`, which no caller renders. NOT covered: `httpcore` logs `send_request_headers.failed exception=LocalProtocolError(...)` with the header value at DEBUG, for every httpx call of a process that runs at DEBUG; that line is the library's.
 - **Named-exception dispatch**: `WebSearchUnavailable` and `WebSearchProviderError`
   (both `PrimerError` subclasses) are the only signals the registry and service
   treat specially. The service skips on these (plus `NotFoundError` for a deleted
@@ -338,6 +339,7 @@ Python: `WebSearchAdapter`, `SearchHit`, the named exceptions (re-exported from
   `ddgs.DDGS`; the REST adapter tests assert the per-status error mapping
   (401/403, 402, 429, 5xx, transport, non-JSON), the `safe_search` collapse, and
   the result-key normalisation.
+- `tests/toolset/test_web_tools_do_not_echo_the_provider_key.py` pins the item above, hermetically: a local server that accepts a connection and closes it (httpcore connects before h11 checks the header, so the failure is the real `LocalProtocolError` and no host is involved), the reason kept and the key absent from the adapter's text, from the tool result (single and aggregated mode) and from every log record of Primer's loggers (message and `extra`), plus a transport that echoes the request for all six adapters and a source guard.
 - `tests/api/test_web_search_providers.py` covers the CRUD + `_test` + `_types`
   surface: reserved-id rejection, mismatched `provider_type`/`config.type`
   rejection, registry invalidation on update / delete, cascade-block on delete of a
