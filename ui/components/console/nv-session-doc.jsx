@@ -1,5 +1,5 @@
 /* global React, SH_api, NV_useConsole, NV_identity, SH_statusFromTap,
-   SH_statusLine, SH_collapseTurns, SH_nestWithResults, SH_resultForCall, SH_callQuotesNotice, SH_toolChipLabel, SH_turnOfSeq,
+   SH_statusLine, SH_collapseTurns, SH_nestWithResults, SH_resultForCall, SH_callQuotesNotice, SH_toolChipLabel, SH_turnOfSeq, SH_windowsOfSeq,
    SH_scrollDecision, SH_shortTime, SH_traceHeaderLabel, SH_thoughtLabel,
    SH_diffLineTone, SH_looksLikeDiff, SH_routingLine, SH_askOptionsOf */
 // The session tab (wiring plan P2 T7). DATA layer inherited from the
@@ -2735,8 +2735,9 @@ function NV_SessionDoc(props) {
     // The old hardcoded fallback of 1 asked for the SECOND turn's trace
     // from every row of a first-turn session, which is why the split
     // came up empty (BDD/live finding 2026-08-25).
-    // SH_turnOfSeq (shell-turns.js) is the one copy of the rule; a delegated run's own done does not end the session's turn.
-    var turnOfSeq = SH_turnOfSeq(flat);
+    // SH_turnOfSeq (shell-turns.js) is the one copy of the rule, fed the window each raw record is filed in (SH_windowsOfSeq: the server's TurnWindowScanner):
+    // a delegated run's own done does not end the session's turn, and a failed turn is ONE window however many error records it wrote.
+    var turnOfSeq = SH_turnOfSeq(flat, SH_windowsOfSeq(window.SA_visibleRecords(records)));
     return {
       flat: flat, rows: rows,
       resultsByCallId: resultsByCallId, turnOfSeq: turnOfSeq,

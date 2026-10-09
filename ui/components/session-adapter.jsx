@@ -379,16 +379,12 @@ function SA_toTranscript(records, session) {
   // raises when the stream ends, so dispatch's own ERROR follows it with the SAME words. A failure of the same scope (and node, as for copies)
   // with the same words ABSORBS the notice, in either order, so the turn shows one red card and not a quiet line above it saying the same thing.
   //
-  // The server counts every ERROR record that is not a non-fatal one, and not a subagent's, as the end of a window (terminals.closes_turn),
-  // folded copies and markers included, and the console asks the trace for that window ordinal (SH_turnOfSeq). A row that absorbed such
-  // records carries their SEQS (foldedSeqs), not a count: a drawn row between the cause and a copy sits in a window the copy's end comes after, so the
-  // ordinal has to step at the copy's own place; a notice, absorbed or not, is not one.
+  // The fold is about what is DRAWN. The server reads a failed turn as ONE window however many records it wrote (terminals.TurnWindowScanner, ticket
+  // 01a11ca5) and the console asks the trace for that window's ordinal: SH_turnOfSeq numbers the rows from SH_windowsOfSeq over the raw records, so
+  // nothing here counts what was folded.
   var turnCauses = [];
   var turnMarkers = {};
   var turnNotices = [];
-  function foldedInto(cause, scope, seq) {
-    if (cause.row && scope === null) (cause.row.foldedSeqs = cause.row.foldedSeqs || []).push(seq);
-  }
   // dispatch's failure row carries only the generic /errors/internal; the provider's own code was on the notice it absorbs, and it is what the card's words are
   // chosen by. A code the failure row has of its own wins. The payload is copied, never edited: it is the record's own.
   function adoptCode(row, code) {
@@ -420,11 +416,11 @@ function SA_toTranscript(records, session) {
       if (bare) {
         // A marker with a cause of its own scope anywhere in its turn is that cause's marker. A marker with none is the only evidence and stays.
         var own = turnCauses.filter(function (c) { return c.scope === scope; });
-        if (own.length) { foldedInto(own[own.length - 1], scope, rec.seq); continue; }
+        if (own.length) continue;
       } else {
         var node = rec.node_id || null;
         var copyOf = message ? turnCauses.filter(sameWords)[0] : null;
-        if (copyOf) { foldedInto(copyOf, scope, rec.seq); continue; }
+        if (copyOf) continue;
         thisCause = { message: message, node: node, scope: scope, row: null };
         turnCauses.push(thisCause);
         // A notice of this scope with the same words was this failure's first half: it gives way to the failure.
@@ -439,7 +435,6 @@ function SA_toTranscript(records, session) {
         if (turnMarkers[scopeKey]) {
           var at = out.indexOf(turnMarkers[scopeKey]);
           if (at >= 0) out.splice(at, 1);
-          thisCause.markerSeq = turnMarkers[scopeKey].seq;
           delete turnMarkers[scopeKey];
         }
       }
@@ -473,7 +468,6 @@ function SA_toTranscript(records, session) {
     out.push(row);
     if (thisCause) {
       thisCause.row = row;
-      if (thisCause.markerSeq != null) foldedInto(thisCause, scope, thisCause.markerSeq);   // the marker that gave way to this cause was a terminal of its own
       adoptCode(row, thisCause.adoptedCode);
     }
     if (notice) {

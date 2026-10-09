@@ -828,53 +828,7 @@ def test_a_notice_is_never_the_cause_a_subagents_failure_folds_into(transcript) 
     assert _kinds(rows) == ["user_message", "retry_notice", "error"], rows
 
 
-# --- the terminals a fold removes still end the turn on the server (so the console's turn ordinals line up with its timeline) -----------
-
-
-def _terminals_folded(transcript, *parts: str) -> dict:
-    """seq -> the SEQS of the terminal records the fold removed into that row. The seqs, not a count: a drawn row between the cause and a copy is a row the
-    copy came AFTER, and the server's window ordinal of that row does not include the copy's window end."""
-    rows = transcript(_records(*parts))
-    return {r["seq"]: r.get("foldedSeqs", []) for r in rows}
-
-
-def test_a_failure_remembers_the_seq_of_the_terminal_marker_that_was_folded_into_it(transcript) -> None:
-    cause = _r(2, "error", message="x", code="server_error")
-    marker = _r(3, "error", reason="unknown", terminal=True)
-    assert _terminals_folded(transcript, _USER, cause, marker) == {1: [], 2: [3]}
-
-
-def test_a_failure_remembers_the_seqs_of_the_copy_and_the_marker_folded_into_it(transcript) -> None:
-    stream = _r(2, "error", message="x", code="server_error", fatal=True)
-    copy = _r(3, "error", message="x", code="/errors/internal")
-    marker = _r(4, "error", reason="unknown", terminal=True)
-    assert _terminals_folded(transcript, _USER, stream, copy, marker) == {1: [], 2: [3, 4]}
-
-
-def test_a_copy_that_comes_after_drawn_rows_is_remembered_at_its_own_seq(transcript) -> None:
-    """The graph superstep: the failed node's error, a sibling's answer, then the graph's copy of the error. The copy's window end is AFTER the sibling's rows."""
-    stream = _r(2, "error", node_id="A", message="x", code="server_error", fatal=True)
-    sibling = _r(3, "assistant_token", node_id="B", text="b")
-    copy = _r(4, "error", node_id="A", message="x", code="server_error")
-    folded = _terminals_folded(transcript, _USER, stream, sibling, copy)
-    assert folded[2] == [4] and folded[3] == []
-
-
-def test_a_marker_written_before_its_cause_is_remembered_at_its_own_seq(transcript) -> None:
-    marker = _r(2, "error", reason="unknown", terminal=True)
-    cause = _r(3, "error", message="x", code="server_error")
-    assert _terminals_folded(transcript, _USER, marker, cause) == {1: [], 3: [2]}
-
-
-def test_a_delegated_copy_is_not_a_terminal_of_the_session(transcript) -> None:
-    sub = _r(2, "error", message="x", code="server_error", fatal=True, **_SUB)
-    sub_copy = _r(3, "error", message="x", code="server_error", fatal=True, **_SUB)
-    assert _terminals_folded(transcript, _USER, sub, sub_copy)[2] == []
-
-
-def test_an_absorbed_notice_is_not_remembered_because_a_non_fatal_error_is_not_a_terminal(transcript) -> None:
-    failure = _r(3, "error", message="Provider hiccup", code="/errors/internal")
-    assert _terminals_folded(transcript, _USER, _r(2, "error", **_NOTICE), failure) == {1: [], 3: []}
+# --- what the fold does with a notice's words (the turn ORDINALS no longer depend on the fold: SH_windowsOfSeq, tests/ui/test_shell_turns.py) ------------
 
 
 def test_a_failure_that_absorbs_a_notice_keeps_the_notices_specific_code_when_it_only_has_the_generic_one(transcript) -> None:

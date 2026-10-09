@@ -337,22 +337,104 @@ function SH_retryInstruction(flat, errorRow, session) {
   return null;
 }
 
-// 0-based turn ordinal per seq: the number of the session's own turn ends before the row (the row that ends a turn is part
-// of it), matching the timeline endpoint's window ordinal.
-function SH_turnOfSeq(rows) {
+// The mirror of primer/session/terminals.py's TurnWindowScanner (ticket 01a11ca5). SH_closesTurn above is per record; one FAILED turn is one window however many
+// error records it wrote (the stream's own, dispatch's with the same words, the claim adapter's release marker), and whether a record is a COPY of an earlier
+// failure needs the records before it. Feed RAW records (kind, payload, node_id) in order; feed() says "closes" (the record ends a window), "copy" (a copy of a
+// failure that already ended one: ends nothing, and belongs to the window it copies) or "inside". The rule, in the server's words: a delegated record is
+// always inside; a user_input starts a new turn; a done / cancelled that closes the turn ends a window (done with stop_reason "error" is a FAILURE end that
+// later errors of the turn can copy; any other end closes the turn); an error with an explicit fatal: false is a notice that ends nothing but whose words are
+// remembered; a bare release marker is a copy once the turn has failed and the only evidence (so it ends the window) when nothing has; any other error ends a
+// window unless the turn has already failed and an earlier error of the turn has the same non-empty message from the same node (a record that names no node
+// matches any node's). tests/ui/test_shell_turns.py compares the two over the shapes the writers produce.
+var SH_WINDOW_CLOSES = "closes";
+var SH_WINDOW_COPY = "copy";
+var SH_WINDOW_INSIDE = "inside";
+
+function SH_isBareMarker(rec) {
+  var p = (rec && rec.payload) || {};
+  return !!rec && rec.kind === "error" && p.terminal === true && !p.message && !p.code && !p.title;
+}
+
+function SH_newWindowScanner() {
+  var failed = false;
+  var words = [];
+  function newTurn() { failed = false; words = []; }
+  function remember(message, node) { if (message) words.push([message, node]); }
+  function copiesAnEarlierError(message, node) {
+    if (!message) return false;
+    for (var i = 0; i < words.length; i++) {
+      if (words[i][0] === message && (!words[i][1] || !node || words[i][1] === node)) return true;
+    }
+    return false;
+  }
+  return {
+    feed: function (rec) {
+      var payload = (rec && rec.payload) || {};
+      if (payload.delegated) return SH_WINDOW_INSIDE;
+      if (rec.kind === "user_input") { newTurn(); return SH_WINDOW_INSIDE; }
+      if (rec.kind === "error") {
+        var message = typeof payload.message === "string" ? payload.message : null;
+        var node = rec.node_id || null;
+        if (SH_isBareMarker(rec)) {
+          if (failed) return SH_WINDOW_COPY;
+          failed = true;
+          return SH_WINDOW_CLOSES;
+        }
+        if (payload.fatal === false) { remember(message, node); return SH_WINDOW_INSIDE; }
+        if (failed && copiesAnEarlierError(message, node)) return SH_WINDOW_COPY;
+        remember(message, node);
+        failed = true;
+        return SH_WINDOW_CLOSES;
+      }
+      if (!SH_closesTurn(rec)) return SH_WINDOW_INSIDE;
+      if (rec.kind === "done" && payload.stop_reason === "error") failed = true;
+      else newTurn();
+      return SH_WINDOW_CLOSES;
+    },
+  };
+}
+
+// The window each record is filed in, as the server's turn_windows files it: {of: {seq: 0-based window}, open: the index of the window still open (every
+// window ended before it), first: the smallest seq seen}. A copy takes back to the window it copies everything written since that window ended. Pass
+// the records the transcript is drawn from (SA_visibleRecords): the rows the console draws are a subset of them.
+function SH_windowsOfSeq(records) {
+  var scanner = SH_newWindowScanner();
+  var of = {};
+  var windows = 0;
+  var current = [];
+  var first = Infinity;
+  function file(recs, index) { for (var i = 0; i < recs.length; i++) of[recs[i].seq] = index; }
+  for (var i = 0; i < (records || []).length; i++) {
+    var rec = records[i];
+    if (typeof rec.seq === "number" && rec.seq < first) first = rec.seq;
+    var verdict = scanner.feed(rec);
+    if (verdict === SH_WINDOW_COPY && windows > 0) {
+      current.push(rec);
+      file(current, windows - 1);
+      current = [];
+      continue;
+    }
+    current.push(rec);
+    if (verdict === SH_WINDOW_CLOSES) {
+      file(current, windows);
+      windows += 1;
+      current = [];
+    }
+  }
+  file(current, windows);
+  return { of: of, open: windows, first: first };
+}
+
+// 0-based turn ordinal per seq, matching the timeline endpoint's window ordinal. `windows` is SH_windowsOfSeq over the records the rows were drawn from: the
+// ordinal is the window the record is filed in, so the console and the server number a failed turn (one window) and the turns after it the same. A row the
+// records do not hold (an optimistic or live row) is numbered by where it sits: before the first record it is the first window's, after the last the open one's.
+function SH_turnOfSeq(rows, windows) {
+  var w = windows || { of: {}, open: 0, first: Infinity };
   var out = {};
-  var ordinal = 0;
-  // The seqs of the terminals the failure fold removed (session-adapter.jsx: a copy of the failure, the release marker), kept on the row that absorbed them
-  // (foldedSeqs). The server counts each as a window end AT ITS OWN PLACE, so the ordinal steps when the walk passes that seq, not where the surviving row is:
-  // a drawn row between the cause and a copy (a sibling node's answer, streamed text) belongs to a window the copy's end comes after.
-  var folded = [];
-  for (var k = 0; k < (rows || []).length; k++) folded = folded.concat(rows[k].foldedSeqs || []);
-  folded.sort(function (a, b) { return a - b; });
-  var f = 0;
   for (var i = 0; i < (rows || []).length; i++) {
-    while (f < folded.length && folded[f] < rows[i].seq) { ordinal += 1; f += 1; }
-    out[rows[i].seq] = ordinal;
-    if (SH_closesTurn(rows[i])) ordinal += 1;
+    var seq = rows[i].seq;
+    if (Object.prototype.hasOwnProperty.call(w.of, seq)) out[seq] = w.of[seq];
+    else out[seq] = seq < w.first ? 0 : w.open;
   }
   return out;
 }
@@ -425,6 +507,8 @@ window.SH_callQuotesNotice = SH_callQuotesNotice;
 window.SH_collapseTurns = SH_collapseTurns;
 window.SH_closesTurn = SH_closesTurn;
 window.SH_turnOfSeq = SH_turnOfSeq;
+window.SH_windowsOfSeq = SH_windowsOfSeq;
+window.SH_newWindowScanner = SH_newWindowScanner;
 window.SH_retryInstruction = SH_retryInstruction;
 window.SH_shortTime = SH_shortTime;
 window.SH_traceHeaderLabel = SH_traceHeaderLabel;
