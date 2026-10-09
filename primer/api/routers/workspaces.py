@@ -115,7 +115,7 @@ from primer.workspace.template_privilege import (
     refusal_message,
 )
 from primer.session.mutation_lock import session_lifecycle_lock
-from primer.model.yield_ import gate_id_of
+from primer.model.yield_ import gate_id_of, with_wake_park
 from primer.session.pending_gates import enumerate_pending_gates
 from primer.session.slot_view import overlay_row_on_slot_info, overlay_rows_on_infos
 from primer.storage import raw_generation
@@ -1949,7 +1949,9 @@ async def steer_session(
             call_storage=call_storage, session_id=session_id,
         )
         if cancelled and row is not None:
-            payload = make_cancelled_payload(reason=CANCEL_REASON_SUPERSEDED)
+            # The cancel names the park whose calls it read (``row``, refreshed above): delivered by key alone and at least once, a copy that arrives after
+            # the session re-parked under the same key must not cancel the new call (ticket 01a1208d, #702 review B2).
+            payload = with_wake_park(make_cancelled_payload(reason=CANCEL_REASON_SUPERSEDED), row.parked_at)
             for tcid, key in _pending_targets(row).items():
                 # Only a call whose cancel LANDED is woken: a call whose result landed meanwhile (its guarded
                 # row write was rejected, so it is not in ``cancelled``) keeps the reply the park carries.

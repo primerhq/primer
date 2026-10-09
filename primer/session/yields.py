@@ -30,12 +30,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 import primer.observability.metrics as _metrics
 from primer.int.claim import ClaimKind
 from primer.model.except_ import NotFoundError
 from primer.model.tool_call_task import MalformedScopedIdError, parse_scoped_task_id
+from primer.model.yield_ import with_wake_park
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
 
 if TYPE_CHECKING:
@@ -238,6 +240,62 @@ def _wake_names_another_gate(session: WorkspaceSession, *, event_key: str, paylo
     return True
 
 
+_TIMEOUT_CLOCK_SKEW = timedelta(seconds=5)
+"""How far ahead of the flipping node's clock a park's deadline may be for a timeout marker or timer fire to still apply (the publisher selected the row on ITS clock).
+
+A sleep of this length or less can therefore be ended early by a stale fire that arrives inside the window (acceptable: the scheduler's own granularity is a couple
+of seconds, and ``elapsed_seconds`` in the sleep's result stays true)."""
+
+
+def _wake_is_for_an_earlier_park(session: WorkspaceSession, *, event_key: str, payload: dict[str, Any] | None) -> bool:
+    """Whether a MACHINE wake belongs to an earlier park than the one the session now has pending on ``event_key`` (security ticket 01a1208d).
+
+    A machine wake is delivered by event key alone and at least once, so one redelivered after the session resumed and PARKED AGAIN under the same provider
+    id carries the key of the new park. Two checks, each refusing with nothing written, one WARNING and ``session_wake_stale_refused_total``:
+
+    * a TIMEOUT marker, or a TIMER fire (the empty payload the ``TimerScheduler`` publishes on a ``timer:`` key), applies only to a park whose deadline has passed
+      (``parked_until`` no more than a few seconds ahead of this node's clock); the redelivered marker of an expired gate otherwise timed out the later gate, and one
+      session's timer woke the sleep of another that waited on the same key (ticket 01a12151-b225), whose own deadlines were still ahead. A park with no deadline is
+      judged as before;
+    * a wake that names the park its producer read (:data:`~primer.model.yield_.WAKE_PARK_KEY`: a trigger fire, an external result, the cancel of a non-gate
+      yield, the steer route's cancel of external calls, a ``wait_for_event`` delivery) must name the park now pending. A graph park is not judged by the stamp:
+      resolving one sibling re-parks the graph on the others with a fresh ``parked_at``.
+
+    A cancel is judged by the stamp it carries and never by the deadline (it is a decision, not a clock). Everything else is judged by the event key alone, as
+    before: a human decision (fenced by its gate id instead, :func:`_wake_names_another_gate`), a file-watcher event or an MCP bridge result (neither carries a
+    stamp), and a wake written before this release.
+    """
+    from primer.model.yield_ import WAKE_PARK_KEY
+    from primer.worker.yield_runtime import is_timeout_payload
+
+    is_timer_fire = event_key.startswith("timer:") and not payload
+    if (is_timeout_payload(payload) or is_timer_fire) and session.parked_until is not None:
+        if session.parked_until > datetime.now(timezone.utc) + _TIMEOUT_CLOCK_SKEW:
+            _metrics.session_wake_stale_refused_total.inc()
+            logger.warning(
+                "session %s: refused a %s on %r: the pending park's deadline (%s) is still ahead (it was redelivered after the session re-parked under the same "
+                "key, it was published for another park that shares the key, or this node's clock runs behind the publisher's: clock skew, which resolves itself "
+                "because the publisher republishes while the park stays due)",
+                session.id, "timer fire" if is_timer_fire else "timeout marker", event_key, session.parked_until.isoformat(),
+            )
+            return True
+    stamp = (payload or {}).get(WAKE_PARK_KEY)
+    if stamp and session.parked_at is not None and not (session.parked_state or {}).get("graph_checkpoint"):
+        try:
+            named = datetime.fromisoformat(str(stamp))
+        except ValueError:
+            return False
+        if named != session.parked_at:
+            _metrics.session_wake_stale_refused_total.inc()
+            logger.warning(
+                "session %s: refused a wake on %r that names an earlier park than the pending one (it was redelivered after the session re-parked under the same "
+                "key, or it was published for another park that shares the key)",
+                session.id, event_key,
+            )
+            return True
+    return False
+
+
 async def durably_mark_session_resumable(
     session: WorkspaceSession,
     *,
@@ -310,6 +368,8 @@ async def durably_mark_session_resumable(
     if session.parked_status not in allowed:
         return False
     if _wake_names_another_gate(session, event_key=event_key, payload=payload):
+        return False
+    if _wake_is_for_an_earlier_park(session, event_key=event_key, payload=payload):
         return False
     if session.status == SessionStatus.ENDED:
         # Cheap early exit ONLY: the caller's own snapshot already says
@@ -534,7 +594,9 @@ async def respond_to_yield(
         payload = result
     else:
         payload = {"response": result}
-    await deps.event_bus.publish(event_key, payload)
+    # The wake names the park this producer read: it is delivered by key alone, and one redelivered after the session re-parked under the same key must
+    # not decide the new park (security ticket 01a1208d).
+    await deps.event_bus.publish(event_key, with_wake_park(payload, session.parked_at))
 
 
 __all__ = [

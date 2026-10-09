@@ -86,6 +86,23 @@ event key, a new gate) used to flip the NEW gate with the old decision. The key 
 strips it from a real reply and no hook or approval classifier ever sees it."""
 
 
+WAKE_PARK_KEY = "__yield_parked_at__"
+"""Where a wake published by a producer that READ the park names the park it read (its ``parked_at``, ISO 8601). The producers that stamp it: a trigger fire
+(``respond_to_yield``), an external tool result, the cancel of a non-gate yield, the steer route's cancel of external calls and a ``wait_for_event`` delivery.
+
+Machine wakes carry no gate, are delivered by event key alone and at least once, and one redelivered after the session re-parked under the same key would
+decide the new park. The flip refuses a single park whose ``parked_at`` is another one. A graph park gets a fresh ``parked_at`` whenever a sibling is
+resolved, so for a graph the stamp is not judged. Primer-internal (``__yield_`` prefix): stripped before any hook sees the payload (security ticket
+01a1208d)."""
+
+
+def with_wake_park(payload: "dict[str, Any]", parked_at: "datetime | None") -> "dict[str, Any]":
+    """``payload`` plus the park its producer read (:data:`WAKE_PARK_KEY`); unchanged when the row has no ``parked_at``."""
+    if parked_at is None:
+        return payload
+    return {**payload, WAKE_PARK_KEY: parked_at.isoformat()}
+
+
 def with_wake_gate(payload: "dict[str, Any]", gate_id: str | None) -> "dict[str, Any]":
     """``payload`` plus the gate it decides (:data:`WAKE_GATE_ID_KEY`); unchanged for a gate with no id (a park from before gates had one)."""
     if not gate_id:
@@ -120,7 +137,8 @@ class Yielded:
         Routing key for the event bus. Conventional prefixes
         documented in spec §3:
 
-        * ``timer:{tool_call_id}`` — wakes from the timer scheduler.
+        * ``timer:{session_id}:{tool_call_id}``: wakes from the timer scheduler (:func:`timer_event_key`; a park written before the key carried the
+          session sits on ``timer:{tool_call_id}``).
         * ``ask_user:{session_id}:{tool_call_id}`` — wakes from
           the ``POST /v1/sessions/{id}/ask_user/respond`` endpoint.
           Inside a graph node it is ``ask_user:{session_id}:{node}:{tool_call_id}``
@@ -322,6 +340,23 @@ class ToolContext:
 CANCEL_REASON_PREEMPTED = "preempted"
 
 
+def timer_event_key(ctx: "ToolContext", node_id: str | None = None) -> str:
+    """The event key a timer park (``sleep``, a python tool's timer yield) waits on: ``timer:{session_id}:{tool_call_id}``.
+
+    A provider repeats ``call_0``, ``call_1`` ... in every conversation, so a key made of the tool call id alone was shared by every session that slept under
+    the same id, and one session's timer woke the others (ticket 01a12151-b225). The scope is the session id, else the chat id; a call with neither keeps the
+    old key (there is nothing to wake). ``node_id`` is the graph node the call runs in (``current_graph_node_id()``, ``None`` outside a graph): two concurrent
+    siblings of one superstep can share a raw provider id, so the node is folded in as ``ask_user``'s key does (``timer:{session_id}:{node}:{tool_call_id}``).
+    A park written before this scoping keeps the key it has; the flip guards it by its deadline.
+    """
+    scope = ctx.session_id or ctx.chat_id
+    if not scope:
+        return f"timer:{ctx.tool_call_id}"
+    if node_id is not None:
+        return f"timer:{scope}:{node_id}:{ctx.tool_call_id}"
+    return f"timer:{scope}:{ctx.tool_call_id}"
+
+
 class YieldToWorker(Exception):
     """Raised by the tool engine when it sees a :class:`Yielded`.
 
@@ -494,7 +529,10 @@ __all__ = [
     "new_gate_id",
     "gate_id_of",
     "WAKE_GATE_ID_KEY",
+    "WAKE_PARK_KEY",
     "with_wake_gate",
+    "with_wake_park",
+    "timer_event_key",
     "Yielded",
     "YieldTimeout",
     "YieldCancelled",

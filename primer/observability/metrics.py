@@ -159,6 +159,13 @@ session_wake_gate_refused_total = Counter(
     registry=registry,
 )
 
+session_wake_stale_refused_total = Counter(
+    "session_wake_stale_refused_total",
+    "Machine wakes that the flip of a parked session refused because they belong to an earlier park than the one now pending on the same event key: a "
+    "timeout marker or timer fire for a park whose deadline is still ahead, or a result that names the park its producer read when that is not the pending one.",
+    registry=registry,
+)
+
 discord_gate_token_dropped_total = Counter(
     "discord_gate_token_dropped_total",
     "Discord approval prompts whose buttons carry no gate token because it did not fit in the 100-character custom_id (counted once per posted prompt, not per Reject click). A click on such a "
@@ -419,7 +426,7 @@ def reset_for_test() -> None:
     global channel_events_normalized_total, channel_events_matched_total  # noqa: PLW0603
     global channel_events_dispatched_total, reply_binding_resolutions_total  # noqa: PLW0603
     global gate_respond_total  # noqa: PLW0603
-    global session_wake_gate_refused_total  # noqa: PLW0603
+    global session_wake_gate_refused_total, session_wake_stale_refused_total  # noqa: PLW0603
     global discord_gate_token_dropped_total  # noqa: PLW0603
     global worker_tasks_total, worker_task_duration_seconds  # noqa: PLW0603
     global storage_cas_drift_total  # noqa: PLW0603
@@ -528,6 +535,12 @@ def reset_for_test() -> None:
         "session_wake_gate_refused_total",
         "Wakes of a human decision that the flip of a parked session refused because they decided another gate than the one now pending on the same event "
         "key (a wake redelivered after the session re-parked under the same provider tool_call_id).",
+        registry=registry,
+    )
+    session_wake_stale_refused_total = Counter(
+        "session_wake_stale_refused_total",
+        "Machine wakes that the flip of a parked session refused because they belong to an earlier park than the one now pending on the same event key: a "
+        "timeout marker or timer fire for a park whose deadline is still ahead, or a result that names the park its producer read when that is not the pending one.",
         registry=registry,
     )
     discord_gate_token_dropped_total = Counter(

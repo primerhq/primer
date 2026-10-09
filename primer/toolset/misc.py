@@ -44,7 +44,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from primer.common.validation_errors import without_input
 from primer.model.chat import Tool, ToolCallResult, ToolExample
-from primer.model.yield_ import ToolContext, Yielded
+from primer.model.yield_ import ToolContext, Yielded, timer_event_key
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import err as _err, ok_json as _ok
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
@@ -198,13 +198,19 @@ async def _sleep_handler(
     if args.seconds == 0.0:
         return _ok({"requested_seconds": 0.0, "elapsed_seconds": 0.0})
 
+    # Inside a graph node the key carries the node (two concurrent siblings can share a raw provider id), as ``ask_user``'s does. Lazy import:
+    # primer.graph imports the toolsets transitively at package-init time.
+    from primer.graph._node_identity import current_graph_node_id
+
+    node_scope = current_graph_node_id()
+
     # The Yielded sentinel; the provider stamps tool_name onto it
     # and raises YieldToWorker. The worker writes parked_state with
     # the rehydrated parked_at_iso so the resume hook can compute
     # elapsed.
     return Yielded(
         tool_name="",  # filled in by the provider; placeholder
-        event_key=f"timer:{ctx.tool_call_id}",
+        event_key=timer_event_key(ctx, node_scope),
         timeout=args.seconds,
         resume_metadata={
             "requested_seconds": args.seconds,

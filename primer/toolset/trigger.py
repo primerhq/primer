@@ -831,6 +831,17 @@ def _make_delete_sub_handler(
     return _handler
 
 
+def _trigger_wake_key(session_id: str, trigger_id: str) -> str:
+    """The event key a session parked on a trigger subscription waits on: ``trigger:{session_id}:{trigger_id}``.
+
+    The key used to be ``trigger:{trigger_id}``, shared by every session subscribed to that trigger. The park stamp fences a single park, but a graph park is
+    exempt from it, so one session's fire woke another session's graph park with the first one's payload, past the second's own subscription checks (the A-20
+    rank guard, a channel subscription's matcher). The dispatcher publishes the key the park STORED, so a park in flight keeps the key it has (ticket
+    01a1208d, #702 review B1).
+    """
+    return f"trigger:{session_id}:{trigger_id}"
+
+
 def _make_subscribe_handler(
     storage_provider: "StorageProvider",
 ) -> ToolHandler:
@@ -894,7 +905,7 @@ def _make_subscribe_handler(
         await storage_provider.get_storage(Subscription).create(sub)
         return Yielded(
             tool_name="subscribe_to_trigger",
-            event_key=f"trigger:{args.trigger_id}",
+            event_key=_trigger_wake_key(ctx.session_id, args.trigger_id),
             timeout=None,  # honour the global yield cap
             resume_metadata={
                 "subscription_id": sub_id,
@@ -916,7 +927,7 @@ def _make_subscribe_channel_handler(
     path; the matcher is stored on the one-shot :class:`Subscription` so the
     channel dispatch loop can honour it before resuming.
 
-    The resume key (``trigger:<id>``) and ``resume_metadata`` shape match
+    The resume key (``trigger:<session_id>:<id>``) and ``resume_metadata`` shape match
     ``subscribe_to_trigger`` so the existing resume bridge works unchanged.
 
     The Subscription row is written BEFORE returning :class:`Yielded` so a
@@ -974,7 +985,7 @@ def _make_subscribe_channel_handler(
         await storage_provider.get_storage(Subscription).create(sub)
         return Yielded(
             tool_name="subscribe_to_channel_event",
-            event_key=f"trigger:{args.trigger_id}",
+            event_key=_trigger_wake_key(ctx.session_id, args.trigger_id),
             timeout=None,  # honour the global yield cap
             resume_metadata={
                 "subscription_id": sub_id,

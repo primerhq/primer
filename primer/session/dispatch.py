@@ -1662,10 +1662,10 @@ def _observe_turn(
 #   primer/toolset/misc.py:336        "ask_user:<sid>:<tcid>"
 #   primer/agent/tool_manager.py:342  "tool_approval:<sid_or_chat>:<call.id>"
 #   primer/graph/base.py:1702         approval-yield key (also tool_approval:)
-#   primer/toolset/misc.py:212        "timer:<tcid>"
+#   primer/toolset/misc.py:213        "timer:<sid>:<tcid>" (a graph node adds ":<node>" before the tcid)
 #   primer/toolset/workspaces.py:511  "watch:<sid>:<tcid>"
 #   primer/toolset/mcp.py:223         "mcp_task:<tsid>:<task_id>"
-#   primer/toolset/trigger.py:703     "trigger:<tid>"
+#   primer/toolset/trigger.py:908     "trigger:<sid>:<tid>"
 # Order matches the most-specific prefix-first principle so "tool_approval:"
 # doesn't accidentally match an earlier shorter prefix.
 # The table itself lives with ``Yielded`` (primer.model.yield_.YIELD_KIND_PREFIXES): the agent loop reads the same

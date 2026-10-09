@@ -532,6 +532,15 @@ def make_timeout_payload() -> dict[str, Any]:
     return {_YIELD_TIMEOUT_KEY: True}
 
 
+def is_timeout_payload(payload: Any) -> bool:
+    """Whether ``payload`` is the timeout marker :func:`make_timeout_payload` builds.
+
+    Recognised by the PRESENCE of its key, as :func:`classify_marker_payload` reads it: a payload the classifier will deliver to the hook as a timeout must be one
+    the wake fence judges as a timeout, whatever value the key holds.
+    """
+    return isinstance(payload, dict) and _YIELD_TIMEOUT_KEY in payload
+
+
 def make_cancelled_payload(
     *,
     reason: str | None,

@@ -50,7 +50,7 @@ from primer.model.except_ import (
     ValidationError,
 )
 from primer.model.workspace_session import WorkspaceSession
-from primer.model.yield_ import GATE_ID_PATTERN, gate_id_of, with_wake_gate
+from primer.model.yield_ import GATE_ID_PATTERN, gate_id_of, with_wake_gate, with_wake_park
 from primer.session.approvers import ADMIN_ONLY_METADATA
 from primer.session.pending_gates import enumerate_pending_gates, resolve_pending_gate
 from primer.session.yields import durably_wake_session
@@ -658,6 +658,10 @@ async def post_cancel_yielded_tool(
     payload = with_wake_gate(
         make_cancelled_payload(reason=body.reason), current_gate_id if _cancel_kind(resolved_tool) != "yield" else None,
     )
+    if _cancel_kind(resolved_tool) == "yield":
+        # A non-gate yield (sleep, watch, external, trigger, wait_for_event) has no gate id to name: the cancel names the PARK it read instead, so a copy
+        # delivered after the session re-parked under the same key cannot cancel the new yield (ticket 01a1208d, #702 review B2).
+        payload = with_wake_park(payload, sess.parked_at)
     await event_bus.publish(event_key, payload)
     # An _external park additionally resolves its audit row so the
     # pending endpoints and the global list reflect the cancel.
