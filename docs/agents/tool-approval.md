@@ -88,20 +88,29 @@ without anyone asking, so it draws only what is declared safe to draw:
 - **The tool declares it.** `make_tool(preview_args=("path", "mode"))` (in memory only, never serialized) lists dotted paths into the arguments; a path allows
   its whole subtree and a list is transparent (`entity.nodes.agent_id` is the `agent_id` of every node). A path that names nothing is an error when the tool is
   built. The nine tools the platform gates by default (the builder's `crud` toolset: create and update of agents, graphs and triggers, and the Python toolset
-  tools) declare the paths that say WHAT is created or changed and leave out the free text (an agent's system prompt, a graph node's templates, a webhook
-  trigger's token and HMAC secret, a Python toolset's source).
+  tools) declare the paths that say WHAT is created or changed and leave out the free text: an agent's system prompt, compaction prompt, description and response
+  format, a graph's and a node's description and templates, a trigger's description, a webhook trigger's token and HMAC secret, a Python toolset's source. No
+  description is ever listed: a person pastes a key into a description as easily as into a prompt.
 - **The operator can override it.** `ToolApprovalPolicy.preview_args` (a list of the same paths) wins over the tool's declaration, and `[]` shows no value. This is the
   only way to cover an MCP tool or a Python tool, whose author declared nothing. Each path must name an argument of the gated tool: the console and the system
   `create_` / `update_tool_approval_policy` tools refuse a path that does not (a typo would hide more than meant, silently), and refuse paths for a tool that is not in
   the catalogue right now (they cannot be checked).
 - **With neither, a default.** Only an argument whose schema is a closed set (a boolean, an integer, a number, `null`, an enum or a const) is shown; text, objects and
-  lists are not, and a schema that cannot be proven closed counts as text.
+  lists are not, and a schema that cannot be proven closed counts as text. The gate parks BEFORE the arguments are validated, so the card also checks the VALUE of a
+  name the default allows: a boolean, a number, `null` or a string of at most 40 characters is drawn, anything else (a long string, an object, a list) is withheld.
+  A short string under a closed-set name is drawn as it is: the card does not check it against the enum.
 - **Resolved at park time.** The tool manager resolves the effective list (policy, else tool, else default) when it parks the call and stamps it into the park as
   `preview: {paths, source}`. A park from before the field, or a graph park without a stamp, takes the default rule by the value's type (a boolean, a number or `null`
   is shown, the rest is not).
 - **What the card says.** An argument not allowed is drawn as its name and `<hidden>` and is never read (not stringified, not measured). `<redacted>` is a different
   word: it means the scrubber FOUND a secret in a value the allowlist let through (the scrubber still runs on every shown value). The row carries `hidden_keys` (what was
-  withheld, as dotted paths) and `preview` (`policy`, `tool`, `default` or `unstamped`).
+  withheld, as dotted paths) and `preview` (`policy`, `tool`, `default` or `unstamped`). A withheld value under a name that looks like a credential (`password_hint`,
+  `api_token`) is drawn as `<redacted>`, the scrubber's word for it, and is listed in `hidden_keys` all the same.
+- **Names and keys.** A name/value pair (`{"name": "Authorization", "value": "..."}`; the name may be `name`, `key`, `header`, `field`, `param`, `variable`, `var`, `env` or
+  `label`) is judged by its NAME: when the name is not shown whole, it was not read and cannot be judged, so the value beside it is withheld even when a path allows it.
+  A dictionary key that is not one path segment (it contains a dot, a space, a slash, or is longer than 200 characters) is never matched as a nested path: `entity.id` as
+  a key does not show under the path `entity.id`, it is withheld. The walk is bounded: every position it visits is charged to the preview's budget, a container is cut
+  at 50 members, and what is not walked is withheld and counted (`entity.nodes <30 more>` in `hidden_keys`).
 - **`call_tool`.** A policy on the tool `call_tool` runs is filtered by THAT tool's list; a policy on `call_tool` itself shows `toolset_id` and `tool_name` and the inner tool's
   paths, and withholds the arguments of an inner tool it cannot find.
 
