@@ -50,7 +50,16 @@ def to_yielded(
     params = yield_request.get("params") or {}
 
     if kind == ASK_USER:
-        event_key = f"ask_user:{ctx.session_id}:{ctx.tool_call_id}"
+        # Inside a graph node the ambient fan-out-instance id is folded into the key, as ``_ask_user_handler`` does: two concurrent siblings that share a raw
+        # provider tool_call_id would otherwise wait on ONE key, and an answer to either could not say which it was for (C-033 round 3). Lazy import:
+        # primer.graph imports the toolsets transitively at package-init time. None (every non-graph path) keeps the key byte-identical.
+        from primer.graph._node_identity import current_graph_node_id
+
+        node_scope = current_graph_node_id()
+        event_key = (
+            f"ask_user:{ctx.session_id}:{node_scope}:{ctx.tool_call_id}" if node_scope is not None
+            else f"ask_user:{ctx.session_id}:{ctx.tool_call_id}"
+        )
         timeout = None
     elif kind == TIMER:
         event_key = f"timer:{ctx.tool_call_id}"

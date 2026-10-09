@@ -481,7 +481,9 @@ class _BaseGraphExecutor(
         ``resumed_event_key`` (C-033 round 2, ticket 01a11fc6-0cce): the event key the reply fired. Two fan-out siblings of one superstep can
         share a raw ``tool_call_id``, so ``resumed_tcid`` can name both; when the key names a pending entry, ONLY that entry is resumed (a
         ``_PendingToolCall`` by its ``parked_event_key``, a ``_PendingAgentYield`` by its ``event_key``) and its sibling stays pending. A key
-        that names no entry (a park written before keys were node-scoped) selects by ``resumed_tcid`` as before, and so does a call without one.
+        that names no entry (a park written before keys were node-scoped) selects EVERY entry that carries ``resumed_tcid``, as before. A call that names a
+        ``resumed_tcid`` and NO key (and is not the key-less drain, which names neither) resumes only the FIRST entry that carries it, the primary the park
+        projects (tool calls before agent yields), and logs the session and the node it picked; it used to resume every one of them.
 
         ``resume_session_id`` / ``resolve_provider``: the session being
         resumed and the provider registry's ``get_toolset``, for the
@@ -525,9 +527,11 @@ class _BaseGraphExecutor(
             tc_match = [e for e in tc_all if e.tool_call_id == resumed_tcid]
             ay_match = [e for e in ay_all if e.tool_call_id == resumed_tcid]
             if len(tc_match) + len(ay_match) > 1:
+                picked = (tc_match + ay_match)[0]
                 logger.warning(
-                    "resume_from_checkpoint: %d pending entries share tool_call_id %r and no event key says which was answered; resuming the first",
-                    len(tc_match) + len(ay_match), resumed_tcid,
+                    "resume_from_checkpoint: session %s: %d pending entries share tool_call_id %r and no event key says which was answered; resuming the "
+                    "first, node %r",
+                    resume_session_id, len(tc_match) + len(ay_match), resumed_tcid, getattr(picked, "node_id", None),
                 )
             tc_pending = tc_match[:1]
             ay_pending = [] if tc_match else ay_match[:1]

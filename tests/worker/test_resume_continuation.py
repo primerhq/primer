@@ -49,7 +49,7 @@ class FakeFrame:
         self.received_services = services
         return self.resume_outcome
 
-    async def resume_leaf(self, leaf: Any, payload: Any, services: Any) -> Any:
+    async def resume_leaf(self, leaf: Any, payload: Any, services: Any, fired_key: Any = None) -> Any:
         self.leaf_received = (leaf, payload, services)
         return self.leaf_outcome
 

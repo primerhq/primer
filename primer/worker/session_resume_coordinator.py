@@ -86,6 +86,7 @@ async def write_approval_record_for_session(
     from primer.model.tool_approval import ToolApprovalRecord
 
     decision, reason, _kind = classify_approval_payload(payload)
+    blob = _blob_of_the_answered_gate(blob)
     yielded: dict = blob.get("yielded") or {}
     record = record_from_parked_blob(
         blob=blob,
@@ -111,7 +112,39 @@ async def write_approval_record_for_session(
     )
 
 
-def _leaf_is_an_approval_gate(pool: "WorkerPool", parked: "ParkedState") -> bool:
+def _blob_of_the_answered_gate(blob: dict) -> dict:
+    """``blob`` with ``yielded`` / ``tool_call_id`` replaced by the pending gate the reply ANSWERED, when that is not the top-level one.
+
+    An agent session parked on an ``invoke_graph`` child carries the child's PRIMARY gate as ``yielded`` and the whole child checkpoint in ``graph_checkpoint``;
+    every pending gate of the child can be answered, and the reply stamps the key it fired as ``resume_event_key``. The audit record is built from the entry
+    that key names (its own metadata, its own event key and gate id), never from the primary: a decision on B must not be recorded as a decision on A. A park
+    with no checkpoint, no fired key, or a key that names no pending entry is returned as it was.
+
+    The entry is looked up in the checkpoint the RESUME reads: the innermost ``GraphFrame``'s (``GraphFrame.answered_entry``), not the blob's top-level one, so the
+    record and the gate that runs cannot name different entries (C-033 round 4). A re-park written before the top-level checkpoint was carried has none, or a stale
+    one; the frame's is always the child's current state.
+    """
+    fired = blob.get("resume_event_key")
+    checkpoint = blob.get("graph_checkpoint")
+    frames = blob.get("frames") or []
+    inner = frames[-1] if frames else None
+    if isinstance(inner, dict) and inner.get("kind") == "graph" and inner.get("checkpoint"):
+        checkpoint = inner["checkpoint"]
+    if not fired or not checkpoint:
+        return blob
+    from primer.session.pending_gates import enumerate_pending_gates
+
+    for entry in enumerate_pending_gates({"graph_checkpoint": checkpoint}):
+        if entry.get("event_key") == fired:
+            return {
+                **blob,
+                "yielded": {"tool_name": entry.get("kind"), "event_key": fired, "resume_metadata": entry.get("resume_metadata") or {}},
+                "tool_call_id": entry.get("tool_call_id") or blob.get("tool_call_id"),
+            }
+    return blob
+
+
+def _leaf_is_an_approval_gate(pool: "WorkerPool", parked: "ParkedState", fired_key: str | None = None) -> bool:
     """Whether the park's leaf is a real approval gate, so that answering it writes a ``ToolApprovalRecord``.
 
     ``_approval`` is the label EVERY graph park carries (``primer/graph/_checkpoint.py``), whatever its leaf is: an
@@ -122,6 +155,9 @@ def _leaf_is_an_approval_gate(pool: "WorkerPool", parked: "ParkedState") -> bool
     value-yielding ``tool_call`` node or a parked agent node whose own ``tool_name`` is not ``_approval`` is not an
     approval gate. Everything else keeps the label's meaning: a flat session park, a gate inside a nested agent chain,
     a child graph's real approval gate, and a frame whose node has no matching entry (nothing to tell it apart by).
+
+    ``fired_key`` is the key the reply fired (the row's ``resume_event_key``): the leaf is the child's PRIMARY gate, and the reply may be for another
+    sibling, so the entry it names is the one judged (an ask_user primary beside an approval sibling that was answered IS an approval).
     """
     if parked.yielded.tool_name != "_approval":
         return False
@@ -134,12 +170,13 @@ def _leaf_is_an_approval_gate(pool: "WorkerPool", parked: "ParkedState") -> bool
         from primer.session.pending_gates import pending_entries
 
         checkpoint = inner.checkpoint or {}
-        # The leaf's own event key picks the entry: two siblings of the child's superstep can share ``node_tcid``, and the first one with the raw id
-        # is not necessarily the gate this reply answers (an ask_user sibling made a real approval look like a non-approval, and no record was written).
-        leaf_key = parked.yielded.event_key
-        if graph_value_yield_toolcall(pool, checkpoint, inner.node_tcid, event_key=leaf_key):
+        # The entry that was ANSWERED picks what is judged: two siblings of the child's superstep can share ``node_tcid``, and the first one with the raw id
+        # is not necessarily the gate this reply answers (an ask_user sibling made a real approval look like a non-approval, and no record was written);
+        # the leaf is only the child's primary, so the fired key comes first.
+        node_tcid, leaf_key = inner.answered_entry(parked.yielded, fired_key)
+        if graph_value_yield_toolcall(pool, checkpoint, node_tcid, event_key=leaf_key):
             return False
-        for entry in pending_entries(checkpoint, "pending_agent_yields", tool_call_id=inner.node_tcid, event_key=leaf_key)[:1]:
+        for entry in pending_entries(checkpoint, "pending_agent_yields", tool_call_id=node_tcid, event_key=leaf_key)[:1]:
             if entry.get("tool_name") not in (None, "_approval"):
                 return False
     return True
@@ -270,7 +307,8 @@ async def resume_engine_session(pool: "WorkerPool", engine_lease, session):
         # Before this fix, taking this branch skipped the write entirely:
         # real decisions AND terminal synthesis for a nested approval
         # gate left no audit record at all, silently.
-        if _leaf_is_an_approval_gate(pool, parked):
+        fired_key = blob.get("resume_event_key")        # stamped by the flip with the payload: the key the reply FIRED
+        if _leaf_is_an_approval_gate(pool, parked, fired_key=fired_key):
             await pool._write_approval_record_for_session(
                 session=session, blob=blob, payload=resume_payload.payload,
             )
@@ -280,6 +318,7 @@ async def resume_engine_session(pool: "WorkerPool", engine_lease, session):
                 parked.yielded,
                 resume_payload.payload,
                 services,
+                fired_key=fired_key,
             )
         except Exception as exc:  # noqa: BLE001 - fail-closed synthesis
             logger.exception(
@@ -660,12 +699,21 @@ def repark_continuation(pool: "WorkerPool", session, parked, outcome):
     leaf = outcome.leaf
     now = datetime.now(timezone.utc)
     timeout = leaf.timeout if leaf.timeout is not None else 3600.0
+    # A session parked on an ``invoke_graph`` child keeps the child's whole state on the blob, as the first park (``dispatch.py``) writes it: the child's
+    # checkpoint (every gate it still waits on, each with its own approvers) and the id of its new primary gate. The innermost frame is the child's, advanced
+    # past the gate that was just answered (``GraphFrame._repark_with_advanced_frame``). A re-park that dropped them left the routes only the projection of the
+    # primary, which carries no ``approvers``: the other gates were decided by anyone, or not at all (C-033 round 4).
+    from primer.worker.frames import GraphFrame
+
+    inner = outcome.frames[-1] if outcome.frames else None
+    child_graph = isinstance(inner, GraphFrame)
     new_parked = ParkedState(
         yielded=leaf,
         llm_messages=parked.llm_messages,
         turn_no=session.turn_no,
         started_at=now,
-        tool_call_id=parked.tool_call_id,
+        tool_call_id=(inner.node_tcid or parked.tool_call_id) if child_graph else parked.tool_call_id,
+        graph_checkpoint=inner.checkpoint if child_graph else None,
         # 01a068ea-dc95: the leaf re-yielded, but the DURABLE TOOL_CALL
         # record this eventual TOOL_RESULT answers is still the outer
         # session-level call (parked.tool_call_id above) - carry its
