@@ -529,11 +529,17 @@ def make_tool_approval_ops_router() -> APIRouter:
             str | None,
             Query(
                 description=(
-                    "Look up the record for one specific gate "
-                    "(ParkedState.yielded.event_key). 01a068da: the field "
+                    "Look up the record for one specific gate, by the key "
+                    "it is STORED under: ``<event_key>@<gate_id>`` "
+                    "(ParkedState.yielded.event_key plus the gate's id) for "
+                    "a park that had a gate id, the bare event key for a "
+                    "park from before gates had ids. The stored value is "
+                    "matched exactly, so a bare event key does not find a "
+                    "gated record; the gate id is the ``gate_id`` the "
+                    "pending response served. 01a068da: the field "
                     "carries a unique index, so this narrows to at most "
-                    "one record - useful for a caller that has the event "
-                    "key in hand (e.g. confirming a just-submitted "
+                    "one record - useful for a caller that has the key "
+                    "in hand (e.g. confirming a just-submitted "
                     "decision landed) and does not want to page through "
                     "session_id history to find it."
                 ),
