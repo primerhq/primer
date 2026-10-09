@@ -386,6 +386,26 @@ def _attach(
     roots.append(entry)
 
 
+def _register_call(
+    entry: dict[str, Any],
+    rec: dict[str, Any],
+    payload: dict[str, Any],
+    calls: dict[tuple[str | None, str | None, str], dict[str, Any]],
+    calls_by_raw_id: dict[str, dict[str, Any]],
+    calls_by_run: dict[tuple[str | None, str | None, str], dict[str, Any]],
+) -> None:
+    """Make a placed tool call findable: by its scoped id (for its result), by its raw id, and by the run and node that made it (for the records it delegates)."""
+    calls[(payload.get("delegate_run_id"), rec.get("node_id"), payload["id"])] = entry
+    # A record predating the raw_id field (01a0518f) has no separate raw id at all - payload["id"] WAS the raw id at write time, so falling back to it here is correct, not just defensive.
+    raw_id = payload.get("raw_id") or payload["id"]
+    calls_by_raw_id[raw_id] = entry
+    call_run = payload.get("delegate_run_id")
+    calls_by_run[(call_run, None, raw_id)] = entry
+    call_node = payload.get("delegate_node_id") or rec.get("node_id")
+    if call_node:
+        calls_by_run[(call_run, call_node, raw_id)] = entry
+
+
 def _tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Fold a window's records into ordered child nodes.
 
@@ -480,19 +500,6 @@ def _tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "result": None,
                 "children": [],
             }
-            if payload.get("id"):
-                calls[(payload.get("delegate_run_id"), rec.get("node_id"), payload["id"])] = entry
-                # A record predating the raw_id field (01a0518f) has no
-                # separate raw id at all - payload["id"] WAS the raw id
-                # at write time, so falling back to it here is correct,
-                # not just defensive.
-                raw_id = payload.get("raw_id") or payload["id"]
-                calls_by_raw_id[raw_id] = entry
-                call_run = payload.get("delegate_run_id")
-                calls_by_run[(call_run, None, raw_id)] = entry
-                call_node = payload.get("delegate_node_id") or rec.get("node_id")
-                if call_node:
-                    calls_by_run[(call_run, call_node, raw_id)] = entry
         elif kind == _TOOL_RESULT:
             parent = calls.get((payload.get("delegate_run_id"), rec.get("node_id"), payload.get("call_id")))
             if parent is not None:
@@ -519,6 +526,10 @@ def _tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         else:
             continue
         _attach(entry, rec, payload, roots, nodes, calls, calls_by_raw_id, calls_by_run)
+        # A call is registered AFTER it has been placed: a delegated call from before run ids has the raw id of the call that delegated to it (providers that
+        # number per stream write call_0 at every level), and registering it first made the lookup find the call itself, which then vanished with its subtree.
+        if kind == _TOOL_CALL and payload.get("id"):
+            _register_call(entry, rec, payload, calls, calls_by_raw_id, calls_by_run)
     return roots
 
 
