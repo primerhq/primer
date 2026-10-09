@@ -25,7 +25,7 @@ import json
 from dataclasses import dataclass
 
 from primer.model.workspace_session import SessionMessageKind
-from primer.session.terminals import CLOSES, TurnWindowScanner
+from primer.session.terminals import CLOSES, TurnWindowScanner, payload_of
 
 
 @dataclass
@@ -68,7 +68,7 @@ def count_turn_state(raw_lines: list[str], *, cursor: int) -> TurnCount:
         kind = obj.get("kind")
         verdict = scanner.feed(obj)          # every record, a history-excluded input included: it starts a turn for the failure fold
         if kind == SessionMessageKind.USER_INPUT.value:
-            if (obj.get("payload") or {}).get("_history_excluded"):
+            if payload_of(obj).get("_history_excluded"):
                 continue
             user_inputs += 1
             open_turns += 1

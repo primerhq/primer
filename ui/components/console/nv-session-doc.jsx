@@ -2736,8 +2736,9 @@ function NV_SessionDoc(props) {
     // from every row of a first-turn session, which is why the split
     // came up empty (BDD/live finding 2026-08-25).
     // SH_turnOfSeq (shell-turns.js) is the one copy of the rule, fed the window each raw record is filed in (SH_windowsOfSeq: the server's TurnWindowScanner):
-    // a delegated run's own done does not end the session's turn, and a failed turn is ONE window however many error records it wrote.
-    var turnOfSeq = SH_turnOfSeq(flat, SH_windowsOfSeq(window.SA_visibleRecords(records)));
+    // a delegated run's own done does not end the session's turn, and a failed turn is ONE window however many error records it wrote. Fed ALL the raw
+    // records (rewound ones included), as the server's turn_windows counts them: a turn rewound away still takes its ordinal.
+    var turnOfSeq = SH_turnOfSeq(flat, SH_windowsOfSeq(records));
     return {
       flat: flat, rows: rows,
       resultsByCallId: resultsByCallId, turnOfSeq: turnOfSeq,

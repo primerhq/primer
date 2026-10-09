@@ -27,7 +27,7 @@ record is a COPY of an earlier failure needs the records before it, so the windo
 the first error of a failure ends the window and the rest of the failure is filed with it. Everything that asks only "is this record a
 terminal of the session's own run" (a turn's status, the final text, the relay's boundaries) keeps using the per-record predicates, so a copy at
 the END of the log still reads as a terminal. Folded on read, so logs written before the rule fold the same way. The console's mirror is
-``SH_windowEndSeqs`` (ui/foundation/shell-turns.js); tests/ui/test_shell_turns.py compares the two over the shapes the writers produce.
+``SH_newWindowScanner`` / ``SH_windowsOfSeq`` (ui/foundation/shell-turns.js); tests/ui/test_shell_turns.py compares the two over the shapes the writers produce.
 """
 
 from __future__ import annotations
@@ -44,14 +44,21 @@ _USER_INPUT = SessionMessageKind.USER_INPUT.value
 TERMINAL_KINDS = frozenset({_DONE, _ERROR, _CANCELLED})
 
 
+def payload_of(rec: dict[str, Any]) -> dict[str, Any]:
+    """``rec``'s payload as a dict: a log is written by many versions, and a payload that is not an object (a string, a list, a number, ``null``) reads as
+    an empty one, here and in the console's mirror, instead of crashing the reader."""
+    payload = rec.get("payload")
+    return payload if isinstance(payload, dict) else {}
+
+
 def is_delegated(rec: dict[str, Any]) -> bool:
     """True when ``rec`` was written by a delegated (subagent) run rather than by the session's own turn."""
-    return bool((rec.get("payload") or {}).get("delegated"))
+    return bool(payload_of(rec).get("delegated"))
 
 
 def is_non_fatal_error(rec: dict[str, Any]) -> bool:
     """True for an ``error`` record that says, with an explicit ``payload.fatal`` of ``false``, that the stream went on from it."""
-    return rec.get("kind") == _ERROR and (rec.get("payload") or {}).get("fatal") is False
+    return rec.get("kind") == _ERROR and payload_of(rec).get("fatal") is False
 
 
 def is_session_terminal(rec: dict[str, Any]) -> bool:
@@ -74,14 +81,30 @@ def closes_turn(rec: dict[str, Any]) -> bool:
     if not is_session_terminal(rec):
         return False
     if rec.get("kind") == _DONE:
-        return (rec.get("payload") or {}).get("stop_reason") != "tool_use"
+        return payload_of(rec).get("stop_reason") != "tool_use"
     return True
 
 
 def is_bare_marker(rec: dict[str, Any]) -> bool:
     """True for the claim adapter's release marker: an ``error`` that is ``terminal`` and says nothing (no message, code or title)."""
-    payload = rec.get("payload") or {}
+    payload = payload_of(rec)
     return rec.get("kind") == _ERROR and payload.get("terminal") is True and not payload.get("message") and not payload.get("code") and not payload.get("title")
+
+
+def is_dispatch_failure_record(rec: dict[str, Any]) -> bool:
+    """True for the ERROR record ``dispatch._end_turn_failed`` writes: built from the problem details, so it has a ``title`` and an integer ``status``,
+    no ``fatal`` flag and no node (a stream's own error has a ``fatal``; a graph node's has a ``node_id`` and neither title nor status).
+
+    It is written exactly once, by the failure exit, AFTER the failure it describes, so it is a copy of the open turn's failure whatever its words
+    are: its message is the problem detail with URL credentials redacted (``redact_url_secrets``), while the stream's error stores the message raw,
+    so comparing the words would take it for a new failure.
+    """
+    payload = payload_of(rec)
+    status = payload.get("status")
+    return (
+        rec.get("kind") == _ERROR and isinstance(payload.get("title"), str) and isinstance(status, int) and not isinstance(status, bool)
+        and "fatal" not in payload and not rec.get("node_id")
+    )
 
 
 # What :meth:`TurnWindowScanner.feed` says about a record.
@@ -101,6 +124,7 @@ class TurnWindowScanner:
     * an ``error`` that says ``fatal: false`` is a notice: it ends nothing, and its words are remembered, because for OpenResponses it is the
       cause that arrives AFTER the ``done(error)`` it belongs to (the agent loop holds the first Done / Error of a stream and yields it last).
     * a bare release marker is a ``COPY`` once the turn has failed, and the only evidence (so it ends the window) when nothing has.
+    * dispatch's own failure ERROR (:func:`is_dispatch_failure_record`) is a ``COPY`` once the turn has failed, whatever its words.
     * any other ``error`` ends a window, unless the turn has already failed and an earlier error of the turn has the same non-empty message
       from the same node (a record that names no node matches any node's: records from before graphs named theirs carry none). Two NAMED nodes
       that fail with the same words are two failures, as are two failures with different words.
@@ -132,7 +156,7 @@ class TurnWindowScanner:
             self._new_turn()
             return INSIDE
         if kind == _ERROR:
-            payload = rec.get("payload") or {}
+            payload = payload_of(rec)
             message = payload.get("message") if isinstance(payload.get("message"), str) else None
             node = rec.get("node_id") or None
             if is_bare_marker(rec):
@@ -143,14 +167,14 @@ class TurnWindowScanner:
             if is_non_fatal_error(rec):
                 self._remember(message, node)
                 return INSIDE
-            if self._failed and self._copies_an_earlier_error(message, node):
+            if self._failed and (is_dispatch_failure_record(rec) or self._copies_an_earlier_error(message, node)):
                 return COPY
             self._remember(message, node)
             self._failed = True
             return CLOSES
         if not closes_turn(rec):
             return INSIDE
-        if kind == _DONE and (rec.get("payload") or {}).get("stop_reason") == "error":
+        if kind == _DONE and payload_of(rec).get("stop_reason") == "error":
             self._failed = True
         else:
             self._new_turn()
@@ -158,6 +182,6 @@ class TurnWindowScanner:
 
 
 __all__ = [
-    "CLOSES", "COPY", "INSIDE", "TERMINAL_KINDS", "TurnWindowScanner", "closes_turn", "is_bare_marker", "is_delegated", "is_non_fatal_error",
-    "is_session_terminal",
+    "CLOSES", "COPY", "INSIDE", "TERMINAL_KINDS", "TurnWindowScanner", "closes_turn", "payload_of", "is_bare_marker", "is_delegated", "is_dispatch_failure_record",
+    "is_non_fatal_error", "is_session_terminal",
 ]

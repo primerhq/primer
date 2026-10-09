@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 from primer.model.workspace_session import SessionMessageKind
 from primer.session.replay import visible_records
-from primer.session.terminals import CLOSES, TurnWindowScanner
+from primer.session.terminals import CLOSES, TurnWindowScanner, payload_of
 
 _DONE = SessionMessageKind.DONE.value
 
@@ -58,7 +58,7 @@ def session_usage(raw_lines: list[str]) -> SessionUsage:
         if rec.get("kind") != _DONE:
             continue
         model_calls += 1
-        usage = (rec.get("payload") or {}).get("usage")
+        usage = payload_of(rec).get("usage")
         if not isinstance(usage, dict):
             continue  # a turn can terminate without a usage envelope
         last_in = usage.get("input_tokens", 0)
