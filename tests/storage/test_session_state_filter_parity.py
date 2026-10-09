@@ -76,16 +76,10 @@ def test_the_matrix_reaches_every_state_and_every_branch_of_the_rule() -> None:
     assert all(count >= 6 for count in by_state.values()), by_state
 
 
-async def _assert_parity(storage, rows: list[WorkspaceSession], *, reload: bool = False) -> None:
-    """Every state's predicate returns exactly the rows whose property reads that state, and every row is in exactly one state.
-
-    ``reload`` judges the property on the row as the storage hands it back (a document written before an axis existed reads the axis's default
-    there), which is what a list over such a document must agree with.
-    """
+async def _assert_parity(storage, rows: list[WorkspaceSession]) -> None:
+    """Every state's predicate returns exactly the rows whose property reads that state, and every row is in exactly one state."""
     for row in rows:
         await storage.create(row)
-    if reload:
-        rows = [await storage.get(row.id) for row in rows]
     seen: set[str] = set()
     for state in _STATES:
         got = await _ids(storage, state)
@@ -142,11 +136,16 @@ async def test_a_row_written_before_an_axis_existed_agrees_with_the_property(pro
                 f"UPDATE sessions SET data = json_remove(data, '$.{axis}') WHERE id = ?", (sid,),
             )
         await conn.commit()
+        holding = (await (await conn.execute(f"SELECT count(*) FROM sessions WHERE json_type(data, '$.{axis}') IS NOT NULL")).fetchone())[0]
     else:
         async with provider.pool.acquire() as c:
             await c.execute(
                 f'UPDATE "{provider.schema}".sessions SET data = data - \'{axis}\' WHERE id = ANY($1::text[])', stripped,
             )
+            holding = await c.fetchval(f'SELECT count(*) FROM "{provider.schema}".sessions WHERE data ? \'{axis}\'')
+    # A strip that did nothing would leave every document as it was and the parity below would hold trivially: count the raw documents that still hold
+    # the key. Exactly the rows that were not stripped do (a model dump writes every field, defaults included).
+    assert holding == len(rows) - len(stripped), f"{holding} documents still hold {axis!r}; the strip did not remove it from exactly {len(stripped)}"
     loaded = [await storage.get(row.id) for row in rows]
     assert all(row is not None for row in loaded)
     # the stripped documents really lack the key and the model reads the default
