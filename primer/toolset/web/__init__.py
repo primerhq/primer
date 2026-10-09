@@ -33,6 +33,7 @@ import httpx
 from primer.common.netguard import guarded_async_client
 from primer.toolset.internal import InternalToolsetProvider
 from primer.toolset.web.tools import (
+    DEFAULT_DOWNLOAD_TIMEOUT_SECONDS,
     DownloadArgs,
     HttpMethod,
     HttpRequestArgs,
@@ -68,6 +69,7 @@ def build_web_toolset(
     response_body_byte_cap: int = _DEFAULT_RESPONSE_BODY_BYTE_CAP,
     workspace_registry: "WorkspaceRegistry | None" = None,
     download_byte_cap: int = _DEFAULT_DOWNLOAD_BYTE_CAP,
+    download_timeout_seconds: float = DEFAULT_DOWNLOAD_TIMEOUT_SECONDS,
 ) -> InternalToolsetProvider:
     """Construct the always-on ``web`` toolset.
 
@@ -110,6 +112,10 @@ def build_web_toolset(
         Default hard cap on ``download`` size in bytes; a stream that
         exceeds it is rejected (nothing is written). A per-call
         ``max_bytes`` overrides it downward. Defaults to 100 MB.
+    download_timeout_seconds
+        Total time one ``download`` may take, every hop and the body
+        (the client's own timeout is per operation, so a body that drips
+        never trips it). Defaults to 300 seconds.
 
     Returns
     -------
@@ -149,6 +155,7 @@ def build_web_toolset(
                 http_client=chosen_client,
                 workspace_registry=workspace_registry,
                 byte_cap=download_byte_cap,
+                timeout_seconds=download_timeout_seconds,
             ),
         )
     return InternalToolsetProvider(toolset_id, registry)

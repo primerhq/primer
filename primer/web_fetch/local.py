@@ -86,8 +86,9 @@ class LocalAdapter(WebFetchAdapter):
             # Not transient: the target is internal. A remote provider in
             # an aggregated chain may still fetch it from its own network.
             raise WebFetchProviderError(str(exc)) from exc
-        except (httpx.HTTPError, httpx.InvalidURL) as exc:
-            # InvalidURL (a redirect to ``data:...``) is not an HTTPError; like one, it lets an aggregated chain fall back to the next provider.
+        except (httpx.HTTPError, httpx.InvalidURL, UnicodeError) as exc:
+            # InvalidURL (a redirect to ``data:...``) is not an HTTPError, and an ``xn--`` host in a Location raises ``idna.IDNAError`` (a
+            # UnicodeError); like an HTTPError, each lets an aggregated chain fall back to the next provider.
             raise WebFetchUnavailable(
                 f"local transport: {type(exc).__name__}: {exc}"
             ) from exc
