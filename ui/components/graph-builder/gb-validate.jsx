@@ -268,17 +268,26 @@ function GB_hasCycle(draft) {
   const colour = new Map();
   const nodes = (draft.nodes || []).map((n) => n.id);
   for (const id of nodes) colour.set(id, WHITE);
-  const visit = (id) => {
-    colour.set(id, GREY);
-    for (const nx of adj.get(id) || []) {
-      const c = colour.get(nx);
-      if (c === GREY) return true;
-      if (c === WHITE && visit(nx)) return true;
+  // Depth-first, with the stack of (step, next link to follow) kept here and not on the call stack: a chain of thousands of steps (a valid graph) overflowed the recursive version
+  // inside the validator, which runs on every render.
+  for (const root of nodes) {
+    if (colour.get(root) !== WHITE) continue;
+    colour.set(root, GREY);
+    const stack = [[root, 0]];
+    while (stack.length) {
+      const top = stack[stack.length - 1];
+      const next = adj.get(top[0]) || [];
+      if (top[1] < next.length) {
+        const nx = next[top[1]++];
+        const c = colour.get(nx);
+        if (c === GREY) return true;
+        if (c === WHITE) { colour.set(nx, GREY); stack.push([nx, 0]); }
+      } else {
+        colour.set(top[0], BLACK);
+        stack.pop();
+      }
     }
-    colour.set(id, BLACK);
-    return false;
-  };
-  for (const id of nodes) if (colour.get(id) === WHITE && visit(id)) return true;
+  }
   return false;
 }
 

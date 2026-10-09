@@ -382,6 +382,7 @@ function GB_reducer(draft, action) {
       if (a.spec.description == null) next.description = d.description;
       if (a.spec.max_iterations == null) delete next.max_iterations;
       if (a.spec.on_max_iterations == null) delete next.on_max_iterations;
+      if (a.spec.edges == null) next.edges = [];
       return next;
     }
     default:
@@ -410,38 +411,69 @@ function GB_stripAll(d) {
 const GB_BODY_STYLE = { flex: 1, minHeight: 520, height: "calc(100vh - 300px)" };
 
 const GB_IMPORT_WRONG_TYPE =
-  "The spec has a field of the wrong type, so it was not loaded: `nodes`, `edges`, every router's `branches` and every fan-out's `specs` must be lists, and descriptions must be strings.";
+  "The spec has a field of the wrong type, so it was not loaded: `nodes`, `edges`, every router's `branches` and `conditions`, every fan-out's `specs` and every schema's `required` "
+  + "must be lists; ids, descriptions, templates and paths must be strings; `count` and `max_iterations` must be numbers; and a schema must be an object.";
+const GB_IMPORT_TOO_BIG = "The spec is too large or too deeply nested to load.";
 
-// A pasted graph spec (the Import spec modal): the message for its first shape problem, else null. IMPORT_SPEC spreads whatever it is given into the draft, so an object where a
-// list is expected makes the validator and the dirty check throw during render, and the console has no error boundary: the whole draft would be lost.
-function GB_importProblem(spec) {
+// Does every field of a pasted spec that the builder DRAWS have the type the server's model gives it (primer/model/graph.py)? IMPORT_SPEC spreads whatever it is given into the draft, and
+// the outline, the canvas label, the inspector and the reference picker each draw a different part of it: an object where a string belongs is a React child that throws, a string where a
+// list belongs is iterable and then has no `.map`. Absent and null are fine for an optional field, and keys the builder does not know are carried and never read. A schema is walked as deep as
+// it goes, so a stack overflow here is the caller's to report (GB_importProblem does).
+function GB_importShapeOk(spec) {
+  const isObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+  const text = (v) => v == null || typeof v === "string";
+  const texts = (v) => v == null || (Array.isArray(v) && v.every((s) => typeof s === "string"));
+  const num = (v) => v == null || (typeof v === "number" && isFinite(v));
+  const list = (v) => v == null || Array.isArray(v);
+  // a schema property is drawn by its type and description (the reference picker); `required` is read from the schema itself (the rows view and the inspector)
+  const properties = (props) => {
+    if (props == null) return true;
+    if (!isObject(props)) return false;
+    return Object.keys(props).every((key) => {
+      const p = props[key];
+      return isObject(p) && (text(p.type) || texts(p.type)) && text(p.description) && properties(p.properties);
+    });
+  };
+  const schema = (s) => s == null || (isObject(s) && texts(s.required) && properties(s.properties));
+  const fanOutSpec = (s) => isObject(s) && text(s.kind) && text(s.target_node_id) && text(s.source_node_id) && text(s.source_path) && text(s.on_failure) && texts(s.target_node_ids) && num(s.count);
+  const TEXT_KEYS = ["agent_id", "input_template", "profile_id", "graph_id", "output_template", "aggregate_template", "tool_id", "arguments_template"];
+  const SCHEMA_KEYS = ["response_format", "input_schema", "output_schema"];
+  const node = (n) => typeof n.kind === "string" && typeof n.id === "string" && n.id !== "" && text(n.description) && num(n.x) && num(n.y)
+    && TEXT_KEYS.every((k) => text(n[k])) && SCHEMA_KEYS.every((k) => schema(n[k]))
+    && (n.arguments == null || isObject(n.arguments)) && list(n.specs) && (n.specs || []).every(fanOutSpec);
+  const condition = (c) => isObject(c) && text(c.path) && text(c.op);
+  const branch = (b) => isObject(b) && text(b.to_node) && list(b.conditions) && (b.conditions || []).every(condition);
+  const router = (r) => r == null || (isObject(r) && text(r.kind) && text(r.callable_id) && text(r.default_to) && list(r.branches) && (r.branches || []).every(branch));
+  const edge = (e) => text(e.kind) && text(e.from_node) && text(e.to_node) && router(e.router);
+  return text(spec.description) && num(spec.max_iterations) && text(spec.on_max_iterations) && spec.nodes.every(node) && (spec.edges || []).every(edge);
+}
+
+// A pasted graph spec (the Import spec modal): the message for its first shape problem, else null. `opts` are the options the builder validates with when it draws (`knownToolIds`).
+function GB_importProblem(spec, opts) {
   const isObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
   if (!isObject(spec)) return "Spec must be a JSON object with nodes and edges.";
   if (!Array.isArray(spec.nodes)) return "`nodes` must be an array.";
   if (spec.edges != null && !Array.isArray(spec.edges)) return "`edges` must be an array when present.";
   if (!spec.nodes.every(isObject)) return "Every entry of `nodes` must be an object.";
   if (spec.edges != null && !spec.edges.every(isObject)) return "Every entry of `edges` must be an object.";
-  // Deeper than the top level. The builder reads the draft on EVERY render (validate, the dirty check, the layers, the links, the outline's titles), and the console has no error
-  // boundary: one thing of the wrong type unmounts the root and the draft is lost. So the would-be draft is run through those pure functions here, and anything that throws is refused
-  // with one message; a description or an id of the wrong type is checked by hand because React would render it as a child and only throw then.
-  const isText = (v) => typeof v === "string";
-  if (spec.description != null && !isText(spec.description)) return GB_IMPORT_WRONG_TYPE;
-  if (!spec.nodes.every((n) => isText(n.id) && n.id !== "" && (n.description == null || isText(n.description)))) return GB_IMPORT_WRONG_TYPE;
+  // Deeper than the top level. The builder reads the draft on EVERY render (validate, the dirty check, the layers, the links, the outline's titles), so after the typed walk the would-be draft
+  // is run through those pure functions and anything that throws is refused with one message. The builder has an error boundary now, but a refusal here keeps the draft as it was.
   try {
+    if (!GB_importShapeOk(spec)) return GB_IMPORT_WRONG_TYPE;
     const draft = GB_reducer({ id: "import", nodes: [], edges: [] }, { type: "IMPORT_SPEC", spec });
-    GB_validate(draft, {});
+    GB_validate(draft, opts || {});
     GB_stripAll(draft);
     GB_supersteps(draft);
     GB_allLinks(draft);
-  } catch (_e) {
-    return GB_IMPORT_WRONG_TYPE;
+  } catch (e) {
+    return e instanceof RangeError ? GB_IMPORT_TOO_BIG : GB_IMPORT_WRONG_TYPE;
   }
   return null;
 }
 
 // What the modal's Load button runs: a spec with the wrong shape throws its message (a string, which the modal draws inline) and the draft is not touched; otherwise IMPORT_SPEC.
-function GB_applyImport(spec, dispatch) {
-  const problem = GB_importProblem(spec);
+function GB_applyImport(spec, dispatch, opts) {
+  const problem = GB_importProblem(spec, opts);
   if (problem) throw problem;
   dispatch({ type: "IMPORT_SPEC", spec });
 }
