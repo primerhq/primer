@@ -637,6 +637,14 @@
   outline-offset: 1px;
 }
 
+/* The graph builder's step name: a bare field in the inspector header, and where the keyboard lands after a removal (gb-branches.jsx, GB_focusAfterRemoval). */
+.gb-title-input { outline: none; }
+.gb-title-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
 /* Integrated terminal — collapsible bottom panel spanning the center column
    (below StudioCenter's active panel), P7. Mounted only while
    studio.state.terminalOpen is true (see studio.jsx / studio-terminal.jsx),

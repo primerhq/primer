@@ -124,22 +124,34 @@ const GB_LINK_BUTTON = { background: "none", border: "none", padding: 0, font: "
 
 // The x of a condition and of a path: a 24 by 24 box (WCAG 2.2 SC 2.5.8; the glyph is about 8 by 13 px), and the margin takes back what the box adds around the glyph, so the row does not grow. The
 // margin on the side of the neighbour may not exceed the row's gap (6): a larger one lets the box reach into the neighbour, and a click on the neighbour's edge hits the x. The 16 px the box adds
-// are taken back 6 on the left (the gap) and 10 on the right, so the glyph of a path sits 2 px right of where the bare span had it. The x of a condition has no neighbour on its right and is pushed
-// to the end of its row by an auto margin there, so it takes back 8 on the right and its glyph stays flush with the row. (Longhands, not the shorthand: React warns when a style mixes the two
-// and a caller overrides one side.)
+// are taken back 5 on the left (one clear px short of the gap: Chromium hit-tests a pointer as a 1 by 1 px rect, so boxes that merely touch let the x take the last px of '+ condition') and 11 on the right,
+// so the glyph of a path sits 3 px right of where the bare span had it. The x of a condition has no neighbour on its right and is pushed to the end of its row by an auto margin there, so it takes
+// back 8 on the right and its glyph stays flush with the row. (Longhands, not the shorthand: React warns when a style mixes the two and a caller overrides one side.)
 const GB_ICON_BUTTON = {
   ...GB_LINK_BUTTON, display: "inline-flex", alignItems: "center", justifyContent: "center", width: 24, height: 24, flex: "0 0 auto",
-  marginTop: -5.5, marginBottom: -5.5, marginLeft: -6, marginRight: -10,
+  marginTop: -5.5, marginBottom: -5.5, marginLeft: -5, marginRight: -11,
 };
 
-// After a confirmed removal the button that asked is gone and the focus would fall to the document (a Tab from there goes to the page behind the overlay). This puts it on `selector` once the next render has
-// drawn it: it asks on each of the next few frames and stops at the first element it finds. Used by Remove this choice, Remove this connection and Delete this step.
-function GB_focusAfterRemoval(selector) {
+// Where the keyboard goes after a confirmed removal, whose button is gone (focus would fall to the document, and a Tab from there goes to the page behind the overlay): the name field of the step the
+// panel shows (an INPUT: the edge inspector's title is a div with the same test id), and '+ Add a step' for a step that is deleted and when there is no such field. '+ Add a step' sits inside the
+// overlay with tab stops after it ("Nothing selected" was a heading after the last one, so a Tab left the overlay), and is there whenever a Delete is (a read-only builder shows neither).
+const GB_NAME_INPUT = 'input[data-testid="gb-inspector-title"]';
+const GB_ADD_A_STEP = '[data-testid="gb-outline-add"]';
+
+// Puts the focus on `selector` once the next render has drawn it: it asks on each of the next few frames and stops when the element is there AND has taken the focus (one that cannot, a div, does not
+// count). When the frames are used up it tries `fallback` once. Used by Remove this choice, Remove this connection and Delete this step.
+function GB_focusAfterRemoval(selector, fallback) {
   let frames = 6;
+  const take = (sel) => {
+    const el = document.querySelector(sel);
+    if (!el) return false;
+    el.focus();
+    return document.activeElement === el;
+  };
   const attempt = () => {
-    const el = document.querySelector(selector);
-    if (el) { el.focus(); return; }
+    if (take(selector)) return;
     if (--frames > 0) window.requestAnimationFrame(attempt);
+    else if (fallback) take(fallback);
   };
   window.requestAnimationFrame(attempt);
 }
@@ -157,7 +169,7 @@ function GB_RemoveChoice({ edge, edgeIdx, pathCount, dispatch, onRemoved, name }
   const remove = () => {
     dispatch({ type: "DELETE_EDGE", idx: edgeIdx });
     if (onRemoved) onRemoved();
-    GB_focusAfterRemoval('[data-testid="gb-inspector-title"]');
+    GB_focusAfterRemoval(GB_NAME_INPUT, GB_ADD_A_STEP);
   };
   const press = async () => {
     if (pathCount > 0) {
@@ -411,4 +423,4 @@ function GB_BranchBuilder(props) {
   );
 }
 
-Object.assign(window, { GB_BranchBuilder, GB_RemoveChoice, GB_focusAfterRemoval, GB_BranchValueInput, GB_branchValueText, GB_branchValueEdit, GB_commaForm, GB_OP_LABELS, GB_OPS });
+Object.assign(window, { GB_BranchBuilder, GB_RemoveChoice, GB_focusAfterRemoval, GB_NAME_INPUT, GB_ADD_A_STEP, GB_BranchValueInput, GB_branchValueText, GB_branchValueEdit, GB_commaForm, GB_OP_LABELS, GB_OPS });
