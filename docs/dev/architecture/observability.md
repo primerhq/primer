@@ -212,7 +212,10 @@ Two read endpoints expose derived detail the scrape format cannot carry:
   children}`), built by `primer/session/timeline.py`. `turn_no` is the window
   ordinal counted over the UNFOLDED record stream, so a compaction or a rewind
   folds what a turn renders without renumbering the turns or retargeting a URL
-  already in circulation. The tree's envelope is the window's RUN of `turns.jsonl`
+  already in circulation. A failed turn is ONE window however many error records
+  it wrote (`terminals.TurnWindowScanner`: the first error of a failure ends it,
+  dispatch's copy and the release marker are filed with it, ticket 01a11ca5), which
+  is what keeps the join below right after a failed turn. The tree's envelope is the window's RUN of `turns.jsonl`
   envelopes (`envelopes_for_window`): window `n` takes the `n`-th run, so both sides
   must count turns alike. `turn_envelopes` groups by `turn_no`, and a FAILED turn
   does not bump it (the claim adapter bumps on success only), so the turn after a
