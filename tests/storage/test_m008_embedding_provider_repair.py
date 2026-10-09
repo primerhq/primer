@@ -47,11 +47,13 @@ def _row(row_id: str, provider: str, config: dict[str, Any]) -> EmbeddingProvide
 
 
 BROKEN = {
-    "hf-url-only": _row("hf-url-only", "huggingface", {"url": URL, "api_key": KEY, "flavor": "other"}),
     "openai-no-url": _row("openai-no-url", "openai", {"api_key": KEY}),
     "openai-token-only": _row("openai-token-only", "openai", {"token": TOKEN}),
 }
 HEALTHY = {
+    # Main stored this for a huggingface row with only a url (an OpenAIConfig). The HuggingFace token is optional now (a public local model needs none), so the live model reads
+    # it, ignoring the stray keys, and the migration has nothing to repair.
+    "hf-url-only": _row("hf-url-only", "huggingface", {"url": URL, "api_key": KEY, "flavor": "other"}),
     "openai-ok": _row("openai-ok", "openai", {"url": URL, "api_key": KEY, "flavor": "lmstudio"}),
     "hf-ok": _row("hf-ok", "huggingface", {"token": TOKEN}),
     "gemini-ok": _row("gemini-ok", "gemini", {"api_key": KEY}),
@@ -119,15 +121,15 @@ async def test_every_row_reads_with_the_live_model_after_the_migration(sp: Stora
 
 
 @pytest.mark.asyncio
-async def test_a_huggingface_row_with_only_a_url_gets_an_empty_token(sp: StorageProvider) -> None:
-    """The url, key and flavor were an OpenAI-shaped config the HuggingFace adapter never reads; an empty token is what the model requires to exist (public models need none)."""
+async def test_a_huggingface_row_of_main_s_shape_is_left_as_it_is(sp: StorageProvider) -> None:
+    """The first version of the migration gave it ``{"token": ""}``. It reads fine without (the token is optional), and a migration should not rewrite what is not broken."""
     await _seed(sp)
+    before = (await _raw(sp))["hf-url-only"]
 
     await _migration().apply(sp)
 
-    row = await sp.get_storage(LiveEmbeddingProvider).get("hf-url-only")
-    assert type(row.config) is HuggingFaceConfig and row.config.token.get_secret_value() == ""
-    assert (await _raw(sp))["hf-url-only"]["config"] == {"token": ""}
+    assert (await _raw(sp))["hf-url-only"] == before
+    assert (await sp.get_storage(LiveEmbeddingProvider).get("hf-url-only")).provider.value == "huggingface"
 
 
 @pytest.mark.asyncio
@@ -225,7 +227,7 @@ async def test_the_log_names_the_id_and_the_provider_and_never_the_config(sp: St
     for secret in (KEY, TOKEN, URL, "sk-secret", "hf_secret"):
         assert secret not in everything, f"the log carries {secret!r}"
     repaired = {getattr(record, "provider_id", None): getattr(record, "provider", None) for record in ours if getattr(record, "provider_id", None)}
-    assert repaired == {"hf-url-only": "huggingface", "openai-no-url": "openai", "openai-token-only": "openai"}
+    assert repaired == {"openai-no-url": "openai", "openai-token-only": "openai"}
 
 
 # ---- it is registered, and the runner applies it ----------------------------------------------------------------------------------------------------------------------

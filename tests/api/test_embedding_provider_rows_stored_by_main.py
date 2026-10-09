@@ -71,8 +71,8 @@ async def test_before_the_migration_one_such_row_takes_the_whole_list_down(sp: S
     await _seed(sp)
 
     assert (await client.get("/v1/embedding_providers")).status_code == 500
-    assert (await client.get("/v1/embedding_providers/hf-url-only")).status_code == 500
-    assert (await client.delete("/v1/embedding_providers/hf-url-only")).status_code == 500, "the operator cannot even delete it"
+    assert (await client.get("/v1/embedding_providers/openai-no-url")).status_code == 500
+    assert (await client.delete("/v1/embedding_providers/openai-no-url")).status_code == 500, "the operator cannot even delete it"
 
 
 # ---- after migration 8 -------------------------------------------------------------------------------------------------------------------------------------------------------

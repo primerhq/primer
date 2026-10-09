@@ -43,10 +43,10 @@ async def test_a_system_create_with_a_credentialed_url_that_does_not_parse_does_
 
 
 @pytest.mark.asyncio
-async def test_a_system_create_of_a_huggingface_row_without_a_token_does_not_echo_the_config(world) -> None:
+async def test_a_system_create_of_an_openai_row_without_a_url_does_not_echo_the_config(world) -> None:
     sp, toolset, _ = world
 
-    is_error, answer = await _call_surface("system", sp, toolset, "create_embedding_provider", entity=_embedding("huggingface", {"url": "http://x.local/v1", "api_key": KEY}))
+    is_error, answer = await _call_surface("system", sp, toolset, "create_embedding_provider", entity=_embedding("openai", {"api_key": KEY}))
 
     assert is_error and answer["type"] == "validation-error", answer
     assert KEY not in json.dumps(answer) and "sk-secret" not in json.dumps(answer), answer

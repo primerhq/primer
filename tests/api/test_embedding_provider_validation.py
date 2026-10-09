@@ -40,6 +40,31 @@ async def test_a_valid_openai_embedding_provider_is_created_and_keeps_its_url(cl
 
 
 @pytest.mark.asyncio
+async def test_a_huggingface_embedding_provider_with_an_empty_config_is_created(client) -> None:
+    """A public local model needs no HuggingFace token. Main never validated the config at create, so every client that posts ``config: {}`` (the e2e suite does, for
+    all-MiniLM-L6-v2) must still get a 201."""
+    body = {"id": "hf-local", "provider": "huggingface", "models": [{"name": "sentence-transformers/all-MiniLM-L6-v2"}], "config": {}, "limits": {"max_concurrency": 1}}
+
+    r = await client.post("/v1/embedding_providers", json=body)
+
+    assert r.status_code in (200, 201), r.text
+    served = (await client.get("/v1/embedding_providers/hf-local")).json()
+    assert served["provider"] == "huggingface" and not (served["config"] or {}).get("token")
+
+
+@pytest.mark.asyncio
+async def test_a_huggingface_embedding_provider_can_be_updated_to_carry_a_token_and_back(client) -> None:
+    body = {"id": "hf-local", "provider": "huggingface", "models": [{"name": "m"}], "config": {}, "limits": {"max_concurrency": 1}}
+    assert (await client.post("/v1/embedding_providers", json=body)).status_code in (200, 201)
+
+    with_token = await client.put("/v1/embedding_providers/hf-local", json={**body, "config": {"token": "hf_live_0123456789"}})
+    without = await client.put("/v1/embedding_providers/hf-local", json={**body, "config": {}})
+
+    assert with_token.status_code == 200 and "hf_live_0123456789" not in with_token.text, with_token.text
+    assert without.status_code == 200, without.text
+
+
+@pytest.mark.asyncio
 async def test_discovering_models_with_a_url_that_does_not_validate_is_a_400_that_does_not_print_the_password(client) -> None:
     r = await client.post(
         "/v1/embedding_providers/_discover_models",
