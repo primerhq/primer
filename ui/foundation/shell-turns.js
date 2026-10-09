@@ -362,7 +362,8 @@ function SH_retryInstruction(flat, errorRow, session) {
 // remembered; a bare release marker is a copy once the turn has failed and the only evidence (so it ends the window) when nothing has; any other error ends a
 // window unless the turn has already failed and an earlier error of the turn has the same non-empty message from the same node (a record that names no node
 // matches any node's); dispatch's own failure ERROR (a title and an integer status, no fatal flag, no node) is a copy once the turn has failed, whatever its words,
-// because its message is the problem detail with URL credentials redacted while the stream's error stores it raw. tests/ui/test_shell_turns.py compares the two
+// because records written before ticket 01a11f35-ad20 hold the stream's message raw while dispatch's copy is the problem detail, so comparing the words would
+// take a copy for a new failure (old logs are not migrated). tests/ui/test_shell_turns.py compares the two
 // over the shapes the writers produce.
 var SH_WINDOW_CLOSES = "closes";
 var SH_WINDOW_COPY = "copy";

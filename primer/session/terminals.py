@@ -96,8 +96,8 @@ def is_dispatch_failure_record(rec: dict[str, Any]) -> bool:
     no ``fatal`` flag and no node (a stream's own error has a ``fatal``; a graph node's has a ``node_id`` and neither title nor status).
 
     It is written exactly once, by the failure exit, AFTER the failure it describes, so it is a copy of the open turn's failure whatever its words
-    are: its message is the problem detail with URL credentials redacted (``redact_url_secrets``), while the stream's error stores the message raw,
-    so comparing the words would take it for a new failure.
+    are: its message is the problem detail, and records written before ticket 01a11f35-ad20 stored the stream's message raw (it is redacted at write
+    time now, but old logs are not migrated), so comparing the words would take a copy for a new failure.
     """
     payload = payload_of(rec)
     status = payload.get("status")
