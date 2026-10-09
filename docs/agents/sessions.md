@@ -434,10 +434,18 @@ POST /v1/sessions/{session_id}/ask_user/respond   {"tool_call_id": "...", "respo
 POST /v1/sessions/{session_id}/yields/{tool_call_id}/cancel
 ```
 
-`ask_user/pending` returns the `tool_call_id`, the `prompt`, and the
-optional `response_schema` (404 when the session is not parked on an
-`ask_user`); `ask_user/respond` validates the `response` against that
-schema and resumes the session; `yields/{tool_call_id}/cancel` skips one
+`ask_user/pending` returns the `tool_call_id`, the `gate_id` (the id of THIS
+prompt, minted when it was asked; `null` for a prompt parked before gates had
+ids), the `prompt`, and the optional `response_schema` (404 when the session is
+not parked on an `ask_user`); `ask_user/respond` validates the `response` against that
+schema and resumes the session. Send the `gate_id` back
+(`{"tool_call_id": ..., "gate_id": ..., "response": ...}`): the provider repeats its
+`tool_call_id` across rounds, so an answer meant for an earlier question could
+otherwise answer a later one under the same id. A `gate_id` that is no longer the
+pending prompt's is a `409` with `extensions.code = "approval_stale"` and nothing is
+resumed; a malformed one is a `422`; one left out is still accepted (counted in
+`gate_respond_total{kind="ask_user",gate_token="absent"}`). The cancel route takes the
+same optional `gate_id` in its body; `yields/{tool_call_id}/cancel` skips one
 in-flight yield without ending the session (the tool sees a cancelled
 result and the agent's turn continues). On a call to a tool you supplied
 yourself (`external_tool`) the cancel also marks the call's record
