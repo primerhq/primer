@@ -299,10 +299,10 @@ async def test_a_bearer_stream_ends_when_its_token_is_revoked(probed) -> None:
 async def test_a_bearer_stream_ends_when_its_token_expires(probed) -> None:
     await _cookies(probed)
     plaintext, token = await _bearer_for(probed, "other")
-    soon = datetime.now(timezone.utc) + timedelta(seconds=0.5)
-    await probed.state.storage_provider.get_storage(ApiToken).update(token.model_copy(update={"expires_at": soon}))
     async with _Http(probed, "/v1/_probe/stream", [(b"authorization", f"Bearer {plaintext}".encode())]) as conn:
         assert conn.status == 200
+        # Expired only once the stream is open: a fixed 0.5 s from creation raced the connection set-up on a slow CI runner (401 before the stream opened).
+        await probed.state.storage_provider.get_storage(ApiToken).update(token.model_copy(update={"expires_at": datetime.now(timezone.utc) - timedelta(seconds=1)}))
         assert await conn.ended_within(), "an API token that expired kept its open stream"
 
 
