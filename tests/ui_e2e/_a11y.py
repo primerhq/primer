@@ -19,6 +19,7 @@ control roles (``button``, ``link``, ``textbox``, ``searchbox``, ``combobox``, `
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -282,24 +283,52 @@ def api_problem(*, method: str, url: str, resource_type: str, status: int | None
     return None
 
 
-class Budget:
-    """The sweep-wide limit on waiting for stuck surfaces: 69 looks of 10 s and 40 forms of 25 s are ~1,700 s against a 900 s test, and a thread timeout kills the whole lane. After ``limit``
-    looks that used their wait up, later waits are ``short_ms`` (a stuck look is still noted, it is just not waited out)."""
+class SweepDeadlineExceeded(Exception):
+    """The sweep ran past its wall-clock deadline. An ordinary exception, raised BETWEEN surfaces (``Budget.check``): the test's own ``finally`` runs with a live browser, what was found is reported and
+    the seeds are deleted. (A signal timeout is not: its ``Failed`` is raised inside Playwright's dispatcher greenlet, and every later sync call spins.)"""
 
-    def __init__(self, limit: int = 5, short_ms: int = 1000) -> None:
+
+class Budget:
+    """The sweep-wide limit on waiting for stuck surfaces: 69 looks of 10 s and 40 forms of 25 s are ~1,700 s, more than the test may take, and a thread timeout kills the whole lane. After ``limit``
+    looks that used their wait up, later waits are ``short_ms`` (a stuck look is still noted, it is just not waited out). With a ``deadline_s`` the sweep is bounded from inside: the clock starts at
+    the first wait, no wait runs past the deadline, past it every wait is 0 and ``check`` raises ``SweepDeadlineExceeded``. ``clock`` is for a test."""
+
+    def __init__(self, limit: int = 5, short_ms: int = 1000, deadline_s: float | None = None, clock: Callable[[], float] = time.monotonic) -> None:
         self.limit = limit
         self.short_ms = short_ms
+        self.deadline_s = deadline_s
+        self.clock = clock
         self.used = 0
+        self._started: float | None = None
 
     @property
     def exhausted(self) -> bool:
         return self.used >= self.limit
 
+    def _remaining_ms(self) -> int | None:
+        if self.deadline_s is None:
+            return None
+        now = self.clock()
+        if self._started is None:
+            self._started = now
+        return max(0, int((self._started + self.deadline_s - now) * 1000))
+
+    @property
+    def expired(self) -> bool:
+        remaining = self._remaining_ms()
+        return remaining is not None and remaining <= 0
+
     def spent(self) -> None:
         self.used += 1
 
     def wait_ms(self, normal_ms: int) -> int:
-        return min(normal_ms, self.short_ms) if self.exhausted else normal_ms
+        wait = min(normal_ms, self.short_ms) if self.exhausted else normal_ms
+        remaining = self._remaining_ms()
+        return wait if remaining is None else min(wait, remaining)
+
+    def check(self, surface: str) -> None:
+        if self.expired:
+            raise SweepDeadlineExceeded(f"the sweep ran past its {self.deadline_s} s deadline before {surface!r}")
 
 
 @dataclass

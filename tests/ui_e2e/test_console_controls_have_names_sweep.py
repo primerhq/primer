@@ -18,7 +18,7 @@ look waits until the ``/v1`` requests in flight have answered, so a form whose f
 loading (a spinner, ``aria-busy``, text that starts Loading, Checking or Reading in any case) and the banners the console draws (``.nv-form-error``, ``.banner-error``, ``.nv-doc-problem``,
 ``[role=alert]``, ``.sh-file-conflict``, ``.field-help.warn``, a red ``.nv-bind-empty``); a red span in a table row, a stuck title and an empty list that is really a failure have no shape a selector
 can know and are left to the network. The BODY of every surface (not its fixed chrome) holds at least its floor, and the numbers are printed on every run. Every wait is bounded and the bound is
-shared (``Budget``): once enough looks have used their wait up, the rest wait briefly and are noted, and the test has a signal timeout, so a broken install is reported and not waited out.
+shared (``Budget``): once enough looks have used their wait up, the rest wait briefly and are noted, and the sweep has a wall-clock deadline of its own (600 s from the first look: past it every wait is 0 and the next surface raises an ordinary exception, so the findings are reported and the seeds deleted with a live browser); pytest-timeout stays only as the thread-method last resort above it (a signal timeout hangs Playwright's sync API). A broken install is reported, not waited out.
 Only the FIRST kind of a provider class is swept (the first item of its register menu). NOT covered (listed in ``docs/dev/subsystems/ui-pages.md``): detail pages, edit forms, the confirm host,
 menus (the provider register menu is only opened to pick from it), the command palette, the Files sidebar and terminal, the phone's drill-downs and sheets, 422 states, the row actions of a
 populated list, the Platform and System nav rows, the setup wizard, the controls inside a closed ``<details>``, and what Chromium cannot be asked about: controls inside iframes and shadow
@@ -41,7 +41,7 @@ from playwright.sync_api import Page, expect
 from tests._support.smk import smk
 from tests.ui_e2e import _delegation_seed as seed
 from tests.ui_e2e import _graph_builder_helpers as gb
-from tests.ui_e2e._a11y import ALLOWLIST, counts_table, evaluate_sweep
+from tests.ui_e2e._a11y import ALLOWLIST, Budget, counts_table, evaluate_sweep
 from tests.ui_e2e._a11y_surfaces import (
     DEAD_MENU_TEXT,
     DEAD_REGISTER_MENUS,
@@ -120,8 +120,8 @@ def _sweep_forms(page: Page, sweep: Sweep, kind: str, name: str, forms: list[For
         try:
             new = page.locator(scope).get_by_role("button", name=re.compile(rf"^(\+ )?{re.escape(form.button)}\b")).first
             expect(new).to_be_visible(timeout=sweep.budget.wait_ms(15_000))
-            expect(new).to_be_enabled(timeout=5_000)
-            expect(page.locator(form.root)).to_have_count(0, timeout=5_000)   # a form root that is already there would be the page recorded as the form
+            expect(new).to_be_enabled(timeout=sweep.budget.wait_ms(5_000))
+            expect(page.locator(form.root)).to_have_count(0, timeout=sweep.budget.wait_ms(5_000))   # a form root that is already there would be the page recorded as the form
             new.click()
             if form.then:
                 item = page.locator(f"{scope} {form.then}").first
@@ -135,7 +135,11 @@ def _sweep_forms(page: Page, sweep: Sweep, kind: str, name: str, forms: list[For
         sweep.at(surface, form.root, ready=[f"{form.root} {FIRST_FIELD}:visible"])
         page.keyboard.press("Escape")
         if form.root == MODAL:
-            expect(page.locator(MODAL)).to_have_count(0, timeout=5_000)
+            try:
+                expect(page.locator(MODAL)).to_have_count(0, timeout=sweep.budget.wait_ms(5_000))
+            except AssertionError:
+                sweep.budget.spent()
+                sweep.notes.append(f"{surface}: Escape did not close its modal")
 
 
 def _sweep_page(page: Page, sweep: Sweep, kind: str, name: str, root: str, forms: list[Form], reopen, scope: str) -> None:
@@ -150,28 +154,32 @@ def _sweep_page(page: Page, sweep: Sweep, kind: str, name: str, root: str, forms
     _sweep_forms(page, sweep, kind, name, forms, reopen, scope)
 
 
-def _assert_register_menu_is_dead(page: Page, reopen, route: str) -> None:
-    """The page is excused from a form because its register menu lists no kinds (ticket 01a1214c): say so again here, so that fixing the page fails the sweep until it is swept through its form."""
+def _assert_register_menu_is_dead(page: Page, reopen, route: str, sweep: Sweep) -> None:
+    """The page is excused from a form because its register menu lists no kinds (ticket 01a1214c): say so again here, so that fixing the page fails the sweep until it is swept through its form. The
+    failure is a note (the sweep goes on to the other surfaces), and the test fails on it at the end."""
     reopen()
-    page.locator(OVERLAY).get_by_role("button", name=re.compile(rf"^{re.escape(DEAD_REGISTER_MENUS[route])}\b")).first.click()
-    panel = page.locator(f'{OVERLAY} [data-testid="provider-register-panel"]')
     try:
-        expect(panel).to_contain_text(DEAD_MENU_TEXT, timeout=15_000)
-    except AssertionError as exc:
-        raise AssertionError(f"{route}: its register menu no longer says {DEAD_MENU_TEXT!r}: move the page back into LEGACY_FORMS with its menu item and drop it from DEAD_REGISTER_MENUS and NO_FORM") from exc
+        page.locator(OVERLAY).get_by_role("button", name=re.compile(rf"^{re.escape(DEAD_REGISTER_MENUS[route])}\b")).first.click(timeout=sweep.budget.wait_ms(10_000))
+        panel = page.locator(f'{OVERLAY} [data-testid="provider-register-panel"]')
+        expect(panel).to_contain_text(DEAD_MENU_TEXT, timeout=sweep.budget.wait_ms(15_000))
+    except (AssertionError, BrowserError):
+        sweep.budget.spent()
+        sweep.notes.append(f"{route}: its register menu no longer says {DEAD_MENU_TEXT!r}: move the page back into LEGACY_FORMS with its menu item and drop it from DEAD_REGISTER_MENUS and NO_FORM")
+        return
     page.keyboard.press("Escape")    # the menu is open: the next surface starts from a page without one
 
 
 @pytest.mark.ui_e2e
-@pytest.mark.timeout(900, method="signal")     # not the thread method: that one kills the whole lane, with no other journey reported and no seed deleted
+@pytest.mark.timeout(900, method="thread")     # the last resort only: it kills the whole lane (no other journey reported, no seed deleted). The sweep stops itself, from inside, after 600 s (Budget deadline_s): the next surface raises SweepDeadlineExceeded and the test reports what it found and deletes its seeds
 def test_no_visible_control_of_the_consoles_main_surfaces_is_without_a_name(base_url: str, console_url: str, page: Page, tmp_path) -> None:
     suffix = uuid.uuid4().hex[:8]
     agent_id = f"dn-agent-{suffix}"
     graph_id = f"sweep-graph-{suffix}"
     provider_id = f"sweep-cp-{suffix}"
+    ssp_id = f"sweep-ssp-{suffix}"
     page_errors: list[str] = []
     page.on("pageerror", lambda exc: page_errors.append(str(exc)))
-    sweep = Sweep(page)
+    sweep = Sweep(page, budget=Budget(deadline_s=600))
     died: Exception | None = None
     steps = 0
     seeded = None
@@ -181,6 +189,10 @@ def test_no_visible_control_of_the_consoles_main_surfaces_is_without_a_name(base
         wid, sid = seeded.wid, seeded.sid
         steps = _seed_graph(base_url, graph_id, agent_id)
         made.append(f"/v1/graphs/{graph_id}")
+        with httpx.Client(base_url=base_url, timeout=30.0) as c:
+            made.append(f"/v1/ssp/{ssp_id}")
+            r = c.post("/v1/ssp", json={"id": ssp_id, "provider": "lance", "config": {"path": f"/tmp/sweep-lance-{suffix}"}})   # the Semantic search toolbar (backend filter, register menu) draws only when one exists
+            assert r.status_code == 201, r.text
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
             made.append(f"/v1/channel_providers/{provider_id}")
             r = c.post("/v1/channel_providers", json={"id": provider_id, "provider": "discord", "config": {"bot_token": "x" * 60}})   # New channel and the rules toolbar need one
@@ -203,7 +215,7 @@ def test_no_visible_control_of_the_consoles_main_surfaces_is_without_a_name(base
                 open_legacy_route(page, console_url, route)
             _sweep_page(page, sweep, "overlay-page", route, OVERLAY, forms, reopen, OVERLAY)
             if route in DEAD_REGISTER_MENUS:
-                _assert_register_menu_is_dead(page, reopen, route)
+                _assert_register_menu_is_dead(page, reopen, route, sweep)
 
         # every Platform VIEW (what every nav row of the Platform view opens), and the forms it opens
         for nav, forms in PLATFORM_FORMS.items():
