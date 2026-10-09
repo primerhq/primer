@@ -126,8 +126,8 @@ network).
   A compressed body with data after the end of its stream (trailing bytes,
   a second gzip member), one that ends before it, or one far larger on the
   wire than its cap allows, is a failed request, never a partial result.
-- `download`'s `max_bytes` can only LOWER the cap the operator configured;
-  a larger value is the operator's cap.
+- `download`'s `max_bytes` can only LOWER the platform's fixed 100 MB cap;
+  a larger value is ignored and the 100 MB cap applies.
 
 ## Related
 
