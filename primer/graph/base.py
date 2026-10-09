@@ -41,6 +41,7 @@ Subclasses provide four abstract hooks:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import uuid
@@ -233,6 +234,8 @@ class _BaseGraphExecutor(
         # (dispatch.py builds coalesce_state AFTER the executor already
         # exists). None is a no-op for callers that haven't opted in.
         self._coalesce_state: "_CoalesceState | None" = None
+        # A CHILD executor's way to wait on its parent's drainer: set by the parent's _stream_subgraph_node (bind_parent_dispatch_barrier), None for a top-level executor.
+        self._parent_dispatch_barrier: "Callable[[], Awaitable[None]] | None" = None
         # Ambient run context exposed to node templates as ``ctx``. The base
         # executor is surface-agnostic, so default to an in-memory context;
         # WorkspaceGraphExecutor overrides this with real workspace ids.
@@ -392,6 +395,22 @@ class _BaseGraphExecutor(
         every caller that hasn't opted into ``tool_calls_as_claims``.
         """
         self._coalesce_state = coalesce_state
+
+    def bind_parent_dispatch_barrier(
+        self, barrier: "Callable[[], Awaitable[None]] | None",
+    ) -> None:
+        """Chain this (child) executor's dispatch barrier to its parent's.
+
+        Set by :meth:`_stream_subgraph_node` to ``partial(await_tool_dispatch_barrier,
+        <the parent's merge queue>)``. A child's drainer resolves a node's
+        :class:`_ToolDispatchBarrier` once the child's events reached the PARENT's
+        queue (``_stream_subgraph_node`` only ``queue.put()``s them), which is
+        not yet "written by session dispatch": it first awaits this, a barrier
+        on the parent's queue (which the parent's drainer resolves, after ITS
+        parent's if it has one), then resolves its own. ``None`` (the default,
+        and every top-level executor) resolves at once.
+        """
+        self._parent_dispatch_barrier = barrier
 
     @property
     def graph(self) -> Graph:
@@ -1243,13 +1262,15 @@ class _BaseGraphExecutor(
             status=SessionStatus.RUNNING,
         )
 
-        async for ev in self._run_superstep_loop(
+        # aclosing: a consumer that closes this generator cancels the node tasks NOW, in the closing task, not whenever the loop's finalizer gets scheduled.
+        async with contextlib.aclosing(self._run_superstep_loop(
             context=context,
             node_states=node_states,
             ended_reason_in=self._pending_ended_reason,
             ended_detail_in=self._pending_ended_detail,
-        ):
-            yield ev
+        )) as steps:
+            async for ev in steps:
+                yield ev
 
     # ---- Subclass hooks --------------------------------------------------
 
@@ -1386,13 +1407,14 @@ class _BaseGraphExecutor(
         self._ready_set = ready
         self._node_states = node_states
 
-        async for ev in self._run_superstep_loop(
+        async with contextlib.aclosing(self._run_superstep_loop(
             context=context,
             node_states=node_states,
             ended_reason_in=self._pending_ended_reason,
             ended_detail_in=self._pending_ended_detail,
-        ):
-            yield ev
+        )) as steps:
+            async for ev in steps:
+                yield ev
 
     async def _run_superstep_loop(
         self,
@@ -1619,6 +1641,14 @@ class _BaseGraphExecutor(
                         # `yield` below was resumed, which only happens
                         # after dispatch.py's translate_stream_event+append
                         # for item N-1 already ran to completion.
+                        #
+                        # A CHILD executor's events only reached its parent's
+                        # queue by then: wait for the parent's drainer (and
+                        # so on up) to have them written, then release the
+                        # node. Awaited here, so the node tasks of this
+                        # superstep go on filling their queue meanwhile.
+                        if self._parent_dispatch_barrier is not None and not item.future.done():
+                            await self._parent_dispatch_barrier()
                         if not item.future.done():
                             item.future.set_result(None)
                         continue

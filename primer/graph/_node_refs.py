@@ -828,6 +828,17 @@ class _ToolDispatchBarrier:
     later (e.g. deferred to the NEXT drained item) would also satisfy that
     guarantee; resolving earlier (e.g. before this item is even dequeued)
     would not.
+
+    A CHILD executor (a subgraph node's graph) is the exception that proves
+    the rule: its queue's consumer is the parent's ``_stream_subgraph_node``,
+    which only ``queue.put()``s what it receives, so dequeuing the sentinel
+    there proves the events reached the PARENT's queue, not that dispatch
+    wrote them. The child's drainer therefore first awaits a barrier on the
+    parent's queue (``bind_parent_dispatch_barrier``; the parent's drainer
+    resolves it, after its own parent's if it is a child too), then resolves
+    the node's. The child's drainer runs in the parent's node task and the
+    parent's drainer is independent of it, so the chain cannot deadlock; a
+    close or cancel reaches the waiting node through the same task tree.
     """
 
     __slots__ = ("future",)

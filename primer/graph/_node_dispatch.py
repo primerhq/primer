@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import functools
 import json
 from typing import Any
 
@@ -55,6 +56,7 @@ from primer.graph._node_refs import (
     _render_fanin_output,
     _resolve_fanout_spec,
     _resolve_toolcall_arguments,
+    await_tool_dispatch_barrier,
 )
 from primer.graph.template import render_input_template
 from primer.model.chat import Message, StreamEvent, TextPart, ToolTurnCapReached, TurnStreamFailure
@@ -554,6 +556,11 @@ class _NodeDispatchMixin:
                 instance_suffix = f"[{fanout_index}]"
         sub_executor = await self._build_sub_executor(
             node, sub_graph, instance_suffix=instance_suffix
+        )
+        # The child's nodes await a dispatch barrier on the CHILD's queue, which its drainer resolves once the events reached THIS queue: chain it to a barrier on this
+        # one (resolved by this executor's drainer, after ITS parent's if it is a child too), so a delegated run still starts after its call row is written.
+        sub_executor.bind_parent_dispatch_barrier(
+            functools.partial(await_tool_dispatch_barrier, queue)
         )
 
         rendered = render_input_template(
