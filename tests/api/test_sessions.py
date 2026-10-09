@@ -1301,6 +1301,7 @@ async def test_top_level_list_sessions_filtered_by_session_state(
 
     bad = await sessions_client.get("/v1/sessions?session_state=sleeping")
     assert bad.status_code == 422, bad.text
+    assert bad.json()["type"] == "/errors/validation-error", bad.text
 
 
 async def test_top_level_list_sessions_filtered_by_agent_id(

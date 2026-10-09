@@ -33,9 +33,10 @@ from tests.storage.test_storage_contract import provider  # noqa: F401
 _STATES = ("waiting", "running", "parked", "ended")
 _PARKED = (None, "parked", "resumable")
 _TURN = ("idle", "claimable", "running")
-_TURN_NO = (0, 3)
+# 0 is a session that never completed a turn, 1 is the usual value after ONE turn (the boundary of ``turn_no > 0``), 3 is "several".
+_TURN_NO = (0, 1, 3)
 # Every ``status`` is its own pre-image of the rule, so the matrix below is the
-# full product: 5 x 3 x 3 x 2 = 90 rows.
+# full product: 5 x 3 x 3 x 3 = 135 rows.
 _MATRIX = list(itertools.product(SessionStatus, _PARKED, _TURN, _TURN_NO))
 
 
@@ -71,13 +72,20 @@ def test_the_matrix_reaches_every_state_and_every_branch_of_the_rule() -> None:
     by_state: dict[str, int] = {state: 0 for state in _STATES}
     for session in _matrix_rows():
         by_state[session.session_state] += 1
-    assert len(_MATRIX) == 90
+    assert len(_MATRIX) == 135
     assert all(count >= 6 for count in by_state.values()), by_state
 
 
-async def _assert_parity(storage, rows: list[WorkspaceSession]) -> None:
+async def _assert_parity(storage, rows: list[WorkspaceSession], *, reload: bool = False) -> None:
+    """Every state's predicate returns exactly the rows whose property reads that state, and every row is in exactly one state.
+
+    ``reload`` judges the property on the row as the storage hands it back (a document written before an axis existed reads the axis's default
+    there), which is what a list over such a document must agree with.
+    """
     for row in rows:
         await storage.create(row)
+    if reload:
+        rows = [await storage.get(row.id) for row in rows]
     seen: set[str] = set()
     for state in _STATES:
         got = await _ids(storage, state)
@@ -100,47 +108,51 @@ async def test_every_backend_agrees_with_the_property(provider) -> None:  # noqa
     await _assert_parity(provider.get_storage(WorkspaceSession), _matrix_rows())
 
 
-async def test_a_row_written_before_the_axes_existed_reads_waiting_or_ended(
-    provider,  # noqa: F811
-) -> None:
-    """An older row has no ``turn_status``, ``turn_no`` or ``parked_status``
-    key at all. The model reads the defaults (idle, 0, none); SQL sees NULL,
-    and ``NULL != 'running'`` is not true, so a filter that spelled "not
-    running" as an inequality would drop the row from every state."""
+def test_a_resting_session_reads_parked_from_the_first_completed_turn_on() -> None:
+    """The route that is easiest to lose: no park, no turn running, but the session rests WAITING or PAUSED after at least one turn."""
+    for status in (SessionStatus.WAITING, SessionStatus.PAUSED):
+        for turn_no in (1, 3):
+            assert _session("r", status, None, "idle", turn_no).session_state == "parked", (status, turn_no)
+        assert _session("r", status, None, "idle", 0).session_state == "waiting", status
+        assert _session("r", status, None, "claimable", 1).session_state == "parked", status
+
+
+# What a stored document gets when its key is missing, per axis: the model's own default.
+_AXIS_DEFAULTS = {"turn_status": "idle", "turn_no": 0, "parked_status": None}
+_AXIS_COLUMN = {"turn_status": 2, "turn_no": 3, "parked_status": 1}      # index into a _MATRIX combo
+
+
+@pytest.mark.parametrize("axis", sorted(_AXIS_DEFAULTS))
+async def test_a_row_written_before_an_axis_existed_agrees_with_the_property(provider, axis) -> None:  # noqa: F811
+    """An older row has no key for the axis at all. The model reads its default; SQL sees NULL, and ``NULL != 'running'`` is not true, so a filter
+    that spelled "not running" (or "not resting") as an inequality would drop the row from every state. Each axis is stripped ALONE, from every
+    row of the matrix that holds the axis's default, over every combination of the other axes."""
     storage = provider.get_storage(WorkspaceSession)
-    legacy = [
-        _session(f"legacy-{status.value}", status, None, "idle", 0)
-        for status in SessionStatus
+    rows = _matrix_rows()
+    stripped = [
+        row.id for row, combo in zip(rows, _MATRIX, strict=True)
+        if combo[_AXIS_COLUMN[axis]] == _AXIS_DEFAULTS[axis]
     ]
-    for row in legacy:
+    for row in rows:
         await storage.create(row)
-    ids = [r.id for r in legacy]
     if isinstance(provider, SqliteStorageProvider):
         conn = provider.connection
-        for sid in ids:
+        for sid in stripped:
             await conn.execute(
-                "UPDATE sessions SET data = json_remove(data, "
-                "'$.turn_status', '$.turn_no', '$.parked_status') WHERE id = ?",
-                (sid,),
+                f"UPDATE sessions SET data = json_remove(data, '$.{axis}') WHERE id = ?", (sid,),
             )
         await conn.commit()
     else:
         async with provider.pool.acquire() as c:
             await c.execute(
-                f'UPDATE "{provider.schema}".sessions SET data = data - '
-                "'turn_status' - 'turn_no' - 'parked_status' "
-                "WHERE id = ANY($1::text[])",
-                ids,
+                f'UPDATE "{provider.schema}".sessions SET data = data - \'{axis}\' WHERE id = ANY($1::text[])', stripped,
             )
-    # The stripped document really lacks the keys, and the model reads defaults.
-    for row in legacy:
-        loaded = await storage.get(row.id)
-        assert loaded is not None
-        assert loaded.turn_status == "idle" and loaded.turn_no == 0
-        assert loaded.session_state == row.session_state
+    loaded = [await storage.get(row.id) for row in rows]
+    assert all(row is not None for row in loaded)
+    # the stripped documents really lack the key and the model reads the default
+    assert len(stripped) >= 45
+    for sid in stripped:
+        assert getattr(await storage.get(sid), axis) == _AXIS_DEFAULTS[axis]
     for state in _STATES:
-        want = {r.id for r in legacy if r.session_state == state}
-        assert await _ids(storage, state) == want, state
-    assert await _ids(storage, "waiting") == {
-        f"legacy-{s.value}" for s in SessionStatus if s != SessionStatus.ENDED
-    }
+        want = {r.id for r in loaded if r.session_state == state}
+        assert await _ids(storage, state) == want, (axis, state)
