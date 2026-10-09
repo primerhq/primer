@@ -103,6 +103,28 @@ def with_wake_park(payload: "dict[str, Any]", parked_at: "datetime | None") -> "
     return {**payload, WAKE_PARK_KEY: parked_at.isoformat()}
 
 
+WAKE_ENTRY_KEY = "__yield_entry__"
+"""Where a wake published by a producer that answers one specific pending ENTRY names it: the subscription of a trigger fire or a ``wait_for_event`` delivery
+(``resume_metadata.subscription_id``), the call row of an external tool result (``resume_metadata.external_call_row_id``).
+
+The park stamp (:data:`WAKE_PARK_KEY`) fences a single park only: a graph park re-parks with a fresh ``parked_at`` whenever a sibling is resolved, so it is
+exempt. An entry's identity survives that, as a gate's id does, and the flip compares it with the entry that waits on the event key (ticket 01a1223f).
+Primer-internal (``__yield_`` prefix): stripped before any hook sees the payload."""
+
+
+def entry_id_of(resume_metadata: "dict[str, Any] | None") -> str | None:
+    """The identity a machine producer can name for the pending entry whose ``resume_metadata`` this is, or ``None`` (a gate, a sleep, a park from before)."""
+    meta = resume_metadata or {}
+    return meta.get("subscription_id") or meta.get("external_call_row_id") or None
+
+
+def with_wake_entry(payload: "dict[str, Any]", entry_id: str | None) -> "dict[str, Any]":
+    """``payload`` plus the entry it answers (:data:`WAKE_ENTRY_KEY`); unchanged when the producer has no id to name."""
+    if not entry_id:
+        return payload
+    return {**payload, WAKE_ENTRY_KEY: entry_id}
+
+
 def with_wake_gate(payload: "dict[str, Any]", gate_id: str | None) -> "dict[str, Any]":
     """``payload`` plus the gate it decides (:data:`WAKE_GATE_ID_KEY`); unchanged for a gate with no id (a park from before gates had one)."""
     if not gate_id:
@@ -529,7 +551,10 @@ __all__ = [
     "new_gate_id",
     "gate_id_of",
     "WAKE_GATE_ID_KEY",
+    "WAKE_ENTRY_KEY",
     "WAKE_PARK_KEY",
+    "entry_id_of",
+    "with_wake_entry",
     "with_wake_gate",
     "with_wake_park",
     "timer_event_key",
