@@ -11,73 +11,113 @@ const GB_OP_LABELS = {
 const GB_OPS = ["eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in", "exists"];
 
 // A condition's value is Any in the model (BranchCondition.value), so the box it is edited in has to show EVERY kind of value in a form that reads back to the same value (ticket 01a11e4e-8910:
-// an object showed as "[object Object]" and the first keystroke replaced it by that string). A string is itself, unless it would read back as something else (a string "5", "true", "[1]"
-// is shown quoted); the comma list of "is one of" is kept for a list of plain strings; anything else that is not text (an object, a list of anything else, a number, a boolean) is JSON.
+// an object showed as "[object Object]" and the first keystroke replaced it by that string). A string is itself, unless it would read back as something else (a string "5", "true", "[1]" is
+// shown quoted) or an <input> would change it (a control character such as a newline: shown quoted too); null shows as null (an empty box is "no value yet", the empty string); the comma list of
+// "is one of" is kept for a list that reads back the same from it (GB_commaForm); anything else that is not text (an object, a list of anything else, a number, a boolean) is JSON.
+const GB_NOT_JSON_YET = "Not JSON yet: the stored value is unchanged. Quote text, or clear the box first.";
+
+// The comma-separated text of a list under "is one of" / "is none of", or null when that text would not read back as the same list: a member that has a comma or blanks around it, or that
+// looks like JSON (["1"] shown as `1` reads back as [1]). An empty list is an empty box.
+function GB_commaForm(value, op) {
+  if (!Array.isArray(value) || !(op === "in" || op === "not_in")) return null;
+  if (!value.every((m) => typeof m === "string" && m !== "" && m === m.trim() && m.indexOf(",") === -1)) return null;
+  const text = value.join(", ");
+  const parse = typeof GR_parseBranchValue === "function" ? GR_parseBranchValue : null;
+  return parse && JSON.stringify(parse(text, op)) === JSON.stringify(value) ? text : null;
+}
+
 function GB_branchValueText(value, op) {
-  if (value === null || value === undefined) return "";
+  if (value === undefined) return "";
+  if (value === null) return "null";
   if (typeof value === "string") {
     if (value === "") return "";
+    if (/[\u0000-\u001f]/.test(value)) return JSON.stringify(value);
     try { JSON.parse(value); return JSON.stringify(value); } catch (_e) { return value; }
   }
   if (Array.isArray(value)) {
-    const plain = (op === "in" || op === "not_in") && value.length > 0
-      && value.every((m) => typeof m === "string" && m !== "" && m === m.trim() && m.indexOf(",") === -1);
-    return plain ? value.join(", ") : JSON.stringify(value);
+    const comma = GB_commaForm(value, op);
+    return comma !== null ? comma : JSON.stringify(value);
   }
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
 }
 
-// What typing `text` into the box means for the stored value: { commit: true, value } to store it, or { commit: false } to leave the stored value as it is. A structured value (an object, or a list
-// under an operator that takes ONE value) is not replaced by the string a half-typed JSON falls back to; clearing the box is deliberate and stores "". Everything else is parsed as it always was.
+// What typing `text` into the box means for the stored value: { commit: true, value } to store it, or { commit: false } to leave the stored value as it is. A structured value (an object, or
+// a list that is shown as JSON) is not replaced by the string a half-typed JSON falls back to; only a list shown in the comma form takes any text. Clearing the box is deliberate and stores
+// "" (or an empty list under "is one of"), blanks included. Everything else is parsed as it always was.
 function GB_branchValueEdit(text, op, current) {
   const parse = typeof GR_parseBranchValue === "function" ? GR_parseBranchValue : (s) => s;
-  const structured = current !== null && typeof current === "object";
-  const listOp = op === "in" || op === "not_in";
-  if (structured && text.trim() !== "" && !(listOp && Array.isArray(current))) {
+  const structured = current !== null && typeof current === "object" && GB_commaForm(current, op) === null;
+  if (structured) {
+    if (text.trim() === "") return { commit: true, value: (op === "in" || op === "not_in") && Array.isArray(current) ? [] : "" };
     try { JSON.parse(text); } catch (_e) { return { commit: false }; }
   }
   return { commit: true, value: parse(text, op) };
 }
 
 // The value box of one condition. It keeps the text the operator types while the value behind it is being edited (a half-typed object, "5." on the way to 5.5), stores a value only when the
-// text means one (GB_branchValueEdit), says so when a structured value's text is not JSON yet, and redraws the text when the stored value or the operator changes from outside.
+// text means one (GB_branchValueEdit), says so in an alert when a structured value's text is not JSON yet and reports that to the builder's Save gate (`onJsonError`, keyed `errorKey`; the
+// same contract as GR_JsonField: cleared on a commit, on a redraw from outside and when the box goes away), and redraws the text when the stored value or the operator changes from outside.
 function GB_BranchValueInput(props) {
-  const { value, op, ariaLabel, placeholder, disabled, style, onCommit } = props;
+  const { value, op, ariaLabel, placeholder, disabled, style, onCommit, onJsonError, errorKey, describedBy } = props;
   const canonical = GB_branchValueText(value, op);
   const [text, setText] = React.useState(canonical);
   const committedText = React.useRef(canonical);
+  const errId = React.useId() + "e";
   React.useEffect(() => {
     if (canonical !== committedText.current) {
       committedText.current = canonical;
       setText(canonical);
     }
   }, [canonical]);
-  const pending = text !== canonical ? GB_branchValueEdit(text, op, value) : null;
+  // The text only means something against the value it was typed over: until the redraw above has run there is nothing pending.
+  const pending = canonical === committedText.current && text !== canonical ? GB_branchValueEdit(text, op, value) : null;
+  const invalid = !!pending && !pending.commit;
+  const report = React.useRef(onJsonError);
+  report.current = onJsonError;
+  const reported = React.useRef(false);
+  React.useEffect(() => {
+    if (invalid === reported.current) return;
+    reported.current = invalid;
+    if (report.current && errorKey) report.current(errorKey, invalid ? GB_NOT_JSON_YET : null);
+  }, [invalid, errorKey]);
+  React.useEffect(() => () => {
+    if (reported.current && report.current && errorKey) report.current(errorKey, null);
+  }, [errorKey]);
+  const describedby = [describedBy, invalid ? errId : null].filter(Boolean).join(" ");
   return (
-    <input
-      aria-label={ariaLabel}
-      data-testid="gb-branch-value"
-      value={text}
-      disabled={disabled}
-      placeholder={placeholder}
-      aria-invalid={pending && !pending.commit ? "true" : undefined}
-      onChange={(e) => {
-        const next = e.target.value;
-        setText(next);
-        const edit = GB_branchValueEdit(next, op, value);
-        if (edit.commit) {
-          committedText.current = GB_branchValueText(edit.value, op);
-          onCommit(edit.value);
-        }
-      }}
-      style={style}
-    />
+    <>
+      <input
+        aria-label={ariaLabel}
+        aria-describedby={describedby || undefined}
+        data-testid="gb-branch-value"
+        value={text}
+        disabled={disabled}
+        placeholder={placeholder}
+        aria-invalid={invalid ? "true" : undefined}
+        onChange={(e) => {
+          const next = e.target.value;
+          setText(next);
+          const edit = GB_branchValueEdit(next, op, value);
+          if (edit.commit) {
+            committedText.current = GB_branchValueText(edit.value, op);
+            onCommit(edit.value);
+          }
+        }}
+        style={style}
+      />
+      {invalid ? (
+        <span id={errId} role="alert" data-testid="gb-branch-value-error" style={{ width: "100%", fontSize: 10.5, color: "var(--red)" }}>
+          {GB_NOT_JSON_YET}
+        </span>
+      ) : null}
+    </>
   );
 }
 
 function GB_BranchBuilder(props) {
-  const { edge, edgeIdx, draft, sourceNode, dispatch, onAddResponseFormat, readOnly } = props;
+  const { edge, edgeIdx, draft, sourceNode, dispatch, onAddResponseFormat, readOnly, onJsonError } = props;
+  const helpId = React.useId();
   const router = edge.router || { kind: "json_path", branches: [] };
   const nodesById = {};
   for (const n of draft.nodes || []) nodesById[n.id] = n;
@@ -179,6 +219,10 @@ function GB_BranchBuilder(props) {
               </select>
               {c.op !== "exists" ? (
                 <GB_BranchValueInput
+                  key={edgeIdx + ":" + bi + ":" + ci}
+                  errorKey={"bv:" + edgeIdx + ":" + bi + ":" + ci}
+                  onJsonError={onJsonError}
+                  describedBy={helpId}
                   ariaLabel={"Branch " + (bi + 1) + ", condition " + (ci + 1) + ": value"}
                   value={c.value}
                   op={c.op}
@@ -269,8 +313,11 @@ function GB_BranchBuilder(props) {
         ) : null}
       </div>
       <span className="muted" style={{ fontSize: "var(--fs-11)" }}>Checked in order - the first match wins.</span>
+      {!readOnly && (router.branches || []).some((b) => (b.conditions || []).some((c) => c.op !== "exists")) ? (
+        <span id={helpId} className="muted" style={{ fontSize: "var(--fs-11)" }}>A value is text, or JSON: 1 is a number, "1" is text.</span>
+      ) : null}
     </div>
   );
 }
 
-Object.assign(window, { GB_BranchBuilder, GB_BranchValueInput, GB_branchValueText, GB_branchValueEdit, GB_OP_LABELS, GB_OPS });
+Object.assign(window, { GB_BranchBuilder, GB_BranchValueInput, GB_branchValueText, GB_branchValueEdit, GB_commaForm, GB_OP_LABELS, GB_OPS });
