@@ -77,9 +77,12 @@ class OpenAIConfig(_HttpApiKeyConfig):
 class HuggingFaceConfig(BaseModel):
     """Connection settings for the HuggingFace embedding provider."""
 
-    token: ApiKeySecret = Field(
-        ...,
-        description="HuggingFace token used to pull the transformer model.",
+    token: ApiKeySecret | None = Field(
+        default=None,
+        description=(
+            "Optional HuggingFace token, needed only for a gated repository. A public local model such as "
+            "``sentence-transformers/all-MiniLM-L6-v2`` needs none (as for ``HuggingFaceCrossEncoderConfig``)."
+        ),
     )
 
 
@@ -139,9 +142,9 @@ class EmbeddingProvider(Identifiable):
         """Pre-validate: ``config`` becomes an instance of the concrete config class the ``provider`` names.
 
         ``config`` is a plain union and pydantic's smart mode keeps the member that sets the most fields, whatever ``provider`` says: an ``openai`` row with an invalid or
-        missing url failed ``OpenAIConfig`` and ``HuggingFaceConfig`` (no token) and was left with ``GoogleConfig``, the url dropped, so a row with no endpoint could be saved; a
+        missing url failed ``OpenAIConfig`` and was left with another member (``GoogleConfig``, the url dropped), so a row with no endpoint could be saved; a
         ``huggingface`` row with only a url validated as an ``OpenAIConfig``. Keyed by the provider, a dict is parsed by the config class's own validation and the error is that
-        class's own, at the field (``url``, ``token``: the ``loc`` of an error raised in a before-validator is the config class's, as ``LLMProvider``'s is). A config OBJECT of
+        class's own, at the field (``url``: the ``loc`` of an error raised in a before-validator is the config class's, as ``LLMProvider``'s is). A config OBJECT of
         another class is refused by name: it used to pass through the union as it was. Rows main stored with the wrong shape are repaired by migration 8
         (``primer/storage/migrations/m008_embedding_provider_repair.py``). ``LLMProvider`` has the same validator for the same reason. An unknown provider is left to the
         ``provider`` field's own error.

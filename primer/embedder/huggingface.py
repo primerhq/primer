@@ -258,7 +258,8 @@ class HuggingFaceEmbedder(Embedder):
 
     async def _get_model(self, name: str) -> SentenceTransformer:
         if name not in self._models:
-            token_value = self._config.token.get_secret_value()
+            # The token is optional (a public model needs none): no token and an empty one both mean "anonymous".
+            token_value = self._config.token.get_secret_value() if self._config.token is not None else ""
             self._models[name] = await asyncio.to_thread(
                 SentenceTransformer,
                 name,

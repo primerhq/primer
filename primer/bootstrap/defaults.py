@@ -87,9 +87,9 @@ RESERVED_WORKSPACE_PROVIDERS: dict[str, dict] = {
 # ---- HuggingFace embedder -----------------------------------------------
 #
 # BAAI/bge-small-en-v1.5 is a public model; no HF token is required.
-# HuggingFaceConfig.token is a mandatory SecretStr, so we supply an
-# empty string — the adapter converts empty strings to None when
-# calling SentenceTransformer(..., token=None).
+# HuggingFaceConfig.token is optional; the default row still supplies an
+# empty string; the adapter converts empty strings (and a missing token)
+# to None when calling SentenceTransformer(..., token=None).
 
 RESERVED_EMBEDDERS: dict[str, dict] = {
     RESERVED_HUGGINGFACE_EMBEDDER: {
