@@ -16,11 +16,15 @@ from primer.graph.base import _GraphErrorEvent
 from primer.model.chat import Error
 from primer.session.persistence import _CoalesceState, translate_stream_event
 
-LEAKY = "upstream refused https://svc-user:hunter2pw@gateway.internal/v1/chat?api_key=SKSECRET123456&x=1 (try again)"
+LEAKY = (
+    "upstream refused https://svc-user:hunter2pw@gateway.internal/v1/chat?api_key=SKSECRET123456&x=1 (try again) "
+    "with Authorization: Bearer sk-bearer-ABCDEFGH12345678 and Authorization: Basic dXNlcjpwYXNzd29yZDEyMzQ="
+)
 
 
 def _assert_clean(text: str) -> None:
     assert "hunter2pw" not in text and "SKSECRET123456" not in text, text
+    assert "sk-bearer-ABCDEFGH12345678" not in text and "dXNlcjpwYXNzd29yZDEyMzQ=" not in text, "the Bearer and Basic tokens are masked as well"
     assert "gateway.internal" in text and "try again" in text, "the rest of the message must survive"
 
 
