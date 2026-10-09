@@ -330,7 +330,6 @@ def _attach(
     payload: dict[str, Any],
     roots: list[dict[str, Any]],
     nodes: dict[str, dict[str, Any]],
-    calls: dict[tuple[str | None, str | None, str], dict[str, Any]],
     calls_by_raw_id: dict[str, dict[str, Any]],
     calls_by_run: dict[tuple[str | None, str | None, str], dict[str, Any]],
 ) -> None:
@@ -539,7 +538,7 @@ def _tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         else:
             continue
-        _attach(entry, rec, payload, roots, nodes, calls, calls_by_raw_id, calls_by_run)
+        _attach(entry, rec, payload, roots, nodes, calls_by_raw_id, calls_by_run)
         # A call is registered AFTER it has been placed: a delegated call from before run ids has the raw id of the call that delegated to it (providers that
         # number per stream write call_0 at every level), and registering it first made the lookup find the call itself, which then vanished with its subtree.
         if kind == _TOOL_CALL and payload.get("id"):
