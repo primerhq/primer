@@ -109,18 +109,80 @@ async def test_the_failure_exit_writes_it_with_one_field_scoped_patch_before_the
 
 
 @pytest.mark.asyncio
-async def test_the_next_turn_clears_it(seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider):
+async def test_the_next_turn_clears_it_when_it_starts(seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider):
+    """Read the row from INSIDE the turn (as the executor is built, after the running flip): it is the flip that clears the field, not the end of
+    the turn, so a console polling a turn in flight does not show the earlier failure."""
     storage = fake_storage_provider.get_storage(WorkspaceSession)
     stale = LastTurnError(code="server_error", at=datetime.now(timezone.utc) - timedelta(minutes=5))
     await storage.update(seeded_session.model_copy(update={"last_turn_error": stale}))
+    seen_while_building: list[LastTurnError | None] = []
 
-    outcome = await _run(
-        seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
-        [TextDelta(text="hi", index=0), Done(stop_reason="stop", raw_reason="stop")],
+    async def build(_session: WorkspaceSession):
+        seen_while_building.append((await storage.get(seeded_session.id)).last_turn_error)
+        return FakeExecutor([TextDelta(text="hi", index=0), Done(stop_reason="stop", raw_reason="stop")])
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider, workspace_io=fake_workspace_io, event_bus=fake_event_bus, build_executor=build,
     )
+    outcome = await run_one_session_turn(_make_lease(seeded_session.id), deps)
 
     assert outcome.success is True
-    assert (await storage.get(seeded_session.id)).last_turn_error is None, "a turn that starts is past the earlier failure"
+    assert seen_while_building == [None], "the failure was still on the row while the next turn was running"
+    assert (await storage.get(seeded_session.id)).last_turn_error is None
+
+
+@pytest.mark.asyncio
+async def test_a_row_that_is_already_ended_keeps_its_first_terminal_reason(fake_storage_provider):
+    """The stamp is guarded on the row not being ENDED, like every terminal write: a Cancel that ended the session first is not overwritten."""
+    import primer.session.dispatch as dispatch
+    from tests.session.test_dispatch import _seed_session
+
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    session = await _seed_session(fake_storage_provider, "s-ended-first")
+    await storage.update(session.model_copy(update={"status": SessionStatus.ENDED, "ended_reason": "cancelled"}))
+
+    await dispatch._record_last_turn_error(storage, "s-ended-first", _failure(), session.binding_epoch)
+
+    assert (await storage.get("s-ended-first")).last_turn_error is None
+
+
+@pytest.mark.asyncio
+async def test_a_binding_that_switched_during_the_turn_is_not_stamped(fake_storage_provider):
+    """The status transition right after the stamp is voided when the binding epoch moved (the failure describes work done for a binding the session
+    has left); the stamp is fenced on the same epoch."""
+    import primer.session.dispatch as dispatch
+    from tests.session.test_dispatch import _seed_session
+
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    session = await _seed_session(fake_storage_provider, "s-switched")
+    await storage.update(session.model_copy(update={"binding_epoch": session.binding_epoch + 1}))
+
+    await dispatch._record_last_turn_error(storage, "s-switched", _failure(), session.binding_epoch)
+
+    assert (await storage.get("s-switched")).last_turn_error is None
+
+
+@pytest.mark.asyncio
+async def test_a_stamp_that_cannot_be_written_does_not_keep_the_session_from_ending(
+    seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+):
+    """The stamp is advisory: the failure exit's job is to release the lease and move the status. A storage error on the stamp is logged and the
+    exit goes on."""
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    real_patch = storage.patch_if
+
+    async def patch_if(id, patch=None, **kwargs):
+        if "last_turn_error" in (patch or {}) and patch["last_turn_error"] is not None:
+            raise RuntimeError("storage hiccup")
+        return await real_patch(id, patch, **kwargs)
+
+    storage.patch_if = patch_if
+
+    outcome = await _run(seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider, [_failure("auth_error")])
+
+    assert outcome.success is False and outcome.drop_lease is True
+    row = await storage.get(seeded_session.id)
+    assert (row.status, row.ended_reason) == (SessionStatus.ENDED, "failed") and row.last_turn_error is None
 
 
 @pytest.mark.asyncio

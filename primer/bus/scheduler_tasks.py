@@ -393,6 +393,15 @@ class StuckSessionSweeper(_BackgroundTask):
             # ONE field-scoped write of the four fields this sweeper owns, fenced on what the decision above depended on: a
             # park, a finished first turn or another ender that landed since the read (the lease lookup awaits) is not
             # overwritten, and the first terminal reason wins. A whole-row update from the snapshot would have erased it.
+            where = {
+                "status": [raw_generation(fresh, "status")],
+                "turn_no": [raw_generation(fresh, "turn_no")],
+                "parked_status": [raw_generation(fresh, "parked_status")],
+            }
+            if fresh.last_turn_error is None:
+                # a failure stamped between the read and this write makes the row one this sweeper must leave to the failure exit (a stamped
+                # row it DID read, still RUNNING, is the reapable half-finished exit: the fence there is the status it read)
+                where["last_turn_error"] = [None]
             written = await self._storage.patch_if(
                 fresh.id,
                 to_jsonable_python({
@@ -401,11 +410,7 @@ class StuckSessionSweeper(_BackgroundTask):
                     "ended_detail": "never_started",
                     "ended_at": datetime.now(timezone.utc),
                 }),
-                where={
-                    "status": [raw_generation(fresh, "status")],
-                    "turn_no": [raw_generation(fresh, "turn_no")],
-                    "parked_status": [raw_generation(fresh, "parked_status")],
-                },
+                where=where,
             )
             if written is None:
                 logger.info(
@@ -476,9 +481,11 @@ def _never_started(session, grace_seconds: float) -> bool:
         return False
     if session.parked_status is not None:
         return False
-    if session.last_turn_error is not None:
+    if session.last_turn_error is not None and session.status == SessionStatus.WAITING:
         # A first turn that FAILED and left the session resting (C-024): a failed turn does not bump turn_no and its release drops the lease, so
-        # it has every other mark of a session that never started. The row says it did.
+        # it has every other mark of a session that never started. The row says it did. Only a RESTING (WAITING) row: a stamped row that is
+        # still RUNNING is one whose failure exit did not finish (the status transition raised, or the epoch voided it) and nothing else would
+        # end it, so it stays reapable, as it was before the field existed.
         return False
     ref = session.started_at or session.created_at
     if ref is None:

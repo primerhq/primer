@@ -629,7 +629,7 @@ async def run_one_session_turn(
             )
         async with session_lifecycle_lock().acquire(session_id):
             # BEFORE the status moves: a reader that sees the row after the transition must see why (C-024).
-            await _record_last_turn_error(session_storage, session_id, exc)
+            await _record_last_turn_error(session_storage, session_id, exc, session.binding_epoch)
             written = await _transition_session_status(
                 session_storage,
                 session,
@@ -2487,7 +2487,7 @@ async def _release_settled_row(session_storage, row: WorkspaceSession, where: st
 _RUNNING_FLIP_ATTEMPTS = 3
 
 
-async def _record_last_turn_error(session_storage, session_id: str, exc: BaseException) -> None:
+async def _record_last_turn_error(session_storage, session_id: str, exc: BaseException, binding_epoch: int) -> None:
     """Stamp ``last_turn_error`` (the failure's code and time) on the row: ONE ``patch_if`` of that field, guarded on the row not being ENDED.
 
     The code is the model call's own (``TurnStreamFailure.ended_detail_code``: the stream's code, else ``llm_stream_error``), else ``turn_failed`` for
@@ -2497,7 +2497,11 @@ async def _record_last_turn_error(session_storage, session_id: str, exc: BaseExc
     code = exc.ended_detail_code if isinstance(exc, _NamesWhyItEndedTheTurn) else "turn_failed"
     patch = to_jsonable_python({"last_turn_error": {"code": code, "at": _now()}})
     try:
-        await session_storage.patch_if(session_id, patch, where={"status": NON_ENDED_STATUSES()})
+        await session_storage.patch_if(
+            session_id, patch,
+            # like the transition right after it: a binding that switched while the turn ran is not this turn's failure to record
+            where={"status": NON_ENDED_STATUSES(), "binding_epoch": [binding_epoch]},
+        )
     except NotFoundError:
         logger.warning("session %s vanished before its failed turn could be recorded on the row", session_id)
     except Exception:  # noqa: BLE001 -- advisory; the lease must still be released
