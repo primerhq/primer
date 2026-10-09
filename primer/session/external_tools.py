@@ -15,7 +15,7 @@ from typing import Any
 
 from primer.model.except_ import ConflictError
 from primer.model.external_tool import ExternalToolCall
-from primer.model.yield_ import with_wake_park
+from primer.model.yield_ import with_wake_entry, with_wake_park
 from primer.model.storage import OffsetPage
 from primer.session.external_calls import resolve_external_row
 from primer.session.yields import durably_wake_session
@@ -146,7 +146,10 @@ async def apply_tool_results(
     for r in results:
         # The wake names the park this producer read (security ticket 01a1208d): delivered by key alone and at least once, a copy redelivered after the
         # session re-parked under the same key must not decide the new park.
-        payload = with_wake_park({"result": r.result, "is_error": bool(r.is_error)}, session.parked_at)
+        # ... and the call row it answers (``external_call_row_id`` of the pending entry), which survives a graph park's re-park where the stamp does not.
+        payload = with_wake_entry(
+            with_wake_park({"result": r.result, "is_error": bool(r.is_error)}, session.parked_at), rows[r.tool_call_id].id,
+        )
         await durably_wake_session(
             session,
             event_key=targets[r.tool_call_id],

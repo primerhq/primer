@@ -179,6 +179,9 @@ class ParkedSessionDispatcher:
                     storage_provider=deps.storage_provider,
                     event_bus=deps.event_bus,
                 ),
+                # The fire names the subscription it answers: delivered by key and at least once, a copy that arrives after the session re-parked cannot decide
+                # the new park, a graph park included (ticket 01a1223f).
+                entry_id=sub.id,
             )
         except Exception as exc:  # noqa: BLE001 — defensive perimeter
             return SubscriptionDispatchResult(

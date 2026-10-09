@@ -12,6 +12,7 @@ from primer.model.workspace_session import (
     SessionStatus,
     WorkspaceSession,
 )
+from primer.model.yield_ import WAKE_ENTRY_KEY
 from primer.trigger.subscribers import DispatchDeps
 from primer.trigger.subscribers.parked_session import ParkedSessionDispatcher
 
@@ -99,6 +100,7 @@ async def test_dispatch_resumes_parked_session(
     assert len(fake_event_bus.published) == 1
     key, payload = fake_event_bus.published[0]
     assert key == "subscribe_to_trigger:tc-1"
+    assert payload.pop(WAKE_ENTRY_KEY) == sub.id, "the fire names the subscription it answers"
     assert payload == {
         "ok": True,
         "fire_context": {
