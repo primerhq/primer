@@ -22,7 +22,7 @@ from typing import Any
 from primer.model.turn_log import TurnLogKind
 from primer.model.workspace_session import SessionMessageKind
 from primer.session.replay import visible_records
-from primer.session.terminals import CLOSES, COPY, TurnWindowScanner, closes_turn, is_session_terminal
+from primer.session.terminals import CLOSES, COPY, TurnWindowScanner, closes_turn, is_session_terminal, payload_of
 
 _DONE = SessionMessageKind.DONE.value
 _ERROR = SessionMessageKind.ERROR.value
@@ -293,16 +293,18 @@ def _turn_status(
         if kind == _YIELDED:
             return "parked"
     # Read from the last record, but only a terminal of the SESSION's own run says how the turn went: a subagent's
-    # failed / cancelled / done (payload.delegated) is the end of the subagent's turn, and its parent carries on.
+    # failed / cancelled / done (payload.delegated) is the end of the subagent's turn, and its parent carries on. So does a graph's: a node's
+    # terminal (one that names a node) ends the node, not the graph turn, which is closed by the graph's own end.
     last = records[-1] if records else None
-    if last is not None and is_session_terminal(last):
+    if last is not None and is_session_terminal(last) and not last.get("node_id"):
         kind = last.get("kind")
         if kind == _ERROR:
             return "failed"
         if kind == _CANCELLED:
             return "cancelled"
         if kind == _DONE and closes_turn(last):
-            return "completed"
+            # A ``done`` with ``stop_reason: "error"`` is the FAILURE end of a turn (the window scanner files what follows it as copies of it): a failed graph's own end is one.
+            return "failed" if payload_of(last).get("stop_reason") == "error" else "completed"
     return "running"
 
 

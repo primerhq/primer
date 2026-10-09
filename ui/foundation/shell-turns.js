@@ -368,8 +368,8 @@ function SH_retryInstruction(flat, errorRow, session) {
 // error records it wrote (the stream's own, dispatch's with the same words, the claim adapter's release marker), and whether a record is a COPY of an earlier
 // failure needs the records before it. Feed RAW records (kind, payload, node_id) in order; feed() says "closes" (the record ends a window), "copy" (a copy of a
 // failure that already ended one: ends nothing, and belongs to the window it copies) or "inside". The rule, in the server's words: a delegated record is
-// always inside, and so is a record of a graph NODE (one with a node_id: a graph turn is one window, closed by the graph's own end, the first record that has no
-// node; ticket 01a11f35); a user_input starts a new turn; a done / cancelled that closes the turn ends a window (done with stop_reason "error" is a FAILURE end that
+// always inside, and so is a record of a graph NODE (one with a node_id: a graph turn is one window, closed by the graph's own end, the node-less done with
+// payload.graph_end that the writers append when the run ends, a copy of the failure instead when a graph-level error already ended the window; ticket 01a11f35); a user_input starts a new turn; a done / cancelled that closes the turn ends a window (done with stop_reason "error" is a FAILURE end that
 // later errors of the turn can copy; any other end closes the turn); an error with an explicit fatal: false is a notice that ends nothing but whose words are
 // remembered; a bare release marker is a copy once the turn has failed and the only evidence (so it ends the window) when nothing has; any other error ends a
 // window unless the turn has already failed and an earlier error of the turn has the same non-empty message; dispatch's own failure ERROR (a title and an integer
@@ -386,11 +386,17 @@ function SH_isBareMarker(rec) {
   return !!rec && rec.kind === "error" && p.terminal === true && !SH_pyTruthy(p.message) && !SH_pyTruthy(p.code) && !SH_pyTruthy(p.title);
 }
 
-// The ERROR record dispatch's failure exit writes (terminals.is_dispatch_failure_record).
+// The ERROR record dispatch's failure exit writes (terminals.is_dispatch_failure_record). It names no node, which is not asked here: a record with a node is inside its window before the scanner gets this far.
 function SH_isDispatchFailureRecord(rec) {
   var p = SH_payloadOf(rec);
   return !!rec && rec.kind === "error" && typeof p.title === "string" && typeof p.status === "number" && isFinite(p.status) && Math.floor(p.status) === p.status
-    && !Object.prototype.hasOwnProperty.call(p, "fatal") && !SH_pyTruthy(rec.node_id);
+    && !Object.prototype.hasOwnProperty.call(p, "fatal");
+}
+
+// The record that ends a graph RUN (terminals.is_graph_end): the node-less done the writers append after the last node, payload.graph_end true.
+function SH_isGraphEnd(rec) {
+  var p = SH_payloadOf(rec);
+  return !!rec && rec.kind === "done" && p.graph_end === true && !SH_pyTruthy(rec.node_id) && !SH_pyTruthy(p.delegated);
 }
 
 function SH_newWindowScanner() {
@@ -417,6 +423,7 @@ function SH_newWindowScanner() {
         failed = true;
         return SH_WINDOW_CLOSES;
       }
+      if (failed && SH_isGraphEnd(rec)) return SH_WINDOW_COPY;        // the graph's end after a failure that already ended the window (a graph-level error): a copy of it
       if (!SH_closesTurn(rec)) return SH_WINDOW_INSIDE;
       if (rec.kind === "done" && payload.stop_reason === "error") failed = true;
       else newTurn();

@@ -592,6 +592,11 @@ class _NodeDispatchMixin:
                 await queue.put(dataclasses.replace(sub_event, nested=True))  # type: ignore[arg-type]
                 continue
             if isinstance(sub_event, _GraphErrorEvent):
+                if not sub_event.node_id:
+                    # The child's OWN failure (its max_iterations, a routing error from no node) names no node. Forwarded as it is, it would be a node-less ERROR in the
+                    # parent's log, which reads as the parent run's terminal and closes the outer window in the middle of the run: it is this node's failure, so it carries
+                    # this node's id (a failure inside the child already carries the innermost node's own).
+                    sub_event = dataclasses.replace(sub_event, node_id=current_graph_node_id() or node.id)
                 sub_error = sub_event
                 await queue.put(sub_event)  # type: ignore[arg-type]
                 continue

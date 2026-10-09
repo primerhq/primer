@@ -30,7 +30,7 @@ import logging
 from primer.channel.adapter import PromptEnvelope
 from primer.channel.reply_binding import resolve_reply_binding
 from primer.model.except_ import NotFoundError
-from primer.session.terminals import is_delegated, is_session_terminal
+from primer.session.terminals import is_delegated, is_graph_end, is_session_terminal
 
 
 _log = logging.getLogger(__name__)
@@ -171,6 +171,12 @@ def derive_session_final_text(records: list[dict]) -> str | None:
     # that ``done`` is a terminal record but the turn did not complete, and its partial text is not a result.
     if (records[last_done].get("payload") or {}).get("stop_reason") == "error":
         return None
+    # A GRAPH run's own end (a node-less ``done`` the writers append after the End node's output) is the verdict above, not a text boundary: the text of the run is the End output
+    # written BEFORE it and, for a pass-through End, the last node's answer, so the windows below are read as if it were not there. Only the FINAL one is dropped: an earlier
+    # invocation's end still separates that invocation's text from this one's.
+    if is_graph_end(records[last_done]):
+        boundaries = boundaries[:-1]
+        last_done = boundaries[-1] if boundaries else -1
     # Assistant text AFTER the last terminal record is a turn that streamed output and never ended. Its
     # ``cancelled`` record is best-effort (skipped when the workspace does not take the write in time), and
     # without this the previous turn's ``done`` would stand for it and that turn's answer would be handed over
@@ -201,7 +207,7 @@ def derive_session_final_text(records: list[dict]) -> str | None:
         return nested_outputs[-1]
     prev_boundary = boundaries[-2] if len(boundaries) > 1 else -1
     chunks: list[str] = []
-    for r in records[prev_boundary + 1:last_done]:
+    for r in records[prev_boundary + 1:max(last_done, 0)]:          # last_done is -1 for a graph whose nodes wrote no done: no node answer to fall back on
         # The subagents' text sits inside the parent's window now that their terminals are not boundaries; it is theirs.
         if r.get("kind") == "assistant_token" and not is_delegated(r):
             text = (r.get("payload") or {}).get("text")
@@ -234,12 +240,14 @@ def _parse_tail(lines_last_first) -> list[dict]:
     completed turn is the rows between the previous terminal record and the final ``done``, and what follows the final one), and
     ignores everything before. Parsing stops once two terminal records have been seen, with the second one INCLUDED, so the
     result has the same last two boundaries as the whole file would and the same answer; if the file has fewer than two it is
-    parsed whole. The cost is the size of the last window, not of the session's history (a relay-every-turn session read and parsed
+    parsed whole. A graph run's own end, when it is the last terminal, is the verdict and not a boundary (the text windows are the nodes'),
+    so it is not counted. The cost is the size of the last window, not of the session's history (a relay-every-turn session read and parsed
     all of it after every turn). Lines that are blank, do not parse, or parse to something that is not a record are skipped
     (the last kind used to reach ``derive_session_final_text`` and raise ``AttributeError`` there).
     """
     tail: list[dict] = []
     boundaries = 0
+    seen_terminal = False
     for line in lines_last_first:
         if isinstance(line, bytes):
             line = line.decode("utf-8", "replace")
@@ -254,6 +262,10 @@ def _parse_tail(lines_last_first) -> list[dict]:
             continue  # a line that is valid JSON but not a record (a stray number or list): skipped like an unparseable one
         tail.append(record)
         if is_session_terminal(record):
+            if not seen_terminal and is_graph_end(record):
+                seen_terminal = True          # the final graph end is the verdict, not a boundary (see derive_session_final_text): the two boundaries are the nodes' before it
+                continue
+            seen_terminal = True
             boundaries += 1
             if boundaries == 2:
                 break
