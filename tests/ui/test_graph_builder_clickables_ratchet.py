@@ -5,10 +5,11 @@ A ``<span onClick>`` or ``<div onClick>`` with no ``role`` is invisible to a key
 a new one fails, and a file that got below its count fails until the baseline is lowered (so the number is never a cushion for a later one). The rest are listed in ``BASELINE`` for the follow-up that
 turns each into a button, a ``role="button"`` with a key handler, or a link.
 
-What is counted (round 2 of #705 hardened it): an opening ``<span>``, ``<div>``, ``<a>``, ``<li>``, ``<p>``, ``<td>``, ``<tr>``, ``<section>``, ``<label>``, ``<ul>``, ``<ol>``, a heading, ``<img>`` or ``<svg>``
-whose attributes hold ``onClick``, ``onDoubleClick``, ``onMouseDown``, ``onMouseUp``, ``onPointerDown`` or ``onPointerUp``, and which is not a control. A control is a ``<button>`` (never scanned), a link
-with an ``href``, or an element with an INTERACTIVE ``role`` (button, link, tab, menuitem, checkbox, radio, switch, option ...) AND a ``tabIndex`` AND an ``onKeyDown``: a ``role="presentation"`` or
-``role="dialog"`` does not make a click handler reachable, and ``data-role=`` is not a role. Comments are not code.
+What is counted (rounds 2 and 3 of #705 hardened it): an opening ``<span>``, ``<div>``, ``<a>``, ``<li>``, ``<p>``, ``<td>``, ``<tr>``, ``<section>``, ``<label>``, ``<ul>``, ``<ol>``, a heading, ``<img>`` or
+``<svg>`` whose attributes hold ``onClick``, ``onDoubleClick``, ``onAuxClick``, ``onContextMenu``, ``onMouseDown``, ``onMouseUp``, ``onPointerDown``, ``onPointerUp``, ``onTouchStart`` or ``onTouchEnd`` (or
+that handler's ``Capture`` form), and which is not a control. A control is a ``<button>`` (never scanned), a link with an ``href`` that is something (``href={undefined}`` is not), or an element with an
+INTERACTIVE ``role`` (button, link, tab, menuitem, checkbox, radio, switch, option ...) AND a tab stop (a ``tabIndex`` of 0 or more: ``-1`` is not one) AND an ``onKeyDown``: a ``role="presentation"`` or
+``role="dialog"`` does not make a click handler reachable, and ``data-role=`` is not a role. Comments are not code, and a ``/*`` inside a string does not start one.
 """
 
 from __future__ import annotations
@@ -34,8 +35,12 @@ BASELINE = {
 TAGS = re.compile(r"<(span|div|a|li|p|td|tr|section|label|ul|ol|h[1-6]|img|svg)\b")
 # the attribute name must stand alone: not data-onClick, not aria-onClick
 HANDLERS = re.compile(
-    r"(?<![\w-])on(?:Click|DoubleClick|MouseDown|MouseUp|PointerDown|PointerUp)="
+    r"(?<![\w-])on(?:Click|DoubleClick|AuxClick|ContextMenu|MouseDown|MouseUp|PointerDown|PointerUp|TouchStart|TouchEnd)(?:Capture)?="
 )
+# a tab stop is a tabIndex of 0 or more that the scan can read: -1 takes focus from a script and a click, not from a Tab
+TAB_STOP = re.compile(r'(?<![\w-])tabIndex=(?:\{\s*\d+\s*\}|"\d+")')
+# an href with a destination: ``href={undefined}`` and ``href={null}`` render an anchor with none
+HREF = re.compile(r"(?<![\w-])href=(?!\{\s*(?:undefined|null)\s*\})")
 # a role that says "I am a control"; presentation, dialog, group, region ... do not make a click handler reachable
 INTERACTIVE = {
     "button",
@@ -57,11 +62,28 @@ INTERACTIVE = {
 
 
 def strip_comments(text: str) -> str:
-    """``text`` with the comments blanked (newlines kept, so line numbers stay): a block comment anywhere, and a line comment that starts its line (a ``//`` after code may be inside a URL)."""
-    text = re.sub(
-        r"/\*.*?\*/", lambda m: re.sub(r"[^\n]", " ", m.group(0)), text, flags=re.S
-    )
-    return re.sub(r"(?m)^(\s*)//.*$", lambda m: m.group(1), text)
+    """``text`` with the comments blanked (newlines kept, so line numbers stay): a block comment anywhere that is not inside a string, and a line comment that starts its line (a ``//`` after code may be
+    inside a URL). A quote opens a string that ends at its closing quote or, for ``'`` and ``"``, at the end of the line (an apostrophe in JSX text is not a string); a backtick string may span lines."""
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            end = n if end < 0 else end + 2
+            out.append(re.sub(r"[^\n]", " ", text[i:end]))
+            i = end
+        elif ch in "\"'`":
+            j = i + 1
+            while j < n and text[j] != ch and (ch == "`" or text[j] != "\n"):
+                j += 2 if text[j] == "\\" else 1
+            end = j + 1 if j < n and text[j] == ch else j
+            out.append(text[i:end])
+            i = end
+        else:
+            out.append(ch)
+            i += 1
+    return re.sub(r"(?m)^(\s*)//.*$", lambda m: m.group(1), "".join(out))
 
 
 def opening_tag(text: str, start: int) -> str:
@@ -84,7 +106,7 @@ def opening_tag(text: str, start: int) -> str:
 
 
 def clickable_non_controls(text: str) -> list[tuple[int, str]]:
-    """``(line, tag)`` of every opening tag in ``text`` that takes a pointer handler and is not a control: not a link with an ``href``, and not an interactive ``role`` with a ``tabIndex`` and an ``onKeyDown``."""
+    """``(line, tag)`` of every opening tag in ``text`` that takes a pointer handler and is not a control: not a link with an ``href``, and not an interactive ``role`` with a tab stop (``tabIndex`` of 0 or more) and an ``onKeyDown``."""
     text = strip_comments(text)
     found = []
     for m in TAGS.finditer(text):
@@ -92,13 +114,13 @@ def clickable_non_controls(text: str) -> list[tuple[int, str]]:
         tag = opening_tag(text, m.start())
         if not HANDLERS.search(tag):
             continue
-        if name == "a" and re.search(r"(?<![\w-])href=", tag):
+        if name == "a" and HREF.search(tag):
             continue
         role = re.search(r"(?<![\w-])role=\"(\w+)\"", tag)
         if (
             role
             and role.group(1) in INTERACTIVE
-            and re.search(r"(?<![\w-])tabIndex=", tag)
+            and TAB_STOP.search(tag)
             and re.search(r"(?<![\w-])onKeyDown=", tag)
         ):
             continue

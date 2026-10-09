@@ -1,4 +1,4 @@
-/* global React, EntityPicker, GB_KindDot, GB_RefEditor, GB_SchemaBuilder, GB_BranchBuilder, GB_ToolPicker, GB_KIND_META, GB_focusAfterRemoval, confirmDialog */
+/* global React, EntityPicker, GB_KindDot, GB_RefEditor, GB_SchemaBuilder, GB_BranchBuilder, GB_ToolPicker, GB_KIND_META, GB_focusAfterRemoval, GB_NAME_INPUT, GB_ADD_A_STEP, confirmDialog */
 // GB_Inspector - the right panel. Leads with what the step DOES, not with its
 // id: `description` is the title, `id` is small mono text in the header.
 // WIRING.md §4 / §5.
@@ -42,7 +42,7 @@ function GB_RemoveConnection({ edge, edgeIdx, labelOf, dispatch, onRemoved }) {
     if (!ok || !live.current || current.current !== asked) return;
     dispatch({ type: "DELETE_EDGE", idx: edgeIdx });
     if (onRemoved) onRemoved();
-    GB_focusAfterRemoval('[data-testid="gb-inspector-title"]');
+    GB_focusAfterRemoval(GB_NAME_INPUT, GB_ADD_A_STEP);
   };
   return (
     <button type="button" data-testid="gb-remove-connection" aria-label={"Remove this connection from " + labelOf(edge.from_node) + " to " + labelOf(edge.to_node)} onClick={press} style={GB_DESTROY_BUTTON}>
@@ -66,7 +66,7 @@ function GB_DeleteStep({ node, dispatch }) {
     });
     if (!ok || !live.current) return;
     dispatch({ type: "DELETE_NODE", id: node.id });
-    GB_focusAfterRemoval('[data-testid="gb-nothing-selected"]');
+    GB_focusAfterRemoval(GB_ADD_A_STEP);
   };
   return (
     <button type="button" data-testid="gb-delete-step" aria-label={"Delete this step: " + name} onClick={press} style={GB_DESTROY_BUTTON}>
@@ -150,7 +150,7 @@ function GB_Inspector(props) {
   if (!node) {
     return (
       <div className="col" style={{ padding: 20, gap: 8 }} data-testid="gb-inspector">
-        <div data-testid="gb-nothing-selected" tabIndex={-1} style={{ fontSize: "var(--fs-13)", fontWeight: 600 }}>Nothing selected</div>
+        <div style={{ fontSize: "var(--fs-13)", fontWeight: 600 }}>Nothing selected</div>
         <div className="muted" style={{ fontSize: "var(--fs-12)" }}>
           Pick a step on the canvas or in the list to see what it does.
         </div>
@@ -170,6 +170,7 @@ function GB_Inspector(props) {
         <div className="row" style={{ gap: 9, alignItems: "center" }}>
           <GB_KindDot kind={node.kind} size={26} />
           <input aria-label="Step name"
+            className="gb-title-input"
             data-testid="gb-inspector-title"
             value={node.description || ""}
             readOnly={readOnly}
@@ -177,7 +178,7 @@ function GB_Inspector(props) {
             onChange={(e) => patch({ description: e.target.value })}
             style={{
               fontSize: "var(--fs-13)", fontWeight: 600, background: "transparent", border: "none",
-              outline: "none", color: "var(--text)", flex: 1, minWidth: 0, padding: 0,
+              color: "var(--text)", flex: 1, minWidth: 0, padding: 0,
             }}
           />
           <span className="mono" style={{ marginLeft: "auto", fontSize: 10, color: "var(--text-4)", flex: "0 0 auto" }}>{node.id}</span>
@@ -302,7 +303,7 @@ function GB_Inspector(props) {
           onClick={() => setAdvanced(!advanced)}
           className="row"
           style={{
-            gap: 8, alignItems: "center", padding: "10px 11px", background: "var(--bg-elev)",
+            gap: 4, alignItems: "center", padding: "10px 11px", background: "var(--bg-elev)",
             border: "1px solid var(--border)", borderRadius: 9, color: "var(--text-3)",
             fontSize: "var(--fs-11)", cursor: "pointer", textAlign: "left", width: "100%",
           }}
