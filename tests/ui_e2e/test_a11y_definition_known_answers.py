@@ -266,3 +266,40 @@ def test_a_quiet_page_is_neither_loading_nor_in_error(page: Page) -> None:
     assert state.loading == [] and state.errors == []
     page.set_content("<main></main>")
     assert page_state(page, "main").errors == [], "an empty but visible root is quiet"
+
+
+# the console's REAL shapes of "this page failed" and "this page is still loading" (copied from ui/components; review of #668, round 3, B2''). The selectors are the SECOND line of defence;
+# the first is the network (tests/ui_e2e/test_a11y_sweep_guards_known_answers.py). Which of them the selectors recognise is stated here, not claimed in general.
+_CAUGHT_BY_SELECTORS = {
+    "an activity feed that failed (sh-activity.jsx)": ('<div class="sh-file-conflict"><span>HTTP 500</span><button type="button" class="sh-verb">Retry</button></div>', "errors"),
+    "an entity picker that could not load (entity-picker.jsx)": ('<div class="field-help warn" style="padding:10px;margin:0">Couldn\'t load agents</div>', "errors"),
+    "the dashboard's workers that keep failing (nv-system.jsx)": ('<div class="nv-bind-empty" style="color:var(--red)">Couldn\'t load workers &mdash; the list keeps failing (retrying).</div>', "errors"),
+    "a toolbar notice that is not an error": ('<div class="nv-bind-empty">Nothing needs you right now.</div>', None),
+    "the health page reading (health.jsx)": ('<div style="font-size:18px">Reading /v1/health&hellip;</div>', "loading"),
+    "the dashboard's health card checking (nv-system.jsx)": ("<div>checking&hellip;</div>", "loading"),
+    "the dashboard's health card before it has a word": ("<div>&hellip;</div>", "loading"),
+    "lower case loading": ("<div>loading templates&hellip;</div>", "loading"),
+}
+# shapes no selector can tell from a page that is fine; only the network guard sees them
+_ONLY_THE_NETWORK_SEES = {
+    "the toolsets table error (toolsets.jsx)": '<table><tbody><tr><td colspan="5"><span style="color:var(--red)">Internal Server Error</span> &middot; <a>Retry</a></td></tr></tbody></table>',
+    "the health probe failing (health.jsx)": '<div style="font-size:18px">Health probe failing</div><span class="mono" style="color:var(--red)">error: Internal Server Error</span>',
+    "a provider class body while its list loads (provider-catalog.jsx)": '<div data-testid="provider-body-llm"><div class="empty-state"><p>No providers match "".</p></div></div>',
+}
+
+
+@pytest.mark.ui_e2e
+@pytest.mark.parametrize("label", sorted(_CAUGHT_BY_SELECTORS))
+def test_the_consoles_real_loading_and_error_shapes_are_recognised_where_they_can_be(page: Page, label: str) -> None:
+    html, expected = _CAUGHT_BY_SELECTORS[label]
+    page.set_content(f"<main>{html}</main>")
+    state = page_state(page, "main")
+    assert (bool(state.errors), bool(state.loading)) == (expected == "errors", expected == "loading"), (label, state)
+
+
+@pytest.mark.ui_e2e
+@pytest.mark.parametrize("label", sorted(_ONLY_THE_NETWORK_SEES))
+def test_what_only_the_network_guard_sees_is_not_claimed_by_the_selectors(page: Page, label: str) -> None:
+    page.set_content(f"<main>{_ONLY_THE_NETWORK_SEES[label]}</main>")
+    state = page_state(page, "main")
+    assert not state.errors and not state.loading, (label, state)
