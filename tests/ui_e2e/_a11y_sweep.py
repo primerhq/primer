@@ -9,13 +9,16 @@ a library (``tests/ui/test_ui_e2e_modules_import_what_exists.py``). For each sur
   fixed ``CHROME`` left out of the body count) and records it. Anything the page said about itself is a NOTE for the surface: an error banner or a loading state it recognises (``page_state``), and,
   independent of how the page draws failure, every ``/v1`` response of 500 or more and every request that failed since the previous look (``api_problem``).
 
-Every wait is bounded, and the bound is shared: ``Budget`` shortens the waits once enough looks have used theirs up, so a broken install is reported and not waited out.
+Every wait is bounded, and the bound is shared: ``Budget`` shortens the waits once enough looks have used theirs up, so a broken install is reported and not waited out, and past its deadline it hands
+out no wait at all (it raises). ``reach(surface, open_it)`` is how a page is opened: a navigation that times out is a note and an empty look for that page, not the end of the sweep.
 """
 
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 
+from playwright.sync_api import Error as BrowserError
 from playwright.sync_api import Page, expect
 
 from tests.ui_e2e._a11y import AxProbe, Budget, Look, api_problem, is_event_stream, page_state
@@ -68,6 +71,10 @@ class Sweep:
 
     def _on_response(self, response) -> None:
         request = response.request
+        if request.is_navigation_request() and request.frame.parent_frame is None:
+            # The new document has committed. Until now the old one was alive and its requests were never reported finished when it went (as Playwright's own network-idle counts, at commit): what is in
+            # flight now can only be the new document's own, and its first request comes after this response.
+            self._inflight.clear()
         if is_event_stream(request.resource_type, response.headers.get("content-type")):
             self._inflight.discard(request)
             return
@@ -109,9 +116,21 @@ class Sweep:
                 return False
         return True
 
+    def reach(self, surface: str, open_it: Callable[[], None]) -> bool:
+        """Run ``open_it`` (a navigation to ``surface``) and say whether it worked. A navigation that times out (``open_legacy_route`` raises ``AssertionError`` after its own two timeouts) is a note and an
+        empty look for the surface, and ``False``: the sweep goes on to the other surfaces. The deadline is not a navigation failure and goes through."""
+        try:
+            open_it()
+        except (AssertionError, BrowserError) as exc:
+            self.budget.spent()
+            self.skip(surface, f"it could not be opened ({type(exc).__name__}: {str(exc).splitlines()[0][:120] if str(exc) else ''})")
+            return False
+        return True
+
     def _wait_until_idle(self, surface: str) -> None:
         """Wait until no ``/v1`` request is in flight: after a round trip to the page (a request the page has just started is announced to us before the answer to that round trip, so the set is
-        not read before the client has been told of it), and for a QUIET window: the set empty on two checks a quarter of a second apart (a poll that starts as the look begins is not missed)."""
+        not read before the client has been told of it), and for a QUIET window: the set empty on two checks a quarter of a second apart, so a request that starts within the quiet window (a poll that
+        starts as the look begins, a fetch the page makes 120 ms in) is waited for too. The wait is what the budget allows, and raises past its deadline."""
         deadline = time.monotonic() + self.budget.wait_ms(int(self.idle_timeout_s * 1000)) / 1000
         quiet = 0
         while True:
