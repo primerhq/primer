@@ -1,10 +1,12 @@
 """A message to a rested session is not undone by the stuck-session sweeper in the instant before its claim is armed (C-024 slice 2, review of PR 623).
 
-``wake_session`` moves a rested (WAITING, stamped) row to RUNNING with a whole-row write and only THEN arms the claim (``claim_engine.upsert``), all under
-the session's lifecycle lock. For that instant the row is RUNNING, ``turn_no`` 0, past the grace (a first turn that failed was started long ago), stamped
-and without a lease: every mark of the half-finished failure exit the sweeper reaps on purpose. The sweeper read the row and the lease table without the
-lock, so it could end the session the user had just messaged. It now takes the same lock for each candidate, so it sees the row after the wake has
-finished (with its lease), or ends it before the wake starts (and the wake reopens an ended session).
+``wake_session`` moves a rested (WAITING, stamped) row to RUNNING with a whole-row write and only THEN arms the claim (``claim_engine.upsert``).
+For that instant the row is RUNNING, ``turn_no`` 0, past the grace (a first turn that failed was started long ago), stamped and without a lease:
+every mark of the half-finished failure exit the sweeper reaps on purpose. A tick landing there ended the session the user had just messaged.
+
+The fence is in the data (the sweeper is leader-elected and can run on another pod, so a process-local lock would not hold): the wake restarts the
+row's ``started_at``, which the sweeper's age check reads and its write is fenced on. The first test lands a tick inside the wake's ``upsert``; the
+cross-pod and no-lock cases are in ``test_rest_and_wake_are_fenced_in_the_data.py``.
 """
 
 from __future__ import annotations
