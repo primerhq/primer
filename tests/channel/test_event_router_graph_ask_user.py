@@ -133,3 +133,14 @@ async def test_the_gate_is_cleared_once_it_is_answered() -> None:
     _outcome, gate_after = await _reply(router, sp)
 
     assert gate_after in (None, ""), gate_after
+
+
+@pytest.mark.asyncio
+async def test_the_routed_reply_names_the_prompt_it_answers() -> None:
+    """PR 4: every human-decision wake carries the gate it resolved, a routed thread reply included (it goes through the inbox)."""
+    sp, _store, bus, router = await _setup(graph=True, pending_gate=GA, correlation_gate=GA)
+
+    await _reply(router, sp)
+
+    [(_key, payload)] = bus.published
+    assert payload["__yield_gate_id__"] == GA
