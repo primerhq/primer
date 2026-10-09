@@ -1,15 +1,16 @@
-"""Reproduction of ticket 01a11057: a subagent under a graph agent node that re-yields on a NEW tool call never gets its next reply.
+"""Ticket 01a11057: a subagent under a graph agent node that re-yields on a NEW tool call must get its next reply.
 
-TEST-ONLY: no production change. ``repark_graph_continuation`` rewrites the parked entry's ``event_key``, ``tool_name``, ``leaf`` and
+FIXED by the sibling selection of ticket 01a11fc6-0cce (C-033 PR 3): a decision now selects the pending entry by the EVENT KEY it fired, and
+``repark_graph_continuation`` does rewrite that key, so the second reply finds the entry although its ``tool_call_id`` still says ``leaf-1``.
+The strict xfail this file carried while the fix was held is lifted; both tests are plain tests now. What follows is the reproduction's
+original description. ``repark_graph_continuation`` rewrites the parked entry's ``event_key``, ``tool_name``, ``leaf`` and
 ``frames`` when a nested subagent yields again, but NOT its ``tool_call_id``; ``resume_graph_engine`` finds the nested entry by
 ``tool_call_id == event_key.rsplit(":", 1)[-1]``. So when the subagent asks a SECOND question on a new tool call (``leaf-2``), the
 entry still says ``leaf-1``: the second reply does not find it, is delivered to the graph agent node as a flat reply instead of
 walking the subagent, and the graph just re-parks. The subagent only ever sees the first answer.
 
-Two tests: a plain SCENARIO test pinning that the first reply DID reach the subagent and the graph re-parked on the second
-question's key (so a broken harness cannot hide behind the expected failure), and a strict-xfail BEHAVIOUR test (restricted to
-``AssertionError``) that the second reply reaches the subagent. The fix (``repark_graph_continuation`` rewriting the entry's
-``tool_call_id``, likely in PR-11) must delete the marker. Harness: ``test_graph_resume_typed_markers.py`` (real
+Two tests: a SCENARIO test pinning that the first reply DID reach the subagent and the graph re-parked on the second
+question's key, and a BEHAVIOUR test that the second reply reaches the subagent. Harness: ``test_graph_resume_typed_markers.py`` (real
 ``resume_graph_engine`` over fake storage; the subagent's resume and the first park are faked at their edges).
 """
 
@@ -86,10 +87,6 @@ async def test_scenario_the_first_reply_reached_the_subagent_and_the_graph_re_pa
     assert seen["repark_key"].endswith(":leaf-2") and seen["entry_event_key"] == seen["repark_key"]
 
 
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError,
-    reason="01a11057: repark_graph_continuation does not rewrite the pending entry's tool_call_id, so the second reply never finds it",
-)
 @pytest.mark.asyncio
 async def test_the_second_reply_to_a_subagent_that_re_yielded_on_a_new_tool_call_reaches_the_subagent(monkeypatch):
     seen = await _two_replies(monkeypatch)
