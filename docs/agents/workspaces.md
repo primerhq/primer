@@ -143,12 +143,14 @@ it's called from a context with no implicit session.
 
 ### Workspace lifecycle
 
-- `workspaces::create_workspace` - body needs `id`, `provider_id`,
-  optional `template_id`. When you supply an `id`, it must be one
-  DNS-1123 label: lowercase letters, digits and `-`, starting and ending
-  with a letter or digit, at most 63 characters (`WORKSPACE_ID_PATTERN`
-  in `primer/model/workspace.py`) - anything else is a validation error.
-  Returns 202.
+- `workspaces::create_workspace` - arguments are `template_id`
+  (required), `id` (optional) and `overrides` (optional); there is no
+  `provider_id` - the provider comes from the template. When you supply
+  an `id`, it must be one DNS-1123 label: lowercase letters, digits and
+  `-`, starting and ending with a letter or digit, at most 63 characters
+  (`WORKSPACE_ID_PATTERN` in `primer/model/workspace.py`) - anything else
+  is a validation error. Returns the stored row (the REST route answers
+  201).
 - `workspaces::get_workspace` - fetch by id.
 - `workspaces::list_workspaces` - paginated.
 - `workspaces::delete_workspace` - destroys the workspace: its
