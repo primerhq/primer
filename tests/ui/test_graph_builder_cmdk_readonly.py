@@ -3,6 +3,8 @@
 A graph a harness manages (``loaded.harness_id``) draws the builder READ-ONLY: the banner says direct edits are blocked, and the dispatch is a no-op. The outline's "+ Add a step" button is already hidden in that mode, but the Cmd-K (Ctrl-K) shortcut was not guarded, so a keypress opened the palette and every step picked from it was silently dropped: the user picks a step and nothing happens.
 
 The harness is the strict mini React on the real builder files, with one difference from the shared ``_graph_builder_v8`` prelude: ``window.addEventListener`` RECORDS its listeners, so a test can send the keydown the builder's ``useEffect`` registers on ``window``. The canvas has no palette entry point, so no guard is needed there; the outline button's existing ``!readOnly`` guard is pinned (hidden read-only, shown editable) so the shortcut is the last unguarded entry point.
+
+Production order matters: the builder mounts while the graph fetch is still in flight (editable), and ``harness_id`` arrives on a LATER re-render, so ``readOnly`` turns true after mount. The keydown effect must re-run on that flip (``readOnly`` is one of its deps), or the stale mount-time closure keeps opening the palette read-only - pinned by mounting editable and re-rendering with ``harness_id``.
 """
 
 from __future__ import annotations
@@ -102,3 +104,14 @@ def test_a_plain_k_does_not_open_the_palette(ctx) -> None:
 def test_the_outline_add_button_shows_in_an_editable_builder(ctx) -> None:
     _mount(ctx, harness=False)
     assert ctx.eval('MR.find("gb-outline-add") !== null') is True
+
+
+def test_cmd_k_does_not_open_the_palette_after_the_builder_becomes_read_only(ctx) -> None:
+    """Production order: mounted editable, ``harness_id`` arrives on a later re-render. The keydown effect must re-run on that flip: with ``readOnly`` missing from its deps, the stale mount-time closure (readOnly false) still opens the palette."""
+    _mount(ctx, harness=False)
+    ro = dict(BASE)
+    ro["harness_id"] = "harness-1"
+    ctx.eval("MR.rerender({ graphId: 'g', loaded: " + json.dumps(ro) + ", pushToast: NOOP });")
+    assert "managed by harness" in " ".join(json.loads(ctx.eval("texts()"))), "the re-render did not turn the builder read-only"
+    _press(ctx, meta=True)
+    assert ctx.eval("paletteOpen()") is False, "the palette opened after the builder turned read-only: the keydown effect kept the stale mount-time closure"
