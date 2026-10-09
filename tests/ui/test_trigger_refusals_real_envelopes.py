@@ -102,16 +102,17 @@ def test_a_role_that_may_not_write_says_so_in_every_dialog(envelopes, fallback: 
 # ---- a message that is only the code is not a sentence ------------------------------------------------------------------------------------------------------
 
 
-def test_a_message_equal_to_the_code_falls_through_to_the_title(envelopes) -> None:
+def test_a_message_equal_to_the_code_falls_through_to_the_title_with_the_code_after_it(envelopes) -> None:
+    """With no sentence and no remedy the banner has only the title and the code (review of #625: a title alone tells nobody what was refused)."""
     env = {**envelopes["slug"], "detail": "something_unheard_of", "title": "Conflict", "extensions": {"code": "something_unheard_of", "request_id": "r"}}
 
-    assert _text(env, "Request failed") == "Conflict"
+    assert _text(env, "Request failed") == "Conflict (something_unheard_of)"
 
 
-def test_a_detail_string_that_is_only_a_snake_case_code_is_not_shown_when_there_is_no_code_at_all() -> None:
+def test_a_detail_string_that_is_only_a_snake_case_code_is_the_code_and_follows_the_title() -> None:
     env = {"type": "/errors/bad-request", "title": "Bad Request", "status": 400, "detail": "payload_malformed", "extensions": {"request_id": "r"}}
 
-    assert _text(env, "Request failed") == "Bad Request"
+    assert _text(env, "Request failed") == "Bad Request (payload_malformed)"
 
 
 def test_an_id_with_an_underscore_in_a_not_found_message_is_not_mistaken_for_a_code(envelopes) -> None:
@@ -121,8 +122,8 @@ def test_an_id_with_an_underscore_in_a_not_found_message_is_not_mistaken_for_a_c
     )
 
 
-def test_a_not_found_with_no_message_is_the_http_title_not_a_sentence_about_nothing(envelopes) -> None:
-    assert _text(envelopes["not_found_empty"], "Fire failed") == "Not Found"
+def test_a_not_found_with_no_message_is_the_http_title_and_its_code_not_a_sentence_about_nothing(envelopes) -> None:
+    assert _text(envelopes["not_found_empty"], "Fire failed") == "Not Found (trigger_not_found)"
 
 
 # ---- what the trigger router says is unchanged ----------------------------------------------------------------------------------------------------------------

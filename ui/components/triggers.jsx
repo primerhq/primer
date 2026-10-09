@@ -181,13 +181,6 @@ var TR_REMEDIES = {
 // what a bare auth code means (a session that ended, a role that may not write) and what is not a sentence. tests/ui/test_trigger_refusals_real_envelopes.py
 // feeds it the real envelopes of the auth gate and of this router.
 
-// The code and the message of a failed trigger write, from the thrown ApiError. With no sentence from the server the message is the HTTP title, then the
-// error's message, then the fallback.
-function TR_refusal(err, fallback) {
-  var r = window.primerApi.readRefusal(err, fallback);
-  return { code: r.code, message: r.message };
-}
-
 // The banner's detail for a refused write: the server's message worked into one sentence about what to do. A code with no template shows the message
 // alone; a code with no sentence from the server (the auth gate) gets the reader's own sentence; the code itself is never part of the text.
 function TR_refusalText(err, fallback) {
