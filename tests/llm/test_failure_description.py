@@ -158,7 +158,7 @@ def test_an_exception_the_classifier_could_not_place_is_scrubbed_and_keeps_its_c
 
 
 async def test_the_cap_is_applied_after_the_scrub_so_a_secret_is_never_cut_in_half():
-    """The key sits ACROSS where a cap-first order would cut (the text is 24 characters longer than the cap before the scrub and 9 shorter after
+    """The key sits ACROSS where a cap-first order would cut (the text is 5 characters longer than the cap before the scrub and 9 shorter after
     it): cut first, 16 of its characters are left readable and no exact match can find them; scrubbed first, the whole key is one mask."""
     padding = "x" * (UPSTREAM_TEXT_CAP - 3 - 16 - 1)
     err = _described(await _openai_sdk_error(500, {"error": {"message": f"{padding} {API_KEY}"}}))
@@ -230,20 +230,6 @@ async def test_an_untouched_message_is_capped_generously_after_the_scrub():
     assert isinstance(err, BadRequestError) and 3000 < len(err.message) <= 4000 and err.message.endswith("...")
 
 
-def test_a_placeholder_key_a_local_server_accepts_does_not_mask_ordinary_words():
-    """``EMPTY`` or ``dummy`` is what a keyless local endpoint is configured with; masking it would blank those words (and numbers) everywhere."""
-    exc = RuntimeError("the dummy model returned none of the 1234 results")
-    for placeholder in ("EMPTY", "dummy", "none", "1234"):
-        provider = LLMProvider(
-            id="lm-studio-box", provider=LLMProviderType.OPENCHAT, limits=Limits(max_concurrency=1),
-            config=OpenChatConfig(url=HttpUrl("http://lmstudio.local:1234/v1"), api_key=SecretStr(placeholder), flavor=OpenChatFlavor.LMSTUDIO),
-        )
-
-        err = describe_failure(classify_openai_exception(exc), exc, provider)
-
-        assert err.message == "the dummy model returned none of the 1234 results", (placeholder, err.message)
-
-
 def test_the_bearer_token_rule_is_pinned():
     exc = RuntimeError("rejected: Authorization: Bearer abcdef0123456789ABCDEF.token_part")
 
@@ -295,3 +281,163 @@ def test_an_ollama_error_that_is_a_decoded_json_object_keeps_its_text():
     err = describe_failure(_classify_ollama_exception(exc), exc, _provider())
 
     assert isinstance(err, ServerError) and err.message.endswith("(HTTP 500): the model crashed"), err.message
+
+
+# ---- round 2 of the review of PR 619: the key floors, Basic auth, the walk bounds, control characters, the fallback log ----------------------------
+
+KEYLESS_PLACEHOLDERS = ("EMPTY", "none", "dummy", "ollama", "lm-studio", "no-key-required", "not-needed", "sk-no-key-required")
+
+
+def _provider_with_key(key: str, url: str = "http://lmstudio.local:1234/v1") -> LLMProvider:
+    return LLMProvider(
+        id="lm-studio-box", provider=LLMProviderType.OPENCHAT, limits=Limits(max_concurrency=1),
+        config=OpenChatConfig(url=HttpUrl(url), api_key=SecretStr(key), flavor=OpenChatFlavor.LMSTUDIO),
+    )
+
+
+@pytest.mark.parametrize("placeholder", KEYLESS_PLACEHOLDERS + ("empty", "None", "Dummy", "OLLAMA"))
+def test_a_keyless_placeholder_is_never_masked_whatever_its_length_or_case(placeholder):
+    """A keyless local endpoint is configured with ``EMPTY``, ``dummy``, ``lm-studio``...: masking it would blank those words (and numbers) everywhere."""
+    exc = RuntimeError(f"the {placeholder} model returned none of the 1234 results")
+
+    err = describe_failure(classify_openai_exception(exc), exc, _provider_with_key(placeholder))
+
+    assert err.message == f"the {placeholder} model returned none of the 1234 results", err.message
+
+
+@pytest.mark.parametrize("key", ["abcd", "sk-1234", "secret1", "abc12345", "token-abc123"])
+async def test_a_configured_key_of_four_or_more_characters_is_masked_where_a_provider_echoes_it(key):
+    """The 8/6 floors of the first revision let ``sk-1234``, ``secret1`` and a short password through verbatim in a 500, a 401 and a 400 echo."""
+    provider = _provider_with_key(key)
+    in_500 = _described(await _openai_sdk_error(500, {"error": {"message": f"invalid api key {key} for this server"}}), provider)
+    in_401 = _described(await _openai_sdk_error(401, {"error": {"message": f"Malformed API Key passed in: Bearer {key}"}}), provider)
+    in_400 = _described(await _openai_sdk_error(400, {"error": {"message": f"key {key} may not call this model"}}), provider)
+
+    for err in (in_500, in_401, in_400):
+        assert key not in err.message and "[REDACTED]" in err.message, err.message
+
+
+def test_the_floor_is_four_characters_and_a_short_key_is_masked_as_a_token_not_inside_a_longer_one():
+    """4 to 7 characters: masked where the key stands alone (a number that merely contains it is not a key: the context-overflow veto reads those),
+    8 and more: masked wherever it appears. Below 4 nothing is masked."""
+    def masked(key: str, text: str) -> str:
+        exc = RuntimeError(text)
+        return describe_failure(classify_openai_exception(exc), exc, _provider_with_key(key)).message
+
+    assert masked("1234", "you requested 12345678 tokens, not 1234") == "you requested 12345678 tokens, not [REDACTED]"
+    assert masked("secret1", "key secret1x and secret1.") == "key secret1x and [REDACTED]."
+    assert masked("abc12345", "key xabc12345y") == "key x[REDACTED]y", "8 characters: masked wherever it appears"
+    assert masked("abc", "key abc") == "key abc", "below the floor nothing is masked"
+
+
+async def test_a_short_base_url_password_is_masked_in_both_forms():
+    for password in ("pw12", "hunt3"):
+        provider = _provider(f"http://admin:{password}@lmstudio.local:1234/v1")
+        bare = _described(await _openai_sdk_error(500, {"error": {"message": f"login admin/{password} refused"}}), provider)
+        in_url = _described(await _openai_sdk_error(502, {"error": {"message": f"proxy http://admin:{password}@lmstudio.local:1234/v1 refused"}}), provider)
+
+        assert password not in bare.message and password not in in_url.message, (bare.message, in_url.message)
+
+
+async def test_the_basic_authorization_header_of_a_base_url_with_credentials_is_masked_when_a_provider_echoes_it():
+    """httpx sends ``Authorization: Basic base64(user:password)`` for a Base URL with userinfo, so a 401 that echoes the header shows the password."""
+    import base64
+
+    provider = _provider("http://admin:Tr0ub4dor-pw@lmstudio.local:1234/v1")
+    header = base64.b64encode(b"admin:Tr0ub4dor-pw").decode()
+    exact = _described(await _openai_sdk_error(401, {"error": {"message": f"bad header Authorization: Basic {header}"}}), provider)
+    other = _described(await _openai_sdk_error(401, {"error": {"message": "bad header Authorization: Basic YWRtaW46c29tZXRoaW5nZWxzZQ=="}}), provider)
+
+    assert header not in exact.message and "Tr0ub4dor" not in exact.message and "Basic [REDACTED]" in exact.message, exact.message
+    assert "YWRtaW46" not in other.message and "Basic [REDACTED]" in other.message, other.message
+
+
+def test_an_ordinary_sentence_that_says_basic_is_not_masked():
+    """Only a run that looks like base64 follows ``Basic`` into the mask; the word after it in prose does not."""
+    exc = RuntimeError("Basic authentication is required for this realm")
+
+    err = describe_failure(classify_openai_exception(exc), exc, _provider())
+
+    assert err.message == "Basic authentication is required for this realm"
+
+
+def test_a_body_nested_far_past_the_walk_ends_with_the_bounded_dump_and_logs_nothing(caplog):
+    """Reverting the walk to recursion survives a test that only checks the sentence: the RecursionError is swallowed and the label-only sentence
+    passes. The text must END with the four-level dump of what the walk reached, and nothing may be logged by the module."""
+    with caplog.at_level("DEBUG", logger="primer.llm._failure"):
+        err = _described(_hostile_body(5000))
+
+    assert err.message.endswith(': {"error": {"error": {"error": {"error": "..."}}}}'), err.message[-120:]
+    assert [r for r in caplog.records if r.name == "primer.llm._failure"] == []
+
+
+async def test_a_control_character_inside_an_echoed_key_does_not_defeat_the_mask():
+    """Stripped before the scrub, a NUL inside the echo no longer breaks the exact match."""
+    echoed = API_KEY[:10] + "\x00" + API_KEY[10:]
+    err = _described(await _openai_sdk_error(500, {"error": {"message": f"bad key {echoed}"}}))
+
+    assert not any(API_KEY[i:i + 8] in err.message for i in range(len(API_KEY) - 7)), err.message
+    assert "[REDACTED]" in err.message
+
+
+async def test_an_untouched_message_has_its_control_characters_stripped_too():
+    err = _described(await _openai_sdk_error(400, {"error": {"message": "bad\x00 value\x1b[31m here"}}))
+
+    assert isinstance(err, BadRequestError) and "\x00" not in err.message and "\x1b" not in err.message
+
+
+def test_the_fallback_log_does_not_carry_the_exception_that_failed_or_the_one_it_chains_to(monkeypatch, caplog):
+    """The fallback is reached inside the adapter's ``except``, so a traceback logged there chains the SDK exception whose text is the raw body (and
+    whatever key it echoes). Only the type's name is logged."""
+    from primer.llm import _failure
+
+    def boom(exc, err):
+        raise RuntimeError(f"cannot read {API_KEY}")
+
+    monkeypatch.setattr(_failure, "_upstream_text", boom)
+    exc = RuntimeError(f"echo {API_KEY}")
+
+    with caplog.at_level("WARNING", logger="primer.llm._failure"):
+        try:
+            raise exc
+        except RuntimeError as caught:
+            err = describe_failure(ServerError("x", code="server_error", status_code=500), caught, _provider())
+
+    assert err.message.endswith("(HTTP 500)")
+    assert caplog.records and API_KEY not in caplog.text and "RuntimeError" in caplog.text
+
+
+async def test_only_a_prefix_of_a_huge_body_is_scrubbed(monkeypatch):
+    """The scrub is linear in what it is handed and a body can be tens of megabytes; the message shows 300 characters of it."""
+    from primer.llm import _failure
+
+    seen: list[int] = []
+    real = _failure.scrub
+
+    def spy(text, provider):
+        seen.append(len(text))
+        return real(text, provider)
+
+    monkeypatch.setattr(_failure, "scrub", spy)
+
+    err = _described(await _openai_sdk_error(502, "<p>" + "x" * 3_000_000))
+
+    assert seen and max(seen) <= _failure._SCAN_LIMIT, seen
+    assert err.message.startswith(f"{LABEL} had a server error (HTTP 502): <p>xxx")
+
+
+def test_an_ollama_connection_error_raised_from_none_carries_its_own_text_not_the_suppressed_one():
+    """ollama raises ``ConnectionError("Failed to connect to Ollama. ...") from None`` inside ``except httpx.ConnectError``. ``from None`` suppresses the
+    context on purpose: the useful sentence is the ConnectionError's own, not the transport's "All connection attempts failed"."""
+    from primer.llm.ollama import _classify_ollama_exception
+
+    try:
+        try:
+            raise httpx.ConnectError("All connection attempts failed")
+        except httpx.ConnectError:
+            raise ConnectionError("Failed to connect to Ollama. Please check that Ollama is running.") from None
+    except ConnectionError as exc:
+        err = describe_failure(_classify_ollama_exception(exc), exc, _provider())
+
+    assert isinstance(err, NetworkError)
+    assert err.message.endswith("(ConnectionError): Failed to connect to Ollama. Please check that Ollama is running."), err.message
