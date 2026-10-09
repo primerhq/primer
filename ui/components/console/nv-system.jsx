@@ -109,9 +109,11 @@ function NV_HealthCards() {
         : healthState === "loading" ? "…"
         : (!sched.alive ? "down" : (sched.degraded ? "degraded" : "alive")),
       sub: healthState === "stuck" ? "health check failing"
+        : healthState === "loading" ? "checking…"
         : sched.degraded ? (sched.degraded_reason || "degraded")
         : (sched.alive ? (sched.detail || "healthy") : "no scheduler attached"),
       tone: healthState === "stuck" ? "var(--red)"
+        : healthState === "loading" ? "var(--text-4)"
         : (schedOk ? "var(--green)" : (sched.alive ? "var(--amber)" : "var(--red)")),
     },
     {
