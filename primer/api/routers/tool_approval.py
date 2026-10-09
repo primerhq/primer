@@ -29,7 +29,9 @@ from primer.common.entity_checks import EntityCheckError
 from primer.int.event_bus import EventBus
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.api.approver_guard import enforce_approvers
+from primer.api.gate_fence import count_gate_token, stale_gate_error
 from primer.session.pending_gates import enumerate_pending_gates, resolve_pending_gate
+from primer.model.yield_ import GATE_ID_PATTERN, gate_id_of
 from primer.session.yields import durably_wake_session
 from primer.model.workspace_session import WorkspaceSession
 from primer.model.storage import OffsetPage, OffsetPageResponse, OrderBy
@@ -145,6 +147,14 @@ class ToolApprovalPendingResponse(BaseModel):
             "ApproverSpec stamped at park time. None means anyone."
         ),
     )
+    gate_id: str | None = Field(
+        default=None,
+        description=(
+            "The id of THIS gate, minted when it was created. Send it back as ``gate_id`` on respond: the provider's tool_call_id repeats "
+            "across rounds, so a respond that names only the tool_call_id can decide a LATER gate than the one the operator was looking at "
+            "(409 ``approval_stale`` when it names a gate that has since been replaced). None for a park from before gates had ids."
+        ),
+    )
     parked_at: str
     timeout_at: str | None = None
     status: Literal["pending", "approved", "rejected"] = "pending"
@@ -154,6 +164,15 @@ class ToolApprovalRespondBody(BaseModel):
     """Request body for POST .../tool_approval/respond."""
 
     tool_call_id: str
+    gate_id: str | None = Field(
+        default=None,
+        pattern=GATE_ID_PATTERN,
+        description=(
+            "The ``gate_id`` the pending response served for the gate this decision answers. Optional while clients catch up (a respond "
+            "without it is accepted, logged and counted); a respond naming a gate that is no longer the pending one is a 409 "
+            "``approval_stale`` and moves nothing."
+        ),
+    )
     decision: Literal["approved", "rejected"]
     reason: str | None = Field(default=None, max_length=1024)
 
@@ -223,6 +242,7 @@ def _build_pending_response(
         approval_type=metadata.get("approval_type"),
         gate_reason=metadata.get("gate_reason"),
         approvers=metadata.get("approvers"),
+        gate_id=gate_id_of(metadata),
         parked_at=(
             sess.parked_at.isoformat()
             if sess.parked_at is not None
@@ -413,7 +433,7 @@ def make_tool_approval_ops_router() -> APIRouter:
     @router.post(
         "/sessions/{session_id}/tool_approval/respond",
         status_code=202,
-        responses=common_responses(404, 422, 500),
+        responses=common_responses(404, 409, 422, 500),
     )
     async def post_session_tool_approval_respond(
         session_id: Annotated[str, Path()],
@@ -431,12 +451,22 @@ def make_tool_approval_ops_router() -> APIRouter:
         # the primary one is projected onto the top-level `yielded` blob
         # (see primer.session.pending_gates). Mirrors yields.py's
         # _graph_ask_user_dispatch pattern for the ask_user case.
-        gate = resolve_pending_gate(blob, tool_call_id=body.tool_call_id, kind="_approval")
+        gate = resolve_pending_gate(
+            blob, tool_call_id=body.tool_call_id, kind="_approval", gate_id=body.gate_id,
+        )
         if gate is None:
+            # C-033: the call id is pending but not under the gate the card named => the card is stale (the gate it showed was replaced by
+            # a later one under the same provider id). Refused before anything moves.
+            if body.gate_id is not None and resolve_pending_gate(
+                blob, tool_call_id=body.tool_call_id, kind="_approval",
+            ) is not None:
+                count_gate_token(kind="approval", session_id=session_id, token=body.gate_id, stale=True)
+                raise stale_gate_error("approval")
             raise NotFoundError(
                 f"No pending tool_approval with tool_call_id "
                 f"{body.tool_call_id!r} on {session_id!r}"
             )
+        count_gate_token(kind="approval", session_id=session_id, token=body.gate_id)
         # Approver routing (P6): 403 approver_mismatch before any state
         # moves; decided_by rides the wake payload into the durable
         # record the resume coordinator writes.

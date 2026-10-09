@@ -48,6 +48,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from primer.model.yield_ import gate_id_of
 from primer.session.yields import _tool_call_id_for
 
 
@@ -65,7 +66,7 @@ def enumerate_pending_gates(blob: dict[str, Any]) -> list[dict[str, Any]]:
                                         # non-graph (agent-session/chat) park
             "tool_call_id": str | None,
             "event_key": str | None,
-            "resume_metadata": dict,
+            "resume_metadata": dict,     # carries the gate's ``gate_id`` when it has one
         }
 
     A non-graph park yields at most one entry, built from
@@ -118,21 +119,25 @@ def resolve_pending_gate(
     *,
     tool_call_id: str,
     kind: str | None = None,
+    gate_id: str | None = None,
 ) -> dict[str, Any] | None:
-    """The one pending entry matching ``tool_call_id`` (and ``kind`` if given).
+    """The one pending entry matching ``tool_call_id`` (and ``kind`` / ``gate_id`` if given).
 
     ``kind`` narrows to one tool_name (e.g. ``"_approval"``) when a caller
     knows only entries of that kind can answer the request. Mirrors
     :func:`primer.api.routers.yields._graph_ask_user_dispatch`'s collision
     handling: two concurrent fan-out siblings can share a raw provider
-    tool_call_id, which the REST wire contract has no field to
-    disambiguate, so a collision resolves to the first match and logs a
-    warning rather than raising.
+    tool_call_id, which only ``gate_id`` can disambiguate: a caller that
+    names the gate it answers gets exactly that entry (``None`` when the
+    id given belongs to no pending entry, e.g. a gate since replaced by
+    one under the same tool_call_id), and a caller that names none gets
+    the first match with a warning rather than an exception.
     """
     matches = [
         entry for entry in enumerate_pending_gates(blob)
         if entry.get("tool_call_id") == tool_call_id
         and (kind is None or entry.get("kind") == kind)
+        and (gate_id is None or gate_id_of(entry.get("resume_metadata")) == gate_id)
     ]
     if len(matches) > 1:
         logger.warning(

@@ -26,6 +26,7 @@ from primer.agent.rego import RegoCompileError, RegoEvaluator
 from primer.common.preview_paths import closed_set_names
 from primer.int.storage import Storage
 from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
+from primer.model.yield_ import GATE_ID_KEY, new_gate_id
 from primer.model.tool_approval import (
     ApprovalType,
     ApproverSpec,
@@ -169,7 +170,7 @@ def _choose_policy(rows: Sequence[ToolApprovalPolicy], *, toolset_id: str, tool_
 
 
 # The keys other code trusts on an approval park; a site's own keys must not collide with them.
-_RESUME_METADATA_KEYS = frozenset({"policy_id", "approval_type", "gate_reason", "approvers", "original_call", "preview"})
+_RESUME_METADATA_KEYS = frozenset({"policy_id", "approval_type", "gate_reason", "approvers", "original_call", "preview", GATE_ID_KEY})
 
 
 def resolve_preview(*, policy: ToolApprovalPolicy, tool: "Tool | None") -> dict[str, Any]:
@@ -200,7 +201,8 @@ def approval_resume_metadata(
 
     Carries the identity of the gate (``policy_id``, ``approval_type``, ``gate_reason``), the call it gates (``original_call``) and WHO MAY
     DECIDE it: the effective approver spec (the evaluator's per-call routing, else the policy row's), stamped as a dict or ``None`` for
-    "anyone". Every path that answers a gate judges the answer against this stamp (:func:`primer.session.approvers.may_decide`), so a
+    "anyone", and the ``gate_id`` minted here, once per park (see :func:`primer.model.yield_.new_gate_id`): a decision names it, so a card left
+    open for an earlier gate under the same provider tool_call_id is refused as stale instead of deciding this one. Every path that answers a gate judges the answer against this stamp (:func:`primer.session.approvers.may_decide`), so a
     park site that built its own dict and left the stamp out (the ``call_tool`` meta-dispatch did) silently let any user decide a
     restricted gate. ``extra`` carries a site's own keys (``via_call_tool``); a key that collides with a stamped one raises ``ValueError``.
 
@@ -220,6 +222,7 @@ def approval_resume_metadata(
         "gate_reason": verdict.reason,
         "approvers": approvers.model_dump() if approvers is not None else None,
         "original_call": original_call,
+        GATE_ID_KEY: new_gate_id(),
     }
     if preview is not None:
         metadata["preview"] = preview
