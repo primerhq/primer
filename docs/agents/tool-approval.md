@@ -276,11 +276,14 @@ but require human review for any other host.
   keys built from it do too. Every approval and `ask_user` park carries a `gate_id` minted when it was created (in the pending entry's
   `resume_metadata`, which the graph checkpoint keeps verbatim, so it survives every re-park while the gate stays pending, and one gate of a
   multi-gate graph park being decided does not change its siblings'). The pending responses serve it, the respond and cancel routes take it
-  back, and a decision naming a gate that has been replaced is a `409 approval_stale` that moves nothing. Two fan-out siblings that share a raw
-  `tool_call_id` are told apart by it. Yields that are not a human gate (`sleep`, `watch_files`, external waits) have none. Slack and Discord
-  buttons and the Telegram button's cache entry keep the id with the button, so an Approve left in a messaging platform thread from an earlier round
-  answers "This approval was replaced by a newer one" and decides nothing; a reply to a question message is judged against the id the prompt was posted with. A button posted before this release has
-  no id and still works (counted as `absent`).
+  back, and a decision naming a gate that has been replaced is a `409 approval_stale` that moves nothing, before the approver check. Yields that are
+  not a human gate (`sleep`, `watch_files`, external waits) have no gate id; their cancel takes the optional `expected_tool_name` and refuses (409) a Skip drawn for a
+  different kind of yield. Slack and Discord buttons and the Telegram button's cache entry keep the id with the button, so an Approve left in a messaging
+  platform thread from an earlier round answers "This approval was replaced by a newer one" and decides nothing; a reply to a question message is judged against the
+  id the prompt was posted with. A Slack or Discord button posted before this release has no id and still works (counted as `absent`); a Telegram button the adapter
+  no longer remembers (a restart) answers "This button has expired; decide it in the console." **Not yet covered:** two fan-out siblings of one graph park that share
+  a raw `tool_call_id` are still resumed together by one decision, and a wake delivered twice can flip a gate that has since been replaced under the same key; both
+  are the next two steps of this work, so do not rely on the id for either yet.
 - **A new user message does not supersede a pending approval.** If a
   session is parked on approval and the user sends another message,
   the message is queued behind the open turn and the approval stays

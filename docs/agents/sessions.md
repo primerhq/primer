@@ -445,7 +445,10 @@ otherwise answer a later one under the same id. A `gate_id` that is no longer th
 pending prompt's is a `409` with `extensions.code = "approval_stale"` and nothing is
 resumed; a malformed one is a `422`; one left out is still accepted (counted in
 `gate_respond_total{kind="ask_user",gate_token="absent"}`). The cancel route takes the
-same optional `gate_id` in its body; `yields/{tool_call_id}/cancel` skips one
+same optional `gate_id` in its body, and an optional `expected_tool_name` (the kind of yield
+the client drew the cancel for: `sleep`, `watch_files`, `ask_user`, `_approval`, `_external`;
+a cancel naming a kind that is not what is parked is a `409 approval_stale`);
+`yields/{tool_call_id}/cancel` skips one
 in-flight yield without ending the session (the tool sees a cancelled
 result and the agent's turn continues). On a call to a tool you supplied
 yourself (`external_tool`) the cancel also marks the call's record
