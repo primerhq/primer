@@ -54,6 +54,7 @@ from pydantic import (
 )
 
 from primer.common.error_codes import safe_code
+from primer.common.log import redact_credentials
 from primer.model.common import Describeable
 
 
@@ -341,6 +342,22 @@ class ToolResultPart(BaseModel):
             "persisted before this field existed - always optional."
         ),
     )
+
+    @model_validator(mode="after")
+    def _mask_a_failures_credentials(self) -> "ToolResultPart":
+        """Mask the credentials in a FAILED result's text, whoever built it (security ticket 01a11fbc-d6de).
+
+        ``ToolExecutionManager.execute`` masks a failed call's text, but the park and resume tails build their error results themselves (the
+        approved ``call_tool`` re-dispatch, the ``resume failed`` syntheses, the resume-hook error outputs, a ``ToolCallTask``'s stored
+        result) and hand them to the model and to the served TOOL_RESULT record. A rehydrated parked message and a stored ``result_state``
+        are masked by the same validation on the way back in. A SUCCESSFUL result is never touched: a presigned URL a tool was asked for
+        comes back intact. Masking is idempotent, so the manager's own pass is harmless.
+        """
+        if self.error and self.output:
+            masked = redact_credentials(self.output)
+            if masked != self.output:
+                self.output = masked
+        return self
 
 
 class ToolCallResult(BaseModel):

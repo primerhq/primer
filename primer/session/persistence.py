@@ -154,6 +154,22 @@ class WorkspaceIO(Protocol):
         ...
 
 
+def _masked_failure_record(record: SessionMessageRecord) -> SessionMessageRecord:
+    """``record`` with the credentials masked in an error TOOL_RESULT's output (security ticket 01a11fbc-d6de).
+
+    The live turn writes its TOOL_RESULT records from a ``ToolResultPart`` (masked when it is built); the resume tails write theirs as dicts
+    (``tool_wait_resume_coordinator``, ``session/abandon``), so the writer is where every record passes. A successful result is never touched.
+    """
+    if record.kind != SessionMessageKind.TOOL_RESULT:
+        return record
+    payload = record.payload
+    output = payload.get("output")
+    if not payload.get("error") or not isinstance(output, str):
+        return record
+    masked = redact_credentials(output)
+    return record if masked == output else record.model_copy(update={"payload": {**payload, "output": masked}})
+
+
 class WorkspaceMessageWriter:
     """Buffered jsonl appender for session messages.
 
@@ -232,7 +248,7 @@ class WorkspaceMessageWriter:
         assigned_seq = self._seq
 
         # Rebuild with the correct seq
-        record = record.model_copy(update={"seq": assigned_seq})
+        record = _masked_failure_record(record).model_copy(update={"seq": assigned_seq})
 
         # Serialise to jsonl line
         line: bytes = record.model_dump_json().encode() + b"\n"

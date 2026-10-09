@@ -54,12 +54,14 @@ _RESERVED_RECORD_ATTRS = frozenset({
 # at INFO and uvicorn logs every request path, so a URL-borne credential
 # would otherwise land in the server log on every call.
 _URL_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    # Query-string credentials: ?key=..., &access_token=..., etc.
+    # Query-string credentials: ?key=..., &access_token=..., etc. The value stops at a backslash: in text that is already a JSON string the
+    # closing quote of the URL is `\"`, and a class that ate the backslash turned the envelope into invalid JSON (#676 review, B2). A real
+    # secret with a backslash in it keeps the part after the backslash, which is the lesser harm.
     (
         re.compile(
             r"(?i)([?&](?:key|api_key|apikey|api-key|token|access_token|"
             r"refresh_token|id_token|client_secret|secret|password)=)"
-            r"[^&#\s'\"<>]+"
+            r"[^&#\s'\"<>\\]+"
         ),
         r"\1[REDACTED]",
     ),
