@@ -5,10 +5,9 @@
 // Tier 2 (runnable)  = runnability invariants              -> Save fine, Run disabled.
 //
 // NOTE: this mirrors primer/model/graph.py (_validate_topology vs
-// assert_runnable). GR_localViolations conflates the two (it marks "exactly one
-// Begin" and "End reachable" as hard), which would wrongly block Save on a
-// legitimate draft - so the tiers are computed here and GR_localViolations is
-// used only as an extra source of blocking messages.
+// assert_runnable). The tiers are kept apart on purpose: "exactly one Begin"
+// and "End reachable" are runnability rules, and treating them as hard would
+// wrongly block Save on a legitimate partial draft.
 
 const GB_FAILURE_COPY = {
   max_iterations_exceeded: "The loop ran its maximum number of passes and stopped. Give it a landing step so it finishes cleanly.",

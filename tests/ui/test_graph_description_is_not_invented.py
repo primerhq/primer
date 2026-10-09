@@ -29,10 +29,8 @@ def test_the_submit_sends_the_trimmed_description_and_invents_no_placeholder() -
     assert '"(no description)"' not in body, "a blank description is sent as \"\", not replaced by a placeholder that is then stored"
 
 
-def test_the_editor_input_placeholder_is_an_input_hint_that_stays_outside_the_modal() -> None:
-    """The ticket keeps ``GR_GraphFields``'s placeholder: it is an input hint, not a submit value. The modal slice must stay placeholder-free for the check above to mean anything."""
+def test_the_modal_carries_no_description_placeholder_either() -> None:
+    """The modal slice must stay placeholder-free for the check above to mean anything. (The ticket also kept the old editor's ``GR_GraphFields`` input hint; that editor is deleted, so only the modal half remains.)"""
     modal = _modal()
-    fields = SRC[SRC.index("function GR_GraphFields("):]
 
-    assert 'placeholder="(no description)"' in fields, "the editor input hint is untouched"
     assert 'placeholder="(no description)"' not in modal

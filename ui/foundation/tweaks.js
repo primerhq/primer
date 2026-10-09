@@ -24,12 +24,6 @@
     // Added Milestone 2 — drives the topbar brand. Operator can
     // change it via the tweaks panel; persisted only client-side.
     instanceLabel: "primer · localhost:8765",
-    // Graph builder revamp (ui/graph-builder/WIRING.md §15). Off until the
-    // ui_e2e journeys are migrated to the new surface - they drive the old
-    // editor's controls ("Add node", the side-panel fields), which the revamp
-    // replaces. Flip on to use the new builder; the switch lives in
-    // GraphDetail so turning it back off is a flag flip, not a revert.
-    graphBuilderV2: true,
     // Studio revamp (ui/studio/STUDIO-WIRING.md). ON: the shell is complete
     // (attention bar, rail, dock, panes, Changes, graph strip, mobile). Both
     // shells still coexist in one build, so turning it back off is a flag flip

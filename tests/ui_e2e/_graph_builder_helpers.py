@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from playwright.sync_api import Page, expect
 
-# The builder is behind the `graphBuilderV2` tweak (default on).
+# The graph builder (GB_Builder) is the graph editor.
 BUILDER = '[data-testid="gb-builder"]'
 SAVE = '[data-testid="gb-save"]'
 DISCARD = '[data-testid="gb-discard"]'

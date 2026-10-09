@@ -1,22 +1,12 @@
-"""The graph editor renders through the unified G6 canvas (preset layout) with
-drag-to-move + drag-to-connect wired; the spike G6-editor POC, its toggle, and
-the SVG-drag machinery are gone. Source-grep + transpile; the live-stack gate
-confirms the editor gestures actually work."""
+"""The spike G6-editor POC, its toggle, and the SVG-drag machinery are gone, and the
+bundle transpiles. (That the editor renders through the shared G6 canvas with move and
+connect wired is pinned on the builder in test_graph_builder_parity.py; the live-stack
+gate confirms the editor gestures actually work.)"""
 from __future__ import annotations
 from pathlib import Path
 
 UI = Path(__file__).resolve().parents[2] / "ui"
 GRAPHS = (UI / "components" / "graphs.jsx").read_text(encoding="utf-8")
-
-
-def test_editor_uses_g6_preset() -> None:
-    assert "GR_Canvas" in GRAPHS
-    assert 'layout="preset"' in GRAPHS
-
-
-def test_editor_wires_move_and_connect() -> None:
-    assert "onMoveNode" in GRAPHS
-    assert "onConnect" in GRAPHS
 
 
 def test_spike_editor_removed() -> None:
