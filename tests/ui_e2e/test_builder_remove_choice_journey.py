@@ -80,7 +80,7 @@ def test_a_condition_a_path_and_a_choice_can_each_be_removed(page: Page, base_ur
         dialog = page.locator(".modal", has_text="Remove this choice?")
         expect(dialog).to_be_visible(timeout=10_000)
         expect(dialog).to_contain_text("its 1 path and its 'in any other case' link")
-        # (Escape is not pressed here: in the graph's overlay one Escape closes the overlay as well and leaves the dialog on screen; see the PR body.)
+        # (Escape in this dialog closes the dialog alone: tests/ui_e2e/test_escape_closes_one_layer_journey.py)
         dialog.get_by_role("button", name="Keep", exact=True).click()
         expect(dialog).to_have_count(0)
         assert any(e["kind"] == "conditional" for e in _draft(page)["edges"]), "keeping leaves the choice"

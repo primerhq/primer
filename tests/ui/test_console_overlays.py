@@ -42,7 +42,8 @@ def test_host_dispatches_three_tiers():
 
 
 def test_panel_closes_by_esc_and_scrim():
-    assert '"Escape"' in OVERLAYS
+    # Escape is answered by the Escape stack (foundation/escape-stack.js), which calls the top-most layer only; tests/ui/test_escape_stack_wiring.py pins the wiring
+    assert "useEscape(" in OVERLAYS
     assert 'className="nv-scrim"' in OVERLAYS
     assert "stopPropagation" in OVERLAYS, "panel clicks must not close it"
 

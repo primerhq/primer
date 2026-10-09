@@ -36,13 +36,8 @@ function NV_OverlayPanel(props) {
       return items[0] || null;
     },
   });
-  React.useEffect(function () {
-    function onKey(ev) {
-      if (ev.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKey);
-    return function () { window.removeEventListener("keydown", onKey); };
-  }, [onClose]);
+  // Escape closes the top-most layer only (foundation/escape-stack.js): a dialog drawn over this overlay answers it first, and this overlay the next one.
+  window.primerApi.useEscape(function () { onClose(); });
   return (
     <div className="nv-scrim" data-testid="nv-overlay-scrim"
       onClick={function () { onClose(); }}>

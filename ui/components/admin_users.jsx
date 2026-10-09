@@ -848,11 +848,11 @@ function ADM_UserKeysDialog({ user, onClose }) {
   const items = list.data?.items ?? [];
 
   // Revoke opens a SECOND Modal (confirmDialog, shared.jsx) on top of this one.
-  // Modal's Escape handler / backdrop click / X button all just invoke whatever
-  // onClose they were given — both Modals listen for the same global keydown,
-  // so an Escape meant to cancel the revoke confirm would otherwise also close
-  // this dialog. confirmPending suppresses that while a confirm is in flight;
-  // ADM_UserKeyRow bumps it via onConfirmStart/onConfirmEnd around confirmDialog().
+  // Escape goes to the top-most Modal only (foundation/escape-stack.js), so an
+  // Escape that cancels the revoke confirm does not also close this dialog.
+  // confirmPending still keeps this dialog's own close paths (the footer button,
+  // the X) from firing while a confirm is in flight; ADM_UserKeyRow bumps it via
+  // onConfirmStart/onConfirmEnd around confirmDialog().
   const confirmPending = React.useRef(0);
   const requestClose = () => { if (confirmPending.current > 0) return; onClose(); };
 

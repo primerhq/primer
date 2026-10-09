@@ -190,7 +190,7 @@ function GB_RefPicker({ draft, nodeId, onPick, onClose, sampleByExpr }) {
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="Insert a value from…"
-          onKeyDown={(e) => { if (e.key === "Escape") onClose(); }}
+          onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); onClose(); } }}
           style={{
             width: "100%", background: "transparent", border: "none", outline: "none",
             color: "var(--text)", fontSize: "var(--fs-12)",

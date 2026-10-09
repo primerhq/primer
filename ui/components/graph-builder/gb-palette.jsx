@@ -71,7 +71,7 @@ function GB_AddStepPalette(props) {
   };
 
   const onKeyDown = (e) => {
-    if (e.key === "Escape") { onClose(); return; }
+    if (e.key === "Escape") { e.preventDefault(); onClose(); return; }
     if (stage !== "purpose") return;
     if (e.key === "ArrowDown") { e.preventDefault(); setCursor((c) => Math.min(c + 1, rows.length - 1)); }
     if (e.key === "ArrowUp") { e.preventDefault(); setCursor((c) => Math.max(c - 1, 0)); }
