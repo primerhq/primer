@@ -290,6 +290,22 @@ function SH_looksLikeDiff(text) {
 
 var SH_TERMINAL_KINDS = ["done", "cancelled", "error"];
 
+// Python's truthiness of a JSON value, which is what terminals.py tests with bool() / not: an empty list or object is falsy there and truthy in JavaScript, so
+// a record with `delegated: []` or a marker with `message: []` would be judged differently by the server and the console without it.
+function SH_pyTruthy(v) {
+  if (v === null || v === undefined || v === false || v === 0 || v === "") return false;
+  if (Array.isArray(v)) return v.length > 0;
+  if (typeof v === "object") return Object.keys(v).length > 0;
+  return true;
+}
+
+// A record's payload as an object: a log is written by many versions, and a payload that is not an object (a string, an array, a number, null) reads as an
+// empty one, as terminals.payload_of does on the server.
+function SH_payloadOf(rec) {
+  var p = rec && rec.payload;
+  return p && typeof p === "object" && !Array.isArray(p) ? p : {};
+}
+
 function SH_isTerminal(kind) {
   return SH_TERMINAL_KINDS.indexOf(kind) >= 0;
 }
@@ -302,8 +318,8 @@ function SH_isTerminal(kind) {
 // (ticket 01a11bf6); no flag, fatal: true and fatal: null still end it.
 function SH_closesTurn(row) {
   if (!row || !SH_isTerminal(row.kind)) return false;
-  var payload = row.payload || {};
-  if (payload.delegated) return false;
+  var payload = SH_payloadOf(row);
+  if (SH_pyTruthy(payload.delegated)) return false;
   if (row.kind === "error" && payload.fatal === false) return false;
   if (row.kind === "done" && payload.stop_reason === "tool_use") return false;
   return true;
@@ -345,14 +361,23 @@ function SH_retryInstruction(flat, errorRow, session) {
 // later errors of the turn can copy; any other end closes the turn); an error with an explicit fatal: false is a notice that ends nothing but whose words are
 // remembered; a bare release marker is a copy once the turn has failed and the only evidence (so it ends the window) when nothing has; any other error ends a
 // window unless the turn has already failed and an earlier error of the turn has the same non-empty message from the same node (a record that names no node
-// matches any node's). tests/ui/test_shell_turns.py compares the two over the shapes the writers produce.
+// matches any node's); dispatch's own failure ERROR (a title and an integer status, no fatal flag, no node) is a copy once the turn has failed, whatever its words,
+// because its message is the problem detail with URL credentials redacted while the stream's error stores it raw. tests/ui/test_shell_turns.py compares the two
+// over the shapes the writers produce.
 var SH_WINDOW_CLOSES = "closes";
 var SH_WINDOW_COPY = "copy";
 var SH_WINDOW_INSIDE = "inside";
 
 function SH_isBareMarker(rec) {
-  var p = (rec && rec.payload) || {};
-  return !!rec && rec.kind === "error" && p.terminal === true && !p.message && !p.code && !p.title;
+  var p = SH_payloadOf(rec);
+  return !!rec && rec.kind === "error" && p.terminal === true && !SH_pyTruthy(p.message) && !SH_pyTruthy(p.code) && !SH_pyTruthy(p.title);
+}
+
+// The ERROR record dispatch's failure exit writes (terminals.is_dispatch_failure_record).
+function SH_isDispatchFailureRecord(rec) {
+  var p = SH_payloadOf(rec);
+  return !!rec && rec.kind === "error" && typeof p.title === "string" && typeof p.status === "number" && isFinite(p.status) && Math.floor(p.status) === p.status
+    && !Object.prototype.hasOwnProperty.call(p, "fatal") && !SH_pyTruthy(rec.node_id);
 }
 
 function SH_newWindowScanner() {
@@ -369,19 +394,19 @@ function SH_newWindowScanner() {
   }
   return {
     feed: function (rec) {
-      var payload = (rec && rec.payload) || {};
-      if (payload.delegated) return SH_WINDOW_INSIDE;
+      var payload = SH_payloadOf(rec);
+      if (SH_pyTruthy(payload.delegated)) return SH_WINDOW_INSIDE;
       if (rec.kind === "user_input") { newTurn(); return SH_WINDOW_INSIDE; }
       if (rec.kind === "error") {
         var message = typeof payload.message === "string" ? payload.message : null;
-        var node = rec.node_id || null;
+        var node = SH_pyTruthy(rec.node_id) ? rec.node_id : null;
         if (SH_isBareMarker(rec)) {
           if (failed) return SH_WINDOW_COPY;
           failed = true;
           return SH_WINDOW_CLOSES;
         }
         if (payload.fatal === false) { remember(message, node); return SH_WINDOW_INSIDE; }
-        if (failed && copiesAnEarlierError(message, node)) return SH_WINDOW_COPY;
+        if (failed && (SH_isDispatchFailureRecord(rec) || copiesAnEarlierError(message, node))) return SH_WINDOW_COPY;
         remember(message, node);
         failed = true;
         return SH_WINDOW_CLOSES;
@@ -395,8 +420,9 @@ function SH_newWindowScanner() {
 }
 
 // The window each record is filed in, as the server's turn_windows files it: {of: {seq: 0-based window}, open: the index of the window still open (every
-// window ended before it), first: the smallest seq seen}. A copy takes back to the window it copies everything written since that window ended. Pass
-// the records the transcript is drawn from (SA_visibleRecords): the rows the console draws are a subset of them.
+// window ended before it), first: the smallest seq seen}. A copy takes back to the window it copies everything written since that window ended. Pass ALL
+// the raw records, rewound ones included (NOT SA_visibleRecords): the server counts every record, so a turn rewound away still takes its ordinal and the
+// turns after it keep theirs; the rows the console draws are a subset of them.
 function SH_windowsOfSeq(records) {
   var scanner = SH_newWindowScanner();
   var of = {};
