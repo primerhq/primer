@@ -553,6 +553,21 @@ class WorkspaceSession(Identifiable):
             "None, and an older build ignores the key."
         ),
     )
+    resumed_park_at: datetime | None = Field(
+        default=None,
+        description=(
+            "The ``parked_at`` of the park whose resume handler last CONTINUED the turn: its effects (the reply "
+            "injected, the TOOL_RESULT record appended, an approved tool run) are all committed. Written by "
+            "``inject_resume_and_continue`` after those effects and BEFORE the release whose transaction clears the "
+            "park, as one field-scoped write fenced on ``turn_no``. Cleared by nothing: a later park stamps a new "
+            "``parked_at``, so a marker that differs from the row's ``parked_at`` names an older park and means "
+            "nothing. A claim that finds the two equal knows the resume was applied and its release never committed "
+            "(abandoned or rolled back): the pool's resume branch does not run the handler again, and its own "
+            "release clears the park and applies the lost ``turn_no`` bump. Only the continue path writes it: a "
+            "handler that re-parks, ends the session or fails leaves it alone. Additive/optional, no migration: a "
+            "row without it reads None, and an older build ignores the key."
+        ),
+    )
     last_worker_id: str | None = Field(default=None)
 
     # Cancel/pause request flags (set by API, read by worker)

@@ -1028,6 +1028,22 @@ class WorkerPool:
                     # same guard in run_one_session_turn; the resume branch
                     # bypasses that function, so re-check here (e2e t0867).
                     outcome = await self._pause_session(session_row)
+                elif session_resume_coordinator.resume_already_applied(session_row):
+                    # The resume of THIS park already ran and its release never committed (abandoned at the
+                    # pool's bound, or raised, so it rolled back and the park columns are still there; ticket
+                    # 01a10b54-425b). Running the handler again would inject the reply a second time and run
+                    # an approved tool a second time, so it does not run: the outcome is the one the handler
+                    # returned (success, lease kept), and this claim's own release clears the park and
+                    # applies the lost turn_no bump, once (the adapter fences it). It sits after the ENDED,
+                    # cancel and pause exits, which are decided from the row as before, and before the
+                    # workspace check and the Stop clear, which belong to a park being resolved NOW.
+                    logger.warning(
+                        "session %s: the resume of the park stamped %s was already applied (its release did "
+                        "not commit); not running the handler again, releasing the park",
+                        sid, session_row.parked_at,
+                    )
+                    _metrics.session_resume_noop_total.inc()
+                    outcome = ReleaseOutcome(success=True, drop_lease=False)
                 else:
                     # A workspace this deployment refuses (ticket 01a1072f) is found HERE, before the Stop is
                     # cleared, a handler is chosen or anything is reported: the handlers emit

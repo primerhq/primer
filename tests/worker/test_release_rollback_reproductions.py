@@ -1,4 +1,4 @@
-"""Reproductions of two release-rollback bugs (tickets 01a10b54-3212 and 01a10b54-425b). TEST-ONLY: no production change.
+"""Reproductions of two release-rollback bugs (tickets 01a10b54-3212 and 01a10b54-425b). 425b is FIXED; 3212 is still a strict xfail.
 
 A claim release runs in ONE transaction (``SessionClaimAdapter.on_release``); when it is abandoned at the pool's bound (or
 raises) it rolls back, the lease stays claimed until it expires, and the next claim reaches the pool again. The existing
@@ -10,16 +10,18 @@ shapes have no such guard, and each is reproduced here exactly as it happens tod
   same ``turn_no`` and the question the operator was asked is never waited for. Flag ON, a ``tool_wait`` park is worse:
   the park arm already advanced ``last_seq`` before returning its outcome, so the re-run computes different record seqs
   and the strict ``ToolCallTask`` create raises ``TurnInvariantError``: the session ends FAILED.
-* a RESUME release (425b): the resume handlers do their effects (inject the reply, append records, run an approved tool)
-  and clear the park in the release, so a rollback leaves ``parked_status="resumable"`` and the re-claim takes the resume
-  branch again: the handler runs twice.
+* a RESUME release (425b, FIXED): the resume handlers do their effects (inject the reply, append records, run an approved
+  tool) and clear the park in the release, so a rollback left ``parked_status="resumable"`` and the re-claim took the resume
+  branch again: the handler ran twice. The continue path now records the park it applied (``resumed_park_at``) and the
+  pool's resume branch skips the handler for a row whose marker names its park; the behaviour test below is a plain test
+  and ``test_resume_applied_marker.py`` pins the rest of the contract.
 
 Each reproduction has two tests. The SCENARIO test is a plain test: it pins that the release really was abandoned and what
 the world looks like before the re-claim, so a broken harness cannot hide behind an expected failure. The BEHAVIOUR test
-asserts what SHOULD happen and is a strict xfail restricted to ``AssertionError``: it fails today (that is the bug), and the
-fix that makes it pass must delete the marker (strict means an unexpected pass is an error). These are the red-first tests
-of the later fixes (the ``pending_park`` stash applied in the release; a resumed-generation marker on the session row).
-Design direction accepted by the lead on 2026-10-06; the builds wait for the independent verifiers.
+asserts what SHOULD happen and, while a bug is open, is a strict xfail restricted to ``AssertionError``: it fails today (that is
+the bug), and the fix that makes it pass must delete the marker (strict means an unexpected pass is an error). The 3212 tests
+are the red-first tests of its later fix (the ``pending_park`` stash applied in the release). Design direction accepted by the
+lead on 2026-10-06.
 """
 
 from __future__ import annotations
@@ -63,7 +65,6 @@ _BUG_3212_FLAG_ON = (
     "01a10b54-3212 (flag on): the park arm advanced last_seq before the release rolled back, so the re-run's record_seq "
     "differs and the strict ToolCallTask create raises TurnInvariantError: the session ends failed"
 )
-_BUG_425B = "01a10b54-425b: a resume release that rolls back leaves the park resumable, and the re-claim runs the handler again"
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +285,6 @@ async def test_scenario_a_resume_release_that_rolled_back_left_the_park_resumabl
     assert seen["lease_holder"] == "wrk-engine-resume", "the old worker's lease should still be claimed"
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_425B)
 @pytest.mark.asyncio
 async def test_a_re_claim_after_a_rolled_back_resume_release_does_not_run_the_handler_again(monkeypatch):
     seen = await _resume_release_abandoned_then_reclaimed(monkeypatch)
