@@ -44,7 +44,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-from primer.common.transport_text import transport_failure
+from primer.common.transport_text import require_sendable_key, transport_failure, unexpected_status
 from primer.web_search.adapter import (
     SafeSearchLevel,
     SearchHit,
@@ -101,6 +101,7 @@ class ExaAdapter(WebSearchAdapter):
             # url and the snippet would always be empty.
             "contents": {"text": True},
         }
+        require_sendable_key("exa", self._api_key, WebSearchProviderError)          # a key h11 would refuse is not sent: no request, no span
         headers = {
             "x-api-key": self._api_key.get_secret_value(),
         }
@@ -112,7 +113,7 @@ class ExaAdapter(WebSearchAdapter):
                 headers=headers,
             )
         except httpx.HTTPError as exc:
-            raise WebSearchUnavailable(transport_failure("exa", exc, self._config)) from exc
+            raise WebSearchUnavailable(transport_failure("exa", exc, self._config)) from None
 
         if r.status_code in (401, 403):
             raise WebSearchProviderError(
@@ -125,9 +126,7 @@ class ExaAdapter(WebSearchAdapter):
                 f"exa server error (HTTP {r.status_code})"
             )
         if r.status_code != 200:
-            raise WebSearchProviderError(
-                f"exa unexpected status {r.status_code}: {r.text[:200]}"
-            )
+            raise WebSearchProviderError(unexpected_status("exa", r.status_code, r.text, self._config))
 
         try:
             data = r.json()

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-from primer.common.transport_text import transport_failure
+from primer.common.transport_text import require_sendable_key, transport_failure, unexpected_status
 from primer.web_fetch.adapter import (
     FetchedPage, WebFetchAdapter, WebFetchProviderError, WebFetchUnavailable,
 )
@@ -30,11 +30,12 @@ class ExaAdapter(WebFetchAdapter):
 
     async def fetch(self, *, url: str) -> FetchedPage:
         body = {"ids": [url], "text": True}
+        require_sendable_key("exa", self._api_key, WebFetchProviderError)          # a key h11 would refuse is not sent: no request, no span
         headers = {"x-api-key": self._api_key.get_secret_value()}
         try:
             r = await self._client.post(f"{self._base_url}/contents", json=body, headers=headers)
         except httpx.HTTPError as exc:
-            raise WebFetchUnavailable(transport_failure("exa", exc, self._config)) from exc
+            raise WebFetchUnavailable(transport_failure("exa", exc, self._config)) from None
         if r.status_code in (401, 403):
             raise WebFetchProviderError(f"exa auth failed (HTTP {r.status_code})")
         if r.status_code == 429:
@@ -42,7 +43,7 @@ class ExaAdapter(WebFetchAdapter):
         if r.status_code >= 500:
             raise WebFetchUnavailable(f"exa server error (HTTP {r.status_code})")
         if r.status_code != 200:
-            raise WebFetchProviderError(f"exa unexpected status {r.status_code}: {r.text[:200]}")
+            raise WebFetchProviderError(unexpected_status("exa", r.status_code, r.text, self._config))
         try:
             data = r.json()
         except ValueError as exc:

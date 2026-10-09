@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-from primer.common.transport_text import transport_failure
+from primer.common.transport_text import require_sendable_key, transport_failure
 from primer.web_fetch.adapter import (
     FetchedPage, WebFetchAdapter, WebFetchProviderError, WebFetchUnavailable,
 )
@@ -29,13 +29,14 @@ class JinaAdapter(WebFetchAdapter):
         self._owns_client = client is None
 
     async def fetch(self, *, url: str) -> FetchedPage:
+        require_sendable_key("jina", self._api_key, WebFetchProviderError)          # the key is optional: None passes; a key h11 would refuse is not sent
         headers = {"Accept": "text/markdown"}
         if self._api_key is not None:
             headers["Authorization"] = f"Bearer {self._api_key.get_secret_value()}"
         try:
             r = await self._client.get(f"{self._base_url}/{url}", headers=headers)
         except httpx.HTTPError as exc:
-            raise WebFetchUnavailable(transport_failure("jina", exc, self._config)) from exc
+            raise WebFetchUnavailable(transport_failure("jina", exc, self._config)) from None
         if r.status_code in (401, 403):
             raise WebFetchProviderError(f"jina auth failed (HTTP {r.status_code})")
         if r.status_code == 429:
