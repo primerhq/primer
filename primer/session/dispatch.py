@@ -666,45 +666,46 @@ async def run_one_session_turn(
         async with session_lifecycle_lock().acquire(session_id):
             # BEFORE the status moves: a reader that sees the row after the transition must see why (C-024).
             stamped = await _record_last_turn_error(session_storage, session_id, failure_code, session.binding_epoch)
-            # Decided HERE, under the lock, from a fresh read (as the clean-completion arm decides a Cancel): a Cancel that landed since the turn
-            # started is not lost. A row that rested with ``cancel_requested`` set would end as cancelled, without ever calling the model, on the
-            # next send. Without its stamp a rested first-turn failure has every mark of a session that never started, so it ends.
-            locked = await session_storage.get(session_id)
-            cancelled_meanwhile = locked is not None and locked.cancel_requested and locked.status != SessionStatus.ENDED
-            rests = may_rest and stamped and not cancelled_meanwhile
-            written = await _transition_session_status(
-                session_storage,
-                session,
-                new_status=SessionStatus.WAITING if rests else SessionStatus.ENDED,
-                ended_reason=None if rests else "failed",
-                # 01a070d6: a TurnStreamFailure means the LLM stream itself
-                # is why the turn failed - ended_detail_code always resolves
-                # to something usable (a real classifier code, or its own
-                # fallback), so monitoring can tell "the LLM was
-                # unreachable" apart from "some other internal error"
-                # instead of both reading as an undifferentiated "failed".
-                ended_detail=None if rests else (exc.ended_detail_code if isinstance(exc, _NamesWhyItEndedTheTurn) else None),
-                executor=executor,
-                expected_epoch=session.binding_epoch,
-            )
-            if rests and written.status == SessionStatus.WAITING:
+            # Without its stamp a rested first-turn failure has every mark of a session that never started, so it ends. A Cancel that lands
+            # (on any process: the lock above is this one's) is not lost either: the rest is a conditional write that refuses a row with
+            # ``cancel_requested`` set, and then the session ends, as the clean-completion arm ends one.
+            rested = may_rest and stamped and await _rest_session(session_storage, session, expected_epoch=session.binding_epoch)
+            if rested:
+                written = _TerminalWrite(True, SessionStatus.WAITING, None)
                 # The executor ended the on-disk slot when the turn failed. The row now says the session is alive, so the slot must too, or the
                 # next send (or a trigger's append, or the follow-up realized below) meets an ENDED slot and is refused.
                 await _reopen_agent_session_slot(executor)
+            else:
+                written = await _transition_session_status(
+                    session_storage,
+                    session,
+                    new_status=SessionStatus.ENDED,
+                    ended_reason="failed",
+                    # 01a070d6: a TurnStreamFailure means the LLM stream itself
+                    # is why the turn failed - ended_detail_code always resolves
+                    # to something usable (a real classifier code, or its own
+                    # fallback), so monitoring can tell "the LLM was
+                    # unreachable" apart from "some other internal error"
+                    # instead of both reading as an undifferentiated "failed".
+                    ended_detail=exc.ended_detail_code if isinstance(exc, _NamesWhyItEndedTheTurn) else None,
+                    executor=executor,
+                    expected_epoch=session.binding_epoch,
+                )
             await _clear_interrupt_requested(session_storage, session_id)
             await _persist_last_seq(session_storage, session_id, writer.last_seq)
             await _advance_drain_cursor(session_storage, session_id)
-        # What the ROW says: if the session was ended by something else while the turn failed, that is
-        # the reason the event log must carry (the turn's own failure is still counted below).
-        await _publish_terminal(deps, session, written.status, written.ended_reason)
         # Every failed turn is announced, ended or resting: ``session.ended`` is only for an ended one, and a session that rests after a
-        # transport failure would otherwise fail without a word on the event log (C-024).
+        # transport failure would otherwise fail without a word on the event log (C-024). First, so a consumer that reacts to
+        # ``session.ended`` already has the failure that ended it.
         await _event_recorder(deps).emit(
             "session.turn_failed",
             workspace_id=session.workspace_id,
             session_id=session_id,
             payload={"code": failure_code, "ended": written.status == SessionStatus.ENDED},
         )
+        # What the ROW says: if the session was ended by something else while the turn failed, that is
+        # the reason the event log must carry (the turn's own failure is still counted below).
+        await _publish_terminal(deps, session, written.status, written.ended_reason)
         await turn_log.aclose()
         await _apply_pending_switch_at_checkpoint(deps, session)
         await _realize_pending_at_checkpoint(deps, session)
@@ -3274,6 +3275,28 @@ async def _transition_session_status(
             session=session, workspace_registry=workspace_registry,
         )
     return _TerminalWrite(True, new_status, ended_reason)
+
+
+async def _rest_session(session_storage, session: WorkspaceSession, *, expected_epoch: int) -> bool:
+    """Leave ``session`` RESTING after a failed turn: ONE field-scoped ``patch_if`` of ``status`` to WAITING. True when it landed.
+
+    The write itself carries the conditions, so they hold on any process (the lifecycle lock is this one's): the row is still RUNNING or WAITING (not
+    ended, not paused), no Cancel is pending (``cancel_requested`` is false: a row that rested with it set would end as cancelled, without calling the
+    model, on the next send) and the binding epoch is the one the turn started under. A refused write means the session ends instead, as it did before
+    a failure could rest.
+    """
+    try:
+        written = await session_storage.patch_if(
+            session.id, to_jsonable_python({"status": SessionStatus.WAITING}),
+            where={
+                "status": [SessionStatus.RUNNING.value, SessionStatus.WAITING.value],
+                "cancel_requested": [False],
+                "binding_epoch": [expected_epoch],
+            },
+        )
+    except NotFoundError:
+        return False
+    return written is not None
 
 
 async def _reopen_agent_session_slot(executor) -> None:

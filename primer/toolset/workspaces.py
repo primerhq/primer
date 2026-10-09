@@ -1870,14 +1870,18 @@ def build_workspaces_toolset(
         "restart_workspace_session",
         (
             "Re-open an ended session and re-invoke it on the same "
-            "workspace. Works for completed, failed, or cancelled sessions; "
-            "appends an 'invocation N' divider to the same stream and "
-            "returns the re-armed session."
+            "workspace. Works for completed, failed, or cancelled sessions "
+            "(ended_reason set); appends an 'invocation N' divider to the "
+            "same stream and returns the re-armed session. A session whose "
+            "last model call failed on a transport error is NOT ended: it "
+            "rests (status waiting, last_turn_error set) and is continued "
+            "with a new instruction, not restarted."
         ),
         (
             "Use when you want to run an ended session again (optionally "
             "with new input) without creating a new one; not to steer a "
-            "live session (use ``steer_workspace_session``)."
+            "live session or to continue one that rested after a failed "
+            "model call (use ``steer_workspace_session``)."
         ),
         _RestartArgs,
         _restart_session,

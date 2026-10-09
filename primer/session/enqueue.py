@@ -289,7 +289,10 @@ async def wake_session(
             row.name = derive_title_from_text(instruction)
         if row.status in _RESUMABLE:
             row.status = SessionStatus.RUNNING
-            if row.started_at is None:
+            if row.started_at is None or row.last_turn_error is not None:
+                # A rested failure (C-024) is RUNNING with no lease row in the instant before the claim below is armed, and its old start would
+                # make it what the stuck-session sweeper reaps (turn 0, no lease, past the grace). The sweeper may be on another pod, so the
+                # fence is in the data: restart the clock its age check reads.
                 row.started_at = datetime.now(timezone.utc)
         await sessions.update(row)
 
