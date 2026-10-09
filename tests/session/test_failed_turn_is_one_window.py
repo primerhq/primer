@@ -85,19 +85,19 @@ SHAPES = [
         [2], [[1, 2]],
     ),
     (
-        "a graph run with two failing nodes keeps two: different node, different words",
+        "a graph run with two failing nodes is ONE window: the node errors are inside it, the release marker is its only end (01a11f35)",
         [_user(1), _stream_error(2, "node a failed", "a"), _stream_error(3, "node b failed", "b"), _marker(4)],
-        [2, 3], [[1, 2], [3, 4]],
+        [4], [[1, 2, 3, 4]],
     ),
     (
-        "the same words from two NAMED nodes are two failures",
-        [_user(1), _stream_error(2, node_id="a"), _stream_error(3, node_id="b")],
-        [2, 3], [[1, 2], [3]],
+        "the same words from two named nodes are both inside the window, and dispatch's failure exit ends it (01a11f35)",
+        [_user(1), _stream_error(2, node_id="a"), _stream_error(3, node_id="b"), _dispatch_error(4)],
+        [4], [[1, 2, 3, 4]],
     ),
     (
-        "the same words from a record that names no node are a copy of any node's failure",
+        "a node's error is inside the window; dispatch's failure exit, which names no node, is the end of the turn (01a11f35)",
         [_user(1), _stream_error(2, node_id="a"), _dispatch_error(3)],
-        [2], [[1, 2, 3]],
+        [3], [[1, 2, 3]],
     ),
     (
         "streamed text between a failure and its copy: the copy still belongs to the failed turn",
