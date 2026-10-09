@@ -152,6 +152,9 @@ function SH_toAttentionItems(input) {
       id: "pending:" + row.tool_call_id,
       sessionId: row.session_id,
       toolCallId: row.tool_call_id,
+      // The id of THIS gate, minted when it was created (C-033): a decision sends it back, because the provider repeats tool_call_id across
+      // rounds and the server refuses a decision naming a gate that has since been replaced. null for a row from before gates had ids.
+      gateId: row.gate_id || null,
       toolName: SH_yieldKind(row),
       gatedTool: SH_gatedToolOf(row),
       kind: SH_yieldKind(row) === "ask_user" ? "question" : "approval",
@@ -269,6 +272,19 @@ function SH_applyTriage(items, triage, nowMs) {
   return out;
 }
 
+// A decision that names a gate which has since been replaced is refused 409 with the code "approval_stale" (primer/api/gate_fence.py) and moved
+// nothing. The card says so in words and reloads the list; it is not a failure to retry.
+var SH_STALE_GATE_CODE = "approval_stale";
+
+function SH_isStaleGate(err) {
+  var ext = err && err.envelope && err.envelope.extensions;
+  return !!(err && err.status === 409 && ext && ext.code === SH_STALE_GATE_CODE);
+}
+
+function SH_staleGateWords(kind) {
+  return "This " + (kind === "question" ? "question" : "approval") + " was replaced; the list is reloaded.";
+}
+
 window.SH_TIERS = SH_TIERS;
 window.SH_tierFor = SH_tierFor;
 window.SH_yieldKind = SH_yieldKind;
@@ -280,3 +296,5 @@ window.SH_approvedByMap = SH_approvedByMap;
 window.SH_emptyTriage = SH_emptyTriage;
 window.SH_triageKey = SH_triageKey;
 window.SH_applyTriage = SH_applyTriage;
+window.SH_isStaleGate = SH_isStaleGate;
+window.SH_staleGateWords = SH_staleGateWords;

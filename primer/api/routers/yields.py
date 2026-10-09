@@ -169,6 +169,24 @@ def _pick_ask_user_gate(
     raise stale_gate_error("ask_user")
 
 
+def _fence_cancel(
+    *, session_id: str, gate_id: str | None, tool_name: str | None, current_gate_id: str | None,
+) -> None:
+    """Refuse a cancel that names a gate which is not the pending one (C-033), before anything is published.
+
+    Only an approval or an ask_user prompt is a human gate: a cancel of one that names none is accepted and counted, one that names the
+    pending gate is counted ``matched``, and one that names another is a 409 ``approval_stale``. A yield that is not a human gate (sleep,
+    watch_files, an external wait) has no gate id and is judged only if the caller sent one.
+    """
+    kind = "approval" if tool_name == "_approval" else "ask_user"
+    is_gate = tool_name in ("_approval", "ask_user")
+    if gate_id is not None and gate_id != current_gate_id:
+        count_gate_token(kind=kind, session_id=session_id, token=gate_id, stale=True)
+        raise stale_gate_error(kind)
+    if is_gate:
+        count_gate_token(kind=kind, session_id=session_id, token=gate_id)
+
+
 async def _durable_wake(
     *,
     session: WorkspaceSession,
@@ -494,8 +512,17 @@ async def post_ask_user_respond(
 
 
 class CancelYieldedToolBody(BaseModel):
-    """Optional reason surfaced to the agent via YieldCancelled."""
+    """Optional reason surfaced to the agent via YieldCancelled, and the gate this cancel is for."""
 
+    gate_id: str | None = Field(
+        default=None,
+        pattern=GATE_ID_PATTERN,
+        description=(
+            "The ``gate_id`` the pending response served for the approval or ask_user prompt this cancels (C-033). Optional while clients "
+            "catch up; a cancel naming a gate that is no longer the pending one is a 409 ``approval_stale`` and publishes nothing. A yield "
+            "that is not a human gate (sleep, watch_files) has no gate id and ignores it."
+        ),
+    )
     reason: str | None = Field(
         default=None,
         max_length=1024,
@@ -511,7 +538,7 @@ class CancelYieldedToolBody(BaseModel):
     "/sessions/{session_id}/yields/{tool_call_id}/cancel",
     status_code=202,
     summary="Cancel one in-flight yield (tool-agnostic)",
-    responses=common_responses(404, 409, 500),
+    responses=common_responses(404, 409, 422, 500),
 )
 async def post_cancel_yielded_tool(
     session_id: str = Path(...),
@@ -564,12 +591,19 @@ async def post_cancel_yielded_tool(
         raise NotFoundError(
             f"Session {session_id!r} park is missing event_key"
         )
+    gate = None
     if yielded.get("tool_name") == "_approval":
         # A graph park's top-level tool_name is "_approval" WHATEVER its primary is (`_build_pending_park_yield` hard-codes it), so
         # the real kind is on the pending entry: resolve the entry by tool_call_id alone (the enumeration order is the primary pick's,
         # so this is the entry whose key is published below) and judge only an approval. An unresolvable one cannot be shown to be
         # anything but an approval, so it is admin-only.
         gate = resolve_pending_gate(blob, tool_call_id=tool_call_id)
+    _fence_cancel(
+        session_id=session_id, gate_id=body.gate_id,
+        tool_name=(gate["kind"] if gate is not None else yielded.get("tool_name")),
+        current_gate_id=gate_id_of(gate["resume_metadata"] if gate is not None else yielded.get("resume_metadata")),
+    )
+    if yielded.get("tool_name") == "_approval":
         if gate is None:
             enforce_approvers(ADMIN_ONLY_METADATA, user)
         elif gate["kind"] == "_approval":

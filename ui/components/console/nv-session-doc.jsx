@@ -1122,9 +1122,13 @@ function NV_DecisionCard(props) {
           <button type="button" className="nv-btn-primary"
             data-testid="nv-approve" disabled={!!props.ended}
             onClick={function () {
-              SH_api.approve(item.sessionId, item.toolCallId).then(
+              SH_api.approve(item.sessionId, item.toolCallId, item.gateId).then(
                 props.onResolved,
-                function (err) { con.toast("Approve failed: " + (err.detail || err.message)); }
+                function (err) {
+                  // A gate replaced since this card was drawn (C-033): say so and reload; nothing was decided.
+                  if (SH_isStaleGate(err)) { con.toast(SH_staleGateWords("approval")); props.onResolved(); return; }
+                  con.toast("Approve failed: " + (err.detail || err.message));
+                }
               );
             }}>Approve</button>
           <button type="button" className="nv-btn-reject"
@@ -1137,9 +1141,12 @@ function NV_DecisionCard(props) {
             disabled={!!props.ended || (rejOpen && !reason.trim())}
             onClick={function () {
               if (!rejOpen) { setRej(true); return; }
-              SH_api.reject(item.sessionId, item.toolCallId, reason).then(
+              SH_api.reject(item.sessionId, item.toolCallId, reason, item.gateId).then(
                 props.onResolved,
-                function (err) { con.toast("Reject failed: " + (err.detail || err.message)); }
+                function (err) {
+                  if (SH_isStaleGate(err)) { con.toast(SH_staleGateWords("approval")); props.onResolved(); return; }
+                  con.toast("Reject failed: " + (err.detail || err.message));
+                }
               );
             }}>{rejOpen ? "Send rejection" : "Reject with feedback"}</button>
           {rejOpen ? (
@@ -1427,11 +1434,17 @@ function NV_AskCard(props) {
   var setErr = errState[1];
   function submit() {
     setErr(null);
-    SH_api.answer(item.sessionId, item.toolCallId, val).then(
+    SH_api.answer(item.sessionId, item.toolCallId, val, item.gateId).then(
       props.onResolved,
       // INLINE, never a toast: the operator sees the failure exactly
       // where the submission happened, and the card stays to retry.
       function (e) {
+        // A question replaced since this card was drawn (C-033): say so inline and reload; the answer went nowhere.
+        if (SH_isStaleGate(e)) {
+          setErr(SH_staleGateWords("question"));
+          props.onResolved();
+          return;
+        }
         setErr(e.detail || e.title || e.message || "Respond failed");
       }
     );

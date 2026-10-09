@@ -424,22 +424,28 @@ var SH_api = {
         + encodeURIComponent(sid) + "/compact", {});
   },
 
-  approve: function (sid, tcid) {
+  // A decision names the gate it answers (C-033): gateId is the id the pending row served. The provider repeats tool_call_id across rounds, so
+  // without it a card left open decides a LATER gate under the same id; the server answers 409 approval_stale for a gate that was replaced.
+  // A row from before gates had ids has none, and the body is then exactly what it always was.
+  approve: function (sid, tcid, gateId) {
+    var body = { tool_call_id: tcid, decision: "approved" };
+    if (gateId) body.gate_id = gateId;
     return window.primerApi.apiFetch(
-      "POST", "/sessions/" + encodeURIComponent(sid) + "/tool_approval/respond",
-      { tool_call_id: tcid, decision: "approved" });
+      "POST", "/sessions/" + encodeURIComponent(sid) + "/tool_approval/respond", body);
   },
 
-  reject: function (sid, tcid, reason) {
+  reject: function (sid, tcid, reason, gateId) {
+    var body = { tool_call_id: tcid, decision: "rejected", reason: reason || "" };
+    if (gateId) body.gate_id = gateId;
     return window.primerApi.apiFetch(
-      "POST", "/sessions/" + encodeURIComponent(sid) + "/tool_approval/respond",
-      { tool_call_id: tcid, decision: "rejected", reason: reason || "" });
+      "POST", "/sessions/" + encodeURIComponent(sid) + "/tool_approval/respond", body);
   },
 
-  answer: function (sid, tcid, response) {
+  answer: function (sid, tcid, response, gateId) {
+    var body = { tool_call_id: tcid, response: response };
+    if (gateId) body.gate_id = gateId;
     return window.primerApi.apiFetch(
-      "POST", "/sessions/" + encodeURIComponent(sid) + "/ask_user/respond",
-      { tool_call_id: tcid, response: response });
+      "POST", "/sessions/" + encodeURIComponent(sid) + "/ask_user/respond", body);
   },
 
   // ---- cache keys ---------------------------------------------------------

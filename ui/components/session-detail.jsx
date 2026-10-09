@@ -842,7 +842,11 @@ function AskUserPanel({ sid, sessionStatus, session, pushToast }) {
   if (pending.error?.status === 404) return null;
   if (!pending.data) return null;
 
-  const { prompt, response_schema, parked_at } = pending.data;
+  const { prompt, response_schema, parked_at, gate_id } = pending.data;
+  // A decision names the gate it answers (C-033): the provider repeats tool_call_id across rounds, so the id is what stops this panel's answer (or
+  // its Skip) landing on a LATER prompt. A prompt that was replaced under it is refused 409 approval_stale: say so and reload, nothing was sent.
+  const gateBody = gate_id ? { gate_id } : {};
+  const staleWords = (err) => (window.SH_isStaleGate && window.SH_isStaleGate(err) ? window.SH_staleGateWords("question") : null);
   const expectsJson = response_schema && response_schema.type === "object";
   const isShortPrompt = !prompt.includes("\n") && prompt.length <= 80;
 
@@ -864,14 +868,16 @@ function AskUserPanel({ sid, sessionStatus, session, pushToast }) {
       await apiFetch(
         "POST",
         `/sessions/${encodeURIComponent(sid)}/ask_user/respond`,
-        { tool_call_id: tcid, response },
+        { tool_call_id: tcid, response, ...gateBody },
       );
       if (pushToast) pushToast({ kind: "success", title: "Response sent", detail: "Session resuming." });
       setDraft("");
       pending.refetch();
     } catch (err) {
       // 422 + 500 + anything else: inline (NEVER toast). U0051/U0060.
-      setInlineError(err.detail || err.title || err.message || "Submit failed");
+      const stale = staleWords(err);
+      if (stale) pending.refetch();
+      setInlineError(stale || err.detail || err.title || err.message || "Submit failed");
     } finally {
       setSubmitting(false);
     }
@@ -884,7 +890,7 @@ function AskUserPanel({ sid, sessionStatus, session, pushToast }) {
       await apiFetch(
         "POST",
         `/sessions/${encodeURIComponent(sid)}/yields/${encodeURIComponent(tcid)}/cancel`,
-        { reason: "operator skipped" },
+        { reason: "operator skipped", ...gateBody },
       );
       if (pushToast) pushToast({
         kind: "warning",
@@ -894,7 +900,9 @@ function AskUserPanel({ sid, sessionStatus, session, pushToast }) {
       setDraft("");
       pending.refetch();
     } catch (err) {
-      setInlineError(err.detail || err.title || err.message || "Skip failed");
+      const stale = staleWords(err);
+      if (stale) pending.refetch();
+      setInlineError(stale || err.detail || err.title || err.message || "Skip failed");
     } finally {
       setSkipping(false);
     }
