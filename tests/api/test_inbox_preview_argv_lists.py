@@ -56,6 +56,7 @@ _LEAKING = [
     pytest.param(["curl", "-U", "admin:hunter2", "https://x/y"], "hunter2", id="curl -U user:password"),
     pytest.param(["curl", "--proxy-user", "admin:hunter2", "https://x/y"], "hunter2", id="curl --proxy-user"),
     pytest.param(["curl", "-u", "deploy:correct horse battery", "https://x/y"], "correct horse battery", id="a password with spaces"),
+    pytest.param(["curl", "-u", "ad min:hunter2", "https://x/y"], "hunter2", id="a user name with a space (only the quotes the line gives the word keep it one value)"),
     pytest.param(["deploy", "--pass", "hunter2"], "hunter2", id="--pass"),
     pytest.param(["deploy", "--password", "hunter2", "--env", "prod"], "hunter2", id="--password among other flags"),
     pytest.param(["deploy", "--api-key", "abc123def456"], "abc123def456", id="--api-key"),
