@@ -1,4 +1,4 @@
-/* global React, EntityPicker, GB_KindDot, GB_RefEditor, GB_SchemaBuilder, GB_BranchBuilder, GB_ToolPicker, GB_KIND_META */
+/* global React, EntityPicker, GB_KindDot, GB_RefEditor, GB_SchemaBuilder, GB_BranchBuilder, GB_ToolPicker, GB_KIND_META, GB_focusAfterRemoval, confirmDialog */
 // GB_Inspector - the right panel. Leads with what the step DOES, not with its
 // id: `description` is the title, `id` is small mono text in the header.
 // WIRING.md §4 / §5.
@@ -17,10 +17,11 @@ function GB_Section({ title, hint, children }) {
   );
 }
 
-// "Remove this connection" (a static edge) and "Delete this step": real buttons, named for what they act on, that ask first through the console's own confirmDialog (a dialog: focus is moved in and
-// trapped, Escape cancels, focus returns to the button) and drop the answer when the question is no longer about what is on screen (the inspector moved on to another connection or step, or this
-// button is gone). Board task 01a12124; they were spans with a click handler (no role, no focus, no key). `onRemoved` lets the edge inspector select the step the connection left, as
-// GB_RemoveChoice does, so the panel does not go blank on an edge index that no longer exists.
+// "Remove this connection" (a static edge) and "Delete this step": real buttons, named for what they act on (the name starts with the words on the button), that ask first through the console's
+// own confirmDialog (a dialog that traps focus and returns it to the opener, and that Escape cancels) and drop the answer when the question is no longer about what is on screen: the inspector
+// moved on to another connection or step, this button is gone, or (for a connection) an undo put a different edge at that index. Board task 01a12124; they were spans with a click handler (no
+// role, no focus, no key). `onRemoved` lets the edge inspector select the step the connection left, as GB_RemoveChoice does, so the panel does not go blank on an edge index that no longer
+// exists. After a confirmed removal the button is gone, so the focus goes where the panel now starts (GB_focusAfterRemoval).
 const GB_DESTROY_BUTTON = { background: "none", border: "none", padding: 0, font: "inherit", cursor: "pointer", lineHeight: 1, display: "inline-flex", alignItems: "center", minHeight: 24, alignSelf: "flex-start", color: "var(--red)", fontSize: "var(--fs-11)" };
 
 function GB_RemoveConnection({ edge, edgeIdx, labelOf, dispatch, onRemoved }) {
@@ -41,22 +42,21 @@ function GB_RemoveConnection({ edge, edgeIdx, labelOf, dispatch, onRemoved }) {
     if (!ok || !live.current || current.current !== asked) return;
     dispatch({ type: "DELETE_EDGE", idx: edgeIdx });
     if (onRemoved) onRemoved();
+    GB_focusAfterRemoval('[data-testid="gb-inspector-title"]');
   };
   return (
-    <button type="button" data-testid="gb-remove-connection" aria-label={"Remove the connection from " + labelOf(edge.from_node) + " to " + labelOf(edge.to_node)} onClick={press} style={GB_DESTROY_BUTTON}>
+    <button type="button" data-testid="gb-remove-connection" aria-label={"Remove this connection from " + labelOf(edge.from_node) + " to " + labelOf(edge.to_node)} onClick={press} style={GB_DESTROY_BUTTON}>
       Remove this connection
     </button>
   );
 }
 
+// The button is keyed by the node id (the call below), so a different step is a different button and `live` goes false with the old one: nothing here has to compare ids itself.
 function GB_DeleteStep({ node, dispatch }) {
   const live = React.useRef(true);
-  const current = React.useRef(node);
-  current.current = node;
   React.useEffect(() => () => { live.current = false; }, []);
   const name = node.description || node.id;
   const press = async () => {
-    const asked = node;
     const ok = await confirmDialog({
       title: "Delete this step?",
       message: "Delete \u201c" + name + "\u201d and every connection to or from it?",
@@ -64,11 +64,12 @@ function GB_DeleteStep({ node, dispatch }) {
       cancelLabel: "Keep",
       danger: true,
     });
-    if (!ok || !live.current || current.current.id !== asked.id) return;
-    dispatch({ type: "DELETE_NODE", id: asked.id });
+    if (!ok || !live.current) return;
+    dispatch({ type: "DELETE_NODE", id: node.id });
+    GB_focusAfterRemoval('[data-testid="gb-nothing-selected"]');
   };
   return (
-    <button type="button" data-testid="gb-delete-step" aria-label={"Delete the step " + name} onClick={press} style={GB_DESTROY_BUTTON}>
+    <button type="button" data-testid="gb-delete-step" aria-label={"Delete this step: " + name} onClick={press} style={GB_DESTROY_BUTTON}>
       Delete this step
     </button>
   );
@@ -149,7 +150,7 @@ function GB_Inspector(props) {
   if (!node) {
     return (
       <div className="col" style={{ padding: 20, gap: 8 }} data-testid="gb-inspector">
-        <div style={{ fontSize: "var(--fs-13)", fontWeight: 600 }}>Nothing selected</div>
+        <div data-testid="gb-nothing-selected" tabIndex={-1} style={{ fontSize: "var(--fs-13)", fontWeight: 600 }}>Nothing selected</div>
         <div className="muted" style={{ fontSize: "var(--fs-12)" }}>
           Pick a step on the canvas or in the list to see what it does.
         </div>
@@ -303,10 +304,10 @@ function GB_Inspector(props) {
           style={{
             gap: 8, alignItems: "center", padding: "10px 11px", background: "var(--bg-elev)",
             border: "1px solid var(--border)", borderRadius: 9, color: "var(--text-3)",
-            fontSize: "var(--fs-11)", cursor: "pointer", font: "inherit", textAlign: "left", width: "100%",
+            fontSize: "var(--fs-11)", cursor: "pointer", textAlign: "left", width: "100%",
           }}
         >
-          {advanced ? "▾" : "▸"} Advanced · raw template, step id
+          <span aria-hidden="true">{advanced ? "▾" : "▸"}</span> Advanced · raw template, step id
         </button>
         {advanced ? (
           <div className="col" style={{ gap: 10 }}>
