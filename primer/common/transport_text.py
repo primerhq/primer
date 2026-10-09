@@ -7,9 +7,10 @@ model vendor, the logs of the service and the tool), and the OpenTelemetry httpx
 trace) when OTLP export is on. Two layers:
 
 * :func:`require_sendable_key` runs BEFORE the request: a key h11 would reject (surrounding whitespace, a control character, a non-ASCII character) is refused with the
-  provider error, with no key in the text. No request is made, so there is no span, no ``httpcore`` DEBUG line and no ``UnicodeEncodeError``.
-* :func:`transport_failure` and :func:`unexpected_status` mask the key an adapter holds in the text of what it raises (a transport that echoes the request, a vendor's body
-  that quotes the key), through the rule the LLM adapters use for a provider's text (``primer.llm._failure.scrubbed_event_text``): the configured ``api_key`` in the forms
+  provider error, with no key in the text. No request is made, so there is no span, no ``httpcore`` DEBUG line and no ``UnicodeEncodeError``. The check is a SUPERSET of what
+  h11 rejects (it also refuses an interior tab, other control characters and DEL, none of which a vendor's key holds), so a key it refuses is one nobody can use.
+* :func:`transport_failure`, :func:`unexpected_status` and :func:`vendor_text` mask the key an adapter holds in the text of what it raises (a transport that echoes the request,
+  a vendor's body or error text that quotes the key), through the rule the LLM adapters use for a provider's text (``primer.llm._failure.scrubbed_event_text``): the configured ``api_key`` in the forms
   a message can show it (itself, its ``repr``-escaped form, its whitespace-normalised form), URL userinfo, ``Bearer`` and ``Basic`` tokens.
 """
 
@@ -22,7 +23,7 @@ from pydantic import SecretStr
 
 from primer.llm._failure import scrubbed_event_text
 
-__all__ = ["UNSENDABLE_KEY", "require_sendable_key", "transport_failure", "unexpected_status"]
+__all__ = ["UNSENDABLE_KEY", "require_sendable_key", "transport_failure", "unexpected_status", "vendor_text"]
 
 #: What a refused key is told, after the adapter's name. It names no key.
 UNSENDABLE_KEY = "api_key has surrounding whitespace or a control/non-ASCII character; re-enter it"
@@ -54,11 +55,16 @@ def transport_failure(label: str, exc: BaseException, config: Any) -> str:
     return scrubbed_event_text(f"{label} transport: {type(exc).__name__}: {exc}", SimpleNamespace(config=config))
 
 
-def unexpected_status(label: str, status_code: int, body: str, config: Any, limit: int = _BODY_CHARS) -> str:
-    """``"<label> unexpected status <code>: <body>"`` with the body scrubbed FIRST and cut to ``limit`` characters AFTER.
+def vendor_text(label: str, text: str, config: Any, limit: int = _BODY_CHARS) -> str:
+    """``"<label>: <text>"`` where ``text`` is something a vendor's response said (a non-2xx body, an ``error`` field of a 200), scrubbed FIRST and cut to ``limit`` characters AFTER.
 
-    A cut made before the scrub can leave the head of a key that straddles the limit; the scrub sees the whole body (to its own scan limit) and the cut then falls on text that
-    holds no secret. The message stays as short as it always was.
+    A cut made before the scrub can leave the head of a key that straddles the limit; the scrub sees the whole text (to its own scan limit) and the cut then falls on text that
+    holds no secret. A text the vendor sent is also unbounded, so it is always cut: a message is never longer than ``label`` plus ``limit`` characters.
     """
-    shown = scrubbed_event_text(body, SimpleNamespace(config=config))[:limit]
-    return f"{label} unexpected status {status_code}: {shown}"
+    shown = scrubbed_event_text(text, SimpleNamespace(config=config))[:limit]
+    return f"{label}: {shown}"
+
+
+def unexpected_status(label: str, status_code: int, body: str, config: Any, limit: int = _BODY_CHARS) -> str:
+    """``"<label> unexpected status <code>: <body>"``, the body through :func:`vendor_text`."""
+    return vendor_text(f"{label} unexpected status {status_code}", body, config, limit)
