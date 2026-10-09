@@ -13,15 +13,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 
 import pytest
+import pytest_asyncio
+from pydantic_core import to_jsonable_python
 
 import primer.observability.metrics as metrics
-from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
-from primer.model.yield_ import with_wake_entry
+from primer.model.external_tool import ExternalToolCall
+from primer.model.provider import SqliteConfig
+from primer.model.workspace_session import AgentSessionBinding, GraphSessionBinding, SessionStatus, WorkspaceSession
+from primer.model.yield_ import WAKE_ENTRY_KEY, with_wake_entry
 from primer.session.yields import durably_mark_session_resumable, flip_sessions_parked_on
+from primer.storage import raw_generation
+from primer.storage.sqlite import SqliteStorageProvider
 from tests.conftest import _FakeStorageProvider
 from tests.session.test_machine_wake_replay_round2 import _row
 
@@ -115,8 +122,9 @@ async def test_a_pending_entry_with_no_identity_is_judged_by_the_key_alone() -> 
 
 
 @pytest.mark.asyncio
-async def test_two_sibling_entries_sharing_a_key_each_accept_only_their_own_subscription() -> None:
-    """One graph session, two nodes subscribed to one trigger: the key is shared (it carries the session), the subscription ids are not."""
+async def test_a_key_two_sibling_entries_share_admits_a_wake_that_names_either_and_refuses_one_that_names_neither() -> None:
+    """One graph session, two nodes subscribed to one trigger: the key is shared (it carries the session), the subscription ids are not. The flip admits a
+    wake that names either sibling, so it does not tell them apart: the resume then takes every entry on the fired key (ticket 01a122cc-e699)."""
     key = TRIGGER_KEY
     entries = [
         {"node_id": "n1", "tool_call_id": "call_0", "event_key": key, "resume_metadata": {"subscription_id": "sb-1"}},
@@ -251,3 +259,212 @@ async def test_a_missing_row_still_raises_not_found() -> None:
 
     with pytest.raises(NotFoundError):
         await durably_mark_session_resumable(ghost, event_key="ask_user:s:call_0", payload={}, session_storage=storage, engine=None)
+
+
+# ---- #707 review, round 2 ---------------------------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_entry_fence_counts_only_the_entries_that_wait_on_the_fired_key() -> None:
+    """N5 (M3). The entry on the fired key carries no id (a park from before); a sibling on ANOTHER key carries one. The wake is judged by the fired key's
+    entries alone, so it lands: counting the sibling would refuse it."""
+    key, other = "external_tool:s:n1:call_0", "trigger:s:T"
+    entries = [
+        {"node_id": "n1", "tool_call_id": "call_0", "event_key": key, "tool_name": "_external", "resume_metadata": {}},
+        {"node_id": "n2", "tool_call_id": "call_1", "event_key": other, "tool_name": "subscribe_to_trigger", "resume_metadata": {"subscription_id": "sb-2"}},
+    ]
+    row = _row("s", key, until=timedelta(hours=1), tool="_external", graph=True)
+    row = row.model_copy(update={"parked_state": {**row.parked_state, "graph_checkpoint": {
+        "pending_toolcalls": [], "pending_agent_yields": entries, "pending_dispatch": [],
+    }}})
+
+    flipped, after = await _flip(row, key, with_wake_entry({"result": "ok", "is_error": False}, "etool-1"))
+
+    assert (flipped, after.parked_status) == (1, "resumable")
+    assert _refused() == 0
+
+
+@pytest_asyncio.fixture
+async def sp(tmp_path):
+    """A REAL SQLite storage: a row read there is a copy, so a write from a stale snapshot can happen (the in-memory fake hands back the stored object)."""
+    provider = SqliteStorageProvider(SqliteConfig(path=str(tmp_path / "fences.sqlite")))
+    await provider.initialize()
+    try:
+        yield provider
+    finally:
+        await provider.aclose()
+
+
+class _HoldBus:
+    """Records every publish and delivers none: the test hands a copy to the flip itself, as a bus that redelivers it late would."""
+
+    def __init__(self) -> None:
+        self.published: list[tuple[str, dict]] = []
+
+    async def publish(self, key: str, payload: dict | None = None) -> None:
+        self.published.append((key, dict(payload or {})))
+
+
+def _graph_park(sid: str, *, parked_at: datetime, toolcalls: tuple[dict, ...] = (), agent_yields: tuple[dict, ...] = ()) -> WorkspaceSession:
+    """A graph park shaped like the park writer's: the top-level ``yielded`` is the ``_approval`` projection of the primary (a ToolCall node's entry
+    first, whose metadata the projection rebuilds from ``original_call`` only), and every entry's key is in ``parked_event_keys``."""
+    keys = [t["parked_event_key"] for t in toolcalls] + [e["event_key"] for e in agent_yields]
+    if toolcalls:
+        first = toolcalls[0]
+        primary_key, primary_tcid = first["parked_event_key"], first["tool_call_id"]
+        meta = {"original_call": {"id": primary_tcid, "name": first["tool_name"], "arguments": {}}}
+    else:
+        first = agent_yields[0]
+        primary_key, primary_tcid, meta = first["event_key"], first["tool_call_id"], dict(first["resume_metadata"])
+    state = {
+        "schema_version": 1, "tool_call_id": primary_tcid,
+        "yielded": {"tool_name": "_approval", "event_key": primary_key, "resume_metadata": meta, "event_keys": keys},
+        "llm_messages": [], "turn_no": 0, "started_at": parked_at.isoformat(), "resume_event_payload": None,
+        "graph_checkpoint": {"pending_toolcalls": list(toolcalls), "pending_agent_yields": list(agent_yields), "pending_dispatch": []},
+    }
+    return WorkspaceSession(
+        id=sid, workspace_id="ws", binding=GraphSessionBinding(graph_id="g"), status=SessionStatus.RUNNING, created_at=parked_at, parked_status="parked",
+        parked_at=parked_at, parked_until=parked_at + timedelta(hours=1), parked_event_key=primary_key, parked_event_keys=keys, parked_state=state,
+    )
+
+
+_ASK_N2 = {"node_id": "n2", "tool_call_id": "call_1", "event_key": "ask_user:gs:n2:call_1", "tool_name": "ask_user", "resume_metadata": {"prompt": "?"}}
+
+
+@pytest.mark.asyncio
+async def test_the_cancel_of_a_tool_call_nodes_trigger_wait_names_the_subscription_of_the_entry_it_resolved(sp) -> None:
+    """N1 (probe A4). A graph park whose primary is a ToolCall node's ``subscribe_to_trigger``: the top-level projection carries ``original_call`` only, so
+    the cancel names the subscription of the pending entry it resolved by tool_call_id. The node then subscribes again under the same key (a trigger key
+    carries no tool_call_id) with a new subscription and a fresh ``parked_at``; the cancel redelivered after that must not end the new wait."""
+    from primer.api.routers.yields import CancelYieldedToolBody, post_cancel_yielded_tool
+
+    sessions = sp.get_storage(WorkspaceSession)
+    key = "trigger:gs:T"
+    wait = {"node_id": "n1", "tool_call_id": "uuid-1", "parked_event_key": key, "arguments": {}, "tool_name": "subscribe_to_trigger",
+            "resume_metadata": {"subscription_id": "sb-1", "trigger_id": "T"}}
+    await sessions.create(_graph_park("gs", parked_at=datetime.now(UTC) - timedelta(minutes=5), toolcalls=(wait,), agent_yields=(_ASK_N2,)))
+    bus = _HoldBus()
+
+    await post_cancel_yielded_tool(
+        session_id="gs", tool_call_id="uuid-1", body=CancelYieldedToolBody(reason="skip"), session_storage=sessions, event_bus=bus,
+        call_storage=sp.get_storage(ExternalToolCall), user=None,
+    )
+
+    [(published_key, copy)] = bus.published
+    assert published_key == key
+    assert copy.get(WAKE_ENTRY_KEY) == "sb-1", "the cancel names the subscription of the entry it cancels"
+    again = {**wait, "tool_call_id": "uuid-2", "resume_metadata": {"subscription_id": "sb-2", "trigger_id": "T"}}
+    await sessions.update(_graph_park("gs", parked_at=datetime.now(UTC), toolcalls=(again,), agent_yields=(_ASK_N2,)))
+
+    flipped = await flip_sessions_parked_on(published_key, copy, session_storage=sessions, engine=None)
+
+    assert flipped == 0 and (await sessions.get("gs")).parked_status == "parked", "the redelivered cancel ended the node's NEW wait"
+    assert _refused() == 1
+
+
+def _ask_park(sid: str = "s") -> WorkspaceSession:
+    return _row(sid, f"ask_user:{sid}:call_0", until=timedelta(hours=1), tool="ask_user", parked_at=datetime.now(UTC) - timedelta(minutes=3))
+
+
+def _drift() -> float:
+    return sum(s.value for m in metrics.storage_cas_drift_total.collect() for s in m.samples if s.name.endswith("_total"))
+
+
+class _HeldFlip:
+    """Holds the flip at its write: the first ``patch_if`` that writes ``parked_status="resumable"`` waits, after every fence ran on the snapshot and
+    before the backend sees the write, until the test has let another writer land."""
+
+    def __init__(self, monkeypatch, storage) -> None:
+        self.arrived, self.go = asyncio.Event(), asyncio.Event()
+        self._armed = True
+        real = storage.patch_if
+
+        async def patch_if(row_id, patch=None, *args, **kwargs):
+            if self._armed and isinstance(patch, dict) and patch.get("parked_status") == "resumable":
+                self._armed = False
+                self.arrived.set()
+                await self.go.wait()
+            return await real(row_id, patch, *args, **kwargs)
+
+        monkeypatch.setattr(storage, "patch_if", patch_if)
+
+
+async def _held_flip(storage, monkeypatch, payload: dict):
+    """Start a flip of the park at its current snapshot and return it held at its write."""
+    snapshot = await storage.get("s")
+    held = _HeldFlip(monkeypatch, storage)
+    task = asyncio.create_task(durably_mark_session_resumable(
+        snapshot, event_key="ask_user:s:call_0", payload=payload, session_storage=storage, engine=None,
+    ))
+    await asyncio.wait_for(held.arrived.wait(), 5)
+    return held, task
+
+
+@pytest.mark.asyncio
+async def test_two_flips_of_one_single_park_on_sqlite_exactly_one_lands(sp) -> None:
+    """N5 (probe C1): two wakes that read the same park; only one may advance it, with its own payload."""
+    sessions = sp.get_storage(WorkspaceSession)
+    await sessions.create(_ask_park())
+    first, second = await sessions.get("s"), await sessions.get("s")
+
+    landed = await asyncio.gather(*(
+        durably_mark_session_resumable(snap, event_key="ask_user:s:call_0", payload={"response": name}, session_storage=sessions, engine=None)
+        for snap, name in ((first, "first"), (second, "second"))
+    ))
+
+    assert sorted(landed) == [False, True]
+    assert (await sessions.get("s")).parked_state["resume_event_payload"] == {"response": "first" if landed[0] else "second"}
+    assert _drift() == 0
+
+
+@pytest.mark.asyncio
+async def test_a_flip_held_at_its_write_while_the_session_parks_again_is_refused_on_sqlite(sp, monkeypatch) -> None:
+    """N5 (probe C2): the flip is held at its write while the release writes a NEW park (the release's own shape: one ``patch_if`` of the park columns,
+    a fresh ``parked_at``); released, the flip must not land on the new park."""
+    sessions = sp.get_storage(WorkspaceSession)
+    await sessions.create(_ask_park())
+    held, task = await _held_flip(sessions, monkeypatch, {"response": "for the old park"})
+    snapshot = await sessions.get("s")
+    new_state = {"tool_call_id": "call_0", "yielded": {"tool_name": "ask_user", "event_key": "ask_user:s:call_0", "resume_metadata": {"prompt": "NEW"}}}
+    assert await sessions.patch_if(
+        "s", to_jsonable_python({"parked_status": "parked", "parked_at": datetime.now(UTC), "parked_state": new_state}),
+        where={"workspace_id": [raw_generation(snapshot, "workspace_id")]},
+    ) is not None
+
+    held.go.set()
+
+    assert await task is False
+    after = await sessions.get("s")
+    assert after.parked_status == "parked" and after.parked_state == new_state
+    assert _drift() == 0
+
+
+@pytest.mark.asyncio
+async def test_a_flip_held_at_its_write_keeps_the_fields_another_writer_changed_on_sqlite(sp, monkeypatch) -> None:
+    """N5 (probe C3): ``cancel_requested`` and ``last_seq`` written while the flip is held survive it (the flip writes only the two fields it owns)."""
+    sessions = sp.get_storage(WorkspaceSession)
+    await sessions.create(_ask_park())
+    held, task = await _held_flip(sessions, monkeypatch, {"response": "x"})
+    await sessions.patch_if("s", {"cancel_requested": True, "last_seq": 41}, where={"parked_status": ["parked"]})
+
+    held.go.set()
+
+    assert await task is True
+    after = await sessions.get("s")
+    assert (after.parked_status, after.cancel_requested, after.last_seq) == ("resumable", True, 41)
+
+
+@pytest.mark.asyncio
+async def test_a_flip_held_at_its_write_while_the_session_ends_is_refused_on_sqlite(sp, monkeypatch) -> None:
+    """N5 (probe C4): the session ENDS while the flip is held; released, the flip must not advance an ended row."""
+    sessions = sp.get_storage(WorkspaceSession)
+    await sessions.create(_ask_park())
+    held, task = await _held_flip(sessions, monkeypatch, {"response": "x"})
+    await sessions.patch_if("s", {"status": SessionStatus.ENDED.value}, where={"parked_status": ["parked"]})
+
+    held.go.set()
+
+    assert await task is False
+    after = await sessions.get("s")
+    assert (after.parked_status, after.status) == ("parked", SessionStatus.ENDED)
+    assert _drift() == 0

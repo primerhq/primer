@@ -454,9 +454,11 @@ async def test_flip_rejects_a_row_ended_after_the_caller_snapshotted_it(app):
     OLD snapshot-check (`if session.status == ENDED: return False`) would
     have read False and let the write through. Between that read and this
     call, a DIFFERENT worker independently ends the row in storage. The
-    fix is `Storage.update_unless` evaluating "is status ENDED" against
-    the row's CURRENT value at write time, not the stale `sess` argument -
-    so this must still reject even though `sess.status` says RUNNING.
+    fix is the flip's one `patch_if`, guarded on a status that is not
+    ENDED (beside the park it read, `parked_at`, and a `parked_status` it
+    may advance from), which the backend evaluates against the row's
+    CURRENT value at write time, not the stale `sess` argument - so this
+    must still reject even though `sess.status` says RUNNING.
     """
     sess = _make_ask_user_parked_session(session_id="d-race", tool_call_id="tcz")
     storage = app.state.storage_provider.get_storage(WorkspaceSession)
