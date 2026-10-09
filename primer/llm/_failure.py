@@ -75,9 +75,9 @@ _BASIC = re.compile(r"(?i)(\bbasic\s+)([A-Za-z0-9+/]{4,}={0,2})")
 #: Control characters that are not whitespace (NUL, ESC, ...): a terminal or a log viewer acts on them. Stripped with ``str.translate``, which is linear and
 #: fast on a body of tens of megabytes (a regex substitution took seconds on a body of NULs).
 _CONTROL_TABLE = {code: None for code in (*range(0x00, 0x09), *range(0x0E, 0x1C), 0x7F)}
-#: Where a SHORT secret (4 to 7 characters) may begin: not inside a longer run of letters or digits, but after a ``%XX`` or ``\uXXXX`` escape it may
-#: (``Bearer%20sk-1234`` is a key after a space, not a longer token).
-_TOKEN_START = r"(?:(?<![A-Za-z0-9])|(?<=%[0-9A-Fa-f]{2})|(?<=\\u[0-9A-Fa-f]{4}))"
+#: Where a SHORT secret (4 to 7 characters) may begin: not inside a longer run of letters or digits, but after an escape it may: ``%XX`` and ``\uXXXX``
+#: (``Bearer%20sk-1234`` is a key after a space, not a longer token) and the escapes a Python ``repr`` of a body prints (``\n``, ``\t``, ``\x1b``).
+_TOKEN_START = r"(?:(?<![A-Za-z0-9])|(?<=%[0-9A-Fa-f]{2})|(?<=\\u[0-9A-Fa-f]{4})|(?<=\\[nrtfv])|(?<=\\x[0-9A-Fa-f]{2}))"
 
 #: What each classified shape says about the provider, as the predicate of the sentence the label starts.
 _WHAT: tuple[tuple[type[PrimerError], str], ...] = (
@@ -97,6 +97,16 @@ def provider_label(provider: Any) -> str:
     return f"Model provider {provider.id!r} ({kind})"
 
 
+def _forms(secret: str) -> set[str]:
+    """``secret`` as the text can show it: itself; its NORMALISED form (controls stripped, whitespace runs collapsed), because the provider's text is
+    normalised before it is scrubbed; and its ESCAPED form (a tab as the two characters ``\\t``), because the SDK's message for a 4xx is the ``repr`` of the body."""
+    forms = {secret, secret.encode("unicode_escape").decode("ascii")}
+    normalised = " ".join(secret.translate(_CONTROL_TABLE).split())
+    if len(normalised) >= _MIN_SECRET_LENGTH:
+        forms.add(normalised)
+    return forms
+
+
 def _secrets(provider: Any) -> list[str]:
     """The values configured on ``provider`` that must never appear in a message, longest first."""
     config = provider.config
@@ -105,13 +115,13 @@ def _secrets(provider: Any) -> list[str]:
     if key is not None:
         value = key.get_secret_value()
         if len(value) >= _MIN_SECRET_LENGTH and value.casefold() not in _KEYLESS_PLACEHOLDERS:
-            values.add(value)
+            values.update(_forms(value))
     url = getattr(config, "url", None)
     username, password = getattr(url, "username", None) or "", getattr(url, "password", None)
     if password:
         for variant in {password, unquote(password)}:
             if len(variant) >= _MIN_SECRET_LENGTH:
-                values.add(variant)
+                values.update(_forms(variant))
         # httpx sends the userinfo of a Base URL as ``Authorization: Basic base64(user:password)``, which a provider may echo back
         for pair in {f"{username}:{password}", f"{unquote(username)}:{unquote(password)}"}:
             token = base64.b64encode(pair.encode()).decode()
@@ -144,6 +154,22 @@ def scrub(text: str, provider: Any) -> str:
     return _BASIC.sub(_mask_basic, text)
 
 
+_WORD = re.compile(r"\S+")
+
+
+def _collapse(text: str, limit: int) -> str:
+    """``" ".join(text.split())`` cut to ``limit`` characters, read lazily: it stops after the words that fill the limit instead of splitting a body of
+    tens of megabytes into a list nobody will read past the first ``limit`` characters of."""
+    words: list[str] = []
+    size = 0
+    for match in _WORD.finditer(text):
+        words.append(match.group())
+        size += match.end() - match.start() + 1
+        if size > limit:
+            break
+    return " ".join(words)[:limit]
+
+
 def _clean(text: str, provider: Any, *, collapse: bool) -> str:
     """``text`` normalised, THEN cut to ``_SCAN_LIMIT``, THEN scrubbed.
 
@@ -153,9 +179,8 @@ def _clean(text: str, provider: Any, *, collapse: bool) -> str:
     match could no longer see them. After normalising, anything the message can show lies well inside the prefix that is scrubbed.
     """
     text = text.translate(_CONTROL_TABLE)
-    if collapse:
-        text = " ".join(text.split())
-    return scrub(text[:_SCAN_LIMIT], provider)
+    text = _collapse(text, _SCAN_LIMIT) if collapse else text[:_SCAN_LIMIT]
+    return scrub(text, provider)
 
 
 def _clipped(value: object, depth: int = _DUMP_DEPTH) -> object:
