@@ -15,8 +15,10 @@ What the repair does, per row, only when the live config class refuses it:
 * ``huggingface``: the config becomes ``{"token": ""}``. The url, key and flavor were an OpenAI-shaped config the HuggingFace adapter never reads, and an empty token is what the
   model needs to exist (a public model needs none).
 * ``openai``: the config becomes ``{"url": PLACEHOLDER_URL}`` plus the ``api_key`` and ``flavor`` the row had. There is no endpoint to restore. The row is KEPT, not deleted: its id
-  may be named by a collection, and removing an operator's row at boot is not ours to do. The placeholder is on the reserved ``.invalid`` domain (RFC 6761), so it says what to fix
-  where the console shows the Base URL and fails loudly, never against a real host, if it is used. A HuggingFace token is not an OpenAI key, so it is not carried over.
+  may be named by a collection, and removing an operator's row at boot is not ours to do. The placeholder is ``https://`` on the reserved ``.invalid`` domain (RFC 6761), so it says what
+  to fix where the console shows the Base URL and a use of it fails loudly. It is https because the row keeps its stored key and a use sends ``Authorization: Bearer <key>``:
+  over plain http that would go to whatever resolves the name (a k8s search list, an NXDOMAIN-hijacking resolver), while no CA can issue a certificate for ``.invalid``, so over
+  https the TLS handshake cannot succeed and fails before any header is sent. A HuggingFace token is not an OpenAI key, so it is not carried over.
 
 **Why this module redefines EmbeddingProvider.** The live model refuses these rows (that is the point), so they cannot be read through it; the shadow class below reads
 ``provider`` and ``config`` untyped and keeps every other field (``models``, ``limits``) as it is (the table is selected by the class NAME, as in m007). The config is a plain dict
@@ -41,8 +43,10 @@ logger = logging.getLogger(__name__)
 
 _PAGE = 200
 
-#: The base URL an ``openai`` row with no usable endpoint gets: on the reserved ``.invalid`` domain, so it never resolves.
-PLACEHOLDER_URL = "http://base-url-not-set.invalid/"
+#: The base URL an ``openai`` row with no usable endpoint gets: on the reserved ``.invalid`` domain, and https. The row keeps its stored key, and a use of it sends
+#: ``Authorization: Bearer <key>``: over http that would go to whatever resolves the name (a search list, an NXDOMAIN-hijacking resolver), while no CA can issue a
+#: certificate for ``.invalid``, so over https the TLS handshake fails before any header is sent.
+PLACEHOLDER_URL = "https://base-url-not-set.invalid/"
 
 
 class EmbeddingProvider(Identifiable):  # noqa: N801 - the class name selects the storage table

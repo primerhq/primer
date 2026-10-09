@@ -86,8 +86,9 @@ def test_the_error_text_of_every_tool_module_drops_the_input_and_keeps_type_loc_
     text = result.output if isinstance(result.output, str) else json.dumps(result.output)
     assert PASSWORD not in text and KEY not in text and "pw-0123" not in text, text
     assert result.is_error is True
-    start = text.index("[")
-    errors = json.loads(text[start : text.rindex("]") + 1])
+    message = json.loads(text)["message"] if text.lstrip().startswith("{") else text
+    prefix = message.index(": ") + 2
+    errors = json.loads(message[prefix:])
     assert errors and all("input" not in error and {"type", "loc", "msg"} <= set(error) for error in errors), errors
 
 

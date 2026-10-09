@@ -40,6 +40,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, ValidationError
 
+from primer.common.validation_errors import without_input
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.model.event_matcher import EventMatcher
 from primer.model.trigger import (
@@ -95,7 +96,7 @@ TRIGGER_TOOLSET_ID = "trigger"
 
 def _err_validation(exc: ValidationError) -> ToolCallResult:
     return _err(
-        "argument validation failed: " + json.dumps(exc.errors(), default=str),
+        "argument validation failed: " + json.dumps(without_input(exc.errors()), default=str),
         error_type="validation-error",
     )
 

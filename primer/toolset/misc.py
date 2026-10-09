@@ -42,6 +42,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
+from primer.common.validation_errors import without_input
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.model.yield_ import ToolContext, Yielded
 from primer.toolset._describe import make_tool
@@ -63,7 +64,7 @@ MISC_TOOLSET_ID = "misc"
 
 def _err_from_validation(exc: ValidationError) -> ToolCallResult:
     return _err(
-        "argument validation failed: " + json.dumps(exc.errors(), default=str),
+        "argument validation failed: " + json.dumps(without_input(exc.errors()), default=str),
         error_type="validation-error",
     )
 

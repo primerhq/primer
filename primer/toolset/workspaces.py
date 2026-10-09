@@ -52,6 +52,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field, ValidationError
 
 from primer.authz import _role_allows
+from primer.common.validation_errors import without_input
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.model.except_ import (
     BadRequestError,
@@ -115,7 +116,7 @@ WORKSPACES_TOOLSET_ID = "workspaces"
 
 def _err_from_validation(exc: ValidationError) -> ToolCallResult:
     return _err(
-        "argument validation failed: " + json.dumps(exc.errors(), default=str),
+        "argument validation failed: " + json.dumps(without_input(exc.errors()), default=str),
         error_type="validation-error",
     )
 
@@ -2285,7 +2286,7 @@ def build_workspaces_toolset(
             )
         except ValidationError as exc:
             return _err(
-                "invalid selector: " + json.dumps(exc.errors(), default=str),
+                "invalid selector: " + json.dumps(without_input(exc.errors()), default=str),
                 error_type="bad-request",
             )
 

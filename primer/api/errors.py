@@ -17,6 +17,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from primer.common.validation_errors import without_input
 from primer.model.except_ import (
     AuthenticationError,
     AuthRequiredError,
@@ -218,7 +219,7 @@ async def _validation_error_handler(
     # pydantic puts the offending INPUT in every error: a config with a credentialed Base URL that does not parse, or a whole config dict
     # (the key beside the missing token). It is what the caller typed, so it adds nothing a person needs (the console reads loc and msg),
     # and it is dropped here for every route, before anything is rendered.
-    errors = [{key: value for key, value in error.items() if key != "input"} for error in exc.errors()]
+    errors = without_input(exc.errors())
     return _problem_response(
         request=request,
         status=422,
