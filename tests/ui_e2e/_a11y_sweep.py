@@ -42,8 +42,8 @@ class Sweep:
         self.network: list[str] = []
         self._reported = 0
         self._inflight: set = set()
-        self._listeners = [("request", self._on_request), ("response", self._on_response), ("requestfinished", self._on_done), ("requestfailed", self._on_failed),
-                           ("domcontentloaded", self._on_new_document)]
+        self._closed = False
+        self._listeners = [("request", self._on_request), ("response", self._on_response), ("requestfinished", self._on_done), ("requestfailed", self._on_failed)]
         for event, handler in self._listeners:
             page.on(event, handler)
 
@@ -53,7 +53,16 @@ class Sweep:
     def _api(request) -> bool:
         return "/v1/" in request.url and request.resource_type != "eventsource"
 
+    @property
+    def in_flight(self) -> list:
+        """The ``/v1`` requests the page has made and not had an answer to (an event stream is not one)."""
+        return list(self._inflight)
+
     def _on_request(self, request) -> None:
+        # A page load drops the requests of the document it replaces without reporting them finished, so they are forgotten when the NAVIGATION starts (not at domcontentloaded, which would drop the
+        # new document's early requests too). The sweep goes from ``/console/#/w/...`` to ``/console/``, the same document URL, so the URL cannot say it.
+        if request.is_navigation_request() and request.frame.parent_frame is None:
+            self._inflight.clear()
         if self._api(request):
             self._inflight.add(request)
 
@@ -75,12 +84,12 @@ class Sweep:
         if problem:
             self.network.append(problem)
 
-    def _on_new_document(self, _page) -> None:
-        """A new DOCUMENT (a page load, not a hash change) never reports the requests of the one it replaced as finished: they are not in flight any more. (Comparing URLs would not do: the sweep
-        goes from ``/console/#/w/...`` to ``/console/``, the same document URL.)"""
-        self._inflight.clear()
-
     def close(self) -> None:
+        """Note what the page's last moments did to the network (they belong to a note too), stop listening and detach the probe. Safe to call twice."""
+        if self._closed:
+            return
+        self._closed = True
+        self.note_network("after the last look")
         for event, handler in self._listeners:
             self.page.remove_listener(event, handler)
         self.probe.close()
@@ -90,6 +99,7 @@ class Sweep:
     def arrive(self, kind: str, name: str, surface: str | None = None) -> bool:
         """Wait for the page of ``kind``/``name`` to show every marker of ``ready_selectors``. ``False`` (and a note) when one never shows."""
         label = surface or f"{kind} {name}"
+        self.budget.check(label)
         for marker in ready_selectors(kind, name):
             try:
                 expect(self.page.locator(marker).first).to_be_visible(timeout=self.budget.wait_ms(self.ready_timeout_ms))
@@ -100,9 +110,16 @@ class Sweep:
         return True
 
     def _wait_until_idle(self, surface: str) -> None:
+        """Wait until no ``/v1`` request is in flight: after a round trip to the page (a request the page has just started is announced to us before the answer to that round trip, so the set is
+        not read before the client has been told of it), and for a QUIET window: the set empty on two checks a quarter of a second apart (a poll that starts as the look begins is not missed)."""
         deadline = time.monotonic() + self.budget.wait_ms(int(self.idle_timeout_s * 1000)) / 1000
-        while self._inflight and time.monotonic() < deadline:
-            self.page.wait_for_timeout(100)
+        quiet = 0
+        while True:
+            self.page.evaluate("1")
+            quiet = 0 if self._inflight else quiet + 1
+            if quiet >= 2 or time.monotonic() >= deadline:
+                break
+            self.page.wait_for_timeout(100 if self._inflight else 250)
         if self._inflight:
             self.budget.spent()
             self.notes.append(f"{surface}: still waiting for " + ", ".join(sorted(f"{r.method} {r.url.split('?', 1)[0].split('/v1/', 1)[-1]}" for r in self._inflight)))
@@ -114,6 +131,7 @@ class Sweep:
 
         Before it looks, the surface must show every marker of ``ready``, its ``/v1`` requests must have answered and, with ``check_page``, what is loading must have stopped; an error banner under
         it, a marker that never came, a request that failed or answered 500 or more are notes in the report (the look is still taken, so one broken page does not hide the rest)."""
+        self.budget.check(surface)
         self.visited.append(surface)
         for marker in ready or []:
             try:
@@ -134,7 +152,13 @@ class Sweep:
             if state.errors:
                 self.notes.append(f"{surface}: an error banner under it: {state.errors}")
         self.page.wait_for_timeout(250)  # let a just-opened surface finish painting
-        result = self.probe.examine(root, chrome=CHROME)
+        try:
+            result = self.probe.examine(root, chrome=CHROME)
+        except AssertionError as exc:   # the page kept changing under the probe, even after its retry: this surface is noted and empty, the sweep goes on
+            self.notes.append(f"{surface}: could not be looked at: {exc}")
+            self.looks[surface] = Look()
+            self.note_network(surface)
+            return
         self.looks[surface] = Look(examined=result.examined, body=result.body, skipped=result.skipped)
         for item in result.unnamed:
             self.found.setdefault(item["html"], []).append(surface)

@@ -20,6 +20,7 @@ from playwright.sync_api import Page, Route
 from tests._support.smk import smk
 from tests.ui_e2e._a11y import Budget, Look, SweepDeadlineExceeded, evaluate_sweep
 from tests.ui_e2e._a11y_sweep import Sweep
+from tests.ui_e2e._shell_helpers import open_gate
 
 pytestmark = smk("SMK-UI-06", status="partial")
 
@@ -45,7 +46,7 @@ def held(page: Page):
 def blank_console(page: Page, console_url: str) -> Page:
     """The page, at the console's origin, showing a document with no script: nothing polls, so no note can come from anywhere but the test."""
     page.route(re.compile(r".*/console/(\?.*)?$"), lambda route: route.fulfill(status=200, content_type="text/html", body=BLANK))
-    page.goto(console_url)
+    open_gate(page, console_url)      # the console's root, without waiting for a shell that this document does not have
     return page
 
 

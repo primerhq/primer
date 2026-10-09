@@ -18,13 +18,22 @@ ROOT = Path(__file__).resolve().parents[2]
 LANE = ROOT / "tests" / "ui_e2e"
 
 
+def _is_type_checking(test: ast.expr) -> bool:
+    return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING")
+
+
 def _defined(tree: ast.Module) -> set[str] | None:
-    """The names a module binds at its top level, or ``None`` when it re-exports with ``import *`` (nothing can be said)."""
-    names: set[str] = set()
+    """The names a module binds at its top level when it runs, or ``None`` when it re-exports with ``import *`` (nothing can be said). An ``if TYPE_CHECKING:`` block never runs, so what only it
+    binds is not defined; the bodies of ``try``, ``except``, ``else`` and ``finally`` do run."""
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and any(a.name == "*" for a in node.names):
             return None
-    for node in tree.body:
+    return _bound(tree.body)
+
+
+def _bound(body: list[ast.stmt]) -> set[str]:
+    names: set[str] = set()
+    for node in body:
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
             names.add(node.name)
         elif isinstance(node, ast.Assign):
@@ -34,11 +43,12 @@ def _defined(tree: ast.Module) -> set[str] | None:
             names.add(node.target.id)
         elif isinstance(node, ast.Import | ast.ImportFrom):
             names |= {(a.asname or a.name).split(".")[0] for a in node.names}
-        elif isinstance(node, ast.If | ast.Try):
-            inner = ast.Module(body=[*node.body, *getattr(node, "orelse", [])], type_ignores=[])
-            more = _defined(inner)
-            if more:
-                names |= more
+        elif isinstance(node, ast.If):
+            names |= _bound(node.orelse) | (set() if _is_type_checking(node.test) else _bound(node.body))
+        elif isinstance(node, ast.Try):
+            names |= _bound(node.body) | _bound(node.orelse) | _bound(node.finalbody)
+            for handler in node.handlers:
+                names |= _bound(handler.body)
     return names
 
 
@@ -53,9 +63,14 @@ def problems_in(lane: Path, package: str = "tests.ui_e2e") -> list[tuple[str, st
     for path in sorted(lane.glob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
-            if not isinstance(node, ast.ImportFrom) or node.level or not (node.module or "").startswith(package):
+            if not isinstance(node, ast.ImportFrom):
                 continue
-            target_name = node.module[len(package):].lstrip(".")
+            if node.level == 1:                                   # ``from .helper import x`` / ``from . import helper``: the same lane
+                target_name = node.module or ""
+            elif node.level == 0 and (node.module or "").startswith(package):
+                target_name = node.module[len(package):].lstrip(".")
+            else:
+                continue
             if not target_name:                                   # ``from tests.ui_e2e import _a11y`` imports sibling MODULES
                 for alias in node.names:
                     if not (lane / f"{alias.name}.py").exists() and not (lane / alias.name).is_dir():
@@ -63,7 +78,7 @@ def problems_in(lane: Path, package: str = "tests.ui_e2e") -> list[tuple[str, st
                 continue
             target = lane / f"{target_name}.py"
             if not target.exists():
-                out.append((MISSING, path.name, node.lineno, "*", node.module))
+                out.append((MISSING, path.name, node.lineno, "*", ("." * node.level) + (node.module or "")))
                 continue
             defined = _defined(ast.parse(target.read_text(encoding="utf-8")))
             for alias in node.names:

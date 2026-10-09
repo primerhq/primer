@@ -23,27 +23,32 @@ class SeededSession:
     delete_paths: list[str] = field(default_factory=list)   # in creation order; deleted in reverse
 
 
-def seed_session(base_url: str, tmp_path: Path, suffix: str, *, description: str = "journey probe") -> SeededSession:
-    """Create the rows listed above and return them. When it dies half way (a refused request), what it had created is deleted before the error goes on: a failed seed leaves nothing behind."""
+def seed_session(base_url: str, tmp_path: Path, suffix: str, *, description: str = "journey probe", transport: httpx.BaseTransport | None = None) -> SeededSession:
+    """Create the rows listed above and return them. When it dies half way (a refused request), what it had created is deleted before the error goes on: a failed seed leaves nothing behind.
+    Only a 201 is recorded for deletion: a 409 means the row was already there (somebody else's, or a leftover), and the journey must not take it away. ``transport`` is for a test."""
     prov, aid, wp, tpl = f"dn-prov-{suffix}", f"dn-agent-{suffix}", f"dn-wp-{suffix}", f"dn-tpl-{suffix}"
     created: list[str] = []
     try:
-        with httpx.Client(base_url=base_url, timeout=30.0) as c:
+        with httpx.Client(base_url=base_url, timeout=30.0, transport=transport) as c:
             r = seed_llm_provider_with(c, {
                 "id": prov, "provider": "ollama", "config": {"url": "http://127.0.0.1:9999"},
                 "models": [{"name": "fake-model", "context_length": 4096}], "limits": {"max_concurrency": 1},
             })
             assert r.status_code in (201, 409), r.text
-            created += [f"/v1/llm_providers/{prov}", f"/v1/model_profiles/{profile_id_for(prov, 'fake-model')}"]
+            if r.status_code == 201:
+                created += [f"/v1/llm_providers/{prov}", f"/v1/model_profiles/{profile_id_for(prov, 'fake-model')}"]
             r = c.post("/v1/agents", json={"id": aid, "description": description, "model": agent_model(prov, "fake-model"), "tools": [], "system_prompt": ["test"]})
             assert r.status_code in (201, 409), r.text
-            created.append(f"/v1/agents/{aid}")
+            if r.status_code == 201:
+                created.append(f"/v1/agents/{aid}")
             r = c.post("/v1/workspace_providers", json={"id": wp, "provider": "local", "config": {"kind": "local", "root_path": str(tmp_path)}})
             assert r.status_code in (201, 409), r.text
-            created.append(f"/v1/workspace_providers/{wp}")
+            if r.status_code == 201:
+                created.append(f"/v1/workspace_providers/{wp}")
             r = c.post("/v1/workspace_templates", json={"id": tpl, "description": "tpl", "provider_id": wp, "backend": {"kind": "local"}})
             assert r.status_code in (201, 409), r.text
-            created.append(f"/v1/workspace_templates/{tpl}")
+            if r.status_code == 201:
+                created.append(f"/v1/workspace_templates/{tpl}")
             r = c.post("/v1/workspaces", json={"template_id": tpl})
             assert r.status_code == 201, r.text
             wid = r.json()["id"]
