@@ -7,7 +7,7 @@ import logging
 import time
 from functools import cache
 from datetime import datetime, timezone
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Path, Query, Request
 from pydantic import BaseModel, Field, model_validator

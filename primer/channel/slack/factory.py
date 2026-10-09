@@ -170,7 +170,7 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         entry = SLACK_CONNECTIONS.entry(provider_id)
         if entry is None:
             return
-        accepted = True
+        accepted: bool | None = None            # None: no adapter under this provider, so nothing was relayed
         for adapter in entry.adapters_by_channel_id.values():
             accepted = await adapter._handle_decision(
                 workspace_id=ws, session_id=sid, tool_call_id=tcid,
@@ -178,6 +178,8 @@ def _install_handlers(provider_id: str, app: Any) -> None:
                 user_id=user_id,
             )
             break  # first wins; the inbox dedupes anyway
+        if accepted is None:
+            return                              # nothing was relayed: the message must not say it was rejected
         if not accepted:
             await _tell_the_approval_is_routed_elsewhere(client, channel_id, user_id)
             return
