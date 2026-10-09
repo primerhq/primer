@@ -86,8 +86,23 @@ function NV_failureWords(code) {
       what: "the model provider did not accept the connection in time",
       next: "Check that the provider is running and reachable, then send a message to try again.",
     },
+    // A stream that died WITHOUT a code, most often a broken connection: the server rests the session on it like the other transport codes (dispatch._RESTING_FAILURE_CODES).
+    llm_stream_error: {
+      what: "the model stopped answering part-way through",
+      next: "Send a message to try again. If it keeps happening, check the provider's status.",
+    },
   };
   return code && Object.prototype.hasOwnProperty.call(words, code) ? words[code] : null;
+}
+
+// The words for a failure code, for the end note and the resting note alike: the table's, or ONE form for a code nobody wrote words for (shown rather than hidden).
+function NV_failureCodeWords(code) {
+  var words = NV_failureWords(code);
+  if (words) return words;
+  return {
+    what: "the failure code is " + code,
+    next: "Open the turn's trace for the cause, or send a message to try again.",
+  };
 }
 
 // What the end divider says beyond "session ended . <reason>" (lead sweep A2): WHY, in user language, and what to do next. A
@@ -119,9 +134,13 @@ function NV_endedLine(session) {
       if (words) {
         out.why = "It failed: " + words.what + ".";
         out.next = words.next;
-      } else {
-        out.why = "It failed: " + (codes[detail] || "the failure code is " + detail) + ".";
+      } else if (codes[detail]) {
+        out.why = "It failed: " + codes[detail] + ".";
         out.next = "Open the turn's trace for the cause, or send a message to try again.";
+      } else {
+        var unknown = NV_failureCodeWords(detail);
+        out.why = "It failed: " + unknown.what + ".";
+        out.next = unknown.next;
       }
     } else {
       out.why = "The turn failed; the error is in the transcript above.";
@@ -138,19 +157,47 @@ function NV_endedLine(session) {
 }
 
 // A session that RESTS after a transport failure (C-024: status waiting, ended_reason null) serves last_turn_error {code, at}, cleared when its next turn starts. NV_endedLine runs
-// for status "ended" only, so the advice of NV_failureWords (what to do about THAT failure) was shown nowhere for a session that is still alive; this is its twin for the resting
-// one: {why, next}, or null when the session ended (its end note says it), has no failure on its row, or is null. Two codes dispatch stamps name nothing a person can act on:
-// llm_stream_error (a stream that died with no code) and turn_failed (a turn that raised something that is not a model error); a code the table does not know is shown.
+// for status "ended" only, so the advice of NV_failureWords (what to do about THAT failure) was shown nowhere for a session that is still alive. The error card above the note already
+// says what happened, so `why` names the STATE ("This session is waiting: its last turn failed.") and `next` is the failure's own advice; a code the table does not know is shown in the
+// end note's form, and turn_failed (a turn that raised something that is not a model error) names nothing a person can act on. null for an ended session, a row with no failure, or no session.
 function NV_restedFailureLine(session) {
   if (!session || session.status === "ended" || !session.last_turn_error) return null;
   var code = session.last_turn_error.code || null;
-  var words = NV_failureWords(code);
-  if (words) return { why: "The last turn failed: " + words.what + ".", next: words.next };
-  var generic = !code || code === "llm_stream_error" || code === "turn_failed";
-  return {
-    why: generic ? "The last turn failed." : "The last turn failed (" + code + ").",
-    next: "Open the turn's trace for the cause, or send a message to try again.",
-  };
+  var base = "This session is waiting: its last turn failed";
+  if (!code || code === "turn_failed") {
+    return { why: base + ".", next: "Open the turn's trace for the cause, or send a message to try again." };
+  }
+  var words = NV_failureCodeWords(code);
+  return { why: NV_failureWords(code) ? base + "." : base + ": " + words.what + ".", next: words.next };
+}
+
+// The newest visible row that ends something: the answer, the failure, the operator's own message. A divider, a retry notice, a tool row is not one.
+function NV_newestTerminalRow(rows) {
+  var terminal = { error: true, assistant_message: true, user_message: true, done: true, cancelled: true };
+  for (var i = (rows || []).length - 1; i >= 0; i--) {
+    if (rows[i] && terminal[rows[i].kind]) return rows[i];
+  }
+  return null;
+}
+
+// The gate of the resting note: the line, or null. Hidden while a turn is shown running (the server clears last_turn_error at the next turn; until the row says so a turn in flight hides
+// the note), and drawn only when the newest visible terminal row IS the failure card: after a Retry (a new message), a rewind that kept the stamp, or an answer, the stamp is not about
+// what is on screen.
+function NV_restedNoteLine(session, shown, newest) {
+  if (shown || !newest || newest.kind !== "error") return null;
+  return NV_restedFailureLine(session);
+}
+
+// What is drawn for the line: `live` (the failure arrived while the page was open, as for the card's role="alert") makes it a polite status.
+function NV_RestedNote(props) {
+  var line = NV_restedNoteLine(props.session, props.shown, props.newest);
+  if (!line) return null;
+  return (
+    <div className="nv-fold-note" data-testid="nv-rested-note" role={props.live ? "status" : undefined}>
+      <div>{line.why}</div>
+      {line.next ? <div className="nv-fold-next">{line.next}</div> : null}
+    </div>
+  );
 }
 
 // What an error card says (lead sweep A3): the problem type (or the stream's snake_case code) in words, with the provider's own text
@@ -614,7 +661,11 @@ function NV_sessionStateChipView(session) {
   var state = (session && session.session_state) || "waiting";
   var label = labels[state] || state;
   var resting = false;
-  if (state === "parked" && session && !session.parked_status) {
+  // A session that RESTS after a failed turn (C-024: last_turn_error on the row, cleared when its next turn starts) says so, whether it had completed a turn (parked) or failed its first (waiting).
+  var failed = !!(session && session.last_turn_error && session.status !== "ended" && session.status !== "paused" && !session.parked_status && state !== "running" && state !== "ended");
+  if (failed) {
+    label = "Last turn failed";
+  } else if (state === "parked" && session && !session.parked_status) {
     if (session.status === "paused") {
       label = "Paused";
     } else {
@@ -622,13 +673,14 @@ function NV_sessionStateChipView(session) {
       resting = true;
     }
   }
-  return { state: state, label: label, resting: resting };
+  return { state: state, label: label, resting: resting, failed: failed };
 }
 function NV_SessionStateChip(props) {
   var view = NV_sessionStateChipView(props.session);
   return (
     <span className="nv-session-state-chip" data-state={view.state}
       data-resting={view.resting ? "true" : "false"}
+      data-failed={view.failed ? "true" : undefined}
       data-testid="nv-session-state-chip">
       <span className="nv-session-state-dot" />
       {view.label}
@@ -2391,6 +2443,7 @@ function NV_SessionDoc(props) {
     if (ev && ev.session_id === sid
         && (ev["class"] === "yielded"
             || ev["class"] === "resumed"
+            || ev["class"] === "error"
             || ev["class"] === "done")) {
       // The row too: with the poll slowed (C-038) a frame must not wait for the next one.
       detail.refetch();
@@ -2652,8 +2705,6 @@ function NV_SessionDoc(props) {
   // evaluates them on their own.
   var historyProblem = NV_historyProblem(history.error);
   var endedLine = NV_endedLine(session);
-  // A turn in flight clears last_turn_error on the server; until the row says so, a turn that is shown running hides the note.
-  var restedLine = shown ? null : NV_restedFailureLine(session);
   // Stop is acknowledged: this click's own pending state, or the served flag (the worker
   // clears interrupt_requested when the Stop lands, which ends the state and brings the
   // button back). Kept below `degraded` on purpose: test_console_session_doc.py slices the
@@ -2788,6 +2839,9 @@ function NV_SessionDoc(props) {
   }, [transcriptSnap, session, shownActive, effectivePhase]);
   var flat = pipeline.flat;
   var rows = pipeline.rows;
+  // The resting note (C-024) draws only for a failure that is the newest thing on screen, and not while a turn is shown running (NV_restedNoteLine).
+  var newestTerminal = NV_newestTerminalRow(flat);
+  var restedLine = NV_restedNoteLine(session, !!shown, newestTerminal);
   var resultsByCallId = pipeline.resultsByCallId;
   var turnOfSeq = pipeline.turnOfSeq;
   // 01a052a5: computed once per render (not per row inside renderTurn's
@@ -2925,7 +2979,7 @@ function NV_SessionDoc(props) {
   });
   React.useEffect(function () {
     if (follow) jumpLatest();
-  }, [rows.length, follow]);
+  }, [rows.length, follow, !!endedLine, !!restedLine]);
 
   function refetchAll() {
     detail.refetch();
@@ -3339,14 +3393,8 @@ function NV_SessionDoc(props) {
                 ) : null}
               </React.Fragment>
             ) : null}
-            {restedLine ? (
-              <div className="nv-fold-note" data-testid="nv-rested-note">
-                <div>{restedLine.why}</div>
-                {restedLine.next ? (
-                  <div className="nv-fold-next">{restedLine.next}</div>
-                ) : null}
-              </div>
-            ) : null}
+            <NV_RestedNote session={session} shown={!!shown} newest={newestTerminal}
+              live={!!newestTerminal && NV_arrivedLive(historyFirstLoad, newestTerminal.seq)} />
           </div>
           {decision.showJump ? (
             <div className="nv-jump-wrap">
