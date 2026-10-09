@@ -29,13 +29,14 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, NoReturn
 from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path, Query, Request
 from pydantic import BaseModel, Field, ValidationError
 
+from primer.llm._failure import describe_failure
 from primer.llm.anthropic import _discover_anthropic_models
 from primer.llm.gemini import _discover_gemini_models
 from primer.llm.openrouter import _discover_openrouter_models
@@ -168,6 +169,21 @@ def _probe_failure(message: str) -> BadRequestError:
     predicate of ``GET /v1/setup/state``, so it is cleaned where it is made.
     """
     return BadRequestError(redact_url_secrets(message))
+
+
+def _reraise_masked(exc: BadRequestError, provider: Any) -> NoReturn:
+    """Re-raise a probe's 400 with the provider's CONFIGURED credentials masked out of its message (ticket 01a11eda-2031).
+
+    ``_probe_failure`` masks what a URL carries; the key itself is another matter. A key pasted with a trailing newline, space or tab is not a valid
+    header value, h11 refuses it with ``LocalProtocolError: Illegal header value b'Bearer sk-...\\n'`` and the library's message holds the key whole,
+    which the probes interpolate. ``provider`` is the stub the draft was validated into: ``describe_failure`` masks its configured key (itself, its
+    escaped form and its normalised form), password and Bearer / Basic tokens with the rules the adapters' in-stream failures use, and leaves a message
+    with no credential as it was.
+    """
+    masked = describe_failure(exc, exc, provider)
+    if masked is exc:
+        raise exc
+    raise masked from exc
 
 
 def _build_stub_provider(
@@ -691,16 +707,28 @@ async def _probe_llm_models(provider: str, config: dict[str, Any]) -> dict:
     Note: the adapters' ``list_models()`` method is not used here (anomaly
     T0025); this bypasses the adapter and calls the provider's native list
     endpoint directly.
+
+    Whatever the probe reports, the draft's configured credentials are masked
+    out of it (:func:`_reraise_masked`).
     """
 
     # Validate the draft via the canonical model so config shape errors
-    # surface cleanly. We never persist or run anything from the stub.
-    _build_stub_provider(
+    # surface cleanly. We never persist or run anything from the stub; it
+    # is what the probe's failure text is masked against.
+    stub = _build_stub_provider(
         LLMProvider,
         provider=provider,
         config=config,
         models=[{"name": "_probe", "context_length": 1}],
     )
+    try:
+        return await _dispatch_llm_probe(provider, config)
+    except BadRequestError as exc:
+        _reraise_masked(exc, stub)
+
+
+async def _dispatch_llm_probe(provider: str, config: dict[str, Any]) -> dict:
+    """The live list-models probe of ``provider``, by type; raises the 400 :func:`_probe_failure` builds."""
     if provider == "ollama":
         result = await _probe_ollama_models(config)
     elif provider == "openresponses":
@@ -874,14 +902,17 @@ async def discover_embedding_models(
     no usable list endpoint — the frontend falls back to curated
     suggestions.
     """
-    _build_stub_provider(
+    stub = _build_stub_provider(
         EmbeddingProvider,
         provider=body.provider,
         config=body.config,
         models=[{"name": "_probe"}],
     )
     if body.provider == "openai":
-        return await _probe_openai_compatible_models(body.config)
+        try:
+            return await _probe_openai_compatible_models(body.config)
+        except BadRequestError as exc:
+            _reraise_masked(exc, stub)
     raise BadRequestError(
         f"live model discovery is not supported for embedding "
         f"provider {body.provider!r}; populate the models list "
