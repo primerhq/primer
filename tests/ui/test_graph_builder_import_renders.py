@@ -76,7 +76,9 @@ function Btn(p) { return React.createElement("button", { "data-testid": p["data-
 function Banner(p) { return React.createElement("div", null, p.children); }
 function Icon() { return null; }
 function Modal(p) { return React.createElement("div", { "data-testid": "modal" }, p.title, p.children, p.footer); }
-window.Btn = Btn; window.Banner = Banner; window.Icon = Icon; window.Modal = Modal;
+// FormField is the labelled row the Import spec modal draws its field with (console review C-003); these cases only need its children, so a pass-through row is all they need.
+function FormField(p) { return React.createElement("div", null, p.children); }
+window.Btn = Btn; window.Banner = Banner; window.Icon = Icon; window.Modal = Modal; window.FormField = FormField;
 """
 
 _DRIVER = r"""
