@@ -35,8 +35,9 @@ def _ctx():
 
 
 def _windows_js(records_json: str) -> str:
-    """The JS expression for the window map the console feeds SH_turnOfSeq: SH_windowsOfSeq over the visible raw records."""
-    return "SH_windowsOfSeq(SA_visibleRecords(" + records_json + "))"
+    """The JS expression for the window map the console feeds SH_turnOfSeq: SH_windowsOfSeq over ALL the raw records (the server counts every
+    record, the rewound ones included; ``SA_visibleRecords`` would drop them and number every turn after a rewind too low)."""
+    return "SH_windowsOfSeq(" + records_json + ")"
 
 
 def _server_windows(records: list[dict]) -> dict[int, int]:
@@ -437,7 +438,7 @@ def test_the_console_numbers_turns_like_the_server_for_every_fatal_variant_of_an
 
 def test_the_session_doc_takes_its_trace_ordinal_from_the_shared_function() -> None:
     doc = (ROOT / "ui" / "components" / "console" / "nv-session-doc.jsx").read_text(encoding="utf-8")
-    assert "SH_turnOfSeq(flat, SH_windowsOfSeq(window.SA_visibleRecords(records)))" in doc
+    assert "SH_turnOfSeq(flat, SH_windowsOfSeq(records))" in doc, "the ordinal must come from ALL the raw records, as the server counts them"
     assert 'flat[ti].kind === "done" || flat[ti].kind === "cancelled"' not in doc, "the inline copy of the rule is back"
 
 
@@ -482,7 +483,7 @@ def test_a_non_fatal_error_mid_turn_is_numbered_the_way_the_servers_timeline_num
     got = json.loads(ctx.eval(
         "JSON.stringify(SH_turnOfSeq(SA_toTranscript(" + json.dumps(records) + ", null), " + _windows_js(json.dumps(records)) + "))"
     ))
-    assert {seq: got[seq] for seq in got} == {seq: expected[seq] for seq in got}
+    assert {seq: got[seq] for seq in expected} == expected
 
 
 def _both_ordinals(records: list[dict]) -> tuple[dict[int, int], dict[int, int]]:
@@ -649,7 +650,9 @@ def test_the_console_scanner_gives_the_servers_verdict_on_every_record_of_every_
 
         windows = turn_windows(lines)
         filed = json.loads(ctx.eval("JSON.stringify(SH_windowsOfSeq(" + json.dumps(records) + "))"))
-        assert {int(seq): n for seq, n in filed["of"].items()} == {rec["seq"]: w["turn_no"] for w in windows for rec in w["records"]}, name
+        console = {int(seq): n for seq, n in filed["of"].items()}
+        server = {rec["seq"]: w["turn_no"] for w in windows for rec in w["records"]}       # the visible ones: a rewound record has no row to number
+        assert {seq: console[seq] for seq in server} == server, name
         assert filed["open"] == sum(1 for w in windows if w["terminal_seq"] is not None), name
 
 
@@ -665,4 +668,34 @@ def test_a_row_the_records_do_not_hold_is_numbered_by_where_it_sits() -> None:
         "JSON.stringify(SH_turnOfSeq(" + json.dumps(rows) + ", SH_windowsOfSeq(" + json.dumps(records) + ")))"
     ))
     assert got == {"-1": 0, "5": 0, "7": 1, "99": 1}
+
+
+def test_the_console_judges_a_record_of_the_wrong_type_like_the_server():
+    """A payload that is not an object reads as an empty one and a message that is not a string as none, on both sides, and neither side crashes."""
+    from primer.session.terminals import TurnWindowScanner
+    from tests.session.test_failed_turn_is_one_window import WEIRD_RECORDS
+
+    scanner = TurnWindowScanner()
+    want = [scanner.feed(rec) for rec in WEIRD_RECORDS]
+    got = json.loads(_ctx().eval(
+        "(function () { var s = SH_newWindowScanner(); return JSON.stringify(" + json.dumps(WEIRD_RECORDS) + ".map(function (r) { return s.feed(r); })); })()"
+    ))
+
+    assert got == want, (got, want)
+
+
+def test_the_trace_ordinal_of_a_turn_after_a_rewind_is_the_servers():
+    """The server counts every record (turn_windows, unfolded), so a rewound turn still takes its ordinal. Numbered from the VISIBLE records the
+    console asked the trace for n=1 and n=2 where the server files the same turns in 2 and 3."""
+    records = [
+        _r(1, "user_input", text="a"), _r(2, "done", stop_reason="stop"),
+        _r(3, "user_input", text="b"), _r(4, "done", stop_reason="stop"),
+        _r(5, "rewind_marker", to_seq=2),
+        _r(6, "user_input", text="c"), _r(7, "done", stop_reason="stop"),
+        _r(8, "user_input", text="d"), _r(9, "done", stop_reason="stop"),
+    ]
+    server, console = _both_ordinals(records)
+
+    assert {seq: console[seq] for seq in console if seq in server} == {seq: server[seq] for seq in console if seq in server}, (server, console)
+    assert console[6] == 2 and console[7] == 2 and console[8] == 3 and console[9] == 3, console
 

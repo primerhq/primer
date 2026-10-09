@@ -18,7 +18,7 @@ import json
 import pytest
 
 from primer.claim.adapters.sessions import SessionClaimAdapter
-from primer.model.chat import Done, TextDelta
+from primer.model.chat import Done, Error, TextDelta, TurnStreamFailure
 from primer.model.workspace_session import WorkspaceSession
 from primer.observability.turn_log_writer import TurnLogWriter
 from primer.session.dispatch import SessionDispatchDeps, run_one_session_turn
@@ -240,6 +240,10 @@ async def _play(fake_storage_provider, fake_event_bus, plan: list[str]):
             )
         if kind == "fail":
             executor = FakeExecutor([TextDelta(text="hi", index=0), RuntimeError("boom")])
+        elif kind.startswith("stream_fail:"):
+            # a fatal stream Error, then the failure the loop raises when the stream ends
+            error = Error(code="server_error", message=kind.split(":", 1)[1], fatal=True)
+            executor = FakeExecutor([TextDelta(text="hi", index=0), error, TurnStreamFailure(error, partial_messages=[], rounds_completed=0)])
         else:
             executor = FakeExecutor([TextDelta(text="done", index=0), Done(stop_reason="stop", raw_reason="stop")])
         outcome = await run_one_session_turn(_make_lease(sid), deps_for(executor))
