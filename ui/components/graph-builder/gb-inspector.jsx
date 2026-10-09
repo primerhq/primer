@@ -151,6 +151,7 @@ function GB_Inspector(props) {
                 nodeId={node.id}
                 readOnly={readOnly}
                 sampleByExpr={sampleByExpr}
+                label="What it gets"
               />
             </GB_Section>
             <GB_Section title="What it gives back" hint={node.response_format ? "structured" : "free text"}>
@@ -181,7 +182,7 @@ function GB_Inspector(props) {
               <EntityPicker path="/graphs" value={node.graph_id || ""} onChange={(v) => patch({ graph_id: v })} placeholder="Search graphs…" testid="gb-graph-picker" />
             </GB_Section>
             <GB_Section title="What it gets">
-              <GB_RefEditor value={node.input_template || ""} onChange={(v) => patch({ input_template: v })} draft={draft} nodeId={node.id} readOnly={readOnly} sampleByExpr={sampleByExpr} />
+              <GB_RefEditor value={node.input_template || ""} onChange={(v) => patch({ input_template: v })} draft={draft} nodeId={node.id} readOnly={readOnly} sampleByExpr={sampleByExpr} label="What it gets" />
             </GB_Section>
           </>
         ) : null}
@@ -201,7 +202,7 @@ function GB_Inspector(props) {
         {node.kind === "end" ? (
           <>
             <GB_Section title="What it returns">
-              <GB_RefEditor value={node.output_template || ""} onChange={(v) => patch({ output_template: v })} draft={draft} nodeId={node.id} readOnly={readOnly} sampleByExpr={sampleByExpr} />
+              <GB_RefEditor value={node.output_template || ""} onChange={(v) => patch({ output_template: v })} draft={draft} nodeId={node.id} readOnly={readOnly} sampleByExpr={sampleByExpr} label="What it returns" />
             </GB_Section>
             <GB_Section title="Shape of the result" hint="optional">
               <GB_SchemaBuilder value={node.output_schema} onChange={(v) => patch({ output_schema: v })} onError={onJsonError} errorKey={`os:${node.id}`} />
@@ -211,7 +212,7 @@ function GB_Inspector(props) {
 
         {node.kind === "fan_in" ? (
           <GB_Section title="How to merge" hint="waits for all">
-            <GB_RefEditor value={node.aggregate_template || ""} onChange={(v) => patch({ aggregate_template: v })} draft={draft} nodeId={node.id} readOnly={readOnly} sampleByExpr={sampleByExpr} />
+            <GB_RefEditor value={node.aggregate_template || ""} onChange={(v) => patch({ aggregate_template: v })} draft={draft} nodeId={node.id} readOnly={readOnly} sampleByExpr={sampleByExpr} label="How to merge" />
           </GB_Section>
         ) : null}
 
@@ -340,6 +341,7 @@ function GB_ToolArguments({ node, tools, draft, patch, readOnly, sampleByExpr })
                 nodeId={node.id}
                 readOnly={readOnly}
                 sampleByExpr={sampleByExpr}
+                label={name}
               />
             </div>
           ))

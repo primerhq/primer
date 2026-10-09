@@ -1220,6 +1220,7 @@ function NV_ApprovalsAudit() {
         <span className="muted text-sm">sort</span>
         <select
           className="select"
+          aria-label="Sort decisions"
           value={sortBy}
           onChange={function (e) { setSortBy(e.target.value); }}
           style={{ fontSize: 12 }}
