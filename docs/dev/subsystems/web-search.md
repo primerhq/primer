@@ -231,7 +231,7 @@ REST (`primer/api/routers/web_search.py`, all under `/v1`):
   `DELETE` of a row referenced by the active config returns 409 (`cascade_blocked`,
   `referenced_by=_active_web_search_config`); `on_update` / `on_delete` invalidate
   the registry.
-- `POST /v1/web_search_providers/_test`: builds a transient adapter from a draft,
+- `POST /v1/web_search_providers/_test` (its error text, like the speech and web fetch `_test` routes', has URL credentials masked: `primer/api/routers/_probe_text.py`): builds a transient adapter from a draft,
   runs `search(query='primer', count=1, safe_search='moderate')`, returns
   `{ok, hits}` or `{ok=false, error}`.
 - `GET /v1/web_search_providers/_types`: returns the per-type `config_fields`
