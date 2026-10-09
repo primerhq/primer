@@ -32,7 +32,7 @@ from primer.model.workspace_session import (
     WorkspaceSession,
     SessionStatus,
 )
-from primer.model.yield_ import WAKE_PARK_KEY
+from primer.model.yield_ import WAKE_ENTRY_KEY, WAKE_PARK_KEY
 
 
 @pytest.fixture
@@ -152,6 +152,15 @@ def _make_sleep_session(*, session_id: str, tool_call_id: str) -> WorkspaceSessi
         "resume_event_payload": None,
     }
     return sess
+
+
+def _make_trigger_session(*, session_id: str, tool_call_id: str, subscription_id: str) -> WorkspaceSession:
+    """A session parked on a ``subscribe_to_trigger``: a non-gate yield whose entry is identified by its subscription."""
+    sess = _make_sleep_session(session_id=session_id, tool_call_id=tool_call_id)
+    key = f"trigger:{session_id}:T"
+    state = dict(sess.parked_state)
+    state["yielded"] = {"tool_name": "subscribe_to_trigger", "event_key": key, "resume_metadata": {"subscription_id": subscription_id, "trigger_id": "T"}}
+    return sess.model_copy(update={"parked_event_key": key, "parked_state": state})
 
 
 def _make_graph_toolcall_ask_user_session(
@@ -696,6 +705,22 @@ class TestCancelYieldedTool:
                 break
         assert row is not None and row.parked_status == "resumable"
         assert row.parked_state["resume_event_payload"][WAKE_PARK_KEY] == row.parked_at.isoformat()
+
+    async def test_the_cancel_of_a_trigger_subscription_names_the_subscription_it_cancels(self, app, client):
+        """The entry's identity rides the cancel too, so a graph park (which the park stamp does not judge) refuses the cancel of an earlier subscription."""
+        sess = _make_trigger_session(session_id="sess-ct", tool_call_id="tc-ct", subscription_id="sb-cancel")
+        await _seed_session(app, sess)
+        resp = await client.post("/v1/sessions/sess-ct/yields/tc-ct/cancel", json={"reason": "operator skipped"})
+        assert resp.status_code == 202
+        storage = app.state.storage_provider.get_storage(WorkspaceSession)
+        row = None
+        for _ in range(50):
+            await asyncio.sleep(0.02)
+            row = await storage.get("sess-ct")
+            if row is not None and row.parked_status == "resumable":
+                break
+        assert row is not None and row.parked_status == "resumable"
+        assert row.parked_state["resume_event_payload"][WAKE_ENTRY_KEY] == "sb-cancel"
 
     async def test_cancel_works_without_reason(self, app, client):
         sess = _make_parked_session(

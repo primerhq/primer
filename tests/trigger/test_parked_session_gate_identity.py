@@ -16,6 +16,7 @@ import pytest
 import primer.trigger.subscribers.parked_session as ps
 from primer.model.trigger import ParkedSessionSubConfig, Subscription
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
+from primer.model.yield_ import WAKE_ENTRY_KEY
 from primer.session.yields import flip_sessions_parked_on
 from primer.trigger.subscribers import DispatchDeps
 from tests.conftest import _FakeStorageProvider
@@ -111,6 +112,7 @@ async def test_a_subscription_for_an_earlier_trigger_park_does_not_wake_the_curr
     fresh = await _fire(sp, new, bus)
     assert fresh.ok and not fresh.skipped
     assert [k for k, _ in bus.published] == ["trigger:tr-1"]
+    assert bus.published[0][1][WAKE_ENTRY_KEY] == "sb-new", "the fire names the subscription it answers: a redelivered copy cannot decide a later park"
     assert await sp.get_storage(Subscription).get("sb-new") is None, "the one-shot subscription is consumed"
 
 
