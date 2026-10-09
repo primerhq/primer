@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-from primer.common.transport_text import transport_failure
+from primer.common.transport_text import transport_failure, unexpected_status
 from primer.web_search.adapter import (
     SafeSearchLevel,
     SearchHit,
@@ -92,7 +92,7 @@ class TavilyAdapter(WebSearchAdapter):
                 f"{self._base_url}/search", json=body,
             )
         except httpx.HTTPError as exc:
-            raise WebSearchUnavailable(transport_failure("tavily", exc, self._config)) from exc
+            raise WebSearchUnavailable(transport_failure("tavily", exc, self._config)) from None
 
         if r.status_code in (401, 403):
             raise WebSearchProviderError(
@@ -105,9 +105,7 @@ class TavilyAdapter(WebSearchAdapter):
                 f"tavily server error (HTTP {r.status_code})"
             )
         if r.status_code != 200:
-            raise WebSearchProviderError(
-                f"tavily unexpected status {r.status_code}: {r.text[:200]}"
-            )
+            raise WebSearchProviderError(unexpected_status("tavily", r.status_code, r.text, self._config))
 
         try:
             data = r.json()
