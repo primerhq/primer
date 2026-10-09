@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Banner, Modal, CardList, Card, Fab, relativeTime */
+/* global React, Icon, Btn, Banner, Modal, CardList, Card, Fab, relativeTime, FormField */
 // Task 7 (UI reconciliation Phase 2):
 // Wires GraphsPage + GraphDetail to the real API. The detail body is
 // the graph builder (graph-builder/*.jsx); this file keeps the list, the
@@ -119,10 +119,7 @@ function GR_NewGraphModal({ onClose, onCreate, pushToast }) {
         </>
       }
     >
-      <div className="field">
-        <label className="field-label">
-          ID <span className="hint">optional — backend assigns if blank</span>
-        </label>
+      <FormField label="ID" hint={"optional \u2014 backend assigns if blank"} err={fieldErrors["body.id"]}>
         <input
           className="input"
           value={id}
@@ -130,38 +127,23 @@ function GR_NewGraphModal({ onClose, onCreate, pushToast }) {
           placeholder="auto-generated"
           style={{ width: "100%" }}
         />
-        {fieldErrors["body.id"] && (
-          <div className="field-help" style={{ color: "var(--red)" }}>
-            {fieldErrors["body.id"]}
-          </div>
-        )}
-      </div>
-      <div className="field">
-        <label className="field-label">Description</label>
+      </FormField>
+      <FormField label="Description" err={fieldErrors["body.description"]}>
         <input
           className="input"
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           style={{ width: "100%" }}
         />
-        {fieldErrors["body.description"] && (
-          <div className="field-help" style={{ color: "var(--red)" }}>
-            {fieldErrors["body.description"]}
-          </div>
-        )}
-      </div>
-      <div className="field">
-        <label className="field-label">
-          Seed agent{" "}
-          <span className="hint">
-            optional · with one, the graph starts as Begin → agent → End;
-            without, it's created empty (not runnable until it has a
-            Begin → … → End)
-          </span>
-        </label>
+      </FormField>
+      <FormField
+        label="Seed agent"
+        hint="optional · with one, the graph starts as Begin → agent → End; without, it's created empty (not runnable until it has a Begin → … → End)"
+      >
         <div style={{ display: "flex", gap: 6 }}>
           <select
             className="select"
+            aria-label="Seed agent"
             value={seedAgentId}
             onChange={(e) => setSeedAgentId(e.target.value)}
             style={{ flex: 1, minWidth: 0 }}
@@ -209,7 +191,7 @@ function GR_NewGraphModal({ onClose, onCreate, pushToast }) {
           <span className="mono">.state/graphs/&lt;session_id&gt;/</span>{" "}
           git repo.
         </div>
-      </div>
+      </FormField>
 
       {creatingAgent && typeof window.AG_NewAgentModal === "function" && (
         <window.AG_NewAgentModal
@@ -656,10 +638,7 @@ function GR_ImportSpecModal({ currentDraft, onClose, onApply }) {
         </>
       }
     >
-      <div className="field">
-        <label className="field-label">
-          Graph spec JSON <span className="hint">same shape as PUT /graphs/{"{id}"}</span>
-        </label>
+      <FormField label="Graph spec JSON" hint={"same shape as PUT /graphs/{id}"} err={error}>
         <textarea
           className="textarea mono"
           rows={18}
@@ -674,10 +653,7 @@ function GR_ImportSpecModal({ currentDraft, onClose, onApply }) {
           a pasted id is ignored so Save can't retarget another graph). Nothing is persisted
           until you press Save. Coordinates are auto-laid-out on load.
         </div>
-        {error && (
-          <div className="field-help" style={{ color: "var(--red)" }}>{error}</div>
-        )}
-      </div>
+      </FormField>
     </Modal>
   );
 }
@@ -685,7 +661,7 @@ function GR_ImportSpecModal({ currentDraft, onClose, onApply }) {
 // JsonField parses the textarea on blur and reports parse errors up to the
 // parent via `onError`. Empty input is treated as null. The parent can track
 // outstanding errors and disable Save.
-function GR_JsonField({ label, value, onChange, onError, help, errorKey }) {
+function GR_JsonField({ label, value, onChange, onError, help, errorKey, ariaLabel }) {
   const [text, setText] = React.useState(
     value === undefined || value === null ? "" : JSON.stringify(value, null, 2),
   );
@@ -714,20 +690,32 @@ function GR_JsonField({ label, value, onChange, onError, help, errorKey }) {
       if (onError && errorKey) onError(errorKey, msg);
     }
   }
+  const textarea = (
+    <textarea
+      className="textarea mono"
+      rows={6}
+      value={text}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={commit}
+      aria-label={label ? undefined : (ariaLabel || "JSON")}
+      style={{ width: "100%", fontFamily: "IBM Plex Mono", fontSize: 12 }}
+    />
+  );
+  // The builder's schema view passes no label (it has its own heading), so the textarea names itself; a labelled field is a FormField row.
+  if (!label) {
+    return (
+      <div className="field">
+        {textarea}
+        {help && <div className="field-help muted">{help}</div>}
+        {err && <div className="field-help" style={{ color: "var(--red)" }}>JSON parse: {err}</div>}
+      </div>
+    );
+  }
   return (
-    <div className="field">
-      <label className="field-label">{label}</label>
-      <textarea
-        className="textarea mono"
-        rows={6}
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        onBlur={commit}
-        style={{ width: "100%", fontFamily: "IBM Plex Mono", fontSize: 12 }}
-      />
+    <FormField label={label} err={err ? "JSON parse: " + err : undefined}>
+      {textarea}
       {help && <div className="field-help muted">{help}</div>}
-      {err && <div className="field-help" style={{ color: "var(--red)" }}>JSON parse: {err}</div>}
-    </div>
+    </FormField>
   );
 }
 
