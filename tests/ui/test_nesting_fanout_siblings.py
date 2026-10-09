@@ -2,9 +2,9 @@
 
 ``SH_nestSubagentRows`` (``shell-turns.js``) put a delegated record under the call named by ``delegate_tool_call_id``, the delegating call's RAW provider id, and under the
 last call with that id: providers that synthesise ids (``call_0``) reuse them, so two fan-out siblings (graph nodes ``A`` and ``B``) that both delegate had BOTH their runs nested
-under ``B``'s call whenever both calls were written before either run's records (they run at once). The recorder now stamps ``delegate_node_id`` on a run's records (the node that
+under ``B``'s call whenever both calls precede the runs' records (each call row precedes its OWN run's records, and nothing orders it against the other node's). The recorder now stamps ``delegate_node_id`` on a run's records (the node that
 delegated, the same instance-qualified id the parent's call row carries as its ``nodeId``), and the nesting keys on it too. A record without it (a session that is not a graph, or one
-written before this) nests exactly as before.
+written before this) nests exactly as before; a stamped record nests under its node's call or nowhere.
 
 The nesting runs in V8 on the real source; the rows are the shape ``SA_toTranscript`` hands it.
 """

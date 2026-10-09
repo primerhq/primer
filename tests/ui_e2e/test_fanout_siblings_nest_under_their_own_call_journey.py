@@ -1,6 +1,6 @@
 """UI e2e: the runs of two fan-out siblings that delegate under the same raw call id render inside their OWN node's call (ticket 01a11cca).
 
-Nodes ``A`` and ``B`` of a graph run at once and each calls ``invoke_agent``; their provider synthesises ``call_0`` for both. Both calls are written before either helper's records, so
+Nodes ``A`` and ``B`` of a graph run at once and each calls ``invoke_agent``; their provider synthesises ``call_0`` for both. Each call row is written before its own helper's records but nothing orders it against the other node's, so with both calls first
 the console, which nested a delegated record under the LAST call with its raw id, drew both answers inside node B's call and none inside node A's. The seed
 (``tests/ui_e2e/_delegation_seed.py: build_fanout``) is the real recorder's output with ``delegate_node_id`` on the delegated records; the journey asserts the containment on the DOM.
 """
