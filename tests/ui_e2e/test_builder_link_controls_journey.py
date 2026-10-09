@@ -182,6 +182,15 @@ def test_the_x_boxes_leave_their_neighbours_a_clear_pixel_the_advanced_toggle_ke
                 )
                 assert hit == f"Branch {n}: add a condition", (n, inset, hit)
 
+        # and a real click there adds a condition to path 1 and removes nothing (it removed the path with no question)
+        add = box("Branch 1: add a condition")
+        page.mouse.click(add["x"] + add["width"] - 0.5, add["y"] + add["height"] / 2)
+        expect(
+            page.get_by_role("button", name="Branch 1, condition 3: remove")
+        ).to_be_visible(timeout=10_000)
+        expect(page.get_by_role("button", name="Branch 1: remove")).to_have_count(1)
+        expect(page.get_by_role("button", name="Branch 2: remove")).to_have_count(1)
+
         # text buttons are at least 24 px tall
         for name in (
             re.compile(r"^Add a path to the choice after"),
