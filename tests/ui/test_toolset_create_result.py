@@ -29,6 +29,8 @@ globalThis.Btn = function (props) { return React.createElement("button", props, 
 globalThis.Icon = function () { return null; };
 globalThis.Banner = function () { return null; };
 globalThis.Modal = function (props) { return React.createElement("div", { "data-testid": "modal" }, props.children, props.footer); };
+// FormField is the labelled row the form draws its fields with (console review C-003); these cases drive the form by test id, so a pass-through row is all they need.
+globalThis.FormField = function (props) { return React.createElement("div", null, props.children); };
 window.primerApi = {
   apiFetch: function (method, path, body) {
     __calls.push(method + " " + path);
