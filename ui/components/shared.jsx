@@ -192,7 +192,7 @@ const Modal = ({ title, onClose, children, footer, danger, width }) => {
       >
         <div className="modal-h">
           <span className="title" style={{ color: danger ? "var(--red)" : undefined }}>{title}</span>
-          <button className="close" onClick={onClose}><Icon name="x" size={14} /></button>
+          <button className="close" aria-label="Close" onClick={onClose}><Icon name="x" size={14} /></button>
         </div>
         <div className="modal-b">{children}</div>
         {footer && <div className="modal-f">{footer}</div>}

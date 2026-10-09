@@ -536,7 +536,7 @@ function SSPCreateModal({ onClose, pushToast, existing, initialProvider }) {
       >
         <div className="modal-h">
           <span className="title">{isEdit ? `Edit SSP · ${existing.id}` : "New Semantic Search provider"}</span>
-          <button className="close" onClick={onClose}><Icon name="x" size={14} /></button>
+          <button className="close" aria-label="Close" onClick={onClose}><Icon name="x" size={14} /></button>
         </div>
         <div className="modal-b">
           <FieldRow label="id" hint={isEdit ? "locked — id cannot change after create" : "must be unique"} err={fieldErrors.id}>

@@ -109,7 +109,7 @@ function NV_ToastHost() {
                 </div>
               ) : null}
             </div>
-            <button type="button" className="close"
+            <button type="button" className="close" aria-label="Dismiss"
               onClick={function () { removeToast(t.id); }}>x</button>
           </div>
         );
