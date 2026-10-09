@@ -384,17 +384,21 @@ class SessionRenameBody(BaseModel):
         description=(
             "New friendly name for the session. Pass null or an empty / "
             "whitespace-only string to clear it and fall back to the id in "
-            "the console. A name holding a control character (a newline, a "
-            "tab, NUL, DEL, a Unicode line separator) is refused with 422: "
-            "the name is written into the subject of the session's rename "
-            "commit, which the history parsers split on those characters."
+            "the console. Leading and trailing whitespace is stripped, as "
+            "before. A name holding a control character INSIDE it (a "
+            "newline, a tab, NUL, DEL, a Unicode line separator) is refused "
+            "with 422: the name is written into the subject of the "
+            "session's rename commit, which the history parsers split on "
+            "those characters."
         ),
     )
 
     @field_validator("name")
     @classmethod
     def _name_has_no_control_characters(cls, value: str | None) -> str | None:
-        if value is not None and has_unsafe_commit_chars(value):
+        # The ends are judged after the strip the handler applies (``set_name`` strips), so a pasted trailing newline or a whitespace-only name keeps the
+        # behaviour it had; only a control character INSIDE the name is refused.
+        if value is not None and has_unsafe_commit_chars(value.strip()):
             raise ValueError("name must not contain control characters")
         return value
 
