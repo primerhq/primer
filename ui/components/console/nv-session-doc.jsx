@@ -114,7 +114,6 @@ function NV_endedLine(session) {
   var reason = session.ended_reason || null;
   var detail = session.ended_detail || null;
   var codes = {
-    llm_stream_error: "the model call failed",
     routing_failed: "a conditional edge matched no branch",
     max_iterations_exceeded: "it hit the iteration cap",
     node_failed: "a node failed",
@@ -156,19 +155,26 @@ function NV_endedLine(session) {
   return out;
 }
 
+// Whether the row rests with a failure stamped on it (C-024): not ended, and no turn queued or running on it. A send or a Retry wakes the row (status running, turn_status claimable) and KEEPS
+// last_turn_error until the worker's flip clears it, so for that time the stamp is not the state of the session: the chip and the note both ask this.
+function NV_restedWithFailure(session) {
+  return !!(session && session.last_turn_error && session.status !== "ended" && (!session.turn_status || session.turn_status === "idle"));
+}
+
 // A session that RESTS after a transport failure (C-024: status waiting, ended_reason null) serves last_turn_error {code, at}, cleared when its next turn starts. NV_endedLine runs
 // for status "ended" only, so the advice of NV_failureWords (what to do about THAT failure) was shown nowhere for a session that is still alive. The error card above the note already
 // says what happened, so `why` names the STATE ("This session is waiting: its last turn failed.") and `next` is the failure's own advice; a code the table does not know is shown in the
 // end note's form, and turn_failed (a turn that raised something that is not a model error) names nothing a person can act on. null for an ended session, a row with no failure, or no session.
 function NV_restedFailureLine(session) {
-  if (!session || session.status === "ended" || !session.last_turn_error) return null;
+  if (!NV_restedWithFailure(session)) return null;
   var code = session.last_turn_error.code || null;
-  var base = "This session is waiting: its last turn failed";
+  // Named from the row: a paused session is not "waiting" (its chip says Paused).
+  var base = "This session is " + (session.status === "paused" ? "paused" : "waiting") + ": its last turn failed";
   if (!code || code === "turn_failed") {
     return { why: base + ".", next: "Open the turn's trace for the cause, or send a message to try again." };
   }
   var words = NV_failureCodeWords(code);
-  return { why: NV_failureWords(code) ? base + "." : base + ": " + words.what + ".", next: words.next };
+  return { why: NV_failureWords(code) ? base + "." : base + " (" + words.what + ").", next: words.next };
 }
 
 // The newest visible row that ends something: the answer, the failure, the operator's own message. A divider, a retry notice, a tool row is not one.
@@ -186,6 +192,17 @@ function NV_newestTerminalRow(rows) {
 function NV_restedNoteLine(session, shown, newest) {
   if (shown || !newest || newest.kind !== "error") return null;
   return NV_restedFailureLine(session);
+}
+
+// What the document hands the note, from what it holds: its flat rows, whether a turn is shown running, and the keys the history loaded with (NV_useFirstLoadKeys). `live` is whether the newest
+// terminal row arrived while the page was open; `line` is the gate's answer, which the follow effect and the render both read.
+function NV_restedNoteInputs(session, flat, shown, firstLoad) {
+  var newest = NV_newestTerminalRow(flat);
+  return {
+    session: session, shown: !!shown, newest: newest,
+    live: !!newest && NV_arrivedLive(firstLoad, newest.seq),
+    line: NV_restedNoteLine(session, !!shown, newest),
+  };
 }
 
 // What is drawn for the line: `live` (the failure arrived while the page was open, as for the card's role="alert") makes it a polite status.
@@ -662,7 +679,7 @@ function NV_sessionStateChipView(session) {
   var label = labels[state] || state;
   var resting = false;
   // A session that RESTS after a failed turn (C-024: last_turn_error on the row, cleared when its next turn starts) says so, whether it had completed a turn (parked) or failed its first (waiting).
-  var failed = !!(session && session.last_turn_error && session.status !== "ended" && session.status !== "paused" && !session.parked_status && state !== "running" && state !== "ended");
+  var failed = NV_restedWithFailure(session) && session.status !== "paused" && !session.parked_status && state !== "running" && state !== "ended";
   if (failed) {
     label = "Last turn failed";
   } else if (state === "parked" && session && !session.parked_status) {
@@ -2839,9 +2856,6 @@ function NV_SessionDoc(props) {
   }, [transcriptSnap, session, shownActive, effectivePhase]);
   var flat = pipeline.flat;
   var rows = pipeline.rows;
-  // The resting note (C-024) draws only for a failure that is the newest thing on screen, and not while a turn is shown running (NV_restedNoteLine).
-  var newestTerminal = NV_newestTerminalRow(flat);
-  var restedLine = NV_restedNoteLine(session, !!shown, newestTerminal);
   var resultsByCallId = pipeline.resultsByCallId;
   var turnOfSeq = pipeline.turnOfSeq;
   // 01a052a5: computed once per render (not per row inside renderTurn's
@@ -2941,6 +2955,9 @@ function NV_SessionDoc(props) {
   // What the first load of the history and of the pending gates brought is not announced; what arrives after it is.
   var historyFirstLoad = NV_useFirstLoadKeys(!!history.data, ((history.data && history.data.items) || []).map(function (it) { return it.seq; }));
   var gatesFirstLoad = NV_useFirstLoadKeys(!!gates.data, gateItems.map(function (it) { return it.id; }));
+  // The resting note (C-024) draws only for a failure that is the newest thing on screen, and not while a turn is shown running (NV_restedNoteLine); its inputs are one pure function (NV_restedNoteInputs).
+  var rested = NV_restedNoteInputs(session, flat, shown, historyFirstLoad);
+  var restedLine = rested.line;
   var agentId = session && session.binding
     ? (session.binding.agent_id || session.binding.graph_id)
     : null;
@@ -3393,8 +3410,7 @@ function NV_SessionDoc(props) {
                 ) : null}
               </React.Fragment>
             ) : null}
-            <NV_RestedNote session={session} shown={!!shown} newest={newestTerminal}
-              live={!!newestTerminal && NV_arrivedLive(historyFirstLoad, newestTerminal.seq)} />
+            <NV_RestedNote {...rested} />
           </div>
           {decision.showJump ? (
             <div className="nv-jump-wrap">
