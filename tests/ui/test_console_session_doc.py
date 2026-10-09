@@ -1760,24 +1760,24 @@ def test_a_session_that_merely_rests_is_not_labelled_parked():
         return json.loads(ctx.eval("JSON.stringify(NV_sessionStateChipView(" + json.dumps(session) + "))"))
 
     assert view({"session_state": "parked", "status": "waiting", "parked_status": None, "turn_no": 3}) == {
-        "state": "parked", "label": "Ready", "resting": True,
+        "state": "parked", "label": "Ready", "resting": True, "failed": False,
     }
     assert view({"session_state": "parked", "status": "running", "parked_status": "parked", "turn_no": 3}) == {
-        "state": "parked", "label": "Parked", "resting": False,
+        "state": "parked", "label": "Parked", "resting": False, "failed": False,
     }, "waiting on an approval, an answer or a timer is still Parked"
     assert view({"session_state": "parked", "status": "running", "parked_status": "resumable", "turn_no": 3}) == {
-        "state": "parked", "label": "Parked", "resting": False,
+        "state": "parked", "label": "Parked", "resting": False, "failed": False,
     }
     assert view({"session_state": "parked", "status": "paused", "parked_status": None, "turn_no": 3}) == {
-        "state": "parked", "label": "Paused", "resting": False,
+        "state": "parked", "label": "Paused", "resting": False, "failed": False,
     }, "an operator pause needs the operator, so it is not Ready"
     assert view({"session_state": "waiting", "status": "created", "turn_no": 0}) == {
-        "state": "waiting", "label": "Waiting", "resting": False,
+        "state": "waiting", "label": "Waiting", "resting": False, "failed": False,
     }
     assert view({"session_state": "running", "status": "running", "turn_no": 1})["label"] == "Running"
     assert view({"session_state": "ended", "status": "ended", "turn_no": 2})["label"] == "Ended"
-    assert view(None) == {"state": "waiting", "label": "Waiting", "resting": False}, "nothing polled yet"
-    assert view({"session_state": "weird"}) == {"state": "weird", "label": "weird", "resting": False}, "an unknown state shows as itself"
+    assert view(None) == {"state": "waiting", "label": "Waiting", "resting": False, "failed": False}, "nothing polled yet"
+    assert view({"session_state": "weird"}) == {"state": "weird", "label": "weird", "resting": False, "failed": False}, "an unknown state shows as itself"
     ctx.close()
 
 
@@ -1833,7 +1833,7 @@ def test_a_failed_session_says_why_in_user_language_and_what_to_do_next(function
     """A2: the end divider read "session ended . failed" and nothing else, while the row knew why (ended_detail never_started)."""
     import json
 
-    ctx = function_ctx("NV_failureWords", "NV_endedLine")
+    ctx = function_ctx("NV_failureWords", "NV_failureCodeWords", "NV_endedLine")
 
     def line(session):
         return _call(ctx, "NV_endedLine(" + json.dumps(session) + ")")
@@ -1912,7 +1912,7 @@ def test_a_failed_llm_stream_ends_the_session_in_words_with_its_own_next_step(fu
     "It failed: the failure code is server_error" is not user language, and a generic next step does not help with a bad key."""
     import json
 
-    ctx = function_ctx("NV_failureWords", "NV_endedLine")
+    ctx = function_ctx("NV_failureWords", "NV_failureCodeWords", "NV_endedLine")
     got = _call(ctx, "NV_endedLine(" + json.dumps({"status": "ended", "ended_reason": "failed", "ended_detail": code}) + ")")
     assert got["label"] == "failed"
     assert got["why"].startswith("It failed: ") and what in got["why"].lower(), got
