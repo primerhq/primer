@@ -130,12 +130,6 @@ class NodeOutput(BaseModel):
         ),
     )
 
-    @field_validator("error")
-    @classmethod
-    def _error_carries_no_credentials(cls, value: str | None) -> str | None:
-        """A FanIn template renders ``n.error`` into the next prompt: URL credentials, Bearer and Basic tokens are masked wherever the output is
-        built (01a11fbc-ec5a)."""
-        return redact_credentials(value) if isinstance(value, str) else value
     ended_detail: str | None = Field(
         default=None,
         description=(
@@ -144,6 +138,13 @@ class NodeOutput(BaseModel):
             "Mirrors WorkspaceSession.ended_detail's semantics."
         ),
     )
+
+    @field_validator("error")
+    @classmethod
+    def _error_carries_no_credentials(cls, value: str | None) -> str | None:
+        """A FanIn template renders ``n.error`` into the next prompt: URL credentials, Bearer and Basic tokens are masked wherever the output is
+        built (01a11fbc-ec5a)."""
+        return redact_credentials(value) if isinstance(value, str) else value
 
 
 class ExecutionContext(BaseModel):

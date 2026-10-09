@@ -32,7 +32,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 from collections.abc import Awaitable, Callable
 
-from primer.common.log import redact_url_secrets
+from primer.common.log import redact_credentials
 from primer.model.except_ import (
     AuthenticationError,
     AuthRequiredError,
@@ -102,8 +102,9 @@ def to_problem_details(exc: BaseException) -> ProblemDetails:
 
     The envelope is served to every reader of the session (the messages
     ERROR record, the turn log, the tap), so it never carries the
-    traceback, and its ``detail`` passes through ``redact_url_secrets``
-    (an upstream error message can embed a ``?key=`` URL), as do the
+    traceback, and its ``detail`` passes through ``redact_credentials``
+    (an upstream error message can embed a ``?key=`` URL, a ``user:password@``
+    userinfo, or the Bearer or Basic token it was sent), as do the
     top-level string values of ``problem_extensions`` (nested dict or
     list values are not walked). The failure is
     logged here, once, under the same ``error_id``: a mapped
@@ -125,16 +126,16 @@ def to_problem_details(exc: BaseException) -> ProblemDetails:
                 type=type_uri,
                 title=title,
                 status=status,
-                detail=redact_url_secrets(detail),
+                detail=redact_credentials(detail),
                 extensions={
                     "exception_class": type(exc).__name__,
                     "error_id": error_id,
                     # Served with the envelope: string values get the same
-                    # URL-credential redaction as the detail. Top-level
-                    # strings only: a nested dict or list value is passed
-                    # through unredacted.
+                    # credential redaction as the detail (URL credentials,
+                    # Bearer and Basic tokens). Top-level strings only: a
+                    # nested dict or list value is passed through unredacted.
                     **{
-                        k: redact_url_secrets(v) if isinstance(v, str) else v
+                        k: redact_credentials(v) if isinstance(v, str) else v
                         for k, v in (
                             getattr(exc, "problem_extensions", None) or {}
                         ).items()
@@ -146,7 +147,7 @@ def to_problem_details(exc: BaseException) -> ProblemDetails:
         type="/errors/internal",
         title=type(exc).__name__,
         status=500,
-        detail=redact_url_secrets(str(exc)),
+        detail=redact_credentials(str(exc)),
         extensions={
             "exception_class": type(exc).__name__,
             "error_id": error_id,

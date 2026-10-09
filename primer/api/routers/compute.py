@@ -24,7 +24,7 @@ from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from primer.agent.agent_checks import AGENT_FIELD_CODES, check_agent_on_create, check_agent_on_update, missing_toolset_ids
 from primer.api.deps import (
@@ -42,6 +42,7 @@ from primer.api.routers._crud import make_crud_router
 from primer.api.routers._references import ReferenceCheck
 from primer.common.context_overflow import output_cap_warning
 from primer.common.entity_checks import EntityCheckError
+from primer.common.log import redact_credentials
 from primer.model.agent import Agent
 from primer.model.except_ import ConflictError, NotFoundError, PrimerError
 from primer.model.graph import Graph
@@ -365,6 +366,13 @@ class _NodeStateOut(BaseModel):
     tokens_out: int | None = None
     duration_ms: int | None = None
     error: str | None = None
+
+    @field_validator("error")
+    @classmethod
+    def _error_carries_no_credentials(cls, value: str | None) -> str | None:
+        """A run recorded before node failures were masked at the source keeps its raw text in the workspace (``state.json``); masked on the way out
+        (01a11fbc-ec5a)."""
+        return redact_credentials(value) if isinstance(value, str) else value
 
 
 @graph_router.get(
