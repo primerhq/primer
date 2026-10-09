@@ -237,7 +237,7 @@ async def test_the_resume_time_audit_record_is_written_for_the_gate_that_was_dec
     )
 
     keys = [r.gate_event_key for r in (await sp.get_storage(ToolApprovalRecord).list(OffsetPage(offset=0, length=10))).items]
-    assert keys == [APPROVAL_B], keys      # the event key of the decided gate (the record key carries the gate id once the record key change lands)
+    assert keys == [f"{APPROVAL_B}@{GB}"], keys      # the event key of the decided gate, suffixed with its gate id (C-033 PR 2)
 
 
 # ---- ask_user inside a graph node is scoped by the node, as an approval is --------------------------------------------------------------------
