@@ -140,6 +140,7 @@ function GB_validate(draft, opts) {
       blocking.push({ code: "graph_missing", nodeId: n.id, message: `“${n.description || n.id}” has no graph chosen.`, fix: "select_node" });
     }
     if (n.kind === "tool_call" && n.tool_id && o.knownToolIds && o.knownToolIds.length
+        && n.tool_id.indexOf("workspace__") !== 0
         && o.knownToolIds.indexOf(n.tool_id) === -1) {
       warnings.push({ code: "tool_unknown", nodeId: n.id, message: `“${n.tool_id}” isn't in the tool catalogue right now.` });
     }
