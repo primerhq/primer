@@ -50,8 +50,43 @@ def current_graph_node_id() -> str | None:
     return _NODE_ID.get()
 
 
+# 01a11faa: the same shape for a ToolCall NODE's dispatch, as a SEPARATE value from ``_NODE_ID`` on purpose. ``_NODE_ID`` is also folded into the approval gate's event_key
+# (primer.agent.tool_manager), and the channel inbox rebuilds a ToolCall node's key WITHOUT a node scope (``tool_approval:<session>:<call id>``,
+# primer.channel.inbox._matching_event_keys), so publishing it for this dispatch would break the approval of a gated ToolCall node. This one is read by two things only: the
+# workspace executor's ``_dispatch_toolcall`` (the id of the call the node wrote its row under becomes the ``ToolCallPart``'s id) and the delegation recorder's stamp
+# (``run_subagent`` takes ``delegate_node_id`` from it when no graph node identity is active), so a run the tool delegates to nests under the node's call.
+_TOOLCALL: contextvars.ContextVar[tuple[str, str] | None] = contextvars.ContextVar(
+    "primer_graph_toolcall_node_call", default=None,
+)
+
+
+def set_current_toolcall(node_id: str, call_id: str) -> contextvars.Token:
+    """Publish (fan-out-instance-qualified node id, tool call id) for a ToolCall node's dispatch on the current task."""
+    return _TOOLCALL.set((node_id, call_id))
+
+
+def reset_current_toolcall(token: contextvars.Token) -> None:
+    _TOOLCALL.reset(token)
+
+
+def current_toolcall_id() -> str | None:
+    """The id of the call the ToolCall node being dispatched wrote its row under, if one is active on this task."""
+    active = _TOOLCALL.get()
+    return active[1] if active is not None else None
+
+
+def current_toolcall_node_id() -> str | None:
+    """The node instance id of the ToolCall node being dispatched, if one is active on this task."""
+    active = _TOOLCALL.get()
+    return active[0] if active is not None else None
+
+
 __all__ = [
     "current_graph_node_id",
+    "current_toolcall_id",
+    "current_toolcall_node_id",
     "reset_current_graph_node_id",
+    "reset_current_toolcall",
     "set_current_graph_node_id",
+    "set_current_toolcall",
 ]
