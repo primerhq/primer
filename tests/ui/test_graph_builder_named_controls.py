@@ -92,11 +92,12 @@ def test_a_branch_row_names_each_of_its_five_controls_by_branch_and_condition() 
     for needle in (
         'aria-label={"Branch " + (bi + 1) + ", condition " + (ci + 1) + ": field"}',
         'aria-label={"Branch " + (bi + 1) + ", condition " + (ci + 1) + ": operator"}',
-        'aria-label={"Branch " + (bi + 1) + ", condition " + (ci + 1) + ": value"}',
+        'ariaLabel={"Branch " + (bi + 1) + ", condition " + (ci + 1) + ": value"}',   # the value box is GB_BranchValueInput, which puts it on its input
         'aria-label={"Branch " + (bi + 1) + ": go to"}',
         'aria-label="In any other case: go to"',
     ):
         assert needle in src, needle
+    assert "aria-label={ariaLabel}" in src, "GB_BranchValueInput names its input by the label it is given"
 
 
 def test_the_entity_picker_names_its_search_by_its_label_or_its_placeholder() -> None:
