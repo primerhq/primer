@@ -1,7 +1,8 @@
 """The Platform pages' list filters and plain create-form inputs name themselves (console review C-003, found by the runtime sweep of the main surfaces).
 
 Each of these controls was an input or a select whose only text was a placeholder or its first option. They carry an ``aria-label`` now. One row per site: the file, an anchor that sits in or
-right after the control's opening tag (``occurrence`` picks the n-th match when the anchor repeats), and the attribute the tag must carry. The runtime check is
+right after the control's opening tag (``occurrence`` picks the n-th match when the anchor repeats), and the attribute the tag must carry. The #668 review (2026-10-09) found two more of the
+same class: the platform approvals' decision-audit sort select and the channel rules page's rule filter. The runtime check is
 ``tests/ui_e2e/test_platform_filters_and_inputs_named_journey.py``.
 """
 
@@ -33,6 +34,7 @@ SITES = [
     ("channels.jsx", 'placeholder="Filter providers\u2026"', 0, 'aria-label="Filter providers"'),
     ("channels.jsx", '<option value="">all platforms</option>', 0, 'aria-label="Filter by platform"'),
     ("channel_rules.jsx", '<option value="">all providers</option>', 0, 'aria-label="Filter by provider"'),
+    ("channel_rules.jsx", 'placeholder="Filter rules\u2026"', 0, 'aria-label="Filter rules"'),
     ("provider-catalog.jsx", 'data-testid="provider-filter"', 0, 'aria-label="Filter providers"'),
     ("provider-catalog.jsx", 'placeholder="stt_provider_id"', 0, 'aria-label="Speech-to-text provider id"'),
     ("provider-catalog.jsx", 'placeholder="tts_provider_id"', 0, 'aria-label="Text-to-speech provider id"'),
@@ -41,6 +43,7 @@ SITES = [
     ("knowledge.jsx", 'placeholder="id (optional)"', 0, 'aria-label="Collection id"'),
     ("knowledge.jsx", 'placeholder="Description"', 0, 'aria-label="Collection description"'),
     ("console/nv-overlays.jsx", 'placeholder="extra init command"', 0, 'aria-label="Extra init command"'),
+    ("console/nv-platform.jsx", 'data-testid="nv-audit-sort-by"', 0, 'aria-label="Sort decisions"'),
     ("shared/tool-picker.jsx", 'data-testid="tool-picker-filter"', 0, 'aria-label="Search the tool catalog"'),
     ("shared/tool-picker.jsx", "data-testid={`tool-picker-group-${entry.id}`}", 0, "aria-label={"),
     ("semantic-search.jsx", 'placeholder="Filter providers\u2026"', 0, 'aria-label="Filter providers"'),
