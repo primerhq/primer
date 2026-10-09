@@ -1,9 +1,9 @@
 """An EmbeddingProvider's config is read as the class its ``provider`` names (ticket 01a11cdf part 2; found in the review of #580).
 
-``EmbeddingProvider.config`` is a plain union of three classes. pydantic tries them in order and takes the first that validates, so an ``openai`` row whose url is invalid
-(or missing) failed ``OpenAIConfig``, failed ``HuggingFaceConfig`` (no token), and validated as ``GoogleConfig`` with ``api_key`` None: the url was silently dropped, a row
-with no endpoint could be saved, and ``_discover_models`` went on to send the raw typed string to httpx. ``LLMProvider`` has had a provider-keyed before-validator for the
-same reason (``_coerce_config_to_provider``); the embedding provider has one now.
+``EmbeddingProvider.config`` is a plain union of three classes. pydantic's smart mode validates the input against each member and keeps the one that sets the most fields, so
+an ``openai`` row whose url is invalid (or missing) failed ``OpenAIConfig`` and failed ``HuggingFaceConfig`` (no token) and was left with ``GoogleConfig``, the only member
+that validated, with ``api_key`` None: the url was silently dropped, a row with no endpoint could be saved, and ``_discover_models`` went on to send the raw typed string to
+httpx. ``LLMProvider`` has had a provider-keyed before-validator for the same reason (``_coerce_config_to_provider``); the embedding provider has one now.
 """
 
 from __future__ import annotations
@@ -60,6 +60,25 @@ def test_a_config_that_is_already_an_instance_passes_through() -> None:
     row = EmbeddingProvider.model_validate({**_row("openai", {}), "config": config})
 
     assert row.config is config or row.config == config
+
+
+@pytest.mark.parametrize(
+    ("provider", "config", "wanted"),
+    [
+        ("huggingface", OpenAIConfig(url="http://emb.local:1234/v1"), "HuggingFaceConfig"),
+        ("openai", HuggingFaceConfig(token="hf_abcdefghijklmnop"), "OpenAIConfig"),
+        ("openai", GoogleConfig(api_key="k"), "OpenAIConfig"),
+        ("gemini", OpenAIConfig(url="http://emb.local:1234/v1"), "GoogleConfig"),
+    ],
+)
+def test_a_config_object_of_the_wrong_class_is_refused(provider: str, config: object, wanted: str) -> None:
+    """The validator only looked at a dict: an object of another class went through the union as it was, so ``provider="huggingface"`` could carry an ``OpenAIConfig``."""
+    with pytest.raises(ValidationError) as caught:
+        EmbeddingProvider.model_validate({**_row(provider, {}), "config": config})
+
+    message = str(caught.value.errors()[0]["msg"])
+    assert wanted in message and provider in message, message
+    assert "hf_abcdefghijklmnop" not in message and "emb.local" not in message, "the message names the classes, never the config"
 
 
 def test_a_stored_row_reads_back_as_the_same_class() -> None:

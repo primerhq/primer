@@ -77,16 +77,74 @@ async def test_a_probe_error_with_no_credential_reads_as_it_did(client, monkeypa
 # ---- the draft does not validate: pydantic's input is not printed -----------------------------------------------------------------------------------------------------
 
 
+# Longer than 50 characters on purpose: pydantic cuts a long ``input_value`` to its first 25 and last 24 characters, which is all that hides a middle slice; a URL of 50 or fewer is
+# printed WHOLE, so a draft that short cannot tell a route that drops the input from one that prints it. The second has a "/" in the password: the "@" is then not part of the
+# userinfo to a URL-shaped mask, so only dropping the input hides it.
+_UNVALIDATED_URLS = [
+    "http://svc:s3cr3t-pw-0123456789abcdefghij@asr.local:notaport/v1",
+    "http://u:s3cr3t/pw-0123456789abcdefghijklmnopqrstuv@asr.local:notaport/v1",
+]
+
+
 @pytest.mark.asyncio
+@pytest.mark.parametrize("url", _UNVALIDATED_URLS)
 @pytest.mark.parametrize(("route", "body"), [("stt_providers", _stt), ("tts_providers", _tts)])
-async def test_a_draft_that_does_not_validate_does_not_print_the_url_it_was_given(client, route: str, body) -> None:
-    r = await client.post(f"/v1/{route}/_test", json=body("http://svc:s3cr3t-pw@asr.local:notaport/v1"))
+async def test_a_draft_that_does_not_validate_does_not_print_the_url_it_was_given(client, route: str, body, url: str) -> None:
+    assert len(url) > 50
+
+    r = await client.post(f"/v1/{route}/_test", json=body(url))
 
     assert r.status_code == 200, r.text
     error = r.json()["error"]
     assert r.json()["ok"] is False and error.startswith("invalid draft"), error
-    assert "s3cr3t" not in error and "pw@" not in error, error
+    assert "s3cr3t" not in error and "pw@" not in error and "0123456789" not in error, error
     assert "url" in error, "the person still needs to know WHICH field is wrong"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["web_search_providers", "web_fetch_providers"])
+async def test_a_web_draft_that_does_not_validate_does_not_print_what_it_was_given(client, route: str) -> None:
+    """An unknown ``provider_type`` fails the discriminator, and pydantic prints the whole config dict as ``input_value``."""
+    draft = {"id": "d", "provider_type": "nonesuch", "config": {"type": "nonesuch", "api_key": "SECRETKEY123-0123456789abcdefghijklmnopqrstuvwxyz", "url": "https://u:pw0rd@h.test/x"}}
+
+    r = await client.post(f"/v1/{route}/_test", json=draft)
+
+    error = r.json()["error"]
+    assert r.json()["ok"] is False and error.startswith("invalid draft"), error
+    assert "SECRETKEY123" not in error and "pw0rd" not in error and "0123456789" not in error, error
+
+
+# ---- the adapter factory runs inside the probe's try ---------------------------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_web_search_factory_that_raises_is_a_failed_probe_with_the_text_cleaned(client, monkeypatch) -> None:
+    def _boom(draft):
+        raise RuntimeError("cannot build for https://u:pw0rd@api.example.test/search?api_key=SECRETKEY123")
+
+    monkeypatch.setattr("primer.api.registries.web_search_registry.default_web_search_factory", _boom)
+
+    r = await client.post("/v1/web_search_providers/_test", json={"id": "d", "provider_type": "tavily", "config": {"type": "tavily", "api_key": "k"}})
+
+    assert r.status_code == 200, r.text
+    error = r.json()["error"]
+    assert r.json()["ok"] is False and error.startswith("RuntimeError: cannot build"), error
+    assert "pw0rd" not in error and "SECRETKEY123" not in error, error
+
+
+@pytest.mark.asyncio
+async def test_a_web_fetch_factory_that_raises_is_a_failed_probe_with_the_text_cleaned(client, monkeypatch) -> None:
+    def _boom(draft):
+        raise RuntimeError("cannot build for https://u:pw0rd@r.jina.ai/x?token=SECRETKEY123")
+
+    monkeypatch.setattr("primer.api.registries.web_fetch_registry.default_web_fetch_factory", _boom)
+
+    r = await client.post("/v1/web_fetch_providers/_test", json={"id": "d", "provider_type": "jina", "config": {"type": "jina"}})
+
+    assert r.status_code == 200, r.text
+    error = r.json()["error"]
+    assert r.json()["ok"] is False and error.startswith("RuntimeError: cannot build"), error
+    assert "pw0rd" not in error and "SECRETKEY123" not in error, error
 
 
 # ---- the web providers -------------------------------------------------------------------------------------------------------------------------------------------------
