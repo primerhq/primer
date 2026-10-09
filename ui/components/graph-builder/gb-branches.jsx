@@ -122,6 +122,13 @@ const ONLY_PATH_REASON = "A choice needs at least one path: remove the whole cho
 // A small text-sized button for the x and + controls of a branch row (they were spans with an onClick: no name, no focus, no key).
 const GB_LINK_BUTTON = { background: "none", border: "none", padding: 0, font: "inherit", cursor: "pointer", lineHeight: 1 };
 
+// The x of a condition and of a path: a 24 by 24 box (WCAG 2.2 SC 2.5.8; the glyph is about 8 by 13 px), and the margin takes back what the box adds around the glyph, so the row does not grow and the glyph
+// stays where it was. (Longhands, not the shorthand: React warns when a style mixes the two and a caller overrides one side.)
+const GB_ICON_BUTTON = {
+  ...GB_LINK_BUTTON, display: "inline-flex", alignItems: "center", justifyContent: "center", width: 24, height: 24, flex: "0 0 auto",
+  marginTop: -5.5, marginBottom: -5.5, marginLeft: -8, marginRight: -8,
+};
+
 // "Remove this choice" (board ticket 01a11e4e-6fa7): the whole conditional edge goes, with its paths and its "In any other case" link. A choice that has paths asks first through the console's own
 // confirmDialog (a dialog: focus is moved in and trapped, Escape cancels, focus returns to the opener); one with none is removed at once. `edge` is the edge the question is about: the answer
 // is dropped if this button is gone (the inspector moved on to another choice) or the edge at that index is not the one that was asked about (undo and redo work while the dialog is open).
@@ -168,7 +175,9 @@ function GB_BranchBuilder(props) {
   const firstTarget = ((router.branches || [])[0] || {}).to_node;
   const onlyPath = (router.branches || []).length <= 1;
   const onlyPathId = helpId + "r";
-  const removeName = "Remove the choice after " + label(edge.from_node) + (firstTarget ? " (first path goes to " + label(firstTarget) + ")" : "");
+  const where = label(edge.from_node) + (firstTarget ? " (first path goes to " + label(firstTarget) + ")" : "");
+  const removeName = "Remove the choice after " + where;
+  const addName = "Add a path to the choice after " + where;
 
   if (router.kind === "callable") {
     return (
@@ -287,7 +296,7 @@ function GB_BranchBuilder(props) {
                   aria-label={"Branch " + (bi + 1) + ", condition " + (ci + 1) + ": remove"}
                   title="Remove this condition"
                   onClick={() => dispatch({ type: "UPDATE_BRANCH", idx: edgeIdx, bi, patch: { conditions: b.conditions.filter((_x, j) => j !== ci) } })}
-                  style={{ ...GB_LINK_BUTTON, marginLeft: "auto", fontSize: 13, color: "var(--text-4)" }}>
+                  style={{ ...GB_ICON_BUTTON, marginLeft: "auto", fontSize: 13, color: "var(--text-4)" }}>
                   ×
                 </button>
               ) : null}
@@ -325,7 +334,7 @@ function GB_BranchBuilder(props) {
                   aria-disabled={onlyPath ? "true" : undefined}
                   aria-describedby={onlyPath ? onlyPathId : undefined}
                   onClick={() => { if (!onlyPath) dispatch({ type: "DELETE_BRANCH", idx: edgeIdx, bi }); }}
-                  style={{ ...GB_LINK_BUTTON, fontSize: 13, color: "var(--text-4)", opacity: onlyPath ? 0.4 : 1, cursor: onlyPath ? "not-allowed" : "pointer" }}
+                  style={{ ...GB_ICON_BUTTON, fontSize: 13, color: "var(--text-4)", opacity: onlyPath ? 0.4 : 1, cursor: onlyPath ? "not-allowed" : "pointer" }}
                   title={onlyPath ? ONLY_PATH_REASON : "Remove this path"}
                 >
                   ×
@@ -338,12 +347,12 @@ function GB_BranchBuilder(props) {
       ))}
 
       {!readOnly ? (
-        <span
+        <button type="button" data-testid="gb-add-path" aria-label={addName}
           onClick={() => dispatch({ type: "ADD_BRANCH", idx: edgeIdx, branch: { conditions: [{ path: "", op: "eq", value: "" }], to_node: "" } })}
-          style={{ fontSize: "var(--fs-11)", color: "var(--accent)", cursor: "pointer", padding: "2px 0" }}
+          style={{ ...GB_LINK_BUTTON, alignSelf: "flex-start", display: "inline-flex", alignItems: "center", minHeight: 24, marginTop: -4, marginBottom: -4, fontSize: "var(--fs-11)", color: "var(--accent)" }}
         >
           + Add a path
-        </span>
+        </button>
       ) : null}
 
       {/* The catch-all is permanent - it replaces the sharpest edge with a default. */}
