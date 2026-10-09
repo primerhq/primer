@@ -190,8 +190,9 @@ async def test_provider(body: _ProviderDraft) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"invalid draft: {draft_error(exc)}"}
 
-    adapter = default_web_search_factory(draft)
+    adapter = None
     try:
+        adapter = default_web_search_factory(draft)          # inside the try: a factory that raises is a failed probe, with its text cleaned, not a 500
         hits = await adapter.search(
             query="primer", count=1, safe_search="moderate",
         )
@@ -200,10 +201,11 @@ async def test_provider(body: _ProviderDraft) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 — diagnostic-only path
         return {"ok": False, "error": probe_error(exc)}
     finally:
-        try:
-            await adapter.aclose()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("test_provider: aclose failed: %s", exc)
+        if adapter is not None:
+            try:
+                await adapter.aclose()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("test_provider: aclose failed: %s", exc)
 
     return {"ok": True, "hits": [h.model_dump() for h in hits]}
 

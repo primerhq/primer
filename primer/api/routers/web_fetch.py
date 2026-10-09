@@ -189,18 +189,20 @@ async def test_provider(body: _ProviderDraft) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"invalid draft: {draft_error(exc)}"}
 
-    adapter = default_web_fetch_factory(draft)
+    adapter = None
     try:
+        adapter = default_web_fetch_factory(draft)          # inside the try: a factory that raises is a failed probe, with its text cleaned, not a 500
         page = await adapter.fetch(url="https://example.com")
     except (WebFetchUnavailable, WebFetchProviderError) as exc:
         return {"ok": False, "error": redact_url_secrets(str(exc))}
     except Exception as exc:  # noqa: BLE001 - diagnostic-only path
         return {"ok": False, "error": probe_error(exc)}
     finally:
-        try:
-            await adapter.aclose()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("test_provider: aclose failed: %s", exc)
+        if adapter is not None:
+            try:
+                await adapter.aclose()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("test_provider: aclose failed: %s", exc)
 
     return {"ok": True, "title": page.title, "chars": len(page.content_markdown)}
 

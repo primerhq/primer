@@ -47,6 +47,9 @@ from primer.storage.migrations.m006_unified_search_grants import (
 from primer.storage.migrations.m007_aggregated_model_profiles import (
     M007AggregatedModelProfiles,
 )
+from primer.storage.migrations.m008_embedding_provider_repair import (
+    M008EmbeddingProviderRepair,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +75,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     M005DocumentDirectories(),
     M006UnifiedSearchGrants(),
     M007AggregatedModelProfiles(),
+    M008EmbeddingProviderRepair(),
 )
 
 #: Highest version this build knows how to apply.

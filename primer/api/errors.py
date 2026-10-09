@@ -215,13 +215,17 @@ def _jsonable(value: object) -> object:
 async def _validation_error_handler(
     request: Request, exc: RequestValidationError
 ) -> JSONResponse:
+    # pydantic puts the offending INPUT in every error: a config with a credentialed Base URL that does not parse, or a whole config dict
+    # (the key beside the missing token). It is what the caller typed, so it adds nothing a person needs (the console reads loc and msg),
+    # and it is dropped here for every route, before anything is rendered.
+    errors = [{key: value for key, value in error.items() if key != "input"} for error in exc.errors()]
     return _problem_response(
         request=request,
         status=422,
         type_uri="/errors/validation-error",
         title="Validation Error",
         detail="One or more request parameters or body fields failed validation.",
-        extensions={"errors": _jsonable(exc.errors())},
+        extensions={"errors": _jsonable(errors)},
     )
 
 
