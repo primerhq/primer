@@ -12,7 +12,6 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from primer.agent.call_scope import current_interrupt
-from primer.graph._node_identity import current_graph_node_id
 from primer.model.chat import Message, TextPart, ToolTurnCapReached
 
 
@@ -252,6 +251,8 @@ async def run_subagent(
     parent_run_id = _RUN_ID.get()
     # The graph node whose agent made this call (None outside a graph). Concurrent fan-out siblings each run in their own task with their own ambient id, and their calls can
     # share a raw id, so the records of a run say which node it belongs to (ticket 01a11cca).
+    from primer.graph._node_identity import current_graph_node_id
+
     node_id = current_graph_node_id()
     context = AgentResumeContext(
         session_id=session_id,
