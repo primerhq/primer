@@ -395,7 +395,7 @@ def _call_scope(payload: dict[str, Any]) -> str | None:
     if run:
         return run
     if payload.get("delegated") and payload.get("delegate_tool_call_id"):
-        return "call:" + payload["delegate_tool_call_id"]
+        return f"call:{payload['delegate_tool_call_id']}"   # as the console's ``"call:" + id`` does: a malformed id reads as something, it does not fail the route
     return None
 
 
