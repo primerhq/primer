@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock
 import pytest
 from pydantic import SecretStr
 
-from primer.channel.adapter import APPROVAL_STALE_NOTICE, QUESTION_STALE_NOTICE, DecisionRefused, PromptEnvelope
+from primer.channel.adapter import APPROVAL_STALE_NOTICE, BUTTON_EXPIRED_NOTICE, QUESTION_STALE_NOTICE, DecisionRefused, PromptEnvelope
 from primer.channel.correlation import CorrelationStore
 from primer.channel.discord.views import ApprovalView, build_approval_custom_ids, decode_custom_id, decode_custom_id_with_gate
 from primer.channel.slack import factory as slack_factory
@@ -279,15 +279,23 @@ def test_the_discord_custom_ids_keep_the_old_shape_without_a_gate_id() -> None:
     assert decode_custom_id("approve:ws:s:tc-1") == ("approve", "ws", "s", "tc-1")
 
 
-def test_the_token_goes_on_only_if_the_longest_discord_id_still_fits_in_100_characters() -> None:
-    """The reject modal's custom id is the longest of the three, so it decides for all of them (a token on Approve and none on Reject would be odd)."""
+def test_the_reject_modal_prefix_is_no_longer_than_the_approve_verb() -> None:
+    """The modal id used to be the longest of the three (a 19-character prefix), so it alone decided whether the token fit. It is no longer the longest."""
+    from primer.channel.discord.views import REJECT_MODAL_CUSTOM_ID_PREFIX
+
+    assert len(REJECT_MODAL_CUSTOM_ID_PREFIX) <= len("approve")
+
+
+def test_the_token_goes_on_whenever_the_longest_discord_id_still_fits_in_100_characters() -> None:
+    """The three ids are ``<verb>:ws:sid:tcid#<12>``; the longest verb decides for all of them (a token on Approve and none on Reject would be odd)."""
     from primer.channel.discord.views import REJECT_MODAL_CUSTOM_ID_PREFIX, build_reject_modal
 
-    fits = "t" * 40            # modal id: 19 + 1 + 11 + 1 + 9 + 1 + 40 = 82, +13 for the token = 95
-    too_long = "t" * 50        # 92 without the token, 105 with it
+    fixed = len("approve:") + len("workspace-1") + 1 + len("session-1") + 1 + 13     # verb, ws, sid, separators and the token
+    fits = "t" * (100 - fixed)                                                     # exactly 100 characters with the token
+    too_long = fits + "t"
 
     approve, reject = build_approval_custom_ids(ws="workspace-1", sid="session-1", tcid=fits, gate_id=G1)
-    assert approve.endswith("#" + G1[:12]) and reject.endswith("#" + G1[:12])
+    assert approve.endswith("#" + G1[:12]) and reject.endswith("#" + G1[:12]) and len(approve) == 100
     modal = build_reject_modal(ws="workspace-1", sid="session-1", tcid=fits, gate_id=G1, on_submit=AsyncMock())
     assert modal.custom_id == f"{REJECT_MODAL_CUSTOM_ID_PREFIX}:workspace-1:session-1:{fits}#{G1[:12]}" and len(modal.custom_id) <= 100
 
@@ -295,6 +303,33 @@ def test_the_token_goes_on_only_if_the_longest_discord_id_still_fits_in_100_char
     assert "#" not in approve and "#" not in reject
     modal = build_reject_modal(ws="workspace-1", sid="session-1", tcid=too_long, gate_id=G1, on_submit=AsyncMock())
     assert "#" not in modal.custom_id and len(modal.custom_id) <= 100
+
+
+def test_a_token_that_does_not_fit_is_dropped_logged_and_counted(caplog) -> None:
+    import logging
+
+    import primer.observability.metrics as metrics
+
+    metrics.reset_for_test()
+    too_long = "t" * 90
+
+    with caplog.at_level(logging.WARNING, logger="primer.channel.discord.views"):
+        approve, _ = build_approval_custom_ids(ws="workspace-1", sid="session-1", tcid=too_long, gate_id=G1)
+
+    assert "#" not in approve
+    assert metrics.discord_gate_token_dropped_total._value.get() == 1
+    assert any("session-1" in r.getMessage() and "gate token" in r.getMessage() for r in caplog.records)
+    metrics.reset_for_test()
+
+
+def test_no_gate_id_is_not_a_dropped_token(caplog) -> None:
+    import primer.observability.metrics as metrics
+
+    metrics.reset_for_test()
+    build_approval_custom_ids(ws="workspace-1", sid="session-1", tcid="t" * 90, gate_id=None)
+
+    assert metrics.discord_gate_token_dropped_total._value.get() == 0
+    metrics.reset_for_test()
 
 
 def test_the_discord_view_buttons_use_those_custom_ids() -> None:
@@ -332,6 +367,24 @@ async def test_a_stale_telegram_click_alerts_only_the_clicker_and_edits_nothing(
 
     assert adapter._handle_decision.await_args.kwargs["gate_id"] == G1
     cq.answer.assert_awaited_once_with(text=APPROVAL_STALE_NOTICE, show_alert=True)
+    ctx.bot.edit_message_text.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("data", ["a:UNKNOWN", "r:UNKNOWN"])
+async def test_a_telegram_click_on_a_button_the_cache_no_longer_knows_alerts_that_it_expired(monkeypatch, data) -> None:
+    """A tag the adapter cannot resolve (the process restarted, or the entry aged out) used to be answered with silence; now the clicker is told."""
+    adapter = tg_tests._mock_adapter()
+    adapter._resolve_tag = AsyncMock(return_value=None)
+    adapter._handle_decision = AsyncMock()
+    on_callback, _ = tg_tests._install(monkeypatch, tg_tests._FakeEntry({"100": adapter}))
+    ctx, cq = tg_tests._context(), tg_tests._cq(data)
+
+    await on_callback(SimpleNamespace(callback_query=cq), ctx)
+
+    cq.answer.assert_awaited_once_with(text=BUTTON_EXPIRED_NOTICE, show_alert=True)
+    assert "console" in BUTTON_EXPIRED_NOTICE
+    adapter._handle_decision.assert_not_awaited()
     ctx.bot.edit_message_text.assert_not_awaited()
 
 

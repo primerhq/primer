@@ -40,7 +40,7 @@ async def _seed(sp, *, session_by: PrincipalRef | None, owner: PrincipalRef | No
         parked_event_key="subscribe_to_trigger:tc-1",
         parked_state={"tool_call_id": "tc-1", "yielded": {
             "tool_name": "subscribe_to_trigger", "event_key": "subscribe_to_trigger:tc-1",
-            "resume_metadata": {"tool_call_id": "tc-1"},
+            "resume_metadata": {"tool_call_id": "tc-1", "subscription_id": "sb-1"},
         }},
         created_at=NOW, initiated_by=session_by,
     ))
