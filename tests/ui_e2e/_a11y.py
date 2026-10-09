@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from playwright.sync_api import CDPSession, Page
 
 # The standing sweep's allowlist: (a regex searched in the control's outer HTML, why it cannot be named: a ticket, or the reason). It is EMPTY on purpose and may only shrink:
@@ -35,7 +37,7 @@ HTML_WINDOW = 220
 PROBE_ATTRIBUTE = "data-a11y-probe"
 
 CANDIDATES_JS = r"""(args) => {
-  const { rootSel, window: win, attr } = args;
+  const { rootSel, window: win, attr, chrome } = args;
   const shown = e => { const s = getComputedStyle(e); return s.visibility !== 'hidden' && s.display !== 'none' && e.getClientRects().length > 0; };
   const roots = rootSel ? Array.from(document.querySelectorAll(rootSel)).filter(shown) : [document.documentElement];
   if (!roots.length) return { error: 'the root selector ' + JSON.stringify(rootSel) + ' matches no visible element', candidates: [] };
@@ -64,23 +66,70 @@ CANDIDATES_JS = r"""(args) => {
     candidates: found.map(({ e, editable }, i) => {
       const html = e.outerHTML.replace(/\s+/g, ' ').slice(0, win);   // before the mark goes on: the report must be the page's own markup
       e.setAttribute(attr, String(i));
-      return { html, testid: e.getAttribute('data-testid') || '', editable };
+      return { html, testid: e.getAttribute('data-testid') || '', editable, body: !(chrome && e.closest(chrome)) };
     }),
   };
 }"""
 
 CLEAR_JS = "(attr) => document.querySelectorAll('[' + attr + ']').forEach(e => e.removeAttribute(attr))"
 
-_INVISIBLE = re.compile(r"[\s​-‍⁠﻿]+")
+# What a surface says about ITSELF (review of #668, B3'): a control count is met by a page's own chrome, so the sweep also asks whether anything under the root is still loading and whether
+# it shows an error. A banner is a visible element of the console's error shapes with text in it; "loading" is a spinner, an element marked busy, or text that says so.
+ERROR_BANNER = '.nv-form-error, .banner-error, .nv-doc-problem, [role="alert"]'
+LOADING_TEXT = r"^(Loading|Checking)\b"
+
+PAGE_STATE_JS = r"""(args) => {
+  const { rootSel, errorSel, loadingText } = args;
+  const shown = e => { const s = getComputedStyle(e); return s.visibility !== 'hidden' && s.display !== 'none' && e.getClientRects().length > 0; };
+  const roots = rootSel ? Array.from(document.querySelectorAll(rootSel)).filter(shown) : [document.documentElement];
+  if (!roots.length) return { error: 'the root selector ' + JSON.stringify(rootSel) + ' matches no visible element', loading: [], errors: [] };
+  const text = e => (e.textContent || '').replace(/\s+/g, ' ').trim();
+  const own = e => Array.from(e.childNodes).filter(n => n.nodeType === Node.TEXT_NODE).map(n => n.textContent).join(' ').replace(/\s+/g, ' ').trim();
+  const rx = new RegExp(loadingText);
+  const loading = [], errors = [];
+  const seen = new Set();
+  for (const root of roots) {
+    for (const e of [root, ...root.querySelectorAll('*')]) {
+      if (seen.has(e) || !shown(e)) continue;
+      seen.add(e);
+      if (e.classList.contains('spinner')) loading.push(e.tagName.toLowerCase() + '.spinner');
+      else if (e.getAttribute('aria-busy') === 'true') loading.push(e.tagName.toLowerCase() + '[aria-busy=true]');
+      else if (rx.test(own(e))) loading.push(own(e).slice(0, 80));
+      if (e.matches(errorSel) && text(e) && !e.parentElement.closest(errorSel)) errors.push(text(e).slice(0, 120));
+    }
+  }
+  return { error: null, loading, errors };
+}"""
 
 
-def effective_source(sources: list[dict[str, Any]]) -> str:
-    """What the accessible name came from, per Chromium's own list of name sources: the first one that produced a value and was not superseded by a higher-priority one."""
+_INVISIBLE = re.compile(r"[\s\u200b-\u200d\u2060\ufeff]+")
+
+
+def effective_source_entry(sources: list[dict[str, Any]]) -> dict[str, Any]:
+    """The name source that produced the name, per Chromium's own list: the first one that produced a value and was not superseded by a higher-priority one."""
     for source in sources or []:
         value = (source.get("value") or {}).get("value")
         if value and not source.get("superseded") and not source.get("invalid"):
-            return str(source.get("nativeSource") or source.get("type") or "")
-    return ""
+            return source
+    return {}
+
+
+def effective_source(sources: list[dict[str, Any]]) -> str:
+    """What the accessible name came from (``attribute``, ``contents``, ``labelfor`` ...), or ``""`` when no source produced one."""
+    entry = effective_source_entry(sources)
+    return str(entry.get("nativeSource") or entry.get("type") or "") if entry else ""
+
+
+def _is_named_by_its_own_placeholder_through_itself(ax: dict[str, Any], sources: list[dict[str, Any]], name: str) -> bool:
+    """``aria-labelledby`` that points at the control itself (and at nothing that has text) makes Chromium read the placeholder as the name, from a source that looks like a label."""
+    entry = effective_source_entry(sources)
+    if entry.get("attribute") != "aria-labelledby" or ax.get("backendDOMNodeId") is None:
+        return False
+    related = [node for node in ((entry.get("attributeValue") or {}).get("relatedNodes") or []) if str(node.get("text") or "").strip()]
+    if not related or any(node.get("backendDOMNodeId") != ax["backendDOMNodeId"] for node in related):
+        return False
+    placeholders = [(source.get("value") or {}).get("value") for source in sources if source.get("type") == "placeholder" and source.get("attribute") == "placeholder"]
+    return name in [str(value) for value in placeholders if value]
 
 
 def verdict(ax: dict[str, Any] | None) -> tuple[str, str]:
@@ -91,23 +140,32 @@ def verdict(ax: dict[str, Any] | None) -> tuple[str, str]:
     name = _INVISIBLE.sub("", str(name_value.get("value") or ""))
     if not name:
         return "unnamed", "no accessible name"
-    source = effective_source(name_value.get("sources") or [])
+    sources = name_value.get("sources") or []
+    source = effective_source(sources)
     if source == "placeholder":
         return "unnamed", "its only name is its placeholder"
+    if _is_named_by_its_own_placeholder_through_itself(ax, sources, str(name_value.get("value") or "")):
+        return "unnamed", "its only name is its placeholder (its aria-labelledby points at itself)"
     return "named", source or "name"
 
 
 @dataclass
 class Examination:
-    """What one look at a page found: how many controls were examined (a sweep that examined none proved nothing) and the unnamed ones."""
+    """What one look at a page found: how many controls were examined (a sweep that examined none proved nothing), how many of those are in the BODY (outside the ``chrome`` the caller named),
+    how many Chromium hides from assistive technology, and the unnamed ones."""
 
     examined: int = 0
+    body: int = 0
     skipped: int = 0
     unnamed: list[dict[str, str]] = field(default_factory=list)
 
     @property
     def html(self) -> list[str]:
         return [item["html"] for item in self.unnamed]
+
+
+class _Stale(Exception):
+    """A candidate left the page between the moment it was marked and the moment the browser was asked about it."""
 
 
 class AxProbe:
@@ -121,9 +179,24 @@ class AxProbe:
     def close(self) -> None:
         self.cdp.detach()
 
-    def examine(self, root: str | None = None) -> Examination:
-        """Examine every candidate control under ``root`` (a CSS selector; the whole document when none). Raises when ``root`` matches no visible element: a sweep must not fall back to the page."""
-        found = self.page.evaluate(CANDIDATES_JS, {"rootSel": root, "window": HTML_WINDOW, "attr": PROBE_ATTRIBUTE})
+    def examine(self, root: str | None = None, *, chrome: str | None = None, _after_marking: Callable[[], None] | None = None) -> Examination:
+        """Examine every candidate control under ``root`` (a CSS selector; the whole document when none). Raises when ``root`` matches no visible element: a sweep must not fall back to the page.
+
+        ``chrome`` is a selector for the fixed furniture around a surface (a modal's title and footer, an overlay's close button ...): its controls are examined for names like any other and
+        are not counted in ``body``. A page that changes under the probe (a list that polls) is looked at again, once; ``_after_marking`` is a seam for the test that makes it change."""
+        try:
+            return self._examine_once(root, chrome, _after_marking)
+        except _Stale:
+            pass
+        try:
+            return self._examine_once(root, chrome, _after_marking)
+        except _Stale as exc:
+            raise AssertionError(f"the page kept changing under the probe: {exc}") from exc
+
+    def _examine_once(self, root: str | None, chrome: str | None, after_marking: Callable[[], None] | None) -> Examination:
+        from playwright.sync_api import Error as BrowserError
+
+        found = self.page.evaluate(CANDIDATES_JS, {"rootSel": root, "window": HTML_WINDOW, "attr": PROBE_ATTRIBUTE, "chrome": chrome})
         try:
             if found["error"]:
                 raise AssertionError(found["error"])
@@ -131,20 +204,28 @@ class AxProbe:
             out = Examination()
             if not candidates:
                 return out
-            document = self.cdp.send("DOM.getDocument", {"depth": 0})["root"]["nodeId"]
-            ids = self.cdp.send("DOM.querySelectorAll", {"nodeId": document, "selector": f"[{PROBE_ATTRIBUTE}]"})["nodeIds"]
-            assert len(ids) == len(candidates), f"{len(candidates)} candidates were marked, {len(ids)} found by the browser"
-            for candidate, node_id in zip(candidates, ids):
-                nodes = self.cdp.send("Accessibility.getPartialAXTree", {"nodeId": node_id, "fetchRelatives": False})["nodes"]
-                ax = nodes[0] if nodes else None
-                outcome, why = verdict(ax)
-                if outcome == "skipped":
-                    out.skipped += 1
-                    continue
-                out.examined += 1
-                if outcome == "unnamed":
-                    role = ((ax or {}).get("role") or {}).get("value") or ""
-                    out.unnamed.append({"html": candidate["html"], "testid": candidate["testid"], "role": role, "why": why})
+            if after_marking:
+                after_marking()
+            try:
+                document = self.cdp.send("DOM.getDocument", {"depth": 0})["root"]["nodeId"]
+                for index, candidate in enumerate(candidates):
+                    # each candidate is found by the mark it carries, so that a control added or removed since the enumeration cannot shift the answers onto its neighbours
+                    node_id = self.cdp.send("DOM.querySelector", {"nodeId": document, "selector": f'[{PROBE_ATTRIBUTE}="{index}"]'})["nodeId"]
+                    if not node_id:
+                        raise _Stale(f"candidate {index} ({candidate['html'][:60]!r}) left the page")
+                    nodes = self.cdp.send("Accessibility.getPartialAXTree", {"nodeId": node_id, "fetchRelatives": False})["nodes"]
+                    ax = nodes[0] if nodes else None
+                    outcome, why = verdict(ax)
+                    if outcome == "skipped":
+                        out.skipped += 1
+                        continue
+                    out.examined += 1
+                    out.body += 1 if candidate["body"] else 0
+                    if outcome == "unnamed":
+                        role = ((ax or {}).get("role") or {}).get("value") or ""
+                        out.unnamed.append({"html": candidate["html"], "testid": candidate["testid"], "role": role, "why": why})
+            except BrowserError as exc:
+                raise _Stale(str(exc)) from exc
             return out
         finally:
             self.page.evaluate(CLEAR_JS, PROBE_ATTRIBUTE)
@@ -173,3 +254,71 @@ def classify(found: dict[str, list[str]], allowlist: list[tuple[str, str]]) -> t
             unnamed[html] = sorted(set(surfaces))
     stale = [allowlist[i][0] for i in range(len(allowlist)) if i not in used]
     return unnamed, stale
+
+
+@dataclass
+class PageState:
+    """What a surface says about itself: what under it is still loading, and the error banners it shows."""
+
+    loading: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+
+def page_state(page: Page, root: str | None = None) -> PageState:
+    """Look for loading and error states under ``root`` (a CSS selector that must match a visible element; the whole document when none)."""
+    found = page.evaluate(PAGE_STATE_JS, {"rootSel": root, "errorSel": ERROR_BANNER, "loadingText": LOADING_TEXT})
+    if found["error"]:
+        raise AssertionError(found["error"])
+    return PageState(loading=found["loading"], errors=found["errors"])
+
+
+@dataclass
+class Look:
+    """What the sweep recorded for one surface: the controls examined, how many of them are in its body (outside the fixed chrome), and how many Chromium hid from assistive technology."""
+
+    examined: int = 0
+    body: int = 0
+    skipped: int = 0
+
+
+def counts_table(looks: dict[str, Look], floors: dict[str, int]) -> str:
+    """The sweep's numbers, one line per surface, to print on every run: floors are calibrated from them, and a page that examined little shows here."""
+    width = max([len(name) for name in looks] + [len("surface")])
+    lines = [f"{'surface'.ljust(width)}  {'examined':>8}  {'body':>5}  {'floor':>5}  {'skipped':>7}"]
+    for name, look in looks.items():
+        floor = floors.get(name)
+        lines.append(f"{name.ljust(width)}  {look.examined:>8}  {look.body:>5}  {'-' if floor is None else floor:>5}  {look.skipped:>7}")
+    return "\n".join(lines)
+
+
+def evaluate_sweep(*, found: dict[str, list[str]], allowlist: list[tuple[str, str]], visited: list[str], expected: list[str], looks: dict[str, Look], floors: dict[str, int],
+                   notes: list[str], page_errors: list[str], left: list[str], completed: bool = True) -> list[str]:
+    """Every guard at the end of the standing sweep, as a pure function: the problems found (an empty list is a pass).
+
+    ``found`` is the sweep's unnamed controls (outer HTML -> surfaces); ``visited`` the surfaces it looked at, in order, against ``expected``; ``looks`` what each look recorded, against the ``floors``
+    on the BODY of each surface; ``notes`` what the pages said about themselves (still loading, an error banner, not the page asked for); ``left`` the seeded rows that could not be deleted.
+    A sweep that died (``completed`` false) is not also blamed for the surfaces it never reached."""
+    problems: list[str] = []
+    unnamed, stale = classify(found, allowlist)
+    if unnamed:
+        report = "\n".join(f"  {', '.join(surfaces)}\n      {html}" for html, surfaces in unnamed.items())
+        problems.append(f"{len(unnamed)} control(s) with no name, by surface:\n{report}")
+    if completed and visited != expected:
+        problems.append("the sweep did not visit exactly the surfaces it lists, difference: " + str(sorted(set(expected) ^ set(visited))) + f" ({len(visited)} visited, {len(expected)} listed)")
+    thin = []
+    for name, look in looks.items():
+        if name not in floors:
+            thin.append(f"{name}: no floor is set for it")
+        elif look.body < floors[name]:
+            thin.append(f"{name}: {look.body} control(s) in its body, at least {floors[name]} expected ({look.examined} examined with the chrome)")
+    if thin:
+        problems.append("surfaces that examined too few controls:\n  " + "\n  ".join(thin))
+    if notes:
+        problems.append("problems with the pages themselves:\n  " + "\n  ".join(notes))
+    if page_errors:
+        problems.append(f"page errors during the sweep: {page_errors}")
+    if stale:
+        problems.append(f"allowlist entries that match nothing in this run (remove them): {stale}")
+    if left:
+        problems.append(f"seeded rows that could not be deleted: {left}")
+    return problems

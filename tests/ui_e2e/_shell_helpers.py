@@ -290,6 +290,7 @@ LEGACY_ROUTE_OVERLAYS = {
     "providers/web_search": "providers:web_search",
     "providers/web_fetch": "providers:web_fetch",
     "providers/artifact_storage": "providers:artifact_storage",
+    "providers/model_profile": "providers:model_profile",
 }
 
 
