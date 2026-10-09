@@ -284,8 +284,9 @@ but require human review for any other host.
   no longer remembers (a restart) answers "This button has expired; decide it in the console." Two fan-out siblings of one graph park that share a raw `tool_call_id` are
   told apart when the decision is resumed: a decision resumes only the sibling whose event key it fired, in a graph session and in the child graph an agent session invoked (the
   key the reply fired selects the sibling, not the child's first gate), and a thread reply routed by the channel router reaches the key the gate waits on. Siblings that were already
-  parked BEFORE this release share one unscoped `ask_user` key, so one answer resumes both of them; that ends with those parks. **Not yet covered:** a wake delivered twice can flip a gate that has
-  since been replaced under the same key; that is the next step of this work (ticket 01a12042), so do not rely on the id for it yet.
+  parked BEFORE this release share one unscoped `ask_user` key, so one answer resumes both of them; that ends with those parks. A decision's wake also names its gate
+  (ticket 01a12042), so one delivered again after the session re-parked under the same id cannot decide the newer gate (the flip refuses it). **Not covered:** a timeout marker
+  names no gate.
 - **A new user message does not supersede a pending approval.** If a
   session is parked on approval and the user sends another message,
   the message is queued behind the open turn and the approval stays
