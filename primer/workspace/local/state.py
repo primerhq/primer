@@ -50,6 +50,7 @@ from primer.workspace.state_helpers import (
     TRAILER_WORKSPACE as _TRAILER_WORKSPACE,
     VALID_OPS as _VALID_OPS,
     build_message as _build_message,
+    commit_text,
     trailer_line,
     validate_relative_path as _validate_relative_path,
     validate_session_id as _validate_session_id,
@@ -436,9 +437,9 @@ class LocalStateRepo:
 
             # Build commit message: subject + workspace trailer + caller trailers.
             message_lines = [
-                summary,
+                commit_text(summary),
                 "",
-                f"{_TRAILER_WORKSPACE}: {self._workspace_id}",
+                trailer_line(_TRAILER_WORKSPACE, self._workspace_id),
             ]
             for key, value in (trailers or {}).items():
                 message_lines.append(trailer_line(key, value))

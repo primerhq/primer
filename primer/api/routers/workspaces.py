@@ -37,7 +37,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic import ValidationError as PydanticValidationError
 from pydantic_core import to_jsonable_python
 
@@ -97,6 +97,7 @@ from primer.model.workspace import (
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
+from primer.workspace.state_helpers import has_unsafe_commit_chars
 from primer.workspace.reserved import reserved_tree, reserved_tree_for, reserved_trees
 from primer.workspace.diagnostic import (
     DIAGNOSTIC_COMMANDS,
@@ -383,9 +384,19 @@ class SessionRenameBody(BaseModel):
         description=(
             "New friendly name for the session. Pass null or an empty / "
             "whitespace-only string to clear it and fall back to the id in "
-            "the console."
+            "the console. A name holding a control character (a newline, a "
+            "tab, NUL, DEL, a Unicode line separator) is refused with 422: "
+            "the name is written into the subject of the session's rename "
+            "commit, which the history parsers split on those characters."
         ),
     )
+
+    @field_validator("name")
+    @classmethod
+    def _name_has_no_control_characters(cls, value: str | None) -> str | None:
+        if value is not None and has_unsafe_commit_chars(value):
+            raise ValueError("name must not contain control characters")
+        return value
 
 
 # ===========================================================================

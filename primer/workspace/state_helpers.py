@@ -54,18 +54,35 @@ VALID_OPS: frozenset[str] = frozenset(
 # ---------------------------------------------------------------------------
 
 
-# Every character ``str.splitlines`` (and so a line-oriented trailer parser) treats as the end of a line.
-_LINE_BREAKS = re.compile("[\r\n\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]")
+# Every character the history parsers or the process act on: all C0 controls (CR and LF end a line; VT, FF, FS, GS end one for ``str.splitlines``; RS and
+# US are the RECORD and FIELD separators of ``git log --format`` in both parsers; NUL cannot be passed to git in an argument; tab, ESC and the rest a
+# terminal or a log viewer acts on), DEL, and NEL, U+2028 and U+2029, which ``str.splitlines`` treats as line ends.
+_UNSAFE_COMMIT_CHARS = re.compile("[\x00-\x1f\x7f\x85\u2028\u2029]")
+
+
+def commit_text(value: object) -> str:
+    """``value`` as text that is safe to put in a commit message: every control or line-separating character becomes a space (security ticket 01a11fbc-ffea).
+
+    A commit message is read back by two parsers (``LocalStateRepo.history()`` and the runtime's ``_parse_log_records``) that split on lines, on RS between
+    records and on US between fields. Text a caller controls (a workspace id, a failure code, a provider's tool_call_id, a session's name in the subject of
+    its rename commit, a graph node id) that held any of them forged trailers, numstat files or a whole record, made ``history()`` raise for every window
+    containing the commit, or failed the commit outright (NUL). Text without one is returned exactly as it was.
+    """
+    return _UNSAFE_COMMIT_CHARS.sub(" ", str(value))
+
+
+def has_unsafe_commit_chars(value: str) -> bool:
+    """Whether ``value`` holds a character :func:`commit_text` would replace (the API refuses such a name rather than writing a changed one)."""
+    return _UNSAFE_COMMIT_CHARS.search(value) is not None
 
 
 def trailer_line(key: str, value: object) -> str:
-    """``key: value`` as ONE line of a commit message (security ticket 01a11fbc-ffea).
+    """``key: value`` as ONE line of a commit message: both pass through :func:`commit_text`.
 
-    A trailer is a line, and the history parser reads them back by line, so a value holding a line break would write lines of its own: a failure
-    code or a provider's tool_call_id with ``\nX-Primer-Session: forged`` in it became a trailer of the commit. Every line-break character in the key or
-    the value becomes a space; a value without one is written exactly as it was.
+    The trailer writers are ``build_message`` (session-scoped commits) and ``commit_arbitrary`` of both backends. ``X-Primer-Call`` and ``X-Primer-Tool``
+    have no production writer today (only ``build_message``'s optional arguments, which no caller fills); they are covered as defence in depth.
     """
-    return f"{_LINE_BREAKS.sub(' ', str(key))}: {_LINE_BREAKS.sub(' ', str(value))}"
+    return f"{commit_text(key)}: {commit_text(value)}"
 
 
 def build_message(
@@ -93,7 +110,7 @@ def build_message(
         trailers.append(trailer_line(TRAILER_TOOL, tool))
     if call_id is not None:
         trailers.append(trailer_line(TRAILER_CALL, call_id))
-    return f"{subject}\n\n" + "\n".join(trailers) + "\n"
+    return f"{commit_text(subject)}\n\n" + "\n".join(trailers) + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +152,9 @@ __all__ = [
     "TRAILER_CALL",
     "VALID_OPS",
     "build_message",
+    "commit_text",
+    "has_unsafe_commit_chars",
+    "trailer_line",
     "validate_session_id",
     "validate_relative_path",
 ]

@@ -42,6 +42,7 @@ from primer.workspace.state_helpers import (
     TRAILER_WORKSPACE as _TRAILER_WORKSPACE,
     VALID_OPS as _VALID_OPS,
     build_message as _build_message,
+    commit_text,
     trailer_line,
     validate_relative_path as _validate_relative_path,
     validate_session_id as _validate_session_id,
@@ -127,9 +128,9 @@ def _build_arbitrary_message(
 ) -> str:
     """Build a commit message for :meth:`SandboxStateRepo.commit_arbitrary`."""
     lines = [
-        subject,
+        commit_text(subject),
         "",
-        f"{_TRAILER_WORKSPACE}: {workspace_id}",
+        trailer_line(_TRAILER_WORKSPACE, workspace_id),
     ]
     for key, value in (trailers or {}).items():
         lines.append(trailer_line(key, value))
