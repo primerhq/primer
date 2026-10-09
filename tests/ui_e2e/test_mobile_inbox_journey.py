@@ -117,10 +117,12 @@ def test_the_inbox_names_what_it_asks_you_to_decide_and_deciding_is_acknowledged
             _attention_row(client, deny_sid, "approval")
             ask_row = _attention_row(client, ask_sid, "ask")
 
-            # The server describes the call: the tool, the target first, the bulky content counted not shipped.
+            # The server describes the call: the tool and what its card may show. write_workspace_file declares nothing yet (its declaration is a later slice of the
+            # Inbox allowlist), so the default rule draws no string: every argument is its name and <hidden>, never read, and the row says who decided.
             assert approve_row["approval"]["tool_name"] == WRITE
-            assert approve_row["approval"]["arguments"].startswith("path=notes/plan.md")
-            assert "content=<3000 chars>" in approve_row["approval"]["arguments"]
+            assert approve_row["approval"]["arguments"] == "path=<hidden>, workspace_id=<hidden>, content=<hidden>"
+            assert sorted(approve_row["approval"]["hidden_keys"]) == ["content", "path", "workspace_id"]
+            assert approve_row["approval"]["preview"] == "default"
             assert ask_row["prompt"] == "Which environment should I deploy to?"
 
             page.set_viewport_size(PHONE)
@@ -133,7 +135,7 @@ def test_the_inbox_names_what_it_asks_you_to_decide_and_deciding_is_acknowledged
             expect(card).to_be_visible(timeout=20_000)
             expect(card.get_by_test_id("nv-mob-ib-kind")).to_have_text("Approval")
             expect(card).to_contain_text(WRITE)
-            expect(card).to_contain_text("path=notes/plan.md")
+            expect(card).to_contain_text("path=<hidden>")
 
             # C-032: the question card fills its width and its button sits below the text, not over it.
             question = page.get_by_test_id(f"nv-mobile-inbox-card:{ask_sid}")
@@ -148,7 +150,7 @@ def test_the_inbox_names_what_it_asks_you_to_decide_and_deciding_is_acknowledged
             review_box = question.get_by_test_id(f"nv-mobile-inbox-review:{ask_sid}").bounding_box()
             assert line_box["y"] + line_box["height"] <= review_box["y"] + 1, "the button must not sit over the question"
 
-            # C-033: nothing is hidden: "show all" loads the whole call.
+            # C-033: nothing is hidden from whoever may decide: "show all" loads the whole call.
             card.get_by_test_id(f"nv-mob-ib-showall:{approve_sid}").click()
             full = page.get_by_test_id(f"nv-mob-ib-full:{approve_sid}")
             expect(full).to_contain_text("notes/plan.md", timeout=10_000)
