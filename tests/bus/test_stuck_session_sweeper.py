@@ -454,7 +454,42 @@ async def test_still_ends_a_running_row_whose_failure_exit_never_finished(fake_s
 
     assert reaped == 1
     row = await storage.get("se-half")
-    assert (row.status, row.ended_reason, row.ended_detail) == (SessionStatus.ENDED, "failed", "never_started")
+    assert (row.status, row.ended_reason, row.ended_detail) == (SessionStatus.ENDED, "failed", "failure_exit_unfinished"), (
+        "the row did start and fail: ending it as 'never_started' would say the opposite of what it carries"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_log_line_of_a_reaped_unfinished_failure_exit_names_the_failure(fake_storage_provider, caplog):
+    from primer.model.workspace_session import LastTurnError
+
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    stamped = LastTurnError(code="rate_limit", at=datetime.now(timezone.utc) - timedelta(minutes=20))
+    await storage.create(_session("se-half-log", age_seconds=3600, status=SessionStatus.RUNNING, last_turn_error=stamped))
+
+    with caplog.at_level("WARNING", logger="primer.bus.scheduler_tasks"):
+        await _sweeper(storage)._tick()
+
+    line = next(r.getMessage() for r in caplog.records if "se-half-log" in r.getMessage())
+    assert "rate_limit" in line and "failure exit" in line and "never ran" not in line, line
+
+
+@pytest.mark.asyncio
+async def test_leaves_a_stamped_session_the_user_paused(fake_storage_provider):
+    """``pause_session`` moves a resting (WAITING) row to PAUSED and keeps the stamp. The guard is for every row that is not RUNNING, not for WAITING
+    alone: a rested session that was paused is still one that started and failed, and ending it ``never_started`` within a tick of the pause would
+    destroy a session the operator can resume."""
+    from primer.model.workspace_session import LastTurnError
+
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    failed = LastTurnError(code="server_error", at=datetime.now(timezone.utc) - timedelta(minutes=20))
+    await storage.create(_session("se-paused", age_seconds=3600, status=SessionStatus.PAUSED, last_turn_error=failed))
+
+    reaped = await _sweeper(storage)._tick()
+
+    assert reaped == 0
+    row = await storage.get("se-paused")
+    assert row.status == SessionStatus.PAUSED and row.ended_reason is None
 
 
 @pytest.mark.asyncio
