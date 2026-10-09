@@ -43,6 +43,7 @@ from primer.int.event_bus import EventBus
 from primer.int.storage import Storage
 from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 from primer.model.workspace_session import SessionStatus
+from primer.session.mutation_lock import session_lifecycle_lock
 from primer.storage import raw_generation
 from primer.worker.yield_runtime import make_timeout_payload
 
@@ -378,61 +379,70 @@ class StuckSessionSweeper(_BackgroundTask):
         """End every never-started session past the grace period. Returns how many."""
         reaped = 0
         for row in await self._find_stuck():
-            fresh = await self._storage.get(row.id)
-            # Re-read before writing: the claim may have landed while we were looking, in
-            # which case the turn is now running and must not be ended.
-            if fresh is None or not _never_started(fresh, self._grace):
-                continue
-            # The decisive check, and the last one before a destructive write: a lease
-            # row means the session is running, queued, or awaiting reclaim; only a lost
-            # claim has none. Done per candidate rather than as a bulk filter because the
-            # candidate list is already narrow (turn_no == 0 past the grace) and the read
-            # must be as close to the write as possible.
-            if await self._has_lease(fresh.id):
-                continue
-            # ONE field-scoped write of the four fields this sweeper owns, fenced on what the decision above depended on: a
-            # park, a finished first turn or another ender that landed since the read (the lease lookup awaits) is not
-            # overwritten, and the first terminal reason wins. A whole-row update from the snapshot would have erased it.
-            where = {
-                "status": [raw_generation(fresh, "status")],
-                "turn_no": [raw_generation(fresh, "turn_no")],
-                "parked_status": [raw_generation(fresh, "parked_status")],
-            }
-            if fresh.last_turn_error is None:
-                # a failure stamped between the read and this write makes the row one this sweeper must leave to the failure exit (a stamped
-                # row it DID read, still RUNNING, is the reapable half-finished exit: the fence there is the status it read)
-                where["last_turn_error"] = [None]
-            # A stamped row that is still RUNNING did start: its failure exit stamped it and then did not finish. It is ended for that, not
-            # for a first turn that never ran.
-            unfinished = fresh.last_turn_error is not None
-            written = await self._storage.patch_if(
-                fresh.id,
-                to_jsonable_python({
-                    "status": SessionStatus.ENDED,
-                    "ended_reason": "failed",
-                    "ended_detail": "failure_exit_unfinished" if unfinished else "never_started",
-                    "ended_at": datetime.now(timezone.utc),
-                }),
-                where=where,
-            )
-            if written is None:
-                logger.info(
-                    "stuck-session-sweeper: %s changed since it was read (a park, a finished first turn or another ender); "
-                    "left alone", fresh.id,
-                )
-                continue
-            reaped += 1
-            if unfinished:
-                logger.warning(
-                    "stuck-session-sweeper: ended %s - its first turn failed (%s) and the failure exit never finished",
-                    fresh.id, fresh.last_turn_error.code,
-                )
-            else:
-                logger.warning(
-                    "stuck-session-sweeper: ended %s - created %s, first turn never ran",
-                    fresh.id, fresh.created_at,
-                )
+            # Each candidate is judged and ended under the session's lifecycle lock, the lock every path that arms or moves a session holds. A wake
+            # (a message to a rested session) writes RUNNING and only then arms its claim; between the two the row is RUNNING with no lease row,
+            # which is what this sweeper reaps. Without the lock it read the row in that instant and ended a session the user had just messaged.
+            async with session_lifecycle_lock().acquire(row.id):
+                if await self._reap(row.id):
+                    reaped += 1
         return reaped
+
+    async def _reap(self, session_id: str) -> bool:
+        """Re-read ``session_id`` and end it if it is still a never-started (or unfinished-failure) row with no lease. True when it was ended."""
+        fresh = await self._storage.get(session_id)
+        # Re-read before writing: the claim may have landed while we were looking, in
+        # which case the turn is now running and must not be ended.
+        if fresh is None or not _never_started(fresh, self._grace):
+            return False
+        # The decisive check, and the last one before a destructive write: a lease
+        # row means the session is running, queued, or awaiting reclaim; only a lost
+        # claim has none. Done per candidate rather than as a bulk filter because the
+        # candidate list is already narrow (turn_no == 0 past the grace) and the read
+        # must be as close to the write as possible.
+        if await self._has_lease(fresh.id):
+            return False
+        # ONE field-scoped write of the four fields this sweeper owns, fenced on what the decision above depended on: a
+        # park, a finished first turn or another ender that landed since the read (the lease lookup awaits) is not
+        # overwritten, and the first terminal reason wins. A whole-row update from the snapshot would have erased it.
+        where = {
+            "status": [raw_generation(fresh, "status")],
+            "turn_no": [raw_generation(fresh, "turn_no")],
+            "parked_status": [raw_generation(fresh, "parked_status")],
+        }
+        if fresh.last_turn_error is None:
+            # a failure stamped between the read and this write makes the row one this sweeper must leave to the failure exit (a stamped
+            # row it DID read, still RUNNING, is the reapable half-finished exit: the fence there is the status it read)
+            where["last_turn_error"] = [None]
+        # A stamped row that is still RUNNING did start: its failure exit stamped it and then did not finish. It is ended for that, not
+        # for a first turn that never ran.
+        unfinished = fresh.last_turn_error is not None
+        written = await self._storage.patch_if(
+            fresh.id,
+            to_jsonable_python({
+                "status": SessionStatus.ENDED,
+                "ended_reason": "failed",
+                "ended_detail": "failure_exit_unfinished" if unfinished else "never_started",
+                "ended_at": datetime.now(timezone.utc),
+            }),
+            where=where,
+        )
+        if written is None:
+            logger.info(
+                "stuck-session-sweeper: %s changed since it was read (a park, a finished first turn or another ender); "
+                "left alone", fresh.id,
+            )
+            return False
+        if unfinished:
+            logger.warning(
+                "stuck-session-sweeper: ended %s - its first turn failed (%s) and the failure exit never finished",
+                fresh.id, fresh.last_turn_error.code,
+            )
+        else:
+            logger.warning(
+                "stuck-session-sweeper: ended %s - created %s, first turn never ran",
+                fresh.id, fresh.created_at,
+            )
+        return True
 
     async def _has_lease(self, session_id: str) -> bool:
         """Whether *session_id* still has a SESSION lease row (running, queued or reclaimable).
