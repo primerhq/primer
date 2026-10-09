@@ -12,7 +12,10 @@ considered even if it lands before the worker finishes writing the
 park row (the dispatcher holds delivery until the park is visible).
 On timeout or cancel the orphaned subscription is garbage-collected
 by the dispatcher the next time a matching event arrives and the
-session is no longer parked on the key.
+session is no longer parked on the key, or waits on it under ANOTHER
+subscription (a later ``wait_for_event`` under the same tool_call_id:
+the park's entry names the subscription that tool call created, and
+the orphan delivers nothing into it).
 """
 
 from __future__ import annotations

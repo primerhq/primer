@@ -661,9 +661,12 @@ async def post_cancel_yielded_tool(
     if _cancel_kind(resolved_tool) == "yield":
         # A non-gate yield (sleep, watch, external, trigger, wait_for_event) has no gate id to name: the cancel names the PARK it read instead, so a copy
         # delivered after the session re-parked under the same key cannot cancel the new yield (ticket 01a1208d, #702 review B2).
-        # ... and, where the yield has one, the identity of the entry it cancels (a trigger subscription, an external call row): it survives a graph park's
-        # re-park where the stamp does not (ticket 01a1223f).
-        payload = with_wake_entry(with_wake_park(payload, sess.parked_at), entry_id_of(yielded.get("resume_metadata")))
+        # ... and, where the yield has one, the identity of the entry it cancels (a trigger or wait_for_event subscription, an external call row): it
+        # survives a graph park's re-park where the stamp does not (ticket 01a1223f). Read from the entry resolved above when there is one, as the gate id
+        # is: for a graph park whose primary is a ToolCall node's yield, the top-level projection carries ``original_call`` only (#707 review N1).
+        payload = with_wake_entry(
+            with_wake_park(payload, sess.parked_at), entry_id_of(gate["resume_metadata"] if gate is not None else yielded.get("resume_metadata")),
+        )
     await event_bus.publish(event_key, payload)
     # An _external park additionally resolves its audit row so the
     # pending endpoints and the global list reflect the cancel.
