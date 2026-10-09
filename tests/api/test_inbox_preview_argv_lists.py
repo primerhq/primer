@@ -415,7 +415,7 @@ def test_an_argv_array_of_quote_heavy_words_is_linear_and_bounded(word: str, mon
 
 # ---- review of #618, round 3 (security): the per-word scrub is a FLOOR, and the line pass may only hide MORE ---------------------------------------------------------
 
-_MARK = ""
+_MARK = "\ue003"
 
 
 @pytest.mark.parametrize(
@@ -435,7 +435,7 @@ def test_the_marking_scrub_replaces_each_piece_with_as_many_marks_as_it_had(text
 
 _PIECES = [
     "mysql", "-u", "-p", "-phunter2", "--password", "--pass", "hunter2", "Bearer", "abc123def456", "Authorization:", "token:", "password=", "admin:hunter2",
-    "https://user:pw@host/x", "sk-abcdefghijkl", "A1b2C3d4" * 6, "'", '"', " ", "\x1f", ";", "&", ",", "<", ">", "=", ":", "x", "y z", "", "", "",
+    "https://user:pw@host/x", "sk-abcdefghijkl", "A1b2C3d4" * 6, "'", '"', " ", "\x1f", ";", "&", ",", "<", ">", "=", ":", "x", "y z", "\ue000", "\ue002", "",
 ]
 
 
@@ -461,8 +461,8 @@ def _floor(member):
 _WORDS = [
     "mysql", "mysqldump", "-u", "root", "-p", "-phunter2", "-p'hunter2'", "--password", "--pass", "--api-key", "hunter2", "Bearer", "abc123def456", "Authorization:", "token:",
     "curl", "-H", "admin:hunter2", "deploy:correct horse", "PGPASSWORD='hun;ter2'", 'DB_PASS="x,ysecret"', "password='x;hunter2' z", "--password='a&bsecret'",
-    "https://user:pw@host/x", "sk-abcdefghijkl", '{"k": "v"}', '{"password": "hunter2"}', "[1]", "'", '"', "a b", "it's", "x", ";", "&", "=", ":", "\x1f", "", "",
-    "", "", "sh", "-c", "mysql -u root -phunter2 db", "curl -u admin:hunter2 https://x", "export DB_PASSWORD='hunter2'; run",
+    "https://user:pw@host/x", "sk-abcdefghijkl", '{"k": "v"}', '{"password": "hunter2"}', "[1]", "'", '"', "a b", "it's", "x", ";", "&", "=", ":", "\x1f", "\ue000", "\ue002",
+    "\ue003", "", "sh", "-c", "mysql -u root -phunter2 db", "curl -u admin:hunter2 https://x", "export DB_PASSWORD='hunter2'; run",
 ]
 _SCALARS = [None, True, 5, 2.5]
 _STRUCTURES = [{"a": 1}, {"password": "hunter2"}, ["l"], ["mysql", "-phunter2"], {"cmd": ["x", "--pass", "hunter2"]}]
