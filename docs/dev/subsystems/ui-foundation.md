@@ -55,6 +55,7 @@ The foundation primitives, all self-invoking and all contributing to `window.pri
 - `ui/foundation/toast.js` - `useToast` plus the module-level `toastPush`/`toastDismiss` entry points.
 - `ui/foundation/tweaks.js` - `useTweaks`, the `localStorage` persistence of `theme`, and the synchronous flash-prevention theme apply.
 - `ui/foundation/idle.js` - the global idle flag and the wake-up `_refetchAll` call.
+- `ui/foundation/escape-stack.js` - `useEscape(handler, active)`: one window `keydown` listener that answers Escape for the top-most registered layer only (the layer that became active last, by render order), so one Escape closes one layer; `Modal`, the overlay panel, the bottom sheet, the command palette, the lightbox and the open menus use it, and an input that handles Escape itself calls `preventDefault`, which the stack respects.
 - `ui/foundation/viewport.js` - `useViewport` with the mobile/tablet/desktop bands and the `?force-desktop=1` escape hatch.
 
 The shared components:
