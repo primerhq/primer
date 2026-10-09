@@ -41,6 +41,7 @@ from primer.model.except_ import (
     NotFoundError,
     ProviderError,
 )
+from primer.model.except_ import ValidationError as PrimerValidationError
 from primer.model.storage import (
     Predicate,
 )
@@ -528,7 +529,10 @@ def _crud_tools_for(
         # get_* serves every SecretStr masked and this is a full replace, so a caller that reads a row and writes it
         # back (an agent changing one field) would store the mask as the credential. The REST routers run the same
         # helper as an on_pre_update hook; a secret the caller really changed still replaces the stored one.
-        preserve_masked_secrets(entity, existing)
+        try:
+            preserve_masked_secrets(entity, existing)
+        except PrimerValidationError as exc:          # a served mask that cannot be restored (another host or user): the REST twin is a 422
+            return _err(exc.message, error_type="validation-error")
         if pre_update is not None:
             try:
                 await pre_update(entity, existing)

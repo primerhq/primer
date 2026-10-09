@@ -31,6 +31,7 @@ from typing import Any
 
 from pydantic import BaseModel, SecretStr
 
+from primer.common.log import redact_url_secrets
 from primer.common.url_userinfo import mask_userinfo
 
 MASK = "•••redacted•••"
@@ -110,7 +111,8 @@ def _mask_value(value: Any) -> Any:
 
 def redact_payload(payload: Any) -> Any:
     """Deep-copy ``payload`` with every sensitive field masked, and the password of every string leaf that is a URL with userinfo
-    (a provider's ``config.url``, a harness ``git_url``: :func:`primer.common.url_userinfo.mask_userinfo`, the same helper the served row uses)."""
+    (a provider's ``config.url``, a harness ``git_url``: :func:`primer.common.url_userinfo.mask_userinfo`, the same helper the served row uses) and the userinfo of a credentialed URL
+    inside a longer text (:func:`primer.common.log.redact_url_secrets`, which also masks the URL query secrets it knows)."""
     if isinstance(payload, dict):
         return {
             k: _mask_value(v) if _is_sensitive_key(str(k)) else redact_payload(v)
@@ -119,7 +121,8 @@ def redact_payload(payload: Any) -> Any:
     if isinstance(payload, list):
         return [redact_payload(v) for v in payload]
     if isinstance(payload, str) and "://" in payload and "@" in payload:
-        return mask_userinfo(payload)
+        masked = mask_userinfo(payload)          # a string that IS a URL: the mask the served row carries (the username stays when there is a password)
+        return masked if masked != payload else redact_url_secrets(payload)          # a credentialed URL inside free text (an error text, a copied log line)
     return payload
 
 
