@@ -31,7 +31,8 @@
   }
 
   function onKeyDown(ev) {
-    if (ev.key !== "Escape" || ev.defaultPrevented) return;
+    // An Escape that belongs to an IME composition (it cancels the candidate list) is not an Escape for a layer: Chrome says so with isComposing, Safari with keyCode 229 on the keydown that ends one.
+    if (ev.key !== "Escape" || ev.defaultPrevented || ev.isComposing || ev.keyCode === 229) return;
     const top = topmost();
     if (top && typeof top.handler === "function") top.handler(ev);
   }
@@ -47,18 +48,21 @@
   function useEscape(handler, active) {
     const on = active === undefined ? true : !!active;
     const live = React.useRef(null);
-    if (live.current === null) live.current = { handler: handler, seq: 0 };
+    if (live.current === null) live.current = { handler: handler, order: 0, seq: 0 };
     live.current.handler = handler;
-    if (on && live.current.seq === 0) live.current.seq = ++counter;
-    if (!on) live.current.seq = 0;
+    // `order` is taken while rendering; `seq`, the place on the stack, is only set when the layer is committed (a render React throws away moves nothing that is on the stack)
+    if (on && live.current.order === 0) live.current.order = ++counter;
+    if (!on) live.current.order = 0;
 
     React.useEffect(() => {
       if (!on) return undefined;
       const entry = live.current;
+      entry.seq = entry.order;
       entries.add(entry);
       attach();
       return () => {
         entries.delete(entry);
+        entry.seq = 0;
         detach();
       };
     }, [on]);

@@ -70,8 +70,11 @@ function GB_AddStepPalette(props) {
     setStage("reference");
   };
 
+  // A layer of the Escape stack (foundation/escape-stack.js), not a key handler of the search box: in the second stage nothing in the palette has focus, and an Escape that nothing here heard went to the
+  // graph overlay under it and closed the builder with its draft.
+  window.primerApi.useEscape(onClose);
+
   const onKeyDown = (e) => {
-    if (e.key === "Escape") { e.preventDefault(); onClose(); return; }
     if (stage !== "purpose") return;
     if (e.key === "ArrowDown") { e.preventDefault(); setCursor((c) => Math.min(c + 1, rows.length - 1)); }
     if (e.key === "ArrowUp") { e.preventDefault(); setCursor((c) => Math.max(c - 1, 0)); }

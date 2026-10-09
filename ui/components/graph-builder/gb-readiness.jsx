@@ -31,6 +31,7 @@ function GB_ReadinessChip({ validation, serverIssues, open, onToggle }) {
 }
 
 function GB_ReadinessPopover({ validation, serverIssues, draft, onFix, onSelectNode, onClose }) {
+  window.primerApi.useEscape(onClose);   // Escape closes it, and only it, wherever focus is (foundation/escape-stack.js)
   const blocking = (validation && validation.blocking) || [];
   const runnable = (validation && validation.runnable) || [];
   const warnings = (validation && validation.warnings) || [];
