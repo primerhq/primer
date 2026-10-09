@@ -173,7 +173,9 @@ def _mount_routers(
     )
     app.include_router(semantic_search_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(service_router, prefix=prefix, dependencies=admin_dep)
-    from primer.api.routers.artifact_storage import artifact_storage_router
+    from primer.api.routers.artifact_storage import artifact_storage_helpers_router, artifact_storage_router
+    # helpers (_types) BEFORE CRUD so the literal path wins over /{id}, same ordering rule as the providers above.
+    app.include_router(artifact_storage_helpers_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(artifact_storage_router, prefix=prefix, dependencies=admin_dep)
     # web_search / web_fetch providers — system configuration => admin.
     # helpers_router MUST be registered before providers_router so the
