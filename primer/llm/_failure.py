@@ -235,7 +235,10 @@ def _rebuilt(err: PrimerError, message: str) -> PrimerError:
 
 def scrubbed_event_text(text: str, provider: Any) -> str:
     """The provider's own words as a stream ``Error`` EVENT carries them (no exception for :func:`describe_failure` to rewrite): normalised, scrubbed
-    with the same rules (the provider's configured credentials included) and capped like an untouched message."""
+    with the same rules (the provider's configured credentials included) and capped like an untouched message.
+
+    Also what a draft ``_test`` route reports about a failed call (ticket 01a11eda-2031): ``provider`` is any object with a ``config`` (a draft row,
+    a stub). A key the HTTP library refuses as a header value is echoed whole by its error, whitespace and all."""
     return _cap(_clean(text, provider, collapse=False), _UNTOUCHED_MESSAGE_CAP)
 
 

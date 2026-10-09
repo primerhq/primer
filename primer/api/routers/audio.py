@@ -17,6 +17,7 @@ from typing import Any
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 
 from primer.api.errors import common_responses
+from primer.llm._failure import scrubbed_event_text
 from primer.api.routers.speech import read_active_speech_config
 from primer.model.provider import SpeechToTextProvider
 from primer.model.speech import SpeechError
@@ -260,16 +261,20 @@ def _api_key_of(config) -> str | None:
     return secret.get_secret_value() if secret is not None else None
 
 
-async def _probe(coro_factory, url: str, api_key: str | None) -> list[str]:
-    """Run one enumeration probe, degrading to [] on any failure.
+async def _probe(coro_factory, row) -> list[str]:
+    """Run one enumeration probe against the speech provider ``row``, degrading to [] on any failure.
 
     The pickers this feeds are advisory: a provider that is down should
-    leave the field empty and typeable, not fail the whole page.
+    leave the field empty and typeable, not fail the whole page. The failure
+    is logged with the row's configured credentials masked (ticket
+    01a11eda-2031): a key the HTTP library refuses as a header value is
+    echoed whole by its error.
     """
+    url = str(row.config.url)
     try:
-        return await coro_factory(url=url, api_key=api_key)
+        return await coro_factory(url=url, api_key=_api_key_of(row.config))
     except Exception as exc:  # noqa: BLE001 -- advisory path
-        logger.warning("audio enumeration probe failed for %s: %s", url, exc)
+        logger.warning("audio enumeration probe failed: %s", scrubbed_event_text(f"{url}: {exc}", row))
         return []
 
 
@@ -287,15 +292,11 @@ async def list_audio_models(request: Request) -> dict[str, list[str]]:
     if active.stt_provider_id:
         row = await sp.get_storage(SpeechToTextProvider).get(active.stt_provider_id)
         if row is not None:
-            out["stt"] = await _probe(
-                list_models, str(row.config.url), _api_key_of(row.config),
-            )
+            out["stt"] = await _probe(list_models, row)
     if active.tts_provider_id:
         row = await sp.get_storage(TextToSpeechProvider).get(active.tts_provider_id)
         if row is not None:
-            out["tts"] = await _probe(
-                list_models, str(row.config.url), _api_key_of(row.config),
-            )
+            out["tts"] = await _probe(list_models, row)
     return out
 
 
@@ -321,9 +322,7 @@ async def list_audio_voices(
     if row is None:
         return {"voices": []}
     return {
-        "voices": await _probe(
-            list_voices, str(row.config.url), _api_key_of(row.config),
-        )
+        "voices": await _probe(list_voices, row)
     }
 
 

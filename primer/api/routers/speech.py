@@ -29,9 +29,10 @@ from pydantic import BaseModel, ValidationError
 
 from primer.api.errors import common_responses
 from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
-from primer.api.routers._probe_text import draft_error, probe_error
+from primer.api.routers._probe_text import draft_error
 from primer.model.provider import SpeechToTextProvider, TextToSpeechProvider
 from primer.model.speech import ACTIVE_SPEECH_CONFIG_ID, ActiveSpeechConfig
+from primer.llm._failure import scrubbed_event_text
 from primer.speech.discovery import list_models, list_voices
 
 
@@ -160,7 +161,7 @@ async def test_stt_provider(body: _SttDraft) -> dict[str, Any]:
             url=str(draft.config.url), api_key=_api_key_of(draft.config),
         )
     except Exception as exc:  # noqa: BLE001 -- diagnostic-only path
-        return {"ok": False, "error": probe_error(exc)}
+        return {"ok": False, "error": scrubbed_event_text(f"{type(exc).__name__}: {exc}", draft)}
     return {"ok": True, "models": models}
 
 
@@ -218,7 +219,7 @@ async def test_tts_provider(body: _TtsDraft) -> dict[str, Any]:
             url=str(draft.config.url), api_key=_api_key_of(draft.config),
         )
     except Exception as exc:  # noqa: BLE001 -- diagnostic-only path
-        return {"ok": False, "error": probe_error(exc)}
+        return {"ok": False, "error": scrubbed_event_text(f"{type(exc).__name__}: {exc}", draft)}
     return {"ok": True, "voices": voices}
 
 
