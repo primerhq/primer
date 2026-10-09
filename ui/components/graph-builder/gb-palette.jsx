@@ -291,34 +291,54 @@ function GB_PaletteReference({ purpose, draft, tools, catalogue, afterNodeId, on
   );
 }
 
-// The tool picker (the inspector of a tool step, the add-step palette and the starters). `catalogue` is the state of the request for the list, {error, loading, retry}: a list that could not be
-// loaded is said so with the server's words and the tool's id can be TYPED instead (the retired editor did this; the builder drew "No tools match.", the words of an empty search, ticket
-// 01a11e4e-7115). A stale list wins over a later error: the list is still good.
-function GB_ToolPicker({ tools, value, onChange, catalogue }) {
-  const { useState } = React;
+// The tool picker (the inspector of a tool step, the add-step palette and the starters). `catalogue` is the state of the request for the list, {error, loading, retry, announce}: a list that could not
+// be loaded is said so in the console's own words for a refusal (`readRefusal`: a code is never shown) and the tool's id can be TYPED instead (the retired editor did this; the builder drew
+// "No tools match.", the words of an empty search, ticket 01a11e4e-7115). A stale list wins over a later error: the list is still good. Typing is not offered where it cannot work: a read-only
+// (harness-managed) builder drops every edit, and a 401 or a 403 means the session or the role is the problem, not the list. `announce: false` is for the second picker of a surface, which says
+// the same thing as the first and must not be announced twice. Try again says it is trying, a new failure is a new alert, and after a retry that worked the focus goes to the search box.
+function GB_ToolPicker({ tools, value, onChange, catalogue, readOnly }) {
+  const { useState, useRef, useEffect } = React;
   const [q, setQ] = useState("");
   const errId = React.useId() + "e";
   const have = (tools || []).length > 0;
   const error = catalogue && catalogue.error && !have ? catalogue.error : null;
   const loading = !!(catalogue && catalogue.loading) && !have && !error;
+  const seen = useRef({ error: null, n: 0 });
+  if (error && seen.current.error !== error) seen.current = { error, n: seen.current.n + 1 };
+  const retried = useRef(false);
+  const searchRef = useRef(null);
+  useEffect(() => {
+    if (retried.current && !error && have) {
+      retried.current = false;
+      if (searchRef.current) searchRef.current.focus();
+    }
+  });
   const items = (tools || []).filter((t) => !q || (t.id + " " + (t.description || "")).toLowerCase().includes(q.toLowerCase()));
   if (error) {
-    const why = error.detail || error.message || error.title || "the request failed";
+    const refused = error.status === 401 || error.status === 403;
+    const canType = !readOnly && !refused;
+    const why = window.primerApi.readRefusal(error, "the request failed").message.replace(/[.\s]+$/, "");
+    const retrying = !!catalogue.loading;
     return (
       <div data-testid="gb-tool-picker" className="col" style={{ gap: 8, padding: 10, border: "1px solid var(--border)", borderRadius: "var(--r-9)" }}>
-        <div id={errId} role="alert" data-testid="gb-tool-catalogue-error" style={{ fontSize: "var(--fs-11)", color: "var(--red)", lineHeight: 1.5 }}>
-          {"The list of tools could not be loaded (" + why + "). Type the tool's id instead."}
+        <div key={"e" + seen.current.n} id={errId} role={catalogue.announce === false ? undefined : "alert"} data-testid="gb-tool-catalogue-error"
+          style={{ fontSize: "var(--fs-11)", color: "var(--red)", lineHeight: 1.5 }}>
+          {"The list of tools could not be loaded: " + why + "." + (canType ? " Type the tool's id instead." : "")}
         </div>
-        <input aria-label="Tool id" aria-describedby={errId} data-testid="gb-tool-id-input" className="mono"
-          value={value || ""}
-          onChange={(e) => onChange(e.target.value.replace(/\s+/g, ""))}
-          placeholder="e.g. workspaces__list_files"
-          style={{ width: "100%", background: "var(--bg-1)", border: "1px solid var(--border)", borderRadius: 6, padding: "7px 9px", color: "var(--text)", fontSize: "var(--fs-12)" }}
-        />
+        {canType ? (
+          <input aria-label="Tool id" aria-describedby={errId} data-testid="gb-tool-id-input" className="mono"
+            value={value || ""}
+            onChange={(e) => onChange(e.target.value.replace(/\s+/g, ""))}
+            placeholder="e.g. workspaces__list_workspace_files"
+            style={{ width: "100%", background: "var(--bg-1)", border: "1px solid var(--border)", borderRadius: 6, padding: "7px 9px", color: "var(--text)", fontSize: "var(--fs-12)" }}
+          />
+        ) : value ? (
+          <div data-testid="gb-tool-id-text" className="mono" style={{ fontSize: "var(--fs-12)", wordBreak: "break-all" }}>{value}</div>
+        ) : null}
         {catalogue.retry ? (
-          <button type="button" data-testid="gb-tool-catalogue-retry" onClick={() => catalogue.retry()}
-            style={{ alignSelf: "flex-start", background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--accent)", fontSize: "var(--fs-11)" }}>
-            Try again
+          <button type="button" data-testid="gb-tool-catalogue-retry" disabled={retrying} onClick={() => { retried.current = true; catalogue.retry(); }}
+            style={{ alignSelf: "flex-start", background: "none", border: "none", padding: 0, cursor: retrying ? "default" : "pointer", color: "var(--accent)", fontSize: "var(--fs-11)" }}>
+            {retrying ? "Trying again…" : "Try again"}
           </button>
         ) : null}
       </div>
@@ -326,7 +346,7 @@ function GB_ToolPicker({ tools, value, onChange, catalogue }) {
   }
   return (
     <div data-testid="gb-tool-picker" style={{ border: "1px solid var(--border)", borderRadius: "var(--r-9)", overflow: "hidden" }}>
-      <input aria-label="Search tools"
+      <input aria-label="Search tools" ref={searchRef}
         value={q}
         onChange={(e) => setQ(e.target.value)}
         placeholder="Search tools…"

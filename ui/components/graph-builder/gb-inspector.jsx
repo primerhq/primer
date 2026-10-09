@@ -172,7 +172,7 @@ function GB_Inspector(props) {
         {node.kind === "tool_call" ? (
           <>
             <GB_Section title="Which tool">
-              <GB_ToolPicker tools={tools} catalogue={catalogue} value={node.tool_id || ""} onChange={(v) => patch({ tool_id: v })} />
+              <GB_ToolPicker tools={tools} catalogue={catalogue} readOnly={readOnly} value={node.tool_id || ""} onChange={(v) => patch({ tool_id: v })} />
             </GB_Section>
             <GB_ToolArguments node={node} tools={tools} draft={draft} patch={patch} readOnly={readOnly} sampleByExpr={sampleByExpr} />
           </>
