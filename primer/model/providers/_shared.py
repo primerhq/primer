@@ -10,7 +10,10 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import BaseModel, Field, HttpUrl, PlainSerializer, PositiveInt, SecretStr
+from pydantic import BaseModel, Field, HttpUrl, PlainSerializer, PositiveInt, SecretStr, SerializationInfo
+
+from primer.common.url_userinfo import mask_userinfo
+from primer.model.common import STORAGE_DUMP_CONTEXT
 
 
 def _mask_with_tail(secret: SecretStr) -> str:
@@ -48,6 +51,25 @@ ApiKeySecret = Annotated[
 ]
 
 
+def _serialize_url(value: HttpUrl, info: SerializationInfo) -> str:
+    """The JSON-mode dump of a Base URL: the password of its userinfo is masked (``http://svc:**********@host/v1``; a lone ``https://TOKEN@host`` whole), unless the dump is the one
+    that writes the row (``dump_for_storage`` passes :data:`~primer.model.common.STORAGE_DUMP_CONTEXT`), which keeps the real URL, as it does for a ``SecretStr``."""
+    context = info.context
+    if isinstance(context, dict) and all(context.get(key) == flag for key, flag in STORAGE_DUMP_CONTEXT.items()):
+        return str(value)
+    return mask_userinfo(str(value))
+
+
+# A provider's Base URL (ticket 01a11cdf part 3, option A). A URL may carry ``user:password@`` (a reverse proxy in front of the server): httpx sends it as Basic auth, and every API
+# response, CRUD event and tool result used to serve it in clear next to a masked ``api_key``. ``when_used="json"`` only, like ``ApiKeySecret``: a python-mode dump and the object itself
+# keep the real URL, which is what the adapters and the probes read; ``dump_for_storage`` keeps it for the stored row; ``preserve_masked_secrets`` puts the stored credential back when a
+# full-replace PUT sends the served mask back. Anything that FINGERPRINTS or COMPARES a row must use the storage form (the served form is the same for two URLs that differ only by password).
+MaskedUserinfoUrl = Annotated[
+    HttpUrl,
+    PlainSerializer(_serialize_url, return_type=str, when_used="json"),
+]
+
+
 class _HttpApiKeyConfig(BaseModel):
     """Shared shape for HTTP providers authenticated by an API key.
 
@@ -63,7 +85,7 @@ class _HttpApiKeyConfig(BaseModel):
     that error to manifest.
     """
 
-    url: HttpUrl = Field(
+    url: MaskedUserinfoUrl = Field(
         ...,
         description="Base URL of the provider's HTTP endpoint.",
     )

@@ -20,7 +20,7 @@ from pydantic import (
 )
 
 from primer.model.common import Identifiable
-from primer.model.providers._shared import ApiKeySecret, Limits, _HttpApiKeyConfig
+from primer.model.providers._shared import ApiKeySecret, Limits, MaskedUserinfoUrl, _HttpApiKeyConfig
 
 
 class LLMProviderType(str, Enum):
@@ -167,7 +167,7 @@ class OllamaConfig(BaseModel):
     optional — Ollama has no authentication by default but users may
     deploy it behind a reverse proxy that enforces its own auth.
     """
-    url: HttpUrl = Field(
+    url: MaskedUserinfoUrl = Field(
         ...,
         description="Base URL of the Ollama HTTP endpoint (e.g. http://localhost:11434).",
     )
