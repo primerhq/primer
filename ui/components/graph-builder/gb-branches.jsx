@@ -1,4 +1,4 @@
-/* global React, GR_parseBranchValue */
+/* global React, GR_parseBranchValue, confirmDialog */
 // GB_BranchBuilder - routing in plain language. WIRING.md §9.
 // Order IS semantics (first match wins), the catch-all is permanent, and the
 // response_format prerequisite is surfaced exactly where it bites.
@@ -122,15 +122,30 @@ const ONLY_PATH_REASON = "A choice needs at least one path: remove the whole cho
 // A small text-sized button for the x and + controls of a branch row (they were spans with an onClick: no name, no focus, no key).
 const GB_LINK_BUTTON = { background: "none", border: "none", padding: 0, font: "inherit", cursor: "pointer", lineHeight: 1 };
 
-// The x of a condition and of a path: a 24 by 24 box (WCAG 2.2 SC 2.5.8; the glyph is about 8 by 13 px), and the margin takes back what the box adds around the glyph, so the row does not grow and the glyph
-// stays where it was. (Longhands, not the shorthand: React warns when a style mixes the two and a caller overrides one side.)
+// The x of a condition and of a path: a 24 by 24 box (WCAG 2.2 SC 2.5.8; the glyph is about 8 by 13 px), and the margin takes back what the box adds around the glyph, so the row does not grow. The
+// margin on the side of the neighbour may not exceed the row's gap (6): a larger one lets the box reach into the neighbour, and a click on the neighbour's edge hits the x. The 16 px the box adds
+// are taken back 6 on the left (the gap) and 10 on the right, so the glyph sits 2 px right of where the bare span had it. (Longhands, not the shorthand: React warns when a style mixes the two
+// and a caller overrides one side.)
 const GB_ICON_BUTTON = {
   ...GB_LINK_BUTTON, display: "inline-flex", alignItems: "center", justifyContent: "center", width: 24, height: 24, flex: "0 0 auto",
-  marginTop: -5.5, marginBottom: -5.5, marginLeft: -8, marginRight: -8,
+  marginTop: -5.5, marginBottom: -5.5, marginLeft: -6, marginRight: -10,
 };
 
+// After a confirmed removal the button that asked is gone and the focus would fall to the document (one more Tab then leaves the overlay). This puts it on `selector` once the next render has
+// drawn it: it asks on each of the next few frames and stops at the first element it finds. Used by Remove this choice, Remove this connection and Delete this step.
+function GB_focusAfterRemoval(selector) {
+  let frames = 6;
+  const attempt = () => {
+    const el = document.querySelector(selector);
+    if (el) { el.focus(); return; }
+    if (--frames > 0) window.requestAnimationFrame(attempt);
+  };
+  window.requestAnimationFrame(attempt);
+}
+
 // "Remove this choice" (board ticket 01a11e4e-6fa7): the whole conditional edge goes, with its paths and its "In any other case" link. A choice that has paths asks first through the console's own
-// confirmDialog (a dialog: focus is moved in and trapped, Escape cancels, focus returns to the opener); one with none is removed at once. `edge` is the edge the question is about: the answer
+// confirmDialog (a dialog that traps focus and returns it to the opener, and that Escape cancels); one with none is removed at once. Either way the button is gone afterwards, so the focus goes to
+// the name of the step the panel shows (GB_focusAfterRemoval). `edge` is the edge the question is about: the answer
 // is dropped if this button is gone (the inspector moved on to another choice) or the edge at that index is not the one that was asked about (undo and redo work while the dialog is open).
 // `onRemoved` lets the edge's own inspector select the step the choice came from, so the panel does not go blank on an edge index that no longer exists.
 function GB_RemoveChoice({ edge, edgeIdx, pathCount, dispatch, onRemoved, name }) {
@@ -141,6 +156,7 @@ function GB_RemoveChoice({ edge, edgeIdx, pathCount, dispatch, onRemoved, name }
   const remove = () => {
     dispatch({ type: "DELETE_EDGE", idx: edgeIdx });
     if (onRemoved) onRemoved();
+    GB_focusAfterRemoval('[data-testid="gb-inspector-title"]');
   };
   const press = async () => {
     if (pathCount > 0) {
@@ -394,4 +410,4 @@ function GB_BranchBuilder(props) {
   );
 }
 
-Object.assign(window, { GB_BranchBuilder, GB_RemoveChoice, GB_BranchValueInput, GB_branchValueText, GB_branchValueEdit, GB_commaForm, GB_OP_LABELS, GB_OPS });
+Object.assign(window, { GB_BranchBuilder, GB_RemoveChoice, GB_focusAfterRemoval, GB_BranchValueInput, GB_branchValueText, GB_branchValueEdit, GB_commaForm, GB_OP_LABELS, GB_OPS });

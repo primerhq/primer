@@ -31,7 +31,19 @@ BASELINE = {
     "graph-builder.jsx": 1,      # the bands toggle
 }
 
-TAGS = re.compile(r"<(span|div|a|li|p|td|tr|section|label)\b")
+TAGS = re.compile(r"<(span|div|a|li|p|td|tr|section|label|ul|ol|h[1-6]|img|svg)\b")
+# the attribute name must stand alone: not data-onClick, not aria-onClick
+HANDLERS = re.compile(r"(?<![\w-])on(?:Click|DoubleClick|MouseDown|MouseUp|PointerDown|PointerUp)=")
+# a role that says "I am a control"; presentation, dialog, group, region ... do not make a click handler reachable
+INTERACTIVE = {
+    "button", "link", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "checkbox", "radio", "switch", "option", "combobox", "textbox", "slider", "searchbox", "treeitem",
+}
+
+
+def strip_comments(text: str) -> str:
+    """``text`` with the comments blanked (newlines kept, so line numbers stay): a block comment anywhere, and a line comment that starts its line (a ``//`` after code may be inside a URL)."""
+    text = re.sub(r"/\*.*?\*/", lambda m: re.sub(r"[^\n]", " ", m.group(0)), text, flags=re.S)
+    return re.sub(r"(?m)^(\s*)//.*$", lambda m: m.group(1), text)
 
 
 def opening_tag(text: str, start: int) -> str:
@@ -42,7 +54,7 @@ def opening_tag(text: str, start: int) -> str:
         if quote:
             if ch == quote and text[i - 1] != "\\":
                 quote = None
-        elif ch in "\"'" and depth == 0:
+        elif ch in "\"'`" and depth == 0:
             quote = ch
         elif ch == "{":
             depth += 1
@@ -54,12 +66,20 @@ def opening_tag(text: str, start: int) -> str:
 
 
 def clickable_non_controls(text: str) -> list[tuple[int, str]]:
-    """``(line, tag)`` of every opening tag in ``text`` that has an ``onClick`` and no ``role``."""
+    """``(line, tag)`` of every opening tag in ``text`` that takes a pointer handler and is not a control: not a link with an ``href``, and not an interactive ``role`` with a ``tabIndex`` and an ``onKeyDown``."""
+    text = strip_comments(text)
     found = []
     for m in TAGS.finditer(text):
+        name = m.group(1)
         tag = opening_tag(text, m.start())
-        if re.search(r"\bonClick=", tag) and not re.search(r"\brole=", tag):
-            found.append((text.count("\n", 0, m.start()) + 1, m.group(1)))
+        if not HANDLERS.search(tag):
+            continue
+        if name == "a" and re.search(r"(?<![\w-])href=", tag):
+            continue
+        role = re.search(r"(?<![\w-])role=\"(\w+)\"", tag)
+        if role and role.group(1) in INTERACTIVE and re.search(r"(?<![\w-])tabIndex=", tag) and re.search(r"(?<![\w-])onKeyDown=", tag):
+            continue
+        found.append((text.count("\n", 0, m.start()) + 1, name))
     return found
 
 
