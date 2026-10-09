@@ -50,7 +50,7 @@ from primer.model.except_ import (
     ValidationError,
 )
 from primer.model.workspace_session import WorkspaceSession
-from primer.model.yield_ import GATE_ID_PATTERN, gate_id_of
+from primer.model.yield_ import GATE_ID_PATTERN, gate_id_of, with_wake_gate
 from primer.session.approvers import ADMIN_ONLY_METADATA
 from primer.session.pending_gates import enumerate_pending_gates, resolve_pending_gate
 from primer.session.yields import durably_wake_session
@@ -452,7 +452,8 @@ async def post_ask_user_respond(
             await _durable_wake(
                 session=sess,
                 event_key=ay_event_key,
-                payload={"response": body.response},
+                # The wake names the gate it answers (C-033 round 2, PR 4): a redelivery after the session re-parked under the same key cannot answer a later one.
+                payload=with_wake_gate({"response": body.response}, gate_id_of(ay_meta)),
                 session_storage=session_storage,
                 engine=engine,
                 event_bus=event_bus,
@@ -489,7 +490,7 @@ async def post_ask_user_respond(
         await _durable_wake(
             session=sess,
             event_key=tc_event_key,
-            payload={"response": body.response},
+            payload=with_wake_gate({"response": body.response}, gate_id_of(tc.get("resume_metadata"))),
             session_storage=session_storage,
             engine=engine,
             event_bus=event_bus,
@@ -520,7 +521,7 @@ async def post_ask_user_respond(
     await _durable_wake(
         session=sess,
         event_key=event_key,
-        payload={"response": body.response},
+        payload=with_wake_gate({"response": body.response}, gate_id_of(metadata)),
         session_storage=session_storage,
         engine=engine,
         event_bus=event_bus,
@@ -653,7 +654,10 @@ async def post_cancel_yielded_tool(
         elif gate["kind"] == "_approval":
             enforce_approvers(gate["resume_metadata"], user)
     _count_cancel(session_id=session_id, gate_id=body.gate_id, tool_name=resolved_tool)
-    payload = make_cancelled_payload(reason=body.reason)
+    # A cancel of a human gate names it too: it is a decision (an approval cancel is classified as a rejection), delivered by key alone and at least once.
+    payload = with_wake_gate(
+        make_cancelled_payload(reason=body.reason), current_gate_id if _cancel_kind(resolved_tool) != "yield" else None,
+    )
     await event_bus.publish(event_key, payload)
     # An _external park additionally resolves its audit row so the
     # pending endpoints and the global list reflect the cancel.

@@ -207,6 +207,37 @@ def tool_wait_event_key_or_none(session_id: str, *, scoped_task_id: str, site: s
         return None
 
 
+def _wake_names_another_gate(session: WorkspaceSession, *, event_key: str, payload: dict[str, Any] | None) -> bool:
+    """Whether ``payload`` is a decision for a gate other than the one the session now has pending on ``event_key`` (C-033 round 2, PR 4).
+
+    A decision's wake is delivered by event key alone and at least once, so one redelivered after the session resumed and PARKED AGAIN under the same
+    provider id carries the same event key as the new gate. The wake names the gate it decided (:data:`~primer.model.yield_.WAKE_GATE_ID_KEY`); when
+    it does, and the pending entry that waits on ``event_key`` carries an id, the two must be equal, else the flip is refused: nothing is written, one
+    WARNING and ``session_wake_gate_refused_total``. A wake with no id (written before this release, or a decision on a yield that is not a human gate)
+    and a pending entry with none (a park from before gates had ids) are judged by the event key alone, as before.
+    """
+    from primer.model.yield_ import WAKE_GATE_ID_KEY, gate_id_of
+    from primer.session.pending_gates import enumerate_pending_gates
+
+    named = (payload or {}).get(WAKE_GATE_ID_KEY)
+    if not named:
+        return False
+    pending = [
+        gate_id_of(entry.get("resume_metadata"))
+        for entry in enumerate_pending_gates(session.parked_state or {})
+        if entry.get("event_key") == event_key
+    ]
+    pending = [gate_id for gate_id in pending if gate_id]
+    if not pending or named in pending:
+        return False
+    _metrics.session_wake_gate_refused_total.inc()
+    logger.warning(
+        "session %s: refused a wake on %r that decided another gate than the pending one (it was redelivered after the session re-parked under the same key)",
+        session.id, event_key,
+    )
+    return True
+
+
 async def durably_mark_session_resumable(
     session: WorkspaceSession,
     *,
@@ -277,6 +308,8 @@ async def durably_mark_session_resumable(
     is_multi = bool(session.parked_event_keys)
     allowed = ("parked", "resumable") if is_multi else ("parked",)
     if session.parked_status not in allowed:
+        return False
+    if _wake_names_another_gate(session, event_key=event_key, payload=payload):
         return False
     if session.status == SessionStatus.ENDED:
         # Cheap early exit ONLY: the caller's own snapshot already says

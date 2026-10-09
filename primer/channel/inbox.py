@@ -132,9 +132,15 @@ class ChannelInbox:
         event_key = (
             captured["gate"].get("event_key") if captured is not None else None
         ) or (asked.get("event_key") if asked is not None else None) or await self._resolve_event_key(env)
-        payload: dict = (
+        # The wake names the gate it decides (C-033 round 2, PR 4), whether or not the reply named it: a redelivery after the session re-parked under the
+        # same key cannot decide a later gate.
+        from primer.model.yield_ import gate_id_of, with_wake_gate
+
+        resolved = captured["gate"] if captured is not None else asked
+        payload: dict = with_wake_gate(
             {"response": env.response} if env.kind == "ask_user"
-            else {"decision": env.decision, "reason": env.reason}
+            else {"decision": env.decision, "reason": env.reason},
+            gate_id_of((resolved or {}).get("resume_metadata")),
         )
         # 01a07be5 gate-review-2 finding 4: the gate's data was captured BEFORE
         # publish, not after. A post-publish re-read can resolve a

@@ -202,7 +202,7 @@ async def test_a_reply_to_the_pending_question_answers_it(world) -> None:
 
     event = await world.published()
     assert event is not None and event.event_key == "ask_user:q-ok:tc-1"
-    assert event.payload == {"response": "EUR"}
+    assert event.payload == {"response": "EUR", "__yield_gate_id__": G1}, "the answer, plus the gate it resolved (C-033 PR 4)"
     assert _count("ask_user", "matched") == 1
 
 

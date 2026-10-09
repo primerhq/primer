@@ -78,6 +78,21 @@ def gate_id_of(resume_metadata: "dict[str, Any] | None") -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+WAKE_GATE_ID_KEY = "__yield_gate_id__"
+"""Where a human decision's wake payload names the gate it decided (C-033 round 2, PR 4).
+
+The wake of a decision is delivered by event key alone and at least once, so one redelivered after the session re-parked under the same provider id (the same
+event key, a new gate) used to flip the NEW gate with the old decision. The key has the primer-internal ``__yield_`` prefix, so the resume classification
+strips it from a real reply and no hook or approval classifier ever sees it."""
+
+
+def with_wake_gate(payload: "dict[str, Any]", gate_id: str | None) -> "dict[str, Any]":
+    """``payload`` plus the gate it decides (:data:`WAKE_GATE_ID_KEY`); unchanged for a gate with no id (a park from before gates had one)."""
+    if not gate_id:
+        return payload
+    return {**payload, WAKE_GATE_ID_KEY: gate_id}
+
+
 # ===========================================================================
 # Sentinels returned by yielding tools
 # ===========================================================================
@@ -478,6 +493,8 @@ __all__ = [
     "GATE_ID_PATTERN",
     "new_gate_id",
     "gate_id_of",
+    "WAKE_GATE_ID_KEY",
+    "with_wake_gate",
     "Yielded",
     "YieldTimeout",
     "YieldCancelled",
