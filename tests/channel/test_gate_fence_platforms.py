@@ -39,6 +39,18 @@ G1 = "a" * 32
 G2 = "b" * 32
 
 
+@pytest.fixture(autouse=True)
+def _fresh_handler_registries(monkeypatch):
+    """Each factory installs its handlers once per provider id, and the per-platform factory tests number their provider ids from a module counter.
+    Importing their helpers here can hand out an id the registry already holds (the handlers are then never installed), so these tests install
+    into registries of their own."""
+    from primer.channel.discord import factory as discord_factory
+    from primer.channel.telegram import factory as telegram_factory
+
+    for module in (discord_factory, slack_factory, telegram_factory):
+        monkeypatch.setattr(module, "_HANDLERS_INSTALLED", set())
+
+
 def _approval(gate_id: str | None, *, tool_call_id: str = "tc-1") -> PromptEnvelope:
     return PromptEnvelope(
         kind="tool_approval", workspace_id="ws", session_id="s", tool_call_id=tool_call_id, prompt="Approve write?", response_schema=None,
