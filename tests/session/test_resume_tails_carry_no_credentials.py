@@ -210,7 +210,8 @@ async def test_the_shared_resume_tail_hands_the_model_and_the_record_a_clean_res
         return WorkspaceIO()
 
     pool = types.SimpleNamespace(_storage=StorageProvider(), _load_workspace_for_persist=load_workspace, _event_bus=None)
-    session = types.SimpleNamespace(id="s1", workspace_id="w1", last_seq=0, model_copy=lambda update: None)
+    # parked_at=None, as a real WorkspaceSession that was never parked has it: the resume tail reads it to stamp the resumed-park marker.
+    session = types.SimpleNamespace(id="s1", workspace_id="w1", last_seq=0, parked_at=None, model_copy=lambda update: None)
     parked = types.SimpleNamespace(llm_messages=[], scoped_tool_call_id="c1#1")
     part = await _resume_call_tool_dispatch(via=_VIA, original_call=_CALL, tool_manager=_Manager(_ErrorResult()))
 
