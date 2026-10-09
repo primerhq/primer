@@ -17,6 +17,7 @@ from primer.api.registries.artifact_storage_registry import (
     DEFAULT_ARTIFACT_PROVIDER_ID,
 )
 from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
+from primer.api.routers.providers import _form_field
 from primer.model.provider import ArtifactStorageProvider
 
 
@@ -46,21 +47,16 @@ async def _reject_reserved_delete(entity_id: str, request: Request) -> None:
 
 # ---------- _types: form metadata for the console's provider form ----------
 #
-# Every provider class serves ``GET /v1/{plural}/_types`` (docs/dev/architecture/provider-pattern.md): one entry per provider-type value, ``{label, config_fields, row_fields, discoverable}``. This
-# class had none, so the console's Register provider menu said "No kinds available." and no artifact-storage provider could be registered from the page (board ticket 01a1214c). The field lists mirror
-# the config models in primer/model/providers/artifact.py (tests/api/test_artifact_storage_types.py holds them to the models); a row of this class has no fields of its own, no limits block and no
-# model list to discover.
+# The provider classes with a console form serve ``GET /v1/{plural}/_types`` (docs/dev/architecture/provider-pattern.md): one entry per provider-type value, ``{label, config_fields, row_fields,
+# discoverable}``. This class had none, so the console's Register provider menu said "No kinds available." and no row of the class could be registered from the page (board ticket 01a1214c). The field
+# lists mirror the config models in primer/model/providers/artifact.py (tests/api/test_artifact_storage_types.py holds them to the models); a row of this class has no fields of its own, no limits
+# block and no model list to discover.
+#
+# THE LABELS TELL THE TRUTH ABOUT WHAT A ROW DOES. ``build_artifact_storage`` (primer/artifact/factory.py) builds only the ``db`` backend, and every consumer reads ONLY the reserved row
+# (``ArtifactStorageRegistry.get_default()``, id ``artifact-storage-default``): a ``filesystem`` or ``s3`` row can be stored and is never used, and a ``db`` row registered here is not the default.
+# The test builds a row of each kind and requires 'not implemented' in the label of every kind the factory refuses, so the labels change by themselves when a backend ships.
 #
 # This router MUST be mounted before the CRUD router in _app_routes.py, or GET /{id} swallows "_types".
-
-
-def _field(key: str, label: str, type_: str = "text", *, required: bool = False, help_: str = "", placeholder: str = "") -> dict[str, Any]:
-    field: dict[str, Any] = {"key": key, "label": label, "type": type_, "required": required}
-    if help_:
-        field["help"] = help_
-    if placeholder:
-        field["placeholder"] = placeholder
-    return field
 
 
 artifact_storage_helpers_router = APIRouter(tags=["artifact-storage-providers"])
@@ -73,28 +69,28 @@ artifact_storage_helpers_router = APIRouter(tags=["artifact-storage-providers"])
 async def list_artifact_storage_types() -> dict[str, dict[str, Any]]:
     return {
         "db": {
-            "label": "Database (default)",
+            "label": "Database: only the built-in artifact-storage-default row is used",
             "config_fields": [],
             "row_fields": [],
             "discoverable": False,
         },
         "filesystem": {
-            "label": "Filesystem",
+            "label": "Filesystem (not implemented yet: stored, never used)",
             "config_fields": [
-                _field("root", "Root directory", required=True, help_="Directory under which artifact bytes are written.", placeholder="/var/lib/primer/artifacts"),
+                _form_field("root", "Root directory", "text", required=True, help_="Directory under which artifact bytes are written.", placeholder="/var/lib/primer/artifacts"),
             ],
             "row_fields": [],
             "discoverable": False,
         },
         "s3": {
-            "label": "S3 or S3-compatible store",
+            "label": "S3 or S3-compatible store (not implemented yet: stored, never used)",
             "config_fields": [
-                _field("bucket", "Bucket", required=True, help_="Target bucket name."),
-                _field("prefix", "Key prefix", help_="Prefix of the stored objects' keys; blank for the bucket root."),
-                _field("endpoint_url", "Endpoint URL", "url", help_="Override endpoint, for an S3-compatible store; blank for AWS.", placeholder="https://s3.example.com"),
-                _field("region", "Region", help_="Bucket region."),
-                _field("access_key", "Access key id", "password"),
-                _field("secret_key", "Secret access key", "password"),
+                _form_field("bucket", "Bucket", "text", required=True, help_="Target bucket name."),
+                _form_field("prefix", "Key prefix", "text", help_="Prefix of the stored objects' keys; blank for the bucket root."),
+                _form_field("endpoint_url", "Endpoint URL", "url", help_="Override endpoint, for an S3-compatible store; blank for AWS.", placeholder="https://s3.example.com"),
+                _form_field("region", "Region", "text", help_="Bucket region."),
+                _form_field("access_key", "Access key id", "password"),
+                _form_field("secret_key", "Secret access key", "password"),
             ],
             "row_fields": [],
             "discoverable": False,
