@@ -296,9 +296,10 @@ class _Clock:
         return self.now
 
 
-def test_the_budget_has_a_wall_clock_deadline_past_which_every_wait_is_zero_and_a_check_raises() -> None:
+def test_the_budget_has_a_wall_clock_deadline_past_which_a_wait_and_a_check_raise() -> None:
     """Round 4 of #668, blocker B2: the sweep is bounded from INSIDE (a signal timeout turned a timeout into a hang under Playwright's sync API). The clock starts at the first wait, a wait never
-    runs past the deadline, and past it every wait is 0 and ``check`` raises an ordinary exception between surfaces, so the sweep's own ``finally`` runs with a live Playwright."""
+    runs past the deadline, and past it ``wait_ms`` and ``check`` raise an ordinary exception, so the sweep's own ``finally`` runs with a live Playwright. Round 5, B2-bis: ``wait_ms`` used to
+    return 0 there, and Playwright treats ``timeout=0`` as NO timeout, so every wait handed out after the deadline waited for ever: no wait is handed out after it."""
     clock = _Clock()
     budget = Budget(limit=5, short_ms=1000, deadline_s=600, clock=clock)
     assert budget.expired is False
@@ -307,9 +308,25 @@ def test_the_budget_has_a_wall_clock_deadline_past_which_every_wait_is_zero_and_
     clock.now += 595
     assert budget.wait_ms(10_000) == 5_000, "never past the deadline"
     clock.now += 10
-    assert budget.expired is True and budget.wait_ms(10_000) == 0
+    assert budget.expired is True
+    with pytest.raises(SweepDeadlineExceeded):
+        budget.wait_ms(10_000)
     with pytest.raises(SweepDeadlineExceeded, match="surface one"):
         budget.check("surface one")
+
+
+def test_a_wait_that_is_handed_out_is_never_zero() -> None:
+    """B2-bis: ``timeout=0`` means no timeout in Playwright. With less than a millisecond left the deadline has passed, and the wait raises instead of becoming 0. (Seconds left are powers of two, so the
+    clock arithmetic is exact.)"""
+    clock = _Clock()
+    budget = Budget(deadline_s=10, clock=clock)
+    budget.wait_ms(1)
+    for left_s, left_ms in ((1.0, 1000), (0.5, 500), (0.125, 125), (2**-9, 1)):
+        clock.now = 1000.0 + 10 - left_s
+        assert budget.wait_ms(10_000) == left_ms
+    clock.now = 1000.0 + 10 - 2**-10     # 0.98 ms left: int() of it is 0
+    with pytest.raises(SweepDeadlineExceeded):
+        budget.wait_ms(10_000)
 
 
 def test_the_deadline_is_counted_from_the_first_wait_not_from_the_budget_being_made() -> None:
@@ -337,4 +354,5 @@ def test_the_stuck_looks_shorten_the_waits_but_the_deadline_still_wins() -> None
     budget.spent()
     assert budget.wait_ms(10_000) == 100
     clock.now += 10
-    assert budget.wait_ms(10_000) == 0
+    with pytest.raises(SweepDeadlineExceeded):
+        budget.wait_ms(10_000)

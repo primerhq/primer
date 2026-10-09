@@ -15,6 +15,7 @@ import re
 import time
 
 import pytest
+from playwright.sync_api import Error as BrowserError
 from playwright.sync_api import Page, Route
 
 from tests._support.smk import smk
@@ -240,3 +241,84 @@ def test_a_request_the_new_document_makes_before_it_has_loaded_is_still_waited_f
     blank_console.goto(console_url + "?early=1")
     blank_console.wait_for_timeout(200)
     assert [request.url.rsplit("/", 1)[-1] for request in sweep.in_flight] == ["early"], "the early request of the new document was dropped"
+
+
+@pytest.mark.ui_e2e
+def test_a_second_marker_after_the_deadline_stops_the_look_and_does_not_wait_without_a_limit(blank_console: Page) -> None:
+    """Round 5, B2-bis (reproduced by the reviewer): past the deadline ``Budget.wait_ms`` returned 0 and Playwright treats ``timeout=0`` as NO timeout, so the next marker waited for ever (here: 6 s, until the
+    page inserted it; on a stuck install, until the 900 s thread timeout killed the lane with no report). Now no wait is handed out after the deadline: the look raises, at 2 s, and the page still answers."""
+    sweep = Sweep(blank_console, ready_timeout_ms=15_000, loaded_timeout_s=0.5, budget=Budget(limit=100, short_ms=1000, deadline_s=2))
+    blank_console.evaluate(
+        "setTimeout(() => document.querySelector('main').insertAdjacentHTML('beforeend', '<p id=\"late-one\">one</p>'), 3000);"
+        "setTimeout(() => document.querySelector('main').insertAdjacentHTML('beforeend', '<p id=\"late-two\">two</p>'), 6000)"
+    )
+    started = time.monotonic()
+    try:
+        with pytest.raises(SweepDeadlineExceeded):
+            sweep.at("two late markers", "main", ready=["#late-one", "#late-two"])
+        elapsed = time.monotonic() - started
+        assert elapsed < 4, f"returned after {elapsed:.1f} s: a wait past the deadline was handed out without a limit"
+        assert any("never showed #late-one" in n for n in sweep.notes), sweep.notes
+        assert blank_console.evaluate("1 + 1") == 2
+    finally:
+        sweep.close()
+
+
+@pytest.mark.ui_e2e
+def test_a_request_the_page_starts_after_the_first_idle_check_is_still_waited_for(blank_console: Page, sweep: Sweep) -> None:
+    """N1 of round 5: the ``void`` case above catches a wait that reads the in-flight set once only two times in three (the request event races the round trip). This one is deterministic: the fetch
+    starts 120 ms in, after the first (empty) check and before the second one 250 ms later, is held 700 ms, and draws an input when it is answered."""
+    def slow(route: Route) -> None:
+        blank_console.wait_for_timeout(700)
+        route.fulfill(status=200, body="{}")
+
+    blank_console.route("**/v1/slow", slow)
+    blank_console.evaluate(
+        "setTimeout(() => { void fetch('/v1/slow').then(() => document.querySelector('main').insertAdjacentHTML('beforeend', '<input aria-label=\"Late\">')); }, 120)"
+    )
+    sweep.at("surface", "main")
+    assert sweep.looks["surface"].examined == 2, "the look was taken before the late request was answered"
+
+
+@pytest.mark.ui_e2e
+def test_a_request_the_old_document_starts_while_the_new_one_is_arriving_is_not_waited_for(blank_console: Page, sweep: Sweep, console_url: str, held: list[Route]) -> None:
+    """N6 of round 5: the old document is forgotten when the navigation REQUEST starts, but it is alive until the new one commits, and a request it makes in between is never reported finished. When the
+    navigation RESPONSE arrives (the commit, as Playwright's own network-idle counts it) everything but the new document's own requests is dropped. The old document's own timer starts the fetch 150 ms
+    in, while the route holds the new document back for 500 ms (the page is not driven from inside a route handler: a call from there can wait for the navigation that waits for the handler)."""
+    def arriving(route: Route) -> None:
+        blank_console.wait_for_timeout(500)
+        route.fulfill(status=200, content_type="text/html", body=BLANK)
+
+    blank_console.route("**/v1/late-old", lambda route: held.append(route))
+    blank_console.route(re.compile(r".*/console/\?again=1$"), arriving)
+    blank_console.evaluate("setTimeout(() => { void fetch('/v1/late-old').catch(() => null); }, 150)")
+    blank_console.goto(console_url + "?again=1")
+    assert [request.url.rsplit("/", 1)[-1] for request in sweep.in_flight] == [], "the request of the replaced document is still in flight"
+    started = time.monotonic()
+    sweep.at("after the page load", "main")
+    assert time.monotonic() - started < 3, "waited for a request of the document that was replaced"
+    assert not any("still waiting" in n for n in sweep.notes), sweep.notes
+
+
+@pytest.mark.ui_e2e
+def test_a_page_that_cannot_be_opened_is_a_note_and_an_empty_look_and_the_sweep_goes_on(sweep: Sweep) -> None:
+    """N4 of round 5: ``open_legacy_route`` raises ``AssertionError`` after its own timeouts (twice 45 s); nothing caught it, and the sweep died with the other surfaces unlooked at."""
+    def stuck() -> None:
+        raise AssertionError("Locator expected to be visible: nv-overlay:agents")
+
+    assert sweep.reach("overlay-page agents", stuck) is False
+    assert sweep.looks["overlay-page agents"] == Look() and sweep.visited == ["overlay-page agents"]
+    assert len(sweep.notes) == 1 and sweep.notes[0].startswith("overlay-page agents: not looked at, it could not be opened (AssertionError"), sweep.notes
+    assert sweep.reach("overlay-page models", lambda: None) is True
+    assert "overlay-page models" not in sweep.looks
+
+    def refused() -> None:
+        raise BrowserError("net::ERR_CONNECTION_REFUSED")
+
+    assert sweep.reach("overlay-page tools", refused) is False
+
+    def late() -> None:
+        raise SweepDeadlineExceeded("past the deadline")
+
+    with pytest.raises(SweepDeadlineExceeded):
+        sweep.reach("overlay-page skills", late)
