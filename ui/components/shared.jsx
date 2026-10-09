@@ -136,11 +136,8 @@ const Modal = ({ title, onClose, children, footer, danger, width }) => {
   const isMobile = !!vp.isMobile;
   const dialogRef = React.useRef(null);
 
-  React.useEffect(() => {
-    const onKey = (e) => { if (e.key === "Escape") onClose && onClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  // Escape closes the top-most layer only (foundation/escape-stack.js): a confirm dialog over this modal, or this modal over an overlay, answers it alone.
+  window.primerApi.useEscape(() => { if (onClose) onClose(); });
 
   // FC5a - focus trap + focus restore, shared with the console's overlays and the bottom sheet (foundation/focus-trap.js): Tab and
   // Shift+Tab cycle inside the dialog, focus moves in on open (an autoFocus'd input and ConfirmHost's delayed input focus are kept) and

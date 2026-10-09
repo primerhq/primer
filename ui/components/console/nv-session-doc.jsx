@@ -777,7 +777,7 @@ function NV_SessionHeader(props) {
           onChange={function (ev) { setDraft(ev.target.value); }}
           onKeyDown={function (ev) {
             if (ev.key === "Enter") saveTitle();
-            if (ev.key === "Escape") setDraft(null);
+            if (ev.key === "Escape") { ev.preventDefault(); setDraft(null); }
           }}
           onBlur={saveTitle} />
       ) : (
@@ -1529,11 +1529,7 @@ function NV_scopeToNode(rows, nodeId) {
 }
 
 function NV_Lightbox(props) {
-  React.useEffect(function () {
-    function onKey(ev) { if (ev.key === "Escape") props.onClose(); }
-    window.addEventListener("keydown", onKey);
-    return function () { window.removeEventListener("keydown", onKey); };
-  });
+  window.primerApi.useEscape(function () { props.onClose(); });
   return (
     <div className="nv-lightbox" data-testid="nv-lightbox"
       onClick={function (ev) {

@@ -90,22 +90,16 @@ function NV_ActivityBar() {
 }
 
 // C-027: an open menu closes on Escape and gives focus back to the button that opened it, and closes when focus moves to something outside it and
-// its button (a keyboard user who tabs out of a menu used to leave it hanging open over the page). It listens only while open, and it does not
-// touch Escape when no menu is open: the palette and the overlays keep theirs.
+// its button (a keyboard user who tabs out of a menu used to leave it hanging open over the page). It is on the Escape stack (foundation/escape-stack.js)
+// only while open, so an Escape closes the menu and nothing under it, and with no menu open the palette and the overlays hear it.
 function NV_useMenuDismiss(con, name, triggerTestId) {
   var open = con.openMenu === name;
-  React.useEffect(function () {
-    if (!open) return undefined;
-    function onKey(ev) {
-      if (ev.key !== "Escape" || ev.defaultPrevented) return;
-      ev.preventDefault();
-      con.toggleMenu(null);
-      var trigger = document.querySelector('[data-testid="' + triggerTestId + '"]');
-      if (trigger) trigger.focus();
-    }
-    document.addEventListener("keydown", onKey);
-    return function () { document.removeEventListener("keydown", onKey); };
-  }, [open]);
+  window.primerApi.useEscape(function (ev) {
+    ev.preventDefault();
+    con.toggleMenu(null);
+    var trigger = document.querySelector('[data-testid="' + triggerTestId + '"]');
+    if (trigger) trigger.focus();
+  }, open);
 }
 
 // Focus moved to another element (relatedTarget is that element; null is a click on a non-focusable part of the menu, which stays) that is neither

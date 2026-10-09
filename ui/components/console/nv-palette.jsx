@@ -116,19 +116,19 @@ function NV_Palette() {
     { pollMs: 0, deps: [open] }
   );
 
-  // Ctrl+K opens; Esc closes. Registered while mounted.
+  // Ctrl+K opens. Registered while mounted.
   React.useEffect(function () {
     function onKey(ev) {
       if ((ev.ctrlKey || ev.metaKey) && String(ev.key).toLowerCase() === "k") {
         ev.preventDefault();
         con.paletteRef.current.open();
-        return;
       }
-      if (ev.key === "Escape" && open) setOpen(false);
     }
     window.addEventListener("keydown", onKey);
     return function () { window.removeEventListener("keydown", onKey); };
-  }, [open]);
+  }, []);
+  // Escape closes it, and only it, when it is open over an overlay (foundation/escape-stack.js).
+  window.primerApi.useEscape(function () { setOpen(false); }, open);
 
   if (!open) return null;
 

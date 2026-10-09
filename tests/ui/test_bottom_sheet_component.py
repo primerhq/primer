@@ -21,9 +21,10 @@ def test_open_and_on_close_props() -> None:
     assert "onClose" in src
 
 def test_escape_key_handler_present() -> None:
+    # Escape is answered by the Escape stack (foundation/escape-stack.js), only while the sheet is open; tests/ui/test_escape_stack_wiring.py pins the wiring
     src = SRC.read_text(encoding="utf-8")
-    assert "Escape" in src
-    assert "keydown" in src
+    assert "useEscape(" in src
+    assert "!!open" in src
 
 def test_body_scroll_lock_present() -> None:
     src = SRC.read_text(encoding="utf-8")

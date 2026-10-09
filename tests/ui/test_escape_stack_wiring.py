@@ -21,9 +21,9 @@ def _src(path: str) -> str:
 
 
 def _function(src: str, header: str) -> str:
-    """The text from ``header`` to the matching closing brace of the first ``{`` after it."""
+    """The text from ``header`` to the closing brace of its body (the first ``{`` after the parameter list, which may itself be a destructuring)."""
     start = src.index(header)
-    depth, i = 0, src.index("{", start)
+    depth, i = 0, start + re.compile(r"\)\s*(?:=>\s*)?\{").search(src[start:]).end() - 1
     while True:
         depth += src[i] == "{"
         depth -= src[i] == "}"
@@ -41,7 +41,8 @@ def test_the_stack_is_loaded_before_every_component_that_uses_it() -> None:
 
 
 def test_the_modal_the_overlay_panel_the_sheet_the_palette_the_lightbox_and_the_menus_register_with_the_stack() -> None:
-    assert "useEscape(" in _function(_src("components/shared.jsx"), "const Modal = (")
+    shared = _src("components/shared.jsx")
+    assert "useEscape(" in shared[shared.index("const Modal = ("):shared.index("const _dialogState")]
     assert "useEscape(" in _function(_src("components/console/nv-overlays.jsx"), "function NV_OverlayPanel(")
     assert "useEscape(" in _function(_src("components/shared/bottom-sheet.jsx"), "function BottomSheet(")
     assert "useEscape(" in _function(_src("components/console/nv-session-doc.jsx"), "function NV_Lightbox(")
@@ -51,7 +52,7 @@ def test_the_modal_the_overlay_panel_the_sheet_the_palette_the_lightbox_and_the_
 
 def test_a_layer_is_on_the_stack_only_while_it_is_open() -> None:
     sheet = _function(_src("components/shared/bottom-sheet.jsx"), "function BottomSheet(")
-    assert re.search(r"useEscape\([^)]*!!open\)", sheet), "the sheet stays mounted while closed"
+    assert re.search(r"useEscape\([\s\S]*?!!open\)", sheet), "the sheet stays mounted while closed"
     menu = _function(_src("components/console/nv-chrome.jsx"), "function NV_useMenuDismiss(")
     assert re.search(r"useEscape\([\s\S]*,\s*open\)", menu), "a menu answers Escape only while it is open"
     assert re.search(r"useEscape\([\s\S]*,\s*open\)", _src("components/console/nv-palette.jsx")), "the palette answers Escape only while it is open"

@@ -5,17 +5,15 @@ function BottomSheet({ open, onClose, title, footer, children }) {
   // Focus moves into the open sheet, Tab cycles inside it and focus returns to the opener on close (foundation/focus-trap.js). The sheet
   // stays mounted while closed, so the trap is gated on `open`.
   window.primerApi.useFocusTrap(sheetRef, !!open);
+  window.primerApi.useEscape(() => { if (onClose) onClose(); }, !!open);
   React.useEffect(() => {
     if (!open) return undefined;
-    const onKey = (e) => { if (e.key === "Escape" && onClose) onClose(); };
-    window.addEventListener("keydown", onKey);
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => {
-      window.removeEventListener("keydown", onKey);
       document.body.style.overflow = prevOverflow;
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
   return (
