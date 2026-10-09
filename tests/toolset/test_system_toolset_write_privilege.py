@@ -5,7 +5,8 @@ toolset at a new endpoint while its stored secrets ride along (security sweep AU
 A python toolset's source runs on the server host (LocalHardenedRunner), so creating or changing one is the same class of power as a
 stdio MCP toolset: either side of an update counts, as for stdio (``toolset_admin_reason``). A secret the caller sends back masked is
 restored from the stored row (``preserve_masked_secrets``); when the same update changes the URL or the OAuth endpoints, that would
-hand the stored headers / client secret to a server of the caller's choosing, so a caller below admin must re-enter the secrets.
+hand the stored headers / client secret to a server of the caller's choosing, so a caller below admin must re-enter the secrets; and the stored secrets are
+kept only for the same origin (scheme, host, port) whoever calls, so an admin who moves the host re-enters them too.
 """
 
 from __future__ import annotations
@@ -201,17 +202,19 @@ async def test_a_user_run_keeps_masked_secrets_when_the_endpoint_does_not_change
     assert (await storage.get("ts-http")).config.config.headers["Authorization"].get_secret_value() == SECRET
 
 
-async def test_an_admin_may_repoint_a_toolset_and_keep_its_masked_secrets(toolset_and_storage):
+async def test_an_admin_may_change_the_path_of_a_toolset_url_and_keep_its_masked_secrets(toolset_and_storage):
+    """The admin gate lets an admin make the write; the stored secrets then follow only to the same origin (ticket 01a1212a): another host is refused
+    for an admin too (``tests/toolset/test_system_masked_secret_origin.py``), since a run an admin started is an admin caller."""
     toolset, storage = toolset_and_storage
     assert not (await _call(toolset, "create_toolset", {"entity": _http("http://127.0.0.1:9/mcp", SECRET)}, _ctx("admin"))).is_error
 
     result = await _call(
-        toolset, "update_toolset", {"id": "ts-http", "entity": _http("http://other.example/mcp", MASK)}, _ctx("admin"),
+        toolset, "update_toolset", {"id": "ts-http", "entity": _http("http://127.0.0.1:9/mcp-v2", MASK)}, _ctx("admin"),
     )
 
     assert not result.is_error, result.output
     stored = (await storage.get("ts-http")).config.config
-    assert (stored.url, stored.headers["Authorization"].get_secret_value()) == ("http://other.example/mcp", SECRET)
+    assert (stored.url, stored.headers["Authorization"].get_secret_value()) == ("http://127.0.0.1:9/mcp-v2", SECRET)
 
 
 # ---- an admin converting an MCP toolset into a python one ----------------------------------------------------------------------

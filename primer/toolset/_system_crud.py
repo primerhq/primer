@@ -33,7 +33,7 @@ from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import ok as _ok
 from primer.model.collection import Collection, Document
-from primer.model.common import Identifiable, preserve_masked_secrets
+from primer.model.common import Identifiable, preserve_masked_secrets, refuse_served_masks
 from primer.model.except_ import (
     BadRequestError,
     ConflictError,
@@ -436,6 +436,11 @@ def _crud_tools_for(
         refusal = refuse_create(guards, entity)
         if refusal is not None:
             return refusal
+        # A create has nothing stored to restore a mask from: get_* then create_* under a new id (copy a provider) would store the masks as the values.
+        try:
+            refuse_served_masks(entity)
+        except PrimerValidationError as exc:          # the REST twin is a 422
+            return _err(exc.message, error_type="validation-error")
         if pre_create is not None:
             try:
                 await pre_create(entity)
@@ -457,7 +462,9 @@ def _crud_tools_for(
 
     create_when = (
         "Use when adding a new row; duplicate id returns "
-        "``type=conflict``, a bad body returns ``type=validation-error``."
+        "``type=conflict``, a bad body returns ``type=validation-error``. "
+        "A body that carries a mask a ``get_`` served (copying a row under a new id) "
+        "returns ``type=validation-error`` too: send the real secrets."
     )
     if pre_create is not None:
         create_when += (
@@ -518,7 +525,10 @@ def _crud_tools_for(
             return _err(
                 f"{cls_name} {entity_id!r} does not exist", error_type="not-found"
             )
-        reason = admin_when(entity, existing) if admin_when is not None else None
+        try:
+            reason = admin_when(entity, existing) if admin_when is not None else None
+        except PrimerValidationError as exc:          # a check that restores a served mask to decide who may write (update_toolset) answers a refusal too
+            return _err(exc.message, error_type="validation-error")
         if reason:
             denied = _refuse_unless_admin(ctx, reason if isinstance(reason, str) else admin_note or "this write requires the admin role")
             if denied is not None:
@@ -550,7 +560,10 @@ def _crud_tools_for(
         "Use when overwriting a whole row; the body ``id`` must "
         "equal the path ``id``. Unknown id returns ``type=not-found``. "
         "A secret field the matching ``get_`` served masked and you send "
-        "back unchanged keeps its stored value."
+        "back unchanged keeps its stored value, but only for the same host: "
+        "when the base URL, host or port changes (or the user of a URL password), "
+        "the mask is refused with ``type=validation-error`` (\"re-enter the key\") "
+        "and nothing is stored; send the secret itself to change the host."
     )
     if on_update is not None:
         update_when += (

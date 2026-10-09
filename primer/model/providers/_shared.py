@@ -72,6 +72,9 @@ def _serialize_url(value, info: SerializationInfo):
 # python-mode dump, which is why it is registered ``when_used="always"`` without a return type): a python-mode dump and the object itself
 # keep the real URL, which is what the adapters and the probes read; ``dump_for_storage`` keeps it for the stored row; ``preserve_masked_secrets`` puts the stored credential back when a
 # full-replace PUT sends the served mask back. Anything that FINGERPRINTS or COMPARES a row must use the storage form (the served form is the same for two URLs that differ only by password).
+#
+# NEVER dump a provider row with ``serialize_as_any=True`` or a ``SerializeAsAny`` annotation: in pydantic 2.13 that skips a field's own serializer, so the URL password would be served in
+# clear and the ``api_key`` unmasked. Nothing under ``primer/`` does it; ``tests/model/test_provider_url_userinfo_is_masked.py`` fails the day something does.
 MaskedUserinfoUrl = Annotated[
     HttpUrl,
     PlainSerializer(_serialize_url, when_used="always"),

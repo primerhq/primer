@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from primer.common.entity_checks import EntityCheckError
 from primer.model.common import preserve_masked_secrets
+from primer.model.except_ import ValidationError as PrimerValidationError
 from primer.model.provider import HttpConfig, Toolset, ToolsetProviderType, TransportType
 
 
@@ -79,15 +80,20 @@ def _endpoint(entity: Toolset) -> tuple[str, str | None, str | None] | None:
 
 
 def repoints_stored_secrets(entity: Toolset, existing: Toolset) -> bool:
-    """True when an update changes a toolset's endpoint while a secret it sends back masked would be restored from ``existing``.
+    """True when an update changes a toolset's endpoint while a secret it sends back masked would be restored from ``existing``, or is refused.
 
     :func:`~primer.model.common.preserve_masked_secrets` swaps a served mask back for the stored value, so without this check a
     caller who never saw the headers / OAuth client secret could move them to a server of its choosing by editing only the URL.
+    It now REFUSES a mask under another origin (scheme, host, port) for every caller, an admin included, and a URL password mask
+    it cannot restore: the refusal counts as a repoint here (the check answers; the write itself is refused with the reason).
     """
     if _endpoint(entity) == _endpoint(existing):
         return False
     restored = entity.model_copy(deep=True)
-    preserve_masked_secrets(restored, existing)
+    try:
+        preserve_masked_secrets(restored, existing)
+    except PrimerValidationError:
+        return True
     # SecretStr.__eq__ compares the plaintext, so this sees a restored mask; model_dump() masks secrets and would not.
     return restored != entity
 
@@ -100,8 +106,8 @@ _PYTHON_REASON = (
     "Creating or changing a python toolset requires the admin role: its source runs on the server host. Ask an admin."
 )
 _REPOINT_REASON = (
-    "Changing a toolset's URL or OAuth endpoints while keeping its stored secrets requires the admin role: re-enter the secrets "
-    "(headers, OAuth client secret) when changing the URL, or ask an admin."
+    "Changing a toolset's URL or OAuth endpoints while keeping its stored secrets requires the admin role, and the stored secrets are kept only "
+    "for the same host (scheme, host and port): re-enter the secrets (headers, OAuth client secret) when changing the URL, or ask an admin."
 )
 
 

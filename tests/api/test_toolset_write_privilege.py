@@ -158,7 +158,23 @@ async def test_a_plain_user_keeps_masked_secrets_when_the_endpoint_does_not_chan
     assert stored.config.config.headers["Authorization"].get_secret_value() == SECRET
 
 
-async def test_an_admin_may_repoint_a_toolset_and_keep_its_masked_secrets(raw_client, app):
+async def test_an_admin_may_change_the_path_of_a_toolset_url_and_keep_its_masked_secrets(raw_client, app):
+    await _admin_creates(raw_client, app, _http("http://127.0.0.1:9/mcp", SECRET), **NO_PROBE)
+    await _login(raw_client, "admin")
+
+    resp = await raw_client.put(
+        "/v1/toolsets/ts-http", json=await _served_with_url(raw_client, "ts-http", "http://127.0.0.1:9/mcp-v2"), params=NO_PROBE,
+    )
+
+    assert resp.status_code == 200, resp.text
+    stored = await app.state.storage_provider.get_storage(Toolset).get("ts-http")
+    assert (stored.config.config.url, stored.config.config.headers["Authorization"].get_secret_value()) == (
+        "http://127.0.0.1:9/mcp-v2", SECRET,
+    )
+
+
+async def test_an_admin_cannot_move_the_host_of_a_toolset_and_keep_its_masked_secrets(raw_client, app):
+    """The stored secrets are kept only for the origin they were stored for (ticket 01a1212a): the admin gate lets the write through, the origin rule refuses it."""
     await _admin_creates(raw_client, app, _http("http://127.0.0.1:9/mcp", SECRET), **NO_PROBE)
     await _login(raw_client, "admin")
 
@@ -166,11 +182,10 @@ async def test_an_admin_may_repoint_a_toolset_and_keep_its_masked_secrets(raw_cl
         "/v1/toolsets/ts-http", json=await _served_with_url(raw_client, "ts-http", "http://other.example/mcp"), params=NO_PROBE,
     )
 
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 422, resp.text
+    assert "re-enter the key" in resp.text and SECRET not in resp.text
     stored = await app.state.storage_provider.get_storage(Toolset).get("ts-http")
-    assert (stored.config.config.url, stored.config.config.headers["Authorization"].get_secret_value()) == (
-        "http://other.example/mcp", SECRET,
-    )
+    assert (stored.config.config.url, stored.config.config.headers["Authorization"].get_secret_value()) == ("http://127.0.0.1:9/mcp", SECRET)
 
 
 # ---- an admin converting an MCP toolset into a python one ----------------------------------------------------------------------
