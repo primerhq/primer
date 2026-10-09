@@ -171,6 +171,36 @@ async def test_an_admin_who_moves_a_toolset_url_and_keeps_the_masked_header_is_r
     assert "re-enter the key" in result.output and "abcdef" not in result.output
 
 
+# ---- nit N1 (review of #711): a served mask where there is nothing stored of its shape ----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_new_header_that_carries_a_served_mask_is_refused(system_toolset) -> None:
+    """A header the stored row does not hold has nothing to restore the mask from: ``**********`` would be stored as its value."""
+    await _create(system_toolset, _toolset("https://home.example/mcp", "https://home.example/cb", "Bearer abcdef"), kind="toolset")
+    served = await _served(system_toolset, "ts-http", "toolset")
+    served["config"]["config"]["headers"]["X-Extra"] = "**********"
+
+    result = await system_toolset.call(tool_name="update_toolset", arguments={"id": "ts-http", "entity": served}, ctx=ADMIN_CALLER)
+
+    assert result.is_error and _error_type(result) == "validation-error", result.output
+    assert "X-Extra" in result.output and "abcdef" not in result.output
+
+
+@pytest.mark.asyncio
+async def test_a_provider_type_switch_that_sends_the_served_key_is_refused(system_toolset, sp) -> None:
+    await _create(system_toolset, _llm())
+    served = await _served(system_toolset)
+    served["provider"] = "openresponses"
+    served["config"]["url"] = AWAY
+
+    result = await system_toolset.call(tool_name="update_llm_provider", arguments={"id": "llm-o", "entity": served})
+
+    assert result.is_error and _error_type(result) == "validation-error", result.output
+    row = sp.get_storage(LLMProvider)._data["llm-o"]
+    assert row.provider.value == "openchat" and row.config.api_key.get_secret_value() == KEY
+
+
 # ---- part B: the descriptor -------------------------------------------------------------------------------------------------------------------------------------------
 
 

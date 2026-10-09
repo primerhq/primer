@@ -131,6 +131,39 @@ async def test_a_post_of_a_url_that_carries_the_served_password_mask_is_a_422(cl
     assert await sp.get_storage(LLMProvider).get("m-1") is None
 
 
+# ---- a provider type that changed: there is no stored config of the new shape to restore the key from ---------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_provider_type_switch_that_sends_the_served_key_is_a_422_and_the_row_is_untouched(client, sp) -> None:
+    """openchat -> openresponses with the served ``api_key`` and another host: the config class differs from the stored one, so the key was not restored but the mask was STORED as the key
+    next to the new host (review of #711, nit N1). It is refused now."""
+    path, model, row_id, served = await _create(client, "openchat")
+    served["provider"] = "openresponses"
+    served["config"]["url"] = AWAY
+
+    r = await client.put(f"/v1/{path}/{row_id}", json=served)
+
+    assert r.status_code == 422, r.text
+    assert "re-enter the key" in r.text and KEY not in r.text
+    stored = await sp.get_storage(model).get(row_id)
+    assert stored.provider.value == "openchat" and stored.config.api_key.get_secret_value() == KEY
+
+
+@pytest.mark.asyncio
+async def test_a_provider_type_switch_with_a_typed_key_is_stored(client, sp) -> None:
+    path, model, row_id, served = await _create(client, "openchat")
+    served["provider"] = "openresponses"
+    served["config"]["url"] = AWAY
+    served["config"]["api_key"] = "sk-live-a-different-key"
+
+    r = await client.put(f"/v1/{path}/{row_id}", json=served)
+
+    assert r.status_code == 200, r.text
+    stored = await sp.get_storage(model).get(row_id)
+    assert stored.provider.value == "openresponses" and stored.config.api_key.get_secret_value() == "sk-live-a-different-key"
+
+
 @pytest.mark.asyncio
 async def test_a_post_of_a_real_body_still_works(client, sp) -> None:
     body = {"id": "r-1", "provider": "openchat", "models": [{"name": "m", "context_length": 8192}], "config": {"url": "http://svc:s3cr3t@px.lan/v1", "api_key": KEY, "flavor": "other"}, "limits": {"max_concurrency": 1}}

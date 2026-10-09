@@ -112,11 +112,43 @@ def test_a_leaf_that_begins_with_a_credentialed_url_does_not_keep_a_second_secre
     assert kept in out, out
 
 
+@pytest.mark.parametrize(
+    ("text", "secrets", "kept"),
+    [
+        pytest.param("https://bot:correct horse battery@mcp.example/mcp", ("correct", "horse", "battery"), "https://bot:**********@mcp.example/mcp", id="a password with spaces"),
+        pytest.param("https://bot:pass\tword@mcp.example/mcp", ("pass", "word"), "https://bot:**********@mcp.example/mcp", id="a password with a tab"),
+        pytest.param("https://u:p ss@host.example and https://u3:p3@h3/", ("p ss", "p3"), "https://u:**********@host.example and ", id="a password with a space and then a second URL"),
+        pytest.param("https://u:p ss@host.example/x?token=tok9", ("p ss", "tok9"), "https://u:**********@host.example/x?token=", id="a password with a space and a query token"),
+    ],
+)
+def test_a_url_password_that_holds_whitespace_is_masked(text: str, secrets: tuple[str, ...], kept: str) -> None:
+    """``httpx`` accepts such a URL (it percent-encodes the userinfo), so a working MCP ``url`` or Kubernetes ``apiserver_url`` (plain strings) can carry one into a CRUD event. Main masked it
+    because ``mask_userinfo`` reads the authority up to the first ``/ ? #``; reading only a whitespace-free lead let it through (review of #711, round 1)."""
+    out = redact_payload({"leaf": text})["leaf"]
+
+    assert not [s for s in secrets if s in out], out
+    assert kept in out, out
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param("http://svc error: write to admin@example.com", id="prose that begins with a scheme and holds an e-mail address"),
+        pytest.param("https://host.example and mail me: bob@x.com about it", id="a host, then words with a colon and an e-mail address"),
+    ],
+)
+def test_prose_that_begins_with_a_scheme_is_not_taken_for_a_userinfo(text: str) -> None:
+    """The user of a ``user:password`` is a single token: a space before the first colon means it is a sentence, which stays as it is."""
+    assert redact_payload({"leaf": text})["leaf"] == text
+
+
 def test_linear_on_a_large_adversarial_leaf() -> None:
     import time
 
     started = time.perf_counter()
     redact_payload({"m": "http://" + "a" * 1_000_000 + "@"})
     redact_payload({"m": ("a." * 500_000) + "@x ://"})
+    redact_payload({"m": "http://" + "a:" * 500_000 + " b@"})
+    redact_payload({"m": "http://u:" + "p " * 500_000 + "@h/"})
 
     assert time.perf_counter() - started < 5.0
