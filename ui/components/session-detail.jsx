@@ -832,12 +832,14 @@ function AskUserPanel({ sid, sessionStatus, session, pushToast }) {
   const [skipping, setSkipping] = React.useState(false);
   const [inlineError, setInlineError] = React.useState(null);
 
-  // Clear local edit state when the prompt id changes.
+  // Clear local edit state when the prompt changes. The provider repeats tool_call_id across rounds, so a question REPLACED under the same id is a
+  // different prompt: the gate id is part of the identity (C-033), and what was typed for the old question must not be sent with the new gate's id.
   const tcid = pending.data?.tool_call_id;
+  const promptGate = pending.data?.gate_id;
   React.useEffect(() => {
     setDraft("");
     setInlineError(null);
-  }, [tcid]);
+  }, [tcid, promptGate]);
 
   if (pending.error?.status === 404) return null;
   if (!pending.data) return null;
@@ -1121,7 +1123,10 @@ function ApprovalBannerPanel({ sid, sessionStatus, session, pushToast }) {
   if (!pending.data) return null;
   return (
     <div>
-      <ApprovalBanner data={pending.data} scope="sessions" id={sid} pushToast={pushToast} />
+      <ApprovalBanner
+        key={window.SH_pendingId ? window.SH_pendingId(sid, pending.data.gate_id, pending.data.tool_call_id) : pending.data.tool_call_id}
+        data={pending.data} scope="sessions" id={sid} pushToast={pushToast}
+      />
       <window.SessionCountdown to={pending.data?.parked_until || pending.data?.timeout_at || session?.parked_until} prefix="expires in " />
     </div>
   );

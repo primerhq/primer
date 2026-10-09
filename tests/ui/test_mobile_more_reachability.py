@@ -22,6 +22,8 @@ from tests.ui._mini_react import mini_react_context, transpile
 ROOT = Path(__file__).resolve().parents[2]
 SHELL = ROOT / "ui" / "components" / "console" / "nv-mobile-shell.jsx"
 PLATFORM = ROOT / "ui" / "components" / "console" / "nv-platform.jsx"
+# SH_pendingId, which keys the Inbox cards by their gate (C-033): a global of the shell bundle the real component reads.
+ATTENTION = (ROOT / "ui" / "foundation" / "shell-attention.js").read_text(encoding="utf-8")
 
 # What the file's globals need to exist; each is the smallest stand-in that lets the real component render.
 _PRELUDE = r"""
@@ -108,7 +110,7 @@ def code() -> str:
 @pytest.fixture
 def app(code):
     """A fresh V8 context with the real shell loaded; closed after the test."""
-    ctx = mini_react_context(code, _PRELUDE + _platform_helpers())
+    ctx = mini_react_context(code, "var window = globalThis;\n" + ATTENTION + "\n" + _PRELUDE + _platform_helpers())
 
     class App:
         def js(self, expr: str):

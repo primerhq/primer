@@ -543,7 +543,8 @@ class CancelYieldedToolBody(BaseModel):
         description=(
             "The ``gate_id`` the pending response served for the approval or ask_user prompt this cancels (C-033). Optional while clients "
             "catch up; a cancel naming a gate that is no longer the pending one is a 409 ``approval_stale`` and publishes nothing. A yield "
-            "that is not a human gate (sleep, watch_files) has no gate id and ignores it."
+            "that is not a human gate (sleep, watch_files) has no gate id, so a cancel that names one is a mismatch and is refused the same "
+            "way (409 ``approval_stale``)."
         ),
     )
     expected_tool_name: str | None = Field(
