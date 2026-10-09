@@ -27,11 +27,11 @@ from primer.model.workspace_session import WorkspaceSession
 from primer.worker.graph_resume_coordinator import write_approval_record_for_graph
 from primer.worker.pool import WorkerPool
 from tests.conftest import _FakeStorageProvider
+from tests.worker.test_engine_session_resume import _FakeWorkspaceIO
 from tests.worker.test_approval_record_resume import (
     _approval_session,
     _async_return,
     _FakeToolManager,
-    _NoopPersist,
     _RecordingExecutor,
 )
 
@@ -60,7 +60,7 @@ async def _rounds(monkeypatch, *rounds: WorkspaceSession) -> list[ToolApprovalRe
     )
     pool._worker_id = "wrk-gate-key"
     executor = _RecordingExecutor(tool_manager=_FakeToolManager())
-    monkeypatch.setattr(pool, "_load_workspace_for_persist", lambda _ws_id: _async_return(_NoopPersist()))
+    monkeypatch.setattr(pool, "_load_workspace_for_persist", lambda _ws_id: _async_return(_FakeWorkspaceIO()))
     monkeypatch.setattr(pool, "_build_agent_executor", lambda _s, _w: _async_return(executor))
     for number, sess in enumerate(rounds):
         if number == 0:

@@ -174,8 +174,8 @@ async def test_an_approval_of_the_non_primary_child_sibling_decides_that_sibling
 @pytest.mark.asyncio
 async def test_the_resume_time_record_of_a_non_primary_child_sibling_names_that_sibling(monkeypatch) -> None:
     _still, records, a_key, b_key, _g = await _answer(monkeypatch, "approval", APPROVED)
-    assert all(key != a_key for key, _args, _d in records), f"an audit record says A was approved: {records}"
-    assert [key for key, _args, _d in records] == [b_key], records
+    assert all(not key.startswith(a_key) for key, _args, _d in records), f"an audit record says A was approved: {records}"
+    assert [key for key, _args, _d in records] == [f"{b_key}@{GB}"], records      # the gate's own event key, suffixed with its gate id (C-033 PR 2)
     assert [args for _key, args, _d in records] == [{"id": "B"}], "the record describes B's gated call, not A's"
 
 
@@ -192,7 +192,7 @@ async def test_an_ask_user_primary_beside_an_answered_approval_sibling_writes_on
     still, records, a_key, b_key, _g = await _answer(monkeypatch, "ask_user", APPROVED, kind_b="approval")
 
     assert still == ["A"], f"B's approval resumed A: pending {still}"
-    assert [key for key, _args, _d in records] == [b_key], records
+    assert [key for key, _args, _d in records] == [f"{b_key}@{GB}"], records
     assert [args for _key, args, _d in records] == [{"id": "B"}] and [d for _key, _args, d in records] == ["approved"]
 
 
@@ -231,7 +231,7 @@ async def test_an_approval_of_the_primary_child_sibling_still_decides_the_primar
     still, records, a_key, _b, _g = await _answer(monkeypatch, "approval", APPROVED, answered="A")
 
     assert still == ["B"], f"A's approval left {still} pending"
-    assert [key for key, _args, _d in records] == [a_key] and [args for _key, args, _d in records] == [{"id": "A"}]
+    assert [key for key, _args, _d in records] == [f"{a_key}@{GA}"] and [args for _key, args, _d in records] == [{"id": "A"}]
 
 
 @pytest.mark.asyncio
