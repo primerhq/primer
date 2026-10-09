@@ -161,6 +161,8 @@ function GB_Builder(props) {
   const tools = (toolsRes.data && toolsRes.data.items) || [];
   // The state of the request for the tool list, for every place a tool is picked: when it fails the picker says so and takes a typed id (ticket 01a11e4e-7115).
   const catalogue = { error: toolsRes.error || null, loading: !!toolsRes.loading, retry: toolsRes.refetch };
+  // while the add-step palette is open its picker says it; the inspector's picker under it must not announce the same failure a second time
+  const inspectorCatalogue = paletteAfter !== undefined ? { ...catalogue, announce: false } : catalogue;
   const statusRes = useResource(
     `graph:status:${graphId}`,
     (signal) => GB_api.graphStatus(graphId, signal),
@@ -482,7 +484,7 @@ function GB_Builder(props) {
               edgeIdx={selectedEdge}
               dispatch={dispatch}
               tools={tools}
-              catalogue={catalogue}
+              catalogue={inspectorCatalogue}
               readOnly={readOnly}
               problems={selectedId ? problemsByNode[selectedId] : null}
               onSelectNode={(id) => { setSelectedId(id); setSelectedEdge(null); }}

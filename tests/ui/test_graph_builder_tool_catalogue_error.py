@@ -358,7 +358,7 @@ def test_one_alert_per_surface_not_one_per_picker(failing) -> None:
 
 @pytest.mark.parametrize(("name", "src", "pattern"), [
     ("the add-step palette", PALETTE, r"<GB_ToolPicker[^>]*catalogue=\{catalogue\}"),
-    ("the starters", STARTERS, r"<window\.GB_ToolPicker[^>]*catalogue=\{catalogue\}"),
+    ("the starters", STARTERS, r"<window\.GB_ToolPicker[^>]*catalogue=\{[^}]*\bcatalogue\b"),   # the first tool slot gets it as it is, the others with announce: false
     ("the tool step's inspector", INSPECTOR, r"<GB_ToolPicker[^>]*catalogue=\{catalogue\}"),
 ], ids=["palette", "starters", "inspector"])
 def test_every_place_a_tool_is_picked_is_handed_the_catalogues_state(name: str, src: str, pattern: str) -> None:
@@ -366,5 +366,7 @@ def test_every_place_a_tool_is_picked_is_handed_the_catalogues_state(name: str, 
 
 
 def test_the_builder_hands_its_catalogue_request_to_the_inspector_the_palette_and_the_starters() -> None:
-    assert "catalogue={" in BUILDER and BUILDER.count("catalogue={catalogue}") >= 3
+    """The palette and the starters get the request's state as it is; the inspector gets it with ``announce: false`` while the palette is open (the palette's picker says it)."""
+    assert BUILDER.count("catalogue={catalogue}") == 2 and BUILDER.count("catalogue={inspectorCatalogue}") == 1
     assert "refetch" in BUILDER[BUILDER.index("const catalogue"):BUILDER.index("const catalogue") + 400]
+    assert re.search(r"inspectorCatalogue = paletteAfter !== undefined \? \{ \.\.\.catalogue, announce: false \} : catalogue", BUILDER)

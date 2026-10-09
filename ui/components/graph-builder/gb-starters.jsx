@@ -184,7 +184,8 @@ const GB_STARTERS = [
 
 // Swap {{slot}} placeholders for the chosen agent/tool ids.
 function GB_fillStarter(spec, picks) {
-  const json = JSON.stringify(spec).replace(/\{\{(\w+)\}\}/g, (m, key) => (picks[key] || m));
+  // a pick is spliced into JSON text, so it goes in as the inside of a JSON string: a typed tool id may hold a quote or a backslash
+  const json = JSON.stringify(spec).replace(/\{\{(\w+)\}\}/g, (m, key) => (picks[key] ? JSON.stringify(String(picks[key])).slice(1, -1) : m));
   return JSON.parse(json);
 }
 
@@ -196,6 +197,7 @@ function GB_Starters({ onApply, onBlank, tools, catalogue }) {
 
   if (chosen) {
     const ready = chosen.slots.every((s) => picks[s.key]);
+    const firstToolSlot = chosen.slots.findIndex((s) => s.kind === "tool");   // the failure of the tool list is announced once, by the first tool slot
     return (
       <div className="col" style={{ gap: 16, padding: "24px 28px", overflow: "auto" }} data-testid="gb-starters">
         <div className="col" style={{ gap: 4 }}>
@@ -203,13 +205,13 @@ function GB_Starters({ onApply, onBlank, tools, catalogue }) {
           <div className="muted" style={{ fontSize: "var(--fs-12)" }}>{chosen.blurb} Choose who does the work - everything else is wired already.</div>
         </div>
         <div className="col" style={{ gap: 12, maxWidth: 460 }}>
-          {chosen.slots.map((s) => (
+          {chosen.slots.map((s, i) => (
             <div key={s.key} className="col" style={{ gap: 6 }}>
               <span style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: ".07em", color: "var(--text-3)", textTransform: "uppercase" }}>{s.label}</span>
               {s.kind === "agent" && EntityPickerC ? (
                 <EntityPickerC path="/agents" value={picks[s.key] || ""} onChange={(v) => setPicks({ ...picks, [s.key]: v })} placeholder="Search agents…" />
               ) : (
-                <window.GB_ToolPicker tools={tools} catalogue={catalogue} value={picks[s.key] || ""} onChange={(v) => setPicks({ ...picks, [s.key]: v })} />
+                <window.GB_ToolPicker tools={tools} catalogue={i === firstToolSlot || !catalogue ? catalogue : { ...catalogue, announce: false }} value={picks[s.key] || ""} onChange={(v) => setPicks({ ...picks, [s.key]: v })} />
               )}
             </div>
           ))}
