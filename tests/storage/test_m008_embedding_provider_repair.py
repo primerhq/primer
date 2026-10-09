@@ -141,6 +141,7 @@ async def test_an_openai_row_with_no_url_keeps_its_key_and_gets_a_url_that_canno
     row = await sp.get_storage(LiveEmbeddingProvider).get("openai-no-url")
     assert type(row.config) is OpenAIConfig
     assert row.config.url.host is not None and row.config.url.host.endswith(".invalid"), row.config.url
+    assert row.config.url.scheme == "https", "the kept key would travel as a bearer header: over plain http to whatever answers that name"
     assert row.config.api_key is not None and row.config.api_key.get_secret_value() == KEY
     assert (await _raw(sp))["openai-no-url"]["config"]["api_key"] == KEY, "stored in the clear, as every row is"
 
@@ -154,7 +155,7 @@ async def test_an_openai_row_with_only_a_token_gets_the_same_url_and_loses_the_t
 
     config = (await _raw(sp))["openai-token-only"]["config"]
     assert "token" not in config and TOKEN not in str(config)
-    assert str(config["url"]).startswith("http://") and ".invalid" in str(config["url"])
+    assert str(config["url"]).startswith("https://") and ".invalid" in str(config["url"])
 
 
 @pytest.mark.asyncio
@@ -196,6 +197,15 @@ async def test_a_database_with_no_embedding_provider_is_a_no_op(sp: StorageProvi
     await _migration().apply(sp)
 
     assert await _raw(sp) == {}
+
+
+@pytest.mark.asyncio
+async def test_the_placeholder_is_https_on_the_reserved_invalid_domain() -> None:
+    """The row keeps its stored api_key, and the first use sends ``Authorization: Bearer <key>``. Over plain http that goes to whatever resolves the name (a search list, an
+    NXDOMAIN-hijacking resolver); over https no CA can issue a certificate for ``.invalid``, so the TLS handshake fails before any header is sent."""
+    from primer.storage.migrations.m008_embedding_provider_repair import PLACEHOLDER_URL
+
+    assert PLACEHOLDER_URL == "https://base-url-not-set.invalid/"
 
 
 # ---- what it says about it ---------------------------------------------------------------------------------------------------------------------------------------------
