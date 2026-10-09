@@ -360,3 +360,33 @@ class TestRowsStoredBeforeTheFix:
         got = await client.get("/v1/llm_providers/legacy-clean-error")
 
         assert got.json()["last_error"] == text
+
+
+class TestAProbeWithoutAStubProvider:
+    """``_probe_llm_models``'s exhaustiveness net (a kind with no probe branch) has no stub provider: ``_reraise_masked(exc, None)`` must not read ``provider.config``
+    (CI found ``AttributeError: 'NoneType' object has no attribute 'config'`` in ``test_probe_dispatch_falls_back_cleanly_for_an_unknown_kind``). With no provider
+    there is no configured credential to look for: URL-borne credentials are masked, the rest of the message is left as it was."""
+
+    def test_the_same_error_is_raised_when_there_is_nothing_to_mask(self) -> None:
+        from primer.api.routers.providers import _reraise_masked
+        from primer.model.except_ import BadRequestError
+
+        exc = BadRequestError("probe not supported for provider 'some-future-kind'")
+
+        with pytest.raises(BadRequestError) as raised:
+            _reraise_masked(exc, None)
+
+        assert raised.value is exc
+
+    def test_a_url_credential_is_masked_without_a_provider(self) -> None:
+        from primer.api.routers.providers import _reraise_masked
+        from primer.model.except_ import BadRequestError
+
+        exc = BadRequestError("probe failed for url 'http://svc:hunter2pw@host/v1?api_key=SK123456789' (try again)")
+
+        with pytest.raises(BadRequestError) as raised:
+            _reraise_masked(exc, None)
+
+        assert "hunter2pw" not in raised.value.message and "SK123456789" not in raised.value.message, raised.value.message
+        assert "host" in raised.value.message and "try again" in raised.value.message
+        assert type(raised.value) is BadRequestError and raised.value.__cause__ is exc
