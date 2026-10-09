@@ -749,7 +749,7 @@ async def _dispatch_llm_probe(provider: str, config: dict[str, Any]) -> dict:
         except httpx.HTTPStatusError as exc:
             raise _probe_failure(
                 f"OpenRouter discover failed: HTTP {exc.response.status_code} "
-                f"{exc.response.text[:200]}",
+                f"{exc.response.text}",
             ) from exc
         except httpx.RequestError as exc:
             # Connect / timeout / read errors that are not HTTP responses.
@@ -770,7 +770,7 @@ async def _dispatch_llm_probe(provider: str, config: dict[str, Any]) -> dict:
         except httpx.HTTPStatusError as exc:
             raise _probe_failure(
                 f"Anthropic discover failed: HTTP {exc.response.status_code} "
-                f"{exc.response.text[:200]}",
+                f"{exc.response.text}",
             ) from exc
         except httpx.RequestError as exc:
             # Connect / timeout / read errors that are not HTTP responses.
@@ -797,7 +797,7 @@ async def _dispatch_llm_probe(provider: str, config: dict[str, Any]) -> dict:
                 ) from exc
             raise _probe_failure(
                 f"Gemini discover failed: HTTP {status} "
-                f"{exc.response.text[:200]}",
+                f"{exc.response.text}",
             ) from exc
         except httpx.RequestError as exc:
             # Connect / timeout / read errors that are not HTTP responses.
