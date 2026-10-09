@@ -371,14 +371,24 @@ function TR_TriggerRow({ trigger, onOpen, onChanged }) {
 
   const stop = (e) => { e.stopPropagation(); };
 
+  // A refusal is said on the spot, in the words the detail page shows for the same refusal (the one reader): nothing is stored anywhere the detail page could read it from, and a
+  // refused fire or delete used to look like nothing had happened (ticket 01a11db6-44fd).
+  const toast = (t) => window.primerApi.toastPush(t);
+
   const fireNow = async (e) => {
     e.stopPropagation();
     setBusy(true);
+    let fired = false;
     try {
       await apiFetch("POST", "/triggers/" + encodeURIComponent(trigger.id) + "/fire_now", {});
+      fired = true;
+    } catch (err) {
+      toast({ kind: "error", title: "Fire failed", detail: TR_refusalText(err, "Fire failed"), requestId: err && err.requestId });
+    } finally { setBusy(false); }
+    if (fired) {
+      toast({ kind: "success", title: "Trigger fired", detail: trigger.name || trigger.slug });
       onChanged && onChanged();
-    } catch (_err) { /* surfaced on the detail page; row stays put */ }
-    finally { setBusy(false); }
+    }
   };
 
   const remove = async (e) => {
@@ -390,11 +400,14 @@ function TR_TriggerRow({ trigger, onOpen, onChanged }) {
       danger: true,
     }))) return;
     setBusy(true);
+    let deleted = false;
     try {
       await apiFetch("DELETE", "/triggers/" + encodeURIComponent(trigger.id));
-      onChanged && onChanged();
-    } catch (_err) { /* ignore - detail page surfaces errors */ }
-    finally { setBusy(false); }
+      deleted = true;
+    } catch (err) {
+      toast({ kind: "error", title: "Delete failed", detail: TR_refusalText(err, "The trigger could not be deleted."), requestId: err && err.requestId });
+    } finally { setBusy(false); }
+    if (deleted) onChanged && onChanged();
   };
 
   return (
