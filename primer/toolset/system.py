@@ -124,7 +124,7 @@ from primer.model.workspace import (
 )
 from primer.model.yield_ import ToolContext, Yielded
 from primer.toolset._system_guards import AGENT_GUARDS, GRAPH_GUARDS, CrudGuards, ToolReference, toolset_guards
-from primer.artifact.checks import check_artifact_provider_on_update
+from primer.artifact.checks import ARTIFACT_DEFAULT_WRITE_NOTE, check_artifact_provider_write
 from primer.channel.checks import check_channel_on_create, check_channel_on_update
 from primer.model_profile.checks import check_profile_on_create, check_profile_on_update
 from primer.knowledge.checks import check_collection_system_flag
@@ -339,9 +339,14 @@ def build_system_toolset(
     async def _collection_pre_update(entity: Collection, existing: Collection) -> None:
         check_collection_system_flag(entity, existing)
 
+    async def _artifact_provider_pre_create(entity: ArtifactStorageProvider) -> None:
+        # The reserved default must name a kind the factory can build, on a create (its row went missing) as on an update; the REST route
+        # runs the same function (ticket 01a1226f).
+        check_artifact_provider_write(entity)
+
     async def _artifact_provider_pre_update(entity: ArtifactStorageProvider, existing: ArtifactStorageProvider) -> None:
-        # The reserved default must stay a kind the factory can build; the REST route runs the same function (ticket 01a1226f).
-        check_artifact_provider_on_update(entity, existing)
+        del existing  # the body id equals the stored id here, and the rule reads only the kind being written
+        check_artifact_provider_write(entity)
 
     pre_checks_by_label: dict[str, tuple[Any, Any]] = {
         "collection": (_collection_pre_create, _collection_pre_update),
@@ -352,7 +357,7 @@ def build_system_toolset(
         "toolset": (_toolset_pre_create, _toolset_pre_update),
         "model_profile": (_profile_pre_create, _profile_pre_update),
         "channel": (_channel_pre_create, _channel_pre_update),
-        "artifact_storage_provider": (None, _artifact_provider_pre_update),
+        "artifact_storage_provider": (_artifact_provider_pre_create, _artifact_provider_pre_update),
     }
 
     # ---- CRUD sets ----------------------------------------------------
@@ -449,6 +454,7 @@ def build_system_toolset(
     # Rules about what a write may set, for the create and update descriptors (the agent reads them before it writes).
     write_notes_by_label: dict[str, str] = {
         "agent": AGENT_WRITE_NOTE,
+        "artifact_storage_provider": ARTIFACT_DEFAULT_WRITE_NOTE,
         "collection": (
             "The ``system`` flag belongs to the platform: a create that sets it and an update that changes it return ``type=forbidden`` "
             "and nothing is stored. When you replace a row, send back the stored value; leaving the field out counts as ``false``."

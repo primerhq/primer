@@ -13,6 +13,13 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+# Reserved id of the auto-seeded default provider (the DB backend), so chat
+# media works with zero operator configuration. Re-exported: it is defined in
+# the leaf ``primer.artifact.factory`` because ``primer.artifact`` must not
+# import ``primer.api`` (its check is imported by the system toolset, which
+# ``primer.api`` imports).
+from primer.artifact.factory import DEFAULT_ARTIFACT_PROVIDER_ID
+
 if TYPE_CHECKING:
     from primer.int.artifact_storage import ArtifactStorage
     from primer.int.storage import Storage
@@ -21,10 +28,6 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
-
-# Reserved id of the auto-seeded default provider (the DB backend), so chat
-# media works with zero operator configuration.
-DEFAULT_ARTIFACT_PROVIDER_ID = "artifact-storage-default"
 
 
 class ArtifactStorageRegistry:
