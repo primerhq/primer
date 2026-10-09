@@ -364,7 +364,8 @@ function NV_CreateSessionOverlay() {
           })}
         </NV_Field>
       ) : (
-        <NV_Field label="Initial instructions">
+        <NV_Field label="Initial instructions"
+          help="To attach files, create the session parked and attach them to your first message.">
           <textarea className="nv-textarea" data-testid="nv-ns-instr"
             rows={4} value={instr}
             placeholder="What should this session do first?"
