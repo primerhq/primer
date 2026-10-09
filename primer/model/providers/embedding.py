@@ -10,7 +10,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from primer.model.common import Identifiable
 from primer.model.providers._shared import ApiKeySecret, Limits, _HttpApiKeyConfig
@@ -132,3 +132,30 @@ class EmbeddingProvider(Identifiable):
         ...,
         description="Rate-limit settings enforced when calling this provider.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_config_to_provider(cls, data: object) -> object:
+        """Pre-validate: when ``config`` arrives as a dict, parse it with the concrete config class the ``provider`` names.
+
+        ``config`` is a plain union, and pydantic takes the FIRST member that validates: an ``openai`` row with an invalid or missing url failed ``OpenAIConfig`` and
+        ``HuggingFaceConfig`` (no token) and validated as ``GoogleConfig`` with the url dropped, so a row with no endpoint could be saved; a ``huggingface`` row with only a
+        url validated as an ``OpenAIConfig``. Keyed by the provider, the error is the config class's own, at the field (``config.url``). ``LLMProvider`` has the same
+        validator for the same reason. An unknown provider is left to the ``provider`` field's own error.
+        """
+        if not isinstance(data, dict):
+            return data
+        config = data.get("config")
+        if not isinstance(config, dict):
+            return data
+        provider = data.get("provider")
+        try:
+            kind = provider if isinstance(provider, EmbeddingProviderType) else EmbeddingProviderType(provider)
+        except ValueError:
+            return data
+        config_cls: type[BaseModel] = {
+            EmbeddingProviderType.OPENAI: OpenAIConfig,
+            EmbeddingProviderType.HUGGINGFACE: HuggingFaceConfig,
+            EmbeddingProviderType.GEMINI: GoogleConfig,
+        }[kind]
+        return {**data, "config": config_cls.model_validate(config)}
