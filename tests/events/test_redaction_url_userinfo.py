@@ -93,3 +93,30 @@ def test_a_credentialed_url_inside_free_text_is_masked_too(text: str, masked: st
     """Only a string that IS a URL used the served-row mask; a credentialed URL inside a sentence (an error text, a log line copied into an event) passed. It goes through
     ``redact_url_secrets`` (linear, handles embedded URLs), whose mask is ``[REDACTED]``."""
     assert redact_payload({"message": text}) == {"message": masked}
+
+
+@pytest.mark.parametrize(
+    ("text", "secrets", "kept"),
+    [
+        pytest.param("http://svc:pw1@h/v1 failed; fallback http://svc2:pw2@i/v1 failed too", ("pw1", "pw2"), "http://svc:**********@h/v1 failed", id="a leaf that begins with a URL and holds a second one"),
+        pytest.param("http://x said hi to bob@example.com, see http://u:pw2@h/", ("pw2",), "bob@example.com", id="free text that begins with a scheme, an e-mail address and then a URL"),
+        pytest.param("http://u:p1@h/?next=http://v:p2@i/", ("p1", "p2"), "http://u:**********@h/?next=", id="two URLs with no whitespace between them"),
+        pytest.param("https://u:pw1@h/x?token=tok2", ("pw1", "tok2"), "https://u:**********@h/x?token=", id="a URL with userinfo and a token in its query"),
+    ],
+)
+def test_a_leaf_that_begins_with_a_credentialed_url_does_not_keep_a_second_secret(text: str, secrets: tuple[str, ...], kept: str) -> None:
+    """``redact_payload`` returned the served-row mask as soon as ``mask_userinfo`` changed a leaf, so whatever followed the first URL (a second URL, a query token) stayed in clear (review of #691)."""
+    out = redact_payload({"m": text})["m"]
+
+    assert not [s for s in secrets if s in out], out
+    assert kept in out, out
+
+
+def test_linear_on_a_large_adversarial_leaf() -> None:
+    import time
+
+    started = time.perf_counter()
+    redact_payload({"m": "http://" + "a" * 1_000_000 + "@"})
+    redact_payload({"m": ("a." * 500_000) + "@x ://"})
+
+    assert time.perf_counter() - started < 5.0

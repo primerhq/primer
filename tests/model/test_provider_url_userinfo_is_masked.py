@@ -15,11 +15,12 @@ it; and an ``HttpUrl`` must still compare equal after a round trip.
 from __future__ import annotations
 
 import pytest
+from pydantic import AnyUrl, BaseModel
 
 from primer.model.common import STORAGE_DUMP_CONTEXT, dump_for_storage, preserve_masked_secrets
 from primer.model.except_ import ValidationError as PrimerValidationError
 from primer.model.providers.embedding import EmbeddingProvider, OpenAIConfig
-from primer.model.providers.llm import LLMProvider, OllamaConfig, OpenChatConfig
+from primer.model.providers.llm import LLMProvider, OllamaConfig, OpenChatConfig, OpenResponsesConfig, OpenRouterConfig
 from primer.model.providers.speech import SpeechToTextConfig, TextToSpeechConfig
 
 MASK = "**********"
@@ -241,6 +242,7 @@ def test_an_unrestorable_mask_is_refused_in_a_nested_row_too() -> None:
 # ---- a python-mode dump must not warn (the warning printed the URL, password included, to stderr) ---------------------------------------------------------------------------
 
 _CONFIGS = [
+    pytest.param(OpenResponsesConfig(url=PROXY), id="LLM openresponses"),
     pytest.param(OpenChatConfig(url=PROXY), id="LLM openchat"),
     pytest.param(OllamaConfig(url=PROXY), id="LLM ollama"),
     pytest.param(OpenAIConfig(url=PROXY), id="embedding openai"),
@@ -288,3 +290,77 @@ def test_the_serialization_schema_of_the_field_is_still_a_uri_string() -> None:
     properties = OpenChatConfig.model_json_schema(mode="serialization")["properties"]["url"]
 
     assert properties["type"] == "string" and properties["format"] == "uri"
+
+
+# ---- the pins the review of #691 predicted would survive ---------------------------------------------------------------------------------------------------------------
+
+
+def test_a_mask_in_an_optional_url_field_with_nothing_stored_is_refused() -> None:
+    """``OpenRouterConfig.app_url`` is optional: with no stored URL there is nothing to restore the password from, and the literal mask must not be stored as one."""
+    stored = OpenRouterConfig(api_key="sk-or-live")
+    incoming = OpenRouterConfig(api_key="sk-or-live", app_url=f"http://svc:{MASK}@app.example/")
+
+    with pytest.raises(PrimerValidationError, match="re-enter the password"):
+        preserve_masked_secrets(incoming, stored)
+
+
+class _Mirrors(BaseModel):
+    mirrors: list[AnyUrl]
+
+
+class _Named(BaseModel):
+    urls: dict[str, AnyUrl]
+
+
+def test_a_mask_in_a_list_that_changed_length_is_refused() -> None:
+    stored = _Mirrors(mirrors=["http://svc:s3cr3t@a.example/"])
+    incoming = _Mirrors(mirrors=[f"http://svc:{MASK}@a.example/", "http://b.example/"])
+
+    with pytest.raises(PrimerValidationError, match="re-enter the password"):
+        preserve_masked_secrets(incoming, stored)
+
+
+def test_a_mask_in_a_list_of_the_same_length_is_restored_for_the_same_origin_and_refused_for_another() -> None:
+    stored = _Mirrors(mirrors=["http://svc:s3cr3t@a.example/", "http://svc:pw2@b.example/"])
+    same = _Mirrors(mirrors=[f"http://svc:{MASK}@a.example/x", f"http://svc:{MASK}@b.example/"])
+    moved = _Mirrors(mirrors=[f"http://svc:{MASK}@a.example/", f"http://svc:{MASK}@attacker.example/"])
+
+    preserve_masked_secrets(same, stored)
+    assert [str(u) for u in same.mirrors] == ["http://svc:s3cr3t@a.example/x", "http://svc:pw2@b.example/"]
+    with pytest.raises(PrimerValidationError, match="re-enter the password"):
+        preserve_masked_secrets(moved, stored)
+
+
+def test_a_mask_under_a_new_dict_key_is_refused_and_under_a_known_key_is_bound_to_its_origin() -> None:
+    stored = _Named(urls={"a": "http://svc:s3cr3t@a.example/"})
+    new_key = _Named(urls={"a": f"http://svc:{MASK}@a.example/", "b": f"http://svc:{MASK}@b.example/"})
+    moved = _Named(urls={"a": f"http://svc:{MASK}@attacker.example/"})
+    same = _Named(urls={"a": f"http://svc:{MASK}@a.example/p"})
+
+    with pytest.raises(PrimerValidationError, match="re-enter the password"):
+        preserve_masked_secrets(new_key, stored)
+    with pytest.raises(PrimerValidationError, match="re-enter the password"):
+        preserve_masked_secrets(moved, stored)
+    preserve_masked_secrets(same, stored)
+    assert str(same.urls["a"]) == "http://svc:s3cr3t@a.example/p"
+
+
+def test_no_code_under_primer_dumps_with_serialize_as_any() -> None:
+    """In pydantic 2.13 ``serialize_as_any=True`` (and ``SerializeAsAny``) skips a field's own serializer: a provider row dumped that way would be served with its URL password in clear and its
+    ``api_key`` unmasked. Nothing in ``primer/`` does it today; this fails the day something does (a comment is not code: the syntax tree is read)."""
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "primer"
+    offenders = []
+    for path in sorted(root.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path))):
+            named = (
+                (isinstance(node, ast.keyword) and node.arg == "serialize_as_any")
+                or (isinstance(node, ast.Name) and node.id == "SerializeAsAny")
+                or (isinstance(node, ast.Attribute) and node.attr == "SerializeAsAny")
+                or (isinstance(node, ast.alias) and node.name == "SerializeAsAny")
+            )
+            if named:
+                offenders.append(f"{path.relative_to(root.parent)}:{getattr(node, 'lineno', '?')}")
+    assert not offenders, f"a provider row dumped with serialize_as_any is served unmasked: {offenders}"
