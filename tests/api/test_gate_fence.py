@@ -228,7 +228,7 @@ async def test_two_siblings_sharing_a_raw_id_are_told_apart_by_their_gate_ids(ap
     assert resp.status_code == 202, resp.text
     payloads = (await storage.get("f-dup")).parked_state["resume_event_payloads"]
     assert [p["event_key"] for p in payloads.values()] == ["tool_approval:f-dup:worker[1]:dup"]
-    assert [r.gate_event_key for r in await _records(app, "f-dup")] == ["tool_approval:f-dup:worker[1]:dup"]
+    assert [r.gate_event_key for r in await _records(app, "f-dup")] == [f"tool_approval:f-dup:worker[1]:dup@{G2}"]       # C-033 PR 2: keyed by the gate
 
 
 @pytest.mark.asyncio
