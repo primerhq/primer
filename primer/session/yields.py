@@ -37,8 +37,11 @@ import primer.observability.metrics as _metrics
 from primer.int.claim import ClaimKind
 from primer.model.except_ import NotFoundError
 from primer.model.tool_call_task import MalformedScopedIdError, parse_scoped_task_id
-from primer.model.yield_ import with_wake_park
+from primer.model.common import dump_for_storage
+from primer.model.yield_ import with_wake_entry, with_wake_park
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
+from primer.storage import raw_generation
+from primer.storage.cas import patch_if_checked
 
 if TYPE_CHECKING:
     from primer.int.claim import ClaimEngine
@@ -240,6 +243,39 @@ def _wake_names_another_gate(session: WorkspaceSession, *, event_key: str, paylo
     return True
 
 
+def _wake_names_another_entry(session: WorkspaceSession, *, event_key: str, payload: dict[str, Any] | None) -> bool:
+    """Whether a MACHINE wake answers a pending entry other than the one that waits on ``event_key`` now (security ticket 01a1223f, #702 review N4).
+
+    The park stamp fences a single park; a graph park re-parks with a fresh ``parked_at`` whenever a sibling is resolved, so it is exempt. What survives a
+    re-park is the identity of the ENTRY: the subscription a trigger fire or a ``wait_for_event`` delivery answers (``resume_metadata.subscription_id``), the call
+    row an external result answers (``external_call_row_id``). A producer that knows it names it (:data:`~primer.model.yield_.WAKE_ENTRY_KEY`); when it does, and
+    an entry that waits on ``event_key`` carries an identity, the wake must name one of them, else the flip is refused: nothing is written, one WARNING and
+    ``session_wake_stale_refused_total``. A wake that names none (an older producer) and a pending entry with none (a park from before) are judged as before.
+    A single park and a graph park are judged alike; two siblings that share a key each accept only their own id.
+    """
+    from primer.model.yield_ import WAKE_ENTRY_KEY, entry_id_of
+    from primer.session.pending_gates import enumerate_pending_gates
+
+    named = (payload or {}).get(WAKE_ENTRY_KEY)
+    if not named:
+        return False
+    pending = [
+        entry_id_of(entry.get("resume_metadata"))
+        for entry in enumerate_pending_gates(session.parked_state or {})
+        if entry.get("event_key") == event_key
+    ]
+    pending = [entry_id for entry_id in pending if entry_id]
+    if not pending or named in pending:
+        return False
+    _metrics.session_wake_stale_refused_total.inc()
+    logger.warning(
+        "session %s: refused a wake on %r that answers another entry than the pending one (it was redelivered after the session re-parked under the same key, "
+        "or it was published for another park that shares the key)",
+        session.id, event_key,
+    )
+    return True
+
+
 _TIMEOUT_CLOCK_SKEW = timedelta(seconds=5)
 """How far ahead of the flipping node's clock a park's deadline may be for a timeout marker or timer fire to still apply (the publisher selected the row on ITS clock).
 
@@ -371,6 +407,8 @@ async def durably_mark_session_resumable(
         return False
     if _wake_is_for_an_earlier_park(session, event_key=event_key, payload=payload):
         return False
+    if _wake_names_another_entry(session, event_key=event_key, payload=payload):
+        return False
     if session.status == SessionStatus.ENDED:
         # Cheap early exit ONLY: the caller's own snapshot already says
         # ENDED, so skip the round trip. This is NOT the safety guarantee
@@ -393,12 +431,24 @@ async def durably_mark_session_resumable(
         "parked_status": "resumable",
         "parked_state": state,
     })
-    landed = await session_storage.update_unless(
-        updated, field="status", forbidden=SessionStatus.ENDED.value,
+    # ONE guarded patch of the two fields the flip owns, evaluated by the backend against the CURRENT row (ticket 01a1223f, #702 review N9). The fences above
+    # judged ``session``, the row ``find()`` returned; a whole-document write guarded on ``status`` alone let a wake that read the old park land on a park
+    # the session had meanwhile entered, and rewrote every other field from the stale snapshot. The guard is the park that was read (``parked_at``), the
+    # ``parked_status`` the snapshot was in (a multi-event park may advance from either) and a status that is not ENDED (the race described above).
+    dumped = dump_for_storage(updated)
+    landed = await patch_if_checked(
+        session_storage,
+        session.id,
+        {"parked_status": dumped["parked_status"], "parked_state": dumped["parked_state"]},
+        where={
+            "parked_at": [raw_generation(session, "parked_at")],
+            "parked_status": list(allowed),
+            "status": [s.value for s in SessionStatus if s is not SessionStatus.ENDED],
+        },
     )
     if landed is None:
-        # The row's CURRENT status was ENDED at write time - rejected
-        # atomically, not from the (possibly stale) snapshot above.
+        # The row is no longer the one this wake read: it ended, resumed, or parked again. Rejected atomically at write time, not from the (possibly
+        # stale) snapshot above.
         return False
     # Re-arm the engine lease (park dropped it). mark_resumable upserts a
     # fresh claimable lease when none exists.
@@ -534,8 +584,12 @@ async def respond_to_yield(
     tool_call_id: str,
     result: Any,
     deps: RespondToYieldDeps,
+    entry_id: str | None = None,
 ) -> None:
     """Publish *result* onto the parked session's resume ``event_key``.
+
+    ``entry_id`` is the identity of the pending entry the producer answers (a trigger fire passes its subscription's id): the wake names it, so the flip refuses a
+    copy delivered after the session re-parked, graph parks included (:func:`_wake_names_another_entry`).
 
     Steps:
 
@@ -596,7 +650,7 @@ async def respond_to_yield(
         payload = {"response": result}
     # The wake names the park this producer read: it is delivered by key alone, and one redelivered after the session re-parked under the same key must
     # not decide the new park (security ticket 01a1208d).
-    await deps.event_bus.publish(event_key, with_wake_park(payload, session.parked_at))
+    await deps.event_bus.publish(event_key, with_wake_entry(with_wake_park(payload, session.parked_at), entry_id))
 
 
 __all__ = [

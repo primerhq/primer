@@ -162,7 +162,7 @@ session_wake_gate_refused_total = Counter(
 session_wake_stale_refused_total = Counter(
     "session_wake_stale_refused_total",
     "Machine wakes that the flip of a parked session refused because they belong to an earlier park than the one now pending on the same event key: a "
-    "timeout marker or timer fire for a park whose deadline is still ahead, or a result that names the park its producer read when that is not the pending one.",
+    "timeout marker or timer fire for a park whose deadline is still ahead, a result that names the park its producer read when that is not the pending one, or a wake that answers another pending entry (subscription, external call row) than the one waiting on the key.",
     registry=registry,
 )
 
@@ -540,7 +540,7 @@ def reset_for_test() -> None:
     session_wake_stale_refused_total = Counter(
         "session_wake_stale_refused_total",
         "Machine wakes that the flip of a parked session refused because they belong to an earlier park than the one now pending on the same event key: a "
-        "timeout marker or timer fire for a park whose deadline is still ahead, or a result that names the park its producer read when that is not the pending one.",
+        "timeout marker or timer fire for a park whose deadline is still ahead, a result that names the park its producer read when that is not the pending one, or a wake that answers another pending entry (subscription, external call row) than the one waiting on the key.",
         registry=registry,
     )
     discord_gate_token_dropped_total = Counter(

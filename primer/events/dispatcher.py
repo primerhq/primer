@@ -38,7 +38,7 @@ from primer.model.event import (
     SessionWakeSink,
 )
 from primer.model.storage import OffsetPage
-from primer.model.yield_ import with_wake_park
+from primer.model.yield_ import with_wake_entry, with_wake_park
 
 logger = logging.getLogger(__name__)
 
@@ -263,10 +263,16 @@ class EventDispatcher(_BackgroundTask):
     async def _deliver_session_wake(
         self, sub: EventSubscription, sink: SessionWakeSink, event: Event,
     ) -> bool:
-        park, parked_at = await self._park_state(sink)
+        park, parked_at = await self._park_state(sink, sub.id)
         if park == "gone":
             # The session ended or vanished: the wait can never be
             # answered. Consume the event and GC the subscription.
+            await self._complete_one_shot(sub)
+            return True
+        if park == "orphan":
+            # The session waits under this key, but on a wait ANOTHER subscription created: this subscription's own wait timed out and the session waited
+            # again under the same tool_call_id. It can never be answered by this subscription, and delivering would decide the later wait with an event
+            # its filter never asked for. Consume the event, deliver nothing, collect the subscription (ticket 01a1223f, #702 review N6).
             await self._complete_one_shot(sub)
             return True
         if park == "pending":
@@ -289,15 +295,19 @@ class EventDispatcher(_BackgroundTask):
         # The envelope names the park the sink just read: a copy delivered after the session re-parked under the same key (another subscription's
         # wait) is refused by the flip instead of becoming the new wait's result (ticket 01a1208d, #702 review B2).
         await self._bus.publish(
-            sink.event_key, with_wake_park(redact_event(event).model_dump(mode="json"), parked_at),
+            sink.event_key, with_wake_entry(with_wake_park(redact_event(event).model_dump(mode="json"), parked_at), sub.id),
         )
         if sink.one_shot:
             await self._complete_one_shot(sub)
         return True
 
-    async def _park_state(self, sink: SessionWakeSink) -> tuple[str, datetime | None]:
-        """``(state, parked_at)``: state is 'parked' (deliver), 'pending' (retry later) or 'gone' (GC); ``parked_at`` is the park the row had when it was
-        read (``None`` unless 'parked')."""
+    async def _park_state(self, sink: SessionWakeSink, subscription_id: str | None = None) -> tuple[str, datetime | None]:
+        """``(state, parked_at)``: state is 'parked' (deliver), 'pending' (retry later), 'gone' (GC) or 'orphan' (GC: the wait under this key was created by
+        another subscription); ``parked_at`` is the park the row had when it was read (``None`` unless 'parked').
+
+        'orphan' needs both ends to carry an identity: the park's entry for the key names the subscription the tool created (``resume_metadata.subscription_id``)
+        and ``subscription_id`` is the one delivering. A park that names none (a wait from an older build) is delivered into by the key alone, as before.
+        """
         from primer.model.workspace_session import (
             SessionStatus,
             WorkspaceSession,
@@ -321,6 +331,18 @@ class EventDispatcher(_BackgroundTask):
         if row.parked_status in ("parked", "resumable") and (
             sink.event_key in keys
         ):
+            if subscription_id:
+                from primer.model.yield_ import entry_id_of
+                from primer.session.pending_gates import enumerate_pending_gates
+
+                owners = [
+                    entry_id_of(entry.get("resume_metadata"))
+                    for entry in enumerate_pending_gates(row.parked_state or {})
+                    if entry.get("event_key") == sink.event_key
+                ]
+                owners = [owner for owner in owners if owner]
+                if owners and subscription_id not in owners:
+                    return "orphan", None
             return "parked", row.parked_at
         return "pending", None
 
