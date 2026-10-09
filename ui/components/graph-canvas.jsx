@@ -325,6 +325,9 @@ function GR_Canvas(props) {
         padding: 28,
       });
       graphRef.current = g;
+      // The canvas is pixels, so a journey cannot address a node or an edge in the DOM: the live instance is also kept on its container, where a browser test can reach it (it selects an
+      // edge by emitting the same `edge:click` a click on it does). Nothing in the console reads it.
+      containerRef.current.__g6 = g;
       readyRef.current = false;
       // Expose the live instance so overlays (GB_Canvas's fan-out bracket and
       // superstep bands) can measure real node positions through pan/zoom.
