@@ -9,6 +9,8 @@ context without losing the underlying traceback.
 
 from __future__ import annotations
 
+from primer.common.error_codes import safe_code
+
 
 class PrimerError(Exception):
     """Root of the primer exception hierarchy.
@@ -30,7 +32,9 @@ class PrimerError(Exception):
     ) -> None:
         super().__init__(message)
         self.message = message
-        self.code = code
+        # A provider can send any text as its error code (the OpenAI SDK's, an OpenResponses error event's); an identifier survives, anything else
+        # is no code (security ticket 01a11fbc-ffea). ``str(self)`` and every sink that reads the code see only the safe value.
+        self.code = safe_code(code)
         self.status_code = status_code
         self.cause = cause
         if cause is not None:
