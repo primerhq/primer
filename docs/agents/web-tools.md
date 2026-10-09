@@ -94,6 +94,7 @@ network).
 
 ## Gotchas
 
+- A search or fetch provider whose API key has surrounding whitespace, a control character or a non-ASCII character (typically a key pasted with its trailing newline) is refused BEFORE any request: the tool answers `web-search not available: <provider> api_key has surrounding whitespace or a control/non-ASCII character; re-enter it` (`web-fetch not available: ...`). Retrying does not help: the key itself must be fixed, so tell the operator to re-enter that provider's API key. An aggregated config falls back to its next provider, so the call can still succeed; the refusal names no part of the key.
 - A refusal is not transient. Retrying the same URL, a redirecting URL,
   a short link, or a name that resolves to the same address gets the
   same answer. Ask the operator to add the target to
