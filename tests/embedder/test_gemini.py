@@ -83,7 +83,9 @@ class TestConstructor:
         from pydantic import HttpUrl
         from primer.model.provider import OpenAIConfig
 
-        provider = EmbeddingProvider(
+        # The model refuses a config object of another class than the provider names (review of #645), so the adapter's own check, kept for an
+        # object that never went through validation, is reached with ``model_construct``.
+        provider = EmbeddingProvider.model_construct(
             id="x",
             provider=EmbeddingProviderType.GEMINI,
             models=[EmbeddingModel(name="m")],
