@@ -10,6 +10,72 @@ const GB_OP_LABELS = {
 };
 const GB_OPS = ["eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in", "exists"];
 
+// A condition's value is Any in the model (BranchCondition.value), so the box it is edited in has to show EVERY kind of value in a form that reads back to the same value (ticket 01a11e4e-8910:
+// an object showed as "[object Object]" and the first keystroke replaced it by that string). A string is itself, unless it would read back as something else (a string "5", "true", "[1]"
+// is shown quoted); the comma list of "is one of" is kept for a list of plain strings; anything else that is not text (an object, a list of anything else, a number, a boolean) is JSON.
+function GB_branchValueText(value, op) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") {
+    if (value === "") return "";
+    try { JSON.parse(value); return JSON.stringify(value); } catch (_e) { return value; }
+  }
+  if (Array.isArray(value)) {
+    const plain = (op === "in" || op === "not_in") && value.length > 0
+      && value.every((m) => typeof m === "string" && m !== "" && m === m.trim() && m.indexOf(",") === -1);
+    return plain ? value.join(", ") : JSON.stringify(value);
+  }
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+// What typing `text` into the box means for the stored value: { commit: true, value } to store it, or { commit: false } to leave the stored value as it is. A structured value (an object, or a list
+// under an operator that takes ONE value) is not replaced by the string a half-typed JSON falls back to; clearing the box is deliberate and stores "". Everything else is parsed as it always was.
+function GB_branchValueEdit(text, op, current) {
+  const parse = typeof GR_parseBranchValue === "function" ? GR_parseBranchValue : (s) => s;
+  const structured = current !== null && typeof current === "object";
+  const listOp = op === "in" || op === "not_in";
+  if (structured && text.trim() !== "" && !(listOp && Array.isArray(current))) {
+    try { JSON.parse(text); } catch (_e) { return { commit: false }; }
+  }
+  return { commit: true, value: parse(text, op) };
+}
+
+// The value box of one condition. It keeps the text the operator types while the value behind it is being edited (a half-typed object, "5." on the way to 5.5), stores a value only when the
+// text means one (GB_branchValueEdit), says so when a structured value's text is not JSON yet, and redraws the text when the stored value or the operator changes from outside.
+function GB_BranchValueInput(props) {
+  const { value, op, ariaLabel, placeholder, disabled, style, onCommit } = props;
+  const canonical = GB_branchValueText(value, op);
+  const [text, setText] = React.useState(canonical);
+  const committedText = React.useRef(canonical);
+  React.useEffect(() => {
+    if (canonical !== committedText.current) {
+      committedText.current = canonical;
+      setText(canonical);
+    }
+  }, [canonical]);
+  const pending = text !== canonical ? GB_branchValueEdit(text, op, value) : null;
+  return (
+    <input
+      aria-label={ariaLabel}
+      data-testid="gb-branch-value"
+      value={text}
+      disabled={disabled}
+      placeholder={placeholder}
+      aria-invalid={pending && !pending.commit ? "true" : undefined}
+      onChange={(e) => {
+        const next = e.target.value;
+        setText(next);
+        const edit = GB_branchValueEdit(next, op, value);
+        if (edit.commit) {
+          committedText.current = GB_branchValueText(edit.value, op);
+          onCommit(edit.value);
+        }
+      }}
+      style={style}
+    />
+  );
+}
+
 function GB_BranchBuilder(props) {
   const { edge, edgeIdx, draft, sourceNode, dispatch, onAddResponseFormat, readOnly } = props;
   const router = edge.router || { kind: "json_path", branches: [] };
@@ -112,16 +178,13 @@ function GB_BranchBuilder(props) {
                 {GB_OPS.map((op) => <option key={op} value={op}>{GB_OP_LABELS[op]}</option>)}
               </select>
               {c.op !== "exists" ? (
-                <input aria-label={"Branch " + (bi + 1) + ", condition " + (ci + 1) + ": value"}
-                  value={Array.isArray(c.value) ? c.value.join(", ") : (c.value == null ? "" : String(c.value))}
+                <GB_BranchValueInput
+                  ariaLabel={"Branch " + (bi + 1) + ", condition " + (ci + 1) + ": value"}
+                  value={c.value}
+                  op={c.op}
                   disabled={readOnly}
                   placeholder={c.op === "in" || c.op === "not_in" ? "a, b, c" : "value"}
-                  onChange={(e) => {
-                    const parsed = typeof GR_parseBranchValue === "function"
-                      ? GR_parseBranchValue(e.target.value, c.op)
-                      : e.target.value;
-                    dispatch({ type: "UPDATE_BRANCH", idx: edgeIdx, bi, patch: { conditions: b.conditions.map((x, j) => (j === ci ? { ...x, value: parsed } : x)) } });
-                  }}
+                  onCommit={(parsed) => dispatch({ type: "UPDATE_BRANCH", idx: edgeIdx, bi, patch: { conditions: b.conditions.map((x, j) => (j === ci ? { ...x, value: parsed } : x)) } })}
                   style={{ padding: "3px 8px", borderRadius: 6, background: "var(--bg-2)", border: "1px solid var(--border)", color: "var(--text)", fontSize: "var(--fs-11)", width: 110 }}
                 />
               ) : null}
@@ -210,4 +273,4 @@ function GB_BranchBuilder(props) {
   );
 }
 
-Object.assign(window, { GB_BranchBuilder, GB_OP_LABELS, GB_OPS });
+Object.assign(window, { GB_BranchBuilder, GB_BranchValueInput, GB_branchValueText, GB_branchValueEdit, GB_OP_LABELS, GB_OPS });
