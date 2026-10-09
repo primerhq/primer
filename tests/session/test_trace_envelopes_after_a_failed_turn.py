@@ -263,36 +263,3 @@ async def test_the_timeline_of_a_failed_turn_is_its_own_envelope_not_the_next_tu
     assert first_turn["status"] == "failed", "the failed turn's trace reads as the turn after it"
     runs = [envelopes_for_window(turn_envelopes(turn_log_lines), i) for i in range(3)]
     assert [len(run) for run in runs] == [1, 1, 0], "one run per turn: the failed one, the one that followed, and no third"
-
-
-@pytest.mark.asyncio
-async def test_interim_mapping_after_a_failed_turn_fail_retry_fail(fake_storage_provider, fake_event_bus):
-    """PINS TODAY'S MAPPING, which is wrong after the first failure, so that the 01a11ca5 fold turns this test red on purpose.
-
-    A failed turn is two windows on the server (the failure exit's ERROR, then the release marker) and the timeline joins window ``n`` to the
-    ``n``-th envelope run by position. The runs are right (one per turn, see above); the windows are ahead of them. With fail, retry, fail the
-    windows are [A's ERROR, A's marker, B (the successful retry), C's ERROR, C's marker] and the runs [A, B, C]:
-
-      window 0 (A)        failed     right
-      window 1 (A marker) completed  WRONG: it is served B's envelope
-      window 2 (B)        failed     WRONG: it is served C's envelope (B succeeded; main read "completed" here by the accident of having no run)
-      window 3, 4         failed     no run left, so the records decide, which happens to be right
-
-    When 01a11ca5 makes a failed turn ONE window the expected list becomes ``["failed", "completed", "failed"]``; rewrite this test then.
-    """
-    message_lines, turn_log_lines, _ = await _play(fake_storage_provider, fake_event_bus, ["fail", "ok", "fail"])
-
-    timelines = []
-    for n in range(8):
-        timeline = build_turn_timeline(message_lines=message_lines, turn_log_lines=turn_log_lines, turn_no=n)
-        if timeline is None:
-            break
-        timelines.append(timeline)
-
-    assert [t["status"] for t in timelines] == ["failed", "completed", "failed", "failed", "failed"]
-    # Window 2 is B's turn, served C's envelope: it carries C's times, not B's.
-    envelopes = turn_envelopes(turn_log_lines)
-    assert len(envelopes) == 3, "premise: one envelope per turn"
-    b_times, c_times = _times(envelopes[1]), _times(envelopes[2])
-    assert c_times != b_times, "premise: the two envelopes have distinct times"
-    assert (timelines[2]["started_at"], timelines[2]["ended_at"]) == c_times

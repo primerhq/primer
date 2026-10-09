@@ -22,7 +22,7 @@ from typing import Any
 from primer.model.turn_log import TurnLogKind
 from primer.model.workspace_session import SessionMessageKind
 from primer.session.replay import visible_records
-from primer.session.terminals import closes_turn, is_session_terminal
+from primer.session.terminals import CLOSES, COPY, TurnWindowScanner, closes_turn, is_session_terminal
 
 _DONE = SessionMessageKind.DONE.value
 _ERROR = SessionMessageKind.ERROR.value
@@ -76,8 +76,8 @@ def _window(
     turn_no: int,
     records: list[dict[str, Any]],
     visible_seqs: set[int],
+    terminal: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    terminal = records[-1] if records and closes_turn(records[-1]) else None
     return {
         "turn_no": turn_no,
         "terminal_seq": terminal.get("seq") if terminal is not None else None,
@@ -90,6 +90,11 @@ def turn_windows(message_lines: list[str]) -> list[dict[str, Any]]:
 
     Each window is ``{"turn_no", "terminal_seq", "records"}``. A trailing
     run with no terminal is returned as the last (open) window.
+
+    A window ends at the record :class:`primer.session.terminals.TurnWindowScanner` says ends it: a FAILED turn is one window, ended by the first
+    error of the failure (``terminal_seq`` is its seq). The rest of the failure (dispatch's error with the same words, the release marker) is a
+    copy: it ends nothing, and it is filed with the window it copies, together with whatever was written between that window's end and the copy,
+    so the next turn's window does not open with the last turn's leftovers (ticket 01a11ca5).
 
     Turns are COUNTED over every parsed record, never over the visible
     ones: :func:`primer.session.replay.visible_records` replaces the whole
@@ -107,13 +112,19 @@ def turn_windows(message_lines: list[str]) -> list[dict[str, Any]]:
     }
     windows: list[dict[str, Any]] = []
     current: list[dict[str, Any]] = []
+    scanner = TurnWindowScanner()
     for rec in _parse_records(message_lines):
+        verdict = scanner.feed(rec)
+        if verdict == COPY and windows:
+            windows[-1]["records"].extend(r for r in (*current, rec) if r.get("seq") in visible_seqs)
+            current = []
+            continue
         current.append(rec)
-        if closes_turn(rec):
-            windows.append(_window(len(windows), current, visible_seqs))
+        if verdict == CLOSES:
+            windows.append(_window(len(windows), current, visible_seqs, rec))
             current = []
     if current:
-        windows.append(_window(len(windows), current, visible_seqs))
+        windows.append(_window(len(windows), current, visible_seqs, None))
     return windows
 
 

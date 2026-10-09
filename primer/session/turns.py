@@ -7,7 +7,8 @@ dying mid-turn, where a flag would strand the session.
 
 On sessions the terminals are the DONE / ERROR / CANCELLED that ``terminals.closes_turn`` accepts: a model call that
 ended in a tool call (``done(tool_use)``) ends a round, and a subagent's terminal (``payload.delegated``) ends the
-subagent's turn, so neither closes the user's. YIELDED is NOT terminal: a parked turn is still open, and the resumed
+subagent's turn, so neither closes the user's. A failed turn is one terminal however many error records it wrote (dispatch's error with the
+same words and the release marker are copies, ``terminals.TurnWindowScanner``, ticket 01a11ca5). YIELDED is NOT terminal: a parked turn is still open, and the resumed
 continuation writes the closing record. The routing rule in the steer path keeps the
 pairing 1:1 by turning a steer that arrives while a turn is open into a
 PendingSessionMessage rather than a second USER_INPUT.
@@ -24,7 +25,7 @@ import json
 from dataclasses import dataclass
 
 from primer.model.workspace_session import SessionMessageKind
-from primer.session.terminals import closes_turn
+from primer.session.terminals import CLOSES, TurnWindowScanner
 
 
 @dataclass
@@ -49,6 +50,7 @@ def count_turn_state(raw_lines: list[str], *, cursor: int) -> TurnCount:
     terminals = 0
     open_turns = 0
     max_seq = cursor - 1
+    scanner = TurnWindowScanner()
     for line in raw_lines:
         line = line.strip()
         if not line:
@@ -64,12 +66,13 @@ def count_turn_state(raw_lines: list[str], *, cursor: int) -> TurnCount:
             continue
         max_seq = max(max_seq, seq)
         kind = obj.get("kind")
+        verdict = scanner.feed(obj)          # every record, a history-excluded input included: it starts a turn for the failure fold
         if kind == SessionMessageKind.USER_INPUT.value:
             if (obj.get("payload") or {}).get("_history_excluded"):
                 continue
             user_inputs += 1
             open_turns += 1
-        elif closes_turn(obj):
+        elif verdict == CLOSES:
             terminals += 1
             open_turns = max(open_turns - 1, 0)   # a terminal closes an input before it; with none open it closes nothing
     return TurnCount(
