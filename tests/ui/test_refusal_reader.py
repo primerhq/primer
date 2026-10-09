@@ -12,11 +12,13 @@ reader: ``{code, field, sentence, message}``.
 * ``field``: ``extensions.field`` or the dotted path of the first request-validation error (``body.`` dropped; an entry that is not an object has none).
 * ``sentence``: the server's own words, or ``""`` when it sent none or only the code. A message equal to the code is not a sentence; one that merely looks like a
   code is kept when the code is known and different (the not-found message is a bare id, and an id may hold an underscore). Exactly one request-validation error
-  is said in its own ``msg``; several are not (``Missing or invalid: a, b.``).
+  is said in its own ``msg`` (the ``message`` names the field first, ``name: Field required``, because a generic toast has no field to draw it under; a caller that
+  draws the error under the field uses the bare ``sentence``); several are not (``Missing or invalid: a, b.``).
 * ``message``: what a person reads. The sentence, except that a reference block (``in_use_by: 1 agent(s) reference 'x' (first: 'y')``) and a duplicate
   (``Channel with provider_id='a', external_id='b' already exists (id='c')``) are said in plain words (ADM-12, ADM-20); with no sentence, a known bare code
   (``auth_required``, ``forbidden_role``) gets its own sentence, else the HTTP title with the code after it (``Forbidden (scope_required)``), then the error's
-  message, then the caller's fallback.
+  message, then the caller's fallback. A caller that must not show a code (the trigger banners: a code never goes in a title, only the HTTP title does) passes
+  ``{codeAfterTitle: false}``.
 
 The envelopes are the REAL ones (``tests/_support/refusal_envelopes.py``: the real handlers and the real producers answer through ``TestClient``), and the
 browser side is the real ``ui/foundation/api.js`` and the real component functions in MiniRacer.
@@ -76,9 +78,10 @@ def _function(path: str, name: str) -> str:
             return text[start:i]
 
 
-def _read(ctx, envelope: dict, fallback: str | None = None) -> dict:
+def _read(ctx, envelope: dict, fallback: str | None = None, options: dict | None = None) -> dict:
     arg = json.dumps(fallback)
-    return json.loads(ctx.eval(f"JSON.stringify(window.primerApi.readRefusal(new window.primerApi.ApiError({json.dumps(envelope)}), {arg}))"))
+    opts = json.dumps(options)
+    return json.loads(ctx.eval(f"JSON.stringify(window.primerApi.readRefusal(new window.primerApi.ApiError({json.dumps(envelope)}), {arg}, {opts}))"))
 
 
 # ---- the reader, on every shape the API really answers ----------------------------------------------------------------------------------------------------
@@ -98,7 +101,7 @@ EXPECTED = {
     },
     "router_code_bare_id": {"code": "trigger_not_found", "field": None, "sentence": "nightly_job", "message": "nightly_job"},
     "pre_write": {"code": "model_profile_not_found", "field": "model.profile_id", "sentence": _NO_PROFILE, "message": _NO_PROFILE},
-    "agent_field": {"code": None, "field": "description", "sentence": _BLANK_DESCRIPTION, "message": _BLANK_DESCRIPTION},
+    "agent_field": {"code": None, "field": "description", "sentence": _BLANK_DESCRIPTION, "message": "description: " + _BLANK_DESCRIPTION},
     "validated": {"code": None, "field": "name", "sentence": "", "message": "Missing or invalid: name, count."},
     "in_use_by": {
         "code": "in_use_by", "field": None,
@@ -476,19 +479,54 @@ def test_a_refusal_with_a_code_and_no_sentence_names_the_code_after_the_title(st
     assert got["sentence"] == "" and got["message"] == f"{title} ({code})"
 
 
+@pytest.mark.parametrize(
+    ("status", "title", "code"),
+    [(422, "Validation Error", "managed_field_set"), (403, "Forbidden", "scope_required"), (409, "Conflict", "something_unheard_of")],
+)
+def test_a_caller_can_keep_the_http_title_alone(status: int, title: str, code: str) -> None:
+    """The trigger banners: a code never goes in a title (the lead's ruling, 01a11bf7-15b7), so they ask the reader not to append it."""
+    env = {"type": "/errors/x", "title": title, "status": status, "detail": code, "extensions": {"code": code}}
+
+    got = _read(_context(), env, None, {"codeAfterTitle": False})
+
+    assert got["code"] == code and got["sentence"] == "" and got["message"] == title
+
+
 def test_a_request_validation_error_has_no_code_to_print(envelopes) -> None:
     """The admin banners print ``Create failed (<code>)``: for a field error the ``type`` is a pydantic type (``string_too_short``) or a check's name, not a code."""
     for key in ("validated", "agent_field"):
         assert _read(_context(), envelopes[key])["code"] is None, key
 
 
-def test_exactly_one_validation_error_is_said_in_its_own_words() -> None:
+def test_exactly_one_validation_error_is_said_in_its_own_words_with_its_field_in_front_for_a_generic_toast() -> None:
+    """"String should have at least 1 character" alone does not say which field (review of #625, round 2): the message names it, the sentence stays the server's msg."""
     env = {
         "type": "/errors/validation-error", "title": "Validation Error", "status": 422, "detail": "One or more request parameters or body fields failed validation.",
         "extensions": {"errors": [{"type": "missing", "loc": ["body", "name"], "msg": "Field required"}]},
     }
 
-    assert _read(_context(), env) == {"code": None, "field": "name", "sentence": "Field required", "message": "Field required"}
+    assert _read(_context(), env) == {"code": None, "field": "name", "sentence": "Field required", "message": "name: Field required"}
+
+
+def test_a_nested_field_is_named_by_its_dotted_path() -> None:
+    env = {
+        "type": "/errors/validation-error", "title": "Validation Error", "status": 422, "detail": "failed",
+        "extensions": {"errors": [{"type": "string_too_short", "loc": ["body", "model", "profile_id"], "msg": "String should have at least 1 character"}]},
+    }
+
+    got = _read(_context(), env)
+
+    assert got["field"] == "model.profile_id" and got["sentence"] == "String should have at least 1 character"
+    assert got["message"] == "model.profile_id: String should have at least 1 character"
+
+
+def test_a_single_validation_error_that_names_no_field_is_its_msg_alone() -> None:
+    env = {
+        "type": "/errors/validation-error", "title": "Validation Error", "status": 422, "detail": "failed",
+        "extensions": {"errors": [{"type": "value_error", "msg": "Value error, the two passwords differ"}]},
+    }
+
+    assert _read(_context(), env) == {"code": None, "field": None, "sentence": "Value error, the two passwords differ", "message": "Value error, the two passwords differ"}
 
 
 def test_several_validation_errors_are_not_said_as_one_of_them(envelopes) -> None:
