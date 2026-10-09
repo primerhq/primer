@@ -10,15 +10,21 @@ The one rule (``WORKSPACE_ID_PATTERN`` in ``primer/model/workspace.py``): a DNS-
 ``^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`` - lowercase letters, digits and ``-``, starting and ending with a letter or
 digit, at most 63 characters. It matches every id the platform generates (the bootstrap default ``primer``, the generated
 ``ws-<hex>``). Uppercase is refused because on a case-insensitive filesystem (a macOS dev machine) ``Proj`` and ``proj``
-would be two rows over ONE directory; k8s label values, docker DNS names and gateway hostnames need lowercase, no
-``_``, and an alphanumeric end too. Existing rows are NOT re-validated: the rule bites on create only.
+would be two rows over ONE directory - and the lowercase rule protects NEW ids only: a new ``proj`` can still adopt a
+legacy ``Proj`` directory (existing rows are NOT re-validated). k8s label VALUES allow uppercase, ``_`` and ``.``; the
+lowercase requirement comes from the Gateway API hostname (RFC 1123) and the k8s object names, which - like docker DNS
+names - also need no ``_`` and an alphanumeric end.
 
 The rule is enforced at every create entry (the REST body, the ``create_workspace`` tool args,
 ``WorkspaceRegistry.materialise`` - the choke point REST, the tool, the bootstrap seed and any future path all pass
-through) and re-asserted in the local backend as defence in depth: the join is resolved for the containment test
-(refused when it is not strictly inside the resolved root), but the backend keeps the UNRESOLVED join, so the
-create rollback's ``rmtree`` and ``destroy`` never delete through an in-root symlink into another workspace's
-directory; an id that IS a symlink is refused outright.
+through) and re-asserted in the local backend as defence in depth: create refuses an id that is not EXACTLY one segment
+under the root (checked lexically, so the configured root itself may be a symlink), then resolves the join for the
+containment test and refuses an id that IS a symlink, so the create rollback's ``rmtree`` and ``destroy`` never delete
+through an in-root symlink into another workspace's directory; a resolve()/is_symlink() failure (a looping link, a name
+the filesystem cannot hold, a NUL byte) is a validation error, not a 500. Re-attach checks the id LEXICALLY only - no
+resolve(), no is_symlink() - so a workspace DIRECTORY that is a symlink (an operator who moved a big workspace to
+another disk and left a link) still loads; destroy leaves a linked workspace's target in place (rmtree refuses a
+top-level link).
 
 The backend tests need git because ``LocalWorkspace.materialise`` shells out to it (same gate as
 ``test_workspace_id_passthrough.py``).
@@ -73,10 +79,12 @@ ESCAPING = [
     ("/abs", lambda root: Path("/abs")),
     (".", lambda root: root),
     ("..", lambda root: root.parent),
+    # A sibling whose name STARTS WITH the root's: a prefix (startswith) containment check passes it, is_relative_to does not.
+    ("../provider_root-x", lambda root: root.parent / "provider_root-x"),
 ]
 
 
-@pytest.mark.parametrize("wid,landing", ESCAPING, ids=["../escape", "/abs", ".", ".."])
+@pytest.mark.parametrize("wid,landing", ESCAPING, ids=["../escape", "/abs", ".", "..", "../provider_root-x"])
 async def test_the_local_backend_refuses_an_id_that_escapes_the_root(
     backend: LocalWorkspaceBackend, wid: str, landing: object,
 ) -> None:
@@ -86,7 +94,12 @@ async def test_the_local_backend_refuses_an_id_that_escapes_the_root(
         ws = await backend.create(_template(), workspace_id=wid)
     except ValidationError as exc:
         assert "escapes the workspace root" in exc.message, exc.message
+        # The refusal message carries no host paths: the configured root and the landing stay in the server log, not the error.
+        assert str(root) not in exc.message, exc.message
         landed = Path(landing(root))
+        # An absolute id IS its landing, and the message must name the id: the host-path pin covers the other landings.
+        if str(landed) != wid:
+            assert str(landed) not in exc.message, exc.message
         # ``.`` and ``..`` land ON the root or its parent, which pre-exist: there a refused
         # create must leave no materialised workspace (no .state repo) at the landing.
         if landed == root or landed == root.parent:
@@ -100,13 +113,13 @@ async def test_the_local_backend_refuses_an_id_that_escapes_the_root(
     )
 
 
-async def test_the_local_backend_accepts_an_id_that_stays_inside_the_root(
+async def test_the_local_backend_refuses_an_id_that_is_not_exactly_one_segment(
     backend: LocalWorkspaceBackend,
 ) -> None:
-    """A nested id stays under the root: the backend's invariant is containment, the entry rule does the rest."""
-    ws = await backend.create(_template(), workspace_id="a/b")
-    assert ws.id == "a/b"
-    assert ws.root.resolve() == (backend.root / "a" / "b").resolve()
+    """A nested id stays INSIDE the root but is still refused: 'alias/x' or 'x/../y' would adopt, then delete, another workspace's directory. The backend's own defence must not depend on the entries refusing '/'."""
+    with pytest.raises(ValidationError):
+        await backend.create(_template(), workspace_id="a/b")
+    assert not (backend.root / "a").exists(), "the refused create left a directory under the root"
 
 
 async def test_the_local_backend_refuses_a_reattach_that_escapes_the_root(
@@ -117,18 +130,127 @@ async def test_the_local_backend_refuses_a_reattach_that_escapes_the_root(
         await backend.get("../escape", template=_template())
 
 
+async def test_reattach_loads_a_workspace_directory_that_is_a_symlink_outside_the_root(
+    backend: LocalWorkspaceBackend,
+) -> None:
+    """An operator who moved a big workspace to another disk and left a link must not get ValidationError on every call (a regression #685 introduced): re-attach checks the id lexically, not the directory's link-ness."""
+    alpha = await backend.create(_template(), workspace_id="alpha")
+    marker = alpha.root / "moved.txt"
+    await asyncio.to_thread(marker.write_text, "here")
+    outside = backend.root.parent / "outside-alpha"
+    await asyncio.to_thread(alpha.root.rename, outside)
+    (backend.root / "alpha").symlink_to(outside)
+    fresh = LocalWorkspaceBackend(backend.root)
+    await fresh.initialize()
+    ws = await fresh.get("alpha", template=_template())
+    assert ws is not None, "a symlinked workspace directory must re-attach"
+    assert (ws.root / "moved.txt").exists()
+
+
+async def test_reattach_loads_a_workspace_directory_that_is_a_symlink_inside_the_root(
+    backend: LocalWorkspaceBackend,
+) -> None:
+    """So does a link to a directory INSIDE the root: re-attach never follows or refuses the link."""
+    alpha = await backend.create(_template(), workspace_id="alpha")
+    moved = backend.root / "moved-alpha"
+    await asyncio.to_thread(alpha.root.rename, moved)
+    (backend.root / "alpha").symlink_to(moved)
+    fresh = LocalWorkspaceBackend(backend.root)
+    await fresh.initialize()
+    ws = await fresh.get("alpha", template=_template())
+    assert ws is not None, "a symlinked workspace directory must re-attach"
+    assert (ws.root / ".state").exists()
+
+
+async def test_destroy_of_a_linked_workspace_leaves_the_target_files_in_place(
+    backend: LocalWorkspaceBackend,
+) -> None:
+    """rmtree refuses a top-level link: destroying a linked workspace deletes the link, not the moved-away directory."""
+    alpha = await backend.create(_template(), workspace_id="alpha")
+    marker = alpha.root / "stay.txt"
+    await asyncio.to_thread(marker.write_text, "here")
+    outside = backend.root.parent / "outside-destroy"
+    await asyncio.to_thread(alpha.root.rename, outside)
+    (backend.root / "alpha").symlink_to(outside)
+    await backend.destroy("alpha")
+    assert marker.exists(), "destroy deleted through the symlink into the target directory"
+
+
 async def test_create_refuses_an_id_that_is_a_symlink_into_another_workspace(
     backend: LocalWorkspaceBackend,
 ) -> None:
-    """A RESOLVED join would rmtree THROUGH the symlink: the refused alias create must leave alpha's files intact."""
+    """A RESOLVED join would rmtree THROUGH the symlink: the refused alias create must leave alpha's files intact. The data loss is asserted FIRST (catch broadly), then the exception type."""
     alpha = await backend.create(_template(), workspace_id="alpha")
     marker = alpha.root / "survive.txt"
     await asyncio.to_thread(marker.write_text, "here")
     alias = backend.root / "alias"
     alias.symlink_to(alpha.root)
-    with pytest.raises(ValidationError):
+    with pytest.raises(Exception) as err:
         await backend.create(_template(init_commands=["exit 3"]), workspace_id="alias")
     assert marker.exists(), "the refused alias create deleted the alpha workspace's files"
+    assert isinstance(err.value, ValidationError), f"expected ValidationError, got {type(err.value).__name__}"
+    # The refusal message carries no host paths: the root and the link target stay in the server log.
+    assert str(backend.root.resolve()) not in err.value.message, err.value.message
+    assert str(alpha.root) not in err.value.message, err.value.message
+
+
+async def test_create_refuses_a_looping_symlink_id_with_a_validation_error(
+    backend: LocalWorkspaceBackend,
+) -> None:
+    """resolve() raises RuntimeError on a symlink loop: today that is a 500, not a 422."""
+    loop = backend.root / "loop"
+    loop.symlink_to(loop)
+    with pytest.raises(ValidationError) as err:
+        await backend.create(_template(), workspace_id="loop")
+    assert str(backend.root.resolve()) not in err.value.message, err.value.message
+
+
+async def test_create_refuses_a_name_the_filesystem_cannot_hold_with_a_validation_error(
+    backend: LocalWorkspaceBackend,
+) -> None:
+    """resolve() raises OSError (ENAMETOOLONG) on a name this long: today that is a 500, not a 422."""
+    with pytest.raises(ValidationError) as err:
+        await backend.create(_template(), workspace_id="a" * 300)
+    assert str(backend.root.resolve()) not in err.value.message, err.value.message
+
+
+async def test_create_refuses_a_nul_id_with_a_validation_error(
+    backend: LocalWorkspaceBackend,
+) -> None:
+    """resolve() raises ValueError on an embedded NUL byte: today that is a 500, not a 422."""
+    with pytest.raises(ValidationError) as err:
+        await backend.create(_template(), workspace_id="a\x00b")
+    assert str(backend.root.resolve()) not in err.value.message, err.value.message
+
+
+@pytest.mark.parametrize("wid", ["LegacyWS", "legacy_ws"])
+async def test_ids_the_create_entries_refuse_still_reattach_when_created_directly(
+    backend: LocalWorkspaceBackend, wid: str,
+) -> None:
+    """Existing rows are NOT re-validated: an id the entries refuse (uppercase, underscore) must re-attach when a pre-existing row carries it."""
+    await backend.create(_template(), workspace_id=wid)
+    fresh = LocalWorkspaceBackend(backend.root)
+    await fresh.initialize()
+    ws = await fresh.get(wid, template=_template())
+    assert ws is not None, f"the pre-existing row {wid!r} must re-attach"
+
+
+async def test_a_symlinked_root_creates_reattaches_and_destroys(tmp_path: Path) -> None:
+    """The configured root itself may be a symlink (an operator mount point): create, re-attach and destroy all work through it."""
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    p = LocalWorkspaceBackend(link)
+    await p.initialize()
+    ws = await p.create(_template(), workspace_id="x")
+    assert ws is not None
+    fresh = LocalWorkspaceBackend(link)
+    await fresh.initialize()
+    ws2 = await fresh.get("x", template=_template())
+    assert ws2 is not None, "a workspace under a symlinked root must re-attach"
+    await p.destroy("x")
+    assert not (real / "x").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +318,7 @@ class _Tpl:
     provider_id = "prov1"
 
 
-@pytest.mark.parametrize("wid", ["../escape", "/abs", ".", "..", "a/b", "new\nline", "a\x00b"])
+@pytest.mark.parametrize("wid", ["../escape", "/abs", ".", "..", "a/b", "abc\n", "new\nline", "a\x00b"])
 async def test_the_registry_refuses_an_id_that_fails_the_rule_before_any_backend(
     monkeypatch: pytest.MonkeyPatch, wid: str,
 ) -> None:
