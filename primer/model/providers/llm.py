@@ -303,6 +303,23 @@ class LLMProvider(Identifiable):
         ),
     )
 
+    @model_validator(mode="after")
+    def _last_error_carries_no_configured_key(self) -> "LLMProvider":
+        """Mask the row's own configured credentials in ``last_error`` whenever the row is loaded (security ticket 01a11eda-2031).
+
+        A probe failure written before the probes masked the key (a key pasted with trailing whitespace is quoted whole by h11's refusal) is
+        served by ``GET /v1/llm_providers/{id}`` until the next probe replaces it. Scrubbed here, with the row's own config, rather than nulled by a
+        migration: the row keeps the words of the failure, and nothing has to guess which stored texts held a key. Imported inside: ``primer.llm``
+        imports this package.
+        """
+        if self.last_error:
+            from primer.llm._failure import scrub
+
+            masked = scrub(self.last_error, self)
+            if masked != self.last_error:
+                self.last_error = masked
+        return self
+
     @model_validator(mode="before")
     @classmethod
     def _coerce_config_to_provider(cls, data: object) -> object:
