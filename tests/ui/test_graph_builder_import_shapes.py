@@ -85,6 +85,7 @@ REFUSED = {
     "response_format required holds a non-string": lambda s: _node(s, "a")["response_format"].__setitem__("required", [OBJ]),
     "a response_format property type is an object": lambda s: _node(s, "a")["response_format"]["properties"]["ok"].__setitem__("type", OBJ),
     "an input_schema property description is an object": lambda s: _node(s, "s")["input_schema"]["properties"]["q"].__setitem__("description", OBJ),
+    "an input_schema property is null": lambda s: _node(s, "s")["input_schema"]["properties"].__setitem__("q", None),
     "an input_schema property is a string": lambda s: _node(s, "s")["input_schema"]["properties"].__setitem__("q", "abc"),
     "an input_schema properties is a list": lambda s: _node(s, "s")["input_schema"].__setitem__("properties", []),
     "output_schema required is true": lambda s: _node(s, "e")["output_schema"].__setitem__("required", True),
@@ -144,6 +145,10 @@ ACCEPTED = {
     "unknown extra keys are carried": lambda s: (s.__setitem__("x-note", OBJ), _node(s, "a").__setitem__("x-extra", [OBJ])),
     "positions on nodes": _set_node("w", "x", 120.5),
     "no max_iterations": lambda s: (s.pop("max_iterations"), s.pop("on_max_iterations")),
+    # JSON Schema allows a boolean as a subschema; a graph the server holds can carry one, and the modal is seeded with the graph's own text
+    "a true subschema for a property": lambda s: _node(s, "s")["input_schema"]["properties"].__setitem__("ok", True),
+    "a false subschema for a property": lambda s: _node(s, "s")["input_schema"]["properties"].__setitem__("no", False),
+    "a boolean subschema in a nested object": lambda s: _node(s, "s")["input_schema"]["properties"].__setitem__("o", {"type": "object", "properties": {"deep": True}}),
 }
 
 

@@ -27,6 +27,14 @@ _POISON_THE_INSPECTOR = """() => {
     };
 }"""
 
+_POISON_A_SELECTED_STEP = """() => {
+    const real = window.GB_Inspector;
+    window.GB_Inspector = function (p) {
+        if (p.node) throw new Error('poison in a selected step');
+        return real(p);
+    };
+}"""
+
 _NODES = [{"kind": "begin", "id": "begin"}, {"kind": "end", "id": "end", "output_template": ""}]
 _EDGES = [{"kind": "static", "from_node": "begin", "to_node": "end"}]
 
@@ -65,6 +73,33 @@ def test_a_render_error_shows_a_message_and_undo_and_discard_bring_the_graph_bac
         _load_poison(page)
         expect(message).to_be_visible(timeout=10_000)                          # the boundary caught the second one too
         page.get_by_test_id("gb-render-error-discard").click()
+        expect(message).to_have_count(0, timeout=5_000)
+        expect(rows).to_have_count(2, timeout=10_000)
+    finally:
+        with httpx.Client(base_url=base_url, timeout=30.0) as c:
+            c.delete(f"/v1/graphs/{graph_id}")
+
+
+@pytest.mark.ui_e2e
+def test_a_step_that_throws_when_it_is_selected_can_be_let_go_of_without_losing_the_draft(page: Page, base_url: str, console_url: str, unique_suffix: str) -> None:
+    graph_id = f"render-err-sel-{unique_suffix}"
+    with httpx.Client(base_url=base_url, timeout=30.0) as c:
+        r = c.post("/v1/graphs", json={"id": graph_id, "description": "click-time error probe", "nodes": _NODES, "edges": _EDGES})
+        assert r.status_code == 201, r.text
+    try:
+        open_legacy_route(page, console_url, f"graphs/{graph_id}")
+        gb.wait_for_builder(page)
+        rows = page.locator('[data-testid="gb-outline-row"]')
+        expect(rows).to_have_count(2, timeout=15_000)
+        page.evaluate(_POISON_A_SELECTED_STEP)
+
+        rows.first.click()
+        message = page.get_by_test_id("gb-render-error")
+        expect(message).to_be_visible(timeout=10_000)
+        expect(message).to_contain_text("poison in a selected step")
+        expect(page.locator('[data-testid^="nv-overlay:"]')).to_be_visible()
+
+        page.get_by_test_id("gb-render-error-clear").click()
         expect(message).to_have_count(0, timeout=5_000)
         expect(rows).to_have_count(2, timeout=10_000)
     finally:
