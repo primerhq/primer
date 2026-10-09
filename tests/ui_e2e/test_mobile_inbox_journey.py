@@ -49,14 +49,16 @@ def _seed(base_url: str, mock_base_url: str, suffix: str, tmp_path: Path) -> dic
     return ids
 
 
-def _gate_writes(client: httpx.Client, policy_id: str) -> None:
-    """Policies are unique on (toolset, tool): clear a leftover, then require approval for write_workspace_file."""
+def _gate_writes(client: httpx.Client, policy_id: str, preview_args: list[str] | None = None) -> None:
+    """Policies are unique on (toolset, tool): clear a leftover, then require approval for write_workspace_file. ``preview_args`` is the operator's allowlist
+    for the card (None: no list, so the closed-set default applies)."""
     for item in client.get("/v1/tool_approval_policies", params={"limit": 200}).json().get("items", []):
         if item.get("toolset_id") == "workspaces" and item.get("tool_name") == "write_workspace_file":
             client.delete(f"/v1/tool_approval_policies/{item['id']}")
-    r = client.post("/v1/tool_approval_policies", json={
-        "id": policy_id, "toolset_id": "workspaces", "tool_name": "write_workspace_file", "enabled": True, "approval": {"type": "required"},
-    })
+    body = {"id": policy_id, "toolset_id": "workspaces", "tool_name": "write_workspace_file", "enabled": True, "approval": {"type": "required"}}
+    if preview_args is not None:
+        body["preview_args"] = preview_args
+    r = client.post("/v1/tool_approval_policies", json=body)
     assert r.status_code == 201, f"policy failed: {r.status_code} {r.text}"
     assert client.post("/v1/tool_approval_policies/invalidate").status_code == 202
 
@@ -137,6 +139,13 @@ def test_the_inbox_names_what_it_asks_you_to_decide_and_deciding_is_acknowledged
             expect(card).to_contain_text(WRITE)
             expect(card).to_contain_text("path=<hidden>")
 
+            # D3: the card hides what nobody declared, so it offers no blind Approve. Deny (never blind) and "Open to review" are what is left.
+            expect(card.get_by_test_id("nv-mob-ib-withheld")).to_contain_text("path")
+            expect(card.get_by_test_id(f"nv-mobile-inbox-approve:{approve_sid}")).to_have_count(0)
+            expect(card.get_by_test_id(f"nv-mobile-inbox-review:{approve_sid}")).to_have_text("Open to review")
+            expect(card.get_by_test_id(f"nv-mobile-inbox-deny:{approve_sid}")).to_be_visible()
+            expect(card.get_by_test_id("nv-mob-ib-note")).to_contain_text("Show all")
+
             # C-032: the question card fills its width and its button sits below the text, not over it.
             question = page.get_by_test_id(f"nv-mobile-inbox-card:{ask_sid}")
             expect(question).to_be_visible(timeout=20_000)
@@ -155,6 +164,13 @@ def test_the_inbox_names_what_it_asks_you_to_decide_and_deciding_is_acknowledged
             full = page.get_by_test_id(f"nv-mob-ib-full:{approve_sid}")
             expect(full).to_contain_text("notes/plan.md", timeout=10_000)
             assert len(full.inner_text()) > 3000
+
+            # With the whole call on the screen the decision is not blind: Approve appears, and goes again when the call is hidden.
+            expect(card.get_by_test_id(f"nv-mobile-inbox-approve:{approve_sid}")).to_be_visible(timeout=10_000)
+            card.get_by_test_id(f"nv-mob-ib-showall:{approve_sid}").click()
+            expect(card.get_by_test_id(f"nv-mobile-inbox-approve:{approve_sid}")).to_have_count(0)
+            card.get_by_test_id(f"nv-mob-ib-showall:{approve_sid}").click()
+            expect(full).to_contain_text("notes/plan.md", timeout=10_000)
 
             # Approve decides that call, says so, and the call actually runs.
             card.get_by_test_id(f"nv-mobile-inbox-approve:{approve_sid}").click()
@@ -199,6 +215,47 @@ def test_the_desktop_rail_inbox_row_says_what_it_is_about(
             expect(line).to_contain_text(WRITE)
             expect(line).to_contain_text("(path, workspace_id, content)")
             assert "notes/plan.md" not in line.inner_text(), "the passive rail line names the arguments and never shows their values"
+        finally:
+            client.delete(f"/v1/tool_approval_policies/{policy_id}")
+            client.post("/v1/tool_approval_policies/invalidate")
+
+
+@pytest.mark.timeout(240)
+def test_a_card_whose_list_the_operator_declared_offers_approve_at_once(
+    page: Page, base_url: str, console_url: str, mock_llm_lan, tmp_path: Path,
+):
+    """The operator chose what matters (``preview_args: ["path"]``): the card shows the path, names what it withholds, and does not make the person tap Show all first."""
+    registry, mock_base_url = mock_llm_lan
+    suffix = uuid.uuid4().hex[:8]
+    ids = _seed(base_url, mock_base_url, suffix, tmp_path)
+    registry.register(ids["model_name"], [
+        Rule(when_tool_result=True, emit_text="done"),
+        Rule(when_last_user_contains="write the plan", emit_tool=WRITE, emit_args={"workspace_id": ids["workspace"], "path": "notes/plan.md", "content": "z" * 50}),
+        Rule(emit_text="ok"),
+    ])
+    policy_id = f"mi-pol-{suffix}"
+    with httpx.Client(base_url=base_url, timeout=30.0) as client:
+        _gate_writes(client, policy_id, preview_args=["path"])
+        try:
+            sid = _start(client, ids, "please write the plan")
+            row = _attention_row(client, sid, "approval")
+            assert row["approval"]["preview"] == "policy"
+            assert row["approval"]["arguments"].startswith("path=notes/plan.md")
+            assert sorted(row["approval"]["hidden_keys"]) == ["content", "workspace_id"]
+
+            page.set_viewport_size(PHONE)
+            open_mobile_shell(page, console_url)
+            card = page.get_by_test_id(f"nv-mobile-inbox-card:{sid}")
+            expect(card).to_be_visible(timeout=30_000)
+            expect(card).to_contain_text("path=notes/plan.md")
+            expect(card.get_by_test_id("nv-mob-ib-withheld")).to_contain_text("content")
+            expect(card.get_by_test_id("nv-mob-ib-note")).to_have_count(0)
+            expect(card.get_by_test_id(f"nv-mobile-inbox-approve:{sid}")).to_be_visible()
+
+            card.get_by_test_id(f"nv-mobile-inbox-approve:{sid}").click()
+            expect(page.locator(".toast", has_text="Approved " + WRITE)).to_be_visible(timeout=10_000)
+            written = _wait_for_file(tmp_path, "plan.md")
+            assert written is not None and written.read_text().startswith("zzz"), "the approved call ran"
         finally:
             client.delete(f"/v1/tool_approval_policies/{policy_id}")
             client.post("/v1/tool_approval_policies/invalidate")
