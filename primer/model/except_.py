@@ -32,8 +32,8 @@ class PrimerError(Exception):
     ) -> None:
         super().__init__(message)
         self.message = message
-        # A provider can send any text as its error code (the OpenAI SDK's, an OpenResponses error event's); an identifier survives, anything else
-        # is no code (security ticket 01a11fbc-ffea). ``str(self)`` and every sink that reads the code see only the safe value.
+        # A provider can send any text as its error code (the OpenAI SDK's, an OpenResponses error event's); an identifier survives (an int is read as its
+        # text), anything else becomes the sentinel ``provider_error`` and an empty code is no code (security ticket 01a11fbc-ffea). ``str(self)`` and every sink see only the safe value.
         self.code = safe_code(code)
         self.status_code = status_code
         self.cause = cause
