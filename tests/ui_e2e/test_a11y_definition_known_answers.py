@@ -272,7 +272,7 @@ def test_a_quiet_page_is_neither_loading_nor_in_error(page: Page) -> None:
 # the first is the network (tests/ui_e2e/test_a11y_sweep_guards_known_answers.py). Which of them the selectors recognise is stated here, not claimed in general.
 _CAUGHT_BY_SELECTORS = {
     "an activity feed that failed (sh-activity.jsx)": ('<div class="sh-file-conflict"><span>HTTP 500</span><button type="button" class="sh-verb">Retry</button></div>', "errors"),
-    "an entity picker that could not load (entity-picker.jsx)": ('<div class="field-help warn" style="padding:10px;margin:0">Couldn\'t load agents</div>', "errors"),
+    "a hint line that says it could not load something": ('<div class="field-help warn" style="padding:10px;margin:0">Could not load the list of agents.</div>', "errors"),
     "the dashboard's workers that keep failing (nv-system.jsx)": ('<div class="nv-bind-empty" style="color:var(--red)">Couldn\'t load workers &mdash; the list keeps failing (retrying).</div>', "errors"),
     "a harmless hint drawn with the same class (toolset form)": ('<div class="field-help warn">Admin only: a stdio toolset launches this command on the Primer host, so creating or changing one needs the admin role.</div>', None),
     "a toolbar notice that is not an error": ('<div class="nv-bind-empty">Nothing needs you right now.</div>', None),
@@ -283,6 +283,7 @@ _CAUGHT_BY_SELECTORS = {
 }
 # shapes no selector can tell from a page that is fine; only the network guard sees them
 _ONLY_THE_NETWORK_SEES = {
+    "an entity picker that could not load, with the server's words (entity-picker.jsx draws \"Couldn't load ...\" only when the error has neither detail nor message)": '<div class="field-help warn" style="padding:10px;margin:0">Internal Server Error</div>',
     "the toolsets table error (toolsets.jsx)": '<table><tbody><tr><td colspan="5"><span style="color:var(--red)">Internal Server Error</span> &middot; <a>Retry</a></td></tr></tbody></table>',
     "the health probe failing (health.jsx)": '<div style="font-size:18px">Health probe failing</div><span class="mono" style="color:var(--red)">error: Internal Server Error</span>',
     "a provider class body while its list loads (provider-catalog.jsx)": '<div data-testid="provider-body-llm"><div class="empty-state"><p>No providers match "".</p></div></div>',
