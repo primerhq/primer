@@ -1059,11 +1059,13 @@ class Error(BaseModel):
         description="True if no further events will follow this one.",
     )
 
-    @field_validator("code")
+    @field_validator("code", mode="before")
     @classmethod
-    def _code_is_an_identifier(cls, value: str | None) -> str | None:
-        """A provider can send any text as its code (an OpenResponses ``error`` event's): it reaches the ERROR record, ``ended_detail``,
-        ``last_turn_error``, the ``session.turn_failed`` payload and a git trailer. Only an identifier survives (01a11fbc-ffea)."""
+    def _code_is_an_identifier(cls, value: object) -> str | None:
+        """A provider can send any text as its code (an OpenResponses ``error`` event's), or a value that is not text at all (a proxy's ``"code": 429``):
+        it reaches the ERROR record, ``ended_detail``, ``last_turn_error``, the ``session.turn_failed`` payload and a git trailer. Only an identifier
+        survives; anything else becomes the sentinel ``provider_error`` (01a11fbc-ffea). ``mode="before"``: the field is declared ``str | None``, and an
+        ``after`` validator would never run for a non-string, pydantic would raise a validation error for the event instead."""
         return safe_code(value)
 
 
