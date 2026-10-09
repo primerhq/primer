@@ -17,6 +17,63 @@ function GB_Section({ title, hint, children }) {
   );
 }
 
+// "Remove this connection" (a static edge) and "Delete this step": real buttons, named for what they act on, that ask first through the console's own confirmDialog (a dialog: focus is moved in and
+// trapped, Escape cancels, focus returns to the button) and drop the answer when the question is no longer about what is on screen (the inspector moved on to another connection or step, or this
+// button is gone). Board task 01a12124; they were spans with a click handler (no role, no focus, no key). `onRemoved` lets the edge inspector select the step the connection left, as
+// GB_RemoveChoice does, so the panel does not go blank on an edge index that no longer exists.
+const GB_DESTROY_BUTTON = { background: "none", border: "none", padding: 0, font: "inherit", cursor: "pointer", lineHeight: 1, display: "inline-flex", alignItems: "center", minHeight: 24, alignSelf: "flex-start", color: "var(--red)", fontSize: "var(--fs-11)" };
+
+function GB_RemoveConnection({ edge, edgeIdx, labelOf, dispatch, onRemoved }) {
+  const live = React.useRef(true);
+  const current = React.useRef(edge);
+  current.current = edge;
+  React.useEffect(() => () => { live.current = false; }, []);
+  const press = async () => {
+    const asked = edge;
+    const from = labelOf(edge.from_node), to = labelOf(edge.to_node);
+    const ok = await confirmDialog({
+      title: "Remove this connection?",
+      message: "Remove the connection from \u201c" + from + "\u201d to \u201c" + to + "\u201d? Both steps stay.",
+      confirmLabel: "Remove",
+      cancelLabel: "Keep",
+      danger: true,
+    });
+    if (!ok || !live.current || current.current !== asked) return;
+    dispatch({ type: "DELETE_EDGE", idx: edgeIdx });
+    if (onRemoved) onRemoved();
+  };
+  return (
+    <button type="button" data-testid="gb-remove-connection" aria-label={"Remove the connection from " + labelOf(edge.from_node) + " to " + labelOf(edge.to_node)} onClick={press} style={GB_DESTROY_BUTTON}>
+      Remove this connection
+    </button>
+  );
+}
+
+function GB_DeleteStep({ node, dispatch }) {
+  const live = React.useRef(true);
+  const current = React.useRef(node);
+  current.current = node;
+  React.useEffect(() => () => { live.current = false; }, []);
+  const name = node.description || node.id;
+  const press = async () => {
+    const asked = node;
+    const ok = await confirmDialog({
+      title: "Delete this step?",
+      message: "Delete \u201c" + name + "\u201d and every connection to or from it?",
+      confirmLabel: "Delete",
+      cancelLabel: "Keep",
+      danger: true,
+    });
+    if (!ok || !live.current || current.current.id !== asked.id) return;
+    dispatch({ type: "DELETE_NODE", id: asked.id });
+  };
+  return (
+    <button type="button" data-testid="gb-delete-step" aria-label={"Delete the step " + name} onClick={press} style={GB_DESTROY_BUTTON}>
+      Delete this step
+    </button>
+  );
+}
+
 function GB_Inspector(props) {
   const {
     draft, node, edgeIdx, dispatch, tools, catalogue, readOnly, problems,
@@ -79,12 +136,8 @@ function GB_Inspector(props) {
                 </button>
               ) : null}
               {!readOnly ? (
-                <span
-                  onClick={() => dispatch({ type: "DELETE_EDGE", idx: edgeIdx })}
-                  style={{ fontSize: "var(--fs-11)", color: "var(--red)", cursor: "pointer" }}
-                >
-                  Remove this connection
-                </span>
+                <GB_RemoveConnection key={edgeIdx} edge={edge} edgeIdx={edgeIdx} dispatch={dispatch} onRemoved={() => onSelectNode(edge.from_node)}
+                  labelOf={(id) => ((draft.nodes || []).find((n) => n.id === id) || {}).description || id} />
               ) : null}
             </div>
           )}
@@ -241,17 +294,20 @@ function GB_Inspector(props) {
           </GB_Section>
         ))}
 
-        <div
+        <button
+          type="button"
+          data-testid="gb-advanced-toggle"
+          aria-expanded={advanced}
           onClick={() => setAdvanced(!advanced)}
           className="row"
           style={{
             gap: 8, alignItems: "center", padding: "10px 11px", background: "var(--bg-elev)",
             border: "1px solid var(--border)", borderRadius: 9, color: "var(--text-3)",
-            fontSize: "var(--fs-11)", cursor: "pointer",
+            fontSize: "var(--fs-11)", cursor: "pointer", font: "inherit", textAlign: "left", width: "100%",
           }}
         >
           {advanced ? "▾" : "▸"} Advanced · raw template, step id
-        </div>
+        </button>
         {advanced ? (
           <div className="col" style={{ gap: 10 }}>
             <label className="col" style={{ gap: 5 }}>
@@ -280,12 +336,7 @@ function GB_Inspector(props) {
               </label>
             ))}
             {!readOnly ? (
-              <span
-                onClick={() => dispatch({ type: "DELETE_NODE", id: node.id })}
-                style={{ fontSize: "var(--fs-11)", color: "var(--red)", cursor: "pointer" }}
-              >
-                Delete this step
-              </span>
+              <GB_DeleteStep key={node.id} node={node} dispatch={dispatch} />
             ) : null}
           </div>
         ) : null}
