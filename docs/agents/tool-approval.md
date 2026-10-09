@@ -163,10 +163,16 @@ It returns 200 with this envelope when an approval is pending:
   "policy_id": "p-required",
   "approval_type": "required",
   "gate_reason": "destructive operation",
+  "gate_id": "3f9a1c8d5e7b4a2f9c1d6e8a0b3c5d7e",
   "parked_at": "2026-06-14T10:00:00+00:00",
   "timeout_at": "2026-06-14T10:10:00+00:00"
 }
 ```
+
+`gate_id` names THIS gate. A provider repeats its `tool_call_id` across rounds (`call_0` in round 1 and again in round 3), so the
+`tool_call_id` alone cannot say which gate a decision is for; the id is minted when the gate is created and stays the same for as long as the
+gate is pending. It is `null` for a gate parked before gates had ids. The per-gate lists (`GET /v1/workspaces/{wid}/sessions/{sid}/yields/pending`,
+`GET /v1/workspaces/{wid}/yields/pending`, `GET /v1/yields/pending`) serve it as `gate_id` on each item.
 
 Both return 404 `/errors/not-found` (RFC 7807) if the session does
 not exist or is not currently waiting on an `_approval` gate. To respond
@@ -174,8 +180,16 @@ not exist or is not currently waiting on an `_approval` gate. To respond
 
 ```
 POST /v1/sessions/{session_id}/tool_approval/respond
-Body: {"tool_call_id": "tc-abc", "decision": "approved"|"rejected", "reason": "..."}
+Body: {"tool_call_id": "tc-abc", "gate_id": "3f9a1c8d...", "decision": "approved"|"rejected", "reason": "..."}
 ```
+
+Send back the `gate_id` the pending response served. A respond naming a gate that is no longer the pending one under that `tool_call_id` (the
+gate it showed was decided or timed out and the agent has since parked on the same raw id again) is refused with `409` and
+`extensions.code = "approval_stale"`, and nothing moves: no wake, no record. Reload the pending list. A `gate_id` is 32 lowercase hex
+characters; anything else is a `422`. A respond with no `gate_id` is still accepted while clients catch up (it is logged once and counted in
+`gate_respond_total{kind="approval",gate_token="absent"}`), but it cannot tell a stale card from a current one, so always send it.
+`POST .../yields/{tool_call_id}/cancel` takes the same optional `gate_id` in its body, and so does `POST .../ask_user/respond`
+(`{"tool_call_id": ..., "gate_id": ..., "response": ...}`; the stale code is the same `approval_stale`, and the message says "question").
 
 ## MCP tools
 
@@ -258,6 +272,16 @@ but require human review for any other host.
   console by an approver or an admin; a gate with no restriction can still be decided from the channel. A spec that cannot be
   read is admin-only, and so is a `call_tool` gate that was parked before approvers were recorded. When several enabled policies
   exist for one tool, the gate trips unconditionally and only an admin decides it until the extra row is deleted. A channel reply is also refused when the park names an approval gate but no pending entry carries its approver spec: a pending ToolCall whose tool is neither `_approval` nor a registered value-yielding tool (it is sent to the channel as an approval prompt, but is not an approval gate), a checkpoint that lists the gate only in its dispatch view, and a legacy park with no `tool_name` whose event key is the `tool_approval:<session>:<tool_call_id>` the reply would be published to.
+- **A decision names the gate it answers.** The `tool_call_id` a provider chooses repeats across rounds, so the approval and `ask_user` event
+  keys built from it do too. Every approval and `ask_user` park carries a `gate_id` minted when it was created (in the pending entry's
+  `resume_metadata`, which the graph checkpoint keeps verbatim, so it survives every re-park while the gate stays pending, and one gate of a
+  multi-gate graph park being decided does not change its siblings'). The pending responses serve it, the respond and cancel routes take it
+  back, and a decision naming a gate that has been replaced is a `409 approval_stale` that moves nothing. Two fan-out siblings that share a raw
+  `tool_call_id` are told apart by it. Chat approvals (`gate_id` does not apply: they are answered with "yes" / "no" in the conversation) and
+  yields that are not a human gate (`sleep`, `watch_files`, external waits) have none. Slack and Discord buttons and the Telegram button's cache
+  entry keep the id with the button, so an Approve left in a chat from an earlier round answers "This approval was replaced by a newer one" and
+  decides nothing; a reply to a question message is judged against the id the prompt was posted with. A button posted before this release has
+  no id and still works (counted as `absent`).
 - **A new user message does not supersede a pending approval.** If a
   session is parked on approval and the user sends another message,
   the message is queued behind the open turn and the approval stays
