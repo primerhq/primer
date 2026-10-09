@@ -516,3 +516,52 @@ async def test_words_after_basic_that_do_not_decode_to_a_credential_are_left_alo
         err = _described(await _openai_sdk_error(401, {"error": {"message": sentence}}))
 
         assert err.message.endswith(sentence), err.message
+
+
+# ---- follow-up of the review of PR 619: repr escapes, secrets with whitespace, a lazy collapse, the ':' guard ------------------------------------
+
+
+@pytest.mark.parametrize("escape", ["\\n", "\\t", "\\r", "\\x1b", "\\x00"])
+async def test_a_short_key_after_a_repr_escape_is_masked(escape):
+    """A 4xx the provider rejected keeps the SDK's message, which can carry the body's ``repr``: a newline before the key is the two characters
+    ``\\`` and ``n`` there, and the ``n`` made the key look like part of a longer token."""
+    key = "sk-1234"
+    exc = RuntimeError(f"Error code: 400 - {{'detail': 'bad{escape}{key}{escape}'}}")
+
+    err = describe_failure(classify_openai_exception(exc), exc, _provider_with_key(key))
+
+    assert key not in err.message and "[REDACTED]" in err.message, err.message
+
+
+async def test_a_configured_secret_that_contains_whitespace_is_masked_after_the_text_is_collapsed():
+    """The provider's text is normalised (controls stripped, whitespace collapsed) BEFORE it is scrubbed, so the exact match must also know the
+    normalised form of a secret that has runs of spaces or a tab in it (and the raw form still matches in an untouched message)."""
+    key = "my  secret\tkey 99"
+    provider = _provider_with_key(key)
+    rewritten = _described(await _openai_sdk_error(500, {"error": {"message": f"invalid key {key} for this model"}}), provider)
+    untouched = _described(await _openai_sdk_error(400, {"error": {"message": f"invalid key {key} for this model"}}), provider)
+
+    for err in (rewritten, untouched):
+        assert "secret" not in err.message and "[REDACTED]" in err.message, err.message
+
+
+def test_the_collapse_is_the_prefix_of_the_full_collapse_and_does_not_read_past_the_limit():
+    from primer.llm import _failure
+
+    text = ("alpha  beta\t\tgamma\n\n" * 50_000) + "\x1ctail end"
+    limit = 1_000
+    full = " ".join(text.split())
+
+    got = _failure._collapse(text, limit)
+
+    assert got == full[:limit] and len(got) == limit
+    assert _failure._collapse("  a   b  ", 100) == "a b"
+    assert _failure._collapse("", 10) == ""
+
+
+@pytest.mark.parametrize("sentence", ["Basic Indiana plan", "Basic Alabama Montana Nebraska", "Basic dGhpcyBpcyBub3QgYSBjcmVkZW50aWFs"])
+async def test_a_word_after_basic_that_decodes_to_text_without_a_colon_is_left_alone(sentence):
+    """The ``:`` guard: ``dGhpcyBpcyBub3QgYSBjcmVkZW50aWFs`` is base64 of printable text ("this is not a credential") with no colon."""
+    err = _described(await _openai_sdk_error(401, {"error": {"message": sentence}}))
+
+    assert err.message.endswith(sentence), err.message
