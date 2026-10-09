@@ -142,7 +142,7 @@ async def test_parked_session_e2e_subscribe_fire_resume(
 
     yielded = info.value.yielded
     assert yielded.tool_name == "subscribe_to_trigger"
-    assert yielded.event_key == f"trigger:{trigger.id}"
+    assert yielded.event_key == f"trigger:{session.id}:{trigger.id}", "the key names the session: a fire for another session's park must not reach this one"
     assert info.value.tool_call_id == tool_call_id
     sub_id: str = yielded.resume_metadata["subscription_id"]
     assert sub_id.startswith("sb-")

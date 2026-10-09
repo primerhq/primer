@@ -33,14 +33,15 @@ def test_ask_user_key_inside_a_graph_node_carries_the_node() -> None:
     assert y.event_key == "ask_user:s-1:worker[1]:tc-1"
 
 
-def test_timer_key_uses_the_tool_call_id() -> None:
+def test_timer_key_is_session_scoped() -> None:
+    """A provider repeats ``call_0`` in every conversation: a key without the session let one session's timer wake another's sleep (ticket 01a12151-b225)."""
     y = to_yielded(
         {"kind": "timer", "params": {"seconds": 5}, "meta": {}},
         tool_name="nap",
         ctx=CTX,
         source_version=1,
     )
-    assert y.event_key == "timer:tc-1"
+    assert y.event_key == "timer:s-1:tc-1"
     assert y.timeout == 5
 
 

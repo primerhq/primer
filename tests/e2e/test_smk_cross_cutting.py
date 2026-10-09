@@ -219,7 +219,7 @@ async def test_subscribe_to_trigger_park_resume(
     tool waiting for a named trigger; the trigger then fires through the
     real REST path (``POST /v1/triggers/{id}/fire_now``), the
     ParkedSessionDispatcher publishes the resume payload on the parked
-    session's event_key (``trigger:{trigger_id}``), the YieldEventListener
+    session's event_key (``trigger:{session_id}:{trigger_id}``, scoped by the session so another session's fire cannot reach it), the YieldEventListener
     flips the row resumable + re-arms the engine lease, and the session
     resumes and ends. Proves the full subscribe -> park -> fire -> resume
     chain end to end against the live engine + event bus."""
@@ -256,7 +256,7 @@ async def test_subscribe_to_trigger_park_resume(
         )
         assert parked.get("parked_status") == "parked", parked
         # The session parked on this trigger's event_key.
-        assert parked.get("parked_event_key") == f"trigger:{trigger_id}", parked
+        assert parked.get("parked_event_key") == f"trigger:{sid}:{trigger_id}", parked
         initial_turn_no = parked["turn_no"]
 
         # ----- Fire the trigger through the real REST path -----

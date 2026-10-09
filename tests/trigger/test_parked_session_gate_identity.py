@@ -16,6 +16,7 @@ import pytest
 import primer.trigger.subscribers.parked_session as ps
 from primer.model.trigger import ParkedSessionSubConfig, Subscription
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
+from primer.session.yields import flip_sessions_parked_on
 from primer.trigger.subscribers import DispatchDeps
 from tests.conftest import _FakeStorageProvider
 
@@ -111,6 +112,37 @@ async def test_a_subscription_for_an_earlier_trigger_park_does_not_wake_the_curr
     assert fresh.ok and not fresh.skipped
     assert [k for k, _ in bus.published] == ["trigger:tr-1"]
     assert await sp.get_storage(Subscription).get("sb-new") is None, "the one-shot subscription is consumed"
+
+
+class _FlippingBus(_Bus):
+    """A bus that, like the listener, flips whatever is parked on the key it publishes."""
+
+    def __init__(self, sessions) -> None:
+        super().__init__()
+        self._sessions = sessions
+
+    async def publish(self, key: str, payload: dict) -> None:
+        await super().publish(key, payload)
+        await flip_sessions_parked_on(key, payload, session_storage=self._sessions, engine=None)
+
+
+@pytest.mark.asyncio
+async def test_a_park_in_flight_on_the_old_shared_trigger_key_is_still_woken_by_the_dispatcher():
+    """Back-compat of the session-scoped trigger key (ticket 01a1208d, #702 review N-g): a park written by an earlier build stored ``trigger:tr-1``; the dispatcher
+    publishes the key the PARK stored, so the subscription still wakes it, through the real flip, and nothing needs a migration."""
+    sp = _FakeStorageProvider()
+    sessions = sp.get_storage(WorkspaceSession)
+    await sessions.create(_session(_trigger_park("sb-old")))
+    sub = _sub("sb-old")
+    await sp.get_storage(Subscription).create(sub)
+    bus = _FlippingBus(sessions)
+
+    result = await _fire(sp, sub, bus)
+
+    assert (result.ok, result.skipped) == (True, False)
+    assert [k for k, _ in bus.published] == ["trigger:tr-1"], "the key the park stored, not a freshly built one"
+    row = await sessions.get(SESSION)
+    assert row.parked_status == "resumable" and row.parked_state["resume_event_payload"]["fire_context"] == {"fired": True}
 
 
 @pytest.mark.asyncio
