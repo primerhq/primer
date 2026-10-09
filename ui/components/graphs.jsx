@@ -314,7 +314,6 @@ function GraphsPage({ onOpen, pushToast, startCreate }) {
                 `${nodeCount} node${nodeCount === 1 ? "" : "s"}`,
                 `${edgeCount} edge${edgeCount === 1 ? "" : "s"}`,
               ];
-              if (g.entry_node_id) metaParts.push(`entry: ${g.entry_node_id}`);
               return (
                 <Card
                   title={g.id}
@@ -336,22 +335,21 @@ function GraphsPage({ onOpen, pushToast, startCreate }) {
               <th>Description</th>
               <th style={{ textAlign: "right" }}>Nodes</th>
               <th style={{ textAlign: "right" }}>Edges</th>
-              <th>Entry</th>
               <th style={{ width: 110 }}>Status</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
             {list.loading && items.length === 0 ? (
-              <tr><td colSpan={7} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>Loading…</td></tr>
+              <tr><td colSpan={6} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>Loading…</td></tr>
             ) : list.error && items.length === 0 ? (
-              <tr><td colSpan={7} style={{ padding: 20, textAlign: "center" }}>
+              <tr><td colSpan={6} style={{ padding: 20, textAlign: "center" }}>
                 <span style={{ color: "var(--red)" }}>{list.error.title || list.error.message}</span>
                 {" · "}<a onClick={() => list.refetch()} style={{ cursor: "pointer" }}>Retry</a>
               </td></tr>
             ) : filtered.length === 0 ? (
               items.length === 0 ? (
-                <tr><td colSpan={7}>
+                <tr><td colSpan={6}>
                   <div className="empty" style={{ padding: "40px 20px" }}>
                     <div className="ico-wrap"><Icon name="graph" size={22} /></div>
                     <div className="head">No graphs yet</div>
@@ -366,7 +364,7 @@ function GraphsPage({ onOpen, pushToast, startCreate }) {
                   </div>
                 </td></tr>
               ) : (
-                <tr><td colSpan={7} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>No graphs match.</td></tr>
+                <tr><td colSpan={6} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>No graphs match.</td></tr>
               )
             ) : filtered.map((g) => {
               const status = perRowStatus[g.id];
@@ -380,9 +378,6 @@ function GraphsPage({ onOpen, pushToast, startCreate }) {
                   </td>
                   <td className="mono num tabular">{nodeCount}</td>
                   <td className="mono num tabular">{edgeCount}</td>
-                  <td className="mono muted text-sm">
-                    {g.entry_node_id || <span style={{ color: "var(--text-4)" }}>—</span>}
-                  </td>
                   <td>
                     {status == null ? (
                       <span className="muted">…</span>
