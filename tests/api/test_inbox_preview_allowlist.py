@@ -354,3 +354,223 @@ def test_every_call_of_approval_preview_in_the_api_passes_the_stamp() -> None:
                 if len(node.args) + len(node.keywords) < 2:
                     offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}")
     assert not offenders, "a caller draws a card from the scrubber alone: " + ", ".join(offenders)
+
+
+# ---- review of #641, round 2: the allowlist walk is bounded, and it does not widen what the scrubber hid -----------------------------------------------------------------
+
+
+def _nested(width: int, depth: int):
+    """Lists of lists ``width`` wide and ``depth`` deep, SHARING their children (cheap to build; a walk that does not charge its visits still pays width**depth)."""
+    value = 0
+    for _ in range(depth):
+        value = [value] * width
+    return value
+
+
+def _count_classified(monkeypatch, limit: int) -> list[int]:
+    """Count the positions the walk classifies, and fail the test the moment it passes ``limit`` (so the buggy walk fails in milliseconds, not in minutes)."""
+    from primer.api.routers import workspaces as w
+
+    calls = [0]
+    real = w.classify
+
+    def counting(allowed, here):
+        calls[0] += 1
+        if calls[0] > limit:
+            pytest.fail(f"{calls[0]} positions were classified and the walk was still going (limit {limit})")
+        return real(allowed, here)
+
+    monkeypatch.setattr(w, "classify", counting)
+    return calls
+
+
+@pytest.mark.parametrize(("width", "depth"), [(50, 4), (30, 5), (20, 6)])
+def test_a_stamped_part_path_through_nested_lists_does_constant_work(monkeypatch, width: int, depth: int) -> None:
+    """``_allow_only`` descends a container that has an allowed path deeper inside, and a list is transparent, so ``entity.nodes`` of lists of lists was walked in full:
+    with the create_graph declaration 50**4 members took 13 s and 30**5 took 53 s, per preview, on the event loop of every ``/v1/yields/pending`` poll. Every visited
+    node is charged to the preview's budget now, and what the budget does not cover is withheld and counted."""
+    from primer.api.routers import workspaces as w
+
+    calls = _count_classified(monkeypatch, w._REDACT_BUDGET // w._REDACT_MEMBER_COST + 64)
+
+    got = _preview({"entity": {"id": "g", "nodes": _nested(width, depth)}}, _stamp("entity.id", "entity.nodes.id", "entity.nodes.agent_id"))
+
+    assert calls[0] > 0
+    assert got["truncated"] is True and any(key.startswith("entity.nodes") for key in got["hidden_keys"]), got
+
+
+def test_the_same_walk_is_fast_in_a_child_that_is_killed_when_it_is_not() -> None:
+    from tests.api.test_inbox_preview_is_bounded import _HANG_BACKSTOP_S, _timed_in_a_child
+
+    call = {"name": "t", "arguments": {"entity": {"id": "g", "nodes": _nested(30, 5)}}}
+    elapsed = _timed_in_a_child("_approval_preview", call, _stamp("entity.id", "entity.nodes.id"))
+
+    assert elapsed is not None and elapsed < _HANG_BACKSTOP_S / 5, f"the preview took {elapsed} s"
+
+
+def test_the_walk_and_the_scrubber_share_one_budget() -> None:
+    """One budget for the whole preview: a walk that used it up leaves nothing to look at, so a LATER allowed argument is withheld unread, not drawn."""
+    wide = {f"k{i}": [{"id": i}] * 50 for i in range(50)}
+    stamp = _stamp(*(f"entity.k{i}.id" for i in range(50)), "note")
+
+    got = _preview({"entity": wide, "note": "plain words"}, stamp)
+
+    assert "plain words" not in got["arguments"], got["arguments"]
+    assert "note=<hidden>" in got["arguments"] and got["truncated"] is True, got["arguments"]
+
+
+def test_a_dict_with_ten_thousand_top_level_arguments_is_walked_in_bounded_work(monkeypatch) -> None:
+    from primer.api.routers import workspaces as w
+
+    calls = _count_classified(monkeypatch, w._REDACT_MAX_ITEMS + 8)
+
+    got = _preview({f"arg{i}": "x" for i in range(10_000)}, _stamp("arg0", "arg1"))
+
+    assert calls[0] > 0 and got["truncated"] is True
+
+
+def test_a_container_cut_at_fifty_members_says_so_and_marks_the_card_truncated() -> None:
+    """The marker was drawn but nothing counted what it left out: a card whose only loss was a cut list said ``truncated: false``."""
+    args = {"entity": {"nodes": [{"id": f"n{i}"} for i in range(80)]}}
+
+    filtered, hidden = _allow_only(args, ["entity.nodes.id"])
+
+    assert filtered["entity"]["nodes"][-1] == "<30 more>" and len(filtered["entity"]["nodes"]) == 51
+    assert hidden == ["entity.nodes <30 more>"], hidden
+    assert _preview(args, _stamp("entity.nodes.id"))["truncated"] is True
+
+    top, top_hidden = _allow_only({f"arg{i}": 1 for i in range(60)}, ["arg0"])
+
+    assert top["..."] == "<10 more>" and top_hidden[-1] == "<10 more>", top_hidden
+
+
+# ---- a withheld name sibling means the value beside it is a secret -------------------------------------------------------------------------------------------------
+
+
+def test_an_allowed_value_beside_a_withheld_pair_name_is_withheld_too() -> None:
+    """Main hid ``{"name": "Authorization", "value": x}`` because the NAME says secret. With ``headers.value`` allowed and ``headers.name`` not, the name is never read, so
+    it cannot be judged: the value is withheld with it (a withheld pair name means a secret name)."""
+    args = {"headers": [{"name": "Authorization", "value": "hunter2xyz"}], "url": "https://x"}
+
+    got = _preview(args, _stamp("url", "headers.value", source="policy"))
+
+    assert "hunter2xyz" not in got["arguments"], got["arguments"]
+    assert "headers.value" in got["hidden_keys"], got["hidden_keys"]
+
+
+@pytest.mark.parametrize("name_key", ["name", "key", "header", "field", "param", "variable", "var", "env", "label"])
+def test_every_pair_name_key_counts(name_key: str) -> None:
+    got = _preview({"cfg": {name_key: "DB_PASSWORD", "value": "hunter2xyz"}}, _stamp("cfg.value"))
+
+    assert "hunter2xyz" not in got["arguments"], (name_key, got["arguments"])
+
+
+def test_the_arguments_themselves_may_be_one_name_value_pair() -> None:
+    got = _preview({"name": "DB_PASSWORD", "value": "hunter2xyz"}, _stamp("value"))
+
+    assert "hunter2xyz" not in got["arguments"], got["arguments"]
+
+
+def test_a_pair_whose_name_is_allowed_is_judged_by_the_scrubber_as_on_main() -> None:
+    args = {"cfg": {"name": "DB_PASSWORD", "value": "hunter2xyz"}}
+
+    got = _preview(args, _stamp("cfg.name", "cfg.value"))
+
+    assert "hunter2xyz" not in got["arguments"] and "DB_PASSWORD" in got["arguments"], got["arguments"]
+
+
+def test_a_pair_whose_name_is_allowed_and_harmless_keeps_its_value() -> None:
+    got = _preview({"cfg": {"name": "REGION", "value": "eu-west-1"}}, _stamp("cfg.name", "cfg.value"))
+
+    assert "eu-west-1" in got["arguments"], got["arguments"]
+
+
+def test_a_value_key_with_no_name_beside_it_is_judged_on_its_own() -> None:
+    got = _preview({"cfg": {"value": "eu-west-1", "other": "x"}}, _stamp("cfg.value"))
+
+    assert "eu-west-1" in got["arguments"], got["arguments"]
+
+
+# ---- a key that is not a path segment is never matched as a nested path -------------------------------------------------------------------------------------------
+
+
+def test_a_top_level_key_that_contains_a_dot_does_not_match_a_nested_path() -> None:
+    args = {"entity": {"id": "a1"}, "entity.id": "s3cretVALUE"}
+
+    got = _preview(args, _stamp("entity.id"))
+
+    assert "s3cretVALUE" not in got["arguments"], got["arguments"]
+    assert "a1" in got["arguments"] and "entity.id=<hidden>" in got["arguments"], got["arguments"]
+
+
+def test_a_nested_key_that_contains_a_dot_is_withheld() -> None:
+    got = _preview({"entity": {"id": "a1", "model.profile_id": "s3cretVALUE"}}, _stamp("entity.model.profile_id", "entity.id"))
+
+    assert "s3cretVALUE" not in got["arguments"], got["arguments"]
+    assert "a1" in got["arguments"] and got["truncated"] is True
+
+
+def test_a_key_made_of_a_whole_allowed_path_is_withheld_with_its_subtree() -> None:
+    filtered, hidden = _allow_only({"a": {"b.c": {"d": "s3cretVALUE"}}}, ["a.b"])
+
+    assert filtered == {"a": {"b.c": "<hidden>"}} and hidden == ["a.b.c"], (filtered, hidden)
+
+
+@pytest.mark.parametrize("key", ["a b", "a/b", "", "caf\u00e9", "a" * 300, "-lead", "x[0]"])
+def test_a_key_that_is_not_a_valid_segment_is_withheld_where_a_path_goes_deeper(key: str) -> None:
+    filtered, hidden = _allow_only({"entity": {"id": "a1", key: "s3cretVALUE"}}, ["entity.id"])
+
+    assert filtered["entity"]["id"] == "a1"
+    assert "s3cretVALUE" not in repr(filtered), filtered
+    assert hidden, "the card must say something was withheld"
+
+
+# ---- the default rule trusts the schema's NAMES, not the value's shape --------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("value", "shown"),
+    [(True, "true"), (False, "false"), (3, "3"), (2.5, "2.5"), (None, "null"), ("dry-run", "dry-run"), ("deploy to the staging cluster in eu west"[:40], "deploy to the staging cluster in eu west"[:40])],
+)
+def test_a_default_allowed_name_shows_a_boolean_a_number_null_or_a_short_string(value, shown: str) -> None:
+    got = _preview({"mode": value}, _stamp("mode", source="default"))
+
+    assert got["arguments"] == f"mode={shown}", got["arguments"]
+    assert got["hidden_keys"] == []
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["deploy to the staging cluster in eu west and then some"[:41], "x" * 4000, {"nested": "s3cretVALUE"}, ["s3cretVALUE"], "line one\nline two " * 4],
+)
+def test_a_default_allowed_name_withholds_anything_else(value) -> None:
+    """The gate parks BEFORE schema validation, so a closed-set name can hold anything the model sent."""
+    got = _preview({"mode": value, "other": 1}, _stamp("mode", "other", source="default"))
+
+    assert got["arguments"].startswith("mode=<hidden>"), got["arguments"]
+    assert "mode" in got["hidden_keys"] and "s3cretVALUE" not in got["arguments"]
+    assert got["truncated"] is True and got["preview"] == "default"
+
+
+def test_a_declared_allowance_is_not_held_to_the_default_rule() -> None:
+    got = _preview({"mode": {"nested": "readable"}, "name": "a longer name than forty characters, which is fine"}, _stamp("mode", "name", source="tool"))
+
+    assert "readable" in got["arguments"] and "a longer name than forty" in got["arguments"], got["arguments"]
+
+
+# ---- a withheld value under a secret-looking key prints the scrubber's word --------------------------------------------------------------------------------------------
+
+
+def test_a_withheld_value_under_a_secret_looking_key_is_drawn_as_redacted() -> None:
+    got = _preview({"path": "/a", "password_hint": "x", "api_token": "y"}, _stamp("path"))
+
+    assert "password_hint=<redacted>" in got["arguments"] and "api_token=<redacted>" in got["arguments"], got["arguments"]
+    assert "<hidden>" not in got["arguments"]
+    assert set(got["hidden_keys"]) == {"password_hint", "api_token"}, "withheld all the same: the card says what it did not read"
+    assert got["truncated"] is True
+
+
+def test_a_withheld_value_under_an_ordinary_key_is_still_drawn_as_hidden() -> None:
+    got = _preview({"path": "/a", "note": "x"}, _stamp("path"))
+
+    assert "note=<hidden>" in got["arguments"] and "<redacted>" not in got["arguments"], got["arguments"]

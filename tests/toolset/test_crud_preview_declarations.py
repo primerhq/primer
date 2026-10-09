@@ -55,26 +55,43 @@ def test_every_declared_path_names_an_argument_of_the_tool(tools, name: str) -> 
     assert tool.preview_args and missing_paths(tool.args_schema, tool.preview_args) == []
 
 
+# A person pastes a key into a description as easily as into a prompt, and a response format is a schema with a free-text description inside: none of these may be a
+# segment of a path a default-gated card shows (review of #641, round 2).
+_FREE_TEXT_SEGMENTS = frozenset({
+    "description", "response_format", "system_prompt", "compaction_prompt", "input_template", "output_template", "arguments", "arguments_template", "token",
+    "hmac_secret", "source",
+})
+
+
+@pytest.mark.parametrize("name", CRUD_TOOL_NAMES)
+def test_no_declared_path_names_free_text(tools, name: str) -> None:
+    named = [path for path in tools[name].preview_args if _FREE_TEXT_SEGMENTS & set(path.split("."))]
+
+    assert not named, f"{name} lets its approval card draw free text: {named}"
+
+
 # ---- agents ------------------------------------------------------------------------------------------------------------------------------------------------------
 
 
 AGENT = {
-    "id": "reviewer", "description": "Reviews diffs", "model": {"profile_id": "anthropic--sonnet"}, "tools": ["system__get_agent"],
+    "id": "reviewer", "description": f"Reviews diffs. Staging key: {SECRET}", "model": {"profile_id": "anthropic--sonnet"}, "tools": ["system__get_agent"],
     "system_prompt": [f"You are a reviewer. The deploy key is {SECRET}."], "compaction_prompt": [f"Summarise. Also remember {SECRET_2}"],
     "compaction_tool_access": False, "allow_external_tools": False,
+    "response_format": {"type": "json_schema", "json_schema": {"name": "verdict", "description": f"Answer with {SECRET_2}", "schema": {"type": "object"}}},
 }
 
 
 @pytest.mark.parametrize("name", ["create_agent", "update_agent"])
-def test_an_agent_card_names_the_agent_and_withholds_its_prompts(tools, name: str) -> None:
+def test_an_agent_card_names_the_agent_and_withholds_its_free_text(tools, name: str) -> None:
+    """A description and a response format are free text a person pastes a key into as easily as a prompt: the card withholds them with the prompts."""
     arguments = {"entity": AGENT, **({"id": "reviewer"} if name == "update_agent" else {})}
 
     card = _card(tools, name, arguments)
 
     drawn = card["arguments"] + " " + " ".join(card["hidden_keys"])
-    assert "Zq7" not in drawn and "horse battery" not in drawn and "deploy key" not in drawn
-    assert card["hidden_keys"] == ["entity.system_prompt", "entity.compaction_prompt"]
-    assert '"id": "reviewer"' in card["arguments"] and '"description": "Reviews diffs"' in card["arguments"]
+    assert "Zq7" not in drawn and "horse battery" not in drawn and "deploy key" not in drawn and "Staging key" not in drawn and "Reviews diffs" not in drawn
+    assert card["hidden_keys"] == ["entity.description", "entity.system_prompt", "entity.compaction_prompt", "entity.response_format"]
+    assert '"id": "reviewer"' in card["arguments"]
     assert card["truncated"] is True and card["preview"] == "tool"
 
 
@@ -82,10 +99,10 @@ def test_an_agent_card_names_the_agent_and_withholds_its_prompts(tools, name: st
 
 
 GRAPH = {
-    "id": "pipeline", "description": "a pipeline",
+    "id": "pipeline", "description": f"a pipeline, deployed with {SECRET_2}",
     "nodes": [
         {"kind": "begin", "id": "begin"},
-        {"kind": "agent", "id": "a1", "agent_id": "reviewer", "input_template": f"Use the key {SECRET}"},
+        {"kind": "agent", "id": "a1", "agent_id": "reviewer", "description": f"reads with {SECRET}", "input_template": f"Use the key {SECRET}"},
         {"kind": "tool_call", "id": "t1", "tool_id": "system__get_agent", "arguments": {"id": SECRET_2}, "arguments_template": {"id": "{{ x }}"}},
         {"kind": "end", "id": "end", "output_template": f"done {SECRET}"},
     ],
@@ -101,7 +118,10 @@ def test_a_graph_card_names_the_nodes_and_withholds_their_templates_and_argument
 
     drawn = card["arguments"] + " " + " ".join(card["hidden_keys"])
     assert "Zq7" not in drawn and "horse battery" not in drawn
-    assert set(card["hidden_keys"]) == {"entity.nodes.input_template", "entity.nodes.arguments", "entity.nodes.arguments_template", "entity.nodes.output_template"}
+    assert set(card["hidden_keys"]) == {
+        "entity.description", "entity.nodes.description", "entity.nodes.input_template", "entity.nodes.arguments", "entity.nodes.arguments_template",
+        "entity.nodes.output_template",
+    }
     # The line is cut at 80 characters per argument, as it always was, so only the start of a long entity is drawn; the rest is one "show all" away.
     assert '"id": "pipeline"' in card["arguments"] and '"nodes": [{"kind": "begin"' in card["arguments"], card["arguments"]
 
@@ -111,15 +131,15 @@ def test_a_graph_card_names_the_nodes_and_withholds_their_templates_and_argument
 
 def test_a_webhook_trigger_card_never_draws_its_token_or_hmac_secret(tools) -> None:
     arguments = {
-        "slug": "deploy-hook", "name": "Deploy hook", "description": "fires on deploy", "enabled": True,
+        "slug": "deploy-hook", "name": "Deploy hook", "description": f"fires on deploy, token {SECRET}", "enabled": True,
         "config": {"kind": "webhook", "token": SECRET, "hmac_secret": SECRET_2, "interactive": False, "wait_timeout_seconds": 30},
     }
 
     card = _card(tools, "create_trigger", arguments)
 
     drawn = card["arguments"] + " " + " ".join(card["hidden_keys"])
-    assert "Zq7" not in drawn and "horse battery" not in drawn
-    assert card["hidden_keys"] == ["config.token", "config.hmac_secret"]
+    assert "Zq7" not in drawn and "horse battery" not in drawn and "fires on deploy" not in drawn
+    assert card["hidden_keys"] == ["description", "config.token", "config.hmac_secret"]
     assert "slug=deploy-hook" in card["arguments"] and "enabled=true" in card["arguments"]
 
 

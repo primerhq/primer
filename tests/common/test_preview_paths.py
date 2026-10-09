@@ -151,3 +151,20 @@ def test_a_path_that_is_not_text_has_a_syntax_error() -> None:
 )
 def test_classify_says_whole_part_or_none(allowed: list[str], here: str, expected: str) -> None:
     assert classify(allowed, here) == expected
+
+
+# ---- a dictionary KEY is matched as one segment, never as a path ------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["a", "id", "a-b", "_x", "9", "A1_b-2", "a" * 200])
+def test_a_name_that_is_one_path_segment_is_a_segment(name: str) -> None:
+    from primer.common.preview_paths import is_segment
+
+    assert is_segment(name) is True
+
+
+@pytest.mark.parametrize("name", ["", "a.b", ".", "a b", "a/b", "caf\u00e9", "-x", "x[0]", "a\nb", "a" * 201, None, 3, ["a"]])
+def test_a_name_that_is_not_one_path_segment_is_not_a_segment(name) -> None:
+    from primer.common.preview_paths import is_segment
+
+    assert is_segment(name) is False
