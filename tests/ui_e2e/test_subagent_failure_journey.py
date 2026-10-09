@@ -21,12 +21,13 @@ import json
 from playwright.sync_api import expect
 
 from tests.ui_e2e import _delegation_seed as seed
+from tests.ui_e2e._session_seed import seed_session
 from tests.ui_e2e._studio_helpers import open_session_in_studio
-from tests.ui_e2e.test_delegated_run_nests_in_its_call_journey import _seed_session
 
 
 def test_a_subagents_failure_renders_inside_its_block_and_a_failed_calls_notice_is_the_failure(base_url, console_url, page, tmp_path, unique_suffix) -> None:
-    wid, sid = _seed_session(base_url, tmp_path, unique_suffix)
+    rows = seed_session(base_url, tmp_path, unique_suffix, description="delegation nesting probe")
+    wid, sid = rows.wid, rows.sid
     seeded = seed.build(failures=True)
     assert seeded.delegated_failure_seq and seeded.delegated_notice_seq and seeded.failed_call_seq
     log = tmp_path / wid / ".state" / "sessions" / sid / "messages.jsonl"
@@ -71,7 +72,8 @@ def test_a_grandchilds_notice_is_the_failure_of_the_helpers_call_not_a_line_that
 ) -> None:
     """The recorder writes the helper's own tool result (an ERROR, quoting the notice) with the SAME scoped id as the parent's call, and the parent's own result is OK.
     Paired by the id alone, the helper's call showed the parent's OK result and its grandchild's notice read "carried on" (review of #575, round 2)."""
-    wid, sid = _seed_session(base_url, tmp_path, unique_suffix)
+    rows = seed_session(base_url, tmp_path, unique_suffix, description="delegation nesting probe")
+    wid, sid = rows.wid, rows.sid
     seeded = seed.build_nested_notice()
     log = tmp_path / wid / ".state" / "sessions" / sid / "messages.jsonl"
     log.parent.mkdir(parents=True, exist_ok=True)

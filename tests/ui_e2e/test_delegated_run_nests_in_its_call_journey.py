@@ -18,41 +18,16 @@ from __future__ import annotations
 
 import json
 
-import httpx
 from playwright.sync_api import expect
 
-from tests._support.model_profiles import agent_model, seed_llm_provider_with
 from tests.ui_e2e import _delegation_seed as seed
+from tests.ui_e2e._session_seed import seed_session
 from tests.ui_e2e._studio_helpers import open_session_in_studio
 
 
-def _seed_session(base_url: str, tmp_path, suffix: str) -> tuple[str, str]:
-    prov, aid, wp, tpl = f"dn-prov-{suffix}", f"dn-agent-{suffix}", f"dn-wp-{suffix}", f"dn-tpl-{suffix}"
-    with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        r = seed_llm_provider_with(c, {
-            "id": prov, "provider": "ollama", "config": {"url": "http://127.0.0.1:9999"},
-            "models": [{"name": "fake-model", "context_length": 4096}], "limits": {"max_concurrency": 1},
-        })
-        assert r.status_code in (201, 409), r.text
-        r = c.post("/v1/agents", json={
-            "id": aid, "description": "delegation nesting probe", "model": agent_model(prov, "fake-model"),
-            "tools": [], "system_prompt": ["test"],
-        })
-        assert r.status_code in (201, 409), r.text
-        r = c.post("/v1/workspace_providers", json={"id": wp, "provider": "local", "config": {"kind": "local", "root_path": str(tmp_path)}})
-        assert r.status_code in (201, 409), r.text
-        r = c.post("/v1/workspace_templates", json={"id": tpl, "description": "tpl", "provider_id": wp, "backend": {"kind": "local"}})
-        assert r.status_code in (201, 409), r.text
-        r = c.post("/v1/workspaces", json={"template_id": tpl})
-        assert r.status_code == 201, r.text
-        wid = r.json()["id"]
-        r = c.post(f"/v1/workspaces/{wid}/sessions", json={"binding": {"kind": "agent", "agent_id": aid}, "auto_start": False})
-        assert r.status_code == 201, r.text
-        return wid, r.json()["id"]
-
-
 def test_a_delegated_run_renders_inside_the_call_that_delegated_to_it(base_url, console_url, page, tmp_path, unique_suffix) -> None:
-    wid, sid = _seed_session(base_url, tmp_path, unique_suffix)
+    rows = seed_session(base_url, tmp_path, unique_suffix, description="delegation nesting probe")
+    wid, sid = rows.wid, rows.sid
     seeded = seed.build()
     log = tmp_path / wid / ".state" / "sessions" / sid / "messages.jsonl"
     log.parent.mkdir(parents=True, exist_ok=True)

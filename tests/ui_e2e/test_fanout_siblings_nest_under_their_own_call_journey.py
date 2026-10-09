@@ -12,12 +12,13 @@ import json
 from playwright.sync_api import expect
 
 from tests.ui_e2e import _delegation_seed as seed
+from tests.ui_e2e._session_seed import seed_session
 from tests.ui_e2e._studio_helpers import open_session_in_studio
-from tests.ui_e2e.test_delegated_run_nests_in_its_call_journey import _seed_session
 
 
 def test_each_siblings_helper_renders_inside_its_own_nodes_call(base_url, console_url, page, tmp_path, unique_suffix) -> None:
-    wid, sid = _seed_session(base_url, tmp_path, unique_suffix)
+    rows = seed_session(base_url, tmp_path, unique_suffix, description="delegation nesting probe")
+    wid, sid = rows.wid, rows.sid
     seeded = seed.build_fanout()
     log = tmp_path / wid / ".state" / "sessions" / sid / "messages.jsonl"
     log.parent.mkdir(parents=True, exist_ok=True)
