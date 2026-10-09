@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
+from primer.model.workspace_session import AgentBinding, SessionInfo, SessionStatus
 from primer.workspace.local.state import LocalStateRepo
 from primer.workspace.sandbox.state import _build_arbitrary_message
 from primer.workspace.state_helpers import build_message
@@ -26,7 +28,7 @@ pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git CLI not
 
 #: Every character that can end a line, separate a record or a field, or that a process refuses in an argument.
 UNSAFE = [
-    "\r", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x1f", "\x00", "\x01", "\x1b", "\t", "\x7f", "\x85", " ", " ",
+    "\r", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x1f", "\x00", "\x01", "\x1b", "\t", "\x7f", "\x85", "\u2028", "\u2029",
 ]
 IDS = [f"U+{ord(c):04X}" for c in UNSAFE]
 REAL_FILE = "graphs/g/state.json"
@@ -174,8 +176,10 @@ async def test_the_sandbox_arbitrary_message_reads_back_as_one_record(tmp_path: 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("char", UNSAFE, ids=IDS)
 async def test_the_session_commit_message_reads_back_as_one_record(tmp_path: Path, char) -> None:
+    """Every value of the message is hostile, the workspace id and the agent id included: both are caller-chosen and written into EVERY session commit."""
     message = build_message(
-        subject=f"user[abc]: a{char}b", workspace_id="ws-test", session_id=f"sess-1{char}X-Primer-Agent: forged", agent_id="ag", op="tool",
+        subject=f"user[abc]: a{char}b", workspace_id=f"ws-test{char}X-Primer-Session: forged", session_id=f"sess-1{char}X-Primer-Op: forged",
+        agent_id=f"ag{char}X-Primer-Workspace: other", op="tool",
         tool=f"fs__read{char}X-Primer-Op: forged", call_id=f"call_0{char}X-Primer-Workspace: other",
     )
     assert "\x00" not in message
@@ -184,5 +188,27 @@ async def test_the_session_commit_message_reads_back_as_one_record(tmp_path: Pat
     commits = (await state_history({"limit": 10}, str(root)))["commits"]
 
     assert [c["sha"] for c in commits] == [sha]
-    assert commits[0]["workspace_id"] == "ws-test" and commits[0]["agent_id"] == "ag" and commits[0]["op"] == "tool"
+    assert commits[0]["workspace_id"] == "ws-test X-Primer-Session: forged", "the workspace id is ONE trailer value, not a trailer plus a forged one"
+    assert commits[0]["session_id"] == "sess-1 X-Primer-Op: forged"
+    assert commits[0]["agent_id"] == "ag X-Primer-Workspace: other" and commits[0]["op"] == "tool"
     assert char not in commits[0]["subject"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("char", UNSAFE, ids=IDS)
+async def test_a_session_commit_of_the_local_repo_with_a_hostile_workspace_id_reads_back_as_one_record(tmp_path: Path, char) -> None:
+    """``LocalStateRepo.commit`` (not ``commit_arbitrary``) writes the workspace id and the agent id into every session commit through ``build_message``."""
+    state = LocalStateRepo(tmp_path / ".state", workspace_id=f"ws{char}X-Primer-Session: forged")
+    await state.initialize()
+    now = datetime(2026, 5, 2, 10, 0, 0, tzinfo=timezone.utc)
+    info = SessionInfo(
+        session_id="sess-1", agent_id=f"ag{char}X-Primer-Op: forged", workspace_id="ws", status=SessionStatus.RUNNING, started_at=now, last_activity_at=now,
+    )
+    await state.create_session(info, AgentBinding(agent_id=info.agent_id, agent_name="n"))
+
+    sha = await state.commit("sess-1", summary="sess-1: hello", op="message", files={"messages.jsonl": "{}\n"})
+
+    local, runtime = await _both(tmp_path, state)
+    assert sha in {c.sha for c in local} and sha in {c["sha"] for c in runtime}
+    assert len(local) == 2 and len(runtime) == 2, "the attach commit and this one, each ONE record"
+    assert {c.op for c in local} == {"attach", "message"} and {c["op"] for c in runtime} == {"attach", "message"}, (local, runtime)
