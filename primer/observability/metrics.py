@@ -148,7 +148,7 @@ gate_respond_total = Counter(
     "Total responds to a human gate (an approval or an ask_user), by kind and by what the respond said about WHICH gate it answers: "
     "matched (its gate_id is the pending one), stale (it named a gate that is no longer the pending one, refused 409) or absent (it named "
     "none: a client that predates the token).",
-    ["kind", "token"],
+    ["kind", "gate_token"],
     registry=registry,
 )
 
@@ -346,6 +346,9 @@ ALLOWED_LABEL_NAMES = frozenset({
     # Which code site met a malformed scoped tool-call id (adapter / materializer / dispatch /
     # repark): a closed enum, so bounded.
     "site",
+    # What a respond to a human gate said about WHICH gate it answers (matched / stale / absent):
+    # a closed enum, so bounded.
+    "gate_token",
 })
 """Every label name any Primer instrument is permitted to carry.
 
@@ -493,7 +496,7 @@ def reset_for_test() -> None:
         "Total responds to a human gate (an approval or an ask_user), by kind and by what the respond said about WHICH gate it answers: "
         "matched (its gate_id is the pending one), stale (it named a gate that is no longer the pending one, refused 409) or absent (it named "
         "none: a client that predates the token).",
-        ["kind", "token"],
+        ["kind", "gate_token"],
         registry=registry,
     )
     worker_tasks_total = Counter(

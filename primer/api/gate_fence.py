@@ -7,7 +7,7 @@ the pending responses serve it, and the respond routes take it back as ``gate_id
 is refused with a 409 ``approval_stale`` BEFORE anything moves.
 
 A respond that names none is still accepted (a client that predates the token, a channel tag minted before this release): logged once without
-the call's arguments and counted in ``gate_respond_total{token="absent"}`` (:func:`primer.session.gate_token.count_gate_token`, shared with the
+the call's arguments and counted in ``gate_respond_total{gate_token="absent"}`` (:func:`primer.session.gate_token.count_gate_token`, shared with the
 channel inbox), so the flip to a 422 can be scheduled once that count is zero.
 """
 
