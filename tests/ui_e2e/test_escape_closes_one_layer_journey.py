@@ -4,7 +4,8 @@ The overlay panel and ``Modal`` each added their own window ``keydown`` listener
 overlay: the Escape closed the builder (an unsaved draft lost) and left the dialog on screen. ``ui/foundation/escape-stack.js`` answers Escape for the top-most layer only.
 
 The first journey is that case in the real builder: a draft with an unsaved change, the "Remove this choice?" dialog, Escape. The dialog goes, the builder and the draft stay, and the second Escape closes the
-overlay. The second is a form modal over a Platform overlay, the same rule for ``Modal`` itself.
+overlay. The second is the builder's add-step palette (review of #700, B2): in its second stage nothing in it has focus, so an Escape handled by its search box alone went to the overlay under it. The third
+is a form modal over a Platform overlay, the same rule for ``Modal`` itself.
 """
 
 from __future__ import annotations
@@ -60,6 +61,36 @@ def test_escape_in_a_confirm_dialog_over_the_graph_builder_closes_the_dialog_and
         assert page.get_by_role("button", name="Branch 1: add a condition").count() == 1, "the choice was not removed"
 
         page.keyboard.press("Escape")                                              # the second Escape is the overlay's
+        expect(page.get_by_test_id("nv-overlay:graphs")).to_have_count(0, timeout=5_000)
+    finally:
+        with httpx.Client(base_url=base_url, timeout=30.0) as c:
+            c.delete(f"/v1/graphs/{graph_id}")
+
+
+@pytest.mark.ui_e2e
+def test_escape_in_the_add_step_palette_closes_the_palette_and_not_the_builder(page: Page, base_url: str, console_url: str, unique_suffix: str) -> None:
+    graph_id = f"escape-palette-{unique_suffix}"
+    _seed(base_url, graph_id)
+    try:
+        open_legacy_route(page, console_url, f"graphs/{graph_id}")
+        gb.wait_for_builder(page)
+        page.locator('[data-testid="gb-outline-row"][data-node-id="check"]').click()
+        page.get_by_role("button", name="Branch 1: add a condition").click()      # an unsaved change that would be lost with the overlay
+        gb.expect_dirty(page)
+
+        page.locator(gb.OUTLINE_ADD).first.click()
+        palette = page.locator(gb.PALETTE)
+        expect(palette).to_be_visible(timeout=10_000)
+        palette.locator('[data-testid="gb-palette-row"][data-purpose="tool"]').first.click()      # the second stage: the search box is disabled and nothing in the palette has focus
+        expect(palette.get_by_role("button", name="Add step")).to_be_visible(timeout=10_000)
+
+        page.keyboard.press("Escape")
+        expect(palette).to_have_count(0, timeout=5_000)
+        expect(page.locator(gb.BUILDER)).to_be_visible()
+        gb.expect_dirty(page)
+        expect(page.get_by_test_id("nv-overlay:graphs")).to_be_visible()
+
+        page.keyboard.press("Escape")                                              # the next Escape is the overlay's
         expect(page.get_by_test_id("nv-overlay:graphs")).to_have_count(0, timeout=5_000)
     finally:
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
