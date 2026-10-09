@@ -36,6 +36,7 @@ from pydantic import BaseModel, ValidationError
 from primer.api.deps import get_semantic_search_registry, get_semantic_search_storage
 from primer.api.errors import common_responses
 from primer.api.registries.provider_registry import RESERVED_SSP_IDS
+from primer.api.routers._probe_text import draft_error, probe_error
 from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
 from primer.api.routers.providers import _form_field
 from primer.model.except_ import NotFoundError
@@ -195,7 +196,8 @@ def _validate_ssp_draft(provider: str, config: dict[str, Any]) -> SemanticSearch
             "config": config,
         })
     except ValidationError as exc:
-        raise ValueError(f"draft SSP config failed validation: {exc}") from exc
+        # pydantic's own text prints the INPUT of the field that failed (a missing field makes it the whole config dict, password included): the layout without it.
+        raise ValueError(f"draft SSP config failed validation: {draft_error(exc)}") from exc
 
 
 async def _run_ssp_probe(row: SemanticSearchProvider) -> dict[str, Any]:
@@ -215,7 +217,7 @@ async def _run_ssp_probe(row: SemanticSearchProvider) -> dict[str, Any]:
         else:  # pragma: no cover - defensive, the discriminator guards this
             return {"ok": False, "error": f"unknown SSP config type: {type(cfg)}"}
     except Exception as exc:  # noqa: BLE001 - diagnostic-only path
-        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"ok": False, "error": probe_error(exc)}
     return {"ok": True}
 
 
