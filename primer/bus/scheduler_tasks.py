@@ -43,7 +43,6 @@ from primer.int.event_bus import EventBus
 from primer.int.storage import Storage
 from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 from primer.model.workspace_session import SessionStatus
-from primer.session.mutation_lock import session_lifecycle_lock
 from primer.storage import raw_generation
 from primer.worker.yield_runtime import make_timeout_payload
 
@@ -379,12 +378,10 @@ class StuckSessionSweeper(_BackgroundTask):
         """End every never-started session past the grace period. Returns how many."""
         reaped = 0
         for row in await self._find_stuck():
-            # Each candidate is judged and ended under the session's lifecycle lock, the lock every path that arms or moves a session holds. A wake
-            # (a message to a rested session) writes RUNNING and only then arms its claim; between the two the row is RUNNING with no lease row,
-            # which is what this sweeper reaps. Without the lock it read the row in that instant and ended a session the user had just messaged.
-            async with session_lifecycle_lock().acquire(row.id):
-                if await self._reap(row.id):
-                    reaped += 1
+            # No lock: the sweeper is leader-elected and can run on another pod than the API that wakes a session, so a process-local lifecycle
+            # lock would not fence it, and a holder doing workspace I/O would stall every tick. The fences are in the data (see ``_reap``).
+            if await self._reap(row.id):
+                reaped += 1
         return reaped
 
     async def _reap(self, session_id: str) -> bool:
@@ -410,9 +407,13 @@ class StuckSessionSweeper(_BackgroundTask):
             "parked_status": [raw_generation(fresh, "parked_status")],
         }
         if fresh.last_turn_error is None:
-            # a failure stamped between the read and this write makes the row one this sweeper must leave to the failure exit (a stamped
-            # row it DID read, still RUNNING, is the reapable half-finished exit: the fence there is the status it read)
+            # a failure stamped between the read and this write makes the row one this sweeper must leave to the failure exit
             where["last_turn_error"] = [None]
+        else:
+            # A stamped row it DID read, still RUNNING, is the reapable half-finished failure exit. A wake or a resume of a rested failure
+            # restarts ``started_at`` (it is what the age check above reads), so a message that landed since the read, on ANY pod, refuses the
+            # write.
+            where["started_at"] = [raw_generation(fresh, "started_at")]
         # A stamped row that is still RUNNING did start: its failure exit stamped it and then did not finish. It is ended for that, not
         # for a first turn that never ran.
         unfinished = fresh.last_turn_error is not None
@@ -428,7 +429,7 @@ class StuckSessionSweeper(_BackgroundTask):
         )
         if written is None:
             logger.info(
-                "stuck-session-sweeper: %s changed since it was read (a park, a finished first turn or another ender); "
+                "stuck-session-sweeper: %s changed since it was read (a park, a finished first turn, a failure stamp, a wake or another ender); "
                 "left alone", fresh.id,
             )
             return False

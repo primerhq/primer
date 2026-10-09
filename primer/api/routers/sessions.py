@@ -284,7 +284,9 @@ async def resume_session(
             patch: dict[str, Any] = {
                 "status": SessionStatus.RUNNING, "pause_requested": False, "workspace_refusal": None,
             }
-            if s.started_at is None:
+            if s.started_at is None or s.last_turn_error is not None:
+                # a rested failure (C-024) restarts the clock the stuck-session sweeper's age check reads: it is RUNNING with no lease row until
+                # the claim below is armed, and the sweeper may be on another pod (see ``wake_session``)
                 patch["started_at"] = datetime.now(timezone.utc)
             written = await sessions.patch_if(
                 session_id, to_jsonable_python(patch),
