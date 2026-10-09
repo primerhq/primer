@@ -11,7 +11,11 @@ On fire:
 1. Load the target session by ``sub.config.session_id``.
 2. Verify it's still parked at the expected ``tool_call_id``. If not
    (session ended, resumed itself, parked on a different tool, etc.)
-   delete the subscription and return a structured skip.
+   delete the subscription and return a structured skip. A park that
+   reuses the raw ``tool_call_id`` (a provider repeats it across
+   rounds) but was not created by THIS subscription is such a park:
+   the park's own yield must carry ``resume_metadata.subscription_id
+   == sub.id``.
 3. Build the tool result envelope (``{ok, fire_context, payload}``).
 4. Publish the result onto the parked session's resume ``event_key``
    via the shared :func:`primer.session.yields.respond_to_yield`
@@ -33,6 +37,7 @@ import logging
 
 from primer.model.trigger import Subscription
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
+from primer.session.pending_gates import enumerate_pending_gates
 from primer.session.yields import RespondToYieldDeps, respond_to_yield
 from primer.trigger.owner import refuse_steer_above_fire
 from primer.trigger.subscribers import (
@@ -95,6 +100,24 @@ class ParkedSessionDispatcher:
                 error_code="skipped_session_unparked",
                 error_message=(
                     "session parked on a different tool_call_id"
+                ),
+            )
+        # A provider repeats its tool_call_id across rounds, so the raw id alone cannot say which PARK this subscription was created for: one left
+        # behind by an earlier round (the yield timed out or was skipped and the row stayed) would otherwise publish its result onto a LATER park
+        # that reuses the id, an approval gate included (C-033). ``subscribe_to_trigger`` stamps the park's own yield with the subscription it
+        # created, so only a park whose entry for this id carries THIS subscription's id may be woken. Anything else is an orphan.
+        if not any(
+            entry.get("tool_call_id") == sub.config.tool_call_id
+            and (entry.get("resume_metadata") or {}).get("subscription_id") == sub.id
+            for entry in enumerate_pending_gates(parked_state)
+        ):
+            await _delete_sub(deps, sub.id)
+            return SubscriptionDispatchResult(
+                ok=True,
+                skipped=True,
+                error_code="skipped_session_unparked",
+                error_message=(
+                    "session parked on a yield this subscription did not create"
                 ),
             )
 
