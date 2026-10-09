@@ -1525,7 +1525,8 @@ async def get_session_turn_timeline(
     Pure derivation (12-s7-design.md section 6): no trace system, no new
     write path. ``turn_no`` is the window ordinal produced by terminal
     counting over every record in messages.jsonl (a failed turn is ONE
-    window, however many error records it wrote: ``TurnWindowScanner``),
+    window, however many error records it wrote, and a graph turn is ONE
+    window, however many nodes finished inside it: ``TurnWindowScanner``),
     and it selects the
     turn-log envelope run at the same ordinal. Counting is deliberately
     done on the UNFOLDED log so a compaction or a rewind cannot retarget
