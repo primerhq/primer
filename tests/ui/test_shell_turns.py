@@ -590,9 +590,10 @@ def test_text_streamed_between_a_failure_and_its_copy_keeps_its_own_ordinal() ->
     ])
 
 
-def test_the_graph_superstep_failure_keeps_a_siblings_rows_in_their_own_window() -> None:
-    """A failed node's error is written live, a sibling streams on, and the graph's copy of the error (same words, same node) comes after the superstep."""
-    _same_ordinals([
+def test_the_graph_superstep_failure_is_one_window_with_its_siblings_rows() -> None:
+    """A failed node's error is written live, a sibling streams on, the graph's copy of the error comes after the superstep, and dispatch's failure exit ends the turn. Every one of them but
+    the last is a NODE's record, so it is inside the graph turn's window (01a11f35): the sibling's rows are in the failed node's window, and the next turn is the next ordinal."""
+    records = [
         _r(1, "user_input", text="go"),
         _r(2, "llm_call"),
         _r(3, "error", node_id="A", message="boom", code="server_error", fatal=True),
@@ -602,8 +603,13 @@ def test_the_graph_superstep_failure_keeps_a_siblings_rows_in_their_own_window()
         _r(7, "done", node_id="B", stop_reason="stop"),
         _r(8, "graph_transition", node_id="B", phase="exit", status="completed"),
         _r(9, "error", node_id="A", message="boom", code="server_error"),
-        *_following_turn(10),
-    ])
+        _r(10, "error", message="boom", code="/errors/internal", title="Internal error", status=500),
+        *_following_turn(11),
+    ]
+    _same_ordinals(records)
+    _, console = _both_ordinals(records)
+    assert {console[seq] for seq in console if seq <= 10} == {0}, console
+    assert {console[seq] for seq in console if seq >= 11} == {1}, console
 
 
 def test_a_marker_written_before_its_cause_is_numbered_as_the_server_numbers_it() -> None:

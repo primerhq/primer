@@ -368,11 +368,12 @@ function SH_retryInstruction(flat, errorRow, session) {
 // error records it wrote (the stream's own, dispatch's with the same words, the claim adapter's release marker), and whether a record is a COPY of an earlier
 // failure needs the records before it. Feed RAW records (kind, payload, node_id) in order; feed() says "closes" (the record ends a window), "copy" (a copy of a
 // failure that already ended one: ends nothing, and belongs to the window it copies) or "inside". The rule, in the server's words: a delegated record is
-// always inside; a user_input starts a new turn; a done / cancelled that closes the turn ends a window (done with stop_reason "error" is a FAILURE end that
+// always inside, and so is a record of a graph NODE (one with a node_id: a graph turn is one window, closed by the graph's own end, the first record that has no
+// node; ticket 01a11f35); a user_input starts a new turn; a done / cancelled that closes the turn ends a window (done with stop_reason "error" is a FAILURE end that
 // later errors of the turn can copy; any other end closes the turn); an error with an explicit fatal: false is a notice that ends nothing but whose words are
 // remembered; a bare release marker is a copy once the turn has failed and the only evidence (so it ends the window) when nothing has; any other error ends a
-// window unless the turn has already failed and an earlier error of the turn has the same non-empty message from the same node (a record that names no node
-// matches any node's); dispatch's own failure ERROR (a title and an integer status, no fatal flag, no node) is a copy once the turn has failed, whatever its words,
+// window unless the turn has already failed and an earlier error of the turn has the same non-empty message; dispatch's own failure ERROR (a title and an integer
+// status, no fatal flag, no node) is a copy once the turn has failed, whatever its words,
 // because records written before ticket 01a11f35-ad20 hold the stream's message raw while dispatch's copy is the problem detail, so comparing the words would
 // take a copy for a new failure (old logs are not migrated). tests/ui/test_shell_turns.py compares the two
 // over the shapes the writers produce.
@@ -396,30 +397,23 @@ function SH_newWindowScanner() {
   var failed = false;
   var words = [];
   function newTurn() { failed = false; words = []; }
-  function remember(message, node) { if (message) words.push([message, node]); }
-  function copiesAnEarlierError(message, node) {
-    if (!message) return false;
-    for (var i = 0; i < words.length; i++) {
-      if (words[i][0] === message && (!words[i][1] || !node || words[i][1] === node)) return true;
-    }
-    return false;
-  }
+  function remember(message) { if (message) words.push(message); }
+  function copiesAnEarlierError(message) { return !!message && words.indexOf(message) !== -1; }
   return {
     feed: function (rec) {
       var payload = SH_payloadOf(rec);
-      if (SH_pyTruthy(payload.delegated)) return SH_WINDOW_INSIDE;
+      if (SH_pyTruthy(payload.delegated) || SH_pyTruthy(rec.node_id)) return SH_WINDOW_INSIDE;     // a subagent's record, or a graph node's: the turn is not over
       if (rec.kind === "user_input") { newTurn(); return SH_WINDOW_INSIDE; }
       if (rec.kind === "error") {
         var message = typeof payload.message === "string" ? payload.message : null;
-        var node = SH_pyTruthy(rec.node_id) ? rec.node_id : null;
         if (SH_isBareMarker(rec)) {
           if (failed) return SH_WINDOW_COPY;
           failed = true;
           return SH_WINDOW_CLOSES;
         }
-        if (payload.fatal === false) { remember(message, node); return SH_WINDOW_INSIDE; }
-        if (failed && (SH_isDispatchFailureRecord(rec) || copiesAnEarlierError(message, node))) return SH_WINDOW_COPY;
-        remember(message, node);
+        if (payload.fatal === false) { remember(message); return SH_WINDOW_INSIDE; }
+        if (failed && (SH_isDispatchFailureRecord(rec) || copiesAnEarlierError(message))) return SH_WINDOW_COPY;
+        remember(message);
         failed = true;
         return SH_WINDOW_CLOSES;
       }
