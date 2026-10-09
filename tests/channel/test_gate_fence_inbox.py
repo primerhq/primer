@@ -188,6 +188,7 @@ async def test_a_matching_token_does_not_bypass_the_approver_check(world) -> Non
     with pytest.raises(ApproverRefusedError):
         await world.inbox.handle_response(_reply("i-appr", gate_id=G1))
     assert await world.published() is None
+    assert _count("approval", "matched") == 0, "a decision the approver check refused was not a decision that named the right gate"
 
 
 # ---- ask_user ---------------------------------------------------------------------------------------------------------------------------------
