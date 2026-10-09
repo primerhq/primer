@@ -4,16 +4,22 @@ The graph editor is ``GB_Builder`` (``ui/components/graph-builder/gb-*.jsx``). I
 no visible label for most controls: a title input, a branch row of four selects and a value, a fan-out spec, a schema row, the picker and palette search boxes. A placeholder is the only text of
 an input, and a ``<select>`` has none: a screen reader met "combo box" five times in one branch editor. Each control now carries an ``aria-label`` (or sits inside a wrapping ``<label>``).
 
-This is the static half: every ``<input>``, ``<select>`` and ``<textarea>`` of the builder's files, and of the shared ``EntityPicker`` its pickers use, is named or wrapped. The browser half
+This is the static half: every ``<input>``, ``<select>`` and ``<textarea>`` of the builder's files, and of the shared ``EntityPicker`` its pickers use, is named or wrapped. The reference
+editor's contentEditable body is the builder's one control that is not a native element, so the scan cannot see it: the #668 review (2026-10-09) found its accessible name empty. It is a
+``role="textbox"`` with ``aria-multiline`` named by the ``label`` its row shows (the section title, or the tool-argument name the row draws); it runs in V8 on the hook runtime of
+``tests/ui/_mini_react.py``, and its call sites are pinned to pass that label. The browser half
 (``tests/ui_e2e/test_graph_builder_named_controls_journey.py``) sweeps every node kind of a seeded graph for what is really on the page.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
 import pytest
+
+from tests.ui._mini_react import mini_react_context, transpile
 
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui" / "components"
@@ -97,3 +103,48 @@ def test_the_entity_picker_names_its_search_by_its_label_or_its_placeholder() ->
     src = (UI / "shared" / "entity-picker.jsx").read_text(encoding="utf-8")
     assert re.search(r"<label className=\"field-label\" htmlFor=\{inputId\}>\{label\}</label>", src), "a label it draws points at the search box"
     assert "aria-label={label ? undefined : (props.ariaLabel || placeholder)}" in src
+
+
+# ---------------------------------------------------------------------------
+# GB_RefEditor: the contentEditable body the native-control scan cannot see
+# ---------------------------------------------------------------------------
+
+REF_EDITOR = UI / "graph-builder" / "gb-ref-editor.jsx"
+
+# The globals GB_RefEditor declares live in gb-refs.jsx; a fresh editor touches none of them
+# before the user types, so plain stubs stand in for that file.
+_REF_PRELUDE = r"""
+var GB_parseTemplate = function (s) { return []; };
+var GB_serialize = function (tokens) { return ""; };
+var GB_availableRefs = function (draft, nodeId) { return []; };
+var GB_chipLabel = function (draft, token) { return String(token.v); };
+var GB_refIsBroken = function (draft, token) { return false; };
+"""
+
+
+def test_the_ref_editor_is_a_named_multiline_textbox() -> None:
+    """The contentEditable body is the graph builder's one non-native control: a multiline textbox named by the label its row shows."""
+    ctx = mini_react_context(transpile(REF_EDITOR), _REF_PRELUDE)
+    try:
+        ctx.eval(
+            "MR.mount(GB_RefEditor, { value: '', onChange: function () {}, draft: {}, nodeId: 'n1', label: 'What it gets' });"
+            "var node = MR.find('gb-ref-editor');"
+            "window.__got = JSON.stringify({ role: node.props.role, multiline: node.props['aria-multiline'], name: node.props['aria-label'] });"
+        )
+        got = json.loads(ctx.eval("window.__got"))
+        assert got.get("role") == "textbox"
+        assert got.get("multiline") is True
+        assert got.get("name") == "What it gets"
+    finally:
+        ctx.close()
+
+
+def test_every_ref_editor_call_site_passes_the_label_its_row_shows() -> None:
+    """Each of the five GB_RefEditor call sites passes the label the surrounding row shows, so the editor's name is never a bare fallback."""
+    src = (UI / "graph-builder" / "gb-inspector.jsx").read_text(encoding="utf-8")
+    sites = []
+    for m in re.finditer(r"<GB_RefEditor\b", src):
+        tag = src[m.start():_tag_end(src, m.start())]
+        sites.append(" ".join(tag.split())[:120])
+        assert "label=" in tag, f"a GB_RefEditor call without the label its row shows:\n{sites[-1]}"
+    assert len(sites) == 5, "the call-site count drifted; a new GB_RefEditor needs the label its row shows"
