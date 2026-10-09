@@ -121,6 +121,21 @@ async def test_a_resume_that_continues_records_the_park_it_applied(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_failing_record_write_still_lets_the_marker_land(monkeypatch):
+    """The record write is best-effort (``_NoopPersist`` has no ``append_message_line``, so it fails and is swallowed): the marker does not depend on it."""
+    world = _World(monkeypatch, workspace=_NoopPersist())
+    seeded = await world.seed()
+    await world.engine.mark_resumable(ClaimKind.SESSION, SID)
+
+    await world.claim_and_run("wrk-engine-resume")
+
+    row = await world.sessions.get(SID)
+    assert row.resumed_park_at == seeded.parked_at, "the marker is written whether or not the record write succeeded"
+    assert row.last_seq == 0, "the failed record write advanced nothing"
+    assert len(world.executor.injected) == 1
+
+
+@pytest.mark.asyncio
 async def test_the_marker_and_the_advanced_last_seq_both_survive_an_abandoned_release(monkeypatch):
     """B1: with a workspace that accepts the record, the abandoned release leaves BOTH writes on the row (the order of the two must not matter)."""
     world = _World(monkeypatch, abandon_releases=1)
@@ -376,7 +391,10 @@ async def test_a_pause_keeps_the_park_and_the_resume_after_it_skips_the_handler(
 
     paused = await world.sessions.get(SID)
     assert paused.status == SessionStatus.PAUSED and paused.parked_status == "resumable"
-    assert paused.resumed_park_at == seeded.parked_at, "the pause route's field-scoped write leaves the marker"
+    assert paused.resumed_park_at == seeded.parked_at, (
+        "the pool's pause exit re-reads the row and writes it back whole, so the marker the first attempt wrote is still on it "
+        "(a whole-document writer that read the row BEFORE the marker was written would drop it: see the docs)"
+    )
     await world.sessions.patch_if(SID, {"status": "running", "pause_requested": False}, where={"status": ["paused"]})
     await world.engine.mark_resumable(ClaimKind.SESSION, SID)          # what /resume does
 
