@@ -223,7 +223,7 @@ class WorkspaceRegistry:
         A pinned id is validated here, at the ONE point every create path
         (REST, the ``create_workspace`` tool, the bootstrap seed) passes:
         it names a directory under the local workspace root, a container
-        name and a k8s object name, so only a single alphanumeric token is
+        name and a k8s object name, so only a single DNS-1123 label is
         admitted (``WORKSPACE_ID_PATTERN``; #680 N7).
         """
         if workspace_id is not None and re.fullmatch(
@@ -231,9 +231,9 @@ class WorkspaceRegistry:
         ) is None:
             raise ValidationError(
                 f"workspace id {workspace_id!r} is not a valid workspace id: "
-                "expected a single alphanumeric token matching "
-                f"{WORKSPACE_ID_PATTERN} (it names a directory under the "
-                "workspace root)"
+                "expected one DNS-1123 label (lowercase letters, digits and "
+                f"'-', at most 63 characters) matching {WORKSPACE_ID_PATTERN} "
+                "(it names a directory under the workspace root)"
             )
         backend = await self.get_backend(template.provider_id)
         resolvers = FileResolvers(
