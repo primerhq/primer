@@ -107,8 +107,13 @@ function SH_callRawId(payload) {
 }
 
 function SH_nestSubagentRows(rows) {
-  // byRun: "<run that made the call>|<raw id>" -> row ("" for a call the parent
-  // turn itself made). Exact, used for a record that carries delegate_run_id.
+  // byRun: "<run that made the call>|<graph node>|<raw id>" -> row ("" for a call
+  // the parent turn itself made, and "" for a node outside a graph). Exact, used
+  // for a record that carries delegate_run_id; a record that also carries
+  // delegate_node_id looks the call up by its node too, because two fan-out
+  // siblings can delegate under the same raw id at the same time (a call is
+  // registered under its node AND under the node-less key, last call winning,
+  // which is what a record without a node, from before this, still asks for).
   // byRaw: raw id -> the LAST call with it, for a record from before run ids.
   var byRun = {};
   var byRaw = {};
@@ -123,8 +128,9 @@ function SH_nestSubagentRows(rows) {
     var key = payload.delegate_tool_call_id;
     var target = null;
     if (key) {
+      var parentRun = payload.delegate_parent_run_id || "";
       target = payload.delegate_run_id
-        ? byRun[(payload.delegate_parent_run_id || "") + "|" + key]
+        ? ((payload.delegate_node_id && byRun[parentRun + "|" + payload.delegate_node_id + "|" + key]) || byRun[parentRun + "||" + key])
         : byRaw[key];
     }
     if (target) {
@@ -135,7 +141,10 @@ function SH_nestSubagentRows(rows) {
     if (rawId) {
       // A delegated call is itself a parent for what ITS run delegates.
       byRaw[rawId] = node;
-      byRun[(payload.delegate_run_id || "") + "|" + rawId] = node;
+      var callRun = payload.delegate_run_id || "";
+      var callNode = payload.delegate_node_id || row.nodeId || "";
+      byRun[callRun + "||" + rawId] = node;
+      if (callNode) byRun[callRun + "|" + callNode + "|" + rawId] = node;
     }
   }
   return out;

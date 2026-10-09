@@ -84,7 +84,7 @@ class DelegationRecorder:
     def _stamp(self, rec: Any, **ids: Any) -> None:
         rec.payload["delegated"] = True
         rec.payload["delegate_tool_call_id"] = ids["delegate_tool_call_id"]
-        for name in ("delegate_run_id", "delegate_parent_run_id", "delegate_depth"):
+        for name in ("delegate_run_id", "delegate_parent_run_id", "delegate_depth", "delegate_node_id"):
             if ids.get(name) is not None:
                 rec.payload[name] = ids[name]
 
@@ -106,6 +106,7 @@ class DelegationRecorder:
         delegate_run_id: str | None = None,
         delegate_parent_run_id: str | None = None,
         delegate_depth: int | None = None,
+        delegate_node_id: str | None = None,
     ) -> None:
         """Record one event of a delegated run.
 
@@ -114,8 +115,10 @@ class DelegationRecorder:
         apart is ``delegate_run_id``, minted when the run starts and kept across a park/resume;
         ``delegate_parent_run_id`` is the run whose call delegated to this one (absent when the parent turn itself did), and
         ``delegate_depth`` the nesting depth (1 is a direct delegation of the parent turn, the number ``AgentFrame.depth``
-        carries). Each is stamped only when given: a record written before this carried none, and the readers fall back to
-        the call id.
+        carries). ``delegate_node_id`` is the graph node (the fan-out-instance-qualified id, ``worker[0]``) whose agent made
+        the delegating call, the id the parent's own call row carries as its ``node_id``: two fan-out siblings that both
+        delegate under the same raw call id are told apart by it (ticket 01a11cca); it is absent outside a graph. Each is
+        stamped only when given: a record written before this carried none, and the readers fall back to the call id.
         """
         # Stop slice B1: once a Stop has given up on the tool call this runs inside (or on a call that call is nested
         # in), nothing it emits may be appended after the call's "interrupted" answer, whatever delegate id the event
@@ -135,7 +138,7 @@ class DelegationRecorder:
             records.extend(result if isinstance(result, list) else [result])
         await self._append(
             records, delegate_tool_call_id=delegate_tool_call_id, delegate_run_id=delegate_run_id,
-            delegate_parent_run_id=delegate_parent_run_id, delegate_depth=delegate_depth,
+            delegate_parent_run_id=delegate_parent_run_id, delegate_depth=delegate_depth, delegate_node_id=delegate_node_id,
         )
 
     async def finish_run(
@@ -145,6 +148,7 @@ class DelegationRecorder:
         delegate_run_id: str | None = None,
         delegate_parent_run_id: str | None = None,
         delegate_depth: int | None = None,
+        delegate_node_id: str | None = None,
         flush: bool = True,
     ) -> None:
         """A run is over, however it ended: write what it streamed and never got to flush, and forget its coalescing state.
@@ -164,6 +168,7 @@ class DelegationRecorder:
             await self._append(
                 flush_partial_output(state, turn_no=self._turn_no), delegate_tool_call_id=delegate_tool_call_id,
                 delegate_run_id=delegate_run_id, delegate_parent_run_id=delegate_parent_run_id, delegate_depth=delegate_depth,
+                delegate_node_id=delegate_node_id,
             )
         except Exception:  # noqa: BLE001 - best effort, see above
             logger.warning("delegation: could not write the unflushed output of run %s", delegate_run_id, exc_info=True)
