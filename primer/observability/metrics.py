@@ -303,7 +303,7 @@ session_resume_noop_total = Counter(
     "session_resume_noop_total",
     "Session claims that found the resume of the parked turn already applied (resumed_park_at == "
     "parked_at) but its release never committed (abandoned or rolled back), and released without "
-    "running the resume handler again. Each one is a reply injected, or an approved tool run, twice.",
+    "running the resume handler again. Each one would otherwise have injected the reply, or run an approved tool, twice.",
     registry=registry,
 )
 
@@ -639,7 +639,7 @@ def reset_for_test() -> None:
         "session_resume_noop_total",
         "Session claims that found the resume of the parked turn already applied (resumed_park_at == "
         "parked_at) but its release never committed (abandoned or rolled back), and released without "
-        "running the resume handler again. Each one is a reply injected, or an approved tool run, twice.",
+        "running the resume handler again. Each one would otherwise have injected the reply, or run an approved tool, twice.",
         registry=registry,
     )
     message_write_abandoned_total = Counter(
