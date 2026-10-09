@@ -54,7 +54,9 @@ class TestConstructor:
         from pydantic import HttpUrl
         from primer.model.provider import OpenAIConfig
 
-        provider = EmbeddingProvider(
+        # The model refuses a config object of another class than the provider names (review of #645), so the adapter's own check, kept for an
+        # object that never went through validation, is reached with ``model_construct``.
+        provider = EmbeddingProvider.model_construct(
             id="x",
             provider=EmbeddingProviderType.HUGGINGFACE,
             models=[EmbeddingModel(name="m")],
@@ -406,6 +408,39 @@ class TestPerTokenVectors:
         _patched_st(monkeypatch, np.array([[0.1, 0.2]]))
         out = await embedder.embed(model="m1", inputs=[TextPart(text="hi")])
         assert out.embeddings[0].extended is None
+
+
+class TestToken:
+    """The token is optional (a public local model needs none): a missing and an empty one both load anonymously."""
+
+    @staticmethod
+    def _provider(config: HuggingFaceConfig) -> EmbeddingProvider:
+        return EmbeddingProvider(
+            id="hf-anon",
+            provider=EmbeddingProviderType.HUGGINGFACE,
+            models=[EmbeddingModel(name="m1")],
+            config=config,
+            limits=Limits(max_concurrency=1),
+        )
+
+    @pytest.mark.parametrize(
+        "config",
+        [HuggingFaceConfig(), HuggingFaceConfig(token=None), HuggingFaceConfig(token=SecretStr(""))],
+        ids=["omitted", "null", "empty"],
+    )
+    async def test_no_token_loads_the_model_anonymously(
+        self, monkeypatch: pytest.MonkeyPatch, config: HuggingFaceConfig
+    ) -> None:
+        embedder = HuggingFaceEmbedder(self._provider(config))
+        cls_mock, _ = _patched_st(monkeypatch, np.array([[0.1, 0.2, 0.3]]))
+        await embedder.embed(model="m1", inputs=[TextPart(text="hi")])
+        assert cls_mock.call_args.kwargs["token"] is None
+
+    async def test_a_given_token_is_passed_through(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        embedder = HuggingFaceEmbedder(self._provider(HuggingFaceConfig(token=SecretStr("hf-given"))))
+        cls_mock, _ = _patched_st(monkeypatch, np.array([[0.1, 0.2, 0.3]]))
+        await embedder.embed(model="m1", inputs=[TextPart(text="hi")])
+        assert cls_mock.call_args.kwargs["token"] == "hf-given"
 
 
 class TestExceptionWrapping:
