@@ -108,6 +108,9 @@ class Yielded:
         * ``timer:{tool_call_id}`` — wakes from the timer scheduler.
         * ``ask_user:{session_id}:{tool_call_id}`` — wakes from
           the ``POST /v1/sessions/{id}/ask_user/respond`` endpoint.
+          Inside a graph node it is ``ask_user:{session_id}:{node}:{tool_call_id}``
+          (the fan-out instance id, as the approval key's), because two
+          siblings can share a raw ``tool_call_id``.
         * ``watch:{session_id}:{tool_call_id}`` — wakes from the
           local filesystem watcher.
         * ``mcp_task:{server_id}:{task_id}`` — wakes when the MCP

@@ -22,7 +22,8 @@ result the agent will see on its next turn.
 
 This is the primitive behind every "wait for the user to do X" tool
 in primer. In a session or graph, `ask_user` parks on an
-`ask_user:{sid}:{tcid}` key and resumes when the user replies in a
+`ask_user:{sid}:{tcid}` key (`ask_user:{sid}:{node}:{tcid}` inside a graph
+node: two fan-out siblings can share a `tcid`) and resumes when the user replies in a
 channel. `subscribe_to_trigger` parks on a `trigger:{trigger_id}` key
 and resumes when the trigger fires. Tool approval reuses the same
 primitive - a `_approval` yield parks the call until the operator's
