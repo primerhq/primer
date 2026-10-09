@@ -147,7 +147,9 @@ from primer.graph._checkpoint import _CheckpointMixin  # noqa: E402
 from primer.graph._agent_node import _AgentNodeMixin  # noqa: E402
 from primer.graph._node_identity import (  # noqa: E402
     reset_current_graph_node_id,
+    reset_current_toolcall,
     set_current_graph_node_id,
+    set_current_toolcall,
 )
 from primer.graph._routing import _RoutingMixin  # noqa: E402
 # ``_SubgraphFailed`` is raised by ``_NodeDispatchMixin._stream_subgraph_node``;
@@ -588,6 +590,11 @@ class _BaseGraphExecutor(
                         resolve_provider=resolve_provider,
                     )
                 except Exception as exc:  # noqa: BLE001 -- map to node failure
+                    # 01a11faa: the call row the node wrote before it parked is answered too (an error answer).
+                    yield self._toolcall_answer_event(
+                        entry.node_id, context, entry.tool_call_id,
+                        ToolResultPart(id=entry.tool_call_id, output=str(exc), error=True),
+                    )
                     fail_out = NodeOutput(
                         text="", parsed=None, history=[],
                         iteration=context.iteration, error=str(exc),
@@ -619,6 +626,7 @@ class _BaseGraphExecutor(
                         ended_detail="tool_execution_failed",
                     )
                     return
+                yield self._toolcall_answer_event(entry.node_id, context, entry.tool_call_id, result)
                 mapped = _map_toolcall_result(
                     result, output_schema=node_def.output_schema
                 )
@@ -669,6 +677,8 @@ class _BaseGraphExecutor(
                 # 01a0812c: settled (ENDED) - see the discard above.
                 self._ready_set.discard(entry.node_id)
                 continue
+            # 01a11faa: re-dispatched under the id the node wrote its call row under (the park's own), so the manager's call, the row and a second park share it.
+            call_token = set_current_toolcall(entry.node_id, entry.tool_call_id)
             try:
                 result = await self._dispatch_toolcall_with_bypass(
                     node_def, entry.arguments
@@ -696,6 +706,10 @@ class _BaseGraphExecutor(
                 )
                 continue
             except _ToolApprovalRejected as rej:
+                yield self._toolcall_answer_event(
+                    entry.node_id, context, entry.tool_call_id,
+                    ToolResultPart(id=entry.tool_call_id, output=str(rej), error=True),
+                )
                 # Spec B §4.8 / Phase 6 Task 6.4 — operator rejected, the
                 # approval timed out, or the approval was cancelled; stamp
                 # the node as a failure with the specific ended_detail
@@ -743,6 +757,10 @@ class _BaseGraphExecutor(
                 )
                 return
             except Exception as exc:  # noqa: BLE001 -- map all to node failure
+                yield self._toolcall_answer_event(
+                    entry.node_id, context, entry.tool_call_id,
+                    ToolResultPart(id=entry.tool_call_id, output=str(exc), error=True),
+                )
                 fail_out = NodeOutput(
                     text="",
                     parsed=None,
@@ -780,6 +798,9 @@ class _BaseGraphExecutor(
                     ended_detail="tool_execution_failed",
                 )
                 return
+            finally:
+                reset_current_toolcall(call_token)
+            yield self._toolcall_answer_event(entry.node_id, context, entry.tool_call_id, result)
             # Map the result through the same path as the normal
             # _stream_node ToolCall handler so schema-validation failures
             # surface consistently.

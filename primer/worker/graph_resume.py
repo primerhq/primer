@@ -201,6 +201,11 @@ async def resume_graph_from_checkpoint(
         # for it - the LLM's own tool-call events stream out of
         # run_agent_turn before its internal dispatch loop acts on them.
         executor.bind_coalesce_state(tap.coalesce_state)
+        # 01a11faa: a ToolCall node wrote its call row (and minted its scoped id) in the turn that parked, in a coalesce state that is gone. Its answer, written by this drain, has to
+        # pair with that row, so the tap's state is told the ids the checkpoint stashed (``stash_graph_scoped_ids``); an entry without one (a park from before) falls back to the raw id.
+        for raw in checkpoint.get("pending_toolcalls") or []:
+            if raw.get("scoped_tool_call_id") is not None:
+                tap.coalesce_state.scoped_call_ids[(raw["node_id"], raw["tool_call_id"])] = raw["scoped_tool_call_id"]
 
     # The ResumeContext a value-yielding tool_call node's hook receives is
     # built from the session being resumed and the provider registry, the

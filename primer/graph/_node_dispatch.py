@@ -131,6 +131,24 @@ class _NodeDispatchMixin:
             return "unknown"
         return getattr(node_def, "kind", "unknown")
 
+    def _toolcall_answer_event(
+        self,
+        node_id: str,
+        context: GraphContext,
+        call_id: str,
+        result: ToolResultPart,
+    ) -> StreamEvent:
+        """The ``tool_result`` event of a ToolCall node's call (01a11faa): the answer the tool gave, an error answer included, under the id the call row carries."""
+        return self._wrap_event(
+            ExtendedEvent(
+                extended=_ExecutorToolResult(
+                    call_id=call_id, output=result.output, error=result.error, metadata=result.metadata,
+                )
+            ),
+            node_id,
+            context.iteration,
+        )
+
     async def _answer_toolcall_row(
         self,
         queue: "asyncio.Queue[Any]",
@@ -139,18 +157,7 @@ class _NodeDispatchMixin:
         call_id: str,
         result: ToolResultPart,
     ) -> None:
-        """Write the ``tool_result`` row of a ToolCall node's call (01a11faa): the answer the tool gave, an error answer included, under the id the call row carries."""
-        await queue.put(
-            self._wrap_event(
-                ExtendedEvent(
-                    extended=_ExecutorToolResult(
-                        call_id=call_id, output=result.output, error=result.error, metadata=result.metadata,
-                    )
-                ),
-                node_id,
-                context.iteration,
-            )
-        )
+        await queue.put(self._toolcall_answer_event(node_id, context, call_id, result))
 
     async def _stream_node(
         self,
