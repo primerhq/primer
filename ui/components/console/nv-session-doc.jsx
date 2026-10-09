@@ -13,6 +13,13 @@ function NV_sessionIsOver(session) {
   return !!session && session.status === "ended";
 }
 
+// The optimistic "sending" leg (set when a message is sent, so the composer says so and the poll keeps going until the tap shows life) is normally cleared when a live turn shows.
+// Its bounded fallback: ten seconds after the send, a polled row that says no turn is executing or queued (turn_status idle) has SETTLED, whatever it settled into: an ended session, or,
+// since C-024, one that failed the send and rests. Only the ended case was covered, so a failed resend whose frames arrived before the POST's response held "sending" until a reload.
+function NV_optimisticLegOver(session, optimisticMs, nowMs) {
+  return !!optimisticMs && !!session && session.turn_status === "idle" && nowMs - optimisticMs > 10000;
+}
+
 // A session that does not exist (C-020): a mistyped link, or a session deleted elsewhere whose tab is restored. Only a 404 on the session
 // row says so; a blip, a refusal or a server error is not the session ceasing to exist, and the document keeps what it has and keeps
 // trying. The row's data may still be there (stale-while-error) when a later poll finds it deleted, so the error alone decides.
@@ -113,6 +120,8 @@ function NV_endedLine(session) {
   if (!session || session.status !== "ended") return null;
   var reason = session.ended_reason || null;
   var detail = session.ended_detail || null;
+  // A failure raised by something that is not a model error has no ended_detail; the code its row stamped says more (turn_failed names nothing a person can act on).
+  if (!detail && session.last_turn_error && session.last_turn_error.code && session.last_turn_error.code !== "turn_failed") detail = session.last_turn_error.code;
   var codes = {
     routing_failed: "a conditional edge matched no branch",
     max_iterations_exceeded: "it hit the iteration cap",
@@ -2651,15 +2660,10 @@ function NV_SessionDoc(props) {
   React.useEffect(function () { if (live) setOptimistic(null); }, [!!live]);
   // Bounded fallback: a reopen whose turn dies before the tap shows
   // life would otherwise hold "sending" (and the lifted poll stop)
-  // forever. Once the polled row confirms the session settled back to
-  // ended with no live turn, drop the optimistic flag.
+  // forever. Once the polled row confirms the session settled (ended, or
+  // resting after a failed send) with no live turn, drop the optimistic flag.
   React.useEffect(function () {
-    if (!optimistic || !session) return;
-    if (NV_sessionIsOver(session)
-        && session.turn_status === "idle"
-        && Date.now() - optimistic > 10_000) {
-      setOptimistic(null);
-    }
+    if (NV_optimisticLegOver(session, optimistic, Date.now())) setOptimistic(null);
   }, [detail.data]);
   // A live status the polled row keeps contradicting is stale (a terminal frame was lost, or never written): drop it, and
   // re-read the durable tail, the catch-up that already exists, so the transcript is complete too. Restarts whenever the
