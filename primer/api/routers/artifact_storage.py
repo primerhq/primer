@@ -16,10 +16,11 @@ from primer.api.deps import get_artifact_storage_provider_storage
 from primer.api.registries.artifact_storage_registry import (
     DEFAULT_ARTIFACT_PROVIDER_ID,
 )
-from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
+from primer.api.routers._crud import make_crud_router
 from primer.api.routers.providers import _form_field
-from primer.artifact.checks import check_artifact_provider_on_update
+from primer.artifact.checks import check_artifact_provider_write
 from primer.common.entity_checks import EntityCheckError
+from primer.model.common import preserve_masked_secrets
 from primer.model.provider import ArtifactStorageProvider
 
 
@@ -30,11 +31,10 @@ async def _on_update(entity_id: str, request: Request) -> None:
         await registry.invalidate(entity_id)
 
 
-async def _pre_update(entity: ArtifactStorageProvider, existing: ArtifactStorageProvider, request: Request) -> None:
-    """Restore masked secrets, then refuse a write that leaves the reserved default naming a kind the factory cannot build (shared with the system tools)."""
-    await preserve_masked_secrets_on_update(entity, existing, request)
+def _refuse_an_unbuildable_default(entity: ArtifactStorageProvider) -> None:
+    """Run the rule the system tools share; a refusal is a 422 shaped like the reserved-delete 403, plus the field."""
     try:
-        check_artifact_provider_on_update(entity, existing)
+        check_artifact_provider_write(entity)
     except EntityCheckError as exc:
         raise HTTPException(
             status_code=422,
@@ -42,9 +42,18 @@ async def _pre_update(entity: ArtifactStorageProvider, existing: ArtifactStorage
         ) from exc
 
 
-async def _reject_reserved_delete(entity_id: str, request: Request) -> None:
-    from fastapi import HTTPException
+async def _pre_create(entity: ArtifactStorageProvider, request: Request) -> None:
+    """Refuse a create of the reserved default (its row went missing) that names a kind the factory cannot build."""
+    _refuse_an_unbuildable_default(entity)
 
+
+async def _pre_update(entity: ArtifactStorageProvider, existing: ArtifactStorageProvider, request: Request) -> None:
+    """Restore masked secrets, then refuse a write that leaves the reserved default naming a kind the factory cannot build."""
+    preserve_masked_secrets(entity, existing)
+    _refuse_an_unbuildable_default(entity)
+
+
+async def _reject_reserved_delete(entity_id: str, request: Request) -> None:
     if entity_id == DEFAULT_ARTIFACT_PROVIDER_ID:
         raise HTTPException(
             status_code=403,
@@ -119,6 +128,7 @@ artifact_storage_router = make_crud_router(
     tag="artifact-storage-providers",
     on_update=_on_update,
     on_delete=_on_update,
+    on_pre_create=_pre_create,
     on_pre_update=_pre_update,
     on_pre_delete_id=_reject_reserved_delete,
 )
