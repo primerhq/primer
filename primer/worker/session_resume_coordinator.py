@@ -400,8 +400,6 @@ async def inject_resume_and_continue(
         return await pool._end_session(session, reason="failed")
 
     await _persist_resume_tool_result_record(pool, session, parked, tool_result_part)
-    # AFTER the record write above: that write puts the pool-start ``session`` document back whole, which would
-    # overwrite the marker if it came first.
     await _mark_resume_applied(pool, session)
 
     # Continuation: clear park (on_release) + keep the lease so the next
@@ -424,9 +422,11 @@ def resume_already_applied(session) -> bool:
 async def _mark_resume_applied(pool: "WorkerPool", session) -> None:
     """Record that the park on ``session`` was resumed (``WorkspaceSession.resumed_park_at``).
 
-    One field-scoped ``patch_if`` fenced on the ``turn_no`` the resume ran at: it writes nothing else, and nothing if the
-    row has moved on to another turn. Best-effort, like ``completed_turn_no``: a rejected fence or a storage error is
+    One field-scoped ``patch_if`` fenced on what the marker NAMES: the park (``parked_at``) still on the row, still
+    ``resumable``. It writes nothing else, and nothing once the release committed (the park columns are cleared) or the
+    row parked again (a new ``parked_at``). Best-effort, like ``completed_turn_no``: a rejected fence or a storage error is
     logged and never fails the resume (without the marker a rolled-back release runs the handler again, as it did before).
+    The record write before it is field-scoped as well, so the two writes do not depend on their order.
 
     Only the continue path calls this. A handler that re-parks (a yielding tool behind an approval, a graph that still has
     pending siblings), ends the session or fails is NOT covered: its effects are not all committed before its release, so
@@ -444,7 +444,7 @@ async def _mark_resume_applied(pool: "WorkerPool", session) -> None:
         written = await storage.patch_if(
             session.id,
             to_jsonable_python({"resumed_park_at": session.parked_at}),
-            where={"turn_no": [session.turn_no]},
+            where={"parked_at": [to_jsonable_python(session.parked_at)], "parked_status": ["resumable"]},
         )
     except Exception:  # noqa: BLE001 - best-effort; the resume's own outcome stands
         logger.warning(
@@ -454,8 +454,8 @@ async def _mark_resume_applied(pool: "WorkerPool", session) -> None:
         return
     if written is None:
         logger.warning(
-            "resume: session %s: turn_no is no longer %d, so the park is not recorded as resumed",
-            session.id, session.turn_no,
+            "resume: session %s: the park is no longer the one this resume ran for, so it is not recorded as resumed",
+            session.id,
         )
 
 
@@ -519,8 +519,11 @@ async def _persist_resume_tool_result_record(
             created_at=datetime.now(timezone.utc),
         ))
         await writer.flush()
-        storage = pool._storage.get_storage(WorkspaceSession)
-        await storage.update(session.model_copy(update={"last_seq": new_seq}))
+        # ONE field-scoped write of last_seq. The pool-start copy of the row this used to put back whole carried a
+        # Stop the pool had just cleared, a steer's turn_status, and any marker written before it (#681 review, P8).
+        from primer.session.seq_reservation import advance_last_seq
+
+        await advance_last_seq(pool._storage.get_storage(WorkspaceSession), session.id, new_seq)
         # 01a068ea-dc95 (sibling finding, same shape as
         # claim/adapters/sessions.py's terminal-ERROR writer): a durable-
         # but-unticked write is invisible to a live client until its next
