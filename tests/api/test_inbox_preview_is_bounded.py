@@ -103,6 +103,10 @@ _HOSTILE = {
     "mysql commands": "mysql " * 6600,
     "mysql with a bare -p": "mysql -p " * 4400,
     "mysql with attached -p": "mysql -pa " * 4000,
+    # the quoted form of the mysql rule (a second pass since the review of #636, round 3)
+    "mysql with a quoted attached -p": "mysql '-pa " * 4000,
+    "mysql with a quoted -p and no closing quote": "mysql '-p" + "a " * 20000,
+    "mysql with a quoted bare -p": "mysql '-p' " * 3600,
     "mysql then a long option run": "mysql" + " x" * 20000,
     "mysql with a separator in each": "mysql a ; " * 4000,
     "user flags": "-u a:" * 10000,
