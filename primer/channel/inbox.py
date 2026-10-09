@@ -128,6 +128,8 @@ class ChannelInbox:
             await self._fence_ask_user(env)
         if captured is not None:
             self._enforce_approvers(env, captured["gate"])
+            # Counted after the approver check, as the REST route does: a refused decision is not counted as one that named the right gate.
+            count_gate_token(kind="approval", session_id=env.session_id, token=env.gate_id)
         event_key = (
             captured["gate"].get("event_key") if captured is not None else None
         ) or await self._resolve_event_key(env)
@@ -213,7 +215,6 @@ class ChannelInbox:
                     "this approval gate's approver spec cannot be read; decide it in the console as an approver or an admin"
                 )
             return None
-        count_gate_token(kind="approval", session_id=env.session_id, token=env.gate_id)
         return {
             "gate": gate,
             "agent_id": getattr(row.binding, "agent_id", None),
@@ -223,11 +224,12 @@ class ChannelInbox:
     async def _fence_ask_user(self, env: ResponseEnvelope) -> None:
         """Refuse an ask_user reply that names a prompt which is no longer the pending one (C-033), before anything is published.
 
-        Only a reply that carries a token is judged: a reply that names none answers whatever is pending (a thread reply on Slack or Discord has
-        no card to carry one, and answers the thread's current prompt by construction), so it is neither refused nor counted. A call id with no
-        pending ask_user entry at all is left to the lookup that follows.
+        Only a reply that carries a token is judged. A reply that names none answers whatever is pending (a thread reply whose correlation row
+        predates gate ids has no token to bring back), so it is accepted, and counted ``absent`` when it reaches a pending ask_user prompt, so the
+        flip to refusing tokenless replies can be scheduled from one number. A call id with no pending ask_user entry at all is left to the lookup
+        that follows and is not counted.
         """
-        if env.gate_id is None or self._storage_provider is None:
+        if self._storage_provider is None:
             return
         from primer.model.workspace_session import WorkspaceSession
         from primer.session.pending_gates import resolve_pending_gate
@@ -236,6 +238,10 @@ class ChannelInbox:
         if row is None:
             return
         blob = getattr(row, "parked_state", None) or {}
+        if env.gate_id is None:
+            if resolve_pending_gate(blob, tool_call_id=env.tool_call_id, kind="ask_user") is not None:
+                count_gate_token(kind="ask_user", session_id=env.session_id, token=None)
+            return
         if resolve_pending_gate(blob, tool_call_id=env.tool_call_id, kind="ask_user", gate_id=env.gate_id) is not None:
             count_gate_token(kind="ask_user", session_id=env.session_id, token=env.gate_id)
             return
