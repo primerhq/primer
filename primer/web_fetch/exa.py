@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from primer.common.transport_text import transport_failure
 from primer.web_fetch.adapter import (
     FetchedPage, WebFetchAdapter, WebFetchProviderError, WebFetchUnavailable,
 )
@@ -21,6 +22,7 @@ EXA_BASE_URL = "https://api.exa.ai"
 class ExaAdapter(WebFetchAdapter):
     def __init__(self, config: "ExaFetchConfig", *, client: httpx.AsyncClient | None = None,
                  base_url: str = EXA_BASE_URL) -> None:
+        self._config = config
         self._api_key = config.api_key
         self._base_url = base_url
         self._client = client or httpx.AsyncClient(timeout=30.0)
@@ -32,7 +34,7 @@ class ExaAdapter(WebFetchAdapter):
         try:
             r = await self._client.post(f"{self._base_url}/contents", json=body, headers=headers)
         except httpx.HTTPError as exc:
-            raise WebFetchUnavailable(f"exa transport: {type(exc).__name__}: {exc}") from exc
+            raise WebFetchUnavailable(transport_failure("exa", exc, self._config)) from exc
         if r.status_code in (401, 403):
             raise WebFetchProviderError(f"exa auth failed (HTTP {r.status_code})")
         if r.status_code == 429:
