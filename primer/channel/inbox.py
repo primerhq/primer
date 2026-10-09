@@ -124,15 +124,14 @@ class ChannelInbox:
             await self._resolve_approval_gate(env)
             if env.kind == "tool_approval" else None
         )
-        if env.kind == "ask_user":
-            await self._fence_ask_user(env)
+        asked = await self._fence_ask_user(env) if env.kind == "ask_user" else None
         if captured is not None:
             self._enforce_approvers(env, captured["gate"])
             # Counted after the approver check, as the REST route does: a refused decision is not counted as one that named the right gate.
             count_gate_token(kind="approval", session_id=env.session_id, token=env.gate_id)
         event_key = (
             captured["gate"].get("event_key") if captured is not None else None
-        ) or await self._resolve_event_key(env)
+        ) or (asked.get("event_key") if asked is not None else None) or await self._resolve_event_key(env)
         payload: dict = (
             {"response": env.response} if env.kind == "ask_user"
             else {"decision": env.decision, "reason": env.reason}
@@ -221,30 +220,36 @@ class ChannelInbox:
             "parked_at": getattr(row, "parked_at", None),
         }
 
-    async def _fence_ask_user(self, env: ResponseEnvelope) -> None:
-        """Refuse an ask_user reply that names a prompt which is no longer the pending one (C-033), before anything is published.
+    async def _fence_ask_user(self, env: ResponseEnvelope) -> "dict | None":
+        """Refuse an ask_user reply that names a prompt which is no longer the pending one (C-033), before anything is published; return the gate it answers.
 
         Only a reply that carries a token is judged. A reply that names none answers whatever is pending (a thread reply whose correlation row
         predates gate ids has no token to bring back), so it is accepted, and counted ``absent`` when it reaches a pending ask_user prompt, so the
         flip to refusing tokenless replies can be scheduled from one number. A call id with no pending ask_user entry at all is left to the lookup
         that follows and is not counted.
+
+        The returned entry is the SPECIFIC gate the reply resolved to (the one carrying the named token, else the first match by raw id), and its
+        own ``event_key`` is what the reply is published to: two fan-out siblings that share a raw tool_call_id wait on different keys, and the lookup
+        that used to follow matched by the raw id alone and took the first (C-033 round 2, PR 3). ``None`` when there is nothing to resolve.
         """
         if self._storage_provider is None:
-            return
+            return None
         from primer.model.workspace_session import WorkspaceSession
         from primer.session.pending_gates import resolve_pending_gate
 
         row = await self._storage_provider.get_storage(WorkspaceSession).get(env.session_id)
         if row is None:
-            return
+            return None
         blob = getattr(row, "parked_state", None) or {}
         if env.gate_id is None:
-            if resolve_pending_gate(blob, tool_call_id=env.tool_call_id, kind="ask_user") is not None:
+            gate = resolve_pending_gate(blob, tool_call_id=env.tool_call_id, kind="ask_user")
+            if gate is not None:
                 count_gate_token(kind="ask_user", session_id=env.session_id, token=None)
-            return
-        if resolve_pending_gate(blob, tool_call_id=env.tool_call_id, kind="ask_user", gate_id=env.gate_id) is not None:
+            return gate
+        gate = resolve_pending_gate(blob, tool_call_id=env.tool_call_id, kind="ask_user", gate_id=env.gate_id)
+        if gate is not None:
             count_gate_token(kind="ask_user", session_id=env.session_id, token=env.gate_id)
-            return
+            return gate
         if resolve_pending_gate(blob, tool_call_id=env.tool_call_id, kind="ask_user") is not None:
             count_gate_token(kind="ask_user", session_id=env.session_id, token=env.gate_id, stale=True)
             logger.warning(
@@ -252,6 +257,7 @@ class ChannelInbox:
                 env.session_id, env.tool_call_id,
             )
             raise StaleGateError("ask_user")
+        return None
 
     @staticmethod
     def _is_nameless_park_at_reconstructed_key(row: Any, env: ResponseEnvelope) -> bool:

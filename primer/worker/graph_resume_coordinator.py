@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 
 async def write_approval_record_for_graph(
-    pool: "WorkerPool", *, session, checkpoint: dict, tcid, payload,
+    pool: "WorkerPool", *, session, checkpoint: dict, tcid, payload, event_key: str | None = None,
 ) -> None:
     """Persist the resolved approval decision for a graph tool-call gate.
 
@@ -60,6 +60,11 @@ async def write_approval_record_for_graph(
     dropped from every such record. Resolving via ``pending_toolcalls``
     (the raw checkpoint field the shared helper reads) carries the full
     metadata tool_manager.py originally stamped.
+
+    ``event_key`` is the key the decision fired (C-033 round 2): two fan-out
+    siblings can share the raw ``tcid``, and the gate that was decided is the
+    one that waits on that key. It selects the gate when it names one; the raw
+    id decides only for a key-less drain or a key that names none.
 
     A tcid that resolves to nothing (not an approval gate, or the legacy
     single-event drain-all with no tcid) is skipped. Best-effort: a
@@ -89,7 +94,7 @@ async def write_approval_record_for_graph(
     if not tcid:
         return
     gate = resolve_pending_gate(
-        {"graph_checkpoint": checkpoint}, tool_call_id=tcid, kind="_approval",
+        {"graph_checkpoint": checkpoint}, tool_call_id=tcid, kind="_approval", event_key=event_key,
     )
     if gate is None:
         return
@@ -246,6 +251,8 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
                 classify_marker_payload(
                     entry.get("payload") or {}, parked_at=session.parked_at,
                 ).payload,
+                # The FIRED key rides with the reply (C-033 round 2): the raw tool_call_id alone cannot say which of two fan-out siblings it answers.
+                event_key or None,
             )
             for event_key, entry in kept.items()
         ]
@@ -261,13 +268,13 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
             # fail-closed-to-rejected default installing the rejecting
             # override for no reason - mirrors resume_graph_tool_wait's
             # own identical convention for its no-real-approval-here case.
-            replies = [("__tool_wait_wake_only__", {"decision": "approved"})]
+            replies = [("__tool_wait_wake_only__", {"decision": "approved"}, None)]
     else:
         resume_event_key = raw_state.get("resume_event_key")
         resumed_tcid = (
             resume_event_key.rsplit(":", 1)[-1] if resume_event_key else None
         )
-        replies = [(resumed_tcid, resume_payload.payload)]
+        replies = [(resumed_tcid, resume_payload.payload, resume_event_key or None)]
 
     repark = None
     # 01a0690a piece 3: per-node mint-seq high-water mark, seeded from the
@@ -275,7 +282,7 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
     # any repark this loop produces so a chain of resumes never re-mints a
     # colliding scoped id.
     node_tool_call_seq = dict(getattr(parked, "node_tool_call_seq", None) or {})
-    for tcid, payload in replies:
+    for tcid, payload, fired_key in replies:
         # Unified nested-yield: when the parked agent-node yielded from
         # INSIDE a nested invoke_agent invocation, its pending entry carries
         # a continuation ``frames`` stack. Run the continuation walk to
@@ -283,7 +290,7 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
         # that as the node's agent_tool_result (Deliver), or re-park the
         # graph session on the deeper new leaf if a frame re-yielded
         # (Repark). The no-nested-frames path below is UNCHANGED.
-        nested = pool._graph_nested_agent_yield(ck, tcid)
+        nested = pool._graph_nested_agent_yield(ck, tcid, event_key=fired_key)
         if nested is not None:
             cont = await pool._resume_graph_continuation(
                 session, parked, ck, nested, payload, workspace, executor,
@@ -304,14 +311,14 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
             # payload regardless of whether the chain reparks deeper
             # afterward on a DIFFERENT, unrelated gate.
             await pool._write_approval_record_for_graph(
-                session=session, checkpoint=ck, tcid=tcid, payload=payload,
+                session=session, checkpoint=ck, tcid=tcid, payload=payload, event_key=fired_key,
             )
             if cont.repark_outcome is not None:
                 return cont.repark_outcome
             agent_tool_result = cont.agent_tool_result
         else:
             agent_tool_result = await pool._graph_agent_tool_result(
-                ck, tcid, payload, session_id=session.id,
+                ck, tcid, payload, session_id=session.id, event_key=fired_key,
             )
             # An approval gate is a pending tool-call yield (NOT an ask_user
             # agent yield, which carries agent_tool_result). Persist the
@@ -320,10 +327,10 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
             # its result is the operator's reply, fed back by the executor,
             # so skip the approval record for it.
             if agent_tool_result is None and not pool._graph_value_yield_toolcall(
-                ck, tcid,
+                ck, tcid, event_key=fired_key,
             ):
                 await pool._write_approval_record_for_graph(
-                    session=session, checkpoint=ck, tcid=tcid, payload=payload,
+                    session=session, checkpoint=ck, tcid=tcid, payload=payload, event_key=fired_key,
                 )
         # 01a0690a piece 2: agent_tool_result is a synthesized delivery
         # (ask_user answer / unwound nested continuation) with no
@@ -332,7 +339,7 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
         if agent_tool_result is not None:
             await pool._persist_resume_tool_result_record_for_graph(
                 session=session, checkpoint=ck, tcid=tcid,
-                agent_tool_result=agent_tool_result,
+                agent_tool_result=agent_tool_result, event_key=fired_key,
             )
         resolved_tool_wait: dict = {}
         resolved_tasks: dict = {}
@@ -346,6 +353,7 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
                 checkpoint=ck,
                 payload=payload,
                 resumed_tcid=tcid,
+                resumed_event_key=fired_key,
                 agent_tool_result=agent_tool_result,
                 pool=pool,
                 session=session,
@@ -398,7 +406,7 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
     return await pool._end_session(session, reason="completed")
 
 
-def graph_value_yield_toolcall(pool: "WorkerPool", checkpoint, tcid) -> bool:
+def graph_value_yield_toolcall(pool: "WorkerPool", checkpoint, tcid, event_key: str | None = None) -> bool:
     """True when ``tcid`` is a pending tool_call node that suspended on a
     value-yielding tool (e.g. ``ask_user``) rather than an approval gate.
 
@@ -407,11 +415,9 @@ def graph_value_yield_toolcall(pool: "WorkerPool", checkpoint, tcid) -> bool:
     record for it nor classify the reply as an approve/reject decision.
     """
     from primer.graph._node_refs import _PendingToolCall, _is_value_yield_toolcall
+    from primer.session.pending_gates import pending_entries
 
-    matches = [
-        e for e in (checkpoint.get("pending_toolcalls") or [])
-        if e.get("tool_call_id") == tcid
-    ]
+    matches = pending_entries(checkpoint, "pending_toolcalls", tool_call_id=tcid, event_key=event_key)
     if len(matches) > 1:
         # 01a0518f: see write_approval_record_for_graph's comment above.
         logger.warning(
@@ -433,7 +439,7 @@ def graph_value_yield_toolcall(pool: "WorkerPool", checkpoint, tcid) -> bool:
     return _is_value_yield_toolcall(entry)
 
 
-def graph_nested_agent_yield(pool: "WorkerPool", checkpoint, tcid):
+def graph_nested_agent_yield(pool: "WorkerPool", checkpoint, tcid, event_key: str | None = None):
     """Return the parked agent-node entry for ``tcid`` IFF it carries a
     nested continuation ``frames`` stack, else ``None``.
 
@@ -442,10 +448,9 @@ def graph_nested_agent_yield(pool: "WorkerPool", checkpoint, tcid):
     continuation walk (:meth:`_resume_graph_continuation`) rather than the
     flat ask_user / approval path.
     """
-    matches = [
-        e for e in (checkpoint.get("pending_agent_yields") or [])
-        if e.get("tool_call_id") == tcid
-    ]
+    from primer.session.pending_gates import pending_entries
+
+    matches = pending_entries(checkpoint, "pending_agent_yields", tool_call_id=tcid, event_key=event_key)
     if len(matches) > 1:
         # 01a0518f: see write_approval_record_for_graph's comment above.
         logger.warning(
@@ -568,7 +573,7 @@ def repark_graph_continuation(pool: "WorkerPool", session, parked, checkpoint, a
 
 
 async def graph_agent_tool_result(
-    pool: "WorkerPool", checkpoint, tcid, payload, *, session_id: str,
+    pool: "WorkerPool", checkpoint, tcid, payload, *, session_id: str, event_key: str | None = None,
 ):
     """Build the tool_result Message an agent-node yield continues from
     (e.g. the ask_user answer). Returns None for tool_call approvals /
@@ -584,11 +589,9 @@ async def graph_agent_tool_result(
     passes ``session.id`` and the GraphFrame leaf path reaches here through
     the closure ``build_invocation_services`` binds to its session."""
     from primer.model.chat import Message, ToolResultPart
+    from primer.session.pending_gates import pending_entries
 
-    matches = [
-        e for e in (checkpoint.get("pending_agent_yields") or [])
-        if e.get("tool_call_id") == tcid
-    ]
+    matches = pending_entries(checkpoint, "pending_agent_yields", tool_call_id=tcid, event_key=event_key)
     if len(matches) > 1:
         # 01a0518f: see write_approval_record_for_graph's comment above.
         logger.warning(
@@ -625,7 +628,7 @@ async def graph_agent_tool_result(
 
 
 async def persist_resume_tool_result_record_for_graph(
-    pool: "WorkerPool", *, session, checkpoint, tcid, agent_tool_result,
+    pool: "WorkerPool", *, session, checkpoint, tcid, agent_tool_result, event_key: str | None = None,
 ) -> None:
     """Write the modern TOOL_RESULT counterpart for a resumed graph yield.
 
@@ -681,13 +684,14 @@ async def persist_resume_tool_result_record_for_graph(
     if tool_result_part is None:
         return
 
+    from primer.session.pending_gates import pending_entries
+
     node_id = None
     scoped_call_id = None
-    for e in (checkpoint.get("pending_agent_yields") or []):
-        if e.get("tool_call_id") == tcid:
-            node_id = e.get("node_id")
-            scoped_call_id = e.get("scoped_tool_call_id")
-            break
+    for e in pending_entries(checkpoint, "pending_agent_yields", tool_call_id=tcid, event_key=event_key):
+        node_id = e.get("node_id")
+        scoped_call_id = e.get("scoped_tool_call_id")
+        break
 
     try:
         fresh, last_seq = await fresh_session_row_and_last_seq(pool, session)

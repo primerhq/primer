@@ -427,6 +427,7 @@ class _BaseGraphExecutor(
         resolved_tool_wait: "dict[str, list[ToolResultPart]] | None" = None,
         resume_session_id: str | None = None,
         resolve_provider: "Callable[[str], Awaitable[Any]] | None" = None,
+        resumed_event_key: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Restore from a checkpoint and continue graph execution.
 
@@ -477,6 +478,11 @@ class _BaseGraphExecutor(
         drain-until-empty re-park below, exactly like an un-replied
         ``_PendingAgentYield``.
 
+        ``resumed_event_key`` (C-033 round 2, ticket 01a11fc6-0cce): the event key the reply fired. Two fan-out siblings of one superstep can
+        share a raw ``tool_call_id``, so ``resumed_tcid`` can name both; when the key names a pending entry, ONLY that entry is resumed (a
+        ``_PendingToolCall`` by its ``parked_event_key``, a ``_PendingAgentYield`` by its ``event_key``) and its sibling stays pending. A key
+        that names no entry (a park written before keys were node-scoped) selects by ``resumed_tcid`` as before, and so does a call without one.
+
         ``resume_session_id`` / ``resolve_provider``: the session being
         resumed and the provider registry's ``get_toolset``, for the
         ``ResumeContext`` a value-yielding tool_call node's resume hook
@@ -503,9 +509,15 @@ class _BaseGraphExecutor(
         tc_all = list(self._pending_toolcalls)
         ay_all = list(self._pending_agent_yields)
         tw_all = list(self._pending_tool_waits)
-        if resumed_tcid is None:
+        if resumed_tcid is None and resumed_event_key is None:
             tc_pending = tc_all
             ay_pending = ay_all
+        elif resumed_event_key is not None and (
+            any(e.parked_event_key == resumed_event_key for e in tc_all)
+            or any(e.event_key == resumed_event_key for e in ay_all)
+        ):
+            tc_pending = [e for e in tc_all if e.parked_event_key == resumed_event_key]
+            ay_pending = [e for e in ay_all if e.event_key == resumed_event_key]
         else:
             tc_pending = [e for e in tc_all if e.tool_call_id == resumed_tcid]
             ay_pending = [e for e in ay_all if e.tool_call_id == resumed_tcid]

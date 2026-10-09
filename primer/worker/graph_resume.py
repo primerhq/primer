@@ -53,6 +53,7 @@ async def resume_graph_from_checkpoint(
     session: "Any | None" = None,
     node_tool_call_seq: dict[str, int] | None = None,
     resolved_tool_wait: "dict[str, list] | None" = None,
+    resumed_event_key: str | None = None,
 ) -> "tuple[str, Any | None, dict[str, int]]":
     """Drive a graph executor's resume stream to completion.
 
@@ -108,7 +109,9 @@ async def resume_graph_from_checkpoint(
         checkpoint written before piece 1, or a park with no prior mints).
 
     ``resumed_tcid`` (multi-event park) selects which pending node the
-    human replied to; ``agent_tool_result`` is the tool-result Message for
+    human replied to, and ``resumed_event_key`` is the event key the reply fired: two fan-out siblings can share a raw tool_call_id, so when the key
+    names a pending entry it alone is resumed (C-033 round 2, ticket 01a11fc6-0cce; see
+    :meth:`~primer.graph.base._BaseGraphExecutor.resume_from_checkpoint`); ``agent_tool_result`` is the tool-result Message for
     a resumed agent-node yield (ask_user answer). ``resolved_tool_wait``
     (01a0518b boundary d, graph third-list) is the tool_wait-batch
     sibling of those two: a ``node_id -> ToolResultPart list`` map for
@@ -148,12 +151,16 @@ async def resume_graph_from_checkpoint(
     # resume hook. Detect that pending entry so we (a) hand the raw payload to
     # the executor and (b) skip the rejection bypass override below (which only
     # applies to approval gates).
+    from primer.session.pending_gates import fired_key_names_a_pending_entry
+
+    # The entry the reply answers: by the fired key when it names one, else by the raw id (see ``pending_entries``).
+    key_selects = fired_key_names_a_pending_entry(checkpoint, resumed_event_key)
     value_yield_toolcall = any(
         isinstance(p, _PendingToolCall)
-        and p.tool_call_id == resumed_tcid
+        and (p.parked_event_key == resumed_event_key if key_selects else p.tool_call_id == resumed_tcid)
         and _is_value_yield_toolcall(p)
         for p in _pending_toolcalls_from(checkpoint)
-    ) if resumed_tcid is not None else False
+    ) if (resumed_tcid is not None or key_selects) else False
 
     # Only the tool_call-approval rejection path uses the bypass override; an
     # agent-node yield carries its result via ``agent_tool_result``, and a
@@ -207,6 +214,7 @@ async def resume_graph_from_checkpoint(
         async for ev in executor.resume_from_checkpoint(
             checkpoint,
             resumed_tcid=resumed_tcid,
+            resumed_event_key=resumed_event_key,
             agent_tool_result=agent_tool_result,
             toolcall_payload=payload if value_yield_toolcall else None,
             resolved_tool_wait=resolved_tool_wait,
