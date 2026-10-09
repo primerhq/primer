@@ -11,12 +11,18 @@ the page only enumerates the candidate controls). It visits, in one browser and 
 * the four phone tabs.
 
 and fails on any control with no accessible name that is not on ``ALLOWLIST``, on a visit that did not happen, on a page error, and on an allowlist entry that excused nothing. A surface that passes
-by being empty fails too: each is looked at only after its OWN marker is on screen (``nv-plat-page:<id>``, ``nv-sys-page:<id>``, the overlay's title and its provider body, ``nv-mobile-panel:<tab>``,
-the inspector showing the clicked step, the form's first field) and nothing under it is still loading, a loading or error banner under it is a failure, and the BODY of every surface (not its fixed
-chrome) holds at least the floor set for it. The numbers are printed on every run. NOT covered (listed in ``docs/dev/subsystems/ui-pages.md``): detail pages, edit forms, the confirm host, menus
-(the provider register menu is only opened to pick from it), the command palette, the Files sidebar and terminal, the phone's drill-downs and sheets, 422 states, the row actions of a populated
-list, the Platform and System nav rows, and what Chromium cannot be asked about: controls inside iframes and shadow roots, and a ``div``, ``span`` or ``<a>`` without ``href`` that has only a click
-handler, a ``[tabindex]`` element without a role, or a dialog's own name.
+by being empty or broken fails too, in three layers (``tests/ui_e2e/_a11y_sweep.py``). Each is looked at only after its OWN marker is on screen (``nv-plat-page:<id>`` and a loaded list,
+``nv-sys-page:<id>``, the overlay's section title and, for a provider class, its loaded cards or its empty state, ``nv-mobile-panel:<tab>``, the step's id in the inspector, the form's first field).
+Then the NETWORK: every ``/v1`` response of 500 or more and every request that failed (not one the console aborts, not its event streams) since the previous look is a note for the surface, and a
+look waits until the ``/v1`` requests in flight have answered, so a form whose fields come from a request is looked at after they arrived. Last, the SELECTORS, the second line: what is still
+loading (a spinner, ``aria-busy``, text that starts Loading, Checking or Reading in any case) and the banners the console draws (``.nv-form-error``, ``.banner-error``, ``.nv-doc-problem``,
+``[role=alert]``, ``.sh-file-conflict``, ``.field-help.warn``, a red ``.nv-bind-empty``); a red span in a table row, a stuck title and an empty list that is really a failure have no shape a selector
+can know and are left to the network. The BODY of every surface (not its fixed chrome) holds at least its floor, and the numbers are printed on every run. Every wait is bounded and the bound is
+shared (``Budget``): once enough looks have used their wait up, the rest wait briefly and are noted, and the test has a signal timeout, so a broken install is reported and not waited out.
+Only the FIRST kind of a provider class is swept (the first item of its register menu). NOT covered (listed in ``docs/dev/subsystems/ui-pages.md``): detail pages, edit forms, the confirm host,
+menus (the provider register menu is only opened to pick from it), the command palette, the Files sidebar and terminal, the phone's drill-downs and sheets, 422 states, the row actions of a
+populated list, the Platform and System nav rows, the setup wizard, the controls inside a closed ``<details>``, and what Chromium cannot be asked about: controls inside iframes and shadow
+roots, and a ``div``, ``span`` or ``<a>`` without ``href`` that has only a click handler, a ``[tabindex]`` element without a role, or a dialog's own name.
 
 ``ALLOWLIST`` is empty on purpose and may only shrink: an entry that matches nothing in a run FAILS the test.
 """
@@ -25,19 +31,18 @@ from __future__ import annotations
 
 import json
 import re
-import time
 import uuid
 
 import httpx
 import pytest
+from playwright.sync_api import Error as BrowserError
 from playwright.sync_api import Page, expect
 
 from tests._support.smk import smk
 from tests.ui_e2e import _delegation_seed as seed
 from tests.ui_e2e import _graph_builder_helpers as gb
-from tests.ui_e2e._a11y import ALLOWLIST, AxProbe, Look, counts_table, evaluate_sweep, page_state
+from tests.ui_e2e._a11y import ALLOWLIST, counts_table, evaluate_sweep
 from tests.ui_e2e._a11y_surfaces import (
-    CHROME,
     DEAD_MENU_TEXT,
     DEAD_REGISTER_MENUS,
     FLOORS,
@@ -54,8 +59,8 @@ from tests.ui_e2e._a11y_surfaces import (
     Form,
     expected_surfaces,
     form_surface,
-    ready_selectors,
 )
+from tests.ui_e2e._a11y_sweep import Sweep
 from tests.ui_e2e._session_seed import delete_paths, delete_seeded, seed_session
 from tests.ui_e2e._shell_helpers import open_legacy_route, open_overlay, open_shell, open_view
 from tests.ui_e2e._studio_helpers import open_session_in_studio
@@ -64,51 +69,7 @@ pytestmark = smk("SMK-UI-06", status="partial")
 
 PHONE = {"width": 390, "height": 844}
 OWN_FAILURE = "the session's own turn: the model fell over"
-READY_TIMEOUT = 15_000      # ms a surface has to show its own marker
-LOADED_TIMEOUT = 10         # s a surface has to stop saying it is loading
 FIRST_FIELD = ":is(input:not([type=hidden]), select, textarea, [contenteditable=true])"
-
-
-class _Sweep:
-    def __init__(self, page: Page) -> None:
-        self.page = page
-        self.probe = AxProbe(page)
-        self.found: dict[str, list[str]] = {}
-        self.visited: list[str] = []
-        self.looks: dict[str, Look] = {}
-        self.notes: list[str] = []
-
-    def arrive(self, kind: str, name: str) -> None:
-        """Wait for the page itself (not the one that was on screen before it, not the first row of a nav that a view falls back to) and for its list or body to have loaded."""
-        for marker in ready_selectors(kind, name):
-            expect(self.page.locator(marker).first).to_be_visible(timeout=READY_TIMEOUT)
-
-    def at(self, surface: str, root: str | None = None, *, ready: list[str] | None = None, check_page: bool = True) -> None:
-        """Record the unnamed controls under ``root`` (a CSS selector that must match a visible element; the whole page when none) as the page is now, under ``surface``.
-
-        Before it looks, the surface must show every marker of ``ready`` and, with ``check_page``, stop saying it is loading; an error banner under it, or a marker that never came, is a note
-        in the report (the look is still taken, so one broken page does not hide the rest)."""
-        self.visited.append(surface)
-        for marker in ready or []:
-            try:
-                expect(self.page.locator(marker).first).to_be_visible(timeout=READY_TIMEOUT)
-            except AssertionError:
-                self.notes.append(f"{surface}: never showed {marker}")
-        state = page_state(self.page, root)
-        if check_page:
-            deadline = time.monotonic() + LOADED_TIMEOUT
-            while state.loading and time.monotonic() < deadline:
-                self.page.wait_for_timeout(250)
-                state = page_state(self.page, root)
-            if state.loading:
-                self.notes.append(f"{surface}: still loading after {LOADED_TIMEOUT} s: {state.loading}")
-            if state.errors:
-                self.notes.append(f"{surface}: an error banner under it: {state.errors}")
-        self.page.wait_for_timeout(250)  # let a just-opened surface finish painting
-        result = self.probe.examine(root, chrome=CHROME)
-        self.looks[surface] = Look(examined=result.examined, body=result.body, skipped=result.skipped)
-        for item in result.unnamed:
-            self.found.setdefault(item["html"], []).append(surface)
 
 
 def _seed_graph(base_url: str, graph_id: str, agent_id: str) -> int:
@@ -146,26 +107,47 @@ def _session_log(tmp_path, wid: str, sid: str) -> None:
     log.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
 
 
-def _sweep_forms(page: Page, sweep: _Sweep, kind: str, name: str, forms: list[Form], reopen, scope: str) -> None:
-    """For each ``Form`` of a page: open the page afresh and wait for IT, press the button (it must be there and enabled), pick the menu item that comes after it (a provider's kind), wait for what it
-    opens (its root must NOT have been on screen before), sweep it, close it."""
+def _sweep_forms(page: Page, sweep: Sweep, kind: str, name: str, forms: list[Form], reopen, scope: str) -> None:
+    """For each ``Form`` of a page: go to the page (``reopen``: the hash is assigned again, so when the console is already there nothing reloads) and wait for IT, press the button (it must be there and
+    enabled), pick the menu item that comes after it (a provider's kind), wait for what it opens (its root must NOT have been on screen before), sweep it, close it. A form that cannot be opened is
+    a note and an empty look (the floor reports it too), and the next form is tried."""
     for form in forms:
+        surface = form_surface(kind, name, form.button)
         reopen()
-        sweep.arrive(kind, name)
-        new = page.locator(scope).get_by_role("button", name=re.compile(rf"^(\+ )?{re.escape(form.button)}\b")).first
-        expect(new).to_be_visible(timeout=15_000)
-        expect(new).to_be_enabled(timeout=5_000)
-        expect(page.locator(form.root)).to_have_count(0, timeout=5_000)   # a form root that is already there would be the page recorded as the form
-        new.click()
-        if form.then:
-            item = page.locator(f"{scope} {form.then}").first
-            expect(item).to_be_visible(timeout=15_000)
-            item.click()
-        expect(page.locator(form.root).first).to_be_visible(timeout=10_000)
-        sweep.at(form_surface(kind, name, form.button), form.root, ready=[f"{form.root} {FIRST_FIELD}:visible"])
+        if not sweep.arrive(kind, name):
+            sweep.skip(surface, "its page never showed")
+            continue
+        try:
+            new = page.locator(scope).get_by_role("button", name=re.compile(rf"^(\+ )?{re.escape(form.button)}\b")).first
+            expect(new).to_be_visible(timeout=sweep.budget.wait_ms(15_000))
+            expect(new).to_be_enabled(timeout=5_000)
+            expect(page.locator(form.root)).to_have_count(0, timeout=5_000)   # a form root that is already there would be the page recorded as the form
+            new.click()
+            if form.then:
+                item = page.locator(f"{scope} {form.then}").first
+                expect(item).to_be_visible(timeout=sweep.budget.wait_ms(15_000))
+                item.click()
+            expect(page.locator(form.root).first).to_be_visible(timeout=sweep.budget.wait_ms(10_000))
+        except (AssertionError, BrowserError) as exc:
+            sweep.budget.spent()
+            sweep.skip(surface, f"the form did not open ({type(exc).__name__})")
+            continue
+        sweep.at(surface, form.root, ready=[f"{form.root} {FIRST_FIELD}:visible"])
         page.keyboard.press("Escape")
         if form.root == MODAL:
             expect(page.locator(MODAL)).to_have_count(0, timeout=5_000)
+
+
+def _sweep_page(page: Page, sweep: Sweep, kind: str, name: str, root: str, forms: list[Form], reopen, scope: str) -> None:
+    """Go to a page, wait for ITS marker, look at it, and sweep the forms it has. A page that never shows is one note and an empty look for it and for each of its forms (the waits are not repeated)."""
+    reopen()
+    if not sweep.arrive(kind, name):
+        sweep.skip(f"{kind} {name}", "its page never showed")
+        for form in forms:
+            sweep.skip(form_surface(kind, name, form.button), "its page never showed")
+        return
+    sweep.at(f"{kind} {name}", root)
+    _sweep_forms(page, sweep, kind, name, forms, reopen, scope)
 
 
 def _assert_register_menu_is_dead(page: Page, reopen, route: str) -> None:
@@ -177,10 +159,11 @@ def _assert_register_menu_is_dead(page: Page, reopen, route: str) -> None:
         expect(panel).to_contain_text(DEAD_MENU_TEXT, timeout=15_000)
     except AssertionError as exc:
         raise AssertionError(f"{route}: its register menu no longer says {DEAD_MENU_TEXT!r}: move the page back into LEGACY_FORMS with its menu item and drop it from DEAD_REGISTER_MENUS and NO_FORM") from exc
+    page.keyboard.press("Escape")    # the menu is open: the next surface starts from a page without one
 
 
 @pytest.mark.ui_e2e
-@pytest.mark.timeout(900)
+@pytest.mark.timeout(900, method="signal")     # not the thread method: that one kills the whole lane, with no other journey reported and no seed deleted
 def test_no_visible_control_of_the_consoles_main_surfaces_is_without_a_name(base_url: str, console_url: str, page: Page, tmp_path) -> None:
     suffix = uuid.uuid4().hex[:8]
     agent_id = f"dn-agent-{suffix}"
@@ -188,7 +171,7 @@ def test_no_visible_control_of_the_consoles_main_surfaces_is_without_a_name(base
     provider_id = f"sweep-cp-{suffix}"
     page_errors: list[str] = []
     page.on("pageerror", lambda exc: page_errors.append(str(exc)))
-    sweep = _Sweep(page)
+    sweep = Sweep(page)
     died: Exception | None = None
     steps = 0
     seeded = None
@@ -218,10 +201,7 @@ def test_no_visible_control_of_the_consoles_main_surfaces_is_without_a_name(base
         for route, forms in LEGACY_FORMS.items():
             def reopen(route=route):
                 open_legacy_route(page, console_url, route)
-            reopen()
-            sweep.arrive("overlay-page", route)
-            sweep.at(f"overlay-page {route}", OVERLAY, ready=ready_selectors("overlay-page", route))
-            _sweep_forms(page, sweep, "overlay-page", route, forms, reopen, OVERLAY)
+            _sweep_page(page, sweep, "overlay-page", route, OVERLAY, forms, reopen, OVERLAY)
             if route in DEAD_REGISTER_MENUS:
                 _assert_register_menu_is_dead(page, reopen, route)
 
@@ -229,19 +209,13 @@ def test_no_visible_control_of_the_consoles_main_surfaces_is_without_a_name(base
         for nav, forms in PLATFORM_FORMS.items():
             def reopen(nav=nav):
                 open_view(page, console_url, wid, f"platform:{nav}")
-            reopen()
-            sweep.arrive("platform-view", nav)
-            sweep.at(f"platform-view {nav}", PLATFORM, ready=ready_selectors("platform-view", nav))
-            _sweep_forms(page, sweep, "platform-view", nav, forms, reopen, PLATFORM)
+            _sweep_page(page, sweep, "platform-view", nav, PLATFORM, forms, reopen, PLATFORM)
 
         # every System view, and the forms it opens
         for nav in SYSTEM_VIEWS:
             def reopen(nav=nav):
                 open_view(page, console_url, wid, f"system:{nav}")
-            reopen()
-            sweep.arrive("system-view", nav)
-            sweep.at(f"system-view {nav}", SYSTEM, ready=ready_selectors("system-view", nav))
-            _sweep_forms(page, sweep, "system-view", nav, SYSTEM_FORMS.get(nav, []), reopen, SYSTEM)
+            _sweep_page(page, sweep, "system-view", nav, SYSTEM, SYSTEM_FORMS.get(nav, []), reopen, SYSTEM)
 
         # the graph builder: a step of each kind, the JSON import, the palette
         open_legacy_route(page, console_url, f"graphs/{graph_id}")
@@ -252,7 +226,8 @@ def test_no_visible_control_of_the_consoles_main_surfaces_is_without_a_name(base
         for i in range(steps):
             node_id = rows.nth(i).get_attribute("data-node-id")
             rows.nth(i).click()
-            expect(page.locator(gb.INSPECTOR)).to_contain_text(node_id or "", timeout=10_000)   # the inspector shows the step that was clicked
+            # the inspector shows the step that was clicked: its id is the mono text beside the step's name (not a word of the whole panel, whose option labels can name another step)
+            expect(page.get_by_test_id("gb-inspector-title").locator("xpath=..").locator(".mono")).to_have_text(node_id or "", timeout=10_000)
             sweep.at(f"graph builder / step {i + 1}", gb.BUILDER, ready=[gb.INSPECTOR])
         page.locator('[data-testid="gb-json-tab"]').click()
         expect(page.locator(MODAL).first).to_be_visible(timeout=5_000)
@@ -270,13 +245,15 @@ def test_no_visible_control_of_the_consoles_main_surfaces_is_without_a_name(base
         expect(page.get_by_test_id("nv-mobile-shell")).to_be_visible(timeout=20_000)
         for tab in PHONE_TABS:
             page.get_by_role("tab", name=tab).click()
-            sweep.arrive("phone", tab)
-            sweep.at(f"phone / {tab}", '[data-testid="nv-mobile-shell"]', ready=ready_selectors("phone", tab))
+            if sweep.arrive("phone", tab, surface=f"phone / {tab}"):
+                sweep.at(f"phone / {tab}", '[data-testid="nv-mobile-shell"]')
+            else:
+                sweep.skip(f"phone / {tab}", "its panel never showed")
     except Exception as exc:  # noqa: BLE001 - reported below with everything found before it died
         died = exc
     finally:
         try:
-            sweep.probe.close()
+            sweep.close()
         except Exception as exc:  # noqa: BLE001 - the findings below matter more than a detached session
             sweep.notes.append(f"the CDP session could not be closed: {exc!r}")
         left = delete_paths(base_url, made) + (delete_seeded(base_url, seeded) if seeded else [])

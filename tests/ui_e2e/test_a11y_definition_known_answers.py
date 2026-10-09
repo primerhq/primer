@@ -274,6 +274,7 @@ _CAUGHT_BY_SELECTORS = {
     "an activity feed that failed (sh-activity.jsx)": ('<div class="sh-file-conflict"><span>HTTP 500</span><button type="button" class="sh-verb">Retry</button></div>', "errors"),
     "an entity picker that could not load (entity-picker.jsx)": ('<div class="field-help warn" style="padding:10px;margin:0">Couldn\'t load agents</div>', "errors"),
     "the dashboard's workers that keep failing (nv-system.jsx)": ('<div class="nv-bind-empty" style="color:var(--red)">Couldn\'t load workers &mdash; the list keeps failing (retrying).</div>', "errors"),
+    "a harmless hint drawn with the same class (toolset form)": ('<div class="field-help warn">Admin only: a stdio toolset launches this command on the Primer host, so creating or changing one needs the admin role.</div>', None),
     "a toolbar notice that is not an error": ('<div class="nv-bind-empty">Nothing needs you right now.</div>', None),
     "the health page reading (health.jsx)": ('<div style="font-size:18px">Reading /v1/health&hellip;</div>', "loading"),
     "the dashboard's health card checking (nv-system.jsx)": ("<div>checking&hellip;</div>", "loading"),

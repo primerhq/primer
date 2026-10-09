@@ -14,14 +14,13 @@ from playwright.sync_api import expect
 
 from tests.ui_e2e import _delegation_seed as seed
 from tests.ui_e2e._studio_helpers import open_session_in_studio
-from tests.ui_e2e.test_delegated_run_nests_in_its_call_journey import _seed_session
 
 OWN_FAILURE = "the session's own turn: the model fell over"
 
 
 @pytest.mark.ui_e2e
-def test_a_subagents_failure_card_has_no_retry_and_the_sessions_own_failure_has_one(base_url, console_url, page, tmp_path, unique_suffix) -> None:
-    wid, sid = _seed_session(base_url, tmp_path, unique_suffix)
+def test_a_subagents_failure_card_has_no_retry_and_the_sessions_own_failure_has_one(console_url, page, tmp_path, delegation_session) -> None:
+    wid, sid = delegation_session.wid, delegation_session.sid
     seeded = seed.build(failures=True)
     records = [r for r in seeded.records if r["seq"] <= seeded.delegated_failure_seq]
     assert records[0]["kind"] == "user_input", "the transcript opens with a plain instruction, so a Retry has something to resend"

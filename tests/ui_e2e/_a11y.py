@@ -73,19 +73,26 @@ CANDIDATES_JS = r"""(args) => {
 
 CLEAR_JS = "(attr) => document.querySelectorAll('[' + attr + ']').forEach(e => e.removeAttribute(attr))"
 
-# What a surface says about ITSELF (review of #668, B3'): a control count is met by a page's own chrome, so the sweep also asks whether anything under the root is still loading and whether
-# it shows an error. A banner is a visible element of the console's error shapes with text in it; "loading" is a spinner, an element marked busy, or text that says so.
-ERROR_BANNER = '.nv-form-error, .banner-error, .nv-doc-problem, [role="alert"]'
-LOADING_TEXT = r"^(Loading|Checking)\b"
+# What a surface says about ITSELF, the second line of defence (review of #668, B3' and round 3 B2''): the first is the network (``api_problem``: a /v1 response of 500 or more, a request that
+# failed), because the console draws "this page failed" in many ways and no list of them is complete. A control count is met by a page's own chrome, so the sweep also asks whether anything under
+# the root is still loading and whether it shows an error banner. RECOGNISED here: the console's banners and form errors (``.nv-form-error``, ``.banner-error``, ``.nv-doc-problem``,
+# ``[role=alert]`` with text), the activity feed's failure (``.sh-file-conflict``), a hint line that says it could not load something (``.field-help.warn`` whose text has "couldn't", "could not",
+# "failed" or "unable": the same class draws the harmless "Admin only" hints), a red empty state (``.nv-bind-empty`` coloured ``--red``); a spinner, an element marked busy, and text that starts Loading, Checking or Reading (any case) or is only an ellipsis. NOT recognised by shape, and so left to the network guard:
+# a red span in a table row (toolsets), a stuck title (health), a provider class body that says "No providers match" while its list loads.
+ERROR_BANNER = '.nv-form-error, .banner-error, .nv-doc-problem, [role="alert"], .sh-file-conflict, .nv-bind-empty[style*="--red"]'
+WARNING_HINT = ".field-help.warn"
+FAILURE_WORDS = r"couldn.?t|could not|failed|unable"
+LOADING_TEXT = r"^(loading|checking|reading)\b|^\u2026$"
 
 PAGE_STATE_JS = r"""(args) => {
-  const { rootSel, errorSel, loadingText } = args;
+  const { rootSel, errorSel, warnSel, failureWords, loadingText } = args;
   const shown = e => { const s = getComputedStyle(e); return s.visibility !== 'hidden' && s.display !== 'none' && e.getClientRects().length > 0; };
   const roots = rootSel ? Array.from(document.querySelectorAll(rootSel)).filter(shown) : [document.documentElement];
   if (!roots.length) return { error: 'the root selector ' + JSON.stringify(rootSel) + ' matches no visible element', loading: [], errors: [] };
   const text = e => (e.textContent || '').replace(/\s+/g, ' ').trim();
   const own = e => Array.from(e.childNodes).filter(n => n.nodeType === Node.TEXT_NODE).map(n => n.textContent).join(' ').replace(/\s+/g, ' ').trim();
-  const rx = new RegExp(loadingText);
+  const rx = new RegExp(loadingText, 'i');
+  const failed = new RegExp(failureWords, 'i');
   const loading = [], errors = [];
   const seen = new Set();
   for (const root of roots) {
@@ -96,6 +103,7 @@ PAGE_STATE_JS = r"""(args) => {
       else if (e.getAttribute('aria-busy') === 'true') loading.push(e.tagName.toLowerCase() + '[aria-busy=true]');
       else if (rx.test(own(e))) loading.push(own(e).slice(0, 80));
       if (e.matches(errorSel) && text(e) && !e.parentElement.closest(errorSel)) errors.push(text(e).slice(0, 120));
+      else if (e.matches(warnSel) && failed.test(text(e))) errors.push(text(e).slice(0, 120));
     }
   }
   return { error: null, loading, errors };
@@ -256,6 +264,44 @@ def classify(found: dict[str, list[str]], allowlist: list[tuple[str, str]]) -> t
     return unnamed, stale
 
 
+def is_event_stream(resource_type: str, content_type: str | None) -> bool:
+    """An event stream (the tap's ``EventSource``, a streamed reply) stays open for as long as the page does: it is neither "in flight" nor a failure."""
+    return resource_type == "eventsource" or "text/event-stream" in (content_type or "")
+
+
+def api_problem(*, method: str, url: str, resource_type: str, status: int | None = None, failure: str | None = None) -> str | None:
+    """What a request of the page says about its surface, or ``None``: a ``/v1`` response of 500 or more, or a ``/v1`` request that failed. A 4xx is often the page's normal answer (an empty install
+    has nothing to show), ``net::ERR_ABORTED`` is the console cancelling a poll of a page it left, and an event stream is not the API's business."""
+    if "/v1/" not in url or resource_type == "eventsource":
+        return None
+    label = f"{method} /v1/" + url.split("/v1/", 1)[1].split("?", 1)[0]
+    if failure is not None:
+        return None if "ERR_ABORTED" in failure else f"{label} failed ({failure})"
+    if status is not None and status >= 500:
+        return f"{label} answered {status}"
+    return None
+
+
+class Budget:
+    """The sweep-wide limit on waiting for stuck surfaces: 69 looks of 10 s and 40 forms of 25 s are ~1,700 s against a 900 s test, and a thread timeout kills the whole lane. After ``limit``
+    looks that used their wait up, later waits are ``short_ms`` (a stuck look is still noted, it is just not waited out)."""
+
+    def __init__(self, limit: int = 5, short_ms: int = 1000) -> None:
+        self.limit = limit
+        self.short_ms = short_ms
+        self.used = 0
+
+    @property
+    def exhausted(self) -> bool:
+        return self.used >= self.limit
+
+    def spent(self) -> None:
+        self.used += 1
+
+    def wait_ms(self, normal_ms: int) -> int:
+        return min(normal_ms, self.short_ms) if self.exhausted else normal_ms
+
+
 @dataclass
 class PageState:
     """What a surface says about itself: what under it is still loading, and the error banners it shows."""
@@ -266,7 +312,7 @@ class PageState:
 
 def page_state(page: Page, root: str | None = None) -> PageState:
     """Look for loading and error states under ``root`` (a CSS selector that must match a visible element; the whole document when none)."""
-    found = page.evaluate(PAGE_STATE_JS, {"rootSel": root, "errorSel": ERROR_BANNER, "loadingText": LOADING_TEXT})
+    found = page.evaluate(PAGE_STATE_JS, {"rootSel": root, "errorSel": ERROR_BANNER, "warnSel": WARNING_HINT, "failureWords": FAILURE_WORDS, "loadingText": LOADING_TEXT})
     if found["error"]:
         raise AssertionError(found["error"])
     return PageState(loading=found["loading"], errors=found["errors"])

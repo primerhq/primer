@@ -8,6 +8,8 @@ A form entry is ``Form(button, root, then)``: the button that is pressed, the ro
 the dialog nearly every form opens; the Platform page's New workspace opens the New workspace overlay. A form root is never the root of its page (the page is on screen before the button is pressed,
 so a sweep rooted there records the page and calls it the form); the sweep also asserts the root is absent before the click. An empty list says the page has no form, and ``NO_FORM`` says why.
 
+Only the FIRST kind's form of a provider class is swept (the first item of its register menu): the other kinds draw other fields and are not looked at.
+
 ``ready_selectors`` is what a surface must show before it is looked at: its own page (not a neighbour's, not the first row of the nav that a view falls back to) and the proof that its list or body
 has loaded. ``FLOORS`` is the fewest controls the BODY of a surface may hold (``CHROME`` is the fixed furniture around it that does not count): about half of what each held when the floors were
 set, on an install with nothing but the sweep's own seeds; ``counts_table`` prints the numbers on every run.
@@ -22,6 +24,9 @@ OVERLAY = '[data-testid^="nv-overlay:"]'
 PLATFORM = '[data-testid="nv-platform"]'
 SYSTEM = '[data-testid="nv-view:system"]'
 NEW_WORKSPACE_OVERLAY = '[data-testid="nv-overlay:new-workspace"]'
+
+# the provider classes whose page is a panel of its own (ProviderCatalog's ``form: "panel"``): they have no card grid and no ``provider-empty-<key>``
+PANEL_CLASSES = {"model_profile", "ssp", "workspace", "channel"}
 
 PAGE_ROOTS = {OVERLAY, PLATFORM, SYSTEM}
 FORM_ROOTS = {MODAL, NEW_WORKSPACE_OVERLAY}
@@ -150,7 +155,7 @@ NO_FORM: dict[str, str] = {
     "system-view mcp": "the MCP page lists the install's MCP servers and their tools; nothing is created from it",
     "system-view internal": "its Configure form is swept through the overlay-page of the internal collections",
     "system-view activity": "the activity feed is read only",
-    "system-view setup": "the readiness checks and their fix actions; nothing is created from it",
+    "system-view setup": "the readiness checks and their fix actions; its provider fix action opens the setup wizard, which creates a provider and is not swept",
 }
 
 PHONE_TABS = ["Inbox", "Spaces", "Files", "More"]
@@ -171,17 +176,27 @@ def ready_selectors(kind: str, name: str) -> list[str]:
     ``platform-view`` / ``system-view`` / ``overlay-page`` take the page's id or route; ``phone`` a tab's label."""
     if kind == "platform-view":
         page = f'[data-testid="nv-plat-page:{name}"]'
-        return [page, '[data-testid="provider-body-all"]'] if name == "providers" else [page, '[data-testid="nv-plat-empty"], [data-testid^="nv-pcard:"]']
+        if name == "providers":
+            return [page, '[data-testid="provider-body-all"]', _providers_loaded("all")]
+        return [page, '[data-testid="nv-plat-empty"], [data-testid^="nv-pcard:"]']
     if kind == "system-view":
         return [f'[data-testid="nv-sys-page:{name}"]']
     if kind == "overlay-page":
         markers = [overlay_title_selector(LEGACY_TITLES[name])]
         if LEGACY_TITLES[name] == "Providers":
-            markers.append(f'[data-testid="provider-body-{_provider_class(name)}"]')
+            key = _provider_class(name)
+            markers.append(f'[data-testid="provider-body-{key}"]')
+            if key not in PANEL_CLASSES:
+                markers.append(_providers_loaded(key))
         return markers
     if kind == "phone":
         return [f'[data-testid="nv-mobile-panel:{name.lower()}"]']
     raise KeyError(kind)
+
+
+def _providers_loaded(key: str) -> str:
+    """A provider class has loaded its instances when it shows a card or says it has none; ``provider-body-<key>`` is drawn at once, with "No providers match" in it while the list loads."""
+    return f'[data-testid="provider-empty-{key}"], [data-testid="provider-body-{key}"] .pc-card'
 
 
 def _provider_class(route: str) -> str:
@@ -226,7 +241,7 @@ FLOORS: dict[str, int] = {
     "overlay-page triggers / Create trigger": 1,
     "overlay-page toolsets": 2,
     "overlay-page toolsets / New toolset": 2,
-    "overlay-page approvals": 0,
+    "overlay-page approvals": 0,                        # a list page whose body, on a fresh install, is its empty state with no control in it (the policies are created on the Platform view)
     "overlay-page workers": 1,
     "overlay-page health": 1,
     "overlay-page harnesses": 3,
@@ -275,7 +290,7 @@ FLOORS: dict[str, int] = {
     "platform-view toolsets": 1,
     "platform-view toolsets / New toolset": 2,
     "platform-view tools": 1,
-    "platform-view collections": 0,
+    "platform-view collections": 0,                     # likewise: the empty state of an install with no collection has no control; the page and its list having loaded is the check
     "platform-view collections / New collection": 2,
     "platform-view workspaces": 1,
     "platform-view workspaces / New workspace": 1,
