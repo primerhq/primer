@@ -620,6 +620,40 @@ async def test_resume_clears_the_refusal_a_paused_session_carried(
     assert (await storage.get(sid)).workspace_refusal is None
 
 
+async def test_resume_restarts_the_start_clock_of_a_rested_failure(
+    sessions_client, seeded_workspace, seeded_agent, app,
+):
+    """A rested first-turn failure is RUNNING with no lease between the resume's write and the claim arming; its old ``started_at`` would make it
+    what the stuck-session sweeper reaps. Resuming restarts the clock the sweeper's age check reads; a row with no failure keeps its start."""
+    from datetime import datetime, timedelta, timezone
+
+    from primer.model.workspace_session import LastTurnError, SessionStatus, WorkspaceSession
+
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    long_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+    sids = []
+    for failed in (True, False):
+        create = await sessions_client.post(
+            f"/v1/workspaces/{seeded_workspace.id}/sessions",
+            json={"binding": {"kind": "agent", "agent_id": seeded_agent.id}},
+        )
+        sid = create.json()["id"]
+        row = await storage.get(sid)
+        update = {"status": SessionStatus.PAUSED, "started_at": long_ago}
+        if failed:
+            update["last_turn_error"] = LastTurnError(code="server_error", at=long_ago)
+        await storage.update(row.model_copy(update=update))
+        sids.append(sid)
+    before = datetime.now(timezone.utc)
+
+    for sid in sids:
+        resumed = await sessions_client.post(f"/v1/workspaces/{seeded_workspace.id}/sessions/{sid}/resume")
+        assert resumed.status_code == 200, resumed.text
+
+    assert (await storage.get(sids[0])).started_at >= before, "the failed one kept its old start"
+    assert (await storage.get(sids[1])).started_at == long_ago, "a row with no failure must keep its original start"
+
+
 async def test_resume_ended_session_is_409(
     sessions_client, seeded_workspace, seeded_agent, app,
 ):

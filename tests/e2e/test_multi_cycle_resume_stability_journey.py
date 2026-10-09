@@ -144,6 +144,9 @@ async def _seed_ladder(
         json={
             "binding": {"kind": "agent", "agent_id": aid},
             "auto_start": False,
+            # The post-resume model call fails on a connect error. An interactive session now RESTS after a transport failure (C-024); this
+            # journey pins the ENDED on-disk slot, so the session is autonomous, which still ends on every failure.
+            "autonomous": True,
         },
     )
     assert r.status_code == 201, r.text

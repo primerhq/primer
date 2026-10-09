@@ -129,14 +129,16 @@ def test_a_model_that_dies_mid_answer_is_one_card_in_words_with_the_cause_below_
 
     with httpx.Client(base_url=base_url, timeout=30.0) as client:
         failed = _start(client, ids, "this will die mid-answer", auto_start=True)
-        _wait_until_ended(client, failed)
+        row = _wait_until_failed(client, failed)
+
+    # A stream that died without a code is most often a broken connection: the session rests (C-024) instead of ending, with the code the
+    # stream gave none for on its row.
+    assert row["status"] == "waiting" and row["ended_reason"] is None, row
+    assert row["last_turn_error"]["code"] == "llm_stream_error", row
 
     open_session_in_studio(page, console_url, ids["workspace"], failed)
     cards = page.locator(".nv-turn-error")
     expect(cards).to_have_count(1, timeout=15_000)
     expect(cards.first).to_contain_text("The model stopped answering part-way through.")
     expect(page.locator(".nv-turn-error-detail")).to_contain_text(cause)
-    note = page.get_by_test_id("nv-ended-note")
-    expect(note).to_be_visible(timeout=10_000)
-    expect(note).to_contain_text("the model call failed")
-    expect(note).not_to_contain_text("llm_stream_error")
+    expect(page.get_by_test_id("nv-ended-note")).to_have_count(0)      # the session did not end: no end divider, no ended note
