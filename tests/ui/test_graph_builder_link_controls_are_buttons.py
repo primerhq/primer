@@ -30,13 +30,28 @@ var confirmDialog = function (opts) { return new Promise(function (resolve) { __
 """
 
 
-# the frames the focus helper waits for, run by the test; a document that records what is asked to take focus
+# where the focus goes after a removal: the name field of the step the panel shows (an INPUT: the edge inspector's title is a div with the same test id), else '+ Add a step'
+NAME_INPUT = 'input[data-testid="gb-inspector-title"]'
+ADD_A_STEP = '[data-testid="gb-outline-add"]'
+
+# the frames the focus helper waits for, run by the test; a document that records what is asked to take focus (every call to focus() is in __focused) and which element holds it (__active()).
+# __absent[sel] = n: the first n lookups of that selector find nothing (the next render has not drawn it yet); __cannotFocus[sel] = true: the element is there and focus() does nothing (a DIV).
 FOCUS = """
 var __focused = [];
 var __frames = [];
+var __absent = {};
+var __cannotFocus = {};
 window.requestAnimationFrame = function (fn) { __frames.push(fn); return 0; };
 function flushFrames() { for (var i = 0; i < 6 && __frames.length; i++) { var run = __frames.splice(0); run.forEach(function (fn) { fn(); }); } }
-var document = { querySelector: function (sel) { return { focus: function () { __focused.push(sel); } }; } };
+var document = {
+  activeElement: null,
+  querySelector: function (sel) {
+    if (__absent[sel] > 0) { __absent[sel]--; return null; }
+    var el = { sel: sel, focus: function () { __focused.push(sel); if (!__cannotFocus[sel]) document.activeElement = el; } };
+    return el;
+  }
+};
+function __active() { return document.activeElement ? document.activeElement.sel : null; }
 """
 
 # Ctrl/Cmd-Z, to undo while a question is open
@@ -376,7 +391,8 @@ def _style(ctx, testid: str) -> dict:
 
 
 def test_the_path_x_does_not_reach_into_the_control_beside_it(ctx) -> None:
-    """B1: the row's gap is 6; a 24 px box with a margin of -8 reached 2 px into '+ condition', and a click on its right edge removed the path unasked. The negative margin may not exceed the gap."""
+    """B1: the row's gap is 6; a 24 px box with a margin of -8 reached 2 px into '+ condition', and a click on its right edge removed the path unasked. Touching is not enough either (round 2 of the
+    review): Chromium hit-tests a pointer as a 1 by 1 px rect, so the last CSS px of '+ condition' resolved to the x that sits beside it. The negative margin leaves one clear px: -5 at most."""
     spec = copy.deepcopy(BASE)
     spec["edges"][1]["router"]["branches"].append(
         {"conditions": [{"path": "ok", "op": "eq", "value": False}], "to_node": "t"}
@@ -389,7 +405,7 @@ def test_the_path_x_does_not_reach_into_the_control_beside_it(ctx) -> None:
             " else if (typeof n.type === 'function' && n.type !== React.Fragment) w(n.out); else w(n.children); })(MR.find('gb-builder')); return JSON.stringify(hit.props.style); })()"
         )
     )
-    assert style["marginLeft"] >= -6, style
+    assert style["marginLeft"] >= -5, style
 
 
 def test_the_advanced_toggle_keeps_its_11_px_text(ctx) -> None:
@@ -397,6 +413,23 @@ def test_the_advanced_toggle_keeps_its_11_px_text(ctx) -> None:
     _mount(ctx, BASE, select="t")
     style = _style(ctx, "gb-advanced-toggle")
     assert style["fontSize"] == "var(--fs-11)" and "font" not in style, style
+
+
+def test_the_advanced_triangle_sits_next_to_its_text(ctx) -> None:
+    """N6': the triangle became its own flex item, and the toggle's gap of 8 put 8 px between it and the text (it was one space)."""
+    _mount(ctx, BASE, select="t")
+    assert _style(ctx, "gb-advanced-toggle")["gap"] <= 4
+
+
+def test_the_step_name_shows_a_focus_ring_for_the_keyboard(ctx) -> None:
+    """N2': the name field is where the focus lands after a removal, and its inline ``outline: none`` left no ring. The ring is a rule on a class (``:focus-visible`` in ui/styles.css); the inline style names no outline."""
+    _mount(ctx, BASE, select="a")
+    el = json.loads(
+        ctx.eval(
+            "(function () { var el = MR.find('gb-inspector-title'); return JSON.stringify({ cls: el.props.className || '', outline: 'outline' in (el.props.style || {}) }); })()"
+        )
+    )
+    assert "gb-title-input" in el["cls"] and el["outline"] is False, el
 
 
 def test_the_advanced_triangle_is_not_read_aloud(ctx) -> None:
@@ -410,17 +443,6 @@ def test_the_advanced_triangle_is_not_read_aloud(ctx) -> None:
     )
 
 
-def test_the_nothing_selected_heading_can_take_focus(ctx) -> None:
-    """B3: where the keyboard lands after a step is deleted. A heading takes focus only with ``tabIndex={-1}``."""
-    _mount(ctx, BASE, select=None)
-    info = json.loads(
-        ctx.eval(
-            "(function () { var el = MR.find('gb-nothing-selected'); return el ? JSON.stringify({ tabIndex: el.props.tabIndex }) : 'null'; })()"
-        )
-    )
-    assert info == {"tabIndex": -1}, info
-
-
 def test_after_a_confirmed_removal_of_a_connection_the_focus_goes_to_the_step_name(
     ctx,
 ) -> None:
@@ -430,21 +452,54 @@ def test_after_a_confirmed_removal_of_a_connection_the_focus_goes_to_the_step_na
     _press(ctx, "gb-remove-connection")
     assert json.loads(ctx.eval("JSON.stringify(__focused)")) == []
     _answer(ctx, True)
-    assert json.loads(ctx.eval("JSON.stringify(__focused)")) == [
-        '[data-testid="gb-inspector-title"]'
-    ]
+    assert json.loads(ctx.eval("JSON.stringify(__focused)")) == [NAME_INPUT]
 
 
-def test_after_a_confirmed_deletion_of_a_step_the_focus_goes_to_the_nothing_selected_heading(
+def test_after_a_confirmed_deletion_of_a_step_the_focus_goes_to_the_add_a_step_button(
     ctx,
 ) -> None:
+    """B3' (round 2 of the review): 'Nothing selected' sits AFTER the overlay's last tab stop, so a forward Tab from it left the overlay. '+ Add a step' is inside it, and is there whenever Delete is (a read-only builder shows neither)."""
     _mount(ctx, BASE, select="t")
     _open_advanced(ctx)
     _press(ctx, "gb-delete-step")
     _answer(ctx, True)
-    assert json.loads(ctx.eval("JSON.stringify(__focused)")) == [
-        '[data-testid="gb-nothing-selected"]'
-    ]
+    assert json.loads(ctx.eval("JSON.stringify(__focused)")) == [ADD_A_STEP]
+
+
+def test_the_focus_goes_to_the_step_name_input_and_not_to_a_title_that_is_not_one(
+    ctx,
+) -> None:
+    """N1': the edge inspector's title is a DIV with the same test id, which cannot take focus; the selector names the input."""
+    _mount(ctx, BASE, select=None)
+    _select_edge(ctx, 0)
+    _press(ctx, "gb-remove-connection")
+    _answer(ctx, True)
+    assert NAME_INPUT.startswith("input[") and json.loads(
+        ctx.eval("JSON.stringify(__focused)")
+    ) == [NAME_INPUT]
+
+
+def test_a_target_that_is_not_drawn_yet_is_waited_for_and_the_fallback_does_not_take_its_place(
+    ctx,
+) -> None:
+    """N1': the lookup runs on the next frames, after the render; the first frames may find nothing."""
+    _mount(ctx, BASE, select=None)
+    _select_edge(ctx, 0)
+    _press(ctx, "gb-remove-connection")
+    ctx.eval(f"__absent[{json.dumps(NAME_INPUT)}] = 2;")
+    _answer(ctx, True)
+    assert json.loads(ctx.eval("JSON.stringify(__focused)")) == [NAME_INPUT]
+    assert ctx.eval("__active()") == NAME_INPUT
+
+
+def test_a_target_that_cannot_take_focus_is_not_the_end_of_it(ctx) -> None:
+    """N1': the helper checks that the focus arrived, and falls back to '+ Add a step' once the frames are used up."""
+    _mount(ctx, BASE, select=None)
+    _select_edge(ctx, 0)
+    _press(ctx, "gb-remove-connection")
+    ctx.eval(f"__cannotFocus[{json.dumps(NAME_INPUT)}] = true;")
+    _answer(ctx, True)
+    assert ctx.eval("__active()") == ADD_A_STEP
 
 
 @pytest.mark.parametrize("what", ["connection", "step"])
@@ -469,9 +524,7 @@ def test_after_removing_a_choice_the_focus_goes_to_the_step_name_whether_it_aske
     _mount(ctx, BASE)
     _press(ctx, "gb-remove-choice")
     _answer(ctx, True)
-    assert json.loads(ctx.eval("JSON.stringify(__focused)")) == [
-        '[data-testid="gb-inspector-title"]'
-    ]
+    assert json.loads(ctx.eval("JSON.stringify(__focused)")) == [NAME_INPUT]
     ctx.eval("__focused.length = 0;")
     spec = copy.deepcopy(BASE)
     spec["edges"][1]["router"]["branches"] = []
@@ -479,7 +532,7 @@ def test_after_removing_a_choice_the_focus_goes_to_the_step_name_whether_it_aske
     _press(ctx, "gb-remove-choice")
     ctx.eval("flushFrames();")
     assert _asked(ctx) == 0 and json.loads(ctx.eval("JSON.stringify(__focused)")) == [
-        '[data-testid="gb-inspector-title"]'
+        NAME_INPUT
     ]
 
 

@@ -210,3 +210,65 @@ def test_headings_images_and_lists_that_are_clickable_count_too() -> None:
         assert clickable_non_controls(f"<{tag} onClick={{go}}>x</{tag}>") == [
             (1, tag)
         ], tag
+
+
+def test_a_tab_index_of_minus_one_is_not_a_tab_stop() -> None:
+    """N4' (round 2 of the review): ``tabIndex={-1}`` takes focus from a script and from a click, not from a Tab, so it does not make a role reachable from a keyboard."""
+    base = '<div role="button" tabIndex={%s} onKeyDown={key} onClick={go}>x</div>'
+    assert clickable_non_controls(base % "-1") == [(1, "div")]
+    assert clickable_non_controls(base % "0") == []
+    assert (
+        clickable_non_controls(
+            '<div role="button" tabIndex="0" onKeyDown={key} onClick={go}>x</div>'
+        )
+        == []
+    )
+    assert clickable_non_controls(base % "n") == [(1, "div")], (
+        "an expression the scan cannot read is not a proof"
+    )
+
+
+def test_the_capture_touch_context_menu_and_aux_handlers_count_too() -> None:
+    for handler in (
+        "onClickCapture",
+        "onMouseDownCapture",
+        "onPointerDownCapture",
+        "onAuxClick",
+        "onContextMenu",
+        "onTouchStart",
+        "onTouchEnd",
+    ):
+        assert clickable_non_controls(f"<span {handler}={{go}}>x</span>") == [
+            (1, "span")
+        ], handler
+
+
+def test_a_comment_opener_inside_a_string_does_not_hide_the_code_after_it() -> None:
+    """N4': ``"/*"`` in a string started a comment that ran to the next ``*/`` anywhere, blanking the code between."""
+    assert clickable_non_controls(
+        'const a = "/*";\n<span onClick={go}>x</span>\nconst b = "*/";\n'
+    ) == [(2, "span")]
+    assert clickable_non_controls(
+        "const a = '/*';\n<div onClick={go}>x</div>\nconst b = `*/`;\n"
+    ) == [(2, "div")]
+    assert clickable_non_controls(
+        "/* <span onClick={go}>old</span> */\n<span onClick={go}>live</span>\n"
+    ) == [(2, "span")], "a real block comment still hides what is in it"
+    assert clickable_non_controls(
+        "<p>Don't</p>\n<span onClick={go}>x</span>\n<p>it's</p>\n"
+    ) == [(2, "span")], "an apostrophe in JSX text is not a string"
+
+
+def test_an_href_that_is_nothing_does_not_make_a_link() -> None:
+    """N4': ``<a href={undefined}>`` renders an anchor with no destination: not focusable, not a link."""
+    assert clickable_non_controls("<a href={undefined} onClick={go}>x</a>") == [
+        (1, "a")
+    ]
+    assert clickable_non_controls("<a href={null} onClick={go}>x</a>") == [(1, "a")]
+    assert clickable_non_controls("<a href={url} onClick={go}>x</a>") == []
+    assert clickable_non_controls("<a href='#/x' onClick={go}>x</a>") == []
+
+
+def test_an_attribute_that_only_ends_in_a_handler_name_is_not_a_handler() -> None:
+    for attr in ("data-onClick", "aria-onClick", "xonClick", "data-onMouseDown"):
+        assert clickable_non_controls(f"<div {attr}={{go}}>x</div>") == [], attr
