@@ -161,6 +161,7 @@ def refusal_envelopes() -> dict[str, dict]:
         "pre_write": client.post("/v1/pre_write").json(),
         "agent_field": client.post("/v1/agent_field").json(),
         "validated": client.post("/v1/validated", json={"name": ""}).json(),
+        "validated_missing": client.post("/v1/validated", json={"count": 1}).json(),
         "in_use_by": client.delete("/v1/in_use_by").json(),
         "in_use_by_session": client.delete("/v1/in_use_by_session").json(),
         "in_use_by_aggregate": client.delete("/v1/in_use_by_aggregate").json(),

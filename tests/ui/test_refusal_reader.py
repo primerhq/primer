@@ -103,6 +103,7 @@ EXPECTED = {
     "pre_write": {"code": "model_profile_not_found", "field": "model.profile_id", "sentence": _NO_PROFILE, "message": _NO_PROFILE},
     "agent_field": {"code": None, "field": "description", "sentence": _BLANK_DESCRIPTION, "message": "description: " + _BLANK_DESCRIPTION},
     "validated": {"code": None, "field": "name", "sentence": "", "message": "Missing or invalid: name, count."},
+    "validated_missing": {"code": None, "field": "name", "sentence": "Field required", "message": "name: Field required"},
     "in_use_by": {
         "code": "in_use_by", "field": None,
         "sentence": "in_use_by: 1 agent(s) reference 'llm-openchat--scripted:default' (first: 'builder')", "message": _IN_USE,
@@ -289,37 +290,28 @@ def test_no_component_reader_prints_the_auth_gates_bare_code(envelopes, path: st
         assert got["message"] not in ("auth_required", "forbidden_role"), (name, key, got)
 
 
-# Every way a component can read a refusal out of the envelope itself: a field of the extensions block (``ext.code``, ``extensions?.field``,
-# ``env.extensions.error``, ``err.envelope?.extensions?.errors``) and a field of the older ``detail`` OBJECT the handler never sends (``envDetail.error``,
-# ``env.detail.message``, ``envelope.detail?.code``). The first version of this scan matched only the first form without optional chaining, and missed
-# two more copies of the reader (``SV_extractError`` and ``LA_extractError``, review of #625).
-_ENVELOPE_READS = [
-    re.compile(r"\bext(?:ensions)?\??\.(?:code|error|errors|message|field)\b"),
-    re.compile(r"(?:\benv(?:elope)?\??\.detail|\benvDetail)\??\.(?:code|error|message|field)\b"),
-]
+# One rule: a component never reads ``.envelope`` (the thrown ApiError's problem document). Everything it needs from a refusal is in ``window.primerApi.readRefusal``.
+# The first version of this guard listed the fields (``ext.code``, ``envDetail.error`` ...) and missed two copies of the reader (review of #625); a rule about the one
+# property they all go through cannot be walked around by renaming a variable or adding ``?.``.
+_ENVELOPE_READ = re.compile(r"\.envelope\b|\{\s*envelope\b")
 
 
-def _reads_a_refusal_out_of_the_envelope(line: str) -> bool:
-    code = line.split("//", 1)[0]
-    return any(pattern.search(code) for pattern in _ENVELOPE_READS)
+def _reads_the_envelope(line: str) -> bool:
+    return _ENVELOPE_READ.search(line.split("//", 1)[0]) is not None
 
 
 @pytest.mark.parametrize(
     "line",
     [
         "const f = err.envelope?.extensions?.field;",
-        "code = env.extensions.code;",
-        "if (ext.error) {",
-        "const e = ext?.errors;",
-        "const m = envDetail.message;",
-        "msg = env.detail.message || null;",
-        "code = envelope.detail?.code;",
-        "const k = e.envelope && e.envelope.extensions && e.envelope.extensions.errors;",
-        "code = envDetail.error || envDetail.code || null;",
+        "const env = err && err.envelope;",
+        "var ext = ((err && err.envelope && err.envelope.extensions) || {});",
+        "const { envelope } = err;",
+        "code = e.envelope.detail?.code;",
     ],
 )
-def test_the_scan_sees_every_way_to_read_a_refusal_out_of_the_envelope(line: str) -> None:
-    assert _reads_a_refusal_out_of_the_envelope(line)
+def test_the_scan_sees_a_component_read_the_envelope(line: str) -> None:
+    assert _reads_the_envelope(line)
 
 
 @pytest.mark.parametrize(
@@ -327,28 +319,81 @@ def test_the_scan_sees_every_way_to_read_a_refusal_out_of_the_envelope(line: str
     [
         "const r = window.primerApi.readRefusal(err);",
         "return { code: r.code, message: r.message };",
-        "// env.extensions.code is read by the reader",
-        "const m = item.detail.message;",
-        "const fileExtensions = accept.extensions;",
+        "// err.envelope.extensions.code is read by the reader",
+        'title="the problem envelope of a failed write"',
+        "const item = list.items.find((x) => x.id === id);",
     ],
 )
-def test_the_scan_leaves_the_reader_and_other_details_alone(line: str) -> None:
-    assert not _reads_a_refusal_out_of_the_envelope(line)
+def test_the_scan_leaves_the_reader_and_prose_alone(line: str) -> None:
+    assert not _reads_the_envelope(line)
 
 
-def test_the_foundation_reader_is_the_only_place_that_reads_a_refusal_out_of_an_envelope() -> None:
-    """A sixth copy is how this started (and a sixth and seventh were still there after the first fix). A component may read ``.envelope.extensions`` only to pick ONE field
-    the reader does not return: the Python editor's registration message (the line and function are the reason it is shown inline)."""
-    allowed = {"components/toolsets/python-editor.jsx"}
+# The Python editor shows the registration message of a refused toolset save INLINE, under the line and function it names: that one field is not in
+# ``readRefusal``'s result, so the editor reads ``err.envelope.extensions`` for it (ui/components/toolsets/python-editor.jsx).
+_MAY_READ_THE_ENVELOPE = {"components/toolsets/python-editor.jsx"}
+
+
+def test_no_component_reads_the_envelope_but_the_python_editor() -> None:
     offenders = []
     for path in sorted((UI / "components").rglob("*.jsx")):
         rel = path.relative_to(UI).as_posix()
-        if rel in allowed or rel.endswith("mock-data.jsx"):
+        if rel in _MAY_READ_THE_ENVELOPE or rel.endswith("mock-data.jsx"):
             continue
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            if _reads_a_refusal_out_of_the_envelope(line):
+            if _reads_the_envelope(line):
                 offenders.append(f"{rel}:{number}: {line.strip()[:110]}")
     assert not offenders, "a component reads a refusal out of the envelope itself instead of window.primerApi.readRefusal:\n" + "\n".join(offenders)
+
+
+# A code never goes in a banner TITLE (ruling 01a11bf7-15b7, restated in the #625 review): the title is "Create failed" or "Save failed"; when the server sent no
+# sentence the MESSAGE carries the code (``Forbidden (scope_required)``). The one reader finds codes the old copies missed, so a title that composes one would put
+# ``Save failed (auth_required)`` where main said ``Save failed``.
+_TITLE_WITH_CODE = [
+    re.compile(r"\btitle=\{[^}]*?\.code\b"),      # title={error.code ? `Save failed (${error.code})` : "Save failed"}, also over several lines
+    re.compile(r"\btitle\s*:\s*[^,\n}]*\.code\b"),   # a toast or banner object: { title: `Failed (${err.code})` }
+]
+
+
+def _titles_that_compose_a_code(text: str) -> list[int]:
+    code = "\n".join(line.split("//", 1)[0] for line in text.split("\n"))
+    return sorted({code.count("\n", 0, m.start()) + 1 for pattern in _TITLE_WITH_CODE for m in pattern.finditer(code)})
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'title={error.code ? `Save failed (${error.code})` : "Save failed"}',
+        "title={toggleError.code\n  ? `Toggle failed (${toggleError.code})`\n  : \"Toggle failed\"}",
+        "pushToast({ title: `Failed (${err.code})`, kind: \"error\" })",
+        "title={submitError && submitError.code ? submitError.code : \"x\"}",
+    ],
+)
+def test_the_title_scan_sees_a_code_in_a_title(text: str) -> None:
+    assert _titles_that_compose_a_code(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'title="Create failed"',
+        "title={`${isEdit ? \"Save\" : \"Create\"} failed`}",
+        "// title={error.code ? `Save failed (${error.code})` : \"Save failed\"}",
+        "detail={error.code ? error.code : \"\"}",
+        "<Chip title=\"x\" label={row.code} />",
+    ],
+)
+def test_the_title_scan_leaves_plain_titles_and_other_props_alone(text: str) -> None:
+    assert not _titles_that_compose_a_code(text)
+
+
+def test_no_banner_title_in_any_component_composes_a_code() -> None:
+    offenders = []
+    for path in sorted((UI / "components").rglob("*.jsx")):
+        rel = path.relative_to(UI).as_posix()
+        if rel.endswith("mock-data.jsx"):
+            continue
+        offenders += [f"{rel}:{n}" for n in _titles_that_compose_a_code(path.read_text(encoding="utf-8"))]
+    assert not offenders, "a title puts the code in the banner title (the message carries it when there is no sentence):\n" + "\n".join(offenders)
 
 
 @pytest.mark.parametrize(("path", "name"), [("components/services.jsx", "SV_extractError"), ("components/linked_accounts.jsx", "LA_extractError")])
@@ -404,8 +449,10 @@ def test_the_trigger_load_banners_read_the_refusal_through_the_one_reader() -> N
     assert "list.error.detail ||" not in src and "detail.error.detail ||" not in src
 
 
-def test_the_default_error_toast_says_the_refusal_in_plain_words(envelopes) -> None:
-    """ADM-20: the toast a refused channel create raised read ``Channel with provider_id='rev-slack', external_id='C0AAAA0001' already exists (id='channel-...')``."""
+@pytest.mark.parametrize(("envelope_name", "detail"), [("channel_conflict", _CHANNEL), ("validated_missing", "name: Field required")])
+def test_the_default_error_toast_says_the_refusal_in_plain_words(envelopes, envelope_name: str, detail: str) -> None:
+    """ADM-20: the toast a refused channel create raised read ``Channel with provider_id='rev-slack', external_id='C0AAAA0001' already exists (id='channel-...')``.
+    A generic toast has no field to draw a validation error under, so a real one-missing-field 422 names the field (review of #625)."""
     src = (UI / "foundation" / "use-mutation.js").read_text(encoding="utf-8")
     ctx = _context()
     ctx.eval(
@@ -418,14 +465,14 @@ def test_the_default_error_toast_says_the_refusal_in_plain_words(envelopes) -> N
     ctx.eval(src)
     ctx.eval(
         f"""
-        var mutation = window.primerApi.useMutation(function () {{ throw new window.primerApi.ApiError({json.dumps(envelopes["channel_conflict"])}); }});
+        var mutation = window.primerApi.useMutation(function () {{ throw new window.primerApi.ApiError({json.dumps(envelopes[envelope_name])}); }});
         mutation.mutate({{}}).catch(function () {{}});
         """
     )
     ctx.eval("0")  # let the promise continuation run
     pushed = json.loads(ctx.eval("JSON.stringify(pushed)"))
 
-    assert pushed and pushed[0]["detail"] == _CHANNEL, pushed
+    assert pushed and pushed[0]["detail"] == detail, pushed
 
 
 # ---- review of #625: the rewrites keep to what they match, the code of a validation error, one entry, a malformed entry -----------------------------------------------------
@@ -543,3 +590,26 @@ def test_a_malformed_validation_entry_does_not_break_the_reader(errors) -> None:
     got = json.loads(_context().eval(f"JSON.stringify(window.primerApi.readRefusal({json.dumps(err)}))"))
 
     assert got["code"] is None and got["field"] is None and got["message"] == "failed", got
+
+
+@pytest.mark.parametrize(
+    ("loc", "field", "message"),
+    [
+        (["body"], "body", "Field required"),                         # the whole body is missing or not an object: "body: Field required" names nothing
+        (["body", 1], "1", "JSON decode error"),                      # FastAPI's position in a body that is not JSON: "1: JSON decode error"
+        (["body", "items", 2], "items.2", "Input should be a valid string"),   # a list index is not a field
+        (["query"], "query", "Field required"),
+        (["body", "items", 2, "name"], "items.2.name", "Field required"),
+    ],
+)
+def test_the_field_goes_in_front_of_a_message_only_when_it_names_a_field(loc: list, field: str, message: str) -> None:
+    env = {
+        "type": "/errors/validation-error", "title": "Validation Error", "status": 422, "detail": "failed",
+        "extensions": {"errors": [{"type": "x", "loc": loc, "msg": message}]},
+    }
+
+    got = _read(_context(), env)
+
+    named = loc[-1] != "body" and loc != ["query"] and not isinstance(loc[-1], int)
+    assert got["sentence"] == message and got["field"] == field
+    assert got["message"] == (f"{field}: {message}" if named else message), got
