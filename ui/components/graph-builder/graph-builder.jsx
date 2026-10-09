@@ -135,7 +135,8 @@ function GB_Builder(props) {
   useEffect(() => {
     const onKey = (e) => {
       const mod = e.metaKey || e.ctrlKey;
-      if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); setPaletteAfter(selectedId || null); }
+      // A harness-managed builder (readOnly) drops staged edits silently (dispatch is a no-op), so a palette whose picks go nowhere must not open: the shortcut does nothing there, as the outline's add button is already hidden.
+      if (!readOnly && mod && e.key.toLowerCase() === "k") { e.preventDefault(); setPaletteAfter(selectedId || null); }
       if (mod && e.key.toLowerCase() === "z" && !e.shiftKey && undoRef.current.length) {
         e.preventDefault();
         undo();
@@ -150,7 +151,7 @@ function GB_Builder(props) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selectedId, undo]);
+  }, [selectedId, undo, readOnly]);
 
   const dirty = useMemo(
     () => JSON.stringify(GB_stripAll(draft)) !== JSON.stringify(GB_stripAll(seed)),
