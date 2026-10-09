@@ -175,6 +175,15 @@ async def test_a_fetch_adapter_masks_a_key_any_transport_echoes(name: str) -> No
     assert KEY_CORE not in text, text
 
 
+async def test_a_keyless_jina_adapter_still_reports_its_transport_error() -> None:
+    """Jina's key is optional (its reader answers anonymously): with no key there is nothing to mask and the reason must still come through."""
+    adapter = fetch_jina.JinaAdapter(JinaFetchConfig(api_key=None), client=httpx.AsyncClient(transport=_EchoingTransport()))
+    with pytest.raises(WebFetchUnavailable) as caught:
+        await _fetch(adapter)
+    text = str(caught.value)
+    assert text.startswith("jina transport: ReadError: connection reset"), text
+
+
 # ---- what the agent is given, and what is logged -----------------------------------------------------------------------------------------------
 
 
