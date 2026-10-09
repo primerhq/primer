@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from primer.api.deps import get_artifact_storage_provider_storage
 from primer.api.registries.artifact_storage_registry import (
@@ -18,6 +18,8 @@ from primer.api.registries.artifact_storage_registry import (
 )
 from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
 from primer.api.routers.providers import _form_field
+from primer.artifact.checks import check_artifact_provider_on_update
+from primer.common.entity_checks import EntityCheckError
 from primer.model.provider import ArtifactStorageProvider
 
 
@@ -26,6 +28,18 @@ async def _on_update(entity_id: str, request: Request) -> None:
     registry = getattr(request.app.state, "artifact_storage_registry", None)
     if registry is not None:
         await registry.invalidate(entity_id)
+
+
+async def _pre_update(entity: ArtifactStorageProvider, existing: ArtifactStorageProvider, request: Request) -> None:
+    """Restore masked secrets, then refuse a write that leaves the reserved default naming a kind the factory cannot build (shared with the system tools)."""
+    await preserve_masked_secrets_on_update(entity, existing, request)
+    try:
+        check_artifact_provider_on_update(entity, existing)
+    except EntityCheckError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": exc.code, "kind": "artifact_storage_provider", "field": exc.field, "message": exc.message},
+        ) from exc
 
 
 async def _reject_reserved_delete(entity_id: str, request: Request) -> None:
@@ -105,7 +119,7 @@ artifact_storage_router = make_crud_router(
     tag="artifact-storage-providers",
     on_update=_on_update,
     on_delete=_on_update,
-    on_pre_update=preserve_masked_secrets_on_update,
+    on_pre_update=_pre_update,
     on_pre_delete_id=_reject_reserved_delete,
 )
 
