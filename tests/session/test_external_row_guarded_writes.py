@@ -25,13 +25,14 @@ from pydantic_core import PydanticSerializationError
 from primer.model.except_ import NotFoundError, ServerError
 from primer.model.external_tool import ExternalToolCall, ExternalToolResultIn
 from primer.model.provider import SqliteConfig
-from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
+from primer.model.workspace_session import AgentSessionBinding, GraphSessionBinding, SessionStatus, WorkspaceSession
 from primer.model.yield_ import WAKE_ENTRY_KEY, WAKE_PARK_KEY
 from primer.session.external_calls import flip_external_row
 from primer.session.external_tools import apply_tool_results, cancel_pending_external
 from primer.storage import PatchValueError
 from primer.storage.sqlite import SqliteStorageProvider
 from tests._support.held_write import hold_write
+from tests.api.test_external_tools_graph import _graph_parked_over
 from tests.api.test_external_tools_steer import _parked_over
 
 RESULT = {"customer": "c1"}
@@ -382,6 +383,65 @@ async def test_apply_tool_results_records_an_error_result_as_completed_with_is_e
     assert (row.status, row.result, row.is_error) == ("completed", error, True)
     session = await sessions.get("sess-1")
     assert session.parked_state["resume_event_payload"] == {"result": error, "is_error": True, WAKE_PARK_KEY: session.parked_at.isoformat(), WAKE_ENTRY_KEY: "etool-fixed-1"}
+
+
+# ---------------------------------------------------------------------------
+# apply_tool_results: the leaf and the row each result reaches (#707 review, round 2)
+# ---------------------------------------------------------------------------
+
+
+async def test_apply_tool_results_keeps_the_leaf_of_every_result_for_one_graph_park(provider) -> None:
+    """N2 (probe C5). One call carries the results of BOTH external calls of a graph park. Each result is its own ``resume_event_payloads`` leaf, and
+    the flip writes ``parked_state`` whole, so the second wake must start from the row the first one wrote: from one snapshot it dropped the first
+    leaf while BOTH rows say ``completed`` (that call cannot be answered again, and its node waits for its deadline)."""
+    sessions = provider.get_storage(WorkspaceSession)
+    calls = provider.get_storage(ExternalToolCall)
+    now = datetime.now(UTC)
+    await sessions.create(WorkspaceSession(
+        id="sess-1", workspace_id="ws-1", binding=GraphSessionBinding(graph_id="gr-ext"), status=SessionStatus.RUNNING, created_at=now,
+        started_at=now, **_graph_parked_over("sess-1"),
+    ))
+    await calls.create(_call("etool-g1", "tc-g1", node_id="n1"))
+    await calls.create(_call("etool-g2", "tc-g2", node_id="n2"))
+
+    applied = await apply_tool_results(
+        await sessions.get("sess-1"),
+        [ExternalToolResultIn(tool_call_id="tc-g1", result="r1"), ExternalToolResultIn(tool_call_id="tc-g2", result="r2")],
+        call_storage=calls, session_storage=sessions, engine=None, event_bus=None,
+    )
+
+    assert applied == 2
+    park = (await sessions.get("sess-1")).parked_state
+    leaves = {e["event_key"]: e["payload"]["result"] for e in park["resume_event_payloads"].values()}
+    assert leaves == {"external_tool:sess-1:tc-g1": "r1", "external_tool:sess-1:tc-g2": "r2"}, "the first result's leaf was dropped by the second wake"
+    assert [(await calls.get(row_id)).status for row_id in ("etool-g1", "etool-g2")] == ["completed", "completed"]
+
+
+async def test_apply_tool_results_names_and_completes_the_call_row_the_pending_entry_names(provider) -> None:
+    """N7. Two PENDING rows share the raw id ``tc-1``: the one the park waits on (its entry names ``etool-fixed-1``) and a stale one (a call whose park
+    hit the yield cap with no timeout, so nothing resolved its row). The result answers the ENTRY: the wake names the entry's row, so the entry fence
+    admits it, and that row is the one completed. Naming the pending row the lookup by raw id kept had the fence refuse the result, and completed the
+    stale row with it."""
+    from primer.session.external_tools import _rows_by_tcid
+
+    sessions = provider.get_storage(WorkspaceSession)
+    calls = provider.get_storage(ExternalToolCall)
+    await _parked_session(provider)
+    await calls.create(_call("etool-fixed-1", "tc-1"))
+    await calls.create(_call("etool-stale", "tc-1", created_at=datetime.now(UTC) - timedelta(hours=2)))
+    assert (await _rows_by_tcid(calls, session_id="sess-1"))["tc-1"].id == "etool-stale", "precondition: the lookup by raw id keeps the stale row"
+
+    applied = await apply_tool_results(
+        await sessions.get("sess-1"),
+        [ExternalToolResultIn(tool_call_id="tc-1", result=RESULT)],
+        call_storage=calls, session_storage=sessions, engine=None, event_bus=None,
+    )
+
+    assert applied == 1
+    session = await sessions.get("sess-1")
+    assert session.parked_status == "resumable", "the result was refused: it named a call row the park does not wait on"
+    assert session.parked_state["resume_event_payload"][WAKE_ENTRY_KEY] == "etool-fixed-1"
+    assert ((await calls.get("etool-fixed-1")).status, (await calls.get("etool-stale")).status) == ("completed", "pending")
 
 
 # ---------------------------------------------------------------------------

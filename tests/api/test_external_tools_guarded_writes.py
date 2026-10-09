@@ -324,3 +324,26 @@ async def test_an_instruction_steer_wakes_only_the_calls_it_cancelled(app, clien
     assert leaves[k1].pop(WAKE_ENTRY_KEY, None) == "etool-g1", "and the call row it answers"
     assert leaves[k1] == {"result": "ok", "is_error": False}, "the landed reply was replaced by the cancelled marker"
     assert leaves[k2].get("__yield_cancelled__") is True
+
+
+async def test_an_instruction_steer_that_cancels_both_calls_of_a_graph_park_keeps_both_cancelled_leaves(app, client, wsr, sp) -> None:
+    """#707 review N2. The instruction cancels BOTH pending calls of one graph park and wakes each with the cancelled payload. Each wake is its own
+    ``resume_event_payloads`` leaf, and the flip writes ``parked_state`` whole, so the second wake must start from the row the first one wrote: from
+    the steer's one snapshot it dropped the first call's leaf while both rows say ``cancelled`` (that node waits for its deadline)."""
+    bus = _RecordingBus()
+    app.state.event_bus = bus
+    wid = await _setup_ws(client, wsr)
+    await _seed_agent(sp, allow=True)
+    await _seed_graph(sp)
+    await _seed_graph_session(sp, wid)
+    await _seed_graph_calls(sp)
+
+    r = await client.post(f"/v1/workspaces/{wid}/sessions/sess-1/steer", json={"instruction": "stop"})
+
+    assert r.status_code == 200, r.text
+    calls = sp.get_storage(ExternalToolCall)
+    assert [(await calls.get(row_id)).status for row_id in ("etool-g1", "etool-g2")] == ["cancelled", "cancelled"]
+    park = (await sp.get_storage(WorkspaceSession).get("sess-1")).parked_state
+    leaves = {e["event_key"]: e["payload"] for e in park["resume_event_payloads"].values()}
+    assert sorted(leaves) == ["external_tool:sess-1:tc-g1", "external_tool:sess-1:tc-g2"], "the first cancelled call's leaf was dropped"
+    assert all(payload.get("__yield_cancelled__") is True for payload in leaves.values())

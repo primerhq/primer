@@ -272,6 +272,46 @@ async def test_a_park_that_carries_no_subscription_id_is_delivered_into_as_befor
     assert [k for k, _ in bus.published] == ["evwait:s1:c1"]
 
 
+async def test_the_sink_judges_only_the_entries_that_wait_on_its_own_key(sp):
+    """#707 review N5 (M15). A graph park: the entry on the sink's key names no subscription (a wait parked by an older build), and a sibling on ANOTHER
+    key names one. Only the sink's own key decides, so the wait is delivered into, not collected as an orphan."""
+    from datetime import datetime, timedelta, timezone
+
+    from primer.model.workspace_session import GraphSessionBinding
+    from primer.model.yield_ import WAKE_ENTRY_KEY
+
+    key, other = "evwait:gs:c1", "evwait:gs:c2"
+    parked_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    waits = [
+        {"node_id": "n1", "tool_call_id": "c1", "event_key": key, "tool_name": "wait_for_event", "resume_metadata": {"event_types": ["collection.*"]}},
+        {"node_id": "n2", "tool_call_id": "c2", "event_key": other, "tool_name": "wait_for_event",
+         "resume_metadata": {"event_types": ["agent.*"], "subscription_id": "evsub-n2"}},
+    ]
+    await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
+        id="gs", workspace_id="w", binding=GraphSessionBinding(graph_id="g"), status=SessionStatus.WAITING, created_at=parked_at,
+        parked_status="parked", parked_event_key=key, parked_event_keys=[key, other], parked_at=parked_at,
+        parked_state={
+            "tool_call_id": "c1", "yielded": {"tool_name": "_approval", "event_key": key, "resume_metadata": {}},
+            "graph_checkpoint": {"pending_toolcalls": [], "pending_agent_yields": waits, "pending_dispatch": []},
+        },
+    ))
+    store = sp.get_event_store()
+    bus = _RecordingBus()
+    await _sub(
+        sp,
+        sink=SessionWakeSink(event_key=key, session_id="gs"),
+        filter_=EventFilter(event_types=["collection.document_pushed"]),
+    )
+    d = _dispatcher(sp, bus=bus)
+    await d.drain_once()
+
+    await store.append(event_type="collection.document_pushed", entity_kind="document", entity_id="d1", payload={"collection_id": "kb"})
+    assert await d.drain_once() == 1
+
+    [(published_key, payload)] = bus.published
+    assert (published_key, payload[WAKE_ENTRY_KEY]) == (key, "sub-1"), "the sibling's subscription on another key made this wait an orphan"
+
+
 async def test_paused_subscription_is_untouched(sp):
     store = sp.get_event_store()
     row = EventSubscription(
