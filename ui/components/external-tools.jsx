@@ -24,8 +24,11 @@
       try {
         // Sessions expose the yield-cancel endpoint; chat pendings are
         // superseded by the next message, so no chat-side cancel here.
+        // expected_tool_name: the provider repeats tool_call_id across rounds and an external wait has no gate id, so the server refuses
+        // (409) a cancel drawn for an external call when the id now belongs to another kind of yield (C-033).
         await apiFetch("POST", `/sessions/${sessionId}/yields/${tcid}/cancel`, {
           reason: "cancelled from console",
+          expected_tool_name: "_external",
         });
         pushToast && pushToast({ kind: "warning", title: `Cancelled ${tcid}` });
         if (res.refetch) res.refetch();

@@ -1165,7 +1165,7 @@ function NV_ApprovalsAudit() {
     .map(function (x) {
       var rec = x.rec;
       return {
-        key: "pending:" + rec.tool_call_id,
+        key: SH_pendingId(x.sid, rec.gate_id, rec.tool_call_id),
         sessionId: x.sid,
         // A pending record's tool_name already IS the full scoped id
         // (original_call.name, as issued) - unlike a resolved record's

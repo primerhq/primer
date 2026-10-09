@@ -1003,7 +1003,7 @@ function WatchFilesPanel({ sid, wid, session, pushToast }) {
         <span style={{ color: "var(--amber)" }}>Watching</span>
         <span className="mono sub">· watch_files · {tcid}</span>
         <div className="right">
-          <CancelYieldBtn sid={sid} wid={wid} tcid={tcid} pushToast={pushToast} />
+          <CancelYieldBtn sid={sid} wid={wid} tcid={tcid} toolName="watch_files" pushToast={pushToast} />
         </div>
       </div>
       <div className="panel-body">
@@ -1054,7 +1054,7 @@ function SleepPanel({ sid, wid, session, pushToast }) {
         <span style={{ color: "var(--amber)" }}>Sleeping</span>
         <span className="mono sub">· sleep · {tcid}</span>
         <div className="right">
-          <CancelYieldBtn sid={sid} wid={wid} tcid={tcid} pushToast={pushToast} />
+          <CancelYieldBtn sid={sid} wid={wid} tcid={tcid} toolName="sleep" pushToast={pushToast} />
         </div>
       </div>
       <div className="panel-body">
@@ -1075,13 +1075,15 @@ function SleepPanel({ sid, wid, session, pushToast }) {
 }
 
 // Shared cancel-yield button (WatchFiles + Sleep panels).
-function CancelYieldBtn({ sid, wid, tcid, pushToast }) {
+function CancelYieldBtn({ sid, wid, tcid, toolName, pushToast }) {
   const { useMutation, apiFetch } = window.primerApi;
   const cancel = useMutation(
     () => apiFetch(
       "POST",
       `/sessions/${encodeURIComponent(sid)}/yields/${encodeURIComponent(tcid)}/cancel`,
-      { reason: "operator cancelled" },
+      // The kind of yield this button was drawn for: a yield that is not a human gate has no gate id, so this is what lets the server refuse a
+      // Skip left open for one kind of yield when the provider's raw id now belongs to another (C-033).
+      { reason: "operator cancelled", ...(toolName ? { expected_tool_name: toolName } : {}) },
     ),
     {
       invalidates: [`session-detail:${sid}`, `ask-user:${sid}`],

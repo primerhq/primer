@@ -166,7 +166,10 @@ function NV_inboxDecide(decision, it, toast, onResolved) {
 // Resolves {text}, {gone} (the session is no longer parked on that call) or {failed, error}; never rejects.
 function NV_inboxFullCall(it) {
   return SH_api.sessionPendingYields(it.workspace_id, it.session_id).then(function (out) {
-    var row = ((out && out.items) || []).filter(function (r) { return r.tool_call_id === it.tool_call_id; })[0];
+    // The gate, when the item names one (C-033): two gates under one provider tool_call_id must not show each other's full call.
+    var row = ((out && out.items) || []).filter(function (r) {
+      return r.tool_call_id === it.tool_call_id && (!it.gate_id || r.gate_id === it.gate_id);
+    })[0];
     var call = row && row.resume_metadata && row.resume_metadata.original_call;
     if (!call) return { gone: true };
     return { text: JSON.stringify(call.arguments === undefined ? {} : call.arguments, null, 2) };
