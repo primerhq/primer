@@ -259,13 +259,13 @@ class _ResumePool:
     def _repark_graph_outcome(self, session, repark, *, node_tool_call_seq=None):
         return repark_graph_outcome(self, session, repark, node_tool_call_seq=node_tool_call_seq)
 
-    def _graph_nested_agent_yield(self, checkpoint, tcid):
+    def _graph_nested_agent_yield(self, checkpoint, tcid, event_key=None):
         return None
 
-    async def _graph_agent_tool_result(self, checkpoint, tcid, payload, *, session_id):
+    async def _graph_agent_tool_result(self, checkpoint, tcid, payload, *, session_id, event_key=None):
         return None
 
-    def _graph_value_yield_toolcall(self, checkpoint, tcid) -> bool:
+    def _graph_value_yield_toolcall(self, checkpoint, tcid, event_key=None) -> bool:
         return False
 
     async def _write_approval_record_for_graph(self, **kwargs) -> None:

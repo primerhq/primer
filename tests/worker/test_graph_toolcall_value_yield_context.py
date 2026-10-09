@@ -169,9 +169,9 @@ class _EnginePool(_EngineFakePool):
 
     _provider_registry: Any = None
 
-    async def _graph_agent_tool_result(self, checkpoint, tcid, payload, *, session_id):
+    async def _graph_agent_tool_result(self, checkpoint, tcid, payload, *, session_id, event_key=None):
         return await graph_resume_coordinator.graph_agent_tool_result(
-            self, checkpoint, tcid, payload, session_id=session_id,
+            self, checkpoint, tcid, payload, session_id=session_id, event_key=event_key,
         )
 
 

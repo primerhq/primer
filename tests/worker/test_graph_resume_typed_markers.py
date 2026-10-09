@@ -222,10 +222,10 @@ class _Pool(EngineFakePool):
     def _repark_graph_continuation(self, session, parked, checkpoint, ay, outcome):
         return graph_resume_coordinator.repark_graph_continuation(self, session, parked, checkpoint, ay, outcome)
 
-    async def _graph_agent_tool_result(self, checkpoint, tcid, payload, *, session_id):
+    async def _graph_agent_tool_result(self, checkpoint, tcid, payload, *, session_id, event_key=None):
         self.agent_node_payloads.append((tcid, payload))
         return await graph_resume_coordinator.graph_agent_tool_result(
-            self, checkpoint, tcid, payload, session_id=session_id,
+            self, checkpoint, tcid, payload, session_id=session_id, event_key=event_key,
         )
 
 
