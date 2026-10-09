@@ -64,6 +64,19 @@ function GB_validate(draft, opts) {
         blocking.push({ code: "unknown_target", message: `A connection points at a step that no longer exists (${t}).`, edgeIdx: idx });
       }
     }
+    // A branch with an empty to_node ("Add a path" starts with to_node "") passes the t && above and is refused by the PUT (JsonPathBranch.to_node has min_length=1), so it blocks Save here instead.
+    if (e.kind === "conditional" && e.router) {
+      const src = nodes.find((n) => n.id === e.from_node);
+      const branches = e.router.branches || [];
+      for (let bi = 0; bi < branches.length; bi++) {
+        if (!branches[bi].to_node) {
+          blocking.push({
+            code: "branch_no_target", edgeIdx: idx, nodeId: e.from_node,
+            message: `“${src ? (src.description || src.id) : e.from_node}”'s branch ${bi + 1} needs a step to go to.`,
+          });
+        }
+      }
+    }
     // The model's json_path router needs at least one branch (_JsonPathRouter.branches has min_length=1): an empty list passes every other check here and is refused by the PUT.
     if (e.kind === "conditional" && e.router && (e.router.kind || "json_path") === "json_path" && !(e.router.branches || []).length) {
       blocking.push({
