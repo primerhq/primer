@@ -64,3 +64,36 @@ def test_masking_is_idempotent_across_the_json_boundary(text: str) -> None:
 
 def test_the_log_filters_masker_stops_at_a_backslash_too() -> None:
     assert redact_url_secrets('x ?api_key=abc\\"y') == 'x ?api_key=[REDACTED]\\"y'
+
+
+# ---- a secret with a non-ASCII character, in text that is already JSON (#676 review round 2) -------------------------------------------------------
+# json.dumps writes a non-ASCII character as a ``\uXXXX`` escape, which holds a backslash. The value class stops at a backslash (so an escaped closing
+# quote survives), and a class that stopped at ANY backslash kept the tail of the secret after the first escape. It consumes a backslash that starts a
+# four-hex-digit unicode escape and stops at every other one.
+
+NON_ASCII_SECRETS = ["SK\u00e9TAIL-ONE-123456", "SK\u4e2d\u6587TAIL-TWO-123456", "SK\U0001F680TAIL-THREE-123456"]
+
+
+@pytest.mark.parametrize("secret", NON_ASCII_SECRETS, ids=["latin", "cjk", "astral"])
+def test_a_non_ascii_secret_is_masked_whole_in_json_encoded_text(secret: str) -> None:
+    envelope = json.dumps({"error": f'upstream said: GET "https://h/v1?api_key={secret}" -> 401'})
+    assert "\\u" in envelope, "the setup must put a unicode escape inside the secret"
+
+    out = redact_credentials(envelope)
+
+    assert "TAIL" not in out, f"the tail of the secret survived: {out}"
+    assert json.loads(out)["error"].endswith('" -> 401'), "the closing quote of the URL survived and the result is valid JSON"
+
+
+@pytest.mark.parametrize("secret", NON_ASCII_SECRETS, ids=["latin", "cjk", "astral"])
+def test_masking_the_encoded_text_agrees_with_masking_the_text(secret: str) -> None:
+    text = f'upstream said: GET "https://h/v1?api_key={secret}" -> 401'
+
+    assert json.loads(redact_credentials(json.dumps({"e": text})))["e"] == redact_credentials(text)
+
+
+def test_an_escaped_quote_after_the_secret_is_still_not_consumed() -> None:
+    """The control for the class: a backslash that does NOT start a unicode escape ends the value (``\\"`` closes the URL's quote)."""
+    out = redact_credentials(json.dumps({"e": f'x "https://h/v1?api_key={SECRET}" y'}))
+
+    assert SECRET not in out and json.loads(out)["e"] == 'x "https://h/v1?api_key=[REDACTED]" y'
