@@ -35,15 +35,22 @@ from __future__ import annotations
 import asyncio
 import re
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from pydantic import SecretStr
 
 from primer.api.registries.workspace_registry import WorkspaceRegistry
 from primer.model.except_ import ValidationError
 from primer.model.workspace import (
     WORKSPACE_ID_PATTERN,
+    LocalWorkspaceConfig,
     ResourceLimits,
+    Workspace,
+    WorkspaceProvider,
+    WorkspaceProviderType,
+    WorkspaceRuntimeMeta,
     WorkspaceTemplate,
 )
 from primer.workspace import LocalWorkspaceBackend
@@ -122,12 +129,15 @@ async def test_the_local_backend_refuses_an_id_that_is_not_exactly_one_segment(
     assert not (backend.root / "a").exists(), "the refused create left a directory under the root"
 
 
+@pytest.mark.parametrize("wid", ["../escape", ".", ".."])
 async def test_the_local_backend_refuses_a_reattach_that_escapes_the_root(
-    backend: LocalWorkspaceBackend,
+    backend: LocalWorkspaceBackend, wid: str,
 ) -> None:
-    """The re-attach path joins the root too: an escaping id must not re-attach to a directory outside it."""
+    """The re-attach path joins the root too: an escaping id must not re-attach to a directory outside it. ``.``/``..`` are lexically indistinguishable enough that the parent check alone misses them - on this Python, ``(root / "..").parent`` IS the root - so only the explicit single-segment check refuses them: without it, re-attach would load the PARENT of the root as a workspace."""
+    fresh = LocalWorkspaceBackend(backend.root)
+    await fresh.initialize()
     with pytest.raises(ValidationError):
-        await backend.get("../escape", template=_template())
+        await fresh.get(wid, template=_template())
 
 
 async def test_reattach_loads_a_workspace_directory_that_is_a_symlink_outside_the_root(
@@ -194,6 +204,21 @@ async def test_create_refuses_an_id_that_is_a_symlink_into_another_workspace(
     assert str(alpha.root) not in err.value.message, err.value.message
 
 
+async def test_create_refuses_an_id_that_is_a_symlink_outside_the_root_by_the_containment_check(
+    backend: LocalWorkspaceBackend,
+) -> None:
+    """A link OUT of the root resolves outside it: the refusal is the CONTAINMENT check's (its message), not the symlink refusal's, and carries no host paths - the root and the target stay in the log."""
+    outside = backend.root.parent / "outside-portal"
+    outside.mkdir()
+    (backend.root / "portal").symlink_to(outside)
+    with pytest.raises(ValidationError) as err:
+        await backend.create(_template(), workspace_id="portal")
+    assert "escapes the workspace root" in err.value.message, err.value.message
+    assert str(backend.root.resolve()) not in err.value.message, err.value.message
+    assert str(outside) not in err.value.message, err.value.message
+    assert not (outside / ".state").exists(), "the refused create materialised through the link"
+
+
 async def test_create_refuses_a_looping_symlink_id_with_a_validation_error(
     backend: LocalWorkspaceBackend,
 ) -> None:
@@ -233,6 +258,56 @@ async def test_ids_the_create_entries_refuse_still_reattach_when_created_directl
     await fresh.initialize()
     ws = await fresh.get(wid, template=_template())
     assert ws is not None, f"the pre-existing row {wid!r} must re-attach"
+
+
+class _RowStore:
+    """The minimal Storage the registry's re-attach path needs: ``get(id)``."""
+
+    def __init__(self, items: dict[str, object]) -> None:
+        self._items = items
+
+    async def get(self, id_: str) -> object:
+        return self._items.get(id_)
+
+
+class _RowStorage:
+    def __init__(self, stores: dict[type, _RowStore]) -> None:
+        self._stores = stores
+
+    def get_storage(self, cls: type) -> _RowStore:
+        return self._stores[cls]
+
+
+async def test_a_legacy_id_reattaches_through_the_registry_path_that_requests_use(
+    backend: LocalWorkspaceBackend,
+) -> None:
+    """'LegacyWS' re-attaches through WorkspaceRegistry.get_workspace - the row lookup, the template load and the backend.get a request takes (a fresh backend, as after a process restart) - not only through a bare fresh backend."""
+    await backend.create(_template(), workspace_id="LegacyWS")
+    provider = WorkspaceProvider(
+        id="local-1",
+        provider=WorkspaceProviderType.LOCAL,
+        config=LocalWorkspaceConfig(root_path=str(backend.root)),
+    )
+    row = Workspace(
+        id="LegacyWS",
+        template_id="dev",
+        provider_id="local-1",
+        created_at=datetime.now(timezone.utc),
+        runtime_meta=WorkspaceRuntimeMeta(url="ws://localhost:1", token=SecretStr("t")),
+    )
+    sp = _RowStorage(
+        {
+            WorkspaceProvider: _RowStore({"local-1": provider}),
+            Workspace: _RowStore({"LegacyWS": row}),
+            WorkspaceTemplate: _RowStore({"dev": _template()}),
+        }
+    )
+    reg = WorkspaceRegistry(
+        storage_provider=sp,  # type: ignore[arg-type]
+        factory=lambda p: LocalWorkspaceBackend(Path(p.config.root_path)),
+    )
+    ws = await reg.get_workspace("LegacyWS")
+    assert (ws.root / ".state").exists(), "the registry re-attach did not load the workspace"
 
 
 async def test_a_symlinked_root_creates_reattaches_and_destroys(tmp_path: Path) -> None:
