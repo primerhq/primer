@@ -188,7 +188,7 @@ function GB_fillStarter(spec, picks) {
   return JSON.parse(json);
 }
 
-function GB_Starters({ onApply, onBlank, tools }) {
+function GB_Starters({ onApply, onBlank, tools, catalogue }) {
   const { useState } = React;
   const [chosen, setChosen] = useState(null);
   const [picks, setPicks] = useState({});
@@ -209,7 +209,7 @@ function GB_Starters({ onApply, onBlank, tools }) {
               {s.kind === "agent" && EntityPickerC ? (
                 <EntityPickerC path="/agents" value={picks[s.key] || ""} onChange={(v) => setPicks({ ...picks, [s.key]: v })} placeholder="Search agents…" />
               ) : (
-                <window.GB_ToolPicker tools={tools} value={picks[s.key] || ""} onChange={(v) => setPicks({ ...picks, [s.key]: v })} />
+                <window.GB_ToolPicker tools={tools} catalogue={catalogue} value={picks[s.key] || ""} onChange={(v) => setPicks({ ...picks, [s.key]: v })} />
               )}
             </div>
           ))}

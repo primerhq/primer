@@ -19,7 +19,7 @@ function GB_Section({ title, hint, children }) {
 
 function GB_Inspector(props) {
   const {
-    draft, node, edgeIdx, dispatch, tools, readOnly, problems,
+    draft, node, edgeIdx, dispatch, tools, catalogue, readOnly, problems,
     onSelectNode, sampleByExpr, onJsonError,
   } = props;
   const { useState } = React;
@@ -172,7 +172,7 @@ function GB_Inspector(props) {
         {node.kind === "tool_call" ? (
           <>
             <GB_Section title="Which tool">
-              <GB_ToolPicker tools={tools} value={node.tool_id || ""} onChange={(v) => patch({ tool_id: v })} />
+              <GB_ToolPicker tools={tools} catalogue={catalogue} value={node.tool_id || ""} onChange={(v) => patch({ tool_id: v })} />
             </GB_Section>
             <GB_ToolArguments node={node} tools={tools} draft={draft} patch={patch} readOnly={readOnly} sampleByExpr={sampleByExpr} />
           </>
@@ -326,7 +326,11 @@ function GB_ToolArguments({ node, tools, draft, patch, readOnly, sampleByExpr })
             style={{ background: "var(--bg-1)", border: "1px solid var(--border)", borderRadius: 8, padding: 9, color: "var(--text-2)", fontSize: "var(--fs-11)", fontFamily: "var(--font-mono)" }}
           />
         ) : !tool ? (
-          <span className="muted" style={{ fontSize: "var(--fs-11)" }}>Choose a tool to see what it needs.</span>
+          <span className="muted" style={{ fontSize: "var(--fs-11)" }}>
+            {node.tool_id
+              ? "No fields are listed for this tool (it is not in the list, or the list is not loaded): build the whole argument object instead."
+              : "Choose a tool to see what it needs."}
+          </span>
         ) : !names.length ? (
           <span className="muted" style={{ fontSize: "var(--fs-11)" }}>This tool takes no arguments.</span>
         ) : (

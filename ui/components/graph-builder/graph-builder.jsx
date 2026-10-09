@@ -159,6 +159,8 @@ function GB_Builder(props) {
 
   const toolsRes = useResource("tools:catalogue", (signal) => GB_api.toolCatalogue(signal), { pollMs: 0 });
   const tools = (toolsRes.data && toolsRes.data.items) || [];
+  // The state of the request for the tool list, for every place a tool is picked: when it fails the picker says so and takes a typed id (ticket 01a11e4e-7115).
+  const catalogue = { error: toolsRes.error || null, loading: !!toolsRes.loading, retry: toolsRes.refetch };
   const statusRes = useResource(
     `graph:status:${graphId}`,
     (signal) => GB_api.graphStatus(graphId, signal),
@@ -385,6 +387,7 @@ function GB_Builder(props) {
       {isEmpty && !readOnly ? (
         <GB_Starters
           tools={tools}
+          catalogue={catalogue}
           onBlank={() => {
             const begin = GB_makeNode({ kind: "begin", label: "Start", takenIds: [] });
             const end = GB_makeNode({ kind: "end", label: "Finish", takenIds: [begin.id] });
@@ -479,6 +482,7 @@ function GB_Builder(props) {
               edgeIdx={selectedEdge}
               dispatch={dispatch}
               tools={tools}
+              catalogue={catalogue}
               readOnly={readOnly}
               problems={selectedId ? problemsByNode[selectedId] : null}
               onSelectNode={(id) => { setSelectedId(id); setSelectedEdge(null); }}
@@ -518,6 +522,7 @@ function GB_Builder(props) {
           draft={draft}
           afterNodeId={paletteAfter}
           tools={tools}
+          catalogue={catalogue}
           onClose={() => setPaletteAfter(undefined)}
           onCreate={onCreateFromPalette}
           onAddBranch={(fromId) => {

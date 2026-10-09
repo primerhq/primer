@@ -39,7 +39,7 @@ const GB_PURPOSES = [
 ];
 
 function GB_AddStepPalette(props) {
-  const { draft, afterNodeId, tools, onClose, onCreate, onAddBranch } = props;
+  const { draft, afterNodeId, tools, catalogue, onClose, onCreate, onAddBranch } = props;
   const { useState, useMemo } = React;
   const [query, setQuery] = useState("");
   const [stage, setStage] = useState("purpose"); // purpose -> reference
@@ -172,6 +172,7 @@ function GB_AddStepPalette(props) {
             purpose={purpose}
             draft={draft}
             tools={tools}
+            catalogue={catalogue}
             afterNodeId={afterNodeId}
             onBack={() => { setStage("purpose"); setPurpose(null); }}
             onDone={(payload) => { onCreate(payload); onClose(); }}
@@ -200,7 +201,7 @@ function GB_AddStepPalette(props) {
 }
 
 // Stage 2: collect the reference (agent / tool / graph) so the node is complete.
-function GB_PaletteReference({ purpose, draft, tools, afterNodeId, onBack, onDone }) {
+function GB_PaletteReference({ purpose, draft, tools, catalogue, afterNodeId, onBack, onDone }) {
   const { useState } = React;
   const [ref, setRef] = useState("");
   const [label, setLabel] = useState("");
@@ -253,7 +254,7 @@ function GB_PaletteReference({ purpose, draft, tools, afterNodeId, onBack, onDon
         <EntityPicker path="/graphs" value={ref} onChange={setRef} placeholder="Search graphs…" testid="gb-graph-picker" />
       ) : null}
       {purpose.kind === "tool_call" ? (
-        <GB_ToolPicker tools={tools} value={ref} onChange={setRef} />
+        <GB_ToolPicker tools={tools} catalogue={catalogue} value={ref} onChange={setRef} />
       ) : null}
 
       <label className="col" style={{ gap: 5 }}>
@@ -290,10 +291,39 @@ function GB_PaletteReference({ purpose, draft, tools, afterNodeId, onBack, onDon
   );
 }
 
-function GB_ToolPicker({ tools, value, onChange }) {
+// The tool picker (the inspector of a tool step, the add-step palette and the starters). `catalogue` is the state of the request for the list, {error, loading, retry}: a list that could not be
+// loaded is said so with the server's words and the tool's id can be TYPED instead (the retired editor did this; the builder drew "No tools match.", the words of an empty search, ticket
+// 01a11e4e-7115). A stale list wins over a later error: the list is still good.
+function GB_ToolPicker({ tools, value, onChange, catalogue }) {
   const { useState } = React;
   const [q, setQ] = useState("");
+  const errId = React.useId() + "e";
+  const have = (tools || []).length > 0;
+  const error = catalogue && catalogue.error && !have ? catalogue.error : null;
+  const loading = !!(catalogue && catalogue.loading) && !have && !error;
   const items = (tools || []).filter((t) => !q || (t.id + " " + (t.description || "")).toLowerCase().includes(q.toLowerCase()));
+  if (error) {
+    const why = error.detail || error.message || error.title || "the request failed";
+    return (
+      <div data-testid="gb-tool-picker" className="col" style={{ gap: 8, padding: 10, border: "1px solid var(--border)", borderRadius: "var(--r-9)" }}>
+        <div id={errId} role="alert" data-testid="gb-tool-catalogue-error" style={{ fontSize: "var(--fs-11)", color: "var(--red)", lineHeight: 1.5 }}>
+          {"The list of tools could not be loaded (" + why + "). Type the tool's id instead."}
+        </div>
+        <input aria-label="Tool id" aria-describedby={errId} data-testid="gb-tool-id-input" className="mono"
+          value={value || ""}
+          onChange={(e) => onChange(e.target.value.replace(/\s+/g, ""))}
+          placeholder="e.g. workspaces__list_files"
+          style={{ width: "100%", background: "var(--bg-1)", border: "1px solid var(--border)", borderRadius: 6, padding: "7px 9px", color: "var(--text)", fontSize: "var(--fs-12)" }}
+        />
+        {catalogue.retry ? (
+          <button type="button" data-testid="gb-tool-catalogue-retry" onClick={() => catalogue.retry()}
+            style={{ alignSelf: "flex-start", background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--accent)", fontSize: "var(--fs-11)" }}>
+            Try again
+          </button>
+        ) : null}
+      </div>
+    );
+  }
   return (
     <div data-testid="gb-tool-picker" style={{ border: "1px solid var(--border)", borderRadius: "var(--r-9)", overflow: "hidden" }}>
       <input aria-label="Search tools"
@@ -306,7 +336,11 @@ function GB_ToolPicker({ tools, value, onChange }) {
         }}
       />
       <div style={{ maxHeight: 200, overflow: "auto" }}>
-        {!items.length ? <div className="muted" style={{ padding: 10, fontSize: "var(--fs-12)" }}>No tools match.</div> : null}
+        {!items.length ? (
+          <div className="muted" style={{ padding: 10, fontSize: "var(--fs-12)" }}>
+            {loading ? "Loading tools…" : !have ? "No tools are available." : "No tools match."}
+          </div>
+        ) : null}
         {items.slice(0, 60).map((t) => (
           <div
             key={t.id}
