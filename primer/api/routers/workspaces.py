@@ -3158,19 +3158,18 @@ _WORD_SEP = "\x1f"
 _OPAQUE_WORD = "\ue002"
 _LINE_MARK = "\ue003"
 _QUOTES_HIDDEN = str.maketrans({"'": "\ue000", '"': "\ue001"})
-_QUOTES_BACK = str.maketrans({"\ue000": "'", "\ue001": '"'})
 _WHITESPACE = re.compile(r"\s")
 
 
-def _line_word(text: str) -> "tuple[str, bool, bool]":
-    """``text`` as it enters the line, and whether it was wrapped in quotes or had its quotes swapped (both are taken off again to compare it with the word alone)."""
+def _line_word(text: str) -> "tuple[str, bool]":
+    """``text`` as it enters the line, and whether it was wrapped in quotes (the wrapping is cut off again to line the word up with itself alone; a swapped quote keeps its place)."""
     quoted = "'" in text or '"' in text
     spaced = _WHITESPACE.search(text) is not None
     if spaced and not quoted:
-        return f"'{text}'", True, False
+        return f"'{text}'", True
     if quoted and not spaced and "\ue000" not in text and "\ue001" not in text:
-        return text.translate(_QUOTES_HIDDEN), False, True
-    return text, False, False
+        return text.translate(_QUOTES_HIDDEN), False
+    return text, False
 
 
 def _is_command_line(members: "list | tuple") -> bool:
@@ -3210,7 +3209,7 @@ def _redact_command_line(members: "list | tuple", depth: int, budget: "list[int]
     alone, the line) is charged to ``budget`` as a string's is. Nothing is expanded or re-serialised, so no input can make the work grow.
     """
     shown: list[Any] = []                                    # per word taken: its floor
-    words: list[tuple[int, int, bool, bool, str]] = []       # per word taken: its span in the line, how it was dressed for the line, and what the scrub finds in it ALONE
+    words: list[tuple[int, int, bool, str]] = []             # per word taken: its span in the line, whether the line wrapped it in quotes, and what the scrub finds in it ALONE
     pieces: list[str] = []
     length = 0
     changed = False
@@ -3224,28 +3223,24 @@ def _redact_command_line(members: "list | tuple", depth: int, budget: "list[int]
             text = _OPAQUE_WORD
         else:
             text = json.dumps(member, default=str)[:_NAME_SCAN_CHARS]
-        word, wrapped, swapped = _line_word(text)
+        word, wrapped = _line_word(text)
         start = length + 1 if pieces else 0
         if start + len(word) > _REDACT_MAX_TEXT:
             if pieces:
                 break
-            word, wrapped, swapped = text, False, False         # the first word alone is at most the ceiling: it never needs its dress
+            word, wrapped = text, False         # the first word alone is at most the ceiling: it never needs its dress
         budget[0] -= _REDACT_MEMBER_COST
         value, inner_changed = _redact(member, depth + 1, budget)
         budget[0] -= len(text) + len(word) + 1                # the word alone and its place in the line
         shown.append(value)
         pieces.append(word)
-        words.append((start, start + len(word), wrapped, swapped, _scrub_text(text, _LINE_MARK)))
+        words.append((start, start + len(word), wrapped, _scrub_text(text, _LINE_MARK)))
         length = start + len(word)
         changed = changed or inner_changed
     marked = _scrub_text(_WORD_SEP.join(pieces), _LINE_MARK)
-    for index, (start, end, wrapped, swapped, alone) in enumerate(words):
+    for index, (start, end, wrapped, alone) in enumerate(words):
         found = marked[start:end]
-        if wrapped:
-            found = found[1:-1]
-        if swapped:
-            found = found.translate(_QUOTES_BACK)
-        if _adds_marks(found, alone):
+        if _adds_marks(found[1:-1] if wrapped else found, alone):
             shown[index], changed = _REDACTED, True
     left_out = len(members) - len(shown)
     if left_out:
