@@ -63,3 +63,26 @@ async def test_the_records_list_finds_a_record_by_its_gate_key(app, client):
 
     assert found.status_code == 200 and [r["tool_call_id"] for r in found.json()["items"]] == ["call_0"]
     assert missed.status_code == 200 and missed.json()["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_the_records_filter_says_it_matches_the_stored_key_suffix_included(app, client):
+    """The OpenAPI text of ``?gate_event_key=`` names the stored form, so a caller that has the bare event key in hand knows it will not match a gated record."""
+    schema = (await client.get("/openapi.json")).json()
+    params = schema["paths"]["/v1/tool_approval/records"]["get"]["parameters"]
+    text = next(p for p in params if p["name"] == "gate_event_key")["description"]
+
+    assert "<event_key>@<gate_id>" in text and "matched exactly" in text and "bare event key" in text, text
+
+
+@pytest.mark.asyncio
+async def test_the_bare_event_key_does_not_find_a_gated_record(app, client):
+    await app.state.storage_provider.get_storage(WorkspaceSession).create(
+        _approval_session(session_id="rk-filter", tool_call_id="call_0", gate_id=G1))
+    await client.post("/v1/sessions/rk-filter/tool_approval/respond", json={"tool_call_id": "call_0", "gate_id": G1, "decision": "approved"})
+
+    bare = await client.get("/v1/tool_approval/records", params={"gate_event_key": "tool_approval:rk-filter:call_0"})
+    stored = await client.get("/v1/tool_approval/records", params={"gate_event_key": f"tool_approval:rk-filter:call_0@{G1}"})
+
+    assert bare.json()["items"] == []
+    assert [r["gate_event_key"] for r in stored.json()["items"]] == [f"tool_approval:rk-filter:call_0@{G1}"]
