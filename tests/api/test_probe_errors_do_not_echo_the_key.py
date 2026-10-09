@@ -19,6 +19,8 @@ import asyncio
 import pytest
 import pytest_asyncio
 
+from primer.common.transport_text import UNSENDABLE_KEY
+
 KEY = "sk-live-Q7xZ9pL2mN4vB8kR1tY6wE3"
 TAIL = "Q7xZ9pL2mN4vB8kR1tY6wE3"
 # A key with a newline INSIDE it: h11 refuses it just the same, and the escaped form of each half is what a repr prints.
@@ -152,6 +154,9 @@ class TestLlmDiscovery:
 
 
 class TestDraftTestRoutes:
+    """The speech adapters send the padded key and the real h11 refuses it (``LocalProtocolError``). The header web adapters (exa, firecrawl) refuse it first
+    (#686, ``require_sendable_key``): no request is made, so their routes answer ``UNSENDABLE_KEY`` and h11 never sees the key."""
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize("route,extra", [("stt_providers", {}), ("tts_providers", {"default_voice": "af_heart"})])
     async def test_the_speech_test_routes_do_not_echo_the_key(self, client, port, route, extra) -> None:
@@ -176,7 +181,7 @@ class TestDraftTestRoutes:
         assert r.status_code == 200, r.text
         assert r.json()["ok"] is False
         _assert_clean(r.text)
-        assert "LocalProtocolError" in r.json()["error"], f"the route must fail for the header, not vacuously: {r.json()['error']!r}"
+        assert UNSENDABLE_KEY in r.json()["error"], f"the route must refuse the padded key before sending it (#686), not vacuously: {r.json()['error']!r}"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("provider_type", ["exa", "firecrawl"])
@@ -188,7 +193,7 @@ class TestDraftTestRoutes:
         assert r.status_code == 200, r.text
         assert r.json()["ok"] is False
         _assert_clean(r.text)
-        assert "LocalProtocolError" in r.json()["error"], f"the route must fail for the header, not vacuously: {r.json()['error']!r}"
+        assert UNSENDABLE_KEY in r.json()["error"], f"the route must refuse the padded key before sending it (#686), not vacuously: {r.json()['error']!r}"
 
 
 class TestAudioEnumeration:
