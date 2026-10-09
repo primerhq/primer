@@ -26,7 +26,7 @@ from primer.model.except_ import NotFoundError, ServerError
 from primer.model.external_tool import ExternalToolCall, ExternalToolResultIn
 from primer.model.provider import SqliteConfig
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
-from primer.model.yield_ import WAKE_PARK_KEY
+from primer.model.yield_ import WAKE_ENTRY_KEY, WAKE_PARK_KEY
 from primer.session.external_calls import flip_external_row
 from primer.session.external_tools import apply_tool_results, cancel_pending_external
 from primer.storage import PatchValueError
@@ -359,7 +359,7 @@ async def test_apply_tool_results_held_at_its_row_write_does_not_overwrite_a_row
     assert applied == 1
     assert cancelled == ["tc-1"]
     session = await sessions.get("sess-1")
-    assert session.parked_state["resume_event_payload"] == {"result": RESULT, "is_error": False, WAKE_PARK_KEY: session.parked_at.isoformat()}
+    assert session.parked_state["resume_event_payload"] == {"result": RESULT, "is_error": False, WAKE_PARK_KEY: session.parked_at.isoformat(), WAKE_ENTRY_KEY: "etool-fixed-1"}
 
 
 async def test_apply_tool_results_records_an_error_result_as_completed_with_is_error(provider) -> None:
@@ -381,7 +381,7 @@ async def test_apply_tool_results_records_an_error_result_as_completed_with_is_e
     row = await calls.get("etool-fixed-1")
     assert (row.status, row.result, row.is_error) == ("completed", error, True)
     session = await sessions.get("sess-1")
-    assert session.parked_state["resume_event_payload"] == {"result": error, "is_error": True, WAKE_PARK_KEY: session.parked_at.isoformat()}
+    assert session.parked_state["resume_event_payload"] == {"result": error, "is_error": True, WAKE_PARK_KEY: session.parked_at.isoformat(), WAKE_ENTRY_KEY: "etool-fixed-1"}
 
 
 # ---------------------------------------------------------------------------

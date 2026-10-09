@@ -197,6 +197,81 @@ async def test_a_session_wake_names_the_park_the_sink_read(sp):
     assert payload["event_type"] == "collection.document_pushed", "the envelope is still the agent's tool result"
 
 
+async def _park_evwait(sp, session_id: str, event_key: str, subscription_id: str | None) -> None:
+    """A session parked on a ``wait_for_event`` whose Yielded carries the id of the subscription the tool created."""
+    from datetime import datetime, timedelta, timezone
+
+    parked_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    meta = {"event_types": ["collection.document_pushed"], **({"subscription_id": subscription_id} if subscription_id else {})}
+    await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
+        id=session_id, workspace_id="w", binding=AgentSessionBinding(agent_id="agent-a"), status=SessionStatus.WAITING, created_at=parked_at,
+        parked_status="parked", parked_event_key=event_key, parked_at=parked_at,
+        parked_state={"tool_call_id": "c1", "yielded": {"tool_name": "wait_for_event", "event_key": event_key, "resume_metadata": meta}},
+    ))
+
+
+async def test_an_orphaned_subscription_does_not_deliver_into_a_later_park_under_the_same_key(sp):
+    """The first wait timed out and the session waited AGAIN under the same tool_call_id (a provider repeats it): the old subscription still waits for its event.
+    Its sink must not deliver into the new park, which another subscription created with another filter (ticket 01a1223f, #702 review N6)."""
+    store = sp.get_event_store()
+    bus = _RecordingBus()
+    await _sub(
+        sp,
+        sink=SessionWakeSink(event_key="evwait:s1:c1", session_id="s1"),
+        filter_=EventFilter(event_types=["collection.document_pushed"]),
+    )
+    await _park_evwait(sp, "s1", "evwait:s1:c1", "evsub-NEW")                     # the park belongs to ANOTHER subscription than "sub-1"
+    d = _dispatcher(sp, bus=bus)
+    await d.drain_once()
+
+    await store.append(event_type="collection.document_pushed", entity_kind="document", entity_id="d1", payload={"collection_id": "kb"})
+    await d.drain_once()
+
+    assert bus.published == [], "the orphan delivered into the later wait"
+    assert await sp.get_storage(EventSubscription).get("sub-1") is None, "and it is collected: it can never be answered"
+    assert (await sp.get_storage(WorkspaceSession).get("s1")).parked_status == "parked"
+
+
+async def test_the_subscription_the_park_was_created_by_delivers_and_names_itself(sp):
+    from primer.model.yield_ import WAKE_ENTRY_KEY
+
+    store = sp.get_event_store()
+    bus = _RecordingBus()
+    await _sub(
+        sp,
+        sink=SessionWakeSink(event_key="evwait:s1:c1", session_id="s1"),
+        filter_=EventFilter(event_types=["collection.document_pushed"]),
+    )
+    await _park_evwait(sp, "s1", "evwait:s1:c1", "sub-1")
+    d = _dispatcher(sp, bus=bus)
+    await d.drain_once()
+
+    await store.append(event_type="collection.document_pushed", entity_kind="document", entity_id="d1", payload={"collection_id": "kb"})
+    assert await d.drain_once() == 1
+
+    [(_key, payload)] = bus.published
+    assert payload[WAKE_ENTRY_KEY] == "sub-1", "the envelope names the subscription: the flip refuses a copy delivered into another wait"
+
+
+async def test_a_park_that_carries_no_subscription_id_is_delivered_into_as_before(sp):
+    """A wait parked by an older build: the park names no subscription, so the key alone decides, as it always did."""
+    store = sp.get_event_store()
+    bus = _RecordingBus()
+    await _sub(
+        sp,
+        sink=SessionWakeSink(event_key="evwait:s1:c1", session_id="s1"),
+        filter_=EventFilter(event_types=["collection.document_pushed"]),
+    )
+    await _park_evwait(sp, "s1", "evwait:s1:c1", None)
+    d = _dispatcher(sp, bus=bus)
+    await d.drain_once()
+
+    await store.append(event_type="collection.document_pushed", entity_kind="document", entity_id="d1", payload={"collection_id": "kb"})
+    assert await d.drain_once() == 1
+
+    assert [k for k, _ in bus.published] == ["evwait:s1:c1"]
+
+
 async def test_paused_subscription_is_untouched(sp):
     store = sp.get_event_store()
     row = EventSubscription(
