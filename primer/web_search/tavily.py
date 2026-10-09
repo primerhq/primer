@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from primer.common.transport_text import transport_failure
 from primer.web_search.adapter import (
     SafeSearchLevel,
     SearchHit,
@@ -62,6 +63,7 @@ class TavilyAdapter(WebSearchAdapter):
         client: httpx.AsyncClient | None = None,
         base_url: str = TAVILY_BASE_URL,
     ) -> None:
+        self._config = config
         self._api_key = config.api_key
         self._base_url = base_url
         self._client = client or httpx.AsyncClient(timeout=30.0)
@@ -90,9 +92,7 @@ class TavilyAdapter(WebSearchAdapter):
                 f"{self._base_url}/search", json=body,
             )
         except httpx.HTTPError as exc:
-            raise WebSearchUnavailable(
-                f"tavily transport: {type(exc).__name__}: {exc}"
-            ) from exc
+            raise WebSearchUnavailable(transport_failure("tavily", exc, self._config)) from exc
 
         if r.status_code in (401, 403):
             raise WebSearchProviderError(
