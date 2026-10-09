@@ -7,7 +7,8 @@ and commit as separate steps so that React's order (a parent renders first, a ch
 
 What they pin, one behaviour each: the top layer alone hears Escape and the next one hears the next; the layer that became active last is on top however the effects ran; a handler that changes
 between renders keeps its place and the latest one is called; an inactive layer is not on the stack and a layer that turns active goes on top; an Escape that was already handled, and any other key,
-is not an Escape; a top layer that does nothing keeps everything below it; the window listener exists only while a layer does.
+is not an Escape (so is one that belongs to an IME composition); a top layer that does nothing keeps everything below it; a layer closed and opened again goes back on top; a layer called
+with one argument is active; a render that is never committed puts nothing on the stack; the window listener exists only while a layer does.
 """
 
 from __future__ import annotations
@@ -27,8 +28,9 @@ var window = {
   addEventListener: function (type, fn) { if (type === 'keydown') this._listeners.push(fn); },
   removeEventListener: function (type, fn) { if (type === 'keydown') this._listeners = this._listeners.filter(function (f) { return f !== fn; }); },
 };
-function press(key, prevented) {
+function press(key, prevented, extra) {
   var ev = { type: 'keydown', key: key, defaultPrevented: !!prevented, preventDefault: function () { this.defaultPrevented = true; } };
+  Object.keys(extra || {}).forEach(function (k) { ev[k] = extra[k]; });
   window._listeners.slice().forEach(function (fn) { fn(ev); });
   return ev;
 }
@@ -44,7 +46,8 @@ function layer(name, active, handler) {
 }
 function render(inst) {
   __cur = inst; inst.i = 0; inst.queue = [];
-  window.primerApi.useEscape(inst.handler === 'none' ? undefined : (inst.handler || function () { __log.push(inst.name); }), inst.active);
+  var handler = inst.handler === 'none' ? undefined : (inst.handler || function () { __log.push(inst.name); });
+  if (inst.oneArg) window.primerApi.useEscape(handler); else window.primerApi.useEscape(handler, inst.active);
   __cur = null;
 }
 function commit(inst) {
@@ -60,6 +63,7 @@ function commit(inst) {
   inst.mounted = true;
 }
 function mount(name, active, handler) { var inst = layer(name, active === undefined ? true : active, handler); render(inst); commit(inst); return inst; }
+function mountWithOneArgument(name) { var inst = layer(name, true); inst.oneArg = true; render(inst); commit(inst); return inst; }
 function rerender(inst, patch) { Object.keys(patch || {}).forEach(function (k) { inst[k] = patch[k]; }); render(inst); commit(inst); }
 function unmount(inst) { Object.keys(inst.cleanups).forEach(function (k) { if (inst.cleanups[k]) inst.cleanups[k](); }); inst.cleanups = {}; }
 function heard() { var l = __log.slice(); __log.length = 0; return l; }
@@ -183,3 +187,42 @@ def test_the_window_listener_exists_only_while_a_layer_does(ctx) -> None:
 
 def test_the_hook_is_published_where_the_components_look_for_it(ctx) -> None:
     assert ctx.eval("typeof window.primerApi.useEscape") == "function"
+
+
+@pytest.mark.parametrize("extra", [{"isComposing": True}, {"keyCode": 229}, {"isComposing": True, "keyCode": 229}], ids=["isComposing", "keyCode-229", "both"])
+def test_an_escape_that_belongs_to_an_ime_composition_is_not_an_escape(ctx, extra) -> None:
+    """Review of #700, B1: Escape cancels the composition in an input method editor (Chrome reports ``isComposing``, Safari ``keyCode`` 229 on the keydown that ends one); it must not close the layer too."""
+    ctx.eval("var only = mount('only');")
+    ctx.eval(f"press('Escape', false, {json.dumps(extra)});")
+    assert _heard(ctx) == []
+    ctx.eval("press('Escape', false, { isComposing: false, keyCode: 27 });")
+    assert _heard(ctx) == ["only"], "the same key outside a composition closes it"
+
+
+def test_a_layer_that_is_closed_and_opened_again_goes_back_on_top(ctx) -> None:
+    """N1: A on, B on, A off, A on: the Escape is A's, then B's. (A mutant that keeps the first number of A would have B on top.)"""
+    ctx.eval("var a = mount('a'); var b = mount('b'); rerender(a, { active: false }); rerender(a, { active: true });")
+    ctx.eval("press('Escape');")
+    assert _heard(ctx) == ["a"]
+    ctx.eval("unmount(a); press('Escape');")
+    assert _heard(ctx) == ["b"]
+
+
+def test_a_layer_called_with_one_argument_is_active(ctx) -> None:
+    """N2: ``Modal``, ``NV_OverlayPanel`` and ``NV_Lightbox`` call ``useEscape(handler)``: ``active`` defaults to true."""
+    ctx.eval("var overlay = mountWithOneArgument('overlay'); var dialog = mountWithOneArgument('dialog');")
+    ctx.eval("press('Escape');")
+    assert _heard(ctx) == ["dialog"]
+    ctx.eval("unmount(dialog); press('Escape');")
+    assert _heard(ctx) == ["overlay"]
+
+
+def test_a_render_that_is_never_committed_puts_nothing_on_the_stack(ctx) -> None:
+    """N4: the order is taken at render, and a render React throws away must neither add a layer nor lift one; only a commit puts a layer on the stack."""
+    ctx.eval("var low = mount('low'); var abandoned = layer('abandoned', true); render(abandoned);")
+    ctx.eval("press('Escape');")
+    assert _heard(ctx) == ["low"]
+    assert ctx.eval("window._listeners.length") == 1
+    ctx.eval("commit(abandoned);")
+    ctx.eval("press('Escape');")
+    assert _heard(ctx) == ["abandoned"], "committed later, so on top"

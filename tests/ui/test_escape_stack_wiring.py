@@ -58,33 +58,87 @@ def test_a_layer_is_on_the_stack_only_while_it_is_open() -> None:
     assert re.search(r"useEscape\([\s\S]*,\s*open\)", _src("components/console/nv-palette.jsx")), "the palette answers Escape only while it is open"
 
 
+_LISTENER = re.compile(r"""(?:window|document)\.addEventListener\(\s*["'](?:keydown|keyup|keypress)["']\s*,\s*""")
+_ESCAPE = re.compile(r"""["']Escape["']|["']Esc["']|keyCode\s*[=!]==?\s*27|\bwhich\s*[=!]==?\s*27""")
+
+
+def _matching_paren(text: str, open_at: int) -> int:
+    depth, i = 0, open_at
+    while i < len(text):
+        depth += text[i] == "("
+        depth -= text[i] == ")"
+        if depth == 0:
+            return i
+        i += 1
+    return len(text)
+
+
+def listeners_that_answer_escape(text: str) -> list[str]:
+    """The window or document ``keydown``/``keyup``/``keypress`` listeners in ``text`` whose handler (a named function defined above the call, or the inline function in the call) mentions the Escape key
+    in any of its spellings (``"Escape"``, ``"Esc"``, ``keyCode === 27``, ``which === 27``)."""
+    found = []
+    for m in _LISTENER.finditer(text):
+        call_open = text.rindex("(", m.start(), m.end())
+        call = text[m.end():_matching_paren(text, call_open)]
+        name = re.match(r"(\w+)\s*$", call.split(",")[0].strip())
+        if name and re.fullmatch(r"\w+", call.strip().split(",")[0].strip()):
+            defined = list(re.finditer(rf"(?:function {name.group(1)}\b|(?:const|let|var) {name.group(1)} =)", text[: m.start()]))
+            body = text[defined[-1].start(): m.start()] if defined else ""
+        else:
+            body = call                                           # an inline function
+        if _ESCAPE.search(body):
+            found.append(text[m.start(): m.start() + 60].replace("\n", " "))
+    return found
+
+
 def test_no_component_listens_for_escape_on_the_window_or_the_document() -> None:
-    """Every ``keydown`` listener added to the window or the document, anywhere in the UI, must not answer Escape: that is the stack's job. The handler is read back from the listener's name."""
+    """Every ``keydown``, ``keyup`` or ``keypress`` listener added to the window or the document, anywhere in the UI, must not answer Escape (named or inline handler, ``"Escape"``, ``"Esc"`` or key code
+    27): that is the stack's job. What the scan does NOT see: a listener added to an element, or to something other than the window and the document, and a key compared by a variable."""
     offenders = []
     for path in sorted(list(UI.rglob("*.jsx")) + list(UI.rglob("*.js"))):
         rel = path.relative_to(UI).as_posix()
         if rel.startswith("vendor/") or rel in {"design-canvas.jsx", "foundation/escape-stack.js"}:
             continue
-        text = path.read_text(encoding="utf-8")
-        for m in re.finditer(r"""(?:window|document)\.addEventListener\(\s*["']keydown["']\s*,\s*(\w+)""", text):
-            name = m.group(1)
-            defined = [d for d in re.finditer(rf"(?:function {name}\b|(?:const|let|var) {name} =)", text[: m.start()])]
-            if not defined:
-                continue
-            body = text[defined[-1].start(): m.start()]
-            if "Escape" in body:
-                offenders.append(f"{rel}: {name}")
+        offenders += [f"{rel}: {hit}" for hit in listeners_that_answer_escape(path.read_text(encoding="utf-8"))]
     assert not offenders, f"these still answer Escape themselves, use useEscape: {offenders}"
 
 
+def test_the_scan_sees_the_shapes_it_claims_to_and_not_the_ones_it_does_not() -> None:
+    named = "function onKey(ev) { if (ev.key === 'Escape') close(); }\nwindow.addEventListener('keydown', onKey);"
+    inline = "document.addEventListener(\"keyup\", (e) => { if (e.key === \"Escape\") close(); });"
+    keycode = "window.addEventListener('keydown', function (e) { if (e.keyCode === 27) close(); });"
+    esc = "window.addEventListener('keypress', (e) => { if (e.key === 'Esc') close(); });"
+    other = "function onKey(ev) { if (ev.ctrlKey && ev.key === 'k') open(); }\nwindow.addEventListener('keydown', onKey);"
+    inline_other = "window.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });"
+    for text in (named, inline, keycode, esc):
+        assert len(listeners_that_answer_escape(text)) == 1, text
+    for text in (other, inline_other):
+        assert listeners_that_answer_escape(text) == [], text
+
+
 def test_an_input_that_handles_escape_itself_says_so_so_the_layer_behind_it_stays() -> None:
-    """The add-step palette's search box, the value picker of the reference editor and the session title input each close something of their own on Escape; the layer under them must not hear the same key."""
-    palette = _src("components/graph-builder/gb-palette.jsx")
-    assert re.search(r'if \(e\.key === "Escape"\) \{ e\.preventDefault\(\); onClose\(\); return; \}', palette)
+    """The reference editor's value picker field and the session title input each close something of their own on Escape; the layer under them must not hear the same key."""
     refs = _src("components/graph-builder/gb-ref-editor.jsx")
-    assert re.search(r'onKeyDown=\{\(e\) => \{ if \(e\.key === "Escape"\) \{ e\.preventDefault\(\); onClose\(\); \} \}\}', refs)
+    assert re.search(r'if \(e\.key === "Escape" && picker\) \{ e\.preventDefault\(\); setPicker\(null\); \}', refs)
     doc = _src("components/console/nv-session-doc.jsx")
     assert re.search(r'if \(ev\.key === "Escape"\) \{ ev\.preventDefault\(\); setDraft\(null\); \}', doc)
+
+
+def test_the_add_step_palette_is_a_layer_of_the_stack_not_a_key_handler_of_its_search_box() -> None:
+    """Review of #700, B2: in its second stage nothing in the palette has focus (the search box is disabled), so an element-level Escape never ran and the key went to the graph overlay under it."""
+    palette = _src("components/graph-builder/gb-palette.jsx")
+    body = _function(palette, "function GB_AddStepPalette(")
+    assert re.search(r"window\.primerApi\.useEscape\(\s*onClose\s*\)", body)
+    assert 'e.key === "Escape"' not in body, "one mechanism: the stack"
+
+
+def test_the_other_popups_are_layers_of_the_stack_too() -> None:
+    """Review of #700, N5: a popup answers Escape from wherever focus is, and only while it is open."""
+    overlays = _src("components/console/nv-overlays.jsx")
+    create = overlays[overlays.index("function NV_CreateSessionOverlay"):overlays.index("function NV_CreateWorkspaceOverlay")]
+    assert re.search(r"window\.primerApi\.useEscape\([\s\S]*?setMenuOpen\(false\)[\s\S]*?,\s*menuOpen\)", create), "the binding menu of the Create session overlay, while it is open"
+    assert "useEscape(" in _function(_src("components/graph-builder/gb-readiness.jsx"), "function GB_ReadinessPopover(")
+    assert "useEscape(" in _function(_src("components/graph-builder/gb-ref-editor.jsx"), "function GB_RefPicker(")
 
 
 def test_the_comment_that_described_the_two_listeners_does_not_any_more() -> None:
