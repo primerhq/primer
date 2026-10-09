@@ -173,7 +173,7 @@ def test_a_decision_names_the_cards_own_call_and_fetches_nothing_first() -> None
     m = re.search(r"function NV_inboxDecide\([\s\S]*?\n\}\n", MOBILE)
     assert m
     body = m.group(0)
-    assert "SH_api.approve(it.session_id, it.tool_call_id)" in body
+    assert "SH_api.approve(it.session_id, it.tool_call_id, it.gate_id)" in body
     assert "SH_api.reject(it.session_id, it.tool_call_id" in body
     assert "sessionPendingYields" not in body
 
