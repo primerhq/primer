@@ -1,5 +1,5 @@
 /* global React, SH_api, NV_useConsole, NV_identity, NV_errText,
-   NV_renderStudioDoc, NV_themeStorageKey, NV_HealthCards, NV_PLAT_GROUPS */
+   NV_renderStudioDoc, NV_themeStorageKey, NV_HealthCards, NV_PLAT_GROUPS, SH_pendingId */
 // The mobile shell (US-014 mobile support): entry + skeleton (M1), the
 // Inbox tab's real cards (M2), the mobile chat screen (M3), and the
 // Spaces + Files tabs (M4).
@@ -304,7 +304,7 @@ function NV_MobileInboxPanel(props) {
     body = (
       <div className="nv-mob-ib-list">
         {props.items.map(function (it) {
-          return <NV_MobileInboxCard key={it.session_id} item={it} onResolved={props.onResolved} />;
+          return <NV_MobileInboxCard key={SH_pendingId(it.session_id, it.gate_id, it.tool_call_id)} item={it} onResolved={props.onResolved} />;
         })}
       </div>
     );

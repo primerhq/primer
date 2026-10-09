@@ -154,7 +154,7 @@ gate_respond_total = Counter(
 
 discord_gate_token_dropped_total = Counter(
     "discord_gate_token_dropped_total",
-    "Discord approval prompts whose buttons carry no gate token because it did not fit in the 100-character custom_id. A click on such a "
+    "Discord approval prompts whose buttons carry no gate token because it did not fit in the 100-character custom_id (counted once per posted prompt, not per Reject click). A click on such a "
     "button is decided as an old button (not fenced against a replaced gate), so a non-zero count is a deployment whose ids are too long.",
     registry=registry,
 )
@@ -509,7 +509,7 @@ def reset_for_test() -> None:
     )
     discord_gate_token_dropped_total = Counter(
         "discord_gate_token_dropped_total",
-        "Discord approval prompts whose buttons carry no gate token because it did not fit in the 100-character custom_id. A click on such a "
+        "Discord approval prompts whose buttons carry no gate token because it did not fit in the 100-character custom_id (counted once per posted prompt, not per Reject click). A click on such a "
         "button is decided as an old button (not fenced against a replaced gate), so a non-zero count is a deployment whose ids are too long.",
         registry=registry,
     )

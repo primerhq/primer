@@ -106,11 +106,15 @@ class ParkedSessionDispatcher:
         # behind by an earlier round (the yield timed out or was skipped and the row stayed) would otherwise publish its result onto a LATER park
         # that reuses the id, an approval gate included (C-033). ``subscribe_to_trigger`` stamps the park's own yield with the subscription it
         # created, so only a park whose entry for this id carries THIS subscription's id may be woken. Anything else is an orphan.
-        if not any(
-            entry.get("tool_call_id") == sub.config.tool_call_id
-            and (entry.get("resume_metadata") or {}).get("subscription_id") == sub.id
-            for entry in enumerate_pending_gates(parked_state)
-        ):
+        entry = next(
+            (
+                e for e in enumerate_pending_gates(parked_state)
+                if e.get("tool_call_id") == sub.config.tool_call_id
+                and (e.get("resume_metadata") or {}).get("subscription_id") == sub.id
+            ),
+            None,
+        )
+        if entry is None:
             await _delete_sub(deps, sub.id)
             return SubscriptionDispatchResult(
                 ok=True,
@@ -118,6 +122,18 @@ class ParkedSessionDispatcher:
                 error_code="skipped_session_unparked",
                 error_message=(
                     "session parked on a yield this subscription did not create"
+                ),
+            )
+        # The fire is published onto the park's PRIMARY (``yielded``, the first pending entry of a graph park): that is the key ``respond_to_yield``
+        # answers. A subscription whose entry is a SIBLING of the primary is pending and not an orphan, but publishing now would land its result on
+        # another node's gate (an approval, say). Skip WITHOUT deleting: it fires once its node is the one that is answered.
+        if entry.get("event_key") != (parked_state.get("yielded") or {}).get("event_key"):
+            return SubscriptionDispatchResult(
+                ok=True,
+                skipped=True,
+                error_code="skipped_not_primary_gate",
+                error_message=(
+                    "this subscription's yield is parked behind another gate of the same session; it fires when it is the one answered"
                 ),
             )
 

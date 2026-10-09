@@ -37,20 +37,21 @@ _CUSTOM_ID_MAX = 100
 """Discord's limit on a component's (and a modal's) custom_id."""
 
 
-def _tcid_with_gate_token(ws: str, sid: str, tcid: str, gate_id: str | None) -> str:
+def _tcid_with_gate_token(ws: str, sid: str, tcid: str, gate_id: str | None, *, count: bool = True) -> str:
     """``tcid`` with ``#<first 12 characters of the gate id>`` after it, when the LONGEST of the three custom ids still fits in 100 characters.
 
     The ids are ``<verb>:ws:sid:tcid`` for approve, reject and the reject modal; the longest verb decides for all three (a token on Approve and none
     on Reject would be odd). Without a gate id the id is exactly what it was. A token that would not fit is dropped, which is a decision the
     operator never sees (a click without it is decided as an old button, not fenced), so it is logged and counted (``discord_gate_token_dropped_total``)
-    instead of vanishing.
+    instead of vanishing. The count is per PROMPT, the buttons that were posted: the reject modal is rebuilt on every Reject click and passes ``count=False``.
     """
     token = short_gate_token(gate_id)
     tail = attach_gate_suffix(
         tcid, token, max_len=_CUSTOM_ID_MAX, base_len=len(f"{_LONGEST_VERB}:{ws}:{sid}:"),
     )
     if token is not None and tail == tcid:
-        _metrics.discord_gate_token_dropped_total.inc()
+        if count:
+            _metrics.discord_gate_token_dropped_total.inc()
         logger.warning(
             "discord: the gate token does not fit in a %d-character custom_id (workspace %s, session %s, tool_call_id %d characters); "
             "this prompt's buttons carry no gate token, so a click on them is not fenced against a replaced gate",
@@ -126,7 +127,7 @@ def build_reject_modal(
             await on_submit(interaction, str(self_inner.reason.value or ""))
 
     modal = _RejectModal(
-        custom_id=f"{REJECT_MODAL_CUSTOM_ID_PREFIX}:{ws}:{sid}:{_tcid_with_gate_token(ws, sid, tcid, gate_id)}",
+        custom_id=f"{REJECT_MODAL_CUSTOM_ID_PREFIX}:{ws}:{sid}:{_tcid_with_gate_token(ws, sid, tcid, gate_id, count=False)}",
     )
     return modal
 

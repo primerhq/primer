@@ -23,6 +23,7 @@ from tests.ui._mini_react import mini_react_context
 
 ROOT = Path(__file__).resolve().parents[2]
 SHELL = (ROOT / "ui" / "components" / "console" / "nv-mobile-shell.jsx").read_text(encoding="utf-8")
+ATTENTION = (ROOT / "ui" / "foundation" / "shell-attention.js").read_text(encoding="utf-8")  # SH_pendingId, which keys the cards by their gate
 
 
 def _function_source(name: str) -> str:
@@ -44,7 +45,7 @@ def _transpiled(source: str) -> str:
 @pytest.fixture
 def panel():
     code = _transpiled(_function_source("NV_mobileInboxHeading") + _function_source("NV_MobileInboxPanel"))
-    ctx = mini_react_context(code, "var __started = 0; var __retried = 0; function NV_errText(e) { return e ? (e.detail || e.message || 'Request failed') : null; } function NV_MobileInboxCard(p) { return React.createElement('div', { 'data-testid': 'card:' + p.item.session_id }); }")
+    ctx = mini_react_context(code, "var window = globalThis;\n" + ATTENTION + "\nvar __started = 0; var __retried = 0; function NV_errText(e) { return e ? (e.detail || e.message || 'Request failed') : null; } function NV_MobileInboxCard(p) { return React.createElement('div', { 'data-testid': 'card:' + p.item.session_id }); }")
     yield ctx
     ctx.close()
 
