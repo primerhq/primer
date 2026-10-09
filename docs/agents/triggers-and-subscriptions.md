@@ -144,9 +144,9 @@ The fire pipeline:
      the configured workspace, with the rendered payload as initial
      instruction.
    - `graph_fresh_session` - same but for a graph.
-   - `parked_session` - publishes
-     `subscription_matched(event_key="trigger:<trigger_id>")` to
-     mark every parked session waiting on that key resumable.
+   - `parked_session` - publishes the fire onto the key the parked
+     session stored when it parked (`trigger:<session_id>:<trigger_id>`)
+     to mark that session resumable; one subscription per parked session.
 6. Subscription result is logged.
 7. Next `next_fire_at` is computed (for `scheduled`) and persisted.
 
