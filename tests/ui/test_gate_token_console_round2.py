@@ -22,9 +22,22 @@ SESSION_DETAIL = (ROOT / "ui" / "components" / "session-detail.jsx").read_text(e
 APPROVALS = (ROOT / "ui" / "components" / "approvals.jsx").read_text(encoding="utf-8")
 EXTERNAL_TOOLS = (ROOT / "ui" / "components" / "external-tools.jsx").read_text(encoding="utf-8")
 PLATFORM = (ROOT / "ui" / "components" / "console" / "nv-platform.jsx").read_text(encoding="utf-8")
+MOBILE = (ROOT / "ui" / "components" / "console" / "nv-mobile-shell.jsx").read_text(encoding="utf-8")
 
 G1 = "a" * 32
 G2 = "b" * 32
+
+
+def _transpile_source(source: str, name: str) -> str:
+    """``tests.ui._mini_react.transpile`` takes a file; the legacy components live inside big files, so the function under test is cut out first."""
+    from primer.api._jsx_bundle import JSXBundler
+
+    ui = ROOT / "ui"
+    bundler = JSXBundler(ui_dir=ui, babel_source=(ui / "vendor" / "babel.min.js").read_text())
+    try:
+        return bundler._transform(source, name)
+    finally:
+        bundler._ctx.close()
 
 
 def _row(session: str, tcid: str, gate: str | None) -> dict:
@@ -143,7 +156,7 @@ def _cancel_yield_btn_source() -> str:
 
 @pytest.mark.parametrize("tool", ["watch_files", "sleep"])
 def test_cancel_yield_btn_sends_the_tool_it_was_drawn_for(tool) -> None:
-    ctx = mini_react_context(transpile(_cancel_yield_btn_source()), _CANCEL_STUBS)
+    ctx = mini_react_context(_transpile_source(_cancel_yield_btn_source(), 'cancel-yield-btn.jsx'), _CANCEL_STUBS)
     try:
         ctx.eval("MR.mount(CancelYieldBtn, { sid: 's-1', wid: 'w1', tcid: 'call_0', toolName: " + json.dumps(tool) + " });")
         ctx.eval("MR.click('cancel-yield');")
@@ -194,7 +207,7 @@ def _banner_source() -> str:
 
 
 def _banner(data: dict):
-    ctx = mini_react_context(transpile(_banner_source()), _BANNER_STUBS + ATTENTION)
+    ctx = mini_react_context(_transpile_source(_banner_source(), 'approval-banner.jsx'), _BANNER_STUBS + ATTENTION)
     ctx.eval("MR.mount(ApprovalBanner, { data: " + json.dumps(data) + ", scope: 'sessions', id: 's-1', pushToast: pushToast });")
     return ctx
 
@@ -270,7 +283,7 @@ def _panel_source() -> str:
 
 
 def _panel(pending: dict):
-    ctx = mini_react_context(transpile(_panel_source()), _PANEL_STUBS + ATTENTION)
+    ctx = mini_react_context(_transpile_source(_panel_source(), 'ask-user-panel.jsx'), _PANEL_STUBS + ATTENTION)
     ctx.eval("PENDING.data = " + json.dumps(pending) + ";")
     ctx.eval("MR.mount(AskUserPanel, { sid: 's-1', sessionStatus: 'waiting', session: null, pushToast: pushToast });")
     return ctx
@@ -328,3 +341,50 @@ def test_a_stale_panel_says_so_inline_and_reloads(act) -> None:
         assert _js(ctx, "REFETCH") == [1]
     finally:
         ctx.close()
+
+
+# ---- the mobile Inbox's full call ------------------------------------------------------------------------------------------------------------------
+
+_FULL_CALL_STUBS = r"""
+var window = globalThis;
+var ITEMS = [];
+var SH_api = { sessionPendingYields: function () { return Promise.resolve({ items: ITEMS }); } };
+var RESULT = null;
+"""
+
+
+def _full_call(item: dict, rows: list[dict]) -> dict:
+    from py_mini_racer import MiniRacer
+
+    ctx = MiniRacer()
+    try:
+        ctx.eval(_FULL_CALL_STUBS)
+        start = MOBILE.index("function NV_inboxFullCall")
+        ctx.eval(MOBILE[start:MOBILE.index("\n}\n", start) + 3])
+        ctx.eval("ITEMS = " + json.dumps(rows) + "; NV_inboxFullCall(" + json.dumps(item) + ").then(function (r) { RESULT = r; });")
+        return _js(ctx, "RESULT")
+    finally:
+        ctx.close()
+
+
+def _yield_row(gate: str | None, args: dict) -> dict:
+    row = {"tool_call_id": "call_0", "resume_metadata": {"original_call": {"id": "call_0", "name": "write", "arguments": args}}}
+    if gate:
+        row["gate_id"] = gate
+    return row
+
+
+def test_the_full_call_is_the_one_of_the_gate_the_item_names() -> None:
+    item = {"workspace_id": "w1", "session_id": "s-1", "tool_call_id": "call_0", "gate_id": G2}
+    got = _full_call(item, [_yield_row(G1, {"path": "old"}), _yield_row(G2, {"path": "new"})])
+    assert json.loads(got["text"]) == {"path": "new"}
+
+
+def test_the_full_call_of_a_gate_that_is_gone_is_gone_not_a_siblings() -> None:
+    item = {"workspace_id": "w1", "session_id": "s-1", "tool_call_id": "call_0", "gate_id": G1}
+    assert _full_call(item, [_yield_row(G2, {"path": "new"})]) == {"gone": True}
+
+
+def test_an_item_without_a_gate_id_still_matches_by_the_raw_id() -> None:
+    item = {"workspace_id": "w1", "session_id": "s-1", "tool_call_id": "call_0"}
+    assert json.loads(_full_call(item, [_yield_row(None, {"path": "a"})])["text"]) == {"path": "a"}

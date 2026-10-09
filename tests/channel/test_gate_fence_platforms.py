@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock
 import pytest
 from pydantic import SecretStr
 
-from primer.channel.adapter import APPROVAL_STALE_NOTICE, BUTTON_EXPIRED_NOTICE, QUESTION_STALE_NOTICE, DecisionRefused, PromptEnvelope
+from primer.channel.adapter import APPROVAL_STALE_NOTICE, QUESTION_STALE_NOTICE, DecisionRefused, PromptEnvelope
 from primer.channel.correlation import CorrelationStore
 from primer.channel.discord.views import ApprovalView, build_approval_custom_ids, decode_custom_id, decode_custom_id_with_gate
 from primer.channel.slack import factory as slack_factory
@@ -374,6 +374,8 @@ async def test_a_stale_telegram_click_alerts_only_the_clicker_and_edits_nothing(
 @pytest.mark.parametrize("data", ["a:UNKNOWN", "r:UNKNOWN"])
 async def test_a_telegram_click_on_a_button_the_cache_no_longer_knows_alerts_that_it_expired(monkeypatch, data) -> None:
     """A tag the adapter cannot resolve (the process restarted, or the entry aged out) used to be answered with silence; now the clicker is told."""
+    from primer.channel.adapter import BUTTON_EXPIRED_NOTICE
+
     adapter = tg_tests._mock_adapter()
     adapter._resolve_tag = AsyncMock(return_value=None)
     adapter._handle_decision = AsyncMock()

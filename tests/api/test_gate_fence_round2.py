@@ -28,6 +28,11 @@ def _restricted(row: WorkspaceSession) -> WorkspaceSession:
     return row
 
 
+def _gate_keys(published: _Published) -> list[str]:
+    """The gate event keys published (the recorder publishes unrelated bus events beside them)."""
+    return [k for k, _ in published.events if k.startswith(("ask_user:", "tool_approval:"))]
+
+
 def _yield_session(*, session_id: str, tool_name: str, tool_call_id: str = "call_0") -> WorkspaceSession:
     """A park on a yield that is not a human gate (sleep, watch_files, an external wait): no gate id."""
     key = f"{tool_name}:{session_id}:{tool_call_id}"
@@ -179,6 +184,34 @@ async def test_the_refusal_of_a_yield_that_is_not_a_gate_does_not_call_it_an_app
     assert "yield" in detail and "approval" not in detail and "question" not in detail, detail
 
 
+@pytest.mark.asyncio
+async def test_a_cancel_naming_a_sibling_queued_behind_the_first_gate_says_so(app, client):
+    """Two gates of one graph park share the raw id "dup"; a cancel reaches the FIRST. The second is not 'replaced', it has to be decided on its own."""
+    from tests.api.test_gate_fence import _graph_two_gate_session
+
+    await app.state.storage_provider.get_storage(WorkspaceSession).create(_graph_two_gate_session(session_id="k-queued", same_raw_id=True))
+    published = _Published(app.state.event_bus)
+
+    resp = await client.post(_url("k-queued", "dup"), json={"gate_id": G2})
+
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["extensions"]["code"] == "approval_stale"
+    assert "queued behind" in resp.json()["detail"], resp.json()["detail"]
+    assert published.events == []
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_naming_a_gate_that_no_entry_holds_still_says_replaced(app, client):
+    from tests.api.test_gate_fence import _graph_two_gate_session
+
+    await app.state.storage_provider.get_storage(WorkspaceSession).create(_graph_two_gate_session(session_id="k-replaced", same_raw_id=True))
+
+    resp = await client.post(_url("k-replaced", "dup"), json={"gate_id": "c" * 32})
+
+    assert resp.status_code == 409, resp.text
+    assert "replaced" in resp.json()["detail"] and "queued" not in resp.json()["detail"]
+
+
 # ---- the graph ask_user branches of the respond route --------------------------------------------------------------------------------------------
 
 
@@ -218,7 +251,7 @@ async def test_a_graph_ask_user_respond_naming_the_second_gate_answers_that_gate
     resp = await client.post("/v1/sessions/g-ask/ask_user/respond", json={"tool_call_id": "dup", "gate_id": G2, "response": "blue"})
 
     assert resp.status_code == 202, resp.text
-    assert [k for k, _ in published.events] == ["ask_user:g-ask:n1:dup"], "the sibling that shares the raw id must not be the one answered"
+    assert _gate_keys(published) == ["ask_user:g-ask:n1:dup"], "the sibling that shares the raw id must not be the one answered"
     assert _count("ask_user", "matched") == 1
 
 
@@ -246,5 +279,5 @@ async def test_a_graph_ask_user_respond_naming_no_gate_is_accepted_and_counted(a
     resp = await client.post("/v1/sessions/g-ask-bare/ask_user/respond", json={"tool_call_id": "dup", "response": "blue"})
 
     assert resp.status_code == 202, resp.text
-    assert [k for k, _ in published.events] == ["ask_user:g-ask-bare:n0:dup"]
+    assert _gate_keys(published) == ["ask_user:g-ask-bare:n0:dup"]
     assert _count("ask_user", "absent") == 1
