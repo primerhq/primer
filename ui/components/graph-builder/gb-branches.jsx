@@ -116,31 +116,41 @@ function GB_BranchValueInput(props) {
   );
 }
 
+// Why the only path of a choice has no working remove: its description (the button stays focusable, `aria-disabled`) and its tooltip.
+const ONLY_PATH_REASON = "A choice needs at least one path: remove the whole choice instead.";
+
 // A small text-sized button for the x and + controls of a branch row (they were spans with an onClick: no name, no focus, no key).
 const GB_LINK_BUTTON = { background: "none", border: "none", padding: 0, font: "inherit", cursor: "pointer", lineHeight: 1 };
 
-// "Remove this choice" (board ticket 01a11e4e-6fa7): the whole conditional edge goes. It asks first when it carries paths (it says how many go with it) and removes at once when it has none.
+// "Remove this choice" (board ticket 01a11e4e-6fa7): the whole conditional edge goes, with its paths and its "In any other case" link. A choice that has paths asks first through the console's own
+// confirmDialog (a dialog: focus is moved in and trapped, Escape cancels, focus returns to the opener); one with none is removed at once. `edge` is the edge the question is about: the answer
+// is dropped if this button is gone (the inspector moved on to another choice) or the edge at that index is not the one that was asked about (undo and redo work while the dialog is open).
 // `onRemoved` lets the edge's own inspector select the step the choice came from, so the panel does not go blank on an edge index that no longer exists.
-function GB_RemoveChoice({ edgeIdx, pathCount, dispatch, onRemoved }) {
-  const [asking, setAsking] = React.useState(false);
+function GB_RemoveChoice({ edge, edgeIdx, pathCount, dispatch, onRemoved, name }) {
+  const live = React.useRef(true);
+  const current = React.useRef(edge);
+  current.current = edge;
+  React.useEffect(() => () => { live.current = false; }, []);
   const remove = () => {
     dispatch({ type: "DELETE_EDGE", idx: edgeIdx });
-    setAsking(false);
     if (onRemoved) onRemoved();
   };
-  if (asking) {
-    return (
-      <div role="group" aria-label="Confirm removing this choice" className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap", fontSize: "var(--fs-11)" }}>
-        <span style={{ color: "var(--red)" }}>{"Remove this choice and its " + pathCount + " path" + (pathCount === 1 ? "" : "s") + "?"}</span>
-        <button type="button" data-testid="gb-remove-choice-confirm" onClick={remove}
-          style={{ ...GB_LINK_BUTTON, color: "var(--red)", fontSize: "var(--fs-11)" }}>Remove</button>
-        <button type="button" data-testid="gb-remove-choice-keep" onClick={() => setAsking(false)}
-          style={{ ...GB_LINK_BUTTON, color: "var(--text-2)", fontSize: "var(--fs-11)" }}>Keep</button>
-      </div>
-    );
-  }
+  const press = async () => {
+    if (pathCount > 0) {
+      const asked = edge;
+      const ok = await confirmDialog({
+        title: "Remove this choice?",
+        message: "Remove this choice, its " + pathCount + " path" + (pathCount === 1 ? "" : "s") + " and its 'in any other case' link?",
+        confirmLabel: "Remove",
+        cancelLabel: "Keep",
+        danger: true,
+      });
+      if (!ok || !live.current || current.current !== asked) return;
+    }
+    remove();
+  };
   return (
-    <button type="button" data-testid="gb-remove-choice" onClick={() => (pathCount > 0 ? setAsking(true) : remove())}
+    <button type="button" data-testid="gb-remove-choice" aria-label={name} onClick={press}
       style={{ ...GB_LINK_BUTTON, alignSelf: "flex-start", color: "var(--red)", fontSize: "var(--fs-11)" }}>
       Remove this choice
     </button>
@@ -154,6 +164,11 @@ function GB_BranchBuilder(props) {
   const nodesById = {};
   for (const n of draft.nodes || []) nodesById[n.id] = n;
   const label = (id) => (nodesById[id] || {}).description || id || "…";
+  // Two choices of one step get two buttons that say which they remove: the step, and where the first path goes.
+  const firstTarget = ((router.branches || [])[0] || {}).to_node;
+  const onlyPath = (router.branches || []).length <= 1;
+  const onlyPathId = helpId + "r";
+  const removeName = "Remove the choice after " + label(edge.from_node) + (firstTarget ? " (first path goes to " + label(firstTarget) + ")" : "");
 
   if (router.kind === "callable") {
     return (
@@ -166,7 +181,7 @@ function GB_BranchBuilder(props) {
         >
           Routing is decided by code (<span className="mono">{router.callable_id}</span>), so this graph needs a limit on how many passes it can run.
         </div>
-        {!readOnly ? <GB_RemoveChoice edgeIdx={edgeIdx} pathCount={0} dispatch={dispatch} onRemoved={onRemoved} /> : null}
+        {!readOnly ? <GB_RemoveChoice key={edgeIdx} edge={edge} edgeIdx={edgeIdx} pathCount={0} dispatch={dispatch} onRemoved={onRemoved} name={removeName} /> : null}
       </div>
     );
   }
@@ -254,7 +269,7 @@ function GB_BranchBuilder(props) {
               </select>
               {c.op !== "exists" ? (
                 <GB_BranchValueInput
-                  key={edgeIdx + ":" + bi + ":" + ci + ":" + (router.branches || []).length + ":" + (b.conditions || []).length}
+                  key={edgeIdx + ":" + bi + ":" + ci + ":" + (router.branches || []).length + ":" + (b.conditions || []).length + ":" + (draft.edges || []).length}
                   errorKey={"bv:" + edgeIdx + ":" + bi + ":" + ci}
                   onJsonError={onJsonError}
                   describedBy={showHelp ? helpId : undefined}
@@ -299,6 +314,7 @@ function GB_BranchBuilder(props) {
             {!readOnly ? (
               <>
                 <button type="button"
+                  aria-label={"Branch " + (bi + 1) + ": add a condition"}
                   onClick={() => dispatch({ type: "UPDATE_BRANCH", idx: edgeIdx, bi, patch: { conditions: [...(b.conditions || []), { path: "", op: "eq", value: "" }] } })}
                   style={{ ...GB_LINK_BUTTON, marginLeft: "auto", fontSize: "var(--fs-11)", color: "var(--text-3)" }}
                 >
@@ -306,13 +322,15 @@ function GB_BranchBuilder(props) {
                 </button>
                 <button type="button"
                   aria-label={"Branch " + (bi + 1) + ": remove"}
-                  disabled={(router.branches || []).length <= 1}
-                  onClick={() => { if ((router.branches || []).length > 1) dispatch({ type: "DELETE_BRANCH", idx: edgeIdx, bi }); }}
-                  style={{ ...GB_LINK_BUTTON, fontSize: 13, color: "var(--text-4)", opacity: (router.branches || []).length <= 1 ? 0.4 : 1, cursor: (router.branches || []).length <= 1 ? "not-allowed" : "pointer" }}
-                  title={(router.branches || []).length <= 1 ? "A choice needs at least one path: remove the whole choice instead" : "Remove this path"}
+                  aria-disabled={onlyPath ? "true" : undefined}
+                  aria-describedby={onlyPath ? onlyPathId : undefined}
+                  onClick={() => { if (!onlyPath) dispatch({ type: "DELETE_BRANCH", idx: edgeIdx, bi }); }}
+                  style={{ ...GB_LINK_BUTTON, fontSize: 13, color: "var(--text-4)", opacity: onlyPath ? 0.4 : 1, cursor: onlyPath ? "not-allowed" : "pointer" }}
+                  title={onlyPath ? ONLY_PATH_REASON : "Remove this path"}
                 >
                   ×
                 </button>
+                {onlyPath ? <span id={onlyPathId} className="nv-sr-only">{ONLY_PATH_REASON}</span> : null}
               </>
             ) : null}
           </div>
@@ -362,7 +380,7 @@ function GB_BranchBuilder(props) {
       {showHelp ? (
         <span id={helpId} className="muted" style={{ fontSize: "var(--fs-11)" }}>A value is text, or JSON: 1 is a number, "1" is text.</span>
       ) : null}
-      {!readOnly ? <GB_RemoveChoice edgeIdx={edgeIdx} pathCount={(router.branches || []).length} dispatch={dispatch} onRemoved={onRemoved} /> : null}
+      {!readOnly ? <GB_RemoveChoice key={edgeIdx} edge={edge} edgeIdx={edgeIdx} pathCount={(router.branches || []).length} dispatch={dispatch} onRemoved={onRemoved} name={removeName} /> : null}
     </div>
   );
 }
