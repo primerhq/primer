@@ -162,7 +162,7 @@ async def wake_session(
             # pending), rather than forcing a resume nobody asked for or
             # dropping the message outright. No wake write happens here
             # -- pause_requested, status, and turn_status all stay exactly
-            # as they were; only last_seq moves, by the seqs the
+            # as they were; only last_seq moves, by the seq the
             # PAUSE_SUPERSEDED record below reserves and, when the queue is
             # full, by the seq store_pending_steer reserves for the record
             # that announces the dropped message (ticket 01a11cd8).

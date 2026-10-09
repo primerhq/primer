@@ -528,7 +528,7 @@ def make_download_handler(
                 )
             dest = f"{args.path}{url_name}" if args.path else url_name
 
-        # ``max_bytes`` lowers the operator's cap and never raises it (the agent chooses its arguments, the operator the bound).
+        # ``max_bytes`` lowers the toolset's cap and never raises it (the agent chooses its arguments, the caller of ``build_web_toolset`` the bound).
         cap = byte_cap if args.max_bytes is None else min(args.max_bytes, byte_cap)
 
         # Stream with a hard cap. A truncated file is corrupt, so reject (write nothing) when the DECODED body goes past the cap: the body is read
