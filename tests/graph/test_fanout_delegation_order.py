@@ -8,6 +8,10 @@ rest of both runs, worker 1's call. The console put everything under worker 0's 
 A graph node whose executor has a coalesce state bound (session dispatch binds one every turn) now awaits the dispatch barrier before the in-process tool loop too, as the claims path always
 did, so the drainer has written its calls before any tool runs. These cases drive the real executor, the real ``run_subagent``, the real ``DelegationRecorder`` and the real
 ``translate_stream_event`` the way ``dispatch.py`` wires them, and fold the log with both readers.
+
+The same fan-out inside one or two SUBGRAPH nodes (round 3 of #659): the child executor shares the parent's coalesce state, so its agent node awaited a barrier on the CHILD's queue, which
+resolved once the child's drainer had forwarded the events to the PARENT's queue, not once session dispatch had written them. Every case below that folds a log runs at depth 0 (flat),
+1 and 2 (the number of subgraph nodes around the fan-out).
 """
 
 from __future__ import annotations
@@ -38,6 +42,7 @@ from primer.model.graph import (
     _EndNode,
     _FanInNode,
     _FanOutNode,
+    _GraphNodeRef,
     _StaticEdge,
 )
 from primer.model.model_profile import ModelProfileConfig
@@ -114,7 +119,21 @@ def _fanout_graph(workers: int = 2) -> Graph:
     )
 
 
-async def _executor(llm: Any, *, workers: int = 2, answers: int = 2) -> GraphExecutor:
+def _wrapper_graph(graph_id: str, inner_id: str) -> Graph:
+    """begin -> one subgraph node running ``inner_id`` -> end."""
+    return Graph.model_construct(
+        id=graph_id, description=f"a subgraph node that runs {inner_id}",
+        nodes=[_BeginNode(id="begin"), _GraphNodeRef(id="sub", graph_id=inner_id), _EndNode(id="end", output_template="{{ nodes.sub.text }}")],
+        edges=[_StaticEdge(from_node="begin", to_node="sub"), _StaticEdge(from_node="sub", to_node="end")],
+        max_iterations=10, harness_id=None,
+    )
+
+
+async def _executor(llm: Any, *, workers: int = 2, answers: int = 2, depth: int = 0, monkeypatch: pytest.MonkeyPatch | None = None) -> GraphExecutor:
+    """The fan-out graph, ``depth`` subgraph nodes deep (0: it is the executor's own graph).
+
+    A child is built by ``GraphExecutor._build_sub_executor``, which does not carry the coalesce state; ``WorkspaceGraphExecutor._build_sub_executor`` (what production runs) does
+    (``tests/graph/test_workspace_executor.py::test_build_sub_executor_inherits_coalesce_state``), so a nested scene patches the base the same way."""
     storage, registry = _world([_text(f"sub answer {i}") for i in range(answers)])
     ctx = AgentResumeContext(session_id="s", workspace_id="ws-1", chat_id=None, principal="user-1", tools=["t1__delegate"], turn_no=1)
 
@@ -127,12 +146,32 @@ async def _executor(llm: Any, *, workers: int = 2, answers: int = 2) -> GraphExe
     async def llm_resolver(agent, *a, **k):
         return (llm, ResolvedModel(profile_id="p", provider_id="pv", model_name="m", context_length=128_000, config=ModelProfileConfig()))
 
+    graphs = {"g": _fanout_graph(workers)}
+    top = "g"
+    for level in range(1, depth + 1):
+        graphs[f"level{level}"] = _wrapper_graph(f"level{level}", top)
+        top = f"level{level}"
+
+    async def graph_resolver(graph_id):
+        return graphs[graph_id]
+
+    if depth:
+        assert monkeypatch is not None, "a nested scene patches the sub-executor builder"
+        real_build = GraphExecutor._build_sub_executor
+
+        async def build_bound(self, *a, **k):
+            child = await real_build(self, *a, **k)
+            child.bind_coalesce_state(self._coalesce_state)
+            return child
+
+        monkeypatch.setattr(GraphExecutor, "_build_sub_executor", build_bound)
+
     ts, ms = _InMemoryStorage(GraphThread), _InMemoryStorage(GraphNodeMessage)
-    graph = _fanout_graph(workers)
+    graph = graphs[top]
     thread = await GraphExecutor.open_thread(graph=graph, thread_storage=ts, title="t")
     return GraphExecutor(
         graph=graph, agent_resolver=agent_resolver, llm_resolver=llm_resolver, thread_storage=ts, message_storage=ms,
-        graph_thread_id=thread.id, router_registry=RouterRegistry(), tool_manager_resolver=tm_resolver,
+        graph_thread_id=thread.id, router_registry=RouterRegistry(), tool_manager_resolver=tm_resolver, graph_resolver=graph_resolver,
     )
 
 
@@ -210,9 +249,19 @@ def _py_children(records: list[dict]) -> dict[int, list[int]]:
     return out
 
 
-async def test_the_scene_is_two_workers_that_each_delegate_under_one_raw_id() -> None:
+@pytest.fixture(params=[0, 1, 2], ids=lambda d: f"depth{d}")
+def depth(request: pytest.FixtureRequest) -> int:
+    """How many subgraph nodes the fan-out sits inside."""
+    return request.param
+
+
+async def _records(depth: int, monkeypatch: pytest.MonkeyPatch, **kw: Any) -> list[dict]:
+    return await _run(await _executor(_WorkerLLM(), depth=depth, monkeypatch=monkeypatch, **kw))
+
+
+async def test_the_scene_is_two_workers_that_each_delegate_under_one_raw_id(depth: int, monkeypatch: pytest.MonkeyPatch) -> None:
     """The control: the scene really is two instances, each with its own call row and its own run, all under ``call_0``."""
-    records = await _run(await _executor(_WorkerLLM()))
+    records = await _records(depth, monkeypatch)
     calls = _calls(records)
     assert sorted(calls) == ["worker[0]", "worker[1]"], sorted(calls)
     assert {c["payload"]["raw_id"] for c in calls.values()} == {"call_0"}
@@ -220,8 +269,8 @@ async def test_the_scene_is_two_workers_that_each_delegate_under_one_raw_id() ->
     assert len(runs) == 2 and {r["payload"]["delegate_node_id"] for r in _delegated(records)} == {"worker[0]", "worker[1]"}
 
 
-async def test_every_delegated_record_is_written_after_the_call_row_that_started_it() -> None:
-    records = await _run(await _executor(_WorkerLLM()))
+async def test_every_delegated_record_is_written_after_the_call_row_that_started_it(depth: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    records = await _records(depth, monkeypatch)
     calls = _calls(records)
     late = [
         (r["seq"], r["payload"]["delegate_node_id"], calls[r["payload"]["delegate_node_id"]]["seq"])
@@ -230,8 +279,8 @@ async def test_every_delegated_record_is_written_after_the_call_row_that_started
     assert late == [], f"(seq of the delegated record, its node, seq of that node's call row): {late}"
 
 
-async def test_the_timeline_puts_each_run_under_its_own_nodes_call() -> None:
-    records = await _run(await _executor(_WorkerLLM()))
+async def test_the_timeline_puts_each_run_under_its_own_nodes_call(depth: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    records = await _records(depth, monkeypatch)
     calls, by_seq = _calls(records), {r["seq"]: r for r in records}
     children = _py_children(records)
     for node, call in calls.items():
@@ -242,8 +291,8 @@ async def test_the_timeline_puts_each_run_under_its_own_nodes_call() -> None:
     assert folded and {s for kids in children.values() for s in kids} >= folded, "every run's llm_call and tool_call records are under some call"
 
 
-async def test_the_console_puts_each_run_under_its_own_nodes_call() -> None:
-    records = await _run(await _executor(_WorkerLLM()))
+async def test_the_console_puts_each_run_under_its_own_nodes_call(depth: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    records = await _records(depth, monkeypatch)
     calls, by_seq = _calls(records), {r["seq"]: r for r in records}
     children = _js_children(records)
     for node, call in calls.items():
@@ -252,9 +301,9 @@ async def test_the_console_puts_each_run_under_its_own_nodes_call() -> None:
         assert {by_seq[s]["payload"].get("delegate_node_id") for s in mine} == {node}, (node, mine)
 
 
-async def test_the_two_readers_agree_on_which_run_each_call_holds() -> None:
+async def test_the_two_readers_agree_on_which_run_each_call_holds(depth: int, monkeypatch: pytest.MonkeyPatch) -> None:
     """They draw different rows of a run (the timeline folds its llm_call and tool_call records, the console its text and end), so compare the RUN each call holds."""
-    records = await _run(await _executor(_WorkerLLM()))
+    records = await _records(depth, monkeypatch)
     py, js, by_seq = _py_children(records), _js_children(records), {r["seq"]: r for r in records}
 
     def runs(children: list[int]) -> set[str]:
@@ -265,9 +314,8 @@ async def test_the_two_readers_agree_on_which_run_each_call_holds() -> None:
 
 
 @pytest.mark.parametrize("workers", [3])
-async def test_it_holds_for_more_instances(workers: int) -> None:
-    ex = await _executor(_WorkerLLM(), workers=workers, answers=workers)
-    records = await _run(ex)
+async def test_it_holds_for_more_instances(workers: int, depth: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    records = await _records(depth, monkeypatch, workers=workers, answers=workers)
     calls = _calls(records)
     assert sorted(calls) == [f"worker[{i}]" for i in range(workers)]
     for r in _delegated(records):
@@ -418,6 +466,9 @@ async def test_a_sibling_that_fails_while_a_node_awaits_the_barrier_still_ends_t
 
 
 @pytest.mark.parametrize("how", ["aclose", "cancel"])
-async def test_closing_the_stream_while_a_node_waits_at_the_barrier_leaves_no_task_behind(barrier_watch: BarrierWatch, how: str) -> None:
-    """The consumer going away is the drainer's ``finally``: it cancels the node tasks, the one waiting at the barrier included (``aclose`` directly, or a consumer cancelled while it holds the stream)."""
-    await close_while_a_node_waits(await _executor(_WorkerLLM()), barrier_watch, how=how)
+async def test_closing_the_stream_while_a_node_waits_at_the_barrier_leaves_no_task_behind(
+    barrier_watch: BarrierWatch, how: str, depth: int, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The consumer going away is the drainer's ``finally``: it cancels the node tasks, the one waiting at the barrier included (``aclose`` directly, or a consumer cancelled while it holds the stream).
+    At depth 1 and 2 the waiter is a node of a CHILD graph: its barrier waits on the child's drainer, which waits on the parent's, so the close has to cancel through the chain."""
+    await close_while_a_node_waits(await _executor(_WorkerLLM(), depth=depth, monkeypatch=monkeypatch), barrier_watch, how=how)
