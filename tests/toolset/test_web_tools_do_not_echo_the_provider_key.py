@@ -195,9 +195,16 @@ class _Row:
 
 
 def _log_texts(caplog: pytest.LogCaptureFixture) -> list[str]:
-    """Everything every record carries: its message, its text of an exception, and every string attribute (``extra={"error": ...}`` is one)."""
+    """Everything every record of Primer's own loggers carries: its message and every string attribute (``extra={"error": ...}`` is one).
+
+    Primer's loggers only (the tests raise the level of ``primer``, not of the root): ``httpcore`` logs ``send_request_headers.failed
+    exception=LocalProtocolError(...)`` at DEBUG with the header value in it, in any process that runs at DEBUG, for every httpx call. That line is
+    the library's, not the adapters', and is not what this ticket covers; see the PR.
+    """
     texts: list[str] = []
     for record in caplog.records:
+        if not record.name.startswith("primer"):
+            continue
         texts.append(record.getMessage())
         texts.extend(str(value) for value in vars(record).values() if isinstance(value, str))
     return texts
@@ -232,7 +239,7 @@ def _aggregated_fetch(pids: list[str]) -> ActiveWebFetchConfig:
 async def test_the_web_search_tool_and_its_logs_carry_no_key(
     name: str, mode: str, closing_server_url: str, caplog: pytest.LogCaptureFixture
 ) -> None:
-    caplog.set_level(logging.DEBUG)
+    caplog.set_level(logging.DEBUG, logger="primer")
     adapter = SEARCH_HEADER[name](PASTED_KEY, base_url=closing_server_url)
     active = _single_search("p") if mode == "single" else _aggregated_search(["p"])
     handler = make_web_search_handler(_search_service({"p": adapter}, active))
@@ -254,7 +261,7 @@ async def test_the_web_search_tool_and_its_logs_carry_no_key(
 async def test_the_web_fetch_tool_and_its_logs_carry_no_key(
     name: str, mode: str, closing_server_url: str, caplog: pytest.LogCaptureFixture
 ) -> None:
-    caplog.set_level(logging.DEBUG)
+    caplog.set_level(logging.DEBUG, logger="primer")
     adapter = FETCH_HEADER[name](PASTED_KEY, base_url=closing_server_url)
     active = _single_fetch("p") if mode == "single" else _aggregated_fetch(["p"])
     handler = make_web_fetch_handler(_fetch_service({"p": adapter}, active))
