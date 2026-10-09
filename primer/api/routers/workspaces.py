@@ -3006,11 +3006,16 @@ _SECRET_FLAG = re.compile(
 # "mysql -u root -phunter2 db": mysql's -p takes its password ATTACHED (a separate word would be the database), so after a mysql-family command
 # (mysql, mysqldump, mysqladmin, mariadb, mariadb-dump, ...: the command NAME is case-insensitive, the flag is NOT, because -P is the port) an attached
 # -p<value> is a password, digits included. Only after such a command: ssh -p22, nc -p80 and find -print are not. At most 32 words between the command and the
-# flag and none of them a command separator, so the scan is bounded and ends at "&&", ";" and "|". The flag may sit behind one quote ('-pcorrect horse' in an argv
-# list, whose spaced words are wrapped for the line). Known false positives, accepted (a click on "Show all"):
+# flag and none of them a command separator, so the scan is bounded and ends at "&&", ";" and "|". Known false positives, accepted (a click on "Show all"):
 # "find /var/lib/mysql -print" and "docker run -p3306:3306 mysql" read -p as the password.
 _MYSQL_ATTACHED_PASSWORD = re.compile(
-    r"(?P<lead>(?<![\w\-])(?i:mysql|mariadb)[\w\-]*(?:\s+[^\s;&|]+){0,32}?\s+'?-p)(?=\S)(?:\"[^\"]*\"|'[^']*'|[^\s;&|]+)",
+    r"(?P<lead>(?<![\w\-])(?i:mysql|mariadb)[\w\-]*(?:\s+[^\s;&|]+){0,32}?\s+-p)(?=\S)(?:\"[^\"]*\"|'[^']*'|[^\s;&|]+)",
+)
+# The same flag behind ONE quote: the line wraps a spaced word in single quotes ('-pcorrect horse' in an argv list), so the password is the rest of the quote. A SECOND pass,
+# after the one above and not a looser version of it: a quoted word that merely starts with -p (LIKE '-p%', -w '-price > 0') is a decoy, and when it ended the match of the
+# first rule re.sub resumed after it and a real -phunter2 further on was shown. Here the match stops at the closing quote, so a decoy costs one quote, not the rest of the command.
+_MYSQL_QUOTED_FLAG_PASSWORD = re.compile(
+    r"(?P<lead>(?<![\w\-])(?i:mysql|mariadb)[\w\-]*(?:\s+[^\s;&|]+){0,32}?\s+'-p)(?=[^\s'])[^']*'?",
 )
 # "curl -u admin:hunter2", "-uadmin:hunter2", "-u :hunter2", "-U user:pass" (short for --proxy-user), "--user admin:hunter2", "--user=admin:hunter2",
 # "--proxy-user ...": a user:password pair after the flag, quoted ("-u 'deploy:correct horse'") or not, with the user empty, attached or numeric. A match
@@ -3063,17 +3068,20 @@ def _bounded(text: str, limit: int) -> str:
     return head[:i] if i > 0 else head
 
 
-def _ends_inside_a_quote(text: str) -> bool:
-    """Whether ``text`` ends inside a quote it opened: ``password='correct horse`` does, ``echo 'a b'`` does not. A quote opens at the start or after a character that is not a
-    letter or a digit (``=``, a space, ``:``, ``(``), so the apostrophe of ``don't`` opens nothing; inside a quote the other kind is just text. One linear pass."""
+def _open_quote(text: str) -> str:
+    """The quote character ``text`` ends inside, or ``""``: ``password='correct horse`` ends inside ``'``, ``echo 'a b'`` inside none. A quote opens at the start, after a character
+    that is not a letter or a digit (``=``, a space, ``:``, ``(``) or directly after a short flag (``-p'..'``, ``-u'..'``), so the apostrophe of ``don't`` opens nothing; inside a
+    quote the other kind is just text. One linear pass."""
     quote = ""
     for index, char in enumerate(text):
         if quote:
             if char == quote:
                 quote = ""
-        elif char in "'\"" and (index == 0 or not text[index - 1].isalnum()):
+        elif char in "'\"" and (
+            index == 0 or not text[index - 1].isalnum() or (index >= 2 and text[index - 2] == "-" and (index == 2 or not text[index - 3].isalnum()))
+        ):
             quote = char
-    return bool(quote)
+    return quote
 
 
 def _hidden(piece: str, mark: "str | None") -> str:
@@ -3116,6 +3124,7 @@ def _scrub_text(text: str, mark: "str | None" = None) -> str:
     text = _SECRET_ASSIGNMENT.sub(lambda m: _hide_after_lead(m, mark), text)
     text = _SECRET_FLAG.sub(lambda m: _hide_after_lead(m, mark), text)
     text = _MYSQL_ATTACHED_PASSWORD.sub(lambda m: _hide_after_lead(m, mark), text)
+    text = _MYSQL_QUOTED_FLAG_PASSWORD.sub(lambda m: _hide_after_lead(m, mark), text)
     text = _USER_PASSWORD_FLAG.sub(lambda m: _hide_after_lead(m, mark), text)
     text = _BEARER.sub(lambda m: _hide_after_word(m, mark), text)
     text = _BASIC.sub(lambda m: _hide_after_word(m, mark), text)
@@ -3334,10 +3343,13 @@ def _redact(value: Any, depth: int = 0, budget: "list[int] | None" = None) -> tu
             # A token the BUDGET cut in two: its head is too short for the blob rule to know it (a 64-character digest cut after 18 was previewed), so it is not drawn.
             # A cut at a space keeps the whole tokens before it, and the ceiling is different: it leaves the blob rule 2000 characters to work with.
             return _REDACTED, True
-        if capped and _ends_inside_a_quote(text):
-            # A cut that ends inside an open quote (password='correct horse battery' cut at its inner space) keeps the first word of a quoted secret: nothing closes the quote
-            # for the rules, and the rest of the secret is not looked at.
-            return _REDACTED, True
+        quote = _open_quote(text) if capped else ""
+        if quote:
+            # A cut that ends inside an open quote (password='correct horse battery' cut at its inner space): nothing closes the quote for the rules, so the first word of a quoted
+            # secret was kept. The kept text is scrubbed with the quote CLOSED (the rules see the whole quoted value they start and hide it), and the closer that was added for
+            # them is dropped again when it is still the last character; the head of a harmless command (bash -lc '...', git commit -m '...') stays.
+            scrubbed = _scrub_text(text + quote)
+            return (scrubbed[:-1] if scrubbed.endswith(quote) else scrubbed), True
         document = _parse_container(text)
         if document is not None:
             inner, changed = _redact(document, depth + 1, budget)
