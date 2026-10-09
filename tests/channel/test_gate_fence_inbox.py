@@ -240,6 +240,21 @@ async def test_a_tokenless_reply_to_nothing_pending_is_not_counted(world) -> Non
     assert _count("ask_user", "absent") == 0
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("via", ["agent", "tool_call"])
+async def test_a_reply_to_the_second_of_two_sibling_questions_is_published_to_that_questions_own_key(world, via) -> None:
+    """Two graph nodes ask under one raw id with node-scoped keys. The fence judged the gate the reply named, but the key it was published to was the FIRST
+    sibling's: the lookup that follows matched by the raw id alone and took the first (round 2 of the C-033 review, PR 3)."""
+    from tests.api.test_gate_fence_round2 import _graph_ask_user_session
+
+    await world.sp.get_storage(WorkspaceSession).create(_graph_ask_user_session(session_id="q-sib", via=via))
+
+    await world.inbox.handle_response(_reply("q-sib", gate_id=G2, kind="ask_user", tool_call_id="dup"))
+
+    event = await world.published()
+    assert event is not None and event.event_key == "ask_user:q-sib:n1:dup", event
+
+
 # ---- the adapters' shared relay ---------------------------------------------------------------------------------------------------------------
 
 

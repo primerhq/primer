@@ -204,6 +204,8 @@ class EngineFakePool:
         self.repark_calls: list = []
         self.agent_tool_result_session_ids: list = []
         self.agent_tool_result_tcids: list[str] = []   # every reply the engine delivered, by its tool_call_id
+        self.agent_tool_result_event_keys: list = []   # ... and by the event key that fired (None for a key-less drain)
+        self.approval_record_event_keys: list = []     # the fired key of every approval record the engine asked for
 
     async def _load_workspace_for_persist(self, workspace_id: str):
         return self._workspace_io
@@ -220,13 +222,17 @@ class EngineFakePool:
         return "REPARKED"
 
     # -- resume_graph_engine's own delegating surface --------------------
-    def _graph_nested_agent_yield(self, checkpoint, tcid):
-        return graph_resume_coordinator.graph_nested_agent_yield(self, checkpoint, tcid)
+    def _graph_nested_agent_yield(self, checkpoint, tcid, event_key=None):
+        # The fired key is forwarded only when there is one: the coordinator's own helpers took the tool_call_id alone before the engine was taught to
+        # select by event key, and a key-less drain (the legacy path) still calls them that way.
+        extra = {"event_key": event_key} if event_key is not None else {}
+        return graph_resume_coordinator.graph_nested_agent_yield(self, checkpoint, tcid, **extra)
 
-    def _graph_value_yield_toolcall(self, checkpoint, tcid):
-        return graph_resume_coordinator.graph_value_yield_toolcall(self, checkpoint, tcid)
+    def _graph_value_yield_toolcall(self, checkpoint, tcid, event_key=None):
+        extra = {"event_key": event_key} if event_key is not None else {}
+        return graph_resume_coordinator.graph_value_yield_toolcall(self, checkpoint, tcid, **extra)
 
-    async def _graph_agent_tool_result(self, checkpoint, tcid, payload, *, session_id):
+    async def _graph_agent_tool_result(self, checkpoint, tcid, payload, *, session_id, event_key=None):
         # Directly supplies the ask_user answer, bypassing the global
         # resume-hook registry - irrelevant to what these tests prove (the
         # real hook call is pinned by test_graph_agent_tool_result_real_hooks.py).
@@ -234,13 +240,15 @@ class EngineFakePool:
         # ResumeContext is built from it.
         self.agent_tool_result_session_ids.append(session_id)
         self.agent_tool_result_tcids.append(tcid)
+        self.agent_tool_result_event_keys.append(event_key)
         return Message(role="tool", parts=[ToolResultPart(id=tcid, output="blue")])
 
-    async def _write_approval_record_for_graph(self, *, session, checkpoint, tcid, payload):
+    async def _write_approval_record_for_graph(self, *, session, checkpoint, tcid, payload, event_key=None):
+        self.approval_record_event_keys.append(event_key)
         return None
 
     async def _persist_resume_tool_result_record_for_graph(
-        self, *, session, checkpoint, tcid, agent_tool_result,
+        self, *, session, checkpoint, tcid, agent_tool_result, event_key=None,
     ):
         return None
 

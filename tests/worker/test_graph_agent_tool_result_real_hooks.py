@@ -156,8 +156,8 @@ async def test_the_invocation_services_closure_forwards_the_session_id():
     register_resume_hook("test_graph_ctx_tool_services", hook)
 
     class _StandIn(SimpleNamespace):
-        async def _graph_agent_tool_result(self, checkpoint, tcid, payload, *, session_id):
-            return await WorkerPool._graph_agent_tool_result(self, checkpoint, tcid, payload, session_id=session_id)
+        async def _graph_agent_tool_result(self, checkpoint, tcid, payload, *, session_id, event_key=None):
+            return await WorkerPool._graph_agent_tool_result(self, checkpoint, tcid, payload, session_id=session_id, event_key=event_key)
 
     pool = _StandIn(_provider_registry=None, _storage=None, _approval_resolver=None)
     services = build_invocation_services(pool, SimpleNamespace(id="sess-3"), None, None, SimpleNamespace())
