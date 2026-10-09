@@ -20,7 +20,7 @@ The seven node kinds are:
 - `_GraphNodeRef` (`kind="graph"`): delegates to a sub-graph (recursive composition).
 - `_FanOutNode` (`kind="fan_out"`): pure dispatcher; spawns parallel downstream instances per `FanOutSpec`.
 - `_FanInNode` (`kind="fan_in"`): wait-for-all aggregator with an `aggregate_template` + optional `output_schema`.
-- `_ToolCallNode` (`kind="tool_call"`): invokes a tool by scoped id with `arguments` or an `arguments_template` + optional `output_schema`.
+- `_ToolCallNode` (`kind="tool_call"`): invokes a tool by scoped id with `arguments` or an `arguments_template` + optional `output_schema`. Its call is a transcript row like an agent node's: a `tool_call` row under the node's id before the tool runs and a `tool_result` row when it answers (after the resume, for a node that parked), so a run the tool delegates to nests under it (ticket 01a11faa; see `sessions.md`).
 
 ```mermaid
 erDiagram
