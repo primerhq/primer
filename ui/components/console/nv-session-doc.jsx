@@ -137,6 +137,22 @@ function NV_endedLine(session) {
   return out;
 }
 
+// A session that RESTS after a transport failure (C-024: status waiting, ended_reason null) serves last_turn_error {code, at}, cleared when its next turn starts. NV_endedLine runs
+// for status "ended" only, so the advice of NV_failureWords (what to do about THAT failure) was shown nowhere for a session that is still alive; this is its twin for the resting
+// one: {why, next}, or null when the session ended (its end note says it), has no failure on its row, or is null. Two codes dispatch stamps name nothing a person can act on:
+// llm_stream_error (a stream that died with no code) and turn_failed (a turn that raised something that is not a model error); a code the table does not know is shown.
+function NV_restedFailureLine(session) {
+  if (!session || session.status === "ended" || !session.last_turn_error) return null;
+  var code = session.last_turn_error.code || null;
+  var words = NV_failureWords(code);
+  if (words) return { why: "The last turn failed: " + words.what + ".", next: words.next };
+  var generic = !code || code === "llm_stream_error" || code === "turn_failed";
+  return {
+    why: generic ? "The last turn failed." : "The last turn failed (" + code + ").",
+    next: "Open the turn's trace for the cause, or send a message to try again.",
+  };
+}
+
 // What an error card says (lead sweep A3): the problem type (or the stream's snake_case code) in words, with the provider's own text
 // kept as the detail below it. A type this table does not know keeps the server's wording, and a bare terminal marker (nothing but {reason, terminal}) says the
 // turn failed.
@@ -2636,6 +2652,8 @@ function NV_SessionDoc(props) {
   // evaluates them on their own.
   var historyProblem = NV_historyProblem(history.error);
   var endedLine = NV_endedLine(session);
+  // A turn in flight clears last_turn_error on the server; until the row says so, a turn that is shown running hides the note.
+  var restedLine = shown ? null : NV_restedFailureLine(session);
   // Stop is acknowledged: this click's own pending state, or the served flag (the worker
   // clears interrupt_requested when the Stop lands, which ends the state and brings the
   // button back). Kept below `degraded` on purpose: test_console_session_doc.py slices the
@@ -3320,6 +3338,14 @@ function NV_SessionDoc(props) {
                   </div>
                 ) : null}
               </React.Fragment>
+            ) : null}
+            {restedLine ? (
+              <div className="nv-fold-note" data-testid="nv-rested-note">
+                <div>{restedLine.why}</div>
+                {restedLine.next ? (
+                  <div className="nv-fold-next">{restedLine.next}</div>
+                ) : null}
+              </div>
             ) : null}
           </div>
           {decision.showJump ? (
