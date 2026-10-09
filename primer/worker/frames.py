@@ -90,6 +90,10 @@ class AgentResumeContext:
     delegate_parent_run_id
         The run id of the run whose tool call delegated to this one (``None`` when the parent turn itself did), the
         timeline's nesting anchor.
+    delegate_node_id
+        The graph node (fan-out-instance-qualified, ``worker[0]``) whose agent made the delegating call, so a resumed run's records
+        keep the ``payload["delegate_node_id"]`` that tells fan-out siblings sharing a raw call id apart (ticket 01a11cca). ``None``
+        outside a graph, and on frames parked before this field existed.
     """
 
     session_id: str
@@ -101,6 +105,7 @@ class AgentResumeContext:
     turn_no: int | None = None
     delegate_run_id: str | None = None
     delegate_parent_run_id: str | None = None
+    delegate_node_id: str | None = None
 
     def to_jsonable(self) -> dict[str, Any]:
         """Render to a JSON-safe dict."""
@@ -118,6 +123,7 @@ class AgentResumeContext:
             "turn_no": self.turn_no,
             "delegate_run_id": self.delegate_run_id,
             "delegate_parent_run_id": self.delegate_parent_run_id,
+            "delegate_node_id": self.delegate_node_id,
         }
 
     @classmethod
@@ -137,6 +143,7 @@ class AgentResumeContext:
             turn_no=data.get("turn_no"),
             delegate_run_id=data.get("delegate_run_id"),
             delegate_parent_run_id=data.get("delegate_parent_run_id"),
+            delegate_node_id=data.get("delegate_node_id"),
         )
 
 

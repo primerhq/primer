@@ -12,6 +12,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from primer.agent.call_scope import current_interrupt
+from primer.graph._node_identity import current_graph_node_id
 from primer.model.chat import Message, TextPart, ToolTurnCapReached
 
 
@@ -249,6 +250,9 @@ async def run_subagent(
     # a run's identity: it is reused across streams and levels). The parent's is whatever run this call is made inside.
     run_id = uuid.uuid4().hex
     parent_run_id = _RUN_ID.get()
+    # The graph node whose agent made this call (None outside a graph). Concurrent fan-out siblings each run in their own task with their own ambient id, and their calls can
+    # share a raw id, so the records of a run say which node it belongs to (ticket 01a11cca).
+    node_id = current_graph_node_id()
     context = AgentResumeContext(
         session_id=session_id,
         workspace_id=workspace_id,
@@ -261,6 +265,7 @@ async def run_subagent(
         turn_no=turn_no,
         delegate_run_id=run_id,
         delegate_parent_run_id=parent_run_id,
+        delegate_node_id=node_id,
     )
     tool_manager = await build_subagent_toolmanager(
         context,
@@ -323,7 +328,7 @@ async def run_subagent(
                 await _sink.on_event(
                     _ev, delegate_tool_call_id=invoke_tool_call_id,
                     delegate_run_id=run_id, delegate_parent_run_id=parent_run_id,
-                    delegate_depth=_DEPTH.get(),
+                    delegate_depth=_DEPTH.get(), delegate_node_id=node_id,
                 )
     except YieldToWorker as yld:
         _push_agent_frame_on_yield(
@@ -347,7 +352,7 @@ async def run_subagent(
             # one it does land is dispatch's cancelled exit to write.
             await _sink.finish_run(
                 delegate_tool_call_id=invoke_tool_call_id, delegate_run_id=run_id,
-                delegate_parent_run_id=parent_run_id, delegate_depth=_DEPTH.get(), flush=not _cancelled,
+                delegate_parent_run_id=parent_run_id, delegate_depth=_DEPTH.get(), delegate_node_id=node_id, flush=not _cancelled,
             )
 
     if interrupted:
@@ -471,6 +476,7 @@ async def resume_subagent(
     # run ids existed has none, and gets a fresh one so its records are still told apart from every other run's).
     run_id = getattr(context, "delegate_run_id", None) or uuid.uuid4().hex
     parent_run_id = getattr(context, "delegate_parent_run_id", None)
+    node_id = getattr(context, "delegate_node_id", None)
     run_token = _RUN_ID.set(run_id)
     _sink = None
     _cancelled = False
@@ -495,7 +501,7 @@ async def resume_subagent(
                         _ev,
                         delegate_tool_call_id=invoke_tool_call_id,
                         delegate_run_id=run_id, delegate_parent_run_id=parent_run_id,
-                        delegate_depth=depth,
+                        delegate_depth=depth, delegate_node_id=node_id,
                     )
     except YieldToWorker as yld:
         _push_agent_frame_on_yield(
@@ -515,7 +521,7 @@ async def resume_subagent(
         if _sink is not None:
             await _sink.finish_run(
                 delegate_tool_call_id=invoke_tool_call_id, delegate_run_id=run_id,
-                delegate_parent_run_id=parent_run_id, delegate_depth=depth, flush=not _cancelled,
+                delegate_parent_run_id=parent_run_id, delegate_depth=depth, delegate_node_id=node_id, flush=not _cancelled,
             )
 
     if capped:
