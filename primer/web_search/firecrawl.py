@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-from primer.common.transport_text import require_sendable_key, transport_failure, unexpected_status
+from primer.common.transport_text import require_sendable_key, transport_failure, unexpected_status, vendor_text
 from primer.web_search.adapter import (
     SafeSearchLevel,
     SearchHit,
@@ -131,9 +131,7 @@ class FirecrawlAdapter(WebSearchAdapter):
         # explicit success=false on a 200 is still an error.
         if data.get("success") is False:
             error_msg = data.get("error") or "(no error message)"
-            raise WebSearchProviderError(
-                f"firecrawl reported failure: {error_msg}"
-            )
+            raise WebSearchProviderError(vendor_text("firecrawl reported failure", str(error_msg), self._config))
 
         results = data.get("data", []) or []
         return [
