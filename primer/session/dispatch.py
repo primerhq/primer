@@ -36,7 +36,14 @@ from primer.int.event_bus import EventBus
 from primer.int.storage_provider import StorageProvider
 import primer.observability.metrics as _metrics
 from primer.model.envelope import RELAY_EVERY_TURN_KEY
-from primer.model.except_ import NotFoundError, PrimerError
+from primer.model.except_ import (
+    NetworkError,
+    NotFoundError,
+    PrimerError,
+    ProviderTimeoutError,
+    RateLimitError,
+    ServerError,
+)
 from primer.model.workspace_refusal import WorkspaceRefusedError
 from primer.model.workspace import Workspace
 from primer.model.workspace_session import (
@@ -44,6 +51,7 @@ from primer.model.workspace_session import (
     NON_ENDED_STATUSES_NOT_PAUSED,
     SessionMessageKind,
     SessionMessageRecord,
+    GraphSessionBinding,
     SessionStatus,
     WorkspaceSession,
 )
@@ -106,12 +114,21 @@ class _NamesWhyItEndedTheTurn(Protocol):
 #: The failure codes of a model call that leave an INTERACTIVE session resting instead of ending it (C-024, the lead's ruling 2026-10-09):
 #: transport failures, after the llm layer's own retries are spent (5xx, a 429, a dropped connection, a stream that stalled or never opened,
 #: a generation that ran out its total budget). Resting never retries by itself (only a ``claimable`` row is re-armed, and a failed turn leaves
-#: ``idle``); it keeps the session open so the next send continues the same invocation. Everything else ends the session: a rejection the
-#: operator has to fix (``auth_error``, ``bad_request``, ``model_not_found``, ``unsupported_content``, ``context_overflow_unrecoverable``), a code
-#: nobody classified, a stream that gave no code (``llm_stream_error``) and a turn that raised something that is not a model error.
+#: ``idle``); it keeps the session open so the next send continues the same invocation. ``llm_stream_error`` is the code of a stream that died
+#: WITHOUT one, most often a broken connection (the lead's second ruling, 2026-10-09). Everything else ends the session: a rejection the operator
+#: has to fix (``auth_error``, ``bad_request``, ``model_not_found``, ``unsupported_content``, ``context_overflow_unrecoverable``), a code that IS
+#: set and that nobody classified, and a turn that raised something that is not a model error (``turn_failed``).
 _RESTING_FAILURE_CODES: frozenset[str] = frozenset({
-    "server_error", "rate_limit", "network_error", "connect_timeout", "stream_timeout", "generation_timeout",
+    "server_error", "rate_limit", "network_error", "connect_timeout", "stream_timeout", "generation_timeout", "llm_stream_error",
 })
+
+#: The code of a RAISED transport error that carries none (``AggregatedLLM``'s exhausted-pool ``RateLimitError`` is one): its class says what it is.
+_TRANSPORT_CODE_BY_CLASS: tuple[tuple[type[PrimerError], str], ...] = (
+    (RateLimitError, "rate_limit"),
+    (ServerError, "server_error"),
+    (NetworkError, "network_error"),
+    (ProviderTimeoutError, "stream_timeout"),
+)
 
 # How often a running turn re-reads its session row for a Stop whose bus message never
 # arrived (see _cancel_watcher). A fallback, so it only has to be quick enough that a Stop
@@ -640,12 +657,21 @@ async def run_one_session_turn(
             )
         failure_code = _failure_code(exc)
         # C-024: a transport failure of the model call leaves an interactive session RESTING (WAITING, no ended_reason); the row still says
-        # the turn failed (last_turn_error), so the next send continues the same invocation. An autonomous, graph or trigger session has no
-        # human to resume it (a resting one-shot would hold a parallelism="skip" gate shut forever), so it ends as before.
-        rests = failure_code in _RESTING_FAILURE_CODES and not session_is_autonomous(session)
+        # the turn failed (last_turn_error), so the next send continues the same invocation. A graph, trigger or webhook one-shot has no human
+        # to resume it (a resting one-shot would hold a parallelism="skip" gate shut forever), so it ends as before: a graph binding is
+        # autonomous whatever an explicit ``autonomous=False`` says.
+        may_rest = failure_code in _RESTING_FAILURE_CODES and not (
+            isinstance(session.binding, GraphSessionBinding) or session_is_autonomous(session)
+        )
         async with session_lifecycle_lock().acquire(session_id):
             # BEFORE the status moves: a reader that sees the row after the transition must see why (C-024).
-            await _record_last_turn_error(session_storage, session_id, failure_code, session.binding_epoch)
+            stamped = await _record_last_turn_error(session_storage, session_id, failure_code, session.binding_epoch)
+            # Decided HERE, under the lock, from a fresh read (as the clean-completion arm decides a Cancel): a Cancel that landed since the turn
+            # started is not lost. A row that rested with ``cancel_requested`` set would end as cancelled, without ever calling the model, on the
+            # next send. Without its stamp a rested first-turn failure has every mark of a session that never started, so it ends.
+            locked = await session_storage.get(session_id)
+            cancelled_meanwhile = locked is not None and locked.cancel_requested and locked.status != SessionStatus.ENDED
+            rests = may_rest and stamped and not cancelled_meanwhile
             written = await _transition_session_status(
                 session_storage,
                 session,
@@ -661,6 +687,10 @@ async def run_one_session_turn(
                 executor=executor,
                 expected_epoch=session.binding_epoch,
             )
+            if rests and written.status == SessionStatus.WAITING:
+                # The executor ended the on-disk slot when the turn failed. The row now says the session is alive, so the slot must too, or the
+                # next send (or a trigger's append, or the follow-up realized below) meets an ENDED slot and is refused.
+                await _reopen_agent_session_slot(executor)
             await _clear_interrupt_requested(session_storage, session_id)
             await _persist_last_seq(session_storage, session_id, writer.last_seq)
             await _advance_drain_cursor(session_storage, session_id)
@@ -1429,6 +1459,15 @@ async def run_one_session_turn(
     await _publish_terminal(
         deps, session, written.status, written.ended_reason,
     )
+    if ended_reason == "failed" and not overridden:
+        # A turn the clean arm ends ``failed`` (``Done(stop_reason="error")``, a failed graph run) is a failed turn too (C-024): announced like the
+        # exception exit's, with the stop reason as its code. It stamps no ``last_turn_error`` (only the exception exit does).
+        await _event_recorder(deps).emit(
+            "session.turn_failed",
+            workspace_id=session.workspace_id,
+            session_id=session_id,
+            payload={"code": last_done_reason or "turn_failed", "ended": True},
+        )
 
     # Every terminal exit drains, not just this one: a queued steer is
     # the user's message, and dropping it because their turn errored
@@ -2516,34 +2555,42 @@ def _failure_code(exc: BaseException) -> str:
 
     A stream that failed carries its own (``TurnStreamFailure.ended_detail_code``: the stream's code, else ``llm_stream_error``). A model call
     that RAISED before a stream opened (the adapter's classified error, e.g. an upstream 500 after the retries) carries it on the exception
-    (``ServerError.code == "server_error"``). Anything else, or a ``PrimerError`` that names no code, is ``turn_failed``: a turn that raised
-    something that is not a model error. The code of a raised error is not written as ``ended_detail`` (it never was): it is the row's
+    (``ServerError.code == "server_error"``); one that names no code is classified by its CLASS (rate limit, server, network, timeout). Anything
+    else, or a generic ``PrimerError`` with no code, is ``turn_failed``: a turn that raised something that is not known to be a model error (an
+    MCP toolset's ``NetworkError`` escaping ``list_tools`` is reported the same way as the model's). The code of a raised error is not written as ``ended_detail`` (it never was): it is the row's
     ``last_turn_error``, the event, and the rule for whether an interactive session rests.
     """
     if isinstance(exc, _NamesWhyItEndedTheTurn):
         return exc.ended_detail_code
-    code = exc.code if isinstance(exc, PrimerError) else None
-    return code if isinstance(code, str) and code else "turn_failed"
+    if not isinstance(exc, PrimerError):
+        return "turn_failed"
+    if isinstance(exc.code, str) and exc.code:
+        return exc.code
+    return next((code for cls, code in _TRANSPORT_CODE_BY_CLASS if isinstance(exc, cls)), "turn_failed")
 
 
-async def _record_last_turn_error(session_storage, session_id: str, code: str, binding_epoch: int) -> None:
+async def _record_last_turn_error(session_storage, session_id: str, code: str, binding_epoch: int) -> bool:
     """Stamp ``last_turn_error`` (the failure's code and time) on the row: ONE ``patch_if`` of that field, guarded on the row not being ENDED and
     on the binding epoch the turn started under (a binding that switched while the turn ran is not this turn's failure to record).
 
     ``code`` is :func:`_failure_code`. Advisory: the failure exit's job is to release the lease, so a write that cannot land is logged and the exit
-    goes on. Called under the lifecycle lock, before the status transition. Cleared by :func:`_flip_to_running` at the next turn.
+    goes on. Returns whether it landed: a session may REST only with its stamp (without one, a rested first-turn failure looks like a session that
+    never started). Called under the lifecycle lock, before the status transition. Cleared by :func:`_flip_to_running` at the next turn.
     """
     patch = to_jsonable_python({"last_turn_error": {"code": code, "at": _now()}})
     try:
-        await session_storage.patch_if(
+        written = await session_storage.patch_if(
             session_id, patch,
             # like the transition right after it: a binding that switched while the turn ran is not this turn's failure to record
             where={"status": NON_ENDED_STATUSES(), "binding_epoch": [binding_epoch]},
         )
     except NotFoundError:
         logger.warning("session %s vanished before its failed turn could be recorded on the row", session_id)
+        return False
     except Exception:  # noqa: BLE001 -- advisory; the lease must still be released
         logger.exception("session %s: could not record the turn's failure (%s) on the row", session_id, code)
+        return False
+    return written is not None
 
 
 async def _flip_to_running(
@@ -3227,6 +3274,31 @@ async def _transition_session_status(
             session=session, workspace_registry=workspace_registry,
         )
     return _TerminalWrite(True, new_status, ended_reason)
+
+
+async def _reopen_agent_session_slot(executor) -> None:
+    """Put the executor's on-disk AgentSession slot (``session.json``) back to RUNNING after a failed turn left the session resting.
+
+    ``WorkspaceAgentExecutor.invoke`` ends the slot on every failed turn; when the row ENDED too, the reopen path (``wake_session``'s ENDED branch)
+    reopened it. A row that RESTS takes the in-place path, which never does. ``reopen`` is the one sanctioned way out of ENDED and a no-op on a slot
+    that is not; bounded like the mirror in the other direction, since it commits over the workspace runtime connection under the lifecycle lock.
+    Advisory: ``wake_session`` reopens a slot that still reads ENDED under a live row too.
+    """
+    inner = getattr(executor, "session", None)
+    reopen = getattr(inner, "reopen", None)
+    if reopen is None:
+        return
+    try:
+        async with asyncio.timeout(_SLOT_MIRROR_TIMEOUT_S):
+            if await inner.status() == SessionStatus.ENDED:
+                await reopen()
+    except TimeoutError:
+        logger.warning(
+            "dispatch: the AgentSession slot was not reopened within %gs (the workspace is not accepting writes); the row rests and the "
+            "slot may still read ended until the next send reopens it", _SLOT_MIRROR_TIMEOUT_S,
+        )
+    except Exception:  # noqa: BLE001 -- advisory; never block release
+        logger.warning("dispatch: failed to reopen the AgentSession slot of a session left resting", exc_info=True)
 
 
 async def _sync_agent_session_ended(
