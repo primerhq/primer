@@ -1,18 +1,24 @@
 """A workspace id is one safe path segment: a traversal id may not materialise a workspace outside the configured root.
 
-From the #680 security review (N7, 2026-10-09; found by static reading, not yet reproduced). ``WorkspaceCreateBody.id``
+From the #680 security review (N7, 2026-10-09). ``WorkspaceCreateBody.id``
 carried no pattern and ``LocalWorkspaceBackend.create`` did ``self._root / workspace_id`` followed by ``mkdir(parents=True)``:
 ``../escape`` landed one directory ABOVE the root, ``/abs`` landed at the filesystem root, and ``.``/``..`` landed on the root
 itself or its parent. The same id becomes the durable row id, a ``LocalStateRepo`` workspace id and a git trailer value, a
 docker container-name suffix and a k8s object-name component.
 
-The one rule (``WORKSPACE_ID_PATTERN`` in ``primer/model/workspace.py``): a single alphanumeric token,
-``[A-Za-z0-9][A-Za-z0-9_-]{0,62}`` - it matches every id that exists today (the bootstrap default ``primer``, the generated
-``ws-<hex>``) and admits no dot, slash or control character. It is enforced at every create entry (the REST body, the
-``create_workspace`` tool
-args, ``WorkspaceRegistry.materialise`` - the choke point REST, the tool, the bootstrap seed and any future path all pass
-through) and re-asserted in the local backend as defence in depth: the joined path is RESOLVED and refused when it is not
-strictly inside the resolved root.
+The one rule (``WORKSPACE_ID_PATTERN`` in ``primer/model/workspace.py``): a DNS-1123 label,
+``^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`` - lowercase letters, digits and ``-``, starting and ending with a letter or
+digit, at most 63 characters. It matches every id the platform generates (the bootstrap default ``primer``, the generated
+``ws-<hex>``). Uppercase is refused because on a case-insensitive filesystem (a macOS dev machine) ``Proj`` and ``proj``
+would be two rows over ONE directory; k8s label values, docker DNS names and gateway hostnames need lowercase, no
+``_``, and an alphanumeric end too. Existing rows are NOT re-validated: the rule bites on create only.
+
+The rule is enforced at every create entry (the REST body, the ``create_workspace`` tool args,
+``WorkspaceRegistry.materialise`` - the choke point REST, the tool, the bootstrap seed and any future path all pass
+through) and re-asserted in the local backend as defence in depth: the join is resolved for the containment test
+(refused when it is not strictly inside the resolved root), but the backend keeps the UNRESOLVED join, so the
+create rollback's ``rmtree`` and ``destroy`` never delete through an in-root symlink into another workspace's
+directory; an id that IS a symlink is refused outright.
 
 The backend tests need git because ``LocalWorkspace.materialise`` shells out to it (same gate as
 ``test_workspace_id_passthrough.py``).
@@ -20,6 +26,7 @@ The backend tests need git because ``LocalWorkspace.materialise`` shells out to 
 
 from __future__ import annotations
 
+import asyncio
 import re
 import shutil
 from pathlib import Path
@@ -41,13 +48,13 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _template(provider_id: str = "local-1") -> WorkspaceTemplate:
+def _template(provider_id: str = "local-1", init_commands: list[str] | None = None) -> WorkspaceTemplate:
     return WorkspaceTemplate(
         id="dev",
         description="local dev template",
         provider_id=provider_id,
         files=[],
-        init_commands=[],
+        init_commands=init_commands or [],
         env={},
         resources=ResourceLimits(),
     )
@@ -110,36 +117,63 @@ async def test_the_local_backend_refuses_a_reattach_that_escapes_the_root(
         await backend.get("../escape", template=_template())
 
 
+async def test_create_refuses_an_id_that_is_a_symlink_into_another_workspace(
+    backend: LocalWorkspaceBackend,
+) -> None:
+    """A RESOLVED join would rmtree THROUGH the symlink: the refused alias create must leave alpha's files intact."""
+    alpha = await backend.create(_template(), workspace_id="alpha")
+    marker = alpha.root / "survive.txt"
+    await asyncio.to_thread(marker.write_text, "here")
+    alias = backend.root / "alias"
+    alias.symlink_to(alpha.root)
+    with pytest.raises(ValidationError):
+        await backend.create(_template(init_commands=["exit 3"]), workspace_id="alias")
+    assert marker.exists(), "the refused alias create deleted the alpha workspace's files"
+
+
 # ---------------------------------------------------------------------------
 # The pattern itself
 # ---------------------------------------------------------------------------
 
 
-def test_the_pattern_accepts_the_ids_that_exist_and_rejects_everything_that_escapes() -> None:
-    for good in (
-        "primer",
-        "psx-financials",
-        "ws-0123456789abcdef",
-        "a",
-        "x_y-z",
-        "UPPER",
-        "a" * 63,
-    ):
+GOOD_IDS = ("primer", "ws-1a2b", "a", "a" * 63)
+BAD_IDS = (
+    "Proj",
+    "ws_1",
+    "ab-",
+    "-ab",
+    "a" * 64,
+    "a.b",
+    "abc\n",
+    "../escape",
+    "/abs",
+    "a/b",
+    ".",
+    "..",
+    "a\x00b",
+)
+
+
+def test_the_pattern_accepts_the_platform_ids_and_rejects_everything_outside_the_rule() -> None:
+    for good in GOOD_IDS:
         assert re.fullmatch(WORKSPACE_ID_PATTERN, good), good
-    for bad in (
-        "../escape",
-        "/abs",
-        "a/b",
-        ".",
-        "..",
-        "new\nline",
-        "a\x00b",
-        "a" * 64,
-        "-lead",
-        "_lead",
-        "",
-    ):
+    for bad in BAD_IDS:
         assert not re.fullmatch(WORKSPACE_ID_PATTERN, bad), bad
+
+
+def test_the_pattern_is_enforced_by_the_create_entry_models() -> None:
+    """re.fullmatch and the pydantic entry models (REST body + tool args) must agree."""
+    from pydantic import ValidationError as PydanticValidationError
+
+    from primer.api.routers.workspaces import WorkspaceCreateBody
+    from primer.toolset.workspaces import _CreateWorkspaceArgs
+
+    for model in (WorkspaceCreateBody, _CreateWorkspaceArgs):
+        for good in GOOD_IDS:
+            assert model(template_id="tpl-1", id=good).id == good
+        for bad in BAD_IDS:
+            with pytest.raises(PydanticValidationError):
+                model(template_id="tpl-1", id=bad)
 
 
 # ---------------------------------------------------------------------------
