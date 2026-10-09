@@ -437,3 +437,45 @@ async def test_leaves_a_first_turn_that_failed_and_rests(fake_storage_provider):
     rests, never = await storage.get("se-rests"), await storage.get("se-never")
     assert rests.status == SessionStatus.WAITING and rests.ended_reason is None
     assert never.status == SessionStatus.ENDED and never.ended_detail == "never_started"
+
+
+@pytest.mark.asyncio
+async def test_still_ends_a_running_row_whose_failure_exit_never_finished(fake_storage_provider):
+    """The stamp is written BEFORE the status moves. A row that carries it but is still RUNNING is one whose failure exit did not complete (the
+    transition raised, or the binding epoch voided it): nothing else ends it, so the guard is for a RESTING row only and this one is reaped as it
+    was before the field existed."""
+    from primer.model.workspace_session import LastTurnError
+
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    stamped = LastTurnError(code="server_error", at=datetime.now(timezone.utc) - timedelta(minutes=20))
+    await storage.create(_session("se-half", age_seconds=3600, status=SessionStatus.RUNNING, last_turn_error=stamped))
+
+    reaped = await _sweeper(storage)._tick()
+
+    assert reaped == 1
+    row = await storage.get("se-half")
+    assert (row.status, row.ended_reason, row.ended_detail) == (SessionStatus.ENDED, "failed", "never_started")
+
+
+@pytest.mark.asyncio
+async def test_a_failure_stamped_between_the_read_and_the_write_is_not_overwritten(fake_storage_provider):
+    """The sweeper awaits the lease lookup between its re-read and its write. A failure exit that stamps the row meanwhile is mid-way through
+    ending or resting it; the write is fenced on the field still being empty, so the sweeper leaves the row to that exit."""
+    from primer.model.workspace_session import LastTurnError
+
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    await storage.create(_session("se-racing", age_seconds=3600, status=SessionStatus.RUNNING))
+
+    class _StampsDuringTheLookup(_FakeClaimEngine):
+        async def has_lease(self, kind, entity_id):
+            row = await storage.get(entity_id)
+            await storage.update(row.model_copy(update={
+                "last_turn_error": LastTurnError(code="server_error", at=datetime.now(timezone.utc)),
+            }))
+            return await super().has_lease(kind, entity_id)
+
+    reaped = await StuckSessionSweeper(session_storage=storage, claim_engine=_StampsDuringTheLookup())._tick()
+
+    assert reaped == 0
+    row = await storage.get("se-racing")
+    assert row.status == SessionStatus.RUNNING and row.ended_reason is None
