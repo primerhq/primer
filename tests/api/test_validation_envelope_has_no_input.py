@@ -51,20 +51,21 @@ async def test_a_put_with_a_credentialed_url_that_does_not_validate_does_not_ech
 
 
 @pytest.mark.asyncio
-async def test_a_huggingface_row_without_a_token_does_not_echo_the_config_it_was_given(client) -> None:
-    r = await client.post("/v1/embedding_providers", json=_row("huggingface", {"url": "http://x.local/v1", "api_key": OPENAI_KEY}))
+async def test_an_openai_row_without_a_url_does_not_echo_the_config_it_was_given(client) -> None:
+    """The error's input is the whole config dict, the key beside the missing url included."""
+    r = await client.post("/v1/embedding_providers", json=_row("openai", {"api_key": OPENAI_KEY}))
 
     errors = _assert_no_input(r)
     assert OPENAI_KEY not in r.text and "sk-secret" not in r.text, r.text
-    assert any(error["loc"][-1] == "token" for error in errors)
+    assert any(error["loc"][-1] == "url" for error in errors)
 
 
 @pytest.mark.asyncio
-async def test_a_put_of_a_huggingface_row_without_a_token_does_not_echo_the_config_either(client) -> None:
-    created = await client.post("/v1/embedding_providers", json=_row("huggingface", {"token": "hf_token_0123456789"}))
+async def test_a_put_of_an_openai_row_without_a_url_does_not_echo_the_config_either(client) -> None:
+    created = await client.post("/v1/embedding_providers", json=_row("openai", {"url": "http://emb.local:1234/v1"}))
     assert created.status_code in (200, 201), created.text
 
-    r = await client.put("/v1/embedding_providers/emb-a", json=_row("huggingface", {"url": "http://x.local/v1", "api_key": OPENAI_KEY}))
+    r = await client.put("/v1/embedding_providers/emb-a", json=_row("openai", {"api_key": OPENAI_KEY}))
 
     _assert_no_input(r)
     assert OPENAI_KEY not in r.text and "sk-secret" not in r.text, r.text

@@ -40,11 +40,26 @@ def test_an_openai_row_whose_url_is_invalid_or_missing_is_refused_at_the_url(con
     assert any(error["loc"][-1] == "url" for error in caught.value.errors()), caught.value.errors()
 
 
-def test_a_huggingface_row_without_a_token_is_refused_at_the_token() -> None:
-    with pytest.raises(ValidationError) as caught:
-        EmbeddingProvider.model_validate(_row("huggingface", {"url": "http://x.local/v1"}))
+@pytest.mark.parametrize("config", [{}, {"token": None}, {"token": ""}, {"url": "http://x.local/v1"}], ids=["empty", "null token", "empty token", "a stray url"])
+def test_a_huggingface_row_needs_no_token(config: dict) -> None:
+    """A local model such as all-MiniLM-L6-v2 is public: the token is for gated repos only (as ``HuggingFaceCrossEncoderConfig.token`` says), and the embedder already passes
+    ``token_value or None``. #645's validator enforced the field's old ``Field(...)`` at create, where main never validated the config at all: ``POST`` of a huggingface embedder
+    with ``config: {}`` answered 422 ``missing body.token`` (e2e: test_collection_documents_by_path and two more)."""
+    row = EmbeddingProvider.model_validate(_row("huggingface", config))
 
-    assert any(error["loc"][-1] == "token" for error in caught.value.errors()), caught.value.errors()
+    assert type(row.config) is HuggingFaceConfig
+    assert row.config.token is None or row.config.token.get_secret_value() == ""
+
+
+def test_the_huggingface_config_class_alone_needs_no_token() -> None:
+    assert HuggingFaceConfig().token is None
+
+
+def test_a_huggingface_row_keeps_a_token_it_is_given() -> None:
+    row = EmbeddingProvider.model_validate(_row("huggingface", {"token": "hf_abcdefghijklmnop"}))
+
+    assert row.config.token is not None and row.config.token.get_secret_value() == "hf_abcdefghijklmnop"
+    assert row.model_dump(mode="json")["config"]["token"].startswith("*"), "a token that is given is still served masked"
 
 
 def test_an_unknown_provider_is_the_providers_own_error_not_a_crash() -> None:
