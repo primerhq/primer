@@ -445,3 +445,21 @@ async def test_a_stale_discord_click_tells_only_the_clicker(monkeypatch) -> None
     inter.followup.send.assert_awaited_once()
     assert inter.followup.send.await_args.args[0] == APPROVAL_STALE_NOTICE
     assert inter.followup.send.await_args.kwargs["ephemeral"] is True
+
+
+def test_the_reject_modal_does_not_count_the_prompts_dropped_token_again(caplog) -> None:
+    """The counter is per PROMPT: the buttons that were posted. The modal is rebuilt on every Reject click, so counting there made the number grow with clicks."""
+    import primer.observability.metrics as metrics
+    from primer.channel.discord.views import build_reject_modal as build_discord_reject_modal
+
+    metrics.reset_for_test()
+    too_long = "t" * 90
+    build_approval_custom_ids(ws="workspace-1", sid="session-1", tcid=too_long, gate_id=G1)
+    assert metrics.discord_gate_token_dropped_total._value.get() == 1
+
+    for _ in range(3):
+        modal = build_discord_reject_modal(ws="workspace-1", sid="session-1", tcid=too_long, gate_id=G1, on_submit=AsyncMock())
+        assert "#" not in modal.custom_id
+
+    assert metrics.discord_gate_token_dropped_total._value.get() == 1, "a click on Reject counted the same dropped token again"
+    metrics.reset_for_test()

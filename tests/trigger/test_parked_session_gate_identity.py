@@ -125,3 +125,65 @@ async def test_a_park_that_carries_no_subscription_id_is_never_woken_by_a_subscr
     result = await _fire(sp, sub, bus)
 
     assert bus.published == [] and result.skipped is True
+
+
+# ---- a graph park: the fire is published onto the PRIMARY's key -------------------------------------------------------------------------------------
+# ``respond_to_yield`` answers the park's primary (``yielded``, the first pending entry projected on top). A subscription whose entry is a SIBLING of
+# the primary carries its id too, so the "does an entry carry my subscription" check passes, and the fire would be published onto the primary's key:
+# another node's approval gate, decided by a trigger result.
+
+PRIMARY_KEY = f"tool_approval:{SESSION}:B:{RAW}"
+SIBLING_KEY = "trigger:tr-1"
+
+
+def _graph_session(*, primary: str) -> WorkspaceSession:
+    """Node B parked on an approval gate and node A on ``subscribe_to_trigger`` (sub ``sb-A``), both under the raw id ``call_0``; ``primary`` is the key on top."""
+    b = {
+        "node_id": "B", "tool_call_id": RAW, "tool_name": "_approval", "event_key": PRIMARY_KEY,
+        "resume_metadata": {"gate_id": "b" * 32, "approvers": None, "original_call": {"id": RAW, "name": "delete_workspace", "arguments": {}}},
+    }
+    a = {
+        "node_id": "A", "tool_call_id": RAW, "tool_name": "subscribe_to_trigger", "event_key": SIBLING_KEY,
+        "resume_metadata": {"subscription_id": "sb-A", "trigger_id": "tr-1"},
+    }
+    top = b if primary == PRIMARY_KEY else a
+    return WorkspaceSession(
+        id=SESSION, workspace_id="ws-g", binding=AgentSessionBinding(kind="agent", agent_id="agt"), status=SessionStatus.RUNNING,
+        created_at=datetime.now(UTC), parked_status="parked", parked_at=datetime.now(UTC), parked_event_key=primary,
+        parked_event_keys=[PRIMARY_KEY, SIBLING_KEY],
+        parked_state={
+            "tool_call_id": RAW,
+            "yielded": {"tool_name": top["tool_name"], "event_key": primary, "resume_metadata": dict(top["resume_metadata"]), "event_keys": [PRIMARY_KEY, SIBLING_KEY]},
+            "graph_checkpoint": {"pending_toolcalls": [], "pending_agent_yields": [top, a if top is b else b], "pending_dispatch": []},
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_sibling_nodes_subscription_does_not_reach_the_primary_approval():
+    sp, bus = _FakeStorageProvider(), _Bus()
+    await sp.get_storage(WorkspaceSession).create(_graph_session(primary=PRIMARY_KEY))
+    sub = _sub("sb-A")
+    await sp.get_storage(Subscription).create(sub)
+
+    result = await _fire(sp, sub, bus)
+
+    assert bus.published == [], "the trigger result was published onto sibling B's approval gate"
+    assert (result.ok, result.skipped) == (True, True)
+    assert await sp.get_storage(Subscription).get("sb-A") is not None, "the subscription is pending, only not primary: it must not be deleted"
+    assert (await sp.get_storage(WorkspaceSession).get(SESSION)).parked_status == "parked"
+
+
+@pytest.mark.asyncio
+async def test_the_subscription_fires_once_its_entry_is_the_primary():
+    """The control: the same graph park with the trigger node on top. The fire reaches the park the subscription created."""
+    sp, bus = _FakeStorageProvider(), _Bus()
+    await sp.get_storage(WorkspaceSession).create(_graph_session(primary=SIBLING_KEY))
+    sub = _sub("sb-A")
+    await sp.get_storage(Subscription).create(sub)
+
+    result = await _fire(sp, sub, bus)
+
+    assert result.ok and not result.skipped
+    assert [k for k, _ in bus.published if k.startswith(("trigger:", "tool_approval:"))] == [SIBLING_KEY]
+    assert await sp.get_storage(Subscription).get("sb-A") is None
