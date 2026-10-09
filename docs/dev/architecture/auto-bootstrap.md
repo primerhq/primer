@@ -157,9 +157,8 @@ Auto-bootstrap creates five reserved rows (the `BootstrapRunner` path), defined 
   `{"kind": "local"}` backend, so a fresh install can materialise a workspace via
   `POST /v1/workspaces {"template_id": "local-default"}`.
 - `huggingface` (`EmbeddingProvider`): `BAAI/bge-small-en-v1.5`,
-  `max_concurrency=2`, `token=""` (empty string, not `None`, because
-  `HuggingFaceConfig.token` is a mandatory `SecretStr`; the adapter converts the
-  empty string to `None` since the model is public).
+  `max_concurrency=2`, `token=""` (an empty string; `HuggingFaceConfig.token` is optional, and the
+  adapter converts an empty or missing token to `None` since the model is public).
 - `lance` (`SemanticSearchProvider`): LanceDB at `~/.primer/vector` with
   `hnsw_m=16`, `hnsw_ef_construction=64`, `hnsw_ef_search=40`,
   `index_min_rows=1000`.
@@ -287,6 +286,6 @@ when one `_ensure_*` step raises, the marker stays null and the error appears in
 - **`system_state` is a single-row table keyed on `id='singleton'` rather than a key-value config table.** Why: a single fixed row makes the marker check a primary-key fetch with no chance of duplicates or missing keys, and later singletons like `session_secret` consolidate onto the same row. Spec: docs/superpowers/specs/2026-05-27-auto-bootstrap-design.md.
 - **Bootstrap runs synchronously in the lifespan before the server accepts connections.** Why: the warm-disk cost target is under 2 seconds (models download lazily on first use, not here), so blocking startup is preferable to serving requests against a partially-provisioned system. Spec: docs/superpowers/specs/2026-05-27-auto-bootstrap-design.md.
 - **Update protection on reserved rows became immutability (PUT returns 403) rather than the spec's per-kind mutable-field allowlist.** Why: the implementation chose immutability over a field-level allowlist for workspace, workspace-template, and SSP rows; the LLM, embedder, and cross-encoder routers wire create and delete guards only. Spec: docs/superpowers/specs/2026-05-27-auto-bootstrap-design.md.
-- **The `huggingface` embedder spec carries an empty-string `token` while the `huggingface-ce` cross-encoder carries `token=None`.** Why: `HuggingFaceConfig.token` is a mandatory `SecretStr` that the adapter converts from empty string to `None`, whereas the cross-encoder config's `token` is already optional. Spec: docs/superpowers/specs/2026-05-27-auto-bootstrap-design.md.
+- **The `huggingface` embedder spec carries an empty-string `token` while the `huggingface-ce` cross-encoder carries `token=None`.** Why: `HuggingFaceConfig.token` is an optional `SecretStr` (the spec supplies an empty string, which the adapter converts to `None`), whereas the cross-encoder config's `token` is already optional. Spec: docs/superpowers/specs/2026-05-27-auto-bootstrap-design.md.
 - **The reserved DuckDuckGo provider row and the `_active_web_search_config` singleton are both auto-bootstrapped at lifespan, DuckDuckGo first.** Why: writing the referenced row before the singleton keeps web search zero-config and keeps the bootstrap idempotent across restarts, since the singleton's reference validation runs at write time. Spec: docs/superpowers/specs/2026-06-03-web-search-providers-design.md.
 - **The web-search reserved id is the readable mixed-case `DuckDuckGo` rather than a lower-case slug.** Why: it matches the SSP reserved-id convention (compare `lance`) because operators see this id in the UI. Spec: docs/superpowers/specs/2026-06-03-web-search-providers-design.md.
