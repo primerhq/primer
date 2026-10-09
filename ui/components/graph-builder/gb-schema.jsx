@@ -87,7 +87,7 @@ function GB_SchemaBuilder(props) {
             help={help}
           />
         ) : (
-          <textarea
+          <textarea aria-label="Schema as JSON"
             value={JSON.stringify(value || {}, null, 2)}
             onChange={(e) => { try { onChange(JSON.parse(e.target.value)); } catch (_e) { /* keep typing */ } }}
             rows={8}
@@ -120,7 +120,7 @@ function GB_SchemaBuilder(props) {
             border: "1px solid var(--border)", borderRadius: 7,
           }}
         >
-          <input
+          <input aria-label={"Field " + (i + 1) + " name"}
             value={r.name}
             onChange={(e) => { const n = [...rows]; n[i] = { ...r, name: e.target.value }; setRows(n); }}
             placeholder="field name"
@@ -130,7 +130,7 @@ function GB_SchemaBuilder(props) {
               fontSize: "var(--fs-11)", width: 130,
             }}
           />
-          <select
+          <select aria-label={"Field " + (i + 1) + " type"}
             value={r.type}
             onChange={(e) => { const n = [...rows]; n[i] = { ...r, type: e.target.value }; setRows(n); }}
             style={{

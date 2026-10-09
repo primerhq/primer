@@ -180,7 +180,7 @@ function GB_RefPicker({ draft, nodeId, onPick, onClose, sampleByExpr }) {
       }}
     >
       <div style={{ padding: "9px 12px", borderBottom: "1px solid var(--border)" }}>
-        <input
+        <input aria-label="Insert a value from"
           autoFocus
           value={q}
           onChange={(e) => setQ(e.target.value)}

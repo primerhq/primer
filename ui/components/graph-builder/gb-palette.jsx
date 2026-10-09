@@ -109,7 +109,7 @@ function GB_AddStepPalette(props) {
               After <span style={{ color: "var(--text-2)" }}>{afterNode.description || afterNode.id}</span> ·
             </span>
           ) : null}
-          <input
+          <input aria-label={stage === "purpose" ? "What should happen next?" : "Pick the reference"}
             data-testid="gb-palette-search"
             autoFocus
             value={query}
@@ -296,7 +296,7 @@ function GB_ToolPicker({ tools, value, onChange }) {
   const items = (tools || []).filter((t) => !q || (t.id + " " + (t.description || "")).toLowerCase().includes(q.toLowerCase()));
   return (
     <div data-testid="gb-tool-picker" style={{ border: "1px solid var(--border)", borderRadius: "var(--r-9)", overflow: "hidden" }}>
-      <input
+      <input aria-label="Search tools"
         value={q}
         onChange={(e) => setQ(e.target.value)}
         placeholder="Search tools…"

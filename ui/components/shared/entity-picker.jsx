@@ -19,7 +19,8 @@
 //   value        currently selected id, or "" for none
 //   onChange(id) called with the picked id, or "" when cleared
 //   placeholder  search input placeholder (optional)
-//   label        label rendered above the search box (optional)
+//   label        label rendered above the search box (optional); without one the search box is named by `ariaLabel`, else by its placeholder
+//   ariaLabel    the search box's accessible name when there is no `label` (optional)
 //   testid       data-testid prefix (optional; derived from `path` otherwise)
 //
 // Deliberately does NOT do a separate GET for the selected item's label -
@@ -39,6 +40,7 @@
     const placeholder = props.placeholder || "Search…";
     const label = props.label || null;
     const testid = props.testid || "entity-picker" + path.replace(/[^a-zA-Z0-9]+/g, "-");
+    const inputId = window.React.useId();
 
     const api = window.primerApi || {};
     const usePagedList = api.usePagedList;
@@ -66,7 +68,7 @@
 
     return (
       <div className="col" data-testid={testid} style={{ gap: 6 }}>
-        {label && <label className="field-label">{label}</label>}
+        {label && <label className="field-label" htmlFor={inputId}>{label}</label>}
         {value && (
           <div
             style={{
@@ -97,6 +99,8 @@
         <div className="input-icon">
           <Icon name="search" size={13} className="icon" />
           <input
+            id={inputId}
+            aria-label={label ? undefined : (props.ariaLabel || placeholder)}
             className="input"
             data-testid={testid + "-search"}
             placeholder={placeholder}

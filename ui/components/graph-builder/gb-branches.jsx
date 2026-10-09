@@ -91,7 +91,7 @@ function GB_BranchBuilder(props) {
           {(b.conditions || []).map((c, ci) => (
             <div key={ci} className="row" style={{ gap: 6, alignItems: "center", flexWrap: "wrap", fontSize: "var(--fs-12)" }}>
               <span style={{ color: "var(--text-3)" }}>{ci === 0 ? "If" : "and"}</span>
-              <select
+              <select aria-label={"Branch " + (bi + 1) + ", condition " + (ci + 1) + ": field"}
                 value={c.path || ""}
                 disabled={readOnly}
                 onChange={(e) => dispatch({ type: "UPDATE_BRANCH", idx: edgeIdx, bi, patch: { conditions: b.conditions.map((x, j) => (j === ci ? { ...x, path: e.target.value } : x)) } })}
@@ -102,7 +102,7 @@ function GB_BranchBuilder(props) {
                 {parsedPaths.map((p) => <option key={p} value={p}>{p}</option>)}
                 {c.path && parsedPaths.indexOf(c.path) === -1 ? <option value={c.path}>{c.path}</option> : null}
               </select>
-              <select
+              <select aria-label={"Branch " + (bi + 1) + ", condition " + (ci + 1) + ": operator"}
                 data-testid="gb-branch-op"
                 value={c.op || "eq"}
                 disabled={readOnly}
@@ -112,7 +112,7 @@ function GB_BranchBuilder(props) {
                 {GB_OPS.map((op) => <option key={op} value={op}>{GB_OP_LABELS[op]}</option>)}
               </select>
               {c.op !== "exists" ? (
-                <input
+                <input aria-label={"Branch " + (bi + 1) + ", condition " + (ci + 1) + ": value"}
                   value={Array.isArray(c.value) ? c.value.join(", ") : (c.value == null ? "" : String(c.value))}
                   disabled={readOnly}
                   placeholder={c.op === "in" || c.op === "not_in" ? "a, b, c" : "value"}
@@ -134,7 +134,7 @@ function GB_BranchBuilder(props) {
           ))}
           <div className="row" style={{ gap: 6, alignItems: "center", fontSize: "var(--fs-12)" }}>
             <span style={{ color: "var(--text-3)" }}>go to</span>
-            <select
+            <select aria-label={"Branch " + (bi + 1) + ": go to"}
               value={b.to_node || ""}
               disabled={readOnly}
               onChange={(e) => dispatch({ type: "UPDATE_BRANCH", idx: edgeIdx, bi, patch: { to_node: e.target.value } })}
@@ -187,7 +187,7 @@ function GB_BranchBuilder(props) {
       >
         <span style={{ color: "var(--amber)" }}>In any other case</span>
         <span style={{ color: "var(--text-3)" }}>go to</span>
-        <select
+        <select aria-label="In any other case: go to"
           value={router.default_to || ""}
           disabled={readOnly}
           onChange={(e) => dispatch({ type: "UPDATE_EDGE", idx: edgeIdx, patch: { router: { ...router, default_to: e.target.value || null } } })}
