@@ -386,6 +386,20 @@ def _attach(
     roots.append(entry)
 
 
+def _call_scope(payload: dict[str, Any]) -> str | None:
+    """The run a call or a result belongs to, as the key that pairs them; mirrors ``SH_callScope`` in ``ui/foundation/shell-turns.js`` so both readers pair alike.
+
+    A delegated record carries its run's id; one written before run ids carries only the delegating call's raw id (``call:<id>``); the parent turn's own records carry neither (``None``).
+    The recorder numbers a delegated run's scoped ids from a counter of its own, so the scoped id alone cannot pair them.
+    """
+    run = payload.get("delegate_run_id")
+    if run:
+        return run
+    if payload.get("delegated") and payload.get("delegate_tool_call_id"):
+        return "call:" + payload["delegate_tool_call_id"]
+    return None
+
+
 def _register_call(
     entry: dict[str, Any],
     rec: dict[str, Any],
@@ -395,7 +409,7 @@ def _register_call(
     calls_by_run: dict[tuple[str | None, str | None, str], dict[str, Any]],
 ) -> None:
     """Make a placed tool call findable: by its scoped id (for its result), by its raw id, and by the run and node that made it (for the records it delegates)."""
-    calls[(payload.get("delegate_run_id"), rec.get("node_id"), payload["id"])] = entry
+    calls[(_call_scope(payload), rec.get("node_id"), payload["id"])] = entry
     # A record predating the raw_id field (01a0518f) has no separate raw id at all - payload["id"] WAS the raw id at write time, so falling back to it here is correct, not just defensive.
     raw_id = payload.get("raw_id") or payload["id"]
     calls_by_raw_id[raw_id] = entry
@@ -501,7 +515,7 @@ def _tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "children": [],
             }
         elif kind == _TOOL_RESULT:
-            parent = calls.get((payload.get("delegate_run_id"), rec.get("node_id"), payload.get("call_id")))
+            parent = calls.get((_call_scope(payload), rec.get("node_id"), payload.get("call_id")))
             if parent is not None:
                 parent["status"] = "error" if payload.get("error") else "ok"
                 parent["duration_ms"] = _delta_ms(
@@ -513,7 +527,7 @@ def _tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             # Task 13's leaf rule, preserved through this rewrite: the S3
             # delivery record belongs to the call it delivered, so it is
             # never routed through _attach.
-            parent = calls.get((payload.get("delegate_run_id"), rec.get("node_id"), payload.get("call_id")))
+            parent = calls.get((_call_scope(payload), rec.get("node_id"), payload.get("call_id")))
             if parent is not None:
                 parent["children"].append({
                     "kind": "client_action",
