@@ -74,21 +74,51 @@ class LocalWorkspaceBackend(BaseWorkspaceBackend):
     def root(self) -> Path:
         return self._root
 
-    def _refuse_escaping(self, workspace_id: str) -> Path:
-        """Join the id to the root and refuse a result that is not strictly inside it.
+    def _one_segment(self, workspace_id: str) -> Path:
+        """The unresolved join, refused unless the id is exactly one segment under the configured root.
 
-        Defence in depth behind the entry-layer id rule (#680 N7): the id is
-        joined with a plain ``/``, so an absolute or ``../`` id would place
-        the workspace directory OUTSIDE the configured root. Resolve both
-        sides for the containment test - but RETURN the unresolved join:
-        the create rollback's ``rmtree`` and ``destroy`` must see the
-        symlink itself and refuse it, not follow it into another
-        workspace's directory. Refusal messages carry no host paths; the
-        paths go to the server log at WARNING.
+        Lexical only: no resolve(), no is_symlink(). ``self._root`` itself may be a
+        symlink (an operator mount point), so the parent is compared against the
+        CONFIGURED root, not a resolved one. Re-attach uses this alone, so a
+        workspace DIRECTORY that is a symlink (an operator who moved a big workspace
+        to another disk and left a link) still loads; create layers the resolved
+        containment and the symlink refusal on top of it.
+        """
+        joined = self._root / workspace_id
+        if joined.parent != self._root or workspace_id in (".", ".."):
+            logger.warning(
+                "refusing workspace id %r: not exactly one segment under the root %s",
+                workspace_id, self._root,
+            )
+            raise ValidationError(
+                f"workspace id {workspace_id!r} escapes the workspace root"
+            )
+        return joined
+
+    def _refuse_escaping(self, workspace_id: str) -> Path:
+        """Create's check on top of :meth:`_one_segment`: resolved containment, and no symlinked id.
+
+        Defence in depth behind the entry-layer id rule (#680 N7): resolve both
+        sides for the containment test - but RETURN the unresolved join, so the
+        create rollback's ``rmtree`` and ``destroy`` must see the symlink itself
+        and refuse it, not follow it into another workspace's directory. A
+        resolve()/is_symlink() failure (a looping link, a name the filesystem
+        cannot hold, a NUL byte) is a validation error, not a 500. Refusal
+        messages carry no host paths; the paths go to the server log at WARNING.
         """
         root = self._root.resolve()
-        joined = self._root / workspace_id
-        resolved = joined.resolve()
+        joined = self._one_segment(workspace_id)
+        try:
+            resolved = joined.resolve()
+            linked = joined.is_symlink()
+        except (OSError, RuntimeError, ValueError) as exc:
+            logger.warning(
+                "could not check workspace id %r under root %s: %s",
+                workspace_id, root, exc,
+            )
+            raise ValidationError(
+                f"workspace id {workspace_id!r} could not be resolved under the workspace root"
+            ) from exc
         if resolved == root or not resolved.is_relative_to(root):
             logger.warning(
                 "refusing workspace id %r: escapes the workspace root %s (would land at %s)",
@@ -97,7 +127,7 @@ class LocalWorkspaceBackend(BaseWorkspaceBackend):
             raise ValidationError(
                 f"workspace id {workspace_id!r} escapes the workspace root"
             )
-        if joined.is_symlink():
+        if linked:
             logger.warning(
                 "refusing workspace id %r: %s is a symbolic link (target %s)",
                 workspace_id, joined, resolved,
@@ -199,12 +229,18 @@ class LocalWorkspaceBackend(BaseWorkspaceBackend):
         supply one and the workspace isn't already in the in-memory
         cache, we cannot safely re-attach and return ``None``.
 
+        The id is checked LEXICALLY only (:meth:`_one_segment`) - no
+        resolve(), no is_symlink(): a workspace DIRECTORY that is a
+        symlink (an operator who moved a big workspace to another disk
+        and left a link) must still load. create keeps the stronger
+        check because it is where a bad id first touches the disk.
+
         Called by :meth:`BaseWorkspaceBackend.get` only after the cache
         lookup (with gone-eviction) misses.
         """
         if not self._initialised:
             await self.initialize()
-        ws_root = self._refuse_escaping(workspace_id)
+        ws_root = self._one_segment(workspace_id)
         if not await asyncio.to_thread(ws_root.is_dir):
             return None
         if template is None:

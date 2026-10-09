@@ -50,9 +50,12 @@ _log = logging.getLogger(__name__)
 # ending with a letter or digit, at most 63 characters. No slash or dot
 # (no traversal, no nesting), no control character. Lowercase only because
 # on a case-insensitive filesystem (a macOS dev machine) ``Proj`` and
-# ``proj`` would be two rows over ONE directory; k8s label values, docker
-# DNS names and gateway hostnames need lowercase, no ``_``, and an
-# alphanumeric end too. The rule matches every id the platform generates
+# ``proj`` would be two rows over ONE directory - and the rule protects
+# NEW ids only: a new ``proj`` can still adopt a legacy ``Proj`` directory.
+# k8s label VALUES allow uppercase, ``_`` and ``.``; the lowercase
+# requirement comes from the Gateway API hostname (RFC 1123) and the k8s
+# object names, which - like docker DNS names - also need no ``_`` and an
+# alphanumeric end. The rule matches every id the platform generates
 # (the bootstrap default ``primer``; the generated ``ws-<hex>``) and the
 # generated ids always pass it; existing rows are NOT re-validated - the
 # rule bites on create only. Every workspace-create entry (the REST body,
