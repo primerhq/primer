@@ -255,9 +255,11 @@ class SeededFanout:
 def build_fanout() -> SeededFanout:
     """Two concurrent fan-out siblings of a graph (nodes ``A`` and ``B``) that each delegate to a helper under the SAME raw call id ``call_0``.
 
-    Providers that synthesise call ids restart the numbering every stream, so both nodes' ``invoke_agent`` calls are ``call_0``. Both calls are written before either run's
-    records (the nodes run at once), and the runs' records are interleaved, as concurrent siblings write them. The records come from ``translate_stream_event`` (the parent's call
-    rows carry their node) and the real ``DelegationRecorder`` (the delegated records carry ``delegate_node_id``, the node that delegated).
+    Providers that synthesise call ids restart the numbering every stream, so both nodes' ``invoke_agent`` calls are ``call_0``. Each call row is written before the records of its
+    OWN run (the loop waits for the drainer to write a node's calls before it runs a tool), but nothing orders it against the OTHER node: the nodes run at once, so here both calls come
+    first and the two runs' records interleave, which is the order that makes the raw id ambiguous. Every run also makes a call of its own (``call_0`` again) and gets its result. The
+    records come from ``translate_stream_event`` (the parent's call rows and results carry their node) and the real ``DelegationRecorder`` (the delegated records carry
+    ``delegate_node_id``, the node that delegated).
     """
     writer = _Writer()
     parent_state = _CoalesceState()
@@ -279,16 +281,16 @@ def build_fanout() -> SeededFanout:
         b = {"delegate_tool_call_id": "call_0", "delegate_run_id": RUN_FAN_B, "delegate_parent_run_id": None, "delegate_depth": 1, "delegate_node_id": "B"}
         await recorder.on_event(TextDelta(index=0, text=ANSWER_B), **b)
         await recorder.on_event(TextDelta(index=0, text=ANSWER_A), **a)
+        for ids in (b, a):
+            await recorder.on_event(ToolCallStart(id="call_0", name="workspace__list_files", index=0), **ids)
+            await recorder.on_event(ToolCallEnd(id="call_0", arguments={"path": "."}, index=0), **ids)
+            await recorder.on_event(ExtendedEvent(extended=_ExecutorToolResult(call_id="call_0", output="listed", error=False)), **ids)
         await recorder.on_event(Done(stop_reason="stop", raw_reason="stop"), **b)
         await recorder.on_event(Done(stop_reason="stop", raw_reason="stop"), **a)
 
     _run_to_completion(delegated())
     for node in ("A", "B"):
-        call = writer.records[seqs[node] - 1]
-        writer.add(SessionMessageRecord(
-            seq=1, kind=SessionMessageKind.TOOL_RESULT, created_at=placeholder,
-            payload={"call_id": call.payload["id"], "output": f"helper {node} finished", "error": False},
-        ))
+        parent(ExtendedEvent(extended=_ExecutorToolResult(call_id="call_0", output=f"helper {node} finished", error=False)), node)
     parent(TextDelta(index=0, text=PARENT_FINAL), "A")
     parent(Done(stop_reason="stop", raw_reason="stop"), "A")
     return SeededFanout([r.model_dump(mode="json") for r in writer.records], seqs["A"], seqs["B"])
