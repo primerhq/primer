@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from primer.bus.scheduler_tasks import _BackgroundTask
+from primer.common.log import redact_credentials
 from primer.int.coordinator import ROLE_MCP_BRIDGE
 from primer.int.event_bus import EventBus
 from primer.toolset.mcp import McpToolsetProvider
@@ -150,12 +151,15 @@ class McpTaskBridge(_BackgroundTask):
             return
 
         if status == "failed":
+            # The upstream's own words: whatever the remote server or the library under it printed. They are persisted in the session.wake event
+            # (served by GET /v1/events) and read by the model, so credentials are masked where the payload is built (security ticket 01a1201c-8918).
             await self._publish_wake(
                 event_key,
                 {"result": {"isError": True, "content": [
                     {"type": "text",
-                     "text": (status_result.status_message
-                              or f"task {task_id} failed")},
+                     "text": redact_credentials(
+                         status_result.status_message or f"task {task_id} failed",
+                     )},
                 ]}},
             )
             return
@@ -167,7 +171,25 @@ class McpTaskBridge(_BackgroundTask):
         result_for_bus = {
             k: v for k, v in payload_dict.items() if not k.startswith("_")
         }
+        if result_for_bus.get("isError"):
+            # A task that completed AS an error result carries error text like a failed one, in any of its parts (content, an embedded resource's text,
+            # structuredContent): every string in it is masked. A task that completed with data is data and is published as it was.
+            result_for_bus = _masked_strings(result_for_bus)
         await self._publish_wake(event_key, {"result": result_for_bus})
+
+
+def _masked_strings(value: Any) -> Any:
+    """``value`` (JSON-shaped: dicts, lists, strings, numbers) with ``redact_credentials`` applied to every string value in it, however deep.
+
+    Keys, numbers and booleans are left alone; a string with no credential comes back as it was, so the shape and the other fields of the result are intact.
+    """
+    if isinstance(value, str):
+        return redact_credentials(value)
+    if isinstance(value, dict):
+        return {k: _masked_strings(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_masked_strings(v) for v in value]
+    return value
 
 
 # ===========================================================================

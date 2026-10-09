@@ -136,15 +136,18 @@ def _redact_arg(arg: Any) -> Any:
         # Filters run outside Handler.handleError's guard, so a raise
         # here would escape to the logger.info() caller. Keep the arg.
         return arg
-    redacted = redact_url_secrets(text)
+    redacted = redact_credentials(text)
     # Only replace the arg when something was masked, so %r / %d
     # formatting of ordinary args is untouched.
     return redacted if redacted != text else arg
 
 
 class _UrlSecretFilter(logging.Filter):
-    """Masks URL-borne credentials in a record's message, args and
-    exception text before any formatter sees it.
+    """Masks credentials in a record's message, args, string extras and
+    exception text before any formatter sees it: URL-borne ones (userinfo,
+    query keys, bot and webhook tokens) and the Bearer / Basic tokens a
+    library echoes back in an error (:func:`redact_credentials`; security
+    ticket 01a1201c-8918).
 
     Rewrites args element-wise first rather than collapsing them into
     the message: uvicorn's AccessFormatter unpacks a 5-tuple of args.
@@ -163,7 +166,7 @@ class _UrlSecretFilter(logging.Filter):
 
     def _redact(self, record: logging.LogRecord) -> None:
         if isinstance(record.msg, str):
-            record.msg = redact_url_secrets(record.msg)
+            record.msg = redact_credentials(record.msg)
         elif not record.args:
             # logger.warning(exc): the message is the object's str().
             record.msg = _redact_arg(record.msg)
@@ -178,7 +181,7 @@ class _UrlSecretFilter(logging.Filter):
                 or not isinstance(value, str)
             ):
                 continue
-            record.__dict__[key] = redact_url_secrets(value)
+            record.__dict__[key] = redact_credentials(value)
         if isinstance(record.args, tuple):
             record.args = tuple(_redact_arg(a) for a in record.args)
         elif isinstance(record.args, dict):
@@ -192,7 +195,7 @@ class _UrlSecretFilter(logging.Filter):
             except Exception:  # noqa: BLE001 - a bad format is logging's to report
                 message = None
             if message is not None:
-                redacted = redact_url_secrets(message)
+                redacted = redact_credentials(message)
                 if redacted != message:
                     record.msg, record.args = redacted, None
         if record.exc_info and not record.exc_text:
@@ -200,7 +203,7 @@ class _UrlSecretFilter(logging.Filter):
                 record.exc_info,
             )
         if record.exc_text:
-            record.exc_text = redact_url_secrets(record.exc_text)
+            record.exc_text = redact_credentials(record.exc_text)
 
 
 _URL_SECRET_FILTER = _UrlSecretFilter()
@@ -239,7 +242,10 @@ class _JsonFormatter(logging.Formatter):
             payload["traceback"] = (
                 record.exc_text or self.formatException(record.exc_info)
             )
-        return json.dumps(payload, default=str)
+        # The filter masked the strings it knows (the message, the string extras, the traceback). An extra that is a dict, a list or an object is rendered
+        # only here (``default=str``), so the finished line is masked once more: a credential in any extra, whatever its type, never reaches the log.
+        # redact_credentials leaves the line valid JSON (its rules stop at a quote or a backslash that is not part of a \uXXXX escape) and is idempotent.
+        return redact_credentials(json.dumps(payload, default=str))
 
 
 class _DevFormatter(logging.Formatter):

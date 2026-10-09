@@ -548,7 +548,7 @@ class ToolExecutionManager:
         import time as _time
         _tracer = _tracing.get_tracer("primer.tool")
         _t0 = _time.monotonic()
-        with _tracer.start_as_current_span("tool.exec") as _span:
+        with _tracing.span(_tracer, "tool.exec") as _span:
             _span.set_attribute("tool.name", call.name)
             try:
                 result = _without_credentials(await self._execute_inner(
@@ -558,7 +558,6 @@ class ToolExecutionManager:
                 await self._emit_tool_called(call, ok=not result.error)
                 return result
             except Exception as _exc:
-                _span.record_exception(_exc)
                 _metrics.tool_calls_total.labels(call.name, "fail").inc()
                 await self._emit_tool_called(call, ok=False)
                 raise
@@ -1066,7 +1065,7 @@ async def invoke_one(
 
     _tracer = _tracing.get_tracer("primer.tool")
     _t0 = _time.monotonic()
-    with _tracer.start_as_current_span("tool.exec") as _span:
+    with _tracing.span(_tracer, "tool.exec") as _span:
         _span.set_attribute("tool.name", tool_name)
         _span.set_attribute("tool.via", "mcp")
         try:
@@ -1079,7 +1078,6 @@ async def invoke_one(
             _metrics.tool_calls_total.labels(tool_name, "ok").inc()
             return result
         except Exception as _exc:
-            _span.record_exception(_exc)
             _metrics.tool_calls_total.labels(tool_name, "fail").inc()
             raise
         finally:

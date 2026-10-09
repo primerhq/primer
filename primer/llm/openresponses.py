@@ -994,7 +994,7 @@ class OpenResponsesLLM(LLM):
         _provider_kind = self._provider.provider.value
         _tracer = _tracing.get_tracer("primer.llm")
         _t0 = time.monotonic()
-        with _tracer.start_as_current_span("llm.stream") as _span:
+        with _tracing.span(_tracer, "llm.stream") as _span:
             _span.set_attribute("llm.provider", _provider_kind)
             _span.set_attribute("llm.model", model)
             if max_output_tokens is not None:
@@ -1143,7 +1143,6 @@ class OpenResponsesLLM(LLM):
                     _metrics.llm_tokens_total.labels(_provider_kind, "in").inc(tokens_in)
                     _metrics.llm_tokens_total.labels(_provider_kind, "out").inc(tokens_out)
             except Exception as _exc:
-                _span.record_exception(_exc)
                 _metrics.llm_failure_total.labels(_provider_kind, type(_exc).__name__).inc()
                 raise
             finally:

@@ -223,7 +223,7 @@ class OpenRouterLLM(LLM):
         _provider_kind = self._provider.provider.value
         _tracer = _tracing.get_tracer("primer.llm")
         _t0 = time.monotonic()
-        with _tracer.start_as_current_span("llm.stream") as _span:
+        with _tracing.span(_tracer, "llm.stream") as _span:
             _span.set_attribute("llm.provider", _provider_kind)
             _span.set_attribute("llm.model", model)
             if max_output_tokens is not None:
