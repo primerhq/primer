@@ -179,7 +179,15 @@ def _reraise_masked(exc: BadRequestError, provider: Any) -> NoReturn:
     which the probes interpolate. ``provider`` is the stub the draft was validated into: ``describe_failure`` masks its configured key (itself, its
     escaped form and its normalised form), password and Bearer / Basic tokens with the rules the adapters' in-stream failures use, and leaves a message
     with no credential as it was.
+
+    ``provider`` is ``None`` when no stub was built (``_probe_llm_models``'s exhaustiveness net, a kind with no probe branch): there is no configured
+    credential to look for, so only the URL-borne ones are masked and the rest of the message is left as it was.
     """
+    if provider is None:
+        text = redact_url_secrets(exc.message)
+        if text == exc.message:
+            raise exc
+        raise type(exc)(text, code=exc.code, status_code=exc.status_code, cause=exc.cause) from exc
     masked = describe_failure(exc, exc, provider)
     if masked is exc:
         raise exc
