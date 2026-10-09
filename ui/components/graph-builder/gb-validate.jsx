@@ -212,7 +212,8 @@ function GB_validate(draft, opts) {
   // UI-only pre-emptive checks that mirror real runtime failures.
   for (let idx = 0; idx < edges.length; idx++) {
     const e = edges[idx];
-    if (!e.router || e.router.kind !== "json_path") continue;
+    // A pasted import can omit kind; the model defaults it to "json_path" (_JsonPathRouter.kind), so an absent kind still gets the json_path checks below.
+    if (!e.router || (e.router.kind || "json_path") !== "json_path") continue;
     const src = nodes.find((n) => n.id === e.from_node);
     const usesPaths = (e.router.branches || []).some((b) => (b.conditions || []).length);
     if (src && usesPaths && !src.response_format) {
