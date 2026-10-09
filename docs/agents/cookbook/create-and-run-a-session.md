@@ -68,7 +68,7 @@ Response:
 ```json
 { "id": "ses-1", "status": "ended", "ended_reason": "completed" }
 ```
-Re-call on an interval until `status` is `ended`. Status moves `created` then `running` then `ended`.
+Re-call on an interval until `status` is `ended`. Status moves `created` then `running` then `ended`. A transient model failure (a provider 5xx, a rate limit, a dropped connection) does not end an interactive session: it rests `waiting` with `last_turn_error` set (`{code, at}`), so also stop polling when `status` is `waiting` and `last_turn_error` is not null; the turn failed, and a new message continues the session.
 
 ### 5. Collect the output
 `workspaces::read_workspace_file`
