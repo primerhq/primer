@@ -53,7 +53,7 @@ def test_a_tool_id_can_be_typed_while_the_catalogue_is_down(page: Page, base_url
 
         alert = page.get_by_test_id("gb-tool-catalogue-error")
         expect(alert).to_be_visible(timeout=15_000)
-        expect(alert).to_contain_text("the tool service is down")
+        expect(alert).to_contain_text("The list of tools could not be loaded: the tool service is down.")
         expect(page.get_by_text("No tools match.")).to_have_count(0)
 
         box = page.get_by_label("Tool id")
@@ -70,6 +70,7 @@ def test_a_tool_id_can_be_typed_while_the_catalogue_is_down(page: Page, base_url
         page.get_by_test_id("gb-tool-catalogue-retry").click()
         expect(page.get_by_test_id("gb-tool-catalogue-error")).to_have_count(0, timeout=15_000)
         expect(page.get_by_label("Search tools")).to_be_visible()
+        expect(page.get_by_label("Search tools")).to_be_focused()   # the button that was pressed is gone: the focus goes to the list's search box
         assert state["calls"] >= 2
     finally:
         page.unroute("**/v1/tools/catalogue*")
