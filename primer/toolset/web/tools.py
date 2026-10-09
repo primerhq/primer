@@ -56,6 +56,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Total time for one ``download`` (every hop and the body). The default byte cap is 100 MB, so this is room for a slow link, not for a stalled one.
+DEFAULT_DOWNLOAD_TIMEOUT_SECONDS = 300.0
+
 
 HttpMethod = Literal[
     "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"
@@ -367,8 +370,9 @@ def make_http_request_handler(
                     body_bytes, truncated = await read_capped(response, response_body_byte_cap)
         except EgressRefused as exc:
             return ToolCallResult(output=f"http-request {exc}", is_error=True)
-        except (httpx.RequestError, httpx.InvalidURL) as exc:
-            # InvalidURL (a redirect to ``data:...``, a Location httpx cannot join) is not an HTTPError, so it is named here.
+        except (httpx.RequestError, httpx.InvalidURL, UnicodeError) as exc:
+            # InvalidURL (a redirect to ``data:...``, a Location httpx cannot join) is not an HTTPError, so it is named here; an ``xn--`` host in a
+            # Location raises ``idna.IDNAError``, a UnicodeError, from the same place.
             logger.warning(
                 "http-request transport failure",
                 extra={
@@ -465,6 +469,7 @@ def make_download_handler(
     http_client: httpx.AsyncClient,
     workspace_registry: "WorkspaceRegistry",
     byte_cap: int,
+    timeout_seconds: float = DEFAULT_DOWNLOAD_TIMEOUT_SECONDS,
 ) -> "ToolHandler":
     """Build the async handler for the ``download`` tool (workspace only).
 
@@ -477,10 +482,12 @@ def make_download_handler(
 
     Closes over a shared :class:`httpx.AsyncClient` (connection pooling),
     the :class:`WorkspaceRegistry` (to resolve the live workspace from
-    ``ctx.workspace_id``), and the default ``byte_cap``.
+    ``ctx.workspace_id``), the default ``byte_cap`` and the ``timeout_seconds`` the whole transfer (every hop and the body) must fit in.
     """
     if byte_cap <= 0:
         raise ValueError(f"byte_cap must be > 0, got {byte_cap!r}")
+    if timeout_seconds <= 0:
+        raise ValueError(f"timeout_seconds must be > 0, got {timeout_seconds!r}")
 
     async def _handle(
         arguments: dict[str, Any], *, ctx: ToolContext
@@ -528,9 +535,12 @@ def make_download_handler(
         # through ``read_capped``, which bounds every decode step (a gzip chunk is not inflated whole before the cap can see it), and a stacked or
         # unknown Content-Encoding is refused. Do NOT read-all-then-truncate.
         try:
-            async with http_client.stream("GET", url_str, headers={"Accept-Encoding": ACCEPT_ENCODING}) as resp:
-                resp.raise_for_status()
-                data, over_the_cap = await read_capped(resp, cap)
+            # One deadline for the whole transfer: the client's ``timeout`` is per operation, and the raw ceiling in ``read_capped`` bounds bytes,
+            # not time, so a body that drips would otherwise hold the call (and the turn) open as long as the server likes.
+            async with asyncio.timeout(timeout_seconds):
+                async with http_client.stream("GET", url_str, headers={"Accept-Encoding": ACCEPT_ENCODING}) as resp:
+                    resp.raise_for_status()
+                    data, over_the_cap = await read_capped(resp, cap)
             if over_the_cap:
                 return ToolCallResult(
                     output=(
@@ -551,9 +561,16 @@ def make_download_handler(
             return ToolCallResult(output=f"download {exc}", is_error=True)
         except UnsupportedContentEncoding as exc:
             return ToolCallResult(output=f"download failed: {exc}", is_error=True)
-        except (httpx.RequestError, httpx.InvalidURL) as exc:
+        except (httpx.RequestError, httpx.InvalidURL, UnicodeError) as exc:
+            # Like ``http_request``: a Location httpx cannot join (``data:...``, an ``xn--`` host) is a failed request, not an exception.
             return ToolCallResult(
                 output=f"download failed: {type(exc).__name__}: {exc}",
+                is_error=True,
+            )
+        except TimeoutError:
+            logger.warning("download timed out", extra={"url": url_str, "timeout_seconds": timeout_seconds})
+            return ToolCallResult(
+                output=f"download timed out after {timeout_seconds:g}s; nothing was written",
                 is_error=True,
             )
 
