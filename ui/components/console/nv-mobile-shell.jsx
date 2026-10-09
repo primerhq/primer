@@ -568,7 +568,7 @@ function NV_MobileSpaces(props) {
                     var sid = s.session_id;
                     var ident = NV_identity(s.binding);
                     var isAttention = !!(attentionSidsByWs[w.id] && attentionSidsByWs[w.id][sid]);
-                    // The same words as the session header's chip (Running / Waiting / Parked / Paused / Ready / Ended).
+                    // The same words as the session header's chip (Running / Waiting / Parked / Paused / Ready / Last turn failed / Ended).
                     var stateView = window.NV_sessionStateChipView(s);
                     return (
                       <button type="button" key={sid}
@@ -583,7 +583,8 @@ function NV_MobileSpaces(props) {
                           <div className="card-title-wrap">
                             <div className="card-title">{s.name || sid}</div>
                             <div className="card-subtitle" data-testid={"nv-mob-session-state:" + sid}
-                              data-state={stateView.state}>{stateView.label}</div>
+                              data-state={stateView.state}
+                              data-failed={stateView.failed ? "true" : undefined}>{stateView.label}</div>
                           </div>
                           {isAttention ? (
                             <span className="nv-dot-attention" title="needs you" />
