@@ -11,7 +11,6 @@
   "components/model-profiles.jsx": 2,
   "components/new-session-form.jsx": 6,
   "components/semantic-search.jsx": 1,
-  "components/shared/entity-picker.jsx": 1,
   "components/toolsets.jsx": 6,
   "components/workspaces.jsx": 12
 }
