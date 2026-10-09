@@ -19,6 +19,15 @@ the turn it happened in. Only an EXPLICIT false counts: an ``error`` with no ``f
 errors, the dispatch failure exit's own ERROR record), ``fatal: true`` and ``fatal: null`` are terminals, as they always were. The console's
 mirror, ``SH_closesTurn`` (ui/foundation/shell-turns.js), says the same, and tests/ui/test_shell_turns.py compares the two over every
 variant.
+
+One FAILED turn is one window (ticket 01a11ca5). A failed model call writes the stream's own terminal, then dispatch's failure-exit ERROR with
+the same words, then the claim adapter's release marker, and ``closes_turn`` is per record, so each of them used to end a window of its own:
+two or three turns for one failure, in the timeline's windows, the trace's ordinals, ``session_usage.turns`` and the open-turn count. Whether a
+record is a COPY of an earlier failure needs the records before it, so the windowing readers walk the log through :class:`TurnWindowScanner`:
+the first error of a failure ends the window and the rest of the failure is filed with it. Everything that asks only "is this record a
+terminal of the session's own run" (a turn's status, the final text, the relay's boundaries) keeps using the per-record predicates, so a copy at
+the END of the log still reads as a terminal. Folded on read, so logs written before the rule fold the same way. The console's mirror is
+``SH_windowEndSeqs`` (ui/foundation/shell-turns.js); tests/ui/test_shell_turns.py compares the two over the shapes the writers produce.
 """
 
 from __future__ import annotations
@@ -30,6 +39,7 @@ from primer.model.workspace_session import SessionMessageKind
 _DONE = SessionMessageKind.DONE.value
 _ERROR = SessionMessageKind.ERROR.value
 _CANCELLED = SessionMessageKind.CANCELLED.value
+_USER_INPUT = SessionMessageKind.USER_INPUT.value
 
 TERMINAL_KINDS = frozenset({_DONE, _ERROR, _CANCELLED})
 
@@ -68,4 +78,86 @@ def closes_turn(rec: dict[str, Any]) -> bool:
     return True
 
 
-__all__ = ["TERMINAL_KINDS", "closes_turn", "is_delegated", "is_non_fatal_error", "is_session_terminal"]
+def is_bare_marker(rec: dict[str, Any]) -> bool:
+    """True for the claim adapter's release marker: an ``error`` that is ``terminal`` and says nothing (no message, code or title)."""
+    payload = rec.get("payload") or {}
+    return rec.get("kind") == _ERROR and payload.get("terminal") is True and not payload.get("message") and not payload.get("code") and not payload.get("title")
+
+
+# What :meth:`TurnWindowScanner.feed` says about a record.
+CLOSES = "closes"        # the record ends a window
+COPY = "copy"            # a copy of a failure that already ended one: ends nothing, and belongs to the window it copies
+INSIDE = "inside"        # an ordinary record of the open window
+
+
+class TurnWindowScanner:
+    """Feed the records of a log in order; it says which ones end a window, which are copies of a failure that did, and which are neither.
+
+    The rule, per record (a delegated record is always ``INSIDE``: a subagent's terminal and a subagent's failure are never the session's):
+
+    * ``user_input`` starts a new turn: nothing before it can be copied from.
+    * ``done`` / ``cancelled`` (a ``done`` that is not a tool round's) ends a window. A ``done`` with ``stop_reason: "error"`` (OpenResponses
+      ``response.failed``) is a FAILURE end, and what follows it in the turn can copy it; any other end closes the turn, so the next error is new.
+    * an ``error`` that says ``fatal: false`` is a notice: it ends nothing, and its words are remembered, because for OpenResponses it is the
+      cause that arrives AFTER the ``done(error)`` it belongs to (the agent loop holds the first Done / Error of a stream and yields it last).
+    * a bare release marker is a ``COPY`` once the turn has failed, and the only evidence (so it ends the window) when nothing has.
+    * any other ``error`` ends a window, unless the turn has already failed and an earlier error of the turn has the same non-empty message
+      from the same node (a record that names no node matches any node's: records from before graphs named theirs carry none). Two NAMED nodes
+      that fail with the same words are two failures, as are two failures with different words.
+
+    A notice alone does not make a turn failed: with no ``response.failed`` the dispatch error that follows it (same words) is the only end the
+    turn has, so it ends the window instead of being filed as a copy of a notice.
+    """
+
+    def __init__(self) -> None:
+        self._failed = False
+        self._words: list[tuple[str, str | None]] = []
+
+    def _new_turn(self) -> None:
+        self._failed = False
+        self._words = []
+
+    def _remember(self, message: str | None, node: str | None) -> None:
+        if message:
+            self._words.append((message, node))
+
+    def _copies_an_earlier_error(self, message: str | None, node: str | None) -> bool:
+        return bool(message) and any(m == message and (not n or not node or n == node) for m, n in self._words)
+
+    def feed(self, rec: dict[str, Any]) -> str:
+        if is_delegated(rec):
+            return INSIDE
+        kind = rec.get("kind")
+        if kind == _USER_INPUT:
+            self._new_turn()
+            return INSIDE
+        if kind == _ERROR:
+            payload = rec.get("payload") or {}
+            message = payload.get("message") if isinstance(payload.get("message"), str) else None
+            node = rec.get("node_id") or None
+            if is_bare_marker(rec):
+                if self._failed:
+                    return COPY
+                self._failed = True
+                return CLOSES
+            if is_non_fatal_error(rec):
+                self._remember(message, node)
+                return INSIDE
+            if self._failed and self._copies_an_earlier_error(message, node):
+                return COPY
+            self._remember(message, node)
+            self._failed = True
+            return CLOSES
+        if not closes_turn(rec):
+            return INSIDE
+        if kind == _DONE and (rec.get("payload") or {}).get("stop_reason") == "error":
+            self._failed = True
+        else:
+            self._new_turn()
+        return CLOSES
+
+
+__all__ = [
+    "CLOSES", "COPY", "INSIDE", "TERMINAL_KINDS", "TurnWindowScanner", "closes_turn", "is_bare_marker", "is_delegated", "is_non_fatal_error",
+    "is_session_terminal",
+]

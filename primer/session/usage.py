@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 from primer.model.workspace_session import SessionMessageKind
 from primer.session.replay import visible_records
-from primer.session.terminals import closes_turn
+from primer.session.terminals import CLOSES, TurnWindowScanner
 
 _DONE = SessionMessageKind.DONE.value
 
@@ -26,7 +26,7 @@ class SessionUsage:
     """Token totals, and the turn and model-call counts, for what is currently visible in a session.
 
     ``turns`` is the number of turns IN VIEW: the visible records that end a turn by the shared rule
-    (:func:`primer.session.terminals.closes_turn`), so it equals the trace's turn ordinals. A compaction folds the turns it
+    (:class:`primer.session.terminals.TurnWindowScanner`: a failed turn is one, however many error records it wrote), so it equals the trace's turn ordinals. A compaction folds the turns it
     replaced away and a rewind drops the rewound ones, so after either it is NOT the session's lifetime count (that is the
     row's ``turn_no``). A ``done`` followed by the ``cancelled`` of a Stop that landed after the model finished counts as two,
     exactly as the trace splits it into two windows.
@@ -51,8 +51,9 @@ def session_usage(raw_lines: list[str]) -> SessionUsage:
     turns = model_calls = 0
     last_in = last_out = 0
     tot_in = tot_out = tot_cached = tot_reasoning = 0
+    scanner = TurnWindowScanner()
     for rec in visible_records(raw_lines):
-        if closes_turn(rec):
+        if scanner.feed(rec) == CLOSES:
             turns += 1
         if rec.get("kind") != _DONE:
             continue
