@@ -426,25 +426,28 @@ async def _mark_resume_applied(pool: "WorkerPool", session) -> None:
     ``resumable``. It writes nothing else, and nothing once the release committed (the park columns are cleared) or the
     row parked again (a new ``parked_at``). Best-effort, like ``completed_turn_no``: a rejected fence or a storage error is
     logged and never fails the resume (without the marker a rolled-back release runs the handler again, as it did before).
-    The record write before it is field-scoped as well, so the two writes do not depend on their order.
+    The record write before it is field-scoped as well (``advance_last_seq``): neither write overwrites the other, and the marker
+    is still the last write, after every effect.
 
-    Only the continue path calls this. A handler that re-parks (a yielding tool behind an approval, a graph that still has
-    pending siblings), ends the session or fails is NOT covered: its effects are not all committed before its release, so
-    there is nothing to skip to, and a rollback of its release still runs the handler again. ``tool_wait`` parks resume
-    through their own coordinator and are not covered either.
+    Only the continue path calls this, so only a resume that continues is covered. NOT covered (ticket 01a1206e-0acc): a resume
+    that RE-PARKS (a yielding tool behind an approval, a graph that still has pending siblings) and a handler that raises, whose
+    effects are not all committed before the release, so a rollback of that release still runs the handler again; and
+    ``tool_wait`` parks, which resume through their own coordinator. An exit through ``pool._end_session`` (ENDED, failed) is NOT
+    a gap: it commits ENDED before the release, so the re-claim finds a finished session.
     """
     if pool._storage is None or session.parked_at is None:
         return
     from pydantic_core import to_jsonable_python
 
     from primer.model.workspace_session import WorkspaceSession
+    from primer.storage import raw_generation
 
     storage = pool._storage.get_storage(WorkspaceSession)
     try:
         written = await storage.patch_if(
             session.id,
             to_jsonable_python({"resumed_park_at": session.parked_at}),
-            where={"parked_at": [to_jsonable_python(session.parked_at)], "parked_status": ["resumable"]},
+            where={"parked_at": [raw_generation(session, "parked_at")], "parked_status": ["resumable"]},
         )
     except Exception:  # noqa: BLE001 - best-effort; the resume's own outcome stands
         logger.warning(
