@@ -441,3 +441,78 @@ def test_an_ollama_connection_error_raised_from_none_carries_its_own_text_not_th
 
     assert isinstance(err, NetworkError)
     assert err.message.endswith("(ConnectionError): Failed to connect to Ollama. Please check that Ollama is running."), err.message
+
+
+# ---- round 3 of the review of PR 619: the scan limit, the exact Basic rule, escapes, unconfigured Basic credentials ----------------------------
+
+
+def _b64(text: str) -> str:
+    import base64
+
+    return base64.b64encode(text.encode()).decode()
+
+
+def test_the_scan_limit_is_a_bound_not_a_target():
+    from primer.llm._failure import _SCAN_LIMIT
+
+    assert _SCAN_LIMIT <= 64_000
+
+
+@pytest.mark.parametrize("padding", [" ", "\x00", "\n", "\t", " \x00\n"])
+async def test_a_key_that_straddles_the_scan_limit_behind_padding_is_never_cut_in_half(padding):
+    """The text is normalised (controls stripped, whitespace collapsed) BEFORE it is sliced and scrubbed. Sliced first, a verbatim echo of the key that
+    starts a few characters before the limit was cut there and the collapse then brought its first characters to the front of the message, where
+    the exact match could no longer see them."""
+    from primer.llm._failure import _SCAN_LIMIT
+
+    echo = padding * ((_SCAN_LIMIT - 12) // len(padding)) + API_KEY
+    err = _described(await _openai_sdk_error(500, {"error": {"message": echo}}))
+
+    assert not any(API_KEY[i:i + 8] in err.message for i in range(len(API_KEY) - 7)), err.message
+
+
+async def test_the_configured_base_url_pair_is_masked_after_basic_and_as_a_bare_token_even_when_it_is_all_letters():
+    """``http://user:pass@`` goes on the wire as ``Authorization: Basic dXNlcjpwYXNz`` (letters only, no padding). The generic ``Basic`` rule does not
+    need the exact one for that header, but a bare echo of the token (a JSON field, a debug dump) is caught by the exact rule alone."""
+    provider = _provider("http://user:pass@lmstudio.local:1234/v1")
+    token = _b64("user:pass")
+    assert token == "dXNlcjpwYXNz"
+    after_basic = _described(await _openai_sdk_error(401, {"error": {"message": f"denied Authorization: Basic {token}"}}), provider)
+    bare = _described(await _openai_sdk_error(401, {"error": {"message": f'denied: {{"auth": "{token}"}}'}}), provider)
+
+    assert token not in after_basic.message and token not in bare.message, (after_basic.message, bare.message)
+
+
+async def test_the_exact_basic_token_is_masked_in_its_padded_and_its_unpadded_form():
+    provider = _provider("http://bob:hunter2@lmstudio.local:1234/v1")
+    padded = _b64("bob:hunter2")
+    assert padded.endswith("=")
+    unpadded = padded.rstrip("=")
+    for echo in (f"bare {padded} here", f"bare {unpadded} here"):
+        err = _described(await _openai_sdk_error(401, {"error": {"message": echo}}), provider)
+
+        assert unpadded not in err.message, err.message
+
+
+@pytest.mark.parametrize("shape", ["Bearer%20{key}", "Bearer\\u0020{key}", "q=api_key%3D{key}%26", "Bearer {key}", "key={key}&x"])
+async def test_a_short_key_after_a_percent_or_unicode_escape_is_still_masked(shape):
+    """``Bearer%20sk-1234``: the ``0`` of the escape glued to the key made it look like part of a longer token."""
+    key = "sk-1234"
+    err = _described(await _openai_sdk_error(500, {"error": {"message": "echo " + shape.format(key=key) + " end"}}), _provider_with_key(key))
+
+    assert key not in err.message and "[REDACTED]" in err.message, err.message
+
+
+@pytest.mark.parametrize("pair", ["a:b", "user:pass", "bob:hunter", "admin:password1", "ab:cd", "proxy:Tr0ub4dor-pw"])
+async def test_a_basic_credential_primer_did_not_configure_is_masked_when_it_decodes_to_user_colon_password(pair):
+    for token in (_b64(pair), _b64(pair).rstrip("=")):
+        err = _described(await _openai_sdk_error(401, {"error": {"message": f"denied for Authorization: Basic {token} sorry"}}))
+
+        assert token not in err.message and "Basic [REDACTED]" in err.message, err.message
+
+
+async def test_words_after_basic_that_do_not_decode_to_a_credential_are_left_alone():
+    for sentence in ("Basic authentication is required", "Basic Authorization header missing", "Basic information about the realm"):
+        err = _described(await _openai_sdk_error(401, {"error": {"message": sentence}}))
+
+        assert err.message.endswith(sentence), err.message
