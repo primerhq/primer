@@ -110,8 +110,8 @@ network).
   sends a byte at a time is given up on at that deadline
   (`http-request timed out after Ns`), and `web_fetch` gives up on the same
   terms (a transient failure, so an aggregated fetch tries the next
-  provider). `download` has the same kind of deadline, set by the platform
-  (300 seconds by default) and not by an argument: past it the call fails
+  provider). `download` has the same kind of deadline, fixed by the platform
+  at 300 seconds and not by an argument: past it the call fails
   with `download timed out after Ns; nothing was written`.
 - A redirect whose `Location` cannot be parsed (`data:...`, a malformed
   `xn--` host) is a failed request (`http-request failed: ...`,
