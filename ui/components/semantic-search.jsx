@@ -278,6 +278,7 @@ function SSPListPage({ onOpen, pushToast }) {
           <div className="sep-v" />
           <select
             className="select"
+            aria-label="Filter by backend"
             value={backendFilter}
             onChange={(e) => setBackendFilter(e.target.value)}
           >
