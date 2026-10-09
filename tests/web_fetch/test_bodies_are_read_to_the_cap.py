@@ -611,14 +611,70 @@ async def test_download_max_bytes_beyond_a_machine_word_is_not_an_overflow():
     assert ws.writes == [("file.bin", text)]
 
 
+UNJOINABLE_LOCATIONS = [
+    "data:text/plain,hi",       # httpx.InvalidURL, which is not an HTTPError
+    "http://xn--/",             # idna.IDNAError ("Malformed A-label"), a UnicodeError
+    "http://xn--zz-/x",         # idna.IDNAError ("must not end with a hyphen")
+    "https://xn--a.com/",       # idna.InvalidCodepoint, a subclass of it
+]
+
+
+def _redirecting_client(location: str) -> httpx.AsyncClient:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"location": location})
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("which", TOOLS)
-async def test_a_redirect_to_a_url_httpx_cannot_parse_is_a_failed_request_not_an_exception(which):
-    """`Location: data:...` makes httpx raise InvalidURL, which is not an HTTPError, even with redirects not followed."""
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(302, headers={"location": "data:text/plain,hi"})
-
-    failure, writes = await _run(which, httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+@pytest.mark.parametrize("location", UNJOINABLE_LOCATIONS)
+async def test_a_redirect_to_a_url_httpx_cannot_parse_is_a_failed_request_not_an_exception(which, location):
+    """httpx builds the redirect for EVERY 3xx, even with redirects not followed, and raises on a Location it cannot join: InvalidURL for
+    ``data:...`` (not an HTTPError) and ``idna.IDNAError`` for an ``xn--`` host (a UnicodeError). Either must come back as a failed request: an
+    exception that is not a PrimerError fails the whole turn."""
+    failure, writes = await _run(which, _redirecting_client(location))
 
     assert failure is not None, "the redirect was treated as a success"
+    assert writes == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("location", UNJOINABLE_LOCATIONS)
+async def test_the_local_fetch_lets_the_chain_fall_back_on_a_location_it_cannot_parse(location):
+    """The same failure as a ``WebFetchUnavailable``, so an aggregated chain tries the next provider (which may reach the host itself)."""
+    with pytest.raises(WebFetchUnavailable, match="local transport"):
+        await LocalAdapter(client=_redirecting_client(location), raw_byte_cap=CAP).fetch(url="https://example.com/x.txt")
+
+
+@pytest.mark.asyncio
+async def test_download_gives_up_on_a_body_that_drips_past_its_total_deadline():
+    """``timeout`` is per operation in httpx, so a body that sends a byte every so often never trips it; the raw ceiling bounds bytes, not time."""
+    from primer.model.yield_ import ToolContext
+    from primer.toolset.web.tools import make_download_handler
+
+    body = _Body(chunk=b"x", delay=0.05)
+    registry = _WsRegistry()
+    handler = make_download_handler(http_client=_client(body), workspace_registry=registry, byte_cap=CAP, timeout_seconds=0.3)
+    ctx = ToolContext(tool_call_id="c1", session_id="s1", workspace_id="w1", initiated_by=None)
+    started = time.monotonic()
+
+    result = await asyncio.wait_for(handler({"url": "https://example.com/slow.bin"}, ctx=ctx), 10)
+
+    assert result.is_error and "timed out after 0.3s" in result.output, result.output
+    assert registry.ws.writes == []
+    assert time.monotonic() - started < 3
+    assert body.closed, "the response was left open"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("which", TOOLS)
+@pytest.mark.parametrize("compress", [_gzip, _zlib, _raw_deflate], ids=["gzip", "deflate", "raw-deflate"])
+async def test_junk_in_the_same_chunk_as_the_end_of_a_compressed_body_is_refused(which, compress):
+    """Not a later chunk (covered above): the end of the stream and the bytes after it arrive TOGETHER, as one piece."""
+    encoding = "gzip" if compress is _gzip else "deflate"
+
+    failure, writes = await _run(which, _encoded_client(compress(b"hello") + b"junk", encoding))
+
+    assert failure is not None and END_OF_STREAM in failure, failure
     assert writes == []
