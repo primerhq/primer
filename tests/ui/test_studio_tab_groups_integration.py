@@ -38,7 +38,9 @@ def test_tg_model_seeds_from_the_initial_url_as_preview() -> None:
 
 
 def test_read_side_sync_opens_as_preview_and_leaves_null_alone() -> None:
-    m = re.search(r"function onNav\(\)([\s\S]{0,700}?)\n    \}", SHELL)
+    # Window widened past 700 (console review C-025): the listener now also writes the canonical form of what it parsed back to the bar
+    # (a comment block and the replaceState lines), so the body is ~1400 characters; the three assertions are unchanged.
+    m = re.search(r"function onNav\(\)([\s\S]{0,1600}?)\n    \}", SHELL)
     assert m
     body = m.group(1)
     assert "if (parsed.doc)" in body
