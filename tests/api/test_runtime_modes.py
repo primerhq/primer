@@ -267,7 +267,7 @@ async def test_in_memory_scheduler_with_api_plus_worker_mode_is_healthy(
     with caplog.at_level(logging.WARNING):
         async with app.router.lifespan_context(app):
             assert app.state.scheduler_degraded_reason is None
-            assert app.state.scheduler_detail == "in-memory scheduler (single process)"
+            assert app.state.scheduler_detail == "in-memory scheduler (single process assumed)"
     assert not any(
         "in-memory scheduler" in r.message for r in caplog.records
     )
@@ -307,7 +307,7 @@ async def test_health_route_reports_the_wired_scheduler_rule(
     assert healthy["alive"] is True
     assert healthy["degraded"] is False
     assert healthy["degraded_reason"] is None
-    assert healthy["detail"] == "in-memory scheduler (single process)"
+    assert healthy["detail"] == "in-memory scheduler (single process assumed)"
 
     degraded = served[RuntimeMode.WORKER]
     assert degraded["degraded"] is True

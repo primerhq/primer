@@ -50,7 +50,7 @@ async def test_health_surfaces_scheduler_degraded(app, client) -> None:
     reason = "in-memory scheduler with runtime_mode=worker is not safe"
     app.state.scheduler_degraded_reason = reason
     # A stale healthy detail must not be served beside a degraded verdict.
-    app.state.scheduler_detail = "in-memory scheduler (single process)"
+    app.state.scheduler_detail = "in-memory scheduler (single process assumed)"
     try:
         response = await client.get("/v1/health")
         body = response.json()
