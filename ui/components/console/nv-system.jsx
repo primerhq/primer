@@ -59,9 +59,11 @@ function NV_sysNavsFor(role) {
 // active, attention count)" - the previous 4 cards (platform/in-flight/
 // claims/missed-heartbeats) were a scheduler-internals dump, not this
 // set. Sessions-active and attention-count need no new backend route:
-// GET /sessions?status=running&limit=1 and SH_api.pendingAttention()
-// (the batch-1 aggregate) both already carry a `.total` the UI never
-// asked for before.
+// GET /sessions?session_state=running&limit=1 (the turns in flight right now;
+// the older `status` filter also counted a session parked on a yielding tool
+// and one queued for a worker, C-036) and SH_api.pendingAttention() (the
+// batch-1 aggregate) both already carry a `.total` the UI never asked for
+// before.
 function NV_HealthCards() {
   var health = window.primerApi.useResource(
     "nv-sys:health",
@@ -75,7 +77,7 @@ function NV_HealthCards() {
     "nv-sys:sessions-active",
     function (signal) {
       return window.primerApi.apiFetch(
-        "GET", "/sessions?status=running&limit=1", null, { signal: signal });
+        "GET", "/sessions?session_state=running&limit=1", null, { signal: signal });
     },
     { pollMs: 10000 }
   );
@@ -108,7 +110,7 @@ function NV_HealthCards() {
         : (!sched.alive ? "down" : (sched.degraded ? "degraded" : "alive")),
       sub: healthState === "stuck" ? "health check failing"
         : sched.degraded ? (sched.degraded_reason || "degraded")
-        : (sched.alive ? "healthy" : "no scheduler attached"),
+        : (sched.alive ? (sched.detail || "healthy") : "no scheduler attached"),
       tone: healthState === "stuck" ? "var(--red)"
         : (schedOk ? "var(--green)" : (sched.alive ? "var(--amber)" : "var(--red)")),
     },
