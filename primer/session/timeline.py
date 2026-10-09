@@ -330,7 +330,7 @@ def _attach(
     payload: dict[str, Any],
     roots: list[dict[str, Any]],
     nodes: dict[str, dict[str, Any]],
-    calls: dict[tuple[str | None, str], dict[str, Any]],
+    calls: dict[tuple[str | None, str | None, str], dict[str, Any]],
     calls_by_raw_id: dict[str, dict[str, Any]],
     calls_by_run: dict[tuple[str | None, str | None, str], dict[str, Any]],
 ) -> None:
@@ -394,8 +394,12 @@ def _tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     its graph node, everything else is a root child. tool_result rows are
     never children of their own: they close the tool_call they answer.
 
-    ``calls`` is keyed by ``(node_id, tool_call_id)``, not tool_call_id
-    alone (01a0518f defense-in-depth): the write side now mints a
+    ``calls`` is keyed by ``(delegate_run_id, node_id, tool_call_id)``, not
+    tool_call_id alone. The run is ``None`` for the parent turn's own calls;
+    a delegated run numbers its scoped ids from a counter of its own, so its
+    first call and the parent's (or another run's) share ``x:tool:1:1`` and
+    a result would pair with whichever was registered last (ticket 01a11cd4).
+    The node is there for a reason of its own (01a0518f defense-in-depth): the write side now mints a
     node+turn+seq-scoped id for every NEW record (primer.session.
     persistence's _CoalesceState.scoped_call_ids), so a live collision
     shouldn't reach here at all - but a record persisted before that fix
@@ -409,7 +413,7 @@ def _tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
     roots: list[dict[str, Any]] = []
     nodes: dict[str, dict[str, Any]] = {}
-    calls: dict[tuple[str | None, str], dict[str, Any]] = {}
+    calls: dict[tuple[str | None, str | None, str], dict[str, Any]] = {}
     calls_by_raw_id: dict[str, dict[str, Any]] = {}
     # (the run that made the call, the graph node, raw id) -> entry: the run is ``None`` for a call the parent turn itself made, otherwise the
     # ``delegate_run_id`` the call's own record carries (it is a delegated record). Every call is registered under ``None`` for the node too (the
@@ -477,7 +481,7 @@ def _tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "children": [],
             }
             if payload.get("id"):
-                calls[(rec.get("node_id"), payload["id"])] = entry
+                calls[(payload.get("delegate_run_id"), rec.get("node_id"), payload["id"])] = entry
                 # A record predating the raw_id field (01a0518f) has no
                 # separate raw id at all - payload["id"] WAS the raw id
                 # at write time, so falling back to it here is correct,
@@ -490,7 +494,7 @@ def _tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 if call_node:
                     calls_by_run[(call_run, call_node, raw_id)] = entry
         elif kind == _TOOL_RESULT:
-            parent = calls.get((rec.get("node_id"), payload.get("call_id")))
+            parent = calls.get((payload.get("delegate_run_id"), rec.get("node_id"), payload.get("call_id")))
             if parent is not None:
                 parent["status"] = "error" if payload.get("error") else "ok"
                 parent["duration_ms"] = _delta_ms(
@@ -502,7 +506,7 @@ def _tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             # Task 13's leaf rule, preserved through this rewrite: the S3
             # delivery record belongs to the call it delivered, so it is
             # never routed through _attach.
-            parent = calls.get((rec.get("node_id"), payload.get("call_id")))
+            parent = calls.get((payload.get("delegate_run_id"), rec.get("node_id"), payload.get("call_id")))
             if parent is not None:
                 parent["children"].append({
                     "kind": "client_action",
