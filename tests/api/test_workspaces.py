@@ -1098,6 +1098,9 @@ class TestWorkspaceRouter:
             )
             assert resp.status_code == 422, (wid, resp.status_code, resp.text)
             assert resp.json()["type"] == "/errors/validation-error"
+            assert any(
+                e["loc"] == ["body", "id"] for e in resp.json()["extensions"]["errors"]
+            ), (wid, resp.json())
         listing = await client.get("/v1/workspaces")
         assert listing.status_code == 200
         assert listing.json()["items"] == []
