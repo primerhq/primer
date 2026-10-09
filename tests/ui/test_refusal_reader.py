@@ -407,6 +407,8 @@ _CHANNELS_PRELUDE = """
 globalThis.Modal = function (props) { return React.createElement("div", { "data-testid": "modal" }, props.children, props.footer); };
 globalThis.Btn = function (props) { return React.createElement("button", { "data-testid": "btn-" + props.kind, onClick: props.onClick, disabled: props.disabled }, props.children); };
 globalThis.Icon = function () { return null; };
+// FormField is the labelled row the dialog's fields are drawn with (console review C-003); this test only presses Save, so a pass-through row is all it needs.
+globalThis.FormField = function (props) { return React.createElement("div", null, props.children); };
 var __toasts = [];
 var __failure = null;
 window.primerApi = window.primerApi || {};
