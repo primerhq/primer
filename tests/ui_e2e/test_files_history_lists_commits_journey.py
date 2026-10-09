@@ -52,6 +52,8 @@ def test_the_history_lists_the_workspace_commits_and_a_click_opens_its_diff(
 ) -> None:
     wid = _a_workspace_id(base_url)
     _answer_the_log(page)
+    # The page fixture's first load may already have fetched the log, so reload first: the console's next log fetch hits the mock.
+    page.reload(wait_until="domcontentloaded")
     open_studio(page, console_url, wid)
     files_list(page)
     page.get_by_test_id("nv-file-history").click()
@@ -71,6 +73,8 @@ def test_the_mobile_files_tab_history_lists_the_commits_too(
 ) -> None:
     wid = _a_workspace_id(base_url)
     _answer_the_log(page)
+    # The page fixture's first load may already have fetched the log, so reload first: the console's next log fetch hits the mock.
+    page.reload(wait_until="domcontentloaded")
     page.set_viewport_size({"width": 390, "height": 844})
     page.goto(f"{console_url}#/w/{wid}")
     open_mobile_tab(page, console_url, "files")
