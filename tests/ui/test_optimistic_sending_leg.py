@@ -59,30 +59,30 @@ RESTING = {"status": "waiting", "ended_reason": None, "turn_status": "idle", "se
 
 def test_a_settled_ended_session_drops_the_leg_after_ten_seconds(v8) -> None:
     """The control: the case the fallback always covered."""
-    assert _over(v8("NV_sessionIsOver", "NV_optimisticLegOver"), ENDED) is True
+    assert _over(v8("NV_sessionIsOver", "NV_optimisticLegLeftMs", "NV_optimisticLegOver"), ENDED) is True
 
 
 def test_a_settled_resting_session_drops_the_leg_after_ten_seconds(v8) -> None:
-    assert _over(v8("NV_sessionIsOver", "NV_optimisticLegOver"), RESTING) is True
+    assert _over(v8("NV_sessionIsOver", "NV_optimisticLegLeftMs", "NV_optimisticLegOver"), RESTING) is True
 
 
 def test_a_session_that_rests_without_a_failure_drops_it_too(v8) -> None:
     """Any settled row: a message that never reached a turn leaves the session waiting with nothing on it."""
-    assert _over(v8("NV_sessionIsOver", "NV_optimisticLegOver"), {"status": "waiting", "turn_status": "idle", "session_state": "parked"}) is True
+    assert _over(v8("NV_sessionIsOver", "NV_optimisticLegLeftMs", "NV_optimisticLegOver"), {"status": "waiting", "turn_status": "idle", "session_state": "parked"}) is True
 
 
 @pytest.mark.parametrize("session", [ENDED, RESTING], ids=["ended", "resting"])
 def test_nothing_is_dropped_before_the_ten_seconds_are_up(v8, session: dict) -> None:
-    assert _over(v8("NV_sessionIsOver", "NV_optimisticLegOver"), session, optimistic=5_000, now=12_000) is False
+    assert _over(v8("NV_sessionIsOver", "NV_optimisticLegLeftMs", "NV_optimisticLegOver"), session, optimistic=5_000, now=12_000) is False
 
 
 @pytest.mark.parametrize("turn_status", ["running", "claimable"])
 def test_a_turn_that_is_queued_or_running_keeps_the_leg(v8, turn_status: str) -> None:
-    assert _over(v8("NV_sessionIsOver", "NV_optimisticLegOver"), {**RESTING, "turn_status": turn_status}) is False
+    assert _over(v8("NV_sessionIsOver", "NV_optimisticLegLeftMs", "NV_optimisticLegOver"), {**RESTING, "turn_status": turn_status}) is False
 
 
 def test_no_leg_and_no_row_are_nothing_to_drop(v8) -> None:
-    ctx = v8("NV_sessionIsOver", "NV_optimisticLegOver")
+    ctx = v8("NV_sessionIsOver", "NV_optimisticLegLeftMs", "NV_optimisticLegOver")
     assert _over(ctx, RESTING, optimistic=0) is False
     assert _over(ctx, None) is False
 
@@ -91,7 +91,7 @@ def test_a_message_to_a_parked_session_drops_the_leg_after_ten_seconds_and_leave
     """Pinned (review nit): a message to a PARKED session is routed pending, so the row stays idle while the session is parked; the leg (the composer's "sending") drops after the window, and what
     says the message is queued is the row's own state (the chip), not this flag."""
     parked = {"status": "waiting", "ended_reason": None, "turn_status": "idle", "session_state": "parked", "parked_status": "parked", "last_turn_error": None}
-    ctx = v8("NV_sessionIsOver", "NV_optimisticLegOver")
+    ctx = v8("NV_sessionIsOver", "NV_optimisticLegLeftMs", "NV_optimisticLegOver")
     assert _over(ctx, parked, optimistic=1_000, now=12_000) is True
     assert _over(ctx, parked, optimistic=1_000, now=9_000) is False
 
