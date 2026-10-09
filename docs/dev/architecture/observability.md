@@ -128,7 +128,7 @@ The instrumentation plumbing lives in `primer/observability/`:
   `otelTraceID` / `otelSpanID` (hex strings) to every `LogRecord` produced inside a
   span. The existing `_JsonFormatter` (`primer/common/log.py`) emits any non-reserved
   record attribute as a top-level JSON field, so the IDs appear automatically.
-- URL-borne credentials never reach the log. `configure_logging` puts
+- Credentials of the shapes below never reach the log (URL-borne ones, and since ticket 01a1201c-8918 the Bearer and Basic tokens a library echoes back in an error: the filter applies `redact_credentials`, not only `redact_url_secrets`, and `_JsonFormatter` masks the finished JSON line once more, so an extra that is a dict, a list or an object is covered too; the dev formatter prints no extras). A secret of no such shape (a bare key in prose) is not recognised: the filter knows no provider. `configure_logging` puts
   `_UrlSecretFilter` on the root handler and on the `uvicorn.access` /
   `uvicorn.error` loggers (uvicorn logs those through its own handlers with
   `propagate=False`, so the root handler never sees them). It masks query
@@ -147,8 +147,8 @@ The instrumentation plumbing lives in `primer/observability/`:
   password (it cannot be told apart from a token). Where a value can be typed by a person the
   caller must not print it at all: the draft-validation detail of a provider probe omits pydantic's
   `input_value` for that reason. The mask also covers Telegram
-  `/bot<id>:<secret>` segments (`/bot[REDACTED]`) and webhook capability tokens
-  (`/v1/webhooks/***<last4>`) in the message (a non-str message such as
+  `/bot<id>:<secret>` segments (`/bot[REDACTED]`), webhook capability tokens
+  (`/v1/webhooks/***<last4>`) and `Bearer <token>` / `Basic <base64 user:password>` tokens in the message (a non-str message such as
   `logger.warning(exc)` too), each arg, every string extra (`extra={"path": ...}`,
   which `_JsonFormatter` emits verbatim) and the exception text. Args are rewritten
   one by one, and collapsed into the message only when a credential spans the format
@@ -258,9 +258,17 @@ To instrument a new code path:
    Import the named metric where you measure and call the prometheus_client API
    directly. Keep label cardinality bounded (provider, kind, name, outcome).
 2. For a span, call `get_tracer(__name__)` once at module scope and wrap the body in
-   `with _tracer.start_as_current_span("<dotted.name>") as _span:`, setting
-   attributes with `_span.set_attribute(...)`. Record failures with
-   `_span.record_exception(...)` and observe duration from a `time.monotonic()`
+   `with _tracing.span(_tracer, "<dotted.name>") as _span:`, setting
+   attributes with `_span.set_attribute(...)`. Do not call `_span.record_exception(...)` and do not open the span with
+   `_tracer.start_as_current_span(...)` where a tool's or a provider's exception can leave the block:
+   the SDK exports the raw message and a stacktrace that ends in it, and an exception text carries what a library printed (a URL with
+   `user:password@`, an `Authorization` header). `primer.observability.tracing.span` records an `Exception` that leaves the block itself
+   (`record_failure`: the exception type and the message with credentials masked, ERROR status, no stacktrace; a cancellation is not recorded) and
+   re-raises it (ticket 01a1201c-8918). The SDK's `exception.stacktrace` and `exception.escaped` are not recorded: the stacktrace ends in the raw message. If
+   the frames are wanted back, record `traceback.format_tb(exc.__traceback__)` (frames only, no message) or the stacktrace through `redact_credentials`.
+   Use `tracing.span` in a `with` statement only (as a decorator on an `async def` it would cover the creation of the coroutine, not its run).
+   `tests/observability/test_span_exceptions_carry_no_credentials.py` scans every module under `primer/` and fails on a span opened the SDK's way
+   (`start_as_current_span`, `start_span`, `record_exception`), except the two `claim.due` spans. Observe duration from a `time.monotonic()`
    delta in a `finally` block. Follow the `llm.stream` shape in
    `primer/llm/anthropic.py`.
 3. Do not gate the call site on `ObservabilityConfig`. When tracing is off,
@@ -288,16 +296,16 @@ To add a turn-log writer backend:
 Tracing plus metrics are wired at these call sites:
 
 - LLM adapters (`anthropic`, `gemini`, `ollama`, `openresponses`, `openrouter`,
-  `openchat`) wrap their stream body in `tracer.start_as_current_span("llm.stream")`
+  `openchat`) wrap their stream body in `_tracing.span(_tracer, "llm.stream")`
   with attributes `llm.provider`, `llm.model`, `llm.request.max_tokens`, and
   (when `trace_llm_io` is on) `llm.request.messages` serialised via
   `_serialize_messages` (`primer/llm/_trace.py`). On success they set
   `llm.usage.tokens_in` / `tokens_out` and increment
-  `llm_tokens_total{provider,direction}`; on exception they `record_exception` and
-  bump `llm_failure_total{provider,error_type}`; a `finally` block records
+  `llm_tokens_total{provider,direction}`; on exception the span records the failure (`tracing.record_failure`: type and masked message) and
+  they bump `llm_failure_total{provider,error_type}`; a `finally` block records
   `llm_duration_seconds{provider}` from a monotonic clock.
-- `ToolExecutionManager.dispatch_call` (`primer/agent/tool_manager.py`) wraps each
-  call in `tracer.start_as_current_span("tool.exec")` with `tool.name`, increments
+- `ToolExecutionManager.execute` (`primer/agent/tool_manager.py`) wraps each
+  call in `_tracing.span(_tracer, "tool.exec")` with `tool.name`, increments
   `tool_calls_total{name,outcome}`, and observes `tool_duration_seconds{name}` in a
   `finally`. The standalone `invoke_one` helper used by the MCP endpoint opens the
   same `tool.exec` span with an added `tool.via='mcp'` attribute.
