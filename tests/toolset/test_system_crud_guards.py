@@ -11,7 +11,8 @@ bootstrap providers, and delete a model profile that agents still use. This pins
 * **reserved ids**: creating a reserved id is a conflict, deleting one is forbidden even when no row exists (REST 409 / 403),
   updating one stays allowed (REST allows it): embedding ``huggingface``, cross-encoder ``huggingface-ce``, semantic search
   ``lance``, the toolset scopes ``external`` / ``workspace`` / ``workspace_ext`` (create only), the default artifact provider
-  (delete only);
+  (delete only). That provider is the one reserved id with a rule on what a write may set: a create (its row went missing) or an
+  update must name a kind the factory can build, else ``validation-error`` and nothing is stored (REST 422; ticket 01a1226f);
 * **reference blocks** on delete: a model profile an agent uses or another profile lists as a member, a channel provider a
   channel uses, a toolset a tool-approval policy names (REST 409 ``in_use_by``);
 * **cache**: updating or deleting a model profile drops its cached aggregated LLM, as REST does.
@@ -286,12 +287,54 @@ class TestReservedIds:
             {"provider": "s3", "config": {"bucket": "b"}},
         ):
             is_error, answer = await _call(toolset, "update_artifact_storage_provider", id=DEFAULT_ARTIFACT_PROVIDER_ID, entity={"id": DEFAULT_ARTIFACT_PROVIDER_ID, **body})
-            assert is_error and answer["type"] == "validation-error" and "default" in answer["message"], answer
+            # The field comes first in the message (not "default": the id itself contains it).
+            assert is_error and answer["type"] == "validation-error" and answer["message"].startswith("provider: "), answer
             assert (await storage.get(DEFAULT_ARTIFACT_PROVIDER_ID)).provider is ArtifactStorageProviderType.DB, "the row is unchanged"
 
         kept_error, _ = await _call(toolset, "update_artifact_storage_provider", id=DEFAULT_ARTIFACT_PROVIDER_ID, entity={"id": DEFAULT_ARTIFACT_PROVIDER_ID, "provider": "db", "config": {}})
         spare_error, _ = await _call(toolset, "update_artifact_storage_provider", id="extra", entity={"id": "extra", "provider": "filesystem", "config": {"root": "/tmp/a"}})
         assert not kept_error and not spare_error, "keeping db is fine, and so is any other row"
+
+    @pytest.mark.asyncio
+    async def test_a_missing_default_artifact_provider_cannot_be_created_with_a_kind_that_cannot_be_built(self, world) -> None:
+        """B2 of the #708 review: with the row missing (a failed seed, a removal outside the API, a restore without it) a create got around the
+        update rule, and the boot seed, which only creates a missing row, never repaired it. REST answers 422."""
+        from primer.api.registries.artifact_storage_registry import DEFAULT_ARTIFACT_PROVIDER_ID
+        from primer.model.providers.artifact import ArtifactStorageProviderType
+
+        sp, toolset, _ = world
+        storage = sp.get_storage(ArtifactStorageProvider)
+        assert await storage.get(DEFAULT_ARTIFACT_PROVIDER_ID) is None, "this world starts without the default"
+
+        for body in (
+            {"provider": "filesystem", "config": {"root": "/tmp/a"}},
+            {"provider": "s3", "config": {"bucket": "b"}},
+        ):
+            is_error, answer = await _call(toolset, "create_artifact_storage_provider", entity={"id": DEFAULT_ARTIFACT_PROVIDER_ID, **body})
+            assert is_error and answer["type"] == "validation-error" and answer["message"].startswith("provider: "), answer
+            assert await storage.get(DEFAULT_ARTIFACT_PROVIDER_ID) is None, "nothing is stored"
+
+        db_error, created = await _call(toolset, "create_artifact_storage_provider", entity={"id": DEFAULT_ARTIFACT_PROVIDER_ID, "provider": "db", "config": {}})
+        spare_error, spare = await _call(toolset, "create_artifact_storage_provider", entity={"id": "extra", "provider": "filesystem", "config": {"root": "/tmp/a"}})
+        assert not db_error and created["provider"] == "db", created
+        assert not spare_error, spare
+        assert (await storage.get(DEFAULT_ARTIFACT_PROVIDER_ID)).provider is ArtifactStorageProviderType.DB
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("verb", ["create", "update"])
+    async def test_the_write_descriptors_state_the_default_artifact_provider_rule(self, world, verb) -> None:
+        """The agent reads the rule before it writes (``write_notes_by_label``). docs/agents has no artifact-provider page, so the descriptor
+        is the agent-facing doc."""
+        from primer.api.registries.artifact_storage_registry import DEFAULT_ARTIFACT_PROVIDER_ID
+        from primer.artifact.factory import BUILDABLE_KINDS
+
+        _, toolset, _ = world
+        text = {tool.id: tool.description async for tool in toolset.list_tools()}[f"{verb}_artifact_storage_provider"]
+
+        assert f"``{DEFAULT_ARTIFACT_PROVIDER_ID}``" in text, text
+        for kind in BUILDABLE_KINDS:
+            assert f"``{kind.value}``" in text, text
+        assert "``provider``" in text and "``type=validation-error``" in text and "nothing is stored" in text, text
 
 
 class TestReferenceBlocks:
