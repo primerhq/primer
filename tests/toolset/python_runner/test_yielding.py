@@ -20,6 +20,19 @@ def test_ask_user_key_is_built_from_the_real_context() -> None:
     assert y.event_key == "ask_user:s-1:tc-1"
 
 
+def test_ask_user_key_inside_a_graph_node_carries_the_node() -> None:
+    """Two concurrent siblings of one superstep can share a raw provider tool_call_id; the node tells their keys apart, as ``_ask_user_handler`` does."""
+    from primer.graph._node_identity import reset_current_graph_node_id, set_current_graph_node_id
+
+    token = set_current_graph_node_id("worker[1]")
+    try:
+        y = to_yielded({"kind": "ask_user", "params": {"question": "?"}, "meta": {}}, tool_name="ask", ctx=CTX, source_version=3)
+    finally:
+        reset_current_graph_node_id(token)
+
+    assert y.event_key == "ask_user:s-1:worker[1]:tc-1"
+
+
 def test_timer_key_uses_the_tool_call_id() -> None:
     y = to_yielded(
         {"kind": "timer", "params": {"seconds": 5}, "meta": {}},

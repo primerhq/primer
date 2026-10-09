@@ -138,8 +138,8 @@ async def test_both_siblings_answered_in_one_cycle_are_both_resumed_each_by_its_
 
 
 @pytest.mark.asyncio
-async def test_a_key_less_drain_still_resumes_by_the_raw_id(monkeypatch) -> None:
-    """The legacy single-event drain (no accumulated reply) carries no fired key: it keeps selecting by the raw id, as before."""
+async def test_the_singular_resume_path_carries_the_fired_key_too(monkeypatch) -> None:
+    """The singular path (the row's ``resume_event_key``, no accumulated ``resume_event_payloads``) carries the fired key down as well."""
     checkpoint, first = await _two_parked_siblings(monkeypatch, _ask_user)
     pool = _FakePool(storage=_StorageProvider(), workspace_io=_WorkspaceIO(), executor_factory=_mk_parallel_executor)
     session = _session()

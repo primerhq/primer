@@ -121,6 +121,104 @@ async def test_a_reply_through_a_graph_frame_resumes_only_the_answered_sibling(m
     outcome = await frame.resume_leaf(yld.yielded, {"decision": "approved"}, _Services(child, {}))
 
     assert isinstance(outcome, Reparked), "one reply resumed BOTH child siblings (the child drained)"
+    assert _pending_nodes(outcome) == ["B"], "A (the leaf, the child's primary) was resumed and B is still waiting"
+
+
+def _pending_nodes(outcome) -> list[str]:
+    return [e["node_id"] for e in outcome.new_yield.graph_checkpoint["pending_agent_yields"]]
+
+
+@pytest.mark.asyncio
+async def test_a_reply_for_the_non_primary_sibling_through_a_graph_frame_resumes_that_sibling(monkeypatch) -> None:
+    """The leaf is the child's PRIMARY projection (A); the reply was for B. The FIRED key (the row's ``resume_event_key``) selects the entry."""
+    ex = await _mk_parallel_executor()
+    _patch_run_agent_turn(monkeypatch, {"agent-a": _approval_yield("A", GA), "agent-b": _approval_yield("B", GB)})
+    with pytest.raises(YieldToWorker) as first:
+        async for _ev in ex.invoke([]):
+            pass
+    yld = first.value
+    frame = GraphFrame(graph_id="g", gsid="gs", checkpoint=yld.graph_checkpoint, tool_call_id="outer", node_tcid=yld.tool_call_id)
+    child = await _mk_parallel_executor()
+
+    outcome = await frame.resume_leaf(yld.yielded, {"decision": "approved"}, _Services(child, {}), fired_key=f"tool_approval:gs:B:{RAW}")
+
+    assert isinstance(outcome, Reparked) and _pending_nodes(outcome) == ["A"], "B's reply resumed the leaf (A)"
+
+
+@pytest.mark.asyncio
+async def test_the_fired_key_selects_the_entry_whose_id_the_result_and_the_resume_use(monkeypatch) -> None:
+    """With distinct ids the entry the key names supplies the tool_call_id too: the result is built for THAT call, not for the leaf's."""
+    recorder: dict = {}
+
+    async def fake_resume_invoke_graph(**kwargs):
+        recorder["resume_invoke_graph"] = kwargs
+        return "out", None
+
+    import primer.worker.frames as frames_mod
+
+    monkeypatch.setattr(frames_mod, "resume_invoke_graph", fake_resume_invoke_graph)
+    checkpoint = {"pending_toolcalls": [], "pending_agent_yields": [
+        {"node_id": "A", "tool_call_id": "call_a", "event_key": "tool_approval:gs:A:call_a", "tool_name": "_approval", "resume_metadata": {}},
+        {"node_id": "B", "tool_call_id": "call_b", "event_key": "tool_approval:gs:B:call_b", "tool_name": "_approval", "resume_metadata": {}},
+    ]}
+    frame = GraphFrame(graph_id="g", gsid="gs", checkpoint=checkpoint, tool_call_id="outer", node_tcid="call_a")
+    leaf = Yielded(tool_name="_approval", event_key="tool_approval:gs:A:call_a", resume_metadata={})
+
+    await frame.resume_leaf(leaf, {"decision": "approved"}, _Services("child", recorder), fired_key="tool_approval:gs:B:call_b")
+
+    assert recorder["agent_result_args"] == ("call_b", "tool_approval:gs:B:call_b")
+    assert recorder["resume_invoke_graph"]["resumed_tcid"] == "call_b"
+    assert recorder["resume_invoke_graph"]["resumed_event_key"] == "tool_approval:gs:B:call_b"
+
+
+@pytest.mark.asyncio
+async def test_a_fired_key_that_names_no_entry_falls_back_to_the_leaf(monkeypatch) -> None:
+    recorder: dict = {}
+
+    async def fake_resume_invoke_graph(**kwargs):
+        recorder["resume_invoke_graph"] = kwargs
+        return "out", None
+
+    import primer.worker.frames as frames_mod
+
+    monkeypatch.setattr(frames_mod, "resume_invoke_graph", fake_resume_invoke_graph)
+    frame = GraphFrame(graph_id="g", gsid="gs", checkpoint={"pending_agent_yields": []}, tool_call_id="outer", node_tcid=RAW)
+    leaf = Yielded(tool_name="_approval", event_key=f"tool_approval:gs:B:{RAW}", resume_metadata={})
+
+    await frame.resume_leaf(leaf, {"decision": "approved"}, _Services("child", recorder), fired_key="tool_approval:gs:ZZ:nothing")
+
+    assert recorder["resume_invoke_graph"]["resumed_event_key"] == f"tool_approval:gs:B:{RAW}"
+    assert recorder["resume_invoke_graph"]["resumed_tcid"] == RAW
+
+
+@pytest.mark.asyncio
+async def test_a_graph_frame_that_is_not_the_innermost_cannot_resume_one_of_several_siblings_by_the_raw_id() -> None:
+    """``GraphFrame.resume`` (a finished deeper frame's result) has no fired key and no leaf: when the child has several entries that share the raw id it
+    cannot say which one the result belongs to, and fails closed. The raise ends the continuation walk: the agent path answers with a ``continuation resume failed`` tool result and the graph path fails the turn
+    (no live path reaches it today)."""
+    frame = GraphFrame(graph_id="g", gsid="gs", checkpoint=_check_checkpoint(), tool_call_id="outer", node_tcid=RAW)
+
+    with pytest.raises(RuntimeError, match="cannot tell which"):
+        await frame.resume(ToolResultPart(id="x", output="y"), _Services("child", {}))
+
+
+@pytest.mark.asyncio
+async def test_a_graph_frame_that_is_not_the_innermost_still_resumes_its_only_entry(monkeypatch) -> None:
+    recorder: dict = {}
+
+    async def fake_resume_invoke_graph(**kwargs):
+        recorder.update(kwargs)
+        return "out", None
+
+    import primer.worker.frames as frames_mod
+
+    monkeypatch.setattr(frames_mod, "resume_invoke_graph", fake_resume_invoke_graph)
+    checkpoint = {"pending_toolcalls": [], "pending_agent_yields": [_check_checkpoint()["pending_agent_yields"][1]]}
+    frame = GraphFrame(graph_id="g", gsid="gs", checkpoint=checkpoint, tool_call_id="outer", node_tcid=RAW)
+
+    await frame.resume(ToolResultPart(id="x", output="y"), _Services("child", {}))
+
+    assert recorder["resumed_tcid"] == RAW
 
 
 @pytest.mark.asyncio
@@ -203,21 +301,27 @@ def _check_checkpoint() -> dict:
     }
 
 
-def _parked_on(leaf_key: str):
-    # A graph park labels EVERY leaf "_approval" (primer/graph/_checkpoint.py), whatever it really is.
+def _parked():
+    """As production parks it: the leaf is the child's PRIMARY projection (sibling A), and a graph park labels it ``_approval`` whatever it really is."""
     checkpoint = _check_checkpoint()
     frame = GraphFrame(graph_id="g", gsid="gs", checkpoint=checkpoint, tool_call_id="outer", node_tcid=RAW)
-    return SimpleNamespace(yielded=Yielded(tool_name="_approval", event_key=leaf_key, resume_metadata={}), frames=[frame])
+    return SimpleNamespace(yielded=Yielded(tool_name="_approval", event_key=f"ask_user:gs:A:{RAW}", resume_metadata={}), frames=[frame])
 
 
-def test_an_ask_user_leaf_beside_an_approval_sibling_is_not_an_approval_gate() -> None:
+def test_an_answer_to_the_ask_user_sibling_is_not_an_approval_gate() -> None:
     from primer.worker.session_resume_coordinator import _leaf_is_an_approval_gate
 
-    assert _leaf_is_an_approval_gate(None, _parked_on(f"ask_user:gs:A:{RAW}")) is False
+    assert _leaf_is_an_approval_gate(None, _parked(), fired_key=f"ask_user:gs:A:{RAW}") is False
 
 
-def test_an_approval_leaf_beside_an_ask_user_sibling_is_an_approval_gate() -> None:
-    """The raw-id scan met sibling A first and called B's real approval a non-approval: no audit record was written for the decision."""
+def test_an_answer_to_the_approval_sibling_is_an_approval_gate_although_the_leaf_is_the_ask_user() -> None:
+    """The leaf is A (an ask_user); the reply was for B, a real approval: the fired key decides, so its decision is audited."""
     from primer.worker.session_resume_coordinator import _leaf_is_an_approval_gate
 
-    assert _leaf_is_an_approval_gate(None, _parked_on(f"tool_approval:gs:B:{RAW}")) is True
+    assert _leaf_is_an_approval_gate(None, _parked(), fired_key=f"tool_approval:gs:B:{RAW}") is True
+
+
+def test_without_a_fired_key_the_leaf_decides_as_it_always_did() -> None:
+    from primer.worker.session_resume_coordinator import _leaf_is_an_approval_gate
+
+    assert _leaf_is_an_approval_gate(None, _parked()) is False
