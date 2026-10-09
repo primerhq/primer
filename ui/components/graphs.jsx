@@ -139,6 +139,15 @@ function GR_NewGraphModal({ onClose, onCreate, pushToast }) {
       <FormField
         label="Seed agent"
         hint="optional · with one, the graph starts as Begin → agent → End; without, it's created empty (not runnable until it has a Begin → … → End)"
+        help={
+          <>
+            Once created, you can bind sessions to this graph{" \u2014 "}the graph
+            executor runs every node in one turn, persisting per-node state
+            to the workspace's{" "}
+            <span className="mono">.state/graphs/&lt;session_id&gt;/</span>{" "}
+            git repo.
+          </>
+        }
       >
         <div style={{ display: "flex", gap: 6 }}>
           <select
@@ -184,13 +193,6 @@ function GR_NewGraphModal({ onClose, onCreate, pushToast }) {
             )}
           </div>
         )}
-        <div className="field-help">
-          Once created, you can bind sessions to this graph — the graph
-          executor runs every node in one turn, persisting per-node state
-          to the workspace's{" "}
-          <span className="mono">.state/graphs/&lt;session_id&gt;/</span>{" "}
-          git repo.
-        </div>
       </FormField>
 
       {creatingAgent && typeof window.AG_NewAgentModal === "function" && (
@@ -638,7 +640,12 @@ function GR_ImportSpecModal({ currentDraft, onClose, onApply }) {
         </>
       }
     >
-      <FormField label="Graph spec JSON" hint={"same shape as PUT /graphs/{id}"} err={error}>
+      <FormField
+        label="Graph spec JSON"
+        hint={"same shape as PUT /graphs/{id}"}
+        err={error}
+        help="Loads the pasted spec into the visual editor (the graph id stays the editor's; a pasted id is ignored so Save can't retarget another graph). Nothing is persisted until you press Save. Coordinates are auto-laid-out on load."
+      >
         <textarea
           className="textarea mono"
           rows={18}
@@ -648,11 +655,6 @@ function GR_ImportSpecModal({ currentDraft, onClose, onApply }) {
           style={{ width: "100%", fontFamily: "IBM Plex Mono", fontSize: 12 }}
           data-testid="graph-import-spec"
         />
-        <div className="field-help muted">
-          Loads the pasted spec into the visual editor (the graph id stays the editor's;
-          a pasted id is ignored so Save can't retarget another graph). Nothing is persisted
-          until you press Save. Coordinates are auto-laid-out on load.
-        </div>
       </FormField>
     </Modal>
   );
@@ -661,7 +663,10 @@ function GR_ImportSpecModal({ currentDraft, onClose, onApply }) {
 // JsonField parses the textarea on blur and reports parse errors up to the
 // parent via `onError`. Empty input is treated as null. The parent can track
 // outstanding errors and disable Save.
-function GR_JsonField({ label, value, onChange, onError, help, errorKey, ariaLabel }) {
+function GR_JsonField({ value, onChange, onError, help, errorKey, ariaLabel }) {
+  const uid = React.useId();
+  const helpId = uid + "h";
+  const errId = uid + "e";
   const [text, setText] = React.useState(
     value === undefined || value === null ? "" : JSON.stringify(value, null, 2),
   );
@@ -690,32 +695,24 @@ function GR_JsonField({ label, value, onChange, onError, help, errorKey, ariaLab
       if (onError && errorKey) onError(errorKey, msg);
     }
   }
-  const textarea = (
-    <textarea
-      className="textarea mono"
-      rows={6}
-      value={text}
-      onChange={(e) => setText(e.target.value)}
-      onBlur={commit}
-      aria-label={label ? undefined : (ariaLabel || "JSON")}
-      style={{ width: "100%", fontFamily: "IBM Plex Mono", fontSize: 12 }}
-    />
-  );
-  // The builder's schema view passes no label (it has its own heading), so the textarea names itself; a labelled field is a FormField row.
-  if (!label) {
-    return (
-      <div className="field">
-        {textarea}
-        {help && <div className="field-help muted">{help}</div>}
-        {err && <div className="field-help" style={{ color: "var(--red)" }}>JSON parse: {err}</div>}
-      </div>
-    );
-  }
+  // The builder's schema view has its own heading, so the textarea names itself (aria-label); the help line and a parse error are what it is described by.
+  const describedBy = [help ? helpId : null, err ? errId : null].filter(Boolean).join(" ");
   return (
-    <FormField label={label} err={err ? "JSON parse: " + err : undefined}>
-      {textarea}
-      {help && <div className="field-help muted">{help}</div>}
-    </FormField>
+    <div className="field">
+      <textarea
+        className="textarea mono"
+        rows={6}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        aria-label={ariaLabel || "JSON"}
+        aria-describedby={describedBy || undefined}
+        aria-invalid={err ? "true" : undefined}
+        style={{ width: "100%", fontFamily: "IBM Plex Mono", fontSize: 12 }}
+      />
+      {help && <div className="field-help muted" id={helpId}>{help}</div>}
+      {err && <div className="field-help" id={errId} role="alert" style={{ color: "var(--red)" }}>JSON parse: {err}</div>}
+    </div>
   );
 }
 

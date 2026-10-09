@@ -2,8 +2,9 @@
 
 ``GR_NewGraphModal`` (ID, Description, Seed agent) and ``GR_ImportSpecModal`` (Graph spec JSON) drew each row as a ``<div className="field">`` holding a bare
 ``<label className="field-label">`` beside the control: ``input.labels`` was empty, the server's field error was a loose ``<div>``, and a click on the visible text focused nothing.
-Each row is a ``FormField`` now. ``GR_JsonField`` is the textarea the builder shows when a schema is too complex for its field rows (``gb-schema.jsx`` calls it with ``label=""``): with no
-label it had NO name at all; it takes an ``ariaLabel`` now and ``gb-schema.jsx`` passes ``"Schema as JSON"``.
+Each row is a ``FormField`` now. ``GR_JsonField`` is the textarea the builder shows for a schema its field rows cannot draw, or on the rows view's JSON toggle (``gb-schema.jsx`` is its one caller): with no
+label it had NO name at all; it takes an ``ariaLabel`` now and ``gb-schema.jsx`` passes ``"Schema as JSON"``. Its help line and its parse error are what the textarea is
+described by (ids, ``role="alert"``, ``aria-invalid``), and so is each modal's explanation (the row's ``help`` prop).
 
 ``GR_JsonField`` runs in V8 on the hook runtime of ``tests/ui/_mini_react.py`` (the harness of ``test_form_rows_label_their_control.py``); the modals are pinned in the same slicing style as
 the rest of ``tests/ui``, and in a browser by ``tests/ui_e2e/test_graph_modal_labels_journey.py``.
@@ -33,14 +34,17 @@ IMPORT_SPEC = _fn(GRAPHS, "GR_ImportSpecModal")
 
 
 def _open_tag(src: str, pattern: str) -> str:
-    """The whole opening tag that starts at the first match of ``pattern``: up to the first ``>`` outside braces and quotes (the ``=>`` of an attribute's arrow function does not end it)."""
+    """The whole opening tag that starts at the first match of ``pattern``: up to the first ``>`` outside braces and quotes (the ``=>`` of an attribute's arrow function does not end it).
+
+    Inside braces only ``"`` and a backtick open a string: an apostrophe there may be JSX text (``help={<>the workspace's repo</>}``), not a quote.
+    """
     start = re.search(pattern, src).start()
     depth, quote = 0, None
     for i in range(start, len(src)):
         c = src[i]
         if quote:
             quote = None if c == quote else quote
-        elif c in "\"'`":
+        elif c in ("\"'`" if depth == 0 else '"`'):
             quote = c
         elif c == "{":
             depth += 1
@@ -54,6 +58,8 @@ def _open_tag(src: str, pattern: str) -> str:
 def test_open_tag_reads_past_an_arrow_function_and_a_quoted_angle_bracket() -> None:
     tag = _open_tag('<a x="1 > 2" onChange={(e) => go(e)} y="z">text</a>', r"<a ")
     assert tag == '<a x="1 > 2" onChange={(e) => go(e)} y="z">'
+    jsx_text = '<F label="x" help={<>the workspace\'s repo</>} hint=\'a > b\'>child</F>'
+    assert _open_tag(jsx_text, r"<F ") == '<F label="x" help={<>the workspace\'s repo</>} hint=\'a > b\'>'
 
 
 def test_the_page_declares_the_row_it_uses() -> None:
@@ -84,7 +90,7 @@ def test_the_seed_select_is_named_itself_because_its_row_holds_it_inside_a_wrapp
 
 def test_the_seed_rows_explanation_is_the_rows_help_so_the_group_is_described_by_it() -> None:
     """A loose ``field-help`` child names nothing; the ``help`` prop gives the line an id and the row (a group here) ``aria-describedby``. Only the amber warning is left as a child."""
-    assert "help={" in _open_tag(NEW_GRAPH, r'<FormField\s+label="Seed agent"')
+    assert re.search(r"\shelp=", _open_tag(NEW_GRAPH, r'<FormField\s+label="Seed agent"'))
     loose = re.findall(r'<div className="field-help"[^>]*>', NEW_GRAPH)
     assert all("--amber" in tag for tag in loose) and len(loose) == 1, loose
 
@@ -103,7 +109,7 @@ def test_the_import_spec_modal_draws_its_json_as_a_form_field_with_the_error_as_
     assert re.search(r'<FormField\s+label="Graph spec JSON"', IMPORT_SPEC)
     assert "err={error}" in IMPORT_SPEC
     assert "field-label" not in IMPORT_SPEC
-    assert "help={" in _open_tag(IMPORT_SPEC, r'<FormField\s+label="Graph spec JSON"')
+    assert re.search(r"\shelp=", _open_tag(IMPORT_SPEC, r'<FormField\s+label="Graph spec JSON"'))
     assert "field-help" not in IMPORT_SPEC, "the explanation is the row's help, not a loose line"
     assert 'data-testid="graph-import-spec"' in IMPORT_SPEC, "the journeys address the textarea by this id"
 
@@ -178,30 +184,19 @@ def _one(view: list[dict], type_: str) -> dict:
     return found[0]
 
 
-def test_a_labelled_json_field_points_its_label_at_the_textarea(json_field) -> None:
-    view = json_field({"label": "response_format", "value": {"type": "object"}})
-    label, textarea = _one(view, "label"), _one(view, "textarea")
-    assert textarea["id"] and label["htmlFor"] == textarea["id"] and label["text"].startswith("response_format"), view
-
-
 def test_a_json_field_with_no_label_draws_no_label_and_names_the_textarea_itself(json_field) -> None:
-    view = json_field({"label": "", "value": {"type": "object"}, "ariaLabel": "Schema as JSON"})
+    view = json_field({"value": {"type": "object"}, "ariaLabel": "Schema as JSON"})
     assert [e for e in view if e["type"] == "label"] == [], "an empty label element names nothing"
     assert _one(view, "textarea")["ariaLabel"] == "Schema as JSON"
 
 
 def test_a_json_field_with_neither_label_nor_name_still_gets_a_default_name(json_field) -> None:
-    view = json_field({"label": "", "value": None})
+    view = json_field({"value": None})
     assert _one(view, "textarea")["ariaLabel"] == "JSON"
 
 
-def test_a_labelled_json_field_does_not_also_carry_an_aria_label(json_field) -> None:
-    view = json_field({"label": "output_schema", "value": None, "ariaLabel": "ignored"})
-    assert _one(view, "textarea")["ariaLabel"] is None
-
-
 def test_the_help_line_is_still_drawn(json_field) -> None:
-    view = json_field({"label": "", "value": None, "help": "Named fields here become chips.", "ariaLabel": "x"})
+    view = json_field({"value": None, "help": "Named fields here become chips.", "ariaLabel": "x"})
     assert any(e["text"] == "Named fields here become chips." for e in view), view
 
 
@@ -213,20 +208,20 @@ def test_the_builders_schema_view_passes_the_name() -> None:
 
 def test_the_help_line_is_what_describes_the_textarea(json_field) -> None:
     """The live branch (the builder passes no label): the help line has an id and the textarea names it in ``aria-describedby``."""
-    view = json_field({"label": "", "value": None, "help": "Named fields here become chips.", "ariaLabel": "x"})
+    view = json_field({"value": None, "help": "Named fields here become chips.", "ariaLabel": "x"})
     help_line = next(e for e in view if e["text"] == "Named fields here become chips.")
     assert help_line["id"], "the help line has no id to be described by"
     assert _one(view, "textarea")["describedBy"] == help_line["id"], view
 
 
 def test_a_field_with_no_help_and_no_error_is_neither_described_nor_invalid(json_field) -> None:
-    textarea = _one(json_field({"label": "", "value": None, "ariaLabel": "x"}), "textarea")
+    textarea = _one(json_field({"value": None, "ariaLabel": "x"}), "textarea")
     assert textarea["describedBy"] is None and textarea["invalid"] is None
-    assert [e for e in json_field({"label": "", "value": None, "ariaLabel": "x"}) if e["role"] == "alert"] == []
+    assert [e for e in json_field({"value": None, "ariaLabel": "x"}) if e["role"] == "alert"] == []
 
 
 def test_a_parse_error_is_an_alert_the_invalid_textarea_is_described_by(json_field) -> None:
-    view = json_field({"label": "", "value": None, "help": "Named fields here become chips.", "ariaLabel": "x"}, type_text="{")
+    view = json_field({"value": None, "help": "Named fields here become chips.", "ariaLabel": "x"}, type_text="{")
     alert = next((e for e in view if e["role"] == "alert"), None)
     assert alert is not None, ("a parse error is drawn as a plain div", view)
     assert alert["id"] and alert["text"].startswith("JSON parse:"), alert
