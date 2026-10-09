@@ -207,8 +207,12 @@ class CorrelationStore:
         workspace_id: str,
         session_id: str,
         tool_call_id: str,
+        gate_id: str | None = None,
     ) -> ChannelCorrelation:
         """Create or update a ``kind="session"`` correlation record.
+
+        ``gate_id`` is the id of the gate ``tool_call_id`` names (C-033), kept so a reply to this message is judged against the prompt it was
+        posted for.
 
         Atomic on (channel_id, anchor): two concurrent callers cannot create
         two rows for the same gate, so a parked session is never double-resumed
@@ -221,6 +225,7 @@ class CorrelationStore:
             workspace_id=workspace_id,
             session_id=session_id,
             tool_call_id=tool_call_id,
+            gate_id=gate_id,
             updated_at=now,
         )
         if self._backend() == "other":
@@ -270,6 +275,7 @@ class CorrelationStore:
         await self._storage().update(
             existing.model_copy(update={
                 "tool_call_id": None,
+                "gate_id": None,
                 "updated_at": datetime.now(timezone.utc),
             })
         )
@@ -307,6 +313,7 @@ class CorrelationStore:
                 "workspace_id": record.workspace_id,
                 "session_id": record.session_id,
                 "tool_call_id": record.tool_call_id,
+                "gate_id": record.gate_id,
                 "updated_at": record.updated_at,
             }
             updated = existing.model_copy(update=update)

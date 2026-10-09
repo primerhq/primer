@@ -18,14 +18,17 @@ from primer.channel.adapter import PromptEnvelope
 
 
 def compute_tag(
-    *, workspace_id: str, session_id: str, tool_call_id: str,
+    *, workspace_id: str, session_id: str, tool_call_id: str, gate_id: str | None = None,
 ) -> str:
-    """Deterministic 16-char base64url tag from the three IDs.
+    """Deterministic 16-char base64url tag from the three IDs, and the gate id when there is one.
 
     Still used for the Approve/Reject button ``callback_data`` (invisible
-    to the user, <= 64 bytes per Telegram's limit).
+    to the user, <= 64 bytes per Telegram's limit, so the gate id cannot ride in it).
+    Hashing it in gives each gate its own tag (C-033): the provider repeats a
+    tool_call_id across rounds, and a later prompt under the same one used to overwrite
+    the earlier button's cache entry. A prompt with no gate id hashes exactly as before.
     """
-    raw = f"{workspace_id}|{session_id}|{tool_call_id}".encode()
+    raw = (f"{workspace_id}|{session_id}|{tool_call_id}" + (f"|{gate_id}" if gate_id else "")).encode()
     digest = hashlib.sha256(raw).digest()[:12]
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
@@ -53,6 +56,7 @@ def build_tool_approval_message(
         workspace_id=envelope.workspace_id,
         session_id=envelope.session_id,
         tool_call_id=envelope.tool_call_id,
+        gate_id=envelope.gate_id,
     )
     lines = ["\U0001F7E1 <b>Primer · approval needed</b>", ""]
     if envelope.tool_name:

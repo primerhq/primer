@@ -17,7 +17,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from primer.channel.adapter import APPROVAL_ROUTED_NOTICE
+from primer.channel.adapter import APPROVAL_ROUTED_NOTICE, refusal_notice
+from primer.channel.gate_tag import split_gate_suffix
 from primer.channel.factory import register_adapter_factory
 from primer.channel.slack.adapter import (
     REJECT_MODAL_CALLBACK_ID,
@@ -72,16 +73,19 @@ async def _route_channel_event(adapter: Any, provider_id: str, event: dict) -> b
         return False
 
 
-async def _tell_the_approval_is_routed_elsewhere(client: Any, channel_id: str | None, user_id: str | None) -> None:
-    """Tell the clicker, and only the clicker (an ephemeral message), that the gate they tried to decide is routed to specific approvers.
+async def _tell_the_approval_is_routed_elsewhere(
+    client: Any, channel_id: str | None, user_id: str | None, notice: str = APPROVAL_ROUTED_NOTICE,
+) -> None:
+    """Tell the clicker, and only the clicker (an ephemeral message), why the decision they tried to make was refused.
 
-    The decision was refused by the inbox, so the original message is left as it is. Best-effort: a failure to post the notice is logged.
+    ``notice`` is the routed-to-approvers one unless the click was for an approval since replaced (C-033). The decision was refused by the
+    inbox, so the original message is left as it is. Best-effort: a failure to post the notice is logged.
     """
     if not channel_id or not user_id:
         logger.warning("slack: a refused approval could not be reported to the clicker (no channel or user id)")
         return
     try:
-        await client.chat_postEphemeral(channel=channel_id, user=user_id, text=APPROVAL_ROUTED_NOTICE)
+        await client.chat_postEphemeral(channel=channel_id, user=user_id, text=notice)
     except Exception:
         logger.exception("slack: chat.postEphemeral for a refused approval failed")
 
@@ -97,6 +101,7 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         await ack()
         try:
             verb, ws, sid, tcid = body["actions"][0]["value"].split(":", 3)
+            tcid, gate_id = split_gate_suffix(tcid)
         except Exception:
             logger.warning("slack: malformed approve value")
             return
@@ -109,11 +114,12 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         accepted = await adapter._handle_decision(
             workspace_id=ws, session_id=sid, tool_call_id=tcid,
             decision="approved", reason=None,
-            user_id=user_id,
+            user_id=user_id, gate_id=gate_id,
         )
         if not accepted:
-            # Refused: the gate is routed to specific approvers. Say so to the clicker; the message is not "Approved".
-            await _tell_the_approval_is_routed_elsewhere(client, channel_id, user_id)
+            # Refused: the gate is routed to specific approvers, or the click is for an approval since replaced. Say so to the clicker; the
+            # message is not "Approved".
+            await _tell_the_approval_is_routed_elsewhere(client, channel_id, user_id, refusal_notice(accepted))
             return
         # Replace the buttons with an "Approved by @user" note.
         from primer.channel.slack.render import build_decided_blocks
@@ -135,13 +141,14 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         await ack()
         try:
             verb, ws, sid, tcid = body["actions"][0]["value"].split(":", 3)
+            tcid, gate_id = split_gate_suffix(tcid)
         except Exception:
             return
         from primer.channel.slack.render import build_reject_modal
         # Carry the originating channel + message ts so the modal-submit
         # handler can update the original message after the reason is given.
         view = build_reject_modal(
-            workspace_id=ws, session_id=sid, tool_call_id=tcid,
+            workspace_id=ws, session_id=sid, tool_call_id=tcid, gate_id=gate_id,
             channel_id=body.get("channel", {}).get("id"),
             message_ts=body.get("message", {}).get("ts"),
         )
@@ -158,7 +165,8 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         parts = view.get("private_metadata", "").split(":")
         if len(parts) < 4:
             return
-        ws, sid, tcid = parts[1], parts[2], parts[3]
+        ws, sid = parts[1], parts[2]
+        tcid, gate_id = split_gate_suffix(parts[3])
         channel_id = parts[4] if len(parts) > 4 and parts[4] else None
         message_ts = parts[5] if len(parts) > 5 and parts[5] else None
         reason = (
@@ -170,18 +178,18 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         entry = SLACK_CONNECTIONS.entry(provider_id)
         if entry is None:
             return
-        accepted: bool | None = None            # None: no adapter under this provider, so nothing was relayed
+        accepted = None            # None: no adapter under this provider, so nothing was relayed (else True or a falsy DecisionRefused)
         for adapter in entry.adapters_by_channel_id.values():
             accepted = await adapter._handle_decision(
                 workspace_id=ws, session_id=sid, tool_call_id=tcid,
                 decision="rejected", reason=reason,
-                user_id=user_id,
+                user_id=user_id, gate_id=gate_id,
             )
             break  # first wins; the inbox dedupes anyway
         if accepted is None:
             return                              # nothing was relayed: the message must not say it was rejected
         if not accepted:
-            await _tell_the_approval_is_routed_elsewhere(client, channel_id, user_id)
+            await _tell_the_approval_is_routed_elsewhere(client, channel_id, user_id, refusal_notice(accepted))
             return
         # Replace the buttons on the original message with a "Rejected" note.
         if channel_id and message_ts:
@@ -237,12 +245,16 @@ def _install_handlers(provider_id: str, app: Any) -> None:
                 except Exception:
                     rec = None
                 if rec is not None and rec.kind == "session":
-                    await adapter._handle_text_reply(
+                    relayed = await adapter._handle_text_reply(
                         workspace_id=rec.workspace_id, session_id=rec.session_id,
                         tool_call_id=rec.tool_call_id,
                         text=event.get("text", ""),
                         user_id=event.get("user"),
+                        gate_id=getattr(rec, "gate_id", None),
                     )
+                    if not relayed:
+                        # The question was replaced since this thread's prompt: the reply answered nothing. Tell the person (best effort).
+                        await _tell_the_approval_is_routed_elsewhere(client, channel_id, event.get("user"), refusal_notice(relayed))
                     try:
                         await CorrelationStore(sp).clear(
                             adapter._channel.id, thread_ts,

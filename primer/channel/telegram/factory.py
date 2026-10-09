@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from primer.channel.adapter import APPROVAL_ROUTED_NOTICE
+from primer.channel.adapter import refusal_notice
 from primer.channel.factory import register_adapter_factory
 from primer.channel.telegram.adapter import TelegramChannelAdapter
 from primer.channel.telegram.connection import TELEGRAM_CONNECTIONS
@@ -114,8 +114,9 @@ def _install_handlers(provider_id: str, app: Any) -> None:
                     user_id=cq.from_user.id if cq.from_user else None,
                 )
                 if not accepted:
-                    # Refused: the gate is routed to specific approvers. The message is not marked approved.
-                    notice = APPROVAL_ROUTED_NOTICE
+                    # Refused: the gate is routed to specific approvers, or the click is for an approval since replaced. The message is not
+                    # marked approved, and the clicker is told which.
+                    notice = refusal_notice(accepted)
                     return
                 try:
                     await context.bot.edit_message_text(
@@ -187,13 +188,22 @@ def _install_handlers(provider_id: str, app: Any) -> None:
             except Exception:
                 rec = None
             if rec is not None and rec.kind == "session":
-                await adapter._handle_text_reply(
+                relayed = await adapter._handle_text_reply(
                     workspace_id=rec.workspace_id,
                     session_id=rec.session_id,
                     tool_call_id=rec.tool_call_id,
                     text=msg.text or "",
                     user_id=user_id,
+                    gate_id=getattr(rec, "gate_id", None),
                 )
+                if not relayed:
+                    # The question was replaced since this message: the reply answered nothing. Tell the person (best effort).
+                    try:
+                        await context.bot.send_message(
+                            chat_id=msg.chat.id, text=refusal_notice(relayed), reply_to_message_id=msg.message_id,
+                        )
+                    except Exception:
+                        logger.exception("telegram: could not send the stale-question notice")
                 try:
                     await CorrelationStore(sp).clear(
                         adapter._channel.id, str(replied_mid),
@@ -211,6 +221,8 @@ def _install_handlers(provider_id: str, app: Any) -> None:
             return
         kind = target.get("kind")
         ids = {k: target[k] for k in ("workspace_id", "session_id", "tool_call_id")}
+        if target.get("gate_id"):
+            ids["gate_id"] = target["gate_id"]          # the gate the Reject button belonged to (C-033)
         if kind == "reject":
             accepted = await adapter._handle_decision(
                 **ids, decision="rejected", reason=msg.text or "",
@@ -221,7 +233,7 @@ def _install_handlers(provider_id: str, app: Any) -> None:
                 # decision was judged either way, and a chat that cannot be written to must not fail the handler).
                 try:
                     await context.bot.send_message(
-                        chat_id=msg.chat.id, text=APPROVAL_ROUTED_NOTICE, reply_to_message_id=msg.message_id,
+                        chat_id=msg.chat.id, text=refusal_notice(accepted), reply_to_message_id=msg.message_id,
                     )
                 except Exception:
                     logger.exception("telegram: could not send the approval-routed notice")

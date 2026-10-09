@@ -14,9 +14,9 @@ from primer.channel.discord.connection import DISCORD_CONNECTIONS
 from primer.channel.discord.views import (
     REJECT_MODAL_CUSTOM_ID_PREFIX,
     build_reject_modal,
-    decode_custom_id,
+    decode_custom_id_with_gate,
 )
-from primer.channel.adapter import APPROVAL_ROUTED_NOTICE
+from primer.channel.adapter import refusal_notice
 from primer.channel.factory import register_adapter_factory
 from primer.model.channel import (
     Channel, ChannelProvider, ChannelProviderType,
@@ -105,10 +105,10 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
         custom_id = data.get("custom_id") if isinstance(data, dict) else None
         if not custom_id:
             return
-        parsed = decode_custom_id(custom_id)
+        parsed = decode_custom_id_with_gate(custom_id)
         if parsed is None:
             return
-        verb, ws, sid, tcid = parsed
+        verb, ws, sid, tcid, gate_id = parsed
         # Approval buttons now live inside the session thread, so the
         # interaction's channel is the Thread; resolve the adapter via the
         # thread's parent channel (where the adapter is registered).
@@ -134,11 +134,13 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
                 workspace_id=ws, session_id=sid, tool_call_id=tcid,
                 decision="approved", reason=None,
                 user_id=interaction.user.id if interaction.user else None,
+                gate_id=gate_id,
             )
             if not accepted:
-                # Refused: the gate is routed to specific approvers. Only the clicker is told; the message is left as it is.
+                # Refused: the gate is routed to specific approvers, or the click is for an approval since replaced. Only the clicker is
+                # told; the message is left as it is.
                 try:
-                    await interaction.followup.send(APPROVAL_ROUTED_NOTICE, ephemeral=True)
+                    await interaction.followup.send(refusal_notice(accepted), ephemeral=True)
                 except Exception:
                     logger.exception("discord: telling the clicker the approval is routed elsewhere failed")
                 return
@@ -173,11 +175,13 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
                     workspace_id=ws, session_id=sid, tool_call_id=tcid,
                     decision="rejected", reason=reason_text or None,
                     user_id=submitted.user.id if submitted.user else None,
+                    gate_id=gate_id,
                 )
                 if not accepted:
-                    # Refused: the gate is routed to specific approvers. Say so; the original message is left as it is.
+                    # Refused: the gate is routed to specific approvers, or the click is for an approval since replaced. Say so; the original
+                    # message is left as it is.
                     try:
-                        await submitted.followup.send(APPROVAL_ROUTED_NOTICE, ephemeral=True)
+                        await submitted.followup.send(refusal_notice(accepted), ephemeral=True)
                     except Exception:
                         logger.exception("discord: telling the clicker the rejection is routed elsewhere failed")
                     return
@@ -202,7 +206,7 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
                     logger.exception("discord: reject edit_message failed")
 
             modal = build_reject_modal(
-                ws=ws, sid=sid, tcid=tcid, on_submit=_on_modal_submit,
+                ws=ws, sid=sid, tcid=tcid, on_submit=_on_modal_submit, gate_id=gate_id,
             )
             await interaction.response.send_modal(modal)
             return
@@ -223,10 +227,11 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
                 workspace_id=ws, session_id=sid, tool_call_id=tcid,
                 decision="rejected", reason=reason or None,
                 user_id=interaction.user.id if interaction.user else None,
+                gate_id=gate_id,
             )
             if not accepted:
                 try:
-                    await interaction.response.send_message(APPROVAL_ROUTED_NOTICE, ephemeral=True)
+                    await interaction.response.send_message(refusal_notice(accepted), ephemeral=True)
                 except Exception:
                     logger.exception("discord: telling the clicker the rejection is routed elsewhere failed")
 
@@ -256,13 +261,20 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
                 except Exception:
                     rec = None
                 if rec is not None and rec.kind == "session":
-                    await adapter._handle_text_reply(
+                    relayed = await adapter._handle_text_reply(
                         workspace_id=rec.workspace_id,
                         session_id=rec.session_id,
                         tool_call_id=rec.tool_call_id,
                         text=message.content or "",
                         user_id=message.author.id if message.author else None,
+                        gate_id=getattr(rec, "gate_id", None),
                     )
+                    if not relayed:
+                        # The question was replaced since this thread's prompt: the reply answered nothing. Tell the person (best effort).
+                        try:
+                            await message.reply(refusal_notice(relayed))
+                        except Exception:
+                            logger.exception("discord: could not send the stale-question notice")
                     try:
                         await CorrelationStore(sp).clear(
                             adapter._channel.id, str(thread_id),

@@ -99,6 +99,36 @@ APPROVAL_ROUTED_NOTICE = (
     "Decide it in the console, as one of its approvers or an admin."
 )
 
+#: What a chat user is told when their click named an approval that has since been replaced by a newer one under the same tool call id
+#: (``ChannelInbox`` raises ``StaleGateError``, C-033). Nothing was decided. Under 200 characters, like the notice above.
+APPROVAL_STALE_NOTICE = "This approval was replaced by a newer one, so nothing was decided. Use the newest approval request in this chat."
+
+#: The same for a reply to an ask_user question that has since been replaced under the same tool call id.
+QUESTION_STALE_NOTICE = "This question was replaced by a newer one, so your reply was not sent. Reply to the newest question in this chat."
+
+
+class DecisionRefused:
+    """What :meth:`ChannelAdapter._handle_decision` returns for a decision that was NOT accepted: falsy, and ``notice`` is what to tell the clicker.
+
+    A caller that only asks ``if not accepted`` keeps working; one that tells the clicker why reads ``refusal_notice(accepted)``.
+    """
+
+    __slots__ = ("notice",)
+
+    def __init__(self, notice: str) -> None:
+        self.notice = notice
+
+    def __bool__(self) -> bool:
+        return False
+
+    def __repr__(self) -> str:
+        return f"DecisionRefused({self.notice!r})"
+
+
+def refusal_notice(accepted: Any) -> str:
+    """The words for a decision that was not accepted: its own notice, else the routed-to-approvers one."""
+    return getattr(accepted, "notice", None) or APPROVAL_ROUTED_NOTICE
+
 
 class ChannelAdapter(ABC):
     """Per-channel adapter instance.
@@ -161,21 +191,26 @@ class ChannelAdapter(ABC):
         workspace_id: str, session_id: str, tool_call_id: str,
         decision: str, reason: str | None,
         user_id: Any = None,
-    ) -> bool:
+        gate_id: str | None = None,
+    ) -> "bool | DecisionRefused":
         """Relay a tool-approval decision (Approve/Reject) to the inbox.
 
         The acting user's id is recorded under the provider-specific
         :meth:`_user_id_key` so renderers can attribute the decision.
 
-        Returns ``True`` when the inbox accepted the decision and ``False`` when it
-        REFUSED it because the gate is routed to specific approvers
-        (:class:`primer.session.approvers.ApproverRefusedError`): a messaging-platform
+        ``gate_id`` is the id (or its first 12 characters) of the gate the click was drawn from, kept with the button by the platform (C-033).
+
+        Returns ``True`` when the inbox accepted the decision and a falsy :class:`DecisionRefused` when it
+        REFUSED it: because the gate is routed to specific approvers
+        (:class:`primer.session.approvers.ApproverRefusedError`; a messaging-platform
         user is not a primer user the spec can admit, so such a gate is decided in
-        the console (see ``ChannelInbox._enforce_approvers``). The caller then tells
-        the clicker with :data:`APPROVAL_ROUTED_NOTICE` and must not mark the message
-        decided. Any other failure still raises.
+        the console, see ``ChannelInbox._enforce_approvers``) or because the click is for a
+        gate that has since been replaced (:class:`primer.session.gate_token.StaleGateError`).
+        The caller then tells the clicker ``refusal_notice(accepted)`` and must not mark the
+        message decided. Any other failure still raises.
         """
         from primer.session.approvers import ApproverRefusedError
+        from primer.session.gate_token import StaleGateError
 
         try:
             await self._inbox.handle_response(ResponseEnvelope(
@@ -187,9 +222,12 @@ class ChannelAdapter(ABC):
                     self._user_id_key(): user_id
                     if user_id is not None else self._user_id_default(),
                 },
+                gate_id=gate_id,
             ))
         except ApproverRefusedError:
-            return False          # the inbox already logged the refusal with the platform metadata
+            return DecisionRefused(APPROVAL_ROUTED_NOTICE)   # the inbox already logged the refusal with the platform metadata
+        except StaleGateError:
+            return DecisionRefused(APPROVAL_STALE_NOTICE)    # and this one, too
         return True
 
     async def _handle_text_reply(
@@ -197,18 +235,31 @@ class ChannelAdapter(ABC):
         workspace_id: str, session_id: str, tool_call_id: str,
         text: str,
         user_id: Any = None,
-    ) -> None:
-        """Relay a free-text ask_user reply to the inbox."""
-        await self._inbox.handle_response(ResponseEnvelope(
-            kind="ask_user",
-            workspace_id=workspace_id, session_id=session_id,
-            tool_call_id=tool_call_id,
-            response=text, decision=None, reason=None,
-            platform_metadata={
-                self._user_id_key(): user_id
-                if user_id is not None else self._user_id_default(),
-            },
-        ))
+        gate_id: str | None = None,
+    ) -> "bool | DecisionRefused":
+        """Relay a free-text ask_user reply to the inbox.
+
+        ``gate_id`` is the id of the prompt the reply was correlated to (the persistent row of the message it replies to, C-033). A reply to a
+        prompt that has since been replaced is refused by the inbox (:class:`primer.session.gate_token.StaleGateError`) and answers nothing: this
+        returns a falsy :class:`DecisionRefused` whose notice says so, for the caller to tell the person who replied. ``True`` otherwise.
+        """
+        from primer.session.gate_token import StaleGateError
+
+        try:
+            await self._inbox.handle_response(ResponseEnvelope(
+                kind="ask_user",
+                workspace_id=workspace_id, session_id=session_id,
+                tool_call_id=tool_call_id,
+                response=text, decision=None, reason=None,
+                platform_metadata={
+                    self._user_id_key(): user_id
+                    if user_id is not None else self._user_id_default(),
+                },
+                gate_id=gate_id,
+            ))
+        except StaleGateError:
+            return DecisionRefused(QUESTION_STALE_NOTICE)    # the inbox already logged the refusal
+        return True
 
     # -- shared inbound routing --------------------------------------------
 
