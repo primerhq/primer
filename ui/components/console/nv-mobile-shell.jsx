@@ -66,8 +66,15 @@ function NV_mobileMayDecide(approvers, who) {
 // card shows WHAT it decides (the tool, which the aggregate row carries), names the call (its id) and the user may decide it. A card
 // with no `approval` may not be a real _approval gate at all (a graph park whose primary gate is something else), so it gets neither
 // Approve nor Deny: it says to open the session.
-function NV_mobileInboxView(it, who) {
-  var view = { kindLabel: "Parked", line: "", args: "", truncated: false, canApprove: false, canDeny: false, notApprover: false, note: "" };
+//
+// The Inbox preview allowlist (slice 2, ruling D3): the row says which arguments the park's allowlist withheld (`hidden_keys`) and who
+// decided that (`preview`: "policy" or "tool" when an operator or the tool's author declared the list, "default" for the closed-set rule,
+// "unstamped" for a park from before the stamp). The card names what is withheld, and a card that hides something nobody declared is
+// BLIND: Approve is offered only once the whole call is on the screen (`shownAll`, the text Show all loaded for THIS call). Deny is never
+// blind (refusing a call cannot do what the call does). An older server sends neither key: the card is as it always was. A source this
+// console does not know counts as undeclared (it fails closed).
+function NV_mobileInboxView(it, who, shownAll) {
+  var view = { kindLabel: "Parked", line: "", args: "", truncated: false, canApprove: false, canDeny: false, notApprover: false, note: "", withheld: "", blind: false };
   if (it.kind === "approval") {
     var a = it.approval;
     view.kindLabel = "Approval";
@@ -75,13 +82,19 @@ function NV_mobileInboxView(it, who) {
     if (a && a.tool_name) {
       view.args = a.arguments || "";
       view.truncated = !!a.truncated;
+      var hidden = Array.isArray(a.hidden_keys) ? a.hidden_keys.filter(function (k) { return typeof k === "string" && k; }) : [];
+      if (hidden.length) {
+        view.withheld = "Hidden on this card: " + hidden.slice(0, 6).join(", ") + (hidden.length > 6 ? " and " + (hidden.length - 6) + " more" : "");
+        view.blind = a.preview !== "tool" && a.preview !== "policy";
+      }
     }
     var decidable = !!(a && a.tool_name && it.tool_call_id);
     var may = NV_mobileMayDecide(it.approvers, who);
-    view.canApprove = decidable && may;
+    view.canApprove = decidable && may && (!view.blind || !!shownAll);
     view.canDeny = decidable && may;
     view.notApprover = decidable && !may;
     if (view.notApprover) view.note = "Only its approvers can decide this. You can still open it.";
+    else if (decidable && view.blind && !shownAll) view.note = "Some arguments are hidden on this card. Tap Show all to read the whole call, or open it to review.";
   } else if (it.kind === "ask") {
     view.kindLabel = "Question";
     view.line = it.prompt || "The agent has a question for you";
@@ -142,6 +155,12 @@ function NV_inboxFullCall(it) {
   });
 }
 
+// The text Show all loaded belongs to ONE call. The card is keyed by session, so the next poll can bring a NEW call for the same session while the old text is still in
+// the card's state: that text must not unlock Approve for a call the person has not read (the decision names the new call's id).
+function NV_inboxFullFor(loaded, it) {
+  return loaded && loaded.callId === it.tool_call_id ? loaded : null;
+}
+
 function NV_MobileDecisionButton(props) {
   var con = NV_useConsole();
   var it = props.item;
@@ -164,11 +183,12 @@ function NV_MobileDecisionButton(props) {
 function NV_MobileInboxCard(props) {
   var con = NV_useConsole();
   var it = props.item;
-  var view = NV_mobileInboxView(it, { username: con.username, role: con.role });
-  var ident = NV_identity(it.agent_binding);
   var fullState = React.useState(null);
-  var full = fullState[0];
+  var full = NV_inboxFullFor(fullState[0], it);
   var setFull = fullState[1];
+  var shownAll = !!(full && full.text !== undefined);
+  var view = NV_mobileInboxView(it, { username: con.username, role: con.role }, shownAll);
+  var ident = NV_identity(it.agent_binding);
 
   function review() {
     if (con.openInWorkspace) {
@@ -182,9 +202,9 @@ function NV_MobileInboxCard(props) {
   function toggleFull(ev) {
     ev.stopPropagation();
     if (full) { setFull(null); return; }
-    setFull({ loading: true });
+    setFull({ loading: true, callId: it.tool_call_id });
     NV_inboxFullCall(it).then(function (res) {
-      if (res.text !== undefined) { setFull({ text: res.text }); return; }
+      if (res.text !== undefined) { setFull({ text: res.text, callId: it.tool_call_id }); return; }
       setFull(null);
       con.toast(res.gone
         ? "That call has moved on. Open the session to review what it is waiting on now."
@@ -218,7 +238,8 @@ function NV_MobileInboxCard(props) {
       <div className="nv-mob-ib-line" data-testid="nv-mob-ib-line">{view.line}</div>
       {view.note ? <div className="nv-mob-ib-note" data-testid="nv-mob-ib-note">{view.note}</div> : null}
       {view.args ? <div className="nv-mob-ib-args" data-testid="nv-mob-ib-args">{view.args}</div> : null}
-      {view.truncated ? (
+      {view.withheld ? <div className="nv-mob-ib-withheld" data-testid="nv-mob-ib-withheld">{view.withheld}</div> : null}
+      {view.truncated || view.blind ? (
         <button type="button" className="nv-mob-ib-showall"
           data-testid={"nv-mob-ib-showall:" + it.session_id}
           onClick={toggleFull}>{full ? "Hide" : "Show all"}</button>
