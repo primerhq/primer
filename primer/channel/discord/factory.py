@@ -12,6 +12,7 @@ from discord import app_commands
 from primer.channel.discord.adapter import DiscordChannelAdapter
 from primer.channel.discord.connection import DISCORD_CONNECTIONS
 from primer.channel.discord.views import (
+    LEGACY_REJECT_MODAL_CUSTOM_ID_PREFIX,
     REJECT_MODAL_CUSTOM_ID_PREFIX,
     build_reject_modal,
     decode_custom_id_with_gate,
@@ -215,7 +216,7 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
         # the modal's on_submit closure above to route them — so
         # this branch only fires if something registers a modal
         # WITHOUT a closure (shouldn't happen in this codebase).
-        if verb == REJECT_MODAL_CUSTOM_ID_PREFIX and adapter is not None:
+        if verb in (REJECT_MODAL_CUSTOM_ID_PREFIX, LEGACY_REJECT_MODAL_CUSTOM_ID_PREFIX) and adapter is not None:
             # Defensive fallback — pull reason from components.
             comps = interaction.data.get("components") or []
             reason = ""

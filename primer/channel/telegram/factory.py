@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from primer.channel.adapter import refusal_notice
+from primer.channel.adapter import BUTTON_EXPIRED_NOTICE, refusal_notice
 from primer.channel.factory import register_adapter_factory
 from primer.channel.telegram.adapter import TelegramChannelAdapter
 from primer.channel.telegram.connection import TELEGRAM_CONNECTIONS
@@ -108,6 +108,9 @@ def _install_handlers(provider_id: str, app: Any) -> None:
                 tag = data[2:]
                 ids = await adapter._resolve_tag(tag)
                 if ids is None:
+                    # The cache no longer knows this button (the process restarted, or the entry aged out): nothing is decided, and silence would
+                    # leave the person guessing. Only the clicker sees the alert.
+                    notice = BUTTON_EXPIRED_NOTICE
                     return
                 accepted = await adapter._handle_decision(
                     **ids, decision="approved", reason=None,
@@ -130,6 +133,7 @@ def _install_handlers(provider_id: str, app: Any) -> None:
                 tag = data[2:]
                 ids = await adapter._resolve_tag(tag)
                 if ids is None:
+                    notice = BUTTON_EXPIRED_NOTICE
                     return
                 sent = await context.bot.send_message(
                     chat_id=cq.message.chat.id, **build_rejection_prompt(),

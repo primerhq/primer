@@ -152,6 +152,13 @@ gate_respond_total = Counter(
     registry=registry,
 )
 
+discord_gate_token_dropped_total = Counter(
+    "discord_gate_token_dropped_total",
+    "Discord approval prompts whose buttons carry no gate token because it did not fit in the 100-character custom_id. A click on such a "
+    "button is decided as an old button (not fenced against a replaced gate), so a non-zero count is a deployment whose ids are too long.",
+    registry=registry,
+)
+
 
 # ---------------------------------------------------------------------------
 # Worker / turn / session metrics (S7)
@@ -397,6 +404,7 @@ def reset_for_test() -> None:
     global channel_events_normalized_total, channel_events_matched_total  # noqa: PLW0603
     global channel_events_dispatched_total, reply_binding_resolutions_total  # noqa: PLW0603
     global gate_respond_total  # noqa: PLW0603
+    global discord_gate_token_dropped_total  # noqa: PLW0603
     global worker_tasks_total, worker_task_duration_seconds  # noqa: PLW0603
     global storage_cas_drift_total  # noqa: PLW0603
     global turns_total, turn_duration_seconds  # noqa: PLW0603
@@ -497,6 +505,12 @@ def reset_for_test() -> None:
         "matched (its gate_id is the pending one), stale (it named a gate that is no longer the pending one, refused 409) or absent (it named "
         "none: a client that predates the token).",
         ["kind", "gate_token"],
+        registry=registry,
+    )
+    discord_gate_token_dropped_total = Counter(
+        "discord_gate_token_dropped_total",
+        "Discord approval prompts whose buttons carry no gate token because it did not fit in the 100-character custom_id. A click on such a "
+        "button is decided as an old button (not fenced against a replaced gate), so a non-zero count is a deployment whose ids are too long.",
         registry=registry,
     )
     worker_tasks_total = Counter(
