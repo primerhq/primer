@@ -81,6 +81,7 @@ from primer.agent.invoke import (
 )
 from primer.model.agent import Agent
 from primer.model.model_profile import ModelProfile
+from primer.common.log import redact_credentials
 from primer.model.chat import Tool, ToolCallResult, ToolExample, ToolTurnCapReached, TurnStreamFailure
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import err as _err, ok as _ok
@@ -978,7 +979,7 @@ def build_system_toolset(
             # anywhere that the subagent's LLM call actually failed.
             return _err(
                 f"subagent {args.agent_id!r} LLM stream failed: "
-                f"{exc.error.message}",
+                f"{redact_credentials(exc.error.message)}",
                 error_type="provider-error",
             )
         return _ok({"output": text})

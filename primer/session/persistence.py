@@ -35,7 +35,7 @@ from typing import Any, Protocol
 
 from pydantic import TypeAdapter
 
-from primer.common.log import redact_url_secrets
+from primer.common.log import redact_credentials
 from primer.model.chat import (
     Done,
     Error,
@@ -625,7 +625,7 @@ def translate_stream_event(
             kind=SessionMessageKind.ERROR,
             payload={
                 "code": event.code,
-                "message": redact_url_secrets(event.message),
+                "message": redact_credentials(event.message),
                 "node_id": event.node_id,
                 "path": event.path,
             },
@@ -879,7 +879,13 @@ def translate_stream_event(
             kind=SessionMessageKind.TOOL_RESULT,
             payload={
                 "call_id": scoped_call_id,
-                "output": event.extended.output,
+                # A failure's text is whatever the tool's exception printed (httpx prints the request URL whole, credentials included) or a child
+                # agent's or graph's failure body; the file is served whole by GET /sessions/{sid}/messages (01a11fbc-d6de). A successful
+                # result is data and is stored as it is.
+                "output": (
+                    redact_credentials(event.extended.output)
+                    if event.extended.error and isinstance(event.extended.output, str) else event.extended.output
+                ),
                 "error": event.extended.error,
                 # UX reconcile wave 5: a workspace tool's own extra data
                 # (grep's match_count/file_count, ...) used to be dropped
@@ -994,7 +1000,7 @@ def translate_stream_event(
             kind=SessionMessageKind.ERROR,
             # The record is served whole by ``/messages``: a URL credential or a query key in the provider's words must not be persisted
             # (dispatch's own ERROR record and the turn log redact theirs the same way).
-            payload={"message": redact_url_secrets(event.message), "code": event.code, "fatal": event.fatal},
+            payload={"message": redact_credentials(event.message), "code": event.code, "fatal": event.fatal},
             node_id=node_id,
             created_at=now,
         )

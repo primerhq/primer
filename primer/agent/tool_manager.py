@@ -41,6 +41,7 @@ from primer.agent.approval import (
     resolve_preview,
 )
 from primer.authz import _role_allows
+from primer.common.log import redact_credentials
 from primer.common.preview_paths import closed_set_names
 from primer.int.toolset import ToolsetProvider
 from primer.model.chat import Tool, ToolCallPart, ToolCallResult, ToolResultPart, NOTIFYING_TOOL_RESULT
@@ -120,6 +121,19 @@ def _wrapped_call(arguments: object) -> tuple[str, dict] | None:
         return None
     inner = arguments.get("arguments")
     return f"{toolset_id}{_SCOPE_SEPARATOR}{tool_name}", inner if isinstance(inner, dict) else {}
+
+
+def _without_credentials(result: ToolResultPart) -> ToolResultPart:
+    """``result`` with the credentials a failure message can carry masked out of its text (security ticket 01a11fbc-d6de).
+
+    An error result's text is whatever the tool's exception printed (httpx prints the whole request URL, userinfo and ``?api_key=`` included) or a
+    child agent's or graph's failure body; it goes back into the model's context as the tool result, into the session record and, for an exposed
+    tool, over MCP. A successful result is data and is returned as it was.
+    """
+    if not result.error or not isinstance(result.output, str):
+        return result
+    cleaned = redact_credentials(result.output)
+    return result if cleaned == result.output else result.model_copy(update={"output": cleaned})
 
 
 class ToolExecutionManager:
@@ -537,9 +551,9 @@ class ToolExecutionManager:
         with _tracer.start_as_current_span("tool.exec") as _span:
             _span.set_attribute("tool.name", call.name)
             try:
-                result = await self._execute_inner(
+                result = _without_credentials(await self._execute_inner(
                     call, principal=principal, bypass_approval=bypass_approval,
-                )
+                ))
                 _metrics.tool_calls_total.labels(call.name, "ok").inc()
                 await self._emit_tool_called(call, ok=not result.error)
                 return result

@@ -48,6 +48,7 @@ from primer.agent.summary_input import (
 )
 from primer.agent.tail import CompactionSplit, split_for_compaction
 from primer.common.context_overflow import is_context_overflow
+from primer.common.log import redact_credentials
 from primer.llm._tokenizer.char_fallback import count_tokens_char_fallback
 from primer.model.chat import (
     CompactionSummary,
@@ -1111,7 +1112,7 @@ class CompactionStrategy:
                     # simply produce an error result during compaction and the
                     # model moves on. Do NOT "harmonize" this to re-raise.
                     # (CancelledError is a BaseException and still propagates.)
-                    rp = ToolResultPart(id=call.id, output=str(exc), error=True)
+                    rp = ToolResultPart(id=call.id, output=redact_credentials(str(exc)), error=True)
                 result_parts.append(rp)
                 await self._sink(
                     event_sink,

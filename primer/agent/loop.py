@@ -36,6 +36,7 @@ from primer.agent.interrupt import Interrupted, interruptible
 from primer.agent.stoppable_call import run_stoppable
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.common.context_overflow import is_context_overflow_error
+from primer.common.log import redact_credentials
 from primer.llm._tokenizer.char_fallback import count_tokens_char_fallback
 from primer.media.hydrate import hydrate_prompt_parts
 from primer.model.chat import (
@@ -957,7 +958,7 @@ async def _dispatch_tool_calls(
             park.completed_results = list(result_parts)
             raise
         except PrimerError as exc:  # defence-in-depth.
-            rp = ToolResultPart(id=call.id, output=str(exc), error=True)
+            rp = ToolResultPart(id=call.id, output=redact_credentials(str(exc)), error=True)
         result_parts.append(rp)
     if not result_parts:
         return []

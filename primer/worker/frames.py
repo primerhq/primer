@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from primer.graph.invoke_graph import ChildGraphFailed, resume_invoke_graph
+from primer.common.log import redact_credentials
 from primer.model.chat import ToolCallPart, ToolResultPart, ToolTurnCapReached, TurnStreamFailure
 from primer.model.principal import PrincipalRef
 from primer.model.yield_ import YieldToWorker
@@ -279,7 +280,7 @@ class AgentFrame:
                 value=ToolResultPart(
                     id=self.tool_call_id,
                     output=json.dumps({
-                        "error": f"subagent LLM stream failed: {exc.error.message}",
+                        "error": f"subagent LLM stream failed: {redact_credentials(exc.error.message)}",
                     }),
                     error=True,
                 )
