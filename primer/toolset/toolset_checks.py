@@ -107,7 +107,7 @@ _PYTHON_REASON = (
 )
 _REPOINT_REASON = (
     "Changing a toolset's URL or OAuth endpoints while keeping its stored secrets requires the admin role, and the stored secrets are kept only "
-    "for the same host (scheme, host and port): re-enter the secrets (headers, OAuth client secret) when changing the URL, or ask an admin."
+    "for the same origin (scheme, host and port): re-enter the secrets (headers, OAuth client secret) when changing the URL, or ask an admin."
 )
 
 

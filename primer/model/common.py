@@ -174,7 +174,7 @@ def _matches_served_mask(incoming_plain: str, existing_plain: str) -> bool:
 # The fields that name WHERE the credentials kept in the same model are sent. A secret restored from the stored row goes to the origin it was stored for and to no other (ticket 01a1212a).
 _ORIGIN_URL_FIELDS = ("url", "base_url", "endpoint_url", "apiserver_url", "discovery_url", "git_url", "resource_uri")
 
-_REENTER_KEY = "re-enter the key: the stored one is kept only for the same host"
+REENTER_KEY = "re-enter the key: the stored one is kept only for the same origin (scheme, host and port)"
 _NOT_A_SECRET = "this is the mask a GET serves, not a secret: re-enter the key"
 
 
@@ -209,7 +209,7 @@ def _restore_secret(name: str, new_value: SecretStr, old_value: Any, moved: bool
     if not isinstance(old_value, SecretStr) or not _matches_served_mask(new_value.get_secret_value(), old_value.get_secret_value()):
         return None
     if moved:
-        raise ValidationError(f"{name}: {_REENTER_KEY}")
+        raise ValidationError(f"{name}: {REENTER_KEY}")
     return old_value
 
 
@@ -238,11 +238,12 @@ def preserve_masked_secrets(entity: Any, existing: Any) -> None:
     the key's mask alone would store the real key next to that host. A secret the person typed is
     theirs and is stored as sent, wherever the URL points; a model with no origin is unaffected.
 
-    A field that never held a secret (``existing``'s value is ``None``)
-    has nothing to restore - an incoming mask-shaped string in that case
-    is stored as a literal secret. This is a known, accepted limitation
-    (nobody's real API key IS the string ``"**********"``), not a bug
-    this function tries to close.
+    Where there is NO stored value of the same shape to restore from (the config class changed,
+    a dict key is new, a list changed length) a served mask, a URL's password or a secret, is
+    REFUSED too: it would be stored as the value. A field of the same class that never held a
+    secret (``existing``'s value is ``None``) is the one case left: an incoming mask-shaped string
+    there is stored as a literal secret. This is a known, accepted limitation (nobody's real API
+    key IS the string ``"**********"``), not a bug this function tries to close.
 
     Recurses into nested ``BaseModel`` fields (provider ``config``
     unions), list items, and dict values - covering every ``SecretStr``
@@ -256,7 +257,7 @@ def _preserve(entity: Any, existing: Any, moved: bool) -> None:
     if not isinstance(entity, BaseModel):
         return
     if not isinstance(existing, BaseModel) or entity.__class__ is not existing.__class__:
-        _refuse_masked_urls(entity)          # nothing stored of this shape to restore from: a served mask in it would be stored as the password
+        _refuse_masks(entity, "", True)          # nothing stored of this shape to restore from (the config class changed): a served mask in it, a password or a key, would be stored as the value
         return
     moved = _moved_origin(entity, existing, moved)
     for name in entity.__class__.model_fields:
@@ -278,7 +279,7 @@ def _preserve(entity: Any, existing: Any, moved: bool) -> None:
             _preserve_dict(name, new_value, old_value, moved)
 
 
-_UNRESTORABLE = "re-enter the password: the stored one is kept only for the same host and user"
+_UNRESTORABLE = "re-enter the password: the stored one is kept only for the same origin (scheme, host and port) and user"
 
 
 def _restored_url(name: str, new_value: AnyUrl, old_value: Any) -> AnyUrl | None:
@@ -310,7 +311,7 @@ def _looks_served(plain: str) -> bool:
 
 
 def _refuse_masks(value: Any, name: str, secrets: bool) -> None:
-    """Refuse a URL that carries the served mask anywhere in ``value`` (a model, a list or a dict of them), and with ``secrets`` a secret that is one."""
+    """Refuse a URL that carries the served mask anywhere in ``value`` (a model, a list or a dict of them), and with ``secrets`` a secret that is one: there is nothing stored to restore it from."""
     if isinstance(value, SecretStr):
         if secrets and _looks_served(value.get_secret_value()):
             raise ValidationError(f"{name or 'secret'}: {_NOT_A_SECRET}")
@@ -328,11 +329,6 @@ def _refuse_masks(value: Any, name: str, secrets: bool) -> None:
             _refuse_masks(item, str(key), secrets)
 
 
-def _refuse_masked_urls(value: Any, name: str = "") -> None:
-    """Refuse a URL that carries the served mask anywhere in ``value``: there is no stored URL of the same shape to restore it from."""
-    _refuse_masks(value, name, False)
-
-
 def refuse_served_masks(entity: Any) -> None:
     """Refuse a CREATE body that carries a mask a GET serves, as a URL's password or as a secret (a 422 whose text names no secret).
 
@@ -344,7 +340,7 @@ def refuse_served_masks(entity: Any) -> None:
 
 def _preserve_list(name: str, new_items: list[Any], old_items: Any, moved: bool) -> None:
     if not isinstance(old_items, list) or len(old_items) != len(new_items):
-        _refuse_masked_urls(new_items, name)
+        _refuse_masks(new_items, name, True)          # the items cannot be paired with stored ones: a served mask would be stored as the value
         return
     for i, (new_item, old_item) in enumerate(zip(new_items, old_items)):
         if isinstance(new_item, SecretStr):
@@ -365,11 +361,11 @@ def _preserve_list(name: str, new_items: list[Any], old_items: Any, moved: bool)
 
 def _preserve_dict(name: str, new_map: dict[Any, Any], old_map: Any, moved: bool) -> None:
     if not isinstance(old_map, dict):
-        _refuse_masked_urls(new_map, name)
+        _refuse_masks(new_map, name, True)
         return
     for k, new_v in new_map.items():
         if k not in old_map:
-            _refuse_masked_urls(new_v, str(k))
+            _refuse_masks(new_v, f"{name}.{k}", True)          # a key the stored row does not hold: nothing to restore the mask from
             continue
         old_v = old_map[k]
         label = f"{name}.{k}"
@@ -390,6 +386,7 @@ def _preserve_dict(name: str, new_map: dict[Any, Any], old_map: Any, moved: bool
 
 
 __all__ = [
+    "REENTER_KEY",
     "Describeable",
     "Identifiable",
     "dump_for_storage",

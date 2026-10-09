@@ -32,6 +32,7 @@ from typing import Any
 from pydantic import BaseModel, SecretStr
 
 from primer.common.log import redact_url_secrets
+from primer.common.url_userinfo import MASK as URL_MASK
 from primer.common.url_userinfo import mask_userinfo
 
 MASK = "•••redacted•••"
@@ -135,9 +136,34 @@ def _redact_leaf(text: str) -> str:
     ``mask_userinfo`` reads the whole leaf as one URL, so a leaf that begins with a credentialed URL and goes on (a second URL in an error text, a query token) kept the rest in clear.
     """
     lead = _LEADING_URL.match(text)
-    if lead is None or "@" not in lead.group(0):
-        return redact_url_secrets(text)          # a credentialed URL inside free text (an error text, a copied log line)
-    return mask_userinfo(lead.group(0)) + redact_url_secrets(text[lead.end() :])
+    if lead is not None and "@" in lead.group(0):
+        return mask_userinfo(lead.group(0)) + redact_url_secrets(text[lead.end() :])
+    spaced = _mask_spaced_userinfo(text)
+    if spaced is not None:
+        return spaced
+    return redact_url_secrets(text)          # a credentialed URL inside free text (an error text, a copied log line)
+
+
+# The authority read the way ``mask_userinfo`` reads it: up to the first "/", "?" or "#", whitespace included.
+_AUTHORITY = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://([^/?#]*)")
+
+
+def _mask_spaced_userinfo(text: str) -> str | None:
+    """A leaf that begins with a URL whose PASSWORD holds whitespace (``https://bot:correct horse battery@mcp.example/mcp``; ``httpx`` percent-encodes it, so such a URL works), masked as the
+    served row masks it, with what follows redacted like free text; ``None`` when the leaf is not that.
+
+    The whitespace-free lead of such a leaf has no ``@``, and ``redact_url_secrets`` stops at whitespace, so the password stayed in clear (main masked it, because ``mask_userinfo`` reads the
+    whole authority). The user is a single token (a space before the first ``:`` means the text is a sentence that happens to begin with a scheme and holds an e-mail address, which stays as it is).
+    """
+    whole = _AUTHORITY.match(text)
+    if whole is None:
+        return None
+    userinfo, at, _ = whole.group(1).rpartition("@")
+    user, colon, _password = userinfo.partition(":")
+    if not at or not colon or any(ch.isspace() for ch in user):
+        return None
+    start = whole.start(1)
+    return f"{text[:start]}{user}:{URL_MASK}@" + redact_url_secrets(text[start + len(userinfo) + 1 :])
 
 
 def redact_event(event: Any) -> Any:

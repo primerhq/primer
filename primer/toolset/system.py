@@ -189,7 +189,7 @@ _ADMIN_WRITE_NOTES: dict[str, str] = {
         "Creating or changing an MCP toolset on the ``stdio`` transport (it launches a command on the server host) or a python "
         "toolset (its source runs on the server host) requires the admin role, whatever this tool's own role; so does changing a "
         "toolset's URL or OAuth endpoints while sending a secret back masked (re-enter the secrets instead; even an admin keeps a "
-        "stored secret only for the same host, scheme and port, else ``type=validation-error``). When the run was not "
+        "stored secret only for the same origin (scheme, host and port), else ``type=validation-error``). When the run was not "
         "started by an admin, or carries no identity (a call through the MCP endpoint), it returns ``type=forbidden`` and nothing "
         "is stored. Other http and sse toolset writes are unaffected."
     ),

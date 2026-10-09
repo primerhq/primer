@@ -560,10 +560,10 @@ def _crud_tools_for(
         "Use when overwriting a whole row; the body ``id`` must "
         "equal the path ``id``. Unknown id returns ``type=not-found``. "
         "A secret field the matching ``get_`` served masked and you send "
-        "back unchanged keeps its stored value, but only for the same host: "
-        "when the base URL, host or port changes (or the user of a URL password), "
+        "back unchanged keeps its stored value, but only for the same origin (scheme, host and port): "
+        "when any of them changes (or the user of a URL password), "
         "the mask is refused with ``type=validation-error`` (\"re-enter the key\") "
-        "and nothing is stored; send the secret itself to change the host."
+        "and nothing is stored; send the secret itself to move it."
     )
     if on_update is not None:
         update_when += (

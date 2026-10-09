@@ -54,6 +54,7 @@ from pydantic import BaseModel, Field, ValidationError
 from primer.authz import _role_allows
 from primer.common.validation_errors import without_input
 from primer.model.chat import Tool, ToolCallResult, ToolExample
+from primer.model.common import refuse_served_masks
 from primer.model.except_ import (
     BadRequestError,
     ConfigError,
@@ -503,6 +504,11 @@ def _make_create_handler(
             refusal = privilege_check(entity, None, ctx)
         if refusal is not None:
             return refusal
+        # A create has nothing stored to restore a mask from: the copy-a-row move (get_*, a new id, create_*) would store the served masks as the values.
+        try:
+            refuse_served_masks(entity)
+        except PrimerValidationError as exc:          # the REST twin is a 422
+            return _err(exc.message, error_type="validation-error")
         storage = storage_factory()
         if await storage.get(entity.id) is not None:
             return _err(
