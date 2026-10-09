@@ -70,6 +70,20 @@ class SessionWakeDeps:
     event_bus: Any | None = None
 
 
+async def _reopen_a_stale_ended_slot(slot: Any) -> None:
+    """The row says the session is alive (this branch is for a row that is not ENDED), so a slot that says ENDED is a stale mirror: reopen it.
+
+    A turn that FAILED leaves the executor's on-disk slot ENDED, and a session that rests after it (C-024) takes this in-place path, not the
+    ENDED branch that reopens the slot. The worker reopens the slot it holds at the failure exit; this covers the handle THIS process holds
+    (a cached one never rewinds an ENDED view it adopted from disk) and a slot whose reopen there did not land. ``reopen`` is a no-op on a slot
+    that is not ENDED. A slot without ``status`` (a test double) is left alone.
+    """
+    status = getattr(slot, "status", None)
+    reopen = getattr(slot, "reopen", None)
+    if status is not None and reopen is not None and await status() == SessionStatus.ENDED:
+        await reopen()
+
+
 async def wake_session(
     *,
     workspace_id: str,
@@ -213,6 +227,7 @@ async def wake_session(
             try:
                 slot = await ws.get_session(session_id)
                 if slot is not None:
+                    await _reopen_a_stale_ended_slot(slot)
                     await slot.append_instruction(
                         instruction, extra_parts=extra_parts,
                     )

@@ -16,7 +16,7 @@ ways:
 
 Every reader that serves the slot to a person or a tool therefore passes it through :func:`overlay_row_on_info` (one session) or
 :func:`overlay_rows_on_infos` (a page) first, so two routes can never tell two stories. The overlay owns the LIFECYCLE fields only
-(``status``, ``ended_reason``, ``ended_detail``, ``ended_at``); everything else in the slot (name, agent, timestamps) is served as it
+(``status``, ``ended_reason``, ``ended_detail``, ``ended_at``) and ``last_turn_error`` (the row's alone); everything else in the slot (name, agent, timestamps) is served as it
 is. It corrects exactly three disagreements: a row that is ENDED (the row's end, whatever the slot says), a slot that says ENDED under a
 row that is not, and a slot still RUNNING under a WAITING row. Every OTHER disagreement between two live states (a slot WAITING or
 PAUSED under a RUNNING row, a slot RUNNING under a CREATED row) is left alone on purpose: those are in-turn states the executor writes to
@@ -57,20 +57,24 @@ def overlay_row_on_info(
     """
     if row is None or (workspace_id is not None and row.workspace_id != workspace_id):
         return info
+    # The failure of the last turn is the row's too (the slot never carries it): served with every lifecycle answer below, so a session that
+    # RESTS after a failed turn (WAITING, no ended_reason) still says so to a tool that reads the slot.
+    failure = {"last_turn_error": row.last_turn_error}
     if row.status == SessionStatus.ENDED:
         return info.model_copy(update={
             "status": SessionStatus.ENDED,
             "ended_reason": row.ended_reason if row.ended_reason is not None else info.ended_reason,
             "ended_detail": row.ended_detail,
             "ended_at": row.ended_at if row.ended_at is not None else info.ended_at,
+            **failure,
         })
     if info.status == SessionStatus.ENDED:
         return info.model_copy(update={
-            "status": row.status, "ended_reason": None, "ended_detail": None, "ended_at": None,
+            "status": row.status, "ended_reason": None, "ended_detail": None, "ended_at": None, **failure,
         })
     if info.status == SessionStatus.RUNNING and row.status == SessionStatus.WAITING:
-        return info.model_copy(update={"status": SessionStatus.WAITING})
-    return info
+        return info.model_copy(update={"status": SessionStatus.WAITING, **failure})
+    return info.model_copy(update=failure)
 
 
 async def overlay_row_on_slot_info(

@@ -295,6 +295,15 @@ class SessionInfo(BaseModel):
             "that wants the real value overlays the row (``primer.session.slot_view``)."
         ),
     )
+    last_turn_error: LastTurnError | None = Field(
+        default=None,
+        description=(
+            "How the session's last turn failed (``code`` and ``at``), served from the DB row like ``ended_detail``: the runtime does not set it, "
+            "so ``session.json`` carries ``null`` and a reader overlays the row (``primer.session.slot_view``). A session that rests after a "
+            "transport failure of the model call is WAITING with no ``ended_reason``; this is how the MCP workspace tools see that its last "
+            "turn failed."
+        ),
+    )
     parent_session_id: str | None = Field(
         default=None,
         description=(
