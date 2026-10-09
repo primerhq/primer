@@ -80,7 +80,8 @@ def test_health_cards_match_notes_not_the_old_scheduler_dump():
     # heartbeats scheduler-internals dump.
     for k in ("scheduler", "worker pool", "sessions active", "attention"):
         assert f'"{k}"' in SYS, k
-    assert "status=running" in SYS, "sessions-active reads GET /sessions?status=running"
+    assert "session_state=running" in SYS, "sessions-active reads GET /sessions?session_state=running (a turn in flight, not every session marked running)"
+    assert "status=running" not in SYS, "status=running also counts a parked session and a queued one"
 
 
 def test_worker_pool_capacity_falls_back_to_a_clean_label_not_a_bare_question_mark():
