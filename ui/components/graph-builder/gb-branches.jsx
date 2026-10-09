@@ -83,6 +83,7 @@ function GB_BranchValueInput(props) {
   }, [invalid, errorKey]);
   React.useEffect(() => () => {
     if (reported.current && report.current && errorKey) report.current(errorKey, null);
+    reported.current = false;
   }, [errorKey]);
   const describedby = [describedBy, invalid ? errId : null].filter(Boolean).join(" ");
   return (
@@ -139,6 +140,8 @@ function GB_BranchBuilder(props) {
   }
 
   const usesPaths = (router.branches || []).some((b) => (b.conditions || []).length);
+  // The help line under the paths, and the boxes it describes: drawn for an editable choice with at least one value box.
+  const showHelp = !readOnly && (router.branches || []).some((b) => (b.conditions || []).some((c) => c.op !== "exists"));
   const needsFields = usesPaths && sourceNode && !sourceNode.response_format;
   const usedPaths = [];
   for (const b of router.branches || []) {
@@ -219,10 +222,10 @@ function GB_BranchBuilder(props) {
               </select>
               {c.op !== "exists" ? (
                 <GB_BranchValueInput
-                  key={edgeIdx + ":" + bi + ":" + ci}
+                  key={edgeIdx + ":" + bi + ":" + ci + ":" + (router.branches || []).length}
                   errorKey={"bv:" + edgeIdx + ":" + bi + ":" + ci}
                   onJsonError={onJsonError}
-                  describedBy={helpId}
+                  describedBy={showHelp ? helpId : undefined}
                   ariaLabel={"Branch " + (bi + 1) + ", condition " + (ci + 1) + ": value"}
                   value={c.value}
                   op={c.op}
@@ -313,7 +316,7 @@ function GB_BranchBuilder(props) {
         ) : null}
       </div>
       <span className="muted" style={{ fontSize: "var(--fs-11)" }}>Checked in order - the first match wins.</span>
-      {!readOnly && (router.branches || []).some((b) => (b.conditions || []).some((c) => c.op !== "exists")) ? (
+      {showHelp ? (
         <span id={helpId} className="muted" style={{ fontSize: "var(--fs-11)" }}>A value is text, or JSON: 1 is a number, "1" is text.</span>
       ) : null}
     </div>
