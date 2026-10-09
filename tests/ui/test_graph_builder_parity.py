@@ -321,8 +321,9 @@ def test_the_import_modal_hands_the_spec_to_the_check_before_it_closes() -> None
     builder = _src("graph-builder.jsx")
     call = builder[builder.index("<GR_ImportSpecModal"):]
     handler = call[call.index("onApply="):call.index("/>")]
-    assert "GB_applyImport(spec, dispatch)" in handler
-    assert handler.index("GB_applyImport(spec, dispatch)") < handler.index("setImportOpen(false)"), "a refused spec must leave the modal open to show its message"
+    call_at = handler.index("GB_applyImport(spec, dispatch")
+    assert call_at < handler.index("setImportOpen(false)"), "a refused spec must leave the modal open to show its message"
+    assert "knownToolIds: tools.map((t) => t.id)" in handler[call_at:handler.index("setImportOpen(false)")], "the dry run validates with the options the builder renders with"
 
 
 # ---------------------------------------------------------------------------
@@ -330,8 +331,8 @@ def test_the_import_modal_hands_the_spec_to_the_check_before_it_closes() -> None
 # ---------------------------------------------------------------------------
 
 _DEEP = (
-    "The spec has a field of the wrong type, so it was not loaded: `nodes`, `edges`, every router's `branches` and every fan-out's `specs` must be lists, "
-    "and descriptions must be strings."
+    "The spec has a field of the wrong type, so it was not loaded: `nodes`, `edges`, every router's `branches` and `conditions`, every fan-out's `specs` and every schema's `required` "
+    "must be lists; ids, descriptions, templates and paths must be strings; `count` and `max_iterations` must be numbers; and a schema must be an object."
 )
 _BEGIN_NODE = {"kind": "begin", "id": "s"}
 
