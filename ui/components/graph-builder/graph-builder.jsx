@@ -30,17 +30,19 @@ class GB_ErrorBoundary extends React.Component {
   }
 }
 
-function GB_RenderError({ error, canUndo, onUndo, onDiscard }) {
+function GB_RenderError({ error, canUndo, onUndo, onDiscard, onClearSelection }) {
   const detail = error && error.message ? error.message : String(error);
   return (
     <div className="col" data-testid="gb-render-error" role="alert" style={{ gap: 10, padding: 20, border: "1px solid var(--border)", borderRadius: 12, background: "var(--bg-1)" }}>
       <div style={{ fontWeight: 600 }}>The graph builder could not draw this graph.</div>
       <div className="muted" style={{ fontSize: "var(--fs-12)" }}>
         Your draft is still here and nothing was saved. Undo the last change, or discard every unsaved change to go back to the saved graph.
+        {onClearSelection ? " If it broke when you selected a step or a link, clear the selection to keep your changes." : ""}
       </div>
       <div className="mono" data-testid="gb-render-error-detail" style={{ fontSize: "var(--fs-11)", color: "var(--text-3)", wordBreak: "break-word" }}>{detail}</div>
       <div className="row" style={{ gap: 8 }}>
         <Btn size="sm" data-testid="gb-render-error-undo" disabled={!canUndo} onClick={onUndo}>Undo the last change</Btn>
+        {onClearSelection ? <Btn size="sm" kind="ghost" data-testid="gb-render-error-clear" onClick={onClearSelection}>Clear the selection</Btn> : null}
         <Btn size="sm" kind="ghost" data-testid="gb-render-error-discard" onClick={onDiscard}>Discard all changes</Btn>
       </div>
     </div>
@@ -108,6 +110,13 @@ function GB_Builder(props) {
     undoRef.current = undoRef.current.slice(0, -1);
     redoRef.current = [...redoRef.current, draftRef.current];
     rawDispatch({ type: "SET_DRAFT", draft: prev });
+    setRetryNonce((n) => n + 1);
+  }, []);
+
+  // Let go of the selected step or link (a click-time throw): the draft and the undo history are untouched.
+  const clearSelection = useCallback(() => {
+    setSelectedId(null);
+    setSelectedEdge(null);
     setRetryNonce((n) => n + 1);
   }, []);
 
@@ -554,7 +563,15 @@ function GB_Builder(props) {
   return (
     <GB_ErrorBoundary
       resetKeys={[draft, selectedId, selectedEdge, retryNonce]}
-      fallback={(error) => <GB_RenderError error={error} canUndo={undoRef.current.length > 0} onUndo={undo} onDiscard={discard} />}
+      fallback={(error) => (
+        <GB_RenderError
+          error={error}
+          canUndo={undoRef.current.length > 0}
+          onUndo={undo}
+          onDiscard={discard}
+          onClearSelection={selectedId || selectedEdge != null ? clearSelection : null}
+        />
+      )}
     >
       {content}
     </GB_ErrorBoundary>
