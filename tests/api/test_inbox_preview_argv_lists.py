@@ -800,8 +800,7 @@ def test_a_cut_that_ends_inside_an_open_quote_is_scrubbed_with_the_quote_closed(
 def test_a_cut_inside_an_open_quote_keeps_the_head_of_a_harmless_command() -> None:
     got, truncated = _redact("bash -lc 'set -e; echo building the module; make all", 0, [30])
 
-    assert truncated is True and got.startswith("bash -lc 'set -e;") and "<redacted>" not in got, got
-    assert not got.endswith("''"), got
+    assert (got, truncated) == ("bash -lc 'set -e; echo", True)          # the head, and no closing quote: the one added for the rules is dropped again
 
 
 def test_an_apostrophe_inside_a_word_opens_no_quote() -> None:
