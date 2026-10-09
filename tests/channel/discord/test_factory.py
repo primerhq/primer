@@ -655,7 +655,7 @@ async def _open_reject_modal(monkeypatch, client, original):
     """Click Reject and return the ``on_submit`` closure the factory built for the modal."""
     captured: dict = {}
 
-    def build(ws, sid, tcid, on_submit):
+    def build(ws, sid, tcid, on_submit, gate_id=None):
         captured["on_submit"] = on_submit
         return SimpleNamespace(custom_id="reject-modal")
 

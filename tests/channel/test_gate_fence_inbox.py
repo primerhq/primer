@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 import pytest
 
 from primer.bus.in_memory import InMemoryEventBus
-from primer.channel.adapter import APPROVAL_ROUTED_NOTICE, ResponseEnvelope
+from primer.channel.adapter import APPROVAL_ROUTED_NOTICE, QUESTION_STALE_NOTICE, ResponseEnvelope
 from primer.channel.gate_tag import attach_gate_suffix, split_gate_suffix
 from primer.channel.inbox import ChannelInbox
 from primer.channel.null_adapter import NullChannelAdapter
@@ -273,6 +273,16 @@ async def test_a_stale_click_reports_a_refusal_whose_notice_says_the_approval_wa
     assert "replaced" in refused.notice and refused.notice != APPROVAL_ROUTED_NOTICE
     assert len(refused.notice) <= 200, "Telegram's alert on a callback query takes no more than 200 characters"
     assert refused.notice == adapter_module.APPROVAL_STALE_NOTICE
+
+
+@pytest.mark.asyncio
+async def test_a_stale_ask_user_reply_reports_a_refusal_whose_notice_says_the_question_was_replaced() -> None:
+    refused = await _Adapter(_Inbox(StaleGateError("ask_user")))._handle_text_reply(
+        workspace_id="ws", session_id="s", tool_call_id="tc", text="EUR", user_id="U1", gate_id=G1,
+    )
+
+    assert not refused and refused.notice == QUESTION_STALE_NOTICE and "replaced" in refused.notice
+    assert len(refused.notice) <= 200
 
 
 @pytest.mark.asyncio
