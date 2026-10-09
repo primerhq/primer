@@ -79,7 +79,8 @@ def _wait_until_failed(client: httpx.Client, sid: str, timeout_s: float = 30.0) 
     last: dict = {}
     while time.monotonic() < deadline:
         last = client.get(f"/v1/sessions/{sid}").json()
-        if last.get("status") == "ended" or last.get("last_turn_error"):
+        # (the stamp is written BEFORE the status moves, so a poll between the two sees the stamp on a row that is still running)
+        if last.get("status") == "ended" or (last.get("last_turn_error") and last.get("status") == "waiting"):
             return last
         time.sleep(0.2)
     raise AssertionError(f"the turn never failed, last observed: {last}")

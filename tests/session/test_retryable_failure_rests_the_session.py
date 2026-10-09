@@ -34,6 +34,9 @@ from tests.session.test_dispatch import (  # noqa: F401  (fixtures are used by n
 )
 
 REST_CODES = ["server_error", "rate_limit", "network_error", "connect_timeout", "stream_timeout", "generation_timeout"]
+#: A stream that died WITHOUT a code is most often a broken connection (lead ruling 2026-10-09): it rests like the transport set. A code that IS
+#: set but that nobody classified ends the session, and so does everything the operator has to fix.
+NO_CODE = "llm_stream_error"
 END_CODES = [
     "auth_error", "bad_request", "model_not_found", "unsupported_content", "context_overflow_unrecoverable", "a_code_nobody_classified",
 ]
@@ -56,12 +59,15 @@ class _Emitted:
         return [name for name, _ in self.events]
 
 
-async def _run(storage_provider, io, bus, monkeypatch, session, events) -> tuple[Any, _Emitted]:
+async def _run(storage_provider, io, bus, monkeypatch, session, events, *, last_done_reason: str | None = None) -> tuple[Any, _Emitted]:
     emitted = _Emitted()
     monkeypatch.setattr(dispatch, "_event_recorder", lambda deps: emitted)
 
     async def build(_session: WorkspaceSession):
-        return FakeExecutor(events)
+        executor = FakeExecutor(events)
+        if last_done_reason is not None:
+            executor.last_done_reason = last_done_reason     # what a real executor reports; a clean "stop" rests an interactive session
+        return executor
 
     deps = SessionDispatchDeps(storage_provider=storage_provider, workspace_io=io, event_bus=bus, build_executor=build)
     outcome = await run_one_session_turn(_make_lease(session.id), deps)
@@ -120,7 +126,7 @@ async def test_an_error_the_adapter_raised_before_the_stream_opened_rests_the_se
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cls, code", [
-    ("AuthenticationError", "auth_error"), ("BadRequestError", "bad_request"), ("ServerError", None), ("ProviderError", "weird"),
+    ("AuthenticationError", "auth_error"), ("BadRequestError", "bad_request"), ("ProviderError", "weird"),
 ])
 async def test_a_raised_rejection_or_an_error_with_no_usable_code_still_ends_the_session(
     cls, code, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
@@ -155,14 +161,28 @@ async def test_a_rejection_or_an_unknown_code_still_ends_the_session(
 
 
 @pytest.mark.asyncio
-async def test_a_stream_failure_with_no_code_and_a_crash_still_end_the_session(
+async def test_a_stream_that_died_without_a_code_rests_like_the_transport_set(
     fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
 ):
-    for sid, events, detail in (("s-nocode", [_failure(None)], "llm_stream_error"), ("s-crash", [RuntimeError("kaboom")], None)):
-        session = await _seed_session(fake_storage_provider, sid)
-        await _run(fake_storage_provider, fake_workspace_io, fake_event_bus, monkeypatch, session, events)
-        row = await _row(fake_storage_provider, sid)
-        assert (row.status, row.ended_reason, row.ended_detail) == (SessionStatus.ENDED, "failed", detail), sid
+    session = await _seed_session(fake_storage_provider, "s-nocode")
+
+    await _run(fake_storage_provider, fake_workspace_io, fake_event_bus, monkeypatch, session, [_failure(None)])
+
+    row = await _row(fake_storage_provider, "s-nocode")
+    assert (row.status, row.ended_reason, row.ended_detail) == (SessionStatus.WAITING, None, None)
+    assert row.last_turn_error is not None and row.last_turn_error.code == NO_CODE
+
+
+@pytest.mark.asyncio
+async def test_a_crash_that_is_not_a_model_error_still_ends_the_session(
+    fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
+):
+    session = await _seed_session(fake_storage_provider, "s-crash")
+
+    await _run(fake_storage_provider, fake_workspace_io, fake_event_bus, monkeypatch, session, [RuntimeError("kaboom")])
+
+    row = await _row(fake_storage_provider, "s-crash")
+    assert (row.status, row.ended_reason, row.ended_detail) == (SessionStatus.ENDED, "failed", None)
 
 
 @pytest.mark.asyncio
@@ -187,7 +207,8 @@ async def test_a_graph_bound_session_still_ends_on_a_transport_failure(
 
     storage = fake_storage_provider.get_storage(WorkspaceSession)
     session = await _seed_session(fake_storage_provider, "s-graph")
-    await storage.update(session.model_copy(update={"binding": GraphSessionBinding(graph_id="g-1")}))
+    # autonomous=False is an explicit override that a graph binding must not take: a graph run has nobody to resume it
+    await storage.update(session.model_copy(update={"binding": GraphSessionBinding(graph_id="g-1"), "autonomous": False}))
     session = await _row(fake_storage_provider, "s-graph")
 
     await _run(fake_storage_provider, fake_workspace_io, fake_event_bus, monkeypatch, session, [_failure("server_error")])
@@ -242,19 +263,31 @@ async def test_the_log_of_a_rested_failure_has_the_shape_of_an_ended_one(
     fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
 ):
     """The turn windows (and the fold-on-read of ticket 01a11ca5, which makes a failed turn ONE window) depend on the records a failed turn
-    writes, not on whether the session then rests: the stream's ERROR, dispatch's ERROR, then the release marker."""
+    writes, not on whether the session then rests: the stream's ERROR, dispatch's ERROR, and the release marker the claim adapter writes when the
+    pool releases the failed turn. Each session is released as the pool releases it."""
+    from primer.claim.adapters.sessions import SessionClaimAdapter
+
+    class _Registry:
+        async def get_workspace(self, workspace_id):
+            return fake_workspace_io
+
     rested = await _seed_session(fake_storage_provider, "s-shape-rest")
     ended = await _seed_session(fake_storage_provider, "s-shape-end", autonomous=True)
     events = [TextDelta(text="par", index=0), Error(code="server_error", message="boom", fatal=True), _failure("server_error")]
+    adapter = SessionClaimAdapter(
+        session_storage=fake_storage_provider.get_storage(WorkspaceSession), workspace_registry=_Registry(), event_bus=fake_event_bus,
+    )
 
-    await _run(fake_storage_provider, fake_workspace_io, fake_event_bus, monkeypatch, rested, list(events))
-    await _run(fake_storage_provider, fake_workspace_io, fake_event_bus, monkeypatch, ended, list(events))
+    for session in (rested, ended):
+        outcome, _ = await _run(fake_storage_provider, fake_workspace_io, fake_event_bus, monkeypatch, session, list(events))
+        await adapter.on_release(None, session.id, outcome=outcome)
 
     def kinds(sid: str) -> list[str]:
         return [json.loads(line)["kind"] for line in fake_workspace_io.read_lines(sid)]
 
     assert kinds("s-shape-rest") == kinds("s-shape-end")
-    assert kinds("s-shape-rest").count(SessionMessageKind.ERROR.value) == 2
+    assert kinds("s-shape-rest").count(SessionMessageKind.ERROR.value) == 3, "stream ERROR, dispatch ERROR, release marker"
+    assert (await _row(fake_storage_provider, "s-shape-rest")).status == SessionStatus.WAITING
 
 
 class _Slot:
@@ -308,16 +341,122 @@ async def test_the_next_send_continues_the_same_invocation_and_clears_the_failur
     assert woken.status != SessionStatus.ENDED and "invocation" not in (woken.metadata or {})
     outcome, _ = await _run(
         fake_storage_provider, workspace, fake_event_bus, monkeypatch, woken,
-        [TextDelta(text="done", index=0), Done(stop_reason="stop", raw_reason="stop")],
+        [TextDelta(text="done", index=0), Done(stop_reason="stop", raw_reason="stop")], last_done_reason="stop",
     )
     assert outcome.success is True
     row = await _row(fake_storage_provider, "s-retry")
-    # (the fake executor reports no stop reason, so dispatch ends the clean turn "completed"; what matters is that it ran and cleared the failure)
-    assert row.last_turn_error is None and row.ended_reason in (None, "completed")
+    assert row.last_turn_error is None and row.status == SessionStatus.WAITING and row.ended_reason is None
     kinds = [json.loads(line)["kind"] for line in workspace.read_lines("s-retry")]
     assert SessionMessageKind.INVOCATION_DIVIDER.value not in kinds, kinds
     assert kinds.count(SessionMessageKind.USER_INPUT.value) >= 1
 
 
 def test_the_resting_codes_are_pinned():
-    assert dispatch._RESTING_FAILURE_CODES == frozenset(REST_CODES)
+    assert dispatch._RESTING_FAILURE_CODES == frozenset(REST_CODES) | {NO_CODE}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cls, code", [
+    ("ServerError", "server_error"), ("RateLimitError", "rate_limit"), ("NetworkError", "network_error"), ("ProviderTimeoutError", "stream_timeout"),
+])
+async def test_a_raised_transport_error_with_no_code_is_classified_by_its_class(
+    cls, code, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
+):
+    """The adapters' own exhausted-pool error (``AggregatedLLM``'s ``RateLimitError``, aggregated.py) carries no code: the class says what it is."""
+    from primer.model import except_
+
+    session = await _seed_session(fake_storage_provider, "s-bycls")
+
+    _, emitted = await _run(
+        fake_storage_provider, fake_workspace_io, fake_event_bus, monkeypatch, session, [getattr(except_, cls)("the pool is exhausted")],
+    )
+
+    row = await _row(fake_storage_provider, "s-bycls")
+    assert (row.status, row.ended_reason) == (SessionStatus.WAITING, None)
+    assert row.last_turn_error is not None and row.last_turn_error.code == code
+    assert [p for n, p in emitted.events if n == "session.turn_failed"] == [{"code": code, "ended": False}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cls", ["PrimerError", "ProviderError", "BadRequestError", "AuthenticationError"])
+async def test_a_raised_error_with_no_code_that_is_not_a_transport_class_still_ends_the_session(
+    cls, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
+):
+    from primer.model import except_
+
+    session = await _seed_session(fake_storage_provider, "s-generic")
+
+    await _run(fake_storage_provider, fake_workspace_io, fake_event_bus, monkeypatch, session, [getattr(except_, cls)("something")])
+
+    row = await _row(fake_storage_provider, "s-generic")
+    assert (row.status, row.ended_reason) == (SessionStatus.ENDED, "failed")
+    assert row.last_turn_error is not None and row.last_turn_error.code == "turn_failed"
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_that_lands_while_the_turn_fails_ends_the_session(
+    fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
+):
+    """Whether the session rests is decided under the lifecycle lock, from a fresh read: a Cancel (the flag the route sets on a RUNNING row) that
+    landed since the turn started is not lost. Resting would have left ``cancel_requested`` on a WAITING row, and the NEXT send would have ended
+    the session as cancelled without ever calling the model."""
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    session = await _seed_session(fake_storage_provider, "s-cancel")
+
+    class _CancelThenFail(FakeExecutor):
+        async def invoke(self, messages, **kwargs):
+            row = await storage.get("s-cancel")
+            await storage.update(row.model_copy(update={"cancel_requested": True}))
+            raise _failure("server_error")
+            yield  # pragma: no cover
+
+    async def build(_session: WorkspaceSession):
+        return _CancelThenFail([])
+
+    monkeypatch.setattr(dispatch, "_event_recorder", lambda deps: _Emitted())
+    deps = SessionDispatchDeps(storage_provider=fake_storage_provider, workspace_io=fake_workspace_io, event_bus=fake_event_bus, build_executor=build)
+    await run_one_session_turn(_make_lease(session.id), deps)
+
+    row = await _row(fake_storage_provider, "s-cancel")
+    assert row.status == SessionStatus.ENDED, "the Cancel was swallowed by a rest"
+
+
+@pytest.mark.asyncio
+async def test_a_failure_that_could_not_be_stamped_ends_the_session_instead_of_resting_it(
+    fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
+):
+    """A rested first-turn failure WITHOUT its stamp has every mark of a session that never started, and the stuck-session sweeper would end it
+    `never_started` after the grace. When the stamp does not land the session ends, with the real reason."""
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    session = await _seed_session(fake_storage_provider, "s-unstamped")
+    real_patch = storage.patch_if
+
+    async def patch_if(id, patch=None, **kwargs):
+        if patch and patch.get("last_turn_error") is not None:
+            raise RuntimeError("storage hiccup")
+        return await real_patch(id, patch, **kwargs)
+
+    storage.patch_if = patch_if
+
+    await _run(fake_storage_provider, fake_workspace_io, fake_event_bus, monkeypatch, session, [_failure("server_error")])
+
+    row = await _row(fake_storage_provider, "s-unstamped")
+    assert (row.status, row.ended_reason, row.ended_detail) == (SessionStatus.ENDED, "failed", "server_error")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["error", "graph_failed"])
+async def test_a_failure_the_clean_arm_ends_is_announced_too(
+    reason, fake_workspace_io, fake_event_bus, fake_storage_provider, monkeypatch,
+):
+    """``Done(stop_reason="error")`` and a failed graph run end the turn through the clean-completion arm, not through the exception exit."""
+    session = await _seed_session(fake_storage_provider, f"s-{reason}")
+
+    _, emitted = await _run(
+        fake_storage_provider, fake_workspace_io, fake_event_bus, monkeypatch, session,
+        [Done(stop_reason="error", raw_reason="error")], last_done_reason=reason,
+    )
+
+    row = await _row(fake_storage_provider, f"s-{reason}")
+    assert (row.status, row.ended_reason) == (SessionStatus.ENDED, "failed")
+    assert [p for n, p in emitted.events if n == "session.turn_failed"] == [{"code": reason, "ended": True}]

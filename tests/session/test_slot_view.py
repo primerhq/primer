@@ -194,3 +194,23 @@ async def test_one_session_reads_its_row_with_a_get():
 
     assert storage.gets == ["s1"] and storage.finds == []
     assert (got.status, got.ended_reason, got.ended_detail) == (SessionStatus.ENDED, "failed", "never_started")
+
+
+@pytest.mark.parametrize("slot_status, row_status", [
+    (SessionStatus.RUNNING, SessionStatus.WAITING),     # a session that RESTS after a failed turn: the slot never learns it rested
+    (SessionStatus.ENDED, SessionStatus.WAITING),       # ... and the executor ended the slot when the turn failed
+    (SessionStatus.WAITING, SessionStatus.WAITING),
+    (SessionStatus.RUNNING, SessionStatus.ENDED),
+])
+def test_the_failure_of_the_last_turn_is_the_rows_alone_and_is_served_with_every_answer(slot_status, row_status):
+    """C-024: a session that rests after a transport failure has no ``ended_reason``; ``last_turn_error`` is how the MCP workspace tools, which
+    read the slot, see that its last turn failed."""
+    from primer.model.workspace_session import LastTurnError
+
+    failure = LastTurnError(code="server_error", at=ROW_ENDED_AT)
+    row = _row(status=row_status, last_turn_error=failure, **({"ended_reason": "failed"} if row_status == SessionStatus.ENDED else {}))
+
+    got = overlay_row_on_info(_slot(status=slot_status), row, workspace_id="ws-1")
+
+    assert got.last_turn_error == failure
+    assert overlay_row_on_info(_slot(status=slot_status), _row(status=row_status), workspace_id="ws-1").last_turn_error is None
