@@ -255,6 +255,27 @@ async def test_a_reply_to_the_second_of_two_sibling_questions_is_published_to_th
     assert event is not None and event.event_key == "ask_user:q-sib:n1:dup", event
 
 
+@pytest.mark.asyncio
+async def test_the_published_decision_names_the_gate_it_resolved(world) -> None:
+    """The wake of a channel decision carries the id of the gate it resolved (named or not), so a redelivery cannot decide a later gate (PR 4)."""
+    await world.sp.get_storage(WorkspaceSession).create(_approval_session("i-wake", gate_id=G1))
+
+    await world.inbox.handle_response(_reply("i-wake", gate_id=None))
+
+    event = await world.published()
+    assert event is not None and event.payload["__yield_gate_id__"] == G1 and event.payload["decision"] == "approved"
+
+
+@pytest.mark.asyncio
+async def test_the_published_answer_names_the_question_it_resolved(world) -> None:
+    await world.sp.get_storage(WorkspaceSession).create(_ask_user_session(session_id="q-wake", tool_call_id="tc-1", gate_id=G1))
+
+    await world.inbox.handle_response(_reply("q-wake", gate_id=G1, kind="ask_user"))
+
+    event = await world.published()
+    assert event is not None and event.payload["__yield_gate_id__"] == G1 and event.payload["response"] == "EUR"
+
+
 # ---- the adapters' shared relay ---------------------------------------------------------------------------------------------------------------
 
 
