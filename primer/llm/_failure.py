@@ -13,12 +13,14 @@ the result capped at :data:`UPSTREAM_TEXT_CAP` characters. A request the provide
 ``primer.common.context_overflow`` reads that message, and the SDK's text already carries the provider's words. It is only scrubbed.
 
 Masking is done BEFORE the cap, so a secret is never cut in half and left partly readable. What is masked: the provider's configured API key and
-Base URL password (exact values: the strongest rule, and the one that catches a key echoed back in a body), URL-borne credentials
-(``primer.common.log.redact_url_secrets``) and ``Bearer`` tokens.
+Base URL password (exact values: the strongest rule, and the one that catches a key echoed back in a body), the ``Authorization: Basic`` token a Base
+URL with credentials is sent as, URL-borne credentials (``primer.common.log.redact_url_secrets``) and ``Bearer`` / ``Basic`` tokens. Control characters are
+stripped first, so a NUL inside an echoed key does not defeat the exact match.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -53,12 +55,21 @@ _DUMP_ITEMS = 16
 
 _ELLIPSIS = "..."
 _REDACTED = "[REDACTED]"
-#: An exact-value mask below these lengths would mask ordinary words (placeholder keys such as ``EMPTY``, ``none`` or ``dummy`` that a local
-#: server accepts), including the numbers the context-overflow veto reads. Real API keys are far longer. URL-borne credentials are masked by
-#: ``redact_url_secrets`` whatever their length.
-_MIN_KEY_LENGTH = 8
-_MIN_PASSWORD_LENGTH = 6
+#: A configured value shorter than this is not masked (a one-, two- or three-letter "key" would blank ordinary words everywhere).
+_MIN_SECRET_LENGTH = 4
+#: From here up a configured value is masked wherever it appears. Below it (4 to 7 characters) it is masked as a TOKEN only: where it is not part of a
+#: longer run of letters or digits, so a short key does not blank the numbers the context-overflow veto reads ("12345678" is not the key "1234").
+_EVERYWHERE_LENGTH = 8
+#: What a keyless local server is configured with, because the SDK insists on SOME key: masking these would blank ordinary words ("none of the results"),
+#: so they are never treated as secrets, whatever their length or case. Any other configured value of 4 or more characters is.
+_KEYLESS_PLACEHOLDERS = frozenset({"empty", "none", "dummy", "ollama", "lm-studio", "no-key-required", "not-needed", "sk-no-key-required"})
+#: The provider text is read from at most this many characters of a body (the scrub is linear in what it is handed and a body can be tens of
+#: megabytes); the message shows at most ``UPSTREAM_TEXT_CAP`` of it, so nothing past the scan limit could be shown anyway.
+_SCAN_LIMIT = 64_000
 _BEARER = re.compile(r"(?i)(\bbearer\s+)[A-Za-z0-9._~+/=-]{8,}")
+#: A Base URL with credentials goes on the wire as ``Authorization: Basic base64(user:password)``. Only a run that looks like base64 (it has a digit,
+#: ``+``, ``/`` or ``=``) is masked, so the sentence "Basic authentication is required" is left alone; the configured pair is masked exactly anyway.
+_BASIC = re.compile(r"(?i)(\bbasic\s+)(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/=]{8,}")
 #: Control characters that are not whitespace (NUL, ESC, ...): a terminal or a log viewer acts on them.
 _CONTROL = re.compile(r"[\x00-\x08\x0e-\x1b\x7f]")
 
@@ -83,22 +94,43 @@ def provider_label(provider: Any) -> str:
 def _secrets(provider: Any) -> list[str]:
     """The values configured on ``provider`` that must never appear in a message, longest first."""
     config = provider.config
-    values: list[str] = []
+    values: set[str] = set()
     key = getattr(config, "api_key", None)
-    if key is not None and len(key.get_secret_value()) >= _MIN_KEY_LENGTH:
-        values.append(key.get_secret_value())
-    password = getattr(getattr(config, "url", None), "password", None)
+    if key is not None:
+        value = key.get_secret_value()
+        if len(value) >= _MIN_SECRET_LENGTH and value.casefold() not in _KEYLESS_PLACEHOLDERS:
+            values.add(value)
+    url = getattr(config, "url", None)
+    username, password = getattr(url, "username", None) or "", getattr(url, "password", None)
     if password:
-        values.extend(v for v in {password, unquote(password)} if len(v) >= _MIN_PASSWORD_LENGTH)
-    return sorted(set(values), key=len, reverse=True)
+        for variant in {password, unquote(password)}:
+            if len(variant) >= _MIN_SECRET_LENGTH:
+                values.add(variant)
+        # httpx sends the userinfo of a Base URL as ``Authorization: Basic base64(user:password)``, which a provider may echo back
+        for pair in {f"{username}:{password}", f"{unquote(username)}:{unquote(password)}"}:
+            values.add(base64.b64encode(pair.encode()).decode())
+    return sorted(values, key=len, reverse=True)
+
+
+def _mask(text: str, secret: str) -> str:
+    if len(secret) >= _EVERYWHERE_LENGTH:
+        return text.replace(secret, _REDACTED)
+    return re.sub(r"(?<![A-Za-z0-9])" + re.escape(secret) + r"(?![A-Za-z0-9])", _REDACTED, text)
 
 
 def scrub(text: str, provider: Any) -> str:
-    """``text`` with the provider's configured credentials, URL-borne credentials and bearer tokens masked."""
+    """``text`` with the provider's configured credentials, URL-borne credentials and bearer / basic tokens masked."""
     for secret in _secrets(provider):
-        text = text.replace(secret, _REDACTED)
+        text = _mask(text, secret)
     text = redact_url_secrets(text)
-    return _BEARER.sub(r"\1" + _REDACTED, text)
+    text = _BEARER.sub(r"\1" + _REDACTED, text)
+    return _BASIC.sub(r"\1" + _REDACTED, text)
+
+
+def _clean(text: str, provider: Any) -> str:
+    """The first ``_SCAN_LIMIT`` characters of ``text`` with control characters stripped, THEN scrubbed (a NUL inside an echoed key must not defeat the
+    exact match)."""
+    return scrub(_CONTROL.sub("", text[:_SCAN_LIMIT]), provider)
 
 
 def _clipped(value: object, depth: int = _DUMP_DEPTH) -> object:
@@ -142,7 +174,7 @@ def _upstream_text(exc: BaseException, err: PrimerError) -> str | None:
     if isinstance(err, NetworkError):
         # The SDK's own message is a class label ("Connection error."); the reason is on the exception it was raised from, else the exception
         # carries it itself (ollama's RequestError keeps it on ``.error``, a builtin ConnectionError in its text).
-        cause = exc.__cause__ or exc.__context__
+        cause = exc.__cause__ or (None if exc.__suppress_context__ else exc.__context__)      # ``raise X from None`` suppresses it on purpose
         if cause is not None and str(cause):
             return str(cause)
         own = getattr(exc, "error", None)
@@ -172,7 +204,7 @@ def describe_failure(err: PrimerError, exc: BaseException, provider: Any) -> Pri
     """``err`` (what the classifier made of ``exc``) with the message a person needs; class, ``code``, ``status_code`` and ``cause`` are kept."""
     what = next((phrase for cls, phrase in _WHAT if isinstance(err, cls)), None)
     if what is None:
-        message = _cap(scrub(err.message, provider), _UNTOUCHED_MESSAGE_CAP)
+        message = _cap(_clean(err.message, provider), _UNTOUCHED_MESSAGE_CAP)
         return err if message == err.message else _rebuilt(err, message)
     sentence = f"{provider_label(provider)} {what}"
     if isinstance(err, NetworkError):
@@ -183,9 +215,10 @@ def describe_failure(err: PrimerError, exc: BaseException, provider: Any) -> Pri
         text = _upstream_text(exc, err)
         if text:
             # Scrub FIRST, then cut: a secret cut in half by the cap would be left partly readable.
-            text = _cap(" ".join(_CONTROL.sub("", scrub(text, provider)).split()))
-    except Exception:  # noqa: BLE001 -- the text is a courtesy; a body nobody can read must not turn a failed call into a crash
-        logger.warning("could not read the provider's text out of a failed call; the sentence goes without it", exc_info=True)
+            text = _cap(" ".join(_clean(text, provider).split()))
+    except Exception as problem:  # noqa: BLE001 -- the text is a courtesy; a body nobody can read must not turn a failed call into a crash
+        # Only the type is logged: this runs inside the adapter's ``except``, so a traceback would chain the SDK exception whose text is the raw body.
+        logger.warning("could not read the provider's text out of a failed call (%s); the sentence goes without it", type(problem).__name__)
         text = None
     if text:
         sentence += f": {text}"
