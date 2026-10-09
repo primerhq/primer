@@ -7,9 +7,13 @@ probes (``providers.py``) and the speech and web ``_test`` routes share these.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from typing import Any
+
 from pydantic import ValidationError
 
 from primer.common.log import redact_url_secrets
+from primer.llm._failure import scrub
 
 
 def validation_detail(exc: ValidationError) -> str:
@@ -34,9 +38,24 @@ def draft_error(exc: BaseException) -> str:
     return redact_url_secrets(validation_detail(exc) if isinstance(exc, ValidationError) else str(exc))
 
 
-def probe_error(exc: BaseException) -> str:
-    """``TypeName: text`` of a probe that failed, with URL credentials masked."""
-    return redact_url_secrets(f"{type(exc).__name__}: {exc}")
+#: The fields of a provider config that hold a secret; ``probe_error`` masks the value of each one the probe's config has, wherever the text prints it.
+_SECRET_FIELDS = ("api_key", "password")
+
+
+def probe_error(exc: BaseException, config: Any = None) -> str:
+    """``TypeName: text`` of a probe that failed, with URL credentials masked.
+
+    With the probe's ``config``, the secrets it holds (``api_key``, ``password``) are masked too, wherever the text prints them and in the forms the LLM
+    adapters' scrub knows (itself, escaped, whitespace-normalised): a library's text for a failed call may print a secret that is not in URL form (a driver's detail
+    line, a quoted bare value). Defence in depth beside the URL mask, for a probe that is handed the stored row. A secret of fewer than 4 characters, or a keyless
+    placeholder such as ``none``, is not masked (``primer.llm._failure.scrub``'s rule, so ordinary words are not blanked).
+    """
+    text = f"{type(exc).__name__}: {exc}"
+    for name in _SECRET_FIELDS:
+        secret = getattr(config, name, None)
+        if secret is not None:
+            text = scrub(text, SimpleNamespace(config=SimpleNamespace(api_key=secret)))
+    return redact_url_secrets(text)
 
 
 __all__ = ["draft_error", "probe_error", "validation_detail"]

@@ -86,7 +86,10 @@ The entities:
   the error text of a draft that does not validate is pydantic's layout WITHOUT the
   input (`draft_error` of `primer/api/routers/_probe_text.py`), because the input of
   a missing field is the whole config dict, database password included, and a probe
-  failure goes through `probe_error`. Document search is
+  failure goes through `probe_error(exc, config)`, which masks URL credentials and
+  the secrets the row holds (`password`, `api_key`) wherever the driver's text prints
+  them (defence in depth; a password under 4 characters or a keyless placeholder is
+  not masked, `primer.llm._failure.scrub`'s rule). Document search is
   `POST /v1/collections/{id}/search`. See [rest-api.md](../architecture/rest-api.md).
 - **Auto-bootstrap.** The reserved `lance` SSP row is seeded at first boot so
   semantic search works zero-config; the internal-collections bootstrap is a

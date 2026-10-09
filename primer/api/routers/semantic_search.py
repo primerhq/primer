@@ -217,7 +217,7 @@ async def _run_ssp_probe(row: SemanticSearchProvider) -> dict[str, Any]:
         else:  # pragma: no cover - defensive, the discriminator guards this
             return {"ok": False, "error": f"unknown SSP config type: {type(cfg)}"}
     except Exception as exc:  # noqa: BLE001 - diagnostic-only path
-        return {"ok": False, "error": probe_error(exc)}
+        return {"ok": False, "error": probe_error(exc, cfg)}          # with the config: its password is masked too, wherever the driver's text prints it
     return {"ok": True}
 
 
