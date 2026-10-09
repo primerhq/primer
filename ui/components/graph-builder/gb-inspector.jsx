@@ -50,6 +50,7 @@ function GB_Inspector(props) {
               dispatch={dispatch}
               readOnly={readOnly}
               onJsonError={onJsonError}
+              onRemoved={() => onSelectNode(edge.from_node)}
               onAddResponseFormat={(nodeId, paths) => {
                 const props2 = {};
                 (paths || []).forEach((p, i) => { props2[p] = { type: i === 0 ? "boolean" : "string" }; });
