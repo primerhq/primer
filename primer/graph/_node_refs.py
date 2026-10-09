@@ -17,6 +17,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
+from primer.common.log import redact_credentials
 from primer.model.chat import Message
 from primer.model.graph import (
     FanOutSpec,
@@ -723,6 +724,11 @@ class _GraphErrorEvent:
     message: str
     node_id: str | None
     path: str | None = None
+
+    def __post_init__(self) -> None:
+        # The message is a node's raw failure text (an exception's, a schema error quoting the value, a routing error quoting its input) and becomes the
+        # session's ERROR record. Masked where it is built, so every site that yields one is covered, and so is a ChildGraphFailed's message (#678).
+        object.__setattr__(self, "message", redact_credentials(self.message))
 
 
 @dataclass(frozen=True)
