@@ -135,6 +135,16 @@ async def test_a_reply_naming_the_pending_gate_decides_it(world, token) -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_channel_decision_record_is_keyed_by_the_gate(world) -> None:
+    """C-033 PR 2: the audit record's key names the gate (``<event_key>@<gate_id>``), so a later gate under the same raw id keeps its own record."""
+    await world.sp.get_storage(WorkspaceSession).create(_approval_session("i-key", gate_id=G1))
+
+    await world.inbox.handle_response(_reply("i-key", gate_id=G1[:12]))
+
+    assert [r.gate_event_key for r in await world.records()] == [f"tool_approval:i-key:tc-1@{G1}"]
+
+
+@pytest.mark.asyncio
 async def test_a_reply_naming_a_replaced_gate_is_refused_as_stale_and_decides_nothing(world) -> None:
     """Round 1's Approve button, clicked after round 3 parked the same raw id under another gate."""
     await world.sp.get_storage(WorkspaceSession).create(_approval_session("i-stale", gate_id=G2))
