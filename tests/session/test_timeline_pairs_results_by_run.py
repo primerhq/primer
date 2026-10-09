@@ -132,3 +132,13 @@ def test_a_client_action_attaches_to_the_call_of_its_own_run() -> None:
     tl = _timeline(lines)
     mine = {seq: [c["name"] for c in _call_by_seq(tl, seq)["children"] if c["kind"] == "client_action"] for seq in (1, 2)}
     assert mine == {1: ["show_diff"], 2: ["open_file"]}, mine
+
+
+def test_a_delegated_record_whose_call_id_is_not_a_string_reads_as_something_and_does_not_fail_the_timeline() -> None:
+    """``SH_callScope`` joins ``"call:"`` and the id with ``+``, which coerces; ``_call_scope`` added them and raised ``TypeError`` for a number in a hand-edited or malformed log, failing the
+    whole route for the session. A bad record reads as something (``terminals.py``'s ``payload_of`` doctrine); it does not crash the reader."""
+    old_call = _rec(2, "tool_call", None, id="x:tool:1:1", raw_id=7, name="system__invoke_agent", arguments={}, delegated=True, delegate_tool_call_id=7)
+    old_result = _rec(3, "tool_result", None, call_id="x:tool:1:1", output="the child's answer", error=False, delegated=True, delegate_tool_call_id=7)
+    tl = _timeline([_call(1, "x:tool:1:1", "call_0"), old_call, old_result, _result(4, "x:tool:1:1", "helper finished")])
+    assert _call_by_seq(tl, 1)["result"]["output"] == "helper finished"
+    assert _call_by_seq(tl, 2)["result"]["output"] == "the child's answer"
