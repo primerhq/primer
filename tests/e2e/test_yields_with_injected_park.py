@@ -171,6 +171,7 @@ async def _inject_park(
     event_key: str,
     prompt: str | None = None,
     response_schema: dict | None = None,
+    extra_metadata: dict | None = None,
 ) -> None:
     """Inject parked_* fields onto a session row, mirroring the shape
     the worker pool writes via the park branch of on_release.
@@ -195,6 +196,8 @@ async def _inject_park(
         resume_metadata["response_schema"] = response_schema
     if tool_name == "sleep":
         resume_metadata["requested_seconds"] = 30.0
+    # keys a park of this kind stamps (e.g. ``gate_id`` and ``original_call`` on an approval, ``gate_id`` on an ask_user)
+    resume_metadata.update(extra_metadata or {})
 
     parked_state = {
         "schema_version": 1,
