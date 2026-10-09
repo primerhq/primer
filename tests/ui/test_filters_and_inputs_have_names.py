@@ -47,6 +47,7 @@ SITES = [
     ("shared/tool-picker.jsx", 'data-testid="tool-picker-filter"', 0, 'aria-label="Search the tool catalog"'),
     ("shared/tool-picker.jsx", "data-testid={`tool-picker-group-${entry.id}`}", 0, "aria-label={"),
     ("semantic-search.jsx", 'placeholder="Filter providers\u2026"', 0, 'aria-label="Filter providers"'),
+    ("semantic-search.jsx", '<option value="">all backends</option>', 0, 'aria-label="Filter by backend"'),
 ]
 
 
