@@ -125,9 +125,11 @@ create sessions in batches and start them on demand.
   a dropped connection, a stalled or too-slow generation) does NOT end an
   interactive session once the retries are spent: it rests `WAITING`, the
   row's `last_turn_error` (`{code, at}`) says the turn failed, and your
-  next message continues the same session. A graph, a trigger- or
+  next message continues the same session (a stream that died without
+  any error code rests the same way). A graph, a trigger- or
   webhook-started session, a rejected request (bad credentials, a bad
-  request, an overflowing context) and a crash still end it. Watch
+  request, an overflowing context), a code nobody classified and a crash
+  still end it. Watch
   `session.turn_failed` (`{code, ended}`) for failed turns, not only
   `session.ended`.
 

@@ -235,7 +235,10 @@ Once you have picked an agent or graph (see the capability index and
    `initial_instructions` (or `graph_input`), and `auto_start: true` - returns the session id.
 3. Poll `workspaces::get_workspace_session` until `status` is `ended`
    (`ended_reason: completed`). A `waiting` status means the agent parked on a
-   yielding tool; see `cookbook/monitor-and-resume-a-parked-session`.
+   yielding tool; see `cookbook/monitor-and-resume-a-parked-session`. A `waiting`
+   status whose `last_turn_error` is set (`{code, at}`) is NOT a park: the last turn
+   failed with a transient model error and the session rests; send a message to continue
+   it, or treat the run as failed.
 4. Read output files with `workspaces::read_workspace_file`, and what the session said with
    `workspaces::read_workspace_session_messages` (poll with `after_seq`). Never read
    `.state/` or `.tmp/` paths: raw reads there are admin-only.
