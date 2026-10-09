@@ -22,6 +22,7 @@ import pytest_asyncio
 from primer.model.external_tool import ExternalToolCall
 from primer.model.provider import SqliteConfig
 from primer.model.workspace_session import WorkspaceSession
+from primer.model.yield_ import WAKE_PARK_KEY
 from primer.storage.sqlite import SqliteStorageProvider
 from tests._support.held_write import hold_write
 
@@ -109,7 +110,7 @@ async def test_the_yields_cancel_route_racing_a_steer_result_leaves_completed(
     assert row.is_error is False
     session = await sp.get_storage(WorkspaceSession).get("sess-1")
     assert session.parked_status == "resumable"
-    assert session.parked_state["resume_event_payload"] == {"result": RESULT, "is_error": False}
+    assert session.parked_state["resume_event_payload"] == {"result": RESULT, "is_error": False, WAKE_PARK_KEY: session.parked_at.isoformat()}
     assert 200 <= r_s.status_code < 300, r_s.text
     assert r_c.status_code == 202, r_c.text
     # R_c did publish its cancelled marker; nothing delivered it
@@ -250,7 +251,7 @@ async def test_an_instruction_steer_whose_cancel_lost_its_race_does_not_wake_the
     assert (row.status, row.result, row.is_error) == ("completed", RESULT, False)
     session = await sp.get_storage(WorkspaceSession).get("sess-1")
     assert session.parked_status == "resumable"
-    assert session.parked_state["resume_event_payload"] == {"result": RESULT, "is_error": False}
+    assert session.parked_state["resume_event_payload"] == {"result": RESULT, "is_error": False, WAKE_PARK_KEY: session.parked_at.isoformat()}
     assert not [p for k, p in bus.published if k == key and p.get("__yield_cancelled__")]
 
 
@@ -284,7 +285,7 @@ async def test_a_steer_result_with_a_non_finite_number_completes_the_call_as_nul
     row = await sp.get_storage(ExternalToolCall).get(ROW_ID)
     assert (row.status, row.result, row.is_error) == ("completed", stored, False)
     session = await sp.get_storage(WorkspaceSession).get("sess-1")
-    assert session.parked_state["resume_event_payload"] == {"result": stored, "is_error": False}
+    assert session.parked_state["resume_event_payload"] == {"result": stored, "is_error": False, WAKE_PARK_KEY: session.parked_at.isoformat()}
 
 
 async def test_an_instruction_steer_wakes_only_the_calls_it_cancelled(app, client, wsr, sp) -> None:
@@ -319,5 +320,6 @@ async def test_an_instruction_steer_wakes_only_the_calls_it_cancelled(app, clien
     assert cancel_wakes == [k2], f"the cancel was published for {cancel_wakes}"
     park = (await sp.get_storage(WorkspaceSession).get("sess-1")).parked_state
     leaves = {e["event_key"]: e["payload"] for e in park["resume_event_payloads"].values()}
+    assert leaves[k1].pop(WAKE_PARK_KEY, None) is not None, "a reply names the park its producer read"
     assert leaves[k1] == {"result": "ok", "is_error": False}, "the landed reply was replaced by the cancelled marker"
     assert leaves[k2].get("__yield_cancelled__") is True

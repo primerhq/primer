@@ -40,7 +40,7 @@ from primer.session.yields import durably_mark_session_resumable, flip_sessions_
 from primer.worker import graph_resume_coordinator
 from primer.worker.continuation import InvocationServices
 from primer.worker.frames import AgentFrame, AgentResumeContext
-from primer.worker.yield_runtime import ParkedState, make_cancelled_payload, make_timeout_payload
+from primer.worker.yield_runtime import ParkedState, is_timeout_payload, make_cancelled_payload, make_timeout_payload
 
 from tests._resume_hook_fakes import (
     EngineFakePool,
@@ -274,8 +274,21 @@ async def _reply(storage, event_key: str, payload: dict) -> None:
     )
 
 
+async def _the_deadline_passes(storage) -> None:
+    """Move the park's ``parked_until`` into the past, as the clock moving on does: the sweeper selects a row only once its deadline has passed."""
+    sessions = storage.get_storage(WorkspaceSession)
+    row = await sessions.get(_SID)
+    await sessions.update(row.model_copy(update={"parked_until": _now() - timedelta(seconds=1)}))
+
+
 async def _bus_delivery(storage, event_key: str, payload: dict) -> None:
-    """What the timeout sweeper's or the yields-cancel route's publish reaches: the shared bus-side flip."""
+    """What the timeout sweeper's or the yields-cancel route's publish reaches: the shared bus-side flip.
+
+    The sweeper publishes a timeout marker only for a park past its ``parked_until`` and the flip refuses one whose deadline is still ahead (ticket 01a1208d),
+    so a timeout marker is delivered once the deadline has passed.
+    """
+    if is_timeout_payload(payload):
+        await _the_deadline_passes(storage)
     flipped = await flip_sessions_parked_on(
         event_key, payload, session_storage=storage.get_storage(WorkspaceSession), engine=None,
     )

@@ -17,6 +17,7 @@ from primer.model.workspace_session import (
     SessionStatus,
     WorkspaceSession,
 )
+from primer.model.yield_ import WAKE_PARK_KEY
 from tests.api.test_workspaces import _FakeBackend, _SP, _provider, _template
 
 DEF = {
@@ -207,6 +208,7 @@ async def test_pure_tool_results_resumes_parked_call(client, wsr, sp):
     assert row.parked_state["resume_event_payload"] == {
         "result": {"customer": "c1"},
         "is_error": False,
+        WAKE_PARK_KEY: row.parked_at.isoformat(),
     }
     stored = await sp.get_storage(ExternalToolCall).get("etool-fixed-1")
     assert stored.status == "completed"

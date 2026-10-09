@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from typing import Any
 
 from primer.bus.scheduler_tasks import _BackgroundTask
@@ -37,6 +38,7 @@ from primer.model.event import (
     SessionWakeSink,
 )
 from primer.model.storage import OffsetPage
+from primer.model.yield_ import with_wake_park
 
 logger = logging.getLogger(__name__)
 
@@ -261,7 +263,7 @@ class EventDispatcher(_BackgroundTask):
     async def _deliver_session_wake(
         self, sub: EventSubscription, sink: SessionWakeSink, event: Event,
     ) -> bool:
-        park = await self._park_state(sink)
+        park, parked_at = await self._park_state(sink)
         if park == "gone":
             # The session ended or vanished: the wait can never be
             # answered. Consume the event and GC the subscription.
@@ -284,15 +286,18 @@ class EventDispatcher(_BackgroundTask):
             return False
         # The envelope becomes the agent's tool result (wait_for_event):
         # mask stored secrets exactly as GET /v1/events does (SEC-04).
+        # The envelope names the park the sink just read: a copy delivered after the session re-parked under the same key (another subscription's
+        # wait) is refused by the flip instead of becoming the new wait's result (ticket 01a1208d, #702 review B2).
         await self._bus.publish(
-            sink.event_key, redact_event(event).model_dump(mode="json"),
+            sink.event_key, with_wake_park(redact_event(event).model_dump(mode="json"), parked_at),
         )
         if sink.one_shot:
             await self._complete_one_shot(sub)
         return True
 
-    async def _park_state(self, sink: SessionWakeSink) -> str:
-        """'parked' (deliver), 'pending' (retry later), or 'gone' (GC)."""
+    async def _park_state(self, sink: SessionWakeSink) -> tuple[str, datetime | None]:
+        """``(state, parked_at)``: state is 'parked' (deliver), 'pending' (retry later) or 'gone' (GC); ``parked_at`` is the park the row had when it was
+        read (``None`` unless 'parked')."""
         from primer.model.workspace_session import (
             SessionStatus,
             WorkspaceSession,
@@ -307,17 +312,17 @@ class EventDispatcher(_BackgroundTask):
                 "event-dispatcher: session %s read failed", sink.session_id,
                 exc_info=True,
             )
-            return "pending"
+            return "pending", None
         if row is None or row.status == SessionStatus.ENDED:
-            return "gone"
+            return "gone", None
         keys = set(row.parked_event_keys or [])
         if row.parked_event_key:
             keys.add(row.parked_event_key)
         if row.parked_status in ("parked", "resumable") and (
             sink.event_key in keys
         ):
-            return "parked"
-        return "pending"
+            return "parked", row.parked_at
+        return "pending", None
 
     async def _complete_one_shot(self, sub: EventSubscription) -> None:
         store = self._sp.get_event_store()
