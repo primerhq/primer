@@ -99,10 +99,17 @@ def test_a_record_without_a_node_nests_as_it_always_did_under_the_last_call_with
     assert top[1] == [] and [c["seq"] for c in top[2]] == [3], "an old graph record still lands under the last call: the information it never had cannot be recovered"
 
 
-def test_a_record_naming_a_node_with_no_call_of_its_own_falls_back_to_the_last_call() -> None:
-    """A node id that matches no call row (a renamed instance, a call row not in the window) must not orphan the run."""
-    rows = [_call(1, "A"), _delegated(2, "r1", "Z")]
-    assert [c["seq"] for c in _tree(_nest(rows))[1]] == [2]
+def test_a_stamped_record_never_nests_under_another_nodes_call() -> None:
+    """A record that names its node nests under THAT node's call or nowhere: another node's call is the wrong answer, not a fallback. It stays at the top level."""
+    nested = _nest([_call(1, "A"), _delegated(2, "r1", "Z")])
+    assert _tree(nested)[1] == [], nested
+    assert [row["seq"] for row in nested] == [1, 2]
+
+
+def test_a_stamped_record_of_a_node_whose_call_comes_later_waits_for_nothing() -> None:
+    """The producer writes a call row before the records of its run (the dispatch barrier); a reader does not guess for a record that came first."""
+    nested = _nest([_call(1, "A"), _delegated(2, "rB", "B"), _call(3, "B")])
+    assert _tree(nested) == {1: [], 2: [], 3: []}, nested
 
 
 def test_a_call_from_the_parent_turn_and_a_delegated_run_with_the_same_raw_id_do_not_collide() -> None:
