@@ -160,10 +160,12 @@ async def wake_session(
             # SAME pending-message mechanism deliver_steer already uses
             # for a busy session (store_pending_steer / realize_next_
             # pending), rather than forcing a resume nobody asked for or
-            # dropping the message outright. The row is not written here
+            # dropping the message outright. No wake write happens here
             # -- pause_requested, status, and turn_status all stay exactly
-            # as they were; only last_seq moves, by the seq the
-            # PAUSE_SUPERSEDED record below reserves (ticket 01a11cd8).
+            # as they were; only last_seq moves, by the seqs the
+            # PAUSE_SUPERSEDED record below reserves and, when the queue is
+            # full, by the seq store_pending_steer reserves for the record
+            # that announces the dropped message (ticket 01a11cd8).
             pending_id = None
             if instruction:
                 # Deferred: pending_messages.py imports wake_session from

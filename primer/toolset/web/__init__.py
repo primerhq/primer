@@ -115,7 +115,9 @@ def build_web_toolset(
     download_timeout_seconds
         Total time one ``download`` may take, every hop and the body
         (the client's own timeout is per operation, so a body that drips
-        never trips it). Defaults to 300 seconds.
+        never trips it). Defaults to 300 seconds. Like ``download_byte_cap``
+        it is set by the caller and not by the agent; neither is wired from
+        configuration today (the app builds the toolset with the defaults).
 
     Returns
     -------

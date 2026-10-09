@@ -140,10 +140,15 @@ def _install_handlers(provider_id: str, app: Any) -> None:
                         message_id=mid, ids=ids, kind="reject",
                     )
         finally:
-            if notice is not None:
-                await cq.answer(text=notice, show_alert=True)
-            else:
-                await cq.answer()
+            # Telegram refuses to answer a click that is too old (and the chat can be gone): that must not turn an accepted decision, or the
+            # exception already on its way out, into a different error.
+            try:
+                if notice is not None:
+                    await cq.answer(text=notice, show_alert=True)
+                else:
+                    await cq.answer()
+            except Exception:
+                logger.exception("telegram: could not answer the callback query")
 
     async def _on_message(update, context):
         msg = update.message
@@ -212,10 +217,14 @@ def _install_handlers(provider_id: str, app: Any) -> None:
                 user_id=user_id,
             )
             if not accepted:
-                # Refused: the gate is routed to specific approvers. Reply to the reason, so the clicker is told.
-                await context.bot.send_message(
-                    chat_id=msg.chat.id, text=APPROVAL_ROUTED_NOTICE, reply_to_message_id=msg.message_id,
-                )
+                # Refused: the gate is routed to specific approvers. Reply to the reason, so the clicker is told (best effort: the
+                # decision was judged either way, and a chat that cannot be written to must not fail the handler).
+                try:
+                    await context.bot.send_message(
+                        chat_id=msg.chat.id, text=APPROVAL_ROUTED_NOTICE, reply_to_message_id=msg.message_id,
+                    )
+                except Exception:
+                    logger.exception("telegram: could not send the approval-routed notice")
 
     app.add_handler(CallbackQueryHandler(_on_callback))
     # Text plus inbound media (photo/document/audio/voice/video). The caption
