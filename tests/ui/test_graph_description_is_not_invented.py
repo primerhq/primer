@@ -29,8 +29,9 @@ def test_the_submit_sends_the_trimmed_description_and_invents_no_placeholder() -
     assert '"(no description)"' not in body, "a blank description is sent as \"\", not replaced by a placeholder that is then stored"
 
 
-def test_the_modal_carries_no_description_placeholder_either() -> None:
-    """The modal slice must stay placeholder-free for the check above to mean anything. (The ticket also kept the old editor's ``GR_GraphFields`` input hint; that editor is deleted, so only the modal half remains.)"""
-    modal = _modal()
+def test_the_graph_list_shows_a_muted_no_description_for_an_empty_one() -> None:
+    """The display-only half of the ticket (#597): an empty description reads "No description" in the list card, and nothing is stored for it. (The old editor's header and input hint
+    went with that editor.)"""
+    page = SRC[SRC.index("function GraphsPage("):SRC.index("function GraphDetail(")]
 
-    assert 'placeholder="(no description)"' not in modal
+    assert 'subtitle={g.description || "No description"}' in page
