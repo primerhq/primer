@@ -113,6 +113,8 @@ function NV_CreateSessionOverlay() {
   var menuState = React.useState(false);
   var menuOpen = menuState[0];
   var setMenuOpen = menuState[1];
+  // The binding menu is a layer of the Escape stack while it is open: Escape closes the menu, and the overlay under it only on the next one.
+  window.primerApi.useEscape(function () { setMenuOpen(false); }, menuOpen);
   var qState = React.useState("");
   var q = qState[0];
   var setQ = qState[1];

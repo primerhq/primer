@@ -171,6 +171,7 @@ function GB_makeChip(token, draft) {
 // The insert popover - grouped, with sample values when we have them.
 function GB_RefPicker({ draft, nodeId, onPick, onClose, sampleByExpr }) {
   const { useState } = React;
+  window.primerApi.useEscape(onClose);   // Escape closes it, and only it, wherever focus is (foundation/escape-stack.js)
   const [q, setQ] = useState("");
   const groups = GB_availableRefs ? GB_availableRefs(draft, nodeId) : [];
   const match = (r) => !q || (r.path + " " + (r.label || "")).toLowerCase().includes(q.toLowerCase());
@@ -190,7 +191,6 @@ function GB_RefPicker({ draft, nodeId, onPick, onClose, sampleByExpr }) {
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="Insert a value from…"
-          onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); onClose(); } }}
           style={{
             width: "100%", background: "transparent", border: "none", outline: "none",
             color: "var(--text)", fontSize: "var(--fs-12)",

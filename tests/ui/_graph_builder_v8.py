@@ -33,6 +33,7 @@ window.primerApi = {
   Pager: function () { return null; },
   apiFetch: function () { return Promise.resolve({}); },
   useRouter: function () { return { navigate: function () {} }; },
+  useEscape: function () {},
 };
 function Btn(p) { return React.createElement("button", { "data-testid": p["data-testid"], disabled: p.disabled, onClick: p.onClick }, p.children); }
 function Banner(p) { return React.createElement("div", null, p.children); }
