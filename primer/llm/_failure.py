@@ -24,6 +24,7 @@ import base64
 import json
 import logging
 import re
+from collections.abc import Iterable
 from typing import Any
 from urllib.parse import unquote
 
@@ -92,13 +93,28 @@ def provider_label(provider: Any) -> str:
     return f"Model provider {provider.id!r} ({kind})"
 
 
+def _normalised(value: str) -> str:
+    """``value`` the way the provider's text is normalised before it is scrubbed: controls stripped, whitespace runs collapsed."""
+    return " ".join(value.translate(_CONTROL_TABLE).split())
+
+
+def _is_secret(value: str) -> bool:
+    """Whether a configured ``value`` is worth masking: long enough, and not the placeholder a keyless local server is configured with (compared
+    NORMALISED, so ``" none\\n"`` is the placeholder ``none`` and blanking the word would not corrupt ordinary prose)."""
+    return len(value) >= _MIN_SECRET_LENGTH and _normalised(value).casefold() not in _KEYLESS_PLACEHOLDERS
+
+
 def _forms(secret: str) -> set[str]:
     """``secret`` as the text can show it: itself; its NORMALISED form (controls stripped, whitespace runs collapsed), because the provider's text is
-    normalised before it is scrubbed; and its ESCAPED form (a tab as the two characters ``\\t``), because the SDK's message for a 4xx is the ``repr`` of the body."""
+    normalised before it is scrubbed; its ESCAPED form (a tab as the two characters ``\\t``), because the SDK's message for a 4xx is the ``repr`` of the body;
+    and the form a ``repr`` or a JSON encoding gives a value that holds quotes (``a"b'c`` is shown as ``a"b\\'c`` by one and ``a\\"b'c`` by the other), once
+    and twice (a ``repr`` of a ``repr``)."""
     forms = {secret, secret.encode("unicode_escape").decode("ascii")}
-    normalised = " ".join(secret.translate(_CONTROL_TABLE).split())
+    normalised = _normalised(secret)
     if len(normalised) >= _MIN_SECRET_LENGTH:
         forms.add(normalised)
+    for _ in range(2):
+        forms |= {repr(form)[1:-1] for form in forms} | {json.dumps(form)[1:-1] for form in forms}
     return forms
 
 
@@ -109,7 +125,7 @@ def _secrets(provider: Any) -> list[str]:
     key = getattr(config, "api_key", None)
     if key is not None:
         value = key.get_secret_value()
-        if len(value) >= _MIN_SECRET_LENGTH and value.casefold() not in _KEYLESS_PLACEHOLDERS:
+        if _is_secret(value):
             values.update(_forms(value))
     url = getattr(config, "url", None)
     username, password = getattr(url, "username", None) or "", getattr(url, "password", None)
@@ -128,6 +144,22 @@ def _mask(text: str, secret: str) -> str:
     if len(secret) >= _EVERYWHERE_LENGTH:
         return text.replace(secret, _REDACTED)
     return re.sub(_TOKEN_START + re.escape(secret) + r"(?![A-Za-z0-9])", _REDACTED, text)
+
+
+def mask_values(text: str, values: Iterable[str]) -> str:
+    """``text`` with each configured secret in ``values`` masked in every form the text can show it (see :func:`_forms`).
+
+    For a caller that has secrets but no model provider to hand to :func:`scrub`: an MCP toolset's header values, whose probe failures
+    (``LocalProtocolError: Illegal header value b'Bearer sk-...\\n'``) quote the value whole. A value that is too short, or is a keyless placeholder, is
+    not masked (it would blank ordinary words); a text without any of the values comes back as it was.
+    """
+    forms: set[str] = set()
+    for value in values:
+        if _is_secret(value):
+            forms |= _forms(value)
+    for form in sorted(forms, key=len, reverse=True):
+        text = _mask(text, form)
+    return text
 
 
 def scrub(text: str, provider: Any) -> str:

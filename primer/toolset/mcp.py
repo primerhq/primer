@@ -19,8 +19,10 @@ import mcp.types as mcp_types
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
+from primer.common.log import redact_url_secrets
 from primer.common.mcp_errors import classify_mcp_exception
 from primer.int.toolset import ToolsetProvider
+from primer.llm._failure import mask_values
 from primer.model.chat import Tool, ToolCallResult
 from primer.model.except_ import AuthRequiredError, ConfigError, PrimerError
 from primer.model.provider import (
@@ -112,6 +114,26 @@ class McpToolsetProvider(ToolsetProvider):
         # path without re-listing.
         self._task_tools: set[str] = set()
 
+    def _classified(self, exc: Exception) -> PrimerError:
+        """``classify_mcp_exception(exc)`` with the toolset's configured header values masked in its text.
+
+        A header value pasted with trailing whitespace is refused by h11 before the request leaves, and the library's message quotes the value whole
+        (``Illegal header value b'Bearer sk-...\\n'``). This text is served by ``GET /v1/toolsets/{id}/tools`` (502), by ``GET /v1/tools`` as the
+        toolset's ``unavailable_reason`` to every user who opens the agent picker, by the ``list_toolset_tools`` system tool to the agent (and so to the
+        model vendor) and by the catalogue's log (security ticket 01a11eda-2031). URL credentials are masked as well.
+        """
+        err = classify_mcp_exception(exc)
+        masked = redact_url_secrets(mask_values(err.message, self._header_secrets()))
+        if masked != err.message:
+            err.message = masked
+            err.args = (masked,)
+        return err
+
+    def _header_secrets(self) -> list[str]:
+        """The values configured as HTTP headers (``Authorization``, ``X-Api-Key``, ...): secrets, whatever the header is called."""
+        config = self._config.config
+        return [value.get_secret_value() for value in config.headers.values()] if isinstance(config, HttpConfig) else []
+
     # ---------- public API ------------------------------------------------
 
     def required_role(self, tool_name: str) -> str:
@@ -166,7 +188,7 @@ class McpToolsetProvider(ToolsetProvider):
                 try:
                     result = await session.list_tools()
                 except Exception as exc:
-                    raise classify_mcp_exception(exc) from exc
+                    raise self._classified(exc) from exc
         except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
             raise
         except PrimerError:
@@ -178,7 +200,7 @@ class McpToolsetProvider(ToolsetProvider):
             # "Connection closed" on one box, a scope cancel on
             # another), and the docstring's promise is that every one
             # of them degrades instead of escaping as an unhandled 500.
-            raise classify_mcp_exception(exc) from exc
+            raise self._classified(exc) from exc
 
         # Refresh the task-tools cache off the latest list. Server may
         # have added / removed task-style annotations between calls;
@@ -220,7 +242,7 @@ class McpToolsetProvider(ToolsetProvider):
             try:
                 result = await session.call_tool(tool_name, arguments=arguments)
             except Exception as exc:
-                raise classify_mcp_exception(exc) from exc
+                raise self._classified(exc) from exc
 
             return self._mcp_call_result_to_primer(result)
 
@@ -249,7 +271,7 @@ class McpToolsetProvider(ToolsetProvider):
                     meta={"task": {}},  # request task-style execution
                 )
             except Exception as exc:
-                raise classify_mcp_exception(exc) from exc
+                raise self._classified(exc) from exc
 
         # Extract the task id. Tolerate slight variations in where
         # the server returns it: result.meta or result._meta, with a
@@ -307,7 +329,7 @@ class McpToolsetProvider(ToolsetProvider):
                     request, mcp_types.GetTaskResult,
                 )
             except Exception as exc:
-                raise classify_mcp_exception(exc) from exc
+                raise self._classified(exc) from exc
 
     async def fetch_task_result(
         self,
@@ -334,7 +356,7 @@ class McpToolsetProvider(ToolsetProvider):
                     request, mcp_types.CallToolResult,
                 )
             except Exception as exc:
-                raise classify_mcp_exception(exc) from exc
+                raise self._classified(exc) from exc
         # by_alias=True keeps the historical camelCase wire shape
         # (isError/content/structuredContent) the bridge
         # (primer/bus/mcp_tasks.py) and mcp_task_resume below both
@@ -358,7 +380,7 @@ class McpToolsetProvider(ToolsetProvider):
                     request, mcp_types.CancelTaskResult,
                 )
             except Exception as exc:
-                raise classify_mcp_exception(exc) from exc
+                raise self._classified(exc) from exc
 
     async def complete_oauth(self, *, code: str, state: str) -> None:
         """Finish an OAuth flow started by an earlier AuthRequiredError."""
@@ -468,7 +490,7 @@ class McpToolsetProvider(ToolsetProvider):
             except (ConfigError, AuthRequiredError, GeneratorExit):
                 raise
             except Exception as exc:
-                raise classify_mcp_exception(exc) from exc
+                raise self._classified(exc) from exc
             return
 
         raise ConfigError(f"unknown transport {self._config.transport!r}")
