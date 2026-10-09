@@ -3343,17 +3343,23 @@ def _redact(value: Any, depth: int = 0, budget: "list[int] | None" = None) -> tu
             # A token the BUDGET cut in two: its head is too short for the blob rule to know it (a 64-character digest cut after 18 was previewed), so it is not drawn.
             # A cut at a space keeps the whole tokens before it, and the ceiling is different: it leaves the blob rule 2000 characters to work with.
             return _REDACTED, True
-        quote = _open_quote(text) if capped else ""
-        if quote:
-            # A cut that ends inside an open quote (password='correct horse battery' cut at its inner space): nothing closes the quote for the rules, so the first word of a quoted
-            # secret was kept. The kept text is scrubbed with the quote CLOSED (the rules see the whole quoted value they start and hide it), and the closer that was added for
-            # them is dropped again when it is still the last character; the head of a harmless command (bash -lc '...', git commit -m '...') stays.
-            scrubbed = _scrub_text(text + quote)
-            return (scrubbed[:-1] if scrubbed.endswith(quote) else scrubbed), True
         document = _parse_container(text)
         if document is not None:
             inner, changed = _redact(document, depth + 1, budget)
             return (json.dumps(inner, ensure_ascii=False, default=str) if changed else text), changed or capped
+        # AFTER the document check, as on main: the scan for an open quote does not know JSON escapes, so a document with an escaped quote in a value ('{"auth": "s3cret",
+        # "m": "a\" "}') looks like a quote that never closed, and scrubbing it as text hides nothing its key names say.
+        quote = _open_quote(text) if capped else ""
+        if quote:
+            # A cut that ends inside an open quote (password='correct horse battery' cut at its inner space): nothing closes the quote for the rules, so the first word of a quoted
+            # secret was kept. The kept text is scrubbed with the quote CLOSED (the rules see the whole quoted value they start and hide it), and the closer that was added for
+            # them is dropped again when it is still the last character; the head of a harmless command (bash -lc '...', git commit -m '...') stays. The closer is one more
+            # character handed to the scrubber, so it is CHARGED like the rest: the scrubber is never handed more than the budget paid for. (Cutting the text one character shorter
+            # instead changes what the rules see at the limit: blindly it can drop the closing quote of a secret, and at a token boundary it can split the secret itself; the
+            # reviewer's cut fuzz found both, so the window stays as it was and the extra character is paid for.)
+            budget[0] -= 1
+            scrubbed = _scrub_text(text + quote)
+            return (scrubbed[:-1] if scrubbed.endswith(quote) else scrubbed), True
         scrubbed = _scrub_text(text)
         return scrubbed, capped or scrubbed != text
     return value, False

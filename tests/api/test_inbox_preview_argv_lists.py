@@ -933,24 +933,31 @@ def test_the_open_quote_branch_still_handles_text_that_is_not_a_document() -> No
     assert _redact("password='correct horse battery'", 0, [18]) == ("password=<redacted>", True)
 
 
-def test_the_scrubber_is_never_handed_more_than_the_ceiling_on_the_open_quote_branch(monkeypatch) -> None:
-    """The branch appends the closing quote for the rules: that was ``len(text) + 1`` characters, one past the ceiling a single string is given (and one past the budget it was
-    charged). The kept text is one character shorter when it is already at the limit."""
+@pytest.mark.parametrize(
+    ("value", "budget"),
+    [("'" + "x" * 3000, 12000), ("a b 'c d e f g h i j k l m n o p", 14), ('say "' + "word " * 600, 12000)],
+    ids=["at the ceiling", "under a budget", "a double quote at the ceiling"],
+)
+def test_the_scrubber_is_handed_no_more_than_it_was_charged_for_on_the_open_quote_branch(monkeypatch, value: str, budget: int) -> None:
+    """The branch appends the closing quote for the rules: one more character handed to the scrubber than ``text``, which was ``len(text) + 1`` against a budget charged
+    ``len(text)`` (2001 characters for ``"'" + "x" * 3000``, one past the ceiling a single string is given). The extra character is charged now; the budget may go one below
+    zero, which the next read sees as spent. (Cutting the text one character shorter was tried and is worse: see the fix commit.)"""
     from primer.api.routers import workspaces as w
 
     seen = _recording_scrubber(monkeypatch)
-    w._redact("'" + "x" * 3000)
+    spent = [budget]
+    w._redact(value, 0, spent)
 
-    assert seen and max(seen) <= w._REDACT_MAX_TEXT, f"the scrubber was handed {max(seen)} characters at once"
+    assert seen and max(seen) <= budget - spent[0], (seen, budget, spent)
 
 
-def test_the_scrubber_is_never_handed_more_than_the_budget_it_was_charged_on_the_open_quote_branch(monkeypatch) -> None:
-    from primer.api.routers import workspaces as w
+def test_a_closing_quote_that_ends_the_kept_text_is_not_chopped_off_to_make_room() -> None:
+    """A first version cut the kept text by one character whenever it was at the limit. Here the text ends with the closing quote of the secret, and a stray double quote in
+    front makes the scan call the whole thing open: chopping the last character left ``'Zqkkhc6d`` unclosed for the rule, and the secret showed (found by the reviewer's cut fuzz)."""
+    got, truncated = _redact("\" --api-key 'Zqkkhc6d' ( -p -H &&", 0, [22])
 
-    seen = _recording_scrubber(monkeypatch)
-    w._redact("a b 'c d e f g h i j k l m n o p", 0, [14])
-
-    assert seen and max(seen) <= 14, seen
+    assert "Zqkkhc6d" not in str(got), got
+    assert truncated is True
 
 
 def test_a_quote_opened_by_an_apostrophe_inside_a_word_is_no_quote() -> None:
