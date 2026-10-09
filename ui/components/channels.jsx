@@ -353,11 +353,12 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing }) {
           const errKey = `body.${f.key}`;
           const err = fieldErrors[errKey];
           return (
-            <FormField key={f.key} label={f.label} hint={f.required ? <span style={{ color: "var(--amber)" }}>required</span> : undefined} err={err}>
+            <FormField key={f.key} label={f.label} hint={f.required ? <span style={{ color: "var(--amber)" }}>required</span> : undefined} help={f.type === "checkbox" ? undefined : f.hint} err={err}>
               {f.type === "checkbox" ? (
                 <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
                   <input
                     type="checkbox"
+                    aria-required={f.required ? "true" : undefined}
                     checked={values[f.key] !== undefined ? !!values[f.key] : !!f.default}
                     onChange={(e) => setValues({ ...values, [f.key]: e.target.checked })}
                   />
@@ -367,6 +368,7 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing }) {
                 <input
                   className="input mono"
                   type="number"
+                  aria-required={f.required ? "true" : undefined}
                   value={values[f.key] ?? ""}
                   onChange={(e) => setValues({ ...values, [f.key]: e.target.value === "" ? "" : Number(e.target.value) })}
                   style={{ width: "100%" }}
@@ -375,13 +377,13 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing }) {
                 <input
                   className="input mono"
                   type={f.secret ? "password" : "text"}
+                  aria-required={f.required ? "true" : undefined}
                   placeholder={f.placeholder}
                   value={values[f.key] ?? ""}
                   onChange={(e) => setValues({ ...values, [f.key]: e.target.value })}
                   style={{ width: "100%" }}
                 />
               )}
-              {f.hint && f.type !== "checkbox" && <div className="field-help">{f.hint}</div>}
             </FormField>
           );
         })}
