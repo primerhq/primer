@@ -172,9 +172,11 @@ function NV_inboxFullCall(it) {
 // The text Show all loaded belongs to ONE PARK. The card is keyed by session, so the next poll can bring a NEW call for the same session while the old text is still in
 // the card's state: that text must not unlock Approve for a call the person has not read (the decision names the new call's id). The raw call id alone is not enough: it is
 // NOT unique across rounds (Ollama's `call_{idx}` restarts per stream, Gemini falls back to the same ids), so call B parking as `call_0` before the poll would inherit the
-// unlock of call A. The park time (`created_at` of the row, the park's `parked_at`) is the second key; a state or a row without one never matches the other.
+// unlock of call A. The park time (`created_at` of the row, the park's `parked_at`) is the second key; a state or a row without one never matches the other, and two
+// missing ones are not a match either (`undefined === undefined` would be the call id alone again): the text is known to belong to this park only when the loaded state
+// carries a park time and the row's is the same.
 function NV_inboxFullFor(loaded, it) {
-  return loaded && loaded.callId === it.tool_call_id && loaded.parkedAt === it.created_at ? loaded : null;
+  return loaded && loaded.parkedAt != null && loaded.callId === it.tool_call_id && loaded.parkedAt === it.created_at ? loaded : null;
 }
 
 function NV_MobileDecisionButton(props) {
