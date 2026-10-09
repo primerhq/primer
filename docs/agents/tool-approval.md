@@ -277,10 +277,9 @@ but require human review for any other host.
   `resume_metadata`, which the graph checkpoint keeps verbatim, so it survives every re-park while the gate stays pending, and one gate of a
   multi-gate graph park being decided does not change its siblings'). The pending responses serve it, the respond and cancel routes take it
   back, and a decision naming a gate that has been replaced is a `409 approval_stale` that moves nothing. Two fan-out siblings that share a raw
-  `tool_call_id` are told apart by it. Chat approvals (`gate_id` does not apply: they are answered with "yes" / "no" in the conversation) and
-  yields that are not a human gate (`sleep`, `watch_files`, external waits) have none. Slack and Discord buttons and the Telegram button's cache
-  entry keep the id with the button, so an Approve left in a chat from an earlier round answers "This approval was replaced by a newer one" and
-  decides nothing; a reply to a question message is judged against the id the prompt was posted with. A button posted before this release has
+  `tool_call_id` are told apart by it. Yields that are not a human gate (`sleep`, `watch_files`, external waits) have none. Slack and Discord
+  buttons and the Telegram button's cache entry keep the id with the button, so an Approve left in a messaging platform thread from an earlier round
+  answers "This approval was replaced by a newer one" and decides nothing; a reply to a question message is judged against the id the prompt was posted with. A button posted before this release has
   no id and still works (counted as `absent`).
 - **A new user message does not supersede a pending approval.** If a
   session is parked on approval and the user sends another message,

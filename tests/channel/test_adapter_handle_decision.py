@@ -46,10 +46,12 @@ async def test_an_accepted_decision_reports_true() -> None:
     assert len(inbox.envelopes) == 1
 
 
-async def test_a_decision_the_gate_refuses_reports_false_instead_of_raising() -> None:
+async def test_a_decision_the_gate_refuses_reports_a_falsy_refusal_instead_of_raising() -> None:
     inbox = _Inbox(ApproverRefusedError("routed to specific approvers"))
 
-    assert await _decide(_Adapter(inbox)) is False
+    refused = await _decide(_Adapter(inbox))
+
+    assert not refused and refused.notice == adapter_module.APPROVAL_ROUTED_NOTICE
 
 
 async def test_any_other_failure_still_raises() -> None:
