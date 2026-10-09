@@ -1,6 +1,6 @@
 /* global React, Btn, Banner, GB_reducer, GB_stripAll, GB_validate, GB_api, GB_Canvas,
    GB_Outline, GB_Inspector, GB_AddStepPalette, GB_ReadinessChip, GB_ReadinessPopover,
-   GB_DryRunDrawer, GB_Starters, GB_makeNode, GR_ImportSpecModal, GR_stripCoords */
+   GB_DryRunDrawer, GB_Starters, GB_makeNode, GB_applyImport, GR_ImportSpecModal, GR_stripCoords */
 // GB_Builder - the graph builder shell. Owns the draft (same staged-local +
 // PUT-replace model as the old editor), composes the outline / canvas /
 // inspector, and hosts the palette, readiness popover and dry-run drawer.
@@ -487,7 +487,7 @@ function GB_Builder(props) {
         <GR_ImportSpecModal
           currentDraft={draft}
           onClose={() => setImportOpen(false)}
-          onApply={(spec) => { dispatch({ type: "IMPORT_SPEC", spec }); setImportOpen(false); setLayoutNonce((n) => n + 1); }}
+          onApply={(spec) => { GB_applyImport(spec, dispatch); setImportOpen(false); setLayoutNonce((n) => n + 1); }}
         />
       ) : null}
     </div>

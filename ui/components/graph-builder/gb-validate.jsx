@@ -64,6 +64,13 @@ function GB_validate(draft, opts) {
         blocking.push({ code: "unknown_target", message: `A connection points at a step that no longer exists (${t}).`, edgeIdx: idx });
       }
     }
+    // The model's json_path router needs at least one branch (_JsonPathRouter.branches has min_length=1): an empty list passes every other check here and is refused by the PUT.
+    if (e.kind === "conditional" && e.router && (e.router.kind || "json_path") === "json_path" && !(e.router.branches || []).length) {
+      blocking.push({
+        code: "branches_none", edgeIdx: idx, nodeId: e.from_node,
+        message: "A choice between paths needs at least one path.",
+      });
+    }
     if (beginIds.has(e.to_node)) {
       blocking.push({ code: "begin_incoming", message: "The start step can't have anything pointing into it.", edgeIdx: idx });
     }

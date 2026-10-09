@@ -262,7 +262,7 @@ function GR_Canvas(props) {
     const behaviors = ["zoom-canvas", "drag-canvas"];
     if (interactive) {
       // Two explicit, mutually-exclusive edit modes keyed off `addEdgeMode`
-      // (toolbar "Add edge" toggle). Default = MOVE nodes (drag-element on,
+      // (the builder's "Connect steps" toggle). Default = MOVE nodes (drag-element on,
       // create-edge off). Add-edge mode = CONNECT (drag-element off, create-
       // edge on). The `enable` callbacks re-read the live mode from cb.current
       // on every gesture, so toggling the toolbar switches modes with no

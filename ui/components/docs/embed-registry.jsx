@@ -141,8 +141,8 @@
       // single-graph editor whose centerpiece is the node/edge canvas
       // (GB_Builder -> GB_Canvas -> GR_Canvas). GraphsPage is the LIST page and never
       // shows the canvas, so the embed mounts the detail directly. graphId
-      // must match the GET /graphs/{id} key in the fixture. Node x/y are
-      // assigned client-side by primerVendor.autoLayout (server stores none).
+      // must match the GET /graphs/{id} key in the fixture. Node positions are
+      // laid out client-side by the canvas (the server stores none).
       component: "GraphDetail",
       fixtures: "graph-canvas",
       props: { graphId: "docs-producer-judge", pushToast: function () {} },
