@@ -108,3 +108,20 @@ def test_every_op_the_model_allows_is_not_flagged(op: str) -> None:
     found = _validate(_draft(op))
     codes = [r["code"] for r in found["blocking"]]
     assert "branch_op_unknown" not in codes, f"op {op!r} must not be flagged: {json.dumps(found)[:400]}"
+
+
+def test_a_branch_with_no_target_is_a_blocking_issue() -> None:
+    """'Add a path' creates to_node: "" and the PUT 422s on it (JsonPathBranch.to_node min_length=1)."""
+    draft = _draft("eq")
+    draft["edges"][1]["router"]["branches"][0]["to_node"] = ""
+    found = _validate(draft)
+    rows = [r for r in found["blocking"] if r["code"] == "branch_no_target"]
+    assert rows, f"an empty to_node must be blocking, got {json.dumps(found)[:400]}"
+    message = rows[0]["message"]
+    assert "Pick" in message, f"the message must name the step in words: {message}"
+    assert "branch 1" in message, f"the message must name the branch in words: {message}"
+
+
+def test_a_branch_with_a_real_target_is_not_flagged() -> None:
+    codes = [r["code"] for r in _validate(_draft("eq"))["blocking"]]
+    assert "branch_no_target" not in codes, json.dumps(codes)
