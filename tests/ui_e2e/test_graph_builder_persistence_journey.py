@@ -186,17 +186,21 @@ def test_u0107_graph_builder_persistence_journey(
         assert rows_staged == rows_before + 1
 
         # ----- 5. Click Save -> the write lands ---------------------
-        # Save returning to disabled means the PUT succeeded AND the refetch
-        # made the server response the new baseline. That is the contract.
+        # Save is disabled while the PUT is in flight too (its text is then
+        # "Saving..."), so disabled alone does not mean saved: the button text
+        # and the dirty dot do. Wait for the text to come back, then for the
+        # saved graph to become the new baseline (expect_clean: Save disabled
+        # and no dirty dot, and the dot only goes away on the refetched graph).
         #
         # The success toast is deliberately NOT asserted: app.jsx auto-dismisses
         # non-error toasts after 5s, so in a journey that also waits on the save
         # round-trip the toast can be gone before it is looked for - a race that
         # would fail intermittently forever while protecting nothing this test
-        # does not already cover twice (Save re-disabling here, and the step
+        # does not already cover twice (the baseline wait here, and the step
         # surviving the reload below).
         save.click()
-        expect(save).to_be_disabled(timeout=15_000)
+        expect(save).to_have_text("Save draft", timeout=15_000)
+        gb.expect_clean(page, timeout=15_000)
 
         # ----- 6. Reload -> builder re-mounts + loads from server ----
         page.reload(wait_until="domcontentloaded")
