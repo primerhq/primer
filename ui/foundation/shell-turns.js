@@ -109,11 +109,13 @@ function SH_callRawId(payload) {
 function SH_nestSubagentRows(rows) {
   // byRun: "<run that made the call>|<graph node>|<raw id>" -> row ("" for a call
   // the parent turn itself made, and "" for a node outside a graph). Exact, used
-  // for a record that carries delegate_run_id; a record that also carries
-  // delegate_node_id looks the call up by its node too, because two fan-out
-  // siblings can delegate under the same raw id at the same time (a call is
-  // registered under its node AND under the node-less key, last call winning,
-  // which is what a record without a node, from before this, still asks for).
+  // for a record that carries delegate_run_id. A record that also carries
+  // delegate_node_id looks the call up by its node and ONLY by it: two fan-out
+  // siblings can delegate under the same raw id, and another node's call is the
+  // wrong answer, not a fallback (a stamped record whose call is not there stays
+  // at the top level). A call is also registered under the node-less key (last
+  // call winning), which is what a record without a node, from before the stamp
+  // or outside a graph, still asks for.
   // byRaw: raw id -> the LAST call with it, for a record from before run ids.
   var byRun = {};
   var byRaw = {};
@@ -130,7 +132,7 @@ function SH_nestSubagentRows(rows) {
     if (key) {
       var parentRun = payload.delegate_parent_run_id || "";
       target = payload.delegate_run_id
-        ? ((payload.delegate_node_id && byRun[parentRun + "|" + payload.delegate_node_id + "|" + key]) || byRun[parentRun + "||" + key])
+        ? byRun[parentRun + "|" + (payload.delegate_node_id || "") + "|" + key]
         : byRaw[key];
     }
     if (target) {

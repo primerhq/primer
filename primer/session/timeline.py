@@ -362,16 +362,18 @@ def _attach(
     In a graph that is still not exact: two fan-out siblings can delegate
     under the same raw id at once, both parent runs are ``None``, and the
     last call wins. A record that carries ``delegate_node_id`` (the node
-    whose agent made the call) is looked up by it as well, and a record
-    that does not, or whose node has no call of its own, takes the last
-    call as before (ticket 01a11cca).
+    whose agent made the call) is looked up by it and ONLY by it: another
+    node's call is the wrong answer, not a fallback, so a stamped record
+    whose call is not there stays where an un-nestable record stays. A
+    record without it (outside a graph, or from before the stamp) takes the
+    last call as before (ticket 01a11cca).
     """
     delegate = payload.get("delegate_tool_call_id")
     if payload.get("delegated"):
         if payload.get("delegate_run_id") is not None:
             parent_run = payload.get("delegate_parent_run_id")
             node_id = payload.get("delegate_node_id")
-            target = (calls_by_run.get((parent_run, node_id, delegate)) if node_id else None) or calls_by_run.get((parent_run, None, delegate))
+            target = calls_by_run.get((parent_run, node_id or None, delegate))
         else:
             target = calls_by_raw_id.get(delegate)
         if target is not None:
