@@ -55,17 +55,51 @@ def test_graphs_jsx_defines_only_the_pieces_that_are_still_used() -> None:
     assert defined == set(KEPT), f"extra: {sorted(defined - set(KEPT))}, missing: {sorted(set(KEPT) - defined)}"
 
 
+def _code(text: str) -> str:
+    """The source without comments (``/* */`` blocks and whole-line ``//``), so a comment that names a piece, or a ``/* global */`` line, is not a use of it."""
+    text = re.sub(r"^[ \t]*//.*$", "", text, flags=re.M)  # first: a line comment may itself contain "/*" (``graph-builder/*.jsx``)
+    return re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+
+
+def _without_the_window_export(text: str) -> str:
+    return re.sub(r"Object\.assign\(window, \{[^}]*\}\);", "", text)
+
+
 @pytest.mark.parametrize("name", KEPT)
 def test_every_kept_piece_is_used_outside_its_own_definition(name: str) -> None:
-    uses = sum(len(_word(name).findall(text)) for text in _ui_sources().values())
+    """A use is a mention in CODE other than the definition itself and the file's ``Object.assign(window, ...)`` export."""
+    uses = sum(len(_word(name).findall(_without_the_window_export(_code(text)))) for text in _ui_sources().values())
     assert uses >= 2, f"{name} is defined and never used: delete it"
 
 
 def test_graph_detail_renders_the_builder_and_reads_no_tweak() -> None:
     text = GRAPHS.read_text(encoding="utf-8")
-    body = text.split("function GraphDetail(", 1)[1].split("\n}\n", 1)[0]
+    body = _code(text.split("function GraphDetail(", 1)[1].split("\n}\n", 1)[0])
     assert "<window.GB_Builder" in body
     assert "useTweaks" not in body and "grTweaks" not in body
+
+
+@pytest.mark.parametrize("wrapper", ["{false && <window.GB_Builder", "{cond ? <window.GB_Builder", "{cond && (\n<window.GB_Builder", "{cond || <window.GB_Builder"])
+def test_the_builder_in_graph_detail_is_not_behind_a_condition(wrapper: str) -> None:
+    """The pin below accepts only an unconditional element; this proves it refuses the conditional spellings."""
+    assert _conditional(wrapper) is True
+    assert _conditional("<GR_GraphStatusPanel id={id} />\n      <window.GB_Builder") is False
+
+
+def _conditional(body: str) -> bool:
+    before = body[:body.index("<window.GB_Builder")]
+    return bool(re.search(r"(&&|\|\||\?|:|\()\s*$", before.rstrip()) or before.rstrip().endswith("{"))
+
+
+def test_graph_detail_draws_the_builder_unconditionally() -> None:
+    body = _code(GRAPHS.read_text(encoding="utf-8").split("function GraphDetail(", 1)[1].split("\n}\n", 1)[0])
+    assert _conditional(body) is False, "GB_Builder in GraphDetail sits behind a condition"
+
+
+def test_the_import_modal_no_longer_speaks_of_an_entry_node() -> None:
+    """``entry_node_id`` went with the model's rule 'exactly one Begin node'; the modal's seed and placeholder named it."""
+    modal = GRAPHS.read_text(encoding="utf-8").split("function GR_ImportSpecModal(", 1)[1].split("\n}\n", 1)[0]
+    assert "entry_node_id" not in modal
 
 
 def test_no_helper_graphs_jsx_names_is_left_undefined() -> None:
@@ -73,3 +107,9 @@ def test_no_helper_graphs_jsx_names_is_left_undefined() -> None:
     defined = {m for text in sources.values() for m in re.findall(r"(?:function|const|let|var)\s+(GR_\w+)", text)}
     used = set(re.findall(r"\bGR_\w+", GRAPHS.read_text(encoding="utf-8")))
     assert used <= defined, f"graphs.jsx names a helper nothing defines: {sorted(used - defined)}"
+
+
+def test_the_comment_stripper_reads_a_line_comment_with_a_slash_star_in_it() -> None:
+    """The check above would swallow code if ``// see graph-builder/*.jsx`` opened a block comment."""
+    kept = _code("// the files are graph-builder/*.jsx\nfunction Real() {}\n/* a block\nacross lines */\nconst X = 1;\n")
+    assert "function Real" in kept and "const X" in kept and "graph-builder" not in kept and "across" not in kept

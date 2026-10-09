@@ -240,6 +240,13 @@ _RULES = {
         {"nodes": [_BEGIN, {"kind": "fan_out", "id": "f", "specs": [{"kind": "broadcast", "target_node_id": "ghost", "count": 2}]}, _END], "edges": [_edge("s", "f")]},
         None, "blocking", "fanout_unknown_target"),
     "fan-in with no incoming edge": ({"nodes": [_BEGIN, {"kind": "fan_in", "id": "m", "aggregate_template": ""}, _END], "edges": [_edge("s", "e")]}, None, "blocking", "fanin_no_incoming"),
+    "conditional edge with no branches": (
+        {"nodes": [_BEGIN, _agent("a"), _END], "edges": [_edge("s", "a"), {"kind": "conditional", "from_node": "a", "router": {"kind": "json_path", "branches": [], "default_to": "e"}}]},
+        None, "blocking", "branches_none"),
+    "router default_to to an unknown node": (
+        {"nodes": [_BEGIN, _agent("a"), _END], "edges": [_edge("s", "a"), {"kind": "conditional", "from_node": "a", "router": {
+            "kind": "json_path", "branches": [{"conditions": [{"path": "k", "op": "eq", "value": 1}], "to_node": "e"}], "default_to": "ghost"}}]},
+        None, "blocking", "unknown_target"),
     "tool not in the catalogue": (
         {"nodes": [_BEGIN, {"kind": "tool_call", "id": "t", "tool_id": "nope", "arguments": {}}, _END], "edges": [_edge("s", "t"), _edge("t", "e")]},
         {"knownToolIds": ["toolset__real"]}, "warnings", "tool_unknown"),
@@ -257,3 +264,62 @@ def test_the_builder_validator_has_the_rule(rule: str) -> None:
     draft, opts, bucket, code = _RULES[rule]
     found = _validate(draft, opts)
     assert code in [row["code"] for row in found[bucket]], f"{rule}: expected {code} in {bucket}, got {json.dumps(found)[:400]}"
+
+
+def test_a_callable_router_needs_no_branches() -> None:
+    """The empty-list rule is the json_path router's (``_JsonPathRouter.branches`` has ``min_length=1``); a callable router names a function instead."""
+    draft = {"nodes": [_BEGIN, _agent("a"), _END], "edges": [_edge("s", "a"), {"kind": "conditional", "from_node": "a", "router": {"kind": "callable", "callable_id": "pick"}}]}
+    assert "branches_none" not in [row["code"] for row in _validate(draft)["blocking"]]
+
+
+# ---------------------------------------------------------------------------
+# a pasted spec (was applyImportedSpec in the deleted editor): the shape is checked before the draft is touched
+# ---------------------------------------------------------------------------
+
+
+def _import(spec: dict | list | None) -> dict:
+    """Run ``GB_applyImport(spec, dispatch)`` in V8 with a recording dispatch: ``{"thrown": <string or None>, "dispatched": [...]}``."""
+    ctx = _ctx()
+    return json.loads(ctx.eval(
+        "(function () { var calls = []; var thrown = null;"
+        f" try {{ GB_applyImport({json.dumps(spec)}, function (a) {{ calls.push(a); }}); }} catch (e) {{ thrown = e; }}"
+        " return JSON.stringify({ thrown: thrown, dispatched: calls }); })()"
+    ))
+
+
+@pytest.mark.parametrize(
+    ("spec", "message"),
+    [
+        ({"nodes": {}}, "`nodes` must be an array."),
+        ({"nodes": [], "edges": {}}, "`edges` must be an array when present."),
+        ({"nodes": [None]}, "Every entry of `nodes` must be an object."),
+        ({"nodes": [], "edges": [3]}, "Every entry of `edges` must be an object."),
+        ([], "Spec must be a JSON object with nodes and edges."),
+        (None, "Spec must be a JSON object with nodes and edges."),
+        ({"edges": []}, "`nodes` must be an array."),
+    ],
+)
+def test_a_spec_with_the_wrong_shape_is_refused_with_a_message_and_the_draft_is_not_touched(spec, message: str) -> None:
+    result = _import(spec)
+    assert result["thrown"] == message and result["dispatched"] == []
+
+
+def test_a_spec_with_the_right_shape_is_dispatched_as_it_is() -> None:
+    spec = {"description": "d", "nodes": [{"kind": "begin", "id": "s"}], "edges": []}
+    result = _import(spec)
+    assert result["thrown"] is None and result["dispatched"] == [{"type": "IMPORT_SPEC", "spec": spec}]
+
+
+def test_without_the_check_a_spec_with_nodes_as_an_object_crashes_the_render_path() -> None:
+    """Why the check exists: the reducer spreads whatever it is given, and the validator and the dirty check then throw during render (the console has no error boundary)."""
+    ctx = _ctx()
+    ctx.eval('var d = GB_reducer({id: "g", nodes: [], edges: []}, {type: "IMPORT_SPEC", spec: {nodes: {}}});')
+    assert ctx.eval("(function () { try { GB_validate(d, {}); return false; } catch (e) { return true; } })()") is True
+
+
+def test_the_import_modal_hands_the_spec_to_the_check_before_it_closes() -> None:
+    builder = _src("graph-builder.jsx")
+    call = builder[builder.index("<GR_ImportSpecModal"):]
+    handler = call[call.index("onApply="):call.index("/>")]
+    assert "GB_applyImport(spec, dispatch)" in handler
+    assert handler.index("GB_applyImport(spec, dispatch)") < handler.index("setImportOpen(false)"), "a refused spec must leave the modal open to show its message"

@@ -4,6 +4,7 @@ The bug batch these came from was reported against the old editor; the canvas it
 
   * #12 - moving a node must not spawn a self-loop edge: edge creation is an explicit mode (drag-element vs create-edge gated by ``addEdgeMode``) and self-loops are rejected in
     ``create-edge.onCreate``.
+  * #14 - the references banner of the graph status panel prints no raw ``GET /v1/graphs/{id}/status`` line (``GR_GraphStatusPanel`` is kept).
   * #15 - Auto-layout re-renders the canvas via a ``layoutNonce`` that feeds the canvas topoKey (an x/y-only relayout is otherwise invisible).
 
 The pins on the old editor's own markup (#13 the Static/Conditional toggle, #14 the references banner, #15 the Auto-layout button, #16 the description and max_iterations fields) went with it;
@@ -19,6 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
 CANVAS = (UI / "components" / "graph-canvas.jsx").read_text(encoding="utf-8")
+GRAPHS = (UI / "components" / "graphs.jsx").read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +72,17 @@ def test_canvas_receives_and_keys_on_layout_nonce() -> None:
     # the builder passes the nonce (pinned in test_graph_builder_parity.py); the
     # canvas folds it into topoKey so a bump forces a re-seed from the new positions.
     assert "props.layoutNonce" in CANVAS
+
+
+# ---------------------------------------------------------------------------
+# #14 - the references banner (GR_GraphStatusPanel, which is kept and still renders above the builder)
+# ---------------------------------------------------------------------------
+
+
+def test_status_banner_has_no_raw_get_line() -> None:
+    assert "GET /v1/graphs/{id}/status" not in GRAPHS
+    # The human-readable message stays.
+    assert "All references resolve" in GRAPHS
 
 
 def test_bundle_transpiles() -> None:
