@@ -234,6 +234,22 @@ def unique_suffix() -> str:
     return uuid.uuid4().hex[:12]
 
 
+@pytest.fixture
+def delegation_session(base_url: str, tmp_path: Path, unique_suffix: str) -> Iterator:
+    """A local-workspace agent session for a journey that writes its own transcript (``tests/ui_e2e/_session_seed.py``), and its rows taken away again when the journey ends, whatever it did.
+
+    A row that cannot be deleted fails the journey's teardown: a journey must not leave rows behind on a shared install, and not saying so is how they pile up.
+    """
+    from tests.ui_e2e._session_seed import delete_seeded, seed_session
+
+    rows = seed_session(base_url, tmp_path, unique_suffix, description="delegation nesting probe")
+    try:
+        yield rows
+    finally:
+        left = delete_seeded(base_url, rows)
+        assert not left, f"seeded rows that could not be deleted: {left}"
+
+
 # ---------------------------------------------------------------------------
 # Artifact directory (screenshots + logs land here on failure)
 # ---------------------------------------------------------------------------

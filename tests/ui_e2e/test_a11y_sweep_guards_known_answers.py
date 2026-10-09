@@ -19,8 +19,7 @@ from tests.ui_e2e._a11y_sweep import Sweep
 
 pytestmark = smk("SMK-UI-06", status="partial")
 
-CORS = {"access-control-allow-origin": "*"}
-API = "http://127.0.0.1:9/v1"        # nothing listens here: every request is answered by a route, or fails
+API = "/v1"        # the console's own origin (its CSP allows no other): a route answers the request, or the request fails
 
 
 def _page_that_calls(page: Page, path: str) -> None:
@@ -39,7 +38,7 @@ def sweep(page: Page):
 
 @pytest.mark.ui_e2e
 def test_a_server_error_the_page_provoked_is_a_note_for_the_surface_looked_at(page: Page, sweep: Sweep) -> None:
-    page.route("**/v1/boom", lambda route: route.fulfill(status=503, body="no", headers=CORS))
+    page.route("**/v1/boom", lambda route: route.fulfill(status=503, body="no"))
     _page_that_calls(page, "/boom")
     page.wait_for_timeout(300)
     sweep.at("surface one", "main")
@@ -50,7 +49,7 @@ def test_a_server_error_the_page_provoked_is_a_note_for_the_surface_looked_at(pa
 
 @pytest.mark.ui_e2e
 def test_a_client_error_is_the_pages_normal_answer_and_not_a_note(page: Page, sweep: Sweep) -> None:
-    page.route("**/v1/nothing", lambda route: route.fulfill(status=404, body="{}", headers=CORS))
+    page.route("**/v1/nothing", lambda route: route.fulfill(status=404, body="{}"))
     _page_that_calls(page, "/nothing")
     page.wait_for_timeout(300)
     sweep.at("surface", "main")
@@ -73,7 +72,7 @@ def test_a_look_waits_for_the_api_requests_in_flight_so_that_what_they_draw_is_l
     """A form whose fields come from a request (the provider form's kind fields) shows its static first field at once; the look must not be taken before the rest has arrived."""
     def slow(route: Route) -> None:
         page.wait_for_timeout(700)
-        route.fulfill(status=200, body="{}", headers=CORS)
+        route.fulfill(status=200, body="{}")
 
     page.route("**/v1/slow", slow)
     page.set_content('<main><input aria-label="Name"></main>')
@@ -123,3 +122,19 @@ def test_a_surface_that_stays_loading_is_noted_and_the_budget_shortens_the_waits
         assert [n.split(":")[0] for n in sweep.notes] == ["first", "second"] and all("still loading" in n for n in sweep.notes), sweep.notes
     finally:
         sweep.close()
+
+
+@pytest.mark.ui_e2e
+def test_requests_of_a_document_that_was_left_are_not_waited_for(page: Page, sweep: Sweep) -> None:
+    """A page load drops the requests of the page it replaces without reporting them finished (the sweep goes from the desktop shell to the phone shell with ``page.goto``)."""
+    held: list[Route] = []
+    page.route("**/v1/never", lambda route: held.append(route))
+    page.set_content('<main><input aria-label="Name"></main>')
+    page.evaluate("void fetch('/v1/never').catch(() => null)")   # not returned: evaluate would wait for it forever
+    page.wait_for_timeout(200)
+    page.goto(page.url.split("#", 1)[0] + "?again=1")
+    page.set_content('<main><input aria-label="Name"></main>')
+    started = time.monotonic()
+    sweep.at("after the page load", "main")
+    assert time.monotonic() - started < 3, "waited for a request of the document that was left"
+    assert not any("still waiting" in n for n in sweep.notes), sweep.notes

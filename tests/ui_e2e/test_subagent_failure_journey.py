@@ -21,13 +21,11 @@ import json
 from playwright.sync_api import expect
 
 from tests.ui_e2e import _delegation_seed as seed
-from tests.ui_e2e._session_seed import seed_session
 from tests.ui_e2e._studio_helpers import open_session_in_studio
 
 
-def test_a_subagents_failure_renders_inside_its_block_and_a_failed_calls_notice_is_the_failure(base_url, console_url, page, tmp_path, unique_suffix) -> None:
-    rows = seed_session(base_url, tmp_path, unique_suffix, description="delegation nesting probe")
-    wid, sid = rows.wid, rows.sid
+def test_a_subagents_failure_renders_inside_its_block_and_a_failed_calls_notice_is_the_failure(console_url, page, tmp_path, delegation_session) -> None:
+    wid, sid = delegation_session.wid, delegation_session.sid
     seeded = seed.build(failures=True)
     assert seeded.delegated_failure_seq and seeded.delegated_notice_seq and seeded.failed_call_seq
     log = tmp_path / wid / ".state" / "sessions" / sid / "messages.jsonl"
@@ -68,12 +66,11 @@ def test_a_subagents_failure_renders_inside_its_block_and_a_failed_calls_notice_
 
 
 def test_a_grandchilds_notice_is_the_failure_of_the_helpers_call_not_a_line_that_says_it_carried_on(
-    base_url, console_url, page, tmp_path, unique_suffix,
+    console_url, page, tmp_path, delegation_session,
 ) -> None:
     """The recorder writes the helper's own tool result (an ERROR, quoting the notice) with the SAME scoped id as the parent's call, and the parent's own result is OK.
     Paired by the id alone, the helper's call showed the parent's OK result and its grandchild's notice read "carried on" (review of #575, round 2)."""
-    rows = seed_session(base_url, tmp_path, unique_suffix, description="delegation nesting probe")
-    wid, sid = rows.wid, rows.sid
+    wid, sid = delegation_session.wid, delegation_session.sid
     seeded = seed.build_nested_notice()
     log = tmp_path / wid / ".state" / "sessions" / sid / "messages.jsonl"
     log.parent.mkdir(parents=True, exist_ok=True)

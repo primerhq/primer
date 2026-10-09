@@ -58,11 +58,12 @@ def seed_session(base_url: str, tmp_path: Path, suffix: str, *, description: str
     return SeededSession(wid=wid, sid=sid, delete_paths=created)
 
 
-def delete_paths(base_url: str, paths: list[str]) -> list[str]:
-    """Delete ``paths`` newest first (the list is in creation order). Returns the ones that could not be deleted (a non-2xx other than 404, or no answer), for the caller to report; never raises."""
+def delete_paths(base_url: str, paths: list[str], *, transport: httpx.BaseTransport | None = None) -> list[str]:
+    """Delete ``paths`` newest first (the list is in creation order). Returns the ones that could not be deleted (a non-2xx other than 404, or no answer), for the caller to report; never raises.
+    ``transport`` is for a test (``httpx.MockTransport``)."""
     left: list[str] = []
     try:
-        with httpx.Client(base_url=base_url, timeout=30.0) as c:
+        with httpx.Client(base_url=base_url, timeout=30.0, transport=transport) as c:
             for path in reversed(paths):
                 try:
                     r = c.delete(path)
