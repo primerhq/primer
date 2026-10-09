@@ -3094,7 +3094,11 @@ def _scrub_text(text: str, mark: "str | None" = None) -> str:
     long base64 or hex run.
 
     With ``mark`` (one character) each piece is replaced by as many marks as it had instead of ``<redacted>``: the result has the length of ``text``, so
-    WHERE the marks fall says which characters a rule hid (``_redact_command_line`` reads them per word)."""
+    WHERE the marks fall says which characters a rule hid (``_redact_command_line`` reads them per word).
+
+    The marks are the plain scrub's replacements. A later rule sees a mark where the plain scrub shows ``<redacted>`` (which no rule matches), so the marking scrub may mark MORE
+    than the plain scrub hides: once ``token:value`` is hidden, ``-utoken:value`` is still a user part with a password to a rule that sees marks. It never marks less: a line
+    the plain scrub changes always has a mark (``tests/api/test_inbox_preview_argv_lists.py`` pins both)."""
     text = _SECRET_ASSIGNMENT.sub(lambda m: _hide_after_lead(m, mark), text)
     text = _SECRET_FLAG.sub(lambda m: _hide_after_lead(m, mark), text)
     text = _MYSQL_ATTACHED_PASSWORD.sub(lambda m: _hide_after_lead(m, mark), text)
@@ -3162,10 +3166,13 @@ _WHITESPACE = re.compile(r"\s")
 
 
 def _line_word(text: str) -> "tuple[str, bool]":
-    """``text`` as it enters the line, and whether it was wrapped in quotes (the wrapping is cut off again to line the word up with itself alone; a swapped quote keeps its place)."""
+    """``text`` as it enters the line, and whether it was wrapped in quotes (the wrapping is cut off again to line the word up with itself alone; a swapped quote keeps its place).
+
+    A word with spaces and no quote is a VALUE (``-u 'deploy:correct horse'``) and is wrapped so it stays one. A word that starts with a dash is a FLAG with its value attached
+    (``-pcorrect horse``): wrapped, the quote would stand in front of its ``-p`` and hide it from the rule that needs a space there, so it enters the line as it is."""
     quoted = "'" in text or '"' in text
     spaced = _WHITESPACE.search(text) is not None
-    if spaced and not quoted:
+    if spaced and not quoted and not text.startswith("-"):
         return f"'{text}'", True
     if quoted and not spaced and "\ue000" not in text and "\ue001" not in text:
         return text.translate(_QUOTES_HIDDEN), False
@@ -3304,9 +3311,14 @@ def _redact(value: Any, depth: int = 0, budget: "list[int] | None" = None) -> tu
     if isinstance(value, str):
         if depth > _REDACT_MAX_DEPTH or budget[0] <= 0:
             return _REDACTED, True
-        text = _bounded(value, min(_REDACT_MAX_TEXT, budget[0]))
+        limit = min(_REDACT_MAX_TEXT, budget[0])
+        text = _bounded(value, limit)
         capped = len(text) < len(value)
         budget[0] -= len(text)
+        if capped and limit < _REDACT_MAX_TEXT and not value[len(text)].isspace():
+            # A token the BUDGET cut in two: its head is too short for the blob rule to know it (a 64-character digest cut after 18 was previewed), so it is not drawn.
+            # A cut at a space keeps the whole tokens before it, and the ceiling is different: it leaves the blob rule 2000 characters to work with.
+            return _REDACTED, True
         document = _parse_container(text)
         if document is not None:
             inner, changed = _redact(document, depth + 1, budget)
