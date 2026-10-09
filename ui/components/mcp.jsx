@@ -259,9 +259,7 @@ function MC_EndpointPanel({ exposure, availableItems }) {
       {toggleError && (
         <Banner
           kind="error"
-          title={toggleError.code
-            ? `Toggle failed (${toggleError.code})`
-            : "Toggle failed"}
+          title="Toggle failed"
           detail={toggleError.message || ""}
         />
       )}
@@ -628,9 +626,7 @@ function MC_ToolsPanel({ exposure, available }) {
         <div style={{ padding: "0 12px 10px" }}>
           <Banner
             kind="error"
-            title={saveError.code
-              ? `Save failed (${saveError.code})`
-              : "Save failed"}
+            title="Save failed"
             detail={saveError.message || ""}
           />
         </div>

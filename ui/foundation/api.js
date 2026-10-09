@@ -67,7 +67,8 @@
   // ---- the ONE reader for a refused write (ticket 01a11cd1-7aaf) --------------------------------------------------------------------------------------
   // Seven components used to read {code, message} out of the problem envelope their own way and disagreed. The API puts a refusal's pieces in four places:
   // extensions.code (routers raise HTTPException(detail={code, message}); `detail` is then the message STRING), extensions.error (the auth gate, which sends
-  // no message so `detail` is the code itself, and the profile pre-write 422s {error, field, message}), extensions.errors[] (request validation: one entry per
+  // no message so `detail` is the code itself, and the {error, field, message} 422s of the pre-write checks: the profile router's and the agent router's
+  // model_profile_not_found), extensions.errors[] (request validation: one entry per
   // field, `loc` the field and `msg` its words; its `type` is a pydantic type or a check's name, NOT a code to print) and, for a reference block, only the
   // sentence ("in_use_by: ...").
 
@@ -140,6 +141,15 @@
   //             title, the error's message, the caller's fallback, "Request failed", with the code after it when there is one ("Forbidden (scope_required)":
   //             a title alone tells nobody what was refused).
   // options.codeAfterTitle === false keeps that last fallback to the title alone: for a caller whose banner must never show a code (the triggers').
+  // Whether a request-validation entry points at a FIELD a person can name: not the whole body or query (loc ["body"]: "body: Field required" names nothing) and
+  // not a position (loc ["body", 1], FastAPI's "JSON decode error" at character 1: "1: JSON decode error"; a list index is not a field).
+  function _namesAField(entry) {
+    const loc = entry && entry.loc;
+    if (!Array.isArray(loc) || loc.length === 0) return false;
+    if (loc.length === 1 && (loc[0] === "body" || loc[0] === "query" || loc[0] === "path")) return false;
+    return typeof loc[loc.length - 1] !== "number";
+  }
+
   function readRefusal(err, fallback, options) {
     const env = err && err.envelope;
     const ext = (env && env.extensions) || {};
@@ -173,7 +183,7 @@
     }
 
     let message;
-    if (sentence) message = errors && field ? `${field}: ${_plainSentence(sentence)}` : _plainSentence(sentence);
+    if (sentence) message = errors && _namesAField(first) ? `${field}: ${_plainSentence(sentence)}` : _plainSentence(sentence);
     else if (code && _BARE_SENTENCES[code]) message = _BARE_SENTENCES[code];
     else if (errors && text) message = text;
     else {

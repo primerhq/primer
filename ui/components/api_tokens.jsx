@@ -445,7 +445,7 @@ function AT_CreateTokenDialog({ onClose, onCreated, onDone }) {
         {submitError && (
           <Banner
             kind="error"
-            title={submitError.code ? `Create failed (${submitError.code})` : "Create failed"}
+            title="Create failed"
             detail={submitError.message || ""}
           />
         )}
@@ -649,7 +649,7 @@ function AT_RevokeConfirmDialog({ token, onClose, onRevoked, isAdmin }) {
         {error && (
           <Banner
             kind="error"
-            title={error.code ? `Revoke failed (${error.code})` : "Revoke failed"}
+            title="Revoke failed"
             detail={error.message || ""}
           />
         )}
