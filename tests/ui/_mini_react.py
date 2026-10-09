@@ -3,8 +3,9 @@
 ``mini_react_context(jsx_path)`` returns a MiniRacer context holding
 
 * a hook runtime (``useState``, ``useEffect`` with dependency arrays and cleanups, ``useRef``, ``useCallback``, ``useMemo``,
-  ``useReducer``) and ``React.createElement`` / ``Fragment``, which together render a function-component tree to a plain element
-  tree, re-render it until no state change is pending, and run each effect after the render that changed its dependencies;
+  ``useReducer``, ``useId``) and ``React.createElement`` / ``Fragment``, which together render a function-component tree to a plain element
+  tree, re-render it until no state change is pending, and run each effect after the render that changed its dependencies; plus the
+  element helpers the shared components call (``isValidElement``, ``cloneElement``, ``Children.toArray``), implemented as React does them;
 * the file's real code, transpiled with the same Babel the server bundles with.
 
 What it deliberately is not: a DOM, a scheduler, or a reconciler. State lives per component position and type, an instance that
@@ -23,6 +24,9 @@ Where it differs from React, so a green test here is not read as more than it is
   such a call.
 * No strict-mode double render or double effect, no ``key`` reordering, no refs to DOM nodes, no context (callers stub the hooks
   that read it, such as ``NV_useConsole``).
+* ``useId`` counts up from ``:r0:`` in each context, one id per component instance (no server/client id matching). ``Children`` has ``toArray`` only, and ``cloneElement`` treats
+  ``ref`` as an ordinary prop and ignores ``defaultProps``. An API the harness lacks throws where the component calls it: add it here, as React does it, rather than
+  stubbing it in the test (a stub that does something else, or nothing, tests the stub).
 
 Driver API, inside the context (``MR``): ``MR.mount(Component, props)``, ``MR.rerender(props?)``, ``MR.find(testid)`` (the element
 or null), ``MR.findAll(prefix)``, ``MR.click(testid)``, ``MR.texts()``, ``MR.subtree(testid)`` (every element at or under the one with that
@@ -44,6 +48,7 @@ var window = globalThis;
   var pendingEffects = [];
   var root = null;
   var typeIds = [];
+  var idCounter = 0;
 
   function typeId(t) {
     var i = typeIds.indexOf(t);
@@ -58,6 +63,55 @@ var window = globalThis;
     if (kids.length === 1) p.children = kids[0];
     else if (kids.length > 1) p.children = kids;
     return { __el: true, type: type, props: p, key: props && props.key != null ? props.key : null, children: kids, out: null };
+  }
+  function isValidElement(x) { return x != null && typeof x === "object" && x.__el === true; }
+  // React refuses an object as a child (a function it only warns about); a render, and Children.toArray, handed one must fail here as they do there
+  function notAChild(node) {
+    return new Error("Objects are not valid as a React child (found: object with keys {" + Object.keys(node).join(", ") + "})");
+  }
+  // cloneElement(el, config, ...children): the element's props with the config laid over them, as React does it. A `key` in the config replaces the element's key (an undefined one leaves it).
+  // `ref` is an ordinary prop in this harness (there are no refs), so it merges like one, an undefined one leaving the original's. Children passed after the config replace the element's,
+  // and so does a `children` in the config. The element it was made from is not touched. (`defaultProps` are not modelled, here or in createElement. React itself refuses only null and
+  // undefined, and fails later, when the broken element it returns for anything else is rendered; the harness refuses anything that is not an element, at the call.)
+  function cloneElement(el, config) {
+    if (!isValidElement(el)) throw new Error("React.cloneElement(...): The argument must be a React element, but you passed " + el + ".");
+    var p = {};
+    for (var k in el.props) p[k] = el.props[k];
+    var key = el.key;
+    var kids = el.children;
+    for (var c in (config || {})) {
+      if (!Object.prototype.hasOwnProperty.call(config, c)) continue;
+      if (c === "key") { if (config.key !== undefined) key = config.key != null ? config.key : null; continue; }
+      if (c === "ref" && config.ref === undefined) continue;
+      p[c] = config[c];
+      if (c === "children") kids = [config.children];
+    }
+    var rest = Array.prototype.slice.call(arguments, 2);
+    if (rest.length) { p.children = rest.length === 1 ? rest[0] : rest; kids = rest; }
+    return { __el: true, type: el.type, props: p, key: key, children: kids, out: null };
+  }
+  // The key React gives a child of a list: its own ("$" + key, "=" and ":" escaped), else its position in base 36.
+  function elementKey(child, i) {
+    if (isValidElement(child) && child.key != null) return "$" + String(child.key).replace(/[=:]/g, function (m) { return m === "=" ? "=0" : "=2"; });
+    return i.toString(36);
+  }
+  // Children.toArray: the children as one flat array, in order. null, undefined, booleans and functions are dropped, strings and numbers stay, and every element is cloned under the key React
+  // gives it (".0", ".1", ".1:0" inside a nested list, ".$k" for the key k). An object that is not an element throws, as it does when it is rendered. Children.map/forEach/count/only are
+  // not here: nothing under test calls them, and a harness grows an API when a component needs it, never as a no-op.
+  function childrenToArray(children) {
+    var out = [];
+    (function flat(node, name) {
+      if (Array.isArray(node)) {
+        node.forEach(function (c, i) { flat(c, (name === "" ? "." : name + ":") + elementKey(c, i)); });
+      } else if (typeof node === "string" || typeof node === "number") {
+        out.push(node);
+      } else if (isValidElement(node)) {
+        out.push(cloneElement(node, { key: name === "" ? "." + elementKey(node, 0) : name }));
+      } else if (typeof node === "object" && node !== null) {
+        throw notAChild(node);
+      }
+    })(children, "");
+    return out;
   }
   function slotAt() {
     var i = current.hookIdx++;
@@ -99,6 +153,12 @@ var window = globalThis;
     return s.v;
   }
   function useCallback(fn, deps) { return useMemo(function () { return fn; }, deps); }
+  // React 18's client ids: ":r" + a base-32 counter + ":". One per component instance, kept in its hook slot, so it holds across renders and a remount gets a new one.
+  function useId() {
+    var s = slotAt();
+    if (!s.id) s.id = ":r" + (idCounter++).toString(32) + ":";
+    return s.id;
+  }
   function useEffect(fn, deps) {
     var s = slotAt();
     if (!("ran" in s) || depsChanged(s.deps, deps)) {
@@ -116,8 +176,7 @@ var window = globalThis;
       return;
     }
     if (!node.__el) {
-      // React refuses an object as a child (a function it only warns about); a render that hands one over must fail here as it does there
-      if (typeof node === "object") throw new Error("Objects are not valid as a React child (found: object with keys {" + Object.keys(node).join(", ") + "})");
+      if (typeof node === "object") throw notAChild(node);
       return;
     }
     if (typeof node.type === "function" && node.type !== Fragment && node.type.prototype && node.type.prototype.isReactComponent) {
@@ -233,7 +292,8 @@ var window = globalThis;
   }
   g.React = {
     createElement: createElement, Fragment: Fragment, Component: Component, useState: useState, useReducer: useReducer, useRef: useRef,
-    useMemo: useMemo, useCallback: useCallback, useEffect: useEffect, useLayoutEffect: useEffect,
+    useMemo: useMemo, useCallback: useCallback, useEffect: useEffect, useLayoutEffect: useEffect, useId: useId,
+    isValidElement: isValidElement, cloneElement: cloneElement, Children: { toArray: childrenToArray },
   };
   g.MR = {
     mount: function (type, props) { root = { type: type, props: props || {}, tree: null }; flush(); },
