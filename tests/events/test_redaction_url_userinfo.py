@@ -39,7 +39,7 @@ def test_a_url_leaf_with_a_password_is_masked_wherever_it_sits() -> None:
 
 @pytest.mark.parametrize(
     "value",
-    ["http://plain.local/v1", "not a url", "", "user@example.com", "http://host/a@b", "see http://svc:pw@host/ for details", 3, None, True],
+    ["http://plain.local/v1", "not a url", "", "user@example.com", "http://host/a@b", 3, None, True],
 )
 def test_anything_else_passes_through_unchanged(value) -> None:
     assert redact_payload({"x": value}) == {"x": value}
@@ -79,3 +79,17 @@ async def test_a_crud_event_of_a_credentialed_provider_is_served_masked_and_stor
     served = redact_event(created).payload
     assert served["config"]["url"] == MASKED and "s3cr3t" not in str(served), served
     assert served["config"]["api_key"] != "sk-live-abcdef"
+
+
+@pytest.mark.parametrize(
+    ("text", "masked"),
+    [
+        ("see http://svc:pw@host/ for details", "see http://[REDACTED]@host/ for details"),
+        ("connect to https://ghp_abcdefghij@github.com/org/repo.git failed: refused", "connect to https://[REDACTED]@github.com/org/repo.git failed: refused"),
+        ("a http://u:p@one.local/x and https://v:q@two.local/y", "a http://[REDACTED]@one.local/x and https://[REDACTED]@two.local/y"),
+    ],
+)
+def test_a_credentialed_url_inside_free_text_is_masked_too(text: str, masked: str) -> None:
+    """Only a string that IS a URL used the served-row mask; a credentialed URL inside a sentence (an error text, a log line copied into an event) passed. It goes through
+    ``redact_url_secrets`` (linear, handles embedded URLs), whose mask is ``[REDACTED]``."""
+    assert redact_payload({"message": text}) == {"message": masked}

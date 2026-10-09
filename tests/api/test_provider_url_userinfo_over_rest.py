@@ -86,16 +86,40 @@ async def test_a_put_of_the_served_body_keeps_the_stored_password(client, app) -
 
 
 @pytest.mark.asyncio
-async def test_a_put_that_changes_the_host_and_leaves_the_mask_keeps_the_password(client, app) -> None:
+async def test_a_put_that_changes_the_path_on_the_same_origin_keeps_the_password(client, app) -> None:
     await client.post("/v1/llm_providers", json=_llm(PROXY))
     served = (await client.get("/v1/llm_providers/llm-a")).json()
-    served["config"]["url"] = f"http://svc:{MASK}@other.local:9000/v2"
+    served["config"]["url"] = f"http://svc:{MASK}@proxy.local:8080/v2"
 
     r = await client.put("/v1/llm_providers/llm-a", json=served)
 
     assert r.status_code == 200, r.text
     stored = await app.state.storage_provider.get_storage(LLMProvider).get("llm-a")
-    assert str(stored.config.url) == "http://svc:s3cr3t@other.local:9000/v2"
+    assert str(stored.config.url) == "http://svc:s3cr3t@proxy.local:8080/v2"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "moved",
+    [
+        pytest.param(f"http://svc:{MASK}@attacker.example:9000/v2", id="another host"),
+        pytest.param(f"http://other:{MASK}@proxy.local:8080/v1", id="another username"),
+        pytest.param(f"https://svc:{MASK}@proxy.local:8080/v1", id="another scheme"),
+    ],
+)
+async def test_a_put_whose_mask_cannot_be_restored_is_a_422_and_stores_nothing(client, app, moved: str) -> None:
+    """An update that points the URL at another host (or another user) and leaves the mask alone is REFUSED: the stored password is not given to a host the person controls, and the
+    literal mask is not stored as a password either."""
+    await client.post("/v1/llm_providers", json=_llm(PROXY))
+    served = (await client.get("/v1/llm_providers/llm-a")).json()
+    served["config"]["url"] = moved
+
+    r = await client.put("/v1/llm_providers/llm-a", json=served)
+
+    assert r.status_code == 422, r.text
+    assert "re-enter the password" in r.text and "s3cr3t" not in r.text
+    stored = await app.state.storage_provider.get_storage(LLMProvider).get("llm-a")
+    assert str(stored.config.url) == PROXY, "the stored row is untouched"
 
 
 @pytest.mark.asyncio
@@ -128,6 +152,7 @@ async def test_a_put_that_removes_the_credential_removes_it(client, app) -> None
 
 
 @pytest.mark.asyncio
+@pytest.mark.filterwarnings("error")
 async def test_the_saved_provider_probe_reads_the_stored_url_with_its_password(client, monkeypatch) -> None:
     await client.post("/v1/llm_providers", json=_llm(PROXY))
     seen: dict = {}

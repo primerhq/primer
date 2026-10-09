@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import pytest
 
-from primer.model.common import dump_for_storage, preserve_masked_secrets
+from primer.model.common import STORAGE_DUMP_CONTEXT, dump_for_storage, preserve_masked_secrets
+from primer.model.except_ import ValidationError as PrimerValidationError
 from primer.model.providers.embedding import EmbeddingProvider, OpenAIConfig
 from primer.model.providers.llm import LLMProvider, OllamaConfig, OpenChatConfig
 from primer.model.providers.speech import SpeechToTextConfig, TextToSpeechConfig
@@ -129,10 +130,33 @@ def test_the_served_body_sent_back_unchanged_keeps_the_stored_password() -> None
     assert str(_put(stored, MASKED).config.url) == PROXY
 
 
-def test_a_changed_host_with_the_mask_keeps_the_password() -> None:
+def test_a_changed_path_on_the_same_origin_keeps_the_password() -> None:
     stored = _llm(PROXY)
 
-    assert str(_put(stored, f"http://svc:{MASK}@other.local:9000/v2").config.url) == "http://svc:s3cr3t@other.local:9000/v2"
+    assert str(_put(stored, f"http://svc:{MASK}@proxy.local:8080/v2?x=1").config.url) == "http://svc:s3cr3t@proxy.local:8080/v2?x=1"
+
+
+def test_the_default_port_spelled_out_is_the_same_origin() -> None:
+    stored = _llm("http://svc:s3cr3t@proxy.local/v1")
+
+    assert str(_put(stored, f"http://svc:{MASK}@proxy.local:80/v1").config.url) == "http://svc:s3cr3t@proxy.local/v1"
+
+
+@pytest.mark.parametrize(
+    "incoming",
+    [
+        pytest.param(f"http://svc:{MASK}@other.local:9000/v2", id="another host"),
+        pytest.param(f"http://svc:{MASK}@proxy.local:9000/v1", id="another port"),
+        pytest.param(f"https://svc:{MASK}@proxy.local:8080/v1", id="another scheme"),
+    ],
+)
+def test_a_changed_origin_with_the_mask_is_refused_not_given_the_stored_password(incoming: str) -> None:
+    """An update that points the URL at another host and leaves the mask alone used to store the stored password next to that host: the next probe or call sent it there."""
+    stored = _llm(PROXY)
+
+    with pytest.raises(PrimerValidationError, match="re-enter the password") as caught:
+        _put(stored, incoming)
+    assert "s3cr3t" not in str(caught.value)
 
 
 def test_a_new_real_password_is_stored() -> None:
@@ -141,10 +165,11 @@ def test_a_new_real_password_is_stored() -> None:
     assert str(_put(stored, "http://svc:newpass@proxy.local:8080/v1").config.url) == "http://svc:newpass@proxy.local:8080/v1"
 
 
-def test_another_username_with_the_mask_is_not_the_row_that_was_served() -> None:
+def test_another_username_with_the_mask_is_refused_and_the_literal_mask_is_never_stored() -> None:
     stored = _llm(PROXY)
 
-    assert str(_put(stored, f"http://other:{MASK}@proxy.local:8080/v1").config.url) == f"http://other:{MASK}@proxy.local:8080/v1"
+    with pytest.raises(PrimerValidationError, match="re-enter the password"):
+        _put(stored, f"http://other:{MASK}@proxy.local:8080/v1")
 
 
 def test_removing_the_credential_removes_it() -> None:
@@ -176,3 +201,90 @@ def test_an_embedding_row_follows_the_same_rules() -> None:
 
     assert str(incoming.config.url) == PROXY
     assert stored.model_dump(mode="json")["config"]["url"] == MASKED
+
+
+def test_a_mask_for_a_row_that_stored_no_credential_is_refused() -> None:
+    stored = _llm("http://proxy.local:8080/v1")
+
+    with pytest.raises(PrimerValidationError, match="re-enter the password"):
+        _put(stored, MASKED)
+
+
+def test_a_mask_when_the_provider_type_changed_is_refused() -> None:
+    """The stored row is an openchat config; the update makes it an Ollama one and sends the served mask: nothing of the stored credential belongs to the new config."""
+    stored = _llm(PROXY)
+    incoming = LLMProvider.model_validate({
+        "id": "llm-a", "provider": "ollama", "models": [{"name": "m", "context_length": 8192}], "config": {"url": MASKED}, "limits": {"max_concurrency": 1},
+    })
+
+    with pytest.raises(PrimerValidationError, match="re-enter the password"):
+        preserve_masked_secrets(incoming, stored)
+
+
+def test_a_restored_url_over_the_length_limit_is_a_refusal_not_a_crash() -> None:
+    """The stored URL (a very long password) fits the 2083 characters, the masked one sent back plus a long path does not once the password is back."""
+    stored = _llm(f"http://svc:{'p' * 2000}@proxy.local:8080/v1")
+    incoming = _llm(f"http://svc:{MASK}@proxy.local:8080/v1/{'a' * 300}")
+
+    with pytest.raises(PrimerValidationError, match="too long"):
+        preserve_masked_secrets(incoming, stored)
+
+
+def test_an_unrestorable_mask_is_refused_in_a_nested_row_too() -> None:
+    stored = _embedding("http://proxy.local:8080/v1")
+    incoming = _embedding(MASKED)
+
+    with pytest.raises(PrimerValidationError, match="re-enter the password"):
+        preserve_masked_secrets(incoming, stored)
+
+
+# ---- a python-mode dump must not warn (the warning printed the URL, password included, to stderr) ---------------------------------------------------------------------------
+
+_CONFIGS = [
+    pytest.param(OpenChatConfig(url=PROXY), id="LLM openchat"),
+    pytest.param(OllamaConfig(url=PROXY), id="LLM ollama"),
+    pytest.param(OpenAIConfig(url=PROXY), id="embedding openai"),
+    pytest.param(SpeechToTextConfig(url=PROXY), id="speech to text"),
+    pytest.param(TextToSpeechConfig(url=PROXY), id="text to speech"),
+]
+
+
+@pytest.mark.filterwarnings("error")
+@pytest.mark.parametrize("config", _CONFIGS)
+def test_no_dump_of_a_config_warns(config) -> None:
+    """pydantic 2.13 warned (PydanticSerializationUnexpectedValue, with the URL in the text) on every PYTHON-mode dump of a field whose serializer declared ``return_type=str``;
+    ``discover_saved_llm_models`` does that dump on every ``GET /v1/setup/state``."""
+    assert str(config.model_dump()["url"]) == PROXY
+    assert str(config.model_dump(mode="python")["url"]) == PROXY
+    assert config.model_dump(mode="json")["url"] == MASKED
+    assert MASK in config.model_dump_json()
+    assert dump_for_storage(config)["url"] == PROXY
+
+
+@pytest.mark.filterwarnings("error")
+def test_no_dump_of_a_row_with_a_config_union_warns() -> None:
+    for row in (_llm(PROXY), _embedding(PROXY)):
+        assert str(row.config.model_dump(mode="python")["url"]) == PROXY
+        assert str(row.model_dump(mode="python")["config"]["url"]) == PROXY
+        row.model_dump(mode="json")
+        row.model_dump_json()
+        dump_for_storage(row)
+
+
+# ---- the storage context is exactly the storage context ---------------------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("context", [{"storage": False}, {"other": True}, {}, "storage", None, {"storage": 1.5}])
+def test_only_the_storage_context_returns_the_real_url(context) -> None:
+    assert OpenChatConfig(url=PROXY).model_dump(mode="json", context=context)["url"] == MASKED
+
+
+def test_the_storage_context_returns_the_real_url_even_with_more_keys() -> None:
+    assert OpenChatConfig(url=PROXY).model_dump(mode="json", context={**STORAGE_DUMP_CONTEXT, "other": 1})["url"] == PROXY
+
+
+def test_the_serialization_schema_of_the_field_is_still_a_uri_string() -> None:
+    """A serializer with a return type of ``Any`` would turn the field into ``{}`` in the OpenAPI document."""
+    properties = OpenChatConfig.model_json_schema(mode="serialization")["properties"]["url"]
+
+    assert properties["type"] == "string" and properties["format"] == "uri"
