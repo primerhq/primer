@@ -72,6 +72,7 @@ def _graph_frame() -> GraphFrame:
 class _Leaf:
     tool_name: str = "misc__ask_user"
     resume_metadata: dict[str, Any] = field(default_factory=dict)
+    event_key: str = "ask_user:sess-1:child-node:node-tc"
 
 
 # ---------------------------------------------------------------------------
@@ -182,8 +183,9 @@ def _graph_services(recorder):
             recorder["build_child"] = (graph, gsid)
             return f"child::{gsid}"
 
-        async def graph_agent_tool_result(self, checkpoint, tcid, payload):
+        async def graph_agent_tool_result(self, checkpoint, tcid, payload, *, event_key=None):
             recorder["agent_tool_result"] = (checkpoint, tcid, payload)
+            recorder["agent_tool_result_event_key"] = event_key
             return "ATR"
 
     svc = _Svc()
@@ -198,7 +200,7 @@ async def test_graph_resume_leaf_completed(monkeypatch):
     services = _graph_services(rec)
 
     async def fake_resume_invoke_graph(
-        *, child, checkpoint, payload, resumed_tcid, agent_tool_result,
+        *, child, checkpoint, payload, resumed_tcid, resumed_event_key, agent_tool_result,
         resume_session_id, resolve_provider,
     ):
         rec["resume_invoke_graph"] = {
@@ -206,6 +208,7 @@ async def test_graph_resume_leaf_completed(monkeypatch):
             "checkpoint": checkpoint,
             "payload": payload,
             "resumed_tcid": resumed_tcid,
+            "resumed_event_key": resumed_event_key,
             "agent_tool_result": agent_tool_result,
             "resume_session_id": resume_session_id,
             "resolve_provider": resolve_provider,
@@ -231,6 +234,10 @@ async def test_graph_resume_leaf_completed(monkeypatch):
     assert rig["checkpoint"] is frame.checkpoint
     assert rig["payload"] == {"p": 9}
     assert rig["resumed_tcid"] == "node-tc"
+    # The leaf's own event key rides down (#683 review, S-B): it is what tells two siblings of the child that share the raw id apart, for the child
+    # executor and for the agent-result builder alike.
+    assert rig["resumed_event_key"] == _Leaf().event_key
+    assert rec["agent_tool_result_event_key"] == _Leaf().event_key
     assert rig["agent_tool_result"] == "ATR"
     # The services bundle's session and toolset resolver reach the child's
     # resume, for a value-yielding tool_call node's ResumeContext.

@@ -265,3 +265,49 @@ async def test_none_agent_tool_result_is_noop():
 
     assert ws.lines == []
     assert session_storage.updated == []
+
+
+# ---- S13: the entry lookup with fan-out siblings that share a raw id (#683 review) ----------------------------------------------------------------
+
+
+def _sibling_checkpoint() -> dict:
+    """Two agent nodes parked on ask_user under ONE raw id, each with its own node, scoped call id and (node-scoped) event key."""
+    def entry(node: str, scoped: str) -> dict:
+        return {
+            "node_id": node, "tool_call_id": "call_0", "scoped_tool_call_id": scoped, "event_key": f"ask_user:gs-1:{node}:call_0",
+            "tool_name": "ask_user", "resume_metadata": {"prompt": f"question of {node}"},
+        }
+
+    return {"pending_agent_yields": [entry("asker-a", "asker-a:tool:0:1"), entry("asker-b", "asker-b:tool:0:2")], "pending_toolcalls": []}
+
+
+async def _written_record(event_key):
+    ws = _FakeWorkspaceIO()
+    pool = _FakePool(workspace_io=ws, storage=_FakeStorage(_FakeSessionStorage()))
+    await graph_resume_coordinator.persist_resume_tool_result_record_for_graph(
+        pool, session=_make_graph_session(), checkpoint=_sibling_checkpoint(), tcid="call_0",
+        agent_tool_result=_make_agent_tool_result("call_0"), event_key=event_key,
+    )
+    assert len(ws.lines) == 1
+    return json.loads(ws.lines[0][1].decode().splitlines()[0])
+
+
+@pytest.mark.asyncio
+async def test_the_record_of_the_second_sibling_carries_its_own_node_and_scoped_call_id():
+    record = await _written_record("ask_user:gs-1:asker-b:call_0")
+
+    assert record["node_id"] == "asker-b" and record["payload"]["call_id"] == "asker-b:tool:0:2", "B's answer was recorded under A"
+
+
+@pytest.mark.asyncio
+async def test_the_record_of_the_first_sibling_carries_its_own_node_and_scoped_call_id():
+    record = await _written_record("ask_user:gs-1:asker-a:call_0")
+
+    assert record["node_id"] == "asker-a" and record["payload"]["call_id"] == "asker-a:tool:0:1"
+
+
+@pytest.mark.asyncio
+async def test_a_key_that_names_no_entry_records_the_first_entry_with_the_raw_id():
+    record = await _written_record("ask_user:gs-1:legacy")
+
+    assert record["node_id"] == "asker-a" and record["payload"]["call_id"] == "asker-a:tool:0:1"
