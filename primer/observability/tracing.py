@@ -66,10 +66,14 @@ def setup(config: "ObservabilityConfig") -> None:
             from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
                 OTLPSpanExporter,
             )
-            exporter = OTLPSpanExporter(
+            from primer.observability.span_redaction import RedactingSpanExporter
+
+            # Every finished span crosses the wrapper once, whichever code made it: the auto-instrumentors' URLs, routes and exceptions carry credentials
+            # that the spans we open ourselves (``span``) never see (ticket 01a12171-2d5a).
+            exporter = RedactingSpanExporter(OTLPSpanExporter(
                 endpoint=config.otlp_endpoint,
                 headers=config.otlp_headers or {},
-            )
+            ))
             provider.add_span_processor(BatchSpanProcessor(exporter))
             logger.info(
                 "tracing: OTLP exporter wired to %s", config.otlp_endpoint

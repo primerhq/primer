@@ -54,9 +54,13 @@ def install_log_correlation() -> None:
     try:
         from opentelemetry.instrumentation.logging import LoggingInstrumentor
 
+        # enable_log_auto_instrumentation=False: by default the instrumentor also attaches an OTel LoggingHandler to the root logger, which reads each
+        # record's raw ``exc_info`` and ships it as a log record, past the credential filter on Primer's own handler (ticket 01a12171-2d5a). Correlation
+        # needs only the hook.
         LoggingInstrumentor().instrument(
             set_logging_format=False,
             log_hook=_log_hook,
+            enable_log_auto_instrumentation=False,
         )
         logger.debug("logging_integration: log-correlation hook installed")
     except Exception:
