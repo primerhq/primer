@@ -682,6 +682,7 @@ function NV_SetupPage() {
 
 function SetupWizardGate({ onDone }) {
   const [state, setState] = React.useState(null);
+  // {title, text}: what failed, in its own words. A failed READ and a failed SEED are different failures and say so.
   const [error, setError] = React.useState(null);
   const [busy, setBusy] = React.useState(null); // "seed" | null
   // null = not yet routed. Decided once, from the first load: a fresh
@@ -694,7 +695,7 @@ function SetupWizardGate({ onDone }) {
   const load = React.useCallback(() => {
     setError(null);
     return _fetchSetupState().then(setState, (err) => (
-      setError(SW_errorText(err))
+      setError({ title: "Couldn't load setup state", text: SW_errorText(err) })
     ));
   }, []);
   React.useEffect(() => { load(); }, [load]);
@@ -710,7 +711,7 @@ function SetupWizardGate({ onDone }) {
     setBusy("seed");
     // A failed seed still re-reads the state, so the checklist shows what is true (and its Re-run seed) instead of whatever was read last.
     window.primerApi.apiFetch("POST", "/setup/seed", null, {}).then(
-      load, (err) => load().then(() => setError(SW_errorText(err))),
+      load, (err) => load().then(() => setError({ title: "Couldn't run the setup seed", text: SW_errorText(err) })),
     ).finally(() => setBusy(null));
   };
 
@@ -755,8 +756,8 @@ function SetupWizardGate({ onDone }) {
           {error && (
             <div className="auth-banner">
               <div style={{ flex: 1 }}>
-                <div className="title">Couldn't load setup state</div>
-                <div className="detail">{error}</div>
+                <div className="title">{error.title}</div>
+                <div className="detail">{error.text}</div>
               </div>
             </div>
           )}
