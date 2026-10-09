@@ -72,9 +72,9 @@ async def _open(storage, io, *, reopen: bool = False):
     return row
 
 
-async def _run(tmp_path, storage, io, bus, scripts, on_failure: str = "fail_fast"):
+async def _run(tmp_path, storage, io, bus, scripts, on_failure: str = "fail_fast", graph: Graph | None = None):
     repo = await _make_state_repo(tmp_path)
-    executor = await _build_executor(graph=_fanout(on_failure), llm=_FakeLLM(scripts=scripts), state_repo=repo, graph_session_id=SID, agents={"x": _agent("x")})
+    executor = await _build_executor(graph=graph or _fanout(on_failure), llm=_FakeLLM(scripts=scripts), state_repo=repo, graph_session_id=SID, agents={"x": _agent("x")})
     outcome = await run_one_session_turn(_make_lease(SID), _deps(storage, io, bus, executor))
     return outcome, await storage.get_storage(WorkspaceSession).get(SID)
 
@@ -184,6 +184,27 @@ async def test_a_fanout_that_collects_its_failures_is_one_closed_window_ended_as
     expected = "stop" if row.ended_reason == "completed" else "error"
     assert (end["kind"], (end["payload"] or {}).get("stop_reason")) == ("done", expected), (row.ended_reason, end)
     assert session_usage(lines).turns == 1
+
+
+@pytest.mark.asyncio
+async def test_a_graph_that_runs_out_of_iterations_is_one_closed_failed_window(tmp_path, fake_workspace_io, fake_event_bus, fake_storage_provider) -> None:
+    """A graph-LEVEL failure names no node: the executor's ``max_iterations_exceeded`` error is a node-less terminal and closes the window; the graph's own end that dispatch appends after it
+    is a copy of that failure, not a second window."""
+    await _open(fake_storage_provider, fake_workspace_io)
+    capped = _one_worker().model_copy(update={"max_iterations": 1})
+
+    outcome, row = await _run(tmp_path, fake_storage_provider, fake_workspace_io, fake_event_bus, OK, graph=capped)
+
+    lines, records = fake_workspace_io.read_lines(SID), _records(fake_workspace_io)
+    assert row.ended_reason == "failed"
+    graph_error = next(r for r in records if r["kind"] == "error" and not r.get("node_id"))
+    assert (graph_error["payload"] or {}).get("code") == "max_iterations_exceeded", [(r["kind"], r.get("node_id")) for r in records]
+    assert len(turn_windows(lines)) == 1, "the graph-level error and the graph's end are one failure"
+    window = _one_closed_window(lines)
+    assert window["terminal_seq"] == graph_error["seq"] and window["records"][-1]["seq"] == records[-1]["seq"], "the end is filed in the window it copies"
+    assert (records[-1]["kind"], (records[-1]["payload"] or {}).get("stop_reason")) == ("done", "error")
+    assert session_usage(lines).turns == 1
+    assert derive_session_final_text(records) is None
 
 
 # ---- two invocations of one session (the reopen path) --------------------------------------------------------------------------------------------------

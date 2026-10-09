@@ -591,8 +591,10 @@ def test_text_streamed_between_a_failure_and_its_copy_keeps_its_own_ordinal() ->
 
 
 def test_the_graph_superstep_failure_is_one_window_with_its_siblings_rows() -> None:
-    """A failed node's error is written live, a sibling streams on, the graph's copy of the error comes after the superstep, and dispatch's failure exit ends the turn. Every one of them but
-    the last is a NODE's record, so it is inside the graph turn's window (01a11f35): the sibling's rows are in the failed node's window, and the next turn is the next ordinal."""
+    """HAND-BUILT (the shape of an executor that RAISED: the non-clean arm; a graph that fails and ends cleanly is closed by its own end record, see ``tests/session/test_graph_turn_real_writers.py``
+    and ``test_shell_turns_graph_windows.py``). A failed node's error is written live, a sibling streams on, the graph's copy of the error comes after the superstep, and dispatch's failure exit
+    ends the turn. Every one of them but the last is a NODE's record, so it is inside the graph turn's window (01a11f35): the sibling's rows are in the failed node's window, and the next turn is
+    the next ordinal."""
     records = [
         _r(1, "user_input", text="go"),
         _r(2, "llm_call"),
