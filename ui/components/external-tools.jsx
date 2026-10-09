@@ -43,7 +43,7 @@
       <div
         data-testid="external-pending"
         style={{
-          border: "1px solid var(--warning, var(--border))",
+          border: "1px solid var(--warn)",
           borderRadius: 6,
           padding: "8px 12px",
           margin: "8px 12px",
