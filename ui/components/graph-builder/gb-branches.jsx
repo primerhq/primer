@@ -124,14 +124,15 @@ const GB_LINK_BUTTON = { background: "none", border: "none", padding: 0, font: "
 
 // The x of a condition and of a path: a 24 by 24 box (WCAG 2.2 SC 2.5.8; the glyph is about 8 by 13 px), and the margin takes back what the box adds around the glyph, so the row does not grow. The
 // margin on the side of the neighbour may not exceed the row's gap (6): a larger one lets the box reach into the neighbour, and a click on the neighbour's edge hits the x. The 16 px the box adds
-// are taken back 6 on the left (the gap) and 10 on the right, so the glyph sits 2 px right of where the bare span had it. (Longhands, not the shorthand: React warns when a style mixes the two
+// are taken back 6 on the left (the gap) and 10 on the right, so the glyph of a path sits 2 px right of where the bare span had it. The x of a condition has no neighbour on its right and is pushed
+// to the end of its row by an auto margin there, so it takes back 8 on the right and its glyph stays flush with the row. (Longhands, not the shorthand: React warns when a style mixes the two
 // and a caller overrides one side.)
 const GB_ICON_BUTTON = {
   ...GB_LINK_BUTTON, display: "inline-flex", alignItems: "center", justifyContent: "center", width: 24, height: 24, flex: "0 0 auto",
   marginTop: -5.5, marginBottom: -5.5, marginLeft: -6, marginRight: -10,
 };
 
-// After a confirmed removal the button that asked is gone and the focus would fall to the document (one more Tab then leaves the overlay). This puts it on `selector` once the next render has
+// After a confirmed removal the button that asked is gone and the focus would fall to the document (a Tab from there goes to the page behind the overlay). This puts it on `selector` once the next render has
 // drawn it: it asks on each of the next few frames and stops at the first element it finds. Used by Remove this choice, Remove this connection and Delete this step.
 function GB_focusAfterRemoval(selector) {
   let frames = 6;
@@ -144,7 +145,7 @@ function GB_focusAfterRemoval(selector) {
 }
 
 // "Remove this choice" (board ticket 01a11e4e-6fa7): the whole conditional edge goes, with its paths and its "In any other case" link. A choice that has paths asks first through the console's own
-// confirmDialog (a dialog that traps focus and returns it to the opener, and that Escape cancels); one with none is removed at once. Either way the button is gone afterwards, so the focus goes to
+// confirmDialog (a dialog that traps focus and returns it to the opener); one with none is removed at once. Either way the button is gone afterwards, so the focus goes to
 // the name of the step the panel shows (GB_focusAfterRemoval). `edge` is the edge the question is about: the answer
 // is dropped if this button is gone (the inspector moved on to another choice) or the edge at that index is not the one that was asked about (undo and redo work while the dialog is open).
 // `onRemoved` lets the edge's own inspector select the step the choice came from, so the panel does not go blank on an edge index that no longer exists.
@@ -312,7 +313,7 @@ function GB_BranchBuilder(props) {
                   aria-label={"Branch " + (bi + 1) + ", condition " + (ci + 1) + ": remove"}
                   title="Remove this condition"
                   onClick={() => dispatch({ type: "UPDATE_BRANCH", idx: edgeIdx, bi, patch: { conditions: b.conditions.filter((_x, j) => j !== ci) } })}
-                  style={{ ...GB_ICON_BUTTON, marginLeft: "auto", fontSize: 13, color: "var(--text-4)" }}>
+                  style={{ ...GB_ICON_BUTTON, marginLeft: "auto", marginRight: -8, fontSize: 13, color: "var(--text-4)" }}>
                   ×
                 </button>
               ) : null}
