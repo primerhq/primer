@@ -81,6 +81,7 @@ The instrumentation plumbing lives in `primer/observability/`:
 - `tracing.setup(config: ObservabilityConfig)` (`primer/observability/tracing.py`)
   builds a `TracerProvider` with `service.name` / `service.namespace` resource
   attributes, attaches an `OTLPSpanExporter` (gRPC) wrapped in a
+  `RedactingSpanExporter` (`primer/observability/span_redaction.py`) and a
   `BatchSpanProcessor` when `otlp_endpoint` is set, calls
   `trace.set_tracer_provider`, and installs the FastAPI / asyncpg / httpx
   auto-instrumentors (each in its own `try/except`). It is a no-op when `enabled`
@@ -126,8 +127,37 @@ The instrumentation plumbing lives in `primer/observability/`:
   (`primer/observability/logging_integration.py`) installs
   `LoggingInstrumentor(set_logging_format=False)` with a `log_hook` that attaches
   `otelTraceID` / `otelSpanID` (hex strings) to every `LogRecord` produced inside a
-  span. The existing `_JsonFormatter` (`primer/common/log.py`) emits any non-reserved
+  span. It passes `enable_log_auto_instrumentation=False`: by default the instrumentor
+  also attaches an OTel `LoggingHandler` to the root logger, which reads each record's
+  raw `exc_info` and ships it as a log record, past the credential filter below
+  (ticket 01a12171-2d5a). The existing `_JsonFormatter` (`primer/common/log.py`) emits any non-reserved
   record attribute as a top-level JSON field, so the IDs appear automatically.
+- Spans carry none of the credential shapes below out of the process (ticket 01a12171-2d5a). The spans Primer
+  opens itself go through `tracing.span` (section 5). The AUTO-instrumentors' spans do not: the httpx client span keeps the whole request URL in
+  `http.url` (a Telegram call is `/bot<id>:<secret>/getMe`, a provider call may carry `?key=`), and with header capture on
+  (`OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_*`) it records the request and response headers; OTel's own URL redaction strips only userinfo and the AWS /
+  Google signature parameters. A FastAPI server span would keep the path and query in `http.target` (`/v1/webhooks/<token>`) and record an exception
+  that leaves a route with its message and a stacktrace with its causes, but production creates none today: `tracing.setup` runs in the lifespan, after
+  `create_app` has built the app, and `FastAPIInstrumentor().instrument()` only patches apps built later (a ticket tracks instrumenting the app, and masking
+  the webhook path structurally by `http.route`). `RedactingSpanExporter` wraps the OTLP exporter, so every finished span crosses it once whichever
+  code created it: its name, attributes (a sequence or a mapping element by element, `bytes` as text), event and link attributes and status description
+  pass through `redact_credentials` (URL credentials, Bearer and Basic tokens) and a query-name rule for the names it does not list (`signature`, `sig`,
+  `code`, `auth_token`, `access_token` / `accessToken` / `access-token`, `api_token`, `access_key`, `oauth_token`, `session_token`, `id_token`, `id_token_hint`,
+  `private_token`, `jwt`, `passwd`, `hm`, `hub.verify_token`, `subscription-key`, every `X-Amz-*` and `X-Goog-*`; case-insensitive, whole names, after a `?`,
+  `&` or `#`, so the first parameter of a URL fragment, `#access_token=...`, is covered; `zipcode` or `country_code` is not a `code`); a Telegram token whose `:`
+  is percent-encoded is masked; `url.query` / `http.query`, which hold a bare query string, are masked as a query. A captured header is masked unless its
+  name is on a short safe list (`accept`, `accept_encoding`, `accept_language`, `cache_control`, `connection`, `content_encoding`, `content_length`,
+  `content_type`, `host`, `traceparent`, `tracestate`, `user_agent`, `x_request_id`): a header Primer sends itself (`x-goog-api-key`) or an operator names
+  (an MCP server's) has no shape to recognise. A span with nothing to mask is exported as the very object the SDK made; one with something to mask is
+  exported as a thin view of it (the masked name, attributes, events, links and status; ids, timing, kind, resource, scope, trace state and every dropped count
+  are the original's); a value the masker fails on is replaced, never exported, and a span it cannot handle at all is dropped alone (logged), not with the batch
+  it travels in. Not covered: a query name outside the rule, or percent-encoded (`api%5Fkey=`); a capability token that is part of a URL path other than
+  `/bot<token>/` and `/v1/webhooks/<token>` (an MCP server URL that embeds its key, a Slack or Discord webhook URL; ticket 01a1227f-ba04); header-shaped free
+  text other than Bearer and Basic (`x-api-key: <key>`, `Authorization: Token <key>`, `Bot <token>`); a secret of no shape in an attribute a tool sets itself
+  (the masker knows no provider); and `db.statement` text, which the asyncpg instrumentor records as the SQL with `$n` placeholders (its `capture_parameters`
+  option, which would add values, is off and Primer does not set it). `OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED` is read by the SDK's
+  auto-configurator, which a plain primer process never runs (under it the SDK owns the provider and its exporters, and they bypass this wrapper), and by the
+  logging instrumentor, only to skip attaching its own handler.
 - Credentials of the shapes below never reach the log (URL-borne ones, and since ticket 01a1201c-8918 the Bearer and Basic tokens a library echoes back in an error: the filter applies `redact_credentials`, not only `redact_url_secrets`, and `_JsonFormatter` masks the finished JSON line once more, so an extra that is a dict, a list or an object is covered too; the dev formatter prints no extras). A secret of no such shape (a bare key in prose) is not recognised: the filter knows no provider. `configure_logging` puts
   `_UrlSecretFilter` on the root handler and on the `uvicorn.access` /
   `uvicorn.error` loggers (uvicorn logs those through its own handlers with
