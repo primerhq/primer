@@ -110,3 +110,21 @@ async def test_the_helper_does_nothing_for_a_row_that_is_gone() -> None:
     sessions = await _sessions(5)
 
     assert await advance_last_seq(sessions, "no-such-session", 8) is False
+
+
+async def test_the_helper_does_nothing_for_a_row_deleted_between_its_read_and_its_patch() -> None:
+    """The docstring says a row that is gone is not an error: ``patch_if`` raises ``NotFoundError`` for one, and the delete can land right after the read."""
+    from primer.session.seq_reservation import advance_last_seq
+
+    sessions = await _sessions(5)
+    real_get = sessions.get
+
+    async def get_then_delete(session_id):
+        row = await real_get(session_id)
+        await sessions.delete(session_id)
+        return row
+
+    sessions.get = get_then_delete  # type: ignore[method-assign]
+
+    assert await advance_last_seq(sessions, SID, 8) is False
+    assert await real_get(SID) is None
