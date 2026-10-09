@@ -29,6 +29,7 @@ from pydantic import BaseModel, ValidationError
 
 from primer.api.errors import common_responses
 from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
+from primer.api.routers._probe_text import draft_error, probe_error
 from primer.model.provider import SpeechToTextProvider, TextToSpeechProvider
 from primer.model.speech import ACTIVE_SPEECH_CONFIG_ID, ActiveSpeechConfig
 from primer.speech.discovery import list_models, list_voices
@@ -153,13 +154,13 @@ async def test_stt_provider(body: _SttDraft) -> dict[str, Any]:
     try:
         draft = SpeechToTextProvider.model_validate(body.model_dump())
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": f"invalid draft: {exc}"}
+        return {"ok": False, "error": f"invalid draft: {draft_error(exc)}"}
     try:
         models = await list_models(
             url=str(draft.config.url), api_key=_api_key_of(draft.config),
         )
     except Exception as exc:  # noqa: BLE001 -- diagnostic-only path
-        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"ok": False, "error": probe_error(exc)}
     return {"ok": True, "models": models}
 
 
@@ -211,13 +212,13 @@ async def test_tts_provider(body: _TtsDraft) -> dict[str, Any]:
     try:
         draft = TextToSpeechProvider.model_validate(body.model_dump())
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": f"invalid draft: {exc}"}
+        return {"ok": False, "error": f"invalid draft: {draft_error(exc)}"}
     try:
         voices = await list_voices(
             url=str(draft.config.url), api_key=_api_key_of(draft.config),
         )
     except Exception as exc:  # noqa: BLE001 -- diagnostic-only path
-        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"ok": False, "error": probe_error(exc)}
     return {"ok": True, "voices": voices}
 
 

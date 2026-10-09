@@ -29,6 +29,8 @@ from pydantic import BaseModel, ValidationError
 
 from primer.api.errors import common_responses
 from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
+from primer.api.routers._probe_text import draft_error, probe_error
+from primer.common.log import redact_url_secrets
 from primer.model.web_search import (
     ACTIVE_WEB_SEARCH_CONFIG_ID,
     ActiveWebSearchConfig,
@@ -186,7 +188,7 @@ async def test_provider(body: _ProviderDraft) -> dict[str, Any]:
     try:
         draft = WebSearchProvider.model_validate(body.model_dump())
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": f"invalid draft: {exc}"}
+        return {"ok": False, "error": f"invalid draft: {draft_error(exc)}"}
 
     adapter = default_web_search_factory(draft)
     try:
@@ -194,9 +196,9 @@ async def test_provider(body: _ProviderDraft) -> dict[str, Any]:
             query="primer", count=1, safe_search="moderate",
         )
     except (WebSearchUnavailable, WebSearchProviderError) as exc:
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": redact_url_secrets(str(exc))}
     except Exception as exc:  # noqa: BLE001 — diagnostic-only path
-        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"ok": False, "error": probe_error(exc)}
     finally:
         try:
             await adapter.aclose()

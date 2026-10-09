@@ -68,6 +68,7 @@ from primer.api.registries.provider_registry import (
 )
 from primer.api.routers._cdc_hooks import register_cdc_kind
 from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
+from primer.api.routers._probe_text import validation_detail as _validation_detail
 from primer.common.entity_checks import EntityCheckError
 from primer.common.log import redact_url_secrets
 from primer.model.common import preserve_masked_secrets
@@ -156,25 +157,6 @@ class _DiscoverModelsBody(BaseModel):
     config: dict[str, Any] = Field(
         ..., description="Provider-specific connection config.",
     )
-
-
-def _validation_detail(exc: ValidationError) -> str:
-    """pydantic's own layout of a validation error WITHOUT the input.
-
-    ``N validation error(s) for <Model>``, each field on its own line with the reason indented under it and ``[type=..., input_type=...]`` (what
-    ``str(exc)`` prints with ``hide_input_in_errors``; the setup wizard parses the field and reason lines). ``str(exc)`` itself prints
-    ``input_value=<the value as typed>``, which pydantic cuts to the first 25 and the last 24 characters of a long value: that removes the "@" and
-    leaves a slice of a Base URL's password readable, and a raw "/", "?" or "#" in the password ends the userinfo for any URL-shaped mask. The input
-    adds nothing the person needs (they typed it), so it is never printed.
-    """
-    errors = exc.errors(include_url=False, include_context=False)
-    lines = [f"{len(errors)} validation error{'' if len(errors) == 1 else 's'} for {exc.title}"]
-    for err in errors:
-        lines.append(".".join(str(part) for part in err["loc"]))
-        lines.append(f"  {err['msg']} [type={err['type']}, input_type={type(err.get('input')).__name__}]")
-    return "\n".join(lines)
-
-
 def _probe_failure(message: str) -> BadRequestError:
     """The 400 a probe raises, with URL-borne credentials masked out of ``message``.
 

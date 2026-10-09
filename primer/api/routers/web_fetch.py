@@ -29,6 +29,8 @@ from pydantic import BaseModel, ValidationError
 
 from primer.api.errors import common_responses
 from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
+from primer.api.routers._probe_text import draft_error, probe_error
+from primer.common.log import redact_url_secrets
 from primer.model.web_fetch import (
     ACTIVE_WEB_FETCH_CONFIG_ID,
     ActiveWebFetchConfig,
@@ -185,15 +187,15 @@ async def test_provider(body: _ProviderDraft) -> dict[str, Any]:
     try:
         draft = WebFetchProvider.model_validate(body.model_dump())
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": f"invalid draft: {exc}"}
+        return {"ok": False, "error": f"invalid draft: {draft_error(exc)}"}
 
     adapter = default_web_fetch_factory(draft)
     try:
         page = await adapter.fetch(url="https://example.com")
     except (WebFetchUnavailable, WebFetchProviderError) as exc:
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": redact_url_secrets(str(exc))}
     except Exception as exc:  # noqa: BLE001 - diagnostic-only path
-        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"ok": False, "error": probe_error(exc)}
     finally:
         try:
             await adapter.aclose()

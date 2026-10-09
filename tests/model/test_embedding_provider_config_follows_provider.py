@@ -33,18 +33,18 @@ def test_a_valid_row_gets_the_config_class_its_provider_names(provider: str, con
 
 @pytest.mark.parametrize("config", [{"url": "not a url", "api_key": "k"}, {"url": "http://emb.local:notaport/v1"}, {"api_key": "k"}, {}])
 def test_an_openai_row_whose_url_is_invalid_or_missing_is_refused_at_the_url(config: dict) -> None:
-    """It used to validate as a GoogleConfig with the url dropped."""
+    """It used to validate as a GoogleConfig with the url dropped. (A ValidationError raised inside the before-validator keeps the config class's own loc, ``("url",)``, as LLMProvider's does.)"""
     with pytest.raises(ValidationError) as caught:
         EmbeddingProvider.model_validate(_row("openai", config))
 
-    assert any(error["loc"][:2] == ("config", "url") for error in caught.value.errors()), caught.value.errors()
+    assert any(error["loc"][-1] == "url" for error in caught.value.errors()), caught.value.errors()
 
 
 def test_a_huggingface_row_without_a_token_is_refused_at_the_token() -> None:
     with pytest.raises(ValidationError) as caught:
         EmbeddingProvider.model_validate(_row("huggingface", {"url": "http://x.local/v1"}))
 
-    assert any(error["loc"][:2] == ("config", "token") for error in caught.value.errors()), caught.value.errors()
+    assert any(error["loc"][-1] == "token" for error in caught.value.errors()), caught.value.errors()
 
 
 def test_an_unknown_provider_is_the_providers_own_error_not_a_crash() -> None:
