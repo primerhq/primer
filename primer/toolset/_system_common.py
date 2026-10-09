@@ -15,6 +15,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from primer.common.validation_errors import without_input
 from primer.model.chat import ToolCallResult
 from primer.model.except_ import PrimerError
 from primer.model.storage import (
@@ -42,7 +43,7 @@ def _err_from_primer(exc: PrimerError, *, error_type: str) -> ToolCallResult:
 
 def _err_from_validation(exc: ValidationError) -> ToolCallResult:
     return _err(
-        "argument validation failed: " + json.dumps(exc.errors(), default=str),
+        "argument validation failed: " + json.dumps(without_input(exc.errors()), default=str),
         error_type="validation-error",
     )
 
