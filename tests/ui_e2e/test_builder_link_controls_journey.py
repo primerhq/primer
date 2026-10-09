@@ -19,6 +19,11 @@ from tests.ui_e2e._shell_helpers import open_legacy_route
 
 pytestmark = smk("SMK-UI-06", status="partial")
 
+NAME_INPUT = 'input[data-testid="gb-inspector-title"]'
+IN_THE_OVERLAY = (
+    "() => !!document.activeElement.closest('[data-testid^=\"nv-overlay:\"]')"
+)
+
 
 def _seed(base_url: str, graph_id: str) -> None:
     nodes = [
@@ -132,12 +137,13 @@ def test_the_text_controls_are_reachable_from_the_keyboard_and_the_x_buttons_are
 
 
 @pytest.mark.ui_e2e
-def test_the_x_boxes_stay_off_their_neighbours_the_advanced_toggle_keeps_its_text_and_the_focus_lands_somewhere(
+def test_the_x_boxes_leave_their_neighbours_a_clear_pixel_the_advanced_toggle_keeps_its_text_and_the_focus_stays_in_the_overlay(
     page: Page, base_url: str, console_url: str, unique_suffix: str
 ) -> None:
-    """Round 2 of #705. B1: no ``Branch N: remove`` box intersects ``Branch N: add a condition`` (a click on the right edge of '+ condition' removed the path, unasked). B2: the Advanced toggle's text is the
-    same size as its sibling text buttons (11 px, not the 13 px that ``font: inherit`` after ``fontSize`` gave). N9: the text buttons are 24 px tall. B3: after a confirmed Delete the focus is on a
-    heading that exists, not on the body (from the body a Tab went to the page behind the overlay)."""
+    """Rounds 2 and 3 of #705. B1: no ``Branch N: remove`` box meets ``Branch N: add a condition``, and the last CSS px of '+ condition' still belongs to it (Chromium hit-tests a pointer as a 1 by 1 px
+    rect, so touching boxes let the x take a click that was meant for its neighbour: a real click removed the path). B2: the Advanced toggle's text is the same size as its sibling text buttons (11 px,
+    not the 13 px that ``font: inherit`` after ``fontSize`` gave). N9: the text buttons are 24 px tall. B3: after a confirmed Delete the focus is on '+ Add a step', inside the overlay: a forward Tab and a
+    Shift+Tab both stay in it (the 'Nothing selected' heading it was on sits after the overlay's last tab stop, so a Tab left for the page behind)."""
     graph_id = f"link-focus-{unique_suffix}"
     _seed(base_url, graph_id)
     try:
@@ -162,6 +168,19 @@ def test_the_x_boxes_stay_off_their_neighbours_the_advanced_toggle_keeps_its_tex
             assert not meets(
                 box(f"Branch {n}: remove"), box(f"Branch {n}: add a condition")
             ), f"the x of path {n} reaches into '+ condition'"
+
+        # the last CSS px of '+ condition' is still '+ condition' (a point inside it resolves to the x if the boxes overlap or touch)
+        for n in (1, 2):
+            page.get_by_role(
+                "button", name=f"Branch {n}: add a condition"
+            ).scroll_into_view_if_needed()  # a point outside the viewport hits nothing
+            add = box(f"Branch {n}: add a condition")
+            for inset in (0.75, 0.5, 0.25, 0.01):
+                hit = page.evaluate(
+                    """([x, y]) => { const el = document.elementFromPoint(x, y); const b = el && el.closest('button'); return b ? b.getAttribute('aria-label') : null; }""",
+                    [add["x"] + add["width"] - inset, add["y"] + add["height"] / 2],
+                )
+                assert hit == f"Branch {n}: add a condition", (n, inset, hit)
 
         # text buttons are at least 24 px tall
         for name in (
@@ -190,15 +209,15 @@ def test_the_x_boxes_stay_off_their_neighbours_the_advanced_toggle_keeps_its_tex
         expect(dialog).to_be_visible(timeout=10_000)
         dialog.get_by_role("button", name="Delete", exact=True).click()
         expect(dialog).to_have_count(0)
-        expect(page.get_by_test_id("gb-nothing-selected")).to_be_focused(
-            timeout=5_000
-        )  # not the body
+        # not the body, not a heading after the overlay's last tab stop: '+ Add a step'
+        expect(page.locator(gb.OUTLINE_ADD)).to_be_focused(timeout=5_000)
 
-        # the keyboard is still inside the builder: Shift+Tab goes back to a control of the overlay (from the body, a Tab went to the page behind it). The heading is the last stop of the overlay, so a forward Tab leaves it by design.
+        # the keyboard is still inside the builder, forward and back
+        page.keyboard.press("Tab")
+        assert page.evaluate(IN_THE_OVERLAY), "a forward Tab left the overlay"
         page.keyboard.press("Shift+Tab")
-        assert page.evaluate(
-            "() => !!document.activeElement.closest('[data-testid^=\"nv-overlay:\"]')"
-        ), "Shift+Tab left the overlay"
+        page.keyboard.press("Shift+Tab")
+        assert page.evaluate(IN_THE_OVERLAY), "Shift+Tab left the overlay"
     finally:
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
             c.delete(f"/v1/graphs/{graph_id}")
@@ -220,7 +239,62 @@ def test_after_a_confirmed_removal_of_a_choice_the_focus_is_on_the_step_name(
         expect(dialog).to_be_visible(timeout=10_000)
         dialog.get_by_role("button", name="Remove", exact=True).click()
         expect(dialog).to_have_count(0)
-        expect(page.get_by_test_id("gb-inspector-title")).to_be_focused(timeout=5_000)
+        name = page.locator(NAME_INPUT)
+        expect(name).to_be_focused(timeout=5_000)
+        _expect_a_focus_ring(name)
+    finally:
+        with httpx.Client(base_url=base_url, timeout=30.0) as c:
+            c.delete(f"/v1/graphs/{graph_id}")
+
+
+def _expect_a_focus_ring(field) -> None:
+    """The field that takes the focus after a removal shows it (N2': it had ``outline: none`` inline and no ring of its own)."""
+    style, width = field.evaluate(
+        "e => { const s = getComputedStyle(e); return [s.outlineStyle, s.outlineWidth]; }"
+    )
+    assert style != "none" and width != "0px", (style, width)
+
+
+def _select_static_edge(page: Page, source: str, target: str) -> None:
+    """Select a connection the way a click on it does: the canvas is pixels, so this emits the ``edge:click`` that the canvas listens to, on the G6 instance it keeps on its container."""
+    page.wait_for_function(
+        """() => { const h = document.querySelector('[data-testid="graph-canvas"]'); return !!(h && h.__g6 && h.__g6.getEdgeData().length); }""",
+        timeout=15_000,
+    )
+    page.evaluate(
+        """([source, target]) => {
+            const g = document.querySelector('[data-testid="graph-canvas"]').__g6;
+            const edge = g.getEdgeData().find((e) => e.source === source && e.target === target && e.data.etype === 'static');
+            g.emit('edge:click', { target: { id: edge.id } });
+        }""",
+        [source, target],
+    )
+
+
+@pytest.mark.ui_e2e
+def test_removing_a_connection_ends_on_the_step_name_with_a_ring_and_the_button_is_24_px(
+    page: Page, base_url: str, console_url: str, unique_suffix: str
+) -> None:
+    """N1' of round 2: the connection path of ``GB_focusAfterRemoval`` in the browser. The edge inspector's title is a DIV with the same test id as the step name INPUT; the focus must end on the input."""
+    graph_id = f"link-focus-edge-{unique_suffix}"
+    _seed(base_url, graph_id)
+    try:
+        open_legacy_route(page, console_url, f"graphs/{graph_id}")
+        gb.wait_for_builder(page)
+        _select_static_edge(page, "begin", "check")
+        remove = page.get_by_role(
+            "button", name="Remove this connection from begin to check"
+        )
+        expect(remove).to_be_visible(timeout=10_000)
+        assert remove.bounding_box()["height"] >= 24 - 0.01
+        remove.click()
+        dialog = page.locator(".modal", has_text="Remove this connection?")
+        expect(dialog).to_be_visible(timeout=10_000)
+        dialog.get_by_role("button", name="Remove", exact=True).click()
+        expect(dialog).to_have_count(0)
+        name = page.locator(NAME_INPUT)
+        expect(name).to_be_focused(timeout=5_000)
+        _expect_a_focus_ring(name)
     finally:
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
             c.delete(f"/v1/graphs/{graph_id}")
