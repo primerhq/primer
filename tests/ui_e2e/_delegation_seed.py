@@ -131,8 +131,9 @@ def build(failures: bool = False) -> Seeded:
         await recorder.on_event(ToolCallEnd(id="call_0", arguments={"agent_id": "grand"}, index=0), **child)
         child_call_seq = len(writer.records)
         if failures:
-            # No text before the failure on purpose: the recorder shares one coalescing buffer across runs and flushes it only on a Done, so a
-            # run's text before an Error is not written as its own record (it is merged into the next run's text; see the ticket on the delegation recorder).
+            # No text before the failure, to keep this seed's rows as the journeys count them. The recorder keeps a coalescing buffer PER RUN and a fatal Error flushes the run's
+            # buffered text ahead of its ERROR record (#578), so a subagent that streamed a partial answer and then failed would show that text in its own block; the recorder's
+            # own tests (tests/session/test_delegation_recorder_failed_run.py, tests/agent/test_failed_subagent_keeps_its_text.py) cover it, no journey draws it.
             await recorder.on_event(Error(message=GRANDCHILD_FAILURE, code="server_error", fatal=True), **grandchild)
         else:
             await recorder.on_event(TextDelta(index=0, text=GRANDCHILD), **grandchild)
