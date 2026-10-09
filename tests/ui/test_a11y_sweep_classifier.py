@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from tests.ui_e2e._a11y import ALLOWLIST, classify, effective_source, verdict
+from tests.ui_e2e._a11y import ALLOWLIST, Look, classify, counts_table, effective_source, evaluate_sweep, verdict
 
 A = '<input class="input" placeholder="Filter a" data-testid="filter-a">'
 B = '<select class="select" data-testid="kind-b"><option value="">all</option></select>'
@@ -97,8 +97,8 @@ def test_an_empty_name_is_unnamed() -> None:
 
 
 def test_a_name_of_only_blanks_is_unnamed() -> None:
-    """Chromium returns the blanks it was given: spaces, non-breaking spaces and a zero-width space are no name."""
-    for blank in ("   ", "  ", "​", " ​  ", "﻿", "⁠"):
+    """Chromium returns the blanks it was given: spaces, non-breaking spaces, a zero-width space, a byte-order mark and a word joiner are no name (written as escapes, so that the file shows them)."""
+    for blank in ("   ", "\u00a0\u00a0", "\u200b", " \u200b\u200c\u200d ", "\ufeff", "\u2060"):
         assert verdict(_ax(blank))[0] == "unnamed", repr(blank)
 
 
@@ -128,3 +128,108 @@ def test_the_source_is_the_first_one_that_produced_a_value_and_was_not_supersede
 def test_a_name_with_no_source_information_is_named() -> None:
     """The conservative reading: Chromium gave a name and did not say where it came from."""
     assert verdict(_ax("Save", [])) == ("named", "name")
+
+
+def test_a_control_named_only_by_an_aria_labelledby_that_points_at_itself_is_named_by_its_placeholder() -> None:
+    """N11: ``aria-labelledby`` naming the input itself makes Chromium read its placeholder as the name, from a source that looks like a label."""
+    self_ref = [{"type": "relatedElement", "attribute": "aria-labelledby", "value": {"value": "Filter"},
+                 "attributeValue": {"relatedNodes": [{"backendDOMNodeId": 9, "idref": "f", "text": "Filter"}]}},
+                {"type": "placeholder", "attribute": "placeholder", "superseded": True, "value": {"value": "Filter"}}]
+    node = {**_ax("Filter", self_ref), "backendDOMNodeId": 9}
+    assert verdict(node) == ("unnamed", "its only name is its placeholder (its aria-labelledby points at itself)")
+
+
+def test_an_aria_labelledby_that_reaches_another_element_is_a_name_even_when_it_also_reaches_the_control() -> None:
+    other = [{"type": "relatedElement", "attribute": "aria-labelledby", "value": {"value": "Filter things"},
+              "attributeValue": {"relatedNodes": [{"backendDOMNodeId": 9, "idref": "f", "text": "Filter"}, {"backendDOMNodeId": 12, "idref": "h", "text": "things"}]}},
+             {"type": "placeholder", "attribute": "placeholder", "superseded": True, "value": {"value": "Filter"}}]
+    assert verdict({**_ax("Filter things", other), "backendDOMNodeId": 9}) == ("named", "relatedElement")
+    empty_other = [{"type": "relatedElement", "attribute": "aria-labelledby", "value": {"value": "Filter"},
+                    "attributeValue": {"relatedNodes": [{"backendDOMNodeId": 9, "idref": "f", "text": "Filter"}, {"backendDOMNodeId": 12, "idref": "h", "text": ""}]}},
+                   {"type": "placeholder", "attribute": "placeholder", "superseded": True, "value": {"value": "Filter"}}]
+    assert verdict({**_ax("Filter", empty_other), "backendDOMNodeId": 9})[0] == "unnamed", "an empty element beside itself names nothing"
+
+
+# ---------------------------------------------------------------------------
+# evaluate_sweep: every guard of the end of the sweep, without a browser (review of #668, N3)
+# ---------------------------------------------------------------------------
+
+SURFACES = ["studio", "page one", "page one / New thing"]
+FLOORS = {"studio": 5, "page one": 3, "page one / New thing": 2}
+LOOKS = {"studio": Look(examined=40, body=30, skipped=0), "page one": Look(examined=9, body=5, skipped=1), "page one / New thing": Look(examined=6, body=4, skipped=0)}
+
+
+def _evaluate(**changes) -> list[str]:
+    arguments = {"found": {}, "allowlist": [], "visited": list(SURFACES), "expected": list(SURFACES), "looks": dict(LOOKS), "floors": dict(FLOORS), "notes": [], "page_errors": [], "left": []}
+    arguments.update(changes)
+    return evaluate_sweep(**arguments)
+
+
+def test_a_clean_complete_sweep_has_no_problem() -> None:
+    assert _evaluate() == []
+
+
+def test_an_unnamed_control_is_a_problem_with_its_markup_and_its_surfaces() -> None:
+    problems = _evaluate(found={A: ["page one", "studio"]})
+    assert len(problems) == 1 and "1 control(s) with no name" in problems[0] and "filter-a" in problems[0] and "page one, studio" in problems[0]
+
+
+def test_a_visit_that_did_not_happen_or_happened_twice_is_a_problem() -> None:
+    missing = _evaluate(visited=["studio", "page one"])
+    assert len(missing) == 1 and "did not visit exactly" in missing[0] and "page one / New thing" in missing[0]
+    twice = _evaluate(visited=SURFACES + ["studio"])
+    assert len(twice) == 1 and "did not visit exactly" in twice[0]
+
+
+def test_a_surface_whose_body_is_under_its_floor_is_a_problem_even_when_its_chrome_is_not() -> None:
+    """The body, not everything examined: 'page one' examined 9 controls, 5 of them in the body, against a floor of 6."""
+    problems = _evaluate(floors={**FLOORS, "page one": 6})
+    assert len(problems) == 1 and "page one: 5 control(s) in its body, at least 6 expected" in problems[0]
+
+
+def test_a_surface_with_no_floor_is_a_problem() -> None:
+    problems = _evaluate(floors={"studio": 5, "page one": 3})
+    assert len(problems) == 1 and "page one / New thing" in problems[0] and "no floor" in problems[0]
+
+
+def test_a_look_that_never_happened_is_not_a_floor_failure_but_the_visit_list_says_so() -> None:
+    looks = {k: v for k, v in LOOKS.items() if k != "page one / New thing"}
+    problems = _evaluate(looks=looks, visited=["studio", "page one"])
+    assert len(problems) == 1 and "did not visit exactly" in problems[0]
+
+
+def test_what_a_page_said_about_itself_is_a_problem() -> None:
+    problems = _evaluate(notes=["page one: an error banner under the page: 'Could not load'"])
+    assert problems == ["problems with the pages themselves:\n  page one: an error banner under the page: 'Could not load'"]
+
+
+def test_a_page_error_is_a_problem() -> None:
+    assert _evaluate(page_errors=["TypeError: x is undefined"]) == ["page errors during the sweep: ['TypeError: x is undefined']"]
+
+
+def test_an_allowlist_entry_that_excused_nothing_is_a_problem() -> None:
+    problems = _evaluate(allowlist=[('data-testid="gone"', "reason with enough words")])
+    assert len(problems) == 1 and "allowlist entries that match nothing" in problems[0] and 'data-testid="gone"' in problems[0]
+
+
+def test_seeded_rows_that_could_not_be_deleted_are_a_problem() -> None:
+    problems = _evaluate(left=["/v1/graphs/g (500)"])
+    assert problems == ["seeded rows that could not be deleted: ['/v1/graphs/g (500)']"]
+
+
+def test_a_sweep_that_died_does_not_also_complain_about_the_visits_it_never_made() -> None:
+    assert _evaluate(visited=["studio"], completed=False) == []
+    assert len(_evaluate(visited=["studio"], completed=False, page_errors=["boom"])) == 1
+
+
+def test_every_kind_of_failure_is_reported_together() -> None:
+    problems = _evaluate(found={A: ["studio"]}, visited=["studio"], floors={**FLOORS, "studio": 99}, page_errors=["boom"], left=["/x"], notes=["n"], allowlist=[("zz", "reason with enough words")])
+    assert len(problems) == 7, problems
+
+
+def test_the_counts_table_shows_what_each_surface_examined_in_its_body_and_its_floor() -> None:
+    table = counts_table(LOOKS, FLOORS)
+    lines = table.splitlines()
+    assert lines[0].split() == ["surface", "examined", "body", "floor", "skipped"]
+    assert any(line.split()[-4:] == ["9", "5", "3", "1"] and line.startswith("page one ") for line in lines)
+    assert any(line.startswith("page one / New thing") and line.split()[-4:] == ["6", "4", "2", "0"] for line in lines)

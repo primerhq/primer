@@ -19,7 +19,7 @@ import pytest
 from playwright.sync_api import Page
 
 from tests._support.smk import smk
-from tests.ui_e2e._a11y import AxProbe
+from tests.ui_e2e._a11y import AxProbe, page_state
 
 pytestmark = smk("SMK-UI-06", status="partial")
 
@@ -53,6 +53,7 @@ _NAMED = f"""
 <input type="reset" data-testid="named-input-reset-default">
 <div role="combobox" title="Choose" {SIZED} data-testid="named-role-combobox-title"></div>
 <input aria-labelledby="no-such-id3" aria-label="Fallback" data-testid="named-missing-labelledby-then-aria-label">
+<span id="head1">Filter</span><input id="both1" aria-labelledby="both1 head1" placeholder="e.g. foo" data-testid="named-labelledby-reaches-itself-and-another">
 """
 
 _UNNAMED = f"""
@@ -73,6 +74,7 @@ _UNNAMED = f"""
 <span id="emp"></span><input aria-labelledby="emp" data-testid="unnamed-labelledby-empty-target">
 <input aria-labelledby="no-such-id" data-testid="unnamed-labelledby-missing-target">
 <label for="el1">  </label><input id="el1" data-testid="unnamed-label-for-whitespace">
+<input id="selfref" aria-labelledby="selfref" placeholder="Filter things" data-testid="unnamed-labelledby-points-at-itself">
 <!-- was passed before: Chromium names these "" -->
 <button data-testid="unnamed-was-passed-zero-width-space">&#8203;</button>
 <label for="hl1" style="display:none">Name</label><input id="hl1" data-testid="unnamed-was-passed-label-display-none">
@@ -167,3 +169,100 @@ def test_every_visible_root_is_swept_not_only_the_first(page: Page) -> None:
     finally:
         probe.close()
     assert [item["testid"] for item in found.unnamed] == ["in-second-modal"]
+
+
+@pytest.mark.ui_e2e
+def test_a_control_behind_a_modal_dialog_is_skipped_because_the_browser_hides_it_from_assistive_technology(page: Page) -> None:
+    """N2: the ``ignored`` branch in a browser. ``showModal()`` makes the rest of the document inert without any attribute the enumerator can see, so the control IS a candidate and Chromium says it is ignored."""
+    page.set_content("""<main>
+<input placeholder="Behind" data-testid="behind-the-dialog">
+<button data-testid="outside-button">Outside</button>
+<dialog id="d"><button data-testid="in-the-dialog">Ok</button><input placeholder="Inside" data-testid="unnamed-in-the-dialog"></dialog>
+</main>""")
+    page.evaluate("document.getElementById('d').showModal()")
+    probe = AxProbe(page)
+    try:
+        result = probe.examine("main")
+    finally:
+        probe.close()
+    assert result.skipped == 2, "the input and the button outside the dialog"
+    assert result.examined == 2, "the dialog's own button and input"
+    assert [item["testid"] for item in result.unnamed] == ["unnamed-in-the-dialog"]
+
+
+@pytest.mark.ui_e2e
+def test_the_body_count_leaves_out_the_chrome_but_the_chrome_is_still_examined_for_names(page: Page) -> None:
+    page.set_content("""<main>
+<header class="chrome"><button data-testid="unnamed-in-chrome"></button><button data-testid="chrome-ok">Close</button></header>
+<section><input aria-label="A" data-testid="body-a"><input placeholder="B" data-testid="unnamed-in-body"></section>
+<footer class="chrome"><button data-testid="footer-ok">Save</button></footer>
+</main>""")
+    probe = AxProbe(page)
+    try:
+        result = probe.examine("main", chrome=".chrome")
+        everything = probe.examine("main")
+    finally:
+        probe.close()
+    assert (result.examined, result.body) == (5, 2)
+    assert sorted(item["testid"] for item in result.unnamed) == ["unnamed-in-body", "unnamed-in-chrome"]
+    assert everything.body == everything.examined == 5, "with no chrome, everything is body"
+
+
+@pytest.mark.ui_e2e
+def test_a_candidate_that_leaves_the_page_while_it_is_examined_is_retried_once_and_then_an_error(page: Page) -> None:
+    """N1: the browser's nodes are found by the mark each candidate carries, not by their position in a list, and a page that changes under the probe (a list that polls) is looked at again."""
+    page.set_content('<main><input placeholder="a" data-testid="unnamed-a"><button data-testid="b">B</button><input placeholder="c" data-testid="unnamed-c"></main>')
+    probe = AxProbe(page)
+    calls: list[int] = []
+
+    def drop_the_middle_one_once() -> None:
+        calls.append(1)
+        if len(calls) == 1:
+            page.evaluate("document.querySelector('[data-testid=b]').remove()")
+
+    def drop_one_every_time() -> None:
+        calls.append(1)
+        page.evaluate("(() => { const m = document.querySelector('main'); m.insertBefore(document.createElement('button'), m.firstChild); m.querySelector('[data-a11y-probe]').remove(); })()")
+
+    try:
+        result = probe.examine("main", _after_marking=drop_the_middle_one_once)
+        assert len(calls) == 2, "marked, found a candidate gone, marked again"
+        assert [item["testid"] for item in result.unnamed] == ["unnamed-a", "unnamed-c"] and result.examined == 2
+        calls.clear()
+        with pytest.raises(AssertionError, match="kept changing"):
+            probe.examine("main", _after_marking=drop_one_every_time)
+        assert len(calls) == 2, "one retry, not a loop"
+    finally:
+        probe.close()
+    assert page.evaluate("document.querySelectorAll('[data-a11y-probe]').length") == 0, "the marks are taken off whatever happened"
+
+
+@pytest.mark.ui_e2e
+def test_a_page_that_is_still_loading_or_shows_an_error_says_so(page: Page) -> None:
+    """B3': the floor of controls is met by a page's own chrome, so the sweep asks the page: is anything under the root still loading, and does it show an error?"""
+    page.set_content("""<main>
+<div class="spinner"></div>
+<div>Loading templates&hellip;</div>
+<div>Checking this install&hellip;</div>
+<div aria-busy="true">Busy</div>
+<div style="display:none">Loading hidden&hellip;</div>
+<div>Downloading the report</div>
+<div class="nv-form-error">Could not load agents: 500</div>
+<div class="banner banner-error"><div class="title">The server said no</div></div>
+<div role="alert">Something failed</div>
+<div role="alert"></div>
+<div class="banner banner-info"><div class="title">Just so you know</div></div>
+<div class="nv-form-error" style="display:none">hidden error</div>
+</main><p class="nv-form-error">outside the root</p>""")
+    state = page_state(page, "main")
+    assert sorted(state.loading) == sorted(["div.spinner", "Loading templates\u2026", "Checking this install\u2026", "div[aria-busy=true]"]), state.loading
+    assert sorted(state.errors) == sorted(["Could not load agents: 500", "The server said no", "Something failed"]), state.errors
+
+
+@pytest.mark.ui_e2e
+def test_a_quiet_page_is_neither_loading_nor_in_error(page: Page) -> None:
+    page.set_content('<main><h1>Agents</h1><input aria-label="Filter"><div role="alert"></div></main>')
+    state = page_state(page, "main")
+    assert state.loading == [] and state.errors == []
+    page.set_content("<main></main>")
+    assert page_state(page, "main").errors == [], "an empty but visible root is quiet"
