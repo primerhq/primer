@@ -426,7 +426,7 @@ def _make_lifespan(config: AppConfig):
                     logger.warning("scheduler degraded: %s", degraded_reason)
                     app.state.scheduler_degraded_reason = degraded_reason
                 elif config.runtime_mode == RuntimeMode.API_PLUS_WORKER:
-                    app.state.scheduler_detail = "in-memory scheduler (single process)"
+                    app.state.scheduler_detail = "in-memory scheduler (single process assumed)"
         app.state.scheduler = scheduler
 
         # --- Event bus + yield background tasks (M2/M3) -------------

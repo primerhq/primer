@@ -50,7 +50,9 @@ class SchedulerHealth(BaseModel):
             "unsafe for the deployment topology (an in-memory scheduler in "
             "a worker-only process, where leases and resumable parks are "
             "not shared with the API process). An in-memory scheduler in "
-            "the default single process (api+worker) is NOT degraded."
+            "the default single process (api+worker) is NOT degraded. "
+            "Replicas of an api+worker process are not detected (a process "
+            "cannot see its replicas): each reports healthy."
         ),
     )
     degraded_reason: str | None = Field(
@@ -65,7 +67,8 @@ class SchedulerHealth(BaseModel):
         description=(
             "What a healthy scheduler is, in words, for a display that wants "
             "more than 'healthy' (for example 'in-memory scheduler (single "
-            "process)' on the default install). Null when degraded, or when "
+            "process assumed)' on the default install: the process cannot "
+            "tell that it is the only one). Null when degraded, or when "
             "there is nothing to add."
         ),
     )

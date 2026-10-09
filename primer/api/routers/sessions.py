@@ -789,7 +789,7 @@ class RecentSessionRow(BaseModel):
         description="Set for a graph-bound session; null when agent-bound.",
     )
     status: SessionStatus
-    session_state: Literal["waiting", "running", "parked", "ended"]
+    session_state: SessionState
     last_activity_at: datetime
 
 
