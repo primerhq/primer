@@ -121,9 +121,23 @@ def redact_payload(payload: Any) -> Any:
     if isinstance(payload, list):
         return [redact_payload(v) for v in payload]
     if isinstance(payload, str) and "://" in payload and "@" in payload:
-        masked = mask_userinfo(payload)          # a string that IS a URL: the mask the served row carries (the username stays when there is a password)
-        return masked if masked != payload else redact_url_secrets(payload)          # a credentialed URL inside free text (an error text, a copied log line)
+        return _redact_leaf(payload)
     return payload
+
+
+# A leaf that BEGINS with a URL: the scheme and the authority, which holds no whitespace (an authority that does is free text that happens to start with "x://").
+_LEADING_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://[^/?#\s]*")
+
+
+def _redact_leaf(text: str) -> str:
+    """The leading URL's password masked as the served row masks it (the username stays when there is a password), and whatever FOLLOWS it redacted like free text.
+
+    ``mask_userinfo`` reads the whole leaf as one URL, so a leaf that begins with a credentialed URL and goes on (a second URL in an error text, a query token) kept the rest in clear.
+    """
+    lead = _LEADING_URL.match(text)
+    if lead is None or "@" not in lead.group(0):
+        return redact_url_secrets(text)          # a credentialed URL inside free text (an error text, a copied log line)
+    return mask_userinfo(lead.group(0)) + redact_url_secrets(text[lead.end() :])
 
 
 def redact_event(event: Any) -> Any:

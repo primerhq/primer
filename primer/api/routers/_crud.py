@@ -30,7 +30,7 @@ from primer.api.errors import common_responses
 from primer.api.routers import _managed as _managed_mod
 from primer.api.routers._references import ReferenceCheck, build_reference_block_hook
 from primer.api.pagination import FindRequest, parse_order_by, parse_page
-from primer.model.common import Identifiable, preserve_masked_secrets
+from primer.model.common import Identifiable, preserve_masked_secrets, refuse_served_masks
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.storage import (
     CursorPageResponse,
@@ -392,6 +392,7 @@ def make_crud_router(
                 raise ConflictError(
                     f"{model_cls.__name__} with id {entity.id!r} already exists"
                 )
+            refuse_served_masks(entity)
             if on_pre_create is not None:
                 await on_pre_create(entity, request)
             created = await storage.create(entity)
@@ -557,6 +558,7 @@ def make_crud_router(
                 raise ConflictError(
                     f"{model_cls.__name__} with id {entity.id!r} already exists"
                 )
+            refuse_served_masks(entity)
             if on_pre_create is not None:
                 await on_pre_create(entity, request)
             created = await storage.create(entity)

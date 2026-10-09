@@ -8,7 +8,8 @@ from uuid import uuid4
 from pydantic import AnyUrl, BaseModel, Field, SecretStr, model_validator
 from pydantic import ValidationError as PydanticValidationError
 
-from primer.common.url_userinfo import MaskCannotBeRestored, carries_mask, restore_userinfo
+from primer.common.origin import origin_of
+from primer.common.url_userinfo import MASK, MaskCannotBeRestored, carries_mask, restore_userinfo
 from primer.model.except_ import ValidationError
 
 
@@ -170,6 +171,48 @@ def _matches_served_mask(incoming_plain: str, existing_plain: str) -> bool:
     return len(existing_plain) > 4 and incoming_plain == "**********" + existing_plain[-4:]
 
 
+# The fields that name WHERE the credentials kept in the same model are sent. A secret restored from the stored row goes to the origin it was stored for and to no other (ticket 01a1212a).
+_ORIGIN_URL_FIELDS = ("url", "base_url", "endpoint_url", "apiserver_url", "discovery_url", "git_url", "resource_uri")
+
+_REENTER_KEY = "re-enter the key: the stored one is kept only for the same host"
+_NOT_A_SECRET = "this is the mask a GET serves, not a secret: re-enter the key"
+
+
+def _origin_of_model(model: BaseModel) -> tuple[Any, ...] | None:
+    """Where the credentials of ``model`` are sent: the origin (scheme, host, port; :func:`primer.common.origin.origin_of`) of each of its URL fields, and for a ``hostname`` field the host
+    with the ``port``. ``None`` when the model names no origin at all (a Hugging Face token, a web-search key): there is nothing to bind to."""
+    fields = model.__class__.model_fields
+    parts: list[Any] = []
+    for name in _ORIGIN_URL_FIELDS:
+        if name in fields:
+            value = getattr(model, name, None)
+            parts.append((name, None if value is None else origin_of(str(value))))
+    if "hostname" in fields:
+        host = getattr(model, "hostname", None)
+        parts.append(("hostname", None if host is None else (str(host).strip().lower(), getattr(model, "port", None))))
+    return tuple(parts) or None
+
+
+def _moved_origin(entity: BaseModel, existing: BaseModel, moved: bool) -> bool:
+    """True when ``entity`` or a model it sits in names another origin than the stored one: an endpoint that appeared or went away counts as another origin."""
+    if moved:
+        return True
+    origin = _origin_of_model(entity)
+    return origin is not None and origin != _origin_of_model(existing)
+
+
+def _restore_secret(name: str, new_value: SecretStr, old_value: Any, moved: bool) -> SecretStr | None:
+    """The stored secret when ``new_value`` is the mask a GET served for it, else ``None`` (the secret is left as the person sent it).
+
+    A served mask under a MOVED origin is REFUSED with a 422, naming no secret: restoring it would send the stored credential to whatever host the update names.
+    """
+    if not isinstance(old_value, SecretStr) or not _matches_served_mask(new_value.get_secret_value(), old_value.get_secret_value()):
+        return None
+    if moved:
+        raise ValidationError(f"{name}: {_REENTER_KEY}")
+    return old_value
+
+
 def preserve_masked_secrets(entity: Any, existing: Any) -> None:
     """Restore secret fields a full-replace PUT never actually changed.
 
@@ -186,6 +229,15 @@ def preserve_masked_secrets(entity: Any, existing: Any) -> None:
     what would have been served for ``existing``'s CURRENT value is
     swapped back for that real value.
 
+    A restored secret goes only where it was stored for: when the model, or a model it sits in,
+    names another origin than the stored one (the scheme, host or port of its ``url`` /
+    ``endpoint_url`` / ``apiserver_url`` / ``discovery_url`` / ``git_url`` / ``resource_uri``, or its
+    ``hostname`` and ``port``; see :func:`_origin_of_model`), a served mask is REFUSED with a
+    :class:`~primer.model.except_.ValidationError` (a 422, ``re-enter the key``) instead of being
+    restored: otherwise an update that points the base URL at a host the caller controls and leaves
+    the key's mask alone would store the real key next to that host. A secret the person typed is
+    theirs and is stored as sent, wherever the URL points; a model with no origin is unaffected.
+
     A field that never held a secret (``existing``'s value is ``None``)
     has nothing to restore - an incoming mask-shaped string in that case
     is stored as a literal secret. This is a known, accepted limitation
@@ -197,29 +249,33 @@ def preserve_masked_secrets(entity: Any, existing: Any) -> None:
     shape actually used in this schema, including ``dict[str,
     SecretStr]`` (toolset ``env`` / ``headers``).
     """
+    _preserve(entity, existing, False)
+
+
+def _preserve(entity: Any, existing: Any, moved: bool) -> None:
     if not isinstance(entity, BaseModel):
         return
     if not isinstance(existing, BaseModel) or entity.__class__ is not existing.__class__:
         _refuse_masked_urls(entity)          # nothing stored of this shape to restore from: a served mask in it would be stored as the password
         return
+    moved = _moved_origin(entity, existing, moved)
     for name in entity.__class__.model_fields:
         new_value = getattr(entity, name, None)
         old_value = getattr(existing, name, None)
         if isinstance(new_value, SecretStr):
-            if isinstance(old_value, SecretStr) and _matches_served_mask(
-                new_value.get_secret_value(), old_value.get_secret_value(),
-            ):
-                setattr(entity, name, old_value)
-        elif isinstance(new_value, AnyUrl):
-            restored = _restored_url(name, new_value, old_value)
+            restored = _restore_secret(name, new_value, old_value, moved)
             if restored is not None:
                 setattr(entity, name, restored)
+        elif isinstance(new_value, AnyUrl):
+            restored_url = _restored_url(name, new_value, old_value)
+            if restored_url is not None:
+                setattr(entity, name, restored_url)
         elif isinstance(new_value, BaseModel):
-            preserve_masked_secrets(new_value, old_value)
+            _preserve(new_value, old_value, moved)
         elif isinstance(new_value, list):
-            _preserve_masked_secrets_list(new_value, old_value)
+            _preserve_list(name, new_value, old_value, moved)
         elif isinstance(new_value, dict):
-            _preserve_masked_secrets_dict(new_value, old_value)
+            _preserve_dict(name, new_value, old_value, moved)
 
 
 _UNRESTORABLE = "re-enter the password: the stored one is kept only for the same host and user"
@@ -248,64 +304,95 @@ def _restored_url(name: str, new_value: AnyUrl, old_value: Any) -> AnyUrl | None
         raise ValidationError(f"{name}: the URL with the stored password put back is too long; re-enter the password") from None
 
 
-def _refuse_masked_urls(value: Any, name: str = "") -> None:
-    """Refuse a URL that carries the served mask anywhere in ``value`` (a model, a list or a dict of them): there is no stored URL of the same shape to restore it from."""
-    if isinstance(value, AnyUrl):
+def _looks_served(plain: str) -> bool:
+    """True when ``plain`` has the shape of a mask a GET serves: the bare ``"**********"`` or the tail form (the mask and the last four characters, the ``ApiKeySecret`` shape)."""
+    return plain == MASK or (len(plain) == len(MASK) + 4 and plain.startswith(MASK))
+
+
+def _refuse_masks(value: Any, name: str, secrets: bool) -> None:
+    """Refuse a URL that carries the served mask anywhere in ``value`` (a model, a list or a dict of them), and with ``secrets`` a secret that is one."""
+    if isinstance(value, SecretStr):
+        if secrets and _looks_served(value.get_secret_value()):
+            raise ValidationError(f"{name or 'secret'}: {_NOT_A_SECRET}")
+    elif isinstance(value, AnyUrl):
         if carries_mask(str(value)):
             raise ValidationError(f"{name or 'url'}: {_UNRESTORABLE}")
     elif isinstance(value, BaseModel):
         for field in value.__class__.model_fields:
-            _refuse_masked_urls(getattr(value, field, None), field)
+            _refuse_masks(getattr(value, field, None), field, secrets)
     elif isinstance(value, list):
         for item in value:
-            _refuse_masked_urls(item, name)
+            _refuse_masks(item, name, secrets)
     elif isinstance(value, dict):
         for key, item in value.items():
-            _refuse_masked_urls(item, str(key))
+            _refuse_masks(item, str(key), secrets)
 
 
-def _preserve_masked_secrets_list(new_items: list[Any], old_items: Any) -> None:
+def _refuse_masked_urls(value: Any, name: str = "") -> None:
+    """Refuse a URL that carries the served mask anywhere in ``value``: there is no stored URL of the same shape to restore it from."""
+    _refuse_masks(value, name, False)
+
+
+def refuse_served_masks(entity: Any) -> None:
+    """Refuse a CREATE body that carries a mask a GET serves, as a URL's password or as a secret (a 422 whose text names no secret).
+
+    A create has nothing stored to restore a mask from, so the literal mask would be stored as the value: the copy-a-provider move (``get_*`` and then ``create_*`` under a new id) stored the
+    URL's ``**********`` and the key's ``**********abcd``. The person re-enters the secret.
+    """
+    _refuse_masks(entity, "", True)
+
+
+def _preserve_list(name: str, new_items: list[Any], old_items: Any, moved: bool) -> None:
     if not isinstance(old_items, list) or len(old_items) != len(new_items):
-        _refuse_masked_urls(new_items)
+        _refuse_masked_urls(new_items, name)
         return
     for i, (new_item, old_item) in enumerate(zip(new_items, old_items)):
         if isinstance(new_item, SecretStr):
-            if isinstance(old_item, SecretStr) and _matches_served_mask(
-                new_item.get_secret_value(), old_item.get_secret_value(),
-            ):
-                new_items[i] = old_item
+            restored = _restore_secret(name, new_item, old_item, moved)
+            if restored is not None:
+                new_items[i] = restored
+        elif isinstance(new_item, AnyUrl):
+            restored_url = _restored_url(name, new_item, old_item)
+            if restored_url is not None:
+                new_items[i] = restored_url
         elif isinstance(new_item, BaseModel):
-            preserve_masked_secrets(new_item, old_item)
+            _preserve(new_item, old_item, moved)
         elif isinstance(new_item, dict):
-            _preserve_masked_secrets_dict(new_item, old_item)
+            _preserve_dict(name, new_item, old_item, moved)
         elif isinstance(new_item, list):
-            _preserve_masked_secrets_list(new_item, old_item)
+            _preserve_list(name, new_item, old_item, moved)
 
 
-def _preserve_masked_secrets_dict(new_map: dict[Any, Any], old_map: Any) -> None:
+def _preserve_dict(name: str, new_map: dict[Any, Any], old_map: Any, moved: bool) -> None:
     if not isinstance(old_map, dict):
-        _refuse_masked_urls(new_map)
+        _refuse_masked_urls(new_map, name)
         return
     for k, new_v in new_map.items():
         if k not in old_map:
             _refuse_masked_urls(new_v, str(k))
             continue
         old_v = old_map[k]
+        label = f"{name}.{k}"
         if isinstance(new_v, SecretStr):
-            if isinstance(old_v, SecretStr) and _matches_served_mask(
-                new_v.get_secret_value(), old_v.get_secret_value(),
-            ):
-                new_map[k] = old_v
+            restored = _restore_secret(label, new_v, old_v, moved)
+            if restored is not None:
+                new_map[k] = restored
+        elif isinstance(new_v, AnyUrl):
+            restored_url = _restored_url(label, new_v, old_v)
+            if restored_url is not None:
+                new_map[k] = restored_url
         elif isinstance(new_v, BaseModel):
-            preserve_masked_secrets(new_v, old_v)
+            _preserve(new_v, old_v, moved)
         elif isinstance(new_v, list):
-            _preserve_masked_secrets_list(new_v, old_v)
+            _preserve_list(label, new_v, old_v, moved)
         elif isinstance(new_v, dict):
-            _preserve_masked_secrets_dict(new_v, old_v)
+            _preserve_dict(label, new_v, old_v, moved)
 
 
 __all__ = [
     "Describeable",
     "Identifiable",
     "dump_for_storage",
+    "preserve_masked_secrets",
+    "refuse_served_masks",
 ]
