@@ -369,8 +369,13 @@ async def run_agent_turn(
         below for where a surface's own ordering concern goes instead).
     await_dispatch_barrier
         Optional, additive (01a0518b, graph-surface boundary): awaited
-        ONCE at the top of ``_dispatch_as_claims``, before resolving any
-        call in the batch. The chat/workspace surface is a single
+        ONCE per batch, before any call of the batch is resolved or run:
+        at the top of ``_dispatch_as_claims`` on the claims path, and
+        before the in-process loop otherwise (ticket 01a11cca: a tool that
+        delegates writes the records of its run to the log straight away,
+        so the batch's own TOOL_CALL rows have to be in the log first, or
+        the run's records precede the call that started them and no
+        reader can nest them). The chat/workspace surface is a single
         pull-chain (no concurrent producer -- events are consumed the
         instant they're yielded), so ``resolve_scoped_call`` alone is
         always safe there and this stays ``None``. The graph surface's
@@ -875,8 +880,12 @@ async def _dispatch_tool_calls(
     :func:`_dispatch_as_claims` instead, which never returns normally --
     it raises :class:`~primer.model.yield_.ToolWaitPark`. Any other
     combination (flag off, or a batch that turns out to be entirely
-    notifying once partitioned) falls through to today's in-process
-    loop unchanged.
+    notifying once partitioned) falls through to the in-process loop.
+
+    ``await_dispatch_barrier`` (graph surface only, ``None`` elsewhere) is awaited ONCE per batch before the in-process loop runs a call:
+    the graph's drainer writes a node's ToolCallStart/ToolCallEnd asynchronously, and a tool that delegates writes its run's records
+    itself, so without the wait a run's records could land before the call row that started it. The claims path awaits it inside
+    :func:`_dispatch_as_claims` instead (never both).
     """
     if tool_calls_as_claims_enabled and resolve_scoped_call is not None:
         notifying_calls, claimable_calls = _partition_notifying(calls, tool_manager)
@@ -890,6 +899,9 @@ async def _dispatch_tool_calls(
                 resolve_scoped_call=resolve_scoped_call,
                 await_dispatch_barrier=await_dispatch_barrier,
             )
+
+    if await_dispatch_barrier is not None:
+        await await_dispatch_barrier()
 
     result_parts: list[ToolResultPart] = []
     for index, call in enumerate(calls):
@@ -986,7 +998,8 @@ async def _dispatch_as_claims(
     needs to carry it across the exception boundary too.
 
     ``await_dispatch_barrier`` (graph surface only) is awaited ONCE
-    here, before resolving ANY call in the batch -- notifying and
+    here (and, on the in-process path, once in ``_dispatch_tool_calls``;
+    never both), before resolving ANY call in the batch -- notifying and
     claimable alike need the drainer caught up, and the whole batch was
     already queued before this function ever runs, so one await covers
     it (see ``run_agent_turn``'s own docstring for the full reasoning
