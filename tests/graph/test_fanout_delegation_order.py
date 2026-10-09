@@ -422,6 +422,9 @@ async def close_while_a_node_waits(ex: Any, watch: BarrierWatch, *, how: str) ->
                 await pull_until_a_node_waits(stream, watch)
                 assert watch.waiting, "the scene must have a node AT the barrier when the stream closes"
                 await stream.aclose()
+                # aclose() returning IS the cancel: the superstep loop is closed by `invoke` itself (contextlib.aclosing), so its `finally` has already cancelled and awaited every node task. Without
+                # aclosing the loop is finalized by the event loop later, and polling for the tasks to end (below) would pass anyway.
+                assert await _other_tasks() == [], "aclose() returned with a node task of the turn still running"
             else:
                 holding = asyncio.Event()
 
