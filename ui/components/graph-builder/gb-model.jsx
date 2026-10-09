@@ -374,8 +374,16 @@ function GB_reducer(draft, action) {
       }
     }
     case "APPLY_TEMPLATE":
-    case "IMPORT_SPEC":
       return { ...d, ...a.spec, id: d.id };
+    case "IMPORT_SPEC": {
+      // A pasted spec is "the same shape as PUT /graphs/{id}", and a PUT REPLACES the body: the graph-level fields it leaves out are cleared (the legacy editor did the same for
+      // max_iterations). The id never changes (a pasted id would retarget the save) and a spec with no description keeps the current one.
+      const next = { ...d, ...a.spec, id: d.id };
+      if (a.spec.description == null) next.description = d.description;
+      if (a.spec.max_iterations == null) delete next.max_iterations;
+      if (a.spec.on_max_iterations == null) delete next.on_max_iterations;
+      return next;
+    }
     default:
       return d;
   }
@@ -401,6 +409,9 @@ function GB_stripAll(d) {
 // page simply scrolls as normal.
 const GB_BODY_STYLE = { flex: 1, minHeight: 520, height: "calc(100vh - 300px)" };
 
+const GB_IMPORT_WRONG_TYPE =
+  "The spec has a field of the wrong type, so it was not loaded: `nodes`, `edges`, every router's `branches` and every fan-out's `specs` must be lists, and descriptions must be strings.";
+
 // A pasted graph spec (the Import spec modal): the message for its first shape problem, else null. IMPORT_SPEC spreads whatever it is given into the draft, so an object where a
 // list is expected makes the validator and the dirty check throw during render, and the console has no error boundary: the whole draft would be lost.
 function GB_importProblem(spec) {
@@ -410,6 +421,21 @@ function GB_importProblem(spec) {
   if (spec.edges != null && !Array.isArray(spec.edges)) return "`edges` must be an array when present.";
   if (!spec.nodes.every(isObject)) return "Every entry of `nodes` must be an object.";
   if (spec.edges != null && !spec.edges.every(isObject)) return "Every entry of `edges` must be an object.";
+  // Deeper than the top level. The builder reads the draft on EVERY render (validate, the dirty check, the layers, the links, the outline's titles), and the console has no error
+  // boundary: one thing of the wrong type unmounts the root and the draft is lost. So the would-be draft is run through those pure functions here, and anything that throws is refused
+  // with one message; a description or an id of the wrong type is checked by hand because React would render it as a child and only throw then.
+  const isText = (v) => typeof v === "string";
+  if (spec.description != null && !isText(spec.description)) return GB_IMPORT_WRONG_TYPE;
+  if (!spec.nodes.every((n) => isText(n.id) && n.id !== "" && (n.description == null || isText(n.description)))) return GB_IMPORT_WRONG_TYPE;
+  try {
+    const draft = GB_reducer({ id: "import", nodes: [], edges: [] }, { type: "IMPORT_SPEC", spec });
+    GB_validate(draft, {});
+    GB_stripAll(draft);
+    GB_supersteps(draft);
+    GB_allLinks(draft);
+  } catch (_e) {
+    return GB_IMPORT_WRONG_TYPE;
+  }
   return null;
 }
 
