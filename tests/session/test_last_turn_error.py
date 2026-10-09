@@ -163,6 +163,27 @@ async def test_a_binding_that_switched_during_the_turn_is_not_stamped(fake_stora
 
 
 @pytest.mark.asyncio
+async def test_a_turn_whose_binding_switched_while_it_ran_and_then_failed_is_not_stamped(
+    seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+):
+    """The epoch fence at the CALL site, end to end (the helper test above passes the epoch by hand): the binding switches while the executor is
+    being built, the turn then fails, and the failure it describes belongs to a binding the session has left."""
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+
+    async def build(_session: WorkspaceSession):
+        row = await storage.get(seeded_session.id)
+        await storage.update(row.model_copy(update={"binding_epoch": row.binding_epoch + 1}))
+        return FakeExecutor([_failure("server_error")])
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider, workspace_io=fake_workspace_io, event_bus=fake_event_bus, build_executor=build,
+    )
+    await run_one_session_turn(_make_lease(seeded_session.id), deps)
+
+    assert (await storage.get(seeded_session.id)).last_turn_error is None
+
+
+@pytest.mark.asyncio
 async def test_a_stamp_that_cannot_be_written_does_not_keep_the_session_from_ending(
     seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
 ):
