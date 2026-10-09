@@ -24,8 +24,8 @@ This is the primitive behind every "wait for the user to do X" tool
 in primer. In a session or graph, `ask_user` parks on an
 `ask_user:{sid}:{tcid}` key (`ask_user:{sid}:{node}:{tcid}` inside a graph
 node: two fan-out siblings can share a `tcid`) and resumes when the user replies in a
-channel. `subscribe_to_trigger` parks on a `trigger:{trigger_id}` key
-and resumes when the trigger fires. Tool approval reuses the same
+channel. `subscribe_to_trigger` parks on a `trigger:{sid}:{trigger_id}` key
+(the session is in the key: two sessions subscribed to one trigger do not share one) and resumes when the trigger fires. Tool approval reuses the same
 primitive - a `_approval` yield parks the call until the operator's
 decision arrives. In a session or graph the shape is always
 identical: yield → park → external event → resume.
@@ -46,7 +46,7 @@ A yielding tool's handler returns:
 ```python
 Yielded(
   tool_name="subscribe_to_trigger",  # the human-visible name
-  event_key="trigger:tr-3f9a1c0b7d42",  # what we're waiting on
+  event_key="trigger:sess-7c1e:tr-3f9a1c0b7d42",  # what we're waiting on
   timeout=300,                       # seconds; None = wait forever
   resume_metadata={"trigger_id": "tr-3f9a1c0b7d42", "subscription_id": "sb-5e8d2a6c9b10"},
 )
@@ -54,9 +54,10 @@ Yielded(
 
 The `event_key` is a free-form string. It's how the event bus matches
 fires to parked sessions: when something publishes
-`subscription_matched(event_key="trigger:tr-3f9a1c0b7d42")`, every session
-parked on that key is marked resumable. Multiple sessions can park on
-the same key; all of them resume.
+`subscription_matched(event_key="trigger:sess-7c1e:tr-3f9a1c0b7d42")`, every session
+parked on that key is marked resumable. The keys of `ask_user`, `timer`, `trigger`
+and `watch` carry the session id, so each is one session's: a fire for another
+session's key cannot reach it. A key that two sessions DO share resumes both.
 
 The `resume_metadata` is the tool's own opaque state. It's stashed
 on the session row and handed back to the tool's `resume()` hook
@@ -68,7 +69,7 @@ Session state during a park:
 
 - `parked_status="parked"` - the high-level lifecycle position
   (`parked` | `resumable`).
-- `parked_event_key="trigger:tg-foo"` - what's being waited on, for a
+- `parked_event_key="trigger:sess-7c1e:tg-foo"` - what's being waited on, for a
   single-event park. A multi-event park uses `parked_event_keys` (a
   list) instead.
 - `parked_until=<timestamp>` - null if no timeout, else the deadline.
@@ -175,14 +176,15 @@ The agent's tool call:
 What happens:
 1. The tool handler resolves `tr-3f9a1c0b7d42`, creates a parked
    subscription row, and returns
-   `Yielded(event_key="trigger:tr-3f9a1c0b7d42",
+   `Yielded(event_key="trigger:sess-7c1e:tr-3f9a1c0b7d42",
    resume_metadata={"subscription_id": "sb-X", "trigger_id": "tr-3f9a1c0b7d42"})`.
 2. The session parks. The worker lease is released. The worker moves
    on to other work.
 3. Cron midnight rolls around. The trigger dispatcher fires the
    trigger, sees the parked subscription, publishes
-   `subscription_matched("trigger:tr-3f9a1c0b7d42")`, and the worker
-   pool marks every parked session on that key resumable.
+   `subscription_matched("trigger:sess-7c1e:tr-3f9a1c0b7d42")` (the key the
+   parked session stored, once per parked subscription), and the worker
+   pool marks that session resumable.
 4. A worker claims the resumable session, calls
    `subscribe_to_trigger.resume(metadata, fire_context)`. The resume
    hook deletes the parked subscription and returns
@@ -234,11 +236,14 @@ session.
 - **The timeout sweeper runs every 30 seconds.** A timeout you set
   to 5 seconds will fire between 5 and 35 seconds later, not exactly
   at 5. Don't use yields as a high-precision timer.
-- **Multiple sessions parked on the same event_key all resume.**
-  The publish is fan-out - all listeners on `trigger:foo` get marked
-  resumable. This is by design (multiple agents can subscribe to the
-  same trigger), but it means firing an event with N parked listeners
-  produces N claim races.
+- **Sessions subscribed to one trigger each resume on their own key.**
+  A fire walks the trigger's parked subscriptions and publishes the
+  result onto each parked session's own key (`trigger:{sid}:{trigger_id}`):
+  N subscribed sessions resume, one publish each, and a fire for one
+  session cannot wake another (the old shared `trigger:{trigger_id}` key
+  could, and parks already in flight on it keep that key until they
+  drain). Firing a trigger with N subscribers still produces N claim
+  races.
 - **The fire-and-forget channel post that delivers ask_user prompts
   doesn't block the park.** If Slack is slow, the session still
   parks immediately; the post lands when it lands. Conversely, a
