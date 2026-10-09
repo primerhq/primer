@@ -174,7 +174,7 @@ function GB_RemoveChoice({ edge, edgeIdx, pathCount, dispatch, onRemoved, name }
   };
   return (
     <button type="button" data-testid="gb-remove-choice" aria-label={name} onClick={press}
-      style={{ ...GB_LINK_BUTTON, alignSelf: "flex-start", color: "var(--red)", fontSize: "var(--fs-11)" }}>
+      style={{ ...GB_LINK_BUTTON, display: "inline-flex", alignItems: "center", minHeight: 24, alignSelf: "flex-start", color: "var(--red)", fontSize: "var(--fs-11)" }}>
       Remove this choice
     </button>
   );
