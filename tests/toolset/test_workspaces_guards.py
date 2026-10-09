@@ -184,3 +184,22 @@ class TestWorkspaceTemplateGuards:
 
         assert not is_error, answer
         assert await sp.get_storage(WorkspaceTemplate).get("tpl-1") is None
+
+    @pytest.mark.asyncio
+    async def test_create_workspace_rejects_an_id_that_fails_the_id_rule(self, world) -> None:
+        """The id names a directory under the workspace root (#680 N7): a traversal id is a validation error and no row is
+        written, on the tool path as on REST."""
+        sp, toolset = world
+        created, _ = await _call(toolset, "create_workspace_provider", entity=_provider_body())
+        assert not created, "the local-1 provider must exist so the refusal is about the id, not the provider"
+        await sp.get_storage(WorkspaceTemplate).create(_template())
+
+        for wid in ("../escape", "/abs", ".", "..", "a/b", "a\x00b"):
+            is_error, body = await _call(
+                toolset, "create_workspace", id=wid, template_id="tpl-1"
+            )
+
+            assert is_error, (wid, body)
+            assert body["type"] == "validation-error"
+
+        assert await sp.get_storage(Workspace).get("../escape") is None

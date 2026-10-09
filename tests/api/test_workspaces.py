@@ -1084,6 +1084,25 @@ class TestWorkspaceRouter:
         assert resp.status_code == 404
 
     @pytest.mark.asyncio
+    async def test_create_rejects_an_id_that_escapes_the_root_with_422(self, client) -> None:
+        """The id names a directory under the workspace root (#680 N7): a traversal id is a 422, and nothing is written."""
+        await client.post(
+            "/v1/workspace_providers", json=_provider().model_dump(mode="json")
+        )
+        await client.post(
+            "/v1/workspace_templates", json=_template().model_dump(mode="json")
+        )
+        for wid in ("../escape", "/abs", "a/b", ".", "..", "a\nb", "a\x00b"):
+            resp = await client.post(
+                "/v1/workspaces", json={"template_id": "tpl-1", "id": wid}
+            )
+            assert resp.status_code == 422, (wid, resp.status_code, resp.text)
+            assert resp.json()["type"] == "/errors/validation-error"
+        listing = await client.get("/v1/workspaces")
+        assert listing.status_code == 200
+        assert listing.json()["items"] == []
+
+    @pytest.mark.asyncio
     async def test_workspace_get_includes_phase_fields(self, client) -> None:
         """GET /v1/workspaces/{id} returns phase, last_probe_at,
         last_probe_ok, failure_reason, runtime_meta."""
