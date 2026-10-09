@@ -1,7 +1,7 @@
 """Journey: an artifact-storage provider can be registered from Providers > Artifact storage (board ticket 01a1214c).
 
 The Register provider menu read ``GET /v1/artifact_storage_providers/_types``, which was a 404, so it said "No kinds available." and the form could not be opened. Now the menu lists the three backends
-(database, filesystem, S3), the form for the one picked asks for its own fields, and the row can be created and deleted.
+(database, filesystem, S3) with what is true of each (only the database one is built: the other two say "not implemented yet: stored, never used"), and a database row can be created and deleted.
 """
 
 from __future__ import annotations
@@ -28,14 +28,17 @@ def test_an_artifact_storage_provider_can_be_registered_and_deleted_from_the_pro
         assert sorted(kinds.nth(i).get_attribute("data-testid") for i in range(3)) == [
             "provider-register-kind-db", "provider-register-kind-filesystem", "provider-register-kind-s3"]
 
-        page.click('[data-testid="provider-register-kind-filesystem"]')
+        # the menu says what is true: only the database backend is built, and only the built-in default row is used
+        rows = {kind: page.get_by_test_id(f"provider-register-kind-{kind}") for kind in ("db", "filesystem", "s3")}
+        expect(rows["db"]).not_to_contain_text("not implemented")
+        expect(rows["filesystem"]).to_contain_text("not implemented yet: stored, never used")
+        expect(rows["s3"]).to_contain_text("not implemented yet: stored, never used")
+
+        page.click('[data-testid="provider-register-kind-db"]')
         form_locator = page.get_by_test_id("provider-form-artifact_storage_providers")
         form_locator.wait_for(state="visible", timeout=15_000)
         form = '[data-testid="provider-form-artifact_storage_providers"]'
         page.fill(f'{form} [data-field="id"] input', name)
-        # root is REQUIRED on a filesystem store: Save stays off until it is filled
-        expect(page.get_by_test_id("provider-form-save")).to_be_disabled()
-        page.fill(f'{form} [data-field="root"] input', "/tmp/primer-journey-artifacts")
         expect(page.get_by_test_id("provider-form-save")).to_be_enabled()
         page.click('[data-testid="provider-form-save"]')
         page.wait_for_selector(f'[data-testid="provider-card-{name}"]')
