@@ -13,6 +13,7 @@ did, so the drainer has written its calls before any tool runs. These cases driv
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -20,7 +21,9 @@ from typing import Any
 
 import pytest
 
+import primer.graph._agent_node as agent_node
 from primer.agent.invoke import build_subagent_toolmanager
+from primer.graph._node_identity import current_graph_node_id
 from primer.graph.executor import GraphExecutor
 from primer.graph.router import RouterRegistry
 from primer.model.agent import Agent, AgentModel
@@ -133,9 +136,11 @@ async def _executor(llm: Any, *, workers: int = 2, answers: int = 2) -> GraphExe
     )
 
 
-async def _run(ex: GraphExecutor, *, bind_state: bool = True) -> list[dict]:
-    """The records session dispatch writes for this executor: its events through ``translate_stream_event`` with the coalesce state bound to the executor (``dispatch.py``)."""
-    log, state = _Log(), _CoalesceState()
+async def _run(ex: GraphExecutor, *, bind_state: bool = True, log: _Log | None = None) -> list[dict]:
+    """The records session dispatch writes for this executor: its events through ``translate_stream_event`` with the coalesce state bound to the executor (``dispatch.py``).
+
+    ``log`` is where they are written; a test that expects the stream to raise passes its own to read what was written before it did."""
+    log, state = log if log is not None else _Log(), _CoalesceState()
     if bind_state:
         ex.bind_coalesce_state(state)
     log.add(SessionMessageRecord(seq=1, kind=SessionMessageKind.USER_INPUT, payload={"text": "go"}, created_at=T))
@@ -309,32 +314,110 @@ async def _other_tasks() -> list[asyncio.Task]:
     return [t for t in asyncio.all_tasks() if t is not me and not t.done()]
 
 
-async def test_a_sibling_that_fails_while_a_node_awaits_the_barrier_still_ends_the_turn() -> None:
-    ex = await _executor(_OneWorkerFails(), answers=1)
-    try:
-        async with asyncio.timeout(20):
-            records = await _run(ex)
-    except TimeoutError:
-        pytest.fail("the turn hung: a node waiting for the dispatch barrier never got it")
-    except Exception:  # noqa: BLE001 - a failed node may surface as an error out of the stream; what matters is that the stream ended
-        records = []
-    assert await _other_tasks() == [], "a node task outlived the turn"
-    assert isinstance(records, list)
+async def _tasks_that_outlive(seconds: float = 5) -> list[asyncio.Task]:
+    """The tasks other than this one that are still running after they were given ``seconds`` to end (a cancelled task needs a loop turn or two to finish)."""
+    with contextlib.suppress(TimeoutError):
+        async with asyncio.timeout(seconds):
+            while await _other_tasks():
+                await asyncio.sleep(0.01)
+    return await _other_tasks()
 
 
-async def test_closing_the_stream_while_a_node_awaits_the_barrier_leaves_no_task_behind() -> None:
-    """The consumer going away is the drainer's ``finally``: it cancels the node tasks, the one awaiting the barrier's future included."""
-    ex = await _executor(_WorkerLLM())
+class BarrierWatch:
+    """Which graph nodes are AT the dispatch barrier right now (entered it, not released), and which waiters were cancelled while they waited."""
+
+    def __init__(self) -> None:
+        self.waiting: list[str | None] = []
+        self.cancelled: list[str | None] = []
+
+
+@pytest.fixture
+def barrier_watch(monkeypatch: pytest.MonkeyPatch) -> BarrierWatch:
+    """Instrument ``await_tool_dispatch_barrier`` as ``_stream_agent_node`` looks it up: the real one, wrapped to say who waits."""
+    watch, real = BarrierWatch(), agent_node.await_tool_dispatch_barrier
+
+    async def watched(queue: asyncio.Queue) -> None:
+        node = current_graph_node_id()
+        watch.waiting.append(node)
+        try:
+            await real(queue)
+        except asyncio.CancelledError:
+            watch.cancelled.append(node)
+            raise
+        finally:
+            watch.waiting.remove(node)
+
+    monkeypatch.setattr(agent_node, "await_tool_dispatch_barrier", watched)
+    return watch
+
+
+async def pull_until_a_node_waits(stream: Any, watch: BarrierWatch) -> None:
+    """Pull events one at a time and, after each, let the node tasks run WITHOUT pulling again (so the drainer stays parked at its ``yield``) until a node is waiting at the barrier."""
+    async for _event in stream:
+        for _ in range(200):
+            if watch.waiting:
+                return
+            await asyncio.sleep(0)
+    pytest.fail("the stream ended before any node reached the barrier")
+
+
+async def close_while_a_node_waits(ex: Any, watch: BarrierWatch, *, how: str) -> None:
+    """Hold ``ex`` with a node AT the barrier, then close the stream (``how="aclose"``) or cancel a consumer that closes it in its ``finally``, as ``dispatch.py`` does on every exit path.
+
+    Afterwards no task of the turn is left, and the waiter was CANCELLED at the barrier rather than left to a future nobody resolves."""
     ex.bind_coalesce_state(_CoalesceState())
     token = set_delegation_sink(DelegationRecorder(writer=_Log(), event_bus=_Bus(), session_id="s", turn_no=1))
     stream = ex.invoke([])
     try:
         async with asyncio.timeout(20):
-            async for _event in stream:
-                break   # the first event is enough: the nodes are mid-turn, some already at the barrier
-            await stream.aclose()
+            if how == "aclose":
+                await pull_until_a_node_waits(stream, watch)
+                assert watch.waiting, "the scene must have a node AT the barrier when the stream closes"
+                await stream.aclose()
+            else:
+                holding = asyncio.Event()
+
+                async def consumer() -> None:
+                    try:
+                        await pull_until_a_node_waits(stream, watch)
+                        holding.set()
+                        await asyncio.sleep(3600)   # the dispatch is busy elsewhere when the cancel lands
+                    finally:
+                        await stream.aclose()
+
+                task = asyncio.create_task(consumer())
+                await holding.wait()
+                assert watch.waiting, "the scene must have a node AT the barrier when the consumer is cancelled"
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
     except TimeoutError:
         pytest.fail("closing the stream hung")
     finally:
         reset_delegation_sink(token)
-    assert await _other_tasks() == [], "a node task outlived the closed stream"
+    assert await _tasks_that_outlive() == [], "a node task outlived the closed stream"
+    assert watch.cancelled, "the node that waited at the barrier was not cancelled there"
+
+
+async def test_a_sibling_that_fails_while_a_node_awaits_the_barrier_still_ends_the_turn() -> None:
+    """Instance ``W1`` fails at once; ``W0`` goes on to its tool and the barrier. The turn ends (no timeout, no task left), ``W0`` has its call row and its run in the log, and ``W1`` is exited as failed."""
+    ex = await _executor(_OneWorkerFails(), answers=1)
+    log = _Log()
+    try:
+        async with asyncio.timeout(20):
+            records = await _run(ex, log=log)
+    except TimeoutError:
+        pytest.fail("the turn hung: a node waiting for the dispatch barrier never got it")
+    assert await _tasks_that_outlive() == [], "a node task outlived the turn"
+    calls = _calls(records)
+    assert sorted(calls) == ["worker[0]"], "only the surviving instance made a call"
+    assert [r["seq"] for r in _delegated(records) if r["seq"] < calls["worker[0]"]["seq"]] == [], "the run of W0 starts after its call row"
+    assert any(r["kind"] == "tool_result" and r["node_id"] == "worker[0]" for r in records), "W0's call got its result"
+    exits = {r["node_id"]: r["payload"]["status"] for r in records if r["kind"] == "graph_transition" and r["payload"].get("phase") == "exit"}
+    assert exits["worker[1]"] == "failed" and exits["worker[0]"] == "completed", exits
+
+
+@pytest.mark.parametrize("how", ["aclose", "cancel"])
+async def test_closing_the_stream_while_a_node_waits_at_the_barrier_leaves_no_task_behind(barrier_watch: BarrierWatch, how: str) -> None:
+    """The consumer going away is the drainer's ``finally``: it cancels the node tasks, the one waiting at the barrier included (``aclose`` directly, or a consumer cancelled while it holds the stream)."""
+    await close_while_a_node_waits(await _executor(_WorkerLLM()), barrier_watch, how=how)
