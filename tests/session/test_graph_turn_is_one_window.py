@@ -21,7 +21,7 @@ from primer.session.terminals import CLOSES, COPY, INSIDE, TurnWindowScanner
 from primer.session.timeline import build_turn_timeline, turn_envelopes, turn_windows
 from primer.session.turns import count_turn_state, has_open_turn
 from primer.session.usage import session_usage
-from tests.session.graph_turn_shapes import FailingWorkerLLM, graph_turn, release_marker
+from tests.session.graph_turn_shapes import FailingWorkerLLM, cancelled, graph_turn, release_marker, with_park
 
 # name -> (the arguments of graph_turn as a factory, the status the turn ends in)
 SHAPES = {
@@ -168,3 +168,55 @@ async def test_a_log_from_before_records_carried_a_node_id_keeps_its_old_windows
     stripped = [{k: v for k, v in r.items() if k != "node_id"} for r in records]
 
     assert len(turn_windows(_lines(stripped))) == 3
+
+
+def _first_node_done(records: list[dict]) -> int:
+    """The seq of the first node ``done`` that ends a node (not a tool round's ``done(tool_use)``)."""
+    return next(
+        r["seq"] for r in records
+        if r["kind"] == "done" and r.get("node_id") and not (r["payload"] or {}).get("delegated") and r["payload"].get("stop_reason") != "tool_use"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_graph_stopped_midway_is_one_window_closed_by_the_cancel(monkeypatch):
+    """A Stop writes dispatch's ``cancelled`` (no node). The nodes that had finished before it are inside the window it closes."""
+    records = await graph_turn(monkeypatch=monkeypatch)
+    cut = _first_node_done(records)
+    stop = cancelled().model_copy(update={"seq": cut + 1}).model_dump(mode="json")
+    lines = _lines([r for r in records if r["seq"] <= cut] + [stop])
+
+    windows = turn_windows(lines)
+    state = count_turn_state(lines, cursor=0)
+
+    assert [w["terminal_seq"] for w in windows] == [stop["seq"]]
+    assert (state.terminals, state.open_turns) == (1, 0)
+    timeline = build_turn_timeline(message_lines=lines, turn_log_lines=[], turn_no=0)
+    assert timeline is not None and timeline["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_a_stop_that_lands_after_the_graph_finished_is_a_second_window_as_for_any_turn(monkeypatch):
+    """Unchanged by the rule: a ``done`` followed by the ``cancelled`` of a Stop that arrived after the run finished counts as two terminals (``session_usage`` documents it)."""
+    records = await graph_turn(monkeypatch=monkeypatch)
+    stop = cancelled().model_copy(update={"seq": len(records) + 1}).model_dump(mode="json")
+
+    windows = turn_windows(_lines(records + [stop]))
+
+    assert [w["terminal_seq"] for w in windows] == [_own_end(records), stop["seq"]]
+
+
+@pytest.mark.asyncio
+async def test_a_graph_that_parks_and_resumes_is_still_one_window(monkeypatch):
+    """A park writes ``yielded`` and, when the answer arrives, ``resumed``: neither ends anything, and while it waits the turn is open."""
+    records = await graph_turn(monkeypatch=monkeypatch)
+    parked = with_park(records, after_seq=_first_node_done(records))
+    park_seq = next(r["seq"] for r in parked if r["kind"] == "yielded")
+
+    lines = _lines(parked)
+    waiting = _lines([r for r in parked if r["seq"] <= park_seq])
+
+    assert [w["terminal_seq"] for w in turn_windows(lines)] == [parked[-1]["seq"]]
+    assert session_usage(lines).turns == 1
+    assert has_open_turn(waiting, cursor=0) is True
+    assert [w["terminal_seq"] for w in turn_windows(waiting)] == [None]

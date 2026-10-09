@@ -77,6 +77,22 @@ def failure_exit(message: str = FAILURE) -> SessionMessageRecord:
     )
 
 
+def cancelled(reason: str = "user") -> SessionMessageRecord:
+    """Dispatch's CANCELLED record for a Stop (``_cancelled_record``): ``{"reason": ...}`` and no node."""
+    return SessionMessageRecord(seq=1, kind=SessionMessageKind.CANCELLED, payload={"reason": reason}, created_at=T)
+
+
+def with_park(records: list[dict], after_seq: int) -> list[dict]:
+    """``records`` with a park and its resume inserted after ``after_seq``: a graph that parks writes ``yielded`` when it waits and ``resumed`` when the answer arrives, and neither is a terminal."""
+    out: list[dict] = []
+    for rec in records:
+        out.append(rec)
+        if rec["seq"] == after_seq:
+            for kind in ("yielded", "resumed"):
+                out.append({"seq": 0, "kind": kind, "node_id": None, "payload": {"event_key": "k"}, "created_at": rec["created_at"]})
+    return [dict(rec, seq=index + 1) for index, rec in enumerate(out)]
+
+
 async def play(
     executor: GraphExecutor, log: _Log | None = None, *, user_text: str = "go", finish: str = "done",
 ) -> list[dict]:
