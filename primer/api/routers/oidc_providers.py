@@ -6,6 +6,9 @@ from fastapi import HTTPException, Request
 from primer.api.routers._crud import make_crud_router
 from primer.api.deps import get_oidc_provider_storage
 from primer.auth import oidc
+from primer.common.origin import origin_of
+from primer.model.common import REENTER_KEY
+from primer.model.except_ import ValidationError
 from primer.model.oidc import OidcProvider
 
 
@@ -86,10 +89,17 @@ async def _preserve_client_secret_if_blank(
     "blank" -- preserve the existing stored secret. A genuinely new
     secret is, by construction, exceedingly unlikely to equal either
     sentinel and still replaces the stored value normally.
+
+    The stored secret is put back only for the origin it was stored for (ticket 01a1212a): the login flow fetches the discovery document and POSTs ``client_id:client_secret`` as
+    Basic auth to the ``token_endpoint`` it names, so a blank secret under a ``discovery_url`` of another scheme, host or port would hand the real secret to whatever host the update
+    names (an admin-started agent run is an admin caller). That update is a 422 and the row is untouched; the person re-enters the secret. This route never goes through
+    ``preserve_masked_secrets``, so the rule is stated here with the same comparison (:func:`primer.common.origin.origin_of`).
     """
     incoming = entity.client_secret
     is_blank = incoming is None or incoming.get_secret_value() in ("", "**********")
     if is_blank and existing.client_secret is not None:
+        if origin_of(entity.discovery_url or "") != origin_of(existing.discovery_url):
+            raise ValidationError(f"client_secret: {REENTER_KEY}")
         entity.client_secret = existing.client_secret
 
 

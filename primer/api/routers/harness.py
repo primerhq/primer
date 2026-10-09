@@ -35,6 +35,7 @@ from primer.harness.outbound import (
     build_bundle_targz,
     build_outbound,
 )
+from primer.model.common import refuse_served_masks
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.harness import (
     Harness,
@@ -248,6 +249,8 @@ async def create_harness(
         tracked_entities=list(body.tracked_entities),
         created_at=datetime.now(timezone.utc),
     )
+    # The token arrives as a plain string: the served mask (GET, change the slug, POST: the copy-a-harness move) would be stored as the git token.
+    refuse_served_masks(harness)
     created = await storage.create(harness)
     return JSONResponse(
         status_code=201,
