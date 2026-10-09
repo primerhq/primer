@@ -237,3 +237,58 @@ def build_nested_notice(helper_calls_something_first: bool = False) -> Seeded:
     parent(Done(stop_reason="stop", raw_reason="stop"))
     records = [r.model_dump(mode="json") for r in writer.records]
     return Seeded(records, parent_call_seq, seqs["helper_call"], delegated_notice_seq=seqs["notice"])
+
+
+ANSWER_A = "node A's helper: the answer is A"
+ANSWER_B = "node B's helper: the answer is B"
+RUN_FAN_A = "44444444444444444444444444444444"
+RUN_FAN_B = "55555555555555555555555555555555"
+
+
+@dataclass
+class SeededFanout:
+    records: list[dict[str, Any]]
+    call_a_seq: int
+    call_b_seq: int
+
+
+def build_fanout() -> SeededFanout:
+    """Two concurrent fan-out siblings of a graph (nodes ``A`` and ``B``) that each delegate to a helper under the SAME raw call id ``call_0``.
+
+    Providers that synthesise call ids restart the numbering every stream, so both nodes' ``invoke_agent`` calls are ``call_0``. Both calls are written before either run's
+    records (the nodes run at once), and the runs' records are interleaved, as concurrent siblings write them. The records come from ``translate_stream_event`` (the parent's call
+    rows carry their node) and the real ``DelegationRecorder`` (the delegated records carry ``delegate_node_id``, the node that delegated).
+    """
+    writer = _Writer()
+    parent_state = _CoalesceState()
+
+    def parent(event, node: str) -> list[int]:
+        return [writer.add(r) for r in _as_list(translate_stream_event(event, parent_state, turn_no=1, node_id=node))]
+
+    placeholder = datetime(2026, 10, 6, tzinfo=timezone.utc)
+    writer.add(SessionMessageRecord(seq=1, kind=SessionMessageKind.USER_INPUT, payload={"text": USER_TEXT}, created_at=placeholder))
+    seqs: dict[str, int] = {}
+    for node in ("A", "B"):
+        parent(ToolCallStart(id="call_0", name="system__invoke_agent", index=0), node)
+        (seqs[node],) = parent(ToolCallEnd(id="call_0", arguments={"agent_id": "helper", "prompt": f"for {node}"}, index=0), node)
+
+    recorder = DelegationRecorder(writer=writer, event_bus=_Bus(), session_id="seed", turn_no=1)
+
+    async def delegated() -> None:
+        a = {"delegate_tool_call_id": "call_0", "delegate_run_id": RUN_FAN_A, "delegate_parent_run_id": None, "delegate_depth": 1, "delegate_node_id": "A"}
+        b = {"delegate_tool_call_id": "call_0", "delegate_run_id": RUN_FAN_B, "delegate_parent_run_id": None, "delegate_depth": 1, "delegate_node_id": "B"}
+        await recorder.on_event(TextDelta(index=0, text=ANSWER_B), **b)
+        await recorder.on_event(TextDelta(index=0, text=ANSWER_A), **a)
+        await recorder.on_event(Done(stop_reason="stop", raw_reason="stop"), **b)
+        await recorder.on_event(Done(stop_reason="stop", raw_reason="stop"), **a)
+
+    _run_to_completion(delegated())
+    for node in ("A", "B"):
+        call = writer.records[seqs[node] - 1]
+        writer.add(SessionMessageRecord(
+            seq=1, kind=SessionMessageKind.TOOL_RESULT, created_at=placeholder,
+            payload={"call_id": call.payload["id"], "output": f"helper {node} finished", "error": False},
+        ))
+    parent(TextDelta(index=0, text=PARENT_FINAL), "A")
+    parent(Done(stop_reason="stop", raw_reason="stop"), "A")
+    return SeededFanout([r.model_dump(mode="json") for r in writer.records], seqs["A"], seqs["B"])
