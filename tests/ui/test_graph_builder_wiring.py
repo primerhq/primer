@@ -1,7 +1,6 @@
 """Graph-builder wiring: every new file transpiles through the real bundler,
 is registered in index.html in dependency order, and the shell is reachable
-from GraphDetail behind the graphBuilderV2 tweak (ui/graph-builder/WIRING.md
-§1, §12, §14, §15).
+from GraphDetail (ui/graph-builder/WIRING.md §1, §12, §14).
 """
 
 from __future__ import annotations
@@ -75,15 +74,10 @@ def test_registered_in_index_in_dependency_order() -> None:
     assert idx["components/graph-canvas.jsx"] < idx["components/graph-builder/gb-canvas.jsx"]
 
 
-def test_graph_detail_renders_the_new_builder_behind_the_tweak() -> None:
+def test_graph_detail_renders_the_builder() -> None:
     src = GRAPHS.read_text(encoding="utf-8")
-    assert "window.GB_Builder" in src, "GraphDetail must render the new builder"
-    assert "graphBuilderV2" in src, "the swap must be behind the tweak"
-    # The revamp is the default; the old editor stays reachable behind the
-    # tweak so a regression is a flag flip rather than a revert.
-    assert "<GR_GraphEditor" in src
-    tweaks = (UI / "foundation" / "tweaks.js").read_text(encoding="utf-8")
-    assert "graphBuilderV2: true" in tweaks
+    assert "<window.GB_Builder" in src, "GraphDetail must render the builder"
+    # The old editor and the tweak that switched to it are gone; test_retired_legacy_graph_editor.py guards that.
 
 
 def test_dispatch_never_hands_the_reducer_a_function() -> None:

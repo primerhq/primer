@@ -139,7 +139,7 @@
     "graph-canvas": {
       // GraphDetail (exposed on window alongside GraphsPage) renders the
       // single-graph editor whose centerpiece is the node/edge canvas
-      // (GR_GraphEditor -> GR_Canvas). GraphsPage is the LIST page and never
+      // (GB_Builder -> GB_Canvas -> GR_Canvas). GraphsPage is the LIST page and never
       // shows the canvas, so the embed mounts the detail directly. graphId
       // must match the GET /graphs/{id} key in the fixture. Node x/y are
       // assigned client-side by primerVendor.autoLayout (server stores none).
