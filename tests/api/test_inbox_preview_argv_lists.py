@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 
 import pytest
 
@@ -647,3 +648,90 @@ def test_a_first_word_that_fills_the_ceiling_enters_the_line_without_its_quotes(
 
     assert max(seen) <= w._REDACT_MAX_TEXT, f"the scrubber was handed {max(seen)} characters at once"
     assert (got[0], got[-1], changed) == ("word " * 400, "<1 more>", True)
+
+
+# ---- follow-ups of #618 (the review that approved e091e937) ------------------------------------------------------------------------------------------------------------
+
+
+def test_a_token_the_budget_cuts_is_hidden_and_its_head_is_not_drawn() -> None:
+    """Two lists of three 660-character words use up the walk's budget; the 64-character hex token after them was cut to its first 18 characters, which is too short
+    for the blob rule, and ``command=deadbeefdeadbeefde`` was drawn."""
+    args = {"path": ["q" * 660] * 3, "file_path": ["r" * 660] * 3, "command": "deadbeef" * 8}
+
+    got = _approval_preview({"name": "run", "arguments": args})
+
+    assert "deadbeef" not in got["arguments"], got["arguments"]
+    assert got["arguments"].endswith("command=<redacted>") and got["truncated"] is True
+
+
+@pytest.mark.parametrize("budget", [1, 5, 20, 32])
+@pytest.mark.parametrize("token", ["deadbeef" * 8, "correcthorsebatterystaple" * 3])
+def test_a_token_cut_by_what_is_left_of_the_budget_is_redacted_whole(token: str, budget: int) -> None:
+    assert _redact(token, 0, [budget]) == ("<redacted>", True)
+
+
+def test_a_cut_that_falls_between_tokens_keeps_the_tokens_it_kept() -> None:
+    """Only a cut INSIDE a token hides it: a cut at a space shows the whole tokens before it (the rest is not looked at, and the preview says so)."""
+    assert _redact("alpha beta gamma", 0, [11]) == ("alpha beta", True)
+    assert _redact("deadbeef" * 2, 0, [16]) == ("deadbeef" * 2, False)           # a token that fits in what is left is not cut at all
+
+
+def test_a_token_cut_by_the_ceiling_alone_keeps_its_head_as_before() -> None:
+    """The ceiling (``_REDACT_MAX_TEXT``) leaves the blob rule 2000 characters to work with, so the head of a long plain word is only cut, not hidden."""
+    assert _redact("q" * 3000) == ("q" * _REDACT_MAX_TEXT, True)
+
+
+@pytest.mark.parametrize(
+    ("argv", "secrets"),
+    [
+        pytest.param(["mysql", "-phun\x1fter2"], ["hun"], id="G1 -p value holding the separator"),
+        pytest.param(["mysql", "-pcorrect horse", "db"], ["correct", "horse"], id="G9 mysql -p password with a space"),
+        pytest.param(["mysqldump", "-u", "root", "-pcorrect horse battery", "db"], ["correct", "horse", "battery"], id="G10 mysqldump -p password with spaces"),
+    ],
+)
+def test_a_spaced_word_that_starts_with_a_dash_is_a_flag_with_its_value_not_a_value(argv, secrets) -> None:
+    """The line wraps a word with spaces in single quotes so ``-u 'deploy:correct horse'`` is one value, and the quote hid the ``-p`` of ``-pcorrect horse`` from the rule
+    that needs a space before it. A word that starts with a dash is a flag, not a value: it enters the line as it is."""
+    shown = json.dumps(_redact(argv)[0], ensure_ascii=False) + " || " + _preview({"command": argv})["arguments"]
+
+    leaked = [s for s in secrets if s in shown]
+    assert not leaked, f"{leaked} show: {shown}"
+
+
+def test_the_line_wraps_a_spaced_value_and_leaves_a_spaced_flag_alone() -> None:
+    from primer.api.routers.workspaces import _line_word
+
+    assert _line_word("correct horse") == ("'correct horse'", True)
+    assert _line_word("-pcorrect horse") == ("-pcorrect horse", False)
+    assert _line_word("--message=fix the bug") == ("--message=fix the bug", False)
+
+
+def test_the_kept_misses_of_the_list_form_are_the_ones_the_docs_list() -> None:
+    """Kept on purpose (listed in ui-pages.md): a header split from its value across two words, the first holding a space. The line wraps that word in quotes, which hides its
+    ``Bearer`` from the rule; the token in the next word is shown. The per-word scrub never hid it either. If this test starts failing the miss is fixed: say so in the docs."""
+    got, _ = _redact(["curl", "-H", "Authorization: Bearer", "tok123456"])
+
+    assert got[-1] == "tok123456"
+
+
+def test_the_marking_scrub_may_mark_what_the_plain_scrub_leaves_but_never_marks_less() -> None:
+    """A later rule sees a mark where the plain scrub shows ``<redacted>``, which no rule matches: after ``token:value`` is hidden, ``-u`` + ``token:`` is a user part with a
+    password the marking scrub still sees. So it can mark MORE than the plain scrub hides. A line the plain scrub changes is always marked (the fuzz above)."""
+    plain = _scrub_text("-utoken:mysqly")
+    marked = _scrub_text("-utoken:mysqly", _MARK)
+
+    assert plain == "-utoken:<redacted>"
+    assert marked == "-u" + _MARK * len("token:mysqly")
+
+
+def test_no_literal_private_use_character_is_written_in_the_scrubber_or_its_tests() -> None:
+    """The marks and stand-ins are private-use characters (U+E000 to U+E003): they are written as escapes, because the literal character renders as nothing in a diff and an
+    editor, and a reader cannot tell the mark from an empty string."""
+    from pathlib import Path
+
+    from primer.api.routers import workspaces as w
+
+    for path in (Path(__file__), Path(w.__file__)):
+        text = path.read_text(encoding="utf-8")
+        found = [n for n, line in enumerate(text.split("\n"), 1) if re.search("[\ue000-\uf8ff]", line)]
+        assert not found, f"{path.name}: a literal private-use character on line(s) {found}"
