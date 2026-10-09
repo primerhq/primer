@@ -48,7 +48,8 @@ function GB_Outline(props) {
   const branchRowsFor = (nodeId) => {
     const rows = [];
     (draft.edges || []).forEach((e) => {
-      if (e.from_node !== nodeId || !e.router || e.router.kind !== "json_path") return;
+      // kind can be absent in a pasted import; the model defaults it to "json_path".
+      if (e.from_node !== nodeId || !e.router || (e.router.kind || "json_path") !== "json_path") return;
       for (const b of e.router.branches || []) {
         const cond = (b.conditions || [])[0];
         rows.push({
