@@ -402,12 +402,15 @@ class StuckSessionSweeper(_BackgroundTask):
                 # a failure stamped between the read and this write makes the row one this sweeper must leave to the failure exit (a stamped
                 # row it DID read, still RUNNING, is the reapable half-finished exit: the fence there is the status it read)
                 where["last_turn_error"] = [None]
+            # A stamped row that is still RUNNING did start: its failure exit stamped it and then did not finish. It is ended for that, not
+            # for a first turn that never ran.
+            unfinished = fresh.last_turn_error is not None
             written = await self._storage.patch_if(
                 fresh.id,
                 to_jsonable_python({
                     "status": SessionStatus.ENDED,
                     "ended_reason": "failed",
-                    "ended_detail": "never_started",
+                    "ended_detail": "failure_exit_unfinished" if unfinished else "never_started",
                     "ended_at": datetime.now(timezone.utc),
                 }),
                 where=where,
@@ -419,10 +422,16 @@ class StuckSessionSweeper(_BackgroundTask):
                 )
                 continue
             reaped += 1
-            logger.warning(
-                "stuck-session-sweeper: ended %s - created %s, first turn never ran",
-                fresh.id, fresh.created_at,
-            )
+            if unfinished:
+                logger.warning(
+                    "stuck-session-sweeper: ended %s - its first turn failed (%s) and the failure exit never finished",
+                    fresh.id, fresh.last_turn_error.code,
+                )
+            else:
+                logger.warning(
+                    "stuck-session-sweeper: ended %s - created %s, first turn never ran",
+                    fresh.id, fresh.created_at,
+                )
         return reaped
 
     async def _has_lease(self, session_id: str) -> bool:
@@ -474,6 +483,9 @@ def _never_started(session, grace_seconds: float) -> bool:
     ended ``failed`` / ``never_started`` while the human was still deciding. A park has its
     own bound: the dispatch and resume park writers all set ``parked_until``, and
     ``TimeoutSweeper`` / ``TimerScheduler`` wake it when that passes.
+
+    So did a first turn that FAILED and left the session resting (``last_turn_error``, C-024): it is not selected unless its row is still RUNNING, which
+    means its failure exit stamped it and never finished (see the guard below).
     """
     if session.status == SessionStatus.ENDED:
         return False
@@ -481,11 +493,11 @@ def _never_started(session, grace_seconds: float) -> bool:
         return False
     if session.parked_status is not None:
         return False
-    if session.last_turn_error is not None and session.status == SessionStatus.WAITING:
+    if session.last_turn_error is not None and session.status != SessionStatus.RUNNING:
         # A first turn that FAILED and left the session resting (C-024): a failed turn does not bump turn_no and its release drops the lease, so
-        # it has every other mark of a session that never started. The row says it did. Only a RESTING (WAITING) row: a stamped row that is
-        # still RUNNING is one whose failure exit did not finish (the status transition raised, or the epoch voided it) and nothing else would
-        # end it, so it stays reapable, as it was before the field existed.
+        # it has every other mark of a session that never started. The row says it did. Every row that is not RUNNING: a resting row is WAITING,
+        # and the user can pause it (``pause_session`` moves WAITING to PAUSED and keeps the stamp). A stamped row that is still RUNNING is one whose
+        # failure exit did not finish (the status transition raised) and nothing else would end it, so it stays reapable.
         return False
     ref = session.started_at or session.created_at
     if ref is None:
