@@ -139,6 +139,10 @@ def test_u0115_channel_provider_modal_invalid_app_token_inline_error(
             app_token_field.get_by_text("xapp-", exact=False).last,
         ).to_be_visible(timeout=10_000)
 
+        # the server's message is tied to the input that caused it (FormField's err: aria-invalid), not only drawn near it
+        expect(slack_passwords.nth(0)).to_have_attribute("aria-invalid", "true", timeout=10_000)
+        expect(slack_passwords.nth(1)).not_to_have_attribute("aria-invalid", "true")
+
         # ----- 5. No global error toast (422 routes inline) ---------
         # If channels.jsx's onError mis-routes 422 → toast path,
         # a kind=error toast would render. None should fire on 422.
