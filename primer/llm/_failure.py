@@ -63,15 +63,21 @@ _EVERYWHERE_LENGTH = 8
 #: What a keyless local server is configured with, because the SDK insists on SOME key: masking these would blank ordinary words ("none of the results"),
 #: so they are never treated as secrets, whatever their length or case. Any other configured value of 4 or more characters is.
 _KEYLESS_PLACEHOLDERS = frozenset({"empty", "none", "dummy", "ollama", "lm-studio", "no-key-required", "not-needed", "sk-no-key-required"})
-#: The provider text is read from at most this many characters of a body (the scrub is linear in what it is handed and a body can be tens of
-#: megabytes); the message shows at most ``UPSTREAM_TEXT_CAP`` of it, so nothing past the scan limit could be shown anyway.
+#: The scrub is run on at most this many characters of the NORMALISED text (the scrub is linear in what it is handed and a body can be tens of
+#: megabytes); the message shows at most ``UPSTREAM_TEXT_CAP`` of it (``_UNTOUCHED_MESSAGE_CAP`` for an untouched one), so nothing past the limit could be
+#: shown anyway.
 _SCAN_LIMIT = 64_000
 _BEARER = re.compile(r"(?i)(\bbearer\s+)[A-Za-z0-9._~+/=-]{8,}")
-#: A Base URL with credentials goes on the wire as ``Authorization: Basic base64(user:password)``. Only a run that looks like base64 (it has a digit,
-#: ``+``, ``/`` or ``=``) is masked, so the sentence "Basic authentication is required" is left alone; the configured pair is masked exactly anyway.
-_BASIC = re.compile(r"(?i)(\bbasic\s+)(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/=]{8,}")
-#: Control characters that are not whitespace (NUL, ESC, ...): a terminal or a log viewer acts on them.
-_CONTROL = re.compile(r"[\x00-\x08\x0e-\x1b\x7f]")
+#: A Base URL with credentials goes on the wire as ``Authorization: Basic base64(user:password)``. The configured pair is masked exactly (below); this
+#: catches a ``Basic`` token of credentials primer did NOT configure, and only one that base64-decodes to printable text containing a ``:``, so the
+#: words after "Basic" in prose ("Basic authentication is required") are left alone.
+_BASIC = re.compile(r"(?i)(\bbasic\s+)([A-Za-z0-9+/]{4,}={0,2})")
+#: Control characters that are not whitespace (NUL, ESC, ...): a terminal or a log viewer acts on them. Stripped with ``str.translate``, which is linear and
+#: fast on a body of tens of megabytes (a regex substitution took seconds on a body of NULs).
+_CONTROL_TABLE = {code: None for code in (*range(0x00, 0x09), *range(0x0E, 0x1C), 0x7F)}
+#: Where a SHORT secret (4 to 7 characters) may begin: not inside a longer run of letters or digits, but after a ``%XX`` or ``\uXXXX`` escape it may
+#: (``Bearer%20sk-1234`` is a key after a space, not a longer token).
+_TOKEN_START = r"(?:(?<![A-Za-z0-9])|(?<=%[0-9A-Fa-f]{2})|(?<=\\u[0-9A-Fa-f]{4}))"
 
 #: What each classified shape says about the provider, as the predicate of the sentence the label starts.
 _WHAT: tuple[tuple[type[PrimerError], str], ...] = (
@@ -108,14 +114,25 @@ def _secrets(provider: Any) -> list[str]:
                 values.add(variant)
         # httpx sends the userinfo of a Base URL as ``Authorization: Basic base64(user:password)``, which a provider may echo back
         for pair in {f"{username}:{password}", f"{unquote(username)}:{unquote(password)}"}:
-            values.add(base64.b64encode(pair.encode()).decode())
+            token = base64.b64encode(pair.encode()).decode()
+            values.update({token, token.rstrip("=")})        # a provider may echo it with or without its padding
     return sorted(values, key=len, reverse=True)
 
 
 def _mask(text: str, secret: str) -> str:
     if len(secret) >= _EVERYWHERE_LENGTH:
         return text.replace(secret, _REDACTED)
-    return re.sub(r"(?<![A-Za-z0-9])" + re.escape(secret) + r"(?![A-Za-z0-9])", _REDACTED, text)
+    return re.sub(_TOKEN_START + re.escape(secret) + r"(?![A-Za-z0-9])", _REDACTED, text)
+
+
+def _mask_basic(match: re.Match[str]) -> str:
+    """``Basic <token>`` with the token masked when it is base64 of printable ``user:password``-shaped text; any other word is left as it was."""
+    token = match.group(2)
+    try:
+        decoded = base64.b64decode(token + "=" * (-len(token) % 4), validate=True).decode("utf-8")
+    except ValueError:                                  # not base64 (binascii.Error), or not text (UnicodeDecodeError): both are ValueErrors
+        return match.group(0)
+    return match.group(1) + _REDACTED if ":" in decoded and decoded.isprintable() else match.group(0)
 
 
 def scrub(text: str, provider: Any) -> str:
@@ -124,13 +141,21 @@ def scrub(text: str, provider: Any) -> str:
         text = _mask(text, secret)
     text = redact_url_secrets(text)
     text = _BEARER.sub(r"\1" + _REDACTED, text)
-    return _BASIC.sub(r"\1" + _REDACTED, text)
+    return _BASIC.sub(_mask_basic, text)
 
 
-def _clean(text: str, provider: Any) -> str:
-    """The first ``_SCAN_LIMIT`` characters of ``text`` with control characters stripped, THEN scrubbed (a NUL inside an echoed key must not defeat the
-    exact match)."""
-    return scrub(_CONTROL.sub("", text[:_SCAN_LIMIT]), provider)
+def _clean(text: str, provider: Any, *, collapse: bool) -> str:
+    """``text`` normalised, THEN cut to ``_SCAN_LIMIT``, THEN scrubbed.
+
+    Normalised first: control characters stripped (a NUL inside an echoed key must not defeat the exact match) and, for the provider's own text,
+    whitespace collapsed. The slice comes after, because the message shows the first characters of the NORMALISED text: cut first, a key echoed
+    behind padding that straddles the limit would be cut there and the collapse would then bring its first characters to the front, where the exact
+    match could no longer see them. After normalising, anything the message can show lies well inside the prefix that is scrubbed.
+    """
+    text = text.translate(_CONTROL_TABLE)
+    if collapse:
+        text = " ".join(text.split())
+    return scrub(text[:_SCAN_LIMIT], provider)
 
 
 def _clipped(value: object, depth: int = _DUMP_DEPTH) -> object:
@@ -204,7 +229,7 @@ def describe_failure(err: PrimerError, exc: BaseException, provider: Any) -> Pri
     """``err`` (what the classifier made of ``exc``) with the message a person needs; class, ``code``, ``status_code`` and ``cause`` are kept."""
     what = next((phrase for cls, phrase in _WHAT if isinstance(err, cls)), None)
     if what is None:
-        message = _cap(_clean(err.message, provider), _UNTOUCHED_MESSAGE_CAP)
+        message = _cap(_clean(err.message, provider, collapse=False), _UNTOUCHED_MESSAGE_CAP)
         return err if message == err.message else _rebuilt(err, message)
     sentence = f"{provider_label(provider)} {what}"
     if isinstance(err, NetworkError):
@@ -215,7 +240,7 @@ def describe_failure(err: PrimerError, exc: BaseException, provider: Any) -> Pri
         text = _upstream_text(exc, err)
         if text:
             # Scrub FIRST, then cut: a secret cut in half by the cap would be left partly readable.
-            text = _cap(" ".join(_clean(text, provider).split()))
+            text = _cap(_clean(text, provider, collapse=True))
     except Exception as problem:  # noqa: BLE001 -- the text is a courtesy; a body nobody can read must not turn a failed call into a crash
         # Only the type is logged: this runs inside the adapter's ``except``, so a traceback would chain the SDK exception whose text is the raw body.
         logger.warning("could not read the provider's text out of a failed call (%s); the sentence goes without it", type(problem).__name__)
