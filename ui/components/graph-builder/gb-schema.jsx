@@ -79,7 +79,6 @@ function GB_SchemaBuilder(props) {
         ) : null}
         {typeof GR_JsonField === "function" ? (
           <GR_JsonField
-            label=""
             ariaLabel="Schema as JSON"
             value={value}
             onChange={onChange}
