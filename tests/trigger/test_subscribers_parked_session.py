@@ -51,7 +51,7 @@ def _parked_session(
             "yielded": {
                 "tool_name": "subscribe_to_trigger",
                 "event_key": event_key,
-                "resume_metadata": {"tool_call_id": tool_call_id},
+                "resume_metadata": {"tool_call_id": tool_call_id, "subscription_id": "sb-1"},
             },
         },
         created_at=datetime.now(timezone.utc),

@@ -11,6 +11,7 @@ id) sends the first 12 characters, which match the gate by prefix.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from datetime import UTC, datetime
 
 import pytest
@@ -216,13 +217,25 @@ async def test_a_reply_to_a_replaced_question_is_refused_as_stale_and_answers_no
 
 
 @pytest.mark.asyncio
-async def test_a_reply_naming_no_question_answers_the_pending_one_and_is_not_counted(world) -> None:
-    """A thread reply on Slack or Discord has no card to carry a token: it answers what is pending in the thread, by construction."""
+async def test_a_reply_naming_no_question_answers_the_pending_one_and_is_counted_as_absent(world) -> None:
+    """A thread reply whose correlation row predates gate ids has no token: it still answers what is pending in the thread, and is counted, so the
+    flip to refusing tokenless replies can be scheduled from one number (round 2 of the C-033 review)."""
     await world.sp.get_storage(WorkspaceSession).create(_ask_user_session(session_id="q-bare", tool_call_id="tc-1", gate_id=G1))
 
     await world.inbox.handle_response(_reply("q-bare", gate_id=None, kind="ask_user"))
 
     assert (await world.published()) is not None
+    assert _count("ask_user", "absent") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_tokenless_reply_to_nothing_pending_is_not_counted(world) -> None:
+    """Only a reply that reaches a pending prompt is a decision attempt worth counting."""
+    await world.sp.get_storage(WorkspaceSession).create(_ask_user_session(session_id="q-none", tool_call_id="tc-other", gate_id=G1))
+
+    with contextlib.suppress(Exception):   # whatever the lookup that follows does with it, this test is about the counter
+        await world.inbox.handle_response(_reply("q-none", gate_id=None, kind="ask_user"))
+
     assert _count("ask_user", "absent") == 0
 
 
