@@ -135,10 +135,12 @@ class WorkspaceCreateBody(BaseModel):
         pattern=WORKSPACE_ID_PATTERN,
         description=(
             "Optional caller-supplied workspace id. If omitted, the "
-            "backend allocates one. Must be a single alphanumeric token "
-            "(WORKSPACE_ID_PATTERN): it names the directory the local "
-            "backend materialises the workspace in, so a slash, dot or "
-            "control character would move it outside (or onto) the root."
+            "backend allocates one. Must be one DNS-1123 label "
+            "(WORKSPACE_ID_PATTERN: lowercase letters, digits and '-', "
+            "starting and ending with a letter or digit, at most 63 "
+            "characters): it names the directory the local backend "
+            "materialises the workspace in, so a slash, dot or control "
+            "character would move it outside (or onto) the root."
         ),
     )
     name: str | None = Field(

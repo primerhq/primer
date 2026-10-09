@@ -46,14 +46,20 @@ _log = logging.getLogger(__name__)
 # (``LocalWorkspaceBackend`` joins it to the root), a docker container-name
 # suffix and a k8s object-name component, and it becomes the durable row id,
 # a ``LocalStateRepo`` workspace id and a git trailer value. It is therefore
-# ONE alphanumeric token: no dot, no slash (no traversal, no nesting), no
-# control character. The rule matches every id that exists today (the
-# bootstrap default ``primer``; the generated ``ws-<hex>``) and the
-# generated ids always pass it. Every workspace-create entry (the REST
-# body, the ``create_workspace`` tool args, ``WorkspaceRegistry.materialise``)
+# ONE DNS-1123 label: lowercase letters, digits and ``-``, starting and
+# ending with a letter or digit, at most 63 characters. No slash or dot
+# (no traversal, no nesting), no control character. Lowercase only because
+# on a case-insensitive filesystem (a macOS dev machine) ``Proj`` and
+# ``proj`` would be two rows over ONE directory; k8s label values, docker
+# DNS names and gateway hostnames need lowercase, no ``_``, and an
+# alphanumeric end too. The rule matches every id the platform generates
+# (the bootstrap default ``primer``; the generated ``ws-<hex>``) and the
+# generated ids always pass it; existing rows are NOT re-validated - the
+# rule bites on create only. Every workspace-create entry (the REST body,
+# the ``create_workspace`` tool args, ``WorkspaceRegistry.materialise``)
 # enforces it, and the local backend re-asserts the containment it implies
 # as defence in depth.
-WORKSPACE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$"
+WORKSPACE_ID_PATTERN = r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
 
 
 # ===========================================================================

@@ -79,20 +79,33 @@ class LocalWorkspaceBackend(BaseWorkspaceBackend):
 
         Defence in depth behind the entry-layer id rule (#680 N7): the id is
         joined with a plain ``/``, so an absolute or ``../`` id would place
-        the workspace directory OUTSIDE the configured root (and the rollback
-        ``rmtree`` would follow it there). Resolve both sides and require the
-        workspace to land strictly INSIDE the root - the root itself is not
-        a workspace directory.
+        the workspace directory OUTSIDE the configured root. Resolve both
+        sides for the containment test - but RETURN the unresolved join:
+        the create rollback's ``rmtree`` and ``destroy`` must see the
+        symlink itself and refuse it, not follow it into another
+        workspace's directory. Refusal messages carry no host paths; the
+        paths go to the server log at WARNING.
         """
         root = self._root.resolve()
-        ws_root = (self._root / workspace_id).resolve()
-        if ws_root == root or not ws_root.is_relative_to(root):
-            raise ValidationError(
-                f"workspace id {workspace_id!r} escapes the workspace root "
-                f"{root} (it would land at {ws_root}); expected a single "
-                "path segment under the root"
+        joined = self._root / workspace_id
+        resolved = joined.resolve()
+        if resolved == root or not resolved.is_relative_to(root):
+            logger.warning(
+                "refusing workspace id %r: escapes the workspace root %s (would land at %s)",
+                workspace_id, root, resolved,
             )
-        return ws_root
+            raise ValidationError(
+                f"workspace id {workspace_id!r} escapes the workspace root"
+            )
+        if joined.is_symlink():
+            logger.warning(
+                "refusing workspace id %r: %s is a symbolic link (target %s)",
+                workspace_id, joined, resolved,
+            )
+            raise ValidationError(
+                f"workspace id {workspace_id!r} is a symbolic link under the workspace root"
+            )
+        return joined
 
     async def initialize(self) -> None:
         await asyncio.to_thread(self._root.mkdir, parents=True, exist_ok=True)
