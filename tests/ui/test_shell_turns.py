@@ -34,6 +34,19 @@ def _ctx():
     return ctx
 
 
+def _windows_js(records_json: str) -> str:
+    """The JS expression for the window map the console feeds SH_turnOfSeq: SH_windowsOfSeq over the visible raw records."""
+    return "SH_windowsOfSeq(SA_visibleRecords(" + records_json + "))"
+
+
+def _server_windows(records: list[dict]) -> dict[int, int]:
+    """seq -> the window the REAL ``turn_windows`` files the record in (not a copy of its rule)."""
+    from primer.session.timeline import turn_windows
+
+    windows = turn_windows([json.dumps(rec) for rec in records])
+    return {rec["seq"]: window["turn_no"] for window in windows for rec in window["records"]}
+
+
 def test_tool_chips_speak_plain_language() -> None:
     ctx = _ctx()
     out = json.loads(ctx.eval(
@@ -360,7 +373,7 @@ def test_the_trace_ordinal_counts_the_sessions_turns_and_not_a_subagents() -> No
     ]
     ctx = _ctx()
     ordinals = json.loads(ctx.eval(
-        "JSON.stringify(SH_turnOfSeq(SA_toTranscript(" + json.dumps(records) + ", null)))"
+        "JSON.stringify(SH_turnOfSeq(SA_toTranscript(" + json.dumps(records) + ", null), " + _windows_js(json.dumps(records)) + "))"
     ))
     first_turn = {str(r["seq"]) for r in seeded.records} & set(ordinals)
     assert first_turn and {ordinals[seq] for seq in first_turn} == {0}, "the delegated dones must not start a new turn"
@@ -370,21 +383,24 @@ def test_the_trace_ordinal_counts_the_sessions_turns_and_not_a_subagents() -> No
 def test_the_trace_ordinal_still_splits_turns_at_the_sessions_own_terminals() -> None:
     ctx = _ctx()
     ordinals = json.loads(ctx.eval(
-        """JSON.stringify(SH_turnOfSeq([
-          {seq: 1, kind: "user_message", payload: {}},
-          {seq: 2, kind: "done", payload: {stop_reason: "stop"}},
-          {seq: 3, kind: "user_message", payload: {}},
-          {seq: 4, kind: "error", payload: {}},
-          {seq: 5, kind: "user_message", payload: {}},
-          {seq: 6, kind: "cancelled", payload: {}},
-          {seq: 7, kind: "user_message", payload: {}},
-          {seq: 8, kind: "done", payload: {stop_reason: "tool_use"}},
-          {seq: 9, kind: "done", payload: {stop_reason: "stop"}},
-          {seq: 10, kind: "error", payload: {delegated: true}},
-          {seq: 11, kind: "user_message", payload: {}},
-          {seq: 12, kind: "done", payload: {stop_reason: "tool_turn_cap"}},
-          {seq: 13, kind: "user_message", payload: {}}
-        ]))"""
+        """(function () {
+          var records = [
+            {seq: 1, kind: "user_input", payload: {}},
+            {seq: 2, kind: "done", payload: {stop_reason: "stop"}},
+            {seq: 3, kind: "user_input", payload: {}},
+            {seq: 4, kind: "error", payload: {}},
+            {seq: 5, kind: "user_input", payload: {}},
+            {seq: 6, kind: "cancelled", payload: {}},
+            {seq: 7, kind: "user_input", payload: {}},
+            {seq: 8, kind: "done", payload: {stop_reason: "tool_use"}},
+            {seq: 9, kind: "done", payload: {stop_reason: "stop"}},
+            {seq: 10, kind: "error", payload: {delegated: true}},
+            {seq: 11, kind: "user_input", payload: {}},
+            {seq: 12, kind: "done", payload: {stop_reason: "tool_turn_cap"}},
+            {seq: 13, kind: "user_input", payload: {}}
+          ];
+          return JSON.stringify(SH_turnOfSeq(records, SH_windowsOfSeq(records)));
+        })()"""
     ))
     assert [ordinals[str(i)] for i in range(1, 11)] == [0, 0, 1, 1, 2, 2, 3, 3, 3, 4]
     # a done that says the tool-turn cap stopped the run is not a tool round: it ends the turn (#437)
@@ -394,9 +410,7 @@ def test_the_trace_ordinal_still_splits_turns_at_the_sessions_own_terminals() ->
 def test_the_console_numbers_turns_like_the_server_for_every_fatal_variant_of_an_error() -> None:
     """Ticket 01a11bf6: the server no longer counts an ERROR with an explicit ``fatal: false`` as a turn end (a recoverable stream error
     is a notice), and ``SH_closesTurn`` is the console's mirror of ``closes_turn``: the trace is asked for under the ordinal counted
-    here, so the two must agree record for record. Compared against the REAL server predicate, not a copy of it."""
-    from primer.session.terminals import closes_turn
-
+    here, so the two must agree record for record. Compared against the REAL server windows, not a copy of the rule."""
     payloads = [
         {"fatal": False},
         {"fatal": True},
@@ -412,21 +426,18 @@ def test_the_console_numbers_turns_like_the_server_for_every_fatal_variant_of_an
     records.append({"seq": len(records) + 1, "kind": "user_input", "payload": {}})
     records.append({"seq": len(records) + 1, "kind": "done", "payload": {"stop_reason": "stop"}})
 
-    expected: dict[str, int] = {}
-    ordinal = 0
-    for rec in records:
-        expected[str(rec["seq"])] = ordinal
-        if closes_turn(rec):
-            ordinal += 1
+    expected = {str(seq): window for seq, window in _server_windows(records).items()}
 
-    ordinals = json.loads(_ctx().eval("JSON.stringify(SH_turnOfSeq(" + json.dumps(records) + "))"))
+    ordinals = json.loads(_ctx().eval(
+        "JSON.stringify(SH_turnOfSeq(" + json.dumps(records) + ", SH_windowsOfSeq(" + json.dumps(records) + ")))"
+    ))
 
     assert ordinals == expected, f"the console and the server number the turns differently: {ordinals} vs {expected}"
 
 
 def test_the_session_doc_takes_its_trace_ordinal_from_the_shared_function() -> None:
     doc = (ROOT / "ui" / "components" / "console" / "nv-session-doc.jsx").read_text(encoding="utf-8")
-    assert "SH_turnOfSeq(flat)" in doc
+    assert "SH_turnOfSeq(flat, SH_windowsOfSeq(window.SA_visibleRecords(records)))" in doc
     assert 'flat[ti].kind === "done" || flat[ti].kind === "cancelled"' not in doc, "the inline copy of the rule is back"
 
 
@@ -456,9 +467,7 @@ def test_a_write_chip_carries_the_path_it_opens() -> None:
 def test_a_non_fatal_error_mid_turn_is_numbered_the_way_the_servers_timeline_numbers_it() -> None:
     """The adapter draws a non-fatal stream Error as a retry notice instead of an error card (ticket 01a11bcc). The server does not count an ERROR with an
     explicit ``fatal: false`` as a turn end (ticket 01a11bf6), and the console asks the trace for the server's window ordinal, so the notice row must not count
-    in ``SH_turnOfSeq`` either. Compared against the real ``closes_turn`` over the same records."""
-    from primer.session.terminals import closes_turn
-
+    in ``SH_turnOfSeq`` either. Compared against the real server windows over the same records."""
     records = [
         {"seq": 1, "kind": "user_input", "payload": {"text": "go"}, "created_at": "t1"},
         {"seq": 2, "kind": "error", "payload": {"message": "hiccup", "code": "server_error", "fatal": False}, "created_at": "t2"},
@@ -468,30 +477,23 @@ def test_a_non_fatal_error_mid_turn_is_numbered_the_way_the_servers_timeline_num
         {"seq": 6, "kind": "error", "payload": {"message": "x", "code": "y", "fatal": False, "delegated": True, "delegate_run_id": "r1"}, "created_at": "t6"},
         {"seq": 7, "kind": "done", "payload": {"stop_reason": "stop"}, "created_at": "t7"},
     ]
-    expected, ordinal = {}, 0
-    for rec in records:
-        expected[str(rec["seq"])] = ordinal
-        if closes_turn(rec):
-            ordinal += 1
+    expected = {str(seq): window for seq, window in _server_windows(records).items()}
     ctx = _ctx()
-    got = json.loads(ctx.eval("JSON.stringify(SH_turnOfSeq(SA_toTranscript(" + json.dumps(records) + ", null)))"))
-    assert {seq: got[seq] for seq in expected} == expected
+    got = json.loads(ctx.eval(
+        "JSON.stringify(SH_turnOfSeq(SA_toTranscript(" + json.dumps(records) + ", null), " + _windows_js(json.dumps(records)) + "))"
+    ))
+    assert {seq: got[seq] for seq in got} == {seq: expected[seq] for seq in got}
 
 
 def _both_ordinals(records: list[dict]) -> tuple[dict[int, int], dict[int, int]]:
-    """(the server's window ordinal per seq, the console's) for the same records. The console numbers what it really draws:
-    ``SH_nestSubagentRows(SA_toTranscript(records))``, in which the failure fold has removed the copies and the marker."""
-    from primer.session.terminals import closes_turn
-
-    server: dict[int, int] = {}
-    ordinal = 0
-    for rec in records:
-        server[rec["seq"]] = ordinal
-        if closes_turn(rec):
-            ordinal += 1
+    """(the server's window per seq, the console's) for the same records. The server's is the REAL ``turn_windows``; the console numbers what it really
+    draws: ``SH_nestSubagentRows(SA_toTranscript(records))``, in which the failure fold has removed the copies and the marker, from the window map of the
+    raw records (``SH_windowsOfSeq``)."""
+    server = _server_windows(records)
     ctx = _ctx()
     got = json.loads(ctx.eval(
-        "JSON.stringify(SH_turnOfSeq(SH_nestSubagentRows(SA_toTranscript(" + json.dumps(records) + ", null))))"
+        "JSON.stringify(SH_turnOfSeq(SH_nestSubagentRows(SA_toTranscript(" + json.dumps(records) + ", null)), "
+        + _windows_js(json.dumps(records)) + "))"
     ))
     return server, {int(seq): n for seq, n in got.items()}
 
@@ -553,8 +555,8 @@ def test_a_subagents_failure_does_not_shift_the_sessions_turn_numbers() -> None:
 def test_the_real_producers_failure_sequence_is_numbered_as_the_server_numbers_it() -> None:
     """What the agent loop and dispatch really write for a non-fatal stream Error: the loop holds it, raises when the stream ends, and dispatch writes
     its own ERROR with the same words and then the release marker: [done(error), error{M, fatal: false}, error{M}, marker]. The console draws ONE red card
-    (the failure absorbs the notice) and must still number the turn after it as the server does: the server counts the done, the failure and the marker as
-    three window ends and the notice as none."""
+    (the failure absorbs the notice) and must still number the turn after it as the server does: the server files the done(error), the notice, the
+    failure and the marker in ONE window (the done ends it, the rest are its copies), so the turn after it is the second."""
     records = [
         _r(1, "user_input", text="go"),
         _r(2, "done", stop_reason="error"),
@@ -566,7 +568,7 @@ def test_the_real_producers_failure_sequence_is_numbered_as_the_server_numbers_i
     server, console = _both_ordinals(records)
     assert 3 not in console, "the notice was absorbed by the failure with the same words"
     assert {seq: console[seq] for seq in console} == {seq: server[seq] for seq in console}, (server, console)
-    assert console[6] == 3 and console[8] == 3, "and the following turn is the fourth window, as on the server"
+    assert console[6] == 1 and console[8] == 1, "and the following turn is the second window, as on the server: the failed turn is one"
 
 
 def _same_ordinals(records: list[dict]) -> None:
@@ -625,3 +627,42 @@ def test_two_failed_turns_in_a_row_are_numbered_as_the_server_numbers_them() -> 
         _r(8, "error", reason="unknown", terminal=True),
         *_following_turn(9),
     ])
+
+
+def test_the_console_scanner_gives_the_servers_verdict_on_every_record_of_every_shape_the_writers_produce() -> None:
+    """``SH_newWindowScanner`` is the mirror of ``terminals.TurnWindowScanner`` (ticket 01a11ca5): the same verdict for every record, so the window each
+    record is filed in (``SH_windowsOfSeq``) is the one the timeline endpoint files it in (``turn_windows``) and the trace is asked for the right ordinal.
+    The shapes are the ones tests/session/test_failed_turn_is_one_window.py runs the server readers over; compared against the REAL scanner."""
+    from primer.session.terminals import TurnWindowScanner
+    from primer.session.timeline import turn_windows
+    from tests.session.test_failed_turn_is_one_window import SHAPES
+
+    ctx = _ctx()
+    for name, lines, _ends, _window_seqs in SHAPES:
+        records = [json.loads(line) for line in lines]
+        scanner = TurnWindowScanner()
+        want = [scanner.feed(rec) for rec in records]
+        got = json.loads(ctx.eval(
+            "(function () { var s = SH_newWindowScanner(); return JSON.stringify(" + json.dumps(records) + ".map(function (r) { return s.feed(r); })); })()"
+        ))
+        assert got == want, (name, got, want)
+
+        windows = turn_windows(lines)
+        filed = json.loads(ctx.eval("JSON.stringify(SH_windowsOfSeq(" + json.dumps(records) + "))"))
+        assert {int(seq): n for seq, n in filed["of"].items()} == {rec["seq"]: w["turn_no"] for w in windows for rec in w["records"]}, name
+        assert filed["open"] == sum(1 for w in windows if w["terminal_seq"] is not None), name
+
+
+def test_a_row_the_records_do_not_hold_is_numbered_by_where_it_sits() -> None:
+    """An optimistic or live row has no record: before the first record it belongs to the first window, after the last to the one still open."""
+    records = [
+        {"seq": 5, "kind": "user_input", "payload": {}},
+        {"seq": 6, "kind": "done", "payload": {"stop_reason": "stop"}},
+        {"seq": 7, "kind": "user_input", "payload": {}},
+    ]
+    rows = [{"seq": -1}, {"seq": 5}, {"seq": 7}, {"seq": 99}]
+    got = json.loads(_ctx().eval(
+        "JSON.stringify(SH_turnOfSeq(" + json.dumps(rows) + ", SH_windowsOfSeq(" + json.dumps(records) + ")))"
+    ))
+    assert got == {"-1": 0, "5": 0, "7": 1, "99": 1}
+
