@@ -97,3 +97,28 @@ def test_an_escaped_quote_after_the_secret_is_still_not_consumed() -> None:
     out = redact_credentials(json.dumps({"e": f'x "https://h/v1?api_key={SECRET}" y'}))
 
     assert SECRET not in out and json.loads(out)["e"] == 'x "https://h/v1?api_key=[REDACTED]" y'
+
+
+# ---- a typed refusal reason ----------------------------------------------------------------------------------------------------------------------
+
+
+def test_a_refusal_reason_is_masked_when_it_is_credential_shaped() -> None:
+    """The reason is what a person typed and is not redacted where ``result_json`` builds it, but the body is delivered in an ERROR result, which masks it."""
+    from primer.graph.base import _ToolApprovalRejected
+
+    code = _ToolApprovalRejected(kind="rejected").ended_detail_code
+    body = ChildGraphFailed(code=code, message=f"no: call https://h/v1?api_key={SECRET} instead", node_id="n", tool_name="t").result_json()
+    assert json.loads(body)["rejected"] is True and SECRET in body, "the setup must be a refusal that carries the secret"
+
+    out = _without_credentials(ToolResultPart(id="c", output=body, error=True)).output
+
+    assert SECRET not in out and json.loads(out)["reason"] == "no: call https://h/v1?api_key=[REDACTED] instead"
+
+
+def test_an_ordinary_refusal_reason_is_untouched() -> None:
+    from primer.graph.base import _ToolApprovalRejected
+
+    code = _ToolApprovalRejected(kind="rejected").ended_detail_code
+    body = ChildGraphFailed(code=code, message="not now, ask me tomorrow", node_id="n", tool_name="t").result_json()
+
+    assert _without_credentials(ToolResultPart(id="c", output=body, error=True)).output == body
