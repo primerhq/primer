@@ -481,7 +481,7 @@ function GB_Builder(props) {
               tools={tools}
               readOnly={readOnly}
               problems={selectedId ? problemsByNode[selectedId] : null}
-              onSelectNode={setSelectedId}
+              onSelectNode={(id) => { setSelectedId(id); setSelectedEdge(null); }}
               onJsonError={(key, err) => setJsonErrors((s) => ({ ...s, [key]: err }))}
             />
           </div>
