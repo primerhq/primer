@@ -105,6 +105,23 @@ def test_a_row_that_is_not_an_error_has_nothing_to_retry(ctx) -> None:
     assert _retry(ctx, [_user(1), {"seq": 2, "kind": "done", "label": "", "payload": {}}], 2) is None
 
 
+def test_after_a_mid_turn_steer_the_resend_is_the_steer_alone(ctx) -> None:
+    """A steer sent while the turn ran is a user message too, and the nearest one is what Retry resends: the instruction that opened the turn is NOT sent with it (documented in ui-pages.md)."""
+    flat = [_user(1, "write the report"), {"seq": 2, "kind": "assistant_message", "label": "drafting", "payload": {}}, _user(3, "make it shorter"), _error(4)]
+    assert _retry(ctx, flat, 4) == "make it shorter"
+
+
+def test_a_subagents_failure_at_the_tail_would_qualify_on_its_own_so_the_depth_guard_is_what_keeps_its_card_without_retry(ctx) -> None:
+    """The control for the card test below and the journey: ``SH_retryInstruction`` knows nothing of depth. A delegated run's fatal error that ends the transcript passes every condition it
+    checks (an error row, a session at rest, nothing after it, a plain user message before it), so without ``depth ? null : ...`` in the card the subagent's failure would offer a Retry that
+    resends the operator's instruction."""
+    nested = {"seq": 3, "kind": "error", "label": "grandchild run: the model fell over",
+              "payload": {"fatal": True, "delegated": True, "delegate_depth": 2, "delegate_run_id": "r2"}}
+    assert _retry(ctx, [_user(1), nested], 3) == "please do the thing"
+    # the delegating call sits BEFORE the error, as in a real transcript, and is not "after" it
+    assert _retry(ctx, [_user(1), {"seq": 2, "kind": "tool_call", "label": "system__invoke_agent", "payload": {}}, nested], 3) == "please do the thing"
+
+
 def test_the_error_card_wires_retry_only_for_the_session_own_turn() -> None:
     """A subagent's failure (nested, depth > 0) is not the session's instruction to resend."""
     card = DOC[DOC.index('if (row.kind === "error") {'):DOC.index("// A lifecycle row with nothing to say renders nothing at all.")]
