@@ -49,7 +49,7 @@ BASE_B = {
 
 UI = Path(__file__).resolve().parents[2] / "ui"
 FILES = [
-    "components/shared/entity-picker.jsx", "components/graph-canvas.jsx",
+    "components/shared/entity-picker.jsx", "components/shared/form-field.jsx", "components/graph-canvas.jsx",
     "components/graph-builder/gb-model.jsx", "components/graph-builder/gb-api.jsx", "components/graph-builder/gb-refs.jsx",
     "components/graph-builder/gb-validate.jsx", "components/graph-builder/gb-canvas.jsx", "components/graph-builder/gb-outline.jsx",
     "components/graph-builder/gb-palette.jsx", "components/graph-builder/gb-schema.jsx", "components/graph-builder/gb-ref-editor.jsx",
@@ -59,7 +59,6 @@ FILES = [
 ]
 
 _PRELUDE = r"""
-var __ids = 0; React.useId = function () { return "uid" + (++__ids); };
 window.requestAnimationFrame = function () { return 0; }; window.cancelAnimationFrame = function () {};
 window.addEventListener = function () {}; window.removeEventListener = function () {};
 var TOOLS = [{ id: "ts__echo", description: "echo", input_schema: { type: "object", properties: { msg: { type: "string" } }, required: ["msg"] } }];
