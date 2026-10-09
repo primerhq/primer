@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from primer.model.tool_approval import ToolApprovalRecord
+from primer.model.yield_ import gate_id_of
 
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,18 @@ logger = logging.getLogger(__name__)
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def gate_record_key(event_key: str | None, gate_id: str | None) -> str | None:
+    """The key a gate's record is deduplicated on: ``<event_key>@<gate_id>``, or just ``event_key`` for a park that has no gate id.
+
+    The event key is built from the provider's tool_call_id, which repeats across rounds, so on its own it is the key of "whatever gate was pending
+    under this id", not of THE gate: the second approval of ``call_0`` in a session collided with the first and its record was dropped (C-033 PR 2).
+    The gate id (minted when the gate was created, C-033 PR 1) tells the two apart. A park from before gates had ids keeps ``event_key``.
+    """
+    if not event_key:
+        return event_key
+    return f"{event_key}@{gate_id}" if gate_id else event_key
 
 
 def record_from_parked_blob(
@@ -56,7 +69,11 @@ def record_from_parked_blob(
     every existing caller); a caller with a real ``ParkedState.yielded.
     event_key`` in hand should pass it explicitly (01a068da) so the
     respond-time and resume-time write sites can dedupe against the same
-    gate via ``ToolApprovalRecord``'s unique index.
+    gate via ``ToolApprovalRecord``'s unique index. The stored key is
+    :func:`gate_record_key` of it and the gate's own ``gate_id`` (read from
+    the same ``resume_metadata`` every writer passes), so ONE gate yields one
+    key whichever site writes it, and a later gate under the same raw
+    tool_call_id yields another (C-033 PR 2).
     """
     yielded: dict = blob.get("yielded") or {}
     metadata: dict = yielded.get("resume_metadata") or {}
@@ -67,7 +84,7 @@ def record_from_parked_blob(
         tool_name=original.get("name") or "",
         arguments=original.get("arguments") or {},
         tool_call_id=original.get("id") or blob.get("tool_call_id"),
-        gate_event_key=gate_event_key,
+        gate_event_key=gate_record_key(gate_event_key, gate_id_of(metadata)),
         agent_id=agent_id,
         session_id=session_id,
         chat_id=chat_id,
@@ -226,6 +243,7 @@ async def _warn_if_decision_disagrees(
 
 
 __all__ = [
+    "gate_record_key",
     "record_from_chat_pending",
     "record_from_parked_blob",
     "write_approval_record",

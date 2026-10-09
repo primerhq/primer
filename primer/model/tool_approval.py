@@ -250,7 +250,10 @@ class ToolApprovalRecord(Identifiable):
     gate_event_key: str | None = Field(
         default=None,
         description=(
-            "The park's own event_key (ParkedState.yielded.event_key) - "
+            "The park's own event_key (ParkedState.yielded.event_key), "
+            "followed by '@<gate_id>' when the park carries a gate id "
+            "(C-033 PR 2: the provider repeats a tool_call_id across "
+            "rounds, so the event key alone cannot tell two gates apart) - "
             "None for records written before this field existed. Carries "
             "a NULL-tolerant unique index, so a record is queryable by "
             "gate and the respond-time + resume-time write sites cannot "
