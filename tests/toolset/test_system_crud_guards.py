@@ -270,6 +270,29 @@ class TestReservedIds:
         assert await sp.get_storage(ArtifactStorageProvider).get(DEFAULT_ARTIFACT_PROVIDER_ID) is not None
         assert not other_error
 
+    @pytest.mark.asyncio
+    async def test_the_default_artifact_provider_cannot_be_switched_to_a_kind_that_cannot_be_built(self, world) -> None:
+        """REST answers 422 (ticket 01a1226f): the factory builds only ``db``, so a default naming ``filesystem`` or ``s3`` breaks every consumer of it."""
+        from primer.api.registries.artifact_storage_registry import DEFAULT_ARTIFACT_PROVIDER_ID
+        from primer.model.providers.artifact import ArtifactStorageProviderType, DbArtifactConfig
+
+        sp, toolset, _ = world
+        storage = sp.get_storage(ArtifactStorageProvider)
+        await storage.create(ArtifactStorageProvider(id=DEFAULT_ARTIFACT_PROVIDER_ID, provider=ArtifactStorageProviderType.DB, config=DbArtifactConfig()))
+        await storage.create(ArtifactStorageProvider(id="extra", provider=ArtifactStorageProviderType.DB, config=DbArtifactConfig()))
+
+        for body in (
+            {"provider": "filesystem", "config": {"root": "/tmp/a"}},
+            {"provider": "s3", "config": {"bucket": "b"}},
+        ):
+            is_error, answer = await _call(toolset, "update_artifact_storage_provider", id=DEFAULT_ARTIFACT_PROVIDER_ID, entity={"id": DEFAULT_ARTIFACT_PROVIDER_ID, **body})
+            assert is_error and answer["type"] == "validation-error" and "default" in answer["message"], answer
+            assert (await storage.get(DEFAULT_ARTIFACT_PROVIDER_ID)).provider is ArtifactStorageProviderType.DB, "the row is unchanged"
+
+        kept_error, _ = await _call(toolset, "update_artifact_storage_provider", id=DEFAULT_ARTIFACT_PROVIDER_ID, entity={"id": DEFAULT_ARTIFACT_PROVIDER_ID, "provider": "db", "config": {}})
+        spare_error, _ = await _call(toolset, "update_artifact_storage_provider", id="extra", entity={"id": "extra", "provider": "filesystem", "config": {"root": "/tmp/a"}})
+        assert not kept_error and not spare_error, "keeping db is fine, and so is any other row"
+
 
 class TestReferenceBlocks:
     @pytest.mark.asyncio
