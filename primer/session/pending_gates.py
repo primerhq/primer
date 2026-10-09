@@ -115,12 +115,45 @@ def enumerate_pending_gates(blob: dict[str, Any]) -> list[dict[str, Any]]:
     }]
 
 
+_KEY_FIELD_BY_LIST = {"pending_toolcalls": "parked_event_key", "pending_agent_yields": "event_key"}
+"""The field of each checkpoint list that holds the event key an entry waits on."""
+
+
+def fired_key_names_a_pending_entry(checkpoint: dict[str, Any], event_key: str | None) -> bool:
+    """Whether ``event_key`` is the key one of the checkpoint's pending human entries waits on."""
+    if not event_key:
+        return False
+    return any(
+        entry.get(field) == event_key
+        for list_name, field in _KEY_FIELD_BY_LIST.items()
+        for entry in checkpoint.get(list_name) or []
+    )
+
+
+def pending_entries(
+    checkpoint: dict[str, Any], list_name: str, *, tool_call_id: str | None, event_key: str | None = None,
+) -> list[dict[str, Any]]:
+    """The entries of ``checkpoint[list_name]`` a reply answers (C-033 round 2, ticket 01a11fc6-0cce).
+
+    The provider repeats ``tool_call_id`` across rounds AND across fan-out siblings of one superstep, so the raw id alone can name several entries. The event
+    key a reply fired is the entry's own, so when it names a pending entry the selection is by it, in BOTH lists (a key that belongs to an agent-node yield
+    must not also select a tool_call entry that shares the raw id). A key that names no entry (a park written before keys were node-scoped), or none at
+    all (the key-less legacy drain), selects by the raw id as before.
+    """
+    entries = checkpoint.get(list_name) or []
+    if fired_key_names_a_pending_entry(checkpoint, event_key):
+        field = _KEY_FIELD_BY_LIST[list_name]
+        return [entry for entry in entries if entry.get(field) == event_key]
+    return [entry for entry in entries if entry.get("tool_call_id") == tool_call_id]
+
+
 def resolve_pending_gate(
     blob: dict[str, Any],
     *,
     tool_call_id: str,
     kind: str | None = None,
     gate_id: str | None = None,
+    event_key: str | None = None,
 ) -> dict[str, Any] | None:
     """The one pending entry matching ``tool_call_id`` (and ``kind`` / ``gate_id`` if given).
 
@@ -136,9 +169,12 @@ def resolve_pending_gate(
     that names none gets
     the first match with a warning rather than an exception.
     """
+    entries = enumerate_pending_gates(blob)
+    # The event key a reply fired names its gate exactly (see :func:`pending_entries`); the raw id decides only when the key names none.
+    by_key = bool(event_key) and any(entry.get("event_key") == event_key for entry in entries)
     matches = [
-        entry for entry in enumerate_pending_gates(blob)
-        if entry.get("tool_call_id") == tool_call_id
+        entry for entry in entries
+        if (entry.get("event_key") == event_key if by_key else entry.get("tool_call_id") == tool_call_id)
         and (kind is None or entry.get("kind") == kind)
         and (gate_id is None or gate_token_matches(gate_id_of(entry.get("resume_metadata")), gate_id))
     ]
@@ -151,4 +187,4 @@ def resolve_pending_gate(
     return matches[0] if matches else None
 
 
-__all__ = ["enumerate_pending_gates", "resolve_pending_gate"]
+__all__ = ["enumerate_pending_gates", "fired_key_names_a_pending_entry", "pending_entries", "resolve_pending_gate"]

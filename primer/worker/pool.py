@@ -1417,10 +1417,10 @@ class WorkerPool:
         )
 
     async def _write_approval_record_for_graph(
-        self, *, session, checkpoint: dict, tcid, payload,
+        self, *, session, checkpoint: dict, tcid, payload, event_key: str | None = None,
     ) -> None:
         return await graph_resume_coordinator.write_approval_record_for_graph(
-            self, session=session, checkpoint=checkpoint, tcid=tcid, payload=payload,
+            self, session=session, checkpoint=checkpoint, tcid=tcid, payload=payload, event_key=event_key,
         )
 
     async def _resume_engine_session(self, engine_lease, session):
@@ -1459,14 +1459,14 @@ class WorkerPool:
             self, session, parked,
         )
 
-    def _graph_value_yield_toolcall(self, checkpoint, tcid) -> bool:
+    def _graph_value_yield_toolcall(self, checkpoint, tcid, event_key: str | None = None) -> bool:
         return graph_resume_coordinator.graph_value_yield_toolcall(
-            self, checkpoint, tcid,
+            self, checkpoint, tcid, event_key=event_key,
         )
 
-    def _graph_nested_agent_yield(self, checkpoint, tcid):
+    def _graph_nested_agent_yield(self, checkpoint, tcid, event_key: str | None = None):
         return graph_resume_coordinator.graph_nested_agent_yield(
-            self, checkpoint, tcid,
+            self, checkpoint, tcid, event_key=event_key,
         )
 
     async def _resume_graph_continuation(
@@ -1481,17 +1481,17 @@ class WorkerPool:
             self, session, parked, checkpoint, ay, outcome,
         )
 
-    async def _graph_agent_tool_result(self, checkpoint, tcid, payload, *, session_id):
+    async def _graph_agent_tool_result(self, checkpoint, tcid, payload, *, session_id, event_key: str | None = None):
         return await graph_resume_coordinator.graph_agent_tool_result(
-            self, checkpoint, tcid, payload, session_id=session_id,
+            self, checkpoint, tcid, payload, session_id=session_id, event_key=event_key,
         )
 
     async def _persist_resume_tool_result_record_for_graph(
-        self, *, session, checkpoint, tcid, agent_tool_result,
+        self, *, session, checkpoint, tcid, agent_tool_result, event_key: str | None = None,
     ) -> None:
         return await graph_resume_coordinator.persist_resume_tool_result_record_for_graph(
             self, session=session, checkpoint=checkpoint, tcid=tcid,
-            agent_tool_result=agent_tool_result,
+            agent_tool_result=agent_tool_result, event_key=event_key,
         )
 
     def _repark_graph_outcome(self, session, repark, *, node_tool_call_seq=None):
