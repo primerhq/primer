@@ -135,7 +135,7 @@ SHAPES = [
         [2, 7], [[1, 2, 3, 4], [5, 6, 7]],
     ),
     (
-        "dispatch's copy carries the message with URL credentials redacted while the stream's error stores it raw: it is still the same failure",
+        "a log written before 01a11f35-ad20 holds the stream's message raw while dispatch's copy is the problem detail: it is still the same failure",
         [_user(1), _stream_error(2, URL_MESSAGE), _dispatch_error(3, redact_url_secrets(URL_MESSAGE)), _marker(4)],
         [2], [[1, 2, 3, 4]],
     ),
