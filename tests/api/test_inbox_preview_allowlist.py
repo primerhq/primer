@@ -574,3 +574,41 @@ def test_a_withheld_value_under_an_ordinary_key_is_still_drawn_as_hidden() -> No
     got = _preview({"path": "/a", "note": "x"}, _stamp("path"))
 
     assert "note=<hidden>" in got["arguments"] and "<redacted>" not in got["arguments"], got["arguments"]
+
+
+# ---- the same rules at the edges the first tests leave open (added with the fix; each pins a branch a mutant could drop) ------------------------------------------------
+
+
+def test_dict_members_are_charged_to_the_budget_too() -> None:
+    """Visits through dictionaries (not lists) cost the budget as well: 49 branches of five nested allowed positions each use it up, and the argument after them is withheld."""
+    deep = {"x" * 20: {"y" * 20: {"z" * 20: {"v": 1}}}}
+    entity = {f"s{i}": deep for i in range(49)}
+    stamp = _stamp(*(f"entity.s{i}.{'x' * 20}.{'y' * 20}.{'z' * 20}.v" for i in range(49)), "note")
+
+    got = _preview({"entity": entity, "note": "plain words"}, stamp)
+
+    assert "note=<hidden>" in got["arguments"] and "plain words" not in got["arguments"], got["arguments"]
+
+
+def test_a_dict_cut_before_its_pair_name_withholds_the_value_beside_it() -> None:
+    """The name sits past the 50 members the walk looks at, so it was never read: the value that was reached is withheld with it."""
+    cfg = {**{f"k{i}": 1 for i in range(49)}, "value": "hunter2xyz", "name": "DB_PASSWORD"}
+
+    filtered, hidden = _allow_only({"cfg": cfg}, ["cfg.value"])      # the filter itself: the card's line is cut at 80 characters, long before the value
+
+    assert filtered["cfg"]["value"] == "<hidden>" and "hunter2xyz" not in repr(filtered), filtered
+    assert filtered["cfg"]["..."] == "<1 more>" and "cfg.value" in hidden
+    assert _preview({"cfg": cfg}, _stamp("cfg.value"))["truncated"] is True
+
+
+def test_an_unstamped_row_withholds_a_value_beside_a_withheld_name() -> None:
+    got = _preview({"name": "PIN", "value": 123456}, None)
+
+    assert "123456" not in got["arguments"] and "value=<hidden>" in got["arguments"], got["arguments"]
+    assert _preview({"mode": "x", "value": 123456}, None)["arguments"] == "mode=<hidden>, value=123456"
+
+
+def test_a_default_stamp_withholds_a_value_beside_a_withheld_name() -> None:
+    got = _preview({"name": "PIN", "value": 123456}, _stamp("value", source="default"))
+
+    assert "123456" not in got["arguments"] and "value=<hidden>" in got["arguments"], got["arguments"]

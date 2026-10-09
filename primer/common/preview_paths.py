@@ -10,7 +10,8 @@ This module is a LEAF (it imports nothing from primer) and knows only the langua
 * :func:`schema_has_path` / :func:`missing_paths`: does a tool's JSON Schema have it (a path that names nothing is a typo, and a typo hides more than was meant);
 * :func:`closed_set_names`: the top-level arguments that are safe to show with NO declaration (design ruling D2): a boolean, an integer, a number, ``null``, an
   enum or a const cannot carry a free-form secret. A string, an object, an array, a schema without a type and a ``$ref`` that does not resolve are hidden;
-* :func:`classify`: at run time, is the value at a position shown whole, shown in part (an allowed path goes deeper) or hidden.
+* :func:`classify`: at run time, is the value at a position shown whole, shown in part (an allowed path goes deeper) or hidden;
+* :func:`is_segment`: at run time, is a dictionary key one path segment (a key such as ``entity.id`` is not, and is never matched as a nested path).
 """
 
 from __future__ import annotations
@@ -42,6 +43,12 @@ def path_syntax_error(path: Any) -> str | None:
                 "(letters, digits, '_' and '-', joined by single dots; a list needs no brackets)"
             )
     return None
+
+
+def is_segment(name: Any) -> bool:
+    """Whether ``name`` is ONE segment of a path: text of the language's name rule, at most ``MAX_PATH_CHARS``. A dictionary key that is not (``entity.id``, ``a b``)
+    is never matched against a path at run time: joined with its parents it would read as a nested path and show a value the allowlist never named."""
+    return isinstance(name, str) and len(name) <= MAX_PATH_CHARS and _SEGMENT.fullmatch(name) is not None
 
 
 def _resolve(node: Any, root: dict, depth: int = 0) -> Any:
@@ -161,4 +168,4 @@ def classify(allowed: Sequence[str], here: str) -> Literal["all", "part", "none"
     return "part" if deeper else "none"
 
 
-__all__ = ["MAX_PATHS", "MAX_PATH_CHARS", "classify", "closed_set_names", "missing_paths", "path_syntax_error", "schema_has_path"]
+__all__ = ["MAX_PATHS", "MAX_PATH_CHARS", "classify", "closed_set_names", "is_segment", "missing_paths", "path_syntax_error", "schema_has_path"]

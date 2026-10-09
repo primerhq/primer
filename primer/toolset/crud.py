@@ -70,16 +70,17 @@ CRUD_TOOL_NAMES: tuple[str, ...] = (
 
 # What the approval card of each default-gated tool may show (design note 01a11cd3-66b0). The nine are the tools bootstrap/seed.py gates with a required policy, so
 # these are the cards a fresh install shows. Each path names WHAT is created or changed; the free text that can hold a pasted secret is not listed, so it is withheld:
-# an agent's system_prompt and compaction_prompt, a graph node's templates and arguments, a webhook trigger's token and hmac_secret, a Python toolset's source.
+# an agent's system_prompt, compaction_prompt, description and response_format (a schema with free text inside), a graph's and a node's description and templates and
+# arguments, a trigger's description, a webhook trigger's token and hmac_secret, a Python toolset's source. A description is free text a person pastes a key into as
+# easily as a prompt, so no description is listed.
 # "Show all" (the session's own pending-yields route) still returns the whole call to whoever may decide it. Checked against each tool's schema when it is built.
 _AGENT_PREVIEW = (
-    "entity.id", "entity.description", "entity.model", "entity.temperature", "entity.max_tool_turns", "entity.max_output_tokens", "entity.tools",
-    "entity.compaction_tool_access", "entity.allow_external_tools", "entity.response_format", "entity.tts_voice", "entity.harness_id",
+    "entity.id", "entity.model", "entity.temperature", "entity.max_tool_turns", "entity.max_output_tokens", "entity.tools",
+    "entity.compaction_tool_access", "entity.allow_external_tools", "entity.tts_voice", "entity.harness_id",
 )
 _GRAPH_PREVIEW = (
-    "entity.id", "entity.description", "entity.nodes.kind", "entity.nodes.id", "entity.nodes.description", "entity.nodes.agent_id", "entity.nodes.graph_id",
-    "entity.nodes.tool_id", "entity.nodes.profile_id", "entity.edges.kind", "entity.edges.from_node", "entity.edges.to_node", "entity.max_iterations",
-    "entity.on_max_iterations", "entity.harness_id",
+    "entity.id", "entity.nodes.kind", "entity.nodes.id", "entity.nodes.agent_id", "entity.nodes.graph_id", "entity.nodes.tool_id", "entity.nodes.profile_id",
+    "entity.edges.kind", "entity.edges.from_node", "entity.edges.to_node", "entity.max_iterations", "entity.on_max_iterations", "entity.harness_id",
 )
 _TRIGGER_CONFIG_PREVIEW = (
     "config.kind", "config.cron", "config.timezone", "config.catchup", "config.provider_id", "config.channel_id", "config.interactive", "config.fire_at",
@@ -90,8 +91,8 @@ PREVIEW_ARGS: dict[str, tuple[str, ...]] = {
     "update_agent": ("id", *_AGENT_PREVIEW),
     "create_graph": _GRAPH_PREVIEW,
     "update_graph": ("id", *_GRAPH_PREVIEW),
-    "create_trigger": ("slug", "name", "description", "enabled", *_TRIGGER_CONFIG_PREVIEW),
-    "update_trigger": ("id", "name", "description", "enabled", *_TRIGGER_CONFIG_PREVIEW),
+    "create_trigger": ("slug", "name", "enabled", *_TRIGGER_CONFIG_PREVIEW),
+    "update_trigger": ("id", "name", "enabled", *_TRIGGER_CONFIG_PREVIEW),
     "create_python_toolset": ("toolset_id", "default_timeout_seconds"),
     "update_python_toolset_source": ("toolset_id",),
     "list_python_tools": ("toolset_id",),
