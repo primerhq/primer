@@ -31,6 +31,7 @@ from tests.session.test_dispatch import (  # noqa: F401  (fixtures are used by n
     fake_storage_provider,
     fake_workspace_io,
 )
+from tests.session.test_advisory_records_write_back_their_seq import _isolating
 from tests.session.test_wake_vs_the_stuck_session_sweeper import _Engine, _Registry, _Scheduler, _rested_row
 
 SID = "s-rested"
@@ -176,3 +177,75 @@ async def test_the_sweeper_does_not_wait_for_the_lifecycle_lock(fake_storage_pro
         reaped = await asyncio.wait_for(sweeper._tick(), 3)
 
     assert reaped == 1
+
+
+# ---- round 4 of the review of PR 623: a stamped row that is already RUNNING, and the fence itself ------------------------------------------------
+
+
+async def _stamped_running_row(storage) -> WorkspaceSession:
+    """The unfinished failure exit the sweeper reaps on purpose: RUNNING, turn 0, past the grace, stamped, no lease."""
+    long_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+    row = WorkspaceSession(
+        id=SID, workspace_id="ws-1", binding=AgentSessionBinding(agent_id="agent-a"), status=SessionStatus.RUNNING,
+        created_at=long_ago, started_at=long_ago, turn_no=0, turn_status="idle",
+        last_turn_error=LastTurnError(code="server_error", at=long_ago),
+    )
+    await storage.create(row)
+    return row
+
+
+@pytest.mark.asyncio
+async def test_a_wake_of_a_stamped_row_that_is_already_running_restarts_the_clock_too(fake_storage_provider, fake_event_bus):
+    """The restart is not for the statuses a wake MOVES to RUNNING (CREATED, PAUSED, WAITING): a message to a stamped row that is already RUNNING (a
+    failure exit that stamped and never finished) lands in the same window, between the sweeper's re-read and its write."""
+    sessions = fake_storage_provider.get_storage(WorkspaceSession)
+    row = await _stamped_running_row(sessions)
+    before = datetime.now(timezone.utc)
+    deps = SessionWakeDeps(
+        storage_provider=fake_storage_provider, scheduler=_Scheduler(), claim_engine=_Engine(),
+        workspace_registry=_Registry(), event_bus=fake_event_bus,
+    )
+
+    await wake_session(workspace_id=row.workspace_id, session_id=SID, instruction=None, human_intent=True, deps=deps)
+
+    assert (await sessions.get(SID)).started_at >= before
+
+
+@pytest.mark.asyncio
+async def test_a_wake_between_the_sweepers_re_read_and_its_write_saves_a_stamped_running_row(fake_storage_provider, fake_event_bus):
+    """The window itself: the sweeper has read the stamped RUNNING row and asks the lease table (no lease yet); the user's message is woken in
+    that await. Its write must be refused, or the session the user just messaged is ended ``failure_exit_unfinished``."""
+    sessions = fake_storage_provider.get_storage(WorkspaceSession)
+    _isolating(sessions)          # the in-memory fake hands out the STORED object: without copies the wake would also change the sweeper's snapshot
+    row = await _stamped_running_row(sessions)
+    wake_deps = SessionWakeDeps(
+        storage_provider=fake_storage_provider, scheduler=_Scheduler(), claim_engine=_Engine(),
+        workspace_registry=_Registry(), event_bus=fake_event_bus,
+    )
+
+    class _WakesDuringTheLookup(_Engine):
+        async def has_lease(self, kind, entity_id) -> bool:
+            await wake_session(workspace_id=row.workspace_id, session_id=SID, instruction=None, human_intent=True, deps=wake_deps)
+            return False
+
+    reaped = await StuckSessionSweeper(session_storage=sessions, claim_engine=_WakesDuringTheLookup())._tick()
+
+    after = await sessions.get(SID)
+    assert reaped == 0 and (after.status, after.ended_reason) == (SessionStatus.RUNNING, None), "the session the user just messaged was ended"
+
+
+@pytest.mark.asyncio
+async def test_the_sweepers_write_for_a_stamped_row_is_fenced_on_the_started_at_it_read(fake_storage_provider):
+    """Whatever moved ``started_at`` between the re-read and the write (a wake on another pod), the write is refused."""
+    sessions = fake_storage_provider.get_storage(WorkspaceSession)
+    await _stamped_running_row(sessions)
+
+    class _MovesTheClockDuringTheLookup(_Engine):
+        async def has_lease(self, kind, entity_id) -> bool:
+            row = await sessions.get(entity_id)
+            await sessions.update(row.model_copy(update={"started_at": datetime.now(timezone.utc)}))
+            return False
+
+    reaped = await StuckSessionSweeper(session_storage=sessions, claim_engine=_MovesTheClockDuringTheLookup())._tick()
+
+    assert reaped == 0 and (await sessions.get(SID)).status == SessionStatus.RUNNING
