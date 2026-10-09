@@ -251,7 +251,8 @@ def _wake_names_another_entry(session: WorkspaceSession, *, event_key: str, payl
     row an external result answers (``external_call_row_id``). A producer that knows it names it (:data:`~primer.model.yield_.WAKE_ENTRY_KEY`); when it does, and
     an entry that waits on ``event_key`` carries an identity, the wake must name one of them, else the flip is refused: nothing is written, one WARNING and
     ``session_wake_stale_refused_total``. A wake that names none (an older producer) and a pending entry with none (a park from before) are judged as before.
-    A single park and a graph park are judged alike; two siblings that share a key each accept only their own id.
+    A single park and a graph park are judged alike. Two graph siblings that share a key are not told apart: a wake that names either is admitted, and
+    the resume takes every entry on the key (ticket 01a122cc-e699).
     """
     from primer.model.yield_ import WAKE_ENTRY_KEY, entry_id_of
     from primer.session.pending_gates import enumerate_pending_gates
@@ -355,10 +356,18 @@ async def durably_mark_session_resumable(
     * For a MULTI-event park (``parked_event_keys`` set) also accumulate
       ``resume_event_payloads[dispatch_key]`` (see :func:`_dispatch_key_for`
       - 01a0518f: the event_key's tail past the fixed ``kind:session_id:``
-      prefix, node-qualified for a graph park; a tool_wait key whole) so a second concurrent reply
+      prefix, node-qualified for a graph park; a tool_wait key whole) so a second reply
       is preserved rather than overwritten - including two fan-out siblings
-      that happen to share a raw provider tool_call_id.
-    * ``storage.update_unless`` the flipped row, guarded on ``status`` -
+      that happen to share a raw provider tool_call_id - PROVIDED it read the
+      row the first one wrote: the leaf is merged into the snapshot's
+      ``parked_state``, which the write replaces whole. A caller that wakes
+      several keys of one park re-reads the row before each further wake
+      (``apply_tool_results``, the steer route's cancel of external calls);
+      two replies that race from one snapshot can still drop a leaf (a
+      ``set_paths`` leaf per dispatch key would close it, ticket 01a122cc-effa).
+    * ONE ``patch_if`` of the two fields the flip owns (``parked_status``,
+      ``parked_state``), guarded on the park it read (``parked_at``), a
+      ``parked_status`` it may advance from and a status that is not ENDED -
       see below.
     * Re-arm the claim lease via ``engine.mark_resumable`` (park dropped it)
       so the claim loop re-claims the row WITHOUT relying on any bus. When no
@@ -373,12 +382,11 @@ async def durably_mark_session_resumable(
     row that ended IN that gap - this used to be a snapshot check for
     exactly that reason and was a real, if narrow, TOCTOU: nothing stopped
     the row from ending between the check and ``storage.update`` landing.
-    The fix is a conditional write, not a better-timed read:
-    ``session_storage.update_unless(..., field="status",
-    forbidden=SessionStatus.ENDED.value)`` asks the BACKEND to evaluate
-    "is status ENDED" against the row's CURRENT value in the same
-    statement as the write (see ``Storage.update_unless``), so there is no
-    gap left for the row to end in. ``flip_sessions_parked_on``'s query-level
+    The fix is a conditional write, not a better-timed read: the
+    ``patch_if`` guard admits every status but ENDED, and the BACKEND
+    evaluates it against the row's CURRENT value in the same statement as
+    the write (see ``Storage.patch_if``), so there is no gap left for the
+    row to end in. ``flip_sessions_parked_on``'s query-level
     exclusion (below) is a separate, complementary optimization - it keeps
     an already-ended row out of the candidate set at all, which this
     function's own guard would also correctly reject if it slipped through.
@@ -412,7 +420,7 @@ async def durably_mark_session_resumable(
     if session.status == SessionStatus.ENDED:
         # Cheap early exit ONLY: the caller's own snapshot already says
         # ENDED, so skip the round trip. This is NOT the safety guarantee
-        # (a snapshot cannot be) - update_unless below is what actually
+        # (a snapshot cannot be) - the guarded patch_if below is what actually
         # closes the race for a row that ends AFTER this check runs.
         return False
     state = dict(session.parked_state or {})
@@ -482,7 +490,7 @@ async def durably_wake_session(
     first attempt lost. When the lease is already healthy the upsert is a
     harmless no-op, which is the common case for an ordinary double-reply.
 
-    A raising ``storage.update_unless`` still propagates untouched: the
+    A raising ``patch_if`` (a missing row's ``NotFoundError`` too) still propagates untouched: the
     caller must NOT report a reply accepted when the durable stamp never
     landed.
 
@@ -693,7 +701,7 @@ async def flip_sessions_parked_on(
         keeps an already-ended row out of the loop below entirely, so it
         never reaches durably_mark_session_resumable at all in the common
         case. That function's own write is independently guarded (its
-        storage.update_unless call, atomic against the row's CURRENT
+        one patch_if, atomic against the row's CURRENT
         status) - so a row that slips past this filter, or ends in the
         narrower gap between this find() and that write, is still
         rejected there rather than getting a lease armed on it and

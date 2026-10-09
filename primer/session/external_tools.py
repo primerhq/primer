@@ -26,9 +26,11 @@ logger = logging.getLogger(__name__)
 CANCEL_REASON_SUPERSEDED = "superseded by new user message"
 
 
-def _pending_targets(session: Any) -> dict[str, str]:
-    """Map tool_call_id -> event_key for every external call parked on
-    this session (single-agent park OR graph checkpoint entries).
+def _pending_targets(session: Any) -> dict[str, tuple[str, str | None]]:
+    """Map tool_call_id -> (event_key, call row id) for every external call
+    parked on this session (single-agent park OR graph checkpoint entries).
+    The row id is the ``external_call_row_id`` the pending entry names
+    (``None`` for an entry that names none).
 
     01a0518f: two concurrent fan-out siblings can share a raw provider
     tool_call_id; this dict collapses to whichever entry is written last,
@@ -38,7 +40,7 @@ def _pending_targets(session: Any) -> dict[str, str]:
     and mapped back to the raw id server-side, tracked as a follow-up).
     Logged here so a real collision is visible instead of silent.
     """
-    out: dict[str, str] = {}
+    out: dict[str, tuple[str, str | None]] = {}
     if getattr(session, "parked_status", None) not in ("parked", "resumable"):
         return out
     blob = session.parked_state or {}
@@ -47,7 +49,7 @@ def _pending_targets(session: Any) -> dict[str, str]:
         tcid = blob.get("tool_call_id")
         key = yielded.get("event_key")
         if tcid and key:
-            out[tcid] = key
+            out[tcid] = (key, (yielded.get("resume_metadata") or {}).get("external_call_row_id"))
     # Graph checkpoints carry external parks in two places, both keyed by
     # the "_external" marker name: tool-call node suspends live in
     # ``pending_toolcalls`` (with their wake key), agent-node yields in
@@ -65,8 +67,9 @@ def _pending_targets(session: Any) -> dict[str, str]:
                 "session %s; a later entry overwrites the earlier one",
                 tcid, session.id,
             )
-        out[tcid] = entry.get("parked_event_key") or (
-            f"external_tool:{session.id}:{tcid}"
+        out[tcid] = (
+            entry.get("parked_event_key") or f"external_tool:{session.id}:{tcid}",
+            (entry.get("resume_metadata") or {}).get("external_call_row_id"),
         )
     for entry in checkpoint.get("pending_agent_yields") or []:
         if entry.get("tool_name") != "_external":
@@ -80,8 +83,9 @@ def _pending_targets(session: Any) -> dict[str, str]:
                 "session %s; a later entry overwrites the earlier one",
                 tcid, session.id,
             )
-        out[tcid] = entry.get("event_key") or (
-            f"external_tool:{session.id}:{tcid}"
+        out[tcid] = (
+            entry.get("event_key") or f"external_tool:{session.id}:{tcid}",
+            (entry.get("resume_metadata") or {}).get("external_call_row_id"),
         )
     return out
 
@@ -129,7 +133,9 @@ async def apply_tool_results(
     Each call's row is then marked ``completed`` through the guarded
     :func:`resolve_external_row`: a row that left ``pending`` after the
     validation (a cancel or the lazy timeout won the race) keeps the
-    status it reached and is not overwritten.
+    status it reached and is not overwritten. The row is the one the
+    pending entry names (its ``external_call_row_id``), not whichever
+    pending row of the raw id the lookup kept.
     """
     targets = _pending_targets(session)
     rows = await _rows_by_tcid(call_storage, session_id=session.id)
@@ -143,16 +149,24 @@ async def apply_tool_results(
             f"no pending external tool call(s) {bad!r} on session "
             f"{session.id!r}; nothing was applied"
         )
+    woken = None
     for r in results:
+        event_key, entry_row_id = targets[r.tool_call_id]
+        # The call row the pending ENTRY names: several pending rows can share a raw id (a stale one whose park hit the yield cap with no timeout), and
+        # naming another than the entry's would have the entry fence refuse this result and complete the wrong row (#707 review N7).
+        row_id = entry_row_id or rows[r.tool_call_id].id
         # The wake names the park this producer read (security ticket 01a1208d): delivered by key alone and at least once, a copy redelivered after the
         # session re-parked under the same key must not decide the new park.
-        # ... and the call row it answers (``external_call_row_id`` of the pending entry), which survives a graph park's re-park where the stamp does not.
+        # ... and the call row it answers, which survives a graph park's re-park where the stamp does not.
         payload = with_wake_entry(
-            with_wake_park({"result": r.result, "is_error": bool(r.is_error)}, session.parked_at), rows[r.tool_call_id].id,
+            with_wake_park({"result": r.result, "is_error": bool(r.is_error)}, session.parked_at), row_id,
         )
+        # Each result is its own leaf of a multi-event park, and the flip writes ``parked_state`` whole: a further wake starts from the row the previous
+        # one wrote, or it drops that leaf (#707 review N2).
+        woken = session if woken is None else (await session_storage.get(session.id) or woken)
         await durably_wake_session(
-            session,
-            event_key=targets[r.tool_call_id],
+            woken,
+            event_key=event_key,
             payload=payload,
             session_storage=session_storage,
             engine=engine,
@@ -162,15 +176,15 @@ async def apply_tool_results(
 
             await emit_session_wake(
                 storage_provider, event_bus,
-                targets[r.tool_call_id], payload,
+                event_key, payload,
             )
         elif event_bus is not None:
             try:
-                await event_bus.publish(targets[r.tool_call_id], payload)
+                await event_bus.publish(event_key, payload)
             except Exception:  # noqa: BLE001 - durable flip already landed
                 logger.exception("external tool result publish failed")
         landed = await resolve_external_row(
-            call_storage, rows[r.tool_call_id].id,
+            call_storage, row_id,
             status="completed", result=r.result, is_error=bool(r.is_error),
         )
         if landed is None:
