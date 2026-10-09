@@ -125,3 +125,65 @@ def test_a_branch_with_no_target_is_a_blocking_issue() -> None:
 def test_a_branch_with_a_real_target_is_not_flagged() -> None:
     codes = [r["code"] for r in _validate(_draft("eq"))["blocking"]]
     assert "branch_no_target" not in codes, json.dumps(codes)
+
+
+def test_a_bad_op_on_the_second_branch_names_the_second_branch() -> None:
+    """Pin: the message counts the branch, it is not hard-coded to the first one."""
+    draft = _draft("eq")
+    draft["edges"][1]["router"]["branches"][1]["conditions"] = [{"path": "k", "op": "contains", "value": 1}]
+    found = _validate(draft)
+    rows = [r for r in found["blocking"] if r["code"] == "branch_op_unknown"]
+    assert rows, f"the bad op on branch 2 must be blocking, got {json.dumps(found)[:400]}"
+    message = rows[0]["message"]
+    assert "Pick" in message, f"the message must name the step in words: {message}"
+    assert "branch 2" in message, f"the message must name the second branch: {message}"
+
+
+def test_an_empty_target_on_the_second_branch_names_the_second_branch() -> None:
+    """Pin: the empty-target message counts the branch, it is not hard-coded to the first one."""
+    draft = _draft("eq")
+    draft["edges"][1]["router"]["branches"][1]["to_node"] = ""
+    found = _validate(draft)
+    rows = [r for r in found["blocking"] if r["code"] == "branch_no_target"]
+    assert rows, f"an empty to_node on branch 2 must be blocking, got {json.dumps(found)[:400]}"
+    message = rows[0]["message"]
+    assert "Pick" in message, f"the message must name the step in words: {message}"
+    assert "branch 2" in message, f"the message must name the second branch: {message}"
+
+
+def _branch_rows_fn() -> str:
+    """The branchRowsFor arrow from gb-outline.jsx, as plain JS (the block itself carries no JSX)."""
+    m = re.search(r"const branchRowsFor = \(nodeId\) => \{.*?\n  \};", _src("gb-outline.jsx"), re.S)
+    assert m, "branchRowsFor moved out of gb-outline.jsx or its shape changed: update this pin"
+    return m.group(0)
+
+
+def _outline_rows(draft: dict, node_id: str) -> list[dict]:
+    from py_mini_racer import MiniRacer
+
+    ctx = MiniRacer()
+    ctx.eval(f"var draft = {json.dumps(draft)};")
+    ctx.eval("var byId = {}; for (var n of draft.nodes || []) byId[n.id] = n;")
+    ctx.eval(_branch_rows_fn())
+    return json.loads(ctx.eval(f"JSON.stringify(branchRowsFor({json.dumps(node_id)}))"))
+
+
+def test_a_router_with_no_kind_is_checked_as_json_path() -> None:
+    """The model defaults the router kind to "json_path" (_JsonPathRouter.kind) and a pasted import can omit it; a kind-less router must still get the json_path checks (branch_op_unknown, branch_requires_response_format, no_catch_all)."""
+    draft = _draft("eq")
+    draft["edges"][1]["router"]["branches"][0]["conditions"][0]["op"] = "contains"
+    del draft["edges"][1]["router"]["kind"]
+    found = _validate(draft)
+    rows = [r for r in found["blocking"] if r["code"] == "branch_op_unknown"]
+    assert rows, f"a kind-less router must be checked as json_path, got {json.dumps(found)[:400]}"
+
+
+def test_a_router_with_no_kind_draws_its_paths_in_the_outline() -> None:
+    """Same default on the left rail: a kind-less json_path router must draw its branch rows like one that names the kind."""
+    bare = _draft("eq")
+    del bare["edges"][1]["router"]["kind"]
+    named = _draft("eq")
+    rows_bare = _outline_rows(bare, "a")
+    rows_named = _outline_rows(named, "a")
+    assert rows_named, "the named-kind control drew nothing: the harness is not reaching branchRowsFor"
+    assert rows_bare == rows_named, f"the kind-less router draws {json.dumps(rows_bare)}, the json_path one draws {json.dumps(rows_named)}"
