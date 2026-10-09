@@ -195,7 +195,7 @@ function ChannelRulesPage({ pushToast }) {
       <div className="filter-bar">
         <div className="input-icon">
           <Icon name="search" size={13} className="icon" />
-          <input className="input" placeholder="Filter rules…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <input className="input" aria-label="Filter rules" placeholder="Filter rules…" value={q} onChange={(e) => setQ(e.target.value)} />
         </div>
         <div className="sep-v" />
         <select aria-label="Filter by provider" className="select" value={provFilter} onChange={(e) => setProvFilter(e.target.value)}>

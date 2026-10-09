@@ -2,6 +2,8 @@
 // GB_RefEditor - the chip text area, and GB_RefPicker - the insert popover.
 // The stored value is always a Jinja string; chips are a view over it, so a
 // graph authored in JSON round-trips untouched. WIRING.md §7.
+// The text area is a role="textbox" (multiline) named by the `label` prop: the
+// field its row shows (a section title, or a tool-argument name), never a placeholder.
 
 // Read the contenteditable DOM back into a Jinja string. Chips are
 // contenteditable=false spans carrying data-ref; everything else is literal text.
@@ -24,7 +26,7 @@ function GB_domToTemplate(root) {
 }
 
 function GB_RefEditor(props) {
-  const { value, onChange, draft, nodeId, placeholder, readOnly, sampleByExpr } = props;
+  const { value, onChange, draft, nodeId, placeholder, readOnly, sampleByExpr, label } = props;
   const { useRef, useEffect, useState } = React;
   const ref = useRef(null);
   const lastEmitted = useRef(value == null ? "" : String(value));
@@ -95,6 +97,9 @@ function GB_RefEditor(props) {
         ref={ref}
         contentEditable={!readOnly}
         suppressContentEditableWarning
+        role="textbox"
+        aria-multiline
+        aria-label={label || "Template"}
         onInput={(e) => {
           const txt = (window.getSelection() && window.getSelection().anchorNode
             && window.getSelection().anchorNode.nodeValue) || "";
