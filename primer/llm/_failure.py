@@ -38,7 +38,7 @@ from primer.model.except_ import (
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["UPSTREAM_TEXT_CAP", "describe_failure", "provider_label", "scrub"]
+__all__ = ["UPSTREAM_TEXT_CAP", "describe_failure", "provider_label", "scrub", "scrubbed_event_text"]
 
 #: Longest the provider's own text may be in a failure message (the console shows the message as the card's detail, and a 502 from a proxy can be
 #: a whole HTML page).
@@ -248,6 +248,12 @@ def _cap(text: str, limit: int = UPSTREAM_TEXT_CAP) -> str:
 
 def _rebuilt(err: PrimerError, message: str) -> PrimerError:
     return type(err)(message, code=err.code, status_code=err.status_code, cause=err.cause)
+
+
+def scrubbed_event_text(text: str, provider: Any) -> str:
+    """The provider's own words as a stream ``Error`` EVENT carries them (no exception for :func:`describe_failure` to rewrite): normalised, scrubbed
+    with the same rules (the provider's configured credentials included) and capped like an untouched message."""
+    return _cap(_clean(text, provider, collapse=False), _UNTOUCHED_MESSAGE_CAP)
 
 
 def describe_failure(err: PrimerError, exc: BaseException, provider: Any) -> PrimerError:

@@ -35,6 +35,7 @@ from typing import Any, Protocol
 
 from pydantic import TypeAdapter
 
+from primer.common.log import redact_url_secrets
 from primer.model.chat import (
     Done,
     Error,
@@ -624,7 +625,7 @@ def translate_stream_event(
             kind=SessionMessageKind.ERROR,
             payload={
                 "code": event.code,
-                "message": event.message,
+                "message": redact_url_secrets(event.message),
                 "node_id": event.node_id,
                 "path": event.path,
             },
@@ -991,7 +992,9 @@ def translate_stream_event(
         error_record = SessionMessageRecord(
             seq=1,
             kind=SessionMessageKind.ERROR,
-            payload={"message": event.message, "code": event.code, "fatal": event.fatal},
+            # The record is served whole by ``/messages``: a URL credential or a query key in the provider's words must not be persisted
+            # (dispatch's own ERROR record and the turn log redact theirs the same way).
+            payload={"message": redact_url_secrets(event.message), "code": event.code, "fatal": event.fatal},
             node_id=node_id,
             created_at=now,
         )

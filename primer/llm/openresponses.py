@@ -27,7 +27,7 @@ from pydantic import BaseModel
 
 from primer.common.openai_errors import classify_openai_exception
 from primer.int.llm import LLM
-from primer.llm._failure import describe_failure
+from primer.llm._failure import describe_failure, scrubbed_event_text
 from primer.llm._openai_common import build_sampling_params as _build_sampling_params_impl
 from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout
 from primer.model.except_ import (
@@ -1066,6 +1066,9 @@ class OpenResponsesLLM(LLM):
                                 if isinstance(event, Usage):
                                     tokens_in = event.input_tokens
                                     tokens_out = event.output_tokens
+                                elif isinstance(event, ChatError):
+                                    # an ``error`` EVENT carries the provider's words raw (no exception went through describe_failure)
+                                    event = ChatError(fatal=event.fatal, code=event.code, message=scrubbed_event_text(event.message, self._provider))
                                 yield event
                     except TimeoutError as exc:
                         from primer.model.except_ import ProviderTimeoutError
