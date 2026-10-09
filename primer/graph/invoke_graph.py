@@ -177,7 +177,7 @@ async def run_invoke_graph(
 
 
 async def resume_invoke_graph(
-    *, child, checkpoint, payload, resumed_tcid=None, agent_tool_result=None,
+    *, child, checkpoint, payload, resumed_tcid=None, resumed_event_key=None, agent_tool_result=None,
     resume_session_id=None, resolve_provider=None,
 ):
     """Resume a parked child graph from its checkpoint, returning
@@ -189,6 +189,9 @@ async def resume_invoke_graph(
 
     Mirrors graph_resume.resume_graph_from_checkpoint's rejection handling but
     also collects the ``_GraphEndOutputEvent`` output text.
+
+    ``resumed_event_key`` is the event key of the child's gate that was answered (the leaf's own): two siblings of the child's superstep can share the
+    raw ``resumed_tcid``, and only the key says which of them this reply is for (C-033, ticket 01a11fc6-0cce).
 
     ``payload`` also reaches the child as ``toolcall_payload``: a
     value-yielding ``tool_call`` node inside the child (``ask_user``, a python
@@ -218,7 +221,7 @@ async def resume_invoke_graph(
     failure: _GraphErrorEvent | None = None
     try:
         async for ev in child.resume_from_checkpoint(
-            checkpoint, resumed_tcid=resumed_tcid,
+            checkpoint, resumed_tcid=resumed_tcid, resumed_event_key=resumed_event_key,
             agent_tool_result=agent_tool_result,
             toolcall_payload=payload,
             resume_session_id=resume_session_id,

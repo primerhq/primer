@@ -372,8 +372,11 @@ class GraphFrame:
         """
         graph = await services.resolve_graph(self.graph_id)
         child = await services.build_child_graph_executor(graph, self.gsid)
+        # The leaf's own event key says WHICH gate of the child this reply answers: two siblings of the child's superstep can share ``node_tcid``, and
+        # a raw id alone resumed every one of them (C-033 round 2, ticket 01a11fc6-0cce).
+        leaf_key = getattr(leaf, "event_key", None)
         agent_tool_result = await services.graph_agent_tool_result(
-            self.checkpoint, self.node_tcid, payload
+            self.checkpoint, self.node_tcid, payload, event_key=leaf_key,
         )
         try:
             out, repark = await resume_invoke_graph(
@@ -381,6 +384,7 @@ class GraphFrame:
                 checkpoint=self.checkpoint,
                 payload=payload,
                 resumed_tcid=self.node_tcid,
+                resumed_event_key=leaf_key,
                 agent_tool_result=agent_tool_result,
                 resume_session_id=services.session_id,
                 resolve_provider=services.resolve_provider,

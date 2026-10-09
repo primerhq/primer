@@ -131,11 +131,16 @@ def _leaf_is_an_approval_gate(pool: "WorkerPool", parked: "ParkedState") -> bool
     if isinstance(inner, GraphFrame) and inner.node_tcid is not None:
         from primer.worker.graph_resume_coordinator import graph_value_yield_toolcall
 
+        from primer.session.pending_gates import pending_entries
+
         checkpoint = inner.checkpoint or {}
-        if graph_value_yield_toolcall(pool, checkpoint, inner.node_tcid):
+        # The leaf's own event key picks the entry: two siblings of the child's superstep can share ``node_tcid``, and the first one with the raw id
+        # is not necessarily the gate this reply answers (an ask_user sibling made a real approval look like a non-approval, and no record was written).
+        leaf_key = parked.yielded.event_key
+        if graph_value_yield_toolcall(pool, checkpoint, inner.node_tcid, event_key=leaf_key):
             return False
-        for entry in checkpoint.get("pending_agent_yields") or []:
-            if entry.get("tool_call_id") == inner.node_tcid and entry.get("tool_name") not in (None, "_approval"):
+        for entry in pending_entries(checkpoint, "pending_agent_yields", tool_call_id=inner.node_tcid, event_key=leaf_key)[:1]:
+            if entry.get("tool_name") not in (None, "_approval"):
                 return False
     return True
 
@@ -613,11 +618,12 @@ def build_invocation_services(pool: "WorkerPool", session, workspace, executor, 
             raise RuntimeError("graph services unavailable for this session")
         return await graph_services.build_child_executor(graph=graph, gsid=gsid)
 
-    async def graph_agent_tool_result(checkpoint, tcid, payload):
+    async def graph_agent_tool_result(checkpoint, tcid, payload, event_key=None):
         # Reuse the worker's own helper so a GraphFrame leaf resolves an
-        # agent-node ask_user answer consistently.
+        # agent-node ask_user answer consistently. ``event_key`` is the
+        # leaf's own: it picks the sibling when several share the raw id.
         return await pool._graph_agent_tool_result(
-            checkpoint, tcid, payload, session_id=session.id,
+            checkpoint, tcid, payload, session_id=session.id, event_key=event_key,
         )
 
     async def resolve_provider(toolset_id):

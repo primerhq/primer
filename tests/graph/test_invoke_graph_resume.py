@@ -83,7 +83,7 @@ async def test_run_invoke_graph_pushes_graph_frame():
 class _CompletingExec:
     """Child executor whose resume drains to a terminal End output."""
 
-    async def resume_from_checkpoint(self, checkpoint, *, resumed_tcid=None,
+    async def resume_from_checkpoint(self, checkpoint, *, resumed_tcid=None, resumed_event_key=None,
                                      agent_tool_result=None, toolcall_payload=None,
                                      resume_session_id=None, resolve_provider=None):
         from primer.graph.base import _GraphEndOutputEvent
@@ -114,7 +114,7 @@ class _ReparkingExec:
         )
         self.repark.graph_checkpoint = {"snap": "shot2"}
 
-    async def resume_from_checkpoint(self, checkpoint, *, resumed_tcid=None,
+    async def resume_from_checkpoint(self, checkpoint, *, resumed_tcid=None, resumed_event_key=None,
                                      agent_tool_result=None, toolcall_payload=None,
                                      resume_session_id=None, resolve_provider=None):
         raise self.repark
@@ -159,6 +159,7 @@ async def test_resume_invoke_graph_hands_the_child_the_reply_and_the_hook_contex
         checkpoint={"snap": "shot"},
         payload={"response": "blue"},
         resumed_tcid="child-tc",
+        resumed_event_key="ask_user:gs:node:child-tc",
         agent_tool_result=None,
         resume_session_id="sess-1",
         resolve_provider=resolver,
@@ -166,6 +167,7 @@ async def test_resume_invoke_graph_hands_the_child_the_reply_and_the_hook_contex
     assert child.kwargs == {
         "checkpoint": {"snap": "shot"},
         "resumed_tcid": "child-tc",
+        "resumed_event_key": "ask_user:gs:node:child-tc",
         "agent_tool_result": None,
         "toolcall_payload": {"response": "blue"},
         "resume_session_id": "sess-1",

@@ -296,5 +296,5 @@ class PythonToolsetRegistry:
 class AgentNodeHookPool(SimpleNamespace):
     """The slice of ``WorkerPool`` the invocation services read, with the real agent-node hook seam."""
 
-    async def _graph_agent_tool_result(self, checkpoint, tcid, payload, *, session_id):
-        return await WorkerPool._graph_agent_tool_result(self, checkpoint, tcid, payload, session_id=session_id)
+    async def _graph_agent_tool_result(self, checkpoint, tcid, payload, *, session_id, event_key=None):
+        return await WorkerPool._graph_agent_tool_result(self, checkpoint, tcid, payload, session_id=session_id, event_key=event_key)
