@@ -103,6 +103,10 @@ APPROVAL_ROUTED_NOTICE = (
 #: (``ChannelInbox`` raises ``StaleGateError``, C-033). Nothing was decided. Under 200 characters, like the notice above.
 APPROVAL_STALE_NOTICE = "This approval was replaced by a newer one, so nothing was decided. Use the newest approval request in this chat."
 
+#: What a Telegram user is told when they press a button the adapter can no longer resolve (its tag cache lost the entry, e.g. the process
+#: restarted): nothing was decided, and the console is where the pending request can still be decided. Under 200 characters (an alert's limit).
+BUTTON_EXPIRED_NOTICE = "This button has expired; decide it in the console."
+
 #: The same for a reply to an ask_user question that has since been replaced under the same tool call id.
 QUESTION_STALE_NOTICE = "This question was replaced by a newer one, so your reply was not sent. Reply to the newest question in this chat."
 
