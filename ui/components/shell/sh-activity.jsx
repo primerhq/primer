@@ -29,6 +29,9 @@ function SH_activityTime(iso, prevIso, offsetOf) {
 // arc's "console events UI" gap. A debugging window, not a tail -f:
 // refresh is a verb, never a timer.
 
+// What each filter box is called (its placeholder is an example, not a name).
+var SH_ACTIVITY_FILTER_LABELS = { eventType: "Event type", entityKind: "Entity kind", workspaceId: "Workspace id" };
+
 function SH_ActivityPanel() {
   var filterState = React.useState({ eventType: "", entityKind: "", workspaceId: "" });
   var filters = filterState[0];
@@ -81,6 +84,7 @@ function SH_ActivityPanel() {
   function field(key, placeholder) {
     return (
       <input type="text" className="sh-admin-search"
+        aria-label={SH_ACTIVITY_FILTER_LABELS[key]}
         data-testid={"activity-filter:" + key}
         placeholder={placeholder}
         value={filters[key]}

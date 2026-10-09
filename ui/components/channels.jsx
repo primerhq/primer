@@ -110,13 +110,14 @@ function ChannelProvidersPage({ onOpen, pushToast }) {
           <Icon name="search" size={13} className="icon" />
           <input
             className="input"
+            aria-label="Filter providers"
             placeholder="Filter providers…"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
           />
         </div>
         <div className="sep-v" />
-        <select className="select" value={platform} onChange={(e) => setPlatform(e.target.value)}>
+        <select aria-label="Filter by platform" className="select" value={platform} onChange={(e) => setPlatform(e.target.value)}>
           <option value="">all platforms</option>
           <option value="slack">slack</option>
           <option value="telegram">telegram</option>
@@ -650,13 +651,14 @@ function ChannelsPage({ onNavigate, pushToast }) {
           <Icon name="search" size={13} className="icon" />
           <input
             className="input"
+            aria-label="Filter channels"
             placeholder="Filter channels…"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
           />
         </div>
         <div className="sep-v" />
-        <select className="select" value={providerFilter} onChange={(e) => setProviderFilter(e.target.value)}>
+        <select aria-label="Filter by provider" className="select" value={providerFilter} onChange={(e) => setProviderFilter(e.target.value)}>
           <option value="">all providers</option>
           {providerItems.map((p) => <option key={p.id} value={p.id}>{p.id}</option>)}
         </select>

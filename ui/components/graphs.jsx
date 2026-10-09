@@ -287,6 +287,7 @@ function GraphsPage({ onOpen, pushToast, startCreate }) {
           <Icon name="search" size={13} className="icon" />
           <input
             className="input"
+            aria-label="Filter graphs"
             placeholder="Filter graphs…"
             value={textFilter}
             onChange={(e) => setTextFilter(e.target.value)}

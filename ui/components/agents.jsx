@@ -147,6 +147,7 @@ function AgentsPage({ onOpen, pushToast, startCreate }) {
           <Icon name="search" size={13} className="icon" />
           <input
             className="input"
+            aria-label="Filter agents"
             placeholder="Filter agents…"
             value={textFilter}
             onChange={(e) => setTextFilter(e.target.value)}

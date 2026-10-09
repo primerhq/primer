@@ -570,6 +570,7 @@ function NV_CreateWorkspaceOverlay() {
           <div className="nv-kv-row">
             <span className="nv-kv-key nv-kv-label">init</span>
             <input className="nv-input nv-kv-val" value={init}
+              aria-label="Extra init command"
               data-testid="nv-nw-init"
               placeholder="extra init command"
               onChange={function (ev) { setInit(ev.target.value); }} />

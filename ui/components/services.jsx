@@ -96,6 +96,7 @@ function SV_ServicesList() {
       <div className="filter-bar">
         <input
           className="input"
+          aria-label="Filter services"
           placeholder="Filter services…"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}

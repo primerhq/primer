@@ -116,6 +116,7 @@ function WorkspacesPage({ onOpen, pushToast, onManageTemplates }) {
           <Icon name="search" size={13} className="icon" />
           <input
             className="input"
+            aria-label="Filter workspaces"
             placeholder="Filter workspaces…"
             value={textQuery}
             onChange={(e) => setTextQuery(e.target.value)}
@@ -126,6 +127,7 @@ function WorkspacesPage({ onOpen, pushToast, onManageTemplates }) {
         <div className="sep-v" />
         <select
           className="ws-filter-select"
+          aria-label="Filter by template"
           value={templateFilter}
           onChange={(e) => setTemplateFilter(e.target.value)}
           data-testid="workspaces-template-filter"
@@ -135,6 +137,7 @@ function WorkspacesPage({ onOpen, pushToast, onManageTemplates }) {
         </select>
         <select
           className="ws-filter-select"
+          aria-label="Filter by provider"
           value={providerFilter}
           onChange={(e) => setProviderFilter(e.target.value)}
           data-testid="workspaces-provider-filter"
@@ -310,6 +313,7 @@ function WS_RenameWorkspaceModal({ workspace, onClose, onRenamed, pushToast }) {
         </label>
         <input
           className="input"
+          aria-label="Workspace name"
           style={{ width: "100%" }}
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -464,6 +468,7 @@ function WS_NewWorkspaceModal({ onClose, pushToast, onCreated }) {
         <label className="field-label">Label <span className="hint">optional — shows in the selector</span></label>
         <input
           className="input"
+          aria-label="Workspace name"
           style={{ width: "100%" }}
           value={name}
           onChange={(e) => setName(e.target.value)}
