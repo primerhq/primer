@@ -72,6 +72,7 @@ from primer.session.delegation import (
     reset_delegation_sink,
     set_delegation_sink,
 )
+from primer.session.graph_end import graph_end_for
 from primer.session.mutation_lock import IN_LOCK_IO_TIMEOUT_S, session_lifecycle_lock
 from primer.session.pending_messages import realize_next_pending
 from primer.session.turns import has_open_turn
@@ -1368,13 +1369,17 @@ async def run_one_session_turn(
         ))
 
     # ------------------------------------------------------------------
-    # 6. Clean completion — write DONE record (if not already written by
-    #    translate_stream_event), flush, final tick, then transition the
-    #    scheduler-visible row based on what the executor did.
+    # 6. Clean completion: an agent turn's DONE record is written by
+    #    translate_stream_event; a GRAPH run's end record (a node-less done,
+    #    primer.session.graph_end) is appended here. Then flush, final tick,
+    #    then transition the scheduler-visible row based on what the
+    #    executor did.
     # ------------------------------------------------------------------
-    await _flush_and_tick(deps, writer, session_id)
-
+    # A graph run's stream ends with the End node's output: none of its records ends the graph's turn (they all carry a node_id), so the graph's own end
+    # is appended here, after everything the stream wrote and flushed with it, as the one terminal of the turn (primer.session.graph_end). An agent turn has none.
     last_done_reason = getattr(executor, "last_done_reason", None)
+    await _flush_and_tick(deps, writer, session_id, graph_end_for(last_done_reason, executor))
+
     agent_status = await _read_agent_session_status(executor)
     new_status, ended_reason = _post_turn_status(
         last_done_reason, agent_status,

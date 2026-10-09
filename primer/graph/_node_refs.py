@@ -740,8 +740,9 @@ class _GraphEndOutputEvent:
     converts this into a ``SessionMessageRecord(kind=assistant_token,
     payload={text, parsed, end_node_id})`` so the session detail page's
     WS stream surfaces the graph's final output the same way an agent's
-    final assistant turn does. The terminal ``done`` record continues to
-    come from the session-dispatch post-turn path.
+    final assistant turn does. The graph's terminal ``done`` is not on this
+    stream: the writers append it after the stream ends (session dispatch's
+    clean completion, the graph resume coordinator; ``primer.session.graph_end``).
     """
 
     text: str

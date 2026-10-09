@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 from primer.model.workspace_session import SessionMessageKind
 from primer.session.replay import visible_records
-from primer.session.terminals import CLOSES, TurnWindowScanner, payload_of
+from primer.session.terminals import CLOSES, TurnWindowScanner, is_graph_end, payload_of
 
 _DONE = SessionMessageKind.DONE.value
 
@@ -32,7 +32,8 @@ class SessionUsage:
     exactly as the trace splits it into two windows.
 
     ``model_calls`` is the number of visible ``done`` records: every model call, tool rounds and delegated (subagent) runs
-    included. It is the population ``total_*`` and ``last_*`` are folded over (a ``done`` with no usage envelope still counts).
+    included, a graph node's too, but not the graph's own end (:func:`primer.session.terminals.is_graph_end`: it ends the run, it calls no model).
+    It is the population ``total_*`` and ``last_*`` are folded over (a ``done`` with no usage envelope still counts).
     Before 01a1138d this number was reported as ``turns``.
     """
 
@@ -55,7 +56,7 @@ def session_usage(raw_lines: list[str]) -> SessionUsage:
     for rec in visible_records(raw_lines):
         if scanner.feed(rec) == CLOSES:
             turns += 1
-        if rec.get("kind") != _DONE:
+        if rec.get("kind") != _DONE or is_graph_end(rec):          # the graph's own end is a done, but not a model call
             continue
         model_calls += 1
         usage = payload_of(rec).get("usage")

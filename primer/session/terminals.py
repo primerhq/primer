@@ -29,12 +29,15 @@ terminal of the session's own run" (a turn's status, the final text, the relay's
 the END of the log still reads as a terminal. Folded on read, so logs written before the rule fold the same way. The console's mirror is
 ``SH_newWindowScanner`` / ``SH_windowsOfSeq`` (ui/foundation/shell-turns.js); tests/ui/test_shell_turns.py compares the two over the shapes the writers produce.
 
-A GRAPH turn is one window too (ticket 01a11f35). Every node of a graph writes its own ``done`` (or ``error`` / ``cancelled``) and each such record carries the node's ``node_id``; the graph's
-own end is written by session dispatch after the executor's stream and carries none (the run's final ``done``, dispatch's failure exit, the claim adapter's release marker). A record with a
-``node_id`` is therefore INSIDE the window, exactly as a delegated record is: it ends nothing, is a copy of nothing and does not touch the scanner's state, so one fan-out of two workers is one
-window, closed by the graph's own end, instead of three. The per-record predicates are unchanged on purpose: the final-result relay reads the text between the last two session terminals and
-needs a node's ``done`` to stay one. A graph log written before records carried a ``node_id`` cannot be told from a non-graph log and keeps the windows it had. Folded on read like the rest,
-so old graph sessions renumber on the next read (the trace asks for the ordinal the console counted over the same records, so the two stay in step).
+A GRAPH turn is one window too (ticket 01a11f35). Every node of a graph writes its own ``done`` (or ``error`` / ``cancelled``) and each such record carries the node's ``node_id``. A record with a
+``node_id`` is INSIDE the window, exactly as a delegated record is: it ends nothing, is a copy of nothing and does not touch the scanner's state, so one fan-out of two workers is one window
+instead of three. What closes it is the graph's OWN END, a node-less ``done`` that the writers append when the run ends (:func:`is_graph_end`, ``payload.graph_end``): session dispatch's clean
+completion for a graph run (``stop_reason`` ``stop`` when the graph ended ``completed``, ``error`` when it did not, so every reader of a failed turn reads it as one), and the graph resume
+coordinator before it ends a resumed graph. The executor's own stream writes none (it ends with the End node's output and the end node's exit transition), and the claim adapter's release marker
+that may follow a failed end is a copy of it. A graph that parks is not over, so nothing closes it until its resume ends it. The per-record predicates are unchanged on purpose: the final-result
+relay reads the text before the last node's ``done`` and the End output after it (and treats the graph's end as the verdict, not as a text boundary). A graph log written before records carried a
+``node_id`` cannot be told from a non-graph log and keeps the windows it had; one written before the graph's end was a record keeps one window that never closes (open) however many nodes it ran.
+Folded on read like the rest, so old graph sessions renumber on the next read (the trace asks for the ordinal the console counted over the same records, so the two stay in step).
 """
 
 from __future__ import annotations
@@ -99,8 +102,9 @@ def is_bare_marker(rec: dict[str, Any]) -> bool:
 
 
 def is_dispatch_failure_record(rec: dict[str, Any]) -> bool:
-    """True for the ERROR record ``dispatch._end_turn_failed`` writes: built from the problem details, so it has a ``title`` and an integer ``status``,
-    no ``fatal`` flag and no node (a stream's own error has a ``fatal``; a graph node's has a ``node_id`` and neither title nor status).
+    """True for the ERROR record ``dispatch._end_turn_failed`` writes: built from the problem details, so it has a ``title`` and an integer ``status`` and no ``fatal`` flag
+    (a stream's own error has a ``fatal``; a graph node's has neither title nor status). It names no node, which the scanner does not ask here: a record with a node is inside its window before it
+    is asked.
 
     It is written exactly once, by the failure exit, AFTER the failure it describes, so it is a copy of the open turn's failure whatever its words
     are: its message is the problem detail, and records written before ticket 01a11f35-ad20 stored the stream's message raw (it is redacted at write
@@ -108,10 +112,15 @@ def is_dispatch_failure_record(rec: dict[str, Any]) -> bool:
     """
     payload = payload_of(rec)
     status = payload.get("status")
-    return (
-        rec.get("kind") == _ERROR and isinstance(payload.get("title"), str) and isinstance(status, int) and not isinstance(status, bool)
-        and "fatal" not in payload and not rec.get("node_id")
-    )
+    return rec.get("kind") == _ERROR and isinstance(payload.get("title"), str) and isinstance(status, int) and not isinstance(status, bool) and "fatal" not in payload
+
+
+def is_graph_end(rec: dict[str, Any]) -> bool:
+    """True for the record that ends a graph RUN: the node-less ``done`` the writers append after the last node (``payload.graph_end``; see the module docstring).
+
+    ``stop_reason`` is ``stop`` when the graph ended ``completed`` and ``error`` when it did not. It carries no usage, and it is not a model call.
+    """
+    return rec.get("kind") == _DONE and payload_of(rec).get("graph_end") is True and not rec.get("node_id") and not is_delegated(rec)
 
 
 # What :meth:`TurnWindowScanner.feed` says about a record.
@@ -124,7 +133,8 @@ class TurnWindowScanner:
     """Feed the records of a log in order; it says which ones end a window, which are copies of a failure that did, and which are neither.
 
     The rule, per record (a delegated record is always ``INSIDE``: a subagent's terminal and a subagent's failure are never the session's; so is a graph NODE's record, one that
-    carries a ``node_id``: the graph turn is not over until the graph's own end, the first record without a node):
+    carries a ``node_id``: the graph turn is not over until the graph's own end, the first ``done`` / ``error`` / ``cancelled`` that names no node; a ``user_input``, a ``yielded`` or an
+    ``invocation_divider`` names no node either and ends nothing):
 
     * ``user_input`` starts a new turn: nothing before it can be copied from.
     * ``done`` / ``cancelled`` (a ``done`` that is not a tool round's) ends a window. A ``done`` with ``stop_reason: "error"`` (OpenResponses
@@ -133,6 +143,8 @@ class TurnWindowScanner:
       cause that arrives AFTER the ``done(error)`` it belongs to (the agent loop holds the first Done / Error of a stream and yields it last).
     * a bare release marker is a ``COPY`` once the turn has failed, and the only evidence (so it ends the window) when nothing has.
     * dispatch's own failure ERROR (:func:`is_dispatch_failure_record`) is a ``COPY`` once the turn has failed, whatever its words.
+    * a graph's own end (:func:`is_graph_end`) is a ``COPY`` once the turn has failed (a graph-level error such as ``max_iterations_exceeded`` names no node, so it has already ended the
+      window), and an ordinary terminal otherwise.
     * any other ``error`` ends a window, unless the turn has already failed and an earlier error of the turn has the same non-empty message.
 
     A notice alone does not make a turn failed: with no ``response.failed`` the dispatch error that follows it (same words) is the only end the
@@ -177,6 +189,8 @@ class TurnWindowScanner:
             self._remember(message)
             self._failed = True
             return CLOSES
+        if self._failed and is_graph_end(rec):
+            return COPY          # the graph's end after a failure that already ended the window (a graph-level error, which names no node): a copy of it
         if not closes_turn(rec):
             return INSIDE
         if kind == _DONE and payload_of(rec).get("stop_reason") == "error":
@@ -188,5 +202,5 @@ class TurnWindowScanner:
 
 __all__ = [
     "CLOSES", "COPY", "INSIDE", "TERMINAL_KINDS", "TurnWindowScanner", "closes_turn", "payload_of", "is_bare_marker", "is_delegated", "is_dispatch_failure_record",
-    "is_non_fatal_error", "is_session_terminal",
+    "is_graph_end", "is_non_fatal_error", "is_session_terminal",
 ]
