@@ -5,10 +5,12 @@
 timeline's windows, the trace's ordinals (and the join of window n to the n-th envelope run), ``session_usage.turns`` and the open-turn count all read that, so a running graph looked finished
 the moment its first node was, a steer arriving mid-graph was written as a second user input, and every later turn of the session asked the trace for another turn's envelope.
 
-The rule: a record with a ``node_id`` is INSIDE, as a delegated record is. The graph's own end is the first record without one: the run's final ``done``, dispatch's failure exit, the claim
-adapter's release marker (a worker that died).
+The rule: a record with a ``node_id`` is INSIDE, as a delegated record is. The graph's own end is the first terminal without one: the node-less ``done`` the writers append when the run ends
+(``primer.session.graph_end``), dispatch's failure exit when the executor raised, the claim adapter's release marker (a worker that died).
 
-Every log below is written by the real writers: a real ``GraphExecutor`` fan-out through the real ``translate_stream_event`` and ``DelegationRecorder`` (``tests/session/graph_turn_shapes.py``).
+HAND-BUILT CORPUS, for the scanner's unit cases. The NODE records are real (a real ``GraphExecutor`` fan-out through the real ``translate_stream_event`` and ``DelegationRecorder``,
+``tests/session/graph_turn_shapes.py``); the end of each turn is MODELLED by that module to the shape the writers produce. Round 1 of this ticket was designed on a corpus whose end the writers
+did not produce, so what the REAL writers leave in a log is pinned in ``test_graph_turn_real_writers.py``, not here.
 """
 
 from __future__ import annotations
@@ -18,19 +20,25 @@ from datetime import UTC, datetime
 
 import pytest
 
-from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
+from primer.model.workspace_session import GraphSessionBinding, SessionStatus, WorkspaceSession
+from primer.session import steer_delivery
+from primer.session.steer_delivery import DELIVERED_QUEUED, DELIVERED_WOKEN, deliver_steer
 from primer.session.steer_routing import ROUTE_PENDING, ROUTE_WAKE, route_steer
 from primer.session.terminals import CLOSES, COPY, INSIDE, TurnWindowScanner
 from primer.session.timeline import build_turn_timeline, turn_envelopes, turn_windows
 from primer.session.turns import count_turn_state, has_open_turn
 from primer.session.usage import session_usage
-from tests.session.graph_turn_shapes import FailingWorkerLLM, cancelled, graph_turn, release_marker, with_park
+from tests.conftest import _FakeStorageProvider
+from tests.graph import test_fanout_delegation_order as scene
+from tests.graph.test_fanout_delegation_order import _WorkerLLM
+from tests.session.graph_turn_shapes import FailingWorkerLLM, _fanout_graph, cancelled, graph_turn, play, release_marker, with_park
 
 # name -> (the arguments of graph_turn as a factory, the status the turn ends in)
 SHAPES = {
     "success": (lambda: {}, "completed"),
     "both-nodes-fail": (lambda: {"llm": FailingWorkerLLM(), "finish": "failed"}, "failed"),
     "one-node-fails-and-the-run-halts": (lambda: {"llm": FailingWorkerLLM((2,)), "finish": "failed"}, "failed"),
+    "the-executor-raised": (lambda: {"llm": FailingWorkerLLM(), "finish": "raised"}, "failed"),
     "one-node-fails-and-the-fan-out-continues": (lambda: {"llm": FailingWorkerLLM((2,)), "on_failure": "collect"}, "completed"),
     "nested-one-level": (lambda: {"depth": 1}, "completed"),
     "nested-two-levels": (lambda: {"depth": 2}, "completed"),
@@ -225,19 +233,58 @@ async def test_a_graph_that_parks_and_resumes_is_still_one_window(monkeypatch):
     assert [w["terminal_seq"] for w in turn_windows(waiting)] == [None]
 
 
-def _idle_row() -> WorkspaceSession:
+def _graph_row(turn_status: str) -> WorkspaceSession:
     return WorkspaceSession(
-        id="s", workspace_id="w", binding=AgentSessionBinding(agent_id="a"), status=SessionStatus.WAITING, created_at=datetime.now(UTC), turn_status="idle",
+        id="s1", workspace_id="w1", binding=GraphSessionBinding(graph_id="g"), status=SessionStatus.RUNNING, created_at=datetime.now(UTC), turn_status=turn_status,
     )
 
 
 @pytest.mark.asyncio
-async def test_a_steer_that_arrives_while_the_graph_runs_is_queued_until_its_own_end(monkeypatch):
-    """``route_steer`` asks ``has_open_turn`` when the row says idle (the terminal record has not landed): once the first node had written its ``done`` the log read as no open turn,
-    so the steer was written as a SECOND user input in the middle of the graph. It is queued now, and wakes the session only after the graph's own end."""
+@pytest.mark.parametrize(("turn_status", "outcome"), [("running", DELIVERED_QUEUED), ("claimable", DELIVERED_QUEUED), ("idle", DELIVERED_WOKEN)])
+async def test_a_steer_to_a_graph_session_is_routed_by_the_rows_turn_status(monkeypatch, turn_status, outcome):
+    """The steer path production takes: ``deliver_steer`` -> ``route_steer(row)``, with NO log (the graph-window change does not touch it). A graph that is running is ``turn_status`` running, so its
+    steer was queued before the window rule and is queued now; an idle graph session is woken. (``route_steer``'s optional ``raw_lines`` slow path, the only reader of ``has_open_turn`` here, has
+    no production caller: both callers pass the row alone.)"""
+    sp = _FakeStorageProvider()
+    await sp.get_storage(WorkspaceSession).create(_graph_row(turn_status))
+    woken = []
+
+    async def _fake_wake(**kw):
+        woken.append(kw["instruction"])
+
+    monkeypatch.setattr(steer_delivery, "wake_session", _fake_wake)
+
+    out = await deliver_steer(
+        session_id="s1", text="also this", parallelism="queue", human_intent=True,
+        storage_provider=sp, scheduler=object(), claim_engine=object(), workspace_registry=object(),
+    )
+
+    assert out.outcome == outcome
+    assert woken == (["also this"] if outcome == DELIVERED_WOKEN else [])
+
+
+@pytest.mark.asyncio
+async def test_a_subgraph_that_runs_out_of_iterations_fails_its_node_and_does_not_close_the_outer_turn(monkeypatch):
+    """The child's ``max_iterations_exceeded`` error names no node. Forwarded raw it was a node-less ERROR in the PARENT's log, which reads as the parent run's terminal and closed the outer window in
+    the middle of the run (review of #701, probe 5); it carries the forwarding node's id now (stream level: the node records are real, nothing is appended after the stream)."""
+    monkeypatch.setattr(scene, "_fanout_graph", lambda workers=2: _fanout_graph("fail_fast").model_copy(update={"max_iterations": 1}))
+    executor = await scene._executor(_WorkerLLM(), depth=1, monkeypatch=monkeypatch)
+
+    records = await play(executor, finish="none")
+
+    inner = [r for r in records if r["kind"] == "error" and (r["payload"] or {}).get("code") == "max_iterations_exceeded"]
+    assert [r.get("node_id") for r in inner] == ["sub"], [(r["kind"], r.get("node_id")) for r in records]
+    scanner = TurnWindowScanner()
+    assert [scanner.feed(r) for r in records if r["kind"] == "error"] == [INSIDE]
+    assert [w["terminal_seq"] for w in turn_windows(_lines(records))] == [None], "the outer turn is still open: nothing of the outer run has ended it"
+
+
+@pytest.mark.asyncio
+async def test_the_slow_path_of_route_steer_reads_the_graph_turn_as_one_open_window(monkeypatch):
+    """The unused slow path, pinned for whoever wires it: given the log of a graph, ``has_open_turn`` says open until the graph's own end, not after the first node's ``done``."""
     records = await graph_turn(monkeypatch=monkeypatch)
     after_first_node = _lines([r for r in records if r["seq"] <= _first_node_done(records)])
-    after_graph = _lines(records)
+    row = _graph_row("idle")
 
-    assert route_steer(_idle_row(), raw_lines=after_first_node) == ROUTE_PENDING
-    assert route_steer(_idle_row(), raw_lines=after_graph) == ROUTE_WAKE
+    assert route_steer(row, raw_lines=after_first_node) == ROUTE_PENDING
+    assert route_steer(row, raw_lines=_lines(records)) == ROUTE_WAKE

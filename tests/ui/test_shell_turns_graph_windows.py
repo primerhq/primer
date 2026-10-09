@@ -2,7 +2,8 @@
 
 The trace is asked for under the ordinal the console counts (``SH_turnOfSeq`` over ``SH_windowsOfSeq``), and the server resolves that ordinal over ITS windows (``turn_windows``), so the two
 scanners must agree record for record. A graph turn is one window on the server (a record with a ``node_id`` is inside it); the console must say the same, or every trace of a graph session asks
-for the wrong turn. The logs are the ones the real writers produce (a real ``GraphExecutor`` fan-out: ``tests/session/graph_turn_shapes.py``), compared against the REAL server windows.
+for the wrong turn. The logs are the hand-built corpus of ``tests/session/graph_turn_shapes.py`` (the node records come from a real ``GraphExecutor`` fan-out, the end of each turn is modelled
+on the writers' output; the real writers are driven in ``tests/session/test_graph_turn_real_writers.py``), compared against the REAL server windows.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ SHAPES = {
     "success": lambda: {},
     "both-nodes-fail": lambda: {"llm": FailingWorkerLLM(), "finish": "failed"},
     "one-node-fails-and-the-run-halts": lambda: {"llm": FailingWorkerLLM((2,)), "finish": "failed"},
+    "the-executor-raised": lambda: {"llm": FailingWorkerLLM(), "finish": "raised"},
     "one-node-fails-and-the-fan-out-continues": lambda: {"llm": FailingWorkerLLM((2,)), "on_failure": "collect"},
     "nested-two-levels": lambda: {"depth": 2},
 }
@@ -104,3 +106,55 @@ def test_a_node_record_with_a_falsy_but_present_node_id_is_judged_like_the_serve
 
     assert _console_ordinals(recs) == expected
     assert expected["5"] == expected["6"] != expected["4"], "the named node's done is inside the window the next own done ends"
+
+
+# ---- the graph's own end (hand-built records, to the shape primer.session.graph_end writes) ----------------------------------------------------------------
+
+_END_OK = {"kind": "done", "payload": {"stop_reason": "stop", "raw_reason": "graph_ended", "graph_end": True, "ended_reason": "completed"}}
+_END_FAILED = {"kind": "done", "payload": {"stop_reason": "error", "raw_reason": "graph_failed", "graph_end": True, "ended_reason": "failed"}}
+_NODE_DONE = {"kind": "done", "node_id": "w0", "payload": {"stop_reason": "stop"}}
+_GRAPH_ERROR = {"kind": "error", "payload": {"code": "max_iterations_exceeded", "message": "graph ran for 1 iterations"}}
+_NODE_ERROR = {"kind": "error", "node_id": "w0", "payload": {"code": "server_error", "message": "boom", "fatal": True}}
+_MARKER = {"kind": "error", "payload": {"reason": "unknown", "terminal": True}}
+_USER = {"kind": "user_input", "payload": {"text": "go"}}
+_DIVIDER = {"kind": "invocation_divider", "payload": {"invocation": 2}}
+
+
+def _numbered(shapes: list[dict]) -> list[dict]:
+    return [dict(shape, seq=i + 1) for i, shape in enumerate(shapes)]
+
+
+@pytest.mark.parametrize(
+    "shapes",
+    [
+        pytest.param([_USER, _NODE_DONE, _END_OK], id="a graph that completed"),
+        pytest.param([_USER, _NODE_DONE, _END_FAILED], id="a graph that failed"),
+        pytest.param([_USER, _NODE_DONE, _GRAPH_ERROR, _END_FAILED], id="a graph-level error and then the end: the end is a copy"),
+        pytest.param([_USER, _NODE_DONE, _END_FAILED, _MARKER], id="a release marker after the failure end"),
+        pytest.param([_USER, _NODE_ERROR, _END_FAILED], id="a node's error is inside and the end still closes"),
+        pytest.param([_USER, _NODE_DONE, _END_FAILED, _DIVIDER, _USER, _NODE_DONE, _END_OK], id="two invocations, the first failed"),
+        pytest.param([_USER, _NODE_DONE, _GRAPH_ERROR, _END_FAILED, _DIVIDER, _USER, _NODE_DONE, _END_FAILED], id="two invocations, both graph-level failures"),
+        pytest.param([_USER, _NODE_DONE, {"kind": "done", "node_id": "w0", "payload": {"stop_reason": "stop", "graph_end": True}}], id="a node's done that carries the flag is a node's"),
+        pytest.param([_USER, _NODE_DONE, {"kind": "done", "payload": {"stop_reason": "stop", "graph_end": "true"}}], id="a flag that is not the boolean is an ordinary done"),
+    ],
+)
+def test_the_console_scanner_agrees_with_the_server_on_the_graphs_own_end(shapes: list[dict]) -> None:
+    recs = _numbered(shapes)
+    scanner = TurnWindowScanner()
+    server = [scanner.feed(rec) for rec in recs]
+
+    console = json.loads(_ctx().eval(
+        "(function () { var scanner = SH_newWindowScanner(); return JSON.stringify(" + json.dumps(recs) + ".map(function (rec) { return scanner.feed(rec); })); })()"
+    ))
+    expected = {str(seq): window for seq, window in _server_windows(recs).items()}
+
+    assert console == server
+    assert _console_ordinals(recs) == expected
+
+
+def test_the_graph_end_after_a_graph_level_error_is_a_copy_on_both_sides() -> None:
+    recs = _numbered([_USER, _NODE_DONE, _GRAPH_ERROR, _END_FAILED])
+
+    scanner = TurnWindowScanner()
+    assert [scanner.feed(rec) for rec in recs] == ["inside", "inside", "closes", "copy"]
+    assert set(_server_windows(recs).values()) == {0}

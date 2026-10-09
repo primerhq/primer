@@ -1,10 +1,11 @@
-"""The logs a graph turn writes, produced by the REAL writers (ticket 01a11f35).
+"""A HAND-BUILT corpus of graph turns for the window scanner's unit cases (ticket 01a11f35). Not the writers' output: the writers are driven by ``test_graph_turn_real_writers.py``.
 
-A graph session turn is a user input, then the records of every node (each carries its ``node_id``), then the run's own end written by session dispatch (no ``node_id``). The node records
-come from a real ``GraphExecutor`` fan-out (two workers that call a delegating tool and then answer) through the real ``translate_stream_event``, the delegated runs through the real
-``run_subagent`` and ``DelegationRecorder`` (the scenes of ``tests/graph/test_fanout_delegation_order.py``, which this module builds on). What dispatch and the claim adapter write around
-them is built the way ``dispatch._end_turn_failed`` and ``claim/adapters/sessions._write_terminal_record`` shape it (``failure_exit`` and ``release_marker`` below; the production writers
-themselves are driven for a non-graph turn by ``test_failed_turn_is_one_window.py``).
+A graph session turn is a user input, then the records of every node (each carries its ``node_id``), then the run's own end (no ``node_id``). The NODE records are real: they come from a
+real ``GraphExecutor`` fan-out (two workers that call a delegating tool and then answer) through the real ``translate_stream_event``, the delegated runs through the real ``run_subagent`` and
+``DelegationRecorder`` (the scenes of ``tests/graph/test_fanout_delegation_order.py``, which this module builds on). What is written AROUND them is built here to the shape the writers
+produce: the graph's own end (``primer.session.graph_end``, which session dispatch and the graph resume coordinator append), and, for the shapes that model a worker or an executor that died,
+``failure_exit`` and ``release_marker`` (``dispatch._end_turn_failed`` and ``claim/adapters/sessions._write_terminal_record``). An earlier version of this module appended a plain ``Done`` and
+called the result "written by the real writers": production wrote no such record, and a rule designed on that corpus never closed a real graph turn (review of #701, round 1).
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from primer.model.chat import Done, Error
 from primer.model.graph import FanOutSpec, Graph, _AgentNodeRef, _BeginNode, _EndNode, _FanInNode, _FanOutNode, _StaticEdge
 from primer.model.workspace_session import SessionMessageKind, SessionMessageRecord
 from primer.session.delegation import DelegationRecorder, reset_delegation_sink, set_delegation_sink
+from primer.session.graph_end import graph_end_record
 from primer.session.persistence import _CoalesceState, translate_stream_event
 from tests.graph import test_fanout_delegation_order as scene
 from tests.graph.test_fanout_delegation_order import T, _as_list, _Bus, _Log, _WorkerLLM
@@ -96,10 +98,13 @@ def with_park(records: list[dict], after_seq: int) -> list[dict]:
 async def play(
     executor: GraphExecutor, log: _Log | None = None, *, user_text: str = "go", finish: str = "done",
 ) -> list[dict]:
-    """The records session dispatch writes for one turn of this executor (as ``_run`` of the delegation-order scene does), then the turn's own end.
+    """The records session dispatch writes for one turn of this executor (as ``_run`` of the delegation-order scene does), then a MODEL of the turn's own end.
 
-    ``finish``: ``"done"`` the run's final ``done`` (a graph that finished), ``"failed"`` dispatch's failure exit and the release marker (the executor raised or ended on a failed node),
-    ``"marker"`` the release marker alone (a worker that died: the lease was lost), ``"none"`` nothing (a turn that is still running). A stream that raises is caught: what it wrote is the log.
+    The node records are real (the executor's stream through ``translate_stream_event``); the end is HAND-BUILT here, to the shape the real writers produce
+    (``tests/session/test_graph_turn_real_writers.py`` drives those writers themselves). ``finish``: ``"done"`` the graph's own end of a run that completed
+    (``primer.session.graph_end``), ``"failed"`` the graph's own end of a run that did not (the clean arm writes only that), ``"raised"`` dispatch's failure exit and the release marker (the
+    executor RAISED: the non-clean arm), ``"marker"`` the release marker alone (a worker that died: the lease was lost), ``"none"`` nothing (a turn that is still running).
+    Only ``"raised"`` catches an exception out of the stream (what it wrote before is the log); any other shape lets one fail the test.
     """
     log, state = log if log is not None else _Log(), _CoalesceState()
     executor.bind_coalesce_state(state)
@@ -109,14 +114,16 @@ async def play(
         async for ev in executor.invoke([]):
             for rec in _as_list(translate_stream_event(ev, state, turn_no=1)):
                 await log.append(rec)
-    except Exception:  # noqa: BLE001 - a failing graph raises out of the stream: what it wrote before is the log
-        pass
+    except Exception:  # noqa: BLE001 - an executor that raised: what it wrote before is the log (only for the shape that models it)
+        if finish != "raised":
+            raise
     finally:
         reset_delegation_sink(token)
     if finish == "done":
-        for rec in _as_list(translate_stream_event(Done(stop_reason="stop", raw_reason="stop"), state, turn_no=1)):
-            log.add(rec)
+        log.add(graph_end_record(failed=False, ended_reason="completed"))
     elif finish == "failed":
+        log.add(graph_end_record(failed=True, ended_reason="failed"))
+    elif finish == "raised":
         log.add(failure_exit())
         log.add(release_marker())
     elif finish == "marker":
