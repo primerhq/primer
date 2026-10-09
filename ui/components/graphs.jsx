@@ -303,6 +303,7 @@ function GraphsPage({ onOpen, pushToast, startCreate }) {
               const status = perRowStatus[g.id];
               const nodeCount = (g.nodes || []).length;
               const edgeCount = (g.edges || []).length;
+              const beginNode = (g.nodes || []).find((n) => n.kind === "begin");
               const statusPill = status == null
                 ? null
                 : status.ok === true
@@ -314,7 +315,7 @@ function GraphsPage({ onOpen, pushToast, startCreate }) {
                 `${nodeCount} node${nodeCount === 1 ? "" : "s"}`,
                 `${edgeCount} edge${edgeCount === 1 ? "" : "s"}`,
               ];
-              if (g.entry_node_id) metaParts.push(`entry: ${g.entry_node_id}`);
+              if (beginNode) metaParts.push(`entry: ${beginNode.id}`);
               return (
                 <Card
                   title={g.id}
@@ -372,6 +373,7 @@ function GraphsPage({ onOpen, pushToast, startCreate }) {
               const status = perRowStatus[g.id];
               const nodeCount = (g.nodes || []).length;
               const edgeCount = (g.edges || []).length;
+              const beginNode = (g.nodes || []).find((n) => n.kind === "begin");
               return (
                 <tr key={g.id} onClick={() => onOpen(g.id)} style={{ cursor: "pointer" }}>
                   <td className="mono">{g.id}</td>
@@ -381,7 +383,7 @@ function GraphsPage({ onOpen, pushToast, startCreate }) {
                   <td className="mono num tabular">{nodeCount}</td>
                   <td className="mono num tabular">{edgeCount}</td>
                   <td className="mono muted text-sm">
-                    {g.entry_node_id || <span style={{ color: "var(--text-4)" }}>—</span>}
+                    {beginNode ? beginNode.id : <span style={{ color: "var(--text-4)" }}>—</span>}
                   </td>
                   <td>
                     {status == null ? (
