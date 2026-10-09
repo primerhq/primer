@@ -113,7 +113,7 @@ function GB_Inspector(props) {
       <div className="col" style={{ gap: 8, padding: 14, borderBottom: "1px solid var(--border)" }}>
         <div className="row" style={{ gap: 9, alignItems: "center" }}>
           <GB_KindDot kind={node.kind} size={26} />
-          <input
+          <input aria-label="Step name"
             data-testid="gb-inspector-title"
             value={node.description || ""}
             readOnly={readOnly}
@@ -314,7 +314,7 @@ function GB_ToolArguments({ node, tools, draft, patch, readOnly, sampleByExpr })
         </div>
 
         {useTemplate ? (
-          <textarea
+          <textarea aria-label="Argument object template"
             value={node.arguments_template || ""}
             readOnly={readOnly}
             onChange={(e) => patch({ arguments_template: e.target.value })}
@@ -408,7 +408,7 @@ function GB_FanOutBody({ node, draft, dispatch, readOnly }) {
       {spec.kind === "map" ? (
         <GB_Section title="The list">
           <div className="row" style={{ gap: 6, alignItems: "center" }}>
-            <select
+            <select aria-label="The list comes from"
               value={spec.source_node_id || ""}
               disabled={readOnly}
               onChange={(e) => setSpec({ source_node_id: e.target.value })}
@@ -417,7 +417,7 @@ function GB_FanOutBody({ node, draft, dispatch, readOnly }) {
               <option value="">which step…</option>
               {candidates.map((n) => <option key={n.id} value={n.id}>{label(n.id)}</option>)}
             </select>
-            <input
+            <input aria-label="Field holding the list"
               value={spec.source_path || ""}
               disabled={readOnly}
               placeholder="field holding the list, e.g. items"
@@ -431,7 +431,7 @@ function GB_FanOutBody({ node, draft, dispatch, readOnly }) {
 
       {spec.kind === "broadcast" ? (
         <GB_Section title="How many copies">
-          <input
+          <input aria-label="Number of copies"
             type="number"
             min={1}
             value={spec.count || 1}
@@ -465,7 +465,7 @@ function GB_FanOutBody({ node, draft, dispatch, readOnly }) {
             })}
           </div>
         ) : (
-          <select
+          <select aria-label="Step that does the work"
             value={spec.target_node_id || ""}
             disabled={readOnly}
             onChange={(e) => setSpec({ target_node_id: e.target.value })}

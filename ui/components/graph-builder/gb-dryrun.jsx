@@ -28,7 +28,7 @@ function GB_DryRunDrawer(props) {
         </span>
         <div className="row" style={{ marginLeft: "auto", gap: 8, alignItems: "center" }}>
           <span className="muted" style={{ fontSize: "var(--fs-11)" }}>Sample input</span>
-          <input
+          <input aria-label="Sample input"
             value={sampleInput}
             onChange={(e) => onSampleInput(e.target.value)}
             placeholder='{"topic": "…"}'
