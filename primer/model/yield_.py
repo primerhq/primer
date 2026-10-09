@@ -36,6 +36,7 @@ persisted or checkpointed.)
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -46,6 +47,35 @@ from primer.model.principal import PrincipalRef
 
 if TYPE_CHECKING:
     from primer.model.chat import ToolResultPart
+
+
+# ===========================================================================
+# The identity of one human gate
+# ===========================================================================
+
+GATE_ID_KEY = "gate_id"
+"""Where a gate's id lives: ``resume_metadata["gate_id"]`` of its pending entry (an approval park or an ``ask_user`` park)."""
+
+GATE_ID_PATTERN = r"^[0-9a-f]{32}$"
+"""What a gate id looks like on the wire (the respond bodies refuse anything else with a 422)."""
+
+
+def new_gate_id() -> str:
+    """Mint the id of a gate that is being created.
+
+    A provider repeats its ``tool_call_id`` across rounds, and the approval / ask_user event keys are built from it, so neither identifies WHICH
+    gate a decision answers. The id is minted once, when the gate is created, and rides in the pending entry's ``resume_metadata``, which the
+    graph checkpoint round-trips verbatim: it survives every re-park for as long as the gate stays pending, and a later gate under the same raw
+    id gets another. (The session's ``parked_at`` cannot stand in for it: answering one gate of a multi-gate graph park re-stamps it while the
+    siblings are still pending.)
+    """
+    return uuid.uuid4().hex
+
+
+def gate_id_of(resume_metadata: "dict[str, Any] | None") -> str | None:
+    """The gate id stamped in a pending entry's ``resume_metadata``; ``None`` for a park written before gates had one."""
+    value = (resume_metadata or {}).get(GATE_ID_KEY)
+    return value if isinstance(value, str) and value else None
 
 
 # ===========================================================================
@@ -441,6 +471,10 @@ class ToolWaitPark(Exception):
 
 
 __all__ = [
+    "GATE_ID_KEY",
+    "GATE_ID_PATTERN",
+    "new_gate_id",
+    "gate_id_of",
     "Yielded",
     "YieldTimeout",
     "YieldCancelled",

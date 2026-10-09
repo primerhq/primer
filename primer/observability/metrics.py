@@ -139,6 +139,19 @@ reply_binding_resolutions_total = Counter(
     registry=registry,
 )
 
+# ---------------------------------------------------------------------------
+# Human-gate decision metrics (C-033)
+# ---------------------------------------------------------------------------
+
+gate_respond_total = Counter(
+    "gate_respond_total",
+    "Total responds to a human gate (an approval or an ask_user), by kind and by what the respond said about WHICH gate it answers: "
+    "matched (its gate_id is the pending one), stale (it named a gate that is no longer the pending one, refused 409) or absent (it named "
+    "none: a client that predates the token).",
+    ["kind", "token"],
+    registry=registry,
+)
+
 
 # ---------------------------------------------------------------------------
 # Worker / turn / session metrics (S7)
@@ -380,6 +393,7 @@ def reset_for_test() -> None:
     global claim_active_count  # noqa: PLW0603
     global channel_events_normalized_total, channel_events_matched_total  # noqa: PLW0603
     global channel_events_dispatched_total, reply_binding_resolutions_total  # noqa: PLW0603
+    global gate_respond_total  # noqa: PLW0603
     global worker_tasks_total, worker_task_duration_seconds  # noqa: PLW0603
     global storage_cas_drift_total  # noqa: PLW0603
     global turns_total, turn_duration_seconds  # noqa: PLW0603
@@ -472,6 +486,14 @@ def reset_for_test() -> None:
         "reply_binding_resolutions_total",
         "Total reply-binding resolutions, by winning scope (session / workspace / none).",
         ["scope"],
+        registry=registry,
+    )
+    gate_respond_total = Counter(
+        "gate_respond_total",
+        "Total responds to a human gate (an approval or an ask_user), by kind and by what the respond said about WHICH gate it answers: "
+        "matched (its gate_id is the pending one), stale (it named a gate that is no longer the pending one, refused 409) or absent (it named "
+        "none: a client that predates the token).",
+        ["kind", "token"],
         registry=registry,
     )
     worker_tasks_total = Counter(

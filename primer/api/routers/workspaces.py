@@ -115,6 +115,7 @@ from primer.workspace.template_privilege import (
     refusal_message,
 )
 from primer.session.mutation_lock import session_lifecycle_lock
+from primer.model.yield_ import gate_id_of
 from primer.session.pending_gates import enumerate_pending_gates
 from primer.session.slot_view import overlay_row_on_slot_info, overlay_rows_on_infos
 from primer.storage import raw_generation
@@ -2934,6 +2935,8 @@ async def list_pending_yields(
                     "kind": kind,
                     "prompt": prompt,
                     "tool_call_id": tcid,
+                    # The id of THIS gate, sent back with the decision (C-033); None for a park from before gates had ids.
+                    "gate_id": gate_id_of(metadata),
                     "parked_at": parked_at,
                     # Who may decide (P6 approver routing); None = anyone.
                     "approvers": metadata.get("approvers"),
@@ -3651,6 +3654,7 @@ async def list_pending_attention(
                     "created_at": str,   # ISO-8601; parked_at, falling back
                                          # to the session's created_at
                     "tool_call_id": str | None,   # the parked call a decision names
+                    "gate_id": str | None,   # the id of that gate: send it back with the decision (409 approval_stale if replaced)
                     "approval": {"tool_name", "arguments", "truncated",
                                  "argument_keys"} | None,
                                          # approval rows only; None when the park
@@ -3733,6 +3737,8 @@ async def list_pending_attention(
             "tool_call_id": _tool_call_id_from_blob(blob),
         }
         metadata: dict = yielded_blob.get("resume_metadata") or {}
+        # The id of THIS gate (the primary one, like tool_call_id), sent back with the decision (C-033).
+        row["gate_id"] = gate_id_of(metadata)
         if kind == "approval":
             row["approval"] = _approval_preview(metadata.get("original_call"), _preview_stamp(metadata))
             row["approvers"] = metadata.get("approvers")
@@ -3788,6 +3794,8 @@ async def list_session_pending_yields(
                 "kind": _extract_yield_kind(tool_name),
                 "prompt": _extract_yield_prompt(tool_name, metadata),
                 "tool_call_id": gate["tool_call_id"],
+                # The id of THIS gate, sent back with the decision (C-033); None for a park from before gates had ids.
+                "gate_id": gate_id_of(metadata),
                 "parked_at": (
                     sess.parked_at.isoformat()
                     if sess.parked_at is not None else None

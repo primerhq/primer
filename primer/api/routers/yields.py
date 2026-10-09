@@ -32,6 +32,7 @@ from fastapi import APIRouter, Body, Depends, Path
 from pydantic import BaseModel, Field
 
 from primer.api.approver_guard import enforce_approvers
+from primer.api.gate_fence import count_gate_token, stale_gate_error
 from primer.api.deps import (
     get_claim_engine,
     get_event_bus,
@@ -49,6 +50,7 @@ from primer.model.except_ import (
     ValidationError,
 )
 from primer.model.workspace_session import WorkspaceSession
+from primer.model.yield_ import GATE_ID_PATTERN, gate_id_of
 from primer.session.approvers import ADMIN_ONLY_METADATA
 from primer.session.pending_gates import resolve_pending_gate
 from primer.session.yields import durably_wake_session
@@ -145,6 +147,28 @@ def _graph_ask_user_dispatch(
     return matches[0] if matches else None
 
 
+def _pick_ask_user_gate(
+    candidates: list[dict[str, Any]], *, token: str | None, session_id: str,
+) -> dict[str, Any] | None:
+    """The pending entry an ask_user respond answers, judged by the gate id it named (C-033).
+
+    ``candidates`` are the entries that already match by ``tool_call_id``. No token: the first one, as before (counted ``absent``). A token:
+    the candidate that carries it; when candidates exist but none does, the card is stale (409 ``approval_stale``, nothing moves).
+    ``None`` when there is no candidate at all (the caller answers 404).
+    """
+    if not candidates:
+        return None
+    if token is None:
+        count_gate_token(kind="ask_user", session_id=session_id, token=None)
+        return candidates[0]
+    for entry in candidates:
+        if gate_id_of(entry.get("resume_metadata")) == token:
+            count_gate_token(kind="ask_user", session_id=session_id, token=token)
+            return entry
+    count_gate_token(kind="ask_user", session_id=session_id, token=token, stale=True)
+    raise stale_gate_error("ask_user")
+
+
 async def _durable_wake(
     *,
     session: WorkspaceSession,
@@ -206,6 +230,14 @@ class AskUserPendingResponse(BaseModel):
     tool_call_id: str = Field(...)
     prompt: str = Field(...)
     response_schema: dict[str, Any] | None = Field(default=None)
+    gate_id: str | None = Field(
+        default=None,
+        description=(
+            "The id of THIS prompt, minted when it was asked. Send it back as ``gate_id`` on respond: the provider's tool_call_id repeats "
+            "across rounds, so an answer that names only the tool_call_id can answer a LATER question than the one the operator was "
+            "reading (409 ``approval_stale`` when it names a prompt that has since been replaced). None for a park from before gates had ids."
+        ),
+    )
     parked_at: str = Field(
         ...,
         description=(
@@ -244,6 +276,7 @@ async def get_ask_user_pending(
                 tool_call_id=graph_entry.get("tool_call_id", ""),
                 prompt=gmeta.get("prompt", ""),
                 response_schema=gmeta.get("response_schema"),
+                gate_id=gate_id_of(gmeta),
                 parked_at=(
                     sess.parked_at.isoformat()
                     if sess.parked_at is not None
@@ -274,6 +307,7 @@ async def get_ask_user_pending(
         tool_call_id=tcid,
         prompt=metadata.get("prompt", ""),
         response_schema=metadata.get("response_schema"),
+        gate_id=gate_id_of(metadata),
         parked_at=parked_at_iso,
     )
 
@@ -287,6 +321,15 @@ class AskUserRespondBody(BaseModel):
     """Operator's reply to an ask_user prompt."""
 
     tool_call_id: str = Field(...)
+    gate_id: str | None = Field(
+        default=None,
+        pattern=GATE_ID_PATTERN,
+        description=(
+            "The ``gate_id`` the pending response served for the prompt this answers. Optional while clients catch up (an answer without it "
+            "is accepted, logged and counted); an answer naming a prompt that is no longer the pending one is a 409 ``approval_stale`` and "
+            "moves nothing."
+        ),
+    )
     response: Any = Field(
         ...,
         description=(
@@ -325,7 +368,7 @@ def _validate_response_against_schema(
     "/sessions/{session_id}/ask_user/respond",
     status_code=202,
     summary="Submit a response to a pending ask_user prompt",
-    responses=common_responses(404, 422, 500),
+    responses=common_responses(404, 409, 422, 500),
 )
 async def post_ask_user_respond(
     session_id: str = Path(...),
@@ -349,11 +392,11 @@ async def post_ask_user_respond(
     # channel path).
     checkpoint = blob.get("graph_checkpoint")
     if checkpoint:
-        ay = next(
-            (e for e in (checkpoint.get("pending_agent_yields") or [])
+        ay = _pick_ask_user_gate(
+            [e for e in (checkpoint.get("pending_agent_yields") or [])
              if e.get("tool_call_id") == body.tool_call_id
-             and e.get("tool_name") == "ask_user"),
-            None,
+             and e.get("tool_name") == "ask_user"],
+            token=body.gate_id, session_id=session_id,
         )
         if ay is not None:
             ay_meta = ay.get("resume_metadata") or {}
@@ -380,10 +423,13 @@ async def post_ask_user_respond(
         # entry's parked_event_key. Publishing the operator response there
         # lets the graph resume adapter feed it back as the node's result.
         disp = _graph_ask_user_dispatch(blob, tool_call_id=body.tool_call_id)
-        tc = next(
-            (e for e in (checkpoint.get("pending_toolcalls") or [])
-             if e.get("tool_call_id") == body.tool_call_id),
-            None,
+        tc = (
+            _pick_ask_user_gate(
+                [e for e in (checkpoint.get("pending_toolcalls") or [])
+                 if e.get("tool_call_id") == body.tool_call_id],
+                token=body.gate_id, session_id=session_id,
+            )
+            if disp is not None else None
         )
         if disp is None or tc is None:
             raise NotFoundError(
@@ -420,6 +466,7 @@ async def post_ask_user_respond(
             f"{body.tool_call_id!r} on session {session_id!r}"
         )
     metadata = yielded.get("resume_metadata") or {}
+    _pick_ask_user_gate([{"resume_metadata": metadata}], token=body.gate_id, session_id=session_id)
     _validate_response_against_schema(
         response=body.response, schema=metadata.get("response_schema"),
     )

@@ -29,7 +29,7 @@ from primer.model.except_ import (
     UnsupportedContentError,
 )
 from primer.toolset._helpers import err as _err, ok as _ok
-from primer.model.yield_ import ToolContext, Yielded
+from primer.model.yield_ import GATE_ID_KEY, ToolContext, Yielded, new_gate_id
 from primer.toolset._system_common import _err_from_validation
 
 
@@ -173,6 +173,8 @@ async def _ask_user_handler(
             "response_schema": args.response_schema,
             "tool_call_id": ctx.tool_call_id,
             "files": args.files or None,
+            # Minted per yield: the provider repeats tool_call_id across rounds, so the event key alone cannot tell a stale answer from a current one.
+            GATE_ID_KEY: new_gate_id(),
         },
     )
 

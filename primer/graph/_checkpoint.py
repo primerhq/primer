@@ -33,7 +33,7 @@ from primer.model.graph import (
     NodeOutput,
     NodeRuntimeState,
 )
-from primer.model.yield_ import ToolWaitPark, Yielded, YieldToWorker
+from primer.model.yield_ import GATE_ID_KEY, ToolWaitPark, Yielded, YieldToWorker, gate_id_of
 
 
 class _CheckpointMixin:
@@ -78,6 +78,10 @@ class _CheckpointMixin:
                 # kept is passed on or the card of a graph approval would fall back to the default rule.
                 if "preview" in first.resume_metadata:
                     resume_meta["preview"] = first.resume_metadata["preview"]
+            # The primary gate's id rides on the key-less projection too, so the Inbox row (which reads only the top-level yield) can name it.
+            primary_gate_id = gate_id_of(first.resume_metadata)
+            if primary_gate_id is not None:
+                resume_meta[GATE_ID_KEY] = primary_gate_id
         else:
             first_ay = self._pending_agent_yields[0]
             primary_event_key = first_ay.event_key
@@ -341,6 +345,10 @@ class _CheckpointMixin:
         # The Inbox card's allowlist the gate stamped (design 01a11cd3-66b0): passed on from the pending call, see _build_pending_park_yield.
         if "preview" in p.resume_metadata:
             entry["resume_metadata"]["preview"] = p.resume_metadata["preview"]
+        # The channel prompt is built from this entry, and a reply names the gate it answers: keep the id the entry's own metadata carries.
+        gate_id = gate_id_of(p.resume_metadata)
+        if gate_id is not None:
+            entry["resume_metadata"][GATE_ID_KEY] = gate_id
         return entry
 
     def restore_state(self, payload: dict[str, Any]) -> None:
