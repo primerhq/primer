@@ -10,12 +10,17 @@ for custom spans in application code.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.trace import Status, StatusCode
+
+from primer.common.log import redact_credentials
 
 if TYPE_CHECKING:
     from primer.api.config import ObservabilityConfig
@@ -121,4 +126,45 @@ def get_tracer(name: str) -> trace.Tracer:
     return trace.get_tracer(name)
 
 
-__all__ = ["setup", "get_tracer"]
+def record_failure(span: trace.Span, exc: BaseException) -> None:
+    """Record ``exc`` on ``span`` the way an OTLP exporter may send it: the type, and the message with credentials masked.
+
+    ``Span.record_exception`` exports the raw message AND a stacktrace that ends in the same message, and ``start_as_current_span`` records an escaping
+    exception that way on its own. A tool's exception text carries what a library printed (httpx prints a request URL whole, ``user:password@`` and
+    ``?api_key=`` included; an ``Authorization`` header is echoed back), so the message goes through :func:`redact_credentials` (URL credentials, Bearer
+    and Basic tokens) and no stacktrace is recorded (security ticket 01a1201c-8918). A credential-free message is recorded as it was.
+
+    The type is named as the SDK names it: the bare qualname for a builtin, ``module.qualname`` otherwise. A span that is not recording (tracing off, or
+    sampled out) records nothing, and the message is not rendered.
+    """
+    if not span.is_recording():
+        return
+    try:
+        message = redact_credentials(str(exc))
+    except Exception:  # noqa: BLE001 - a raising __str__ must not turn a span record into a second failure
+        message = ""
+    cls = type(exc)
+    type_name = cls.__qualname__ if cls.__module__ in ("builtins", None) else f"{cls.__module__}.{cls.__qualname__}"
+    span.add_event("exception", {"exception.type": type_name, "exception.message": message})
+    span.set_status(Status(StatusCode.ERROR, f"{cls.__name__}: {message}" if message else cls.__name__))
+
+
+@contextmanager
+def span(tracer: trace.Tracer, name: str) -> Iterator[trace.Span]:
+    """``tracer.start_as_current_span(name)`` that records a failure with :func:`record_failure` instead of the SDK's own recording.
+
+    An ``Exception`` that leaves the block is recorded (type, masked message, ERROR status) and re-raised; a ``BaseException`` (a cancellation) is not a
+    failure of the work and is not recorded. Use it wherever the exception that can leave the block carries text from a tool, a peer or a provider.
+
+    Use it in a ``with`` statement only: it is a plain context manager, so as a decorator on an ``async def`` it would cover the creation of the coroutine,
+    not its run.
+    """
+    with tracer.start_as_current_span(name, record_exception=False, set_status_on_exception=False) as current:
+        try:
+            yield current
+        except Exception as exc:
+            record_failure(current, exc)
+            raise
+
+
+__all__ = ["setup", "get_tracer", "span", "record_failure"]
