@@ -1,11 +1,10 @@
 {
   "components/admin_users.jsx": 3,
   "components/api_tokens.jsx": 2,
-  "components/approvals.jsx": 9,
+  "components/approvals.jsx": 7,
   "components/harness_form.jsx": 11,
   "components/harness_outbound_builder.jsx": 2,
-  "components/internal-collections.jsx": 6,
-  "components/mcp.jsx": 1,
+  "components/internal-collections.jsx": 2,
   "components/model-profiles.jsx": 2,
   "components/semantic-search.jsx": 1,
   "components/workspaces.jsx": 12

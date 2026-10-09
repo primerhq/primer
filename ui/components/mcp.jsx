@@ -265,9 +265,10 @@ function MC_EndpointPanel({ exposure, availableItems }) {
       )}
 
       <div className="field" style={{ margin: 0 }}>
-        <label className="field-label">Endpoint URL</label>
+        <label className="field-label" htmlFor="mcp-endpoint-url-input">Endpoint URL</label>
         <div style={{ display: "flex", gap: 6, alignItems: "stretch" }}>
           <input
+            id="mcp-endpoint-url-input"
             className="input mono"
             value={url}
             readOnly
@@ -535,6 +536,7 @@ function MC_ToolsPanel({ exposure, available }) {
       >
         <span style={{ fontSize: 13, fontWeight: 600 }}>Exposed tools</span>
         <input
+          aria-label="Search exposed tools"
           className="input"
           style={{ width: 200 }}
           value={search}
