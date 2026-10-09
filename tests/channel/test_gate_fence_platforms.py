@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock
 import pytest
 from pydantic import SecretStr
 
-from primer.channel.adapter import PromptEnvelope
+from primer.channel.adapter import APPROVAL_STALE_NOTICE, QUESTION_STALE_NOTICE, DecisionRefused, PromptEnvelope
 from primer.channel.correlation import CorrelationStore
 from primer.channel.discord.views import ApprovalView, build_approval_custom_ids, decode_custom_id, decode_custom_id_with_gate
 from primer.channel.slack import factory as slack_factory
@@ -303,3 +303,78 @@ async def test_a_discord_approve_click_hands_the_inbox_the_token_and_a_plain_too
 
     kw = adapter._handle_decision.await_args.kwargs
     assert kw["tool_call_id"] == "t" and kw["gate_id"] == G1[:12]
+
+
+# ---- a refused click or reply is told so -------------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_stale_telegram_click_alerts_only_the_clicker_and_edits_nothing(monkeypatch) -> None:
+    adapter = tg_tests._mock_adapter()
+    adapter._resolve_tag = AsyncMock(return_value={"workspace_id": "w", "session_id": "s", "tool_call_id": "t", "gate_id": G1})
+    adapter._handle_decision = AsyncMock(return_value=DecisionRefused(APPROVAL_STALE_NOTICE))
+    on_callback, _ = tg_tests._install(monkeypatch, tg_tests._FakeEntry({"100": adapter}))
+    ctx, cq = tg_tests._context(), tg_tests._cq("a:TAG")
+
+    await on_callback(SimpleNamespace(callback_query=cq), ctx)
+
+    assert adapter._handle_decision.await_args.kwargs["gate_id"] == G1
+    cq.answer.assert_awaited_once_with(text=APPROVAL_STALE_NOTICE, show_alert=True)
+    ctx.bot.edit_message_text.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_telegram_reply_to_a_replaced_question_is_told_so(monkeypatch) -> None:
+    adapter = tg_tests._mock_adapter()
+    adapter._handle_text_reply = AsyncMock(return_value=DecisionRefused(QUESTION_STALE_NOTICE))
+    rec = SimpleNamespace(kind="session", workspace_id="w", session_id="s", tool_call_id="t", gate_id=G1)
+
+    class Corr:
+        def __init__(self, sp):
+            pass
+
+        async def lookup(self, cid, key):
+            return rec
+
+        async def clear(self, cid, key):
+            return None
+
+    monkeypatch.setattr("primer.channel.correlation.CorrelationStore", Corr)
+    _, on_message = tg_tests._install(monkeypatch, tg_tests._FakeEntry({"100": adapter}))
+    ctx = tg_tests._context()
+
+    await on_message(SimpleNamespace(message=tg_tests._msg(text="EUR", reply_to=SimpleNamespace(message_id=33))), ctx)
+
+    assert ctx.bot.send_message.await_args.kwargs["text"] == QUESTION_STALE_NOTICE
+
+
+@pytest.mark.asyncio
+async def test_a_stale_slack_click_tells_only_the_clicker_and_leaves_the_message(monkeypatch) -> None:
+    adapter = _slack_adapter()
+    adapter._handle_decision = AsyncMock(return_value=DecisionRefused(APPROVAL_STALE_NOTICE))
+    _, app = _slack_install(monkeypatch, _SlackEntry({"C123": adapter}))
+    client = SimpleNamespace(chat_update=AsyncMock(), chat_postEphemeral=AsyncMock())
+    body = {"actions": [{"value": f"approve:ws1:sid1:tc1#{G1}"}], "channel": {"id": "C123"}, "user": {"id": "U9"}, "message": {"ts": "1", "blocks": []}}
+
+    await app.actions["approve"](AsyncMock(), body, client)
+
+    client.chat_update.assert_not_awaited()
+    kw = client.chat_postEphemeral.await_args.kwargs
+    assert kw["channel"] == "C123" and kw["user"] == "U9" and kw["text"] == APPROVAL_STALE_NOTICE
+
+
+@pytest.mark.asyncio
+async def test_a_stale_discord_click_tells_only_the_clicker(monkeypatch) -> None:
+    from tests.channel.discord import test_factory as dc_tests
+
+    adapter = dc_tests._mock_adapter()
+    adapter._handle_decision = AsyncMock(return_value=DecisionRefused(APPROVAL_STALE_NOTICE))
+    _, client = dc_tests._install(monkeypatch, dc_tests._FakeEntry({"100": adapter}))
+    inter = dc_tests._interaction(custom_id=f"approve:w:s:t#{G1[:12]}", channel_id=100)
+
+    await client.on_interaction(inter)
+
+    inter.edit_original_response.assert_not_awaited()
+    inter.followup.send.assert_awaited_once()
+    assert inter.followup.send.await_args.args[0] == APPROVAL_STALE_NOTICE
+    assert inter.followup.send.await_args.kwargs["ephemeral"] is True
