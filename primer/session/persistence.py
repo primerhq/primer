@@ -332,10 +332,11 @@ class WorkspaceMessageWriter:
         """The monotonic time past which the batch in flight is treated as hung.
 
         ``_WRITE_TIMEOUT_S`` after the request was SENT, when the backend reports it (the wait for the session's messages_lock, which
-        a turn persist holds across its git commit, is not the workspace being dead); and in all at most ``_QUEUE_CAP_FACTOR`` bounds
-        after the hand-over, so a lock holder that never lets go cannot hold the batch for ever. A request that was sent only just
-        before the cap still gets a quarter of a bound to answer (a healthy slow commit that held the lock for nearly the whole cap
-        must not then lose its records). A backend that does not report keeps the clock from the hand-over.
+        a turn persist holds across its git commit, is not the workspace being dead); and in all ``_QUEUE_CAP_FACTOR`` bounds after the
+        hand-over, so a lock holder that never lets go cannot hold the batch for ever. The one exception is a request that was sent
+        only just before that cap: it still gets a quarter of a bound to answer (a healthy slow commit that held the lock for nearly the
+        whole cap must not then lose its records), so the latest the limit can fall is ``_QUEUE_CAP_FACTOR`` + 1/4 bounds after the
+        hand-over. A backend that does not report keeps the clock from the hand-over.
         """
         start = self._write_started_at
         clock = self._write_clock

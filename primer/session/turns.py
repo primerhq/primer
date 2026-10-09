@@ -33,14 +33,14 @@ class TurnCount:
 
     ``open_turns`` is what decides whether a turn is open, and it is order-aware: each terminal closes one input that came BEFORE it, so a terminal
     at the front of the window (the claim adapter's release marker is written at the seq the failure exit moved the cursor to) closes nothing and
-    cannot cancel out an input that arrived after it. ``open_user_inputs - terminals`` is not that: it is the same only when no terminal precedes
-    the input it would close.
+    cannot cancel out an input that arrived after it. ``open_user_inputs - terminals`` is not that: it equals ``open_turns`` exactly when every
+    terminal has an open input before it to close.
     """
 
     open_user_inputs: int
     terminals: int
     max_seen_seq: int
-    open_turns: int = 0
+    open_turns: int
 
 
 def count_turn_state(raw_lines: list[str], *, cursor: int) -> TurnCount:
