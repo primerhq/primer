@@ -1751,10 +1751,10 @@ def test_a_session_that_merely_rests_is_not_labelled_parked():
 
     from py_mini_racer import MiniRacer
 
-    start = DOC.index("function NV_sessionStateChipView")
-    end = DOC.index("\n}\n", start) + len("\n}\n")
     ctx = MiniRacer()
-    ctx.eval(DOC[start:end])
+    for name in ("NV_restedWithFailure", "NV_sessionStateChipView"):   # the chip asks the helper whether the row rests with a failure
+        start = DOC.index("function " + name)
+        ctx.eval(DOC[start:DOC.index("\n}\n", start) + len("\n}\n")])
 
     def view(session):
         return json.loads(ctx.eval("JSON.stringify(NV_sessionStateChipView(" + json.dumps(session) + "))"))

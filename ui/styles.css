@@ -3888,8 +3888,9 @@ input, textarea, select { font: inherit; color: inherit; }
 .nv-session-state-chip[data-state="parked"] { color: var(--warn, #d9a441); border-color: var(--warn, #d9a441); }
 .nv-session-state-chip[data-state="parked"] .nv-session-state-dot { background: var(--warn, #d9a441); }
 .nv-session-state-chip[data-state="ended"] { color: var(--text-3); }
-.nv-session-state-chip[data-failed="true"] { color: var(--red); }
-.nv-session-state-chip[data-failed="true"] .nv-session-state-dot { background: var(--red); }
+/* After the parked rule, which has the same specificity and an amber border: a failed turn is drawn in the danger token (a failed turn or tool call elsewhere), text, border and dot. */
+.nv-session-state-chip[data-failed="true"] { color: var(--danger, #e06c5f); border-color: var(--danger, #e06c5f); }
+.nv-session-state-chip[data-failed="true"] .nv-session-state-dot { background: var(--danger, #e06c5f); }
 /* A session that merely rests after a turn is waiting for the next message, not blocked: no warning colour (C-009). */
 .nv-session-state-chip[data-state][data-resting="true"] { color: var(--text-2); border-color: var(--border); }
 .nv-session-state-chip[data-state][data-resting="true"] .nv-session-state-dot { background: var(--text-3); }
