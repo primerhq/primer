@@ -5,7 +5,9 @@ from __future__ import annotations
 from typing import Any, ClassVar
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, SecretStr, model_validator
+from pydantic import AnyUrl, BaseModel, Field, SecretStr, model_validator
+
+from primer.common.url_userinfo import restore_userinfo
 
 
 class Identifiable(BaseModel):
@@ -58,6 +60,11 @@ class Describeable(Identifiable):
 # ===========================================================================
 
 
+# The ``context`` of the dump that writes a row to storage (and of anything that needs the row's IDENTITY): a field type that masks something in the JSON-mode dump
+# (a provider ``url``'s password, :class:`primer.model.providers._shared.MaskedUserinfoUrl`) returns the real value when its serializer sees this key.
+STORAGE_DUMP_CONTEXT: dict[str, Any] = {"storage": True}
+
+
 def dump_for_storage(entity: BaseModel) -> dict[str, Any]:
     """JSON-mode model dump that preserves SecretStr plaintext.
 
@@ -71,10 +78,17 @@ def dump_for_storage(entity: BaseModel) -> dict[str, Any]:
     replacing each masked placeholder with the live secret value so that
     the JSONB blob written to Postgres carries the real credential.
 
+    A URL field that masks the password of its userinfo in the JSON-mode dump
+    (:class:`~primer.model.providers._shared.MaskedUserinfoUrl`) is dumped with
+    :data:`STORAGE_DUMP_CONTEXT`, which that serializer reads as "the real URL":
+    one mechanism, no second kind of leaf for the walk below.
+
     Callers in API/router/serialization paths must NOT use this helper —
-    they want the redacted default.
+    they want the redacted default. Anything that FINGERPRINTS or COMPARES a
+    row (cache key, reload detection) must use this form too: the served
+    form is the same for two URLs that differ only by password.
     """
-    dumped = entity.model_dump(mode="json")
+    dumped = entity.model_dump(mode="json", context=STORAGE_DUMP_CONTEXT)
     _unmask_secrets(dumped, entity)
     return dumped
 
@@ -193,12 +207,25 @@ def preserve_masked_secrets(entity: Any, existing: Any) -> None:
                 new_value.get_secret_value(), old_value.get_secret_value(),
             ):
                 setattr(entity, name, old_value)
+        elif isinstance(new_value, AnyUrl):
+            restored = _restored_url(new_value, old_value)
+            if restored is not None:
+                setattr(entity, name, restored)
         elif isinstance(new_value, BaseModel):
             preserve_masked_secrets(new_value, old_value)
         elif isinstance(new_value, list):
             _preserve_masked_secrets_list(new_value, old_value)
         elif isinstance(new_value, dict):
             _preserve_masked_secrets_dict(new_value, old_value)
+
+
+def _restored_url(new_value: AnyUrl, old_value: Any) -> AnyUrl | None:
+    """``new_value`` with the stored URL's credential put back when it is the mask a GET served for ``old_value`` (see
+    :func:`primer.common.url_userinfo.restore_userinfo`), else ``None``: the URL is left as the person sent it."""
+    if not isinstance(old_value, AnyUrl):
+        return None
+    restored = restore_userinfo(str(new_value), str(old_value))
+    return None if restored is None else type(new_value)(restored)
 
 
 def _preserve_masked_secrets_list(new_items: list[Any], old_items: Any) -> None:
