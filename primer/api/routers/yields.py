@@ -52,7 +52,7 @@ from primer.model.except_ import (
 from primer.model.workspace_session import WorkspaceSession
 from primer.model.yield_ import GATE_ID_PATTERN, gate_id_of
 from primer.session.approvers import ADMIN_ONLY_METADATA
-from primer.session.pending_gates import resolve_pending_gate
+from primer.session.pending_gates import enumerate_pending_gates, resolve_pending_gate
 from primer.session.yields import durably_wake_session
 from primer.worker.yield_runtime import make_cancelled_payload
 
@@ -169,21 +169,44 @@ def _pick_ask_user_gate(
     raise stale_gate_error("ask_user")
 
 
-def _fence_cancel(
-    *, session_id: str, gate_id: str | None, tool_name: str | None, current_gate_id: str | None,
-) -> None:
-    """Refuse a cancel that names a gate which is not the pending one (C-033), before anything is published.
+def _cancel_kind(tool_name: str | None) -> str:
+    """The noun a cancel's refusal uses: ``approval`` and ``ask_user`` are human gates, anything else (sleep, watch_files, an external wait) a ``yield``."""
+    return {"_approval": "approval", "ask_user": "ask_user"}.get(tool_name or "", "yield")
 
-    Only an approval or an ask_user prompt is a human gate: a cancel of one that names none is accepted and counted, one that names the
-    pending gate is counted ``matched``, and one that names another is a 409 ``approval_stale``. A yield that is not a human gate (sleep,
-    watch_files, an external wait) has no gate id and is judged only if the caller sent one.
+
+def _fence_cancel(
+    *,
+    session_id: str,
+    gate_id: str | None,
+    expected_tool_name: str | None,
+    tool_name: str | None,
+    current_gate_id: str | None,
+    queued: bool = False,
+) -> None:
+    """Refuse a cancel drawn for a yield or gate that is not the pending one (C-033), before anything is published.
+
+    Two checks, both 409 ``approval_stale``. ``expected_tool_name`` is the kind of yield the card was drawn for: a yield that is not a human gate
+    has no gate id, so this is all that stops a Skip left open for a sleep from cancelling an ask_user that reused the raw id. ``gate_id`` is the
+    gate the card was drawn for: only an approval or an ask_user prompt has one; a cancel naming a gate that is not the pending one is refused, and
+    for a yield that is not a gate (which has none) any id named is a mismatch. ``queued`` says the id named belongs to another pending entry of the
+    same park (a sibling behind the one this route reaches), which changes the words, not the refusal. The decision is counted by
+    :func:`_count_cancel` AFTER the approver check, so a refused cancel is not counted as a decision.
     """
-    kind = "approval" if tool_name == "_approval" else "ask_user"
-    is_gate = tool_name in ("_approval", "ask_user")
+    kind = _cancel_kind(tool_name)
+    if expected_tool_name is not None and expected_tool_name != tool_name:
+        if kind != "yield":
+            count_gate_token(kind=kind, session_id=session_id, token=gate_id, stale=True)
+        raise stale_gate_error("yield")
     if gate_id is not None and gate_id != current_gate_id:
-        count_gate_token(kind=kind, session_id=session_id, token=gate_id, stale=True)
-        raise stale_gate_error(kind)
-    if is_gate:
+        if kind != "yield":
+            count_gate_token(kind=kind, session_id=session_id, token=gate_id, stale=True)
+        raise stale_gate_error(kind, queued=queued)
+
+
+def _count_cancel(*, session_id: str, gate_id: str | None, tool_name: str | None) -> None:
+    """Count a cancel of a human gate that passed the fence and the approver check: ``matched`` with a token, ``absent`` without."""
+    kind = _cancel_kind(tool_name)
+    if kind != "yield":
         count_gate_token(kind=kind, session_id=session_id, token=gate_id)
 
 
@@ -523,6 +546,16 @@ class CancelYieldedToolBody(BaseModel):
             "that is not a human gate (sleep, watch_files) has no gate id and ignores it."
         ),
     )
+    expected_tool_name: str | None = Field(
+        default=None,
+        max_length=128,
+        description=(
+            "The kind of yield the client drew this cancel for (``sleep``, ``watch_files``, ``ask_user``, ``_approval``, ``_external``). Optional "
+            "while clients catch up. A yield that is not a human gate has no gate id to say which park a Skip was drawn for, and the provider "
+            "repeats ``tool_call_id`` across rounds, so a Skip left open for a sleep could cancel an ask_user parked under the same id later. A "
+            "cancel naming a kind that is not what is parked is a 409 ``approval_stale`` and publishes nothing."
+        ),
+    )
     reason: str | None = Field(
         default=None,
         max_length=1024,
@@ -598,16 +631,27 @@ async def post_cancel_yielded_tool(
         # so this is the entry whose key is published below) and judge only an approval. An unresolvable one cannot be shown to be
         # anything but an approval, so it is admin-only.
         gate = resolve_pending_gate(blob, tool_call_id=tool_call_id)
+    resolved_tool = gate["kind"] if gate is not None else yielded.get("tool_name")
+    current_gate_id = gate_id_of(gate["resume_metadata"] if gate is not None else yielded.get("resume_metadata"))
     _fence_cancel(
-        session_id=session_id, gate_id=body.gate_id,
-        tool_name=(gate["kind"] if gate is not None else yielded.get("tool_name")),
-        current_gate_id=gate_id_of(gate["resume_metadata"] if gate is not None else yielded.get("resume_metadata")),
+        session_id=session_id, gate_id=body.gate_id, expected_tool_name=body.expected_tool_name,
+        tool_name=resolved_tool, current_gate_id=current_gate_id,
+        queued=(
+            body.gate_id is not None and body.gate_id != current_gate_id
+            and any(
+                e.get("event_key") != (gate or {}).get("event_key")
+                and e.get("tool_call_id") == tool_call_id
+                and gate_id_of(e.get("resume_metadata")) == body.gate_id
+                for e in enumerate_pending_gates(blob)
+            )
+        ),
     )
     if yielded.get("tool_name") == "_approval":
         if gate is None:
             enforce_approvers(ADMIN_ONLY_METADATA, user)
         elif gate["kind"] == "_approval":
             enforce_approvers(gate["resume_metadata"], user)
+    _count_cancel(session_id=session_id, gate_id=body.gate_id, tool_name=resolved_tool)
     payload = make_cancelled_payload(reason=body.reason)
     await event_bus.publish(event_key, payload)
     # An _external park additionally resolves its audit row so the

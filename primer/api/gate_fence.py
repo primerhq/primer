@@ -21,18 +21,22 @@ from primer.session.gate_token import count_gate_token
 APPROVAL_STALE = "approval_stale"
 """The RFC 7807 ``code`` of a respond that named a gate that has since been replaced (409). One code for approvals and ask_user alike."""
 
-_NOUN = {"approval": "approval", "ask_user": "question"}
+_NOUN = {"approval": "approval", "ask_user": "question", "yield": "yield"}
 
 
-def stale_gate_error(kind: str) -> HTTPException:
-    """The 409 for a respond that named a gate that is no longer the pending one; ``kind`` is ``approval`` or ``ask_user``."""
-    return HTTPException(
-        status_code=409,
-        detail={
-            "code": APPROVAL_STALE,
-            "message": f"this {_NOUN.get(kind, 'request')} was replaced by a newer one; reload the pending list",
-        },
-    )
+def stale_gate_error(kind: str, *, queued: bool = False) -> HTTPException:
+    """The 409 for a respond or cancel that named a gate or yield that is no longer the pending one.
+
+    ``kind`` is ``approval``, ``ask_user`` or ``yield`` (a park that is not a human gate: sleep, watch_files, an external wait); the words
+    follow it. ``queued`` is a cancel that named a gate which is still pending but is not the one the route reaches: a graph park cancels the
+    first pending entry under a call id, so a sibling queued behind it is not "replaced", it has to be decided with its own respond.
+    """
+    noun = _NOUN.get(kind, "request")
+    if queued:
+        message = f"this {noun} is queued behind another one of the same session, which is the one a cancel reaches; decide it with its own response"
+    else:
+        message = f"this {noun} was replaced by a newer one; reload the pending list"
+    return HTTPException(status_code=409, detail={"code": APPROVAL_STALE, "message": message})
 
 
 __all__ = ["APPROVAL_STALE", "count_gate_token", "stale_gate_error"]

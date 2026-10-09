@@ -466,11 +466,13 @@ def make_tool_approval_ops_router() -> APIRouter:
                 f"No pending tool_approval with tool_call_id "
                 f"{body.tool_call_id!r} on {session_id!r}"
             )
-        count_gate_token(kind="approval", session_id=session_id, token=body.gate_id)
         # Approver routing (P6): 403 approver_mismatch before any state
         # moves; decided_by rides the wake payload into the durable
         # record the resume coordinator writes.
         enforce_approvers(gate.get("resume_metadata") or {}, user)
+        # Counted only now: a decision the approver check refused is not a decision that named the right gate, and the count is what schedules the
+        # flip to refusing tokenless responds (a stale token was counted above, where it is refused).
+        count_gate_token(kind="approval", session_id=session_id, token=body.gate_id)
         await _publish_decision(
             sess=sess,
             id_str=session_id,
