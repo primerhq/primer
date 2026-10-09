@@ -620,6 +620,9 @@ function GR_ImportSpecModal({ currentDraft, onClose, onApply }) {
       ...(currentDraft.max_iterations != null
         ? { max_iterations: currentDraft.max_iterations }
         : {}),
+      ...(currentDraft.on_max_iterations != null
+        ? { on_max_iterations: currentDraft.on_max_iterations }
+        : {}),
     };
     return JSON.stringify(body, null, 2);
   }, [currentDraft]);
