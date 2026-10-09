@@ -332,7 +332,7 @@ def _attach(
     nodes: dict[str, dict[str, Any]],
     calls: dict[tuple[str | None, str], dict[str, Any]],
     calls_by_raw_id: dict[str, dict[str, Any]],
-    calls_by_run: dict[tuple[str | None, str], dict[str, Any]],
+    calls_by_run: dict[tuple[str | None, str | None, str], dict[str, Any]],
 ) -> None:
     """Place one child entry: delegation wins, then node, else the root.
 
@@ -358,11 +358,20 @@ def _attach(
     ``calls_by_run``, which is exact; a record that is not found that way
     stays at the node or the root rather than under a wrong call. A record
     without a run id (written before) keeps the raw-id lookup.
+
+    In a graph that is still not exact: two fan-out siblings can delegate
+    under the same raw id at once, both parent runs are ``None``, and the
+    last call wins. A record that carries ``delegate_node_id`` (the node
+    whose agent made the call) is looked up by it as well, and a record
+    that does not, or whose node has no call of its own, takes the last
+    call as before (ticket 01a11cca).
     """
     delegate = payload.get("delegate_tool_call_id")
     if payload.get("delegated"):
         if payload.get("delegate_run_id") is not None:
-            target = calls_by_run.get((payload.get("delegate_parent_run_id"), delegate))
+            parent_run = payload.get("delegate_parent_run_id")
+            node_id = payload.get("delegate_node_id")
+            target = (calls_by_run.get((parent_run, node_id, delegate)) if node_id else None) or calls_by_run.get((parent_run, None, delegate))
         else:
             target = calls_by_raw_id.get(delegate)
         if target is not None:
@@ -400,9 +409,12 @@ def _tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     nodes: dict[str, dict[str, Any]] = {}
     calls: dict[tuple[str | None, str], dict[str, Any]] = {}
     calls_by_raw_id: dict[str, dict[str, Any]] = {}
-    # (the run that made the call, raw id) -> entry: ``None`` for a call the parent turn itself made, otherwise the
-    # ``delegate_run_id`` the call's own record carries (it is a delegated record).
-    calls_by_run: dict[tuple[str | None, str], dict[str, Any]] = {}
+    # (the run that made the call, the graph node, raw id) -> entry: the run is ``None`` for a call the parent turn itself made, otherwise the
+    # ``delegate_run_id`` the call's own record carries (it is a delegated record). Every call is registered under ``None`` for the node too (the
+    # last call with that run and raw id wins, which is all a record without ``delegate_node_id`` can ask for) and, when it has one, under its node
+    # (``delegate_node_id`` of the run that made it, else the record's own ``node_id``), so two fan-out siblings that delegate under one raw id
+    # do not replace each other.
+    calls_by_run: dict[tuple[str | None, str | None, str], dict[str, Any]] = {}
     for rec in records:
         kind = rec.get("kind")
         payload = rec.get("payload") or {}
@@ -470,7 +482,11 @@ def _tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 # not just defensive.
                 raw_id = payload.get("raw_id") or payload["id"]
                 calls_by_raw_id[raw_id] = entry
-                calls_by_run[(payload.get("delegate_run_id"), raw_id)] = entry
+                call_run = payload.get("delegate_run_id")
+                calls_by_run[(call_run, None, raw_id)] = entry
+                call_node = payload.get("delegate_node_id") or rec.get("node_id")
+                if call_node:
+                    calls_by_run[(call_run, call_node, raw_id)] = entry
         elif kind == _TOOL_RESULT:
             parent = calls.get((rec.get("node_id"), payload.get("call_id")))
             if parent is not None:
