@@ -1,11 +1,12 @@
 """The REAL problem envelopes every kind of refused write reaches the browser as, for the UI tests that read them (ticket 01a11cd1-7aaf).
 
 A FastAPI app with the real ``register_error_handlers`` answers through ``TestClient``; each route raises what the real code raises, by calling the
-real producer: the auth gate (``require_user``), the trigger router's ``_raise_code``, the agent routers' ``_agent_check_as_rest_error``, the channel
-router's ``_as_rest_error`` over the channel check's own conflict, ``build_reference_block_hook`` for ``in_use_by``, ``default_agent_refusal`` for the
-default-agent block, a real pydantic request body for a field validation error, and the primer error classes. Nothing here hand-builds an envelope, so
-a server-side change in any of them changes what the tests read (the #572 review: a hand-built ``extensions.code`` hid that the auth gate puts its code
-in ``extensions.error``).
+real producer: the auth gate (``require_user``), the trigger router's ``_raise_code`` (with the code and message its call sites use), the agent checks
+themselves (``check_profile_exists`` and ``check_agent_fields``, re-raised by the agent routers' ``_agent_check_as_rest_error``), the channel router's
+``_as_rest_error`` over the channel check's own conflict, ``build_reference_block_hook`` for ``in_use_by`` (with the child kinds the routers declare),
+``default_agent_refusal`` for the default-agent block, a real pydantic request body for a field validation error, and the primer error classes. A
+producer that needs a store gets a stand-in that answers the one row it asks for. No envelope is written by hand, so a server-side change in any of
+them changes what the tests read (the #572 review: a hand-built ``extensions.code`` hid that the auth gate puts its code in ``extensions.error``).
 """
 
 # No ``from __future__ import annotations`` here: the routes below are defined inside the function, and FastAPI resolves their parameter annotations
@@ -26,10 +27,12 @@ def refusal_envelopes() -> dict[str, dict]:
     from primer.api.routers.channels import _as_rest_error
     from primer.api.routers.compute import _agent_check_as_rest_error
     from primer.api.routers.triggers import _raise_code
+    from primer.agent.agent_checks import check_agent_fields, check_profile_exists
     from primer.channel.checks import _refuse_if_pair_taken
     from primer.common.entity_checks import EntityCheckError
     from primer.model.channel import Channel
     from primer.model.except_ import ConflictError, NotFoundError, ProviderError
+    from primer.model.model_profile import ModelProfile
     from primer.model.user import User
     from primer.storage.references import default_agent_refusal
 
@@ -72,17 +75,27 @@ def refusal_envelopes() -> dict[str, dict]:
     def router_code_bare_id():
         _raise_code(404, "trigger_not_found", "nightly_job")
 
+    async def _no_profile(profile_id):
+        return None
+
+    class _NoProfiles:
+        def get_storage(self, model):
+            assert model is ModelProfile
+            return SimpleNamespace(get=_no_profile)
+
     @app.post("/v1/pre_write")
-    def pre_write():
-        raise _agent_check_as_rest_error(
-            EntityCheckError("validation", "profile 'p-9' does not exist", code="profile_not_found", field="model.profile_id")
-        )
+    async def pre_write():
+        try:
+            await check_profile_exists(SimpleNamespace(model=SimpleNamespace(profile_id="p-9")), storage_provider=_NoProfiles())
+        except EntityCheckError as exc:
+            raise _agent_check_as_rest_error(exc) from exc
 
     @app.post("/v1/agent_field")
     def agent_field():
-        raise _agent_check_as_rest_error(
-            EntityCheckError("validation", "an agent id is lowercase letters, digits, - and _", code="agent_id_invalid", field="id")
-        )
+        try:
+            check_agent_fields(SimpleNamespace(id="refund-triage", description="   "))
+        except EntityCheckError as exc:
+            raise _agent_check_as_rest_error(exc) from exc
 
     @app.post("/v1/validated")
     def validated(body: _Body):
@@ -101,6 +114,13 @@ def refusal_envelopes() -> dict[str, dict]:
             child_kind="session", child_storage=lambda r: _FindsOne("sess-0001"), child_field="binding.agent_id",
         )
         await build_reference_block_hook([session_check])(SimpleNamespace(id="ag-1"), request)
+
+    @app.delete("/v1/in_use_by_aggregate")
+    async def in_use_by_aggregate(request: Request):
+        member_check = ReferenceCheck(
+            child_kind="model_profile (aggregate member)", child_storage=lambda r: _FindsOne("agg-1"), child_field="members",
+        )
+        await build_reference_block_hook([member_check])(SimpleNamespace(id="p-1"), request)
 
     class _State:
         async def get_system_state(self):
@@ -143,6 +163,7 @@ def refusal_envelopes() -> dict[str, dict]:
         "validated": client.post("/v1/validated", json={"name": ""}).json(),
         "in_use_by": client.delete("/v1/in_use_by").json(),
         "in_use_by_session": client.delete("/v1/in_use_by_session").json(),
+        "in_use_by_aggregate": client.delete("/v1/in_use_by_aggregate").json(),
         "default_agent": client.delete("/v1/default_agent").json(),
         "channel_conflict": client.post("/v1/channel_conflict").json(),
         "not_found": client.get("/v1/not_found").json(),

@@ -1,6 +1,6 @@
 """A refused trigger write reads the REAL envelopes of the auth gate and of the trigger router (the #572 review).
 
-``TR_refusal`` first read only ``extensions.code`` and ``detail.code``. The auth gate answers differently: ``require_user`` raises
+The trigger dialogs' reader first read only ``extensions.code`` and ``detail.code``. The auth gate answers differently: ``require_user`` raises
 ``HTTPException(401, detail={"error": "auth_required"})`` and ``(403, detail={"error": "forbidden_role"})`` with no message, so the problem's
 ``detail`` is the code itself (``_detail_from_mapping`` falls back to it) and the code sits in ``extensions.error``, not ``extensions.code``. The reader found no
 code and fell back to ``err.detail``, so a session that had expired, a password that was reset or a user signed out everywhere got
