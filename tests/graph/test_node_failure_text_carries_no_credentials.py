@@ -41,7 +41,8 @@ from tests.graph.test_workspace_executor import _FakeLLM, _make_state_repo
 
 URL = "https://svc-user:hunter2pw@gateway.internal/v1/x?api_key=SKSECRET123456"
 LEAKY = f"ConnectError for url '{URL}' (retry with Bearer sk-abcdefgh12345678)"
-SECRETS = ("hunter2pw", "SKSECRET123456", "sk-abcdefgh12345678")
+BASIC = "dXNlcjpodW50ZXIycHc="            # base64 of "user:hunter2pw"
+SECRETS = ("hunter2pw", "SKSECRET123456", "sk-abcdefgh12345678", BASIC)
 
 
 def _assert_clean(text: str | None) -> None:
@@ -55,7 +56,7 @@ def _end_node_with_a_bad_value() -> Graph:
     """The End node's rendered value is a JSON string, which the object schema refuses with a message that quotes the value."""
     return Graph(
         id="g-bad-end", description="begin -> end",
-        nodes=[_BeginNode(id="b"), _EndNode(id="e", output_template=json.dumps(URL), output_schema={"type": "object"})],
+        nodes=[_BeginNode(id="b"), _EndNode(id="e", output_template=json.dumps(f"{URL} Bearer sk-abcdefgh12345678 Basic {BASIC}"), output_schema={"type": "object"})],
         edges=[_StaticEdge(from_node="b", to_node="e")],
     )
 
