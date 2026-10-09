@@ -31,7 +31,7 @@ from primer.model.except_ import ConflictError, NotFoundError
 from primer.api.approver_guard import enforce_approvers
 from primer.api.gate_fence import count_gate_token, stale_gate_error
 from primer.session.pending_gates import enumerate_pending_gates, resolve_pending_gate
-from primer.model.yield_ import GATE_ID_PATTERN, gate_id_of
+from primer.model.yield_ import GATE_ID_PATTERN, gate_id_of, with_wake_gate
 from primer.session.yields import durably_wake_session
 from primer.model.workspace_session import WorkspaceSession
 from primer.model.storage import OffsetPage, OffsetPageResponse, OrderBy
@@ -289,11 +289,12 @@ async def _publish_decision(
     event_key: str | None = gate.get("event_key")
     if not event_key:
         raise NotFoundError(f"{id_str!r} park is missing event_key")
-    payload = {
-        "decision": body.decision,
-        "reason": body.reason,
-        "decided_by": decided_by,
-    }
+    # The wake names the gate it decides (C-033 round 2, PR 4), whether or not the request named it, so a redelivery cannot decide a later gate that
+    # re-parked under the same key.
+    payload = with_wake_gate(
+        {"decision": body.decision, "reason": body.reason, "decided_by": decided_by},
+        gate_id_of(gate.get("resume_metadata")),
+    )
     did = await durably_wake_session(
         sess,
         event_key=event_key,
