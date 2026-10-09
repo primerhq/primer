@@ -133,11 +133,14 @@
   //   field     the field the refusal is about (dotted, no "body."), or null.
   //   sentence  the server's own words, or "" when it sent none or only the code. A message equal to the code is not a sentence; one that merely looks like
   //             a code is kept when the code is known and different (a not-found message is a bare id, and an id may hold an underscore). Exactly one
-  //             request-validation error is said in its own `msg`; several are not.
-  //   message   what a person reads: the sentence (said plainly, see _plainSentence); else the sentence for a known bare code; else, for request
-  //             validation, ApiError's "Missing or invalid: a, b."; else the HTTP title, the error's message, the caller's fallback, "Request failed",
-  //             with the code after it when there is one ("Forbidden (scope_required)": a title alone tells nobody what was refused).
-  function readRefusal(err, fallback) {
+  //             request-validation error is said in its own `msg`; several are not. A caller that draws the error under its field uses this.
+  //   message   what a person reads: the sentence (said plainly, see _plainSentence), with the field in front for a single validation error that has one
+  //             ("name: Field required": "String should have at least 1 character" alone does not say which field, and a generic toast has no field to draw
+  //             it under); else the sentence for a known bare code; else, for request validation, ApiError's "Missing or invalid: a, b."; else the HTTP
+  //             title, the error's message, the caller's fallback, "Request failed", with the code after it when there is one ("Forbidden (scope_required)":
+  //             a title alone tells nobody what was refused).
+  // options.codeAfterTitle === false keeps that last fallback to the title alone: for a caller whose banner must never show a code (the triggers').
+  function readRefusal(err, fallback, options) {
     const env = err && err.envelope;
     const ext = (env && env.extensions) || {};
     const det = env && env.detail && typeof env.detail === "object" ? env.detail : {};
@@ -170,12 +173,12 @@
     }
 
     let message;
-    if (sentence) message = _plainSentence(sentence);
+    if (sentence) message = errors && field ? `${field}: ${_plainSentence(sentence)}` : _plainSentence(sentence);
     else if (code && _BARE_SENTENCES[code]) message = _BARE_SENTENCES[code];
     else if (errors && text) message = text;
     else {
       const base = (err && (err.title || err.message)) || fallback || "Request failed";
-      message = code ? `${base} (${code})` : base;
+      message = code && !(options && options.codeAfterTitle === false) ? `${base} (${code})` : base;
     }
     return { code, field, sentence, message };
   }

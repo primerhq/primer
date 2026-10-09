@@ -184,7 +184,7 @@ var TR_REMEDIES = {
 // The banner's detail for a refused write: the server's message worked into one sentence about what to do. A code with no template shows the message
 // alone; a code with no sentence from the server (the auth gate) gets the reader's own sentence; the code itself is never part of the text.
 function TR_refusalText(err, fallback) {
-  var r = window.primerApi.readRefusal(err, fallback);
+  var r = window.primerApi.readRefusal(err, fallback, { codeAfterTitle: false });      // a code never goes in a banner's title: with no sentence it is the HTTP title alone
   if (!r.sentence) return r.message;
   var template = r.code ? TR_REMEDIES[r.code] : "";
   if (!template) return r.message;
