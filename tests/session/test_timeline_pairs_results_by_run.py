@@ -104,7 +104,31 @@ def test_a_result_with_no_run_pairs_as_before_in_a_session_that_never_delegated(
     assert _call_by_seq(tl, 1)["result"]["output"] == "fine"
 
 
-def test_a_record_from_before_run_ids_still_pairs_by_node_and_scoped_id() -> None:
-    """The control: delegated records written before ``delegate_run_id`` carry none, and pair exactly as they did."""
+def test_records_from_before_run_ids_pair_within_their_delegating_call_and_not_with_the_parents() -> None:
+    """Delegated records written before ``delegate_run_id`` carry only the delegating call's raw id. The console pairs them under ``call:<raw id>`` (``SH_callScope``), so a delegated
+    call and its parent's, which share the scoped id ``x:tool:1:1``, each get their own result; the timeline paired both under the parent's scope and the later call took both results."""
+    old_call = _rec(2, "tool_call", None, id="x:tool:1:1", raw_id="call_0", name="system__invoke_agent", arguments={}, delegated=True, delegate_tool_call_id="call_0")
+    old_result = _rec(3, "tool_result", None, call_id="x:tool:1:1", output="the child's answer", error=False, delegated=True, delegate_tool_call_id="call_0")
+    tl = _timeline([_call(1, "x:tool:1:1", "call_0"), old_call, old_result, _result(4, "x:tool:1:1", "helper finished")])
+    assert _call_by_seq(tl, 1)["result"]["output"] == "helper finished"
+    assert _call_by_seq(tl, 2)["result"]["output"] == "the child's answer"
+
+
+def test_a_record_with_no_delegation_at_all_pairs_by_node_and_scoped_id_as_before() -> None:
+    """The control: nothing delegated, nothing changes."""
     lines = [_call(1, "x:tool:1:1", "call_0"), _result(2, "x:tool:1:1", "done")]
     assert _call_by_seq(_timeline(lines), 1)["status"] == "ok"
+
+
+def test_a_client_action_attaches_to_the_call_of_its_own_run() -> None:
+    """The client action (the delivery record of a notifying call) is looked up like a result: a delegated one stamped with its run belongs to the delegated notifying call, not to the
+    parent's that shares its scoped id. Nothing pinned this lookup before."""
+    lines = [
+        _call(1, "x:tool:1:1", "call_0"),
+        _call(2, "x:tool:1:1", "call_0", run="r1"),
+        _rec(3, "client_action", None, call_id="x:tool:1:1", name="open_file", delegated=True, delegate_tool_call_id="call_0", delegate_run_id="r1"),
+        _rec(4, "client_action", None, call_id="x:tool:1:1", name="show_diff"),
+    ]
+    tl = _timeline(lines)
+    mine = {seq: [c["name"] for c in _call_by_seq(tl, seq)["children"] if c["kind"] == "client_action"] for seq in (1, 2)}
+    assert mine == {1: ["show_diff"], 2: ["open_file"]}, mine
