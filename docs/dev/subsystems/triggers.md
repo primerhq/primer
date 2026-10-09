@@ -131,7 +131,7 @@ sequenceDiagram
     Disp->>Store: delete consumed Subscription (one-shot)
 ```
 
-The subscription row is written before the `Yielded` sentinel is returned so a fire racing the park still finds the row; the dispatcher's park-state check (session exists, not ENDED, `parked_status == 'parked'`, matching `tool_call_id`) guards against a stale fire and skips with `skipped_session_unparked` if any check fails.
+The subscription row is written before the `Yielded` sentinel is returned so a fire racing the park still finds the row; the dispatcher's park-state check (session exists, not ENDED, `parked_status == 'parked'`, matching `tool_call_id`) guards against a stale fire and skips with `skipped_session_unparked` if any check fails. A provider repeats its `tool_call_id` across rounds, so the raw id alone cannot say which park a subscription was created for (ticket 01a11f52-9d98): the park's own pending entry for that id must also carry THIS subscription's id (`subscribe_to_trigger` stamps it), otherwise the subscription is an orphan, skipped and deleted, and a fire never lands on a later park that reuses the id (an approval gate included). The fire is published onto the park's PRIMARY entry (`yielded`, the first pending entry of a graph park), so a subscription whose entry is pending but is a sibling of the primary is skipped with `skipped_not_primary_gate` and KEPT: it fires once its node is the one that is answered.
 
 ## 7. Persistence
 

@@ -283,7 +283,7 @@ but require human review for any other host.
   id the prompt was posted with. A Slack or Discord button posted before this release has no id and still works (counted as `absent`); a Telegram button the adapter
   no longer remembers (a restart) answers "This button has expired; decide it in the console." **Not yet covered:** two fan-out siblings of one graph park that share
   a raw `tool_call_id` are still resumed together by one decision, and a wake delivered twice can flip a gate that has since been replaced under the same key; both
-  are the next two steps of this work, so do not rely on the id for either yet.
+  are the next two steps of this work (tickets 01a11fc6-0cce and 01a12042), so do not rely on the id for either yet.
 - **A new user message does not supersede a pending approval.** If a
   session is parked on approval and the user sends another message,
   the message is queued behind the open turn and the approval stays
