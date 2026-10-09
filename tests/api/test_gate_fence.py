@@ -92,7 +92,7 @@ def _graph_two_gate_session(*, session_id: str, same_raw_id: bool = False) -> Wo
 def _count(kind: str, token: str) -> float:
     import primer.observability.metrics as m
 
-    return m.registry.get_sample_value("gate_respond_total", {"kind": kind, "token": token}) or 0.0
+    return m.registry.get_sample_value("gate_respond_total", {"kind": kind, "gate_token": token}) or 0.0
 
 
 async def _records(app, session_id: str) -> list[ToolApprovalRecord]:
