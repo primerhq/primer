@@ -141,9 +141,36 @@ def _card_source() -> str:
 def test_the_card_tells_the_view_when_the_whole_call_has_been_loaded() -> None:
     source = _card_source()
 
+    assert "var full = NV_inboxFullFor(fullState[0], it);" in source
     assert "var shownAll = !!(full && full.text !== undefined);" in source
     assert "NV_mobileInboxView(it, { username: con.username, role: con.role }, shownAll)" in source
     assert source.index("var fullState = React.useState(null);") < source.index("var shownAll"), "the loaded state has to exist before the view reads it"
+    assert source.count("callId: it.tool_call_id") == 2, "the loading state and the loaded text both name the call they belong to"
+
+
+def _full_for(state, call_id: str):
+    """``NV_inboxFullFor`` evaluated on its own (V8), so the shared fixture of test_mobile_inbox.py is untouched."""
+    from py_mini_racer import MiniRacer
+
+    ctx = MiniRacer()
+    try:
+        start = SHELL.index("function NV_inboxFullFor")
+        ctx.eval(SHELL[start:SHELL.index("\n}\n", start) + 3])
+        return json.loads(ctx.eval(f"JSON.stringify(NV_inboxFullFor({json.dumps(state)}, {json.dumps({'tool_call_id': call_id})}))"))
+    finally:
+        ctx.close()
+
+
+def test_the_text_loaded_by_show_all_unlocks_only_the_call_it_belongs_to() -> None:
+    """The card is keyed by SESSION. When the poll brings a NEW call for the same session (the first one was decided, the agent parked on another), the text loaded for
+    the old call must not unlock Approve for a call the person has not read: the decision names the new call's id."""
+    loaded = {"text": "the whole call", "callId": "tc-1"}
+
+    assert _full_for(loaded, "tc-1") == loaded
+    assert _full_for(loaded, "tc-2") is None
+    assert _full_for(None, "tc-1") is None
+    assert _full_for({"loading": True, "callId": "tc-1"}, "tc-1") == {"loading": True, "callId": "tc-1"}      # loading is not loaded: the card checks .text
+    assert _full_for({"text": "no call named"}, "tc-1") is None
 
 
 def test_the_card_draws_the_withheld_line() -> None:
