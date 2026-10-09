@@ -2488,7 +2488,8 @@ _RUNNING_FLIP_ATTEMPTS = 3
 
 
 async def _record_last_turn_error(session_storage, session_id: str, exc: BaseException, binding_epoch: int) -> None:
-    """Stamp ``last_turn_error`` (the failure's code and time) on the row: ONE ``patch_if`` of that field, guarded on the row not being ENDED.
+    """Stamp ``last_turn_error`` (the failure's code and time) on the row: ONE ``patch_if`` of that field, guarded on the row not being ENDED and
+    on the binding epoch the turn started under (a binding that switched while the turn ran is not this turn's failure to record).
 
     The code is the model call's own (``TurnStreamFailure.ended_detail_code``: the stream's code, else ``llm_stream_error``), else ``turn_failed`` for
     a turn that raised something that is not a model error. Advisory: the failure exit's job is to release the lease, so a write that cannot land is
