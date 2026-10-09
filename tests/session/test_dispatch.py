@@ -1101,7 +1101,12 @@ async def test_turn_stream_failure_ended_detail_falls_back_when_code_unset(
 ) -> None:
     """01a070d6: several provider classifiers (NetworkError across ollama,
     anthropic, openai, google, mcp) leave Error.code unset - ended_detail
-    must still resolve to something usable rather than None."""
+    must still resolve to something usable rather than None.
+
+    An AUTONOMOUS session: an interactive one whose stream died without a code RESTS instead of ending (C-024), so it carries no
+    ``ended_detail``; what is pinned here is the detail an ENDED session carries."""
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    await storage.update(seeded_session.model_copy(update={"autonomous": True}))
     fake_executor = FakeExecutor([
         TurnStreamFailure(
             Error(code=None, message="connection refused", fatal=True),

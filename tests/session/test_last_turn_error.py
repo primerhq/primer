@@ -141,7 +141,9 @@ async def test_a_row_that_is_already_ended_keeps_its_first_terminal_reason(fake_
     session = await _seed_session(fake_storage_provider, "s-ended-first")
     await storage.update(session.model_copy(update={"status": SessionStatus.ENDED, "ended_reason": "cancelled"}))
 
-    await dispatch._record_last_turn_error(storage, "s-ended-first", _failure(), session.binding_epoch)
+    landed = await dispatch._record_last_turn_error(storage, "s-ended-first", "server_error", session.binding_epoch)
+
+    assert landed is False
 
     assert (await storage.get("s-ended-first")).last_turn_error is None
 
@@ -157,7 +159,9 @@ async def test_a_binding_that_switched_during_the_turn_is_not_stamped(fake_stora
     session = await _seed_session(fake_storage_provider, "s-switched")
     await storage.update(session.model_copy(update={"binding_epoch": session.binding_epoch + 1}))
 
-    await dispatch._record_last_turn_error(storage, "s-switched", _failure(), session.binding_epoch)
+    landed = await dispatch._record_last_turn_error(storage, "s-switched", "server_error", session.binding_epoch)
+
+    assert landed is False
 
     assert (await storage.get("s-switched")).last_turn_error is None
 
