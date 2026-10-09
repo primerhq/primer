@@ -250,8 +250,11 @@ class ToolApprovalRecord(Identifiable):
     gate_event_key: str | None = Field(
         default=None,
         description=(
-            "The park's own event_key (ParkedState.yielded.event_key), "
-            "followed by '@<gate_id>' when the park carries a gate id "
+            "The gate's own event key (the key its pending entry waits on: "
+            "for the gate of a single park that is ParkedState.yielded."
+            "event_key, for a non-primary gate of a graph park the entry's "
+            "own node-scoped key, not the projection's), "
+            "followed by '@<gate_id>' when the gate carries an id "
             "(C-033 PR 2: the provider repeats a tool_call_id across "
             "rounds, so the event key alone cannot tell two gates apart) - "
             "None for records written before this field existed. Carries "
