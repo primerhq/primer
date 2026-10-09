@@ -1,6 +1,6 @@
 """``GET /v1/artifact_storage_providers/_types`` serves the form metadata of the artifact-storage class (board ticket 01a1214c, found by the #668 round-2 a11y sweep).
 
-Every other provider class serves its form from ``/{plural}/_types`` (docs/dev/architecture/provider-pattern.md), and the console carries no field table of its own. The artifact-storage router had only
+The provider classes with a console form serve it from ``/{plural}/_types`` (docs/dev/architecture/provider-pattern.md; ``channel_providers`` and ``workspace_providers`` have their own panels and serve none), and the console carries no field table of its own. The artifact-storage router had only
 the CRUD routes, so the console's Register provider menu on Providers > Artifact storage said "No kinds available." and no artifact-storage provider could be registered from the page. These
 tests hold the served shape to the pydantic models it describes (``primer/model/providers/artifact.py``), the way the model-family tests hold theirs to the enums, and prove that a form built from it
 creates a row.
@@ -99,3 +99,83 @@ async def test_the_literal_types_path_beats_the_crud_get_by_id(client) -> None:
     """Mounted before the CRUD router, so "_types" is never read as an id (and is not a 404 "ArtifactStorageProvider '_types' does not exist")."""
     assert (await client.get("/v1/artifact_storage_providers/_types")).status_code == 200
     assert (await client.get("/v1/artifact_storage_providers/_nope")).status_code == 404
+
+# ---- round 2 (lead's review of #706) ---------------------------------------------------------------------------------------------------------------------------------------
+
+
+def _row_of(kind: str):
+    from primer.model.provider import ArtifactStorageProvider
+
+    config = {f["key"]: "value" for f in CONFIG_FIELDS[kind] if f["required"]}
+    return ArtifactStorageProvider.model_validate({"id": f"asp-factory-{kind}", "provider": kind, "config": config})
+
+
+CONFIG_FIELDS = {
+    "db": [],
+    "filesystem": [{"key": "root", "required": True}],
+    "s3": [{"key": "bucket", "required": True}],
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", sorted(CONFIG_OF))
+async def test_a_kind_the_factory_cannot_build_says_so_in_its_label_and_one_it_can_does_not(client, kind: str) -> None:
+    """B1: the menu must not offer as working a backend that is stored and never used. Every consumer reads only the reserved default row, and ``build_artifact_storage`` builds only ``db``; so the label of
+    every kind the factory refuses says 'not implemented yet: stored, never used', and when a backend ships the label has to lose it (this test flips by itself)."""
+    from primer.artifact.factory import build_artifact_storage
+    from primer.model.except_ import ConfigError
+
+    label = (await _types(client))[kind]["label"]
+    try:
+        build_artifact_storage(_row_of(kind), storage_provider=object())  # type: ignore[arg-type]
+        builds = True
+    except ConfigError:
+        builds = False
+    assert ("not implemented" in label) is (not builds), (kind, label, "builds" if builds else "is refused by the factory")
+    if not builds:
+        assert "stored, never used" in label, label
+
+
+@pytest.mark.asyncio
+async def test_the_database_kind_is_not_called_the_default_and_says_which_row_is_used(client) -> None:
+    """A newly registered ``db`` row is not the default: only the built-in ``artifact-storage-default`` row is read by the consumers."""
+    label = (await _types(client))["db"]["label"]
+    assert "(default)" not in label
+    assert "artifact-storage-default" in label and "only" in label.lower(), label
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["user", "restricted"])
+async def test_a_non_admin_cannot_read_the_types(raw_client, app, role: str) -> None:
+    """N1: system configuration is admin only, like every sibling class (the helper router is mounted with the admin gate, not the user gate)."""
+    from tests.api.test_require_user_admin import _login, _seed
+
+    await _seed(app, uid=f"u-{role}", username=role, role=role)
+    await _login(raw_client, role)
+    r = await raw_client.get("/v1/artifact_storage_providers/_types")
+    assert r.status_code == 403, r.text
+    assert r.json()["extensions"]["error"] == "forbidden_role"
+
+
+@pytest.mark.asyncio
+async def test_an_anonymous_caller_cannot_read_the_types(raw_client) -> None:
+    r = await raw_client.get("/v1/artifact_storage_providers/_types")
+    assert r.status_code == 401, r.text
+    assert r.json()["extensions"]["error"] == "auth_required"
+
+
+@pytest.mark.asyncio
+async def test_an_admin_reads_the_types_through_the_same_gate(raw_client, app) -> None:
+    from tests.api.test_require_user_admin import _login, _seed
+
+    await _seed(app, uid="u-admin", username="admin1", role="admin")
+    await _login(raw_client, "admin1")
+    assert (await raw_client.get("/v1/artifact_storage_providers/_types")).status_code == 200
+
+
+def test_the_route_reuses_the_shared_field_descriptor() -> None:
+    """N3: one descriptor builder for the provider classes (``providers._form_field``), not a copy per router."""
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[2] / "primer" / "api" / "routers" / "artifact_storage.py").read_text(encoding="utf-8")
+    assert "_form_field" in src and "def _field(" not in src
