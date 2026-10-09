@@ -64,6 +64,7 @@ from primer.model.except_ import (
 from primer.model.except_ import ValidationError as PrimerValidationError
 from primer.model.storage import CursorPage, OffsetPage, OrderBy
 from primer.model.workspace import (
+    WORKSPACE_ID_PATTERN,
     Workspace as WorkspaceRow,
     WorkspaceProvider,
     WorkspaceTemplate,
@@ -259,7 +260,9 @@ class _UpdateTemplateArgs(BaseModel):
 
 
 class _CreateWorkspaceArgs(BaseModel):
-    id: str | None = Field(default=None)
+    # Same rule as REST (WorkspaceCreateBody.id): the id names a directory
+    # under the workspace root, so a traversal id must not reach the backend.
+    id: str | None = Field(default=None, pattern=WORKSPACE_ID_PATTERN)
     template_id: str = Field(..., min_length=1)
     overrides: WorkspaceTemplateOverrides | None = Field(default=None)
 

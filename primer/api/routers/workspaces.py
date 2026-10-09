@@ -88,6 +88,7 @@ from primer.model.storage import (
     PageRequest,
 )
 from primer.model.workspace import (
+    WORKSPACE_ID_PATTERN,
     WorkspaceEventsConfig,
     FileEntry,
     Workspace as WorkspaceRow,
@@ -131,9 +132,13 @@ class WorkspaceCreateBody(BaseModel):
 
     id: str | None = Field(
         default=None,
+        pattern=WORKSPACE_ID_PATTERN,
         description=(
             "Optional caller-supplied workspace id. If omitted, the "
-            "backend allocates one."
+            "backend allocates one. Must be a single alphanumeric token "
+            "(WORKSPACE_ID_PATTERN): it names the directory the local "
+            "backend materialises the workspace in, so a slash, dot or "
+            "control character would move it outside (or onto) the root."
         ),
     )
     name: str | None = Field(

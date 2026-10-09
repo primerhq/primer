@@ -20,6 +20,7 @@ The backend tests need git because ``LocalWorkspace.materialise`` shells out to 
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -27,7 +28,11 @@ import pytest
 
 from primer.api.registries.workspace_registry import WorkspaceRegistry
 from primer.model.except_ import ValidationError
-from primer.model.workspace import ResourceLimits, WorkspaceTemplate
+from primer.model.workspace import (
+    WORKSPACE_ID_PATTERN,
+    ResourceLimits,
+    WorkspaceTemplate,
+)
 from primer.workspace import LocalWorkspaceBackend
 
 pytestmark = pytest.mark.skipif(
@@ -103,6 +108,38 @@ async def test_the_local_backend_refuses_a_reattach_that_escapes_the_root(
     """The re-attach path joins the root too: an escaping id must not re-attach to a directory outside it."""
     with pytest.raises(ValidationError):
         await backend.get("../escape", template=_template())
+
+
+# ---------------------------------------------------------------------------
+# The pattern itself
+# ---------------------------------------------------------------------------
+
+
+def test_the_pattern_accepts_the_ids_that_exist_and_rejects_everything_that_escapes() -> None:
+    for good in (
+        "primer",
+        "psx-financials",
+        "ws-0123456789abcdef",
+        "a",
+        "x_y-z",
+        "UPPER",
+        "a" * 63,
+    ):
+        assert re.fullmatch(WORKSPACE_ID_PATTERN, good), good
+    for bad in (
+        "../escape",
+        "/abs",
+        "a/b",
+        ".",
+        "..",
+        "new\nline",
+        "a\x00b",
+        "a" * 64,
+        "-lead",
+        "_lead",
+        "",
+    ):
+        assert not re.fullmatch(WORKSPACE_ID_PATTERN, bad), bad
 
 
 # ---------------------------------------------------------------------------
