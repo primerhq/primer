@@ -209,9 +209,11 @@ class AgentFrame:
         )
 
     async def resume_leaf(
-        self, leaf: Any, payload: Any, services: Any
+        self, leaf: Any, payload: Any, services: Any, fired_key: str | None = None,
     ) -> "FrameOutcome":
         """Resolve this frame's OWN leaf when it is the innermost frame.
+
+        ``fired_key`` is not used: an agent frame's leaf is exact.
 
         The leaf belongs to this subagent's own tool call (an approval gate or
         a yielding tool it raised), so it is resolved via :func:`apply_leaf`
@@ -349,10 +351,28 @@ class GraphFrame:
             node_tcid=data.get("node_tcid"),
         )
 
+    def answered_entry(self, leaf: Any, fired_key: str | None) -> tuple[str | None, str | None]:
+        """``(tool_call_id, event_key)`` of the child's pending entry a reply answered.
+
+        The leaf is the child's PRIMARY projection (its first pending entry), but the child may have several gates pending and every one of them is offered to
+        the operator: the pending list, the respond routes and the channel prompts name any sibling. The key the reply FIRED (``fired_key``, the parked row's
+        ``resume_event_key``) names the entry that was answered, and its own ``tool_call_id`` is the one to resume; when it names none of the child's pending
+        entries (a row flipped before the key was stamped, a key that belongs to an outer frame) the leaf decides, as it always did.
+        """
+        if fired_key:
+            from primer.session.pending_gates import enumerate_pending_gates
+
+            for entry in enumerate_pending_gates({"graph_checkpoint": self.checkpoint}):
+                if entry.get("event_key") == fired_key:
+                    return entry.get("tool_call_id") or self.node_tcid, fired_key
+        return self.node_tcid, getattr(leaf, "event_key", None)
+
     async def resume_leaf(
-        self, leaf: Any, payload: Any, services: Any
+        self, leaf: Any, payload: Any, services: Any, fired_key: str | None = None,
     ) -> "FrameOutcome":
         """Resolve this graph's OWN leaf when it is the innermost frame.
+
+        The entry that was ANSWERED is selected by ``fired_key`` (see :meth:`answered_entry`), else by the leaf.
 
         The leaf belongs to a node INSIDE this child graph, so only the graph's
         own resume can resolve it: rehydrate the child executor
@@ -372,19 +392,19 @@ class GraphFrame:
         """
         graph = await services.resolve_graph(self.graph_id)
         child = await services.build_child_graph_executor(graph, self.gsid)
-        # The leaf's own event key says WHICH gate of the child this reply answers: two siblings of the child's superstep can share ``node_tcid``, and
-        # a raw id alone resumed every one of them (C-033 round 2, ticket 01a11fc6-0cce).
-        leaf_key = getattr(leaf, "event_key", None)
+        # WHICH gate of the child this reply answers: two siblings of the child's superstep can share ``node_tcid``, and a raw id alone resumed every one of
+        # them (C-033 round 2); the leaf is the child's primary, so a reply for another sibling needs the key it fired (round 3, ticket 01a11fc6-0cce).
+        node_tcid, answered_key = self.answered_entry(leaf, fired_key)
         agent_tool_result = await services.graph_agent_tool_result(
-            self.checkpoint, self.node_tcid, payload, event_key=leaf_key,
+            self.checkpoint, node_tcid, payload, event_key=answered_key,
         )
         try:
             out, repark = await resume_invoke_graph(
                 child=child,
                 checkpoint=self.checkpoint,
                 payload=payload,
-                resumed_tcid=self.node_tcid,
-                resumed_event_key=leaf_key,
+                resumed_tcid=node_tcid,
+                resumed_event_key=answered_key,
                 agent_tool_result=agent_tool_result,
                 resume_session_id=services.session_id,
                 resolve_provider=services.resolve_provider,
@@ -450,6 +470,17 @@ class GraphFrame:
         """
         from primer.model.chat import Message
 
+        # This path carries no fired key and no leaf (a finished deeper frame's result is all it has), so when the child has several pending entries that
+        # share ``node_tcid`` it cannot say which one the result belongs to: it fails closed (the raise ends the walk: the agent path's `resume_engine_session` answers with a `continuation resume failed` tool result, the graph path fails the turn; no live path reaches it today)
+        # instead of resuming whichever sibling the raw id met first (C-033 round 3, ticket 01a11fc6-0cce).
+        from primer.session.pending_gates import enumerate_pending_gates
+
+        sharing = [e for e in enumerate_pending_gates({"graph_checkpoint": self.checkpoint}) if e.get("tool_call_id") == self.node_tcid]
+        if len(sharing) > 1:
+            raise RuntimeError(
+                f"GraphFrame.resume cannot tell which of {len(sharing)} pending entries of graph {self.graph_id!r} that share tool_call_id "
+                f"{self.node_tcid!r} the finished result belongs to; only the innermost frame, which has the leaf, resumes a sibling"
+            )
         graph = await services.resolve_graph(self.graph_id)
         child = await services.build_child_graph_executor(graph, self.gsid)
         agent_tool_result = Message(role="tool", parts=[child_result])

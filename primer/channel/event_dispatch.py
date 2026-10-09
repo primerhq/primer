@@ -184,18 +184,35 @@ class ChannelEventRouter:
                             "no event bus; dropping reply", channel_id,
                         )
                         return ChannelRouteOutcome(kind="ignored")
-                    event_key = (
-                        f"ask_user:{record.session_id}:{record.tool_call_id}"
-                    )
-                    await self._bus.publish(event_key, {"response": event.text})
-                    # One reply answers one gate. Clearing it here is what
-                    # lets the NEXT reply in the same thread steer the
-                    # session instead of re-publishing onto a dead resume
-                    # key.
-                    await self._correlation.clear_gate(channel_id, anchor)
-                    return ChannelRouteOutcome(
-                        kind="gate", session_id=record.session_id,
-                    )
+                    # The reply goes through the inbox like every adapter's direct reply: the key the pending gate WAITS on is resolved from the row (an
+                    # ask_user inside a graph node waits on ``ask_user:{sid}:{node}:{tcid}``, which a key rebuilt here from the raw id would miss, so the
+                    # answer was lost) and the C-033 stale fence applies, so a reply to a prompt that has since been replaced does not answer the newer one.
+                    from primer.channel.inbox import ChannelInbox
+                    from primer.model.envelope import ResponseEnvelope
+                    from primer.session.gate_token import StaleGateError
+
+                    try:
+                        await ChannelInbox(event_bus=self._bus, storage_provider=self._sp).handle_response(ResponseEnvelope(
+                            kind="ask_user", workspace_id=record.workspace_id, session_id=record.session_id,
+                            tool_call_id=record.tool_call_id, response=event.text, decision=None, reason=None,
+                            gate_id=getattr(record, "gate_id", None),
+                        ))
+                    except StaleGateError:
+                        # The thread's prompt was replaced by a newer question: this text is not its answer. The stale gate is cleared and the text
+                        # falls through to the steer below, like a reply in a thread with no open gate.
+                        logger.info(
+                            "channel event: reply for %s/%s names a prompt that has been replaced; steering instead", channel_id, anchor,
+                        )
+                        await self._correlation.clear_gate(channel_id, anchor)
+                    else:
+                        # One reply answers one gate. Clearing it here is what
+                        # lets the NEXT reply in the same thread steer the
+                        # session instead of re-publishing onto a dead resume
+                        # key.
+                        await self._correlation.clear_gate(channel_id, anchor)
+                        return ChannelRouteOutcome(
+                            kind="gate", session_id=record.session_id,
+                        )
             if record is not None and record.kind == "session":
                 # Thread-mapped session, no open gate: the reply is the next
                 # user message on that session (S6 section 5). Queueing is
