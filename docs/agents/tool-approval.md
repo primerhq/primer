@@ -282,7 +282,9 @@ but require human review for any other host.
   platform thread from an earlier round answers "This approval was replaced by a newer one" and decides nothing; a reply to a question message is judged against the
   id the prompt was posted with. A Slack or Discord button posted before this release has no id and still works (counted as `absent`); a Telegram button the adapter
   no longer remembers (a restart) answers "This button has expired; decide it in the console." Two fan-out siblings of one graph park that share a raw `tool_call_id` are
-  told apart end to end: a decision resumes only the sibling whose event key it fired. **Not yet covered:** a wake delivered twice can flip a gate that has
+  told apart when the decision is resumed: a decision resumes only the sibling whose event key it fired, in a graph session and in the child graph an agent session invoked (the
+  key the reply fired selects the sibling, not the child's first gate), and a thread reply routed by the channel router reaches the key the gate waits on. Siblings that were already
+  parked BEFORE this release share one unscoped `ask_user` key, so one answer resumes both of them; that ends with those parks. **Not yet covered:** a wake delivered twice can flip a gate that has
   since been replaced under the same key; that is the next step of this work (ticket 01a12042), so do not rely on the id for it yet.
 - **A new user message does not supersede a pending approval.** If a
   session is parked on approval and the user sends another message,
