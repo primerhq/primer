@@ -29,7 +29,12 @@ import uuid
 from pathlib import Path
 
 from primer.int.workspace import Workspace
-from primer.model.except_ import BadRequestError, NotFoundError, SubprocessTimeoutError
+from primer.model.except_ import (
+    BadRequestError,
+    NotFoundError,
+    SubprocessTimeoutError,
+    ValidationError,
+)
 from primer.model.workspace import (
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
@@ -68,6 +73,26 @@ class LocalWorkspaceBackend(BaseWorkspaceBackend):
     @property
     def root(self) -> Path:
         return self._root
+
+    def _refuse_escaping(self, workspace_id: str) -> Path:
+        """Join the id to the root and refuse a result that is not strictly inside it.
+
+        Defence in depth behind the entry-layer id rule (#680 N7): the id is
+        joined with a plain ``/``, so an absolute or ``../`` id would place
+        the workspace directory OUTSIDE the configured root (and the rollback
+        ``rmtree`` would follow it there). Resolve both sides and require the
+        workspace to land strictly INSIDE the root - the root itself is not
+        a workspace directory.
+        """
+        root = self._root.resolve()
+        ws_root = (self._root / workspace_id).resolve()
+        if ws_root == root or not ws_root.is_relative_to(root):
+            raise ValidationError(
+                f"workspace id {workspace_id!r} escapes the workspace root "
+                f"{root} (it would land at {ws_root}); expected a single "
+                "path segment under the root"
+            )
+        return ws_root
 
     async def initialize(self) -> None:
         await asyncio.to_thread(self._root.mkdir, parents=True, exist_ok=True)
@@ -108,7 +133,7 @@ class LocalWorkspaceBackend(BaseWorkspaceBackend):
         # durable row id and the on-disk workspace dir agree -- otherwise
         # re-attach after cache eviction looks up the wrong id and 404s.
         workspace_id = workspace_id or _generate_workspace_id()
-        ws_root = self._root / workspace_id
+        ws_root = self._refuse_escaping(workspace_id)
         # exist_ok: a directory left by an earlier install used to crash
         # the seed on EVERY boot of a fresh database (FileExistsError out
         # of ensure_default_workspace). The durable row is authoritative
@@ -166,7 +191,7 @@ class LocalWorkspaceBackend(BaseWorkspaceBackend):
         """
         if not self._initialised:
             await self.initialize()
-        ws_root = self._root / workspace_id
+        ws_root = self._refuse_escaping(workspace_id)
         if not await asyncio.to_thread(ws_root.is_dir):
             return None
         if template is None:

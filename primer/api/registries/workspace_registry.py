@@ -19,12 +19,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from primer.model.except_ import NotFoundError
+from primer.model.except_ import NotFoundError, ValidationError
 from primer.model.workspace_refusal import WorkspaceRefusedError
-from primer.model.workspace import Workspace as WorkspaceRow
+from primer.model.workspace import WORKSPACE_ID_PATTERN, Workspace as WorkspaceRow
 from primer.model.workspace import (
     WorkspaceProvider,
     WorkspaceTemplate,
@@ -218,7 +219,22 @@ class WorkspaceRegistry:
         (typically the same id the durable row is keyed by). Forwarding
         it keeps the row id and the live instance id in sync so re-attach
         via :meth:`get_workspace` works after the cache is evicted.
+
+        A pinned id is validated here, at the ONE point every create path
+        (REST, the ``create_workspace`` tool, the bootstrap seed) passes:
+        it names a directory under the local workspace root, a container
+        name and a k8s object name, so only a single alphanumeric token is
+        admitted (``WORKSPACE_ID_PATTERN``; #680 N7).
         """
+        if workspace_id is not None and re.fullmatch(
+            WORKSPACE_ID_PATTERN, workspace_id
+        ) is None:
+            raise ValidationError(
+                f"workspace id {workspace_id!r} is not a valid workspace id: "
+                "expected a single alphanumeric token matching "
+                f"{WORKSPACE_ID_PATTERN} (it names a directory under the "
+                "workspace root)"
+            )
         backend = await self.get_backend(template.provider_id)
         resolvers = FileResolvers(
             document_resolver=make_document_resolver(self._sp),

@@ -14,6 +14,7 @@ Models exported:
 * :class:`WorkspaceTemplateOverrides` -- per-instantiation tweaks.
 * :class:`FileEntry` -- user-facing file listing entry returned from
   :meth:`Workspace.list_files`.
+* ``WORKSPACE_ID_PATTERN`` -- the one rule for caller-supplied workspace ids.
 
 See ``docs/superpowers/specs/2026-05-02-workspace-design.md`` for the
 full design.
@@ -39,6 +40,20 @@ from pydantic import (
 from primer.model.common import Describeable, Identifiable
 
 _log = logging.getLogger(__name__)
+
+
+# A workspace id names a directory under the local workspace root
+# (``LocalWorkspaceBackend`` joins it to the root), a docker container-name
+# suffix and a k8s object-name component, and it becomes the durable row id,
+# a ``LocalStateRepo`` workspace id and a git trailer value. It is therefore
+# ONE alphanumeric token: no dot, no slash (no traversal, no nesting), no
+# control character. The rule matches every id that exists today (the
+# bootstrap default ``primer``; the generated ``ws-<hex>``) and the
+# generated ids always pass it. Every workspace-create entry (the REST
+# body, the ``create_workspace`` tool args, ``WorkspaceRegistry.materialise``)
+# enforces it, and the local backend re-asserts the containment it implies
+# as defence in depth.
+WORKSPACE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$"
 
 
 # ===========================================================================
