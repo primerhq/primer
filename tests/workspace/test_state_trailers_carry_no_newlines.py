@@ -59,7 +59,7 @@ def test_a_session_commit_message_cannot_gain_a_trailer_from_a_provider_tool_cal
 
     message = build_message(
         subject="s", workspace_id="ws", session_id="sess-1", agent_id="ag", op="tool", tool="fs__read",
-        call_id="call_0\nX-Primer-Session: forged X-Primer-Agent: forged",
+        call_id="call_0\nX-Primer-Session: forged\u2028X-Primer-Agent: forged",
     )
 
     lines = message.splitlines()

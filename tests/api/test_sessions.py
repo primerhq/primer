@@ -2063,3 +2063,42 @@ async def test_recent_sessions_serves_graph_bound_qualifier(
     assert row["graph_ref"] == graph_id
     assert row["agent_id"] is None
     assert row["agent_name"] is None
+
+
+# ===========================================================================
+# PATCH .../sessions/{sid} - a rename cannot carry control characters (#680 review round 1, B4)
+# ===========================================================================
+
+
+@pytest.mark.parametrize(
+    "name", ["a\x1fb", "a\x1eb", "a\nb", "a\rb", "a\x00b", "a\x0bb", "a\x7fb", "a\x85b", "a b", "a b", "a\tb"],
+    ids=["US", "RS", "LF", "CR", "NUL", "VT", "DEL", "NEL", "LS", "PS", "TAB"],
+)
+async def test_rename_session_refuses_a_name_with_a_control_character(sessions_client, seeded_workspace, seeded_agent, name):
+    """The name lands in the commit SUBJECT of the ``rename`` commit, which the history parsers split on RS and US: an authenticated user could forge a
+    record or make the workspace's log fail for everyone. The API refuses it; the writers sanitise too (defence in depth)."""
+    create = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={"binding": {"kind": "agent", "agent_id": seeded_agent.id}, "auto_start": False},
+    )
+    assert create.status_code == 201, create.text
+    sid = create.json()["id"]
+
+    patched = await sessions_client.patch(f"/v1/workspaces/{seeded_workspace.id}/sessions/{sid}", json={"name": name})
+
+    assert patched.status_code == 422, patched.text
+    got = await sessions_client.get(f"/v1/sessions/{sid}")
+    assert got.json()["name"] is None, "a refused rename changes nothing"
+
+
+async def test_rename_session_still_accepts_an_ordinary_name_with_unicode(sessions_client, seeded_workspace, seeded_agent):
+    create = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={"binding": {"kind": "agent", "agent_id": seeded_agent.id}, "auto_start": False},
+    )
+    sid = create.json()["id"]
+
+    patched = await sessions_client.patch(f"/v1/workspaces/{seeded_workspace.id}/sessions/{sid}", json={"name": "Nightly: ünïcode run 2"})
+
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["name"] == "Nightly: ünïcode run 2"
