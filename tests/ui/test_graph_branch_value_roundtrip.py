@@ -489,7 +489,7 @@ def test_deleting_a_branch_does_not_hand_its_half_typed_text_to_the_branch_that_
     _open(builder, _two_equal_branches())
     builder.eval("typeInto(0, '{\"a\":1}x');")                                       # half-type into the first branch's box
     assert builder.eval("MR.find('gb-branch-value-error') !== null") is True
-    builder.eval("(function () { var del = findByProp('title', 'Remove branch'); del.props.onClick({ preventDefault: function () {}, stopPropagation: function () {} }); MR.rerender(); })();")
+    builder.eval("(function () { var del = findByProp('aria-label', 'Branch 1: remove'); del.props.onClick({ preventDefault: function () {}, stopPropagation: function () {} }); MR.rerender(); })();")
     branches = _conditions_of_edge(builder)
     assert len(branches) == 1 and branches[0]["conditions"][0]["path"] == "n", "the first branch is gone, the second remains"
     assert _shown(builder) == ['{"a":1}'], "the branch that slid up shows its own stored value, not the text typed into the deleted one"
