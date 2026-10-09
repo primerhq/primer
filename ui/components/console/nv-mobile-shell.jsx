@@ -69,10 +69,13 @@ function NV_mobileMayDecide(approvers, who) {
 //
 // The Inbox preview allowlist (slice 2, ruling D3): the row says which arguments the park's allowlist withheld (`hidden_keys`) and who
 // decided that (`preview`: "policy" or "tool" when an operator or the tool's author declared the list, "default" for the closed-set rule,
-// "unstamped" for a park from before the stamp). The card names what is withheld, and a card that hides something nobody declared is
-// BLIND: Approve is offered only once the whole call is on the screen (`shownAll`, the text Show all loaded for THIS call). Deny is never
-// blind (refusing a call cannot do what the call does). An older server sends neither key: the card is as it always was. A source this
-// console does not know counts as undeclared (it fails closed).
+// "unstamped" for a park from before the stamp). The card names what is withheld, and a card that hides ANYTHING is BLIND, whatever the source
+// (review of #643): the declared list decides what is DRAWN, never whether a hidden argument is safe to approve unread (the python source of
+// update_python_toolset_source, an agent's system prompt). Who declared it changes the words of the note and nothing else. Approve is offered
+// only once the whole call is on the screen (`shownAll`, the text Show all loaded for THIS park). Deny is never blind (refusing a call cannot
+// do what the call does). Blindness is read from the RAW `hidden_keys`: an argument named "" counts, a list of garbage counts, a `hidden_keys`
+// that is not a list counts, and so does a value withheld whole (a bare string or list as the arguments: `arguments` is "<hidden>" and the
+// server has no names to send). An older server sends neither key: the card is as it always was.
 function NV_mobileInboxView(it, who, shownAll) {
   var view = { kindLabel: "Parked", line: "", args: "", truncated: false, canApprove: false, canDeny: false, notApprover: false, note: "", withheld: "", blind: false };
   if (it.kind === "approval") {
@@ -82,10 +85,17 @@ function NV_mobileInboxView(it, who, shownAll) {
     if (a && a.tool_name) {
       view.args = a.arguments || "";
       view.truncated = !!a.truncated;
-      var hidden = Array.isArray(a.hidden_keys) ? a.hidden_keys.filter(function (k) { return typeof k === "string" && k; }) : [];
-      if (hidden.length) {
-        view.withheld = "Hidden on this card: " + hidden.slice(0, 6).join(", ") + (hidden.length > 6 ? " and " + (hidden.length - 6) + " more" : "");
-        view.blind = a.preview !== "tool" && a.preview !== "policy";
+      var raw = a.hidden_keys;
+      var listed = Array.isArray(raw) ? raw : [];
+      var names = listed.filter(function (k) { return typeof k === "string"; }).map(function (k) { return k === "" ? "(unnamed)" : k; });
+      var notAList = raw !== undefined && !Array.isArray(raw);
+      var wholeValue = typeof a.preview === "string" && a.arguments === "<hidden>";
+      if (listed.length || notAList || wholeValue) view.blind = true;
+      if (names.length) {
+        // The server sends at most 12 names (_ATTENTION_KEY_COUNT): a list at that cap may be the first 12 of many, so it says "and more" and never a number that undercounts.
+        view.withheld = "Hidden on this card: " + names.slice(0, 6).join(", ") + (listed.length >= 12 ? " and more" : names.length > 6 ? " and " + (names.length - 6) + " more" : "");
+      } else if (wholeValue) {
+        view.withheld = "Hidden on this card: the whole value of the arguments";
       }
     }
     var decidable = !!(a && a.tool_name && it.tool_call_id);
@@ -94,7 +104,11 @@ function NV_mobileInboxView(it, who, shownAll) {
     view.canDeny = decidable && may;
     view.notApprover = decidable && !may;
     if (view.notApprover) view.note = "Only its approvers can decide this. You can still open it.";
-    else if (decidable && view.blind && !shownAll) view.note = "Some arguments are hidden on this card. Tap Show all to read the whole call, or open it to review.";
+    else if (decidable && view.blind && !shownAll) {
+      var declared = a.preview === "tool" || a.preview === "policy";
+      view.note = (declared ? "The tool's author or your operator chose what this card shows, and some arguments are hidden. " : "Some arguments are hidden on this card. ")
+        + "Tap Show all to read the whole call, or open it to review.";
+    }
   } else if (it.kind === "ask") {
     view.kindLabel = "Question";
     view.line = it.prompt || "The agent has a question for you";
@@ -155,10 +169,12 @@ function NV_inboxFullCall(it) {
   });
 }
 
-// The text Show all loaded belongs to ONE call. The card is keyed by session, so the next poll can bring a NEW call for the same session while the old text is still in
-// the card's state: that text must not unlock Approve for a call the person has not read (the decision names the new call's id).
+// The text Show all loaded belongs to ONE PARK. The card is keyed by session, so the next poll can bring a NEW call for the same session while the old text is still in
+// the card's state: that text must not unlock Approve for a call the person has not read (the decision names the new call's id). The raw call id alone is not enough: it is
+// NOT unique across rounds (Ollama's `call_{idx}` restarts per stream, Gemini falls back to the same ids), so call B parking as `call_0` before the poll would inherit the
+// unlock of call A. The park time (`created_at` of the row, the park's `parked_at`) is the second key; a state or a row without one never matches the other.
 function NV_inboxFullFor(loaded, it) {
-  return loaded && loaded.callId === it.tool_call_id ? loaded : null;
+  return loaded && loaded.callId === it.tool_call_id && loaded.parkedAt === it.created_at ? loaded : null;
 }
 
 function NV_MobileDecisionButton(props) {
@@ -202,9 +218,9 @@ function NV_MobileInboxCard(props) {
   function toggleFull(ev) {
     ev.stopPropagation();
     if (full) { setFull(null); return; }
-    setFull({ loading: true, callId: it.tool_call_id });
+    setFull({ loading: true, callId: it.tool_call_id, parkedAt: it.created_at });
     NV_inboxFullCall(it).then(function (res) {
-      if (res.text !== undefined) { setFull({ text: res.text, callId: it.tool_call_id }); return; }
+      if (res.text !== undefined) { setFull({ text: res.text, callId: it.tool_call_id, parkedAt: it.created_at }); return; }
       setFull(null);
       con.toast(res.gone
         ? "That call has moved on. Open the session to review what it is waiting on now."
