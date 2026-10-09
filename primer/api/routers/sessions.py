@@ -930,9 +930,11 @@ USAGE_CACHE = UsageCache()
 async def _session_usage_totals(
     session: WorkspaceSession, workspace_registry,
 ) -> dict[str, int] | None:
-    """Best-effort token totals for ``session``, or ``None`` if the log
-    is unreadable - mirrors build_usage_frame's own shape (tap.py), the
-    only other place session_usage() is assembled into a response."""
+    """Best-effort token totals for ``session``: the empty frame when the
+    log does not exist yet (a session that never ran a turn wrote no
+    messages.jsonl), or ``None`` if the log is otherwise unreadable -
+    mirrors build_usage_frame's own shape (tap.py), the only other place
+    session_usage() is assembled into a response."""
     from primer.api.routers.tap import build_usage_frame
 
     workspace = await workspace_registry.get_workspace(session.workspace_id)
@@ -956,7 +958,14 @@ async def _session_usage_totals(
         cached = USAGE_CACHE.get(key)
         if cached is not None:
             return cached
-    raw = await workspace.read_file(rel)
+    try:
+        raw = await workspace.read_file(rel)
+    except NotFoundError:  # a session that never ran a turn wrote no log: empty, not an error
+        logger.debug(
+            "session %s has no messages log yet; serving the empty usage frame",
+            session.id,
+        )
+        return build_usage_frame([])
     text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
     usage = build_usage_frame(text.splitlines())
     if key is not None:
