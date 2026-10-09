@@ -8,10 +8,13 @@ that park keep the node in the resume context, so a run resumed on another worke
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+
+import pytest
 
 from primer.agent.invoke import invocation_depth_guard, resume_subagent, run_subagent
 from primer.graph._node_identity import reset_current_graph_node_id, set_current_graph_node_id
-from primer.model.chat import ToolResultPart
+from primer.model.chat import StreamStart, TextDelta, ToolResultPart
 from primer.session.delegation import DelegationRecorder, reset_delegation_sink, set_delegation_sink
 from primer.worker.frames import AgentResumeContext
 from tests.agent.test_delegated_runs_carry_a_run_id import (
@@ -129,3 +132,91 @@ def test_the_node_survives_the_park_blob_and_an_old_blob_still_loads() -> None:
     assert AgentResumeContext.from_jsonable(context.to_jsonable()).delegate_node_id == "worker[2]"
     old = AgentResumeContext.from_jsonable({"session_id": "s", "workspace_id": "w", "chat_id": None, "principal": "p", "tools": []})
     assert old.delegate_node_id is None
+
+
+# ---------------------------------------------------------------------------
+# the stamp on the records a run writes as it ENDS, and on the frame it parks in
+# ---------------------------------------------------------------------------
+
+
+class _BreaksAfterText:
+    """A model that streams half an answer and then breaks (an exception out of the stream, not an Error event)."""
+
+    def stream(self, *, model, messages, **kwargs):  # noqa: ANN001
+        async def gen() -> AsyncIterator:
+            yield StreamStart(model="m1")
+            yield TextDelta(index=0, text="half an answer")
+            raise RuntimeError("the stream broke")
+
+        return gen()
+
+
+async def test_the_text_a_run_flushes_as_it_raises_is_stamped_with_the_node() -> None:
+    """``finish_run`` (the invoke loop's ``finally``) writes what the run streamed and never flushed: those records come from a different call than the stream's own, so they carry the node on their own."""
+    storage = _StorageProvider(agent=_agent(tools=[]), provider_row=_provider_row())
+    registry = _ProviderRegistry(llm=_BreaksAfterText(), toolset=None)
+    writer = _Writer()
+    token = set_delegation_sink(DelegationRecorder(writer=writer, event_bus=_Bus(), session_id="sess-1"))
+    try:
+        with pytest.raises(RuntimeError):
+            await _delegate(storage, registry, "A")
+    finally:
+        reset_delegation_sink(token)
+    flushed = [p for p in _payloads(writer) if p.get("text") == "half an answer"]
+    assert flushed and all(p["delegate_node_id"] == "A" for p in flushed), _payloads(writer)
+
+
+async def test_the_text_a_resumed_run_flushes_as_it_raises_is_stamped_with_the_node_of_its_frame() -> None:
+    """The ``resume_subagent`` twin of the case above: the node comes from the frame's context, not from the ambient contextvar (nothing sets one on a resume)."""
+    storage = _StorageProvider(agent=_agent(tools=[]), provider_row=_provider_row())
+    registry = _ProviderRegistry(llm=_BreaksAfterText(), toolset=None)
+    context = AgentResumeContext(
+        session_id="sess-1", workspace_id="ws-1", chat_id=None, principal="user-1", tools=[], turn_no=1,
+        delegate_run_id="run-before-the-park", delegate_node_id="worker[1]",
+    )
+    writer = _Writer()
+    token = set_delegation_sink(DelegationRecorder(writer=writer, event_bus=_Bus(), session_id="sess-1"))
+    try:
+        with pytest.raises(RuntimeError):
+            await resume_subagent(
+                agent_id="agent-sub", context=context, llm_messages=[], child_result=ToolResultPart(id="call-x", output="ok"),
+                depth=1, storage_provider=storage, provider_registry=registry, invoke_tool_call_id="call_0",
+            )
+    finally:
+        reset_delegation_sink(token)
+    flushed = [p for p in _payloads(writer) if p.get("text") == "half an answer"]
+    assert flushed and all(p["delegate_node_id"] == "worker[1]" for p in flushed), _payloads(writer)
+
+
+async def test_a_run_that_parks_carries_the_node_in_the_frame_it_pushes() -> None:
+    from primer.agent.approval import ApprovalResolver
+    from primer.model.tool_approval import RequiredApprovalConfig, ToolApprovalPolicy
+    from primer.model.yield_ import YieldToWorker
+    from tests.agent.test_run_subagent_yield import _FakeLLM, _GatedToolsetProvider, _tool_call_script
+
+    class _Resolver(ApprovalResolver):
+        def __init__(self) -> None:
+            self._ttl = 60.0
+            self._cache = {}
+
+        async def find(self, *, toolset_id, tool_name):  # noqa: ANN001
+            return ToolApprovalPolicy(id="p", toolset_id="t1", tool_name="do_it", approval=RequiredApprovalConfig())
+
+    storage = _StorageProvider(agent=_agent(tools=["t1__do_it"]), provider_row=_provider_row())
+    registry = _ProviderRegistry(llm=_FakeLLM(events=_tool_call_script("t1__do_it", "call-1")), toolset=_GatedToolsetProvider())
+    writer = _Writer()
+    node_token = set_current_graph_node_id("A")
+    sink_token = set_delegation_sink(DelegationRecorder(writer=writer, event_bus=_Bus(), session_id="sess-1"))
+    try:
+        with pytest.raises(YieldToWorker) as parked:
+            with invocation_depth_guard():
+                await run_subagent(
+                    agent_id="agent-sub", prompt="x", storage_provider=storage, provider_registry=registry, principal="user-1",
+                    approval_resolver=_Resolver(), session_id="sess-1", workspace_id="ws-1", invoke_tool_call_id="call_0",
+                )
+    finally:
+        reset_delegation_sink(sink_token)
+        reset_current_graph_node_id(node_token)
+    (frame,) = parked.value.frames
+    assert frame.context.delegate_node_id == "A", "a run resumed on another worker would otherwise lose the node"
+    assert AgentResumeContext.from_jsonable(frame.context.to_jsonable()).delegate_node_id == "A", "and the park blob carries it"
