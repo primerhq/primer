@@ -479,8 +479,11 @@ endpoints answer a graph session parked mid-run on an `ask_user` node (see
   you want to continue from there.
 - **A failed model call's error record says which provider and what it said.** The `error` record's `message` names the provider by its
   configured id and kind (`Model provider 'lm-studio-box' (openchat/lmstudio) had a server error (HTTP 500): ...`) and carries the provider's
-  own text, capped at 300 characters with credentials masked. Branch on the record's `code` (`server_error`, `rate_limit`, `auth_error`,
-  `network_error`, `bad_request`, the timeouts), not on the sentence.
+  own text with credentials masked, control characters stripped and the text capped at 300 characters; that rewrite is for four shapes only
+  (server error, rate limit, authentication, network). Any other message (a rejected request, an error in the middle of a stream) keeps the
+  SDK's own wording, masked and capped at 4000 characters. Branch on the record's `code`, not on the sentence: a failure in a stream carries the
+  classification (`server_error`, `rate_limit`, `auth_error`, `network_error`, `bad_request`, the timeouts), while one RAISED before the stream
+  opened is written by the session runtime with `code` = the problem type (`/errors/provider-server-error`, `/errors/rate-limited`...).
 - **Yield-cancellation differs from session-end.** Cancelling a
   yield produces a `tool_cancelled` result; the agent continues
   the turn. Ending the session stops the agent entirely.
