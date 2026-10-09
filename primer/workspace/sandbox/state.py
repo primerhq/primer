@@ -42,6 +42,7 @@ from primer.workspace.state_helpers import (
     TRAILER_WORKSPACE as _TRAILER_WORKSPACE,
     VALID_OPS as _VALID_OPS,
     build_message as _build_message,
+    trailer_line,
     validate_relative_path as _validate_relative_path,
     validate_session_id as _validate_session_id,
 )
@@ -131,7 +132,7 @@ def _build_arbitrary_message(
         f"{_TRAILER_WORKSPACE}: {workspace_id}",
     ]
     for key, value in (trailers or {}).items():
-        lines.append(f"{key}: {value}")
+        lines.append(trailer_line(key, value))
     return "\n".join(lines)
 
 

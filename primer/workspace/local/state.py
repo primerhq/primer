@@ -50,6 +50,7 @@ from primer.workspace.state_helpers import (
     TRAILER_WORKSPACE as _TRAILER_WORKSPACE,
     VALID_OPS as _VALID_OPS,
     build_message as _build_message,
+    trailer_line,
     validate_relative_path as _validate_relative_path,
     validate_session_id as _validate_session_id,
 )
@@ -440,7 +441,7 @@ class LocalStateRepo:
                 f"{_TRAILER_WORKSPACE}: {self._workspace_id}",
             ]
             for key, value in (trailers or {}).items():
-                message_lines.append(f"{key}: {value}")
+                message_lines.append(trailer_line(key, value))
             message = "\n".join(message_lines)
 
             await self._run_git(

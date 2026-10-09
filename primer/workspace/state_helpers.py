@@ -16,6 +16,7 @@ it -- it only hosts the concrete helpers.
 
 from __future__ import annotations
 
+import re
 from pathlib import PurePosixPath
 
 
@@ -53,6 +54,20 @@ VALID_OPS: frozenset[str] = frozenset(
 # ---------------------------------------------------------------------------
 
 
+# Every character ``str.splitlines`` (and so a line-oriented trailer parser) treats as the end of a line.
+_LINE_BREAKS = re.compile("[\r\n\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]")
+
+
+def trailer_line(key: str, value: object) -> str:
+    """``key: value`` as ONE line of a commit message (security ticket 01a11fbc-ffea).
+
+    A trailer is a line, and the history parser reads them back by line, so a value holding a line break would write lines of its own: a failure
+    code or a provider's tool_call_id with ``\nX-Primer-Session: forged`` in it became a trailer of the commit. Every line-break character in the key or
+    the value becomes a space; a value without one is written exactly as it was.
+    """
+    return f"{_LINE_BREAKS.sub(' ', str(key))}: {_LINE_BREAKS.sub(' ', str(value))}"
+
+
 def build_message(
     *,
     subject: str,
@@ -69,15 +84,15 @@ def build_message(
     byte-compatible.
     """
     trailers = [
-        f"{TRAILER_WORKSPACE}: {workspace_id}",
-        f"{TRAILER_SESSION}: {session_id}",
-        f"{TRAILER_AGENT}: {agent_id}",
-        f"{TRAILER_OP}: {op}",
+        trailer_line(TRAILER_WORKSPACE, workspace_id),
+        trailer_line(TRAILER_SESSION, session_id),
+        trailer_line(TRAILER_AGENT, agent_id),
+        trailer_line(TRAILER_OP, op),
     ]
     if tool is not None:
-        trailers.append(f"{TRAILER_TOOL}: {tool}")
+        trailers.append(trailer_line(TRAILER_TOOL, tool))
     if call_id is not None:
-        trailers.append(f"{TRAILER_CALL}: {call_id}")
+        trailers.append(trailer_line(TRAILER_CALL, call_id))
     return f"{subject}\n\n" + "\n".join(trailers) + "\n"
 
 

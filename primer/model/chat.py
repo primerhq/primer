@@ -49,9 +49,11 @@ from pydantic import (
     ConfigDict,
     Field,
     PlainSerializer,
+    field_validator,
     model_validator,
 )
 
+from primer.common.error_codes import safe_code
 from primer.model.common import Describeable
 
 
@@ -1056,6 +1058,13 @@ class Error(BaseModel):
         ...,
         description="True if no further events will follow this one.",
     )
+
+    @field_validator("code")
+    @classmethod
+    def _code_is_an_identifier(cls, value: str | None) -> str | None:
+        """A provider can send any text as its code (an OpenResponses ``error`` event's): it reaches the ERROR record, ``ended_detail``,
+        ``last_turn_error``, the ``session.turn_failed`` payload and a git trailer. Only an identifier survives (01a11fbc-ffea)."""
+        return safe_code(value)
 
 
 class TurnStreamFailure(Exception):
