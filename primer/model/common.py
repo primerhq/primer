@@ -6,8 +6,10 @@ from typing import Any, ClassVar
 from uuid import uuid4
 
 from pydantic import AnyUrl, BaseModel, Field, SecretStr, model_validator
+from pydantic import ValidationError as PydanticValidationError
 
-from primer.common.url_userinfo import restore_userinfo
+from primer.common.url_userinfo import MaskCannotBeRestored, carries_mask, restore_userinfo
+from primer.model.except_ import ValidationError
 
 
 class Identifiable(BaseModel):
@@ -195,9 +197,10 @@ def preserve_masked_secrets(entity: Any, existing: Any) -> None:
     shape actually used in this schema, including ``dict[str,
     SecretStr]`` (toolset ``env`` / ``headers``).
     """
-    if not isinstance(entity, BaseModel) or not isinstance(existing, BaseModel):
+    if not isinstance(entity, BaseModel):
         return
-    if entity.__class__ is not existing.__class__:
+    if not isinstance(existing, BaseModel) or entity.__class__ is not existing.__class__:
+        _refuse_masked_urls(entity)          # nothing stored of this shape to restore from: a served mask in it would be stored as the password
         return
     for name in entity.__class__.model_fields:
         new_value = getattr(entity, name, None)
@@ -208,7 +211,7 @@ def preserve_masked_secrets(entity: Any, existing: Any) -> None:
             ):
                 setattr(entity, name, old_value)
         elif isinstance(new_value, AnyUrl):
-            restored = _restored_url(new_value, old_value)
+            restored = _restored_url(name, new_value, old_value)
             if restored is not None:
                 setattr(entity, name, restored)
         elif isinstance(new_value, BaseModel):
@@ -219,17 +222,51 @@ def preserve_masked_secrets(entity: Any, existing: Any) -> None:
             _preserve_masked_secrets_dict(new_value, old_value)
 
 
-def _restored_url(new_value: AnyUrl, old_value: Any) -> AnyUrl | None:
-    """``new_value`` with the stored URL's credential put back when it is the mask a GET served for ``old_value`` (see
-    :func:`primer.common.url_userinfo.restore_userinfo`), else ``None``: the URL is left as the person sent it."""
+_UNRESTORABLE = "re-enter the password: the stored one is kept only for the same host and user"
+
+
+def _restored_url(name: str, new_value: AnyUrl, old_value: Any) -> AnyUrl | None:
+    """``new_value`` with the stored URL's credential put back when it is the mask a GET served for ``old_value`` AND the origin and user are the stored ones (see
+    :func:`primer.common.url_userinfo.restore_userinfo`), else ``None``: the URL is left as the person sent it.
+
+    A mask that cannot be restored is REFUSED with a 422, whatever the reason (the origin or the user changed, nothing was stored): the stored credential is never given to another host,
+    and the literal mask is never stored as the password. A restored URL that is over the length limit although the masked one was not is a 422 too.
+    """
     if not isinstance(old_value, AnyUrl):
+        if carries_mask(str(new_value)):
+            raise ValidationError(f"{name}: {_UNRESTORABLE}")
         return None
-    restored = restore_userinfo(str(new_value), str(old_value))
-    return None if restored is None else type(new_value)(restored)
+    try:
+        restored = restore_userinfo(str(new_value), str(old_value))
+    except MaskCannotBeRestored as exc:
+        raise ValidationError(f"{name}: {_UNRESTORABLE} ({exc})") from None
+    if restored is None:
+        return None
+    try:
+        return type(new_value)(restored)
+    except PydanticValidationError:
+        raise ValidationError(f"{name}: the URL with the stored password put back is too long; re-enter the password") from None
+
+
+def _refuse_masked_urls(value: Any, name: str = "") -> None:
+    """Refuse a URL that carries the served mask anywhere in ``value`` (a model, a list or a dict of them): there is no stored URL of the same shape to restore it from."""
+    if isinstance(value, AnyUrl):
+        if carries_mask(str(value)):
+            raise ValidationError(f"{name or 'url'}: {_UNRESTORABLE}")
+    elif isinstance(value, BaseModel):
+        for field in value.__class__.model_fields:
+            _refuse_masked_urls(getattr(value, field, None), field)
+    elif isinstance(value, list):
+        for item in value:
+            _refuse_masked_urls(item, name)
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            _refuse_masked_urls(item, str(key))
 
 
 def _preserve_masked_secrets_list(new_items: list[Any], old_items: Any) -> None:
     if not isinstance(old_items, list) or len(old_items) != len(new_items):
+        _refuse_masked_urls(new_items)
         return
     for i, (new_item, old_item) in enumerate(zip(new_items, old_items)):
         if isinstance(new_item, SecretStr):
@@ -247,9 +284,11 @@ def _preserve_masked_secrets_list(new_items: list[Any], old_items: Any) -> None:
 
 def _preserve_masked_secrets_dict(new_map: dict[Any, Any], old_map: Any) -> None:
     if not isinstance(old_map, dict):
+        _refuse_masked_urls(new_map)
         return
     for k, new_v in new_map.items():
         if k not in old_map:
+            _refuse_masked_urls(new_v, str(k))
             continue
         old_v = old_map[k]
         if isinstance(new_v, SecretStr):

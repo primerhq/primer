@@ -51,9 +51,16 @@ ApiKeySecret = Annotated[
 ]
 
 
-def _serialize_url(value: HttpUrl, info: SerializationInfo) -> str:
-    """The JSON-mode dump of a Base URL: the password of its userinfo is masked (``http://svc:**********@host/v1``; a lone ``https://TOKEN@host`` whole), unless the dump is the one
-    that writes the row (``dump_for_storage`` passes :data:`~primer.model.common.STORAGE_DUMP_CONTEXT`), which keeps the real URL, as it does for a ``SecretStr``."""
+def _serialize_url(value, info: SerializationInfo):
+    """The dump of a Base URL: unchanged in a python-mode dump (the adapters and the probes read the real URL), the real URL under the storage context (``dump_for_storage`` passes
+    :data:`~primer.model.common.STORAGE_DUMP_CONTEXT`), and otherwise, in a JSON-mode dump, the URL with the password of its userinfo masked (``http://svc:**********@host/v1``; a
+    lone ``https://TOKEN@host`` whole).
+
+    No return annotation, and the serializer is registered without ``return_type``: a ``str`` return type makes pydantic 2.13 warn (PydanticSerializationUnexpectedValue, with the
+    URL in the text) on every PYTHON-mode dump, and the warning goes to stderr, not through the log filter.
+    """
+    if not info.mode_is_json():
+        return value
     context = info.context
     if isinstance(context, dict) and all(context.get(key) == flag for key, flag in STORAGE_DUMP_CONTEXT.items()):
         return str(value)
@@ -61,12 +68,13 @@ def _serialize_url(value: HttpUrl, info: SerializationInfo) -> str:
 
 
 # A provider's Base URL (ticket 01a11cdf part 3, option A). A URL may carry ``user:password@`` (a reverse proxy in front of the server): httpx sends it as Basic auth, and every API
-# response, CRUD event and tool result used to serve it in clear next to a masked ``api_key``. ``when_used="json"`` only, like ``ApiKeySecret``: a python-mode dump and the object itself
+# response, CRUD event and tool result used to serve it in clear next to a masked ``api_key``. It masks in a JSON-mode dump only (the serializer itself returns the value unchanged for a
+# python-mode dump, which is why it is registered ``when_used="always"`` without a return type): a python-mode dump and the object itself
 # keep the real URL, which is what the adapters and the probes read; ``dump_for_storage`` keeps it for the stored row; ``preserve_masked_secrets`` puts the stored credential back when a
 # full-replace PUT sends the served mask back. Anything that FINGERPRINTS or COMPARES a row must use the storage form (the served form is the same for two URLs that differ only by password).
 MaskedUserinfoUrl = Annotated[
     HttpUrl,
-    PlainSerializer(_serialize_url, return_type=str, when_used="json"),
+    PlainSerializer(_serialize_url, when_used="always"),
 ]
 
 
