@@ -414,8 +414,8 @@ function MP_ProfileModal({ open, onClose, onSaved, existing, providers, prefill,
       }
     >
       <div className="field">
-        <label>Id</label>
-        <input value={id} disabled={isEdit}
+        <label htmlFor="mp-id">Id</label>
+        <input id="mp-id" value={id} disabled={isEdit}
           onChange={(e) => setId(e.target.value)}
           placeholder="gx10--qwen-fast" />
         {errFor("id") && <div className="field-help warn">{errFor("id")}</div>}
@@ -428,8 +428,8 @@ function MP_ProfileModal({ open, onClose, onSaved, existing, providers, prefill,
         )}
       </div>
       <div className="field">
-        <label>Description</label>
-        <input value={description}
+        <label htmlFor="mp-description">Description</label>
+        <input id="mp-description" value={description}
           onChange={(e) => setDescription(e.target.value)}
           placeholder="Qwen with reasoning suppressed for cheap turns." />
         {errFor("description") && (
@@ -580,8 +580,8 @@ function MP_ProfileModal({ open, onClose, onSaved, existing, providers, prefill,
           </div>
 
           <div className="field">
-            <label>Context length</label>
-            <input type="number" value={contextLength}
+            <label htmlFor="mp-context-length">Context length</label>
+            <input id="mp-context-length" type="number" value={contextLength}
               onChange={(e) => setContextLength(e.target.value)} />
             {errFor("context_length") && (
               <div className="field-help warn">{errFor("context_length")}</div>

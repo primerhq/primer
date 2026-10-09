@@ -112,6 +112,7 @@
         <div
           data-testid={testid + "-results"}
           role="listbox"
+          aria-label={label || props.ariaLabel || placeholder}
           style={{ maxHeight: 220, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 6 }}
         >
           {list.loading && items.length === 0 ? (

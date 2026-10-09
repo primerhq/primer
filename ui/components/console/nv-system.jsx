@@ -425,10 +425,12 @@ function NV_SysProfile() {
       ) : null}
       <div className="nv-profile-pw">
         <input className="nv-input" type="password" value={cur}
+          aria-label="Current password"
           placeholder="Current password" data-testid="nv-pw-current"
           autoComplete="current-password"
           onChange={function (ev) { setCur(ev.target.value); }} />
         <input className="nv-input" type="password" value={next}
+          aria-label="New password"
           placeholder="New password (min 8 chars)" data-testid="nv-pw-next"
           autoComplete="new-password"
           onChange={function (ev) { setNext(ev.target.value); }} />

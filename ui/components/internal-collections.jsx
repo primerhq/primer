@@ -632,8 +632,8 @@ function ConfigureModal({ existing, onClose, onSaved, pushToast }) {
         />
       )}
       <div className="field">
-        <label className="field-label">Semantic Search provider <span className="hint">required — backs the 4 reserved internal collections</span></label>
-        <select className="select mono" value={searchProviderId} onChange={(e) => setSearchProviderId(e.target.value)} disabled={vectorSpaceLocked} style={{ width: "100%" }}>
+        <label className="field-label" htmlFor="ic-search-provider">Semantic Search provider <span className="hint">required &mdash; backs the 4 reserved internal collections</span></label>
+        <select id="ic-search-provider" className="select mono" value={searchProviderId} onChange={(e) => setSearchProviderId(e.target.value)} disabled={vectorSpaceLocked} style={{ width: "100%" }}>
           <option value="">-- pick a provider --</option>
           {(ssps.data?.items ?? []).map((p) => <option key={p.id} value={p.id}>{p.id}{p.provider ? ` · ${p.provider}` : ""}</option>)}
         </select>
@@ -641,8 +641,8 @@ function ConfigureModal({ existing, onClose, onSaved, pushToast }) {
         {fieldErrors["body.search_provider_id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.search_provider_id"]}</div>}
       </div>
       <div className="field">
-        <label className="field-label">Embedding provider</label>
-        <select className="select" value={providerId} onChange={(e) => setProviderId(e.target.value)} disabled={vectorSpaceLocked} style={{ width: "100%" }}>
+        <label className="field-label" htmlFor="ic-embedding-provider">Embedding provider</label>
+        <select id="ic-embedding-provider" className="select" value={providerId} onChange={(e) => setProviderId(e.target.value)} disabled={vectorSpaceLocked} style={{ width: "100%" }}>
           <option value="">-- pick a provider --</option>
           {(embedProviders.data?.items ?? []).map((p) => <option key={p.id} value={p.id}>{p.id}</option>)}
         </select>
@@ -655,8 +655,8 @@ function ConfigureModal({ existing, onClose, onSaved, pushToast }) {
         {fieldErrors["body.embedding_provider_id"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.embedding_provider_id"]}</div>}
       </div>
       <div className="field">
-        <label className="field-label">Embedding model</label>
-        <select className="select" value={model} onChange={(e) => setModel(e.target.value)} disabled={vectorSpaceLocked} style={{ width: "100%" }}>
+        <label className="field-label" htmlFor="ic-embedding-model">Embedding model</label>
+        <select id="ic-embedding-model" className="select" value={model} onChange={(e) => setModel(e.target.value)} disabled={vectorSpaceLocked} style={{ width: "100%" }}>
           <option value="">-- pick a model --</option>
           {modelOptions.map((m) => <option key={m.name} value={m.name}>{m.name}</option>)}
         </select>
@@ -692,8 +692,8 @@ function ConfigureModal({ existing, onClose, onSaved, pushToast }) {
             )}
           </div>
           <div className="field" style={{ paddingLeft: 22 }}>
-            <label className="field-label">Reranker model</label>
-            <select className="select" value={rerankerModel} onChange={(e) => setRerankerModel(e.target.value)} style={{ width: "100%" }}>
+            <label className="field-label" htmlFor="ic-reranker-model">Reranker model</label>
+            <select id="ic-reranker-model" className="select" value={rerankerModel} onChange={(e) => setRerankerModel(e.target.value)} style={{ width: "100%" }}>
               <option value="">-- pick a model --</option>
               {rerankerModelOptions.map((m) => <option key={m.name} value={m.name}>{m.name}</option>)}
             </select>

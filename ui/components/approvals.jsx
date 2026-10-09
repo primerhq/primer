@@ -303,11 +303,12 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
       </div>
 
       <div className="field">
-        <label className="field-label">id {isEdit
+        <label className="field-label" htmlFor="approval-policy-id-input">id {isEdit
           ? <span className="hint">locked — id cannot change after create</span>
           : <span className="hint">unique policy identifier</span>}
         </label>
         <input
+          id="approval-policy-id-input"
           className="input mono"
           value={id}
           onChange={(e) => setId(e.target.value)}
@@ -344,8 +345,9 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
       </div>
 
       <div className="field">
-        <label className="field-label">timeout (seconds) <span className="hint">optional — falls back to global yield cap</span></label>
+        <label className="field-label" htmlFor="approval-policy-timeout-input">timeout (seconds) <span className="hint">optional &mdash; falls back to global yield cap</span></label>
         <input
+          id="approval-policy-timeout-input"
           className="input mono"
           type="number"
           min="1"
