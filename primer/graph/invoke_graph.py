@@ -52,7 +52,8 @@ class ChildGraphFailed(Exception):
                 "tool_name": self.tool_name or "unknown",
             })
         # The child's failure text is whatever its node's exception printed: it goes into the parent's tool result and so into the model's context,
-        # the session record and an MCP answer (01a11fbc-d6de). A refusal's reason, above, is what a person typed.
+        # the session record and an MCP answer (01a11fbc-d6de). A refusal's reason, above, is what a person typed; both consumers deliver the body as an ERROR
+        # result, so ``ToolResultPart`` masks the reason too when it is credential-shaped.
         return json.dumps({"error": self.code, "message": redact_credentials(self.message), "node_id": self.node_id})
 
 
