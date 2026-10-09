@@ -18,7 +18,7 @@ function GB_Section({ title, hint, children }) {
 }
 
 // "Remove this connection" (a static edge) and "Delete this step": real buttons, named for what they act on (the name starts with the words on the button), that ask first through the console's
-// own confirmDialog (a dialog that traps focus and returns it to the opener, and that Escape cancels) and drop the answer when the question is no longer about what is on screen: the inspector
+// own confirmDialog (a dialog that traps focus and returns it to the opener) and drop the answer when the question is no longer about what is on screen: the inspector
 // moved on to another connection or step, this button is gone, or (for a connection) an undo put a different edge at that index. Board task 01a12124; they were spans with a click handler (no
 // role, no focus, no key). `onRemoved` lets the edge inspector select the step the connection left, as GB_RemoveChoice does, so the panel does not go blank on an edge index that no longer
 // exists. After a confirmed removal the button is gone, so the focus goes where the panel now starts (GB_focusAfterRemoval).
