@@ -1,8 +1,8 @@
 """An EmbeddingProvider's config is read as the class its ``provider`` names (ticket 01a11cdf part 2; found in the review of #580).
 
 ``EmbeddingProvider.config`` is a plain union of three classes. pydantic's smart mode validates the input against each member and keeps the one that sets the most fields, so
-an ``openai`` row whose url is invalid (or missing) failed ``OpenAIConfig`` and failed ``HuggingFaceConfig`` (no token) and was left with ``GoogleConfig``, the only member
-that validated, with ``api_key`` None: the url was silently dropped, a row with no endpoint could be saved, and ``_discover_models`` went on to send the raw typed string to
+an ``openai`` row whose url is invalid (or missing) failed ``OpenAIConfig`` and was left with another member (``GoogleConfig`` with its key, or a ``HuggingFaceConfig`` once the
+token is optional) with ``api_key`` None: the url was silently dropped, a row with no endpoint could be saved, and ``_discover_models`` went on to send the raw typed string to
 httpx. ``LLMProvider`` has had a provider-keyed before-validator for the same reason (``_coerce_config_to_provider``); the embedding provider has one now.
 """
 

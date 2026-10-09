@@ -1,19 +1,20 @@
 """Migration 8: embedding provider rows the provider-keyed validator refuses are repaired in place.
 
 ``EmbeddingProvider.config`` is a plain union of three config classes. Until the config was read as the class its ``provider`` names, pydantic's smart mode picked the member
-that validated and set the most fields, whatever ``provider`` said, so three shapes were stored that the provider-keyed validator now refuses:
+that validated and set the most fields, whatever ``provider`` said, so two shapes were stored that the provider-keyed validator now refuses:
 
-* ``openai`` with a missing or invalid url: it failed ``OpenAIConfig`` and ``HuggingFaceConfig`` and was left with ``GoogleConfig``, so the url was dropped (``{"api_key": ...}``);
-* ``huggingface`` with only a url (an ``OpenAIConfig``: ``{"url": ..., "api_key": ..., "flavor": ...}``);
-* ``openai`` with only a token (a ``HuggingFaceConfig``: ``{"token": ...}``).
+* ``openai`` with a missing or invalid url: it failed ``OpenAIConfig`` and was left with the member that set the most fields (``GoogleConfig`` when it had a key, so the url was dropped:
+  ``{"api_key": ...}``; a ``HuggingFaceConfig`` shape when it had a token, ``{"token": ...}``, which was an ``openai`` row with only a token).
+
+A third shape main stored, ``huggingface`` with only a url (an ``OpenAIConfig``: ``{"url": ..., "api_key": ..., "flavor": ...}``), is NOT broken any more: the HuggingFace token is optional
+(a public local model needs none, as for ``HuggingFaceCrossEncoderConfig``), so the live model reads it and ignores the stray keys. An earlier version of this migration gave such a row
+``{"token": ""}``; it is left as it is, since a migration should not rewrite a row that reads fine.
 
 ``Storage._from_row`` validates uncaught, so ONE such row answered 500 on the whole ``GET /v1/embedding_providers`` and on get, put and delete by id (the operator could not even
 delete it), and each 500 logged pydantic's ``input_value`` with most of the stored key. A ``gemini`` row cannot be refused (``GoogleConfig`` takes any dict), so nothing is done for it.
 
 What the repair does, per row, only when the live config class refuses it:
 
-* ``huggingface``: the config becomes ``{"token": ""}``. The url, key and flavor were an OpenAI-shaped config the HuggingFace adapter never reads, and an empty token is what the
-  model needs to exist (a public model needs none).
 * ``openai``: the config becomes ``{"url": PLACEHOLDER_URL}`` plus the ``api_key`` and ``flavor`` the row had. There is no endpoint to restore. The row is KEPT, not deleted: its id
   may be named by a collection, and removing an operator's row at boot is not ours to do. The placeholder is ``https://`` on the reserved ``.invalid`` domain (RFC 6761), so it says what
   to fix where the console shows the Base URL and a use of it fails loudly. It is https because the row keeps its stored key and a use sends ``Authorization: Bearer <key>``:
@@ -36,7 +37,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from primer.int.storage_provider import StorageProvider
 from primer.model.common import Identifiable
-from primer.model.providers.embedding import HuggingFaceConfig, OpenAIConfig, OpenAIEmbeddingFlavor
+from primer.model.providers.embedding import OpenAIConfig, OpenAIEmbeddingFlavor
 from primer.model.storage import OffsetPage
 
 logger = logging.getLogger(__name__)
@@ -71,8 +72,6 @@ def _repaired(provider: str | None, config: dict[str, Any] | None) -> tuple[dict
     """``(new config, what was wrong)`` for a row the live model refuses, else ``None``."""
     if not isinstance(config, dict):
         return None
-    if provider == "huggingface" and not _accepts(HuggingFaceConfig, config):
-        return {"token": ""}, "huggingface config without a token"
     if provider == "openai" and not _accepts(OpenAIConfig, config):
         fixed: dict[str, Any] = {"url": PLACEHOLDER_URL}
         if isinstance(config.get("api_key"), str):
