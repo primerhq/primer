@@ -28,6 +28,15 @@ def _unnamed(root) -> list[str]:
     return root.locator("input, select, textarea").evaluate_all(_UNNAMED)
 
 
+_DESCRIPTIONS = """el => (el.getAttribute('aria-describedby') || '').split(/\\s+/).filter(Boolean)
+    .map(id => { const n = document.getElementById(id); return n ? n.textContent.trim() : null })"""
+
+
+def _described_by(locator) -> list[str | None]:
+    """The text of every element the control's ``aria-describedby`` points at (None for an id that resolves to nothing)."""
+    return locator.evaluate(_DESCRIPTIONS)
+
+
 def _seed_graph(base_url: str, graph_id: str, begin_schema: dict | None = None) -> None:
     begin: dict = {"kind": "begin", "id": "begin"}
     if begin_schema is not None:
@@ -61,7 +70,11 @@ def test_the_new_graph_modal_rows_are_found_by_their_label(page: Page, console_u
     expect(modal.get_by_label(re.compile(r"^ID optional"))).to_have_count(1)
     # the seed agent: the select keeps its own name, and the row around it (the select sits beside the New button) is a group named by its label
     expect(modal.get_by_role("combobox", name="Seed agent", exact=True)).to_have_count(1)
-    expect(modal.get_by_role("group", name=re.compile(r"^Seed agent"))).to_have_count(1)
+    group = modal.get_by_role("group", name=re.compile(r"^Seed agent"))
+    expect(group).to_have_count(1)
+    # the explanation under the row is the group's description, not a loose line
+    described = _described_by(group)
+    assert len(described) == 1 and described[0] and described[0].startswith("Once created, you can bind sessions to this graph"), described
 
 
 @pytest.mark.ui_e2e
@@ -77,7 +90,10 @@ def test_the_import_spec_modal_textarea_is_found_by_its_label(page: Page, base_u
         assert _unnamed(modal) == []
         expect(modal.get_by_label(re.compile(r"^Graph spec JSON"))).to_have_count(1)
         modal.locator("label.field-label", has_text="Graph spec JSON").click()
-        expect(modal.get_by_test_id("graph-import-spec")).to_be_focused()
+        spec = modal.get_by_test_id("graph-import-spec")
+        expect(spec).to_be_focused()
+        described = _described_by(spec)
+        assert len(described) == 1 and described[0] and described[0].startswith("Loads the pasted spec into the visual editor"), described
     finally:
         _delete_graph(base_url, graph_id)
 
@@ -96,7 +112,20 @@ def test_the_builders_schema_json_view_has_a_named_textarea(page: Page, base_url
         inspector = page.locator(gb.INSPECTOR)
         expect(inspector).to_be_visible(timeout=5_000)
         expect(inspector.get_by_text("This shape uses advanced JSON Schema")).to_be_visible(timeout=5_000)
-        expect(inspector.get_by_role("textbox", name="Schema as JSON")).to_have_count(1)
+        field = inspector.get_by_role("textbox", name="Schema as JSON")
+        expect(field).to_have_count(1)
+        # a parse error is an alert that the (now invalid) textarea is described by
+        field.fill("{")
+        field.blur()
+        alert = inspector.get_by_role("alert").filter(has_text="JSON parse:")
+        expect(alert).to_have_count(1, timeout=5_000)
+        expect(field).to_have_attribute("aria-invalid", "true")
+        assert any(d and d.startswith("JSON parse:") for d in _described_by(field)), _described_by(field)
+        # a valid document clears it
+        field.fill('{"type": "object", "properties": {"q": {"anyOf": [{"type": "string"}, {"type": "number"}]}}}')
+        field.blur()
+        expect(alert).to_have_count(0, timeout=5_000)
+        expect(field).not_to_have_attribute("aria-invalid", "true")
         # the JSON textarea itself is named (the rest of the inspector's controls are the builder PR's)
         assert _unnamed(inspector.locator("textarea").first.locator("xpath=..")) == []
     finally:
