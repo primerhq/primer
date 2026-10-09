@@ -30,12 +30,15 @@ import asyncio
 import dataclasses
 import functools
 import json
+import uuid
 from typing import Any
 
 from primer.graph._node_identity import (
     current_graph_node_id,
     reset_current_graph_node_id,
+    reset_current_toolcall,
     set_current_graph_node_id,
+    set_current_toolcall,
 )
 from primer.graph._node_refs import (
     _FanoutDrainState,
@@ -59,7 +62,18 @@ from primer.graph._node_refs import (
     await_tool_dispatch_barrier,
 )
 from primer.graph.template import render_input_template
-from primer.model.chat import Message, StreamEvent, TextPart, ToolTurnCapReached, TurnStreamFailure
+from primer.model.chat import (
+    ExtendedEvent,
+    Message,
+    StreamEvent,
+    TextPart,
+    ToolCallEnd,
+    ToolCallStart,
+    ToolResultPart,
+    ToolTurnCapReached,
+    TurnStreamFailure,
+    _ExecutorToolResult,
+)
 from primer.model.except_ import ConfigError
 from primer.model.graph import (
     FanOutSpec,
@@ -116,6 +130,27 @@ class _NodeDispatchMixin:
         except KeyError:
             return "unknown"
         return getattr(node_def, "kind", "unknown")
+
+    async def _answer_toolcall_row(
+        self,
+        queue: "asyncio.Queue[Any]",
+        node_id: str,
+        context: GraphContext,
+        call_id: str,
+        result: ToolResultPart,
+    ) -> None:
+        """Write the ``tool_result`` row of a ToolCall node's call (01a11faa): the answer the tool gave, an error answer included, under the id the call row carries."""
+        await queue.put(
+            self._wrap_event(
+                ExtendedEvent(
+                    extended=_ExecutorToolResult(
+                        call_id=call_id, output=result.output, error=result.error, metadata=result.metadata,
+                    )
+                ),
+                node_id,
+                context.iteration,
+            )
+        )
 
     async def _stream_node(
         self,
@@ -309,6 +344,14 @@ class _NodeDispatchMixin:
                         )
                     )
                     return
+                # 01a11faa: the node's call is a transcript row, like an agent node's, so a run its tool delegates to has a call to nest under: the row (ToolCallStart +
+                # ToolCallEnd under this node's id) is written, and the drainer has written it (the barrier), before the tool runs under the same id.
+                call_id = str(uuid.uuid4())
+                await queue.put(self._wrap_event(ToolCallStart(id=call_id, name=node.tool_id, index=0), node_id, context.iteration))
+                await queue.put(self._wrap_event(ToolCallEnd(id=call_id, arguments=args, index=0), node_id, context.iteration))
+                if self._coalesce_state is not None:
+                    await await_tool_dispatch_barrier(queue)
+                call_token = set_current_toolcall(node_id, call_id)
                 try:
                     result = await self._dispatch_toolcall(node, args)
                 except YieldToWorker as yld:
@@ -345,6 +388,9 @@ class _NodeDispatchMixin:
                     )
                     return
                 except Exception as exc:  # noqa: BLE001
+                    await self._answer_toolcall_row(
+                        queue, node_id, context, call_id, ToolResultPart(id=call_id, output=str(exc), error=True),
+                    )
                     await queue.put(
                         _NodeDone(
                             node_id=node_id,
@@ -354,6 +400,9 @@ class _NodeDispatchMixin:
                         )
                     )
                     return
+                finally:
+                    reset_current_toolcall(call_token)
+                await self._answer_toolcall_row(queue, node_id, context, call_id, result)
                 mapped = _map_toolcall_result(
                     result, output_schema=node.output_schema
                 )

@@ -251,9 +251,10 @@ async def run_subagent(
     parent_run_id = _RUN_ID.get()
     # The graph node whose agent made this call (None outside a graph). Concurrent fan-out siblings each run in their own task with their own ambient id, and their calls can
     # share a raw id, so the records of a run say which node it belongs to (ticket 01a11cca).
-    from primer.graph._node_identity import current_graph_node_id
+    from primer.graph._node_identity import current_graph_node_id, current_toolcall_node_id
 
-    node_id = current_graph_node_id()
+    # A ToolCall node's dispatch publishes its own value (not the agent nodes' one: that also scopes the approval key), so a run its tool delegates to is stamped with the node too.
+    node_id = current_graph_node_id() or current_toolcall_node_id()
     context = AgentResumeContext(
         session_id=session_id,
         workspace_id=workspace_id,

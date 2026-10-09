@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from primer.agent.tool_manager import ToolExecutionManager
+from primer.graph._node_identity import current_toolcall_id
 from primer.graph.base import DEFAULT_MAX_PARALLEL_NODES, _BaseGraphExecutor
 from primer.graph.router import RouterRegistry
 from primer.model.chat import Message, StreamEvent, ToolResultPart
@@ -385,8 +386,10 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
     ) -> ToolResultPart:
         """Dispatch a ToolCall node via the workspace's ``ToolExecutionManager``.
 
-        Spec B §2.3 step 2. Builds a :class:`ToolCallPart` with a fresh
-        uuid id and forwards to :meth:`ToolExecutionManager.execute`.
+        Spec B §2.3 step 2. Builds a :class:`ToolCallPart` and forwards to
+        :meth:`ToolExecutionManager.execute`. Its id is the one the calling
+        node wrote its ``tool_call`` row under (``current_toolcall_id``), a
+        fresh uuid for a caller outside a node's dispatch.
 
         ``bypass_approval`` is threaded through to the manager so the
         resume path (Phase 6 Task 6.3) can re-dispatch a previously
@@ -461,7 +464,9 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
                 self._tool_manager = manager
 
         call = ToolCallPart(
-            id=str(uuid.uuid4()),
+            # The id the node wrote its call row under (primer.graph._node_identity), so the manager's call, the row and the runs the tool delegates to share one id; a
+            # direct caller outside a node's dispatch gets a fresh one.
+            id=current_toolcall_id() or str(uuid.uuid4()),
             name=node.tool_id,
             arguments=arguments,
         )
