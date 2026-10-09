@@ -1,12 +1,14 @@
 """A ratchet on the graph builder's clickable things that are not controls (board task 01a12124).
 
-A ``<span onClick>`` or ``<div onClick>`` with no ``role`` is invisible to a keyboard and a screen reader: no focus, no key, no name. The builder had 21 of them; the three the #692 review found
+A ``<span onClick>`` or ``<div onClick>`` with no ``role`` is invisible to a keyboard and a screen reader: no focus, no key, no name. The builder had 22 of them; the three the #692 review found
 (+ Add a path, Remove this connection, Delete this step) and the Advanced toggle in front of one of them are buttons now, and this file counts what is left, per file. The counts may only go DOWN:
 a new one fails, and a file that got below its count fails until the baseline is lowered (so the number is never a cushion for a later one). The rest are listed in ``BASELINE`` for the follow-up that
 turns each into a button, a ``role="button"`` with a key handler, or a link.
 
-What is counted: an opening ``<span>``, ``<div>``, ``<a>``, ``<li>``, ``<p>``, ``<td>``, ``<tr>``, ``<section>`` or ``<label>`` whose attributes hold ``onClick=`` and no ``role=``. (A ``<label>`` is clickable by
-nature when it wraps a control, but one with its own ``onClick`` is not a control; none is in the builder today.)
+What is counted (round 2 of #705 hardened it): an opening ``<span>``, ``<div>``, ``<a>``, ``<li>``, ``<p>``, ``<td>``, ``<tr>``, ``<section>``, ``<label>``, ``<ul>``, ``<ol>``, a heading, ``<img>`` or ``<svg>``
+whose attributes hold ``onClick``, ``onDoubleClick``, ``onMouseDown``, ``onMouseUp``, ``onPointerDown`` or ``onPointerUp``, and which is not a control. A control is a ``<button>`` (never scanned), a link
+with an ``href``, or an element with an INTERACTIVE ``role`` (button, link, tab, menuitem, checkbox, radio, switch, option ...) AND a ``tabIndex`` AND an ``onKeyDown``: a ``role="presentation"`` or
+``role="dialog"`` does not make a click handler reachable, and ``data-role=`` is not a role. Comments are not code.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ BUILDER = Path(__file__).resolve().parents[2] / "ui" / "components" / "graph-bui
 
 # the clickable non-controls that are still there, per file (can only shrink)
 BASELINE = {
-    "gb-dryrun.jsx": 2,
+    "gb-dryrun.jsx": 2,          # the close x, a node row
     "gb-inspector.jsx": 2,       # the template-kind cards, the fan-out spec chips
     "gb-outline.jsx": 1,         # the step rows
     "gb-palette.jsx": 4,         # the scrim, a purpose row, Back, a tool row
@@ -77,9 +79,50 @@ def test_the_branch_builder_has_none_left() -> None:
 def test_the_scan_sees_what_it_claims_to() -> None:
     text = (
         '<span onClick={() => run()} style={{ a: 1 }}>x</span>\n'
-        '<div role="button" tabIndex={0} onClick={go}>y</div>\n'
+        '<div role="button" tabIndex={0} onKeyDown={key} onClick={go}>y</div>\n'
         '<button onClick={go}>z</button>\n'
         '<a onClick={() => { if (a > b) c(); }} href="#">w</a>\n'
+        '<a onClick={go}>no href</a>\n'
         '<div className="row">no click</div>\n'
     )
-    assert clickable_non_controls(text) == [(1, "span"), (4, "a")]
+    assert clickable_non_controls(text) == [(1, "span"), (5, "a")]
+
+
+def test_a_role_that_is_not_interactive_does_not_make_a_click_reachable() -> None:
+    assert clickable_non_controls('<div role="presentation" onClick={go}>x</div>') == [(1, "div")]
+    assert clickable_non_controls('<div role="dialog" onClick={go}>x</div>') == [(1, "div")]
+    assert clickable_non_controls('<div data-role="button" onClick={go}>x</div>') == [(1, "div")], "data-role is not a role"
+    assert clickable_non_controls('<div aria-role="button" onClick={go}>x</div>') == [(1, "div")]
+
+
+def test_an_interactive_role_needs_a_tab_stop_and_a_key_handler() -> None:
+    assert clickable_non_controls('<div role="button" onClick={go}>x</div>') == [(1, "div")]
+    assert clickable_non_controls('<div role="button" tabIndex={0} onClick={go}>x</div>') == [(1, "div")], "focusable, but Enter does nothing"
+    assert clickable_non_controls('<div role="button" onKeyDown={key} onClick={go}>x</div>') == [(1, "div")], "keys, but nothing to tab to"
+    assert clickable_non_controls('<div role="button" tabIndex={0} onKeyDown={key} onClick={go}>x</div>') == []
+
+
+def test_every_pointer_handler_counts_not_only_click() -> None:
+    for handler in ("onDoubleClick", "onMouseDown", "onMouseUp", "onPointerDown", "onPointerUp"):
+        assert clickable_non_controls(f"<span {handler}={{go}}>x</span>") == [(1, "span")], handler
+    assert clickable_non_controls("<span onMouseEnter={go}>x</span>") == [], "hover alone is not a click"
+
+
+def test_a_link_with_an_href_is_a_control_and_one_without_is_not() -> None:
+    assert clickable_non_controls('<a href="#/x" onClick={go}>x</a>') == []
+    assert clickable_non_controls('<a onClick={go}>x</a>') == [(1, "a")]
+
+
+def test_comments_are_not_code() -> None:
+    text = (
+        '// <span onClick={go}>commented out</span>\n'
+        '/* <div onClick={go}>also</div> */\n'
+        '{/* <span onMouseDown={go}>in jsx</span> */}\n'
+        '<span onClick={go}>real</span>\n'
+    )
+    assert clickable_non_controls(text) == [(4, "span")]
+
+
+def test_headings_images_and_lists_that_are_clickable_count_too() -> None:
+    for tag in ("h3", "img", "svg", "ul", "ol"):
+        assert clickable_non_controls(f"<{tag} onClick={{go}}>x</{tag}>") == [(1, tag)], tag
