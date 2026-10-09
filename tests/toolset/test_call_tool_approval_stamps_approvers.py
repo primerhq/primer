@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from primer.model.common import dump_for_storage
 from primer.model.tool_approval import ApproverSpec, PolicyApprovalConfig, RequiredApprovalConfig, ToolApprovalPolicy
 from primer.model.yield_ import YieldToWorker
 from primer.toolset.system import SYSTEM_TOOLSET_ID
@@ -28,7 +29,7 @@ ROUTES_TO_CAROL = (
 async def _park(system_toolset, sp, policy: ToolApprovalPolicy) -> dict:
     """Store ``policy`` for the inner tool, call it through ``call_tool`` and return the park's resume_metadata."""
     await sp.get_storage(ToolApprovalPolicy).create(policy)
-    await system_toolset.call(tool_name="create_llm_provider", arguments={"entity": _llm().model_dump(mode="json")})
+    await system_toolset.call(tool_name="create_llm_provider", arguments={"entity": dump_for_storage(_llm())})
     with pytest.raises(YieldToWorker) as parked:
         await system_toolset.call(
             tool_name="call_tool",

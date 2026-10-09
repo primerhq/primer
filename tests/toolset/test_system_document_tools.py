@@ -23,6 +23,7 @@ import pytest
 
 from primer.api.registries import ProviderRegistry
 from primer.model.collection import Collection, CollectionEmbedder, CollectionSearchConfig, Document
+from primer.model.common import dump_for_storage
 from primer.model.provider import SqliteConfig
 from primer.storage.sqlite import SqliteStorageProvider
 from primer.toolset.system import build_system_toolset
@@ -81,7 +82,7 @@ async def world(tmp_path: Path):
     )
     toolset = build_system_toolset(storage_provider=sp, provider_registry=registry, semantic_search_registry=_SSR(store))
     registry._system_toolset_provider = toolset
-    await toolset.call(tool_name="create_embedding_provider", arguments={"entity": _emb().model_dump(mode="json")})
+    await toolset.call(tool_name="create_embedding_provider", arguments={"entity": dump_for_storage(_emb())})
     kb = Collection(
         id="kb-1", description="kb",
         search=CollectionSearchConfig(
