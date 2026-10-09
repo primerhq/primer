@@ -18,8 +18,7 @@ from pathlib import Path
 import pytest
 
 from tests.ui._mini_react import mini_react_context
-from tests.ui.test_graph_builder_import_renders import _DRIVER, _PRELUDE
-from tests.ui.test_graph_builder_import_renders import _code as _builder_code
+from tests.ui._graph_builder_v8 import DRIVER, PRELUDE, builder_code
 from tests.ui.test_graph_builder_import_shapes import BASE
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -365,10 +364,10 @@ def _spec() -> dict:
 
 @pytest.fixture
 def builder():
-    c = mini_react_context(_builder_code(), _PRELUDE)
-    c.eval(_DRIVER)
+    c = mini_react_context(builder_code(), PRELUDE)
+    c.eval(DRIVER)
     c.eval("function draftOf() { return inspector().props.draft; }")
-    c.eval("function boxes() { return MR.findAll('gb-branch-value'); }")
+    c.eval("function boxes() { return MR.findAll('gb-branch-value').filter(function (el) { return el.type === 'input'; }); }")   # not the alert span, whose test id starts with the same words
     c.eval("function typeInto(i, text) { boxes()[i].props.onChange({ target: { value: text } }); MR.rerender(); }")
     c.eval("function saveDisabled() { return MR.find('gb-save').props.disabled; }")
     try:
