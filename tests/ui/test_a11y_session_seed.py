@@ -56,6 +56,29 @@ def test_seed_session_records_only_what_it_created_not_a_row_that_was_already_th
     assert seeded.delete_paths == ["/v1/workspace_providers/dn-wp-sfx", "/v1/workspaces/w1", "/v1/workspaces/w1/sessions/s1"], seeded.delete_paths
 
 
+def test_a_seed_that_dies_half_way_deletes_what_it_made_through_its_own_transport(tmp_path) -> None:
+    """Round 5, N8: the cleanup of a failed seed went to the real ``base_url`` whatever ``transport`` the seed was given, so a test of the failure path deleted nothing it could see."""
+    import pytest
+
+    from tests.ui_e2e._session_seed import seed_session
+
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(f"{request.method} {request.url.path}")
+        if request.method == "DELETE":
+            return httpx.Response(204)
+        if request.url.path == "/v1/workspaces":
+            return httpx.Response(500, json={"detail": "no"})
+        return httpx.Response(201, json={"id": "x"})
+
+    with pytest.raises(AssertionError):
+        seed_session("http://server", tmp_path, "sfx", transport=httpx.MockTransport(handler))
+    deletes = [line for line in seen if line.startswith("DELETE")]
+    assert deletes and deletes[0].endswith("/v1/workspace_templates/dn-tpl-sfx") and deletes[-1].startswith("DELETE /v1/llm_providers/"), seen
+    assert deletes.count("DELETE /v1/agents/dn-agent-sfx") == 1
+
+
 def test_a_created_llm_provider_is_recorded_with_the_model_profile_the_seed_made_for_it(tmp_path) -> None:
     from tests.ui_e2e._session_seed import seed_session
 
