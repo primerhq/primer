@@ -381,7 +381,7 @@ async def test_on_interaction_reject_opens_modal(monkeypatch):
     await client.on_interaction(inter)
     inter.response.send_modal.assert_awaited_once()
     modal = inter.response.send_modal.await_args.args[0]
-    assert "reject" in modal.custom_id
+    assert modal.custom_id.startswith("rm:w:s:t"), "the reject modal's verb is short so that it never decides whether the gate token fits"
 
 
 @pytest.mark.asyncio

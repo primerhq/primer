@@ -379,7 +379,7 @@ def test_two_concurrent_gates_on_the_same_session_both_surface() -> None:
     """01a06c94: a graph fan-out can park TWO approval gates on the SAME
     session at once - list_session_pending_yields now returns one item
     per gate instead of just the primary. SH_toAttentionItems must keep
-    both, each with a distinct id keyed on tool_call_id: that id is the
+    both, each with a distinct id keyed on the session and the gate (the tool_call_id for a row from before gates had ids): that id is the
     React key nv-session-doc.jsx's gateItems.map uses, so an id collision
     here would silently drop one DecisionCard even though the backend
     sent both.
@@ -413,6 +413,6 @@ def test_two_concurrent_gates_on_the_same_session_both_surface() -> None:
         """
     ))
     assert len(out) == 2, out
-    assert {row[0] for row in out} == {"pending:call-0", "pending:call-1"}
+    assert {row[0] for row in out} == {"pending:sess-fanout:call-0", "pending:sess-fanout:call-1"}
     assert {row[1] for row in out} == {"call-0", "call-1"}
     assert all(row[2] == "sess-fanout" for row in out)
