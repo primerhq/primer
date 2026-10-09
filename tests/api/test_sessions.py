@@ -2071,7 +2071,7 @@ async def test_recent_sessions_serves_graph_bound_qualifier(
 
 
 @pytest.mark.parametrize(
-    "name", ["a\x1fb", "a\x1eb", "a\nb", "a\rb", "a\x00b", "a\x0bb", "a\x7fb", "a\x85b", "a b", "a b", "a\tb"],
+    "name", ["a\x1fb", "a\x1eb", "a\nb", "a\rb", "a\x00b", "a\x0bb", "a\x7fb", "a\x85b", "a\u2028b", "a\u2029b", "a\tb"],
     ids=["US", "RS", "LF", "CR", "NUL", "VT", "DEL", "NEL", "LS", "PS", "TAB"],
 )
 async def test_rename_session_refuses_a_name_with_a_control_character(sessions_client, seeded_workspace, seeded_agent, name):
@@ -2102,3 +2102,52 @@ async def test_rename_session_still_accepts_an_ordinary_name_with_unicode(sessio
 
     assert patched.status_code == 200, patched.text
     assert patched.json()["name"] == "Nightly: ünïcode run 2"
+
+
+@pytest.mark.parametrize("name", ["Nightly \U0001F680 run", "\U0001D4B3 astral \U00010348", "emoji \u2764\ufe0f ok"], ids=["rocket", "astral-letters", "heart-vs16"])
+async def test_rename_session_accepts_emoji_and_astral_characters(sessions_client, seeded_workspace, seeded_agent, name):
+    """The refusal is for control and line-separating characters only: an emoji or an astral-plane letter is an ordinary name."""
+    create = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={"binding": {"kind": "agent", "agent_id": seeded_agent.id}, "auto_start": False},
+    )
+    sid = create.json()["id"]
+
+    patched = await sessions_client.patch(f"/v1/workspaces/{seeded_workspace.id}/sessions/{sid}", json={"name": name})
+
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["name"] == name
+
+
+@pytest.mark.parametrize(
+    "sent,stored", [("Nightly\n", "Nightly"), ("  Nightly  ", "Nightly"), ("\tNightly\r\n", "Nightly"), ("\u2028Nightly\u2029", "Nightly")],
+    ids=["trailing-newline", "spaces", "tab-crlf", "line-separators"],
+)
+async def test_rename_session_strips_the_ends_like_before_and_only_refuses_interior_control_characters(
+    sessions_client, seeded_workspace, seeded_agent, sent, stored,
+):
+    """A pasted trailing newline was stripped before this change and must still be (the validator judged the raw value and answered 422)."""
+    create = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={"binding": {"kind": "agent", "agent_id": seeded_agent.id}, "auto_start": False},
+    )
+    sid = create.json()["id"]
+
+    patched = await sessions_client.patch(f"/v1/workspaces/{seeded_workspace.id}/sessions/{sid}", json={"name": sent})
+
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["name"] == stored
+
+
+@pytest.mark.parametrize("name", ["\n", " \t\r\n ", "\u2028"], ids=["newline", "whitespace-mix", "line-separator"])
+async def test_rename_session_clears_the_name_for_a_whitespace_only_value(sessions_client, seeded_workspace, seeded_agent, name):
+    create = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={"binding": {"kind": "agent", "agent_id": seeded_agent.id}, "name": "Temp name", "auto_start": False},
+    )
+    sid = create.json()["id"]
+
+    patched = await sessions_client.patch(f"/v1/workspaces/{seeded_workspace.id}/sessions/{sid}", json={"name": name})
+
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["name"] is None
