@@ -181,9 +181,10 @@ The turn-log surface lives in `primer/observability/turn_log_writer.py`:
   unknown -> generic 500). `extensions` carries `exception_class` and a fresh
   `error_id` (uuid4 hex), never the traceback: the envelope is served to every
   reader of the session (the messages `ERROR` record, the turn log, the tap), and a
-  traceback exposes server file paths and internals. `detail` passes through
-  `redact_url_secrets`, since an upstream error message can embed a `?key=` URL or the
-  `user:password@` of a Base URL.
+  traceback exposes server file paths and internals. `detail` (and the top-level string
+  values of the exception's `problem_extensions`) passes through `redact_credentials`, since an
+  upstream error message can embed a `?key=` URL, the `user:password@` of a Base URL, or the
+  Bearer or Basic token it was sent.
   `to_problem_details` logs the failure once on `primer.observability.turn_log_writer`
   as `error_id=<id> <Class>: <message>`, so an operator finds it in the server log by
   the id the console shows: a mapped `PrimerError` subclass (an expected failure
