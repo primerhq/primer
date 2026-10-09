@@ -323,3 +323,81 @@ def test_the_import_modal_hands_the_spec_to_the_check_before_it_closes() -> None
     handler = call[call.index("onApply="):call.index("/>")]
     assert "GB_applyImport(spec, dispatch)" in handler
     assert handler.index("GB_applyImport(spec, dispatch)") < handler.index("setImportOpen(false)"), "a refused spec must leave the modal open to show its message"
+
+
+# ---------------------------------------------------------------------------
+# a pasted spec, deeper than its top level (review of #633, round 3)
+# ---------------------------------------------------------------------------
+
+_DEEP = (
+    "The spec has a field of the wrong type, so it was not loaded: `nodes`, `edges`, every router's `branches` and every fan-out's `specs` must be lists, "
+    "and descriptions must be strings."
+)
+_BEGIN_NODE = {"kind": "begin", "id": "s"}
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        {"nodes": [], "description": {"x": 1}},
+        {"nodes": [_BEGIN_NODE], "edges": [{"kind": "conditional", "from_node": "s", "router": {"kind": "json_path", "branches": {}, "default_to": "s"}}]},
+        {"nodes": [{"kind": "fan_out", "id": "f", "specs": {}}], "edges": []},
+        {"nodes": [{"kind": "agent", "id": "a", "agent_id": "x", "description": {"x": 1}}], "edges": []},
+        {"nodes": [{"kind": "agent", "id": 5, "agent_id": "x"}], "edges": []},
+    ],
+    ids=["description is an object", "router branches is an object", "fan-out specs is an object", "a node's description is an object", "a node's id is a number"],
+)
+def test_a_spec_that_would_throw_while_drawing_is_refused_with_one_message_and_the_draft_is_not_touched(spec: dict) -> None:
+    """Each of these passes the top-level shape check and then throws in the validator or while rendering (the console has no error boundary: the root unmounts and the draft is lost)."""
+    result = _import(spec)
+    assert result["thrown"] == _DEEP and result["dispatched"] == []
+
+
+def test_a_full_valid_spec_is_not_refused_by_the_dry_run() -> None:
+    """The control: the dry run must not reject a real graph (every kind of step, a router with branches, a fan-out with specs, a description)."""
+    spec = {
+        "description": "every kind of step", "max_iterations": 3,
+        "nodes": [
+            _BEGIN_NODE, _agent("a"), {"kind": "fan_out", "id": "f", "specs": [{"kind": "broadcast", "target_node_id": "w", "count": 2, "on_failure": "fail_fast"}]}, _agent("w"),
+            {"kind": "fan_in", "id": "m", "aggregate_template": ""}, {"kind": "tool_call", "id": "t", "tool_id": "x", "arguments": {}}, _END,
+        ],
+        "edges": [_edge("s", "a"), {"kind": "conditional", "from_node": "a", "router": {"kind": "json_path", "branches": [
+            {"conditions": [{"path": "k", "op": "eq", "value": 1}], "to_node": "f"}], "default_to": "t"}}, _edge("w", "m"), _edge("m", "e"), _edge("t", "e")],
+    }
+    result = _import(spec)
+    assert result["thrown"] is None and len(result["dispatched"]) == 1
+
+
+def _reduce(draft: dict, action: dict) -> dict:
+    return json.loads(_ctx().eval(f"JSON.stringify(GB_reducer({json.dumps(draft)}, {json.dumps(action)}))"))
+
+
+_CURRENT = {"id": "g", "description": "keep me", "nodes": [], "edges": [], "max_iterations": 5, "on_max_iterations": "a"}
+
+
+def test_importing_clears_the_graph_level_fields_the_spec_leaves_out() -> None:
+    """The legacy editor dropped ``max_iterations`` when the pasted spec had none; a PUT of the same body would too. A merge kept the old value."""
+    out = _reduce(_CURRENT, {"type": "IMPORT_SPEC", "spec": {"nodes": [], "edges": []}})
+    assert "max_iterations" not in out and "on_max_iterations" not in out
+    assert out["id"] == "g" and out["description"] == "keep me", "the pasted spec never retargets the graph, and a spec with no description keeps the current one"
+
+
+def test_importing_sets_the_graph_level_fields_the_spec_has() -> None:
+    out = _reduce(_CURRENT, {"type": "IMPORT_SPEC", "spec": {"id": "other", "description": "new", "nodes": [], "edges": [], "max_iterations": 3, "on_max_iterations": "z"}})
+    assert out["max_iterations"] == 3 and out["on_max_iterations"] == "z" and out["description"] == "new" and out["id"] == "g"
+
+
+def test_applying_a_starter_still_merges() -> None:
+    """``APPLY_TEMPLATE`` shared the reducer case with the import and keeps its merge: a starter spec names nodes and edges and nothing else."""
+    out = _reduce(_CURRENT, {"type": "APPLY_TEMPLATE", "spec": {"nodes": [], "edges": []}})
+    assert out["max_iterations"] == 5 and out["on_max_iterations"] == "a"
+
+
+def test_the_import_modal_seeds_the_loop_landing_so_loading_its_text_unchanged_keeps_it() -> None:
+    """The modal is pre-filled with the current draft so it doubles as an export/edit surface. An import now REPLACES the graph-level fields a spec leaves out, so a seed without
+    ``on_max_iterations`` would clear the loop's landing step on a Load that changed nothing."""
+    graphs = (UI / "components" / "graphs.jsx").read_text(encoding="utf-8")
+    modal = graphs.split("function GR_ImportSpecModal(", 1)[1].split("\n}\n", 1)[0]
+    seed = modal[:modal.index("React.useState(_seedText)")]
+    assert "max_iterations: currentDraft.max_iterations" in seed
+    assert "on_max_iterations: currentDraft.on_max_iterations" in seed
