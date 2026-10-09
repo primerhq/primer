@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from primer.common.log import redact_credentials
 from primer.model.chat import Message, TextPart
 
 
@@ -50,7 +51,9 @@ class ChildGraphFailed(Exception):
                 "reason": self.message or "(no reason supplied)",
                 "tool_name": self.tool_name or "unknown",
             })
-        return json.dumps({"error": self.code, "message": self.message, "node_id": self.node_id})
+        # The child's failure text is whatever its node's exception printed: it goes into the parent's tool result and so into the model's context,
+        # the session record and an MCP answer (01a11fbc-d6de). A refusal's reason, above, is what a person typed.
+        return json.dumps({"error": self.code, "message": redact_credentials(self.message), "node_id": self.node_id})
 
 
 def _gated_tool_name(checkpoint: dict[str, Any] | None, node_id: str | None) -> str | None:

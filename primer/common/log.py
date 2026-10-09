@@ -29,6 +29,7 @@ INFO request line and the uvicorn access line never write them out.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import logging.handlers
@@ -92,6 +93,34 @@ def redact_url_secrets(text: str) -> str:
     for pattern, repl in _URL_SECRET_PATTERNS:
         text = pattern.sub(repl, text)
     return text
+
+
+# Bearer and Basic tokens in free text (the Authorization header a library echoes back in an error, a provider quoting the credential it received).
+# A Bearer token is masked from 8 characters up. A ``Basic`` token is masked only when it base64-decodes to printable text containing a ``:``
+# (``user:password``), so the words after "Basic" in prose ("Basic authentication is required") are left alone.
+_BEARER = re.compile(r"(?i)(\bbearer\s+)[A-Za-z0-9._~+/=-]{8,}")
+_BASIC = re.compile(r"(?i)(\bbasic\s+)([A-Za-z0-9+/]{4,}={0,2})")
+_REDACTED = "[REDACTED]"
+
+
+def _mask_basic(match: re.Match[str]) -> str:
+    """``Basic <token>`` with the token masked when it is base64 of printable ``user:password``-shaped text; any other word is left as it was."""
+    token = match.group(2)
+    try:
+        decoded = base64.b64decode(token + "=" * (-len(token) % 4), validate=True).decode("utf-8")
+    except ValueError:                                  # not base64 (binascii.Error), or not text (UnicodeDecodeError): both are ValueErrors
+        return match.group(0)
+    return match.group(1) + _REDACTED if ":" in decoded and decoded.isprintable() else match.group(0)
+
+
+def redact_credentials(text: str) -> str:
+    """``text`` with the credentials a failure message can carry masked: URL-borne ones (:func:`redact_url_secrets`) and Bearer / Basic tokens.
+
+    For text that came from a library or a peer and is about to be stored, shown to a model or returned over MCP (a tool's exception, a child agent's
+    or graph's failure body). It knows no provider, so it cannot mask a configured key that is not URL- or header-shaped; the LLM adapters do that
+    with ``primer.llm._failure.scrub``, which ends in this function.
+    """
+    return _BASIC.sub(_mask_basic, _BEARER.sub(r"\1" + _REDACTED, redact_url_secrets(text)))
 
 
 def _redact_arg(arg: Any) -> Any:

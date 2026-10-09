@@ -27,7 +27,7 @@ import re
 from typing import Any
 from urllib.parse import unquote
 
-from primer.common.log import redact_url_secrets
+from primer.common.log import redact_credentials
 from primer.model.except_ import (
     AuthenticationError,
     NetworkError,
@@ -67,11 +67,6 @@ _KEYLESS_PLACEHOLDERS = frozenset({"empty", "none", "dummy", "ollama", "lm-studi
 #: megabytes); the message shows at most ``UPSTREAM_TEXT_CAP`` of it (``_UNTOUCHED_MESSAGE_CAP`` for an untouched one), so nothing past the limit could be
 #: shown anyway.
 _SCAN_LIMIT = 64_000
-_BEARER = re.compile(r"(?i)(\bbearer\s+)[A-Za-z0-9._~+/=-]{8,}")
-#: A Base URL with credentials goes on the wire as ``Authorization: Basic base64(user:password)``. The configured pair is masked exactly (below); this
-#: catches a ``Basic`` token of credentials primer did NOT configure, and only one that base64-decodes to printable text containing a ``:``, so the
-#: words after "Basic" in prose ("Basic authentication is required") are left alone.
-_BASIC = re.compile(r"(?i)(\bbasic\s+)([A-Za-z0-9+/]{4,}={0,2})")
 #: Control characters that are not whitespace (NUL, ESC, ...): a terminal or a log viewer acts on them. Stripped with ``str.translate``, which is linear and
 #: fast on a body of tens of megabytes (a regex substitution took seconds on a body of NULs).
 _CONTROL_TABLE = {code: None for code in (*range(0x00, 0x09), *range(0x0E, 0x1C), 0x7F)}
@@ -135,23 +130,11 @@ def _mask(text: str, secret: str) -> str:
     return re.sub(_TOKEN_START + re.escape(secret) + r"(?![A-Za-z0-9])", _REDACTED, text)
 
 
-def _mask_basic(match: re.Match[str]) -> str:
-    """``Basic <token>`` with the token masked when it is base64 of printable ``user:password``-shaped text; any other word is left as it was."""
-    token = match.group(2)
-    try:
-        decoded = base64.b64decode(token + "=" * (-len(token) % 4), validate=True).decode("utf-8")
-    except ValueError:                                  # not base64 (binascii.Error), or not text (UnicodeDecodeError): both are ValueErrors
-        return match.group(0)
-    return match.group(1) + _REDACTED if ":" in decoded and decoded.isprintable() else match.group(0)
-
-
 def scrub(text: str, provider: Any) -> str:
     """``text`` with the provider's configured credentials, URL-borne credentials and bearer / basic tokens masked."""
     for secret in _secrets(provider):
         text = _mask(text, secret)
-    text = redact_url_secrets(text)
-    text = _BEARER.sub(r"\1" + _REDACTED, text)
-    return _BASIC.sub(_mask_basic, text)
+    return redact_credentials(text)
 
 
 _WORD = re.compile(r"\S+")

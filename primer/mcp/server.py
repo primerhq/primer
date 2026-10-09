@@ -46,6 +46,7 @@ from mcp.types import (
     Tool as McpTool,
 )
 
+from primer.common.log import redact_credentials
 from primer.mcp.audit import log_invoke
 from primer.mcp.dispatch import NotExposed, invoke_exposed, list_exposed_tools
 from primer.mcp.exposure import ExposureDeps
@@ -231,13 +232,18 @@ def build_mcp_server(deps_factory: Callable[[], ExposureDeps]) -> Server:
                 error_code = "dispatch_failed"
                 return CallToolResult(
                     isError=True,
-                    content=[TextContent(type="text", text=str(exc))],
+                    content=[TextContent(type="text", text=redact_credentials(str(exc)))],
                 )
             ok = not result.is_error
+            # A failure's text is whatever the tool's exception printed (httpx prints the request URL whole, credentials included); a successful
+            # result is data and is returned as it was (01a11fbc-d6de).
+            text = result.output or ""
+            if result.is_error:
+                text = redact_credentials(text)
             return CallToolResult(
                 isError=result.is_error,
                 content=[
-                    TextContent(type="text", text=result.output or ""),
+                    TextContent(type="text", text=text),
                 ],
             )
         finally:
