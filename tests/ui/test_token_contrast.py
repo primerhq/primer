@@ -120,3 +120,24 @@ def test_no_color_in_the_stylesheet_depends_on_the_fallback_of_an_undeclared_tok
     declared = set(_DECLARED_RE.findall(css))
     undeclared = sorted({name for name in _VAR_WITH_COLOR_FALLBACK_RE.findall(css) if name not in declared})
     assert not undeclared, f"colour tokens used with a literal fallback but declared in no theme block: {undeclared}"
+
+
+_JSX_TOKEN_FALLBACK_RE = re.compile(r"var\(\s*(--[a-z0-9-]+)\s*,\s*var\(")
+
+
+def test_no_inline_style_depends_on_the_fallback_of_an_undeclared_token():
+    """`var(--x, var(--y))` in a .jsx inline style with `--x` declared nowhere always renders `--y`: the intended per-theme colour
+    silently never applies. The stylesheet's undeclared-token guard above covers styles.css; this one covers the .jsx inline styles
+    (the C-030 follow-up: `--warning` in external-tools.jsx and `--bg-0` in session-detail.jsx both used a token fallback). A token
+    used with a token fallback must be declared. Runtime-set vars (for example `--dc-inv-zoom`, set per element via
+    `el.style.setProperty`) carry a literal fallback and are out of scope."""
+    css = STYLES.read_text(encoding="utf-8")
+    declared = set(_DECLARED_RE.findall(css))
+    root = STYLES.parent.parent
+    offenders = []
+    for path in sorted(STYLES.parent.rglob("*.jsx")):
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for name in _JSX_TOKEN_FALLBACK_RE.findall(line):
+                if name not in declared:
+                    offenders.append(f"{path.relative_to(root)}:{lineno}: {name}")
+    assert not offenders, "inline styles that fall back to a token declared in no theme block:\n" + "\n".join(offenders)
