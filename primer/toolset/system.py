@@ -124,6 +124,7 @@ from primer.model.workspace import (
 )
 from primer.model.yield_ import ToolContext, Yielded
 from primer.toolset._system_guards import AGENT_GUARDS, GRAPH_GUARDS, CrudGuards, ToolReference, toolset_guards
+from primer.artifact.checks import check_artifact_provider_on_update
 from primer.channel.checks import check_channel_on_create, check_channel_on_update
 from primer.model_profile.checks import check_profile_on_create, check_profile_on_update
 from primer.knowledge.checks import check_collection_system_flag
@@ -338,6 +339,10 @@ def build_system_toolset(
     async def _collection_pre_update(entity: Collection, existing: Collection) -> None:
         check_collection_system_flag(entity, existing)
 
+    async def _artifact_provider_pre_update(entity: ArtifactStorageProvider, existing: ArtifactStorageProvider) -> None:
+        # The reserved default must stay a kind the factory can build; the REST route runs the same function (ticket 01a1226f).
+        check_artifact_provider_on_update(entity, existing)
+
     pre_checks_by_label: dict[str, tuple[Any, Any]] = {
         "collection": (_collection_pre_create, _collection_pre_update),
         # The agent's profile and toolset references are looked up before the write, as the REST route does (A-09); the builder's
@@ -347,6 +352,7 @@ def build_system_toolset(
         "toolset": (_toolset_pre_create, _toolset_pre_update),
         "model_profile": (_profile_pre_create, _profile_pre_update),
         "channel": (_channel_pre_create, _channel_pre_update),
+        "artifact_storage_provider": (None, _artifact_provider_pre_update),
     }
 
     # ---- CRUD sets ----------------------------------------------------

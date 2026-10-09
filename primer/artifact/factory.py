@@ -11,6 +11,11 @@ from primer.model.provider import (
 )
 
 
+#: The kinds ``build_artifact_storage`` can construct. The reserved default provider (``artifact-storage-default``) must name one of them: everything that
+#: stores or serves chat media resolves it (``primer/artifact/checks.py`` refuses a write that would break that). Add a kind here when its backend ships.
+BUILDABLE_KINDS: frozenset[ArtifactStorageProviderType] = frozenset({ArtifactStorageProviderType.DB})
+
+
 def build_artifact_storage(
     row: ArtifactStorageProvider, *, storage_provider: StorageProvider,
 ) -> ArtifactStorage:
@@ -19,7 +24,7 @@ def build_artifact_storage(
     Only the ``DB`` backend ships in v1; ``FILESYSTEM`` and ``S3`` are accepted
     enum values whose construction raises until implemented.
     """
-    if row.provider is ArtifactStorageProviderType.DB:
+    if row.provider in BUILDABLE_KINDS:
         from primer.artifact.db import DbArtifactStorage
 
         return DbArtifactStorage(storage_provider)
@@ -28,4 +33,4 @@ def build_artifact_storage(
     )
 
 
-__all__ = ["build_artifact_storage"]
+__all__ = ["BUILDABLE_KINDS", "build_artifact_storage"]
