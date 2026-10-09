@@ -263,8 +263,8 @@ async def test_the_record_of_a_click_after_a_sibling_answer_names_the_gate_that_
     if not trace["click_flipped"]:
         pytest.skip(f"the click woke nothing: {trace}")
     ran = trace["ran_after_click"]
-    clicked_key = f"tool_approval:{SID}:u-{trace['clicked']}"
-    later = [r for r in trace["records"] if r[0] != A_KEY]
+    clicked_key = f"tool_approval:{SID}:u-{trace['clicked']}@{G[trace['clicked']]}"           # the record key carries the gate (C-033 PR 2)
+    later = [r for r in trace["records"] if r[0] != f"{A_KEY}@{G['A']}"]
     assert ran == [trace["clicked"]], f"the click on {trace['clicked']} ran {ran}: {trace}"
     # The click's own respond-time record and the resume-time record are ONE record on the unique key (the fake store has no unique index, so the set is compared).
     assert {r[0] for r in later} == {clicked_key}, f"the gate that ran is {ran} but the resume-time record names {[r[0] for r in later]}: {trace}"
