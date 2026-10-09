@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from tests.ui_e2e._a11y import ALLOWLIST, Look, classify, counts_table, effective_source, evaluate_sweep, verdict
+from tests.ui_e2e._a11y import ALLOWLIST, Budget, Look, api_problem, classify, counts_table, effective_source, evaluate_sweep, is_event_stream, verdict
 
 A = '<input class="input" placeholder="Filter a" data-testid="filter-a">'
 B = '<select class="select" data-testid="kind-b"><option value="">all</option></select>'
@@ -233,3 +233,53 @@ def test_the_counts_table_shows_what_each_surface_examined_in_its_body_and_its_f
     assert lines[0].split() == ["surface", "examined", "body", "floor", "skipped"]
     assert any(line.split()[-4:] == ["9", "5", "3", "1"] and line.startswith("page one ") for line in lines)
     assert any(line.startswith("page one / New thing") and line.split()[-4:] == ["6", "4", "2", "0"] for line in lines)
+
+
+def test_a_body_exactly_at_its_floor_is_not_thin() -> None:
+    """N3: the boundary of the floor guard (``body == floor`` passes, one less fails)."""
+    assert _evaluate(looks={**LOOKS, "page one": Look(examined=3, body=3, skipped=0)}) == []
+    assert len(_evaluate(looks={**LOOKS, "page one": Look(examined=3, body=2, skipped=0)})) == 1
+
+
+# ---------------------------------------------------------------------------
+# the network guard: what a look takes from the requests the page made (review of #668, round 3, B2'')
+# ---------------------------------------------------------------------------
+
+
+def test_a_server_error_of_the_api_is_a_problem_and_a_client_error_is_not() -> None:
+    """The UI shapes of "this page failed" are many (a red span, a stuck title, a banner, nothing at all); a 5xx from the API is one fact. A 4xx is often the page's normal answer (an empty install)."""
+    assert api_problem(method="GET", url="http://h:8797/v1/tools/catalogue?limit=5", resource_type="fetch", status=503) == "GET /v1/tools/catalogue answered 503"
+    assert api_problem(method="POST", url="http://h/v1/agents", resource_type="xhr", status=500) == "POST /v1/agents answered 500"
+    for ok in (200, 204, 304, 400, 404, 409, 422, 499):
+        assert api_problem(method="GET", url="http://h/v1/x", resource_type="fetch", status=ok) is None, ok
+
+
+def test_a_request_that_failed_is_a_problem_unless_it_was_aborted() -> None:
+    """The console aborts its own in-flight polls when a page unmounts (``net::ERR_ABORTED``); that is how it works, not a failure."""
+    assert api_problem(method="GET", url="http://h/v1/health", resource_type="fetch", failure="net::ERR_CONNECTION_REFUSED") == "GET /v1/health failed (net::ERR_CONNECTION_REFUSED)"
+    assert api_problem(method="GET", url="http://h/v1/health", resource_type="fetch", failure="net::ERR_ABORTED") is None
+
+
+def test_only_the_api_and_not_its_event_streams_count() -> None:
+    assert api_problem(method="GET", url="http://h/console/app.js", resource_type="script", status=500) is None
+    assert api_problem(method="GET", url="http://h/v1/workspaces/w/tap", resource_type="eventsource", status=500) is None
+    assert api_problem(method="GET", url="http://h/v1/workspaces/w/tap", resource_type="eventsource", failure="net::ERR_FAILED") is None
+
+
+def test_an_event_stream_is_told_by_its_type_or_its_content_type() -> None:
+    assert is_event_stream("eventsource", None) is True
+    assert is_event_stream("fetch", "text/event-stream; charset=utf-8") is True
+    assert is_event_stream("fetch", "application/json") is False
+    assert is_event_stream("fetch", None) is False
+
+
+def test_the_wait_budget_keeps_the_normal_wait_until_enough_looks_were_stuck_and_then_waits_briefly() -> None:
+    """N1: 69 looks of 10 s and 40 forms of 25 s are 1,690 s against a 900 s test: a sweep-wide budget, so that a broken install is reported and not waited out."""
+    budget = Budget(limit=2, short_ms=100)
+    assert budget.wait_ms(10_000) == 10_000
+    budget.spent()
+    assert budget.wait_ms(10_000) == 10_000
+    budget.spent()
+    assert budget.wait_ms(10_000) == 100, "the second stuck look used the budget up"
+    assert budget.wait_ms(50) == 50, "never longer than the wait asked for"
+    assert budget.exhausted is True

@@ -23,8 +23,9 @@ MOBILE_JSX = (ROOT / "ui" / "components" / "console" / "nv-mobile-shell.jsx").re
 CATALOG_JSX = (ROOT / "ui" / "components" / "provider-catalog.jsx").read_text(encoding="utf-8")
 
 
-def _grammar(name: str) -> list[str]:
-    block = re.search(rf"\b{name}:\s*\[([^\]]*)\]", SHELL_URL[SHELL_URL.index("var SH_VIEWS"):])
+def _grammar(name: str, source: str | None = None) -> list[str]:
+    text = SHELL_URL if source is None else source
+    block = re.search(rf"\b{name}:\s*\[([^\]]*)\]", text[text.index("var SH_VIEWS"):])
     assert block, f"SH_VIEWS.{name} not found in shell-url.js"
     return re.findall(r'"([^"]+)"', block.group(1))
 
@@ -49,7 +50,10 @@ def test_the_grammar_is_read_as_the_shell_defines_it() -> None:
 
 
 def test_the_grammar_reads_any_quoted_id_not_only_lowercase_words() -> None:
-    assert re.findall(r'"([^"]+)"', 'a: ["x-y", "Z9", "model_profile"]') == ["x-y", "Z9", "model_profile"]
+    """N4: the function the tables are held by, on a source of its own (the old test ran a copy of its regex)."""
+    source = 'var SH_VIEWS = { platform: ["x-y", "Z9", "model_profile"], system: ["dashboard"] };'
+    assert _grammar("platform", source) == ["x-y", "Z9", "model_profile"]
+    assert _grammar("system", source) == ["dashboard"]
 
 
 def test_every_platform_view_of_the_shell_is_swept_and_none_that_does_not_exist() -> None:
@@ -68,6 +72,7 @@ def test_a_page_with_no_form_says_why() -> None:
     assert no_form == set(surfaces.NO_FORM), (sorted(no_form), sorted(surfaces.NO_FORM))
     for name, why in surfaces.NO_FORM.items():
         assert len(why.split()) >= 4, f"{name}: say why it has no create form"
+    assert "wizard" in surfaces.NO_FORM["system-view setup"], "N5: its provider fix action opens the wizard that creates one; the wizard is not swept"
 
 
 def test_the_system_views_that_open_a_create_form_are_swept_through_it() -> None:
@@ -176,9 +181,24 @@ def test_a_platform_view_waits_for_its_own_page_and_for_its_list_to_load() -> No
     for nav in surfaces.PLATFORM_FORMS:
         markers = surfaces.ready_selectors("platform-view", nav)
         assert markers[0] == f'[data-testid="nv-plat-page:{nav}"]', nav
-        assert len(markers) == 2, f"{nav}: the page, and the proof that its list or body has loaded"
-    assert surfaces.ready_selectors("platform-view", "providers")[1] == '[data-testid="provider-body-all"]'
+        assert len(markers) == (3 if nav == "providers" else 2), f"{nav}: the page, and the proof that its list or body has loaded"
+    assert surfaces.ready_selectors("platform-view", "providers")[1:] == ['[data-testid="provider-body-all"]', '[data-testid="provider-empty-all"], [data-testid="provider-body-all"] .pc-card']
     assert surfaces.ready_selectors("platform-view", "agents")[1] == '[data-testid="nv-plat-empty"], [data-testid^="nv-pcard:"]'
+
+
+def test_a_provider_route_waits_for_its_class_to_have_loaded_its_instances_or_said_it_has_none() -> None:
+    """B2'': ``provider-body-<class>`` is drawn unconditionally (with "No providers match" while the list loads); a loaded crud class shows a card or its empty state. A panel class mounts its own page."""
+    assert 'data-testid={`provider-empty-${klass.key}`}' in CATALOG_JSX and 'className="pc-card"' in CATALOG_JSX
+    panel = {key for key in re.findall(r'\{ key: "(\w+)", label: [^}]*form: "panel"', CATALOG_JSX[CATALOG_JSX.index("const PROVIDER_CLASSES"):CATALOG_JSX.index("const PC_ALL_TYPE_CHIPS")])}
+    assert panel == {"model_profile", "ssp", "workspace", "channel"}
+    assert surfaces.PANEL_CLASSES == panel
+    for route in surfaces.LEGACY_FORMS:
+        if surfaces.LEGACY_TITLES[route] != "Providers":
+            continue
+        key = surfaces._provider_class(route)
+        markers = surfaces.ready_selectors("overlay-page", route)
+        loaded = f'[data-testid="provider-empty-{key}"], [data-testid="provider-body-{key}"] .pc-card'
+        assert (loaded in markers) == (key not in panel), (route, markers)
 
 
 def test_a_system_view_waits_for_its_own_page_not_the_first_nav_row_it_falls_back_to() -> None:
