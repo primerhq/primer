@@ -269,6 +269,21 @@ async def test_it_holds_for_more_instances(workers: int) -> None:
         assert r["seq"] > calls[r["payload"]["delegate_node_id"]]["seq"], r["seq"]
 
 
+def test_the_journeys_seed_is_read_the_same_by_both_readers() -> None:
+    """``tests/ui_e2e/_delegation_seed.build_fanout`` (what the CI-only journey opens) must say, to the timeline and to the console alike, that each run belongs under its own node's call."""
+    from tests.ui_e2e import _delegation_seed as seed
+
+    seeded = seed.build_fanout()
+    by_seq = {r["seq"]: r for r in seeded.records}
+    py, js = _py_children(seeded.records), _js_children(seeded.records)
+    for call_seq, run in ((seeded.call_a_seq, seed.RUN_FAN_A), (seeded.call_b_seq, seed.RUN_FAN_B)):
+        for name, children in (("timeline", py), ("console", js)):
+            assert children[call_seq], f"{name}: nothing under call {call_seq}"
+            assert {by_seq[s]["payload"]["delegate_run_id"] for s in children[call_seq]} == {run}, (name, call_seq, children[call_seq])
+    parents_results = [r for r in seeded.records if r["kind"] == "tool_result" and not r["payload"].get("delegated")]
+    assert {r["node_id"] for r in parents_results} == {"A", "B"}, "the parents' results carry their node, as production writes them"
+
+
 # ---------------------------------------------------------------------------
 # a node that waits for the drainer must never hang the turn
 # ---------------------------------------------------------------------------
