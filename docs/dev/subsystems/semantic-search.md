@@ -81,7 +81,12 @@ The entities:
   [storage.md](../architecture/storage.md).
 - **REST API conventions.** SSP CRUD mounts under `/v1/ssp` via
   `make_crud_router`, with reference-integrity cascade-block on delete and an
-  explicit `POST /v1/ssp/{id}/invalidate`. Document search is
+  explicit `POST /v1/ssp/{id}/invalidate`. `POST /v1/ssp/_test` (a draft) and
+  `GET /v1/ssp/{id}/_test` probe reachability and answer `{ok, error}` with a 200:
+  the error text of a draft that does not validate is pydantic's layout WITHOUT the
+  input (`draft_error` of `primer/api/routers/_probe_text.py`), because the input of
+  a missing field is the whole config dict, database password included, and a probe
+  failure goes through `probe_error`. Document search is
   `POST /v1/collections/{id}/search`. See [rest-api.md](../architecture/rest-api.md).
 - **Auto-bootstrap.** The reserved `lance` SSP row is seeded at first boot so
   semantic search works zero-config; the internal-collections bootstrap is a
