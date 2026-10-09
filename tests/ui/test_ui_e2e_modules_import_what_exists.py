@@ -127,3 +127,36 @@ def test_a_name_bound_by_an_import_or_a_conditional_counts_as_defined(tmp_path: 
     (tmp_path / "helper.py").write_text("import json\nfrom pathlib import Path as P\nif True:\n    LATE = 1\n", encoding="utf-8")
     (tmp_path / "test_c.py").write_text("from tests.ui_e2e.helper import json, P, LATE\n", encoding="utf-8")
     assert problems_in(tmp_path) == []
+
+def test_the_baseline_only_shrinks() -> None:
+    """N3: thirteen were on main when the check was added; the number is a ceiling, so adding an entry is as visible as adding a violation."""
+    assert len(BASELINE) <= 13
+
+
+def test_a_name_that_only_a_type_checking_block_binds_is_not_defined(tmp_path: Path) -> None:
+    """N4: ``if TYPE_CHECKING:`` never runs, so importing such a name at run time is an ImportError (the lane's collection error again)."""
+    (tmp_path / "helper.py").write_text("from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from somewhere import only_for_types\nreal = 1\n", encoding="utf-8")
+    (tmp_path / "test_c.py").write_text("from tests.ui_e2e.helper import real, only_for_types\n", encoding="utf-8")
+    assert problems_in(tmp_path) == [(MISSING, "test_c.py", 1, "only_for_types", "helper.py")]
+
+
+def test_a_relative_import_is_checked_like_an_absolute_one(tmp_path: Path) -> None:
+    """N4: ``from .helper import gone`` is the same import as ``from tests.ui_e2e.helper import gone``."""
+    (tmp_path / "test_a.py").write_text("def _helper():\n    pass\n", encoding="utf-8")
+    (tmp_path / "helper.py").write_text("def shared():\n    pass\n", encoding="utf-8")
+    (tmp_path / "test_d.py").write_text(
+        "from .helper import shared, gone\n"
+        "from .test_a import _helper\n"
+        "from . import helper, missing_module\n",
+        encoding="utf-8")
+    found = problems_in(tmp_path)
+    assert (MISSING, "test_d.py", 1, "gone", "helper.py") in found
+    assert (PRIVATE, "test_d.py", 2, "_helper", "test_a.py") in found
+    assert (MISSING, "test_d.py", 3, "missing_module", "(the lane)") in found
+    assert len(found) == 3, found
+
+
+def test_a_name_bound_in_an_except_handler_or_a_finally_counts_as_defined(tmp_path: Path) -> None:
+    (tmp_path / "helper.py").write_text("try:\n    import fast\nexcept ImportError:\n    fallback = None\nfinally:\n    cleaned = True\n", encoding="utf-8")
+    (tmp_path / "test_e.py").write_text("from tests.ui_e2e.helper import fast, fallback, cleaned\n", encoding="utf-8")
+    assert problems_in(tmp_path) == []

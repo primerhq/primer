@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import re
 
-from tests.ui_e2e._a11y import ALLOWLIST, Budget, Look, api_problem, classify, counts_table, effective_source, evaluate_sweep, is_event_stream, verdict
+import pytest
+
+from tests.ui_e2e._a11y import ALLOWLIST, Budget, Look, SweepDeadlineExceeded, api_problem, classify, counts_table, effective_source, evaluate_sweep, is_event_stream, verdict
 
 A = '<input class="input" placeholder="Filter a" data-testid="filter-a">'
 B = '<select class="select" data-testid="kind-b"><option value="">all</option></select>'
@@ -283,3 +285,56 @@ def test_the_wait_budget_keeps_the_normal_wait_until_enough_looks_were_stuck_and
     assert budget.wait_ms(10_000) == 100, "the second stuck look used the budget up"
     assert budget.wait_ms(50) == 50, "never longer than the wait asked for"
     assert budget.exhausted is True
+
+class _Clock:
+    """A clock the test moves."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def test_the_budget_has_a_wall_clock_deadline_past_which_every_wait_is_zero_and_a_check_raises() -> None:
+    """Round 4 of #668, blocker B2: the sweep is bounded from INSIDE (a signal timeout turned a timeout into a hang under Playwright's sync API). The clock starts at the first wait, a wait never
+    runs past the deadline, and past it every wait is 0 and ``check`` raises an ordinary exception between surfaces, so the sweep's own ``finally`` runs with a live Playwright."""
+    clock = _Clock()
+    budget = Budget(limit=5, short_ms=1000, deadline_s=600, clock=clock)
+    assert budget.expired is False
+    assert budget.wait_ms(10_000) == 10_000, "the clock starts at the first wait"
+    budget.check("surface one")
+    clock.now += 595
+    assert budget.wait_ms(10_000) == 5_000, "never past the deadline"
+    clock.now += 10
+    assert budget.expired is True and budget.wait_ms(10_000) == 0
+    with pytest.raises(SweepDeadlineExceeded, match="surface one"):
+        budget.check("surface one")
+
+
+def test_the_deadline_is_counted_from_the_first_wait_not_from_the_budget_being_made() -> None:
+    clock = _Clock()
+    budget = Budget(deadline_s=600, clock=clock)
+    clock.now += 5000
+    assert budget.expired is False and budget.wait_ms(300) == 300
+    clock.now += 599
+    assert budget.expired is False
+
+
+def test_a_budget_with_no_deadline_never_expires() -> None:
+    clock = _Clock()
+    budget = Budget(clock=clock)
+    assert budget.wait_ms(10_000) == 10_000
+    clock.now += 10**9
+    assert budget.expired is False and budget.wait_ms(10_000) == 10_000
+    budget.check("anything")
+
+
+def test_the_stuck_looks_shorten_the_waits_but_the_deadline_still_wins() -> None:
+    clock = _Clock()
+    budget = Budget(limit=1, short_ms=100, deadline_s=10, clock=clock)
+    budget.wait_ms(1)
+    budget.spent()
+    assert budget.wait_ms(10_000) == 100
+    clock.now += 10
+    assert budget.wait_ms(10_000) == 0

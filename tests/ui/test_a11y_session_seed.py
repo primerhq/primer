@@ -33,3 +33,36 @@ def test_a_request_that_cannot_be_made_is_reported_and_does_not_raise() -> None:
 
 def test_nothing_to_delete_is_nothing_left() -> None:
     assert delete_paths("http://server", [], transport=httpx.MockTransport(lambda request: httpx.Response(500))) == []
+
+
+def test_seed_session_records_only_what_it_created_not_a_row_that_was_already_there(tmp_path) -> None:
+    """Round 4, N9: a 409 means the row was somebody else's (or a leftover); deleting it at the end would take it from them. Only a 201 is recorded."""
+    from tests.ui_e2e._session_seed import seed_session
+
+    answers = {
+        ("POST", "/v1/llm_providers"): (409, {}),
+        ("POST", "/v1/agents"): (409, {}),
+        ("POST", "/v1/workspace_providers"): (201, {"id": "wp-new"}),
+        ("POST", "/v1/workspace_templates"): (409, {}),
+        ("POST", "/v1/workspaces"): (201, {"id": "w1"}),
+        ("POST", "/v1/workspaces/w1/sessions"): (201, {"id": "s1"}),
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        status, body = answers[(request.method, request.url.path)]
+        return httpx.Response(status, json=body)
+
+    seeded = seed_session("http://server", tmp_path, "sfx", transport=httpx.MockTransport(handler))
+    assert seeded.delete_paths == ["/v1/workspace_providers/dn-wp-sfx", "/v1/workspaces/w1", "/v1/workspaces/w1/sessions/s1"], seeded.delete_paths
+
+
+def test_a_created_llm_provider_is_recorded_with_the_model_profile_the_seed_made_for_it(tmp_path) -> None:
+    from tests.ui_e2e._session_seed import seed_session
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path in ("/v1/workspaces", "/v1/workspaces/w1/sessions"):
+            return httpx.Response(201, json={"id": "w1" if request.url.path == "/v1/workspaces" else "s1"})
+        return httpx.Response(201, json={"id": "x"})
+
+    seeded = seed_session("http://server", tmp_path, "sfx", transport=httpx.MockTransport(handler))
+    assert "/v1/llm_providers/dn-prov-sfx" in seeded.delete_paths and any(p.startswith("/v1/model_profiles/") for p in seeded.delete_paths)
