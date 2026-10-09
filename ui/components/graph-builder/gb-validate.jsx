@@ -214,8 +214,19 @@ function GB_validate(draft, opts) {
         message: "Add an “in any other case” path - without one, a run that matches nothing stops with an error.",
       });
     }
-    for (const b of e.router.branches || []) {
+    const branches = e.router.branches || [];
+    for (let bi = 0; bi < branches.length; bi++) {
+      const b = branches[bi];
       for (const c of b.conditions || []) {
+        // The op must be one of the model's Literal values (primer/model/graph.py,
+        // BranchCondition.op); the builder's list is GB_OPS (gb-branches.jsx).
+        // Save 422s on any other op, so it blocks here instead.
+        if (window.GB_OPS && window.GB_OPS.indexOf(c.op) === -1) {
+          blocking.push({
+            code: "branch_op_unknown", edgeIdx: idx, nodeId: e.from_node,
+            message: `“${src ? (src.description || src.id) : e.from_node}”'s branch ${bi + 1} uses “${c.op}”, an operator the model doesn't know - Save would reject it.`,
+          });
+        }
         if ((c.op === "ne" || c.op === "not_in")
             && !(b.conditions || []).some((x) => x.op === "exists" && x.path === c.path)) {
           warnings.push({
