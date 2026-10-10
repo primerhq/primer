@@ -108,6 +108,21 @@ def test_the_refusal_is_still_shown_through_on_error_or_the_toast() -> None:
     assert len(toasts) == 1 and toasts[0]["kind"] == "error" and toasts[0]["title"] == "Request failed"
 
 
+def test_a_promise_chained_onto_the_returned_one_is_not_marked_handled() -> None:
+    """The limit of the fix (the #608 review nit): only the promise ``mutate`` returns is marked handled.
+
+    ``mutate(b).then(onDone)`` and ``mutate(b).finally(fn)`` derive a NEW promise that rejects with the same refusal and has no handler, so it is an unhandled
+    rejection again. This is the premise of ``tests/ui/test_mutate_chains_end_in_a_rejection_handler.py``, which keeps the count of such chains at zero.
+    """
+    ctx = _ctx()
+    ctx.eval(FAILING % "{ onError: function () {} }")
+
+    assert ctx.eval("var p = m.mutate({}); __handled.has(p)") is True
+    assert ctx.eval("var q = m.mutate({}).then(function () {}); __handled.has(q)") is False, "a chained then(onDone) is a new promise with no handler"
+    assert ctx.eval("var f = m.mutate({}).finally(function () {}); __handled.has(f)") is False
+    assert ctx.eval("var h = m.mutate({}).then(function () {}); h.catch(function () {}); __handled.has(h)") is True, "ending the chain in a catch handles it"
+
+
 def test_a_successful_mutation_resolves_with_its_data_and_calls_on_success() -> None:
     ctx = _ctx()
     ctx.eval(
