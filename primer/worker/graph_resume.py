@@ -227,6 +227,7 @@ async def resume_graph_from_checkpoint(
             resumed_event_key=resumed_event_key,
             resumed_gate_id=resumed_gate_id,
             wake_only=wake_only,
+            **({} if decision == "approved" else {"approved": False}),     # the no-gate rule refuses an approval that cannot be shown to be one gate; a timeout, a rejection or a cancel rejects what it selects
             agent_tool_result=agent_tool_result,
             toolcall_payload=payload if value_yield_toolcall else None,
             resolved_tool_wait=resolved_tool_wait,

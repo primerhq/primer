@@ -86,7 +86,11 @@ async def write_approval_record_for_session(
     from primer.model.tool_approval import ToolApprovalRecord
 
     decision, reason, _kind = classify_approval_payload(payload)
-    blob = _blob_of_the_answered_gate(blob)
+    # The gate the decision named is read from the RAW wake the park carries, BEFORE the record is built: on a shared key the fired key alone names the FIRST sibling (security review of #724, round 4, R3-B1).
+    answered = _blob_of_the_answered_gate(blob, gate_id=wake_gate_id_of(blob.get("resume_event_payload")))
+    if answered is None:
+        return
+    blob = answered
     yielded: dict = blob.get("yielded") or {}
     record = record_from_parked_blob(
         blob=blob,
@@ -112,8 +116,8 @@ async def write_approval_record_for_session(
     )
 
 
-def _blob_of_the_answered_gate(blob: dict) -> dict:
-    """``blob`` with ``yielded`` / ``tool_call_id`` replaced by the pending gate the reply ANSWERED, when that is not the top-level one.
+def _blob_of_the_answered_gate(blob: dict, gate_id: str | None = None) -> dict | None:
+    """``blob`` with ``yielded`` / ``tool_call_id`` replaced by the pending gate the reply ANSWERED, when that is not the top-level one; ``None`` when no record can be written for it.
 
     An agent session parked on an ``invoke_graph`` child carries the child's PRIMARY gate as ``yielded`` and the whole child checkpoint in ``graph_checkpoint``;
     every pending gate of the child can be answered, and the reply stamps the key it fired as ``resume_event_key``. The audit record is built from the entry
@@ -123,6 +127,10 @@ def _blob_of_the_answered_gate(blob: dict) -> dict:
     The entry is looked up in the checkpoint the RESUME reads: the innermost ``GraphFrame``'s (``GraphFrame.answered_entry``), not the blob's top-level one, so the
     record and the gate that runs cannot name different entries (C-033 round 4). A re-park written before the top-level checkpoint was carried has none, or a stale
     one; the frame's is always the child's current state.
+
+    Two siblings of the child's superstep can share the key, so the key alone names the FIRST of them: ``gate_id`` (the gate the wake named) picks the entry that was decided. A decision that names NO gate and
+    finds several entries on the key is about none of them in particular: ``None``, no record (the first sibling would get 'approved by <decider>' and lose its own later decision to the unique index). A gate the
+    wake named that no entry of the checkpoint carries (a gate since replaced) is ``None`` too.
     """
     fired = blob.get("resume_event_key")
     checkpoint = blob.get("graph_checkpoint")
@@ -132,15 +140,23 @@ def _blob_of_the_answered_gate(blob: dict) -> dict:
         checkpoint = inner["checkpoint"]
     if not fired or not checkpoint:
         return blob
+    from primer.model.yield_ import gate_id_of
+    from primer.session.gate_token import gate_token_matches
     from primer.session.pending_gates import enumerate_pending_gates
 
-    for entry in enumerate_pending_gates({"graph_checkpoint": checkpoint}):
-        if entry.get("event_key") == fired:
-            return {
-                **blob,
-                "yielded": {"tool_name": entry.get("kind"), "event_key": fired, "resume_metadata": entry.get("resume_metadata") or {}},
-                "tool_call_id": entry.get("tool_call_id") or blob.get("tool_call_id"),
-            }
+    on_the_key = [entry for entry in enumerate_pending_gates({"graph_checkpoint": checkpoint}) if entry.get("event_key") == fired]
+    if gate_id is not None and on_the_key:
+        on_the_key = [entry for entry in on_the_key if gate_token_matches(gate_id_of(entry.get("resume_metadata")), gate_id)]
+        if not on_the_key:
+            return None
+    if gate_id is None and len(on_the_key) > 1:
+        return None
+    for entry in on_the_key:
+        return {
+            **blob,
+            "yielded": {"tool_name": entry.get("kind"), "event_key": fired, "resume_metadata": entry.get("resume_metadata") or {}},
+            "tool_call_id": entry.get("tool_call_id") or blob.get("tool_call_id"),
+        }
     return blob
 
 

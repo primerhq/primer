@@ -147,6 +147,26 @@ def pending_entries(
     return [entry for entry in entries if entry.get("tool_call_id") == tool_call_id]
 
 
+def matching_pending_gates(
+    blob: dict[str, Any],
+    *,
+    tool_call_id: str,
+    kind: str | None = None,
+    gate_id: str | None = None,
+    event_key: str | None = None,
+) -> list[dict[str, Any]]:
+    """Every pending entry a reply answers: :func:`resolve_pending_gate` takes the first, and a caller that must not guess between several (the audit record of a decision that named no gate) counts them."""
+    entries = enumerate_pending_gates(blob)
+    # The event key a reply fired names its gate exactly (see :func:`pending_entries`); the raw id decides only when the key names none.
+    by_key = bool(event_key) and any(entry.get("event_key") == event_key for entry in entries)
+    return [
+        entry for entry in entries
+        if (entry.get("event_key") == event_key if by_key else entry.get("tool_call_id") == tool_call_id)
+        and (kind is None or entry.get("kind") == kind)
+        and (gate_id is None or gate_token_matches(gate_id_of(entry.get("resume_metadata")), gate_id))
+    ]
+
+
 def resolve_pending_gate(
     blob: dict[str, Any],
     *,
@@ -169,15 +189,7 @@ def resolve_pending_gate(
     that names none gets
     the first match with a warning rather than an exception.
     """
-    entries = enumerate_pending_gates(blob)
-    # The event key a reply fired names its gate exactly (see :func:`pending_entries`); the raw id decides only when the key names none.
-    by_key = bool(event_key) and any(entry.get("event_key") == event_key for entry in entries)
-    matches = [
-        entry for entry in entries
-        if (entry.get("event_key") == event_key if by_key else entry.get("tool_call_id") == tool_call_id)
-        and (kind is None or entry.get("kind") == kind)
-        and (gate_id is None or gate_token_matches(gate_id_of(entry.get("resume_metadata")), gate_id))
-    ]
+    matches = matching_pending_gates(blob, tool_call_id=tool_call_id, kind=kind, gate_id=gate_id, event_key=event_key)
     if len(matches) > 1:
         logger.warning(
             "resolve_pending_gate: %d pending entries share "
@@ -187,4 +199,4 @@ def resolve_pending_gate(
     return matches[0] if matches else None
 
 
-__all__ = ["enumerate_pending_gates", "fired_key_names_a_pending_entry", "pending_entries", "resolve_pending_gate"]
+__all__ = ["enumerate_pending_gates", "fired_key_names_a_pending_entry", "matching_pending_gates", "pending_entries", "resolve_pending_gate"]

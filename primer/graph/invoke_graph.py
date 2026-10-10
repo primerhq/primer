@@ -226,6 +226,7 @@ async def resume_invoke_graph(
         async for ev in child.resume_from_checkpoint(
             checkpoint, resumed_tcid=resumed_tcid, resumed_event_key=resumed_event_key,
             **({"resumed_gate_id": resumed_gate_id} if resumed_gate_id is not None else {}),     # only when the wake named one: a caller with no gate resumes exactly as before
+            **({} if decision == "approved" else {"approved": False}),                           # the no-gate rule is for approvals: a timeout, a rejection or a cancel rejects what it selects
             agent_tool_result=agent_tool_result,
             toolcall_payload=payload,
             resume_session_id=resume_session_id,
