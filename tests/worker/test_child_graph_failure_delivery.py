@@ -36,7 +36,9 @@ from primer.model.graph import (
     GraphNodeMessage,
     GraphThread,
     JsonPathBranch,
+    _AgentNodeRef,
     _BeginNode,
+    _CallableRouter,
     _ConditionalEdge,
     _EndNode,
     _JsonPathRouter,
@@ -216,3 +218,114 @@ async def test_a_child_graph_that_fails_on_its_first_run_is_an_error_result_from
     body = json.loads(result.output)
     assert body["error"] == "tool_execution_failed" and body["node_id"] == "ask", body
     assert "disk on fire" in body["message"]
+
+
+# ---- a child that fails WITHOUT a _GraphErrorEvent (ticket 01a12625-436c, found by the #733 review) ---------------------------------------------------------------
+#
+# The main loop ends a run ``failed`` and yields no error event in two cases: an un-suppressed node failure whose exception carries no ``ended_detail`` (any agent node's exception
+# other than a stream failure or the tool-turn cap: an agent resolver for a deleted agent, a bad profile, a nested subgraph failure) and an edge ``ConfigError`` (a router that is not
+# registered, one that returns a node that does not exist). ``run_invoke_graph`` and ``resume_invoke_graph`` decided a failure ONLY by the event, so the invoking agent got
+# ``{"output": ""}`` with ``error=False``. The shared executor factory resolves no agent (``KeyError``), so an agent node in these graphs is a node whose exception names the agent.
+
+
+def _agent_node_graph() -> Graph:
+    """begin -> A (an agent node whose agent resolves to nothing) -> exit."""
+    return Graph(
+        id="g-agent-gone",
+        description="an agent node whose agent was deleted",
+        nodes=[_BeginNode(id="begin"), _AgentNodeRef(id="A", agent_id="gone-agent"), _EndNode(id="exit", output_template="{{ nodes.A.text }}")],
+        edges=[_StaticEdge(from_node="begin", to_node="A"), _StaticEdge(from_node="A", to_node="exit")],
+    )
+
+
+def _gate_then_agent_node_graph() -> Graph:
+    """begin -> ask (a gated tool) -> A (an agent node whose agent resolves to nothing) -> exit."""
+    return Graph(
+        id="g-gate-then-agent-gone",
+        description="a gated tool, then an agent node whose agent was deleted",
+        nodes=[
+            _BeginNode(id="begin"),
+            _ToolCallNode(id="ask", tool_id="danger__wipe", arguments={}),
+            _AgentNodeRef(id="A", agent_id="gone-agent"),
+            _EndNode(id="exit", output_template="{{ nodes.A.text }}"),
+        ],
+        edges=[_StaticEdge(from_node="begin", to_node="ask"), _StaticEdge(from_node="ask", to_node="A"), _StaticEdge(from_node="A", to_node="exit")],
+    )
+
+
+def _unregistered_router_graph() -> Graph:
+    """begin -> ask (a tool) -> a conditional edge whose callable router is not registered -> exit."""
+    return Graph(
+        id="g-router-unregistered",
+        description="a conditional edge whose router is not registered",
+        nodes=[_BeginNode(id="begin"), _ToolCallNode(id="ask", tool_id="danger__wipe", arguments={}), _EndNode(id="exit", output_template="{{ nodes.ask.text }}")],
+        edges=[
+            _StaticEdge(from_node="begin", to_node="ask"),
+            _ConditionalEdge(from_node="ask", router=_CallableRouter(callable_id="not-registered")),
+        ],
+    )
+
+
+async def _first_run_through_the_tool(graph: Graph, dispatcher: Any) -> ToolCallResult:
+    (executor,) = await _executors(graph, dispatcher)
+    ctx = SimpleNamespace(
+        session_id=_SESSION_ID, workspace_id="ws-1", tool_call_id=_AGENT_TC, graph_services=_services(graph, [executor]),
+    )
+    result = await _invoke_graph_handler({"graph_id": "child", "input": "go"}, ctx=ctx)
+    assert isinstance(result, ToolCallResult)
+    return result
+
+
+@pytest.mark.asyncio
+async def test_a_child_whose_agent_node_raises_is_an_error_result_from_the_tool() -> None:
+    result = await _first_run_through_the_tool(_agent_node_graph(), _tool_runs)
+
+    assert result.is_error is True, f"a child whose agent node raised reached the agent as a success: {result.output!r}"
+    body = json.loads(result.output)
+    assert body["error"] == "node_failed" and body["node_id"] == "A", body
+    assert "gone-agent" in body["message"], body
+
+
+@pytest.mark.asyncio
+async def test_a_child_whose_edge_raises_a_config_error_is_an_error_result_from_the_tool() -> None:
+    result = await _first_run_through_the_tool(_unregistered_router_graph(), _tool_runs)
+
+    assert result.is_error is True, f"a child whose edge failed reached the agent as a success: {result.output!r}"
+    body = json.loads(result.output)
+    assert body["error"] == "edge_config_error" and body["node_id"] is None, body
+    assert "not-registered" in body["message"], body
+
+
+@pytest.mark.asyncio
+async def test_a_child_whose_agent_node_raises_after_the_approval_is_an_error_result_from_the_resume() -> None:
+    part = await _resume_with({"decision": "approved"}, resumed=_tool_runs, graph=_gate_then_agent_node_graph())
+
+    assert part.id == _AGENT_TC
+    assert part.error is True, f"a resumed child whose agent node raised reached the agent as a success: {part.output!r}"
+    body = json.loads(part.output)
+    assert body["error"] == "node_failed" and body["node_id"] == "A", body
+    assert "gone-agent" in body["message"], body
+
+
+@pytest.mark.asyncio
+async def test_a_child_whose_edge_raises_a_config_error_after_the_approval_is_an_error_result_from_the_resume() -> None:
+    part = await _resume_with({"decision": "approved"}, resumed=_tool_runs, graph=_unregistered_router_graph())
+
+    assert part.id == _AGENT_TC
+    assert part.error is True, f"a resumed child whose edge failed reached the agent as a success: {part.output!r}"
+    body = json.loads(part.output)
+    assert body["error"] == "edge_config_error" and body["node_id"] is None, body
+    assert "not-registered" in body["message"], body
+
+
+@pytest.mark.asyncio
+async def test_a_child_that_completes_is_still_a_success_with_the_same_machinery() -> None:
+    """The control: the same graph shape with a node that works (the tool, then the end) delivers its output, not an error."""
+    graph = build_ask_user_graph()
+    (executor,) = await _executors(graph, _tool_runs)
+    ctx = SimpleNamespace(session_id=_SESSION_ID, workspace_id="ws-1", tool_call_id=_AGENT_TC, graph_services=_services(graph, [executor]))
+
+    result = await _invoke_graph_handler({"graph_id": "child", "input": "go"}, ctx=ctx)
+
+    assert result.is_error is False, result.output
+    assert json.loads(result.output) == {"output": "the tool ran"}
