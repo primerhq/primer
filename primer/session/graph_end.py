@@ -2,7 +2,9 @@
 
 A graph executor's stream ends with the End node's output and the end node's exit transition: no ``done``, no ``error``. Every node-level terminal carries a ``node_id`` and sits INSIDE the
 window (:mod:`primer.session.terminals`), so the graph's turn needs a terminal of its own, and the executor does not write one. The WRITERS do: session dispatch on a graph run's clean completion
-(:func:`graph_end_for`) and the graph resume coordinator before it ends a resumed graph (:func:`graph_end_record`). One definition of the record, so the two cannot disagree.
+(:func:`graph_end_for`) and the graph resume coordinators before they end a resumed graph (``end_graph``: ``resume_graph_engine`` and ``resume_graph_tool_wait``; :func:`graph_end_record`). One
+definition of the record, so they cannot disagree. Not every path that ends a graph session writes it (a parked graph cancelled inline, ``resume_engine_session``'s early exits, a log from before it
+existed): an ``invocation_divider`` closes the window of a graph run it finds still open, see :mod:`primer.session.terminals`.
 
 It is a node-less ``done`` with ``payload.graph_end`` set (:func:`primer.session.terminals.is_graph_end`): ``stop_reason`` ``stop`` when the graph ended ``completed`` and ``error`` when it did not,
 so every reader of a failed turn (the relay, the turn status, the window scanner's copy rule for the claim adapter's release marker) reads a failed graph as it reads any failed turn. It carries
