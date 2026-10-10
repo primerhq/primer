@@ -13,6 +13,7 @@ while the opener is still the one restored; a Tab already handled by a nested di
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -127,12 +128,98 @@ function open(s, opts, deps) {
 """
 
 
+# ---- round 3 (board task 01a124ad): a fake page that knows ATTRIBUTES, the selector, visibility, radio groups, <body>, document-level listeners and several traps at once ----
+# The selector the hook hands to querySelectorAll is EVALUATED here (the clauses the hook uses: tag, [attr], [attr="v"], [attr^="v"] and :not([...]) of those), so a clause that forgets
+# tabindex="-1" or leaves out contenteditable fails a test, not a grep of the source. What the browser would TAB to is decided by nativeStop, independently of the selector.
+PRELUDE_DOM = r"""
+document.body = el('body');
+document.listeners = {};
+document.addEventListener = function (t, fn) { (document.listeners[t] = document.listeners[t] || []).push(fn); };
+document.removeEventListener = function (t, fn) { document.listeners[t] = (document.listeners[t] || []).filter(function (f) { return f !== fn; }); };
+document.contains = function (x) { return PAGE.indexOf(x) >= 0 || x.__node === true || (x.__ne === true && DOC.indexOf(x) >= 0); };      // scene3's elements are in the document while they are in DOC
+var getComputedStyle = function (e) { return { visibility: e.cssVisibility || 'visible' }; };
+
+function parseClause(c) {
+  var m = /^\s*([a-z]*)(.*)$/.exec(c), conds = [], r, re = /(:not\()?\[([a-z-]+)(\^?=)?(?:"([^"]*)")?\]\)?/g;
+  while ((r = re.exec(m[2]))) conds.push({ not: !!r[1], attr: r[2], op: r[3] || null, val: r[4] });
+  return { tag: m[1], conds: conds };
+}
+function matches(e, sel) {
+  return sel.split(',').some(function (c) {
+    var p = parseClause(c);
+    if (p.tag && e.tag !== p.tag) return false;
+    return p.conds.every(function (k) {
+      var has = k.attr in e.attrs, v = e.attrs[k.attr], ok = !has ? false : !k.op ? true : k.op === '=' ? String(v) === k.val : String(v).indexOf(k.val) === 0;
+      return k.not ? !ok : ok;
+    });
+  });
+}
+// what the browser tabs to, whatever the selector says
+function nativeStop(e) {
+  var a = e.attrs, t = e.tag;
+  if (!e.visible || e.cssVisibility === 'hidden' || 'disabled' in a) return false;
+  if ('tabindex' in a) return parseInt(a.tabindex, 10) >= 0;
+  if (t === 'input' && a.type === 'radio') {
+    var group = DOC.filter(function (x) { return x.tag === 'input' && x.attrs.type === 'radio' && x.attrs.name === a.name; });
+    var checked = group.filter(function (x) { return x.checked; })[0];
+    return checked ? e === checked : e === group[0];          // one stop per group: the checked one, else the first
+  }
+  if (t === 'a') return 'href' in a;
+  if (['button', 'input', 'select', 'textarea', 'summary', 'iframe'].indexOf(t) >= 0) return true;
+  if ((t === 'audio' || t === 'video') && 'controls' in a) return true;
+  return 'contenteditable' in a && a.contenteditable !== 'false';
+}
+function ne(name, spec, parent) {
+  var e = el(name, { parent: parent, visible: spec.visible });
+  e.__ne = true; e.tag = spec.tag || 'div'; e.attrs = spec.attrs || {}; e.checked = !!spec.checked; e.cssVisibility = spec.cssVisibility || null;
+  if (ne.modern !== false) e.checkVisibility = function () { return e.visible && e.cssVisibility !== 'hidden'; };
+  e.getAttribute = function (k) { return k in e.attrs ? e.attrs[k] : null; };
+  e.querySelectorAll = function (sel) { return DOC.filter(function (x) { return x !== e && e.contains(x) && matches(x, sel); }); };
+  return e;
+}
+// opener | dialog(specs...) | after, with PAGE decided by nativeStop. specs: [{ name, tag, attrs, checked, cssVisibility, visible }]
+function scene3(specs) {
+  DOC.length = 0; PAGE.length = 0;
+  var opener = ne('opener', { tag: 'button' }), after = ne('after', { tag: 'button' });
+  var dialog = ne('dialog', { attrs: { tabindex: '-1' } }); dialog.__node = true;
+  var s = { opener: opener, dialog: dialog, after: after };
+  DOC.push(opener, dialog);
+  specs.forEach(function (sp) { s[sp.name] = ne(sp.name, sp, dialog); DOC.push(s[sp.name]); });
+  DOC.push(after);
+  DOC.forEach(function (x) { if (nativeStop(x)) PAGE.push(x); });
+  document.activeElement = opener;
+  return s;
+}
+// the key goes to the focused element, bubbles through its ancestors and then the document; then the native default runs
+function nativeTab(shift) {
+  var cur = document.activeElement, i = PAGE.indexOf(cur), next;
+  if (cur === document.body) next = shift ? PAGE[PAGE.length - 1] : PAGE[0];
+  else if (i >= 0) next = PAGE[(i + (shift ? -1 : 1) + PAGE.length) % PAGE.length];
+  else {
+    var pos = DOC.indexOf(cur), order = shift ? DOC.slice(0, pos).reverse() : DOC.slice(pos + 1);
+    next = order.filter(function (x) { return PAGE.indexOf(x) >= 0; })[0] || PAGE[shift ? PAGE.length - 1 : 0];
+  }
+  next.focus();
+}
+function pressAt(shift) {
+  var ev = { type: 'keydown', key: 'Tab', shiftKey: !!shift, defaultPrevented: false, preventDefault: function () { this.defaultPrevented = true; } };
+  for (var n = document.activeElement; n; n = n.parent) (n.listeners.keydown || []).slice().forEach(function (fn) { fn(ev); });
+  (document.listeners.keydown || []).slice().forEach(function (fn) { fn(ev); });
+  if (!ev.defaultPrevented) nativeTab(shift);
+  return ev;
+}
+function settle() { PAGE.length = 0; DOC.forEach(function (x) { if (nativeStop(x)) PAGE.push(x); }); }       // after a test edits DOC by hand
+function inst() { return { refs: [], effects: [], i: 0, pending: [] }; }       // one hook instance per dialog: __h = inst() before its render / commit
+"""
+
+
 @pytest.fixture()
 def ctx():
     from py_mini_racer import MiniRacer
 
     c = MiniRacer()
     c.eval(PRELUDE)
+    c.eval(PRELUDE_DOM)
     c.eval(HOOK)
     yield c
     c.close()
@@ -404,3 +491,132 @@ def test_without_the_trap_a_native_tab_from_after_the_last_tab_stop_leaves_the_d
       return { fwd: fwd, back: back };
     })()""")
     assert out == {"fwd": "after", "back": "dialog"}
+
+
+# ---- round 3 (board task 01a124ad, measured in the review of #717): what the trap treats as a stop, and a focus that is on <body> ----
+
+
+def _tabs(ctx, specs: str, setup: str, *, modern: bool = True) -> dict:
+    """Build a dialog from ``specs`` (the fake page decides what the browser tabs to), open the trap, run ``setup`` (which may move focus) and press Tab and then Shift+Tab from where focus is."""
+    return json.loads(ctx.eval(f"""JSON.stringify((function () {{
+      unmount(); __h = inst();                                  // a helper call is a new dialog: the trap of the previous call is closed
+      ne.modern = {str(modern).lower()};
+      var s = scene3({specs}), ref = {{ current: s.dialog }};
+      render(ref, true, null, []); commit();
+      {setup}
+      var at = document.activeElement.name;
+      var fwd = pressAt(false), toFwd = document.activeElement.name;
+      {setup}
+      var back = pressAt(true), toBack = document.activeElement.name;
+      return {{ at: at, fwd: fwd.defaultPrevented, toFwd: toFwd, back: back.defaultPrevented, toBack: toBack }};
+    }})())"""))
+
+
+def test_tab_with_focus_on_the_body_goes_into_the_dialog(ctx) -> None:
+    """T1, a live leak: the trap listened on the dialog node, and a key whose target is ``<body>`` never reaches it. A focused button that is disabled (a busy submit) or removed hands focus to ``<body>``; the next
+    Tab then went to the first control of the page behind the scrim. The same for a focus that sits on the page behind the scrim."""
+    for behind in ("document.activeElement = document.body;", "s.opener.focus();"):
+        out = _tabs(ctx, "[{name:'first',tag:'button'},{name:'last',tag:'button'}]", behind)
+        assert out["fwd"] is True and out["toFwd"] == "first", (behind, out)
+        assert out["back"] is True and out["toBack"] == "last", (behind, out)
+
+
+def test_without_the_trap_a_tab_from_the_body_goes_to_the_page_behind(ctx) -> None:
+    """The control for the test above: with the trap closed the same Tab reaches the opener, so the fake page models the leak."""
+    out = json.loads(ctx.eval("""JSON.stringify((function () {
+      var s = scene3([{name:'first',tag:'button'},{name:'last',tag:'button'}]), ref = { current: s.dialog };
+      render(ref, false, null, []); commit();
+      document.activeElement = document.body;
+      var ev = pressAt(false);
+      return { prevented: ev.defaultPrevented, now: document.activeElement.name };
+    })())"""))
+    assert out == {"prevented": False, "now": "opener"}
+
+
+def test_with_two_dialogs_open_a_tab_from_the_body_goes_into_the_top_one_and_when_it_closes_into_the_one_below(ctx) -> None:
+    out = json.loads(ctx.eval("""JSON.stringify((function () {
+      DOC.length = 0;
+      var opener = ne('opener', { tag: 'button' });
+      var A = ne('A', { attrs: { tabindex: '-1' } }); A.__node = true; var a1 = ne('a1', { tag: 'button' }, A), a2 = ne('a2', { tag: 'button' }, A);
+      var B = ne('B', { attrs: { tabindex: '-1' } }); B.__node = true; var b1 = ne('b1', { tag: 'button' }, B), b2 = ne('b2', { tag: 'button' }, B);
+      DOC.push(opener, A, a1, a2, B, b1, b2); settle(); document.activeElement = opener;
+      var hA = inst(), hB = inst(), refA = { current: A }, refB = { current: B };
+      __h = hA; render(refA, true, null, []); commit();
+      __h = hB; render(refB, true, null, []); commit();                       // B opens after A: it is on top
+      document.activeElement = document.body; pressAt(false); var top = document.activeElement.name;
+      b2.focus(); pressAt(false); var wrapped = document.activeElement.name;   // a Tab inside the top dialog is its own, and only its
+      __h = hB; render(refB, false, null, []); commit();                       // B closes
+      document.activeElement = document.body; pressAt(false); var below = document.activeElement.name;
+      return { top: top, wrapped: wrapped, below: below };
+    })())"""))
+    assert out == {"top": "b1", "wrapped": "b1", "below": "a1"}, out
+
+
+@pytest.mark.parametrize("modern", [True, False], ids=["checkVisibility", "offsetParent-and-computed-style"])
+def test_a_visibility_hidden_control_is_not_a_tab_stop(ctx, modern: bool) -> None:
+    """T2: ``visibility:hidden`` leaves ``offsetParent`` set, so such a control at an end became ``last`` and a Tab from the real last stop left the dialog."""
+    end = _tabs(ctx, "[{name:'first',tag:'button'},{name:'last',tag:'button'},{name:'ghost',tag:'button',cssVisibility:'hidden'}]", "s.last.focus();", modern=modern)
+    assert end["fwd"] is True and end["toFwd"] == "first", end
+    start = _tabs(ctx, "[{name:'ghost',tag:'button',cssVisibility:'hidden'},{name:'first',tag:'button'},{name:'last',tag:'button'}]", "s.first.focus();", modern=modern)
+    assert start["back"] is True and start["toBack"] == "last", start
+
+
+@pytest.mark.parametrize("tag", ["button", "input", "select", "textarea", "a"])
+def test_a_control_with_tabindex_minus_one_is_not_a_tab_stop(ctx, tag: str) -> None:
+    """T3: only the bare ``[tabindex]`` clause excluded -1; a ``button``, ``input``, ``select``, ``textarea`` or ``a[href]`` with ``tabindex="-1"`` was a stop, and at an end it became ``last``/``first``."""
+    attrs = "{tabindex:'-1', href:'#'}" if tag == "a" else "{tabindex:'-1'}"
+    end = _tabs(ctx, f"[{{name:'first',tag:'button'}},{{name:'last',tag:'button'}},{{name:'skipped',tag:'{tag}',attrs:{attrs}}}]", "s.last.focus();")
+    assert end["fwd"] is True and end["toFwd"] == "first", end
+    start = _tabs(ctx, f"[{{name:'skipped',tag:'{tag}',attrs:{attrs}}},{{name:'first',tag:'button'}},{{name:'last',tag:'button'}}]", "s.first.focus();")
+    assert start["back"] is True and start["toBack"] == "last", start
+
+
+def test_a_radio_group_is_one_tab_stop_the_checked_one(ctx) -> None:
+    """T4: every radio counted as a stop, so a group at an end with another radio checked let Tab (or Shift+Tab) out: the browser stops once in a group, on the checked radio."""
+    radios = "{name:'r1',tag:'input',attrs:{type:'radio',name:'g'}},{name:'r2',tag:'input',attrs:{type:'radio',name:'g'},checked:true},{name:'r3',tag:'input',attrs:{type:'radio',name:'g'}}"
+    end = _tabs(ctx, f"[{{name:'first',tag:'button'}},{radios}]", "s.r2.focus();")
+    assert end["fwd"] is True and end["toFwd"] == "first", end
+    start = _tabs(ctx, f"[{radios},{{name:'last',tag:'button'}}]", "s.r2.focus();")
+    assert start["back"] is True and start["toBack"] == "last", start
+
+
+def test_a_radio_group_with_none_checked_is_one_tab_stop_its_first(ctx) -> None:
+    end = _tabs(ctx, "[{name:'first',tag:'button'},{name:'r1',tag:'input',attrs:{type:'radio',name:'g'}},{name:'r2',tag:'input',attrs:{type:'radio',name:'g'}}]", "s.r1.focus();")
+    assert end["fwd"] is True and end["toFwd"] == "first", end
+
+
+def test_two_radio_groups_are_two_tab_stops(ctx) -> None:
+    out = _tabs(
+        ctx,
+        "[{name:'a1',tag:'input',attrs:{type:'radio',name:'ga'}},{name:'a2',tag:'input',attrs:{type:'radio',name:'ga'},checked:true},"
+        "{name:'b1',tag:'input',attrs:{type:'radio',name:'gb'}},{name:'b2',tag:'input',attrs:{type:'radio',name:'gb'},checked:true}]",
+        "s.a2.focus();",
+    )
+    assert out["fwd"] is False and out["toFwd"] == "b2", "between the two groups the browser's own Tab stays inside"
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        "{name:'ed',tag:'div',attrs:{contenteditable:'true'}}",
+        "{name:'ed',tag:'div',attrs:{contenteditable:''}}",
+        "{name:'ed',tag:'summary'}",
+        "{name:'ed',tag:'iframe'}",
+        "{name:'ed',tag:'audio',attrs:{controls:''}}",
+        "{name:'ed',tag:'video',attrs:{controls:''}}",
+    ],
+    ids=["contenteditable", "contenteditable-empty", "summary", "iframe", "audio-controls", "video-controls"],
+)
+def test_controls_the_browser_tabs_to_but_the_selector_omitted_are_tab_stops(ctx, spec: str) -> None:
+    """T5: ``[contenteditable]``, ``summary``, ``iframe`` and ``audio/video[controls]`` were not in the selector. In the toolsets overlay the Python editor (a contenteditable) comes after the last listed control, so a
+    Tab from that control wrapped past it and the editor could not be reached with the keyboard."""
+    before = _tabs(ctx, f"[{{name:'first',tag:'button'}},{spec}]", "s.first.focus();")
+    assert before["fwd"] is False and before["toFwd"] == "ed", f"the Tab skipped the control: {before}"
+    at = _tabs(ctx, f"[{{name:'first',tag:'button'}},{spec}]", "s.ed.focus();")
+    assert at["fwd"] is True and at["toFwd"] == "first", f"and the Tab from it wraps: {at}"
+
+
+@pytest.mark.parametrize("spec", ["{name:'x',tag:'div',attrs:{contenteditable:'false'}}", "{name:'x',tag:'audio'}", "{name:'x',tag:'video'}", "{name:'x',tag:'div'}"], ids=["contenteditable-false", "audio", "video", "div"])
+def test_things_the_browser_does_not_tab_to_are_not_stops(ctx, spec: str) -> None:
+    end = _tabs(ctx, f"[{{name:'first',tag:'button'}},{{name:'last',tag:'button'}},{spec}]", "s.last.focus();")
+    assert end["fwd"] is True and end["toFwd"] == "first", end
