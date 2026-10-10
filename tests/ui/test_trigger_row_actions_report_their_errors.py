@@ -9,6 +9,9 @@ Round 2 (lead's review of #695): a Fire now that was SKIPPED (a disabled trigger
 plain success; a trigger that is already gone (``trigger_not_found``) refreshes the list and is worded for the row; the buttons are off while a request is pending; a throwing ``onChanged`` is
 never reported as a refused write. The bodies of the fires are the REAL route's (``real_fire_bodies``).
 
+Follow-up (lead's review of items c/d/e): a write that refetches the row away (a confirmed delete, an Already-deleted delete, a fire_now the server answers trigger_not_found) moves focus off
+the row before the refetch: to the adjacent row's Delete (next, or previous when it is the last row) or, with no row left, to the overlay's h1 (ticket 01a12144).
+
 The REAL row runs in V8 on the mini React (``tests/ui/_mini_react.py``) with the real ``ui/foundation/api.js`` ``ApiError`` and the REAL problem envelopes of the auth gate and the trigger
 router (``tests/_support/trigger_envelopes.py``): a swallowed ``catch`` cannot be pinned by reading the source.
 """
@@ -38,6 +41,36 @@ function Modal(p) { return React.createElement("div", null, p.children); }
 
 _DRIVER = """
 var __toasts = []; var __calls = []; var __changed = 0; var __confirm = true; var __outcome = null; var __response = {}; var __pending = false; var __throwOnChanged = false;
+var __focused = [];
+var __rowA = {
+  getAttribute: function () { return "trigger-row-tr-0"; },
+  querySelector: function (sel) { return sel.indexOf("trigger-row-delete") >= 0 ? { focus: function () { __focused.push("prev-row-delete"); } } : null; },
+  nextElementSibling: null,
+  previousElementSibling: null,
+};
+var __rowC = {
+  getAttribute: function () { return "trigger-row-tr-2"; },
+  querySelector: function (sel) { return sel.indexOf("trigger-row-delete") >= 0 ? { focus: function () { __focused.push("next-row-delete"); } } : null; },
+  nextElementSibling: null,
+  previousElementSibling: null,
+};
+var __selfRow = {
+  getAttribute: function () { return "trigger-row-tr-1"; },
+  nextElementSibling: __rowC,
+  previousElementSibling: __rowA,
+};
+__rowA.nextElementSibling = __selfRow;
+__rowC.previousElementSibling = __selfRow;
+var __fakeH1 = { focus: function () { __focused.push("nv-overlay-title"); } };
+document = {
+  querySelectorAll: function (sel) { return sel.indexOf("trigger-row") >= 0 ? [__rowA, __selfRow, __rowC] : []; },
+  querySelector: function (sel) {
+    if (sel.indexOf("trigger-row-tr-1") >= 0) return __selfRow;
+    if (sel.indexOf("nv-overlay-title") >= 0) return __fakeH1;
+    return null;
+  },
+  contains: function () { return false; },
+};
 window.primerApi.toastPush = function (t) { __toasts.push(t); };
 window.primerApi.apiFetch = function (method, path) {
   __calls.push(method + " " + path);
@@ -159,6 +192,30 @@ def test_a_delete_that_works_refreshes_the_list_and_stays_quiet(row) -> None:
     assert _toasts(row) == [] and row.eval("__changed") == 1
 
 
+def test_a_confirmed_delete_lands_focus_on_the_next_row_delete(row) -> None:
+    """The confirm Modal restores focus to this row's Delete button, which the refetch unmounts (focus would
+    end on <body>); the row moves it to the NEXT row's Delete first, not the first other row (board 01a12144)."""
+    _press(row, "delete")
+    assert json.loads(row.eval("JSON.stringify(__focused)")) == ["next-row-delete"]
+    assert row.eval("__changed") == 1
+
+
+def test_a_confirmed_delete_of_the_last_row_lands_focus_on_the_previous_row_delete(row) -> None:
+    """No next row: focus the PREVIOUS row's Delete, never <body>."""
+    row.eval("__selfRow.nextElementSibling = null;")
+    _press(row, "delete")
+    assert json.loads(row.eval("JSON.stringify(__focused)")) == ["prev-row-delete"]
+    assert row.eval("__changed") == 1
+
+
+def test_a_confirmed_delete_of_the_only_row_lands_focus_on_the_overlay_h1(row) -> None:
+    """No adjacent row: focus the overlay's h1 (the surface's one heading, tabIndex -1), never <body>."""
+    row.eval("__selfRow.nextElementSibling = null; __selfRow.previousElementSibling = null;")
+    _press(row, "delete")
+    assert json.loads(row.eval("JSON.stringify(__focused)")) == ["nv-overlay-title"]
+    assert row.eval("__changed") == 1
+
+
 def test_a_delete_that_is_not_confirmed_sends_nothing_and_says_nothing(row, envelopes) -> None:
     row.eval("__confirm = false;")
     _outcome(row, envelopes["not_found"])
@@ -256,3 +313,24 @@ def test_a_refetch_that_throws_is_never_reported_as_a_refused_write(row, what: s
     toasts = _toasts(row)
     assert all(t["kind"] != "error" for t in toasts), toasts
     assert row.eval("__changed") == 1
+
+
+# ---- the other paths that refetch the row away drop focus too -------------------------------------------------------
+
+
+def test_a_fire_now_on_a_trigger_that_is_gone_lands_focus_on_the_next_row_delete(row, envelopes) -> None:
+    """The trigger_not_found refetch unmounts the row the Fire now button keeps focus on; focus must not end on
+    <body>."""
+    _outcome(row, envelopes["not_found"])
+    _press(row, "fire")
+    assert row.eval("__changed") == 1
+    assert json.loads(row.eval("JSON.stringify(__focused)")) == ["next-row-delete"]
+
+
+def test_a_delete_that_is_already_gone_lands_focus_on_the_next_row_delete(row, envelopes) -> None:
+    """The Already-deleted refetch unmounts the row the confirm Modal restored focus to; focus must not end on
+    <body>."""
+    _outcome(row, envelopes["not_found"])
+    _press(row, "delete")
+    assert row.eval("__changed") == 1
+    assert json.loads(row.eval("JSON.stringify(__focused)")) == ["next-row-delete"]

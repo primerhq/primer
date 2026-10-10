@@ -17,11 +17,19 @@ the server already deleted (trigger_not_found) it says the desktop list row's wo
 the sheet and refetches the phone list. Those pins are behavioural: the real fireNow() from
 nv-mobile-shell.jsx runs in MiniRacer on a rejected real ApiError built from a real envelope with
 the production request-id middleware (the reviewer's probe /var/tmp/review714/probe_phone_rid.py).
+
+Follow-up (the lead's review of items c/d/e): a write that refetches its own row away (a confirmed
+delete, an Already-deleted delete, a fire the server answers trigger_not_found) lands focus on the
+adjacent row's Delete (next, or previous when it is the last row) or, with no row left, the
+overlay's h1 - not the list's action-bar span; the toast's request-id copy is a <button> named
+'Copy request id'; and the TR_fireOutcome rule that a delivery skipped on purpose is not a failure
+is pinned with the real bodies, including the mutant the #695 review left uncaught.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -29,6 +37,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 SRC = (ROOT / "ui" / "components" / "triggers.jsx").read_text(encoding="utf-8")
 MOB = (ROOT / "ui" / "components" / "console" / "nv-mobile-shell.jsx").read_text(encoding="utf-8")
+SHELL = (ROOT / "ui" / "components" / "console" / "nv-shell.jsx").read_text(encoding="utf-8")
+CSS = (ROOT / "ui" / "styles.css").read_text(encoding="utf-8")
 
 _OPEN_CONTEXTS: list = []
 
@@ -171,6 +181,36 @@ def test_a_fired_trigger_says_fired(bodies) -> None:
     }
 
 
+def test_a_fire_without_subscriptions_still_fired(bodies) -> None:
+    assert _outcome(bodies["no_subscriptions"], "nightly")["title"] == "Trigger fired"
+
+
+def test_partial_and_total_failures_are_failures_not_skips(bodies) -> None:
+    partial = _outcome(bodies["partial"], "nightly")
+    assert partial["title"] == "Fired, with failures"
+    assert "1 of 2" in partial["detail"]
+    assert _outcome(bodies["all_failed"], "nightly")["title"] == "Fired, with failures"
+
+
+def test_the_real_delivery_skipped_on_purpose_is_not_a_failure(bodies) -> None:
+    """The real event_matcher skip row (ok: true, skipped: true) is a delivery that was skipped on purpose."""
+    assert _outcome(bodies["delivery_skipped"], "nightly")["title"] == "Trigger fired"
+
+
+def test_a_skipped_delivery_with_ok_false_is_not_a_failure() -> None:
+    """The mutant the #695 review left uncaught: without the !r.skipped filter this body reports a failure.
+
+    results = [{ok: true}, {skipped: true, ok: false}] is 'Trigger fired', not 'Fired, with failures' -
+    a skipped delivery is not a failed one.
+    """
+    res = {
+        "skipped": False,
+        "fire_id": "fire-9",
+        "results": [{"ok": True}, {"skipped": True, "ok": False}],
+    }
+    assert _outcome(res, "nightly") == {"kind": "success", "title": "Trigger fired", "detail": "nightly"}
+
+
 # ---- the detail page reuses the outcome for a skipped fire -------------------------------------------------------
 
 
@@ -251,3 +291,42 @@ def test_the_mobile_shell_can_reach_the_trigger_helpers() -> None:
     """TR_fireOutcome / TR_refusalText are module-local to triggers.jsx; the console page needs the window exports."""
     assert "window.TR_fireOutcome = TR_fireOutcome" in SRC
     assert "window.TR_refusalText = TR_refusalText" in SRC
+
+
+# ---- focus after a confirmed delete --------------------------------------------------------------------------------
+
+
+def test_a_write_that_refetches_the_row_away_moves_focus_to_the_adjacent_row_or_the_h1() -> None:
+    """The confirm Modal restores focus to the row's Delete button, and a gone trigger's Fire now keeps focus on
+    its button; each of the three refetches that drops the row (a confirmed delete, an Already-deleted delete, a
+    trigger_not_found fire) would then leave focus on <body>. All three move it through the one helper: the
+    adjacent row's Delete (next, or previous when it is the last row) or, with no row left, the overlay's h1
+    (the surface's one heading, tabIndex -1: the re-hosted pages render action bars, never headings, so the
+    list's own filter-bar span is not the fallback) (ticket 01a12144)."""
+    assert SRC.count("TR_focusAfterRowGone(") == 4
+    start = SRC.index("function TR_focusAfterRowGone(")
+    helper = SRC[start:SRC.index("\n}\n", start)]
+    assert "nextElementSibling" in helper
+    assert "previousElementSibling" in helper
+    assert "nv-overlay-title" in helper
+    assert ".focus()" in helper
+    assert "triggers-list-heading" not in SRC
+    list_start = SRC.index("function TR_TriggerList")
+    bar = SRC[SRC.index("filter-bar", list_start):SRC.index("filter-bar", list_start) + 400]
+    assert "tabIndex={-1}" not in bar
+    overlay = (ROOT / "ui" / "components" / "console" / "nv-overlays.jsx").read_text(encoding="utf-8")
+    h1 = overlay[overlay.index('<h1 className="nv-overlay-title'):overlay.index('<h1 className="nv-overlay-title') + 220]
+    assert "tabIndex={-1}" in h1
+
+
+# ---- the toast request-id copy is keyboard-usable -----------------------------------------------------------------
+
+
+def test_the_toast_request_id_copy_is_a_named_button() -> None:
+    """An <a> with no href, role or key handler cannot be used from the keyboard; it is a button, and its name
+    is 'Copy request id', not the bare 'copy' an operator would have to guess at."""
+    m = re.search(r"<button\b[^>]{0,200}?data-testid=\"toast-copy-request-id\"", SHELL, re.S)
+    assert m, "the copy control must be a <button>, not an <a> with only an onClick"
+    assert 'type="button"' in m.group(0)
+    assert 'aria-label="Copy request id"' in m.group(0)
+    assert ".toast .req-id button" in CSS
