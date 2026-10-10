@@ -43,8 +43,14 @@ def _template(url: str = URL, row_id: str = "tpl-a", description: str = "d") -> 
     return {"id": row_id, "provider_id": "p-1", "description": description, "files": [{"path": "seed.txt", "source": {"kind": "url", "url": url}}]}
 
 
-async def _call(toolset, name: str, **args):
-    result = await toolset.call(tool_name=name, arguments=args, ctx=CTX)
+USER = ToolContext(
+    tool_call_id="call-2", session_id="sess-2", workspace_id=None,
+    initiated_by=PrincipalRef(type="user", id="user-2", display="user", role="user", source="local"),
+)
+
+
+async def _call(toolset, name: str, *, ctx=CTX, **args):
+    result = await toolset.call(tool_name=name, arguments=args, ctx=ctx)
     try:
         body = json.loads(result.output)
     except ValueError:
@@ -125,3 +131,100 @@ async def test_an_update_with_a_new_password_stores_it(world) -> None:
     assert await _stored_url(sp) == "https://reader:newpass@files.example.com/seed.txt"
 
 
+# ---- round 2 of #721: who may get the password back, how the files are matched, env ------------------------------------------------------------------------------------------
+
+
+def _files(*files: tuple[str, str]) -> dict:
+    return {"id": "tpl-a", "provider_id": "p-1", "description": "d", "files": [{"path": path, "source": {"kind": "url", "url": url}} for path, url in files]}
+
+
+@pytest.mark.asyncio
+async def test_a_user_run_that_sends_the_served_body_back_unchanged_keeps_the_password(world) -> None:
+    sp, toolset = world
+    await _call(toolset, "create_workspace_template", entity=_template())
+    _, served, _ = await _call(toolset, "get_workspace_template", id="tpl-a", ctx=USER)
+    served["description"] = "edited by a user run"
+
+    failed, body, raw = await _call(toolset, "update_workspace_template", id="tpl-a", entity=served, ctx=USER)
+
+    assert not failed, body
+    assert await _stored_url(sp) == URL and "s3cr3t" not in raw
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed", [f"https://reader:{MASK}@files.example.com/other-path.txt", f"https://reader:{MASK}@files.example.com/seed.txt?x=1"], ids=["another path", "a query"])
+async def test_a_user_run_that_changes_anything_but_the_password_gets_a_validation_error_and_the_row_is_untouched(world, changed: str) -> None:
+    """The lead's ruling: a non-admin caller gets a served mask restored only when the WHOLE URL is unchanged; an admin keeps the origin rule."""
+    sp, toolset = world
+    await _call(toolset, "create_workspace_template", entity=_template())
+    _, served, _ = await _call(toolset, "get_workspace_template", id="tpl-a", ctx=USER)
+    served["files"][0]["source"]["url"] = changed
+
+    failed, body, raw = await _call(toolset, "update_workspace_template", id="tpl-a", entity=served, ctx=USER)
+
+    assert failed and body["type"] == "validation-error", body
+    assert "re-enter the password" in raw and "s3cr3t" not in raw
+    assert await _stored_url(sp) == URL
+
+
+@pytest.mark.asyncio
+async def test_an_admin_run_may_change_the_path_on_the_same_origin(world) -> None:
+    sp, toolset = world
+    await _call(toolset, "create_workspace_template", entity=_template())
+    _, served, _ = await _call(toolset, "get_workspace_template", id="tpl-a")
+    served["files"][0]["source"]["url"] = f"https://reader:{MASK}@files.example.com/other-path.txt"
+
+    failed, body, _ = await _call(toolset, "update_workspace_template", id="tpl-a", entity=served)
+
+    assert not failed, body
+    assert await _stored_url(sp) == "https://reader:s3cr3t@files.example.com/other-path.txt"
+
+
+@pytest.mark.asyncio
+async def test_a_user_run_that_moves_a_mask_on_a_template_that_holds_an_admin_only_setting_is_forbidden_not_refused_for_the_mask(world) -> None:
+    """The template holds a ``kind=secret`` file source (admin-only): not user-editable at all. The answer is ``forbidden``, before any restore."""
+    sp, toolset = world
+    body = _files(("seed.txt", URL))
+    body["files"].append({"path": "creds", "source": {"kind": "secret", "name": "OPENAI_API_KEY"}})
+    failed, created, _ = await _call(toolset, "create_workspace_template", entity=body)
+    assert not failed, created
+    _, served, _ = await _call(toolset, "get_workspace_template", id="tpl-a", ctx=USER)
+    served["files"][0]["source"]["url"] = f"https://reader:{MASK}@attacker.example/seed.txt"
+
+    failed, answer, raw = await _call(toolset, "update_workspace_template", id="tpl-a", entity=served, ctx=USER)
+
+    assert failed and answer["type"] == "forbidden", answer
+    assert "re-enter" not in raw and "s3cr3t" not in raw
+    assert await _stored_url(sp) == URL
+
+
+@pytest.mark.asyncio
+async def test_the_files_are_matched_by_path_so_a_reorder_keeps_each_password_and_a_new_path_with_a_mask_is_refused(world) -> None:
+    sp, toolset = world
+    other = "https://second:hunter2@mirror.example.org/b.txt"
+    await _call(toolset, "create_workspace_template", entity=_files(("a.txt", URL), ("b.txt", other)))
+    _, served, _ = await _call(toolset, "get_workspace_template", id="tpl-a")
+    served["files"].reverse()
+    failed, body, _ = await _call(toolset, "update_workspace_template", id="tpl-a", entity=served)
+    assert not failed, body
+    row = await sp.get_storage(WorkspaceTemplate).get("tpl-a")
+    assert {fm.path: str(fm.source.url) for fm in row.files} == {"a.txt": URL, "b.txt": other}
+
+    served["files"].append({"path": "new.txt", "source": {"kind": "url", "url": f"https://reader:{MASK}@files.example.com/new.txt"}})
+    failed, body, raw = await _call(toolset, "update_workspace_template", id="tpl-a", entity=served)
+    assert failed and body["type"] == "validation-error" and "re-enter the password" in raw
+
+
+@pytest.mark.asyncio
+async def test_the_env_values_of_a_served_body_are_restored_by_the_tool_too(world) -> None:
+    sp, toolset = world
+    body = _template()
+    body["env"] = {"API_TOKEN": "tok-0123456789"}
+    await _call(toolset, "create_workspace_template", entity=body)
+    _, served, _ = await _call(toolset, "get_workspace_template", id="tpl-a")
+    assert served["env"]["API_TOKEN"].startswith(MASK)
+
+    failed, answer, _ = await _call(toolset, "update_workspace_template", id="tpl-a", entity=served)
+
+    assert not failed, answer
+    assert (await sp.get_storage(WorkspaceTemplate).get("tpl-a")).env["API_TOKEN"].get_secret_value() == "tok-0123456789"

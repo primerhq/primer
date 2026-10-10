@@ -120,6 +120,18 @@ async def test_too_many_redirects_does_not_name_the_password(monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
+async def test_a_redirect_loop_through_a_relative_location_keeps_the_password_on_every_hop_and_names_it_nowhere(monkeypatch) -> None:
+    """A relative ``Location`` is joined onto the current URL, which keeps its userinfo: the password survives EVERY hop, so the "more than N redirects" text names a URL that still holds it."""
+    session = _patch(monkeypatch, _Session([_Resp(302, {"Location": "/next"}) for _ in range(10)]))
+
+    with pytest.raises(RuntimeError) as caught:
+        await resolve_file_sources([_mount()])
+
+    assert len(session.fetched) == 6 and all("reader:s3cr3t@files.example.com" in u for u in session.fetched), session.fetched
+    assert "s3cr3t" not in str(caught.value) and "redirects" in str(caught.value) and "reader:**********@files.example.com" in str(caught.value)
+
+
+@pytest.mark.asyncio
 async def test_a_timeout_does_not_name_the_password(monkeypatch) -> None:
     _patch(monkeypatch, _Session(hang=True))
     monkeypatch.setattr("primer.workspace.files._FETCH_TIMEOUT_S", 0.05)
