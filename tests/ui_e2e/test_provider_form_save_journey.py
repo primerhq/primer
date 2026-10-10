@@ -1,9 +1,14 @@
-"""Journey: the provider form never offers Save before the kind's fields have loaded, and a Save the server refuses is said in the form (board task 01a12350-792d).
+"""Journeys: the provider form never offers Save before the kind's fields have loaded, a Save the server refuses is said in the form, and the focus stays in the dialog throughout (board task 01a12350-792d).
 
 Found on main by the lead: ``test_u0047_provider_list_reflects_new_row_after_modal_create`` failed on main 919f3f28 and on #700 and passed on neighbouring commits. The form fetched ``GET /<plural>/_types`` a
 second time (under another cache key than the Register menu), and until that answer arrived it offered an enabled Save with no Limits and no API key box; the POST had no ``limits`` and answered 422, which the
-catalog's ``save()`` let go as an unhandled rejection: the modal stayed open and said nothing. These cases hold the answer to the form back (the request is delayed, so the race is not left to the timing of a CI
-runner) and make the server refuse the Save with the 422 it really answered.
+catalog's ``save()`` let go as an unhandled rejection: the modal stayed open and said nothing.
+
+Two ways in, because they fetch differently. Opened from a class's Register menu the form finds the answer the menu already fetched: ONE ``_types`` request (what the first fix changed, and the only thing that
+makes the race go away there; a held request never fires on that path). Opened from Platform > Providers (the "all" view, whose Register menu fetches nothing) the form fetches the answer itself, so that path
+is where the held request is: Save must not be offered, and a loading line must be shown, until it arrives. A refused Save is said in the form, Save keeps the focus while the request is out and after the
+refusal (a button that turns disabled while it has the focus drops it to ``<body>`` outside the dialog, and Tab then walks the page behind the scrim), and a Try again that works moves the focus into the
+form, because the button it was on is gone.
 """
 
 from __future__ import annotations
@@ -25,9 +30,15 @@ LIMITS_422 = {
     "detail": "One or more request parameters or body fields failed validation.", "instance": "/v1/llm_providers",
     "extensions": {"errors": [{"type": "missing", "loc": ["body", "limits"], "msg": "Field required"}], "request_id": "req-0aea9d32c0e9"},
 }
+TYPES_500 = {"type": "/errors/internal", "title": "Internal Server Error", "status": 500, "detail": "types unavailable", "instance": "/v1/llm_providers/_types"}
+
+# where the focus is: the data-testid of the focused element, whether it is inside the dialog, whether the page body has it
+_FOCUS = """() => { const a = document.activeElement, d = document.querySelector('[role=dialog]');
+  return { testid: a && a.getAttribute('data-testid'), inDialog: !!(d && a && d.contains(a)), isBody: a === document.body, inName: !!(a && a.closest('[data-field="id"]')) }; }"""
 
 
 def _open_the_anthropic_form(page: Page, console_url: str):
+    """From the class's own Register menu (its menu fetches ``_types`` and the form finds the answer)."""
     open_legacy_route(page, console_url, "providers/llm")
     page.get_by_test_id("provider-register-toggle").click()
     page.get_by_test_id("provider-register-kind-anthropic").click()
@@ -36,62 +47,147 @@ def _open_the_anthropic_form(page: Page, console_url: str):
     return form
 
 
+def _open_the_llm_form_from_the_all_view(page: Page):
+    """From Platform > Providers (the 'all' view): its Register menu fetches nothing, so the form fetches ``_types`` itself."""
+    expect(page.get_by_test_id("nv-root")).to_be_visible(timeout=20_000)
+    page.get_by_test_id("nv-go-platform").click()
+    page.get_by_test_id("nv-plat-row:providers").click()
+    expect(page.get_by_test_id("nv-plat-page:providers")).to_be_visible(timeout=15_000)
+    page.get_by_test_id("provider-register-all-toggle").click()
+    page.get_by_test_id("provider-register-type-llm").click()
+    form = page.get_by_test_id("provider-form-llm_providers")
+    form.wait_for(state="visible", timeout=15_000)
+    return form
+
+
 @pytest.mark.ui_e2e
-def test_save_is_never_offered_while_the_kinds_fields_are_still_loading(page: Page, console_url: str) -> None:
-    """Every ``_types`` request after the first (the Register menu's, made when the page opens) is held for 2.5 s, so a form that asks for its own copy has nothing for that long. At no moment may Save be
-    enabled while the kind's own fields (the Limits box every class has) are not on screen."""
+def test_a_form_opened_from_the_register_menu_asks_for_the_types_once(page: Page, console_url: str) -> None:
+    """The menu fetched ``_types`` under one cache key and the form under another, so the form asked again and had nothing until the second answer. Counted in the browser, once the Limits are drawn and a
+    moment has passed: exactly one request."""
+    seen: list[str] = []
+    page.on("request", lambda request: seen.append(request.url) if request.url.endswith("/v1/llm_providers/_types") else None)
+    form = _open_the_anthropic_form(page, console_url)
+    expect(form.get_by_test_id("provider-form-limits")).to_be_visible(timeout=15_000)
+    page.wait_for_timeout(1_500)
+    assert len(seen) == 1, f"the menu and the form asked for the kind's fields {len(seen)} times: {seen}"
+
+
+@pytest.mark.ui_e2e
+def test_save_is_never_offered_while_the_kinds_fields_are_still_loading(page: Page) -> None:
+    """The form opened from Platform > Providers asks for ``_types`` itself; the request is held for 2.5 s. At no moment may Save be enabled while the kind's own fields (the Limits box the LLM class
+    requires) are not on screen, and the form says it is loading while it waits."""
     asked = {"n": 0}
 
     def types(route) -> None:
         asked["n"] += 1
-        if asked["n"] > 1:
-            page.wait_for_timeout(2_500)
+        page.wait_for_timeout(2_500)
         route.continue_()
 
     page.route("**/v1/llm_providers/_types", types)
     try:
-        form = _open_the_anthropic_form(page, console_url)
+        form = _open_the_llm_form_from_the_all_view(page)
         # the Name is the one required field that does not depend on the kind, so an operator (or a test) that types it at once has made Save look ready while the rest is still on its way
         form.locator('[data-field="id"] input').fill("journey-save-gate")
-        save, limits = form.get_by_test_id("provider-form-save"), form.get_by_test_id("provider-form-limits")
-        deadline = time.monotonic() + 5
+        save, limits, loading = form.get_by_test_id("provider-form-save"), form.get_by_test_id("provider-form-limits"), form.get_by_test_id("provider-form-loading")
+        said_loading = False
+        deadline = time.monotonic() + 8
         while time.monotonic() < deadline:
             offered = save.is_enabled()
             drawn = limits.count() > 0
+            said_loading = said_loading or loading.count() > 0
             assert not (offered and not drawn), "Save was offered before the kind's fields had loaded"
             if drawn:
                 break
             page.wait_for_timeout(40)
         expect(limits).to_be_visible(timeout=15_000)
-        expect(save).to_be_enabled()
+        assert asked["n"] == 1, "the form's own request was not the one held, so this case did not hold anything"
+        assert said_loading, "the form did not say that its fields were loading"
+        expect(loading).to_have_count(0)
     finally:
         page.unroute_all(behavior="ignoreErrors")     # a request still held when the test ends is not a second failure
 
 
 @pytest.mark.ui_e2e
-def test_a_save_the_server_refuses_is_said_in_the_form_and_raises_nothing(page: Page, console_url: str) -> None:
-    """The POST answers the 422 the server answered for a missing ``limits``. The modal stays open, says what was refused in a ``role="alert"`` line, Save works again, and the page raised no error."""
+def test_a_save_the_server_refuses_is_said_in_the_form_and_the_focus_never_leaves_the_dialog(page: Page, console_url: str) -> None:
+    """The POST answers, after a pause, the 422 the server answered for a missing ``limits``. While it is out Save is ``aria-busy`` and ``aria-disabled`` but not ``disabled`` and keeps the focus; a second
+    Enter sends nothing; when the refusal lands the modal stays open, says what was refused in a ``role="alert"`` line, Save still has the focus, Tab stays in the dialog, and the page raised no error."""
     errors: list[str] = []
     page.on("pageerror", lambda exc: errors.append(str(exc)))
+    posts = {"n": 0}
 
     def refuse(route) -> None:
         if route.request.method == "POST":
+            posts["n"] += 1
+            page.wait_for_timeout(1_200)
             route.fulfill(status=422, content_type="application/problem+json", body=json.dumps(LIMITS_422))
         else:
             route.continue_()
 
     page.route("**/v1/llm_providers", refuse)
-    form = _open_the_anthropic_form(page, console_url)
-    expect(form.get_by_test_id("provider-form-limits")).to_be_visible(timeout=15_000)
-    form.locator('[data-field="id"] input').fill("journey-save-refused")
-    save = form.get_by_test_id("provider-form-save")
-    expect(save).to_be_enabled()
-    save.click()
-    alert = form.get_by_test_id("provider-form-save-error")
-    expect(alert).to_be_visible(timeout=10_000)
-    expect(alert).to_have_attribute("role", "alert")
-    expect(alert).to_contain_text("Field required")
-    expect(form).to_be_visible()
-    expect(save).to_be_enabled()
-    page.wait_for_timeout(300)
-    assert errors == [], errors
+    try:
+        form = _open_the_anthropic_form(page, console_url)
+        expect(form.get_by_test_id("provider-form-limits")).to_be_visible(timeout=15_000)
+        form.locator('[data-field="id"] input').fill("journey-save-refused")
+        save = form.get_by_test_id("provider-form-save")
+        expect(save).to_be_enabled()
+        save.focus()
+        page.keyboard.press("Enter")
+        expect(save).to_have_attribute("aria-busy", "true")
+        expect(save).to_have_attribute("aria-disabled", "true")
+        assert save.evaluate("el => el.disabled") is False, "Save turned disabled while it had the focus"     # Locator.is_disabled() also counts aria-disabled
+        busy = page.evaluate(_FOCUS)
+        assert busy["testid"] == "provider-form-save" and busy["inDialog"], f"the focus left Save while the request was out: {busy}"
+        page.keyboard.press("Enter")            # a second activation while the request is out
+        alert = form.get_by_test_id("provider-form-save-error")
+        expect(alert).to_be_visible(timeout=10_000)
+        expect(alert).to_have_attribute("role", "alert")
+        expect(alert).to_contain_text("Field required")
+        expect(form).to_be_visible()
+        expect(save).to_be_enabled()
+        expect(save).not_to_have_attribute("aria-busy", "true")
+        refused = page.evaluate(_FOCUS)
+        assert refused["testid"] == "provider-form-save" and refused["inDialog"] and not refused["isBody"], f"after the refusal the focus is not on Save in the dialog: {refused}"
+        page.keyboard.press("Tab")
+        assert page.evaluate(_FOCUS)["inDialog"], "Tab after the refusal left the dialog for the page behind it"
+        page.wait_for_timeout(300)
+        assert posts["n"] == 1, f"{posts['n']} POSTs were sent for one Save"
+        assert errors == [], errors
+    finally:
+        page.unroute_all(behavior="ignoreErrors")
+
+
+@pytest.mark.ui_e2e
+def test_a_try_again_that_works_says_it_is_trying_and_moves_the_focus_into_the_form(page: Page) -> None:
+    """The first ``_types`` answer is a 500: the form says so in an alert, with Try again after it (not inside it). Try again is pressed from the keyboard; while the retry is out it says "Trying again", is
+    ``aria-busy`` and keeps the focus; when the answer arrives the button is gone, so the focus goes to the form's first field (the Name) and not to ``<body>``."""
+    calls = {"n": 0}
+
+    def flaky(route) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            route.fulfill(status=500, content_type="application/problem+json", body=json.dumps(TYPES_500))
+        else:
+            page.wait_for_timeout(1_200)
+            route.continue_()
+
+    page.route("**/v1/llm_providers/_types", flaky)
+    try:
+        form = _open_the_llm_form_from_the_all_view(page)
+        alert = form.get_by_test_id("provider-form-types-error")
+        expect(alert).to_be_visible(timeout=15_000)
+        expect(alert).to_have_attribute("role", "alert")
+        expect(alert).to_contain_text("types unavailable")
+        expect(alert.get_by_test_id("provider-form-types-retry")).to_have_count(0)
+        retry = form.get_by_test_id("provider-form-types-retry")
+        retry.focus()
+        page.keyboard.press("Enter")
+        expect(retry).to_have_attribute("aria-busy", "true")
+        expect(retry).to_contain_text("Trying again")
+        assert page.evaluate(_FOCUS)["testid"] == "provider-form-types-retry", "the focus left Try again while the retry was out"
+        expect(form.get_by_test_id("provider-form-limits")).to_be_visible(timeout=15_000)
+        expect(alert).to_have_count(0)
+        landed = page.evaluate(_FOCUS)
+        assert landed["inDialog"] and not landed["isBody"] and landed["inName"], f"after a retry that worked the focus is not in the form's first field: {landed}"
+        assert calls["n"] == 2
+    finally:
+        page.unroute_all(behavior="ignoreErrors")
