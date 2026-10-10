@@ -160,7 +160,7 @@ async def test_a_write_that_fails_does_not_keep_the_session_from_ending() -> Non
 
 # ---- resume_graph_tool_wait: the tool_wait sibling (round 3 of #701, B2) ------------------------------------------------------------------------------------------------
 #
-# Its six ends wrote no record either, so a graph resumed after its tool_wait batches finished (or failed) stayed an open window. They go through the same `_end_graph`.
+# Its six ends wrote no record either, so a graph resumed after its tool_wait batches finished (or failed) stayed an open window. They go through the same `end_graph`.
 
 
 async def _tool_wait_world(monkeypatch):

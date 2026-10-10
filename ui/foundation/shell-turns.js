@@ -437,7 +437,8 @@ function SH_newWindowScanner() {
   return {
     feed: function (rec) {
       var verdict = feedOne(rec);
-      if (verdict === SH_WINDOW_CLOSES) graphOpen = false;
+      // A close ends the graph run, and so does a COPY (the graph's end after a failure that already ended the window): a late node record between the two opened the run again.
+      if (verdict === SH_WINDOW_CLOSES || verdict === SH_WINDOW_COPY) graphOpen = false;
       return verdict;
     },
   };

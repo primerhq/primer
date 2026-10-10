@@ -95,6 +95,7 @@ _DIVIDER = {"kind": "invocation_divider", "payload": {"invocation": 2}}
         pytest.param([_USER, _NODE_DONE, _DIVIDER, _USER, _NODE_DONE, _END_OK], id="a divider closes a graph run that wrote no end"),
         pytest.param([_USER, _NODE_DONE, _END_FAILED, _DIVIDER, _NODE_DONE, _END_OK], id="a restart with no message after a failed end"),
         pytest.param([_USER, _NODE_DONE, _GRAPH_ERROR, _END_FAILED, _DIVIDER, _NODE_DONE, _END_FAILED], id="two graph-level failures with a restart between"),
+        pytest.param([_USER, _NODE_DONE, _GRAPH_ERROR, _NODE_DONE, _END_FAILED, _DIVIDER, _NODE_DONE, _END_OK], id="a late node record between a graph-level error and its copy, then a divider"),
         pytest.param([_USER, _AGENT_DONE, _DIVIDER, _USER, _AGENT_DONE], id="a divider after a closed agent turn"),
         pytest.param([_USER, _AGENT_ERROR, _DISPATCH_FAILURE, _MARKER, _DIVIDER, _USER, _AGENT_ERROR, _DISPATCH_FAILURE, _MARKER], id="a divider after a failure and its copies"),
         pytest.param([_USER, _AGENT_DONE, _AGENT_MARKER, _DIVIDER, _USER, _AGENT_DONE], id="a divider after an agent_marker"),

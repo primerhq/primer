@@ -30,12 +30,13 @@ the END of the log still reads as a terminal. Folded on read, so logs written be
 ``SH_newWindowScanner`` / ``SH_windowsOfSeq`` (ui/foundation/shell-turns.js); tests/ui/test_shell_turns.py compares the two over the shapes the writers produce.
 
 A GRAPH turn is one window too (ticket 01a11f35). Every node of a graph writes its own ``done`` (or ``error`` / ``cancelled``) and each such record carries the node's ``node_id``. A record with a
-``node_id`` is INSIDE the window, exactly as a delegated record is: it ends nothing, is a copy of nothing and does not touch the scanner's state, so one fan-out of two workers is one window
-instead of three. What closes it is the graph's OWN END, a node-less ``done`` that the writers append when the run ends (:func:`is_graph_end`, ``payload.graph_end``): session dispatch's clean
+``node_id`` is INSIDE the window, exactly as a delegated record is: it ends nothing, is a copy of nothing and changes nothing in the scanner but its graph-open flag (rule (c) below), so one fan-out of
+two workers is one window instead of three. What closes it is the graph's OWN END, a node-less ``done`` that the writers append when the run ends (:func:`is_graph_end`, ``payload.graph_end``): session dispatch's clean
 completion for a graph run (``stop_reason`` ``stop`` when the graph ended ``completed``, ``error`` when it did not, so every reader of a failed turn reads it as one), and the graph resume
 coordinators (``resume_graph_engine`` and ``resume_graph_tool_wait``, through ``end_graph``) before they end a resumed graph. NOT EVERY PATH THAT ENDS A GRAPH SESSION WRITES IT: a parked graph that is
-cancelled is ended inline by the pool with no record (agents have the same gap: a ticket), ``resume_engine_session`` ends a graph itself on three early exits, and a log written before the end was a
-record has none. The executor's own stream writes none (it ends with the End node's output and the end node's exit transition), and the claim adapter's release marker
+cancelled is ended inline by ``cancel_session`` with no record (agents have the same gap: a ticket), and so is a resumable row whose cancel the pool finds when it claims it and the preempt-cancel
+convergence (both in the pool's resume branch); ``resume_engine_session`` ends a graph itself on three early exits and ``resume_engine_tool_wait`` on two (a malformed ``parked_state``, no storage); a
+log written before the end was a record has none. The executor's own stream writes none (it ends with the End node's output and the end node's exit transition), and the claim adapter's release marker
 that may follow a failed end is a copy of it. A graph that parks is not over, so nothing closes it until its resume ends it. The per-record predicates are unchanged on purpose: the final-result
 relay reads the text before the last node's ``done`` and the End output after it (and treats the graph's end as the verdict, not as a text boundary). A graph log written before records carried a
 ``node_id`` cannot be told from a non-graph log and keeps the windows it had. For every log with a graph run that ended without its end record, rule (c): an ``invocation_divider`` is written ONLY to an ENDED
@@ -139,8 +140,8 @@ class TurnWindowScanner:
     """Feed the records of a log in order; it says which ones end a window, which are copies of a failure that did, and which are neither.
 
     The rule, per record (a delegated record is always ``INSIDE``: a subagent's terminal and a subagent's failure are never the session's; so is a graph NODE's record, one that
-    carries a ``node_id``: the graph turn is not over until the graph's own end, the first ``done`` / ``error`` / ``cancelled`` that names no node; a ``user_input``, a ``yielded`` or an
-    ``invocation_divider`` names no node either and ends nothing):
+    carries a ``node_id``: the graph turn is not over until the graph's own end, the first ``done`` / ``error`` / ``cancelled`` that names no node; such a record only marks a graph run open for
+    rule (c) below; a ``user_input`` or a ``yielded`` names no node either and ends nothing, and an ``invocation_divider`` ends a window only in the one case below):
 
     * ``user_input`` starts a new turn: nothing before it can be copied from.
     * ``done`` / ``cancelled`` (a ``done`` that is not a tool round's) ends a window. A ``done`` with ``stop_reason: "error"`` (OpenResponses
@@ -178,7 +179,9 @@ class TurnWindowScanner:
 
     def feed(self, rec: dict[str, Any]) -> str:
         verdict = self._feed(rec)
-        if verdict == CLOSES:
+        # A close ends the graph run, and so does a COPY: the graph's end after a failure that already ended the window is the end of the run it follows (a late node record between the two opened it
+        # again), so a divider after it must not read the run as open (round 3 review: no dependence on the order of those records).
+        if verdict in (CLOSES, COPY):
             self._graph_open = False
         return verdict
 
