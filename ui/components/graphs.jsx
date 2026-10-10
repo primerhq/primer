@@ -512,7 +512,7 @@ function GraphDetail({ graphId, pushToast }) {
           footer={
             <>
               <Btn kind="ghost" onClick={() => setConfirmDelete(false)}>Cancel</Btn>
-              <Btn kind="primary" onClick={() => delMut.mutate()} disabled={delMut.loading}>
+              <Btn kind="primary" onClick={() => delMut.mutate()} busy={delMut.loading}>
                 {delMut.loading ? "Deleting…" : "Delete"}
               </Btn>
             </>

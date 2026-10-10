@@ -894,7 +894,7 @@ function ToolsetDetail({ toolsetId, pushToast }) {
               <Btn
                 kind="danger"
                 icon="trash"
-                disabled={del.loading}
+                busy={del.loading}
                 onClick={async () => {
                   try { await del.mutate(); setConfirmDelete(false); }
                   catch (_e) { /* onError handled inline */ }

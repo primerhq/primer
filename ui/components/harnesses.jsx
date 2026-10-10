@@ -659,7 +659,7 @@ function HarnessDetail({ id }) {
             <>
               <Btn
                 kind="ghost"
-                disabled={uninstallMut.loading}
+                busy={uninstallMut.loading}
                 onClick={() => { setConfirmUninstall(false); setCascadeDelete(false); }}
               >
                 Cancel
@@ -667,7 +667,7 @@ function HarnessDetail({ id }) {
               <Btn
                 kind="danger"
                 icon="trash"
-                disabled={uninstallMut.loading}
+                busy={uninstallMut.loading}
                 onClick={async () => {
                   try {
                     await uninstallMut.mutate();

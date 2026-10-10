@@ -701,7 +701,8 @@ function WorkspaceProviderDetail({ providerId, pushToast }) {
               <Btn
                 kind="danger"
                 icon="trash"
-                disabled={referencingTemplates.length > 0 || del.loading}
+                disabled={referencingTemplates.length > 0}
+                busy={del.loading}
                 onClick={() => del.mutate().catch(() => { /* onError */ })}
               >
                 {del.loading ? "Deleting…" : "Delete provider"}

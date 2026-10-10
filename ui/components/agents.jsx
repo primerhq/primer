@@ -1184,7 +1184,7 @@ function AgentDetail({ agentId, pushToast }) {
               <Btn
                 kind="danger"
                 icon="trash"
-                disabled={delMut.loading}
+                busy={delMut.loading}
                 onClick={async () => {
                   try { await delMut.mutate(); } catch (_e) { /* surfaced via onError */ }
                 }}

@@ -926,7 +926,8 @@ function SSPDetail({ sspId, pushToast }) {
               <Btn
                 kind="danger"
                 icon="trash"
-                disabled={collectionsState !== "ready" || referencingCollections.length > 0 || del.loading}
+                disabled={collectionsState !== "ready" || referencingCollections.length > 0}
+                busy={del.loading}
                 onClick={() => del.mutate().catch(() => { /* onError handled */ })}
               >
                 {del.loading ? "Deleting…" : "Delete provider"}
