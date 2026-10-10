@@ -1094,7 +1094,7 @@ class PostgresStorage(Storage[ModelT]):
     ) -> CursorPageResponse[ModelT]:
         cursor_clause = ""
         if page.cursor is not None:
-            cursor_state = _decode_cursor_for(page.cursor, order_by)
+            cursor_state = _decode_cursor_for(page.cursor, order_by, self._model)
             cursor_clause = self._render_cursor_filter(
                 translator=translator,
                 cursor_state=cursor_state,

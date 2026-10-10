@@ -6,11 +6,14 @@ compares against the clear value the read hides. The classifier that refuses tho
 * ``find`` with a predicate on a secret-bearing field is refused (422 ``validation-error``);
 * ``order_by`` on a secret-bearing field is refused;
 * a cursor from the server still pages every row once, and a cursor whose keys do not match the request's ``order_by`` is refused;
+* a cursor whose seek value has the wrong type for an allowed, non-secret key is refused as a bad cursor on both backends (not a Postgres 5xx);
 * plain fields keep working, on SQLite and (when gated) Postgres.
 """
 
 from __future__ import annotations
 
+import base64
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -186,6 +189,38 @@ async def test_default_id_order_cursor_visits_every_row_once(provider: StoragePr
             break
         page = await st.list(CursorPage(cursor=page.next_cursor, length=2))
     assert seen == ["llm-0", "llm-1", "llm-2", "llm-3", "llm-4"]
+
+
+def _forge_cursor(keys: list[dict]) -> str:
+    payload = json.dumps({"keys": keys}, separators=(",", ":"))
+    return base64.urlsafe_b64encode(payload.encode()).rstrip(b"=").decode()
+
+
+@pytest.mark.asyncio
+async def test_a_wrongly_typed_cursor_value_on_an_allowed_key_is_a_bad_cursor(provider: StorageProvider) -> None:
+    # ``last_probe_ok`` is a top-level bool field, not a secret, that the
+    # request may legitimately sort by. A cursor that carries a string for it
+    # would bind against the backend's typed column expression and answer a
+    # 5xx on Postgres (and 0 rows on SQLite); it must be refused as a bad
+    # cursor on both backends instead.
+    st = provider.get_storage(LLMProvider)
+    await st.create(_llm(0, "alpha"))
+    order = [OrderBy(field="last_probe_ok", direction="asc")]
+    forged = _forge_cursor(
+        [
+            {"field": "last_probe_ok", "value": "not-a-bool", "direction": "asc", "is_null": False},
+            {"field": "id", "value": "llm-0", "direction": "asc", "is_null": False},
+        ]
+    )
+    with pytest.raises(BadRequestError):
+        await st.list(CursorPage(cursor=forged, length=1), order_by=order)
+    # The server's own cursor for the same sort (a real bool) is accepted and
+    # pages normally.
+    await st.create(_llm(1, "bravo"))
+    page = await st.list(CursorPage(cursor=None, length=1), order_by=order)
+    assert page.next_cursor is not None
+    nxt = await st.list(CursorPage(cursor=page.next_cursor, length=1), order_by=order)
+    assert nxt is not None
 
 
 @pytest.mark.asyncio
