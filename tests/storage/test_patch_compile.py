@@ -78,6 +78,17 @@ def test_the_ensure_order_in_the_postgres_text_is_shallowest_first():
     assert params[:3] == [["a"], ["a", "b"], ["a", "b", "c"]]
 
 
+def test_a_postgres_where_list_is_a_filter_on_the_row_never_an_in_sub_select():
+    """``(data -> f) IN (SELECT jsonb_array_elements(...))`` is planned as a semi-join, and when the UPDATE waits on a
+    concurrent writer's row lock, the READ COMMITTED re-check compares the committed row with only the list element the first
+    pass matched: a row moved to ANOTHER allowed value is refused. The live proof is
+    ``test_patch_if_postgres_multi_value_guard.py`` (Postgres lane only); this pins the filter form in every lane."""
+    p, sp, w = validate_patch({"x": 1}, {}, {"status": ["a", "b"], "token": ["t", None], "count": [1]})
+    _, where_sql, _ = compile_postgres(p, sp, w, first_param=2)
+    assert "IN (SELECT" not in where_sql
+    assert where_sql.count("= ANY(ARRAY(SELECT jsonb_array_elements(") == 3, where_sql
+
+
 def test_a_where_value_is_typed_json_never_spliced():
     p, sp, w = validate_patch({"x": 1}, {}, {"status": ["a'; DROP TABLE t; --"]})
     set_expr, where_sql, params = compile_postgres(p, sp, w, first_param=2)
