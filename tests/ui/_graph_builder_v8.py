@@ -34,6 +34,8 @@ window.primerApi = {
   apiFetch: function () { return Promise.resolve({}); },
   useRouter: function () { return { navigate: function () {} }; },
   useEscape: function () {},
+  useFocusTrap: function () {},                          // the palettes are focus traps now (review of #729, round 2); the trap itself is pinned in test_focus_trap_behaviour.py
+  focusablesOf: function () { return []; },
 };
 function Btn(p) { return React.createElement("button", { "data-testid": p["data-testid"], disabled: p.disabled, onClick: p.onClick }, p.children); }
 function Banner(p) { return React.createElement("div", null, p.children); }
