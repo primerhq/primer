@@ -22,7 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: pgvector/pgvector:pg16
+        # Docker Hub rate-limits unauthenticated pulls; mirror.gcr.io is Google's Docker Hub mirror (same digest).
+        image: mirror.gcr.io/pgvector/pgvector:pg16
         env:
           POSTGRES_USER: primer
           POSTGRES_PASSWORD: primer

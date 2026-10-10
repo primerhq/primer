@@ -164,7 +164,9 @@ reason rather than skipping it silently.
   because the gated fixtures DROP tables and DELETE leases and some of their
   statements are unqualified, so a `?schema=` does not protect it. CI runs these in a dedicated
   `postgres` job (one pytest process per suite) against a
-  `pgvector/pgvector:pg16` service with `PRIMER_REQUIRE_POSTGRES_TESTS=1`: in
+  `pgvector/pgvector:pg16` service (CI pulls it through `mirror.gcr.io`,
+  Google's Docker Hub mirror, because Docker Hub rate-limits unauthenticated
+  pulls) with `PRIMER_REQUIRE_POSTGRES_TESTS=1`: in
   that mode a Postgres-gated test that SKIPS fails, a module skipped at
   collection under those directories fails, the run refuses to start without the
   URL, and a suite in which no gated test passed fails. Locally, point at a

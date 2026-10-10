@@ -120,7 +120,9 @@ a one-line reason; it may not simply be omitted.
   `tests/scheduler`, `tests/storage`, `tests/coordinator` and `tests/vector`
   contain tests that need a real database and skip without one, so the
   narrowed sweep above does not exercise them. The `postgres` job in
-  `.github/workflows/ci.yml` does, against a `pgvector/pgvector:pg16` service,
+  `.github/workflows/ci.yml` does, against a `pgvector/pgvector:pg16` service
+  (CI pulls it through `mirror.gcr.io`, Google's Docker Hub mirror, because
+  Docker Hub rate-limits unauthenticated pulls),
   running each suite as its own pytest process (a hang kills only its own
   process, so one suite cannot erase the others' results). Gated files that
   live with their subsystem instead (`LANE_FILES` in `tests/pg_gate.py`:
