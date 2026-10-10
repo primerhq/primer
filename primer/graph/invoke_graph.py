@@ -210,7 +210,7 @@ async def resume_invoke_graph(
     if decision != "approved" and agent_tool_result is None:
         rejection_reason = reason or "rejected"
 
-        async def _rejecting_dispatch(node, arguments):
+        async def _rejecting_dispatch(node, arguments, inner_call=None):
             raise _ToolApprovalRejected(rejection_reason, kind=kind)
 
         child._dispatch_toolcall_with_bypass = _rejecting_dispatch

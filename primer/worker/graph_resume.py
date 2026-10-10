@@ -172,7 +172,7 @@ async def resume_graph_from_checkpoint(
     ):
         rejection_reason = reason or "rejected"
 
-        async def _rejecting_dispatch(node, arguments):  # type: ignore[no-untyped-def]
+        async def _rejecting_dispatch(node, arguments, inner_call=None):  # type: ignore[no-untyped-def]
             raise _ToolApprovalRejected(rejection_reason, kind=kind)
 
         executor._dispatch_toolcall_with_bypass = _rejecting_dispatch  # type: ignore[assignment]

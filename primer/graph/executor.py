@@ -245,12 +245,15 @@ class GraphExecutor(_BaseGraphExecutor):
         self,
         node: "_ToolCallNode",
         arguments: dict,
+        inner_call: dict | None = None,
     ) -> ToolResultPart:
         """Resume-path dispatch with ``bypass_approval=True``.
 
         Spec B §2.3 step 3 / Phase 6 — calls the injected dispatcher
         with ``bypass_approval=True`` when its signature accepts the
-        kwarg; otherwise falls back to a plain call.
+        kwarg; otherwise falls back to a plain call. ``inner_call`` is
+        accepted and ignored: an injected dispatcher has no manager to
+        run an inner call through (see ``_BaseGraphExecutor``).
         """
         if self._tool_dispatcher is not None:
             return await self._call_tool_dispatcher(
