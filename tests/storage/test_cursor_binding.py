@@ -204,10 +204,11 @@ def test_a_declared_str_key_refuses_a_number() -> None:
 def test_a_same_length_cursor_naming_another_field_is_refused() -> None:
     # order_by=[name] expects [name, id]. A cursor of the same length whose
     # first key is ``count`` must still be refused: the field must match, not
-    # only the number of keys.
+    # only the number of keys. The value is a string, which the type check of
+    # the expected ``name`` key accepts, so only the field check can refuse it.
     forged = _forge(
         [
-            {"field": "count", "value": 1, "direction": "asc", "is_null": False},
+            {"field": "count", "value": "a", "direction": "asc", "is_null": False},
             {"field": "id", "value": "s1", "direction": "asc", "is_null": False},
         ]
     )
