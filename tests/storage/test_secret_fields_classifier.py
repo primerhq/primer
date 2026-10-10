@@ -131,6 +131,10 @@ def test_unknown_top_level_field_is_left_to_the_renderer() -> None:
     [
         (LLMProvider, "config"),
         (Harness, "git_token"),
+        # A MaskedGitUrl since #722, and the list of resolved dependencies
+        # whose git_url is one too.
+        (Harness, "git_url"),
+        (Harness, "dependencies_resolved"),
         (Toolset, "config"),
         (Trigger, "config"),
         (WorkspaceTemplate, "env"),
@@ -147,7 +151,6 @@ def test_real_secret_bearing_fields(model: type, field: str) -> None:
     [
         (LLMProvider, "provider"),
         (LLMProvider, "config.flavor"),
-        (Harness, "git_url"),
         (Harness, "slug"),
         (WorkspaceTemplate, "provider_id"),
         (Workspace, "template_id"),
