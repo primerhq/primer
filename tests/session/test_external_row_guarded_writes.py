@@ -22,7 +22,7 @@ import pytest
 import pytest_asyncio
 from pydantic_core import PydanticSerializationError
 
-from primer.model.except_ import NotFoundError, ServerError
+from primer.model.except_ import ConflictError, NotFoundError, ServerError
 from primer.model.external_tool import ExternalToolCall, ExternalToolResultIn
 from primer.model.provider import SqliteConfig
 from primer.model.workspace_session import AgentSessionBinding, GraphSessionBinding, SessionStatus, WorkspaceSession
@@ -34,6 +34,7 @@ from primer.storage.sqlite import SqliteStorageProvider
 from tests._support.held_write import hold_write
 from tests.api.test_external_tools_graph import _graph_parked_over
 from tests.api.test_external_tools_steer import _parked_over
+from tests.session.test_machine_wake_fences import _graph_park
 
 RESULT = {"customer": "c1"}
 
@@ -442,6 +443,160 @@ async def test_apply_tool_results_names_and_completes_the_call_row_the_pending_e
     assert session.parked_status == "resumable", "the result was refused: it named a call row the park does not wait on"
     assert session.parked_state["resume_event_payload"][WAKE_ENTRY_KEY] == "etool-fixed-1"
     assert ((await calls.get("etool-fixed-1")).status, (await calls.get("etool-stale")).status) == ("completed", "pending")
+
+
+# ---------------------------------------------------------------------------
+# apply_tool_results: round 3 of the #707 review
+# ---------------------------------------------------------------------------
+
+
+def _external_wait(node: str, tcid: str, key: str, row_id: str) -> dict:
+    """A graph agent node's pending external call, its entry naming its row."""
+    return {"node_id": node, "tool_call_id": tcid, "event_key": key, "tool_name": "_external", "resume_metadata": {"external_call_row_id": row_id}}
+
+
+def _leaves(row: WorkspaceSession) -> dict:
+    return {e["event_key"]: e["payload"] for e in ((row.parked_state or {}).get("resume_event_payloads") or {}).values()}
+
+
+class _RecordingBus:
+    """Records every publish and delivers none."""
+
+    def __init__(self) -> None:
+        self.published: list[tuple[str, dict]] = []
+
+    async def publish(self, key: str, payload: dict | None = None) -> None:
+        self.published.append((key, dict(payload or {})))
+
+
+def _after_the_first_row_write(monkeypatch, action) -> None:
+    """Run ``action`` once, right after ``apply_tool_results`` wrote its FIRST call row: after the first wake, before the second re-read."""
+    import primer.session.external_tools as external_tools
+
+    real = external_tools.resolve_external_row
+    writes = []
+
+    async def resolve_then_act(storage, row_id, **kwargs):
+        out = await real(storage, row_id, **kwargs)
+        writes.append(row_id)
+        if len(writes) == 1:
+            await action()
+        return out
+
+    monkeypatch.setattr(external_tools, "resolve_external_row", resolve_then_act)
+
+
+async def test_apply_tool_results_keeps_three_leaves_and_each_wake_names_the_park_it_read_and_its_row(provider) -> None:
+    """N3 (probe N2a). THREE results for one graph park: each further wake re-reads the row, so the third keeps the second's leaf as the second kept
+    the first's; every leaf names the park the producer read and its own call row."""
+    sessions = provider.get_storage(WorkspaceSession)
+    calls = provider.get_storage(ExternalToolCall)
+    parked_at = datetime.now(UTC) - timedelta(minutes=1)
+    waits = tuple(_external_wait(f"n{i}", f"tc-{i}", f"external_tool:gs:tc-{i}", f"etool-{i}") for i in (1, 2, 3))
+    await sessions.create(_graph_park("gs", parked_at=parked_at, agent_yields=waits))
+    for i in (1, 2, 3):
+        await calls.create(_call(f"etool-{i}", f"tc-{i}", session_id="gs", node_id=f"n{i}"))
+
+    applied = await apply_tool_results(
+        await sessions.get("gs"), [ExternalToolResultIn(tool_call_id=f"tc-{i}", result=f"r{i}") for i in (1, 2, 3)],
+        call_storage=calls, session_storage=sessions, engine=None, event_bus=None,
+    )
+
+    assert applied == 3
+    leaves = _leaves(await sessions.get("gs"))
+    assert {key: payload["result"] for key, payload in leaves.items()} == {f"external_tool:gs:tc-{i}": f"r{i}" for i in (1, 2, 3)}
+    assert {key: (payload[WAKE_PARK_KEY], payload[WAKE_ENTRY_KEY]) for key, payload in leaves.items()} == {
+        f"external_tool:gs:tc-{i}": (parked_at.isoformat(), f"etool-{i}") for i in (1, 2, 3)
+    }
+    assert [(await calls.get(f"etool-{i}")).status for i in (1, 2, 3)] == ["completed"] * 3
+
+
+async def test_apply_tool_results_does_not_wake_a_park_that_no_longer_waits_on_the_call_after_the_re_read(provider, monkeypatch) -> None:
+    """N1 (probe N2g). Between the first wake and the second, the second call was resolved elsewhere (a concurrent steer cancelled it) and the graph
+    re-parked on ANOTHER entry that shares its raw id under another key (n3's ask_user under ``call_0``). The re-read park does not wait on the second
+    call any more, so its wake (and publish) is skipped: landing on that park would have the resume answer n3's question with the external result (a
+    key that names no pending entry selects by the raw id)."""
+    sessions = provider.get_storage(WorkspaceSession)
+    calls = provider.get_storage(ExternalToolCall)
+    first, second = _external_wait("n1", "tc-1", "external_tool:gs:tc-1", "etool-1"), _external_wait("n2", "call_0", "external_tool:gs:call_0", "etool-2")
+    await sessions.create(_graph_park("gs", parked_at=datetime.now(UTC) - timedelta(minutes=1), agent_yields=(first, second)))
+    await calls.create(_call("etool-1", "tc-1", session_id="gs", node_id="n1"))
+    await calls.create(_call("etool-2", "call_0", session_id="gs", node_id="n2"))
+    question = {"node_id": "n3", "tool_call_id": "call_0", "event_key": "ask_user:gs:n3:call_0", "tool_name": "ask_user",
+                "resume_metadata": {"prompt": "approve the wire transfer?", "gate_id": "c" * 32}}
+    new_park = _graph_park("gs", parked_at=datetime.now(UTC), agent_yields=(question,))
+
+    async def resolved_elsewhere_then_reparked() -> None:
+        assert await calls.patch_if("etool-2", {"status": "cancelled"}, where={"status": ["pending"]}) is not None
+        await sessions.update(new_park)
+
+    _after_the_first_row_write(monkeypatch, resolved_elsewhere_then_reparked)
+    bus = _RecordingBus()
+
+    await apply_tool_results(
+        await sessions.get("gs"),
+        [ExternalToolResultIn(tool_call_id="tc-1", result="r1"), ExternalToolResultIn(tool_call_id="call_0", result={"wire": "denied"})],
+        call_storage=calls, session_storage=sessions, engine=None, event_bus=bus,
+    )
+
+    after = await sessions.get("gs")
+    assert after.parked_status == "parked", "a wake for a call the re-read park does not wait on flipped it"
+    assert after.parked_state == new_park.parked_state, "the new park is untouched"
+    assert [key for key, _payload in bus.published] == ["external_tool:gs:tc-1"], "and nothing was published for the skipped wake"
+    assert (await calls.get("etool-2")).status == "cancelled"
+
+
+async def test_apply_tool_results_refuses_a_result_whose_entry_names_a_row_that_is_no_longer_pending(provider) -> None:
+    """N2 (probe N7b). The entry's own row was already CANCELLED (the yields cancel route wrote it; its bus copy has not flipped the park yet) and a
+    stale PENDING row shares the raw id. The validation is by the row the entry names: the call is already resolved, so the request is refused
+    with nothing applied, as the docstring says (409), instead of delivering a result for a cancelled call."""
+    sessions = provider.get_storage(WorkspaceSession)
+    calls = provider.get_storage(ExternalToolCall)
+    await _parked_session(provider)
+    await calls.create(_call("etool-fixed-1", "tc-1", status="cancelled", result={"cancelled": True}, is_error=True, resolved_at=datetime.now(UTC)))
+    await calls.create(_call("etool-stale", "tc-1", created_at=datetime.now(UTC) - timedelta(hours=2)))
+
+    with pytest.raises(ConflictError):
+        await apply_tool_results(
+            await sessions.get("sess-1"), [ExternalToolResultIn(tool_call_id="tc-1", result="late")],
+            call_storage=calls, session_storage=sessions, engine=None, event_bus=None,
+        )
+
+    session = await sessions.get("sess-1")
+    assert session.parked_status == "parked" and not session.parked_state.get("resume_event_payload")
+    assert ((await calls.get("etool-fixed-1")).status, (await calls.get("etool-stale")).status) == ("cancelled", "pending")
+
+
+async def test_apply_tool_results_completes_the_rows_the_entries_of_both_graph_lists_name(provider) -> None:
+    """N3 (probe N7c). A graph park waits on a ToolCall node's external call (``pending_toolcalls``) and an agent node's (``pending_agent_yields``); two
+    pending rows share each raw id and the lookup by raw id keeps the STALE one of each. Each result names and completes the row its entry names."""
+    from primer.session.external_tools import _rows_by_tcid
+
+    sessions = provider.get_storage(WorkspaceSession)
+    calls = provider.get_storage(ExternalToolCall)
+    agent_key, tool_key = "external_tool:gs:call_0", "external_tool:gs:uuid-9"
+    tool_node = {"node_id": "nt", "tool_call_id": "uuid-9", "parked_event_key": tool_key, "arguments": {}, "tool_name": "_external",
+                 "resume_metadata": {"external_call_row_id": "etool-t"}}
+    await sessions.create(_graph_park(
+        "gs", parked_at=datetime.now(UTC) - timedelta(minutes=1), toolcalls=(tool_node,),
+        agent_yields=(_external_wait("na", "call_0", agent_key, "etool-a"),),
+    ))
+    for row_id, tcid, age in (("etool-a", "call_0", 0), ("etool-a-stale", "call_0", 2), ("etool-t", "uuid-9", 0), ("etool-t-stale", "uuid-9", 2)):
+        await calls.create(_call(row_id, tcid, session_id="gs", created_at=datetime.now(UTC) - timedelta(hours=age)))
+    kept = await _rows_by_tcid(calls, session_id="gs")
+    assert {tcid: row.id for tcid, row in kept.items()} == {"call_0": "etool-a-stale", "uuid-9": "etool-t-stale"}, "precondition"
+
+    await apply_tool_results(
+        await sessions.get("gs"), [ExternalToolResultIn(tool_call_id="call_0", result="ra"), ExternalToolResultIn(tool_call_id="uuid-9", result="rt")],
+        call_storage=calls, session_storage=sessions, engine=None, event_bus=None,
+    )
+
+    leaves = _leaves(await sessions.get("gs"))
+    assert {key: (payload["result"], payload[WAKE_ENTRY_KEY]) for key, payload in leaves.items()} == {
+        agent_key: ("ra", "etool-a"), tool_key: ("rt", "etool-t"),
+    }
+    statuses = {row_id: (await calls.get(row_id)).status for row_id in ("etool-a", "etool-a-stale", "etool-t", "etool-t-stale")}
+    assert statuses == {"etool-a": "completed", "etool-a-stale": "pending", "etool-t": "completed", "etool-t-stale": "pending"}
 
 
 # ---------------------------------------------------------------------------

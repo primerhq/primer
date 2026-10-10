@@ -468,3 +468,29 @@ async def test_a_flip_held_at_its_write_while_the_session_ends_is_refused_on_sql
     after = await sessions.get("s")
     assert (after.parked_status, after.status) == ("parked", SessionStatus.ENDED)
     assert _drift() == 0
+
+
+# ---- #707 review, round 3 ---------------------------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_park_whose_parked_at_is_stored_in_the_isoformat_spelling_is_still_woken(sp) -> None:
+    """B1 (probe P8, on SQLite). A park written outside the storage layer (a test fixture's raw SQL, an older build) can hold ``parked_at`` in the
+    ``isoformat()`` spelling (``+00:00``), not the canonical ``Z`` one ``raw_generation`` gives. Both spell the SAME instant, so both name the same
+    park: the flip lands and the drift tripwire stays quiet. A guard on the canonical spelling alone refused every wake of such a park for ever."""
+    sessions = sp.get_storage(WorkspaceSession)
+    parked_at = datetime.now(UTC) - timedelta(minutes=1)
+    await sessions.create(_row("s", "ask_user:s:call_0", until=timedelta(hours=1), tool="ask_user", parked_at=parked_at))
+    await sp.connection.execute("UPDATE sessions SET data = json_set(data, '$.parked_at', ?) WHERE id = ?", (parked_at.isoformat(), "s"))
+    await sp.connection.commit()
+    cursor = await sp.connection.execute("SELECT json_extract(data, '$.parked_at') FROM sessions WHERE id = ?", ("s",))
+    [(stored,)] = await cursor.fetchall()
+    snapshot = await sessions.get("s")
+    assert stored == parked_at.isoformat() != raw_generation(snapshot, "parked_at"), "precondition: the stored spelling is not the canonical one"
+
+    landed = await durably_mark_session_resumable(
+        snapshot, event_key="ask_user:s:call_0", payload={"response": "x"}, session_storage=sessions, engine=None,
+    )
+
+    assert landed is True and (await sessions.get("s")).parked_status == "resumable", "a park whose parked_at is not canonically spelled is refused"
+    assert _drift() == 0

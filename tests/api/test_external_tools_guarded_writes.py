@@ -21,7 +21,7 @@ import pytest_asyncio
 
 from primer.model.external_tool import ExternalToolCall
 from primer.model.provider import SqliteConfig
-from primer.model.workspace_session import WorkspaceSession
+from primer.model.workspace_session import GraphSessionBinding, SessionStatus, WorkspaceSession
 from primer.model.yield_ import WAKE_ENTRY_KEY, WAKE_PARK_KEY
 from primer.storage.sqlite import SqliteStorageProvider
 from tests._support.held_write import hold_write
@@ -347,3 +347,92 @@ async def test_an_instruction_steer_that_cancels_both_calls_of_a_graph_park_keep
     leaves = {e["event_key"]: e["payload"] for e in park["resume_event_payloads"].values()}
     assert sorted(leaves) == ["external_tool:sess-1:tc-g1", "external_tool:sess-1:tc-g2"], "the first cancelled call's leaf was dropped"
     assert all(payload.get("__yield_cancelled__") is True for payload in leaves.values())
+
+
+def _graph_external_park(wid: str, waits: list[tuple[str, str, str]], *, parked_at: datetime) -> WorkspaceSession:
+    """A graph park of ``sess-1`` over external calls ``(node, tool_call_id, row id)``, shaped like the graph suite's."""
+    entries = [
+        {"node_id": node, "tool_call_id": tcid, "event_key": f"external_tool:sess-1:{tcid}", "tool_name": "_external",
+         "resume_metadata": {"original_call": {"id": tcid, "name": "lookup", "arguments": {}}, "external_call_row_id": row_id},
+         "llm_messages": [], "iteration": 1, "frames": [], "leaf": None}
+        for node, tcid, row_id in waits
+    ]
+    keys = [entry["event_key"] for entry in entries]
+    return WorkspaceSession(
+        id="sess-1", workspace_id=wid, binding=GraphSessionBinding(graph_id="gr-ext"), status=SessionStatus.RUNNING, created_at=parked_at,
+        started_at=parked_at, parked_status="parked", parked_event_key=keys[0], parked_event_keys=keys, parked_until=parked_at + timedelta(seconds=600),
+        parked_at=parked_at,
+        parked_state={
+            "schema_version": 1, "tool_call_id": None, "yielded": {"tool_name": "_approval", "event_key": "graph:sess-1", "resume_metadata": {}},
+            "graph_checkpoint": {"pending_agent_yields": entries, "pending_toolcalls": [], "pending_dispatch": []},
+        },
+    )
+
+
+async def _seed_external_park(sp, wid: str, waits: list[tuple[str, str, str]], *, parked_at: datetime) -> None:
+    await sp.get_storage(WorkspaceSession).create(_graph_external_park(wid, waits, parked_at=parked_at))
+    for node, tcid, row_id in waits:
+        await sp.get_storage(ExternalToolCall).create(ExternalToolCall(
+            id=row_id, session_id="sess-1", node_id=node, tool_call_id=tcid, tool_name="lookup", arguments={}, created_at=parked_at,
+        ))
+
+
+async def test_an_instruction_steer_that_cancels_three_calls_of_a_graph_park_keeps_three_cancelled_leaves(app, client, wsr, sp) -> None:
+    """#707 review round 2, N3. THREE pending calls: each further cancel wake re-reads the row, so the third keeps the second's leaf as the second kept
+    the first's, and every cancel names the park the route read."""
+    bus = _RecordingBus()
+    app.state.event_bus = bus
+    wid = await _setup_ws(client, wsr)
+    await _seed_agent(sp, allow=True)
+    await _seed_graph(sp)
+    parked_at = datetime.now(UTC)
+    await _seed_external_park(sp, wid, [(f"n{i}", f"tc-{i}", f"etool-{i}") for i in (1, 2, 3)], parked_at=parked_at)
+
+    r = await client.post(f"/v1/workspaces/{wid}/sessions/sess-1/steer", json={"instruction": "stop"})
+
+    assert r.status_code == 200, r.text
+    calls = sp.get_storage(ExternalToolCall)
+    assert [(await calls.get(f"etool-{i}")).status for i in (1, 2, 3)] == ["cancelled"] * 3
+    park = (await sp.get_storage(WorkspaceSession).get("sess-1")).parked_state
+    leaves = {e["event_key"]: e["payload"] for e in park["resume_event_payloads"].values()}
+    assert sorted(leaves) == [f"external_tool:sess-1:tc-{i}" for i in (1, 2, 3)], "a cancelled call's leaf was dropped"
+    assert all(payload.get("__yield_cancelled__") is True for payload in leaves.values())
+    assert {payload[WAKE_PARK_KEY] for payload in leaves.values()} == {parked_at.isoformat()}
+
+
+async def test_an_instruction_steer_does_not_wake_a_park_that_no_longer_waits_on_a_cancelled_call_after_the_re_read(app, client, wsr, sp) -> None:
+    """#707 review round 2, N1 (the steer variant of probe N2g). After the first cancel's wake and publish, the graph re-parked on ANOTHER entry that
+    shares the second call's raw id under another key (n3's ask_user under ``call_0``). The re-read park does not wait on the second call any more, so
+    its cancel is not woken or published: landing there would have the resume answer n3's question with the cancel (a key that names no pending
+    entry selects by the raw id)."""
+    sessions = sp.get_storage(WorkspaceSession)
+    wid = await _setup_ws(client, wsr)
+    await _seed_agent(sp, allow=True)
+    await _seed_graph(sp)
+    await _seed_external_park(sp, wid, [("n1", "tc-1", "etool-1"), ("n2", "call_0", "etool-2")], parked_at=datetime.now(UTC) - timedelta(minutes=1))
+    question = {"node_id": "n3", "tool_call_id": "call_0", "event_key": "ask_user:sess-1:n3:call_0", "tool_name": "ask_user",
+                "resume_metadata": {"prompt": "approve?", "gate_id": "d" * 32}, "llm_messages": [], "iteration": 1, "frames": [], "leaf": None}
+    new_park = _graph_external_park(wid, [("n2", "call_0", "etool-2")], parked_at=datetime.now(UTC)).model_copy(update={
+        "parked_event_key": question["event_key"], "parked_event_keys": [question["event_key"]],
+        "parked_state": {
+            "schema_version": 1, "tool_call_id": None, "yielded": {"tool_name": "_approval", "event_key": "graph:sess-1", "resume_metadata": {}},
+            "graph_checkpoint": {"pending_agent_yields": [question], "pending_toolcalls": [], "pending_dispatch": []},
+        },
+    })
+
+    class _ReparkAfterTheFirstCancel(_RecordingBus):
+        async def publish(self, key: str, payload: dict) -> None:
+            await super().publish(key, payload)
+            if payload.get("__yield_cancelled__") and len([p for _k, p in self.published if p.get("__yield_cancelled__")]) == 1:
+                await sessions.update(new_park)
+
+    bus = _ReparkAfterTheFirstCancel()
+    app.state.event_bus = bus
+
+    r = await client.post(f"/v1/workspaces/{wid}/sessions/sess-1/steer", json={"instruction": "stop"})
+
+    assert r.status_code == 200, r.text
+    after = await sessions.get("sess-1")
+    assert after.parked_status == "parked", "a cancel for a call the re-read park does not wait on flipped it"
+    assert after.parked_state == new_park.parked_state, "the new park is untouched"
+    assert [k for k, p in bus.published if p.get("__yield_cancelled__")] == ["external_tool:sess-1:tc-1"], "the skipped cancel was published"
