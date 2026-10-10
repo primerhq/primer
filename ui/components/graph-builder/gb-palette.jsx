@@ -40,9 +40,10 @@ const GB_PURPOSES = [
 
 function GB_AddStepPalette(props) {
   const { draft, afterNodeId, tools, catalogue, onClose, onCreate, onAddBranch } = props;
-  const { useState, useMemo } = React;
+  const { useState, useMemo, useRef, useEffect } = React;
   const [query, setQuery] = useState("");
   const [stage, setStage] = useState("purpose"); // purpose -> reference
+  const cardRef = useRef(null);
   const [purpose, setPurpose] = useState(null);
   const [cursor, setCursor] = useState(0);
 
@@ -74,6 +75,15 @@ function GB_AddStepPalette(props) {
   // graph overlay under it and closed the builder with its draft.
   window.primerApi.useEscape(onClose);
 
+  // A layer that holds focus above the builder's overlay is a focus trap too (foundation/focus-trap.js knows only traps: a Tab from a palette that was not one went to the overlay's close button behind the scrim,
+  // and the next Enter closed the builder with its unsaved draft, review of #729, round 2). The second stage disables the search box that held focus, which drops it to <body>: the stage's own first control takes it.
+  window.primerApi.useFocusTrap(cardRef, true);
+  useEffect(() => {
+    if (stage !== "reference" || !cardRef.current) return;
+    const first = window.primerApi.focusablesOf(cardRef.current)[0];
+    if (first) first.focus();
+  }, [stage]);
+
   const onKeyDown = (e) => {
     if (stage !== "purpose") return;
     if (e.key === "ArrowDown") { e.preventDefault(); setCursor((c) => Math.min(c + 1, rows.length - 1)); }
@@ -98,6 +108,7 @@ function GB_AddStepPalette(props) {
     >
       <div
         data-testid="gb-palette"
+        ref={cardRef}
         onKeyDown={onKeyDown}
         style={{
           width: 660, maxWidth: "94vw", background: "var(--bg-elev)",
