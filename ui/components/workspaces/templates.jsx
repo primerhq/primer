@@ -440,7 +440,7 @@ function WorkspaceTemplateCreateModal({ onClose, pushToast, existing }) {
       footer={
         <>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" icon={isEdit ? "save" : "plus"} disabled={mutation.loading} onClick={submit}>
+          <Btn kind="primary" icon={isEdit ? "save" : "plus"} busy={mutation.loading} onClick={submit}>
             {mutation.loading ? (isEdit ? "Saving…" : "Creating…") : (isEdit ? "Save" : "Create")}
           </Btn>
         </>

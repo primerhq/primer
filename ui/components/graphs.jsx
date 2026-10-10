@@ -112,7 +112,7 @@ function GR_NewGraphModal({ onClose, onCreate, pushToast }) {
             kind="primary"
             icon="plus"
             onClick={submit}
-            disabled={create.loading}
+            busy={create.loading}
           >
             {create.loading ? "Creating…" : "Create"}
           </Btn>

@@ -245,12 +245,12 @@ function LA_UnlinkConfirmDialog({ identity, onClose, onUnlinked }) {
       onClose={onClose}
       footer={
         <>
-          <Btn kind="ghost" onClick={onClose} disabled={busy}>Cancel</Btn>
+          <Btn kind="ghost" onClick={onClose} blocked={busy}>Cancel</Btn>
           <Btn
             kind="danger"
             icon="trash"
             onClick={submit}
-            disabled={busy}
+            busy={busy}
             data-testid="unlink-confirm-btn"
           >
             {busy ? "Unlinking…" : "Unlink account"}

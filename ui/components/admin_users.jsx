@@ -467,7 +467,7 @@ function ADM_CreateUserDialog({ onClose, onCreated }) {
   // Password min length mirrors RegisterBody (Task 2/§6): >= 8 chars. The
   // server flags must_change_password=true when a password is given
   // (typed or generated).
-  const canSubmit = !busy && !!username.trim()
+  const formReady = !!username.trim()
     && (generatePassword || password.length >= 8);
 
   const submit = async () => {
@@ -518,12 +518,13 @@ function ADM_CreateUserDialog({ onClose, onCreated }) {
       onClose={onClose}
       footer={
         <>
-          <Btn kind="ghost" onClick={onClose} disabled={busy}>Cancel</Btn>
+          <Btn kind="ghost" onClick={onClose} blocked={busy}>Cancel</Btn>
           <Btn
             kind="primary"
             icon="check"
             onClick={submit}
-            disabled={!canSubmit}
+            disabled={!formReady}
+            busy={busy}
             data-testid="create-user-submit"
           >
             {busy ? "Creating…" : "Create user"}
@@ -645,7 +646,7 @@ function ADM_EditUserDialog({ user, onClose, onSaved }) {
     return () => { mountedRef.current = false; };
   }, []);
 
-  const canSubmit = !busy && (password === "" || password.length >= 8);
+  const formReady = password === "" || password.length >= 8;
 
   const submit = async () => {
     setSubmitError(null);
@@ -674,12 +675,13 @@ function ADM_EditUserDialog({ user, onClose, onSaved }) {
       onClose={onClose}
       footer={
         <>
-          <Btn kind="ghost" onClick={onClose} disabled={busy}>Cancel</Btn>
+          <Btn kind="ghost" onClick={onClose} blocked={busy}>Cancel</Btn>
           <Btn
             kind="primary"
             icon="check"
             onClick={submit}
-            disabled={!canSubmit}
+            disabled={!formReady}
+            busy={busy}
             data-testid="edit-user-submit"
           >
             {busy ? "Saving…" : "Save changes"}
@@ -795,12 +797,12 @@ function ADM_DeleteUserDialog({ user, onClose, onDeleted }) {
       onClose={onClose}
       footer={
         <>
-          <Btn kind="ghost" onClick={onClose} disabled={busy}>Cancel</Btn>
+          <Btn kind="ghost" onClick={onClose} blocked={busy}>Cancel</Btn>
           <Btn
             kind="danger"
             icon="trash"
             onClick={submit}
-            disabled={busy}
+            busy={busy}
             data-testid="delete-user-confirm-btn"
           >
             {busy ? "Deleting…" : "Delete user"}
