@@ -376,6 +376,21 @@ function TR_scheduleLabel(trigger) {
 // affordances through the detail surface.
 // ============================================================================
 
+// A write that refetches the row away (a confirmed delete, an Already-deleted delete, a fire_now the
+// server answers trigger_not_found) leaves focus where the refetch cannot reach: the confirm Modal
+// restores focus to this row's Delete button, and the gone trigger's Fire now keeps focus on its
+// button; the refetch then unmounts the row and focus would end on <body>. Move it, before the
+// refetch, to the adjacent row's Delete (next, or previous when this is the last row) or, with no
+// row left, to the overlay's h1 (the surface's one heading, focusable for this reason) (ticket
+// 01a12144). tr is captured by the caller before the await, so it is still the row's element even
+// if a concurrent refetch unmounts it while the write is in flight.
+function TR_focusAfterRowGone(tr) {
+  var nextRow = (tr && (tr.nextElementSibling || tr.previousElementSibling)) || null;
+  var focusTarget = (nextRow && nextRow.querySelector("[data-testid^='trigger-row-delete-']"))
+    || document.querySelector('[data-testid="nv-overlay-title"]');
+  if (focusTarget) focusTarget.focus();
+}
+
 function TR_TriggerRow({ trigger, onOpen, onChanged }) {
   const { apiFetch } = window.primerApi;
   const kind = trigger?.config?.kind || "—";
@@ -393,6 +408,8 @@ function TR_TriggerRow({ trigger, onOpen, onChanged }) {
 
   const fireNow = async (e) => {
     e.stopPropagation();
+    // The row's element, captured before the await (ticket 01a12144).
+    const tr = document.querySelector('[data-testid="trigger-row-' + trigger.id + '"]');
     setBusy(true);
     let res = null;
     let refusal = null;
@@ -407,7 +424,10 @@ function TR_TriggerRow({ trigger, onOpen, onChanged }) {
         kind: "error", title: "Fire failed", requestId: refusal && refusal.requestId,
         detail: gone ? label + " no longer exists; the list has been refreshed." : TR_refusalText(refusal, "Fire failed"),
       });
-      if (gone && onChanged) onChanged();
+      if (gone) {
+        TR_focusAfterRowGone(tr);
+        if (onChanged) onChanged();
+      }
       return;
     }
     const outcome = TR_fireOutcome(res, label);
@@ -417,6 +437,8 @@ function TR_TriggerRow({ trigger, onOpen, onChanged }) {
 
   const remove = async (e) => {
     e.stopPropagation();
+    // The row's element, captured before the await (ticket 01a12144).
+    const tr = document.querySelector('[data-testid="trigger-row-' + trigger.id + '"]');
     if (!(await confirmDialog({
       title: "Delete trigger?",
       message: `Delete trigger ${trigger.name || trigger.slug}? This cascades to its subscriptions and cannot be undone.`,
@@ -435,13 +457,19 @@ function TR_TriggerRow({ trigger, onOpen, onChanged }) {
     if (refusal) {
       if (isGone(refusal)) {
         toast({ kind: "info", title: "Already deleted", detail: label + " was already deleted; the list has been refreshed.", requestId: refusal && refusal.requestId });
+        TR_focusAfterRowGone(tr);
         if (onChanged) onChanged();
       } else {
         toast({ kind: "error", title: "Delete failed", detail: TR_refusalText(refusal, "The trigger could not be deleted."), requestId: refusal && refusal.requestId });
       }
       return;
     }
-    if (deleted && onChanged) onChanged();
+    if (deleted) {
+      // The confirm Modal's close restored focus to this row's Delete button, which the refetch
+      // below unmounts; focus would end on <body>. Move it before the refetch (ticket 01a12144).
+      TR_focusAfterRowGone(tr);
+      if (onChanged) onChanged();
+    }
   };
 
   return (
