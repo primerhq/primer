@@ -266,3 +266,19 @@ async def test_a_storage_fault_on_a_document_tool_is_storage_error(tools, monkey
     )
     assert result.is_error, result.output
     assert _typ(result) == "storage-error", result.output
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool, extra", _DOC_TOOLS, ids=[t for t, _ in _DOC_TOOLS])
+async def test_a_storage_fault_in_a_document_tool_collection_lookup_is_storage_error(
+    tools, monkeypatch, tool, extra
+) -> None:
+    # The lookup that answers not-found for a missing collection reads storage too: a fault there
+    # comes back like a fault in the document find, not raised out of call() (ticket 01a125de-df6f).
+    await _seed_collection(tools)
+    monkeypatch.setattr(tools["sp"].get_storage(Collection), "get", _storage_fault)
+    result = await tools["system"].call(
+        tool_name=tool, arguments={"collection_id": "kb-1", **extra}, ctx=ADMIN_CALLER,
+    )
+    assert result.is_error, result.output
+    assert json.loads(result.output) == {"type": "storage-error", "message": "database unavailable"}
