@@ -294,3 +294,16 @@ def test_an_href_that_is_nothing_does_not_make_a_link() -> None:
 def test_an_attribute_that_only_ends_in_a_handler_name_is_not_a_handler() -> None:
     for attr in ("data-onClick", "aria-onClick", "xonClick", "data-onMouseDown"):
         assert clickable_non_controls(f"<div {attr}={{go}}>x</div>") == [], attr
+
+
+def test_a_block_comment_opener_inside_a_line_comment_does_not_swallow_the_code_after_it() -> None:
+    """Review of #732, B1: ``strip_comments`` blanked from ANY ``/*`` to the next ``*/`` in its first pass and stripped ``//`` comments only afterwards, so a ``/*`` inside a ``//`` comment (a glob path such as
+    ``primer/channel/*/``) swallowed real code: 44-487 of channel_rules.jsx, 77-841 of nv-session-doc.jsx, 4-101 of graphs.jsx. A ``//`` that starts a line ends at the end of the line, before ``/*`` is looked for."""
+    assert clickable_non_controls("// see a/*\n<span onClick={go}>x</span>\n") == [(2, "span")]
+    assert clickable_non_controls("    // see a/* and b\n<span onClick={go}>x</span>\n") == [(2, "span")]
+    assert clickable_non_controls("// a/*\n<span onClick={go}>x</span>\n/* a real block */\n<div onClick={go}>y</div>\n") == [(2, "span"), (4, "div")]
+
+
+def test_a_line_comment_after_code_is_still_not_stripped_because_it_may_be_a_url() -> None:
+    assert clickable_non_controls('const u = "http://x/*";\n<span onClick={go}>x</span>\n') == [(2, "span")], "a // inside a string is not a comment"
+    assert strip_comments("a(); // b\n").startswith("a(); // b"), "only a // that starts its line is blanked"

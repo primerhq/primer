@@ -32,6 +32,7 @@ BASELINE: dict[str, int] = {
     "api_tokens.jsx": 3,
     "approvals.jsx": 4,
     "auth.jsx": 3,
+    "channel_rules.jsx": 2,
     "channels.jsx": 1,
     "console/nv-mobile-shell.jsx": 3,
     "console/nv-overlays.jsx": 1,
@@ -94,14 +95,16 @@ def busy_disabled(text: str) -> list[tuple[int, str]]:
     return found
 
 
-def counts() -> dict[str, int]:
+def counts(root: Path = UI) -> dict[str, int]:
+    """Per file under ``root`` (keyed relative to ``root/components`` for a component, else to ``root``: ``ui/app.jsx`` is a file too)."""
     out = {}
-    for path in sorted(UI.rglob("*.jsx")):
+    for path in sorted(root.rglob("*.jsx")):
         if "vendor" in path.parts:
             continue
         n = len(busy_disabled(path.read_text(encoding="utf-8")))
         if n:
-            out[path.relative_to(UI / "components").as_posix()] = n
+            base = root / "components"
+            out[(path.relative_to(base) if path.is_relative_to(base) else path.relative_to(root)).as_posix()] = n
     return out
 
 
@@ -162,3 +165,18 @@ def test_no_raw_button_is_given_a_busy_attribute() -> None:
             if re.search(r"(?<![\w-])busy=", opening_tag(text, m.start())):
                 offenders.append(f"{path.relative_to(UI)}:{text.count(chr(10), 0, m.start()) + 1}")
     assert offenders == []
+
+
+def test_a_busy_button_after_a_line_comment_that_holds_a_block_opener_is_counted() -> None:
+    """Review of #732, B1: a ``//`` comment quoting a glob (``primer/channel/*/``) hid the rest of the file from the scan. channel_rules.jsx, nv-session-doc.jsx and graphs.jsx each have one; the real counts are 153 on main and
+    142 at the head of #732, not 151 and 140."""
+    assert busy_disabled("// see a/*\n<Btn disabled={busy}>x</Btn>\n") == [(2, "busy")]
+    assert busy_disabled("// a/*\n<button disabled={saving}>x</button>\n/* b */\n<Btn disabled={create.loading}>y</Btn>\n") == [(2, "saving"), (4, "create.loading")]
+
+
+def test_a_file_directly_under_ui_is_counted_and_does_not_raise(tmp_path: Path) -> None:
+    """Review of #732, N7: ``relative_to(UI / "components")`` raised a bare ValueError for ``ui/app.jsx``, ``ui/design-canvas.jsx`` and ``ui/tweaks-panel.jsx``."""
+    (tmp_path / "components").mkdir()
+    (tmp_path / "app.jsx").write_text("<Btn disabled={busy}>x</Btn>\n", encoding="utf-8")
+    (tmp_path / "components" / "page.jsx").write_text("<Btn disabled={busy}>x</Btn>\n<Btn disabled={saving}>y</Btn>\n", encoding="utf-8")
+    assert counts(tmp_path) == {"app.jsx": 1, "page.jsx": 2}

@@ -22,18 +22,18 @@ SHARED = ROOT / "ui" / "components" / "shared.jsx"
 _PRELUDE = "window.primerApi = {};"
 
 _DRIVER = """
-var __clicks = 0; var __prevented = 0;
+var __clicks = 0; var __prevented = 0; var __stopped = 0;
 function __button(props) {
   MR.mount(function () { return React.createElement(Btn, Object.assign({ "data-testid": "b", onClick: function () { __clicks += 1; } }, props), "Save"); }, {});
   return MR.findAll("b").filter(function (el) { return el.type === "button"; })[0];
 }
 function __attrs(el) {
   var p = el.props;
-  return { disabled: p.disabled === undefined ? null : p.disabled, busy: p["aria-busy"] === undefined ? null : p["aria-busy"], ariaDisabled: p["aria-disabled"] === undefined ? null : p["aria-disabled"], leaked: "busy" in p };
+  return { disabled: p.disabled === undefined ? null : p.disabled, busy: p["aria-busy"] === undefined ? null : p["aria-busy"], ariaDisabled: p["aria-disabled"] === undefined ? null : p["aria-disabled"], leaked: ("busy" in p) || ("blocked" in p) };
 }
 function __press(el) {
-  if (typeof el.props.onClick === "function") el.props.onClick({ preventDefault: function () { __prevented += 1; }, stopPropagation: function () {} });
-  return { clicks: __clicks, prevented: __prevented };
+  if (typeof el.props.onClick === "function") el.props.onClick({ preventDefault: function () { __prevented += 1; }, stopPropagation: function () { __stopped += 1; } });
+  return { clicks: __clicks, prevented: __prevented, stopped: __stopped };
 }
 """
 
@@ -73,13 +73,13 @@ def test_a_busy_click_does_nothing(ctx) -> None:
 
 def test_a_busy_click_does_not_submit_the_form_the_button_sits_in(ctx) -> None:
     """``type="submit"`` clicks submit a form unless the click's default is prevented: a busy one prevents it."""
-    got = json.loads(ctx.eval('JSON.stringify((function () { var b = __button({ busy: true, type: "submit" }); __clicks = 0; __prevented = 0; return __press(b); })())'))
-    assert got == {"clicks": 0, "prevented": 1}
+    got = json.loads(ctx.eval('JSON.stringify((function () { var b = __button({ busy: true, type: "submit" }); __clicks = 0; __prevented = 0; __stopped = 0; return __press(b); })())'))
+    assert got["clicks"] == 0 and got["prevented"] == 1
 
 
 def test_a_button_that_is_not_busy_clicks_through(ctx) -> None:
-    got = json.loads(ctx.eval('JSON.stringify((function () { var b = __button({ busy: false }); __clicks = 0; __prevented = 0; return __press(b); })())'))
-    assert got == {"clicks": 1, "prevented": 0}
+    got = json.loads(ctx.eval('JSON.stringify((function () { var b = __button({ busy: false }); __clicks = 0; __prevented = 0; __stopped = 0; return __press(b); })())'))
+    assert got == {"clicks": 1, "prevented": 0, "stopped": 0}
 
 
 def test_busy_wins_over_an_aria_disabled_the_caller_passed(ctx) -> None:
@@ -92,3 +92,19 @@ def test_a_callers_own_aria_attributes_survive_when_the_button_is_not_busy(ctx) 
     """The existing hand-written sites (provider form, the builder's remove) pass ``aria-disabled`` themselves: ``busy`` must not clear them."""
     got = _attrs(ctx, {"aria-disabled": "true", "aria-busy": "true"})
     assert got["ariaDisabled"] == "true" and got["busy"] == "true"
+
+
+def test_a_refused_click_does_not_bubble_to_an_ancestor_that_acts_on_clicks(ctx) -> None:
+    """Review of #732, N1: a natively disabled button's click reaches nobody; a busy one's reached an ancestor ``onClick`` (a row or a card that opens on a click) for a click, Enter and Space alike. The refused
+    click is stopped as well as prevented."""
+    got = json.loads(ctx.eval('JSON.stringify((function () { var b = __button({ busy: true }); __clicks = 0; __prevented = 0; __stopped = 0; return __press(b); })())'))
+    assert got["stopped"] == 1, got
+
+
+def test_a_button_blocked_for_another_buttons_request_is_aria_disabled_and_not_busy(ctx) -> None:
+    """Review of #732, N4: ``aria-busy`` says "this button's request is out". A Cancel beside a Delete whose request is out is blocked, not busy: it is ``aria-disabled`` (so it keeps its tab stop and a refused click),
+    and announces no request it does not own."""
+    assert _attrs(ctx, {"blocked": True}) == {"disabled": None, "busy": None, "ariaDisabled": "true", "leaked": False}
+    got = json.loads(ctx.eval('JSON.stringify((function () { var b = __button({ blocked: true }); __clicks = 0; __prevented = 0; __stopped = 0; return __press(b); })())'))
+    assert got["clicks"] == 0 and got["stopped"] == 1
+    assert _attrs(ctx, {"blocked": False}) == {"disabled": None, "busy": None, "ariaDisabled": None, "leaked": False}
