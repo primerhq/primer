@@ -651,6 +651,9 @@ async def _workspace_template_pre_create(entity, request: Request) -> None:
 async def _workspace_template_pre_update(entity, existing, request: Request) -> None:
     await _reject_reserved_workspace_template_update(entity, existing, request)
     _check_template_privilege(entity, existing, request)
+    # 01a11d32: the password of a url file source is served masked, and PUT is a full replace, so a client that sends the served body back keeps the stored one (for the same scheme, host,
+    # port and user; another host or user is a 422 and nothing is stored). After the 403s: a caller who may not write the template never learns what a mask could be restored to.
+    preserve_masked_secrets(entity, existing)
 
 
 template_router = make_crud_router(

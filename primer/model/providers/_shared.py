@@ -10,10 +10,9 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import BaseModel, Field, HttpUrl, PlainSerializer, PositiveInt, SecretStr, SerializationInfo
+from pydantic import BaseModel, Field, PlainSerializer, PositiveInt, SecretStr
 
-from primer.common.url_userinfo import mask_userinfo
-from primer.model.common import STORAGE_DUMP_CONTEXT
+from primer.model.masked_url import MaskedUserinfoUrl
 
 
 def _mask_with_tail(secret: SecretStr) -> str:
@@ -48,36 +47,6 @@ def _mask_with_tail(secret: SecretStr) -> str:
 ApiKeySecret = Annotated[
     SecretStr,
     PlainSerializer(_mask_with_tail, return_type=str, when_used="json"),
-]
-
-
-def _serialize_url(value, info: SerializationInfo):
-    """The dump of a Base URL: unchanged in a python-mode dump (the adapters and the probes read the real URL), the real URL under the storage context (``dump_for_storage`` passes
-    :data:`~primer.model.common.STORAGE_DUMP_CONTEXT`), and otherwise, in a JSON-mode dump, the URL with the password of its userinfo masked (``http://svc:**********@host/v1``; a
-    lone ``https://TOKEN@host`` whole).
-
-    No return annotation, and the serializer is registered without ``return_type``: a ``str`` return type makes pydantic 2.13 warn (PydanticSerializationUnexpectedValue, with the
-    URL in the text) on every PYTHON-mode dump, and the warning goes to stderr, not through the log filter.
-    """
-    if not info.mode_is_json():
-        return value
-    context = info.context
-    if isinstance(context, dict) and all(context.get(key) == flag for key, flag in STORAGE_DUMP_CONTEXT.items()):
-        return str(value)
-    return mask_userinfo(str(value))
-
-
-# A provider's Base URL (ticket 01a11cdf part 3, option A). A URL may carry ``user:password@`` (a reverse proxy in front of the server): httpx sends it as Basic auth, and every API
-# response, CRUD event and tool result used to serve it in clear next to a masked ``api_key``. It masks in a JSON-mode dump only (the serializer itself returns the value unchanged for a
-# python-mode dump, which is why it is registered ``when_used="always"`` without a return type): a python-mode dump and the object itself
-# keep the real URL, which is what the adapters and the probes read; ``dump_for_storage`` keeps it for the stored row; ``preserve_masked_secrets`` puts the stored credential back when a
-# full-replace PUT sends the served mask back. Anything that FINGERPRINTS or COMPARES a row must use the storage form (the served form is the same for two URLs that differ only by password).
-#
-# NEVER dump a provider row with ``serialize_as_any=True`` or a ``SerializeAsAny`` annotation: in pydantic 2.13 that skips a field's own serializer, so the URL password would be served in
-# clear and the ``api_key`` unmasked. Nothing under ``primer/`` does it; ``tests/model/test_provider_url_userinfo_is_masked.py`` fails the day something does.
-MaskedUserinfoUrl = Annotated[
-    HttpUrl,
-    PlainSerializer(_serialize_url, when_used="always"),
 ]
 
 
