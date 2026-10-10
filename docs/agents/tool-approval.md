@@ -313,9 +313,13 @@ but require human review for any other host.
   named: the gate id the decision carries is honoured down to a child graph
   too (`invoke_graph`), so a sibling gate that shares the event key stays
   parked. An entry whose gate id cannot be read stays parked when the
-  decision names a gate, and a decision that names NO gate (an old client)
+  decision names a gate, and an APPROVAL that names NO gate (an old client)
   runs none of several sibling gates that share the key, because it cannot
-  be shown to be any one of them. Limit: the approved inner call runs in the
+  be shown to be any one of them (a timeout, a rejection or a cancel that names
+  no gate still ends every gate it selects, and a decision that names no gate
+  writes no approval record onto one of several gates). The approval record of a
+  decision lands on the gate that was decided on both paths, a graph session's
+  and an agent session's through a child graph. Limit: the approved inner call runs in the
   tools of the NODE's own toolset, so the inner tool of another toolset (what
   a subagent was asked to run) fails with `unknown tool` instead of running.
 - **The parked-tool name is literal `_approval`** in the parked-state
