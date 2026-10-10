@@ -129,6 +129,10 @@ function NV_Palette() {
   }, []);
   // Escape closes it, and only it, when it is open over an overlay (foundation/escape-stack.js).
   window.primerApi.useEscape(function () { setOpen(false); }, open);
+  // A layer that holds focus above an overlay is a focus trap too: the document listener of foundation/focus-trap.js knows only traps, and a Tab from a palette that was not one went to the overlay's close
+  // button behind its scrim, where the next Enter closed the overlay with whatever draft it held (review of #729, round 2). Called before the early return: hooks keep their order.
+  var dialogRef = React.useRef(null);
+  window.primerApi.useFocusTrap(dialogRef, open);
 
   if (!open) return null;
 
@@ -434,7 +438,7 @@ function NV_Palette() {
   return (
     <div className="nv-scrim" data-testid="nv-palette-scrim"
       onClick={function () { setOpen(false); }}>
-      <div className="nv-palette" data-testid="nv-palette"
+      <div className="nv-palette" data-testid="nv-palette" ref={dialogRef}
         role="dialog" aria-label="Command palette"
         onClick={function (ev) { ev.stopPropagation(); }}>
         <div className="nv-palette-head">

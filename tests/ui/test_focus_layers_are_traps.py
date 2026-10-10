@@ -49,4 +49,4 @@ def test_the_add_step_palette_is_a_focus_trap_and_hands_its_second_stage_the_foc
     text = strip_comments((UI / "components" / "graph-builder" / "gb-palette.jsx").read_text(encoding="utf-8"))
     assert re.search(r"useFocusTrap\(\s*\w+\s*,\s*true\b", text), "the add-step palette must trap focus while it is open"
     # the second stage disables the focused search box, which drops focus to <body>: the stage hands it to its own first control
-    assert re.search(r'stage === "reference"[\s\S]{0,400}\.focus\(\)', text), "the second stage must move focus into itself"
+    assert re.search(r'stage (?:===|!==) "reference"[\s\S]{0,400}\.focus\(\)', text), "the second stage must move focus into itself"

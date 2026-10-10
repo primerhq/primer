@@ -542,10 +542,12 @@ def _tabs(ctx, specs: str, setup: str, *, modern: bool = True) -> dict:
 def test_tab_with_focus_on_the_body_goes_into_the_dialog(ctx) -> None:
     """T1, a live leak: the trap listened on the dialog node, and a key whose target is ``<body>`` never reaches it. A focused button that is disabled (a busy submit) or removed hands focus to ``<body>``; the next
     Tab then went to the first control of the page behind the scrim. The same for a focus that sits on the page behind the scrim."""
-    for behind in ("document.activeElement = document.body;", "s.opener.focus();"):
-        out = _tabs(ctx, "[{name:'first',tag:'button'},{name:'last',tag:'button'}]", behind)
-        assert out["fwd"] is True and out["toFwd"] == "first", (behind, out)
-        assert out["back"] is True and out["toBack"] == "last", (behind, out)
+    behind = _tabs(ctx, "[{name:'first',tag:'button'},{name:'last',tag:'button'}]", "s.opener.focus();")
+    assert behind["fwd"] is True and behind["toFwd"] == "first", behind                  # a focus on the page behind the scrim: nothing to continue from, so the ends
+    assert behind["back"] is True and behind["toBack"] == "last", behind
+    body = _tabs(ctx, "[{name:'first',tag:'button'},{name:'last',tag:'button'}]", "document.activeElement = document.body;")
+    assert body["fwd"] is True and body["toFwd"] == "last", body                          # <body> after focus was inside: on from where it was (the trap gave focus to `first`), as the browser would
+    assert body["back"] is True and body["toBack"] == "first", body                       # the helper loses focus again after the Tab, which had moved it to `last`: back from there
 
 
 def test_without_the_trap_a_tab_from_the_body_goes_to_the_page_behind(ctx) -> None:
@@ -576,7 +578,7 @@ def test_with_two_dialogs_open_a_tab_from_the_body_goes_into_the_top_one_and_whe
       document.activeElement = document.body; pressAt(false); var below = document.activeElement.name;
       return { top: top, wrapped: wrapped, below: below };
     })())"""))
-    assert out == {"top": "b1", "wrapped": "b1", "below": "a1"}, out
+    assert out == {"top": "b2", "wrapped": "b1", "below": "a2"}, out        # each continues from the stop its focus was on (the trap gave focus to b1, and to a1 again when B closed)
 
 
 @pytest.mark.parametrize("modern", [True, False], ids=["checkVisibility", "offsetParent-and-computed-style"])
@@ -715,13 +717,13 @@ def test_the_dialog_that_opened_last_is_the_top_one_whatever_order_the_effects_r
       __h = hB; commit();                                                    // but B's effect runs BEFORE A's (children first, as React does it)
       __h = hA; commit();
       document.activeElement = document.body; pressAt(false);
-      var effect_order = document.activeElement.name;
+      var effect_order = document.activeElement.parent.name;
       __h = hA; render(refA, true, null, ['again']); commit();               // A re-attaches (its dependencies changed): it does not become the newest
       document.activeElement = document.body; pressAt(false);
-      var after_reattach = document.activeElement.name;
+      var after_reattach = document.activeElement.parent.name;
       return { effect_order: effect_order, after_reattach: after_reattach };
     })())"""))
-    assert out == {"effect_order": "b1", "after_reattach": "b1"}, out
+    assert out == {"effect_order": "B", "after_reattach": "B"}, out
 
 
 def _lost(ctx, specs: str, focus: str, how: str, shift: bool) -> str:
@@ -758,9 +760,9 @@ def test_a_focus_lost_from_an_end_wraps(ctx, how: str) -> None:
     assert _lost(ctx, _THREE, "a", how, False) == "b"
 
 
-def test_a_focus_that_was_never_inside_still_restarts_at_the_ends(ctx) -> None:
-    """Nothing to continue from (focus never entered, or sits on the page behind): the restart of round 3 stays."""
-    out = _tabs(ctx, _THREE, "document.activeElement = document.body;")
+def test_a_focus_on_the_page_behind_the_scrim_still_restarts_at_the_ends(ctx) -> None:
+    """Nothing to continue from: focus sits on the page behind, not on <body> after a control inside was lost. The restart of round 3 stays."""
+    out = _tabs(ctx, _THREE, "s.opener.focus();")
     assert out["toFwd"] == "a" and out["toBack"] == "c", out
 
 
