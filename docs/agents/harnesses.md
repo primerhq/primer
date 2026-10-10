@@ -322,6 +322,22 @@ set). Status returns to `installed`. If something went wrong,
   new remote: a REST update that moves `git_url` must carry the
   token for the new remote (or `""`), else it is refused with 422
   `git_token_required`.
+- **A credential kept in `git_url` is masked on every read.** A URL
+  may carry `user:password@` or a lone token
+  (`https://ghp_xxx@github.com/org/repo`). GET, list, the REST
+  responses and `harness__get` / `harness__list` show it as
+  `https://user:**********@host/org/repo.git` (a lone token is masked
+  whole), and so does the dependency `git_url` of a resolved
+  dependency; the stored row and git keep the real URL. A REST `PUT`
+  that sends the served `git_url` back keeps the stored credential
+  (for the same scheme, host, port and user, and it is not a "move"
+  for the token rule above); a masked URL for another remote answers
+  422 `git_url_mask_unrestorable` and stores nothing, so re-enter the
+  password there. Registering a harness (REST `POST` or
+  `harness__register`) with the masked URL a read returned is refused
+  the same way: there is no stored URL to take the credential from.
+  Git's own error text and the dependency URL in
+  `last_operation_error` have the credential masked too.
 - **Reinstalling at a different ref skips the explicit uninstall
   step.** The new install diff treats removed entities as
   delete-required, so the workflow `update(ref=...) → sync` is
