@@ -313,7 +313,7 @@ function AT_CreateTokenDialog({ onClose, onCreated, onDone }) {
       : [...prev, value]);
   };
 
-  const canSubmit = !busy && !!name.trim();
+  const formReady = !!name.trim();
 
   const submit = async () => {
     setSubmitError(null);
@@ -362,12 +362,13 @@ function AT_CreateTokenDialog({ onClose, onCreated, onDone }) {
       onClose={onClose}
       footer={
         <>
-          <Btn kind="ghost" onClick={onClose} disabled={busy}>Cancel</Btn>
+          <Btn kind="ghost" onClick={onClose} blocked={busy}>Cancel</Btn>
           <Btn
             kind="primary"
             icon="check"
             onClick={submit}
-            disabled={!canSubmit}
+            disabled={!formReady}
+            busy={busy}
             data-testid="create-token-submit"
           >
             {busy ? "Creating…" : "Create token"}
@@ -626,12 +627,12 @@ function AT_RevokeConfirmDialog({ token, onClose, onRevoked, isAdmin }) {
       onClose={onClose}
       footer={
         <>
-          <Btn kind="ghost" onClick={onClose} disabled={busy}>Cancel</Btn>
+          <Btn kind="ghost" onClick={onClose} blocked={busy}>Cancel</Btn>
           <Btn
             kind="danger"
             icon="trash"
             onClick={submit}
-            disabled={busy}
+            busy={busy}
             data-testid="revoke-confirm-btn"
           >
             {busy ? "Revoking…" : "Revoke token"}

@@ -300,7 +300,7 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing }) {
     create.mutate(body);
   };
 
-  const canSubmit = !create.loading && fields.every((f) => {
+  const formReady = fields.every((f) => {
     if (!f.required) return true;
     const v = values[f.key];
     return v !== undefined && v !== null && v !== "";
@@ -313,7 +313,7 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing }) {
       footer={
         <>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" icon={isEdit ? "check" : "plus"} onClick={submit} disabled={!canSubmit}>
+          <Btn kind="primary" icon={isEdit ? "check" : "plus"} onClick={submit} disabled={!formReady} busy={create.loading}>
             {create.loading ? (isEdit ? "Saving…" : "Creating…") : (isEdit ? "Save changes" : "Create provider")}
           </Btn>
         </>
@@ -902,7 +902,7 @@ function NewChannelModal({ providers, onClose, onCreated, pushToast, existing })
     create.mutate(body);
   };
 
-  const canSubmit = !!providerId && !!externalId && !create.loading;
+  const formReady = !!providerId && !!externalId;
 
   return (
     <Modal
@@ -911,7 +911,7 @@ function NewChannelModal({ providers, onClose, onCreated, pushToast, existing })
       footer={
         <>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" icon={isEdit ? "check" : "plus"} onClick={submit} disabled={!canSubmit}>
+          <Btn kind="primary" icon={isEdit ? "check" : "plus"} onClick={submit} disabled={!formReady} busy={create.loading}>
             {create.loading ? (isEdit ? "Saving…" : "Creating…") : (isEdit ? "Save changes" : "Create channel")}
           </Btn>
         </>

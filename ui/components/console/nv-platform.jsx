@@ -1031,7 +1031,7 @@ function NV_TemplateModal(props) {
       footer={
         <React.Fragment>
           <Btn kind="ghost" onClick={props.onClose}>Cancel</Btn>
-          <Btn kind="primary" onClick={save} disabled={busyState[0]}
+          <Btn kind="primary" onClick={save} busy={busyState[0]}
             data-testid="template-save">
             {busyState[0] ? "Saving…" : isEdit ? "Save template" : "Create template"}
           </Btn>
