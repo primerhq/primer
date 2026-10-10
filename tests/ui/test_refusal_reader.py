@@ -398,9 +398,10 @@ def test_no_component_reads_the_envelope_but_the_python_editor() -> None:
 
 def test_the_envelope_scan_still_sees_the_one_reader_that_is_allowed_to() -> None:
     """The allowlist is not dead and the scan is not blind: the Python editor's read is found."""
-    text = dict(_component_sources())["components/toolsets/python-editor.jsx"]
+    sources = dict(_component_sources())
 
-    assert _envelope_reads(text)
+    assert _envelope_reads(sources["components/toolsets/python-editor.jsx"])
+    assert "components/shared/use-transcript.js" in sources, "the scans read *.js under ui/components as well as *.jsx"
 
 
 # A code never goes in a banner TITLE (ruling 01a11bf7-15b7, restated in the #625 review): the title is "Create failed" or "Save failed"; when the server sent no
@@ -479,6 +480,9 @@ def test_the_title_scan_sees_a_code_in_a_title(text: str) -> None:
         'pushToast({ title: "Code review", detail: err.code })',
         "title={`${a} of ${b} failed`}",
         'const { code } = refusal;\n<Banner title="Save failed" detail={code} />',
+        # `title :` that is a variable or a property read in a ternary, not a prop or a key
+        "const shown = flag ? title : err.code;",
+        "const shown = flag ? err.title : err.code;",
     ],
 )
 def test_the_title_scan_leaves_plain_titles_and_other_props_alone(text: str) -> None:
