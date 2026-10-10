@@ -983,6 +983,27 @@ async def test_delete_identity_unlinks(client, app):
 
 
 @pytest.mark.asyncio
+async def test_delete_identity_answers_an_empty_204(client, app):
+    """The unlink answered ``JSONResponse(status_code=204, content=None)``, whose body is the four bytes ``null``: uvicorn refuses a body on a 204 (board task 01a12350-941b)."""
+    provider = await app.state.storage_provider.get_storage(OidcProvider).create(
+        OidcProvider(
+            name="Test IdP",
+            discovery_url="https://idp-del-empty.example.com/.well-known/openid-configuration",
+            client_id=CLIENT_ID,
+        )
+    )
+    heidi = await _login_as(client, app, user_id="user-heidi", username="heidi")
+    row = await app.state.storage_provider.get_storage(UserIdentity).create(
+        UserIdentity(user_id=heidi.id, provider_id=provider.id, subject="sub-heidi", created_at=datetime.now(timezone.utc))
+    )
+
+    r = await client.delete(f"/v1/auth/sso/identities/{row.id}")
+    assert r.status_code == 204, r.text
+    assert r.content == b"", f"a 204 must have no body; this one has {r.content!r}"
+    assert r.headers.get("content-length", "0") == "0", r.headers.get("content-length")
+
+
+@pytest.mark.asyncio
 async def test_delete_identity_masked_404_for_other_users_identity(client, app):
     provider = await app.state.storage_provider.get_storage(OidcProvider).create(
         OidcProvider(
