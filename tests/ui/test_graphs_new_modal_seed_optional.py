@@ -20,8 +20,8 @@ def _src() -> str:
 
 def test_create_button_not_gated_on_seed_agent() -> None:
     src = _src()
-    # Create is disabled only while the create mutation is running.
-    assert "disabled={create.loading}" in src
+    # Create is busy (still focusable) only while the create mutation is running.
+    assert "busy={create.loading}" in src
     # The old seed-agent gate is gone.
     assert "disabled={!seedAgentId || create.loading}" not in src
 

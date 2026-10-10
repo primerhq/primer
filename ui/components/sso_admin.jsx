@@ -370,7 +370,7 @@ function SSO_CreateProviderDialog({ onClose, onCreated }) {
     return () => { mountedRef.current = false; };
   }, []);
 
-  const canSubmit = !busy && !!name.trim() && !!discoveryUrl.trim() && !!clientId.trim();
+  const formReady = !!name.trim() && !!discoveryUrl.trim() && !!clientId.trim();
 
   const submit = async () => {
     setSubmitError(null);
@@ -409,12 +409,13 @@ function SSO_CreateProviderDialog({ onClose, onCreated }) {
       onClose={onClose}
       footer={
         <>
-          <Btn kind="ghost" onClick={onClose} disabled={busy}>Cancel</Btn>
+          <Btn kind="ghost" onClick={onClose} blocked={busy}>Cancel</Btn>
           <Btn
             kind="primary"
             icon="check"
             onClick={submit}
-            disabled={!canSubmit}
+            disabled={!formReady}
+            busy={busy}
             data-testid="create-sso-provider-submit"
           >
             {busy ? "Adding…" : "Add provider"}
@@ -475,7 +476,7 @@ function SSO_EditProviderDialog({ provider, onClose, onSaved }) {
     return () => { mountedRef.current = false; };
   }, []);
 
-  const canSubmit = !busy && !!name.trim() && !!discoveryUrl.trim() && !!clientId.trim();
+  const formReady = !!name.trim() && !!discoveryUrl.trim() && !!clientId.trim();
 
   const submit = async () => {
     setSubmitError(null);
@@ -515,12 +516,13 @@ function SSO_EditProviderDialog({ provider, onClose, onSaved }) {
       onClose={onClose}
       footer={
         <>
-          <Btn kind="ghost" onClick={onClose} disabled={busy}>Cancel</Btn>
+          <Btn kind="ghost" onClick={onClose} blocked={busy}>Cancel</Btn>
           <Btn
             kind="primary"
             icon="check"
             onClick={submit}
-            disabled={!canSubmit}
+            disabled={!formReady}
+            busy={busy}
             data-testid="edit-sso-provider-submit"
           >
             {busy ? "Saving…" : "Save changes"}
@@ -589,12 +591,12 @@ function SSO_DeleteProviderDialog({ provider, onClose, onDeleted }) {
       onClose={onClose}
       footer={
         <>
-          <Btn kind="ghost" onClick={onClose} disabled={busy}>Cancel</Btn>
+          <Btn kind="ghost" onClick={onClose} blocked={busy}>Cancel</Btn>
           <Btn
             kind="danger"
             icon="trash"
             onClick={submit}
-            disabled={busy}
+            busy={busy}
             data-testid="delete-sso-provider-confirm-btn"
           >
             {busy ? "Deleting…" : "Delete provider"}

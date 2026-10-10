@@ -270,7 +270,7 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
           <Btn
             kind="primary"
             icon={isEdit ? "check" : "plus"}
-            disabled={!canSubmit || create.loading}
+            disabled={!canSubmit} busy={create.loading}
             onClick={submit}
             data-testid="approval-policy-create"
           >

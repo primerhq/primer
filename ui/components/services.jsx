@@ -234,8 +234,8 @@ function SV_ServiceModal({ existing, onClose, onSaved }) {
       onClose={onClose}
       footer={
         <>
-          <Btn kind="ghost" onClick={onClose} disabled={busy}>Cancel</Btn>
-          <Btn kind="primary" onClick={submit} disabled={busy || !name.trim() || !description.trim()} data-testid="service-save-btn">
+          <Btn kind="ghost" onClick={onClose} blocked={busy}>Cancel</Btn>
+          <Btn kind="primary" onClick={submit} disabled={!name.trim() || !description.trim()} busy={busy} data-testid="service-save-btn">
             {busy ? "Saving…" : existing ? "Save" : "Create"}
           </Btn>
         </>

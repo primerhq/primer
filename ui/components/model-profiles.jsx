@@ -407,7 +407,7 @@ function MP_ProfileModal({ open, onClose, onSaved, existing, providers, prefill,
       footer={
         <>
           <Btn onClick={onClose}>Cancel</Btn>
-          <Btn variant="primary" onClick={submit} disabled={save.loading || !canSave}>
+          <Btn variant="primary" onClick={submit} disabled={!canSave} busy={save.loading}>
             {isEdit ? "Save" : "Create"}
           </Btn>
         </>
