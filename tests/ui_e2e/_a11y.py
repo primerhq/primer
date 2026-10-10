@@ -284,8 +284,9 @@ def api_problem(*, method: str, url: str, resource_type: str, status: int | None
 
 
 class SweepDeadlineExceeded(Exception):
-    """The sweep ran past its wall-clock deadline. An ordinary exception, raised BETWEEN surfaces (``Budget.check``): the test's own ``finally`` runs with a live browser, what was found is reported and
-    the seeds are deleted. (A signal timeout is not: its ``Failed`` is raised inside Playwright's dispatcher greenlet, and every later sync call spins.)"""
+    """The sweep ran past its wall-clock deadline. An ordinary exception, raised by ``Budget.check`` between surfaces and by ``Budget.wait_ms`` before any wait (Playwright treats ``timeout=0`` as no
+    timeout, so a wait is never handed out after the deadline): the test's own ``finally`` runs with a live browser, what was found is reported and the seeds are deleted. (A signal timeout is not: its
+    ``Failed`` is raised inside Playwright's dispatcher greenlet, and every later sync call spins.)"""
 
 
 class Budget:
@@ -295,6 +296,8 @@ class Budget:
     must raise and not return 0: Playwright treats ``timeout=0`` as no timeout at all, so a 0 handed out after the deadline waits for ever. ``clock`` is for a test."""
 
     def __init__(self, limit: int = 5, short_ms: int = 1000, deadline_s: float | None = None, clock: Callable[[], float] = time.monotonic) -> None:
+        if short_ms <= 0:
+            raise ValueError(f"short_ms must be positive (Playwright treats a timeout of 0 as none), not {short_ms}")
         self.limit = limit
         self.short_ms = short_ms
         self.deadline_s = deadline_s
@@ -323,6 +326,8 @@ class Budget:
         self.used += 1
 
     def wait_ms(self, normal_ms: int) -> int:
+        if normal_ms <= 0:
+            raise ValueError(f"a wait must be positive (Playwright treats a timeout of 0 as none), not {normal_ms}")
         wait = min(normal_ms, self.short_ms) if self.exhausted else normal_ms
         remaining = self._remaining_ms()
         if remaining is None:

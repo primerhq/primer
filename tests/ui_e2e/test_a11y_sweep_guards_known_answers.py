@@ -191,7 +191,7 @@ def test_a_surface_that_stays_loading_is_noted_and_the_budget_shortens_the_waits
 
 @pytest.mark.ui_e2e
 def test_a_sweep_past_its_deadline_stops_reports_and_leaves_the_page_answering(blank_console: Page) -> None:
-    """Round 4, blocker B2: a stuck page and a 2 s deadline. The sweep is bounded from inside: past the deadline every wait is 0 and the next ``at`` raises an ordinary exception, so the test's own
+    """Round 4, blocker B2: a stuck page and a 2 s deadline. The sweep is bounded from inside: past the deadline no wait is handed out and the next ``at`` raises an ordinary exception, so the test's own
     ``finally`` runs; the findings so far are reported; and the browser still answers afterwards (a signal timeout left it spinning)."""
     budget = Budget(limit=100, short_ms=1000, deadline_s=2)
     sweep = Sweep(blank_console, ready_timeout_ms=500, loaded_timeout_s=30, budget=budget)

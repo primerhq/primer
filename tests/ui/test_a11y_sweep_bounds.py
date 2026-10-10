@@ -38,7 +38,7 @@ def test_the_sweep_seeds_a_semantic_search_provider_of_its_own() -> None:
 
 
 UI_E2E = Path(__file__).resolve().parents[2] / "tests" / "ui_e2e"
-SIGNAL_TIMEOUT = re.compile(r"""\bmethod\s*=\s*['"]signal['"]""")      # a signal timeout, as pytest-timeout is asked for it
+SIGNAL_TIMEOUT = re.compile(r"""\bmethod\s*=\s*['"]signal['"]|\btimeout\s*\([^)]*['"]signal['"]""")      # a signal timeout, as pytest-timeout is asked for it (keyword or positional)
 
 
 def test_no_ui_e2e_file_uses_a_signal_timeout() -> None:
@@ -76,12 +76,11 @@ def test_no_wait_of_the_sweep_has_a_fixed_timeout() -> None:
 def test_a_page_that_cannot_be_opened_is_a_note_for_every_navigation_of_the_sweep_that_can_time_out() -> None:
     """N2/N4: the legacy pages and their forms (``_sweep_page``, ``_sweep_forms``), the three create overlays, the graph builder and the phone are opened through ``Sweep.reach``, so one that never
     comes up is a note and an empty look, and the sweep goes on."""
-    body = SWEEP[SWEEP.index("def test_no_visible_control"):]
     assert 'sweep.reach(f"{kind} {name}", reopen)' in SWEEP, "_sweep_page"
     assert "sweep.reach(surface, reopen)" in SWEEP, "_sweep_forms"
-    assert 'sweep.reach(f"overlay {name}"' in body
-    assert 'sweep.reach("graph builder"' in body
-    assert 'sweep.reach("phone"' in body
+    assert 'sweep.reach(f"overlay {name}"' in SWEEP
+    assert 'sweep.reach("graph builder"' in SWEEP
+    assert 'sweep.reach(f"phone / ' in SWEEP
 
 
 def test_the_signal_timeout_pin_reads_the_positional_form_too() -> None:
