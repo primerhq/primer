@@ -34,6 +34,7 @@ PAIRS: list[tuple[str, str, float]] = [
     ("--text-3", "--bg", 4.5),
     ("--text-4", "--bg", 4.5),
     ("--accent-fg", "--accent", 4.5),
+    ("--accent", "--bg-1", 4.5),
     ("--attention-fg", "--attention", 4.5),
     # The status colours the console draws as text on a surface (the parked chip, a failed tool call, a failed turn, an attachment that
     # did not upload). They were never declared: the stylesheet used `var(--warn, #d9a441)` and `var(--danger, #e06c5f)`, so the light theme

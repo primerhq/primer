@@ -2,9 +2,9 @@
 
 The Approvals page drew its only create affordance, "Add or edit one", as an ``<a>`` with an ``onClick`` and no ``href``: a link that is not a link, and no keyboard path to it either. Every Platform card (``nv-pcard``) carried its open action on the whole div: an ``onClick`` with no role or tabindex, so a keyboard user could not open a card (only its Delete button was reachable). The Platform and System nav rows, and the new-workspace overlay's template pick rows, are the same shape: click-only divs.
 
-Each is a ``<button type="button">`` now: the approvals affordance (``approvals-config-link``), the Platform nav rows (``nv-plat-row``, ``aria-current="page"`` on the active one) and the System nav rows one file over (``nv-sys-row``, the same class), the template pick rows (``nv-pick-row``), and the card's open action, which moved from the card div to the ``Open`` button inside it (``nv-pcard-open:<name>``, named ``Open <name>``); a click anywhere on the card still opens it, because the button is stretched over the whole card (``.nv-pcard`` is ``position: relative`` and ``.nv-pcard-open::after`` is ``position: absolute; inset: 0``), with the Delete button above it (``z-index: 1``), and the Open label is fully opaque on focus.
+Each is a ``<button type="button">`` now: the approvals affordance (``approvals-config-link``), the Platform nav rows (``nv-plat-row``, ``aria-current="page"`` on the active one) and the System nav rows one file over (``nv-sys-row``, the same class), the template pick rows (``nv-pick-row``), and the card's open action, which moved from the card div to the ``Open`` button inside it (``nv-pcard-open:<name>``, named ``Open <name>``); a click anywhere on the card still opens it, because the button is stretched over the whole card (``.nv-pcard`` is ``position: relative`` and ``.nv-pcard-open::after`` is ``position: absolute; inset: 0``), with the Delete button above it (``z-index: 1``), and the Open label is fully opaque at rest (no opacity rule at all).
 
-Static pins on each site, in the slicing style of the rest of ``tests/ui``: a native button, ``type="button"``, no ``tabIndex`` (a button with ``tabIndex={-1}`` is unreachable by Tab, which is how a keyboard regression would land), the Open button's ``onClick`` and its name, and the stretched and focus CSS rules. The browser half is ``tests/ui_e2e/test_platform_overlay_close_refetch_journey.py`` (opens a card from a click on its name) and ``tests/ui_e2e/test_platform_filters_and_inputs_named_journey.py`` (sweeps the Platform view for unnamed controls).
+Static pins on each site, in the slicing style of the rest of ``tests/ui``: a native button, ``type="button"``, no ``tabIndex`` (a button with ``tabIndex={-1}`` is unreachable by Tab, which is how a keyboard regression would land), the Open button's ``onClick`` and its name, the stretched CSS rules, the phone's content-sized System chips, and no ``opacity`` in the Open's rule. The browser half is ``tests/ui_e2e/test_platform_overlay_close_refetch_journey.py`` (opens a card from a click on its name) and ``tests/ui_e2e/test_platform_filters_and_inputs_named_journey.py`` (sweeps the Platform view for unnamed controls).
 """
 
 from __future__ import annotations
@@ -107,7 +107,8 @@ def test_the_approvals_create_affordance_is_a_named_button() -> None:
     assert tag.startswith("<button"), f"the affordance is not a native button:\n{tag}"
     assert 'type="button"' in tag, tag
     assert "tabIndex" not in tag, f"the affordance is out of the tab order:\n{tag}"
-    assert "onClick" in tag, f"the button does not open the configuration:\n{tag}"
+    assert "onClick={() => onConfigure && onConfigure()}" in tag, f"the button does not open the configuration:\n{tag}"
+    assert 'border: "none"' in tag, f"the button draws the UA border:\n{tag}"
     assert "Add or edit one" in _inner_text(src, start), "the button has no words a screen reader could read"
 
 
@@ -129,9 +130,11 @@ def test_the_platform_card_still_opens_from_anywhere_on_it_via_the_stretched_but
     pcard = _css(".nv-pcard")
     assert "position: relative" in pcard, f"the stretch has no containing block:\n{pcard}"
     after = _css(".nv-pcard-open::after")
-    for decl in ('content: ""', "position: absolute", "inset: 0"):
+    for decl in ('content: ""', "position: absolute"):
         assert decl in after, f".nv-pcard-open::after does not stretch the Open over the card (missing {decl!r}):\n{after}"
+    assert re.search(r"\binset:\s*0\s*;", after), f"the stretch does not cover the whole card:\n{after}"
     assert "pointer-events" not in after, f"a dropped click on the stretch leaves the card unopenable:\n{after}"
+    assert "pointer-events" not in _css(".nv-pcard-open"), "the ::after inherits pointer-events from the Open button"
     dele = _css(".nv-pcard-del")
     assert "position: relative" in dele and "z-index: 1" in dele, f"the Delete button is not above the stretched Open:\n{dele}"
     assert "pointer-events" not in dele, f"a dropped click on Delete lands on the stretched Open and opens the card:\n{dele}"
@@ -162,6 +165,7 @@ def test_the_template_pick_rows_are_focusable_buttons() -> None:
     assert tag.startswith("<button"), f"the template pick row is not a native button:\n{tag}"
     assert 'type="button"' in tag, tag
     assert "tabIndex" not in tag, f"the pick row is out of the tab order:\n{tag}"
+    assert "aria-pressed={t.id === tplId}" in tag, tag
 
 
 def test_the_nav_rows_keep_their_borderless_button_reset() -> None:
@@ -169,11 +173,14 @@ def test_the_nav_rows_keep_their_borderless_button_reset() -> None:
     plat_row = _css(".nv-plat-row")
     assert "border: none" in plat_row, plat_row
     assert "width: 100%" in plat_row, f"the row must fill its column like the div it replaced:\n{plat_row}"
+    assert "background: transparent" in plat_row, plat_row
 
 
-def test_the_stretched_open_button_is_fully_visible_on_focus() -> None:
-    """At rest the Open label was opacity 0.55 (2.21:1 in light): a keyboard user who Tabs onto it must see it at full opacity, not only a hover user. Rest is now fully opaque (4.79:1 light, 9.82:1 dark); the focus rules pin the Tab-onto state."""
-    focus = _css(".nv-pcard-open:focus-visible")
-    assert "opacity: 1" in focus, f".nv-pcard-open:focus-visible is not fully opaque:\n{focus}"
-    in_focus = _css(".nv-pcard:focus-within .nv-pcard-open")
-    assert "opacity: 1" in in_focus, f".nv-pcard:focus-within .nv-pcard-open is not fully opaque:\n{in_focus}"
+def test_the_system_nav_chips_are_content_sized_on_the_phone() -> None:
+    """On the phone (More > System settings) the nav is a row of chips, and width: 100% would make every chip as wide as the strip."""
+    assert "width: auto" in _css(".nv-mob-system-body .nv-plat-row")
+
+
+def test_the_open_label_is_fully_opaque_at_rest() -> None:
+    """At rest it was 0.55 (2.21:1); --accent on --bg-1 is pinned in test_token_contrast.py."""
+    assert "opacity" not in _css(".nv-pcard-open")

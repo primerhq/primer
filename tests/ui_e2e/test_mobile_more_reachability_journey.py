@@ -140,6 +140,7 @@ def test_system_settings_opens_full_screen_and_back_returns(page: Page, console_
     page.get_by_test_id("nv-mob-setting:system").click()
     expect(page.get_by_test_id("nv-mob-system-screen")).to_be_visible(timeout=10_000)
     expect(page.get_by_test_id("nv-system")).to_be_visible()
+    expect(page.get_by_test_id("nv-sys-row:users")).to_be_in_viewport(ratio=1)  # a chip is content-sized, not as wide as the strip
 
     page.get_by_test_id("nv-mob-system-back").click()
     expect(page.get_by_test_id("nv-mobile-panel:more")).to_be_visible(timeout=10_000)
