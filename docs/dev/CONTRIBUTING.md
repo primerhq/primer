@@ -126,7 +126,8 @@ a one-line reason; it may not simply be omitted.
   running each suite as its own pytest process (a hang kills only its own
   process, so one suite cannot erase the others' results). Gated files that
   live with their subsystem instead (`LANE_FILES` in `tests/pg_gate.py`:
-  today one under `tests/bus` and one under `tests/worker`) each get their own
+  today one under `tests/bus`, one under `tests/worker` and one under
+  `tests/session`) each get their own
   step too, so a file that vanishes fails its own process; a static test fails
   any gated file that is in neither `LANE_DIRS` nor `LANE_FILES`. The one gate is
   `PRIMER_TEST_POSTGRES_URL` (`postgresql://user:pw@host:port/db`, optional

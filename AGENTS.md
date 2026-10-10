@@ -149,8 +149,8 @@ reason rather than skipping it silently.
 
 - **Live-Postgres suites** (`tests/claim`, `tests/scheduler`, `tests/storage`,
   `tests/coordinator`, `tests/vector`, plus the gated files that live with their
-  subsystem: `LANE_FILES` in `tests/pg_gate.py`, currently one under `tests/bus`
-  and one under `tests/worker`; a static test fails a gated file the CI lane
+  subsystem: `LANE_FILES` in `tests/pg_gate.py`, currently one under `tests/bus`,
+  one under `tests/worker` and one under `tests/session`; a static test fails a gated file the CI lane
   does not run) skip unless a database is configured. The
   single gate is `PRIMER_TEST_POSTGRES_URL=postgresql://user:pw@host:port/db[?schema=name]`;
   `PRIMER_TEST_PG_DSN` and `PRIMER_PG_TEST_DSN` are deprecated aliases that
