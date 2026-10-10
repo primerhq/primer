@@ -3,7 +3,8 @@
 // useFocusTrap(ref, active, opts) keeps keyboard focus inside the dialog node while it is open and gives it back afterwards:
 //   * on activation focus moves INTO the dialog (opts.initial(node) may name the element, else the first focusable, else the node);
 //     focus already inside is left alone, which keeps an autoFocus'd input (the rename dialog) and ConfirmHost's delayed input focus;
-//   * Tab and Shift+Tab cycle inside it, so a keyboard user cannot tab out into the (inert) page behind the scrim;
+//   * Tab and Shift+Tab cycle inside it, so a keyboard user cannot tab out into the (inert) page behind the scrim. They wrap from the ends AND from any element that holds focus beyond them without
+//     being a tab stop (a tabindex -1 heading a removal hands focus to): after the last tab stop, or inside it, a Tab wraps to the first; before the first, a Shift+Tab wraps to the last;
 //   * on deactivation or unmount focus returns to the element that had it when the dialog opened, if that element still exists.
 //
 // The opener is captured DURING RENDER, on the first render in which the dialog is active, not in the effect: React runs an autoFocus
@@ -50,9 +51,13 @@
         const first = items[0];
         const last = items[items.length - 1];
         const current = document.activeElement;
+        // Document order decides whether focus is beyond an end: an element that is no tab stop is not in `items`, so comparing with `first` and `last` alone let a Tab from after the last (or a Shift+Tab
+        // from before the first) fall through to the browser, which walked on out of the dialog (board task 01a122c8-33c6).
+        const beforeFirst = !!(first.compareDocumentPosition(current) & Node.DOCUMENT_POSITION_PRECEDING);
+        const afterLast = !!(last.compareDocumentPosition(current) & Node.DOCUMENT_POSITION_FOLLOWING);
         if (e.shiftKey) {
-          if (current === first || current === node || !node.contains(current)) { e.preventDefault(); last.focus(); }
-        } else if (current === last || !node.contains(current)) {
+          if (current === first || current === node || !node.contains(current) || beforeFirst) { e.preventDefault(); last.focus(); }
+        } else if (current === last || !node.contains(current) || afterLast) {
           e.preventDefault();
           first.focus();
         }
