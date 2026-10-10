@@ -1131,7 +1131,12 @@ def _collection_extras(
             if isinstance(exc, ValidationError):
                 return _err_from_validation(exc)
             return _err(str(exc), error_type="bad-request")
-        if await collections.get(args.collection_id) is None:
+        try:
+            coll = await collections.get(args.collection_id)
+        except PrimerError as exc:
+            # A fault in the lookup is a storage fault, like one in the find below.
+            return _err_from_primer(exc, error_type="storage-error")
+        if coll is None:
             return _err(
                 f"Collection {args.collection_id!r} does not exist",
                 error_type="not-found",
@@ -1185,7 +1190,12 @@ def _collection_extras(
             if isinstance(exc, ValidationError):
                 return _err_from_validation(exc)
             return _err(str(exc), error_type="bad-request")
-        if await collections.get(args.collection_id) is None:
+        try:
+            coll = await collections.get(args.collection_id)
+        except PrimerError as exc:
+            # A fault in the lookup is a storage fault, like one in the find below.
+            return _err_from_primer(exc, error_type="storage-error")
+        if coll is None:
             return _err(
                 f"Collection {args.collection_id!r} does not exist",
                 error_type="not-found",
