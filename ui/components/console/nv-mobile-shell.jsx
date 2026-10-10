@@ -1341,7 +1341,8 @@ function NV_MobilePlatform(props) {
       </div>
       <NV_MobileFactSheet open={!!sheet} kind={sheet && sheet.kind}
         cardVM={sheet && sheet.cardVM} row={sheet && sheet.row}
-        onClose={function () { setSheet(null); }} />
+        onClose={function () { setSheet(null); }}
+        onChanged={res.refetch} />
     </div>
   );
 }
