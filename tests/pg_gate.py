@@ -59,6 +59,7 @@ LANE_DIRS = (
 LANE_FILES = (
     "tests/bus/test_postgres_listen_setup_live.py",
     "tests/worker/test_cancel_reconcile_live.py",
+    "tests/session/test_park_flip_writes_leaves_live.py",
 )
 
 # The e2e server's own database. Its bringup script creates it and a live
