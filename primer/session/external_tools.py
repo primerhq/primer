@@ -95,7 +95,8 @@ async def _rows_by_tcid(
     *,
     session_id: str | None = None,
     chat_id: str | None = None,
-) -> dict[str, ExternalToolCall]:
+) -> tuple[dict[str, ExternalToolCall], set[str]]:
+    """The owner's pending rows by tool_call_id (the last of several that share one wins), and the ids of ALL of them."""
     q = Q(ExternalToolCall).where("status", "pending")
     if session_id is not None:
         q = q.where("session_id", session_id)
@@ -112,7 +113,7 @@ async def _rows_by_tcid(
                 r.tool_call_id, rows[r.tool_call_id].id, r.id,
             )
         rows[r.tool_call_id] = r
-    return rows
+    return rows, {r.id for r in page.items}
 
 
 async def apply_tool_results(
@@ -128,7 +129,9 @@ async def apply_tool_results(
     """Validate ALL ids, then wake each matched park. 409-atomic.
 
     Raises :class:`ConflictError` before any state change if ANY id is
-    unknown or already resolved. Returns the number of applied results.
+    unknown or already resolved: a call whose pending entry names a row
+    that is no longer pending is resolved, whatever other pending row
+    shares its raw id. Returns the number of applied results.
 
     Each call's row is then marked ``completed`` through the guarded
     :func:`resolve_external_row`: a row that left ``pending`` after the
@@ -138,11 +141,15 @@ async def apply_tool_results(
     pending row of the raw id the lookup kept.
     """
     targets = _pending_targets(session)
-    rows = await _rows_by_tcid(call_storage, session_id=session.id)
+    rows, pending_ids = await _rows_by_tcid(call_storage, session_id=session.id)
     bad = [
         r.tool_call_id
         for r in results
-        if r.tool_call_id not in targets or r.tool_call_id not in rows
+        if r.tool_call_id not in targets
+        or r.tool_call_id not in rows
+        # The row the pending entry names must itself be pending: a stale pending row under the same raw id does not stand in for it (#707 review
+        # round 2, N2).
+        or (targets[r.tool_call_id][1] or rows[r.tool_call_id].id) not in pending_ids
     ]
     if bad:
         raise ConflictError(
@@ -164,25 +171,36 @@ async def apply_tool_results(
         # Each result is its own leaf of a multi-event park, and the flip writes ``parked_state`` whole: a further wake starts from the row the previous
         # one wrote, or it drops that leaf (#707 review N2).
         woken = session if woken is None else (await session_storage.get(session.id) or woken)
-        await durably_wake_session(
-            woken,
-            event_key=event_key,
-            payload=payload,
-            session_storage=session_storage,
-            engine=engine,
-        )
-        if storage_provider is not None:
-            from primer.events.wake import emit_session_wake
-
-            await emit_session_wake(
-                storage_provider, event_bus,
-                event_key, payload,
+        # ... and the re-read park must still wait on this call, under the same key and row. Between two wakes it can have moved on (the call resolved
+        # elsewhere and the graph parked on another entry under the same raw id): the wake would land there all the same (no entry waits on its key, so
+        # the entry fence admits it) and the resume would answer that entry by the raw id. Then neither the wake nor its publish happens; the row is
+        # still written (#707 review round 2, N1).
+        if woken is session or _pending_targets(woken).get(r.tool_call_id) == (event_key, entry_row_id):
+            await durably_wake_session(
+                woken,
+                event_key=event_key,
+                payload=payload,
+                session_storage=session_storage,
+                engine=engine,
             )
-        elif event_bus is not None:
-            try:
-                await event_bus.publish(event_key, payload)
-            except Exception:  # noqa: BLE001 - durable flip already landed
-                logger.exception("external tool result publish failed")
+            if storage_provider is not None:
+                from primer.events.wake import emit_session_wake
+
+                await emit_session_wake(
+                    storage_provider, event_bus,
+                    event_key, payload,
+                )
+            elif event_bus is not None:
+                try:
+                    await event_bus.publish(event_key, payload)
+                except Exception:  # noqa: BLE001 - durable flip already landed
+                    logger.exception("external tool result publish failed")
+        else:
+            logger.info(
+                "external tool call %r on session %s: the park moved on between two wakes of one request and no longer waits on it, so it "
+                "is not woken; its row is still written",
+                r.tool_call_id, session.id,
+            )
         landed = await resolve_external_row(
             call_storage, row_id,
             status="completed", result=r.result, is_error=bool(r.is_error),
@@ -227,7 +245,7 @@ async def cancel_pending_external(
             "created_before must be a timezone-aware datetime: rows are "
             "compared on their aware created_at"
         )
-    rows = await _rows_by_tcid(
+    rows, _pending_ids = await _rows_by_tcid(
         call_storage, session_id=session_id, chat_id=chat_id
     )
     wanted = None if tool_call_ids is None else set(tool_call_ids)

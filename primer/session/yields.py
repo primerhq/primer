@@ -39,7 +39,7 @@ from primer.model.except_ import NotFoundError
 from primer.model.tool_call_task import MalformedScopedIdError, parse_scoped_task_id
 from primer.model.common import dump_for_storage
 from primer.model.yield_ import with_wake_entry, with_wake_park
-from primer.model.workspace_session import SessionStatus, WorkspaceSession
+from primer.model.workspace_session import NON_ENDED_STATUSES, SessionStatus, WorkspaceSession
 from primer.storage import raw_generation
 from primer.storage.cas import patch_if_checked
 
@@ -441,18 +441,21 @@ async def durably_mark_session_resumable(
     })
     # ONE guarded patch of the two fields the flip owns, evaluated by the backend against the CURRENT row (ticket 01a1223f, #702 review N9). The fences above
     # judged ``session``, the row ``find()`` returned; a whole-document write guarded on ``status`` alone let a wake that read the old park land on a park
-    # the session had meanwhile entered, and rewrote every other field from the stale snapshot. The guard is the park that was read (``parked_at``), the
-    # ``parked_status`` the snapshot was in (a multi-event park may advance from either) and a status that is not ENDED (the race described above).
+    # the session had meanwhile entered, and rewrote every other field from the stale snapshot. The guard is the park that was read (``parked_at``), a
+    # ``parked_status`` the flip may advance from (``parked``; ``parked`` or ``resumable`` for a multi-event park) and a status that is not ENDED (the race
+    # described above).
+    # The park is named by its stored spelling. The storage layer writes ``parked_at`` canonically (pydantic's ``Z`` form, ``raw_generation``); a park
+    # written outside it (raw SQL, an older build) can hold the ``isoformat()`` spelling (``+00:00``) of the SAME instant, which names the same park, so
+    # both are accepted: a guard on the canonical one alone refused every wake of such a park for ever (#707 review round 2, B1).
+    parked_at_spellings = [raw_generation(session, "parked_at")]
+    if session.parked_at is not None and session.parked_at.isoformat() not in parked_at_spellings:
+        parked_at_spellings.append(session.parked_at.isoformat())
     dumped = dump_for_storage(updated)
     landed = await patch_if_checked(
         session_storage,
         session.id,
         {"parked_status": dumped["parked_status"], "parked_state": dumped["parked_state"]},
-        where={
-            "parked_at": [raw_generation(session, "parked_at")],
-            "parked_status": list(allowed),
-            "status": [s.value for s in SessionStatus if s is not SessionStatus.ENDED],
-        },
+        where={"parked_at": parked_at_spellings, "parked_status": list(allowed), "status": NON_ENDED_STATUSES()},
     )
     if landed is None:
         # The row is no longer the one this wake read: it ended, resumed, or parked again. Rejected atomically at write time, not from the (possibly

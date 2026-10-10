@@ -430,7 +430,8 @@ async def test_apply_tool_results_names_and_completes_the_call_row_the_pending_e
     await _parked_session(provider)
     await calls.create(_call("etool-fixed-1", "tc-1"))
     await calls.create(_call("etool-stale", "tc-1", created_at=datetime.now(UTC) - timedelta(hours=2)))
-    assert (await _rows_by_tcid(calls, session_id="sess-1"))["tc-1"].id == "etool-stale", "precondition: the lookup by raw id keeps the stale row"
+    kept, _pending_ids = await _rows_by_tcid(calls, session_id="sess-1")
+    assert kept["tc-1"].id == "etool-stale", "precondition: the lookup by raw id keeps the stale row"
 
     applied = await apply_tool_results(
         await sessions.get("sess-1"),
@@ -583,7 +584,7 @@ async def test_apply_tool_results_completes_the_rows_the_entries_of_both_graph_l
     ))
     for row_id, tcid, age in (("etool-a", "call_0", 0), ("etool-a-stale", "call_0", 2), ("etool-t", "uuid-9", 0), ("etool-t-stale", "uuid-9", 2)):
         await calls.create(_call(row_id, tcid, session_id="gs", created_at=datetime.now(UTC) - timedelta(hours=age)))
-    kept = await _rows_by_tcid(calls, session_id="gs")
+    kept, _pending_ids = await _rows_by_tcid(calls, session_id="gs")
     assert {tcid: row.id for tcid, row in kept.items()} == {"call_0": "etool-a-stale", "uuid-9": "etool-t-stale"}, "precondition"
 
     await apply_tool_results(
