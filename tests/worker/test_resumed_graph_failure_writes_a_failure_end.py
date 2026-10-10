@@ -13,7 +13,6 @@ from datetime import UTC, datetime
 
 import pytest
 
-from primer.graph.base import _ToolApprovalRejected  # noqa: F401  (documents the exit under test)
 from primer.graph.executor import GraphExecutor
 from primer.model.graph import GraphNodeMessage, GraphThread
 from primer.model.tool_call_task import ToolCallTask, ToolCallTaskState
@@ -31,14 +30,6 @@ from tests.session.test_dispatch import fake_event_bus, fake_storage_provider, f
 from tests.worker.test_graph_resume_writes_the_graph_end import _records, _world
 
 pytestmark = pytest.mark.asyncio
-
-
-class _ApprovalPool(EngineFakePool):
-    """The shared fake answers EVERY graph reply with an ask_user answer (it stands in for the agent-yield hook). An approval gate is a ToolCall entry, which the real pool answers with ``None``: the decision
-    is then applied by the coordinator (``_rejecting_dispatch``), which is the path this test is about."""
-
-    async def _graph_agent_tool_result(self, checkpoint, tcid, payload, *, session_id, event_key=None):
-        return None
 
 
 def _graph_ends(recs: list[dict]) -> list[dict]:
@@ -101,7 +92,7 @@ async def test_a_rejected_approval_gets_a_failure_end() -> None:
         yielded=gate, llm_messages=[], turn_no=0, started_at=datetime.now(UTC), tool_call_id="tc-1",
         resume_event_payload={"decision": "rejected", "reason": "no"}, graph_checkpoint=parked.value.graph_checkpoint,
     )
-    pool = _ApprovalPool(storage=storage, workspace_io=io, executor_factory=executor)
+    pool = EngineFakePool(storage=storage, workspace_io=io, executor_factory=executor)
 
     await graph_resume_coordinator.resume_graph_engine(pool, session, state)
 
