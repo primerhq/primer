@@ -621,11 +621,7 @@ class _BaseGraphExecutor(
                         phase="exit",
                         status="failed",
                     )
-                    await self._save_state(
-                        iteration=context.iteration, node_states=node_states,
-                        status=SessionStatus.ENDED, ended_reason="failed",
-                        ended_detail="tool_execution_failed",
-                    )
+                    await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail="tool_execution_failed")
                     return
                 if entry.row_call_id is not None:
                     yield self._toolcall_answer_event(entry.node_id, context, entry.row_call_id, result)
@@ -660,11 +656,7 @@ class _BaseGraphExecutor(
                         phase="exit",
                         status="failed",
                     )
-                    await self._save_state(
-                        iteration=context.iteration, node_states=node_states,
-                        status=SessionStatus.ENDED, ended_reason="failed",
-                        ended_detail=mapped.error_code,
-                    )
+                    await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail=mapped.error_code)
                     return
                 context.nodes[entry.node_id] = NodeOutput(
                     text=mapped.text, parsed=mapped.parsed, history=[],
@@ -755,13 +747,7 @@ class _BaseGraphExecutor(
                     phase="exit",
                     status="failed",
                 )
-                await self._save_state(
-                    iteration=context.iteration,
-                    node_states=node_states,
-                    status=SessionStatus.ENDED,
-                    ended_reason="failed",
-                    ended_detail=rej.ended_detail_code,
-                )
+                await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail=rej.ended_detail_code)
                 return
             except Exception as exc:  # noqa: BLE001 -- map all to node failure
                 if entry.row_call_id is not None:
@@ -798,13 +784,7 @@ class _BaseGraphExecutor(
                     phase="exit",
                     status="failed",
                 )
-                await self._save_state(
-                    iteration=context.iteration,
-                    node_states=node_states,
-                    status=SessionStatus.ENDED,
-                    ended_reason="failed",
-                    ended_detail="tool_execution_failed",
-                )
+                await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail="tool_execution_failed")
                 return
             finally:
                 reset_current_toolcall(call_token)
@@ -846,13 +826,7 @@ class _BaseGraphExecutor(
                     phase="exit",
                     status="failed",
                 )
-                await self._save_state(
-                    iteration=context.iteration,
-                    node_states=node_states,
-                    status=SessionStatus.ENDED,
-                    ended_reason="failed",
-                    ended_detail=mapped.error_code,
-                )
+                await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail=mapped.error_code)
                 return
             tc_out = NodeOutput(
                 text=mapped.text,
@@ -1029,11 +1003,7 @@ class _BaseGraphExecutor(
                         phase="exit",
                         status="failed",
                     )
-                    await self._save_state(
-                        iteration=context.iteration, node_states=node_states,
-                        status=SessionStatus.ENDED, ended_reason="failed",
-                        ended_detail=detail,
-                    )
+                    await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail=detail)
                     return
                 context.nodes[ay.node_id] = out
                 node_states[ay.node_id] = NodeRuntimeState(
@@ -1178,11 +1148,7 @@ class _BaseGraphExecutor(
                         phase="exit",
                         status="failed",
                     )
-                    await self._save_state(
-                        iteration=context.iteration, node_states=node_states,
-                        status=SessionStatus.ENDED, ended_reason="failed",
-                        ended_detail=detail,
-                    )
+                    await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail=detail)
                     return
                 context.nodes[tw.node_id] = out
                 node_states[tw.node_id] = NodeRuntimeState(
@@ -1252,13 +1218,7 @@ class _BaseGraphExecutor(
                     message=str(exc),
                     node_id=exc.source_node_id,
                 )
-                await self._save_state(
-                    iteration=context.iteration,
-                    node_states=node_states,
-                    status=SessionStatus.ENDED,
-                    ended_reason="failed",
-                    ended_detail="routing_failed",
-                )
+                await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail="routing_failed")
                 return
             # Drain any fan-out plans spawned by the drained ToolCalls.
             for fanout_id, instances in list(self._pending_fanout.items()):
@@ -1359,6 +1319,29 @@ class _BaseGraphExecutor(
         ended_detail: str | None = None,
     ) -> None:
         """Persist graph-level state between supersteps."""
+
+    async def _end_failed(
+        self,
+        *,
+        iteration: int,
+        node_states: dict[str, NodeRuntimeState],
+        ended_detail: str,
+    ) -> None:
+        """Persist ``ENDED/failed`` AND expose the outcome: the failure exits of :meth:`resume_from_checkpoint`.
+
+        The main loop sets ``_last_ended_reason`` / ``_last_ended_detail`` at its tail, and ``last_done_reason`` (what a parent subgraph node and ``end_graph``'s record read) reports from them. The early
+        exits of a resume (a failed or rejected tool, a mapped error, a resumed agent or tool_wait node that fails, routing that fails) leave through ``return`` and never reach that tail, so before this
+        helper a resumed graph that failed read as ``None`` and its end record said ``graph_ended``/``completed`` (review of #701, round 3, B2-N3). Every such exit calls this, so a new one cannot forget.
+        """
+        self._last_ended_reason = "failed"
+        self._last_ended_detail = ended_detail
+        await self._save_state(
+            iteration=iteration,
+            node_states=node_states,
+            status=SessionStatus.ENDED,
+            ended_reason="failed",
+            ended_detail=ended_detail,
+        )
 
     async def _build_sub_executor(
         self,

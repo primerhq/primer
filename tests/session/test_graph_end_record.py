@@ -336,6 +336,17 @@ def test_a_node_record_opens_a_run_and_every_close_ends_it() -> None:
     assert _verdicts([USER, node_done("w0"), end(), DIVIDER, USER, node_done("w0"), DIVIDER]) == [INSIDE, INSIDE, CLOSES, INSIDE, INSIDE, INSIDE, CLOSES]
 
 
+def test_a_copy_closes_the_graph_run_too_so_a_later_divider_does_not_depend_on_the_order() -> None:
+    """A graph-level error closes the window, a node record after it (a late sibling) opens a run again, and the graph's end that follows is a COPY of the failure: it has closed nothing, but the run it
+    ends is over. A divider after it must be inside (the first record of the next window), as it is when the late node record never came (round 3 review: remove the order dependence)."""
+    graph_error = rec(0, "error", {"code": "max_iterations_exceeded", "message": "graph ran for 1 iterations"})
+    in_order = [USER, node_done("w0"), graph_error, end(failed=True), DIVIDER, node_done("w0"), end()]
+    late_node = [USER, node_done("w0"), graph_error, node_done("w1"), end(failed=True), DIVIDER, node_done("w0"), end()]
+
+    assert _verdicts(in_order) == [INSIDE, INSIDE, CLOSES, COPY, INSIDE, INSIDE, CLOSES]
+    assert _verdicts(late_node) == [INSIDE, INSIDE, CLOSES, INSIDE, COPY, INSIDE, INSIDE, CLOSES]
+
+
 def test_the_open_user_input_of_a_run_the_divider_closed_is_counted_as_closed() -> None:
     from primer.session.turns import count_turn_state
 

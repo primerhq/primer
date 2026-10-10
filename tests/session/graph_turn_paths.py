@@ -87,7 +87,7 @@ def one_worker(*, end_template: str | None = "{{ nodes.worker.text }}", max_iter
     )
 
 
-async def open_turn(storage, io, *, reopen: bool = False, user_input: bool = True, bump: bool | None = None) -> WorkspaceSession:
+async def open_turn(storage, io, *, reopen: bool = False, user_input: bool = True, bump: bool = False) -> WorkspaceSession:
     """``create_session`` / ``wake_session``'s records: (a reopen's ``invocation_divider``, then) a ``user_input`` (none for a restart without input); the row as the reopen leaves it."""
     sessions = storage.get_storage(WorkspaceSession)
     row = await sessions.get(SID)
@@ -105,7 +105,7 @@ async def open_turn(storage, io, *, reopen: bool = False, user_input: bool = Tru
     row = await sessions.get(SID)
     row = row.model_copy(update={
         "last_seq": last, "status": SessionStatus.RUNNING, "ended_reason": None, "ended_at": None, "turn_status": "running",
-        "parked_status": None, "parked_state": None, "parked_at": None, **({"turn_no": row.turn_no + 1} if (reopen if bump is None else bump) else {}),
+        "parked_status": None, "parked_state": None, "parked_at": None, **({"turn_no": row.turn_no + 1} if bump else {}),
     })
     await sessions.update(row)
     return row
