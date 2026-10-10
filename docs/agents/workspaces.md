@@ -170,7 +170,12 @@ it's called from a context with no implicit session.
   `workspaces::list_workspace_templates` /
   `workspaces::update_workspace_template` /
   `workspaces::delete_workspace_template` - reusable workspace
-  configs.
+  configs. `list_workspace_templates` (and the other list tools) refuse
+  an `order_by` on a secret-bearing field (a template's `env`, a
+  workspace's `overrides`, and any field nesting a `SecretStr` or a
+  masked URL) with `type=validation-error`; those fields cannot be a
+  find predicate either, because the row stores them in clear while
+  every read masks them.
 - Some template fields are admin-only: container `extra_mounts`,
   Kubernetes `extra_volumes`, `extra_volume_mounts`, `pod_overrides`
   and `container_security_context_overrides`, and any file whose
