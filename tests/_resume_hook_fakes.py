@@ -253,6 +253,15 @@ class EngineFakePool:
         self.agent_tool_result_session_ids.append(session_id)
         self.agent_tool_result_tcids.append(tcid)
         self.agent_tool_result_event_keys.append(event_key)
+        # ... but it answers only where the real lookup does (graph_resume_coordinator.graph_agent_tool_result): None when the checkpoint has no pending agent
+        # yield for the fired tool_call_id / event key, or when that yield is an approval (the decision is applied by the coordinator's bypass dispatch, not by
+        # a reply). tests/worker/test_engine_fake_pool_graph_reply.py checks the two against each other.
+        from primer.session.pending_gates import pending_entries
+
+        matches = pending_entries(checkpoint, "pending_agent_yields", tool_call_id=tcid, event_key=event_key)
+        ay = matches[0] if matches else None
+        if ay is None or ay.get("tool_name") in (None, "_approval"):
+            return None
         return Message(role="tool", parts=[ToolResultPart(id=tcid, output="blue")])
 
     async def _write_approval_record_for_graph(self, *, session, checkpoint, tcid, payload, event_key=None):

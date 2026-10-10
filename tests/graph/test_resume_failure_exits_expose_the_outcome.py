@@ -13,13 +13,26 @@ from __future__ import annotations
 
 import pytest
 
-from primer.graph.base import _RoutingFailed, _ToolApprovalRejected
+from primer.graph.base import _GraphErrorEvent, _ToolApprovalRejected
 from primer.graph.executor import GraphExecutor
 from primer.model.chat import Message, ToolResultPart
-from primer.model.graph import Graph, GraphNodeMessage, GraphThread, _BeginNode, _EndNode, _StaticEdge, _ToolCallNode
+from primer.model.graph import (
+    BranchCondition,
+    Graph,
+    GraphNodeMessage,
+    GraphThread,
+    JsonPathBranch,
+    _AgentNodeRef,
+    _BeginNode,
+    _ConditionalEdge,
+    _EndNode,
+    _JsonPathRouter,
+    _StaticEdge,
+    _ToolCallNode,
+)
 from primer.model.yield_ import ToolWaitPark, Yielded, YieldToWorker
 from primer.session.graph_end import graph_end_for
-from tests.graph.test_tool_wait_graph_park import _ask_user_yield, _mk_parallel_executor, _tool_wait_park
+from tests.graph.test_tool_wait_graph_park import _ask_user_yield, _mk_executor_for_graph, _mk_parallel_executor, _tool_wait_park
 from tests.graph.test_toolcall_dispatch import _InMemoryStorage
 
 
@@ -182,10 +195,24 @@ async def test_a_resumed_tool_wait_node_that_fails_ends_the_graph_failed(monkeyp
 # ---- routing ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 
+def _routing_graph() -> Graph:
+    """begin -> A -> a conditional edge none of whose branches matches A's output (and no ``default_to``) -> exit: the shape of tests/graph/test_routing_failed.py."""
+    return Graph(
+        id="g-routing", description="begin -> A -> conditional (no match, no default) -> exit",
+        nodes=[_BeginNode(id="begin"), _AgentNodeRef(id="A", agent_id="agent-a"), _EndNode(id="exit")],
+        edges=[
+            _StaticEdge(from_node="begin", to_node="A"),
+            _ConditionalEdge(
+                from_node="A",
+                router=_JsonPathRouter(branches=[JsonPathBranch(conditions=[BranchCondition(path="go", op="eq", value="exit")], to_node="exit")]),
+            ),
+        ],
+    )
+
+
 @pytest.mark.asyncio
 async def test_routing_that_fails_after_a_resume_ends_the_graph_failed(monkeypatch) -> None:
-    ex1 = await _mk_parallel_executor()
-    _fail_when_resumed(monkeypatch, {})
+    ex1 = await _mk_executor_for_graph(_routing_graph())
     import primer.graph._agent_node as agent_node_mod
 
     first = {"done": False}
@@ -201,14 +228,9 @@ async def test_routing_that_fails_after_a_resume_ends_the_graph_failed(monkeypat
     with pytest.raises(ToolWaitPark) as parked:
         async for _ in ex1.invoke([]):
             pass
-    ex2 = await _mk_parallel_executor()
+    ex2 = await _mk_executor_for_graph(_routing_graph())
 
-    async def _no_route(completed, context):
-        raise _RoutingFailed("A", "no branch matched")
+    events = [ev async for ev in ex2.resume_from_checkpoint(parked.value.graph_checkpoint, resolved_tool_wait={"A": [ToolResultPart(id="A:tool:0:1", output="result A", error=False)]})]
 
-    monkeypatch.setattr(ex2, "_compute_next_ready", _no_route)
-
-    async for _ in ex2.resume_from_checkpoint(parked.value.graph_checkpoint, resolved_tool_wait={"A": [ToolResultPart(id="A:tool:0:1", output="result A", error=False)]}):
-        pass
-
+    assert [ev.code for ev in events if isinstance(ev, _GraphErrorEvent)] == ["routing_failed"], "the failure under test is the router's own, not a stand-in"
     _says_failed(ex2)

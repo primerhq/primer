@@ -238,7 +238,7 @@ async def failed_then_restarted_without_input(kind: str, tmp_path, sp, io, bus) 
     else:  # pragma: no cover - a typo in a test
         raise AssertionError(kind)
     await release(sp, outcome)
-    await open_turn(sp, io, reopen=True, user_input=False, bump=False)
+    await open_turn(sp, io, reopen=True, user_input=False)
     outcome, _ = await run_graph(tmp_path / "b", sp, io, bus, tl, scripts=[OK], graph=one_worker() if kind == "iterations" else None)
     await release(sp, outcome)
     return tl
