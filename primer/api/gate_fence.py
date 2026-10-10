@@ -9,6 +9,10 @@ is refused with a 409 ``approval_stale`` BEFORE anything moves.
 A respond that names none is still accepted (a client that predates the token, a channel tag minted before this release): logged once without
 the call's arguments and counted in ``gate_respond_total{gate_token="absent"}`` (:func:`primer.session.gate_token.count_gate_token`, shared with the
 channel inbox), so the flip to a 422 can be scheduled once that count is zero.
+
+A gate takes ONE decision (ticket 01a12606): a respond for a gate that already holds one (another operator's, or this client's own earlier
+different answer) is refused by the durable flip and answered 409 ``already_decided``; nothing moves, and the first decision is the one that
+runs and the one the audit names. The same decision sent again is the one that landed, and is accepted again.
 """
 
 from __future__ import annotations
@@ -20,6 +24,10 @@ from primer.session.gate_token import count_gate_token
 
 APPROVAL_STALE = "approval_stale"
 """The RFC 7807 ``code`` of a respond that named a gate that has since been replaced (409). One code for approvals and ask_user alike."""
+
+ALREADY_DECIDED = "already_decided"
+"""The RFC 7807 ``code`` of a decision on a gate that already holds one (409): the decision was not applied, recorded or published. One code for
+approvals and ask_user alike."""
 
 _NOUN = {"approval": "approval", "ask_user": "question", "yield": "yield"}
 
@@ -39,4 +47,11 @@ def stale_gate_error(kind: str, *, queued: bool = False) -> HTTPException:
     return HTTPException(status_code=409, detail={"code": APPROVAL_STALE, "message": message})
 
 
-__all__ = ["APPROVAL_STALE", "count_gate_token", "stale_gate_error"]
+def decided_gate_error(kind: str) -> HTTPException:
+    """The 409 for a decision the durable flip refused: the gate (``approval`` or ``ask_user``) already holds a decision, which stands."""
+    noun = _NOUN.get(kind, "request")
+    verb = "answered" if kind == "ask_user" else "decided"
+    return HTTPException(status_code=409, detail={"code": ALREADY_DECIDED, "message": f"this {noun} was already {verb}; reload the pending list"})
+
+
+__all__ = ["ALREADY_DECIDED", "APPROVAL_STALE", "count_gate_token", "decided_gate_error", "stale_gate_error"]

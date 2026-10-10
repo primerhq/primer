@@ -390,7 +390,10 @@ async def test_tool_approval_retry_repairs_lease_lost_by_a_half_applied_flip(
 @pytest.mark.asyncio
 async def test_healthy_double_reply_still_repairs_idempotently(app, client):
     """The repair is an idempotent upsert, so an ordinary double-reply (lease
-    already healthy) stays a harmless no-op that still returns 202."""
+    already healthy) stays harmless: the lease is upserted again and the first
+    reply stands. The second reply is a DIFFERENT answer, which was never
+    applied, so it is refused 409 ``already_decided`` (ticket 01a12606; it
+    used to be answered 202)."""
     sess = _make_ask_user_parked_session(session_id="d-2x", tool_call_id="tc2x")
     storage = app.state.storage_provider.get_storage(WorkspaceSession)
     await storage.create(sess)
@@ -408,7 +411,9 @@ async def test_healthy_double_reply_still_repairs_idempotently(app, client):
         "/v1/sessions/d-2x/ask_user/respond",
         json={"tool_call_id": "tc2x", "response": "two"},
     )
-    assert second.status_code == 202
+    assert second.status_code == 409
+    assert second.json()["extensions"]["code"] == "already_decided"
+    assert engine.calls == [(ClaimKind.SESSION, "d-2x")] * 2, "the refused reply still re-arms the lease of the row it found resumable"
     # The guard still protects the first reply's payload from being clobbered.
     after = await storage.get("d-2x")
     assert after.parked_state["resume_event_payload"] == {"response": "one"}

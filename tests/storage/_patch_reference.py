@@ -38,10 +38,22 @@ def same_spelling(a: Any, b: Any) -> bool:
     return type(a) is type(b) and a == b
 
 
-def doc_matches(doc: Mapping[str, Any], where: Mapping[str, Sequence[Any]]) -> bool:
-    """Every field must match (AND); any listed value matches (OR); an absent field reads as None."""
+def value_at(doc: Mapping[str, Any], field: str | tuple[str, ...]) -> Any:
+    """What a ``where`` key names: a top-level field, or the leaf a path names (None when absent, under an absent or non-object parent too)."""
+    if not isinstance(field, tuple):
+        return doc.get(field)
+    node: Any = doc
+    for part in field:
+        if not isinstance(node, Mapping) or part not in node:
+            return None
+        node = node[part]
+    return node
+
+
+def doc_matches(doc: Mapping[str, Any], where: Mapping[Any, Sequence[Any]]) -> bool:
+    """Every key must match (AND); any listed value matches (OR); an absent field or leaf reads as None."""
     return all(
-        any(typed_equal(doc.get(field), v) for v in allowed)
+        any(typed_equal(value_at(doc, field), v) for v in allowed)
         for field, allowed in where.items()
     )
 
