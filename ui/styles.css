@@ -1463,7 +1463,7 @@ input, textarea, select { font: inherit; color: inherit; }
 .toast .title { font-weight: 600; }
 .toast .detail { color: var(--text-2); margin-top: 2px; }
 .toast .req-id { margin-top: 6px; font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--text-3); display: flex; align-items: center; gap: 4px; }
-.toast .req-id a { color: var(--accent); cursor: pointer; }
+.toast .req-id button { color: var(--accent); cursor: pointer; background: none; border: none; padding: 0; font: inherit; }
 .toast-actions { display: flex; gap: 8px; margin-top: 8px; }
 .toast-action {
   background: transparent;

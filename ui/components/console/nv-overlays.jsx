@@ -49,8 +49,10 @@ function NV_OverlayPanel(props) {
         <div className="nv-overlay-head">
           {/* THE one title (one-title rule), and the page's h1: the
               re-hosted pages render action bars, never headings, and
-              the e2e suite addresses surfaces by h1.page-title. */}
-          <h1 className="nv-overlay-title page-title" id={titleId}
+              the e2e suite addresses surfaces by h1.page-title. tabIndex -1:
+              a triggers row that refetches itself away lands focus here, the
+              surface's one heading (ticket 01a12144). */}
+          <h1 className="nv-overlay-title page-title" id={titleId} tabIndex={-1}
             data-testid="nv-overlay-title">{props.title}</h1>
           <span style={{ flex: 1 }} />
           <button type="button" className="nv-overlay-close"
