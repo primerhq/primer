@@ -32,6 +32,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._support.js_source import blank, close_of, line_of, value_end
+
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
 API = (UI / "foundation" / "api.js").read_text(encoding="utf-8")
@@ -292,12 +294,37 @@ def test_no_component_reader_prints_the_auth_gates_bare_code(envelopes, path: st
 
 # One rule: a component never reads ``.envelope`` (the thrown ApiError's problem document). Everything it needs from a refusal is in ``window.primerApi.readRefusal``.
 # The first version of this guard listed the fields (``ext.code``, ``envDetail.error`` ...) and missed two copies of the reader (review of #625); a rule about the one
-# property they all go through cannot be walked around by renaming a variable or adding ``?.``.
-_ENVELOPE_READ = re.compile(r"\.envelope\b|\{\s*envelope\b")
+# property they all go through cannot be walked around by renaming a variable or adding ``?.``. The second was a regular expression per LINE and could be walked
+# around too: ``err["envelope"]``, ``const { message, envelope } = err`` (it only knew a pattern that STARTS with ``envelope``), the same pattern over several lines,
+# and it took ``//`` inside a string for a comment and read prose in a string or a block comment as code. It now reads the whole file with the comments, the strings
+# and the static text of templates taken out (tests/_support/js_source.py) and looks at three things: a ``.envelope`` access, a bracket access with the name as a
+# literal, and a destructuring pattern (a brace group that names ``envelope`` and is followed by ``=``, a parameter list that goes on, or ``of``/``in``).
+_ENVELOPE_DOT = re.compile(r"\.\s*envelope\b")
+_ENVELOPE_BRACKET = re.compile(r"\[\s*(['\"])envelope\1\s*\]")
+_ENVELOPE_KEY = re.compile(r"[{,]\s*envelope\s*(?=[,:=}])")
+_DESTRUCTURED = re.compile(r"\s*(?:=(?![=>])|\)\s*(?:=>|\{)|(?:of|in)\b)")
 
 
-def _reads_the_envelope(line: str) -> bool:
-    return _ENVELOPE_READ.search(line.split("//", 1)[0]) is not None
+def _envelope_reads(text: str) -> list[int]:
+    """The lines of ``text`` that read the thrown error's ``envelope``."""
+    code = blank(text, strings=True, templates=True)
+    lines = {line_of(text, m.start()) for m in _ENVELOPE_DOT.finditer(code)}
+    for m in _ENVELOPE_BRACKET.finditer(blank(text)):
+        if code[m.start()] == "[":  # the bracket is code, not text inside a string
+            lines.add(line_of(text, m.start()))
+    if re.search(r"\benvelope\b", code):
+        for i, ch in enumerate(code):
+            if ch != "{":
+                continue
+            end = close_of(code, i)
+            key = _ENVELOPE_KEY.search(code, i, end) if end > 0 else None
+            if key and _DESTRUCTURED.match(code, end):
+                lines.add(line_of(text, code.index("envelope", key.start(), key.end())))
+    return sorted(lines)
+
+
+def _reads_the_envelope(text: str) -> bool:
+    return bool(_envelope_reads(text))
 
 
 @pytest.mark.parametrize(
@@ -350,30 +377,71 @@ def test_the_scan_leaves_the_reader_and_prose_alone(line: str) -> None:
 _MAY_READ_THE_ENVELOPE = {"components/toolsets/python-editor.jsx"}
 
 
+def _component_sources() -> list[tuple[str, str]]:
+    """Every ``*.jsx`` and ``*.js`` under ``ui/components`` as ``(path relative to ui/, text)``, mock data left out."""
+    root = UI / "components"
+    paths = sorted([*root.rglob("*.jsx"), *root.rglob("*.js")])
+    return [(p.relative_to(UI).as_posix(), p.read_text(encoding="utf-8")) for p in paths if not p.name.endswith("mock-data.jsx")]
+
+
 def test_no_component_reads_the_envelope_but_the_python_editor() -> None:
+    sources = _component_sources()
     offenders = []
-    for path in sorted((UI / "components").rglob("*.jsx")):
-        rel = path.relative_to(UI).as_posix()
-        if rel in _MAY_READ_THE_ENVELOPE or rel.endswith("mock-data.jsx"):
+    for rel, text in sources:
+        if rel in _MAY_READ_THE_ENVELOPE:
             continue
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            if _reads_the_envelope(line):
-                offenders.append(f"{rel}:{number}: {line.strip()[:110]}")
+        lines = text.splitlines()
+        offenders += [f"{rel}:{n}: {lines[n - 1].strip()[:110]}" for n in _envelope_reads(text)]
+    assert len(sources) >= 50, f"the scan found {len(sources)} component files: it is looking at the wrong place"
     assert not offenders, "a component reads a refusal out of the envelope itself instead of window.primerApi.readRefusal:\n" + "\n".join(offenders)
+
+
+def test_the_envelope_scan_still_sees_the_one_reader_that_is_allowed_to() -> None:
+    """The allowlist is not dead and the scan is not blind: the Python editor's read is found."""
+    text = dict(_component_sources())["components/toolsets/python-editor.jsx"]
+
+    assert _envelope_reads(text)
 
 
 # A code never goes in a banner TITLE (ruling 01a11bf7-15b7, restated in the #625 review): the title is "Create failed" or "Save failed"; when the server sent no
 # sentence the MESSAGE carries the code (``Forbidden (scope_required)``). The one reader finds codes the old copies missed, so a title that composes one would put
 # ``Save failed (auth_required)`` where main said ``Save failed``.
-_TITLE_WITH_CODE = [
-    re.compile(r"\btitle=\{[^}]*?\.code\b"),      # title={error.code ? `Save failed (${error.code})` : "Save failed"}, also over several lines
-    re.compile(r"\btitle\s*:\s*[^,\n}]*\.code\b"),   # a toast or banner object: { title: `Failed (${err.code})` }
-]
+# The scan reads the file the way the envelope scan does (comments, strings and the static text of templates taken out; the ``${...}`` placeholders stay), finds
+# every ``title={...}`` prop by its balanced braces and every ``title:`` key up to the end of its value, and asks whether the expression names a ``code``: a
+# property (``err.code``), a destructured variable (``code``) or a bracket access (``err["code"]``). The first version was two regular expressions that stopped at the
+# first ``}`` and only knew ``.code``: a title with a ``${name}`` before the code, a destructured ``code`` and ``err["code"]`` were missed.
+TITLES_SEEN_WHEN_WRITTEN = 425
+_TITLE_START = re.compile(r"\btitle\s*(=\s*\{|:)")
+_CODE_WORD = re.compile(r"\bcode\b")
+_CODE_BRACKET = re.compile(r"\[\s*(['\"])code\1\s*\]")
+
+
+def _titles(text: str) -> list[tuple[int, bool]]:
+    """``(line, whether the expression names a code)`` of every ``title={...}`` and ``title:`` in ``text``."""
+    code = blank(text, strings=True, templates=True)
+    visible = blank(text)
+    found = []
+    for m in _TITLE_START.finditer(code):
+        k = m.start() - 1
+        while k >= 0 and code[k].isspace():
+            k -= 1
+        if k >= 0 and code[k] in "?.":  # `cond ? title : other` and `err.title : other` are not a prop or a key
+            continue
+        if m.group(1) == ":":
+            start, end = m.end(), value_end(code, m.end())
+        else:
+            start = m.end()
+            close = close_of(code, start - 1)
+            if close < 0:
+                continue
+            end = close - 1
+        names_a_code = bool(_CODE_WORD.search(code, start, end)) or any(code[b.start()] == "[" for b in _CODE_BRACKET.finditer(visible, start, end))
+        found.append((line_of(text, m.start()), names_a_code))
+    return found
 
 
 def _titles_that_compose_a_code(text: str) -> list[int]:
-    code = "\n".join(line.split("//", 1)[0] for line in text.split("\n"))
-    return sorted({code.count("\n", 0, m.start()) + 1 for pattern in _TITLE_WITH_CODE for m in pattern.finditer(code)})
+    return sorted({line for line, names_a_code in _titles(text) if names_a_code})
 
 
 @pytest.mark.parametrize(
@@ -418,12 +486,11 @@ def test_the_title_scan_leaves_plain_titles_and_other_props_alone(text: str) -> 
 
 
 def test_no_banner_title_in_any_component_composes_a_code() -> None:
-    offenders = []
-    for path in sorted((UI / "components").rglob("*.jsx")):
-        rel = path.relative_to(UI).as_posix()
-        if rel.endswith("mock-data.jsx"):
-            continue
-        offenders += [f"{rel}:{n}" for n in _titles_that_compose_a_code(path.read_text(encoding="utf-8"))]
+    offenders, seen = [], 0
+    for rel, text in _component_sources():
+        seen += len(_titles(text))
+        offenders += [f"{rel}:{n}" for n in _titles_that_compose_a_code(text)]
+    assert seen >= TITLES_SEEN_WHEN_WRITTEN // 2, f"the scan saw {seen} titles (there were {TITLES_SEEN_WHEN_WRITTEN} when it was written): it is looking at the wrong place"
     assert not offenders, "a title puts the code in the banner title (the message carries it when there is no sentence):\n" + "\n".join(offenders)
 
 
