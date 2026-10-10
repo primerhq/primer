@@ -185,7 +185,7 @@ Body: {"tool_call_id": "tc-abc", "gate_id": "3f9a1c8d...", "decision": "approved
 
 Send back the `gate_id` the pending response served. A respond naming a gate that is no longer the pending one under that `tool_call_id` (the
 gate it showed was decided or timed out and the agent has since parked on the same raw id again) is refused with `409` and
-`extensions.code = "approval_stale"`, and nothing moves: no wake, no record. Reload the pending list. A `gate_id` is 32 lowercase hex
+`extensions.code = "approval_stale"`, and nothing moves: no wake, no record. Reload the pending list. A respond naming a gate that is pending nowhere (the first gate of a graph ToolCall node that has re-parked on a second gate) is a `404`: treat it like the `409` and reload. A `gate_id` is 32 lowercase hex
 characters; anything else is a `422`. A respond with no `gate_id` is still accepted while clients catch up (it is logged once and counted in
 `gate_respond_total{kind="approval",gate_token="absent"}`), but it cannot tell a stale card from a current one, so always send it.
 `POST .../yields/{tool_call_id}/cancel` takes the same optional `gate_id` in its body, and so does `POST .../ask_user/respond`
