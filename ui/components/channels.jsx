@@ -543,7 +543,8 @@ function ChannelProviderDetail({ providerId, pushToast }) {
               <Btn
                 kind="danger"
                 icon="trash"
-                disabled={chs.length > 0 || del.loading}
+                disabled={chs.length > 0}
+                busy={del.loading}
                 onClick={() => del.mutate()}
               >
                 {del.loading ? "Deleting…" : "Delete provider"}

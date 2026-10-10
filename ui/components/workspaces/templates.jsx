@@ -772,7 +772,8 @@ function WorkspaceTemplateDetail({ templateId, pushToast }) {
               <Btn
                 kind="danger"
                 icon="trash"
-                disabled={referencingWorkspaces.length > 0 || del.loading}
+                disabled={referencingWorkspaces.length > 0}
+                busy={del.loading}
                 onClick={() => del.mutate().catch(() => { /* onError */ })}
               >
                 {del.loading ? "Deleting…" : "Delete template"}

@@ -1007,7 +1007,7 @@ function WS_FilesTab({ wid, pushToast }) {
                 <Btn
                   kind="danger"
                   icon="trash"
-                  disabled={deleteEntry.loading}
+                  busy={deleteEntry.loading}
                   onClick={() => deleteEntry.mutate({ path: pendingDelete.path, recursive: pendingDelete.isDir })}
                 >
                   {pendingDelete.isDir ? "Delete folder" : "Delete file"}
@@ -2009,7 +2009,7 @@ function WS_DestroyTab({ wid, pushToast, sessionsForBadge }) {
           footer={
             <>
               <Btn kind="ghost" onClick={() => setShowConfirm(false)}>Cancel</Btn>
-              <Btn kind="danger" icon="trash" disabled={destroy.loading} onClick={onConfirm}>Destroy permanently</Btn>
+              <Btn kind="danger" icon="trash" busy={destroy.loading} onClick={onConfirm}>Destroy permanently</Btn>
             </>
           }
         >

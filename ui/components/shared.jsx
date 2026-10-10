@@ -96,18 +96,25 @@ const StatusPill = ({ status, className = "", parked }) => {
   );
 };
 
-const Btn = ({ children, kind = "default", size, icon, iconRight, disabled, onClick, title, type = "button", ...rest }) => {
+// A click on a busy button does nothing, and its default is prevented so a type="submit" one does not submit its form.
+const refuseWhileBusy = (e) => { if (e && typeof e.preventDefault === "function") e.preventDefault(); };
+
+// `busy` is "my request is out". The button is NOT natively disabled: a focused button that turns `disabled` drops the focus to <body> (inside a dialog the
+// focus trap no longer sees Tab, and the keyboard user loses their place), so it keeps its tab stop and says `aria-disabled` and `aria-busy` instead, and its
+// click is refused. `disabled` keeps its own meaning ("cannot be pressed now, whatever the answer"): `disabled={!canSubmit} busy={saving}`. See ui-foundation.md.
+const Btn = ({ children, kind = "default", size, icon, iconRight, disabled, busy, onClick, title, type = "button", ...rest }) => {
   const cls = ["btn"];
   if (kind === "primary") cls.push("btn-primary");
   if (kind === "danger") cls.push("btn-danger");
   if (kind === "ghost") cls.push("btn-ghost");
   if (size === "sm") cls.push("btn-sm");
   if (size === "lg") cls.push("btn-lg");
+  const busyAttrs = busy ? { "aria-busy": "true", "aria-disabled": "true" } : null;
   // Forward arbitrary HTML attrs (data-testid, aria-*, etc.) so call
   // sites that set them — e.g. data-testid="approval-approve" in
   // approvals.jsx — actually surface them on the rendered <button>.
   return (
-    <button type={type} className={cls.join(" ")} disabled={disabled} onClick={onClick} title={title} {...rest}>
+    <button type={type} className={cls.join(" ")} disabled={disabled} onClick={busy ? refuseWhileBusy : onClick} title={title} {...rest} {...busyAttrs}>
       {icon && <Icon name={icon} size={13} />}
       {children}
       {iconRight && <Icon name={iconRight} size={13} />}
