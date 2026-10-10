@@ -10,6 +10,7 @@ real ``translate_stream_event`` and whose park is stashed with ``stash_graph_sco
 
 from __future__ import annotations
 
+import copy
 import json
 from typing import Any
 
@@ -264,3 +265,79 @@ async def test_a_value_yielding_call_whose_hook_raises_is_answered_with_an_error
     written = await _resume(checkpoint, resumer, {"response": "blue"}, ids[0])
     call = _live_call(live)
     assert [(r["payload"]["call_id"], r["payload"]["error"]) for r in _results(written)] == [(call["payload"]["id"], True)]
+
+
+# ---- review of #712, round 2: pins for the parts of the second-phase and inner-id handling that no case told apart --------------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_two_phase_park_whose_second_decision_is_a_rejection_is_answered_under_the_scoped_id_of_the_row() -> None:
+    """The rejection arm of the approved re-dispatch answers under ``row_call_id``; when the first gate is rejected the two ids are equal, so only a rejection of the SECOND gate (whose id is a fresh one) tells
+    an answer under the row from an answer under the gate."""
+    ids: list[str] = []
+
+    async def never(node: Any, arguments: Any, bypass_approval: bool = False) -> ToolResultPart:  # pragma: no cover - the rejection replaces the dispatch
+        raise AssertionError("a rejected call is not dispatched")
+
+    world = await _park(_gate(ids))
+    _first, repark = await _resume_full(world.checkpoint, world.executor(_gate(ids)), {"decision": "approved"}, ids[0])
+    assert repark is not None and ids[0] != ids[1]
+    (pending,) = repark.graph_checkpoint["pending_toolcalls"]
+    written, again = await _resume_full(repark.graph_checkpoint, world.executor(never), {"decision": "rejected", "reason": "no"}, ids[1], event_key=pending["parked_event_key"])
+    assert again is None
+    call = _live_call(world.live)
+    assert [(r["payload"]["call_id"], r["payload"]["error"]) for r in _results(written)] == [(call["payload"]["id"], True)]
+
+
+@pytest.mark.asyncio
+async def test_a_two_phase_park_whose_second_dispatch_raises_is_answered_with_an_error_under_the_scoped_id_of_the_row() -> None:
+    """The exception arm of the approved re-dispatch, for the same reason: only the second dispatch runs under an id that is not the row's."""
+    ids: list[str] = []
+
+    async def broken(node: Any, arguments: Any, bypass_approval: bool = False) -> ToolResultPart:
+        ids.append(_call_id())
+        raise RuntimeError("the tool broke the second time")
+
+    world = await _park(_gate(ids))
+    _first, repark = await _resume_full(world.checkpoint, world.executor(_gate(ids)), {"decision": "approved"}, ids[0])
+    assert repark is not None
+    (pending,) = repark.graph_checkpoint["pending_toolcalls"]
+    written, again = await _resume_full(repark.graph_checkpoint, world.executor(broken), {"decision": "approved"}, ids[1], event_key=pending["parked_event_key"])
+    assert again is None and len(ids) == 3
+    call = _live_call(world.live)
+    assert [(r["payload"]["call_id"], r["payload"]["error"]) for r in _results(written)] == [(call["payload"]["id"], True)]
+
+
+@pytest.mark.asyncio
+async def test_a_park_under_an_id_other_than_the_rows_is_answered_under_the_scoped_id_of_the_row() -> None:
+    """The shape of a delegating tool whose SUBAGENT parks: the yield names the inner call's id, not the id the node's row was written under. The live park records the ROW's id (``row_call_id`` is the call the
+    node was dispatched with, whatever id the gate carries) and the stash keys on it, so the resume still closes the node's own row. Every other case parks under the id it was handed, where the two are equal."""
+    async def first(node: Any, arguments: Any) -> ToolResultPart:
+        raise YieldToWorker(Yielded(tool_name="_approval", event_key="tool_approval:s:inner-call"), tool_call_id="inner-call")
+
+    async def approved(node: Any, arguments: Any, bypass_approval: bool = False) -> ToolResultPart:
+        return ToolResultPart(id=_call_id(), output="it ran")
+
+    world = await _park(first)
+    call = _live_call(world.live)
+    (entry,) = world.checkpoint["pending_toolcalls"]
+    assert entry["tool_call_id"] == "inner-call", "the gate's id is the one the yield named"
+    assert entry["row_call_id"] == call["payload"]["raw_id"] != "inner-call", "the row's id is the call the node was dispatched with"
+    assert entry["scoped_tool_call_id"] == call["payload"]["id"], "the stash found the scoped id through the row's id"
+    written, repark = await _resume_full(world.checkpoint, world.executor(approved), {"decision": "approved"}, "inner-call", event_key="tool_approval:s:inner-call")
+    assert repark is None
+    assert [r["payload"]["call_id"] for r in _results(written)] == [call["payload"]["id"]], "answered under the ROW's scoped id, not under the inner id"
+
+
+@pytest.mark.asyncio
+async def test_a_worker_resume_that_names_only_the_first_gates_id_decides_nothing_once_the_node_has_re_parked() -> None:
+    """The worker side of the C-033 pin: the REST selector (``pending_entries``, ``resolve_pending_gate``) is pinned above. A resume that names the first gate's id and no key, after the node re-parked on a
+    second gate, dispatches nothing, writes nothing and leaves the node parked on the second gate."""
+    ids: list[str] = []
+    world = await _park(_gate(ids))
+    _first, repark = await _resume_full(world.checkpoint, world.executor(_gate(ids)), {"decision": "approved"}, ids[0])
+    assert repark is not None and len(ids) == 2
+    written, again = await _resume_full(copy.deepcopy(repark.graph_checkpoint), world.executor(_gate(ids)), {"decision": "approved"}, ids[0])
+    assert len(ids) == 2, "the first gate's id dispatched the node again"
+    assert again is not None and [e["tool_call_id"] for e in again.graph_checkpoint["pending_toolcalls"]] == [ids[1]]
+    assert _results(written) == []
