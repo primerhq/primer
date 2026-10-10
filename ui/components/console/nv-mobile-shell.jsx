@@ -1149,12 +1149,18 @@ function NV_MobileFactSheet(props) {
   function fireNow() {
     if (!props.row || firing) return;
     setFiring(true);
-    SH_api.fireTrigger(props.row.id).then(function () {
+    var label = props.row.name || props.row.slug || props.row.id;
+    // fire_now is a 200 even when the server SKIPPED it (a disabled trigger answers {skipped: true}):
+    // the same outcome words the desktop list row's toast uses, never a blind 'Fired <id>'.
+    SH_api.fireTrigger(props.row.id).then(function (res) {
       setFiring(false);
-      con.toast("Fired " + (props.row.id || ""));
+      var outcome = window.TR_fireOutcome(res, label);
+      con.toast(outcome.title + (outcome.detail ? ": " + outcome.detail : ""), { kind: outcome.kind, requestId: null });
     }, function (e) {
       setFiring(false);
-      con.toast("Fire failed: " + ((e && e.message) || "unknown error"));
+      // e.message is only the HTTP title; the one reader's text, with the request id for the toast's copy.
+      var refusal = window.primerApi.readRefusal(e);
+      con.toast("Fire failed: " + window.TR_refusalText(e, "Fire failed"), { kind: "error", requestId: refusal.requestId || null });
     });
   }
 

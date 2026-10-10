@@ -1696,9 +1696,24 @@ function TR_TriggerDetail({ id }) {
           )}
           {fireResult && (
             <div style={{ marginTop: 8 }} data-testid="fire-now-result">
-              <div className="muted text-sm">
-                Fired{fireResult.fire_id ? <> · fire id <span className="mono">{fireResult.fire_id}</span></> : null}
-              </div>
+              {(function () {
+                // fire_now is a 200 even when the server SKIPPED it (a disabled trigger answers
+                // {skipped: true, fire_id: null, results: []}): say it was not fired and why, in
+                // the same words the list row's toast uses (TR_fireOutcome), not the bare 'Fired'.
+                var o = TR_fireOutcome(fireResult, t.name || t.slug || t.id);
+                if (fireResult.skipped) {
+                  return (
+                    <div className="muted text-sm" data-testid="fire-now-skipped">
+                      {o.title + ": " + o.detail}
+                    </div>
+                  );
+                }
+                return (
+                  <div className="muted text-sm">
+                    Fired{fireResult.fire_id ? <> · fire id <span className="mono">{fireResult.fire_id}</span></> : null}
+                  </div>
+                );
+              })()}
               {/* Per-subscription results inline (notes 3.6) -- POST
                   .../fire_now is synchronous and already returns one
                   result dict per subscription (primer/trigger/dispatch.py),
@@ -2349,3 +2364,8 @@ window.TR_SubscriptionsPanel = TR_SubscriptionsPanel;
 window.TR_SubscriptionDialog = TR_SubscriptionDialog;
 window.TR_CreateTriggerDialog = TR_CreateTriggerDialog;
 window.TR_HmacSecretDialog = TR_HmacSecretDialog;
+// The one-reader words every surface shares (the console shell's mobile fact sheet toasts the
+// same outcome and refusal a list-row toast does; ticket 01a12144): module-local here, window-
+// exported so a sibling component can call them.
+window.TR_fireOutcome = TR_fireOutcome;
+window.TR_refusalText = TR_refusalText;
