@@ -69,6 +69,7 @@ async def write_approval_record_for_graph(
 
     ``gate_id`` is the gate the decision named (read from the RAW wake; security review of #724, round 3, B1-r2b). Two siblings can share the key, and without it the FIRST of them is the one
     resolved: the record of a decision on the second sibling was written onto the first, which is still pending, and the first's own later decision then lost the ``gate_event_key`` unique-index race.
+    A decision that names NO gate and selects several gates on the key writes no record (round 4): it is not about the first of them.
 
     A tcid that resolves to nothing (not an approval gate, or the legacy
     single-event drain-all with no tcid) is skipped. Best-effort: a
@@ -93,13 +94,22 @@ async def write_approval_record_for_graph(
         write_approval_record,
     )
     from primer.model.tool_approval import ToolApprovalRecord
-    from primer.session.pending_gates import resolve_pending_gate
+    from primer.session.pending_gates import matching_pending_gates
 
     if not tcid:
         return
-    gate = resolve_pending_gate(
+    matches = matching_pending_gates(
         {"graph_checkpoint": checkpoint}, tool_call_id=tcid, kind="_approval", event_key=event_key, gate_id=gate_id,
     )
+    if gate_id is None and len(matches) > 1:
+        # A decision that named no gate (a timeout, a cancel, a rejection, a wake from before gates had ids) selected several gates on one key: any one record would be written onto a sibling the decision
+        # cannot be shown to be about, and that sibling's own later decision would lose the ``gate_event_key`` unique-index race to it (security review of #724, round 4, R3-B2 and R3-N1).
+        logger.warning(
+            "write_approval_record_for_graph: a decision that names no gate selected %d pending gates on %r; no record is written onto one of them",
+            len(matches), event_key or tcid,
+        )
+        return
+    gate = matches[0] if matches else None
     if gate is None:
         return
     decision, reason, _kind = classify_approval_payload(payload)

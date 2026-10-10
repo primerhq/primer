@@ -441,6 +441,7 @@ class _BaseGraphExecutor(
         resumed_event_key: str | None = None,
         resumed_gate_id: str | None = None,
         wake_only: bool = False,
+        approved: bool = True,
     ) -> AsyncIterator[StreamEvent]:
         """Restore from a checkpoint and continue graph execution.
 
@@ -504,6 +505,10 @@ class _BaseGraphExecutor(
         it is not run (round 3, N1). When the wake names NO gate (a wake from before gates had ids, the key-less drain) and more than one selected entry would run an inner call, the
         decision cannot be shown to be any one of them: none of those runs and all stay pending (round 3, N2); a single such entry, and every entry that runs the node's own call, are as before.
 
+        ``approved`` (round 4, R3-B2): whether the decision being applied is an approval. The no-gate rule above is about APPROVALS: one that names no gate and selects several inner-call entries is refused, because an approval
+        cannot be shown to be any one of them. A timeout, a rejection or a cancel that names no gate rejects every selected entry, as before: the deadline sweeper publishes a gate-less timeout on the park's key,
+        and a rule that swallowed it left both gates pending with a fresh deadline for ever. ``False`` turns the rule off; the callers that classify the decision pass it.
+
         ``wake_only`` (round 3, N5): the resume is a ``tool_wait`` batch's readiness and nothing was decided by a human, so NO ToolCall or agent-yield entry is selected, whatever tool_call_id
         a provider chose for a pending gate. (The reply used to carry a sentinel id for this; an id is not a safe way to say "no entry".)
 
@@ -566,7 +571,7 @@ class _BaseGraphExecutor(
             ay_pending = [e for e in ay_all if e.tool_call_id == resumed_tcid]
         if resumed_gate_id is not None:
             tc_pending = [e for e in tc_pending if gate_id_of(e.resume_metadata) == resumed_gate_id]
-        else:
+        elif approved:
             running_an_inner_call = [e for e in tc_pending if self._would_run_an_inner_call(e)]
             if len(running_an_inner_call) > 1:
                 logger.warning(
