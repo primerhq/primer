@@ -1970,10 +1970,11 @@ function WS_DestroyTab({ wid, pushToast, sessionsForBadge }) {
     }
   );
 
+  // The confirm stays open while the request is out: its "Destroy permanently" is busy and keeps the focus. It used to close first, so the busy state never rendered and the trap sent the focus back to an opener that
+  // was natively disabled for the whole request (review of #732, B2). A refusal closes it onto the cascade Banner; a success leaves the page.
   const onConfirm = () => {
-    setShowConfirm(false);
     setCascadeError(null);
-    destroy.mutate();
+    destroy.mutate().then(() => setShowConfirm(false), () => setShowConfirm(false));
   };
 
   return (
@@ -1998,7 +1999,7 @@ function WS_DestroyTab({ wid, pushToast, sessionsForBadge }) {
         <dt>total sessions</dt><dd className="mono">{items.length}</dd>
       </div>
       <div className="mt-4">
-        <Btn kind="danger" icon="trash" disabled={destroy.loading} onClick={() => setShowConfirm(true)}>Destroy workspace</Btn>
+        <Btn kind="danger" icon="trash" busy={destroy.loading} onClick={() => setShowConfirm(true)}>Destroy workspace</Btn>
       </div>
 
       {showConfirm && (

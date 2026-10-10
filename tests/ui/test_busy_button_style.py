@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-CSS = (Path(__file__).resolve().parents[2] / "ui" / "styles.css").read_text(encoding="utf-8")
+CSS = re.sub(r"/\*.*?\*/", "", (Path(__file__).resolve().parents[2] / "ui" / "styles.css").read_text(encoding="utf-8"), flags=re.S)       # comments are not selectors
 
 
 def _rules(selector: str) -> list[str]:

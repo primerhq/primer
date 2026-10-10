@@ -1121,6 +1121,8 @@ input, textarea, select { font: inherit; color: inherit; }
 }
 .btn:hover { background: var(--bg-hover); border-color: var(--border-strong); }
 .btn:disabled, .btn[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; }
+/* a busy button KEEPS the focus, and opacity applies to its outline too: dim the focused one less and give it a ring of its own */
+.btn[aria-disabled="true"]:focus-visible { opacity: 0.8; outline: 2px solid var(--accent); outline-offset: 1px; }
 .btn-primary {
   background: var(--accent);
   color: var(--accent-fg);
