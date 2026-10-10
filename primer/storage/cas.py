@@ -32,7 +32,7 @@ from typing import Any
 import primer.observability.metrics as _metrics
 from primer.int.storage import Storage
 from primer.model.common import dump_for_storage
-from primer.storage._patch import document_matches
+from primer.storage._patch import WhereKey, document_matches
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ async def patch_if_checked(
     id: str,  # noqa: A002
     patch: Mapping[str, Any] | None = None,
     *,
-    where: Mapping[str, Sequence[Any]],
+    where: Mapping[WhereKey, Sequence[Any]],
     set_paths: Mapping[tuple[str, ...], Any] | None = None,
     conn: Any | None = None,
 ) -> Any | None:
@@ -58,6 +58,6 @@ async def patch_if_checked(
             "patch_if on %s %r was rejected although a fresh read still satisfies the guard: "
             "the comparison value does not match what the backend stores (serialization drift), "
             "so this write can never apply. guarded fields=%s",
-            model, id, sorted(where),
+            model, id, sorted(where, key=str),
         )
     return None

@@ -62,6 +62,7 @@ from primer.storage._patch import (
     canonical_fixup,
     check_known_fields,
     compile_sqlite,
+    WhereKey,
     normalise_where,
     validate_patch,
 )
@@ -901,7 +902,7 @@ class SqliteStorage(Storage[ModelT]):
         id: str,  # noqa: A002
         patch: Mapping[str, Any] | None = None,
         *,
-        where: Mapping[str, Sequence[Any]],
+        where: Mapping[WhereKey, Sequence[Any]],
         set_paths: Mapping[tuple[str, ...], Any] | None = None,
         conn: object | None = None,
     ) -> ModelT | None:

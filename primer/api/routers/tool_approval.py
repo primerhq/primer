@@ -29,7 +29,7 @@ from primer.common.entity_checks import EntityCheckError
 from primer.int.event_bus import EventBus
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.api.approver_guard import enforce_approvers
-from primer.api.gate_fence import count_gate_token, stale_gate_error
+from primer.api.gate_fence import count_gate_token, decided_gate_error, stale_gate_error
 from primer.session.pending_gates import enumerate_pending_gates, resolve_pending_gate
 from primer.model.yield_ import GATE_ID_PATTERN, gate_id_of, with_wake_gate
 from primer.session.yields import durably_wake_session
@@ -282,9 +282,16 @@ async def _publish_decision(
 
     Uses :func:`durably_wake_session`, which acts on the flip helper's bool:
     a guard-rejected row that is already ``resumable`` gets its claim lease
-    re-armed, so a retry after a half-applied flip (row stamped, lease lost)
-    repairs the row rather than accepting a decision the claim loop can never
-    act on. Returns True when this call advanced the row.
+    re-armed, and a retry of the SAME decision after a half-applied flip (row
+    stamped, lease lost) is answered as landed with its lease re-armed, so the
+    row is repaired rather than a decision accepted that the claim loop can
+    never act on.
+
+    A gate takes ONE decision (ticket 01a12606): when the flip did not land
+    (the gate already holds another decision, or the park moved on) this one
+    was not applied, so it is not recorded or published, and the route
+    answers 409 ``already_decided`` instead of 202. Returns True when the row
+    holds this decision.
     """
     event_key: str | None = gate.get("event_key")
     if not event_key:
@@ -302,19 +309,23 @@ async def _publish_decision(
         session_storage=session_storage,
         engine=engine,
     )
+    if not did:
+        # The gate already holds a decision (or the park moved on): this one was not applied, so nothing is recorded or published. Recording it
+        # used to leave the audit naming one decision while the worker ran another (ticket 01a12606).
+        raise decided_gate_error("approval")
     if storage_provider is not None:
         # 01a068da: write the durable ToolApprovalRecord HERE, at the
         # moment the decision actually arrives, rather than waiting for
         # the resume coordinator to get around to it (session_resume_
         # coordinator.py's write_approval_record_for_session, which used
         # to be the ONLY write site - a crash between this respond and
-        # that eventual resume lost the audit record entirely). Attempted
-        # unconditionally, not gated on `did`: a retry after a half-
-        # applied first attempt (row already resumable, but that earlier
-        # call's record write itself failed for some unrelated reason)
-        # still gets a fresh try, and gate_event_key's unique index makes
-        # a genuine duplicate attempt a safe no-op either way (see
-        # write_approval_record's own docstring). classify_approval_
+        # that eventual resume lost the audit record entirely). Written
+        # only for a decision the row holds (``did``): one that landed now,
+        # or a retry of it, whose earlier attempt may have half-applied
+        # (row already resumable, but that call's record write never ran
+        # or failed), so the retry still gets a fresh try, and
+        # gate_event_key's unique index makes a genuine duplicate attempt a
+        # safe no-op (see write_approval_record's own docstring). classify_approval_
         # payload is the SAME classifier the resume path uses on this
         # SAME payload shape, so the record's verdict cannot drift from
         # whatever the eventual resume computes.

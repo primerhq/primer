@@ -32,7 +32,7 @@ from fastapi import APIRouter, Body, Depends, Path
 from pydantic import BaseModel, Field
 
 from primer.api.approver_guard import enforce_approvers
-from primer.api.gate_fence import count_gate_token, stale_gate_error
+from primer.api.gate_fence import count_gate_token, decided_gate_error, stale_gate_error
 from primer.api.deps import (
     get_claim_engine,
     get_event_bus,
@@ -232,9 +232,13 @@ async def _durable_wake(
 
     Uses :func:`durably_wake_session`, which acts on the flip helper's bool:
     a guard-rejected row that is already ``resumable`` gets its claim lease
-    re-armed, so a retry after a half-applied flip (row stamped, lease lost)
-    repairs the row instead of handing back a 202 for a session the claim
-    loop can never pick up. Returns True when this call advanced the row.
+    re-armed, and a retry of the SAME reply after a half-applied flip (row
+    stamped, lease lost) is answered as landed with its lease re-armed,
+    instead of handing back a 202 for a session the claim loop can never pick
+    up. A prompt takes ONE answer (ticket 01a12606): when the flip did not
+    land (it already holds another answer, or the park moved on) nothing is
+    published and the route answers 409 ``already_decided``. Returns True
+    when the row holds this reply.
     """
     did = await durably_wake_session(
         session,
@@ -243,6 +247,8 @@ async def _durable_wake(
         session_storage=session_storage,
         engine=engine,  # type: ignore[arg-type]
     )
+    if not did:
+        raise decided_gate_error("ask_user")
     if storage_provider is not None:
         from primer.events.wake import emit_session_wake
 

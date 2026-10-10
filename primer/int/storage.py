@@ -177,7 +177,7 @@ class Storage(ABC, Generic[ModelT]):
         id: str,
         patch: Mapping[str, Any] | None = None,
         *,
-        where: Mapping[str, Sequence[Any]],
+        where: Mapping[str | tuple[str, ...], Sequence[Any]],
         set_paths: Mapping[tuple[str, ...], Any] | None = None,
         conn: Any | None = None,
     ) -> ModelT | None:
@@ -205,6 +205,11 @@ class Storage(ABC, Generic[ModelT]):
             Python value, so "the row I read" is spelled exactly as the backend stores it. A guard
             that names the DEFAULT of a field that cannot hold null also matches a document lacking
             the key (the model reads it as the default); a nullable field is compared as stored.
+            A key may also be a PATH to a nested leaf, a tuple held to the rules of a ``set_paths``
+            path (``("parked_state", "resume_event_payloads", key): [None]``: that leaf is absent):
+            it is read one object key at a time, so an absent or non-object parent makes the leaf
+            absent and a path never indexes into an array, and the leaf is compared like a field. A
+            one-element path is the field itself.
         set_paths
             ``{("parked_state", "resume_event_payloads", key): value}``: nested leaves set after the
             shallow patch. Every parent is ensured to be an object first, shallowest first (an
