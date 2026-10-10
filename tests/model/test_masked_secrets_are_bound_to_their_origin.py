@@ -5,16 +5,18 @@ update that sent ``{url: "https://attacker.example/v1", api_key: "<the mask>"}``
 admin started, can send that: ``update_llm_provider``, ``update_embedding_provider``, the speech and artifact tools, REST ``PUT``).
 
 The rule now: a secret that sits next to an origin (a ``url`` / ``endpoint_url`` / ``apiserver_url`` / ``discovery_url`` / ``git_url`` / ``resource_uri``, or a ``hostname`` with its ``port``) is restored
-only when that origin (scheme, host and port; for a hostname the host and port) is the stored one. A mask sent back for another origin is REFUSED with a 422 (``re-enter the key: the stored one is kept
+only when that origin (scheme, host and port; for a hostname the host and port) is the stored one. A mask sent back for another origin is REFUSED with a 422 (``re-enter the secret: the stored one is kept
 only for the same origin (scheme, host and port)``); a real new secret is the person's change and is stored as sent; a different path, query, host case or the default port spelled out is the same origin.
 The refusal names no secret. Every family that keeps a secret beside an origin is in ``FAMILIES``: the LLM, embedding and speech providers, the S3 artifact store, the Kubernetes service-account
 connection, a harness and its dependencies, an OIDC provider, an HTTP MCP toolset (its headers) and the Postgres-shaped configs (the vector store and the storage provider).
 
-WHICH ENTRIES ARE WRITTEN THROUGH ``preserve_masked_secrets`` (the REST ``PUT`` and the system ``update_*`` tools): the LLM, embedding and speech providers, the S3 artifact store, the Kubernetes
-service-account connection, the HTTP MCP toolset and the vector stores. FOUR ENTRIES ARE HELPER-LEVEL ONLY, and pin the rule of the helper, not of a route: ``OIDC provider`` (its route is
-``_preserve_client_secret_if_blank``, pinned in ``tests/api/test_oidc_client_secret_origin.py``), ``harness git token`` (the harness route uses ``apply_git_token_update``, which compares ``git_url``
-exactly and is stricter), ``harness dependency git token`` (a ``DependencyRef`` comes only from ``harness.yaml``) and ``storage provider postgres`` (the storage provider comes from the config file).
-An earlier version of this table presented all four as covered routes; the OIDC route was not bound at all (review of #711, round 1).
+HOW EACH ENTRY IS WRITTEN is in ``HOW`` below, one line per entry, and a test fails if an entry has none (review of #711, round 2, N3: "helper-level" had been used for entries that ARE written by a
+route, with a rule of their own): ``preserve`` entries are written through ``preserve_masked_secrets`` by a REST ``PUT`` and the system ``update_*`` tools (the LLM, embedding and speech providers, the S3
+artifact store, the Kubernetes service-account connection, the HTTP MCP toolset and the vector stores); two entries are written by a route with ITS OWN rule, which this file pins only as the helper's
+rule: ``OIDC provider`` (``_preserve_client_secret_if_blank``, pinned on the route in ``tests/api/test_oidc_client_secret_origin.py``) and ``harness git token`` (``PUT /v1/harnesses/{id}`` runs
+``apply_git_token_update``, which compares ``git_url`` exactly and is stricter, pinned in ``tests/api/test_harness_admin_and_git_args.py``); two are written by NO route and the helper test is the whole
+pin: ``harness dependency git token`` (a ``DependencyRef`` comes only from ``harness.yaml``) and ``storage provider postgres`` (the storage provider comes from the config file). An earlier version of
+this table presented the OIDC route as covered while it was not bound at all (review of #711, round 1).
 """
 
 from __future__ import annotations
@@ -100,16 +102,35 @@ FAMILIES = {
     "text to speech": (_api(TextToSpeechConfig), _ONE, TAIL, "url"),
     "S3 artifact store": (_s3, [lambda m: m.access_key, lambda m: m.secret_key], BARE, "url"),
     "Kubernetes service account": (_k8s, [lambda m: m.token], BARE, "url"),
-    # HELPER-LEVEL ONLY: no route writes these through preserve_masked_secrets (see the module docstring for what does).
+    # NOT written through preserve_masked_secrets: see HOW below for what writes each of these.
     "harness git token": (_harness, [lambda m: m.git_token], BARE, "url"),
     "harness dependency git token": (_dependency, [lambda m: m.git_token], BARE, "url"),
     "OIDC provider": (_oidc, [lambda m: m.client_secret], BARE, "url"),
     "MCP http headers": (_mcp, [lambda m: m.headers["Authorization"]], BARE, "url"),
     "vector store pgvector": (_pg(PgVectorConfig), [lambda m: m.password], BARE, "host"),
     "vector store pgvectorscale": (_pg(PgVectorScaleConfig), [lambda m: m.password], BARE, "host"),
-    "storage provider postgres": (_pg(PostgresConfig), [lambda m: m.password], BARE, "host"),          # HELPER-LEVEL ONLY: the storage provider comes from the config file
+    "storage provider postgres": (_pg(PostgresConfig), [lambda m: m.password], BARE, "host"),
 }
 IDS = sorted(FAMILIES)
+
+_PRESERVE = "preserve: a REST PUT and the system update_* tools, through preserve_masked_secrets"
+HOW = {
+    "LLM openresponses": _PRESERVE,
+    "LLM openchat": _PRESERVE,
+    "LLM ollama": _PRESERVE,
+    "embedding openai": _PRESERVE,
+    "speech to text": _PRESERVE,
+    "text to speech": _PRESERVE,
+    "S3 artifact store": _PRESERVE,
+    "Kubernetes service account": _PRESERVE,
+    "MCP http headers": _PRESERVE,
+    "vector store pgvector": _PRESERVE,
+    "vector store pgvectorscale": _PRESERVE,
+    "OIDC provider": "own rule: PUT /v1/oidc_providers/{id} runs _preserve_client_secret_if_blank (tests/api/test_oidc_client_secret_origin.py)",
+    "harness git token": "own rule: PUT /v1/harnesses/{id} runs apply_git_token_update (tests/api/test_harness_admin_and_git_args.py)",
+    "harness dependency git token": "helper: no route writes a DependencyRef (it comes only from harness.yaml)",
+    "storage provider postgres": "helper: no route writes the storage provider (it comes from the config file)",
+}
 
 
 def _stored(name: str):
@@ -124,6 +145,15 @@ def _sent_back_masked(name: str, origin: str, path: str | None = None):
 
 def _secrets_of(model, name: str) -> list[str]:
     return [accessor(model).get_secret_value() for accessor in FAMILIES[name][1]]
+
+
+def test_every_family_says_how_its_secret_is_written() -> None:
+    """A reader must not take a helper-only pin for a route pin (or the other way round): every entry carries its writer, in one of three words."""
+    assert set(HOW) == set(FAMILIES), sorted(set(HOW) ^ set(FAMILIES))
+    assert all(how.startswith(("preserve:", "own rule:", "helper:")) for how in HOW.values())
+    assert sorted(name for name, how in HOW.items() if not how.startswith("preserve:")) == [
+        "OIDC provider", "harness dependency git token", "harness git token", "storage provider postgres",
+    ]
 
 
 @pytest.mark.parametrize("name", IDS)
@@ -151,7 +181,7 @@ def test_a_moved_origin_with_the_mask_is_refused_and_the_secret_is_not_given(nam
     stored = _stored(name)
     sent = _sent_back_masked(name, AWAY)
 
-    with pytest.raises(PrimerValidationError, match="re-enter the key") as caught:
+    with pytest.raises(PrimerValidationError, match="re-enter the secret") as caught:
         preserve_masked_secrets(sent, stored)
 
     assert STORED not in str(caught.value) and "abcdef0123456789" not in str(caught.value), "the refusal names no secret"
@@ -177,7 +207,7 @@ def test_another_scheme_port_or_host_is_another_origin(name: str, moved: str) ->
     except ValueError:
         pytest.skip("this family only accepts an https origin (its own validator refuses the other scheme before the rule is reached)")
 
-    with pytest.raises(PrimerValidationError, match="re-enter the key"):
+    with pytest.raises(PrimerValidationError, match="re-enter the secret"):
         preserve_masked_secrets(sent, stored)
 
 
@@ -197,7 +227,7 @@ def test_another_port_is_another_origin_for_a_hostname(name: str) -> None:
     sent = _sent_back_masked(name, HOME)
     sent.port = 6543
 
-    with pytest.raises(PrimerValidationError, match="re-enter the key"):
+    with pytest.raises(PrimerValidationError, match="re-enter the secret"):
         preserve_masked_secrets(sent, stored)
 
 
@@ -222,7 +252,7 @@ def test_an_unparseable_stored_origin_is_not_an_excuse_to_restore() -> None:
     preserve_masked_secrets(kept, stored)
     assert kept.access_key.get_secret_value() == STORED
 
-    with pytest.raises(PrimerValidationError, match="re-enter the key"):
+    with pytest.raises(PrimerValidationError, match="re-enter the secret"):
         preserve_masked_secrets(moved, stored)
 
 
@@ -231,5 +261,5 @@ def test_an_endpoint_that_appears_where_there_was_none_is_a_moved_origin() -> No
     stored = S3ArtifactConfig(bucket="b", access_key=_secret(STORED), secret_key=_secret(STORED))
     sent = S3ArtifactConfig(bucket="b", endpoint_url="https://attacker.example", access_key=_secret(BARE), secret_key=_secret(BARE))
 
-    with pytest.raises(PrimerValidationError, match="re-enter the key"):
+    with pytest.raises(PrimerValidationError, match="re-enter the secret"):
         preserve_masked_secrets(sent, stored)

@@ -62,8 +62,8 @@ async def api(request) -> AsyncIterator[tuple[httpx.AsyncClient, _Store, str]]:
 @pytest.mark.parametrize(
     ("body", "wording"),
     [
-        pytest.param({"token": "**********"}, "re-enter the key", id="the bare mask"),
-        pytest.param({"token": "**********cdef"}, "re-enter the key", id="the mask with the last four characters"),
+        pytest.param({"token": "**********"}, "re-enter the secret", id="the bare mask"),
+        pytest.param({"token": "**********cdef"}, "re-enter the secret", id="the mask with the last four characters"),
         pytest.param({"endpoint": "http://svc:**********@px.lan/v1"}, "re-enter the password", id="a URL with the password mask"),
     ],
 )
