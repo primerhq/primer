@@ -66,7 +66,12 @@ def test_ci_has_a_postgres_lane_that_cannot_skip_silently():
     targets = (*LANE_DIRS, *LANE_FILES)
     ci = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
     job = ci["jobs"]["postgres"]
-    assert job["services"]["postgres"]["image"].startswith("pgvector/pgvector")
+    # Docker Hub rate-limits unauthenticated pulls, so CI pulls the image through
+    # Google's mirror; either spelling must still be the pgvector:pg16 image.
+    assert job["services"]["postgres"]["image"] in {
+        "pgvector/pgvector:pg16",
+        "mirror.gcr.io/pgvector/pgvector:pg16",
+    }
     assert job["env"]["PRIMER_TEST_POSTGRES_URL"].startswith("postgresql://")
     # The guard: without this the lane would go green while skipping.
     assert str(job["env"]["PRIMER_REQUIRE_POSTGRES_TESTS"]) == "1"
