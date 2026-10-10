@@ -345,6 +345,20 @@ function PY_CodeEditor({ value, onChange, diagnostics, viewRef, minHeight }) {
             ...C.searchKeymap,
             ...C.historyKeymap,
             ...C.defaultKeymap,
+            // Last, so a popup or a search panel that uses Escape still gets
+            // it first. Escape+Tab is the way out of the editor, and the
+            // overlay the editor sits in closes on the same key (the escape
+            // stack skips an event that is already handled), so a plain
+            // Escape that nothing above wants is consumed here. A handled
+            // keydown never reaches the library's own handler that starts the
+            // tab-focus mode, so this starts it, for the library's 2 seconds.
+            {
+              key: "Escape",
+              run: function (view) {
+                view.setTabFocusMode(2000);
+                return true;
+              },
+            },
           ]),
           C.EditorView.updateListener.of(function (u) {
             if (u.docChanged && onChangeRef.current) {
