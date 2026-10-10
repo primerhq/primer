@@ -152,6 +152,7 @@ function NV_endedLine(session) {
     node_failed: "a node failed",
     fanin_upstream_failed: "an upstream branch failed before fan-in",
     tool_execution_failed: "a tool call failed",
+    topology_drift: "the graph was edited while it waited, so a step that was waiting could not be resumed",
     any_failed: "a required branch failed",
     begin_input_invalid: "its begin input was invalid",
     template_error: "the End output template failed to render",

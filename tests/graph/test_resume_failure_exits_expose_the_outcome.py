@@ -1,7 +1,7 @@
 """Every failure exit of ``resume_from_checkpoint`` exposes how the graph ended (ticket 01a11f35, round 4 of #701, review B2-N3).
 
 A graph that parks and is resumed ends through the pool, so the record that closes its turn is written by ``end_graph`` from ``graph_end_for(executor.last_done_reason, executor)``. ``last_done_reason`` reads
-``_last_ended_reason``, which the main loop sets at its tail. The eight early exits of ``resume_from_checkpoint`` (a resumed tool that raises, a mapped tool error, a rejected approval, the resumed
+``_last_ended_reason``, which the main loop sets at its tail. (A ninth exit, a pending ToolCall node the edited graph has turned into another kind of node, is in test_resume_topology_drift_ends_failed.py.) The eight early exits of ``resume_from_checkpoint`` (a resumed tool that raises, a mapped tool error, a rejected approval, the resumed
 agent or tool_wait node failing, routing failing) save ``ENDED/failed`` and ``return`` without it, so ``last_done_reason`` stayed ``None`` and the record said ``done(stop, graph_ended, completed)`` for a
 graph that failed (found with real executors by the round 3 review; the round 3 tests used ``SimpleNamespace`` stand-ins and could not see it).
 
