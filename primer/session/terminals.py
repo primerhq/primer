@@ -34,13 +34,13 @@ A GRAPH turn is one window too (ticket 01a11f35). Every node of a graph writes i
 two workers is one window instead of three. What closes it is the graph's OWN END, a node-less ``done`` that the writers append when the run ends (:func:`is_graph_end`, ``payload.graph_end``): session dispatch's clean
 completion for a graph run (``stop_reason`` ``stop`` when the graph ended ``completed``, ``error`` when it did not, so every reader of a failed turn reads it as one), and the graph resume
 coordinators (``resume_graph_engine`` and ``resume_graph_tool_wait``, through ``end_graph``) before they end a resumed graph. NOT EVERY PATH THAT ENDS A GRAPH SESSION WRITES IT: a parked graph that is
-cancelled is ended inline by ``cancel_session`` with no record (agents have the same gap: a ticket), and so is a resumable row whose cancel the pool finds when it claims it and the preempt-cancel
-convergence (both in the pool's resume branch); ``resume_engine_session`` ends a graph itself on three early exits and ``resume_engine_tool_wait`` on two (a malformed ``parked_state``, no storage); a
+cancelled is ended inline by ``cancel_session`` with no record (agents have the same gap: a ticket), and so is a resumable row whose cancel the pool finds when it claims it (the pool's resume branch) and the preempt-cancel
+convergence (an ``except CancelledError`` around both pool branches); ``resume_engine_session`` ends a graph itself on three early exits and ``resume_engine_tool_wait`` on two (a malformed ``parked_state``, no storage); a
 log written before the end was a record has none. The executor's own stream writes none (it ends with the End node's output and the end node's exit transition), and the claim adapter's release marker
 that may follow a failed end is a copy of it. A graph that parks is not over, so nothing closes it until its resume ends it. The per-record predicates are unchanged on purpose: the final-result
 relay reads the text before the last node's ``done`` and the End output after it (and treats the graph's end as the verdict, not as a text boundary). A graph log written before records carried a
 ``node_id`` cannot be told from a non-graph log and keeps the windows it had. For every log with a graph run that ended without its end record, rule (c): an ``invocation_divider`` is written ONLY to an ENDED
-session, so a graph run still open before one (a node's record since the last close) ended without its end, and the divider closes that window (and restarts the failure fold: a graph restarted with no
+session, so a graph run still open before one (a node's record since the last close or copy) ended without its end, and the divider closes that window (and restarts the failure fold: a graph restarted with no
 message writes a divider and no ``user_input``). The residual, accepted and documented: the LAST invocation of a session that ended with no end record stays one open window until a reopen
 (``usage.turns`` one short, ``terminal_seq`` None; its status comes from ``turns.jsonl``).
 Folded on read like the rest, so old graph sessions renumber on the next read (the trace asks for the ordinal the console counted over the same records, so the two stay in step).
@@ -152,7 +152,7 @@ class TurnWindowScanner:
     * dispatch's own failure ERROR (:func:`is_dispatch_failure_record`) is a ``COPY`` once the turn has failed, whatever its words.
     * a graph's own end (:func:`is_graph_end`) is a ``COPY`` once the turn has failed (a graph-level error such as ``max_iterations_exceeded`` names no node, so it has already ended the
       window), and an ordinary terminal otherwise.
-    * an ``invocation_divider`` is written only to an ENDED session, so a graph run still open before it (a node's record since the last close) ended without its end record: the divider CLOSES
+    * an ``invocation_divider`` is written only to an ENDED session, so a graph run still open before it (a node's record since the last close or copy) ended without its end record: the divider CLOSES
       that window (it is its last record). Otherwise it is ``INSIDE``, the first record of the next window. Either way it starts a new turn: the failure state of the invocation before it
       is forgotten, because nothing before a reopen is a copy of anything after it.
     * any other ``error`` ends a window, unless the turn has already failed and an earlier error of the turn has the same non-empty message.
@@ -164,7 +164,7 @@ class TurnWindowScanner:
     def __init__(self) -> None:
         self._failed = False
         self._words: list[str] = []
-        self._graph_open = False          # a graph node's record since the last close: a graph run no terminal has closed yet
+        self._graph_open = False          # a graph node's record since the last close or copy: a graph run no terminal has ended yet
 
     def _new_turn(self) -> None:
         self._failed = False

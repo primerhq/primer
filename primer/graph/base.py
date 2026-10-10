@@ -1329,9 +1329,13 @@ class _BaseGraphExecutor(
     ) -> None:
         """Persist ``ENDED/failed`` AND expose the outcome: the failure exits of :meth:`resume_from_checkpoint`.
 
-        The main loop sets ``_last_ended_reason`` / ``_last_ended_detail`` at its tail, and ``last_done_reason`` (what a parent subgraph node and ``end_graph``'s record read) reports from them. The early
+        The main loop sets ``_last_ended_reason`` / ``_last_ended_detail`` at its tail, and ``last_done_reason`` (what ``end_graph``'s record reads) reports from them. The early
         exits of a resume (a failed or rejected tool, a mapped error, a resumed agent or tool_wait node that fails, routing that fails) leave through ``return`` and never reach that tail, so before this
         helper a resumed graph that failed read as ``None`` and its end record said ``graph_ended``/``completed`` (review of #701, round 3, B2-N3). Every such exit calls this, so a new one cannot forget.
+
+        ``end_graph``'s record is the ONLY reader of a resumed executor's outcome. A parent subgraph node reads ``_last_ended_reason`` only of a child it INVOKED (``_stream_subgraph_node``); a child
+        that parks raises ``YieldToWorker``, which the parent node files as its own error at the park, so a parent node never resumes a child, and ``resume_invoke_graph`` (the ``invoke_graph`` tool's
+        resume) decides a resumed child by the ``_GraphErrorEvent`` it yields, not by this field. So this changes what the end record says and nothing a parent node sees.
         """
         self._last_ended_reason = "failed"
         self._last_ended_detail = ended_detail

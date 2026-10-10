@@ -370,7 +370,7 @@ function SH_retryInstruction(flat, errorRow, session) {
 // failure that already ended one: ends nothing, and belongs to the window it copies) or "inside". The rule, in the server's words: a delegated record is
 // always inside, and so is a record of a graph NODE (one with a node_id: a graph turn is one window, closed by the graph's own end, the node-less done with
 // payload.graph_end that the writers append when the run ends, a copy of the failure instead when a graph-level error already ended the window; ticket 01a11f35); an invocation_divider (written only to an ENDED session) closes a graph run still open before it (a node's
-// record since the last close) and starts a new turn either way, staying inside after a closed turn; a user_input starts a new turn; a done / cancelled that closes the turn ends a window (done with stop_reason "error" is a FAILURE end that
+// record since the last close or copy) and starts a new turn either way, staying inside after a closed turn; a user_input starts a new turn; a done / cancelled that closes the turn ends a window (done with stop_reason "error" is a FAILURE end that
 // later errors of the turn can copy; any other end closes the turn); an error with an explicit fatal: false is a notice that ends nothing but whose words are
 // remembered; a bare release marker is a copy once the turn has failed and the only evidence (so it ends the window) when nothing has; any other error ends a
 // window unless the turn has already failed and an earlier error of the turn has the same non-empty message; dispatch's own failure ERROR (a title and an integer
@@ -403,7 +403,7 @@ function SH_isGraphEnd(rec) {
 function SH_newWindowScanner() {
   var failed = false;
   var words = [];
-  var graphOpen = false;     // a graph node's record since the last close: a graph run no terminal has closed yet
+  var graphOpen = false;     // a graph node's record since the last close or copy: a graph run no terminal has ended yet
   function newTurn() { failed = false; words = []; }
   function remember(message) { if (message) words.push(message); }
   function copiesAnEarlierError(message) { return !!message && words.indexOf(message) !== -1; }
