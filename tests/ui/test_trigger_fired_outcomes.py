@@ -8,8 +8,15 @@ a fire whose deliveries failed is 'Fired, with failures', otherwise 'Trigger fir
 surfaces now use the same helper.
 
 The V8 cases run the real triggers.jsx TR_fireOutcome in MiniRacer with the real fire_now bodies
-from tests/_support/trigger_envelopes.py (the way #695's tests do); the surfaces are pinned
+from tests/_support/trigger_envelopes.py (the way #695's tests do); the detail page is pinned
 statically, the way this directory pins the rest of the console.
+
+Round 2: a REFUSED fire on the phone fact sheet says the request id the server sent (it comes off
+the ApiError itself; readRefusal returns no id, so the copy line never showed), and for a trigger
+the server already deleted (trigger_not_found) it says the desktop list row's words, then closes
+the sheet and refetches the phone list. Those pins are behavioural: the real fireNow() from
+nv-mobile-shell.jsx runs in MiniRacer on a rejected real ApiError built from a real envelope with
+the production request-id middleware (the reviewer's probe /var/tmp/review714/probe_phone_rid.py).
 """
 
 from __future__ import annotations
@@ -40,6 +47,41 @@ def bodies() -> dict[str, dict]:
     return real_fire_bodies()
 
 
+@pytest.fixture(scope="module")
+def refusals() -> dict[str, dict]:
+    """The REAL refusal envelopes with the production request-id middleware (the reviewer's probe).
+
+    The real register_error_handlers, the real require_user gate and the trigger router's own
+    _raise_code answer through TestClient, so extensions.request_id is the one a real server sends
+    (tests/_support/trigger_envelopes.py's app carries no request-id middleware).
+    """
+    from fastapi import Depends, FastAPI
+    from fastapi.testclient import TestClient
+
+    from primer.api._app_middleware import _install_request_id
+    from primer.api.deps import require_user
+    from primer.api.errors import register_error_handlers
+    from primer.api.routers.triggers import _raise_code
+
+    app = FastAPI()
+    register_error_handlers(app)
+    _install_request_id(app)
+
+    @app.post("/v1/not_found")
+    def not_found():
+        _raise_code(404, "trigger_not_found", "tr-1")
+
+    @app.post("/v1/gated", dependencies=[Depends(require_user)])
+    def gated():
+        return {}
+
+    client = TestClient(app, raise_server_exceptions=False)
+    return {
+        "not_found": client.post("/v1/not_found").json(),
+        "session_ended": client.post("/v1/gated").json(),
+    }
+
+
 def _outcome(res: dict, label: str) -> dict:
     """The real TR_fireOutcome from triggers.jsx, run in V8 (MiniRacer) on the given body."""
     from py_mini_racer import MiniRacer
@@ -51,6 +93,63 @@ def _outcome(res: dict, label: str) -> dict:
     ctx.eval("var window = {};")
     ctx.eval(SRC[start:end])
     return json.loads(ctx.eval(f"JSON.stringify(TR_fireOutcome({json.dumps(res)}, {json.dumps(label)}))"))
+
+
+def _fire_now() -> "callable":
+    """The real fireNow() from nv-mobile-shell.jsx, in V8 (MiniRacer): the real api.js ApiError and
+    readRefusal, the real TR helpers, a con.toast that records what the toast host would render
+    (the copy line shows when the payload carries a requestId), props carrying onClose / onChanged
+    call counters and an SH_api.fireTrigger that rejects with a REAL ApiError or resolves with a
+    real fire body (the reviewer's probe /var/tmp/review714/probe_phone_rid.py).
+
+    run() returns the recorded toasts (kind, text, requestId as the toast host would render them)
+    and the onClose / onChanged call counts.
+    """
+    from py_mini_racer import MiniRacer
+
+    def cut(src: str, start_marker: str, end_marker: str) -> str:
+        s = src.index(start_marker)
+        e = src.index(end_marker, s) + len(end_marker)
+        return src[s:e]
+
+    api = (ROOT / "ui" / "foundation" / "api.js").read_text(encoding="utf-8")
+    remedies = cut(SRC, "var TR_REMEDIES = {", "\n};\n")
+    refusal = cut(SRC, "function TR_refusalText(", "\n}\n")
+    outcome = cut(SRC, "function TR_fireOutcome(", "\n}\n")
+    fire = cut(MOB, "  function fireNow() {", "\n  }\n")
+
+    ctx = MiniRacer()
+    _OPEN_CONTEXTS.append(ctx)
+    ctx.eval("var window = {};")
+    ctx.eval(api)
+    ctx.eval(remedies + "\n" + refusal + "\n" + outcome)
+    ctx.eval("window.TR_fireOutcome = TR_fireOutcome; window.TR_refusalText = TR_refusalText;")
+    ctx.eval(
+        "var __pushed = []; var __closed = 0; var __changed = 0;"
+        "var __mode = null; var __env = null; var __body = null;"
+        'var props = { row: { id: "tr-1", name: "Nightly", slug: "nightly" },'
+        "onClose: function () { __closed++; }, onChanged: function () { __changed++; } };"
+        "var firing = false; function setFiring() {}"
+        "var con = { toast: function (msg, extra) {"
+        "__pushed.push({ kind: (extra && extra.kind) || 'info', text: String(msg),"
+        "requestId: (extra && (extra.requestId || extra.request_id)) || null });"
+        "}};"
+        "var SH_api = { fireTrigger: function () {"
+        "return __mode === 'reject' ? Promise.reject(new window.primerApi.ApiError(__env))"
+        ": Promise.resolve(__body); } };"
+    )
+    ctx.eval(fire)
+
+    def run(mode: str, env: dict | None = None, body: dict | None = None) -> dict:
+        ctx.eval(
+            f"__pushed = []; __closed = 0; __changed = 0; __mode = {json.dumps(mode)};"
+            f"__env = {json.dumps(env)}; __body = {json.dumps(body)};"
+        )
+        ctx.eval("fireNow();")
+        ctx.eval("void 0;")
+        return json.loads(ctx.eval("JSON.stringify({ pushed: __pushed, closed: __closed, changed: __changed })"))
+
+    return run
 
 
 # ---- TR_fireOutcome says what the server answered (V8, the real bodies) -----------------------------------------
@@ -82,11 +181,63 @@ def test_the_detail_page_branches_on_the_skipped_outcome() -> None:
     assert "TR_fireOutcome" in block
 
 
+# ---- the phone fact sheet's real fireNow() on a refused fire (V8, the real ApiError) ------------------------------
+
+
+def test_the_mobile_fire_now_says_the_request_id_the_server_sent(refusals) -> None:
+    """The copy line needs the id, and readRefusal returns no id: the toast's requestId comes off
+    the ApiError itself and equals the envelope's extensions.request_id, for every refusal."""
+    run = _fire_now()
+    for name in ("not_found", "session_ended"):
+        env = refusals[name]
+        out = run("reject", env=env)
+        assert len(out["pushed"]) == 1, name
+        assert out["pushed"][0]["requestId"] == env["extensions"]["request_id"], name
+
+
+def test_the_mobile_fire_now_for_a_gone_trigger_says_the_list_words_and_refreshes(refusals) -> None:
+    """A trigger the server already deleted is the desktop list row's words (the label, then ' no
+    longer exists; the list has been refreshed.'), not the detail page's 'Go back to the triggers
+    list': the sheet goes away with the stale row and the phone list refetches."""
+    run = _fire_now()
+    out = run("reject", env=refusals["not_found"])
+    assert out["pushed"][0]["kind"] == "error"
+    assert out["pushed"][0]["text"] == "Nightly no longer exists; the list has been refreshed."
+    assert out["closed"] == 1
+    assert out["changed"] == 1
+
+
+def test_the_mobile_fire_now_for_other_refusals_keeps_the_reader_words_and_the_sheet(refusals) -> None:
+    """Only trigger_not_found gets the list words and the close-and-refresh: another refusal is the
+    one reader's text under 'Fire failed:' (with its request id), and the sheet stays open on the
+    live row."""
+    run = _fire_now()
+    out = run("reject", env=refusals["session_ended"])
+    assert out["pushed"][0]["kind"] == "error"
+    assert out["pushed"][0]["text"] == "Fire failed: Your session has ended; sign in again."
+    assert out["closed"] == 0
+    assert out["changed"] == 0
+
+
+def test_the_mobile_fire_now_says_the_outcome_for_an_answered_fire(bodies) -> None:
+    """The answered path is unchanged: the outcome's words through the real fireNow(), no request
+    id to copy on a 200."""
+    run = _fire_now()
+    out = run("resolve", body=bodies["skipped"])
+    assert out["pushed"][0]["kind"] == "warning"
+    assert out["pushed"][0]["text"] == "Not fired: Nightly is disabled; enable it to fire it."
+    assert out["pushed"][0]["requestId"] is None
+    assert out["closed"] == 0
+    assert out["changed"] == 0
+
+
 # ---- the phone fact sheet reads the outcome and the one refusal reader ---------------------------------------------
 
 
 def test_the_mobile_fact_sheet_uses_the_outcome_and_the_one_reader() -> None:
-    """A skipped fire is not 'Fired <id>'; a refused one is the one reader's text, with its request id."""
+    """A skipped fire is not 'Fired <id>'; a refused one is the one reader's text. The request id
+    and the trigger_not_found words are pinned behaviourally above (the static grep for requestId
+    passed for the wrong reason: readRefusal returns no id, so the id came off the wrong object)."""
     start = MOB.index("function fireNow()")
     end = MOB.index("\n  }\n", start) + 4
     fn = MOB[start:end]
@@ -94,7 +245,6 @@ def test_the_mobile_fact_sheet_uses_the_outcome_and_the_one_reader() -> None:
     assert '"Fire failed: " + ((e && e.message)' not in fn
     assert "TR_fireOutcome" in fn
     assert "TR_refusalText" in fn
-    assert "requestId" in fn
 
 
 def test_the_mobile_shell_can_reach_the_trigger_helpers() -> None:
