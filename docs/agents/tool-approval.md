@@ -305,8 +305,12 @@ but require human review for any other host.
   subsequent calls to the same tool are gated again. Operators don't
   approve "this tool from now on" - they approve "this specific call".
   When a graph ToolCall node's tool gates an inner call (it runs a gated
-  tool, or it is `call_tool` gating the tool it was asked to run), the
-  call that was approved is the inner call, and that is the one that runs.
+  tool, or it is `call_tool` gating the tool it was asked to run), the gate
+  is the inner call's: the card, the Inbox row and the channel prompt show
+  that inner call, approving it runs that call and nothing else (the node's
+  tool is not run again, and its remaining code does not run: the node's
+  output is the inner call's answer), and a decision covers only the gate it
+  named (a sibling gate that shares the event key stays parked).
 - **The parked-tool name is literal `_approval`** in the parked-state
   fields. Code that introspects park state and dispatches on tool
   name treats `_approval` as a special case distinct from real tool
