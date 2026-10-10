@@ -478,13 +478,14 @@ async def test_a_value_yield_tool_call_node_gets_the_typed_marker(marker, expect
 
 
 _QUOTED = 'a"b'                  # a provider tool_call_id with a double quote in it
-_RAW_KEY = _QUOTED               # the dispatch key older code stores the leaf under: the event_key's tail
-_ENCODED_KEY = "a%22b"           # the same leaf under the percent-encoded key (leaf_key_for, S2a PR-4b)
+_RAW_KEY = _QUOTED               # the dispatch key older code stored the leaf under: the event_key's tail
+_ENCODED_KEY = "a%22b"           # the same leaf under the percent-encoded key the durable flip writes (leaf_key_for, ticket 01a122cc-effa)
 
 
 async def _raw_and_encoded_leaves(monkeypatch, *, raw_payload: dict, encoded_payload: dict, encoded_first: bool):
-    """A park holding A's reply under the raw key (written by the durable flip as it stands) and a later duplicate
-    of it under the encoded key; B's gate is still unanswered, so the drain goes on past A's first entry."""
+    """A park holding A's reply under the raw key (written by an older build, before the durable flip encoded the leaf
+    key) and a later duplicate of it under the encoded key (written by the durable flip as it stands); B's gate is still
+    unanswered, so the drain goes on past A's first entry."""
     _patch_run_agent_turn(monkeypatch, {"agent-a": _own_ask_user(_QUOTED), "agent-b": _own_ask_user("tc-b")})
     graph = _parallel_graph()
     raised = await _first_park(graph)
@@ -493,13 +494,13 @@ async def _raw_and_encoded_leaves(monkeypatch, *, raw_payload: dict, encoded_pay
     await _parked_session(storage, raised, parked_at=_now())
 
     event_key = f"ask_user:{_SID}:{_QUOTED}"
-    await _reply(storage, event_key, raw_payload)
+    await _reply(storage, event_key, encoded_payload)
     sessions = storage.get_storage(WorkspaceSession)
     row = await sessions.get(_SID)
     state = dict(row.parked_state)
-    raw_entry = state["resume_event_payloads"][_RAW_KEY]
-    assert raw_entry == {"payload": raw_payload, "event_key": event_key}, "the flip stores the leaf under the raw key"
-    encoded_entry = {"payload": encoded_payload, "event_key": event_key}
+    encoded_entry = state["resume_event_payloads"][_ENCODED_KEY]
+    assert encoded_entry == {"payload": encoded_payload, "event_key": event_key}, "the flip stores the leaf under the encoded key"
+    raw_entry = {"payload": raw_payload, "event_key": event_key}
     state["resume_event_payloads"] = (
         {_ENCODED_KEY: encoded_entry, _RAW_KEY: raw_entry} if encoded_first
         else {_RAW_KEY: raw_entry, _ENCODED_KEY: encoded_entry}

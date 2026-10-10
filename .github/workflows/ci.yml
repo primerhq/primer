@@ -199,6 +199,12 @@ jobs:
           uv run pytest tests/worker/test_cancel_reconcile_live.py
           -o addopts= -n 0 -p no:cacheprovider -v -rs
           --timeout=120 --timeout-method=thread
+      - name: Postgres-gated test, session park flip leaves (skips are failures)
+        if: ${{ !cancelled() }}
+        run: >-
+          uv run pytest tests/session/test_park_flip_writes_leaves_live.py
+          -o addopts= -n 0 -p no:cacheprovider -v -rs
+          --timeout=120 --timeout-method=thread
 
   core-install:
     # Boundary rule 1 enforcement (modular-monolith): a core-only install

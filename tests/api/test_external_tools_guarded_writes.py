@@ -349,6 +349,46 @@ async def test_an_instruction_steer_that_cancels_both_calls_of_a_graph_park_keep
     assert all(payload.get("__yield_cancelled__") is True for payload in leaves.values())
 
 
+async def test_two_instruction_steers_that_read_one_graph_park_and_each_cancel_one_call_keep_both_cancelled_leaves(
+    app, client, wsr, sp, monkeypatch,
+) -> None:
+    """Ticket 01a122cc-effa (C6 through the steer's cancel loop). Two instruction steers read the same graph park. Steer A lands the cancel of tc-g1's row
+    and is held at its write of tc-g2's (the rows are cancelled in id order). Steer B, which read the park before A woke anything, lands the cancel of tc-g2
+    and wakes it. Released, A's tc-g2 write is refused and A wakes tc-g1 from ITS snapshot, which has no tc-g2 leaf: the flip wrote the whole
+    ``parked_state`` from that snapshot and dropped B's cancel while both rows say ``cancelled`` (that node waits for its deadline). Each cancel is its
+    own leaf, so both stay."""
+    bus = _RecordingBus()
+    app.state.event_bus = bus
+    wid = await _setup_ws(client, wsr)
+    await _seed_agent(sp, allow=True)
+    await _seed_graph(sp)
+    await _seed_graph_session(sp, wid)
+    await _seed_graph_calls(sp)
+    calls = sp.get_storage(ExternalToolCall)
+    sessions = sp.get_storage(WorkspaceSession)
+    held = hold_write(monkeypatch, calls, row_id="etool-g2", status="cancelled")
+    url = f"/v1/workspaces/{wid}/sessions/sess-1/steer"
+    k1, k2 = "external_tool:sess-1:tc-g1", "external_tool:sess-1:tc-g2"
+
+    async with asyncio.timeout(30):
+        steer_a = asyncio.create_task(client.post(url, json={"instruction": "stop"}))
+        await held.wait_arrived()
+        before_b = ((await calls.get("etool-g1")).status, (await calls.get("etool-g2")).status, (await sessions.get("sess-1")).parked_status)
+        steer_b = await client.post(url, json={"instruction": "stop as well"})
+        await held.release()
+        steer_a = await steer_a
+        after = await sessions.get("sess-1")
+        statuses = [(await calls.get(row_id)).status for row_id in ("etool-g1", "etool-g2")]
+
+    assert before_b == ("cancelled", "pending", "parked"), "precondition: A landed tc-g1's cancel and has woken nothing when B reads the park"
+    assert (steer_a.status_code, steer_b.status_code) == (200, 200), (steer_a.text, steer_b.text)
+    assert statuses == ["cancelled", "cancelled"]
+    assert sorted(k for k, p in bus.published if p.get("__yield_cancelled__")) == [k1, k2], "each steer woke the call whose cancel it landed"
+    leaves = {e["event_key"]: e["payload"] for e in ((after.parked_state or {}).get("resume_event_payloads") or {}).values()}
+    assert sorted(leaves) == [k1, k2], "a steer's cancel wake from its own snapshot dropped the other steer's cancelled leaf"
+    assert all(payload.get("__yield_cancelled__") is True for payload in leaves.values())
+
+
 def _graph_external_park(wid: str, waits: list[tuple[str, str, str]], *, parked_at: datetime) -> WorkspaceSession:
     """A graph park of ``sess-1`` over external calls ``(node, tool_call_id, row id)``, shaped like the graph suite's."""
     entries = [

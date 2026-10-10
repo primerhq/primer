@@ -512,6 +512,37 @@ async def test_apply_tool_results_keeps_three_leaves_and_each_wake_names_the_par
     assert [(await calls.get(f"etool-{i}")).status for i in (1, 2, 3)] == ["completed"] * 3
 
 
+async def test_two_requests_with_results_for_one_graph_park_that_read_one_snapshot_keep_all_three_leaves(provider) -> None:
+    """Ticket 01a122cc-effa (C6 through this producer). Two steer requests read the same graph park before either woke it: the first carries tc-1's
+    result, the second tc-2's and tc-3's. The second request's first wake starts from ITS snapshot, which has no tc-1 leaf (the re-read only comes before
+    a further wake of the same request), and the flip wrote the whole ``parked_state`` from it: tc-1's reply was dropped while its row says ``completed``,
+    so the call cannot be answered again and its node waits for its deadline. The flip writes only its own leaf, so all three replies stay."""
+    sessions = provider.get_storage(WorkspaceSession)
+    calls = provider.get_storage(ExternalToolCall)
+    waits = tuple(_external_wait(f"n{i}", f"tc-{i}", f"external_tool:gs:tc-{i}", f"etool-{i}") for i in (1, 2, 3))
+    async with asyncio.timeout(30):
+        await sessions.create(_graph_park("gs", parked_at=datetime.now(UTC) - timedelta(minutes=1), agent_yields=waits))
+        for i in (1, 2, 3):
+            await calls.create(_call(f"etool-{i}", f"tc-{i}", session_id="gs", node_id=f"n{i}"))
+        first_read, second_read = await sessions.get("gs"), await sessions.get("gs")
+
+        await apply_tool_results(
+            first_read, [ExternalToolResultIn(tool_call_id="tc-1", result="r1")],
+            call_storage=calls, session_storage=sessions, engine=None, event_bus=None,
+        )
+        await apply_tool_results(
+            second_read, [ExternalToolResultIn(tool_call_id=f"tc-{i}", result=f"r{i}") for i in (2, 3)],
+            call_storage=calls, session_storage=sessions, engine=None, event_bus=None,
+        )
+        after = await sessions.get("gs")
+        statuses = [(await calls.get(f"etool-{i}")).status for i in (1, 2, 3)]
+
+    assert {key: payload["result"] for key, payload in _leaves(after).items()} == {
+        f"external_tool:gs:tc-{i}": f"r{i}" for i in (1, 2, 3)
+    }, "the second request's first wake, from its own snapshot, dropped the first request's reply"
+    assert statuses == ["completed"] * 3
+
+
 async def test_apply_tool_results_does_not_wake_a_park_that_no_longer_waits_on_the_call_after_the_re_read(provider, monkeypatch) -> None:
     """N1 (probe N2g). Between the first wake and the second, the second call was resolved elsewhere (a concurrent steer cancelled it) and the graph
     re-parked on ANOTHER entry that shares its raw id under another key (n3's ask_user under ``call_0``). The re-read park does not wait on the second
