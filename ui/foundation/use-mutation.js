@@ -88,7 +88,8 @@
     // must not close on a failed save. Most call sites do not await it (onClick={() => create.mutate(body)}), and for them the rethrown error was an
     // unhandled promise rejection, so every 422 or 409 a form handles perfectly well also reached `unhandledrejection` (ADM-18). A rejection
     // handler attached here marks THIS promise handled; a caller that awaits it still receives the rejection, because awaiting attaches its own
-    // handler and the rejection is delivered to every handler.
+    // handler and the rejection is delivered to every handler. Only THIS promise is marked: `mutate(b).then(onDone)` is a NEW promise with no handler,
+    // so end a chain with `.catch(...)` or `.then(onDone, onFail)` (tests/ui/test_mutate_chains_end_in_a_rejection_handler.py keeps the count at zero).
     const mutate = useCallback((body) => {
       const promise = run(body);
       promise.catch(() => {});
