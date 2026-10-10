@@ -556,24 +556,37 @@ class _BaseGraphExecutor(
         for entry in tc_pending:
             node_def = self._resolve_node_def(entry.node_id)
             if not isinstance(node_def, _ToolCallNode):
-                # Topology drifted between checkpoint + resume; surface
-                # as a node failure so the outer loop terminates cleanly.
+                # Topology drifted between checkpoint + resume: the graph was edited while it was parked and this pending ToolCall entry
+                # now resolves to another kind of node, which cannot be resumed. The run FAILS, like the other failure exits of this method
+                # (01a125a1-3591, T1 of the #701 round 4 review): this branch used to mark the node FAILED and carry on, so the main loop ran
+                # to its tail with nothing failed in the superstep and ended the run "completed". A terminal error event (a resumed child
+                # graph is judged by the error event it yields), the node's balanced exit, and ENDED/failed with the detail.
+                drift = (
+                    f"resume: pending ToolCall node id {entry.node_id!r} "
+                    f"resolves to {type(node_def).__name__!r}, not _ToolCallNode"
+                )
                 node_states[entry.node_id] = NodeRuntimeState(
                     status=NodeRuntimeStatus.FAILED,
                     last_run_iteration=context.iteration,
                     last_run_at=datetime.now(timezone.utc),
-                    error=(
-                        f"resume: pending ToolCall node id {entry.node_id!r} "
-                        f"resolves to {type(node_def).__name__!r}, not _ToolCallNode"
-                    ),
+                    error=drift,
                 )
-                completed_ids.append(entry.node_id)
                 # 01a0812c: this node just settled (FAILED) - remove it
                 # from the live ready-set invariant now, at the write
                 # site, rather than tracking it in a second exclusion set
                 # to subtract later. See _ready_set's own docstring.
                 self._ready_set.discard(entry.node_id)
-                continue
+                yield _GraphErrorEvent(  # type: ignore[misc]
+                    code="topology_drift", message=drift, node_id=entry.node_id,
+                )
+                yield _GraphTransitionEvent(  # type: ignore[misc]
+                    node_id=entry.node_id,
+                    node_kind=self._node_kind_for(entry.node_id),
+                    phase="exit",
+                    status="failed",
+                )
+                await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail="topology_drift")
+                return
             if _is_value_yield_toolcall(entry):
                 # Value-yielding tool_call node (e.g. ``system__ask_user``):
                 # the node's RESULT is the operator's reply, not a re-run of
@@ -1330,7 +1343,7 @@ class _BaseGraphExecutor(
         """Persist ``ENDED/failed`` AND expose the outcome: the failure exits of :meth:`resume_from_checkpoint`.
 
         The main loop sets ``_last_ended_reason`` / ``_last_ended_detail`` at its tail, and ``last_done_reason`` (what a parent subgraph node and ``end_graph``'s record read) reports from them. The early
-        exits of a resume (a failed or rejected tool, a mapped error, a resumed agent or tool_wait node that fails, routing that fails) leave through ``return`` and never reach that tail, so before this
+        exits of a resume (a failed or rejected tool, a mapped error, a resumed agent or tool_wait node that fails, routing that fails, a pending ToolCall node the edited graph has turned into another kind of node) leave through ``return`` and never reach that tail, so before this
         helper a resumed graph that failed read as ``None`` and its end record said ``graph_ended``/``completed`` (review of #701, round 3, B2-N3). Every such exit calls this, so a new one cannot forget.
         """
         self._last_ended_reason = "failed"
