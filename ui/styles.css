@@ -1112,7 +1112,7 @@ input, textarea, select { font: inherit; color: inherit; }
   white-space: nowrap;
 }
 .btn:hover { background: var(--bg-hover); border-color: var(--border-strong); }
-.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn:disabled, .btn[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; }
 .btn-primary {
   background: var(--accent);
   color: var(--accent-fg);

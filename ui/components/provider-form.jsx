@@ -404,9 +404,10 @@ function PC_submittable(draft, shape, selectedType) {
 }
 
 // The cache key of a class's GET /<plural>/_types. The Register menu (provider-catalog.jsx, PC_RegisterDropdown) and this form read the SAME URL, and used to read it under two keys, so a form
-// opened from the menu fetched a second copy and had nothing until it arrived (board task 01a12350-792d). One key: the form opened from the menu finds the answer the menu already has.
-function PC_typesKey(plural) {
-  return `provider-types:${plural}`;
+// opened from the menu fetched a second copy and had nothing until it arrived (board task 01a12350-792d). One key, built from the URL that is fetched: the form opened from the menu finds the answer the
+// menu already has, and a form handed another `typesPath` does not share it.
+function PC_typesKey(plural, typesPath) {
+  return `provider-types:${typesPath || `/${plural}/_types`}`;
 }
 
 function PC_ProviderForm({
@@ -420,10 +421,13 @@ function PC_ProviderForm({
   const [saving, setSaving] = React.useState(false);
   const [saveError, setSaveError] = React.useState(null);
   const live = React.useRef(true);
-  React.useEffect(() => () => { live.current = false; }, []);
+  React.useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
+  const savingRef = React.useRef(false);
+  const rootRef = React.useRef(null);
+  const retried = React.useRef(false);
   const caps = (useCapabilities() || {}).data;
   const types = useResource(
-    PC_typesKey(plural),
+    PC_typesKey(plural, typesPath),
     (signal) => apiFetch("GET", typesPath || `/${plural}/_types`, null, { signal }),
     { pollMs: null },
   );
@@ -466,7 +470,7 @@ function PC_ProviderForm({
   const selectedType = draft.provider || typeKeys[0] || "";
   const shape = typeMap[selectedType] || {};
   // The fields of the kind come from _types. Until that has answered AND names this kind, `shape` is {}: no config fields (so no API key box), no Limits, nothing required, and a Save that sends a
-  // request without `limits`, which every class requires (422). The form does not offer Save or Test until the shape is known.
+  // request without what the server requires of the kind (an LLM provider without `limits` is a 422). The form does not offer Save or Test until the shape is known.
   const shapeReady = !!types.data && !!typeMap[selectedType];
   const typesFailed = !!types.error && !types.data;
   const loadingShape = !types.data && !types.error;
@@ -497,9 +501,12 @@ function PC_ProviderForm({
   };
 
   // A Save the server refuses is said here, in the words of the one reader (window.primerApi.readRefusal), and the click handler's promise never rejects: the catalog's save() throws what the
-  // server answered, and a button ignores what its handler returns, so a refusal used to be an unhandled rejection with nothing on screen. The edit (PUT) path is this same form.
+  // server answered, and a button ignores what its handler returns, so a refusal used to be an unhandled rejection with nothing on screen. The edit (PUT) path is this same form. While the request is out
+  // Save is `aria-disabled` and `aria-busy`, NOT `disabled`: a focused button that turns disabled drops the focus to <body>, outside the dialog (the focus trap listens on the dialog), so the refusal
+  // would leave Tab walking the page behind the scrim. The ref refuses a second submit the disabled attribute no longer does.
   const submit = async () => {
-    if (typeof onSubmit !== "function") return;
+    if (typeof onSubmit !== "function" || savingRef.current) return;
+    savingRef.current = true;
     setSaveError(null);
     setSaving(true);
     try {
@@ -507,9 +514,28 @@ function PC_ProviderForm({
     } catch (err) {
       if (live.current) setSaveError(window.primerApi.readRefusal(err, String(err)).message);
     } finally {
+      savingRef.current = false;
       if (live.current) setSaving(false);
     }
   };
+
+  // Try again repeats the request for the kind's fields. useResource keeps `error` until the answer, so the retry in flight is `types.loading` with the alert still up: the button says it is trying
+  // and stays focusable (aria-disabled, same reason as Save). When the answer arrives the button is gone, and the focus it had is lost to <body>: it goes to the form's first field, unless the operator
+  // has already moved it somewhere else.
+  const retryTypes = () => {
+    if (types.loading || typeof types.refetch !== "function") return;
+    retried.current = true;
+    types.refetch();
+  };
+  React.useEffect(() => {
+    if (!shapeReady || !retried.current) return;
+    retried.current = false;
+    const root = rootRef.current;
+    const held = document.activeElement;
+    if (!root || (held && held !== document.body)) return;
+    const first = root.querySelector("input:not([disabled]), select:not([disabled]), textarea:not([disabled])");
+    if (first) first.focus();
+  }, [shapeReady]);
 
   const runTest = async () => {
     setBusy(true);
@@ -568,9 +594,14 @@ function PC_ProviderForm({
       ) : null}
       {typesFailed ? (
         <div className="nv-form-error" role="alert" data-testid="provider-form-types-error">
-          Could not load the fields for this kind: {window.primerApi.readRefusal(types.error, String(types.error)).message}{" "}
-          <Btn kind="ghost" data-testid="provider-form-types-retry" onClick={() => types.refetch && types.refetch()}>
-            Try again
+          Could not load the fields for this kind: {window.primerApi.readRefusal(types.error, String(types.error)).message}
+        </div>
+      ) : null}
+      {typesFailed ? (
+        <div>
+          <Btn kind="ghost" data-testid="provider-form-types-retry" onClick={retryTypes}
+            aria-busy={types.loading ? "true" : undefined} aria-disabled={types.loading ? "true" : undefined}>
+            {types.loading ? "Trying again\u2026" : "Try again"}
           </Btn>
         </div>
       ) : null}
@@ -637,7 +668,7 @@ function PC_ProviderForm({
   const showRightColumn = showProbePanel || showInvalidate;
 
   return (
-    <div className="col" style={{ gap: 12 }}
+    <div className="col" style={{ gap: 12 }} ref={rootRef}
       data-testid={`provider-form-${plural}`}>
       {/* 01a04d6a: was a flex row (fields flex:1 vs. the probe panel's
           fixed 240px) inside the default 420px Modal - the fields
@@ -700,7 +731,8 @@ function PC_ProviderForm({
         <Btn data-testid="provider-form-save"
           onClick={submit}
           aria-busy={saving ? "true" : undefined}
-          disabled={!shapeReady || busy || saving || missingRequired()
+          aria-disabled={saving ? "true" : undefined}
+          disabled={!shapeReady || busy || missingRequired()
             || modelRowsIncomplete(shape.row_fields)}>
           Save provider
         </Btn>
