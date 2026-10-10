@@ -304,7 +304,7 @@ reachable from `begin`.
   also blocks, because it may be the one that names this graph. Residual: an
   ended session can be re-opened later with `reset_session` (back to created)
   after its graph was deleted, and then fails at its next turn.
-- `system::find_graphs` - predicate query.
+- `system::find_graphs` - predicate query. A secret-bearing field (a `SecretStr`, a masked URL, or anything nesting one) cannot be a predicate or `order_by` key: such a query is refused `type=validation-error`.
 
 ### Discovery (search toolset)
 

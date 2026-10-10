@@ -181,7 +181,7 @@ path-addressed document tools, and the per-collection extras.
   delete again. If a delete fails part-way, search on that collection
   returns nothing until you retry (the vectors are dropped first); the
   documents that remain are intact and deleting again finishes the job.
-- `system::find_collections` - predicate-based query.
+- `system::find_collections` - predicate-based query. A secret-bearing field (a `SecretStr`, a masked URL, or anything nesting one) cannot be a predicate or `order_by` key: such a query is refused `type=validation-error`.
 
 ### Document tools (path-addressed)
 
