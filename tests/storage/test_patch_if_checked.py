@@ -95,6 +95,33 @@ async def test_a_status_exclusion_in_where_keeps_an_ended_row_quiet(fake_storage
 
 
 @pytest.mark.asyncio
+async def test_a_refusal_by_a_path_guard_the_fresh_row_agrees_with_is_a_quiet_none(fake_storage_provider, caplog):
+    """A guard on a nested leaf (a ``where`` key that is a path) is re-evaluated on the leaf, not on a top-level field named by the tuple: the leaf
+    is set, so ``[None]`` does not match and the refusal is the race it looks like (ticket 01a12606)."""
+    store = fake_storage_provider.get_storage(ps.PatchDoc)
+    await store.create(ps.PatchDoc(id="a", status="running", state={"ps": {"k": {"v": 1}}}))
+    before = _drift_count()
+    with caplog.at_level(logging.ERROR, logger="primer.storage.cas"):
+        out = await patch_if_checked(
+            _RefusesEverything(store), "a", None, where={"status": ["running"], ("state", "ps", "k"): [None]}, set_paths={("state", "ps", "k"): {"v": 2}},
+        )
+    assert out is None
+    assert _drift_count() == before and not caplog.records
+
+
+@pytest.mark.asyncio
+async def test_the_alarm_names_a_path_guard_beside_a_field_guard(fake_storage_provider, caplog):
+    store = fake_storage_provider.get_storage(ps.PatchDoc)
+    await store.create(ps.PatchDoc(id="a", status="running", state={"ps": {}}))
+    with caplog.at_level(logging.ERROR, logger="primer.storage.cas"):
+        out = await patch_if_checked(
+            _RefusesEverything(store), "a", None, where={"status": ["running"], ("state", "ps", "k"): [None]}, set_paths={("state", "ps", "k"): 1},
+        )
+    text = " ".join(r.getMessage() for r in caplog.records)
+    assert out is None and "serialization drift" in text and "status" in text and "('state', 'ps', 'k')" in text
+
+
+@pytest.mark.asyncio
 async def test_the_alarm_names_the_guarded_fields_and_never_their_values(fake_storage_provider, caplog):
     from pydantic import SecretStr
 

@@ -127,9 +127,13 @@ async def _until_blocked_by(provider: PostgresStorageProvider, blocker: Any, tas
     raise RuntimeError("wake B finished without waiting on wake A's row lock, so the race was never run")
 
 
-async def _race(provider: PostgresStorageProvider, a: tuple[WorkspaceSession, str], b: tuple[WorkspaceSession, str]) -> tuple[bool, bool]:
+async def _race(
+    provider: PostgresStorageProvider, a: tuple[WorkspaceSession, str], b: tuple[WorkspaceSession, str], *, payloads: tuple[dict, dict] | None = None,
+) -> tuple[bool, bool]:
     """Wake A (``(snapshot, key)``) flips inside an open transaction and holds the row lock; wake B blocks on it; A commits. Returns what each flip
-    returned. On any failure A is rolled back (which frees B) and B is awaited; every await is bounded."""
+    returned. Each wake's payload is ``{"response": <its key>}`` unless ``payloads`` gives them. On any failure A is rolled back (which frees B) and B is
+    awaited; every await is bounded."""
+    payload_a, payload_b = payloads or ({"response": a[1]}, {"response": b[1]})
     sessions = provider.get_storage(WorkspaceSession)
     async with asyncio.timeout(3 * _BOUND_S), provider.pool.acquire() as c1:
         tx = c1.transaction()
@@ -139,10 +143,10 @@ async def _race(provider: PostgresStorageProvider, a: tuple[WorkspaceSession, st
         try:
             async with asyncio.timeout(_BOUND_S):
                 landed_a = await durably_mark_session_resumable(
-                    a[0], event_key=a[1], payload={"response": a[1]}, session_storage=_OnConnection(sessions, c1), engine=None,
+                    a[0], event_key=a[1], payload=payload_a, session_storage=_OnConnection(sessions, c1), engine=None,
                 )
                 b_task = asyncio.create_task(durably_mark_session_resumable(
-                    b[0], event_key=b[1], payload={"response": b[1]}, session_storage=sessions, engine=None,
+                    b[0], event_key=b[1], payload=payload_b, session_storage=sessions, engine=None,
                 ))
                 await _until_blocked_by(provider, c1, b_task)
                 await tx.commit()
@@ -200,3 +204,22 @@ async def test_two_wakes_of_a_parked_multi_event_park_that_read_one_snapshot_kee
     assert {"landed": landed, "parked_status": after.parked_status, "leaves": _leaves(after), "drift": _drift()} == {
         "landed": (True, True), "parked_status": "resumable", "leaves": {key: {"response": key} for key in keys}, "drift": 0,
     }
+
+
+async def test_two_decisions_on_one_gate_that_read_one_snapshot_land_once_and_the_first_stands(provider) -> None:
+    """Ticket 01a12606: two DIFFERENT decisions on the same gate read a freshly ``parked`` park and race on its row lock. The flip refuses a wake whose
+    key already holds a leaf, in the statement's own guard, so Postgres re-checks it for B against the version A committed: B is refused, A's decision
+    stands, and nothing counts as drift. Before, B's guard (the park, a status it may advance from) still held and B replaced A's decision."""
+    sessions = provider.get_storage(WorkspaceSession)
+    n1, n2 = _gate("n1", "call_1"), _gate("n2", "call_2")
+    async with asyncio.timeout(_BOUND_S):
+        await sessions.create(_graph_park("gs", parked_at=datetime.now(UTC) - timedelta(minutes=1), agent_yields=(n1, n2)))
+        a, b = await sessions.get("gs"), await sessions.get("gs")
+
+    landed = await _race(provider, (a, n1["event_key"]), (b, n1["event_key"]), payloads=({"response": "first"}, {"response": "second"}))
+
+    async with asyncio.timeout(_BOUND_S):
+        after = await sessions.get("gs")
+    assert {"landed": landed, "parked_status": after.parked_status, "leaves": _leaves(after), "drift": _drift()} == {
+        "landed": (True, False), "parked_status": "resumable", "leaves": {n1["event_key"]: {"response": "first"}}, "drift": 0,
+    }, "the second decision on one gate replaced the first"

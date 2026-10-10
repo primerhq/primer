@@ -36,6 +36,10 @@ _WHERES = [
     {"status": ["zzz"]},                         # does not match _DOC: the rejected-guard leg
     {"status": ["a"]},
     {"status": ["a", None], "flag": [True], "count": [1, 2.5]},
+    {("state", "ps", "existing"): [1], "status": ["a"]},      # a path to a nested leaf, beside a field
+    {("state", "ps", "missing"): [None]},                     # an absent leaf
+    {("state", "ps", "existing"): [None]},                    # a set leaf is not absent: the rejected leg
+    {("other", "x"): [None, 3]},                              # under a scalar parent: absent
 ]
 
 
@@ -108,6 +112,14 @@ def test_a_where_value_is_typed_json_never_spliced():
         ({}, {"a": ["x"]}, False),
         ({"a": "x", "b": 2}, {"a": ["x"], "b": [1, 2]}, True),
         ({"a": "x", "b": 3}, {"a": ["x"], "b": [1, 2]}, False),
+        ({"s": {"a": 1}}, {("s", "a"): [1.0]}, True),                 # a path names the nested leaf
+        ({"s": {"a": 1}}, {("s", "a"): [None]}, False),
+        ({"s": {"a": None}}, {("s", "a"): [None]}, True),
+        ({"s": {}}, {("s", "a"): [None]}, True),
+        ({}, {("s", "a"): [None]}, True),
+        ({"s": 5}, {("s", "a"): [None]}, True),                       # under a scalar parent
+        ({"s": [7]}, {("s", "0"): [None]}, True),                     # a path never indexes into an array
+        ({"s": {"a": 1}, "b": 2}, {("s", "a"): [1], "b": [3]}, False),
     ],
 )
 def test_document_matches_agrees_with_the_independent_oracle(doc, where, expected):
@@ -124,11 +136,19 @@ def test_document_matches_agrees_with_the_independent_oracle(doc, where, expecte
         (None, {("state", ""): 1}, {"status": ["a"]}),            # an empty path element
         ({"count": 1}, None, {"": ["a"]}),                        # an empty where field
         (None, {("id", "x"): 1}, {"status": ["a"]}),              # a nested path rooted at the id
+        ({"count": 1}, None, {(): ["a"]}),                        # an empty where path
+        ({"count": 1}, None, {("state", ""): ["a"]}),             # an empty where path element
+        ({"count": 1}, None, {("id", "x"): ["a"]}),               # a where path rooted at the id
     ],
 )
 def test_validate_patch_refuses_an_empty_or_non_string_key_and_a_path_rooted_at_the_id(patch, paths, where):
     with pytest.raises(PatchSpecError):
         validate_patch(patch, paths, where)
+
+
+def test_a_one_element_where_path_is_the_field_itself():
+    """So a guard spelled as a path is normalised for a defaulted field exactly as the field name is."""
+    assert validate_patch({"count": 1}, None, {("status",): ["a"], ("state", "k"): [None]})[2] == {"status": ["a"], ("state", "k"): [None]}
 
 
 def test_raw_generation_is_the_stored_json_value_not_a_python_object():

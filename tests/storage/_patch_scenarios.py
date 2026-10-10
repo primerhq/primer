@@ -137,6 +137,58 @@ async def none_in_where_matches_null_and_absent(store: Store) -> None:
     assert await store.patch_if("a", {"count": 5}, where={"never_written": ["x"]}) is None
 
 
+# ---- where: a path to a nested leaf ----------------------------------------------------------------------------------------------------------
+
+
+async def a_where_path_compares_the_nested_leaf(store: Store) -> None:
+    """A ``where`` key may be a path (a tuple, like a ``set_paths`` key): the leaf it names is compared by the same typed rule as a top-level field,
+    and ``None`` matches a leaf that is absent, under an absent, scalar or array parent too (a path never indexes into an array), or JSON null."""
+    await _mk(store, "a", state={"ps": {"k1": "x", "n": 2, "nul": None}, "scalar": 5, "arr": [1, 2]})
+    ok = {("state", "ps", "w"): 1}
+    assert await store.patch_if("a", None, where={("state", "ps", "k1"): ["x"]}, set_paths=ok) is not None
+    assert await store.patch_if("a", None, where={("state", "ps", "k1"): ["y"]}, set_paths=ok) is None
+    assert await store.patch_if("a", None, where={("state", "ps", "n"): [2.0]}, set_paths=ok) is not None   # numbers by value
+    assert await store.patch_if("a", None, where={("state", "ps", "n"): ["2"]}, set_paths=ok) is None      # typed, not text
+    assert await store.patch_if("a", None, where={("state", "ps", "k1"): [None]}, set_paths=ok) is None   # set: not absent
+    for absent in (("state", "ps", "nul"), ("state", "ps", "missing"), ("state", "none", "x"), ("state", "scalar", "x"), ("state", "arr", "0")):
+        assert await store.patch_if("a", None, where={absent: [None]}, set_paths=ok) is not None, absent
+    # a path and a field guard combine like two fields: both must match
+    assert await store.patch_if("a", {"count": 1}, where={"status": ["created"], ("state", "ps", "missing"): [None]}) is not None
+    assert await store.patch_if("a", {"count": 2}, where={"status": ["other"], ("state", "ps", "missing"): [None]}) is None
+    fresh = await store.get("a")
+    assert fresh is not None and fresh.count == 1 and fresh.state["ps"] == {"k1": "x", "n": 2, "nul": None, "w": 1}
+
+
+async def a_leaf_guarded_absent_is_written_once(store: Store) -> None:
+    """The use it exists for: two writers that each set a leaf only while it is absent. The first lands; the second, on the same guard, is refused
+    and leaves the first one's leaf and fields as they are (ticket 01a12606: one decision per gate)."""
+    await _mk(store, "a", state={})
+    leaf = ("state", "ps", "k")
+    first = await store.patch_if("a", {"token": "one"}, where={leaf: [None]}, set_paths={leaf: {"v": 1}})
+    second = await store.patch_if("a", {"token": "two"}, where={leaf: [None]}, set_paths={leaf: {"v": 2}})
+    fresh = await store.get("a")
+    assert (first is not None, second, fresh.token if fresh else None, fresh.state if fresh else None) == (True, None, "one", {"ps": {"k": {"v": 1}}})
+
+
+async def a_malformed_where_path_is_rejected(store: Store) -> None:
+    await _mk(store, "a")
+    for bad in (
+        {(): [None]},                                  # an empty path
+        {("state", 'a"b'): [None]},                    # a quote in an element
+        {("state", "a\\b"): [None]},                   # a backslash
+        {("state", ""): [None]},                       # an empty element
+        {("state", 1): [None]},                        # an element that is not a string
+        {("a", "b", "c", "d", "e"): [None]},           # deeper than the cap
+        {("id", "x"): [None]},                         # rooted at the id
+        {("state", "x"): "absent"},                    # a bare string, not a list
+        {("state", "x"): [{"v": 1}]},                  # not a scalar
+    ):
+        with pytest.raises(PatchSpecError):
+            await store.patch_if("a", {"count": 1}, where=bad)  # type: ignore[arg-type]
+    fresh = await store.get("a")
+    assert fresh is not None and fresh.count == 0
+
+
 # ---- raw_generation: a read value matches the stored value ---------------------------------------
 
 
@@ -530,6 +582,9 @@ ALL = [
     where_compares_typed_scalars_not_text,
     where_matches_any_listed_value_and_all_fields,
     none_in_where_matches_null_and_absent,
+    a_where_path_compares_the_nested_leaf,
+    a_leaf_guarded_absent_is_written_once,
+    a_malformed_where_path_is_rejected,
     raw_generation_round_trips_for_microseconds_and_a_utc_offset,
     three_paths_sharing_a_parent_all_land_and_siblings_survive,
     a_null_parent_is_replaced_and_the_leaves_set,
