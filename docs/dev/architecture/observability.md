@@ -246,7 +246,7 @@ Two read endpoints expose derived detail the scrape format cannot carry:
   already in circulation. A failed turn is ONE window however many error records
   it wrote (`terminals.TurnWindowScanner`: the first error of a failure ends it,
   dispatch's copy and the release marker are filed with it, ticket 01a11ca5), and a GRAPH turn is one window however many nodes finished inside it (a record with a
-  `node_id` is inside the window; the graph's own end, a node-less `done` the writers append when the run ends (`payload.graph_end`), closes it, ticket 01a11f35), which
+  `node_id` is inside the window; the graph's own end, a node-less `done` the writers append when the run ends (`payload.graph_end`), closes it, and an `invocation_divider`, written only to an ENDED session, closes a graph run still open before it when a log or a path wrote no end, ticket 01a11f35), which
   is what keeps the join below right after a failed turn. The tree's envelope is the window's RUN of `turns.jsonl`
   envelopes (`envelopes_for_window`): window `n` takes the `n`-th run, so both sides
   must count turns alike. `turn_envelopes` groups by `turn_no`, and a FAILED turn
