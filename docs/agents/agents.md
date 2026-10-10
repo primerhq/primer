@@ -250,7 +250,7 @@ Agents are managed via standard CRUD plus the semantic search tool.
   setup checklist, every other user waits on a setup screen) until
   `POST /v1/setup/seed` or the next server start re-creates it with its
   default definition, not your edits.
-- `system::find_agents` - predicate query. A field that holds a secret (a `SecretStr`, a masked URL, or anything nesting one) cannot be a predicate or `order_by` key, and a cursor only carries the keys its own request sorts by: such a query is refused `type=validation-error` (a bad cursor, `type=bad-request`).
+- `system::find_agents` - predicate query. A field that holds a secret (a `SecretStr`, a masked URL, or anything nesting one) cannot be a predicate or `order_by` key, and a cursor only carries the keys its own request sorts by: such a query, and a bad cursor, are refused `type=validation-error`.
 
 ### Model profiles (system toolset)
 
