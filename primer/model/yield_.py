@@ -132,6 +132,14 @@ def with_wake_gate(payload: "dict[str, Any]", gate_id: str | None) -> "dict[str,
     return {**payload, WAKE_GATE_ID_KEY: gate_id}
 
 
+def wake_gate_id_of(raw_payload: "Any") -> str | None:
+    """The gate a human decision's RAW wake payload names (:data:`WAKE_GATE_ID_KEY`), or ``None`` (a wake from before gates had ids, a machine wake, a reply that is not a dict).
+
+    Read it from the raw wake: the resume classification strips the key from a real reply, so the payload a walk is handed no longer says which gate it decided."""
+    named = raw_payload.get(WAKE_GATE_ID_KEY) if isinstance(raw_payload, dict) else None
+    return named if isinstance(named, str) and named else None
+
+
 # ===========================================================================
 # Sentinels returned by yielding tools
 # ===========================================================================
@@ -556,6 +564,7 @@ __all__ = [
     "entry_id_of",
     "with_wake_entry",
     "with_wake_gate",
+    "wake_gate_id_of",
     "with_wake_park",
     "timer_event_key",
     "Yielded",

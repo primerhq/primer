@@ -424,10 +424,13 @@ async def test_resume_graph_engine_tool_wait_only_wake_runs_readiness_recheck(
     remaining_ay = repark.graph_checkpoint["pending_agent_yields"]
     assert [ay["node_id"] for ay in remaining_ay] == ["B"]
     assert repark.graph_checkpoint.get("pending_tool_waits") in (None, [])
-    # `replies` was emptied by the tool_wait filter, so the engine ran its "no human reply yet" path: ONE delivery,
-    # the sentinel, which matches no pending gate. Without the filter the tool_wait wake itself (a reply for the node
-    # id "A") would reach the node loop instead and the sentinel path would never run.
-    assert pool.agent_tool_result_tcids == ["__tool_wait_wake_only__"]
+    # `replies` was emptied by the tool_wait filter, so the engine ran its "no human reply yet" path (`wake_only`): nothing a
+    # human decided arrived, so NO reply machinery runs (no agent answer is computed, no approval record is written) and no
+    # human-gate entry is selected. Without the filter the tool_wait wake itself (a reply for the node id "A") would reach the
+    # node loop instead and the wake-only path would never run. (It used to deliver a sentinel tool_call_id that matched no
+    # pending gate; an id is not a safe way to say "no entry", see test_graph_toolcall_inner_gate_round3.py.)
+    assert pool.agent_tool_result_tcids == []
+    assert pool.approval_record_event_keys == []
 
 
 # ===========================================================================

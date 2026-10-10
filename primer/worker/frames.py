@@ -209,11 +209,11 @@ class AgentFrame:
         )
 
     async def resume_leaf(
-        self, leaf: Any, payload: Any, services: Any, fired_key: str | None = None,
+        self, leaf: Any, payload: Any, services: Any, fired_key: str | None = None, gate_id: str | None = None,
     ) -> "FrameOutcome":
         """Resolve this frame's OWN leaf when it is the innermost frame.
 
-        ``fired_key`` is not used: an agent frame's leaf is exact.
+        ``fired_key`` and ``gate_id`` are not used: an agent frame's leaf is exact.
 
         The leaf belongs to this subagent's own tool call (an approval gate or
         a yielding tool it raised), so it is resolved via :func:`apply_leaf`
@@ -368,11 +368,12 @@ class GraphFrame:
         return self.node_tcid, getattr(leaf, "event_key", None)
 
     async def resume_leaf(
-        self, leaf: Any, payload: Any, services: Any, fired_key: str | None = None,
+        self, leaf: Any, payload: Any, services: Any, fired_key: str | None = None, gate_id: str | None = None,
     ) -> "FrameOutcome":
         """Resolve this graph's OWN leaf when it is the innermost frame.
 
-        The entry that was ANSWERED is selected by ``fired_key`` (see :meth:`answered_entry`), else by the leaf.
+        The entry that was ANSWERED is selected by ``fired_key`` (see :meth:`answered_entry`), else by the leaf. ``gate_id`` is the gate the decision named, read from the RAW wake by the walk (``payload`` is the
+        classified one, which no longer carries it) and handed to the child's resume: sibling gates can share the key, and a gated inner call runs with the approval bypassed (security review of #724, round 3).
 
         The leaf belongs to a node INSIDE this child graph, so only the graph's
         own resume can resolve it: rehydrate the child executor
@@ -405,6 +406,7 @@ class GraphFrame:
                 payload=payload,
                 resumed_tcid=node_tcid,
                 resumed_event_key=answered_key,
+                **({"resumed_gate_id": gate_id} if gate_id is not None else {}),
                 agent_tool_result=agent_tool_result,
                 resume_session_id=services.session_id,
                 resolve_provider=services.resolve_provider,

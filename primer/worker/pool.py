@@ -1417,10 +1417,10 @@ class WorkerPool:
         )
 
     async def _write_approval_record_for_graph(
-        self, *, session, checkpoint: dict, tcid, payload, event_key: str | None = None,
+        self, *, session, checkpoint: dict, tcid, payload, event_key: str | None = None, gate_id: str | None = None,
     ) -> None:
         return await graph_resume_coordinator.write_approval_record_for_graph(
-            self, session=session, checkpoint=checkpoint, tcid=tcid, payload=payload, event_key=event_key,
+            self, session=session, checkpoint=checkpoint, tcid=tcid, payload=payload, event_key=event_key, gate_id=gate_id,
         )
 
     async def _resume_engine_session(self, engine_lease, session):
@@ -1470,10 +1470,10 @@ class WorkerPool:
         )
 
     async def _resume_graph_continuation(
-        self, session, parked, checkpoint, ay, payload, workspace, executor,
+        self, session, parked, checkpoint, ay, payload, workspace, executor, gate_id: str | None = None,
     ):
         return await graph_resume_coordinator.resume_graph_continuation(
-            self, session, parked, checkpoint, ay, payload, workspace, executor,
+            self, session, parked, checkpoint, ay, payload, workspace, executor, gate_id=gate_id,
         )
 
     def _repark_graph_continuation(self, session, parked, checkpoint, ay, outcome):

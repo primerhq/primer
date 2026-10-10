@@ -132,6 +132,7 @@ async def resume_continuation(
     payload: Any,
     services: InvocationServices,
     fired_key: str | None = None,
+    gate_id: str | None = None,
 ) -> Deliver | Repark:
     """Resolve ``leaf`` at the innermost frame, then unwind the stack.
 
@@ -148,6 +149,9 @@ async def resume_continuation(
     ``fired_key`` is the event key the reply FIRED (the parked row's ``resume_event_key``). An agent session parked on an ``invoke_graph`` child offers every
     pending gate of the child, but ``leaf`` is the child's PRIMARY projection, so a reply for a non-primary sibling must select the entry it names, not the
     leaf (C-033 round 3, ticket 01a11fc6-0cce). A frame whose leaf is exact (an agent frame) ignores it.
+
+    ``gate_id`` is the gate the decision named, read from the RAW wake (the ``payload`` here is the classified one, whose ``__yield_gate_id__`` is stripped). A child graph's sibling gates can share the key and
+    a gated inner call runs with the approval bypassed, so the child resumes only the entry of that gate (security review of #724, round 3, B1-r2a). It is handed on only when there is one.
     """
     assert frames, "resume_continuation requires a non-empty frame stack"
 
@@ -156,7 +160,7 @@ async def resume_continuation(
     #    a GraphFrame defers to the child graph's own resume. Either returns a
     #    Completed (the leaf answer / final value) or a Reparked.
     inner = frames[-1]
-    outcome = await inner.resume_leaf(leaf, payload, services, fired_key=fired_key)
+    outcome = await inner.resume_leaf(leaf, payload, services, fired_key=fired_key, **({"gate_id": gate_id} if gate_id is not None else {}))
     if not outcome.completed:  # Reparked
         ny = outcome.new_yield
         return Repark(frames=list(frames[:-1]) + list(ny.frames or []), leaf=ny.yielded)
