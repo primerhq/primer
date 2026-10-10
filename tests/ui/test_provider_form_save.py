@@ -56,9 +56,6 @@ def _limits_422() -> dict:
     return answer.json()
 
 
-ANTHROPIC = _llm_types()["anthropic"]
-WEB_FETCH_LOCAL = _web_fetch_types()["local"]
-LIMITS_422 = _limits_422()
 
 _PRELUDE = """
 window.addEventListener = function () {}; window.removeEventListener = function () {};
@@ -99,6 +96,23 @@ function press(testid) {
   Promise.resolve(out).then(function () { __settled = "fulfilled"; }, function () { __settled = "rejected"; });
 }
 """
+
+
+@pytest.fixture(scope="module")
+def anthropic() -> dict:
+    """The ``anthropic`` entry of ``GET /v1/llm_providers/_types``, as the route function answers it."""
+    return _llm_types()["anthropic"]
+
+
+@pytest.fixture(scope="module")
+def web_fetch_local() -> dict:
+    """The ``local`` entry of ``GET /v1/web_fetch_providers/_types``."""
+    return _web_fetch_types()["local"]
+
+
+@pytest.fixture(scope="module")
+def limits_422() -> dict:
+    return _limits_422()
 
 
 @pytest.fixture(scope="module")
@@ -154,14 +168,14 @@ def _fail_types(ctx, **state) -> None:
     ctx.eval("__types.error = new window.primerApi.ApiError(" + json.dumps(envelope) + "); " + assign + "MR.rerender();")
 
 
-def test_the_shapes_and_the_refusal_are_the_servers_own() -> None:
+def test_the_shapes_and_the_refusal_are_the_servers_own(anthropic, limits_422, web_fetch_local) -> None:
     """The stand-ins are not typed in: they are what the producers answer, so a server-side change in them changes what these tests read."""
-    assert ANTHROPIC["limits"] is True and any(f["key"] == "api_key" for f in ANTHROPIC["config_fields"]), ANTHROPIC
-    assert WEB_FETCH_LOCAL == {"config_fields": []}
-    assert LIMITS_422["status"] == 422 and LIMITS_422["extensions"]["errors"][0]["loc"] == ["body", "limits"], LIMITS_422
+    assert anthropic["limits"] is True and any(f["key"] == "api_key" for f in anthropic["config_fields"]), anthropic
+    assert web_fetch_local == {"config_fields": []}
+    assert limits_422["status"] == 422 and limits_422["extensions"]["errors"][0]["loc"] == ["body", "limits"], limits_422
 
 
-def test_save_and_test_are_off_and_a_loading_line_is_shown_until_the_kinds_fields_have_arrived(ctx) -> None:
+def test_save_and_test_are_off_and_a_loading_line_is_shown_until_the_kinds_fields_have_arrived(ctx, web_fetch_local) -> None:
     """F1: ``shape`` is ``{}`` until ``_types`` answers, which offered Save with no Limits and no API key box."""
     _mount(ctx, plural="web_fetch_providers", typesPath="/web_fetch_providers/_types", value={"provider": "local", "id": "p1"})
     assert _props(ctx, "provider-form-save")["disabled"] is True, "Save was offered before the fields were known"
@@ -169,15 +183,15 @@ def test_save_and_test_are_off_and_a_loading_line_is_shown_until_the_kinds_field
     loading = _props(ctx, "provider-form-loading")
     assert loading is not None, "nothing said that the fields are loading"
     assert loading["role"] == "status", "the loading line is a status for a screen reader"
-    _types(ctx, data={"local": WEB_FETCH_LOCAL})
+    _types(ctx, data={"local": web_fetch_local})
     assert _props(ctx, "provider-form-save")["disabled"] is False
     assert _props(ctx, "provider-form-test")["disabled"] is False
     assert _props(ctx, "provider-form-loading") is None
 
 
-def test_save_is_offered_once_the_fields_are_known_and_sends_what_the_form_shows(ctx) -> None:
+def test_save_is_offered_once_the_fields_are_known_and_sends_what_the_form_shows(ctx, anthropic) -> None:
     _mount(ctx)
-    _types(ctx, data={"anthropic": ANTHROPIC})
+    _types(ctx, data={"anthropic": anthropic})
     assert _props(ctx, "provider-form-save")["disabled"] is False
     ctx.eval("press('provider-form-save');")
     assert _settle(ctx) == "fulfilled"
@@ -185,10 +199,10 @@ def test_save_is_offered_once_the_fields_are_known_and_sends_what_the_form_shows
     assert body["provider"] == "anthropic" and body["limits"] == {"max_concurrency": 1}, body
 
 
-def test_a_kind_the_install_does_not_serve_is_said_and_save_stays_off(ctx) -> None:
+def test_a_kind_the_install_does_not_serve_is_said_and_save_stays_off(ctx, anthropic) -> None:
     """F1: the types arrived but not the kind this draft names; a form for it would send a request nothing can validate."""
     _mount(ctx, value={"provider": "retired-kind", "id": "p1"})
-    _types(ctx, data={"anthropic": ANTHROPIC})
+    _types(ctx, data={"anthropic": anthropic})
     assert _props(ctx, "provider-form-save")["disabled"] is True
     missing = _props(ctx, "provider-form-kind-missing")
     assert missing is not None and missing["role"] == "alert"
@@ -226,24 +240,24 @@ def test_a_retry_that_is_out_says_so_stays_focusable_and_is_not_sent_twice(ctx) 
     assert retry["aria_disabled"] is None and retry["busy"] is None and "Try again" in (_text_of(ctx, "provider-form-types-retry") or "")
 
 
-def test_a_later_failure_keeps_the_fields_it_already_has(ctx) -> None:
+def test_a_later_failure_keeps_the_fields_it_already_has(ctx, anthropic) -> None:
     """``useResource`` is stale-while-error: data that arrived stays when a later fetch fails, and the form keeps showing the kind's fields rather than an alert over a usable form."""
     _mount(ctx)
-    _types(ctx, data={"anthropic": ANTHROPIC})
-    _fail_types(ctx, data={"anthropic": ANTHROPIC})
+    _types(ctx, data={"anthropic": anthropic})
+    _fail_types(ctx, data={"anthropic": anthropic})
     assert _props(ctx, "provider-form-types-error") is None, "an alert over a form that has its fields"
     assert "API key" in (_text_of(ctx, "provider-form-llm_providers") or ""), "the kind's fields went away"
     assert _props(ctx, "provider-form-save")["disabled"] is False
 
 
 @pytest.mark.parametrize("editing", [False, True], ids=["create", "edit"])
-def test_a_save_the_server_refused_is_shown_in_the_form_and_never_rejects(ctx, editing: bool) -> None:
+def test_a_save_the_server_refused_is_shown_in_the_form_and_never_rejects(ctx, editing: bool, anthropic, limits_422) -> None:
     """F2: the 422 for a missing ``limits`` was an unhandled rejection and nothing on screen. The button's handler returns a promise that settles fulfilled, the refusal is in a ``role="alert"`` line
     (``provider-form-save-error``) in the words of the one reader (``readRefusal``), and Save works again for another try. The edit (PUT) path is the same form."""
     props = {"editing": True, "existingId": "p1"} if editing else {}
     _mount(ctx, **props)
-    _types(ctx, data={"anthropic": ANTHROPIC})
-    ctx.eval("__onSubmit = function () { return Promise.reject(new window.primerApi.ApiError(" + json.dumps(LIMITS_422) + ")); };")
+    _types(ctx, data={"anthropic": anthropic})
+    ctx.eval("__onSubmit = function () { return Promise.reject(new window.primerApi.ApiError(" + json.dumps(limits_422) + ")); };")
     ctx.eval("press('provider-form-save');")
     assert _settle(ctx) == "fulfilled", "the click handler's promise rejected: an unhandled rejection in the browser"
     alert = _props(ctx, "provider-form-save-error")
@@ -255,22 +269,22 @@ def test_a_save_the_server_refused_is_shown_in_the_form_and_never_rejects(ctx, e
     assert save["disabled"] is False and save["aria_disabled"] is None and save["busy"] is None, "Save must work again after a refusal"
 
 
-def test_the_refusal_goes_away_when_the_next_save_is_pressed(ctx) -> None:
+def test_the_refusal_goes_away_when_the_next_save_is_pressed(ctx, anthropic, limits_422) -> None:
     _mount(ctx)
-    _types(ctx, data={"anthropic": ANTHROPIC})
-    ctx.eval("__onSubmit = function () { return Promise.reject(new window.primerApi.ApiError(" + json.dumps(LIMITS_422) + ")); }; press('provider-form-save');")
+    _types(ctx, data={"anthropic": anthropic})
+    ctx.eval("__onSubmit = function () { return Promise.reject(new window.primerApi.ApiError(" + json.dumps(limits_422) + ")); }; press('provider-form-save');")
     _settle(ctx)
     assert _props(ctx, "provider-form-save-error") is not None
     ctx.eval("__onSubmit = function () { return new Promise(function (resolve) { __release = resolve; }); }; press('provider-form-save'); MR.rerender();")
     assert _props(ctx, "provider-form-save-error") is None, "the old refusal stayed on screen while the new request was out"
 
 
-def test_save_stays_focusable_while_the_request_is_out_and_a_second_press_sends_nothing(ctx) -> None:
+def test_save_stays_focusable_while_the_request_is_out_and_a_second_press_sends_nothing(ctx, anthropic) -> None:
     """F2 and the review's B1: ``busy`` covered only the Test round trip, so a double click on Save sent two POSTs; the first fix made Save ``disabled`` while the request was out, and a focused button that
     turns disabled drops the focus to ``<body>``, outside the dialog (the focus trap listens on the dialog), so after a refusal Tab walked the page behind the scrim. Save is ``aria-disabled`` and
     ``aria-busy`` instead: it keeps its focus, and the handler refuses a second submit itself."""
     _mount(ctx)
-    _types(ctx, data={"anthropic": ANTHROPIC})
+    _types(ctx, data={"anthropic": anthropic})
     ctx.eval("__onSubmit = function (body) { __submitted.push(body); return new Promise(function (resolve) { __release = resolve; }); }; press('provider-form-save'); MR.rerender();")
     save = _props(ctx, "provider-form-save")
     assert save["disabled"] is False, "Save turned disabled while it has the focus: the focus drops out of the dialog"
@@ -285,10 +299,10 @@ def test_save_stays_focusable_while_the_request_is_out_and_a_second_press_sends_
     assert ctx.eval("__submitted.length") == 2, "Save did not work again once the first request was answered"
 
 
-def test_a_save_that_cannot_be_pressed_for_another_reason_is_still_disabled(ctx) -> None:
+def test_a_save_that_cannot_be_pressed_for_another_reason_is_still_disabled(ctx, anthropic) -> None:
     """Only the request-in-flight state moves to ``aria-disabled``; a blank Name or an unknown shape stays a real ``disabled``."""
     _mount(ctx, value={"provider": "anthropic", "id": ""})
-    _types(ctx, data={"anthropic": ANTHROPIC})
+    _types(ctx, data={"anthropic": anthropic})
     assert _props(ctx, "provider-form-save")["disabled"] is True
 
 
@@ -308,3 +322,57 @@ def test_the_form_and_the_register_menu_read_the_same_types_under_one_key(code, 
         c.close()
     assert menu_keys and form_keys and set(menu_keys) == set(form_keys) and len(set(menu_keys)) == 1, (menu_keys, form_keys)
     assert other_keys and set(other_keys).isdisjoint(form_keys), (other_keys, form_keys)
+
+
+def _prime(ctx, *, error: bool = False, data: dict | None = None, loading: bool = False) -> None:
+    """The shared ``_types`` entry as a component finds it when it MOUNTS (set before the mount, no rerender)."""
+    envelope = {"type": "/errors/internal", "title": "Internal Server Error", "status": 500, "detail": "the types could not be read", "instance": "/v1/llm_providers/_types"}
+    failure = "new window.primerApi.ApiError(" + json.dumps(envelope) + ")" if error else "null"
+    ctx.eval(f"__types.error = {failure}; __types.data = {json.dumps(data)}; __types.loading = {json.dumps(loading)};")
+
+
+@pytest.mark.parametrize(
+    ("entry", "asks"),
+    [
+        pytest.param({"error": True}, 1, id="failed-and-idle"),
+        pytest.param({"error": True, "loading": True}, 0, id="failed-but-a-retry-is-out"),
+        pytest.param({"error": True, "data": "anthropic"}, 0, id="failed-with-stale-data"),
+        pytest.param({"data": "anthropic"}, 0, id="healthy"),
+        pytest.param({"loading": True}, 0, id="first-load-in-flight"),
+    ],
+)
+def test_a_form_that_mounts_on_a_failed_idle_entry_asks_once(ctx, anthropic, entry: dict, asks: int) -> None:
+    """The Register menu and the form share one cache entry (one request, not two), and ``useResource`` only copies an entry's state to whoever joins it: a menu request that FAILED reaches every form opened
+    after it, which showed the menu's old error with Save off and never fetched. A form that mounts on a failed entry with nothing in flight asks once; it does not ask when data is there (stale or not), when a
+    request is already out, or when nothing has failed."""
+    state = dict(entry)
+    if state.get("data") == "anthropic":
+        state["data"] = {"anthropic": anthropic}
+    _prime(ctx, **state)
+    _mount(ctx)
+    assert ctx.eval("__refetched") == asks
+
+
+@pytest.mark.parametrize(
+    ("entry", "asks"),
+    [
+        pytest.param({"error": True}, 1, id="failed-and-idle"),
+        pytest.param({"error": True, "loading": True}, 0, id="failed-but-a-retry-is-out"),
+        pytest.param({"data": "anthropic"}, 0, id="healthy"),
+    ],
+)
+def test_the_register_menu_asks_again_when_it_is_opened_on_a_failed_idle_entry(code, catalog_code, anthropic, entry: dict, asks: int) -> None:
+    """The menu said 'No kinds available.' for a failed request and nothing could repair it but a reload. Opening it on a failed entry with nothing in flight asks once; mounting alone asks nothing."""
+    c = mini_react_context(API + "\n" + code + "\n" + catalog_code, _PRELUDE)
+    try:
+        c.eval(_DRIVER)
+        state = dict(entry)
+        if state.get("data") == "anthropic":
+            state["data"] = {"anthropic": anthropic}
+        _prime(c, **state)
+        c.eval("MR.mount(PC_RegisterDropdown, { klass: { plural: 'llm_providers' }, onPick: function () {} });")
+        assert c.eval("__refetched") == 0, "mounting the menu asked"
+        c.eval("MR.find('provider-register-toggle').props.onClick(); MR.rerender();")
+        assert c.eval("__refetched") == asks
+    finally:
+        c.close()

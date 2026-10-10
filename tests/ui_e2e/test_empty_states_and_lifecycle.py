@@ -150,7 +150,7 @@ def test_u0047_provider_list_reflects_new_row_after_modal_create(
 
         from playwright.sync_api import expect
 
-        # The kind's fields (the Limits box every class has, and anthropic's API key) come from GET /llm_providers/_types. Wait for them: the form
+        # The kind's fields (the Limits box the LLM class has, and anthropic's API key) come from GET /llm_providers/_types. Wait for them: the form
         # used to be usable before they arrived, and a Save pressed then sent no limits and answered 422 (board task 01a12350-792d; the form now keeps
         # Save off until they are there, which tests/ui_e2e/test_provider_form_save_journey.py holds with the request delayed).
         expect(form.get_by_test_id("provider-form-limits")).to_be_visible(timeout=15_000)
