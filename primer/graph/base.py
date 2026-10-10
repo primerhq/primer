@@ -420,6 +420,14 @@ class _BaseGraphExecutor(
     def graph(self) -> Graph:
         return self._graph
 
+    def _would_run_an_inner_call(self, entry: "_PendingToolCall") -> bool:
+        """Whether resuming ``entry`` would run a gated INNER call (:func:`_approved_inner_call`) rather than the node's own tool: the entries one decision must not run together."""
+        try:
+            node_def = self._resolve_node_def(entry.node_id)
+        except KeyError:
+            return False               # topology drifted: the resume loop fails this node, it runs nothing
+        return isinstance(node_def, _ToolCallNode) and _approved_inner_call(entry, node_def) is not None
+
     async def resume_from_checkpoint(
         self,
         checkpoint: dict[str, Any],
@@ -432,6 +440,7 @@ class _BaseGraphExecutor(
         resolve_provider: "Callable[[str], Awaitable[Any]] | None" = None,
         resumed_event_key: str | None = None,
         resumed_gate_id: str | None = None,
+        wake_only: bool = False,
     ) -> AsyncIterator[StreamEvent]:
         """Restore from a checkpoint and continue graph execution.
 
@@ -490,9 +499,13 @@ class _BaseGraphExecutor(
         projects (tool calls before agent yields), and logs the session and the node it picked; it used to resume every one of them.
 
         ``resumed_gate_id`` (security review of #724, B1): the gate the decision named. Two siblings can share an event key (a provider numbers its calls ``call_0``
-        itself), and a decision on the key selects both; a ToolCall entry whose gate carries ANOTHER id is not the one decided and stays pending (it is re-parked below),
-        because each entry now runs its own ``original_call`` with the approval bypassed. An entry that carries no id (a park from before gates had ids) is judged by the key
-        alone, as before.
+        itself), and a decision on the key selects both; a ToolCall entry whose gate is not THAT id stays pending (it is re-parked below), because each entry now runs its own
+        ``original_call`` with the approval bypassed. That includes an entry whose gate id is missing or cannot be read: when the wake names a gate, an entry that cannot be shown to be
+        it is not run (round 3, N1). When the wake names NO gate (a wake from before gates had ids, the key-less drain) and more than one selected entry would run an inner call, the
+        decision cannot be shown to be any one of them: none of those runs and all stay pending (round 3, N2); a single such entry, and every entry that runs the node's own call, are as before.
+
+        ``wake_only`` (round 3, N5): the resume is a ``tool_wait`` batch's readiness and nothing was decided by a human, so NO ToolCall or agent-yield entry is selected, whatever tool_call_id
+        a provider chose for a pending gate. (The reply used to carry a sentinel id for this; an id is not a safe way to say "no entry".)
 
         ``resume_session_id`` / ``resolve_provider``: the session being
         resumed and the provider registry's ``get_toolset``, for the
@@ -520,7 +533,10 @@ class _BaseGraphExecutor(
         tc_all = list(self._pending_toolcalls)
         ay_all = list(self._pending_agent_yields)
         tw_all = list(self._pending_tool_waits)
-        if resumed_tcid is None and resumed_event_key is None:
+        if wake_only:
+            tc_pending = []
+            ay_pending = []
+        elif resumed_tcid is None and resumed_event_key is None:
             tc_pending = tc_all
             ay_pending = ay_all
         elif resumed_event_key is not None and (
@@ -549,7 +565,16 @@ class _BaseGraphExecutor(
             tc_pending = [e for e in tc_all if e.tool_call_id == resumed_tcid]
             ay_pending = [e for e in ay_all if e.tool_call_id == resumed_tcid]
         if resumed_gate_id is not None:
-            tc_pending = [e for e in tc_pending if gate_id_of(e.resume_metadata) in (resumed_gate_id, None)]
+            tc_pending = [e for e in tc_pending if gate_id_of(e.resume_metadata) == resumed_gate_id]
+        else:
+            running_an_inner_call = [e for e in tc_pending if self._would_run_an_inner_call(e)]
+            if len(running_an_inner_call) > 1:
+                logger.warning(
+                    "resume_from_checkpoint: session %s: the wake names no gate and %d selected entries would each run a gated inner call (nodes %s); a decision cannot be shown to be "
+                    "any one of them, so none runs and all stay pending",
+                    resume_session_id, len(running_an_inner_call), [e.node_id for e in running_an_inner_call],
+                )
+                tc_pending = [e for e in tc_pending if e not in running_an_inner_call]
         # tool_wait selection is readiness-based (resolved_tool_wait), not
         # resumed_tcid-based — a batch has no single "replying tcid", it
         # has N sibling task ids. See the docstring above.

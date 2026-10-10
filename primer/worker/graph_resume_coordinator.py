@@ -25,6 +25,7 @@ import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from primer.model.yield_ import wake_gate_id_of
 from primer.worker.yield_resume_registry import ResumeContext, get_resume_hook
 from primer.worker.yield_runtime import (
     classify_approval_payload,
@@ -40,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 
 async def write_approval_record_for_graph(
-    pool: "WorkerPool", *, session, checkpoint: dict, tcid, payload, event_key: str | None = None,
+    pool: "WorkerPool", *, session, checkpoint: dict, tcid, payload, event_key: str | None = None, gate_id: str | None = None,
 ) -> None:
     """Persist the resolved approval decision for a graph tool-call gate.
 
@@ -65,6 +66,9 @@ async def write_approval_record_for_graph(
     siblings can share the raw ``tcid``, and the gate that was decided is the
     one that waits on that key. It selects the gate when it names one; the raw
     id decides only for a key-less drain or a key that names none.
+
+    ``gate_id`` is the gate the decision named (read from the RAW wake; security review of #724, round 3, B1-r2b). Two siblings can share the key, and without it the FIRST of them is the one
+    resolved: the record of a decision on the second sibling was written onto the first, which is still pending, and the first's own later decision then lost the ``gate_event_key`` unique-index race.
 
     A tcid that resolves to nothing (not an approval gate, or the legacy
     single-event drain-all with no tcid) is skipped. Best-effort: a
@@ -94,7 +98,7 @@ async def write_approval_record_for_graph(
     if not tcid:
         return
     gate = resolve_pending_gate(
-        {"graph_checkpoint": checkpoint}, tool_call_id=tcid, kind="_approval", event_key=event_key,
+        {"graph_checkpoint": checkpoint}, tool_call_id=tcid, kind="_approval", event_key=event_key, gate_id=gate_id,
     )
     if gate is None:
         return
@@ -170,10 +174,7 @@ async def end_graph(pool: "WorkerPool", session, *, reason: str, executor=None):
 
 def _wake_gate_id(raw_payload) -> str | None:
     """The gate a human decision's wake names (:data:`~primer.model.yield_.WAKE_GATE_ID_KEY`), or ``None`` (a wake from before gates had ids, a machine wake, a reply that is not a dict)."""
-    from primer.model.yield_ import WAKE_GATE_ID_KEY
-
-    named = raw_payload.get(WAKE_GATE_ID_KEY) if isinstance(raw_payload, dict) else None
-    return named if isinstance(named, str) and named else None
+    return wake_gate_id_of(raw_payload)
 
 
 async def resume_graph_engine(pool: "WorkerPool", session, parked):
@@ -249,6 +250,7 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
     raw_state = session.parked_state or {}
     payloads_map = raw_state.get("resume_event_payloads")
     ck = parked.graph_checkpoint
+    wake_only = False           # True when nothing a human decided arrived (only a tool_wait batch's wake): see below
     if payloads_map:
         # 7a gate review (verdict item 4): a co-pending tool_wait batch's
         # OWN wake rides in this SAME accumulation dict (multi-event
@@ -311,15 +313,21 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
             # Every accumulated reply this cycle was a tool_wait wake -
             # no human gate has been answered yet, but the co-pending
             # tool_wait readiness re-check below still needs to run
-            # exactly once. A sentinel tcid matching no real
-            # _PendingToolCall/_PendingAgentYield keeps this a genuine
-            # no-op on the human-gate side (never None, which would
-            # legacy-drain-all and spuriously answer the STILL-unanswered
-            # gate); "approved" avoids classify_approval_payload's
-            # fail-closed-to-rejected default installing the rejecting
-            # override for no reason - mirrors resume_graph_tool_wait's
-            # own identical convention for its no-real-approval-here case.
-            replies = [("__tool_wait_wake_only__", {"decision": "approved"}, None, None)]
+            # exactly once. ``wake_only`` makes this a genuine no-op on
+            # the human-gate side: no ToolCall or agent-yield entry is
+            # selected (a tcid None would legacy-drain-all and spuriously
+            # answer the STILL-unanswered gate, and a sentinel tcid is an
+            # id like any other: a pending gate whose raw id a provider
+            # chose to be the sentinel was selected by it and its inner
+            # call ran with no human decision, security review of #724,
+            # round 3, N5), and no reply machinery runs for it (no agent
+            # answer, no approval record). "approved" avoids
+            # classify_approval_payload's fail-closed-to-rejected default
+            # installing the rejecting override for no reason - mirrors
+            # resume_graph_tool_wait's own identical convention for its
+            # no-real-approval-here case.
+            wake_only = True
+            replies = [(None, {"decision": "approved"}, None, None)]
     else:
         resume_event_key = raw_state.get("resume_event_key")
         resumed_tcid = (
@@ -334,64 +342,72 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
     # colliding scoped id.
     node_tool_call_seq = dict(getattr(parked, "node_tool_call_seq", None) or {})
     for tcid, payload, fired_key, gate_id in replies:
-        # Unified nested-yield: when the parked agent-node yielded from
-        # INSIDE a nested invoke_agent invocation, its pending entry carries
-        # a continuation ``frames`` stack. Run the continuation walk to
-        # unwind the subagent chain into a single tool_result FIRST; deliver
-        # that as the node's agent_tool_result (Deliver), or re-park the
-        # graph session on the deeper new leaf if a frame re-yielded
-        # (Repark). The no-nested-frames path below is UNCHANGED.
-        nested = pool._graph_nested_agent_yield(ck, tcid, event_key=fired_key)
-        if nested is not None:
-            cont = await pool._resume_graph_continuation(
-                session, parked, ck, nested, payload, workspace, executor,
-            )
-            # 01a07be5 gate-review-2 finding 1: the leaf this nested
-            # entry unwinds can itself be an approval gate. write_
-            # approval_record_for_graph already resolves via checkpoint
-            # + tcid regardless of nesting -- pending_agent_yields'
-            # top-level tool_name/event_key/resume_metadata are always
-            # the LEAF's own values (frames/leaf are additive bookkeeping
-            # for the continuation walk, not a different identity), and
-            # the function no-ops internally for a non-"_approval" kind
-            # -- so this call is safe unconditionally. Before this fix,
-            # taking this branch skipped the write entirely: real
-            # decisions AND terminal synthesis for a nested approval gate
-            # left no audit record at all, silently. Written BEFORE the
-            # repark_outcome check: tcid's own decision is settled by
-            # payload regardless of whether the chain reparks deeper
-            # afterward on a DIFFERENT, unrelated gate.
-            await pool._write_approval_record_for_graph(
-                session=session, checkpoint=ck, tcid=tcid, payload=payload, event_key=fired_key,
-            )
-            if cont.repark_outcome is not None:
-                return cont.repark_outcome
-            agent_tool_result = cont.agent_tool_result
+        # The gate the decision named rides to every consumer of this reply: the nested walk (a child graph's siblings), the approval record and the executor's own selection. It is passed on only
+        # when there is one (a wake from before gates had ids names none), the way the fired key is.
+        gate_kw = {"gate_id": gate_id} if gate_id is not None else {}
+        if wake_only:
+            # nothing was decided: no nested walk, no agent answer, no approval record (N5)
+            nested = None
+            agent_tool_result = None
         else:
-            agent_tool_result = await pool._graph_agent_tool_result(
-                ck, tcid, payload, session_id=session.id, event_key=fired_key,
-            )
-            # An approval gate is a pending tool-call yield (NOT an ask_user
-            # agent yield, which carries agent_tool_result). Persist the
-            # resolved decision for that gate exactly once per reply. A
-            # value-yielding tool_call (ask_user) is NOT an approval gate:
-            # its result is the operator's reply, fed back by the executor,
-            # so skip the approval record for it.
-            if agent_tool_result is None and not pool._graph_value_yield_toolcall(
-                ck, tcid, event_key=fired_key,
-            ):
-                await pool._write_approval_record_for_graph(
-                    session=session, checkpoint=ck, tcid=tcid, payload=payload, event_key=fired_key,
+            # Unified nested-yield: when the parked agent-node yielded from
+            # INSIDE a nested invoke_agent invocation, its pending entry carries
+            # a continuation ``frames`` stack. Run the continuation walk to
+            # unwind the subagent chain into a single tool_result FIRST; deliver
+            # that as the node's agent_tool_result (Deliver), or re-park the
+            # graph session on the deeper new leaf if a frame re-yielded
+            # (Repark). The no-nested-frames path below is UNCHANGED.
+            nested = pool._graph_nested_agent_yield(ck, tcid, event_key=fired_key)
+            if nested is not None:
+                cont = await pool._resume_graph_continuation(
+                    session, parked, ck, nested, payload, workspace, executor, **gate_kw,
                 )
-        # 01a0690a piece 2: agent_tool_result is a synthesized delivery
-        # (ask_user answer / unwound nested continuation) with no
-        # StreamEvent of its own -- the only way it gets a durable display
-        # record is an explicit write here.
-        if agent_tool_result is not None:
-            await pool._persist_resume_tool_result_record_for_graph(
-                session=session, checkpoint=ck, tcid=tcid,
-                agent_tool_result=agent_tool_result, event_key=fired_key,
-            )
+                # 01a07be5 gate-review-2 finding 1: the leaf this nested
+                # entry unwinds can itself be an approval gate. write_
+                # approval_record_for_graph already resolves via checkpoint
+                # + tcid regardless of nesting -- pending_agent_yields'
+                # top-level tool_name/event_key/resume_metadata are always
+                # the LEAF's own values (frames/leaf are additive bookkeeping
+                # for the continuation walk, not a different identity), and
+                # the function no-ops internally for a non-"_approval" kind
+                # -- so this call is safe unconditionally. Before this fix,
+                # taking this branch skipped the write entirely: real
+                # decisions AND terminal synthesis for a nested approval gate
+                # left no audit record at all, silently. Written BEFORE the
+                # repark_outcome check: tcid's own decision is settled by
+                # payload regardless of whether the chain reparks deeper
+                # afterward on a DIFFERENT, unrelated gate.
+                await pool._write_approval_record_for_graph(
+                    session=session, checkpoint=ck, tcid=tcid, payload=payload, event_key=fired_key, **gate_kw,
+                )
+                if cont.repark_outcome is not None:
+                    return cont.repark_outcome
+                agent_tool_result = cont.agent_tool_result
+            else:
+                agent_tool_result = await pool._graph_agent_tool_result(
+                    ck, tcid, payload, session_id=session.id, event_key=fired_key,
+                )
+                # An approval gate is a pending tool-call yield (NOT an ask_user
+                # agent yield, which carries agent_tool_result). Persist the
+                # resolved decision for that gate exactly once per reply. A
+                # value-yielding tool_call (ask_user) is NOT an approval gate:
+                # its result is the operator's reply, fed back by the executor,
+                # so skip the approval record for it.
+                if agent_tool_result is None and not pool._graph_value_yield_toolcall(
+                    ck, tcid, event_key=fired_key,
+                ):
+                    await pool._write_approval_record_for_graph(
+                        session=session, checkpoint=ck, tcid=tcid, payload=payload, event_key=fired_key, **gate_kw,
+                    )
+            # 01a0690a piece 2: agent_tool_result is a synthesized delivery
+            # (ask_user answer / unwound nested continuation) with no
+            # StreamEvent of its own -- the only way it gets a durable display
+            # record is an explicit write here.
+            if agent_tool_result is not None:
+                await pool._persist_resume_tool_result_record_for_graph(
+                    session=session, checkpoint=ck, tcid=tcid,
+                    agent_tool_result=agent_tool_result, event_key=fired_key,
+                )
         resolved_tool_wait: dict = {}
         resolved_tasks: dict = {}
         if task_storage is not None:
@@ -406,6 +422,7 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
                 resumed_tcid=tcid,
                 resumed_event_key=fired_key,
                 resumed_gate_id=gate_id,
+                wake_only=wake_only,
                 agent_tool_result=agent_tool_result,
                 pool=pool,
                 session=session,
@@ -517,7 +534,7 @@ def graph_nested_agent_yield(pool: "WorkerPool", checkpoint, tcid, event_key: st
 
 
 async def resume_graph_continuation(
-    pool: "WorkerPool", session, parked, checkpoint, ay, payload, workspace, executor,
+    pool: "WorkerPool", session, parked, checkpoint, ay, payload, workspace, executor, gate_id: str | None = None,
 ):
     """Run the continuation walk for a graph-node's nested invoke_agent yield.
 
@@ -532,6 +549,9 @@ async def resume_graph_continuation(
     * ``repark_outcome`` - a ReleaseOutcome re-parking the GRAPH SESSION on
       the deeper new leaf when a frame re-yielded (Repark). The graph itself
       did NOT advance; only the nested subagent state changed.
+
+    ``gate_id`` is the gate the decision named, read from the RAW wake (``payload`` is the classified one): the chain can end in a child graph whose sibling
+    ToolCall gates share a key, and the child resumes only the entry of that gate (security review of #724, round 3, B1-r2a).
     """
     from dataclasses import dataclass
     from primer.model.chat import Message
@@ -553,7 +573,7 @@ async def resume_graph_continuation(
     )
     frames = frames_from_jsonable(list(ay.get("frames") or []))
     leaf = Yielded.from_jsonable(ay["leaf"])
-    outcome = await resume_continuation(frames, leaf, payload, services)
+    outcome = await resume_continuation(frames, leaf, payload, services, **({"gate_id": gate_id} if gate_id is not None else {}))
     if isinstance(outcome, Repark):
         return _ContResult(
             repark_outcome=pool._repark_graph_continuation(

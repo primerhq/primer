@@ -214,7 +214,7 @@ class _Pool(EngineFakePool):
     def _build_invocation_services(self, session, workspace, executor, tool_manager):
         return self._subagent.services()
 
-    async def _resume_graph_continuation(self, session, parked, checkpoint, ay, payload, workspace, executor):
+    async def _resume_graph_continuation(self, session, parked, checkpoint, ay, payload, workspace, executor, gate_id=None):
         return await graph_resume_coordinator.resume_graph_continuation(
             self, session, parked, checkpoint, ay, payload, workspace, executor,
         )

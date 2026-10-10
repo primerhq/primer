@@ -27,7 +27,7 @@ import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from primer.model.yield_ import YieldToWorker
+from primer.model.yield_ import YieldToWorker, wake_gate_id_of
 
 # Imported for its side effect: registers the ``_external`` resume hook.
 # The provider module is otherwise imported lazily (only when a caller
@@ -312,6 +312,8 @@ async def resume_engine_session(pool: "WorkerPool", engine_lease, session):
             await pool._write_approval_record_for_session(
                 session=session, blob=blob, payload=resume_payload.payload,
             )
+        # the gate the decision named, read from the RAW wake: the payload below is the classified one and has lost it (security review of #724, round 3, B1-r2a)
+        wake_gate = wake_gate_id_of(parked.resume_event_payload)
         try:
             outcome = await resume_continuation(
                 parked.frames,
@@ -319,6 +321,7 @@ async def resume_engine_session(pool: "WorkerPool", engine_lease, session):
                 resume_payload.payload,
                 services,
                 fired_key=fired_key,
+                **({"gate_id": wake_gate} if wake_gate is not None else {}),
             )
         except Exception as exc:  # noqa: BLE001 - fail-closed synthesis
             logger.exception(

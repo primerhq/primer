@@ -55,6 +55,7 @@ async def resume_graph_from_checkpoint(
     resolved_tool_wait: "dict[str, list] | None" = None,
     resumed_event_key: str | None = None,
     resumed_gate_id: str | None = None,
+    wake_only: bool = False,
 ) -> "tuple[str, Any | None, dict[str, int]]":
     """Drive a graph executor's resume stream to completion.
 
@@ -108,6 +109,9 @@ async def resume_graph_from_checkpoint(
         not bump until on_release, so the resume drain observes the
         SAME turn_no the pre-park turn did). ``None`` starts empty (a
         checkpoint written before piece 1, or a park with no prior mints).
+
+    ``resumed_gate_id`` is the gate the decision named and ``wake_only`` says nothing was decided by a human (only a tool_wait batch's wake): no human-gate entry is selected
+    (security review of #724, round 3; see :meth:`~primer.graph.base._BaseGraphExecutor.resume_from_checkpoint`).
 
     ``resumed_tcid`` (multi-event park) selects which pending node the
     human replied to, and ``resumed_event_key`` is the event key the reply fired: two fan-out siblings can share a raw tool_call_id, so when the key
@@ -222,6 +226,7 @@ async def resume_graph_from_checkpoint(
             resumed_tcid=resumed_tcid,
             resumed_event_key=resumed_event_key,
             resumed_gate_id=resumed_gate_id,
+            wake_only=wake_only,
             agent_tool_result=agent_tool_result,
             toolcall_payload=payload if value_yield_toolcall else None,
             resolved_tool_wait=resolved_tool_wait,

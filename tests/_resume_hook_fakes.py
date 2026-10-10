@@ -218,6 +218,7 @@ class EngineFakePool:
         self.agent_tool_result_tcids: list[str] = []   # every reply the engine delivered, by its tool_call_id
         self.agent_tool_result_event_keys: list = []   # ... and by the event key that fired (None for a key-less drain)
         self.approval_record_event_keys: list = []     # the fired key of every approval record the engine asked for
+        self.approval_record_gate_ids: list = []       # ... and the gate the decision named (None for a wake that names none)
 
     async def _load_workspace_for_persist(self, workspace_id: str):
         return self._workspace_io
@@ -264,8 +265,9 @@ class EngineFakePool:
             return None
         return Message(role="tool", parts=[ToolResultPart(id=tcid, output="blue")])
 
-    async def _write_approval_record_for_graph(self, *, session, checkpoint, tcid, payload, event_key=None):
+    async def _write_approval_record_for_graph(self, *, session, checkpoint, tcid, payload, event_key=None, gate_id=None):
         self.approval_record_event_keys.append(event_key)
+        self.approval_record_gate_ids.append(gate_id)
         return None
 
     async def _persist_resume_tool_result_record_for_graph(
