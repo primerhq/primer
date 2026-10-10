@@ -168,6 +168,32 @@ def test_a_correctly_typed_value_for_an_allowed_key_is_accepted() -> None:
     assert state["keys"][0]["value"] == 7
 
 
+class _WithMeta(Identifiable):
+    name: str
+    meta: dict = {}
+
+
+def test_a_dotted_key_accepts_the_number_the_server_itself_encodes() -> None:
+    # ``meta.score`` has no declared scalar type (a dotted path is ``Any``), so
+    # the server's own next_cursor may carry a number there; it must not be
+    # refused on the next page.
+    order = [OrderBy(field="meta.score", direction="desc")]
+    cursor = _encode_cursor_for(_WithMeta(id="m1", name="a", meta={"score": 5}), order)
+    state = _decode_cursor_for(cursor, order, _WithMeta)
+    assert state["keys"][0]["value"] == 5
+
+
+def test_a_declared_str_key_refuses_a_number() -> None:
+    forged = _forge(
+        [
+            {"field": "name", "value": 5, "direction": "asc", "is_null": False},
+            {"field": "id", "value": "s1", "direction": "asc", "is_null": False},
+        ]
+    )
+    with pytest.raises(BadRequestError):
+        _decode_cursor_for(forged, [OrderBy(field="name", direction="asc")], _Sample)
+
+
 def test_malformed_cursor_still_raises() -> None:
     with pytest.raises(BadRequestError):
         _decode_cursor_for("!!!not-base64!!!", None, _Sample)
