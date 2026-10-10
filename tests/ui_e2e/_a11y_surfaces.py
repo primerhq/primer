@@ -76,7 +76,7 @@ LEGACY_FORMS: dict[str, list[Form]] = {
     "providers/tts": [_register(KIND_MENU_ITEM)],
     "providers/web_search": [_register(KIND_MENU_ITEM)],
     "providers/web_fetch": [_register(KIND_MENU_ITEM)],
-    "providers/artifact_storage": [],                   # its register menu lists no kinds: DEAD_REGISTER_MENUS
+    "providers/artifact_storage": [_register(KIND_MENU_ITEM)],   # db, filesystem and s3 since the class serves its kinds (GET /_types); the first, db, is the one that is built
     "providers/model_profile": [Form("New profile", MODAL)],
     "ssp": [_register(KIND_MENU_ITEM)],                 # the semantic-search stores: the same register menu, and a modal of their own
 }
@@ -139,13 +139,7 @@ SYSTEM_FORMS: dict[str, list[Form]] = {
     "profile": [Form("Create token", MODAL)],           # the Profile page embeds the personal token page
 }
 
-# Pages whose 'Register provider' menu is a dead end today, and the button to press to see it: the sweep asserts the menu still says "No kinds available." so that fixing the page fails the sweep until
-# the page moves back into LEGACY_FORMS (an exemption that is never checked again is how a fixed bug stays excused).
-DEAD_REGISTER_MENUS: dict[str, str] = {"providers/artifact_storage": "Register provider"}
-DEAD_MENU_TEXT = "No kinds available."
-
 NO_FORM: dict[str, str] = {
-    "overlay-page providers/artifact_storage": "its Register provider menu lists no kinds because GET /v1/artifact_storage_providers/_types is a 404, so the form cannot be opened (ticket 01a1214c)",
     "overlay-page approvals": "its policies are created on the Platform view (platform-view approvals, New policy)",
     "overlay-page workers": "a list of workers with Drain; nothing is created from it",
     "overlay-page health": "the health of the workers, read only; nothing is created from it",
@@ -279,6 +273,7 @@ FLOORS: dict[str, int] = {
     "overlay-page providers/web_fetch": 3,
     "overlay-page providers/web_fetch / Register provider": 2,
     "overlay-page providers/artifact_storage": 3,
+    "overlay-page providers/artifact_storage / Register provider": 2,
     "overlay-page providers/model_profile": 3,
     "overlay-page providers/model_profile / New profile": 2,
     "overlay-page ssp": 1,

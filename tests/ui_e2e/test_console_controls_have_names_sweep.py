@@ -43,8 +43,6 @@ from tests.ui_e2e import _delegation_seed as seed
 from tests.ui_e2e import _graph_builder_helpers as gb
 from tests.ui_e2e._a11y import ALLOWLIST, Budget, counts_table, evaluate_sweep
 from tests.ui_e2e._a11y_surfaces import (
-    DEAD_MENU_TEXT,
-    DEAD_REGISTER_MENUS,
     FLOORS,
     LEGACY_FORMS,
     MODAL,
@@ -158,20 +156,54 @@ def _sweep_page(page: Page, sweep: Sweep, kind: str, name: str, root: str, forms
     _sweep_forms(page, sweep, kind, name, forms, reopen, scope)
 
 
-def _assert_register_menu_is_dead(page: Page, reopen, route: str, sweep: Sweep) -> None:
-    """The page is excused from a form because its register menu lists no kinds (ticket 01a1214c): say so again here, so that fixing the page fails the sweep until it is swept through its form. The
-    failure is a note (the sweep goes on to the other surfaces), and the test fails on it at the end."""
-    try:
-        reopen()
-        page.locator(OVERLAY).get_by_role("button", name=re.compile(rf"^{re.escape(DEAD_REGISTER_MENUS[route])}\b")).first.click(timeout=sweep.budget.wait_ms(10_000))
-        panel = page.locator(f'{OVERLAY} [data-testid="provider-register-panel"]')
-        expect(panel).to_contain_text(DEAD_MENU_TEXT, timeout=sweep.budget.wait_ms(15_000))
-    except (AssertionError, BrowserError) as exc:
-        sweep.budget.spent()
-        sweep.notes.append(f"{route}: its register menu does not say {DEAD_MENU_TEXT!r} ({type(exc).__name__}): move the page back into LEGACY_FORMS with its menu item and drop it from DEAD_REGISTER_MENUS and NO_FORM")
-        page.keyboard.press("Escape")    # the menu may be open: the next surface starts from a page without one
+def _sweep_builder(page: Page, sweep: Sweep, console_url: str, graph_id: str, steps: int) -> None:
+    """The graph builder: a step of each kind, the JSON import, the palette. A builder that never comes up is one note and an empty look for it and for each surface after it."""
+    rows = page.locator('[data-testid="gb-outline-row"]')
+
+    def open_builder() -> None:
+        open_legacy_route(page, console_url, f"graphs/{graph_id}", timeout=sweep.budget.wait_ms(45_000))
+        gb.wait_for_builder(page, timeout=sweep.budget.wait_ms(20_000))
+        expect(rows).to_have_count(steps, timeout=sweep.budget.wait_ms(15_000))
+
+    if not sweep.reach("graph builder", open_builder):
+        for surface in [f"graph builder / step {i + 1}" for i in range(steps)] + ["graph builder / JSON import", "graph builder / palette"]:
+            sweep.skip(surface, "the graph builder never came up")
         return
-    page.keyboard.press("Escape")    # the menu is open: the next surface starts from a page without one
+    sweep.at("graph builder", gb.BUILDER, ready=[gb.OUTLINE, gb.CANVAS])
+    for i in range(steps):
+        node_id = rows.nth(i).get_attribute("data-node-id", timeout=sweep.budget.wait_ms(10_000))
+        rows.nth(i).click(timeout=sweep.budget.wait_ms(10_000))
+        # the inspector shows the step that was clicked: its id is the mono text beside the step's name (not a word of the whole panel, whose option labels can name another step)
+        expect(page.get_by_test_id("gb-inspector-title").locator("xpath=..").locator(".mono")).to_have_text(node_id or "", timeout=sweep.budget.wait_ms(10_000))
+        sweep.at(f"graph builder / step {i + 1}", gb.BUILDER, ready=[gb.INSPECTOR])
+    page.locator('[data-testid="gb-json-tab"]').click(timeout=sweep.budget.wait_ms(10_000))
+    expect(page.locator(MODAL).first).to_be_visible(timeout=sweep.budget.wait_ms(5_000))
+    sweep.at("graph builder / JSON import", MODAL, ready=[f"{MODAL} {FIRST_FIELD}:visible"])
+    page.locator(MODAL).get_by_role("button", name="Cancel", exact=True).click(timeout=sweep.budget.wait_ms(10_000))
+    page.locator(gb.OUTLINE_ADD).first.click(timeout=sweep.budget.wait_ms(10_000))
+    expect(page.locator(gb.PALETTE)).to_be_visible(timeout=sweep.budget.wait_ms(5_000))
+    sweep.at("graph builder / palette", gb.BUILDER, ready=[gb.PALETTE])
+
+
+def _sweep_phone(page: Page, sweep: Sweep, console_url: str) -> None:
+    """The phone: its four tabs. The open session document would fill the phone screen, so the stored tabs are cleared and the console is loaded afresh at its root. A phone shell that never comes up is
+    one note and an empty look for each tab."""
+    def open_phone() -> None:
+        page.set_viewport_size(PHONE)
+        page.evaluate("() => { localStorage.clear(); sessionStorage.clear(); }")
+        page.goto(console_url, timeout=sweep.budget.wait_ms(30_000))
+        expect(page.get_by_test_id("nv-mobile-shell")).to_be_visible(timeout=sweep.budget.wait_ms(20_000))
+
+    if not sweep.reach(f"phone / {PHONE_TABS[0]}", open_phone):
+        for tab in PHONE_TABS[1:]:
+            sweep.skip(f"phone / {tab}", "the phone shell never came up")
+        return
+    for tab in PHONE_TABS:
+        page.get_by_role("tab", name=tab).click(timeout=sweep.budget.wait_ms(10_000))
+        if sweep.arrive("phone", tab, surface=f"phone / {tab}"):
+            sweep.at(f"phone / {tab}", '[data-testid="nv-mobile-shell"]')
+        else:
+            sweep.skip(f"phone / {tab}", "its panel never showed")
 
 
 @pytest.mark.ui_e2e
@@ -212,7 +244,8 @@ def test_no_visible_control_of_the_consoles_main_surfaces_is_without_a_name(base
         expect(page.locator(".nv-turn-error").first).to_be_visible(timeout=sweep.budget.wait_ms(20_000))
         sweep.at("session document", ready=[".nv-turn-error"], check_page=False)   # its failed turn is the point of the page
         for name in OVERLAYS:
-            open_overlay(page, console_url, wid, name, timeout=sweep.budget.wait_ms(20_000))
+            if not sweep.reach(f"overlay {name}", lambda name=name: open_overlay(page, console_url, wid, name, timeout=sweep.budget.wait_ms(20_000))):
+                continue
             sweep.at(f"overlay {name}", f'[data-testid="nv-overlay:{name}"]', ready=[f'[data-testid="nv-overlay:{name}"] [data-testid="nv-overlay-body"]'])
 
         # every Platform page as an overlay (its legacy route), and the forms it opens
@@ -220,8 +253,6 @@ def test_no_visible_control_of_the_consoles_main_surfaces_is_without_a_name(base
             def reopen(route=route):
                 open_legacy_route(page, console_url, route, timeout=sweep.budget.wait_ms(45_000))
             _sweep_page(page, sweep, "overlay-page", route, OVERLAY, forms, reopen, OVERLAY)
-            if route in DEAD_REGISTER_MENUS:
-                _assert_register_menu_is_dead(page, reopen, route, sweep)
 
         # every Platform VIEW (what every nav row of the Platform view opens), and the forms it opens
         for nav, forms in PLATFORM_FORMS.items():
@@ -236,37 +267,10 @@ def test_no_visible_control_of_the_consoles_main_surfaces_is_without_a_name(base
             _sweep_page(page, sweep, "system-view", nav, SYSTEM, SYSTEM_FORMS.get(nav, []), reopen, SYSTEM)
 
         # the graph builder: a step of each kind, the JSON import, the palette
-        open_legacy_route(page, console_url, f"graphs/{graph_id}", timeout=sweep.budget.wait_ms(45_000))
-        gb.wait_for_builder(page, timeout=sweep.budget.wait_ms(20_000))
-        rows = page.locator('[data-testid="gb-outline-row"]')
-        expect(rows).to_have_count(steps, timeout=sweep.budget.wait_ms(15_000))
-        sweep.at("graph builder", gb.BUILDER, ready=[gb.OUTLINE, gb.CANVAS])
-        for i in range(steps):
-            node_id = rows.nth(i).get_attribute("data-node-id")
-            rows.nth(i).click(timeout=sweep.budget.wait_ms(10_000))
-            # the inspector shows the step that was clicked: its id is the mono text beside the step's name (not a word of the whole panel, whose option labels can name another step)
-            expect(page.get_by_test_id("gb-inspector-title").locator("xpath=..").locator(".mono")).to_have_text(node_id or "", timeout=sweep.budget.wait_ms(10_000))
-            sweep.at(f"graph builder / step {i + 1}", gb.BUILDER, ready=[gb.INSPECTOR])
-        page.locator('[data-testid="gb-json-tab"]').click(timeout=sweep.budget.wait_ms(10_000))
-        expect(page.locator(MODAL).first).to_be_visible(timeout=sweep.budget.wait_ms(5_000))
-        sweep.at("graph builder / JSON import", MODAL, ready=[f"{MODAL} {FIRST_FIELD}:visible"])
-        page.locator(MODAL).get_by_role("button", name="Cancel", exact=True).click(timeout=sweep.budget.wait_ms(10_000))
-        page.locator(gb.OUTLINE_ADD).first.click(timeout=sweep.budget.wait_ms(10_000))
-        expect(page.locator(gb.PALETTE)).to_be_visible(timeout=sweep.budget.wait_ms(5_000))
-        sweep.at("graph builder / palette", gb.BUILDER, ready=[gb.PALETTE])
+        _sweep_builder(page, sweep, console_url, graph_id, steps)
 
         # the phone: its four tabs
-        # (the open session document would fill the phone screen, so the stored tabs are cleared and the console is loaded afresh at its root)
-        page.set_viewport_size(PHONE)
-        page.evaluate("() => { localStorage.clear(); sessionStorage.clear(); }")
-        page.goto(console_url, timeout=sweep.budget.wait_ms(30_000))
-        expect(page.get_by_test_id("nv-mobile-shell")).to_be_visible(timeout=sweep.budget.wait_ms(20_000))
-        for tab in PHONE_TABS:
-            page.get_by_role("tab", name=tab).click(timeout=sweep.budget.wait_ms(10_000))
-            if sweep.arrive("phone", tab, surface=f"phone / {tab}"):
-                sweep.at(f"phone / {tab}", '[data-testid="nv-mobile-shell"]')
-            else:
-                sweep.skip(f"phone / {tab}", "its panel never showed")
+        _sweep_phone(page, sweep, console_url)
     except Exception as exc:  # noqa: BLE001 - reported below with everything found before it died
         died = exc
     finally:
@@ -274,7 +278,7 @@ def test_no_visible_control_of_the_consoles_main_surfaces_is_without_a_name(base
             sweep.close()
         except Exception as exc:  # noqa: BLE001 - the findings below matter more than a detached session
             sweep.notes.append(f"the CDP session could not be closed: {exc!r}")
-        left = delete_paths(base_url, made) + (delete_seeded(base_url, seeded) if seeded else [])
+        left = delete_paths(base_url, made, timeout=10.0, give_up_after=90.0) + (delete_seeded(base_url, seeded, timeout=10.0, give_up_after=90.0) if seeded else [])
 
     # Everything is judged AFTER the sweep, by one pure function, so that a sweep that died part-way still reports what it had found, and every kind of failure is reported together.
     counts = counts_table(sweep.looks, FLOORS)

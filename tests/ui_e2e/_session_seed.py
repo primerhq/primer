@@ -11,6 +11,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import time
+from collections.abc import Callable
+
 import httpx
 
 from tests._support.model_profiles import agent_model, profile_id_for, seed_llm_provider_with
@@ -63,13 +66,20 @@ def seed_session(base_url: str, tmp_path: Path, suffix: str, *, description: str
     return SeededSession(wid=wid, sid=sid, delete_paths=created)
 
 
-def delete_paths(base_url: str, paths: list[str], *, transport: httpx.BaseTransport | None = None) -> list[str]:
+def delete_paths(
+    base_url: str, paths: list[str], *, transport: httpx.BaseTransport | None = None, timeout: float = 30.0, give_up_after: float | None = None, clock: Callable[[], float] = time.monotonic
+) -> list[str]:
     """Delete ``paths`` newest first (the list is in creation order). Returns the ones that could not be deleted (a non-2xx other than 404, or no answer), for the caller to report; never raises.
-    ``transport`` is for a test (``httpx.MockTransport``)."""
+    ``give_up_after`` is a wall-clock cap, in seconds, on the whole cleanup: a server that does not answer cost ``timeout`` a row, and the rows not reached when the time is up are reported as left.
+    ``transport`` and ``clock`` are for a test (``httpx.MockTransport``)."""
     left: list[str] = []
+    started = clock()
     try:
-        with httpx.Client(base_url=base_url, timeout=30.0, transport=transport) as c:
+        with httpx.Client(base_url=base_url, timeout=timeout, transport=transport) as c:
             for path in reversed(paths):
+                if give_up_after is not None and clock() - started >= give_up_after:
+                    left.append(path)
+                    continue
                 try:
                     r = c.delete(path)
                 except httpx.HTTPError:
@@ -82,6 +92,6 @@ def delete_paths(base_url: str, paths: list[str], *, transport: httpx.BaseTransp
     return left
 
 
-def delete_seeded(base_url: str, seeded: SeededSession) -> list[str]:
-    """Delete what ``seed_session`` created, newest first. Returns the paths that could not be deleted, for the journey to report."""
-    return delete_paths(base_url, seeded.delete_paths)
+def delete_seeded(base_url: str, seeded: SeededSession, **limits: float | None) -> list[str]:
+    """Delete what ``seed_session`` created, newest first. Returns the paths that could not be deleted, for the journey to report. ``limits`` are ``delete_paths``' ``timeout`` and ``give_up_after``."""
+    return delete_paths(base_url, seeded.delete_paths, **limits)  # type: ignore[arg-type]

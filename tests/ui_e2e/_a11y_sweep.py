@@ -107,6 +107,7 @@ class Sweep:
         """Wait for the page of ``kind``/``name`` to show every marker of ``ready_selectors``. ``False`` (and a note) when one never shows."""
         label = surface or f"{kind} {name}"
         self.budget.check(label)
+        self.bound_defaults()
         for marker in ready_selectors(kind, name):
             try:
                 expect(self.page.locator(marker).first).to_be_visible(timeout=self.budget.wait_ms(self.ready_timeout_ms))
@@ -116,9 +117,17 @@ class Sweep:
                 return False
         return True
 
+    def bound_defaults(self) -> None:
+        """Make what the budget has left the page's default timeout. A helper that opens a page makes calls with no timeout of their own (``goto``, ``get_attribute``: 30 s in Playwright), and some spend
+        the timeout they were handed twice; with this set, none of them waits longer than the sweep may. Raises ``SweepDeadlineExceeded`` once the deadline has passed."""
+        left = self.budget.wait_ms(30_000)
+        self.page.set_default_timeout(left)
+        self.page.set_default_navigation_timeout(left)
+
     def reach(self, surface: str, open_it: Callable[[], None]) -> bool:
         """Run ``open_it`` (a navigation to ``surface``) and say whether it worked. A navigation that times out (``open_legacy_route`` raises ``AssertionError`` after its own two timeouts) is a note and an
         empty look for the surface, and ``False``: the sweep goes on to the other surfaces. The deadline is not a navigation failure and goes through."""
+        self.bound_defaults()
         try:
             open_it()
         except (AssertionError, BrowserError) as exc:
@@ -151,6 +160,7 @@ class Sweep:
         Before it looks, the surface must show every marker of ``ready``, its ``/v1`` requests must have answered and, with ``check_page``, what is loading must have stopped; an error banner under
         it, a marker that never came, a request that failed or answered 500 or more are notes in the report (the look is still taken, so one broken page does not hide the rest)."""
         self.budget.check(surface)
+        self.bound_defaults()
         self.visited.append(surface)
         for marker in ready or []:
             try:
