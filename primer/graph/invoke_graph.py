@@ -57,6 +57,31 @@ class ChildGraphFailed(Exception):
         return json.dumps({"error": self.code, "message": redact_credentials(self.message), "node_id": self.node_id})
 
 
+def failure_without_an_event(child: Any) -> ChildGraphFailed | None:
+    """The failure of a child whose run ended ``failed`` although its stream carried no ``_GraphErrorEvent``, else ``None`` (ticket 01a12625-436c).
+
+    The main loop ends a run ``failed`` and yields no error event in two cases: an un-suppressed node failure whose exception carries no ``ended_detail`` (any agent node's exception other
+    than a stream failure or the tool-turn cap: an agent resolver for a deleted agent, a bad profile, a nested subgraph failure) and an edge that cannot be evaluated (a router that is not
+    registered, one that names a node that does not exist). The caller decided a failure ONLY by the event, so the invoking agent received ``{"output": ""}`` with ``error=False``. This reads
+    what the executor itself recorded, as ``_stream_subgraph_node`` does for a subgraph node: ``_last_ended_reason``, the text of the edge failure, else the first failed node and its error.
+
+    The code is the executor's ``_last_ended_detail`` when it has one, else ``edge_config_error`` for an edge and ``node_failed`` for a node (the console already words ``node_failed``). A
+    child that is not an executor (a stub with none of these attributes) is never a failure here.
+    """
+    if getattr(child, "_last_ended_reason", None) != "failed":
+        return None
+    from primer.model.graph import NodeRuntimeStatus
+
+    code = getattr(child, "_last_ended_detail", None)
+    edge_text = getattr(child, "_last_failure_text", None)
+    if edge_text:
+        return ChildGraphFailed(code=code or "edge_config_error", message=edge_text, node_id=None)
+    for node_id, state in (getattr(child, "_node_states", None) or {}).items():
+        if getattr(state, "status", None) == NodeRuntimeStatus.FAILED:
+            return ChildGraphFailed(code=code or "node_failed", message=getattr(state, "error", None) or f"node {node_id!r} failed", node_id=node_id)
+    return ChildGraphFailed(code=code or "graph_failed", message="the child graph ended failed", node_id=None)
+
+
 def _gated_tool_name(checkpoint: dict[str, Any] | None, node_id: str | None) -> str | None:
     """The tool the child's parked node was gating, as the approval park recorded it (``original_call``)."""
     for key in ("pending_toolcalls", "pending_agent_yields"):
@@ -121,8 +146,10 @@ async def run_invoke_graph(
       is observed (e.g. a stub or a node-level text stream).
 
     A child that ends ``failed`` (its stream carries a terminal
-    ``_GraphErrorEvent``) raises :class:`ChildGraphFailed`: its output is not
-    the graph's result, and returning it would hand the agent an empty success.
+    ``_GraphErrorEvent``, or, when no event came, the executor's own outcome:
+    :func:`failure_without_an_event`) raises :class:`ChildGraphFailed`: its
+    output is not the graph's result, and returning it would hand the agent an
+    empty success.
     """
     # Imported lazily: these runtime dataclasses live in primer.graph.base,
     # which pulls in jinja2 + jsonschema. Keeping the import local avoids
@@ -171,6 +198,9 @@ async def run_invoke_graph(
 
     if failure is not None:
         raise ChildGraphFailed(code=failure.code, message=failure.message, node_id=failure.node_id)
+    unreported = failure_without_an_event(child)
+    if unreported is not None:
+        raise unreported
     if end_text is not None:
         return end_text
     return "".join(delta_buf)
@@ -185,7 +215,9 @@ async def resume_invoke_graph(
     it drains to completion (None if it re-parked first); ``repark`` is the
     child's re-park YieldToWorker if another gate is still pending, else None.
     A child that ends ``failed`` instead (a refused gate, a tool crash, a
-    routing error) raises :class:`ChildGraphFailed`.
+    routing error, or, with no event, an agent node that raised or an edge that
+    could not be evaluated: :func:`failure_without_an_event`) raises
+    :class:`ChildGraphFailed`.
 
     Mirrors graph_resume.resume_graph_from_checkpoint's rejection handling but
     also collects the ``_GraphEndOutputEvent`` output text.
@@ -248,5 +280,9 @@ async def resume_invoke_graph(
             code=failure.code, message=failure.message, node_id=failure.node_id,
             tool_name=_gated_tool_name(checkpoint, failure.node_id),
         )
+    if repark is None:
+        unreported = failure_without_an_event(child)
+        if unreported is not None:
+            raise unreported
     out = end_text if end_text is not None else "".join(delta_buf)
     return out, repark
