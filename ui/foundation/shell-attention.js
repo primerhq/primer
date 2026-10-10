@@ -288,14 +288,25 @@ function SH_isStaleGate(err) {
   return !!(err && err.status === 409 && ext && ext.code === SH_STALE_GATE_CODE);
 }
 
-// A decision for a gate that has MOVED ON: 409 approval_stale (the id is pending under another gate) or 404 (the id is pending nowhere: the first gate of a graph ToolCall node that re-parked on a second
-// one, board task 01a124e2-4550). The approval cards say the same words and reload for both; SH_isStaleGate stays the 409 alone, which the question cards and the session detail read.
+// A decision for a gate that has MOVED ON: 409 approval_stale (the id is pending under another gate) or 404 (the id is pending under no approval gate: the first gate of a graph ToolCall node that re-parked on a
+// second one, a gate decided elsewhere, the node re-parked on the tool's own yield, a deleted session; board task 01a124e2-4550). The desktop approval cards and the banner reload for both. SH_isStaleGate stays the
+// 409 alone, which the question cards, the session detail and the mobile Inbox's approval cards (nv-mobile-shell.jsx:146, which words a 404 itself) read.
 function SH_isMovedOnGate(err) {
   return SH_isStaleGate(err) || !!(err && err.status === 404);
 }
 
 function SH_staleGateWords(kind) {
   return "This " + (kind === "question" ? "question" : "approval") + " was replaced; the list is reloaded.";
+}
+
+// A 404 is NOT always a replacement (decided elsewhere, the tool's own yield, a deleted session), so its words claim no more than that the gate is gone from the list; "replaced" is the 409's alone.
+function SH_movedOnWords(kind) {
+  return "This " + (kind === "question" ? "question" : "approval") + " has moved on; the list is reloaded.";
+}
+
+// The words for a decision SH_isMovedOnGate accepted: "replaced" for the 409, "moved on" for the 404.
+function SH_movedOnGateWords(err, kind) {
+  return SH_isStaleGate(err) ? SH_staleGateWords(kind) : SH_movedOnWords(kind);
 }
 
 window.SH_TIERS = SH_TIERS;
@@ -312,4 +323,6 @@ window.SH_triageKey = SH_triageKey;
 window.SH_applyTriage = SH_applyTriage;
 window.SH_isStaleGate = SH_isStaleGate;
 window.SH_isMovedOnGate = SH_isMovedOnGate;
+window.SH_movedOnWords = SH_movedOnWords;
+window.SH_movedOnGateWords = SH_movedOnGateWords;
 window.SH_staleGateWords = SH_staleGateWords;
