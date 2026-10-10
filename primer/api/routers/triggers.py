@@ -38,7 +38,7 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from primer.api.deps import (
@@ -287,13 +287,13 @@ async def delete_trigger_endpoint(
     sp=Depends(get_storage_provider),
     claim_engine=Depends(get_claim_engine),
     event_bus=Depends(get_event_bus),
-) -> JSONResponse:
+) -> Response:
     deps = _deps(sp, claim_engine, event_bus)
     try:
         await delete_trigger(trigger_id=trigger_id, deps=deps)
     except TriggerNotFound as exc:
         _raise_code(404, "trigger_not_found", str(exc))
-    return JSONResponse(status_code=204, content=None)
+    return Response(status_code=204)
 
 
 @triggers_router.post(
@@ -517,7 +517,7 @@ async def delete_subscription_endpoint(
     sp=Depends(get_storage_provider),
     claim_engine=Depends(get_claim_engine),
     event_bus=Depends(get_event_bus),
-) -> JSONResponse:
+) -> Response:
     deps = _deps(sp, claim_engine, event_bus)
     try:
         await delete_subscription(
@@ -527,7 +527,7 @@ async def delete_subscription_endpoint(
         )
     except SubscriptionNotFound as exc:
         _raise_code(404, "subscription_not_found", str(exc))
-    return JSONResponse(status_code=204, content=None)
+    return Response(status_code=204)
 
 
 __all__ = ["triggers_router"]

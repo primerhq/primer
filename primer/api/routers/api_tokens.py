@@ -36,7 +36,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from primer.api.deps import get_storage_provider
@@ -287,7 +287,7 @@ async def revoke_api_token(
             row.id, user.id, row.name,
         )
     # Idempotent — already revoked rows still return 204.
-    return JSONResponse(status_code=204, content=None)
+    return Response(status_code=204)
 
 
 # ---------------------------------------------------------------------------
