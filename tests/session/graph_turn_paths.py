@@ -172,8 +172,12 @@ class LegacyWriters:
         return False
 
 
-async def park(tmp_path, storage, io, bus, tl: TurnLogs, monkeypatch):
-    """A graph that parks at an ``ask_user`` through the real dispatch; the row as the claim adapter's park branch leaves it (park columns, no bump)."""
+async def park(tmp_path, storage, io, bus, tl: TurnLogs, monkeypatch, *, scripts=None):
+    """A graph that parks at an ``ask_user`` through the real dispatch; the row as the claim adapter's park branch leaves it (park columns, no bump).
+
+    ``scripts`` is what the model says after the park, for the executors the returned factory builds (a resume): ``OK`` by default, ``FAIL`` for a resumed worker whose model call fails. The parked
+    run itself never reaches the model (its ``run_agent_turn`` is patched to raise the park).
+    """
     from primer.model.yield_ import Yielded, YieldToWorker
     from tests.graph.test_tool_wait_graph_park import _patch_run_agent_turn
 
@@ -186,7 +190,7 @@ async def park(tmp_path, storage, io, bus, tl: TurnLogs, monkeypatch):
     repo = await _make_state_repo(tmp_path)
 
     async def executor():
-        return await _build_executor(graph=one_worker(), llm=_FakeLLM(scripts=[OK]), state_repo=repo, graph_session_id=SID, agents={"x": _agent("x")})
+        return await _build_executor(graph=one_worker(), llm=_FakeLLM(scripts=[scripts or OK]), state_repo=repo, graph_session_id=SID, agents={"x": _agent("x")})
 
     parked = await run_one_session_turn(_make_lease(SID), deps(storage, io, bus, await executor(), tl))
     sessions = storage.get_storage(WorkspaceSession)
