@@ -591,10 +591,11 @@ class _BaseGraphExecutor(
                     )
                 except Exception as exc:  # noqa: BLE001 -- map to node failure
                     # 01a11faa: the call row the node wrote before it parked is answered too (an error answer).
-                    yield self._toolcall_answer_event(
-                        entry.node_id, context, entry.tool_call_id,
-                        ToolResultPart(id=entry.tool_call_id, output=str(exc), error=True),
-                    )
+                    if entry.row_call_id is not None:
+                        yield self._toolcall_answer_event(
+                            entry.node_id, context, entry.row_call_id,
+                            ToolResultPart(id=entry.row_call_id, output=str(exc), error=True),
+                        )
                     fail_out = NodeOutput(
                         text="", parsed=None, history=[],
                         iteration=context.iteration, error=str(exc),
@@ -626,7 +627,8 @@ class _BaseGraphExecutor(
                         ended_detail="tool_execution_failed",
                     )
                     return
-                yield self._toolcall_answer_event(entry.node_id, context, entry.tool_call_id, result)
+                if entry.row_call_id is not None:
+                    yield self._toolcall_answer_event(entry.node_id, context, entry.row_call_id, result)
                 mapped = _map_toolcall_result(
                     result, output_schema=node_def.output_schema
                 )
@@ -677,8 +679,9 @@ class _BaseGraphExecutor(
                 # 01a0812c: settled (ENDED) - see the discard above.
                 self._ready_set.discard(entry.node_id)
                 continue
-            # 01a11faa: re-dispatched under the id the node wrote its call row under (the park's own), so the manager's call, the row and a second park share it.
-            call_token = set_current_toolcall(entry.node_id, entry.tool_call_id)
+            # 01a11faa: the approved dispatch runs under a FRESH call id, not the parked one (the id of the call row is carried in ``entry.row_call_id``): a gate raised inside it builds its event key
+            # from the id it is called with, and a reply that names an id selects the gate by it, so a second gate under the first gate's id would answer to the first gate's reply (C-033).
+            call_token = set_current_toolcall(entry.node_id, str(uuid.uuid4()))
             try:
                 result = await self._dispatch_toolcall_with_bypass(
                     node_def, entry.arguments
@@ -702,14 +705,18 @@ class _BaseGraphExecutor(
                         resume_metadata=dict(
                             yld.yielded.resume_metadata or {}
                         ),
+                        # the row the node wrote is still the one to answer, under the scoped id its first park stashed
+                        scoped_tool_call_id=entry.scoped_tool_call_id,
+                        row_call_id=entry.row_call_id,
                     )
                 )
                 continue
             except _ToolApprovalRejected as rej:
-                yield self._toolcall_answer_event(
-                    entry.node_id, context, entry.tool_call_id,
-                    ToolResultPart(id=entry.tool_call_id, output=str(rej), error=True),
-                )
+                if entry.row_call_id is not None:
+                    yield self._toolcall_answer_event(
+                        entry.node_id, context, entry.row_call_id,
+                        ToolResultPart(id=entry.row_call_id, output=str(rej), error=True),
+                    )
                 # Spec B §4.8 / Phase 6 Task 6.4 — operator rejected, the
                 # approval timed out, or the approval was cancelled; stamp
                 # the node as a failure with the specific ended_detail
@@ -757,10 +764,11 @@ class _BaseGraphExecutor(
                 )
                 return
             except Exception as exc:  # noqa: BLE001 -- map all to node failure
-                yield self._toolcall_answer_event(
-                    entry.node_id, context, entry.tool_call_id,
-                    ToolResultPart(id=entry.tool_call_id, output=str(exc), error=True),
-                )
+                if entry.row_call_id is not None:
+                    yield self._toolcall_answer_event(
+                        entry.node_id, context, entry.row_call_id,
+                        ToolResultPart(id=entry.row_call_id, output=str(exc), error=True),
+                    )
                 fail_out = NodeOutput(
                     text="",
                     parsed=None,
@@ -800,7 +808,8 @@ class _BaseGraphExecutor(
                 return
             finally:
                 reset_current_toolcall(call_token)
-            yield self._toolcall_answer_event(entry.node_id, context, entry.tool_call_id, result)
+            if entry.row_call_id is not None:
+                yield self._toolcall_answer_event(entry.node_id, context, entry.row_call_id, result)
             # Map the result through the same path as the normal
             # _stream_node ToolCall handler so schema-validation failures
             # surface consistently.

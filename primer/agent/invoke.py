@@ -253,8 +253,9 @@ async def run_subagent(
     # share a raw id, so the records of a run say which node it belongs to (ticket 01a11cca).
     from primer.graph._node_identity import current_graph_node_id, current_toolcall_node_id
 
-    # A ToolCall node's dispatch publishes its own value (not the agent nodes' one: that also scopes the approval key), so a run its tool delegates to is stamped with the node too.
-    node_id = current_graph_node_id() or current_toolcall_node_id()
+    # A ToolCall node's dispatch publishes its own value (not the agent nodes' one: that also scopes the approval key), so a run its tool delegates to is stamped with the node too. The innermost
+    # node wins: a ToolCall node inside a subgraph node is read before the subgraph node's id (the child's tasks inherit it), and a graph node entered inside a dispatch hides the ToolCall's value.
+    node_id = current_toolcall_node_id() or current_graph_node_id()
     context = AgentResumeContext(
         session_id=session_id,
         workspace_id=workspace_id,

@@ -646,12 +646,15 @@ async def persist_resume_tool_result_record_for_graph(
     falling back to the raw ``tcid`` for a checkpoint written before that
     field existed.
 
-    A value-yielding tool_call's resume (ask_user answered via a
-    _PendingToolCall, not a _PendingAgentYield) has no durable record gap
-    to begin with: the node re-runs for real through _dispatch_toolcall_
-    with_bypass, so its ToolCallStart/End/Result flow through the live
-    _GraphNodeEvent-tapped pipeline exactly like any other execution --
-    that's why this only searches pending_agent_yields.
+    A tool_call NODE's resume (approval, or ask_user answered via a
+    _PendingToolCall, not a _PendingAgentYield) has no gap this function
+    fills: the drain's own events carry its answer. The node wrote its
+    ToolCallStart/End before it parked (live, through the dispatch tap), and
+    the resume drain yields the _ExecutorToolResult for that row
+    (primer.graph.base's resume loop, under the entry's row_call_id), which
+    the resume-drain tap translates with the scoped id seeded from the
+    checkpoint (primer.worker.graph_resume) -- that's why this only searches
+    pending_agent_yields.
 
     Best-effort, same doctrine as the agent-path sibling: a write failure
     here must not fail an otherwise-successful resume.

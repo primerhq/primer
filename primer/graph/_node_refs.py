@@ -926,6 +926,11 @@ class _PendingToolCall:
         for a checkpoint written before this field existed, or if the
         mint lookup missed (defensive) -- the resume write falls back
         to the raw id in that case.
+    row_call_id
+        01a11faa: the id of the ``tool_call`` ROW the node wrote before it ran the tool (the call id of the first dispatch), or ``None`` for a park written before nodes wrote one (that
+        node has no row to answer, and is not answered). It differs from ``tool_call_id`` once a second gate is raised inside the approved dispatch: that dispatch runs under a fresh call id
+        (a gate's event key is built from it, and a reply that names an id selects the gate by it), so the gate's id is the new one and the row stays under this one. The answer, the scoped-id
+        stash and the resume's seeding of the drain all go by this id.
     """
 
     node_id: str
@@ -935,6 +940,7 @@ class _PendingToolCall:
     tool_name: str | None = None
     resume_metadata: dict[str, Any] = field(default_factory=dict)
     scoped_tool_call_id: str | None = None
+    row_call_id: str | None = None
 
 
 @dataclass

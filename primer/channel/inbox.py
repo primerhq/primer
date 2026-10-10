@@ -86,9 +86,11 @@ def _matching_event_keys(row: Any, env: ResponseEnvelope) -> list[str]:
             # _toolcall_dispatch_entry) don't carry their own event_key -
             # the graph-native ToolCall node's park key is always the
             # unscoped tool_approval:<session_id>:<tool_call_id> shape
-            # (its tool_call_id is a fresh uuid4, never provider-raw, so
-            # it was never collision-prone - see primer.graph.
-            # workspace_executor._dispatch_toolcall). Reconstruct exactly
+            # (its tool_call_id is a uuid4 the node mints for each dispatch,
+            # never provider-raw, so it was never collision-prone; the node
+            # publishes it for the manager through primer.graph._node_identity's
+            # current_toolcall_id, which _dispatch_toolcall reads, and the
+            # approved re-dispatch runs under a fresh one). Reconstruct exactly
             # that shape, not the generic fallback (which would use
             # env.kind's literal string, "tool_approval", correctly here
             # since _approval is the only kind pending_dispatch models).

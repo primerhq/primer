@@ -382,6 +382,7 @@ class _NodeDispatchMixin:
                             resume_metadata=dict(
                                 yld.yielded.resume_metadata or {}
                             ),
+                            row_call_id=call_id,
                         )
                     )
                     await queue.put(
