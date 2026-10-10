@@ -61,13 +61,14 @@ function AP_ConfigHint({ onConfigure }) {
       <span className="muted text-sm">
         Approval gates are configured <strong style={{ color: "var(--text)" }}>per tool</strong>.
         {" "}
-        <a
-          style={{ color: "var(--accent)", cursor: "pointer" }}
+        <button
+          type="button"
+          style={{ color: "var(--accent)", cursor: "pointer", background: "none", border: "none", padding: 0 }}
           onClick={() => onConfigure && onConfigure()}
           data-testid="approvals-config-link"
         >
           Add or edit one
-        </a>
+        </button>
         .
       </span>
     </div>

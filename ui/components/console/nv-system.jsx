@@ -487,9 +487,10 @@ function NV_System() {
       <div className="nv-plat-nav" data-testid="nv-sys-nav">
         {navs.map(function (id) {
           return (
-            <div key={id} className="nv-plat-row"
+            <button type="button" key={id} className="nv-plat-row"
               data-active={id === nav ? "true" : "false"}
               data-testid={"nv-sys-row:" + id}
+              aria-current={id === nav ? "page" : undefined}
               onClick={function () { con.goView("system", id); }}>
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none"
                 stroke="currentColor" strokeWidth="1.2"
@@ -497,7 +498,7 @@ function NV_System() {
                 <path d={NV_SYS_ICONS[id]} />
               </svg>
               <span>{NV_SYS_LABELS[id]}</span>
-            </div>
+            </button>
           );
         })}
       </div>

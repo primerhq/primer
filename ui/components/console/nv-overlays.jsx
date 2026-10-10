@@ -513,12 +513,13 @@ function NV_CreateWorkspaceOverlay() {
           <div className="nv-pick-list">
             {tplItems.map(function (t) {
               return (
-                <div key={t.id} className="nv-pick-row"
+                <button type="button" key={t.id} className="nv-pick-row"
                   data-active={t.id === tplId ? "true" : "false"}
+                  aria-pressed={t.id === tplId}
                   data-testid={"nv-nw-tpl:" + t.id}
                   onClick={function () { setTplId(t.id); }}>
                   {t.id}
-                </div>
+                </button>
               );
             })}
           </div>

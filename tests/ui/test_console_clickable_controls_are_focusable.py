@@ -84,8 +84,8 @@ def _src(name: str) -> str:
 
 
 def _css(selector: str) -> str:
-    """The body of the first top-level ``selector { ... }`` rule of styles.css."""
-    src = CSS.read_text(encoding="utf-8")
+    """The body of the first top-level ``selector { ... }`` rule of styles.css (comments stripped: a commented-out rule is not a rule)."""
+    src = re.sub(r"/\*.*?\*/", "", CSS.read_text(encoding="utf-8"), flags=re.S)
     m = re.search(r"^" + re.escape(selector) + r"\s*\{", src, re.MULTILINE)
     assert m, f"no top-level rule for {selector!r}"
     i = m.end() - 1
@@ -106,6 +106,8 @@ def test_the_approvals_create_affordance_is_a_named_button() -> None:
     start, tag = _tag(src, 'data-testid="approvals-config-link"')
     assert tag.startswith("<button"), f"the affordance is not a native button:\n{tag}"
     assert 'type="button"' in tag, tag
+    assert "tabIndex" not in tag, f"the affordance is out of the tab order:\n{tag}"
+    assert "onClick" in tag, f"the button does not open the configuration:\n{tag}"
     assert "Add or edit one" in _inner_text(src, start), "the button has no words a screen reader could read"
 
 
@@ -114,6 +116,7 @@ def test_the_platform_card_opens_from_a_button_inside_the_card() -> None:
     start, tag = _tag(src, "nv-pcard-open")
     assert tag.startswith("<button"), f"the card's open action is not a native button:\n{tag}"
     assert 'type="button"' in tag, tag
+    assert "tabIndex" not in tag, f"the Open button is out of the tab order:\n{tag}"
     assert "onClick={props.onOpen}" in tag, f"the Open button does not open the card:\n{tag}"
     assert 'aria-label={"Open " + c.name}' in tag, f"the Open button is not named after the card:\n{tag}"
     assert "Open" in _inner_text(src, start), "the button has no words a screen reader could read"
@@ -128,8 +131,10 @@ def test_the_platform_card_still_opens_from_anywhere_on_it_via_the_stretched_but
     after = _css(".nv-pcard-open::after")
     for decl in ('content: ""', "position: absolute", "inset: 0"):
         assert decl in after, f".nv-pcard-open::after does not stretch the Open over the card (missing {decl!r}):\n{after}"
+    assert "pointer-events" not in after, f"a dropped click on the stretch leaves the card unopenable:\n{after}"
     dele = _css(".nv-pcard-del")
     assert "position: relative" in dele and "z-index: 1" in dele, f"the Delete button is not above the stretched Open:\n{dele}"
+    assert "pointer-events" not in dele, f"a dropped click on Delete lands on the stretched Open and opens the card:\n{dele}"
 
 
 def test_the_platform_nav_rows_are_focusable_buttons() -> None:
@@ -138,7 +143,7 @@ def test_the_platform_nav_rows_are_focusable_buttons() -> None:
     assert tag.startswith("<button"), f"the Platform nav row is not a native button:\n{tag}"
     assert 'type="button"' in tag, tag
     assert "tabIndex" not in tag, f"the nav row is out of the tab order:\n{tag}"
-    assert "aria-current" in tag, f"the active nav row is not marked for assistive tech:\n{tag}"
+    assert 'aria-current={id === active ? "page" : undefined}' in tag, f"the active nav row is not marked for assistive tech:\n{tag}"
 
 
 def test_the_system_nav_rows_are_focusable_buttons() -> None:
@@ -148,7 +153,7 @@ def test_the_system_nav_rows_are_focusable_buttons() -> None:
     assert tag.startswith("<button"), f"the System nav row is not a native button:\n{tag}"
     assert 'type="button"' in tag, tag
     assert "tabIndex" not in tag, f"the nav row is out of the tab order:\n{tag}"
-    assert "aria-current" in tag, f"the active nav row is not marked for assistive tech:\n{tag}"
+    assert 'aria-current={id === nav ? "page" : undefined}' in tag, f"the active nav row is not marked for assistive tech:\n{tag}"
 
 
 def test_the_template_pick_rows_are_focusable_buttons() -> None:
@@ -160,13 +165,14 @@ def test_the_template_pick_rows_are_focusable_buttons() -> None:
 
 
 def test_the_nav_rows_keep_their_borderless_button_reset() -> None:
-    """A <button> without border: none would draw a UA border the click-only div rows never had."""
+    """A <button> without border: none would draw a UA border the click-only div rows never had; a row that does not fill its column would not either."""
     plat_row = _css(".nv-plat-row")
     assert "border: none" in plat_row, plat_row
+    assert "width: 100%" in plat_row, f"the row must fill its column like the div it replaced:\n{plat_row}"
 
 
 def test_the_stretched_open_button_is_fully_visible_on_focus() -> None:
-    """At rest the Open label is opacity 0.55 (contrast 2.21:1): a keyboard user who Tabs onto it must see it at full opacity, not only a hover user."""
+    """At rest the Open label was opacity 0.55 (2.21:1 in light): a keyboard user who Tabs onto it must see it at full opacity, not only a hover user. Rest is now fully opaque (4.79:1 light, 9.82:1 dark); the focus rules pin the Tab-onto state."""
     focus = _css(".nv-pcard-open:focus-visible")
     assert "opacity: 1" in focus, f".nv-pcard-open:focus-visible is not fully opaque:\n{focus}"
     in_focus = _css(".nv-pcard:focus-within .nv-pcard-open")
