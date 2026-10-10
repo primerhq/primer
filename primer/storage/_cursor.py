@@ -99,7 +99,8 @@ def _value_matches_field(model: type[BaseModel], field: str, value: Any) -> bool
     int field is therefore refused here as a bad cursor, so the two backends
     agree (SQLite would otherwise just return no rows) and neither answers 5xx.
 
-    The id tiebreaker (a text column) is checked by the caller. Only a type
+    Every ``id`` key (the tiebreaker, and an explicit ``id`` sort key) is
+    checked by the caller: it must be a string. Only a type
     the field actually declares is enforced: a declared string type (``str``,
     a ``str`` enum, a date or time, all dumped as JSON strings) takes a
     string; a key with no declared scalar type (a dotted path resolves to
@@ -132,8 +133,8 @@ def _decode_cursor_for(
     A cursor is accepted only when it carries exactly the keys
     :func:`_encode_cursor_for` emits for this ``order_by``: its fields, in its
     order and directions, then the ``id`` tiebreaker, each with a JSON
-    scalar whose Python type matches the field's declared type (a non-null
-    string for ``id``). Anything else is a :class:`BadRequestError`, as a
+    scalar whose Python type matches the field's declared type (a string
+    for every ``id`` key). Anything else is a :class:`BadRequestError`, as a
     malformed cursor is: a value of the wrong type for an allowed key would
     otherwise bind against a typed column expression and answer a backend
     server error on Postgres (and silently no rows on SQLite).
@@ -150,11 +151,15 @@ def _decode_cursor_for(
             or key["field"] != field
             or key["direction"] != direction
             or not _is_seek_value(key["value"], key["is_null"])
-            or (field != "id" and not _value_matches_field(model, field, key["value"]))
+            or not (
+                # Every id key (the tiebreaker, and an explicit ``id`` sort key)
+                # compares against the text id column: a string only.
+                isinstance(key["value"], str)
+                if field == "id"
+                else _value_matches_field(model, field, key["value"])
+            )
         ):
             raise BadRequestError(_NOT_THIS_REQUEST)
-    if not isinstance(keys[-1]["value"], str):
-        raise BadRequestError(_NOT_THIS_REQUEST)
     return state
 
 

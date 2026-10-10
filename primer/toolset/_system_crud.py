@@ -1143,7 +1143,13 @@ def _collection_extras(
             op=Op.EQ,
             right=Value(value=args.collection_id),
         )
-        response = await documents.find(predicate, page, order_by=order_by)
+        try:
+            response = await documents.find(predicate, page, order_by=order_by)
+        except BadRequestError as exc:
+            # A bad cursor is a client error, answered like the entity tools.
+            return _err(exc.message, error_type="validation-error")
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="storage-error")
         return _ok(response)
 
     out["list_collection_documents"] = (
@@ -1199,7 +1205,13 @@ def _collection_extras(
             )
             node = Predicate(left=node, op=Op.AND, right=equality)
 
-        response = await documents.find(node, page, order_by=order_by)
+        try:
+            response = await documents.find(node, page, order_by=order_by)
+        except BadRequestError as exc:
+            # A bad cursor is a client error, answered like the entity tools.
+            return _err(exc.message, error_type="validation-error")
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="storage-error")
         return _ok(response)
 
     out["find_collection_documents_by_meta"] = (
