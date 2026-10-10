@@ -138,6 +138,8 @@ def test_unknown_top_level_field_is_left_to_the_renderer() -> None:
         (Toolset, "config"),
         (Trigger, "config"),
         (WorkspaceTemplate, "env"),
+        # A kind=url file source carries a MaskedUserinfoUrl since #721, so the list of mounts holds a secret.
+        (WorkspaceTemplate, "files"),
         (Workspace, "overrides"),
         (Workspace, "runtime_meta"),
     ],
@@ -163,9 +165,9 @@ def test_real_plain_fields(model: type, field: str) -> None:
 def test_a_nested_masked_url_anywhere_in_a_list_flags_the_top_field() -> None:
     # The #721 shape: list[FileMount] -> source -> a MaskedUserinfoUrl leaf.
     # The whole list is compared as JSON text, so the top field holds a secret
-    # even though it is not itself a SecretStr. On main WorkspaceTemplate.files
-    # carries a plain HttpUrl (served in clear); once #721 masks that URL the
-    # classifier flags WorkspaceTemplate.files automatically, with no change
-    # here. ``nested_masked_url`` on _Sample pins the rule on a real masked type.
+    # even though it is not itself a SecretStr. WorkspaceTemplate.files is the real
+    # case since #721 (its kind=url source carries a MaskedUserinfoUrl; see
+    # test_real_secret_bearing_fields). ``nested_masked_url`` on _Sample pins the
+    # rule on a synthetic model of the same shape.
     assert holds_secret(_Sample, "nested_masked_url") is True
     assert holds_secret(_Sample, "nested_masked_url.source.url") is True
