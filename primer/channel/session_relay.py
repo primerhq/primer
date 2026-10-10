@@ -174,9 +174,13 @@ def derive_session_final_text(records: list[dict]) -> str | None:
     # A GRAPH run's own end (a node-less ``done`` the writers append after the End node's output) is the verdict above, not a text boundary: the text of the run is the End output
     # written BEFORE it and, for a pass-through End, the last node's answer, so the windows below are read as if it were not there. Only the FINAL one is dropped: an earlier
     # invocation's end still separates that invocation's text from this one's.
+    end_only = False
     if is_graph_end(records[last_done]):
         boundaries = boundaries[:-1]
         last_done = boundaries[-1] if boundaries else -1
+        # The new last boundary was not checked above: with ``on_failure: collect`` the worker that finishes last may have FAILED, and its partial text is not the graph's result. Then only an End
+        # output (the graph's own result, rendered after the nodes) counts, and a pass-through End relays nothing.
+        end_only = last_done >= 0 and (records[last_done].get("kind") != "done" or (records[last_done].get("payload") or {}).get("stop_reason") == "error")
     # Assistant text AFTER the last terminal record is a turn that streamed output and never ended. Its
     # ``cancelled`` record is best-effort (skipped when the workspace does not take the write in time), and
     # without this the previous turn's ``done`` would stand for it and that turn's answer would be handed over
@@ -205,6 +209,8 @@ def derive_session_final_text(records: list[dict]) -> str | None:
         return "\n\n".join(end_outputs)
     if nested_outputs:
         return nested_outputs[-1]
+    if end_only:
+        return None
     prev_boundary = boundaries[-2] if len(boundaries) > 1 else -1
     chunks: list[str] = []
     for r in records[prev_boundary + 1:max(last_done, 0)]:          # last_done is -1 for a graph whose nodes wrote no done: no node answer to fall back on

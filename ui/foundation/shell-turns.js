@@ -369,7 +369,8 @@ function SH_retryInstruction(flat, errorRow, session) {
 // failure needs the records before it. Feed RAW records (kind, payload, node_id) in order; feed() says "closes" (the record ends a window), "copy" (a copy of a
 // failure that already ended one: ends nothing, and belongs to the window it copies) or "inside". The rule, in the server's words: a delegated record is
 // always inside, and so is a record of a graph NODE (one with a node_id: a graph turn is one window, closed by the graph's own end, the node-less done with
-// payload.graph_end that the writers append when the run ends, a copy of the failure instead when a graph-level error already ended the window; ticket 01a11f35); a user_input starts a new turn; a done / cancelled that closes the turn ends a window (done with stop_reason "error" is a FAILURE end that
+// payload.graph_end that the writers append when the run ends, a copy of the failure instead when a graph-level error already ended the window; ticket 01a11f35); an invocation_divider (written only to an ENDED session) closes a graph run still open before it (a node's
+// record since the last close) and starts a new turn either way, staying inside after a closed turn; a user_input starts a new turn; a done / cancelled that closes the turn ends a window (done with stop_reason "error" is a FAILURE end that
 // later errors of the turn can copy; any other end closes the turn); an error with an explicit fatal: false is a notice that ends nothing but whose words are
 // remembered; a bare release marker is a copy once the turn has failed and the only evidence (so it ends the window) when nothing has; any other error ends a
 // window unless the turn has already failed and an earlier error of the turn has the same non-empty message; dispatch's own failure ERROR (a title and an integer
@@ -402,13 +403,17 @@ function SH_isGraphEnd(rec) {
 function SH_newWindowScanner() {
   var failed = false;
   var words = [];
+  var graphOpen = false;     // a graph node's record since the last close: a graph run no terminal has closed yet
   function newTurn() { failed = false; words = []; }
   function remember(message) { if (message) words.push(message); }
   function copiesAnEarlierError(message) { return !!message && words.indexOf(message) !== -1; }
-  return {
-    feed: function (rec) {
+  function feedOne(rec) {
       var payload = SH_payloadOf(rec);
+      if (SH_pyTruthy(rec.node_id)) graphOpen = true;
       if (SH_pyTruthy(payload.delegated) || SH_pyTruthy(rec.node_id)) return SH_WINDOW_INSIDE;     // a subagent's record, or a graph node's: the turn is not over
+      // An invocation_divider is written only to an ENDED session, so a graph run still open before it ended without its end record: it closes that window; either way it starts a new turn
+      // (nothing before a reopen is a copy of anything after it). After a closed turn it stays inside, the first record of the next window.
+      if (rec.kind === "invocation_divider") { var closes = graphOpen; newTurn(); return closes ? SH_WINDOW_CLOSES : SH_WINDOW_INSIDE; }
       if (rec.kind === "user_input") { newTurn(); return SH_WINDOW_INSIDE; }
       if (rec.kind === "error") {
         var message = typeof payload.message === "string" ? payload.message : null;
@@ -428,6 +433,12 @@ function SH_newWindowScanner() {
       if (rec.kind === "done" && payload.stop_reason === "error") failed = true;
       else newTurn();
       return SH_WINDOW_CLOSES;
+  }
+  return {
+    feed: function (rec) {
+      var verdict = feedOne(rec);
+      if (verdict === SH_WINDOW_CLOSES) graphOpen = false;
+      return verdict;
     },
   };
 }
