@@ -379,7 +379,7 @@ function WorkspaceProviderCreateModal({ onClose, pushToast, existing = null, onC
       footer={
         <>
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" icon={isEdit ? "check" : "plus"} disabled={create.loading} onClick={submit}>
+          <Btn kind="primary" icon={isEdit ? "check" : "plus"} busy={create.loading} onClick={submit}>
             {create.loading ? (isEdit ? "Saving…" : "Creating…") : (isEdit ? "Save changes" : "Create")}
           </Btn>
         </>
