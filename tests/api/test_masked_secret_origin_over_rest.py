@@ -1,7 +1,7 @@
 """Over REST on a real SQLite store: a masked secret is kept only for the origin it was stored for, and a served mask is refused on create (ticket 01a1212a).
 
 ``PUT`` is a full replace, ``GET`` serves the secret masked, and ``preserve_masked_secrets`` swapped the mask back for the stored value whatever the base URL became: an update of
-``{url: "https://attacker.example/v1", api_key: "<the mask>"}`` stored the real key next to the attacker's host. It answers a 422 now (``re-enter the key: the stored one is kept only for the same
+``{url: "https://attacker.example/v1", api_key: "<the mask>"}`` stored the real key next to the attacker's host. It answers a 422 now (``re-enter the secret: the stored one is kept only for the same
 host``) and the row is untouched; the same host with another path keeps the key; a key the person typed is theirs. ``POST`` of a served body under a new id (the copy-a-provider move) used to store
 the masks as the values; it is a 422 too.
 """
@@ -60,7 +60,7 @@ async def test_a_put_that_moves_the_host_and_keeps_the_key_mask_is_a_422_and_sto
     r = await client.put(f"/v1/{path}/{row_id}", json=served)
 
     assert r.status_code == 422, r.text
-    assert "re-enter the key" in r.text and KEY not in r.text
+    assert "re-enter the secret" in r.text and KEY not in r.text
     stored = await sp.get_storage(model).get(row_id)
     assert str(stored.config.url) == HOME and stored.config.api_key.get_secret_value() == KEY, "the row is untouched"
 
@@ -154,7 +154,7 @@ async def test_a_vector_store_password_is_bound_to_its_host(client, sp) -> None:
 
     r = await client.put("/v1/ssp/ssp-o", json=served)
 
-    assert r.status_code == 422 and "re-enter the key" in r.text and "s3cr3t-db-pw" not in r.text, r.text
+    assert r.status_code == 422 and "re-enter the secret" in r.text and "s3cr3t-db-pw" not in r.text, r.text
     assert (await sp.get_storage(SemanticSearchProvider).get("ssp-o")).config.password.get_secret_value() == "s3cr3t-db-pw-0123"
 
 
@@ -198,7 +198,7 @@ async def test_a_provider_type_switch_that_sends_the_served_key_is_a_422_and_the
     r = await client.put(f"/v1/{path}/{row_id}", json=served)
 
     assert r.status_code == 422, r.text
-    assert "re-enter the key" in r.text and KEY not in r.text
+    assert "re-enter the secret" in r.text and KEY not in r.text
     stored = await sp.get_storage(model).get(row_id)
     assert stored.provider.value == "openchat" and stored.config.api_key.get_secret_value() == KEY
 

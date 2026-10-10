@@ -27,7 +27,7 @@ def _tools(storage_provider, **options):
 
 
 def _refuses(entity, existing):
-    raise PrimerValidationError("token: re-enter the key: the stored one is kept only for the same host")
+    raise PrimerValidationError("token: re-enter the secret: the stored one is kept only for the same host")
 
 
 async def _call(tools, name: str, arguments: dict):
@@ -44,7 +44,7 @@ async def test_update_answers_a_refusal_raised_by_admin_when(fake_storage_provid
     result, body = await _call(tools, "update_widget", {"id": "w-1", "entity": {"id": "w-1", "token": "another"}})
 
     assert result.is_error and body["type"] == "validation-error", result.output
-    assert "re-enter the key" in body["message"] and "stored-secret-value" not in result.output
+    assert "re-enter the secret" in body["message"] and "stored-secret-value" not in result.output
     assert (await storage.get("w-1")).token.get_secret_value() == "stored-secret-value", "nothing was stored"
 
 
@@ -70,7 +70,7 @@ async def test_create_refuses_a_body_that_carries_a_served_mask(fake_storage_pro
     result, body = await _call(tools, "create_widget", {"entity": {"id": "w-3", "token": served}})
 
     assert result.is_error and body["type"] == "validation-error", result.output
-    assert "re-enter the key" in body["message"]
+    assert "re-enter the secret" in body["message"]
     assert await storage.get("w-3") is None, "nothing was stored"
 
 

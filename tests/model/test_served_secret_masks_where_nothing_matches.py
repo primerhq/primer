@@ -35,7 +35,7 @@ def test_a_config_class_switch_with_the_served_key_is_refused() -> None:
     stored = OpenChatConfig(url=HOME, api_key=SecretStr(STORED))
     sent = OpenResponsesConfig(url="https://attacker.example/v1", api_key=SecretStr(TAIL))
 
-    with pytest.raises(PrimerValidationError, match="re-enter the key"):
+    with pytest.raises(PrimerValidationError, match="re-enter the secret"):
         preserve_masked_secrets(sent, stored)
 
     assert sent.api_key.get_secret_value() == TAIL, "nothing of the stored key was put into the update, and the mask was not accepted"
@@ -54,7 +54,7 @@ def test_a_new_header_with_a_served_mask_is_refused() -> None:
     stored = HttpConfig(url="https://home.example/mcp", headers={"Authorization": SecretStr("Bearer abcdef")})
     sent = HttpConfig(url="https://home.example/mcp", headers={"Authorization": SecretStr(BARE), "X-Extra": SecretStr(BARE)})
 
-    with pytest.raises(PrimerValidationError, match="re-enter the key") as caught:
+    with pytest.raises(PrimerValidationError, match="re-enter the secret") as caught:
         preserve_masked_secrets(sent, stored)
 
     assert "X-Extra" in str(caught.value) and "abcdef" not in str(caught.value)
@@ -74,7 +74,7 @@ def test_a_list_that_changed_length_with_a_served_secret_is_refused(served: str)
     stored = _Holder(secrets=[SecretStr(STORED)])
     sent = _Holder(secrets=[SecretStr(served), SecretStr(NEW)])
 
-    with pytest.raises(PrimerValidationError, match="re-enter the key"):
+    with pytest.raises(PrimerValidationError, match="re-enter the secret"):
         preserve_masked_secrets(sent, stored)
 
 
@@ -103,7 +103,7 @@ def test_a_different_host_of_a_postgres_shaped_config_is_still_another_origin() 
     stored = PgVectorConfig(hostname="db.home.example", port=5432, username="u", password=SecretStr(STORED), database="d")
     sent = PgVectorConfig(hostname="db.home.example.attacker.example", port=5432, username="u", password=SecretStr(BARE), database="d")
 
-    with pytest.raises(PrimerValidationError, match="re-enter the key"):
+    with pytest.raises(PrimerValidationError, match="re-enter the secret"):
         preserve_masked_secrets(sent, stored)
 
 

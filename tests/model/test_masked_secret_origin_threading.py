@@ -77,7 +77,7 @@ def test_every_position_is_refused_for_another_origin(position: str) -> None:
     stored = _holder(HOME)
     sent = _holder(AWAY, **{p: (BARE if p == position else NEW) for p in POSITIONS})
 
-    with pytest.raises(PrimerValidationError, match="re-enter the key"):
+    with pytest.raises(PrimerValidationError, match="re-enter the secret"):
         preserve_masked_secrets(sent, stored)
 
     assert _read(sent, position) == BARE, "the stored secret was not put into the update"
@@ -107,7 +107,7 @@ def test_an_endpoint_that_goes_away_is_a_moved_origin() -> None:
     stored = S3ArtifactConfig(bucket="b", endpoint_url="https://minio.home.example", access_key=STORED, secret_key=STORED)
     sent = S3ArtifactConfig(bucket="b", access_key=BARE, secret_key=BARE)
 
-    with pytest.raises(PrimerValidationError, match="re-enter the key"):
+    with pytest.raises(PrimerValidationError, match="re-enter the secret"):
         preserve_masked_secrets(sent, stored)
 
 
@@ -129,7 +129,7 @@ def test_the_oauth_client_secret_follows_the_url_of_the_toolset_it_sits_under() 
     assert kept.oauth.static_client.client_secret.get_secret_value() == STORED
 
     moved = _oauth("https://attacker.example/mcp", BARE)
-    with pytest.raises(PrimerValidationError, match="re-enter the key"):
+    with pytest.raises(PrimerValidationError, match="re-enter the secret"):
         preserve_masked_secrets(moved, stored)
 
 
@@ -137,7 +137,7 @@ def test_moving_only_the_oauth_resource_uri_refuses_the_client_secret_mask() -> 
     stored = _oauth("https://home.example/mcp", STORED, resource_uri="https://home.example/mcp")
     moved = _oauth("https://home.example/mcp", BARE, resource_uri="https://attacker.example/mcp")
 
-    with pytest.raises(PrimerValidationError, match="re-enter the key"):
+    with pytest.raises(PrimerValidationError, match="re-enter the secret"):
         preserve_masked_secrets(moved, stored)
 
 
@@ -160,7 +160,7 @@ def test_moving_only_the_oauth_redirect_uri_is_not_a_move_of_where_the_secret_is
 def test_a_create_refuses_a_served_mask_in_every_position(position: str, served: str) -> None:
     body = _holder(HOME, **{position: served})
 
-    with pytest.raises(PrimerValidationError, match="re-enter the key") as caught:
+    with pytest.raises(PrimerValidationError, match="re-enter the secret") as caught:
         refuse_served_masks(body)
 
     assert served not in str(caught.value), "a refusal repeats no secret"

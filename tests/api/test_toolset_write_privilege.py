@@ -183,7 +183,7 @@ async def test_an_admin_cannot_move_the_host_of_a_toolset_and_keep_its_masked_se
     )
 
     assert resp.status_code == 422, resp.text
-    assert "re-enter the key" in resp.text and SECRET not in resp.text
+    assert "re-enter the secret" in resp.text and SECRET not in resp.text
     stored = await app.state.storage_provider.get_storage(Toolset).get("ts-http")
     assert (stored.config.config.url, stored.config.config.headers["Authorization"].get_secret_value()) == ("http://127.0.0.1:9/mcp", SECRET)
 

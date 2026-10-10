@@ -56,7 +56,7 @@ async def test_an_update_that_moves_the_host_and_keeps_the_key_mask_is_refused(s
     result = await system_toolset.call(tool_name="update_llm_provider", arguments={"id": "llm-o", "entity": served})
 
     assert result.is_error and _error_type(result) == "validation-error", result.output
-    assert "re-enter the key" in result.output and KEY not in result.output
+    assert "re-enter the secret" in result.output and KEY not in result.output
     row = sp.get_storage(LLMProvider)._data["llm-o"]
     assert str(row.config.url) == HOME and row.config.api_key.get_secret_value() == KEY, "the stored row is untouched"
 
@@ -168,7 +168,7 @@ async def test_an_admin_who_moves_a_toolset_url_and_keeps_the_masked_header_is_r
     result = await system_toolset.call(tool_name="update_toolset", arguments={"id": "ts-http", "entity": served}, ctx=ADMIN_CALLER)
 
     assert result.is_error and _error_type(result) == "validation-error", result.output
-    assert "re-enter the key" in result.output and "abcdef" not in result.output
+    assert "re-enter the secret" in result.output and "abcdef" not in result.output
 
 
 # ---- nit N1 (review of #711): a served mask where there is nothing stored of its shape ----------------------------------------------------------------------------

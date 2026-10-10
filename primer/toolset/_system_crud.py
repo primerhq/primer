@@ -562,7 +562,7 @@ def _crud_tools_for(
         "A secret field the matching ``get_`` served masked and you send "
         "back unchanged keeps its stored value, but only for the same origin (scheme, host and port): "
         "when any of them changes (or the user of a URL password), "
-        "the mask is refused with ``type=validation-error`` (\"re-enter the key\") "
+        "the mask is refused with ``type=validation-error`` (\"re-enter the secret\") "
         "and nothing is stored; send the secret itself to move it."
     )
     if on_update is not None:
