@@ -354,21 +354,21 @@ async def durably_mark_session_resumable(
     * Stamp the singular ``resume_event_payload`` / ``resume_event_key`` (the
       single-event resume path + a "last fired" hint).
     * For a MULTI-event park (``parked_event_keys`` set) also accumulate
-      ``resume_event_payloads[dispatch_key]`` (see :func:`_dispatch_key_for`
-      - 01a0518f: the event_key's tail past the fixed ``kind:session_id:``
-      prefix, node-qualified for a graph park; a tool_wait key whole) so a second reply
-      is preserved rather than overwritten - including two fan-out siblings
-      that happen to share a raw provider tool_call_id - PROVIDED it read the
-      row the first one wrote: the leaf is merged into the snapshot's
-      ``parked_state``, which the write replaces whole. A caller that wakes
-      several keys of one park re-reads the row before each further wake
-      (``apply_tool_results``, the steer route's cancel of external calls);
-      two replies that race from one snapshot can still drop a leaf (a
-      ``set_paths`` leaf per dispatch key would close it, ticket 01a122cc-effa).
-    * ONE ``patch_if`` of the two fields the flip owns (``parked_status``,
-      ``parked_state``), guarded on the park it read (``parked_at``), a
-      ``parked_status`` it may advance from and a status that is not ENDED -
-      see below.
+      ``resume_event_payloads[leaf_key]``, where the leaf key is the dispatch
+      key (see :func:`_dispatch_key_for` - 01a0518f: the event_key's tail
+      past the fixed ``kind:session_id:`` prefix, node-qualified for a graph
+      park; a tool_wait key whole) through :func:`leaf_key_for`, so a second
+      reply is preserved rather than overwritten - including two fan-out
+      siblings that happen to share a raw provider tool_call_id.
+    * ONE ``patch_if``: ``parked_status`` and ONLY this wake's leaves of
+      ``parked_state`` (the two singular fields and its own
+      ``resume_event_payloads`` entry), as nested ``set_paths`` the backend
+      applies to the row's CURRENT document, guarded on the park it read
+      (``parked_at``), a ``parked_status`` it may advance from and a status
+      that is not ENDED - see below. Two wakes of one multi-event park on two
+      keys that read the same row therefore keep both entries (ticket
+      01a122cc-effa): the whole ``parked_state`` built from a snapshot, which
+      this used to write, dropped the entry the other wake wrote in between.
     * Re-arm the claim lease via ``engine.mark_resumable`` (park dropped it)
       so the claim loop re-claims the row WITHOUT relying on any bus. When no
       engine is wired (e.g. the lightweight test app) the durable storage
@@ -393,8 +393,8 @@ async def durably_mark_session_resumable(
 
     Idempotency (the listener may also process the NOTIFY): a single-event
     park only advances from ``parked``, so a second flip is a no-op; a
-    multi-event park may advance from ``resumable`` and re-accumulates the
-    same ``dispatch_key`` with identical data. Returns True when the row
+    multi-event park may advance from ``resumable`` and re-writes the same
+    leaf with identical data. Returns True when the row
     was advanced/accumulated, False when the guard rejected it (including
     the ENDED race above, resolved at write time rather than read time).
 
@@ -423,38 +423,40 @@ async def durably_mark_session_resumable(
         # (a snapshot cannot be) - the guarded patch_if below is what actually
         # closes the race for a row that ends AFTER this check runs.
         return False
-    state = dict(session.parked_state or {})
-    # Singular fields: the single-event resume path + a "last fired" hint.
-    state["resume_event_payload"] = dict(payload or {})
-    state["resume_event_key"] = event_key
+    # This wake's own leaves of ``parked_state``, never the whole state built from ``session``: the singular fields (the single-event resume path + a
+    # "last fired" hint) and, on a multi-event park, its entry in ``resume_event_payloads``. ``patch_if`` refuses an empty path element, so a key with
+    # nothing past its ``<kind>:<session_id>:`` prefix keeps its entry under the whole key.
+    own: dict[str, Any] = {"resume_event_payload": dict(payload or {}), "resume_event_key": event_key}
     if is_multi:
         dispatch_key = _dispatch_key_for(event_key, session_id=session.id)
-        payloads = dict(state.get("resume_event_payloads") or {})
-        payloads[dispatch_key] = {
-            "payload": dict(payload or {}),
-            "event_key": event_key,
+        own["resume_event_payloads"] = {
+            leaf_key_for(dispatch_key or event_key): {"payload": dict(payload or {}), "event_key": event_key},
         }
-        state["resume_event_payloads"] = payloads
-    updated = session.model_copy(update={
-        "parked_status": "resumable",
-        "parked_state": state,
-    })
-    # ONE guarded patch of the two fields the flip owns, evaluated by the backend against the CURRENT row (ticket 01a1223f, #702 review N9). The fences above
-    # judged ``session``, the row ``find()`` returned; a whole-document write guarded on ``status`` alone let a wake that read the old park land on a park
-    # the session had meanwhile entered, and rewrote every other field from the stale snapshot. The guard is the park that was read (``parked_at``), a
-    # ``parked_status`` the flip may advance from (``parked``; ``parked`` or ``resumable`` for a multi-event park) and a status that is not ENDED (the race
-    # described above).
+    # Dumped as the model stores them (a NaN in a payload becomes null), the form a whole-document write gave them.
+    dumped = dump_for_storage(session.model_copy(update={"parked_status": "resumable", "parked_state": own}))
+    leaves: dict[tuple[str, ...], Any] = {
+        ("parked_state", "resume_event_payload"): dumped["parked_state"]["resume_event_payload"],
+        ("parked_state", "resume_event_key"): dumped["parked_state"]["resume_event_key"],
+    }
+    for leaf_key, entry in (dumped["parked_state"].get("resume_event_payloads") or {}).items():
+        leaves[("parked_state", "resume_event_payloads", leaf_key)] = entry
+    # ONE guarded patch, evaluated by the backend against the CURRENT row (ticket 01a1223f, #702 review N9). The fences above judged ``session``, the row
+    # ``find()`` returned; a whole-document write guarded on ``status`` alone let a wake that read the old park land on a park the session had meanwhile
+    # entered, and rewrote every other field from the stale snapshot. The guard is the park that was read (``parked_at``), a ``parked_status`` the flip may
+    # advance from (``parked``; ``parked`` or ``resumable`` for a multi-event park) and a status that is not ENDED (the race described above). It writes
+    # ``parked_status`` and the leaves above as nested ``set_paths``, set on the row's current document: a wake of another key of the same multi-event park
+    # that landed after ``session`` was read keeps its entry (ticket 01a122cc-effa; the whole ``parked_state`` built from ``session`` dropped it).
     # The park is named by its stored spelling. The storage layer writes ``parked_at`` canonically (pydantic's ``Z`` form, ``raw_generation``); a park
     # written outside it (raw SQL, an older build) can hold the ``isoformat()`` spelling (``+00:00``) of the SAME instant, which names the same park, so
     # both are accepted: a guard on the canonical one alone refused every wake of such a park for ever (#707 review round 2, B1).
     parked_at_spellings = [raw_generation(session, "parked_at")]
     if session.parked_at is not None and session.parked_at.isoformat() not in parked_at_spellings:
         parked_at_spellings.append(session.parked_at.isoformat())
-    dumped = dump_for_storage(updated)
     landed = await patch_if_checked(
         session_storage,
         session.id,
-        {"parked_status": dumped["parked_status"], "parked_state": dumped["parked_state"]},
+        {"parked_status": dumped["parked_status"]},
+        set_paths=leaves,
         where={"parked_at": parked_at_spellings, "parked_status": list(allowed), "status": NON_ENDED_STATUSES()},
     )
     if landed is None:
