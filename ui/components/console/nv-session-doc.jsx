@@ -1125,8 +1125,8 @@ function NV_DecisionCard(props) {
               SH_api.approve(item.sessionId, item.toolCallId, item.gateId).then(
                 props.onResolved,
                 function (err) {
-                  // A gate replaced since this card was drawn (C-033: 409), or one that is pending nowhere now (404, the first gate of a node that re-parked): say so and reload; nothing was decided.
-                  if (SH_isMovedOnGate(err)) { con.toast(SH_staleGateWords("approval")); props.onResolved(); return; }
+                  // A gate replaced since this card was drawn (C-033: 409 "replaced"), or one that has moved on (404 "moved on": the first gate of a node that re-parked, a gate decided elsewhere): say so and reload; nothing was decided.
+                  if (SH_isMovedOnGate(err)) { con.toast(SH_movedOnGateWords(err, "approval")); props.onResolved(); return; }
                   con.toast("Approve failed: " + (err.detail || err.message));
                 }
               );
@@ -1144,7 +1144,7 @@ function NV_DecisionCard(props) {
               SH_api.reject(item.sessionId, item.toolCallId, reason, item.gateId).then(
                 props.onResolved,
                 function (err) {
-                  if (SH_isMovedOnGate(err)) { con.toast(SH_staleGateWords("approval")); props.onResolved(); return; }
+                  if (SH_isMovedOnGate(err)) { con.toast(SH_movedOnGateWords(err, "approval")); props.onResolved(); return; }
                   con.toast("Reject failed: " + (err.detail || err.message));
                 }
               );
