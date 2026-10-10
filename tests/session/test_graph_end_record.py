@@ -272,3 +272,73 @@ def test_a_log_that_does_not_end_in_a_graph_end_is_parsed_as_before() -> None:
     tail = _parse_tail(iter(reversed(lines(records))))
 
     assert [r["seq"] for r in tail] == [5, 6, 7]
+
+
+# ---- round 3: the invocation_divider (hand-built records; the real writers are in test_graph_turn_reopen_paths.py) ---------------------------------------------------
+
+
+AGENT_DONE = rec(0, "done", {"stop_reason": "stop", "raw_reason": "stop"})          # an agent turn's own end: no node
+AGENT_MARKER = rec(0, "agent_marker", {"agent_id": "a"})
+RELEASE_MARKER = rec(0, "error", {"reason": "unknown", "terminal": True})
+STREAM_ERROR = rec(0, "error", {"message": "boom", "code": "server_error", "fatal": True})
+DISPATCH_FAILURE = rec(0, "error", {"message": "boom", "code": "/errors/internal", "title": "Internal error", "status": 500})
+
+
+def test_a_divider_after_a_closed_agent_turn_is_the_first_record_of_the_next_window() -> None:
+    assert _verdicts([USER, AGENT_DONE, DIVIDER, USER, AGENT_DONE]) == [INSIDE, CLOSES, INSIDE, INSIDE, CLOSES]
+    assert len(turn_windows(lines(seqd([USER, AGENT_DONE, DIVIDER, USER, AGENT_DONE])))) == 2
+
+
+def test_a_divider_after_a_failure_and_its_copies_is_inside_and_forgets_the_failure() -> None:
+    records = [USER, STREAM_ERROR, DISPATCH_FAILURE, RELEASE_MARKER, DIVIDER, USER, STREAM_ERROR, DISPATCH_FAILURE, RELEASE_MARKER]
+
+    assert _verdicts(records) == [INSIDE, CLOSES, COPY, COPY, INSIDE, INSIDE, CLOSES, COPY, COPY]
+    assert len(turn_windows(lines(seqd(records)))) == 2
+
+
+def test_a_divider_after_an_agent_marker_is_inside() -> None:
+    assert _verdicts([USER, AGENT_DONE, AGENT_MARKER, DIVIDER, USER, AGENT_DONE]) == [INSIDE, CLOSES, INSIDE, INSIDE, INSIDE, CLOSES]
+
+
+def test_an_agent_input_with_no_node_record_before_a_divider_stays_in_the_next_window() -> None:
+    """No node record means no graph run is open: the divider closes nothing, exactly as before this rule."""
+    records = seqd([USER, DIVIDER, USER, AGENT_DONE])
+
+    assert _verdicts(records) == [INSIDE, INSIDE, INSIDE, CLOSES]
+    assert len(turn_windows(lines(records))) == 1
+
+
+def test_a_delegated_record_does_not_open_a_graph_run() -> None:
+    delegated = rec(0, "done", {"stop_reason": "stop", "delegated": True})
+
+    assert _verdicts([USER, delegated, DIVIDER, USER, AGENT_DONE]) == [INSIDE, INSIDE, INSIDE, INSIDE, CLOSES]
+
+
+def test_a_divider_closes_a_graph_run_that_wrote_no_end_and_is_its_last_record() -> None:
+    records = seqd([USER, node_done("w0"), DIVIDER, USER, node_done("w0"), end()])
+
+    assert _verdicts(records) == [INSIDE, INSIDE, CLOSES, INSIDE, INSIDE, CLOSES]
+    windows = turn_windows(lines(records))
+    assert [(w["terminal_seq"], [r["seq"] for r in w["records"]]) for w in windows] == [(3, [1, 2, 3]), (6, [4, 5, 6])]
+
+
+def test_a_divider_after_a_failed_graph_end_is_inside_and_the_next_end_is_not_a_copy() -> None:
+    """The review's B1 as a unit case: ``[user, node done, end(error), divider, node done, end]``. The restart wrote no user_input, so only the divider can forget the failure."""
+    records = [USER, node_done("w0"), end(failed=True), DIVIDER, node_done("w0"), end()]
+
+    assert _verdicts(records) == [INSIDE, INSIDE, CLOSES, INSIDE, INSIDE, CLOSES]
+
+
+def test_a_node_record_opens_a_run_and_every_close_ends_it() -> None:
+    graph_error = rec(0, "error", {"code": "max_iterations_exceeded", "message": "graph ran for 1 iterations"})
+
+    assert _verdicts([USER, node_done("w0"), graph_error, DIVIDER, USER, AGENT_DONE]) == [INSIDE, INSIDE, CLOSES, INSIDE, INSIDE, CLOSES]
+    assert _verdicts([USER, node_done("w0"), end(), DIVIDER, USER, node_done("w0"), DIVIDER]) == [INSIDE, INSIDE, CLOSES, INSIDE, INSIDE, INSIDE, CLOSES]
+
+
+def test_the_open_user_input_of_a_run_the_divider_closed_is_counted_as_closed() -> None:
+    from primer.session.turns import count_turn_state
+
+    state = count_turn_state(lines(seqd([USER, node_done("w0"), DIVIDER, USER, node_done("w0"), end()])), cursor=0)
+
+    assert (state.open_user_inputs, state.terminals, state.open_turns) == (2, 2, 0)
