@@ -7,8 +7,9 @@ Playwright ``pageerror``). The same holds for ``.finally(fn)``.
 
 This pins the count at zero. A chain whose LAST link is ``.catch(fn)`` or ``.then(onDone, onFail)`` is handled; a chain with an ``await`` or a ``return`` in front
 of it hands the rejection to the enclosing async function or the caller, like awaiting ``mutate`` itself, and is left alone. Anything else is listed.
-The scan reads the source with comments and the insides of string literals blanked out, so a ``)`` in a message or a call in a comment cannot end or start a
-match.
+The scan reads the source through the lexer the other static scans use (``tests/_support/js_source.py``: comments, the insides of strings, the static text of templates and the bodies of
+regular-expression literals blanked, the ``${...}`` placeholders kept as code), so a ``)`` in a message, a call in a comment or a backtick in a regex cannot end, start or hide a match. It used to
+carry its own blanker, which opened a template at the backtick of a regex literal (``knowledge.jsx:139``) and read nothing after it.
 """
 
 from __future__ import annotations
@@ -18,69 +19,13 @@ from pathlib import Path
 
 import pytest
 
+from tests._support.js_source import blank, close_of
+
 UI = Path(__file__).resolve().parents[2] / "ui"
 
 _MUTATE = re.compile(r"\.mutate\s*\(")
 _LINK = re.compile(r"\s*\.(then|catch|finally)\s*\(")
 _AWAITED = re.compile(r"\b(?:await|return)\s+[\w$.\[\]?\s]*$")
-
-
-def _blank(src: str) -> str:
-    """The same text with every comment and the inside of every string blanked to spaces (newlines kept), so offsets and line numbers still match.
-
-    A quote opened in JSX text (``Don't``) or in a regex literal would swallow the rest of the file, so a ' or " string ends at the newline.
-    Template literals are blanked whole, ``${...}`` included.
-    """
-    out = list(src)
-    i, n = 0, len(src)
-    while i < n:
-        c = src[i]
-        nxt = src[i + 1] if i + 1 < n else ""
-        if c == "/" and nxt == "/":
-            j = src.find("\n", i)
-            j = n if j < 0 else j
-            for k in range(i, j):
-                out[k] = " "
-            i = j
-        elif c == "/" and nxt == "*":
-            j = src.find("*/", i + 2)
-            j = n if j < 0 else j + 2
-            for k in range(i, j):
-                if src[k] != "\n":
-                    out[k] = " "
-            i = j
-        elif c in "'\"":
-            j = i + 1
-            while j < n and src[j] != c and src[j] != "\n":
-                j += 2 if src[j] == "\\" else 1
-            for k in range(i + 1, min(j, n)):
-                out[k] = " "
-            i = j + 1
-        elif c == "`":
-            j = i + 1
-            while j < n and src[j] != "`":
-                j += 2 if src[j] == "\\" else 1
-            for k in range(i + 1, min(j, n)):
-                if src[k] != "\n":
-                    out[k] = " "
-            i = j + 1
-        else:
-            i += 1
-    return "".join(out)
-
-
-def _close(text: str, open_at: int) -> int:
-    """The offset just past the bracket that closes the one at ``open_at`` (-1 when the file ends first)."""
-    depth, i = 0, open_at
-    while i < len(text):
-        if text[i] in "([{":
-            depth += 1
-        elif text[i] in ")]}":
-            depth -= 1
-            if depth == 0:
-                return i + 1
-        i += 1
-    return -1
 
 
 def _arguments(text: str, start: int, end: int) -> int:
@@ -102,11 +47,11 @@ def _arguments(text: str, start: int, end: int) -> int:
 
 def scan(src: str) -> tuple[int, list[int]]:
     """``(mutate call sites seen, line numbers of the ones whose chain ends without a rejection handler)``."""
-    text = _blank(src)
+    text = blank(src, strings=True, templates=True)
     sites, bad = 0, []
     for m in _MUTATE.finditer(text):
         sites += 1
-        end = _close(text, m.end() - 1)
+        end = close_of(text, m.end() - 1)
         if end < 0:
             continue
         last = None
@@ -114,7 +59,7 @@ def scan(src: str) -> tuple[int, list[int]]:
             link = _LINK.match(text, end)
             if not link:
                 break
-            close = _close(text, link.end() - 1)
+            close = close_of(text, link.end() - 1)
             if close < 0:
                 break
             last = (link.group(1), _arguments(text, link.end(), close - 1))
@@ -134,7 +79,10 @@ def scan(src: str) -> tuple[int, list[int]]:
 def _tree(root: Path) -> tuple[int, list[str]]:
     sites, offenders = 0, []
     for path in sorted([*root.rglob("*.js"), *root.rglob("*.jsx")]):
-        n, bad = scan(path.read_text(encoding="utf-8"))
+        try:
+            n, bad = scan(path.read_text(encoding="utf-8"))
+        except ValueError as exc:      # the lexer lost its place in the file: say which one
+            raise ValueError(f"{path.relative_to(root)}: {exc}") from exc
         sites += n
         offenders += [f"{path.relative_to(root)}:{line}" for line in bad]
     return sites, offenders
@@ -191,6 +139,25 @@ def test_the_line_of_the_call_is_reported() -> None:
 def test_a_quote_in_jsx_text_does_not_swallow_the_rest_of_the_file() -> None:
     src = "<p>Don't save</p>\nonClick={() => c.mutate(b).then(f)}\n"
     assert scan(src)[1] == [2]
+
+
+def test_a_regex_literal_with_a_backtick_does_not_hide_the_chains_after_it() -> None:
+    """knowledge.jsx:139 ``/(^|\\n)(#{1,6} |```)/``: the scanner's own ``_blank`` opened a template at the first backtick and read nothing after it (the lexer of #720 reads regex literals)."""
+    src = "const heading = /(^|\\n)(#{1,6} |```)/;\ncreate.mutate(body).then(onDone);\n"
+
+    assert scan(src)[1] == [2]
+
+
+def test_an_offender_appended_to_knowledge_jsx_is_listed() -> None:
+    text = (UI / "components" / "knowledge.jsx").read_text(encoding="utf-8")
+    appended = text + "\ncreate.mutate(body).then(onDone);\n"
+
+    assert scan(appended)[1] == [appended.count("\n", 0, appended.rindex("create.mutate")) + 1]
+
+
+def test_a_mutate_call_in_a_template_placeholder_is_code() -> None:
+    """``${create.mutate(body).then(f)}`` runs: the old scanner blanked a template whole, placeholders included."""
+    assert scan("const t = `x ${create.mutate(body).then(onDone)} y`;")[1] == [1]
 
 
 def test_a_tree_with_an_offender_is_listed_by_file_and_line(tmp_path: Path) -> None:
