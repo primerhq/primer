@@ -119,6 +119,9 @@ def test_a_leaf_that_begins_with_a_credentialed_url_does_not_keep_a_second_secre
         pytest.param("https://bot:pass\tword@mcp.example/mcp", ("pass", "word"), "https://bot:**********@mcp.example/mcp", id="a password with a tab"),
         pytest.param("https://u:p ss@host.example and https://u3:p3@h3/", ("p ss", "p3"), "https://u:**********@host.example and ", id="a password with a space and then a second URL"),
         pytest.param("https://u:p ss@host.example/x?token=tok9", ("p ss", "tok9"), "https://u:**********@host.example/x?token=", id="a password with a space and a query token"),
+        # a raw "@" BEFORE the whitespace made the whitespace-free lead hold an "@", so the lead branch ran first and the tail after the whitespace stayed in clear (round 2 review, B2r)
+        pytest.param("https://u:p@ss word@host.example/x", ("p@ss", "ss word", "word@"), "https://u:**********@host.example/x", id="a raw @ and then a space in the password"),
+        pytest.param("https://u:p@ss\tword@host.example/x", ("p@ss", "ss\tword", "word@"), "https://u:**********@host.example/x", id="a raw @ and then a tab in the password"),
     ],
 )
 def test_a_url_password_that_holds_whitespace_is_masked(text: str, secrets: tuple[str, ...], kept: str) -> None:

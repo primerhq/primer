@@ -78,6 +78,25 @@ def test_an_authority_that_parsers_read_differently_is_its_own_origin(value: str
     assert origin_of(value) != origin_of("https://attacker.example")
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("https:\t//attacker.example\\@home.example/x://y", id="a tab in the scheme separator hides the authority from a scan for the first ://"),
+        pytest.param("https:\t//attacker.example\\@home.example/?next=http://z", id="the same, with another :// after the path"),
+        pytest.param("https:/\t/attacker.example\\@home.example/a://b", id="a tab between the two slashes"),
+        pytest.param("https:\n//attacker.example\\@home.example/a://b", id="a newline in the scheme separator"),
+        pytest.param("https:\r//attacker.example\\@home.example/a://b", id="a carriage return in the scheme separator"),
+        pytest.param("https://home.example/a\tb", id="a tab anywhere, even in the path, is not worth trusting a parse for"),
+    ],
+)
+def test_a_control_character_in_the_text_is_its_own_origin(value: str) -> None:
+    """``urlsplit`` drops a tab, CR or LF from anywhere in the text, WHATWG parsers (``HttpUrl``) drop them too and read a backslash as a slash, so a tab in the scheme separator hid the backslash
+    authority from the scan for the first ``://`` while ``urlsplit`` still read the stored host: the secret was restored next to a value the client reads as ``attacker.example`` (round 2 review,
+    N4b). Such a value is compared as text."""
+    assert origin_of(value) == ("text", value.strip())
+    assert origin_of(value) != origin_of("https://home.example")
+
+
 def test_a_backslash_or_space_after_the_authority_is_only_part_of_the_path() -> None:
     assert origin_of("https://home.example/a\\b c") == origin_of("https://home.example")
     assert origin_of("https://home.example?q=a b") == origin_of("https://home.example")
