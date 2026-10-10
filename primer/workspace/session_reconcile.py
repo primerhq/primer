@@ -35,6 +35,33 @@ _LIST_PAGE_SIZE = 200
 _NOT_ENDED = Predicate(left=FieldRef(name="status"), op=Op.NE, right=Value(value=SessionStatus.ENDED.value))
 
 
+async def _say_why_refused(session_storage, session_id: str, workspace_id: str) -> None:
+    """Log why the fenced patch of ``session_id`` did not apply, from a fresh read of the row.
+
+    ENDED: another path ended it (the fence did its job), INFO. Still open: the fence refused a row it should have matched, and the session stays open on a workspace that is gone,
+    WARNING naming the session. Deleted since: WARNING. A read that fails is logged and goes no further: the other sessions are still ended.
+    """
+    try:
+        row = await session_storage.get(session_id)
+    except Exception:  # noqa: BLE001 -- log + continue
+        logger.exception(
+            "session reconcile: session %s on %s was not reconciled (its fenced patch was refused) and the row could not be read again to say why",
+            session_id, workspace_id,
+        )
+        return
+    if row is None:
+        logger.warning("session reconcile: session %s on %s was deleted before it could be reconciled", session_id, workspace_id)
+    elif row.status == SessionStatus.ENDED:
+        logger.info(
+            "session reconcile: session %s on %s left alone: ended by another path (ENDED/%s)", session_id, workspace_id, row.ended_reason,
+        )
+    else:
+        logger.warning(
+            "session reconcile: session %s on %s is still open (%s) although its fenced patch was refused; it stays open on a workspace that is gone",
+            session_id, workspace_id, getattr(row.status, "value", row.status),
+        )
+
+
 async def reconcile_sessions_to_workspace_lost(
     sp: "StorageProvider", workspace_id: str,
 ) -> int:
@@ -45,10 +72,14 @@ async def reconcile_sessions_to_workspace_lost(
     (a probe tick, a workspace destroy) because one session row couldn't
     be updated. Returns the number of sessions reconciled.
 
-    Each session is ended by ONE field-scoped, fenced write (``patch_if`` of the five fields below, ``where status`` is not ended), never a whole-document
+    Each session is ended by ONE field-scoped, fenced write (``patch_if`` of the eight fields below, ``where status`` is not ended), never a whole-document
     write of the snapshot read at the start (ticket 01a11d29). A session another path ended since the read (a turn's own end, a force delete's closure, the
     preempt convergence) keeps that path's reason and is not counted; a field another writer committed since (a steer's ``last_seq``) is not put back; a
-    session deleted since is skipped.
+    session deleted since is skipped with a warning.
+
+    A refused patch is never silent: the row is read again, and it is logged at INFO as left alone when it is ENDED (another path ended it), at WARNING naming the
+    session when it is still open (a fence that refused a row it should have matched leaves a session running on a workspace that is gone), and at WARNING or
+    ERROR when the row cannot be read. None of them is counted: the return value is the number of sessions THIS call ended.
 
     Every open session is read before any is changed (the ticket 01a11b93 bug: one page of 200 rows, ENDED ones included, so a workspace with more
     sessions than that kept its open ones past page 1 running against a workspace whose runtime the destroy had just torn down). The read pages by
@@ -108,6 +139,11 @@ async def reconcile_sessions_to_workspace_lost(
         # current value like the finally-block clear does.
         "turn_status": "idle",
         "turn_started_at": None,
+        # The agent phase belongs to the turn that is gone with the workspace (the model says it is None whenever turn_status is idle), and the same
+        # crashed-turn cleanup clears it with turn_started_at.
+        "agent_phase": None,
+        "agent_phase_turn_no": None,
+        "agent_phase_stamped_at": None,
     })
     reconciled = 0
     for sess in open_sessions:
@@ -128,6 +164,8 @@ async def reconcile_sessions_to_workspace_lost(
             continue
         if written is not None:
             reconciled += 1
+        else:
+            await _say_why_refused(session_storage, sess.id, workspace_id)
 
     if reconciled:
         logger.info(
