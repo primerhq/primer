@@ -64,7 +64,7 @@ class Describeable(Identifiable):
 
 
 # The ``context`` of the dump that writes a row to storage (and of anything that needs the row's IDENTITY): a field type that masks something in the JSON-mode dump
-# (a provider ``url``'s password, :class:`primer.model.providers._shared.MaskedUserinfoUrl`) returns the real value when its serializer sees this key.
+# (the password of a provider ``url`` or of a template's url file source, :class:`primer.model.masked_url.MaskedUserinfoUrl`) returns the real value when its serializer sees this key.
 STORAGE_DUMP_CONTEXT: dict[str, Any] = {"storage": True}
 
 
@@ -82,7 +82,7 @@ def dump_for_storage(entity: BaseModel) -> dict[str, Any]:
     the JSONB blob written to Postgres carries the real credential.
 
     A URL field that masks the password of its userinfo in the JSON-mode dump
-    (:class:`~primer.model.providers._shared.MaskedUserinfoUrl`) is dumped with
+    (:class:`~primer.model.masked_url.MaskedUserinfoUrl`) is dumped with
     :data:`STORAGE_DUMP_CONTEXT`, which that serializer reads as "the real URL":
     one mechanism, no second kind of leaf for the walk below.
 
