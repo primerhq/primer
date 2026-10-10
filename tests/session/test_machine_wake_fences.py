@@ -223,16 +223,19 @@ async def test_a_row_another_wake_already_flipped_is_not_flipped_twice() -> None
 
 @pytest.mark.asyncio
 async def test_a_multi_event_park_still_accepts_a_second_wake_after_the_first_flipped_it() -> None:
-    """A multi-event park advances from ``parked`` OR ``resumable`` (a second concurrent reply accumulates): the guard allows both."""
+    """A multi-event park advances from ``parked`` OR ``resumable``: a concurrent reply to ANOTHER of its keys accumulates. (A second wake on the SAME
+    key is refused, ticket 01a12606: ``test_one_wake_per_key.py``.)"""
     storage = _FakeStorageProvider().get_storage(WorkspaceSession)
-    await storage.create(_parked(multi=True))
+    await storage.create(_parked(multi=True).model_copy(update={"parked_event_keys": ["ask_user:s:call_0", "ask_user:s:call_1"]}))
     first = await storage.get("s")
     second = await storage.get("s")
 
     assert await durably_mark_session_resumable(first, event_key="ask_user:s:call_0", payload={"response": "a"}, session_storage=storage, engine=None) is True
-    assert await durably_mark_session_resumable(second, event_key="ask_user:s:call_0", payload={"response": "b"}, session_storage=storage, engine=None) is True
+    assert await durably_mark_session_resumable(second, event_key="ask_user:s:call_1", payload={"response": "b"}, session_storage=storage, engine=None) is True
 
-    assert (await storage.get("s")).parked_status == "resumable"
+    after = await storage.get("s")
+    assert after.parked_status == "resumable"
+    assert sorted(entry["payload"]["response"] for entry in after.parked_state["resume_event_payloads"].values()) == ["a", "b"]
 
 
 @pytest.mark.asyncio
