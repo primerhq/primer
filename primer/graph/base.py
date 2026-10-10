@@ -348,6 +348,9 @@ class _BaseGraphExecutor(
         # two fields, not one tuple.
         self._pending_ended_reason: str | None = None
         self._pending_ended_detail: str | None = None
+        # Why the run ended ``failed`` when it did so with NO ``_GraphErrorEvent`` and NO failed node: an edge that could not be evaluated (a router that is not registered,
+        # one that names a node that does not exist). ``None`` otherwise. Read by ``primer.graph.invoke_graph`` to tell the invoking agent what failed (ticket 01a12625-436c).
+        self._last_failure_text: str | None = None
         # Node ids that have entered the ready set at least once this run.
         # Used by ``_fanin_ready`` to decide whether a callable-router source
         # is a *live* potential upstream (admitted but not yet resolved) that
@@ -1277,6 +1280,16 @@ class _BaseGraphExecutor(
                 )
                 await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail="routing_failed")
                 return
+            except ConfigError as exc:
+                # The main loop's own answer to an edge that cannot be evaluated: log it, remember why, end the run ``failed`` with no detail. It used to leave this
+                # method as a raw exception and the thread was never saved as ended (ticket 01a12625-436c).
+                logger.warning(
+                    "GraphExecutor: edge evaluation failed",
+                    extra={"graph_id": self._graph.id, "error": str(exc)},
+                )
+                self._last_failure_text = f"edge evaluation failed: {exc}"
+                await self._end_failed(iteration=context.iteration, node_states=node_states, ended_detail=None)
+                return
             # Drain any fan-out plans spawned by the drained ToolCalls.
             for fanout_id, instances in list(self._pending_fanout.items()):
                 for inst in instances:
@@ -1382,7 +1395,7 @@ class _BaseGraphExecutor(
         *,
         iteration: int,
         node_states: dict[str, NodeRuntimeState],
-        ended_detail: str,
+        ended_detail: str | None,
     ) -> None:
         """Persist ``ENDED/failed`` AND expose the outcome: the failure exits of :meth:`resume_from_checkpoint`.
 
@@ -2219,6 +2232,7 @@ class _BaseGraphExecutor(
                     "GraphExecutor: edge evaluation failed",
                     extra={"graph_id": self._graph.id, "error": str(exc)},
                 )
+                self._last_failure_text = f"edge evaluation failed: {exc}"
                 ended_reason = "failed"
                 break
 
