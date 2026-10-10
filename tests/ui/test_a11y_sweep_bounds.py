@@ -66,11 +66,39 @@ def test_no_page_is_excused_from_its_register_menu_any_more() -> None:
     assert "_assert_register_menu_is_dead" not in SWEEP and "DEAD_REGISTER_MENUS" not in SWEEP and "DEAD_MENU_TEXT" not in SWEEP
 
 
+# a number given as a timeout, in any spelling: 5000, 10_000, 1500.5
+NUMERIC_TIMEOUT = re.compile(r"\btimeout=\d[\d_]*(?:\.\d+)?")
+# the calls whose timeout is a number on purpose: the seeds' httpx clients and the cleanup, in SECONDS and capped as a whole (see the next pin)
+SECONDS_CALLS = re.compile(r"(?:httpx\.Client|delete_paths|delete_seeded)\([^()]*\)")
+
+
 def test_no_wait_of_the_sweep_has_a_fixed_timeout() -> None:
-    """Round 6, N3/N4: every click, ``expect`` and ``goto`` of the sweep takes what the budget has left (``timeout=sweep.budget.wait_ms(...)``); a fixed number is a wait the deadline does not cap. (The httpx
-    clients' ``timeout=30.0`` are floats and are the seeds' own.)"""
-    fixed = re.findall(r"\btimeout=\d+(?![\d.])", SWEEP)
+    """Round 6, N3/N4: every click, ``expect`` and ``goto`` of the sweep takes what the budget has left (``timeout=sweep.budget.wait_ms(...)``); a fixed number is a wait the deadline does not cap. The
+    only numbers are the httpx clients' and the cleanup's own, in seconds. Round 7: the first version of this pin looked for integers only, so ``timeout=1500.5`` and ``timeout=10_000`` passed it."""
+    fixed = NUMERIC_TIMEOUT.findall(SECONDS_CALLS.sub("", SWEEP))
     assert fixed == [], fixed
+
+
+def test_the_fixed_timeout_pin_reads_every_spelling_of_a_number() -> None:
+    for source in ("expect(x).to_be_visible(timeout=5000)", "x.click(timeout=10_000)", "x.click(timeout=1500.5)", "page.goto(url, timeout=30.0)", "x.click(timeout=0)"):
+        assert NUMERIC_TIMEOUT.search(source), source
+    for source in ("x.click(timeout=sweep.budget.wait_ms(5_000))", "x.click(timeout=wait)", "timeout_ms=5000"):
+        assert not NUMERIC_TIMEOUT.search(source), source
+
+
+CLEANUP = re.compile(r"\b(delete_paths|delete_seeded)\(base_url, (?:made|seeded), timeout=([\d.]+), give_up_after=([\d.]+)\)")
+
+
+def test_the_cleanup_has_limits_and_the_worst_case_of_the_whole_test_fits_under_the_thread_timeout() -> None:
+    """Round 7: nothing pinned the cleanup. A server that does not answer cost ``timeout`` a row (30 s by default) with no cap on the rows, and the cleanup runs AFTER the deadline, inside the thread timeout.
+    Each of the two cleanups gives up after ``give_up_after`` and can overshoot it by one more ``timeout``, so the worst case is: the deadline + 2 * (give_up_after + timeout) + 45 s for the report, and it
+    must fit under the thread timeout (the last resort that kills the whole lane)."""
+    cleanups = {name: (float(timeout), float(give_up)) for name, timeout, give_up in CLEANUP.findall(SWEEP)}
+    assert set(cleanups) == {"delete_paths", "delete_seeded"}, "the sweep's cleanup passes both a timeout and give_up_after to both deletes"
+    deadline = float(re.search(r"deadline_s=(\d+)", SWEEP).group(1))
+    thread_timeout = float(re.search(r'@pytest\.mark\.timeout\((\d+), method="thread"\)', SWEEP).group(1))
+    worst = deadline + sum(timeout + give_up for timeout, give_up in cleanups.values()) + 45
+    assert worst <= thread_timeout, f"{worst} s of worst case does not fit under the {thread_timeout} s thread timeout"
 
 
 def test_a_page_that_cannot_be_opened_is_a_note_for_every_navigation_of_the_sweep_that_can_time_out() -> None:
