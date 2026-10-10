@@ -82,5 +82,110 @@ def test_value_end_stops_at_a_top_level_comma_or_the_closing_bracket(text: str, 
     assert text[: value_end(text, 0)] == expected
 
 
+# ---- regular-expression literals (review of #720, round 1, B1) ------------------------------------------------------------------------------------------
+
+
+def test_a_regex_literal_with_a_backtick_does_not_open_a_template() -> None:
+    """knowledge.jsx:139 ``/(^|\\n)(#{1,6} |\\* |- |\\d+\\. |```)/`` opened a template at its first backtick: 16k of the file's 41k characters were blanked and the scans read nothing after it."""
+    src = "const heading = /(^|\\n)(#{1,6} |\\* |- |\\d+\\. |```)/;\nconst e = err.envelope;\nconst b = <Banner title={`Failed (${err.code})`} />;\n"
+
+    out = blank(src, strings=True, templates=True)
+
+    assert "err.envelope" in out and "err.code" in out, out
+
+
+def test_a_regex_literal_with_a_quote_inside_a_placeholder_does_not_desync_the_frames() -> None:
+    """predicate-builder.jsx:160 ``.replace(/'/g, ..)`` inside a placeholder: the quote opened a string, the rest of the line was swallowed, the placeholder's closing brace never came."""
+    src = "const t = `a ${s.replace(/'/g, \"\")} b`; const e = err.envelope; const u = `x ${err.code}`;\n"
+
+    out = blank(src, strings=True, templates=True)
+
+    assert "err.envelope" in out and "err.code" in out, out
+    assert " a " not in out and " b" not in out.split("err.envelope")[0], "the template's own text is still blanked"
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    ["", "(", ", ", "= ", ": ", "[", "!", "&&", "||", "? ", "{", "}", ";", "return ", "typeof ", "case ", "x of ", "x in "],
+    ids=lambda p: repr(p),
+)
+def test_a_regex_literal_is_read_after_every_token_that_allows_one(prefix: str) -> None:
+    src = f"{prefix}/`['\"]/.test(x)\nconst e = err.envelope;\n"
+
+    out = blank(src, strings=True, templates=True)
+
+    assert "err.envelope" in out, (prefix, out)
+
+
+@pytest.mark.parametrize(
+    "src",
+    ["const q = a / b / c; const e = err.envelope;", "const q = f(x) / 2 / 'y'; const e = err.envelope;", "const q = n++ / 2; const e = err.envelope;", "const q = arr[0] / 2; const e = err.envelope;"],
+)
+def test_a_slash_that_divides_is_not_a_regex(src: str) -> None:
+    out = blank(src, strings=True, templates=True)
+
+    assert "err.envelope" in out, out
+    assert "'y'" not in out or "y" not in out.split("'y'")[0], "a string after a division is still a string"
+
+
+def test_a_jsx_self_closing_tag_after_a_brace_is_not_a_regex() -> None:
+    src = '<A b={x} /><B c="y" />\nconst e = err.envelope;\n'
+
+    out = blank(src, strings=True, templates=True)
+
+    assert "<B c=" in out and "err.envelope" in out, out
+    assert "y" not in out.split("<B c=")[1].split("/>")[0], "the string inside the second tag is blanked"
+
+
+def test_a_slash_in_jsx_text_after_a_tag_is_not_a_regex() -> None:
+    out = blank("<p>and/or '</p>\nconst e = err.envelope;\n", strings=True, templates=True)
+
+    assert "err.envelope" in out, out
+
+
+def test_a_regex_does_not_run_past_the_end_of_its_line() -> None:
+    """No closing slash on the line: it is not a regex literal, and nothing after it is blanked."""
+    out = blank("x = a ? /not closed\nconst e = err.envelope;\n", strings=True, templates=True)
+
+    assert "err.envelope" in out, out
+
+
+def test_a_slash_inside_a_character_class_does_not_end_the_regex() -> None:
+    out = blank("const r = /[/']+/g; const e = err.envelope;\n", strings=True, templates=True)
+
+    assert "err.envelope" in out, out
+
+
+# ---- a lexer that ends inside a construct says so ----------------------------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "src",
+    ["x = `abc", "x = `a ${b", "x = `a ${ `inner", "f('abc", 'f("abc'],
+    ids=["a template", "a placeholder", "a nested template", "a single-quoted string at the end of the file", "a double-quoted string at the end of the file"],
+)
+def test_ending_inside_a_template_a_placeholder_or_a_string_raises(src: str) -> None:
+    """The scans would otherwise read the rest of the file as if it were text and report fewer sites than there are (a one-file blindness the floors cannot see)."""
+    with pytest.raises(ValueError, match="unterminated"):
+        blank(src, strings=True, templates=True)
+
+
+def test_a_string_that_ends_at_the_end_of_its_line_is_not_unterminated() -> None:
+    """A quote in JSX text (``Don't``) opens a string that ends at the newline: the lexer is lenient there on purpose (see the module docstring)."""
+    blank("<p>Don't save</p>\nconst e = err.envelope;\n", strings=True, templates=True)
+
+
+def test_a_backslash_in_template_text_escapes_the_next_character() -> None:
+    out = blank("x = `a\\`b ${c}`; y = err.envelope;", strings=True, templates=True)
+
+    assert "err.envelope" in out and "c" in out.split("${")[1], out
+
+
+def test_a_comment_inside_a_placeholder_is_a_comment() -> None:
+    out = blank("x = `a ${ b /* ` */ + c } d`; y = err.envelope;", strings=True, templates=True)
+
+    assert "err.envelope" in out and " + c " in out, out
+
+
 def test_line_of_counts_from_one() -> None:
     assert [line_of("a\nb\nc", i) for i in (0, 2, 4)] == [1, 2, 3]

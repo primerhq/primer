@@ -106,6 +106,8 @@ EXPECTED = {
     "agent_field": {"code": None, "field": "description", "sentence": _BLANK_DESCRIPTION, "message": "description: " + _BLANK_DESCRIPTION},
     "validated": {"code": None, "field": "name", "sentence": "", "message": "Missing or invalid: name, count."},
     "validated_missing": {"code": None, "field": "name", "sentence": "Field required", "message": "name: Field required"},
+    "list_item": {"code": None, "field": "items.2", "sentence": "Input should be a valid string", "message": "items.2: Input should be a valid string"},
+    "json_decode": {"code": None, "field": "1", "sentence": "JSON decode error", "message": "JSON decode error"},
     "in_use_by": {
         "code": "in_use_by", "field": None,
         "sentence": "in_use_by: 1 agent(s) reference 'llm-openchat--scripted:default' (first: 'builder')", "message": _IN_USE,
@@ -147,6 +149,9 @@ def test_the_real_envelopes_really_look_like_this(envelopes) -> None:
     assert field["extensions"]["errors"][0]["msg"] == _BLANK_DESCRIPTION
     assert pre["extensions"]["error"] == "model_profile_not_found" and pre["extensions"]["field"] == "model.profile_id"
     assert block["status"] == 409 and "extensions" not in block and block["detail"].startswith("in_use_by: ")
+    # the two locations the field-prefix rule tells apart, as the real handlers answer them (round 1 review of the follow-ups: the table had only hand-built cases)
+    item, decode = envelopes["list_item"]["extensions"]["errors"][0], envelopes["json_decode"]["extensions"]["errors"][0]
+    assert item["loc"] == ["body", "items", 2] and decode["loc"] == ["body", 1] and decode["msg"] == "JSON decode error"
 
 
 def test_the_default_agent_block_is_a_reference_block_said_without_the_token(envelopes) -> None:
@@ -346,6 +351,13 @@ def _reads_the_envelope(text: str) -> bool:
         "const show = ({ envelope }) => envelope.detail;",
         "for (const { envelope } of errors) {",
         "/* the reader does this */\nconst e = err.envelope;",
+        # the shapes the second scan missed (round 1 review of the follow-ups): an array pattern, a template literal in the brackets, a quoted key
+        "const [{ envelope }] = list;",
+        "const show = ([k, { envelope }]) => envelope.detail;",
+        "for (const [{ envelope }] of rows) {",
+        "const e = err[`envelope`];",
+        "const { 'envelope': e } = err;",
+        'const { "envelope": e, message } = err;',
     ],
 )
 def test_the_scan_sees_a_component_read_the_envelope(line: str) -> None:
@@ -394,6 +406,42 @@ def test_no_component_reads_the_envelope_but_the_python_editor() -> None:
         offenders += [f"{rel}:{n}: {lines[n - 1].strip()[:110]}" for n in _envelope_reads(text)]
     assert len(sources) >= 50, f"the scan found {len(sources)} component files: it is looking at the wrong place"
     assert not offenders, "a component reads a refusal out of the envelope itself instead of window.primerApi.readRefusal:\n" + "\n".join(offenders)
+
+
+@pytest.mark.parametrize("rel", ["components/knowledge.jsx", "components/predicate-builder.jsx"])
+def test_an_offender_appended_to_a_file_that_holds_a_regex_literal_is_found(rel: str) -> None:
+    """The two real files whose regex literals blinded the first lexer (knowledge.jsx opened a template at a backtick inside one, predicate-builder.jsx lost its frames at a quote inside one): an offender
+    appended to either was caught by the per-line scans and missed by the lexer's, and the floors on the whole tree could not see a one-file blindness."""
+    text = dict(_component_sources())[rel] + "\nconst e = err.envelope;\nconst b = <Banner title={`Failed (${err.code})`} />;\n"
+
+    assert _envelope_reads(text), rel
+    assert _titles_that_compose_a_code(text), rel
+
+
+def test_knowledge_jsx_is_read_to_its_end() -> None:
+    text = dict(_component_sources())["components/knowledge.jsx"]
+
+    assert len(_titles(text)) >= 18, "knowledge.jsx holds 20 title props: the lexer lost the file after its regex literal"
+
+
+def test_the_lexer_ends_every_component_file_in_the_base_state() -> None:
+    """``blank`` raises when a file ends inside a template, a placeholder or a string: a file the lexer lost its place in fails HERE, by name, not as a scan that quietly sees less."""
+    bad = []
+    for rel, text in _component_sources():
+        try:
+            blank(text, strings=True, templates=True)
+        except ValueError as exc:
+            bad.append(f"{rel}: {exc}")
+
+    assert not bad, "\n".join(bad)
+
+
+def test_a_reported_line_is_the_line_of_the_text_even_when_the_file_holds_a_form_feed() -> None:
+    """``splitlines()`` also breaks at a form feed, a vertical tab and U+2028, so it numbered lines differently from ``count("\\n")``."""
+    text = "const a = 1;\x0c\nconst b = 2;\nconst e = err.envelope;\n"
+
+    assert _envelope_reads(text) == [3]
+    assert _describe(text, 3) == "const e = err.envelope;"
 
 
 def test_the_envelope_scan_still_sees_the_one_reader_that_is_allowed_to() -> None:
@@ -707,6 +755,9 @@ def test_a_malformed_validation_entry_does_not_break_the_reader(errors) -> None:
         (["body", "items", 2], "items.2", "Input should be a valid string", "items.2: Input should be a valid string"),
         (["body", "members", 0], "members.0", "Input should be a valid string", "members.0: Input should be a valid string"),
         (["query", "ids", 3], "ids.3", "Input should be a valid integer", "ids.3: Input should be a valid integer"),
+        # numbers only after the prefix names no field a person can find (a JSON decode error one level down, a list of lists): the skip needs a string segment, not a length of two
+        (["body", 0, 1], "0.1", "Input should be a valid string", "Input should be a valid string"),
+        (["path", 2, 0, 1], "2.0.1", "Input should be a valid string", "Input should be a valid string"),
         (["body", "items", 2, "name"], "items.2.name", "Field required", "items.2.name: Field required"),
     ],
 )
