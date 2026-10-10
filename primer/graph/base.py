@@ -132,6 +132,7 @@ from primer.graph._node_refs import (  # noqa: E402
     _ToolApprovalRejected,
     _ToolCallOutputResult,
     _ToolDispatchBarrier,
+    _approved_inner_call,
     _is_value_yield_toolcall,
     _map_toolcall_result,
     _resume_value_yield_toolcall,
@@ -674,9 +675,14 @@ class _BaseGraphExecutor(
             # 01a11faa: the approved dispatch runs under a FRESH call id, not the parked one (the id of the call row is carried in ``entry.row_call_id``): a gate raised inside it builds its event key
             # from the id it is called with, and a reply that names an id selects the gate by it, so a second gate under the first gate's id would answer to the first gate's reply (C-033).
             call_token = set_current_toolcall(entry.node_id, str(uuid.uuid4()))
+            # 01a1247f-b4de: a park raised from INSIDE the node's dispatch (a tool that runs a gated tool through the manager, call_tool's gate on its inner tool) gates the INNER call, and approving
+            # it runs that call, as the agent path does (``resume_metadata.original_call``); re-dispatching the node's own tool would meet the inner gate again under a new id, for ever. The inner call
+            # goes through the same hook, so a rejection (which replaces the hook) cannot run it.
+            inner_call = _approved_inner_call(entry, node_def)
             try:
                 result = await self._dispatch_toolcall_with_bypass(
-                    node_def, entry.arguments
+                    node_def, entry.arguments,
+                    **({"inner_call": inner_call} if inner_call is not None else {}),
                 )
             except YieldToWorker as yld:
                 # Two-phase park: the approval gate sat on a *yielding* tool.
@@ -1388,6 +1394,7 @@ class _BaseGraphExecutor(
         self,
         node: "_ToolCallNode",
         arguments: dict[str, Any],
+        inner_call: dict[str, Any] | None = None,
     ) -> "ToolResultPart":
         """Re-dispatch a previously-yielded ToolCall with ``bypass_approval=True``.
 
@@ -1400,6 +1407,12 @@ class _BaseGraphExecutor(
         (no bypass) — subclasses with a real approval-aware dispatch
         surface should override to thread ``bypass_approval=True``
         through to their underlying manager.
+
+        ``inner_call`` (``{"name", "arguments", "via_call_tool"}``, see
+        :func:`_approved_inner_call`) is given when the approved gate was raised
+        from inside the node's dispatch and gates an INNER call: an executor that
+        can dispatch one runs THAT call instead of the node's own. The default
+        has no surface for it and re-dispatches the node's own call.
         """
         return await self._dispatch_toolcall(node, arguments)
 

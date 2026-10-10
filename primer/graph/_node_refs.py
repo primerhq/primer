@@ -306,6 +306,29 @@ def _is_value_yield_toolcall(entry: "_PendingToolCall") -> bool:
     return has_resume_hook(name)
 
 
+def _approved_inner_call(entry: "_PendingToolCall", node: "_ToolCallNode") -> dict[str, Any] | None:
+    """The call an approval park gates, when it is NOT the node's own call (ticket 01a1247f-b4de).
+
+    The manager gates the node's own call, and that park's ``original_call`` is the call the node dispatched. A tool that runs a gated tool through the
+    manager, and the ``call_tool`` meta-tool (which gates the tool it was asked to run against that tool's own policy), raise a gate from INSIDE the
+    dispatch, and that park's ``original_call`` is the INNER call (``call_tool`` also stamps ``via_call_tool``, the toolset that owns it). Approving it
+    means running that inner call: re-dispatching the node's own tool with ``bypass_approval=True`` skips only the node's own gate, so the inner gate fired
+    again under a new id and the node never completed. Returns ``{"name", "arguments", "via_call_tool"}`` for such a park and ``None`` for the node's own
+    gate, a value-yielding tool, and a park written before ``original_call`` was recorded (all of which keep re-dispatching the node's own call).
+    """
+    if _is_value_yield_toolcall(entry):
+        return None
+    meta = entry.resume_metadata or {}
+    original = meta.get("original_call")
+    if not isinstance(original, dict) or not original.get("name"):
+        return None
+    via = meta.get("via_call_tool")
+    arguments = original.get("arguments") or {}
+    if via is None and original["name"] == node.tool_id and arguments == (entry.arguments or {}):
+        return None
+    return {"name": str(original["name"]), "arguments": dict(arguments), "via_call_tool": via}
+
+
 async def _resume_value_yield_toolcall(
     *,
     tool_name: str,

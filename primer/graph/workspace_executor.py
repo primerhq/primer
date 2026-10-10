@@ -407,8 +407,27 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         fails with ``tool_execution_failed`` rather than hanging.
         """
         import uuid
-        from primer.agent.tool_manager import WORKSPACE_TOOLSET_ID, _SCOPE_SEPARATOR
         from primer.model.chat import ToolCallPart
+
+        manager = await self._manager_for(node)
+
+        call = ToolCallPart(
+            # The id the node wrote its call row under (primer.graph._node_identity), so the manager's call, the row and the runs the tool delegates to share one id; a
+            # direct caller outside a node's dispatch gets a fresh one.
+            id=current_toolcall_id() or str(uuid.uuid4()),
+            name=node.tool_id,
+            arguments=arguments,
+        )
+        return await manager.execute(
+            call,
+            principal=self._principal,
+            bypass_approval=bypass_approval,
+        )
+
+    async def _manager_for(self, node: "_ToolCallNode") -> ToolExecutionManager:
+        """The manager a ToolCall node's tool is dispatched through (see :meth:`_dispatch_toolcall`): the injected one when it already covers the toolset the node's scoped
+        ``tool_id`` names, else one built from the workspace session. The approved inner call of a parked node (:meth:`_dispatch_toolcall_with_bypass`) uses the same one."""
+        from primer.agent.tool_manager import WORKSPACE_TOOLSET_ID, _SCOPE_SEPARATOR
 
         # Determine the toolset this node needs from its scoped tool_id. A
         # workspace-scoped id (``workspace__*``) or one with no resolvable
@@ -462,24 +481,13 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             # must not leak to a later tool_call naming a different toolset.
             if not toolset_providers:
                 self._tool_manager = manager
-
-        call = ToolCallPart(
-            # The id the node wrote its call row under (primer.graph._node_identity), so the manager's call, the row and the runs the tool delegates to share one id; a
-            # direct caller outside a node's dispatch gets a fresh one.
-            id=current_toolcall_id() or str(uuid.uuid4()),
-            name=node.tool_id,
-            arguments=arguments,
-        )
-        return await manager.execute(
-            call,
-            principal=self._principal,
-            bypass_approval=bypass_approval,
-        )
+        return manager
 
     async def _dispatch_toolcall_with_bypass(
         self,
         node: "_ToolCallNode",
         arguments: dict[str, Any],
+        inner_call: dict[str, Any] | None = None,
     ) -> ToolResultPart:
         """Resume-path dispatch with ``bypass_approval=True``.
 
@@ -487,10 +495,39 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         the resume path drains pending ToolCalls by routing through this
         hook so the underlying :class:`ToolExecutionManager` skips its
         approval gate and runs the tool directly.
+
+        ``inner_call`` is given when the approved gate was raised from inside
+        the node's dispatch and gates an INNER call (ticket 01a1247f-b4de, see
+        ``_approved_inner_call``): that call is run instead, as the agent path
+        does with a park's ``original_call``. A park that carries
+        ``via_call_tool`` (``call_tool`` gating the tool it was asked to run) is
+        dispatched through the owning toolset provider, which is where that
+        handler would have sent it; any other inner call goes through the
+        manager with ``bypass_approval=True``, which skips that call's own gate.
+        It runs under the fresh id this resume's dispatch was given
+        (``current_toolcall_id``), so a gate raised inside it still has a key of
+        its own.
         """
-        return await self._dispatch_toolcall(
-            node, arguments, bypass_approval=True,
+        if inner_call is None:
+            return await self._dispatch_toolcall(
+                node, arguments, bypass_approval=True,
+            )
+        import uuid
+        from primer.model.chat import ToolCallPart
+
+        manager = await self._manager_for(node)
+        call = ToolCallPart(
+            id=current_toolcall_id() or str(uuid.uuid4()),
+            name=inner_call["name"],
+            arguments=inner_call["arguments"],
         )
+        if inner_call.get("via_call_tool") is not None:
+            from primer.worker.yield_runtime import _resume_call_tool_dispatch
+
+            return await _resume_call_tool_dispatch(
+                via=inner_call["via_call_tool"], original_call=call, tool_manager=manager,
+            )
+        return await manager.execute(call, principal=self._principal, bypass_approval=True)
 
     async def _load_node_history(self, node_id: str) -> list[Message]:
         rel_path = self._state_rel(f"nodes/{node_id}/messages.jsonl")
