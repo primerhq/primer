@@ -403,6 +403,12 @@ function PC_submittable(draft, shape, selectedType) {
   return cleaned;
 }
 
+// The cache key of a class's GET /<plural>/_types. The Register menu (provider-catalog.jsx, PC_RegisterDropdown) and this form read the SAME URL, and used to read it under two keys, so a form
+// opened from the menu fetched a second copy and had nothing until it arrived (board task 01a12350-792d). One key: the form opened from the menu finds the answer the menu already has.
+function PC_typesKey(plural) {
+  return `provider-types:${plural}`;
+}
+
 function PC_ProviderForm({
   plural, typesPath, value, onChange, onSubmit, onTest, onCancel, editing,
   existingId, canInvalidate,
@@ -411,9 +417,13 @@ function PC_ProviderForm({
     EXTRA_FOR_PROVIDER_TYPE } = window.primerApi;
   const [busy, setBusy] = React.useState(false);
   const [testResult, setTestResult] = React.useState(null);
+  const [saving, setSaving] = React.useState(false);
+  const [saveError, setSaveError] = React.useState(null);
+  const live = React.useRef(true);
+  React.useEffect(() => () => { live.current = false; }, []);
   const caps = (useCapabilities() || {}).data;
   const types = useResource(
-    `provider-types:${plural}`,
+    PC_typesKey(plural),
     (signal) => apiFetch("GET", typesPath || `/${plural}/_types`, null, { signal }),
     { pollMs: null },
   );
@@ -455,6 +465,12 @@ function PC_ProviderForm({
   const typeKeys = Object.keys(typeMap);
   const selectedType = draft.provider || typeKeys[0] || "";
   const shape = typeMap[selectedType] || {};
+  // The fields of the kind come from _types. Until that has answered AND names this kind, `shape` is {}: no config fields (so no API key box), no Limits, nothing required, and a Save that sends a
+  // request without `limits`, which every class requires (422). The form does not offer Save or Test until the shape is known.
+  const shapeReady = !!types.data && !!typeMap[selectedType];
+  const typesFailed = !!types.error && !types.data;
+  const loadingShape = !types.data && !types.error;
+  const kindNotServed = !!types.data && !typeMap[selectedType];
 
   // 01a05198: no strip-on-edit effect needed any more - a secret field's
   // draft value on edit is simply whatever GET served (the mask
@@ -480,6 +496,21 @@ function PC_ProviderForm({
     onChange({ ...draft, [name]: v });
   };
 
+  // A Save the server refuses is said here, in the words of the one reader (window.primerApi.readRefusal), and the click handler's promise never rejects: the catalog's save() throws what the
+  // server answered, and a button ignores what its handler returns, so a refusal used to be an unhandled rejection with nothing on screen. The edit (PUT) path is this same form.
+  const submit = async () => {
+    if (typeof onSubmit !== "function") return;
+    setSaveError(null);
+    setSaving(true);
+    try {
+      await onSubmit(PC_submittable(draft, shape, selectedType));
+    } catch (err) {
+      if (live.current) setSaveError(window.primerApi.readRefusal(err, String(err)).message);
+    } finally {
+      if (live.current) setSaving(false);
+    }
+  };
+
   const runTest = async () => {
     setBusy(true);
     try {
@@ -494,14 +525,6 @@ function PC_ProviderForm({
       setBusy(false);
     }
   };
-
-  if (types.error) {
-    return (
-      <Banner kind="error" title="Could not load the provider types">
-        {String(types.error.detail || types.error.message || types.error)}
-      </Banner>
-    );
-  }
 
   // Platform wave P1a item 4: the rich "Live model probe" panel is
   // ADDITIONAL, not a replacement for the generic Test button below -
@@ -538,6 +561,27 @@ function PC_ProviderForm({
         onChange={(next) => setField("row", "id", next)}
       />
 
+      {loadingShape ? (
+        <div className="muted text-sm" role="status" data-testid="provider-form-loading">
+          Loading the fields for this kind…
+        </div>
+      ) : null}
+      {typesFailed ? (
+        <div className="nv-form-error" role="alert" data-testid="provider-form-types-error">
+          Could not load the fields for this kind: {window.primerApi.readRefusal(types.error, String(types.error)).message}{" "}
+          <Btn kind="ghost" data-testid="provider-form-types-retry" onClick={() => types.refetch && types.refetch()}>
+            Try again
+          </Btn>
+        </div>
+      ) : null}
+      {kindNotServed ? (
+        <div className="nv-form-error" role="alert" data-testid="provider-form-kind-missing">
+          {selectedType
+            ? `This install does not serve the kind "${selectedType}", so the form cannot show its fields.`
+            : "This install serves no kind for this class, so the form cannot show its fields."}
+        </div>
+      ) : null}
+
       {(shape.row_fields || []).map(PC_normalizeField).map((f) => (
         <PC_Field
           key={`row:${f.key}`}
@@ -572,6 +616,12 @@ function PC_ProviderForm({
             ? (testResult.models || testResult.voices || []).join(", ")
             : testResult.error}
         </Banner>
+      ) : null}
+
+      {saveError ? (
+        <div className="nv-form-error" role="alert" data-testid="provider-form-save-error">
+          {saveError}
+        </div>
       ) : null}
     </div>
   );
@@ -642,14 +692,15 @@ function PC_ProviderForm({
             kind="ghost"
             data-testid="provider-form-test"
             onClick={runTest}
-            disabled={busy}
+            disabled={busy || saving || !shapeReady}
           >
             Test
           </Btn>
         ) : null}
         <Btn data-testid="provider-form-save"
-          onClick={() => onSubmit && onSubmit(PC_submittable(draft, shape, selectedType))}
-          disabled={busy || missingRequired()
+          onClick={submit}
+          aria-busy={saving ? "true" : undefined}
+          disabled={!shapeReady || busy || saving || missingRequired()
             || modelRowsIncomplete(shape.row_fields)}>
           Save provider
         </Btn>
@@ -661,4 +712,5 @@ function PC_ProviderForm({
 window.PC_FIELD_TYPES = PC_FIELD_TYPES;
 window.PC_normalizeField = PC_normalizeField;
 window.PC_submittable = PC_submittable;
+window.PC_typesKey = PC_typesKey;
 window.PC_ProviderForm = PC_ProviderForm;
