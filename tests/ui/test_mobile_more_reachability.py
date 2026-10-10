@@ -227,6 +227,71 @@ def test_a_link_to_a_row_waits_for_the_list_and_opens_its_fact_sheet(app) -> Non
     assert app.js("LOG.consumed") == 1
 
 
+# --- the fact sheet's fire now and the platform list refetch -----------------------------------------------------------------
+
+# The real NV_MobilePlatform + NV_MobileFactSheet with a counted refetch: what the fireNow harness in test_trigger_fired_outcomes.py
+# cannot see is who passes the sheet its onChanged - a wrapper that passes its own would pass silently, and a deleted trigger would
+# stay on the phone list for about 15 seconds. The envelope carries a request id the way the production middleware stamps it.
+_GONE_TRIGGER = {
+    "type": "/errors/not-found", "title": "Not Found", "status": 404, "detail": "tr-1",
+    "extensions": {"code": "trigger_not_found", "message": "tr-1", "request_id": "req-0000000000aa"},
+}
+_SESSION_ENDED = {
+    "type": "/errors/authentication-failed", "title": "Authentication Failed", "status": 401, "detail": "auth_required",
+    "extensions": {"error": "auth_required", "request_id": "req-0000000000bb"},
+}
+
+
+def _cut(src: str, start: str, end: str) -> str:
+    s = src.index(start)
+    return src[s:src.index(end, s) + len(end)]
+
+
+def _fire_now_wiring(app, envelope: dict) -> None:
+    """Mount the real NV_MobilePlatform (not a host that passes the sheet its own refetch), open the trigger's fact sheet, and
+    press Fire now with the real fireTrigger rejecting on a real ApiError."""
+    trig = (ROOT / "ui" / "components" / "triggers.jsx").read_text(encoding="utf-8")
+    app.js((ROOT / "ui" / "foundation" / "api.js").read_text(encoding="utf-8"))
+    app.js(_cut(trig, "var TR_REMEDIES = {", "\n};\n") + _cut(trig, "function TR_refusalText(", "\n}\n")
+           + _cut(trig, "function TR_fireOutcome(", "\n}\n")
+           + "\nwindow.TR_fireOutcome = TR_fireOutcome; window.TR_refusalText = TR_refusalText;")
+    app.js(
+        "var REFETCHES = 0; var TOASTS = [];"
+        "NV_PLAT_GROUPS = [{ label: 'Automation', ids: ['triggers'] }];"
+        "window.NV_PLAT_PAGES = { triggers: { title: 'Triggers', noun: ['trigger', 'triggers'], list: function () {},"
+        " card: function (row) { return { name: row.id, facts: [] }; } } };"
+        "ITEMS = [{ id: 'tr-1', name: 'Nightly', slug: 'nightly' }];"
+        "window.primerApi.useResource = function () { return { data: { items: ITEMS }, loading: false, error: null, degraded: false,"
+        " refetch: function () { REFETCHES += 1; } }; };"
+        "window.BottomSheet = function (props) { return React.createElement('div', { 'data-testid': 'sheet', 'data-open': String(!!props.open) },"
+        " props.open ? [props.children, props.footer] : null); };"
+        "__con = Object.assign({}, __con, { toast: function (msg, extra) { TOASTS.push({ text: String(msg), requestId: (extra && extra.requestId) || null }); } });"
+        "SH_api.fireTrigger = function () { return Promise.reject(new window.primerApi.ApiError(" + json.dumps(envelope) + ")); };"
+    )
+    app.mount("NV_MobilePlatform", '{ pending: { kind: "triggers", id: null }, onPendingConsumed: function () {}, onNavChange: function () {} }')
+    app.click("nv-mob-plat-row:tr-1")
+    assert app.has("nv-mob-fact-fire"), "the fact sheet's Fire now button is rendered"
+    app.click("nv-mob-fact-fire")
+    app.js("void 0;")
+    app.js("MR.rerender();")
+
+
+def test_the_platform_hands_the_sheet_the_list_refetch_when_a_trigger_is_gone(app) -> None:
+    _fire_now_wiring(app, _GONE_TRIGGER)
+    assert app.data("TOASTS") == [
+        {"text": "Nightly no longer exists; the list has been refreshed.", "requestId": "req-0000000000aa"}]
+    assert not app.has("nv-mob-fact-fire"), "the sheet closed with the stale row"
+    assert app.js("REFETCHES") == 1, "the phone list was refetched, once (the toast says it was)"
+
+
+def test_the_platform_keeps_the_sheet_and_list_alone_for_other_refusals(app) -> None:
+    _fire_now_wiring(app, _SESSION_ENDED)
+    assert app.data("TOASTS") == [
+        {"text": "Fire failed: Your session has ended; sign in again.", "requestId": "req-0000000000bb"}]
+    assert app.has("nv-mob-fact-fire"), "the sheet stays on the live row"
+    assert app.js("REFETCHES") == 0
+
+
 # --- the More tab ------------------------------------------------------------------------------------------------------------
 
 
