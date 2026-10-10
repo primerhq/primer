@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from pydantic import BaseModel, SecretStr
 
 from primer.model.common import dump_for_storage, preserve_masked_secrets
+from primer.model.except_ import ValidationError
 
 
 class _Inner(BaseModel):
@@ -119,17 +121,17 @@ def test_preserve_masked_secrets_keeps_a_real_new_value() -> None:
     assert incoming.api_key.get_secret_value() == "sk-new-5678"
 
 
-def test_preserve_masked_secrets_never_held_before_stores_literally() -> None:
-    """Documented, accepted edge case: a field with no prior stored
-    secret has nothing to restore against - an incoming mask-shaped
-    string is stored as a literal secret rather than silently dropped."""
+def test_preserve_masked_secrets_never_held_before_is_refused() -> None:
+    """A field with no prior stored secret has nothing to restore against. It used to store the incoming mask-shaped string as a literal
+    secret (documented as accepted); a served mask is not a secret anybody typed, so it is REFUSED now (#711 review N1: the mask of a row
+    the client read, sent for a field that row did not hold, is a copy-a-row mistake, not a key)."""
     existing = _Outer(api_key=SecretStr("abcd"), public_id="p", nested=None)
     incoming = _Outer(
         api_key=SecretStr("abcd"), public_id="p",
         nested=_Inner(secret=SecretStr("**********")),
     )
-    preserve_masked_secrets(incoming, existing)
-    assert incoming.nested.secret.get_secret_value() == "**********"
+    with pytest.raises(ValidationError, match="mask a GET serves"):
+        preserve_masked_secrets(incoming, existing)
 
 
 def test_preserve_masked_secrets_recurses_into_nested_model() -> None:
@@ -173,17 +175,18 @@ def test_preserve_masked_secrets_recurses_into_dict_of_secrets() -> None:
     assert incoming.env["PLAIN"].get_secret_value() == "xy"
 
 
-def test_preserve_masked_secrets_dict_new_key_has_nothing_to_restore() -> None:
-    """A brand-new dict key (an operator adding a new env var) never
-    existed on the old side - an incoming mask-shaped value for it is
-    stored literally, same as the never-held-before top-level case."""
+def test_preserve_masked_secrets_dict_new_key_with_a_mask_is_refused() -> None:
+    """A brand-new dict key (an operator adding a new env var) never existed on the old side - an incoming mask-shaped value for it has
+    nothing to restore, and is refused with the key named, same as the never-held-before top-level case. A new key with a real value is
+    the operator's own and is kept."""
     existing = _Outer(api_key=SecretStr("abcd"), public_id="p", env={})
-    incoming = _Outer(
-        api_key=SecretStr("abcd"), public_id="p",
-        env={"NEW_VAR": SecretStr("**********")},
-    )
-    preserve_masked_secrets(incoming, existing)
-    assert incoming.env["NEW_VAR"].get_secret_value() == "**********"
+    masked = _Outer(api_key=SecretStr("abcd"), public_id="p", env={"NEW_VAR": SecretStr("**********")})
+    with pytest.raises(ValidationError, match=r"env\.NEW_VAR"):
+        preserve_masked_secrets(masked, existing)
+
+    real = _Outer(api_key=SecretStr("abcd"), public_id="p", env={"NEW_VAR": SecretStr("a-real-value")})
+    preserve_masked_secrets(real, existing)
+    assert real.env["NEW_VAR"].get_secret_value() == "a-real-value"
 
 
 def test_preserve_masked_secrets_optional_blank_still_nulls() -> None:
@@ -196,10 +199,15 @@ def test_preserve_masked_secrets_optional_blank_still_nulls() -> None:
     assert incoming.api_key.get_secret_value() == ""
 
 
-def test_preserve_masked_secrets_mismatched_types_are_a_noop() -> None:
-    """A defensive guard, not a real production shape: mismatched
-    entity classes must not raise or partially mutate anything."""
+def test_preserve_masked_secrets_mismatched_types_restore_nothing() -> None:
+    """Mismatched entity classes (the provider type changed under the same id) have nothing to restore from. An incoming row with real values is
+    left exactly as it is and nothing is partially mutated; one that carries a served mask is refused, because the literal mask would otherwise
+    be stored as the secret (#711 review N1)."""
     existing = _Inner(secret=SecretStr("s"))
-    incoming = _Outer(api_key=SecretStr("**********"), public_id="p")
-    preserve_masked_secrets(incoming, existing)  # must not raise
-    assert incoming.api_key.get_secret_value() == "**********"
+    real = _Outer(api_key=SecretStr("a-real-key"), public_id="p")
+    preserve_masked_secrets(real, existing)  # must not raise
+    assert real.api_key.get_secret_value() == "a-real-key"
+
+    masked = _Outer(api_key=SecretStr("**********"), public_id="p")
+    with pytest.raises(ValidationError, match="mask a GET serves"):
+        preserve_masked_secrets(masked, existing)
