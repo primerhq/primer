@@ -41,6 +41,7 @@ from primer.model.common import dump_for_storage
 from primer.model.yield_ import with_wake_entry, with_wake_park
 from primer.model.workspace_session import NON_ENDED_STATUSES, SessionStatus, WorkspaceSession
 from primer.storage import raw_generation
+from primer.storage._patch import json_equal
 from primer.storage.cas import patch_if_checked
 
 if TYPE_CHECKING:
@@ -333,6 +334,38 @@ def _wake_is_for_an_earlier_park(session: WorkspaceSession, *, event_key: str, p
     return False
 
 
+async def _rearm_if_redelivered(
+    session: WorkspaceSession,
+    *,
+    event_key: str,
+    leaf_key: str | None,
+    dumped: dict[str, Any],
+    session_storage: "Storage[WorkspaceSession]",
+    engine: "ClaimEngine | None",
+) -> bool:
+    """Whether a wake the flip refused is a redelivery of the wake the row already holds; if so the lease is re-armed, as a landed flip re-arms it.
+
+    The row, read fresh, must still be the park ``session`` was read from (``parked_at``), ``resumable``, not ENDED, and hold under this wake's key the
+    payload this wake carries (``dumped``, the form the flip would have written: on a multi-event park the key's ``resume_event_payloads`` entry, on a
+    single-event park the singular payload and key). Anything else (another decision holds the key, the park moved on or ended) is a refusal. Only the
+    lease is touched: the refused write wrote nothing, and this writes nothing either.
+    """
+    fresh = await session_storage.get(session.id)
+    if fresh is None or fresh.status == SessionStatus.ENDED or fresh.parked_status != "resumable" or fresh.parked_at != session.parked_at:
+        return False
+    held = dump_for_storage(fresh).get("parked_state") or {}
+    mine = dumped["parked_state"]
+    if leaf_key is not None:
+        same = json_equal((held.get("resume_event_payloads") or {}).get(leaf_key), mine["resume_event_payloads"][leaf_key])
+    else:
+        same = held.get("resume_event_key") == event_key and json_equal(held.get("resume_event_payload"), mine["resume_event_payload"])
+    if not same:
+        return False
+    if engine is not None:
+        await engine.mark_resumable(ClaimKind.SESSION, session.id)
+    return True
+
+
 async def durably_mark_session_resumable(
     session: WorkspaceSession,
     *,
@@ -364,11 +397,16 @@ async def durably_mark_session_resumable(
       ``parked_state`` (the two singular fields and its own
       ``resume_event_payloads`` entry), as nested ``set_paths`` the backend
       applies to the row's CURRENT document, guarded on the park it read
-      (``parked_at``), a ``parked_status`` it may advance from and a status
-      that is not ENDED - see below. Two wakes of one multi-event park on two
-      keys that read the same row therefore keep both entries (ticket
-      01a122cc-effa): the whole ``parked_state`` built from a snapshot, which
-      this used to write, dropped the entry the other wake wrote in between.
+      (``parked_at``), a ``parked_status`` it may advance from, a status
+      that is not ENDED - see below - and, on a multi-event park, its own
+      ``resume_event_payloads`` entry being absent. Two wakes of one
+      multi-event park on two keys that read the same row therefore keep
+      both entries (ticket 01a122cc-effa): the whole ``parked_state`` built
+      from a snapshot, which this used to write, dropped the entry the other
+      wake wrote in between. Two wakes on the SAME key land once (ticket
+      01a12606): the second decision on one gate used to replace the first
+      in the entry the worker runs, while the respond-time audit record kept
+      the first.
     * Re-arm the claim lease via ``engine.mark_resumable`` (park dropped it)
       so the claim loop re-claims the row WITHOUT relying on any bus. When no
       engine is wired (e.g. the lightweight test app) the durable storage
@@ -391,12 +429,20 @@ async def durably_mark_session_resumable(
     an already-ended row out of the candidate set at all, which this
     function's own guard would also correctly reject if it slipped through.
 
-    Idempotency (the listener may also process the NOTIFY): a single-event
-    park only advances from ``parked``, so a second flip is a no-op; a
-    multi-event park may advance from ``resumable`` and re-writes the same
-    leaf with identical data. Returns True when the row
-    was advanced/accumulated, False when the guard rejected it (including
-    the ENDED race above, resolved at write time rather than read time).
+    One wake per key (ticket 01a12606): a single-event park only advances
+    from ``parked``; a multi-event park also advances from ``resumable`` (a
+    reply to ANOTHER of its keys), but never over an entry its key already
+    holds. Both refusals are the backend's, in the write's own guard, so
+    two wakes that read the same row cannot both land. A redelivery of the
+    wake the row already holds (the same payload under the same key, on the
+    park it was read from: the bus listener and the event log's replay
+    deliver every wake again, and a client retries a reply) is answered as
+    landed: the lease is re-armed as a landed flip re-arms it (which repairs
+    a flip whose re-arm was lost) and nothing is written. Returns True when
+    this call advanced/accumulated the row or found it holding this very
+    wake, False when the guard rejected it (another wake already holds the
+    key, the park moved on, or the ENDED race above, resolved at write time
+    rather than read time).
 
     ``ToolCallClaimAdapter.on_release`` (01a0518b, the mixed-park wake
     seam) is a NEW caller, but never calls this directly from INSIDE its
@@ -409,8 +455,21 @@ async def durably_mark_session_resumable(
     """
     is_multi = bool(session.parked_event_keys)
     allowed = ("parked", "resumable") if is_multi else ("parked",)
+    # This wake's own leaves of ``parked_state``, never the whole state built from ``session``: the singular fields (the single-event resume path + a
+    # "last fired" hint) and, on a multi-event park, its entry in ``resume_event_payloads``. ``patch_if`` refuses an empty path element, so a key with
+    # nothing past its ``<kind>:<session_id>:`` prefix keeps its entry under the whole key.
+    own: dict[str, Any] = {"resume_event_payload": dict(payload or {}), "resume_event_key": event_key}
+    leaf_key: str | None = None
+    if is_multi:
+        leaf_key = leaf_key_for(_dispatch_key_for(event_key, session_id=session.id) or event_key)
+        own["resume_event_payloads"] = {leaf_key: {"payload": dict(payload or {}), "event_key": event_key}}
+    # Dumped as the model stores them (a NaN in a payload becomes null), the form a whole-document write gave them.
+    dumped = dump_for_storage(session.model_copy(update={"parked_status": "resumable", "parked_state": own}))
     if session.parked_status not in allowed:
-        return False
+        # A single-event park advances from ``parked`` only: this one already took a wake. Refused, unless that wake is this one.
+        return session.parked_status == "resumable" and await _rearm_if_redelivered(
+            session, event_key=event_key, leaf_key=leaf_key, dumped=dumped, session_storage=session_storage, engine=engine,
+        )
     if _wake_names_another_gate(session, event_key=event_key, payload=payload):
         return False
     if _wake_is_for_an_earlier_park(session, event_key=event_key, payload=payload):
@@ -423,17 +482,6 @@ async def durably_mark_session_resumable(
         # (a snapshot cannot be) - the guarded patch_if below is what actually
         # closes the race for a row that ends AFTER this check runs.
         return False
-    # This wake's own leaves of ``parked_state``, never the whole state built from ``session``: the singular fields (the single-event resume path + a
-    # "last fired" hint) and, on a multi-event park, its entry in ``resume_event_payloads``. ``patch_if`` refuses an empty path element, so a key with
-    # nothing past its ``<kind>:<session_id>:`` prefix keeps its entry under the whole key.
-    own: dict[str, Any] = {"resume_event_payload": dict(payload or {}), "resume_event_key": event_key}
-    if is_multi:
-        dispatch_key = _dispatch_key_for(event_key, session_id=session.id)
-        own["resume_event_payloads"] = {
-            leaf_key_for(dispatch_key or event_key): {"payload": dict(payload or {}), "event_key": event_key},
-        }
-    # Dumped as the model stores them (a NaN in a payload becomes null), the form a whole-document write gave them.
-    dumped = dump_for_storage(session.model_copy(update={"parked_status": "resumable", "parked_state": own}))
     leaves: dict[tuple[str, ...], Any] = {
         ("parked_state", "resume_event_payload"): dumped["parked_state"]["resume_event_payload"],
         ("parked_state", "resume_event_key"): dumped["parked_state"]["resume_event_key"],
@@ -452,17 +500,24 @@ async def durably_mark_session_resumable(
     parked_at_spellings = [raw_generation(session, "parked_at")]
     if session.parked_at is not None and session.parked_at.isoformat() not in parked_at_spellings:
         parked_at_spellings.append(session.parked_at.isoformat())
+    where: dict[Any, list[Any]] = {"parked_at": parked_at_spellings, "parked_status": list(allowed), "status": NON_ENDED_STATUSES()}
+    if leaf_key is not None:
+        # One wake per key (ticket 01a12606): ``resumable`` is admitted for a reply to ANOTHER key of the park, never over the entry this key already
+        # holds. In the guard, so a second wake that read the same row is refused by the backend, not by a check of the snapshot.
+        where[("parked_state", "resume_event_payloads", leaf_key)] = [None]
     landed = await patch_if_checked(
         session_storage,
         session.id,
         {"parked_status": dumped["parked_status"]},
         set_paths=leaves,
-        where={"parked_at": parked_at_spellings, "parked_status": list(allowed), "status": NON_ENDED_STATUSES()},
+        where=where,
     )
     if landed is None:
-        # The row is no longer the one this wake read: it ended, resumed, or parked again. Rejected atomically at write time, not from the (possibly
-        # stale) snapshot above.
-        return False
+        # The row is no longer the one this wake read (it ended, resumed, or parked again), or its key already holds a wake. Rejected atomically at
+        # write time, not from the (possibly stale) snapshot above; a redelivery of the wake the key holds is answered as landed.
+        return await _rearm_if_redelivered(
+            session, event_key=event_key, leaf_key=leaf_key, dumped=dumped, session_storage=session_storage, engine=engine,
+        )
     # Re-arm the engine lease (park dropped it). mark_resumable upserts a
     # fresh claimable lease when none exists.
     if engine is not None:
@@ -487,20 +542,23 @@ async def durably_wake_session(
     session permanently unclaimable. The reply handlers must not report the
     reply accepted in that state.
 
-    This wrapper ACTS on the helper's return value instead of discarding it:
-    a False return on a row whose ``parked_status`` is already ``resumable``
-    is exactly the fingerprint of that half-applied flip (the guard only
-    admits ``parked`` for a single-event park), so re-drive
-    ``mark_resumable`` - an idempotent upsert - to re-create the lease the
-    first attempt lost. When the lease is already healthy the upsert is a
-    harmless no-op, which is the common case for an ordinary double-reply.
+    A retry of the SAME reply after such a half-applied attempt is a
+    redelivery of the wake the row holds, which the helper itself answers
+    as landed after re-arming the lease (ticket 01a12606). This wrapper
+    still ACTS on a False return on a row whose ``parked_status`` is already
+    ``resumable``: another reply holds the key, and its own flip may be the
+    half-applied one, so re-drive ``mark_resumable`` - an idempotent upsert -
+    to re-create the lease that attempt lost. When the lease is already
+    healthy the upsert is a harmless no-op, which is the common case for an
+    ordinary double-reply.
 
     A raising ``patch_if`` (a missing row's ``NotFoundError`` too) still propagates untouched: the
     caller must NOT report a reply accepted when the durable stamp never
     landed.
 
     Returns the underlying helper's bool (True when this call advanced the
-    row, False when the guard rejected it).
+    row or found it holding this very reply, False when the guard rejected
+    it: the reply routes answer that 409 ``already_decided``).
     """
     did = await durably_mark_session_resumable(
         session,

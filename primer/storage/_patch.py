@@ -25,6 +25,11 @@ Semantics of the nested part (identical on both backends)
 3. Path elements are bound, never spliced into SQL text (Postgres: a ``text[]`` parameter; SQLite: a
    quoted key inside a ``$`` path, which is why quotes, backslashes and control characters are rejected).
 
+A ``where`` key is a top-level field or, like a ``set_paths`` key, a tuple path to a nested leaf, e.g.
+``("parked_state", "resume_event_payloads", key): [None]`` (the leaf is absent). A path is read one object key at a time (Postgres
+``data -> 'a' -> 'b'``, SQLite ``$."a"."b"``), so an absent or non-object parent makes the leaf absent and a path never indexes into an
+array; the leaf is then compared by the same typed rule as a field. A one-element path is the field itself.
+
 Canonical storage (identical on every backend)
 ----------------------------------------------
 A patch value is JSON the CALLER wrote (``"5"`` for an int field, a ``+00:00`` timestamp, a mixed-case value
@@ -66,6 +71,9 @@ _FORBIDDEN_IN_KEY = ('"', "\\")
 MAX_DISTINCT_PARENTS = 4
 MAX_PATCH_KEYS = 32
 MAX_LEAVES = 16
+
+#: A ``where`` key: a top-level field name, or a path (a tuple, like a ``set_paths`` key) to a nested leaf.
+WhereKey = str | tuple[str, ...]
 
 #: Scalar types a ``where`` clause may name. ``bool`` is listed before ``int`` wherever order matters,
 #: because ``True`` is an ``int`` in Python and must stay a JSON boolean.
@@ -180,16 +188,16 @@ def _default_as_stored(model_cls: Any, field: str) -> Any:
     return to_jsonable_python(default)
 
 
-def normalise_where(model_cls: Any, where: Mapping[str, Sequence[Any]]) -> dict[str, list[Any]]:
+def normalise_where(model_cls: Any, where: Mapping[WhereKey, Sequence[Any]]) -> dict[WhereKey, list[Any]]:
     """``where`` with each guard that names a field's DEFAULT also matching the field being absent.
 
     A document written before the model gained a defaulted field has no such key; the model reads it as the
     default, and a guard built from that read (``raw_generation`` returns the default) must match it. The
     database compares the stored document, where the key is absent, so ``None`` is added to the allowed values
-    (``None`` matches absent or null). Fields without a default, unknown fields and guards that already allow
-    ``None`` are left alone.
+    (``None`` matches absent or null). Fields without a default, unknown fields, paths (a nested leaf has no model
+    default) and guards that already allow ``None`` are left alone.
     """
-    out: dict[str, list[Any]] = {}
+    out: dict[WhereKey, list[Any]] = {}
     for field, allowed in where.items():
         values = list(allowed)
         default = _default_as_stored(model_cls, field)
@@ -305,11 +313,29 @@ def _check_json(value: Any, what: str) -> None:
     _check_encodable(text, what)
 
 
+def _where_key(key: Any) -> WhereKey:
+    """A validated ``where`` key: a field name, or a path held to the rules of a ``set_paths`` path (a one-element path is the field)."""
+    if isinstance(key, tuple):
+        if not key or len(key) > MAX_PATH_DEPTH:
+            raise PatchSpecError(f"a where path must be a non-empty tuple at most {MAX_PATH_DEPTH} deep, got {key!r}")
+        for part in key:
+            _check_key(part, "where path element")
+        field: WhereKey = key[0] if len(key) == 1 else key
+    else:
+        _check_key(key, "where field")
+        field = key
+    if key == "id" or (isinstance(key, tuple) and key[0] == "id"):
+        raise PatchSpecError(
+            "where cannot name 'id': the id is a column, not part of the stored document"
+        )
+    return field
+
+
 def validate_patch(
     patch: Mapping[str, Any] | None,
     set_paths: Mapping[tuple[str, ...], Any] | None,
-    where: Mapping[str, Sequence[Any]],
-) -> tuple[dict[str, Any], dict[tuple[str, ...], Any], dict[str, list[Any]]]:
+    where: Mapping[WhereKey, Sequence[Any]],
+) -> tuple[dict[str, Any], dict[tuple[str, ...], Any], dict[WhereKey, list[Any]]]:
     """Validate a ``patch_if`` spec, before any I/O, and return normalised copies ``(patch, set_paths, where)``.
 
     Pure and backend-independent, so SQLite, Postgres and the test fake refuse the same spec the same way, before a
@@ -323,7 +349,8 @@ def validate_patch(
     * every patch and path value is strict JSON (no NaN or infinity, encodable text), checked with ``json.dumps``: a nested
       dict key that is an int, float, bool or None is accepted (``json.dumps`` writes it as a string), any other non-string
       key (a tuple, say) is refused;
-    * each ``where`` entry is a non-empty list of JSON scalars.
+    * each ``where`` key is a field name or a path held to the rules of a ``set_paths`` path (a one-element path becomes the
+      field name), and each entry is a non-empty list of JSON scalars.
 
     Whether the fields exist on the model is :func:`check_known_fields`; whether the values survive the model is
     :func:`canonical_fixup`, after the write.
@@ -332,7 +359,7 @@ def validate_patch(
     """
     patch_d = dict(patch or {})
     paths_d = dict(set_paths or {})
-    where_d: dict[str, list[Any]] = {}
+    where_d: dict[WhereKey, list[Any]] = {}
 
     if not patch_d and not paths_d:
         raise PatchSpecError("patch_if needs a non-empty patch or set_paths")
@@ -378,12 +405,10 @@ def validate_patch(
             "the compiled statement grows as 3^parents"
         )
 
-    for field, allowed in where.items():
-        _check_key(field, "where field")
-        if field == "id":
-            raise PatchSpecError(
-                "where cannot name 'id': the id is a column, not part of the stored document"
-            )
+    for key, allowed in where.items():
+        field = _where_key(key)
+        if field in where_d:
+            raise PatchSpecError(f"where names {field!r} twice (a one-element path is the field itself)")
         if isinstance(allowed, (str, bytes)) or not isinstance(allowed, Sequence):
             raise PatchSpecError(
                 f"where[{field!r}] must be a LIST of allowed values, got {type(allowed).__name__} "
@@ -403,14 +428,26 @@ def validate_patch(
     return patch_d, paths_d, where_d
 
 
-def document_matches(doc: Mapping[str, Any], where: Mapping[str, Sequence[Any]]) -> bool:
+def _value_at(doc: Mapping[str, Any], key: WhereKey) -> Any:
+    """What a ``where`` key names in ``doc``: the field, or the leaf a path names (``None`` when absent, under an absent or non-object parent too)."""
+    if not isinstance(key, tuple):
+        return doc.get(key)
+    node: Any = doc
+    for part in key:
+        if not isinstance(node, Mapping) or part not in node:
+            return None
+        node = node[part]
+    return node
+
+
+def document_matches(doc: Mapping[str, Any], where: Mapping[WhereKey, Sequence[Any]]) -> bool:
     """Whether a stored document (``dump_for_storage`` form) satisfies a ``where``, in Python.
 
     Used only to cross-check the database's verdict (the drift tripwire); the database remains the
     authority on whether a write applies.
     """
     return all(
-        any(json_equal(doc.get(field), v) for v in allowed)
+        any(json_equal(_value_at(doc, field), v) for v in allowed)
         for field, allowed in where.items()
     )
 
@@ -432,7 +469,7 @@ def parent_paths(set_paths: Mapping[tuple[str, ...], Any]) -> list[tuple[str, ..
 def compile_postgres(
     patch: Mapping[str, Any],
     set_paths: Mapping[tuple[str, ...], Any],
-    where: Mapping[str, Sequence[Any]],
+    where: Mapping[WhereKey, Sequence[Any]],
     *,
     first_param: int,
 ) -> tuple[str, str, list[Any]]:
@@ -465,7 +502,8 @@ def compile_postgres(
 
     clauses: list[str] = []
     for field, allowed in where.items():
-        f = ph(field, "text")
+        # A path is read one text key at a time: ``->`` with a text key on an array is NULL, so a path never indexes into one (as on SQLite).
+        target = "(data" + "".join(f" -> {ph(part, 'text')}" for part in (field if isinstance(field, tuple) else (field,))) + ")"
         parts: list[str] = []
         non_null = [v for v in allowed if v is not None]
         if non_null:
@@ -474,9 +512,9 @@ def compile_postgres(
             # this UPDATE waits on a concurrent writer's row lock, the READ COMMITTED re-check (EvalPlanQual) compares the
             # committed row with only the list element the first pass matched, refusing a row moved to ANOTHER allowed
             # value. ``ARRAY(...)`` is computed once per statement, and ``= ANY`` is the same jsonb equality as ``IN``.
-            parts.append(f"(data -> {f}) = ANY(ARRAY(SELECT jsonb_array_elements({arr})))")
+            parts.append(f"{target} = ANY(ARRAY(SELECT jsonb_array_elements({arr})))")
         if any(v is None for v in allowed):
-            parts.append(f"((data -> {f}) IS NULL OR (data -> {f}) = 'null'::jsonb)")
+            parts.append(f"({target} IS NULL OR {target} = 'null'::jsonb)")
         clauses.append("(" + " OR ".join(parts) + ")")
     return acc, " AND ".join(clauses), params
 
@@ -493,7 +531,7 @@ def _sqlite_path(path: Sequence[str]) -> str:
 def compile_sqlite(
     patch: Mapping[str, Any],
     set_paths: Mapping[tuple[str, ...], Any],
-    where: Mapping[str, Sequence[Any]],
+    where: Mapping[WhereKey, Sequence[Any]],
 ) -> tuple[str, list[Any], str, list[Any]]:
     """Return ``(set_expression, set_params, where_sql, where_params)`` for a SQLite ``UPDATE``.
 
@@ -525,7 +563,7 @@ def compile_sqlite(
     where_params: list[Any] = []
     clauses: list[str] = []
     for field, allowed in where.items():
-        path = _sqlite_path((field,))
+        path = _sqlite_path(field if isinstance(field, tuple) else (field,))
         parts: list[str] = []
         for v in allowed:
             if v is None:

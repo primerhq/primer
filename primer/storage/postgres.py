@@ -100,6 +100,7 @@ from primer.storage._patch import (
     canonical_fixup,
     check_known_fields,
     compile_postgres,
+    WhereKey,
     normalise_where,
     validate_patch,
 )
@@ -881,7 +882,7 @@ class PostgresStorage(Storage[ModelT]):
         id: str,
         patch: Mapping[str, Any] | None = None,
         *,
-        where: Mapping[str, Sequence[Any]],
+        where: Mapping[WhereKey, Sequence[Any]],
         set_paths: Mapping[tuple[str, ...], Any] | None = None,
         conn: Any | None = None,
     ) -> ModelT | None:
