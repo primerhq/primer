@@ -39,7 +39,12 @@ var document = {
 function el(name, opts) {
   opts = opts || {};
   var e = { name: name, parent: opts.parent || null, visible: opts.visible !== false, listeners: {}, focusables: [] };
-  e.focus = function () { document.activeElement = e; };
+  e.focus = function () {
+    document.activeElement = e;
+    var ev = { type: 'focusin', target: e };
+    for (var n = e; n; n = n.parent) (n.listeners.focusin || []).slice().forEach(function (fn) { fn(ev); });
+    ((document.listeners || {}).focusin || []).slice().forEach(function (fn) { fn(ev); });
+  };
   e.contains = function (o) { while (o) { if (o === e) return true; o = o.parent; } return false; };
   // what the browser says of `o` relative to this element: PRECEDING / FOLLOWING in document order, plus CONTAINS / CONTAINED_BY for an ancestor / descendant
   e.compareDocumentPosition = function (o) {
@@ -51,7 +56,7 @@ function el(name, opts) {
   e.querySelectorAll = function () { return e.focusables.slice(); };      // which descendants match the selector is the browser's job
   e.addEventListener = function (t, fn) { (e.listeners[t] = e.listeners[t] || []).push(fn); };
   e.removeEventListener = function (t, fn) { e.listeners[t] = (e.listeners[t] || []).filter(function (f) { return f !== fn; }); };
-  Object.defineProperty(e, 'offsetParent', { get: function () { return e.visible ? {} : null; } });
+  Object.defineProperty(e, 'offsetParent', { get: function () { return e.visible ? {} : null; }, configurable: true });
   return e;
 }
 function press(node, shift) {
@@ -157,10 +162,10 @@ function matches(e, sel) {
 // what the browser tabs to, whatever the selector says
 function nativeStop(e) {
   var a = e.attrs, t = e.tag;
-  if (!e.visible || e.cssVisibility === 'hidden' || 'disabled' in a) return false;
+  if (!e.visible || e.cssVisibility === 'hidden' || e.cssVisibility === 'collapse' || 'disabled' in a) return false;
   if ('tabindex' in a) return parseInt(a.tabindex, 10) >= 0;
-  if (t === 'input' && a.type === 'radio') {
-    var group = DOC.filter(function (x) { return x.tag === 'input' && x.attrs.type === 'radio' && x.attrs.name === a.name; });
+  if (t === 'input' && String(a.type).toLowerCase() === 'radio') {
+    var group = DOC.filter(function (x) { return x.tag === 'input' && String(x.attrs.type).toLowerCase() === 'radio' && x.attrs.name === a.name; });
     var checked = group.filter(function (x) { return x.checked; })[0];
     return checked ? e === checked : e === group[0];          // one stop per group: the checked one, else the first
   }
@@ -172,7 +177,11 @@ function nativeStop(e) {
 function ne(name, spec, parent) {
   var e = el(name, { parent: parent, visible: spec.visible });
   e.__ne = true; e.tag = spec.tag || 'div'; e.attrs = spec.attrs || {}; e.checked = !!spec.checked; e.cssVisibility = spec.cssVisibility || null;
-  if (ne.modern !== false) e.checkVisibility = function () { return e.visible && e.cssVisibility !== 'hidden'; };
+  // Chromium's checkVisibility() with NO options reports visibility:hidden (and collapse) as visible: only { visibilityProperty: true } looks at the property
+  if (ne.modern !== false) e.checkVisibility = function (o) { o = o || {}; return e.visible && !(o.visibilityProperty && (e.cssVisibility === 'hidden' || e.cssVisibility === 'collapse')); };
+  e.getClientRects = function () { return e.visible ? [{}] : []; };
+  if (spec.cssPosition === 'fixed') Object.defineProperty(e, 'offsetParent', { get: function () { return null; }, configurable: true });      // a fixed element has no offsetParent and is shown
+  Object.defineProperty(e, 'type', { get: function () { return e.tag === 'input' ? String(e.attrs.type || 'text').toLowerCase() : e.attrs.type; } });         // the normalised value, not the attribute
   e.getAttribute = function (k) { return k in e.attrs ? e.attrs[k] : null; };
   e.querySelectorAll = function (sel) { return DOC.filter(function (x) { return x !== e && e.contains(x) && matches(x, sel); }); };
   return e;
@@ -620,3 +629,125 @@ def test_controls_the_browser_tabs_to_but_the_selector_omitted_are_tab_stops(ctx
 def test_things_the_browser_does_not_tab_to_are_not_stops(ctx, spec: str) -> None:
     end = _tabs(ctx, f"[{{name:'first',tag:'button'}},{{name:'last',tag:'button'}},{spec}]", "s.last.focus();")
     assert end["fwd"] is True and end["toFwd"] == "first", end
+
+
+# ---- round 2 of the #729 review: the tabindex -1 pins for every clause, the checkVisibility options, render order against a re-attach, the radio type, the fallback, and a focus that is lost mid-dialog ----
+
+
+@pytest.mark.parametrize(
+    "tag,attrs",
+    [
+        ("summary", "{tabindex:'-1'}"),
+        ("iframe", "{tabindex:'-1'}"),
+        ("audio", "{tabindex:'-1',controls:''}"),
+        ("video", "{tabindex:'-1',controls:''}"),
+        ("div", "{tabindex:'-1',contenteditable:'true'}"),
+    ],
+    ids=["summary", "iframe", "audio-controls", "video-controls", "contenteditable"],
+)
+def test_every_clause_of_the_selector_leaves_out_a_control_with_tabindex_minus_one(ctx, tag: str, attrs: str) -> None:
+    """The five clauses T3 did not pin (``summary``, ``iframe``, ``audio[controls]``, ``video[controls]``, ``[contenteditable]``): with tabindex -1 the browser skips them, and at an end such a control became ``last``/``first``."""
+    spec = f"{{name:'skipped',tag:'{tag}',attrs:{attrs}}}"
+    end = _tabs(ctx, f"[{{name:'first',tag:'button'}},{{name:'last',tag:'button'}},{spec}]", "s.last.focus();")
+    assert end["fwd"] is True and end["toFwd"] == "first", end
+    start = _tabs(ctx, f"[{spec},{{name:'first',tag:'button'}},{{name:'last',tag:'button'}}]", "s.first.focus();")
+    assert start["back"] is True and start["toBack"] == "last", start
+
+
+def test_the_visibility_options_are_what_hide_a_visibility_hidden_control(ctx) -> None:
+    """Chromium's ``checkVisibility()`` with no options reports ``visibility:hidden`` as visible; only ``{ visibilityProperty: true }`` looks at the property. The fake honours that, so a hook that dropped the options
+    (mutant M10 of the review) fails this and T2 regresses with every other test green. ``collapse`` is hidden too."""
+    for css in ("hidden", "collapse"):
+        end = _tabs(ctx, f"[{{name:'first',tag:'button'}},{{name:'last',tag:'button'}},{{name:'ghost',tag:'button',cssVisibility:'{css}'}}]", "s.last.focus();")
+        assert end["fwd"] is True and end["toFwd"] == "first", (css, end)
+
+
+def test_the_fallback_counts_a_fixed_control_and_not_a_collapsed_one(ctx) -> None:
+    """Without ``checkVisibility`` (Safari before 17.4) the test was ``offsetParent !== null && visibility !== "hidden"``: a ``position:fixed`` control has no ``offsetParent`` and was dropped (so it was unreachable, as before
+    the PR), and ``visibility:collapse`` was counted (so a Tab from the real last stop left the dialog)."""
+    fixed = _tabs(ctx, "[{name:'first',tag:'button'},{name:'pinned',tag:'button',cssPosition:'fixed'}]", "s.first.focus();", modern=False)
+    assert fixed["fwd"] is False and fixed["toFwd"] == "pinned", f"the Tab skipped a fixed control the browser tabs to: {fixed}"
+    pinned_last = _tabs(ctx, "[{name:'first',tag:'button'},{name:'pinned',tag:'button',cssPosition:'fixed'}]", "s.pinned.focus();", modern=False)
+    assert pinned_last["fwd"] is True and pinned_last["toFwd"] == "first", pinned_last
+    collapsed = _tabs(ctx, "[{name:'first',tag:'button'},{name:'last',tag:'button'},{name:'ghost',tag:'button',cssVisibility:'collapse'}]", "s.last.focus();", modern=False)
+    assert collapsed["fwd"] is True and collapsed["toFwd"] == "first", collapsed
+
+
+def test_a_radio_whose_type_is_spelled_in_capitals_is_grouped_like_any_other(ctx) -> None:
+    """``type="RADIO"`` is a radio (the browser normalises it): the group is one stop. ``getAttribute("type") === "radio"`` did not group them, and a Shift+Tab from the real first stop left the dialog."""
+    radios = "{name:'r1',tag:'input',attrs:{type:'RADIO',name:'g'}},{name:'r2',tag:'input',attrs:{type:'RADIO',name:'g'},checked:true},{name:'r3',tag:'input',attrs:{type:'RADIO',name:'g'}}"
+    start = _tabs(ctx, f"[{radios},{{name:'last',tag:'button'}}]", "s.r2.focus();")
+    assert start["back"] is True and start["toBack"] == "last", start
+    end = _tabs(ctx, f"[{{name:'first',tag:'button'}},{radios}]", "s.r2.focus();")
+    assert end["fwd"] is True and end["toFwd"] == "first", end
+
+
+def test_the_dialog_that_opened_last_is_the_top_one_whatever_order_the_effects_run_in_and_a_reattach_does_not_move_it(ctx) -> None:
+    """Order is taken during RENDER (the opener is), so it follows the order the dialogs became active. Mutant M4 (order taken in the effect) and M5 (order taken again when a dialog re-attaches) both put the lower
+    dialog on top; the first survived the V8 file because every test committed in render order."""
+    out = json.loads(ctx.eval("""JSON.stringify((function () {
+      DOC.length = 0;
+      var opener = ne('opener', { tag: 'button' });
+      var A = ne('A', { attrs: { tabindex: '-1' } }); A.__node = true; var a1 = ne('a1', { tag: 'button' }, A), a2 = ne('a2', { tag: 'button' }, A);
+      var B = ne('B', { attrs: { tabindex: '-1' } }); B.__node = true; var b1 = ne('b1', { tag: 'button' }, B), b2 = ne('b2', { tag: 'button' }, B);
+      DOC.push(opener, A, a1, a2, B, b1, b2); settle(); document.activeElement = opener;
+      var hA = inst(), hB = inst(), refA = { current: A }, refB = { current: B };
+      __h = hA; render(refA, true, null, []);                              // A becomes active first ...
+      __h = hB; render(refB, true, null, []);                              // ... B second: B is on top
+      __h = hB; commit();                                                    // but B's effect runs BEFORE A's (children first, as React does it)
+      __h = hA; commit();
+      document.activeElement = document.body; pressAt(false);
+      var effect_order = document.activeElement.name;
+      __h = hA; render(refA, true, null, ['again']); commit();               // A re-attaches (its dependencies changed): it does not become the newest
+      document.activeElement = document.body; pressAt(false);
+      var after_reattach = document.activeElement.name;
+      return { effect_order: effect_order, after_reattach: after_reattach };
+    })())"""))
+    assert out == {"effect_order": "b1", "after_reattach": "b1"}, out
+
+
+def _lost(ctx, specs: str, focus: str, how: str, shift: bool) -> str:
+    """Open a dialog from ``specs``, focus ``s.<focus>`` inside it, lose that element (``remove`` it from the document, or ``disable`` it in place) so the browser hands focus to <body>, press Tab (or Shift+Tab) and say where focus lands."""
+    return ctx.eval(f"""(function () {{
+      unmount(); __h = inst();
+      var s = scene3({specs}), ref = {{ current: s.dialog }};
+      render(ref, true, null, []); commit();
+      s.{focus}.focus();
+      if ('{how}' === 'remove') {{ DOC.splice(DOC.indexOf(s.{focus}), 1); s.{focus}.parent = null; }} else {{ s.{focus}.attrs.disabled = ''; }}
+      settle();
+      document.activeElement = document.body;
+      pressAt({str(shift).lower()});
+      return document.activeElement.name;
+    }})()""")
+
+
+_THREE = "[{name:'a',tag:'button'},{name:'b',tag:'button'},{name:'c',tag:'button'}]"
+
+
+@pytest.mark.parametrize("how", ["remove", "disable"])
+def test_a_focus_lost_from_the_middle_of_the_dialog_continues_in_place(ctx, how: str) -> None:
+    """Review nit 1: a control that holds focus is disabled (a busy submit) or removed (a menu's search box on Escape) and the browser hands focus to <body>; the document listener restarted at the dialog's FIRST stop
+    (or its last on Shift+Tab), where the browser would have gone on from the lost control's place (the Create session bind menu: Tab went to the close button, the next field before the PR)."""
+    assert _lost(ctx, _THREE, "b", how, False) == "c"
+    assert _lost(ctx, _THREE, "b", how, True) == "a"
+
+
+@pytest.mark.parametrize("how", ["remove", "disable"])
+def test_a_focus_lost_from_an_end_wraps(ctx, how: str) -> None:
+    assert _lost(ctx, _THREE, "c", how, False) == "a", "nothing after the lost last stop: the Tab wraps to the first"
+    assert _lost(ctx, _THREE, "a", how, True) == "c", "nothing before the lost first stop: the Shift+Tab wraps to the last"
+    assert _lost(ctx, _THREE, "c", how, True) == "b"
+    assert _lost(ctx, _THREE, "a", how, False) == "b"
+
+
+def test_a_focus_that_was_never_inside_still_restarts_at_the_ends(ctx) -> None:
+    """Nothing to continue from (focus never entered, or sits on the page behind): the restart of round 3 stays."""
+    out = _tabs(ctx, _THREE, "document.activeElement = document.body;")
+    assert out["toFwd"] == "a" and out["toBack"] == "c", out
+
+
+def test_a_lost_focus_that_was_not_a_tab_stop_continues_from_its_place(ctx) -> None:
+    """A tabindex -1 heading between two stops held focus and was removed: Tab goes to the stop after its place, Shift+Tab to the one before."""
+    specs = "[{name:'a',tag:'button'},{name:'h',tag:'h3',attrs:{tabindex:'-1'}},{name:'b',tag:'button'}]"
+    assert _lost(ctx, specs, "h", "remove", False) == "b"
+    assert _lost(ctx, specs, "h", "remove", True) == "a"
