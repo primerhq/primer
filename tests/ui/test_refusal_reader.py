@@ -366,6 +366,13 @@ def _reads_the_envelope(text: str) -> bool:
         "const e = err[`envelope`];",
         "const { 'envelope': e } = err;",
         'const { "envelope": e, message } = err;',
+        # a pattern that a COMMA follows (review of #720, round 2, N1): a parameter or an element of a list that goes on
+        "rows.map(({ envelope }, i) => i);",
+        "function f({ envelope }, x) {}",
+        "const [{ envelope }, ...rest] = list;",
+        "const g = (a, { envelope }, b) => envelope;",
+        "for (const [{ envelope }, i] of rows) {",
+        "class A { show({ envelope }, extra) { return extra; } }",
     ],
 )
 def test_the_scan_sees_a_component_read_the_envelope(line: str) -> None:
@@ -386,6 +393,12 @@ def test_the_scan_sees_a_component_read_the_envelope(line: str) -> None:
         'const url = "http://example.com/a"; const ok = { envelope: 1 };',
         "const { message, title } = err;",
         "const extra = { envelopes: [] };",
+        # an object literal that a comma follows is a value, not a pattern: nothing assigns to it or declares it as a parameter list
+        "foo({ envelope: 1 }, x);",
+        "render([{ envelope: x }, y]);",
+        "if (check({ envelope: 1 }, 2)) { go(); }",
+        "const [{ id }, i] = rows;",
+        "rows.map(({ id }, i) => id);",
     ],
 )
 def test_the_scan_leaves_the_reader_and_prose_alone(line: str) -> None:
@@ -513,6 +526,8 @@ def _titles_that_compose_a_code(text: str) -> list[int]:
         # a destructured code variable, a bracket access, the code on a later line
         'const { code } = refusal;\n<Banner title={code ? `Save failed (${code})` : "Save failed"} />',
         'title={`Save failed (${err["code"]})`}',
+        # a bracket access with a template literal, like the envelope bracket (review of #720, round 2, N6)
+        'title={`Save failed (${err[`code`]})`}',
         "title={\n  isEdit\n    ? \"Save failed\"\n    : `Create failed (${\n      err.code\n    })`\n}",
         "pushToast({\n  kind: \"error\",\n  title: `Failed (${r.code})`,\n})",
     ],

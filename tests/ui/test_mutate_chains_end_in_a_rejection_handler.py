@@ -193,6 +193,25 @@ def test_a_quote_in_jsx_text_does_not_swallow_the_rest_of_the_file() -> None:
     assert scan(src)[1] == [2]
 
 
+def test_a_regex_literal_with_a_backtick_does_not_hide_the_chains_after_it() -> None:
+    """knowledge.jsx:139 ``/(^|\\n)(#{1,6} |```)/``: the scanner's own ``_blank`` opened a template at the first backtick and read nothing after it (the lexer of #720 reads regex literals)."""
+    src = "const heading = /(^|\\n)(#{1,6} |```)/;\ncreate.mutate(body).then(onDone);\n"
+
+    assert scan(src)[1] == [2]
+
+
+def test_an_offender_appended_to_knowledge_jsx_is_listed() -> None:
+    text = (UI / "components" / "knowledge.jsx").read_text(encoding="utf-8")
+    appended = text + "\ncreate.mutate(body).then(onDone);\n"
+
+    assert scan(appended)[1] == [appended.count("\n", 0, appended.rindex("create.mutate")) + 1]
+
+
+def test_a_mutate_call_in_a_template_placeholder_is_code() -> None:
+    """``${create.mutate(body).then(f)}`` runs: the old scanner blanked a template whole, placeholders included."""
+    assert scan("const t = `x ${create.mutate(body).then(onDone)} y`;")[1] == [1]
+
+
 def test_a_tree_with_an_offender_is_listed_by_file_and_line(tmp_path: Path) -> None:
     (tmp_path / "components").mkdir()
     (tmp_path / "components" / "bad.jsx").write_text("const a = 1;\nonClick={() => c.mutate(b).then(f)}\n", encoding="utf-8")
