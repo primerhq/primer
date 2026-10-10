@@ -89,3 +89,21 @@ def test_a_created_llm_provider_is_recorded_with_the_model_profile_the_seed_made
 
     seeded = seed_session("http://server", tmp_path, "sfx", transport=httpx.MockTransport(handler))
     assert "/v1/llm_providers/dn-prov-sfx" in seeded.delete_paths and any(p.startswith("/v1/model_profiles/") for p in seeded.delete_paths)
+
+
+def test_delete_paths_gives_up_after_its_time_and_reports_what_it_did_not_reach() -> None:
+    """Round 6, N3: a server that does not answer cost 30 s a row, and the cleanup ate the margin between the sweep's deadline and the thread timeout. ``give_up_after`` is a wall-clock cap on the whole
+    cleanup; the rows it did not reach are reported like any other row it could not delete."""
+    now = [1000.0]
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        now[0] += 100.0                                       # every request takes 100 s
+        return httpx.Response(204)
+
+    left = delete_paths(
+        "http://server", ["/v1/a", "/v1/b", "/v1/c", "/v1/d", "/v1/e"], transport=httpx.MockTransport(handler), give_up_after=250.0, clock=lambda: now[0],
+    )
+    assert seen == ["/v1/e", "/v1/d", "/v1/c"], "newest first, until the time is up"
+    assert left == ["/v1/b", "/v1/a"], left

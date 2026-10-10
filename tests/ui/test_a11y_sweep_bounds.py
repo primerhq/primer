@@ -38,14 +38,12 @@ def test_the_sweep_seeds_a_semantic_search_provider_of_its_own() -> None:
 
 
 UI_E2E = Path(__file__).resolve().parents[2] / "tests" / "ui_e2e"
+SIGNAL_TIMEOUT = re.compile(r"""\bmethod\s*=\s*['"]signal['"]""")      # a signal timeout, as pytest-timeout is asked for it
 
 
 def test_no_ui_e2e_file_uses_a_signal_timeout() -> None:
     """Round 5, N7: the hang is the lane's, not the sweep's: any journey under sync Playwright that asks pytest-timeout for ``method="signal"`` can hang the same way."""
-    offenders = [
-        path.name for path in sorted(UI_E2E.glob("*.py"))
-        if re.search(r"method\s*=\s*[\"']signal[\"']", path.read_text(encoding="utf-8"))
-    ]
+    offenders = [path.name for path in sorted(UI_E2E.glob("*.py")) if SIGNAL_TIMEOUT.search(path.read_text(encoding="utf-8"))]
     assert offenders == [], offenders
 
 
@@ -63,7 +61,32 @@ def test_every_navigation_of_the_sweep_is_bounded_by_its_budget() -> None:
     assert unbudgeted == [], unbudgeted
 
 
-def test_a_dead_register_menu_that_is_gone_leaves_no_menu_open_for_the_next_surface() -> None:
-    """N5: the note path of ``_assert_register_menu_is_dead`` returned with the menu possibly open; Escape closes it on both paths."""
-    func = SWEEP[SWEEP.index("def _assert_register_menu_is_dead"):SWEEP.index("@pytest.mark.ui_e2e")]
-    assert func.count('page.keyboard.press("Escape")') >= 2 or "finally:" in func and 'page.keyboard.press("Escape")' in func.split("finally:", 1)[1], func
+def test_no_page_is_excused_from_its_register_menu_any_more() -> None:
+    """Round 6: the dead-menu check existed for the artifact storage page only, and went with the exemption once the page served its kinds."""
+    assert "_assert_register_menu_is_dead" not in SWEEP and "DEAD_REGISTER_MENUS" not in SWEEP and "DEAD_MENU_TEXT" not in SWEEP
+
+
+def test_no_wait_of_the_sweep_has_a_fixed_timeout() -> None:
+    """Round 6, N3/N4: every click, ``expect`` and ``goto`` of the sweep takes what the budget has left (``timeout=sweep.budget.wait_ms(...)``); a fixed number is a wait the deadline does not cap. (The httpx
+    clients' ``timeout=30.0`` are floats and are the seeds' own.)"""
+    fixed = re.findall(r"\btimeout=\d+(?![\d.])", SWEEP)
+    assert fixed == [], fixed
+
+
+def test_a_page_that_cannot_be_opened_is_a_note_for_every_navigation_of_the_sweep_that_can_time_out() -> None:
+    """N2/N4: the legacy pages and their forms (``_sweep_page``, ``_sweep_forms``), the three create overlays, the graph builder and the phone are opened through ``Sweep.reach``, so one that never
+    comes up is a note and an empty look, and the sweep goes on."""
+    body = SWEEP[SWEEP.index("def test_no_visible_control"):]
+    assert 'sweep.reach(f"{kind} {name}", reopen)' in SWEEP, "_sweep_page"
+    assert "sweep.reach(surface, reopen)" in SWEEP, "_sweep_forms"
+    assert 'sweep.reach(f"overlay {name}"' in body
+    assert 'sweep.reach("graph builder"' in body
+    assert 'sweep.reach("phone"' in body
+
+
+def test_the_signal_timeout_pin_reads_the_positional_form_too() -> None:
+    """N5: ``timeout(900, 'signal')`` is the same hang as ``timeout(900, method="signal")``."""
+    for source in ('@pytest.mark.timeout(900, method="signal")', "@pytest.mark.timeout(900, method='signal')", "@pytest.mark.timeout(900, 'signal')", '@pytest.mark.timeout(900, "signal")', 'pytest.mark.timeout(method = "signal")'):
+        assert SIGNAL_TIMEOUT.search(source), source
+    for source in ('@pytest.mark.timeout(900, method="thread")', "# a signal arrives", 'assert "signal" in text'):
+        assert not SIGNAL_TIMEOUT.search(source), source
