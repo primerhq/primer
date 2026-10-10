@@ -186,7 +186,7 @@ async def test_running_to_failed_reconciles_dependent_sessions() -> None:
     sess_storage.find = AsyncMock(
         return_value=MagicMock(items=[sess_running, sess_ended], next_cursor=None)
     )
-    sess_storage.update = AsyncMock()
+    sess_storage.patch_if = AsyncMock()
 
     sp = MagicMock()
     def _get_storage(model_cls):
@@ -209,19 +209,17 @@ async def test_running_to_failed_reconciles_dependent_sessions() -> None:
     for _ in range(3):
         await task.tick()
 
-    # The RUNNING session was reconciled to ENDED/workspace_lost.
-    update_calls = sess_storage.update.await_args_list
-    assert update_calls, "expected at least one session update"
-    reconciled = [c.args[0] for c in update_calls]
-    assert any(
-        s.id == "sess-r1"
-        and s.status == SessionStatus.ENDED
-        and s.ended_reason == "workspace_lost"
-        for s in reconciled
-    ), f"sess-r1 not reconciled: {[(s.id, s.status, s.ended_reason) for s in reconciled]}"
+    # The RUNNING session was reconciled to ENDED/workspace_lost, by a field-scoped patch (01a11d29), never a whole-document update.
+    sess_storage.update.assert_not_called()
+    patch_calls = sess_storage.patch_if.await_args_list
+    assert patch_calls, "expected at least one session patch"
+    reconciled = {c.args[0]: c.args[1] for c in patch_calls}
+    assert reconciled.get("sess-r1", {}).get("status") == "ended" and reconciled["sess-r1"].get("ended_reason") == "workspace_lost", (
+        f"sess-r1 not reconciled: {reconciled}"
+    )
     # The already-ENDED session was left untouched.
-    assert all(s.id != "sess-e1" for s in reconciled), (
-        "sess-e1 was already ENDED and must not be re-updated"
+    assert "sess-e1" not in reconciled, (
+        "sess-e1 was already ENDED and must not be re-written"
     )
 
 

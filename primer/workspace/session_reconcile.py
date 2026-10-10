@@ -16,8 +16,11 @@ import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from pydantic_core import to_jsonable_python
+
+from primer.model.except_ import NotFoundError
 from primer.model.storage import CursorPage, FieldRef, Op, Predicate, Value
-from primer.model.workspace_session import SessionStatus, WorkspaceSession
+from primer.model.workspace_session import NON_ENDED_STATUSES, SessionStatus, WorkspaceSession
 
 if TYPE_CHECKING:
     from primer.int.storage_provider import StorageProvider
@@ -41,6 +44,11 @@ async def reconcile_sessions_to_workspace_lost(
     rather than raised, since callers must not fail their own operation
     (a probe tick, a workspace destroy) because one session row couldn't
     be updated. Returns the number of sessions reconciled.
+
+    Each session is ended by ONE field-scoped, fenced write (``patch_if`` of the five fields below, ``where status`` is not ended), never a whole-document
+    write of the snapshot read at the start (ticket 01a11d29). A session another path ended since the read (a turn's own end, a force delete's closure, the
+    preempt convergence) keeps that path's reason and is not counted; a field another writer committed since (a steer's ``last_seq``) is not put back; a
+    session deleted since is skipped.
 
     Every open session is read before any is changed (the ticket 01a11b93 bug: one page of 200 rows, ENDED ones included, so a workspace with more
     sessions than that kept its open ones past page 1 running against a workspace whose runtime the destroy had just torn down). The read pages by
@@ -85,33 +93,41 @@ async def reconcile_sessions_to_workspace_lost(
         )
 
     now = datetime.now(timezone.utc)
+    # The fields this writer owns, and nothing else: the snapshot it read can be stale by the time it writes (a steer's last_seq, a cancel flag), and a
+    # whole-document write of it would put all of that back.
+    patch = to_jsonable_python({
+        "status": SessionStatus.ENDED,
+        "ended_reason": "workspace_lost",
+        "ended_at": now,
+        # A worker whose workspace just went permanently unreachable is
+        # exactly the crash scenario turn_started_at exists to catch: it
+        # never reached run_one_session_turn's own cleanup (finally /
+        # build-executor-failure paths), so turn_status could still read
+        # "running" here. The workspace being gone forever makes any
+        # value moot - reset unconditionally rather than gating on the
+        # current value like the finally-block clear does.
+        "turn_status": "idle",
+        "turn_started_at": None,
+    })
     reconciled = 0
     for sess in open_sessions:
         if sess.status == SessionStatus.ENDED:
             continue
-        updated_sess = sess.model_copy(update={
-            "status": SessionStatus.ENDED,
-            "ended_reason": "workspace_lost",
-            "ended_at": now,
-            # A worker whose workspace just went permanently unreachable is
-            # exactly the crash scenario turn_started_at exists to catch: it
-            # never reached run_one_session_turn's own cleanup (finally /
-            # build-executor-failure paths), so turn_status could still read
-            # "running" here. The workspace being gone forever makes any
-            # value moot - reset unconditionally rather than gating on the
-            # current value like the finally-block clear does.
-            "turn_status": "idle",
-            "turn_started_at": None,
-        })
         try:
-            await session_storage.update(updated_sess)
+            # Fenced on "not ended" in the statement itself: a turn's own end, a force delete or the preempt convergence that ended the row since the read
+            # keeps its reason ("the first terminal reason wins"), and is not counted as reconciled here.
+            written = await session_storage.patch_if(sess.id, patch, where={"status": NON_ENDED_STATUSES()})
+        except NotFoundError:
+            logger.warning("session reconcile: session %s on %s was deleted before it could be reconciled", sess.id, workspace_id)
+            continue
         except Exception:  # noqa: BLE001 -- log + continue
             logger.exception(
                 "session reconcile: failed to reconcile session %s on %s",
                 sess.id, workspace_id,
             )
             continue
-        reconciled += 1
+        if written is not None:
+            reconciled += 1
 
     if reconciled:
         logger.info(

@@ -124,6 +124,10 @@ Four rules make that safe:
   process-local (a force-delete on another API process does not serialize with
   this worker) and the reconciler and the pool's `_end_session` do not take it
   at all, so the row can be ended between the helper's read and its write. The
+  reconciler's own end is fenced the same way, from its side: one `patch_if` of
+  the five fields it owns that matches only a row that is not ENDED (ticket
+  01a11d29), so it neither overwrites a reason another path just wrote nor puts
+  back a stale snapshot's other fields. The
   helper returns what the
   row says afterwards (`_TerminalWrite`: whether it landed, the status and the
   ended reason), and the callers that announce the outcome use that, not the

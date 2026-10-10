@@ -57,7 +57,6 @@ primer/worker/tool_wait_resume_coordinator.py | persist_resume_tool_result_recor
 primer/workspace/session_factory.py | cancel_session | update | 2 | RUNNING branch: reverse-order cancel test (3.4(b)) for the reverted WAKE, S4 patch_if on the two flag fields (3.8 4b, C1) for the erased PARK; created/waiting/paused branch ends inline only when needs_closure(row) is false (C0), itself a patch_if of three fields fenced on the read status; S4 also adds the marker clear (the C5 remainder)
 primer/workspace/session_factory.py | create_session | update | 1 | none (a new row; the auto_start RUNNING write follows the create)
 primer/workspace/session_factory.py | interrupt_session | update | 1 | S4 patch_if on interrupt_requested / cancel_requested_at where status == running and parked_status is null (3.8 condition 4); a Stop on a parked row is a 409 with no write
-primer/workspace/session_reconcile.py | reconcile_sessions_to_workspace_lost | update | 1 | ends the session (terminal ENDED write); 'ENDED wins' holds only once (a) adds status != ENDED to every wake selector and the hook; S4 adds the marker clear (C5)
 
 [deletes]
 primer/api/routers/sessions.py | delete_session | delete | 1 | regression pin only (C11, N109): non-force delete of a RUNNING session answers 409; closure (C3(a)/(b)) in delete is S4
