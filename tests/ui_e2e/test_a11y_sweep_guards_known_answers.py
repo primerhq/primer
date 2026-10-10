@@ -326,8 +326,9 @@ def test_a_page_that_cannot_be_opened_is_a_note_and_an_empty_look_and_the_sweep_
 
 @pytest.mark.ui_e2e
 def test_two_overlapping_requests_are_both_waited_for(blank_console: Page, sweep: Sweep) -> None:
-    """N4 of round 6: the first request is answered at 100 ms, the second is held 700 ms and draws an input when it is answered. A wait that stops when the set has once been seen empty, or that
-    forgets the second request when the first finishes, looks at the page with one input."""
+    """N4 of round 6, in a browser: the first request is answered at 100 ms, the second is held 700 ms and draws an input when it is answered. It shows the look waits for the second when the two are
+    started together; it does not prove the logic (a slow runner can stretch the 100 ms), and it is not the only guard: ``tests/ui/test_a11y_sweep_recorder.py`` drives the same wait with the requests
+    started and finished at chosen round trips, so a wait that stops at the first empty check, or one that forgets the second request when the first finishes, fails there without a browser."""
     def first(route: Route) -> None:
         blank_console.wait_for_timeout(100)
         route.fulfill(status=200, body="{}")

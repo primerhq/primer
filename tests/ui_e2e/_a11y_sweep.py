@@ -27,6 +27,7 @@ from tests.ui_e2e._a11y_surfaces import CHROME, ready_selectors
 READY_TIMEOUT_MS = 15_000      # a surface has this long to show a marker
 LOADED_TIMEOUT_S = 10          # ... and to stop saying it is loading
 IDLE_TIMEOUT_S = 10            # ... and its /v1 requests to answer
+PLAYWRIGHT_DEFAULT_MS = 30_000  # a page's own default timeout, which a call without one of its own takes
 
 
 class Sweep:
@@ -99,6 +100,9 @@ class Sweep:
         self.note_network("after the last look")
         for event, handler in self._listeners:
             self.page.remove_listener(event, handler)
+        # ``bound_defaults`` leaves the page on what the budget had left, which near the deadline is a few hundred milliseconds: what the test or the page fixture's teardown does with the page next gets Playwright's own default back.
+        self.page.set_default_timeout(PLAYWRIGHT_DEFAULT_MS)
+        self.page.set_default_navigation_timeout(PLAYWRIGHT_DEFAULT_MS)
         self.probe.close()
 
     # ---- waiting ------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -118,9 +122,11 @@ class Sweep:
         return True
 
     def bound_defaults(self) -> None:
-        """Make what the budget has left the page's default timeout. A helper that opens a page makes calls with no timeout of their own (``goto``, ``get_attribute``: 30 s in Playwright), and some spend
-        the timeout they were handed twice; with this set, none of them waits longer than the sweep may. Raises ``SweepDeadlineExceeded`` once the deadline has passed."""
-        left = self.budget.wait_ms(30_000)
+        """Make what the budget has left the page's default timeout. A helper that opens a page makes calls with no timeout of their own (``goto``, ``get_attribute``: 30 s in Playwright); with this set,
+        none of THOSE waits longer than the sweep may. A call that is handed a timeout takes it as given, and a helper may spend the one it was handed twice (``open_legacy_route`` waits for the page and
+        again for its marker): the sweep hands each what the budget has left, and that overshoot is one more wait past the deadline, which the thread timeout leaves room for. Raises
+        ``SweepDeadlineExceeded`` once the deadline has passed."""
+        left = self.budget.wait_ms(PLAYWRIGHT_DEFAULT_MS)
         self.page.set_default_timeout(left)
         self.page.set_default_navigation_timeout(left)
 

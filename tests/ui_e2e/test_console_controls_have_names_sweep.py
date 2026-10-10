@@ -19,7 +19,7 @@ loading (a spinner, ``aria-busy``, text that starts Loading, Checking or Reading
 ``[role=alert]``, ``.sh-file-conflict``, ``.field-help.warn``, a red ``.nv-bind-empty``); a red span in a table row, a stuck title and an empty list that is really a failure have no shape a selector
 can know and are left to the network. The BODY of every surface (not its fixed chrome) holds at least its floor, and the numbers are printed on every run. Every wait is bounded and the bound is
 shared (``Budget``): once enough looks have used their wait up, the rest wait briefly and are noted, and the sweep has a wall-clock deadline of its own (600 s from the start of the test, seeding included: past it no wait is handed out, the next one raises an ordinary exception, so the findings are reported and the seeds deleted with a live browser); pytest-timeout stays only as the thread-method last resort above it (a signal timeout hangs Playwright's sync API). A broken install is reported, not waited out.
-Only the FIRST kind of a provider class is swept (the first item of its register menu). NOT covered (listed in ``docs/dev/subsystems/ui-pages.md``): detail pages, edit forms, the confirm host,
+Only the FIRST kind of a provider class is swept (the first item of its register menu): the fields of the other kinds (the artifact storage page builds db, so the s3 and filesystem fields are not swept) are not looked at. NOT covered (listed in ``docs/dev/subsystems/ui-pages.md``): detail pages, edit forms, the confirm host,
 menus (the provider register menu is only opened to pick from it), the command palette, the Files sidebar and terminal, the phone's drill-downs and sheets, 422 states, the row actions of a
 populated list, the Platform and System nav rows, the setup wizard, the controls inside a closed ``<details>``, and what Chromium cannot be asked about: controls inside iframes and shadow
 roots, and a ``div``, ``span`` or ``<a>`` without ``href`` that has only a click handler, a ``[tabindex]`` element without a role, or a dialog's own name.
@@ -207,7 +207,7 @@ def _sweep_phone(page: Page, sweep: Sweep, console_url: str) -> None:
 
 
 @pytest.mark.ui_e2e
-@pytest.mark.timeout(900, method="thread")     # the last resort only: it kills the whole lane (no other journey reported, no seed deleted). The sweep stops itself, from inside, after 600 s (Budget deadline_s): the next surface raises SweepDeadlineExceeded and the test reports what it found and deletes its seeds
+@pytest.mark.timeout(900, method="thread")     # the last resort only: it kills the whole lane (no other journey reported, no seed deleted). The sweep stops itself, from inside, after 600 s (Budget deadline_s): the next wait or check raises SweepDeadlineExceeded (an ordinary exception: Playwright reads a timeout of 0 as none), and the test reports what it found and deletes its seeds, each cleanup capped at give_up_after plus one timeout (600 + 2 * (90 + 10) + 45 <= 900, pinned in tests/ui/test_a11y_sweep_bounds.py)
 def test_no_visible_control_of_the_consoles_main_surfaces_is_without_a_name(base_url: str, console_url: str, page: Page, tmp_path) -> None:
     suffix = uuid.uuid4().hex[:8]
     agent_id = f"dn-agent-{suffix}"
