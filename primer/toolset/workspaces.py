@@ -465,7 +465,12 @@ def _make_list_handler(storage_factory: Callable[[], Any], model_cls: type) -> T
             refuse_secret_fields(model_cls, order_by=order_by)
         except PrimerValidationError as exc:
             return _err(exc.message, error_type="validation-error")
-        return _ok(await storage_factory().list(page, order_by=order_by))
+        try:
+            return _ok(await storage_factory().list(page, order_by=order_by))
+        except BadRequestError as exc:
+            # A bad cursor (forged, or not this request's) is a client error,
+            # answered like the secret-field refusal above (ticket 01a1212a).
+            return _err(exc.message, error_type="validation-error")
 
     return _handler
 

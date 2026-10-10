@@ -121,7 +121,21 @@ async def test_forged_cursor_naming_config_api_key_is_refused(tools) -> None:
         ctx=ADMIN_CALLER,
     )
     assert result.is_error
+    # A bad cursor is a client error, answered like the secret-field refusal
+    # (nit 2), not type=storage-error.
+    assert _typ(result) == "validation-error", result.output
     assert "sk-alpha" not in result.output
+
+
+@pytest.mark.asyncio
+async def test_a_bad_cursor_on_find_is_validation_error(tools) -> None:
+    result = await tools["system"].call(
+        tool_name="find_llm_providers",
+        arguments={"predicate": None, "cursor": _forge_cursor("provider", "zzz")},
+        ctx=ADMIN_CALLER,
+    )
+    assert result.is_error
+    assert _typ(result) == "validation-error", result.output
 
 
 @pytest.mark.asyncio

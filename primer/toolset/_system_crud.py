@@ -365,6 +365,11 @@ def _crud_tools_for(
             return _err(exc.message, error_type="validation-error")
         try:
             response = await storage.list(page, order_by=order_by)
+        except BadRequestError as exc:
+            # A bad cursor (a forged one, or one that does not belong to this
+            # request) is a client error, like the secret-field refusal above,
+            # not a storage fault; answer it the same way (ticket 01a1212a nit).
+            return _err(exc.message, error_type="validation-error")
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="storage-error")
         return _ok(response)
@@ -701,6 +706,10 @@ def _crud_tools_for(
             return _err(exc.message, error_type="validation-error")
         try:
             response = await storage.find(predicate, page, order_by=order_by)
+        except BadRequestError as exc:
+            # A bad cursor / untranslatable predicate is a client error, like
+            # the secret-field refusal above, not a storage fault (nit).
+            return _err(exc.message, error_type="validation-error")
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="storage-error")
         return _ok(response)

@@ -12,9 +12,15 @@ import base64
 import json
 from typing import Any
 
+from pydantic import BaseModel
+
 from primer.model.common import Identifiable
 from primer.model.except_ import BadRequestError
 from primer.model.storage import OrderBy
+from primer.storage._predicate_common import (
+    field_annotation as _field_annotation,
+    strip_optional as _strip_optional,
+)
 
 
 def _encode_cursor_for(
@@ -82,7 +88,36 @@ def _is_seek_value(value: Any, is_null: Any) -> bool:
     return value is None or isinstance(value, (str, int, float))   # bool is an int
 
 
-def _decode_cursor_for(cursor: str, order_by: list[OrderBy] | None) -> dict[str, Any]:
+def _value_matches_field(model: type[BaseModel], field: str, value: Any) -> bool:
+    """Whether ``value`` has the Python type the backend will bind for ``field``.
+
+    A seek value crosses the wire as a bound parameter against the field's
+    typed column expression (``(data->>'x')::bigint = $1`` on Postgres), and
+    asyncpg rejects a mismatched Python type with a server error rather than
+    returning no rows. A cursor that carries a string (or a NaN) for a bool or
+    int field is therefore refused here as a bad cursor, so the two backends
+    agree (SQLite would otherwise just return no rows) and neither answers 5xx.
+
+    The id tiebreaker (a text column) is checked by the caller. A dotted path
+    resolves to ``Any`` (the backend compares it as text and would reject a
+    non-string bind too), so only a string is accepted there.
+    """
+    if value is None:
+        return True   # a NULL seek key (NULLS LAST); no typed bind
+    annotation = _strip_optional(_field_annotation(model, field))
+    if annotation is bool:
+        return isinstance(value, bool)
+    if annotation is int:
+        return isinstance(value, int) and not isinstance(value, bool)
+    if annotation is float:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    # str, or a dotted path (``Any``), both compared as text: a string only.
+    return isinstance(value, str)
+
+
+def _decode_cursor_for(
+    cursor: str, order_by: list[OrderBy] | None, model: type[BaseModel],
+) -> dict[str, Any]:
     """Decode ``cursor`` and check that THIS request could have issued it.
 
     The seek compares the cursor's keys with the STORED document, so a key a
@@ -92,8 +127,11 @@ def _decode_cursor_for(cursor: str, order_by: list[OrderBy] | None) -> dict[str,
     A cursor is accepted only when it carries exactly the keys
     :func:`_encode_cursor_for` emits for this ``order_by``: its fields, in its
     order and directions, then the ``id`` tiebreaker, each with a JSON
-    scalar (a non-null string for ``id``). Anything else is a
-    :class:`BadRequestError`, as a malformed cursor is.
+    scalar whose Python type matches the field's declared type (a non-null
+    string for ``id``). Anything else is a :class:`BadRequestError`, as a
+    malformed cursor is: a value of the wrong type for an allowed key would
+    otherwise bind against a typed column expression and answer a backend
+    server error on Postgres (and silently no rows on SQLite).
     """
     state = _decode_cursor(cursor)
     expected = [(ob.field, ob.direction) for ob in order_by or []] + [("id", "asc")]
@@ -107,6 +145,7 @@ def _decode_cursor_for(cursor: str, order_by: list[OrderBy] | None) -> dict[str,
             or key["field"] != field
             or key["direction"] != direction
             or not _is_seek_value(key["value"], key["is_null"])
+            or (field != "id" and not _value_matches_field(model, field, key["value"]))
         ):
             raise BadRequestError(_NOT_THIS_REQUEST)
     if not isinstance(keys[-1]["value"], str):
