@@ -142,15 +142,14 @@
   //             a title alone tells nobody what was refused).
   // options.codeAfterTitle === false keeps that last fallback to the title alone: for a caller whose banner must never show a code (the triggers').
   // Whether a request-validation entry points at a FIELD a person can name: not the whole body or query (loc ["body"]: "body: Field required" names nothing) and
-  // not a position (loc ["body", 1], FastAPI's "JSON decode error" at character 1: "1: JSON decode error"). A location that is two long and ends in a number is
-  // that position; a longer one that ends in a number is a list item of a named field (["body", "items", 2]: "items.2: Input should be a valid string"), which is
-  // a field a person can find.
+  // not a position (loc ["body", 1], FastAPI's "JSON decode error" at character 1: "1: JSON decode error"). What a person can find is a NAME: a location names a field when it
+  // holds a string segment after the body / query / path prefix (["body", "items", 2] is a list item of a named field: "items.2: Input should be a valid string"); numbers only after the
+  // prefix (["body", 1], ["body", 0, 1]) are positions, not fields.
   function _namesAField(entry) {
     const loc = entry && entry.loc;
     if (!Array.isArray(loc) || loc.length === 0) return false;
-    if (loc.length === 1 && (loc[0] === "body" || loc[0] === "query" || loc[0] === "path")) return false;
-    if (loc.length === 2 && typeof loc[1] === "number") return false;
-    return true;
+    const prefixed = loc[0] === "body" || loc[0] === "query" || loc[0] === "path";
+    return (prefixed ? loc.slice(1) : loc).some((segment) => typeof segment === "string");
   }
 
   function readRefusal(err, fallback, options) {
