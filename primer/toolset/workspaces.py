@@ -471,6 +471,10 @@ def _make_list_handler(storage_factory: Callable[[], Any], model_cls: type) -> T
             # A bad cursor (forged, or not this request's) is a client error,
             # answered like the secret-field refusal above (ticket 01a1212a).
             return _err(exc.message, error_type="validation-error")
+        except PrimerError as exc:
+            # A genuine storage fault is a tool error, as in the system tools,
+            # not an exception out of call().
+            return _err_from_primer(exc, error_type="storage-error")
 
     return _handler
 
