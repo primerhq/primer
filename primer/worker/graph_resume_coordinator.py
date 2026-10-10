@@ -219,9 +219,9 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
         # human-gate event_key.
         #
         # S2a: ONE reply per event_key. A park written by an older build
-        # holds a leaf under the RAW dispatch key; once the durable flip
-        # writes leaves under an encoded key (leaf_key_for, a later S2a
-        # change), a resend or an echo of the same reply lands a second
+        # holds a leaf under the RAW dispatch key; the durable flip now
+        # writes leaves under an encoded key (leaf_key_for, ticket
+        # 01a122cc-effa), so a resend or an echo of the same reply lands a second
         # entry under the encoded spelling. Keep the entry whose dict key IS the raw spelling (only
         # older code writes it, so it is the older entry). jsonb does not
         # keep key insertion order, so the order of .values() says nothing

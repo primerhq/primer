@@ -168,10 +168,10 @@ async def apply_tool_results(
         payload = with_wake_entry(
             with_wake_park({"result": r.result, "is_error": bool(r.is_error)}, session.parked_at), row_id,
         )
-        # Each result is its own leaf of a multi-event park, and the flip writes ``parked_state`` whole: a further wake starts from the row the previous
-        # one wrote, or it drops that leaf (#707 review N2).
+        # Each result is its own leaf of a multi-event park and the flip writes only that leaf, so the leaves other wakes wrote stay whatever this request
+        # read (ticket 01a122cc-effa). A further wake still starts from a fresh read of the row (#707 review N2) ...
         woken = session if woken is None else (await session_storage.get(session.id) or woken)
-        # ... and the re-read park must still wait on this call, under the same key and row. Between two wakes it can have moved on (the call resolved
+        # ... because the re-read park must still wait on this call, under the same key and row. Between two wakes it can have moved on (the call resolved
         # elsewhere and the graph parked on another entry under the same raw id): the wake would land there all the same (no entry waits on its key, so
         # the entry fence admits it) and the resume would answer that entry by the raw id. Then neither the wake nor its publish happens; the row is
         # still written (#707 review round 2, N1).

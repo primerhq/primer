@@ -1961,10 +1961,11 @@ async def steer_session(
                 # row write was rejected, so it is not in ``cancelled``) keeps the reply the park carries.
                 if tcid not in cancelled:
                     continue
-                # Each cancel is its own leaf of a multi-event park, and the flip writes ``parked_state`` whole: a
-                # further wake starts from the row the previous one wrote, or it drops that leaf (#707 review N2).
+                # Each cancel is its own leaf of a multi-event park and the flip writes only that leaf, so the leaves
+                # other wakes wrote stay whatever this request read (ticket 01a122cc-effa). A further wake still starts
+                # from a fresh read of the row (#707 review N2) ...
                 woken = row if woken is None else (await sessions.get(session_id) or woken)
-                # ... and only while the re-read park still waits on this call, under the same key and row: a park
+                # ... and wakes only while the re-read park still waits on this call, under the same key and row: a park
                 # that moved on between two wakes (the graph parked on another entry under the same raw id) would
                 # take the cancel all the same and answer that entry with it (#707 review round 2, N1).
                 if woken is not row and _pending_targets(woken).get(tcid) != (key, entry_row_id):
