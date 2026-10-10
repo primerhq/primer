@@ -224,6 +224,35 @@ async def test_a_wrongly_typed_cursor_value_on_an_allowed_key_is_a_bad_cursor(pr
 
 
 @pytest.mark.asyncio
+async def test_an_explicit_id_sort_key_must_carry_a_string(provider: StorageProvider) -> None:
+    # order_by=[id desc] gives a cursor with TWO id keys (the sort key and the
+    # tiebreaker). Both compare against the text id column, so both must carry
+    # a string: an int in the first one is a bad cursor on both backends, not a
+    # Postgres 5xx or a silent empty page on SQLite.
+    st = provider.get_storage(LLMProvider)
+    for i, pw in enumerate(["a", "b", "c"]):
+        await st.create(_llm(i, pw))
+    order = [OrderBy(field="id", direction="desc")]
+    forged = _forge_cursor(
+        [
+            {"field": "id", "value": 5, "direction": "desc", "is_null": False},
+            {"field": "id", "value": "llm-2", "direction": "asc", "is_null": False},
+        ]
+    )
+    with pytest.raises(BadRequestError):
+        await st.list(CursorPage(cursor=forged, length=1), order_by=order)
+    # The server's own cursor for the same sort walks every row once, newest id first.
+    seen: list[str] = []
+    page = await st.list(CursorPage(cursor=None, length=1), order_by=order)
+    for _ in range(10):
+        seen.extend(r.id for r in page.items)
+        if not page.next_cursor:
+            break
+        page = await st.list(CursorPage(cursor=page.next_cursor, length=1), order_by=order)
+    assert seen == ["llm-2", "llm-1", "llm-0"]
+
+
+@pytest.mark.asyncio
 async def test_a_cursor_not_matching_the_requests_order_by_is_refused(provider: StorageProvider) -> None:
     st = provider.get_storage(LLMProvider)
     for i, pw in enumerate(["e", "d", "c"]):

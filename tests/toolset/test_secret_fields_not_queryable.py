@@ -16,6 +16,7 @@ import pytest_asyncio
 from pydantic import SecretStr
 
 from primer.api.registries import ProviderRegistry, WorkspaceRegistry
+from primer.model.collection import Collection, Document
 from primer.model.except_ import ServerError
 from primer.model.provider import SqliteConfig
 from primer.model.providers.llm import LLMProvider
@@ -194,3 +195,74 @@ async def test_a_bad_cursor_on_a_workspaces_list_tool_is_validation_error(tools)
     )
     assert result.is_error
     assert _typ(result) == "validation-error", result.output
+
+
+def _forge_keys(keys: list[dict]) -> str:
+    payload = json.dumps({"keys": keys}, separators=(",", ":"))
+    return base64.urlsafe_b64encode(payload.encode()).rstrip(b"=").decode()
+
+
+@pytest.mark.asyncio
+async def test_an_explicit_id_sort_key_carrying_a_non_string_is_validation_error(tools) -> None:
+    forged = _forge_keys(
+        [
+            {"field": "id", "value": 5, "direction": "desc", "is_null": False},
+            {"field": "id", "value": "llm-0", "direction": "asc", "is_null": False},
+        ]
+    )
+    result = await tools["system"].call(
+        tool_name="list_llm_providers",
+        arguments={"order_by": ["id:desc"], "cursor": forged},
+        ctx=ADMIN_CALLER,
+    )
+    assert result.is_error, result.output
+    assert _typ(result) == "validation-error", result.output
+
+
+@pytest.mark.asyncio
+async def test_a_storage_fault_on_a_workspaces_list_tool_is_storage_error(tools, monkeypatch) -> None:
+    # A genuine storage fault must come back as a tool error, not raise out of call().
+    monkeypatch.setattr(tools["sp"].get_storage(WorkspaceTemplate), "list", _storage_fault)
+    result = await tools["workspaces"].call(
+        tool_name="list_workspace_templates", arguments={}, ctx=ADMIN_CALLER,
+    )
+    assert result.is_error, result.output
+    assert _typ(result) == "storage-error", result.output
+
+
+_DOC_TOOLS = [
+    ("list_collection_documents", {}),
+    ("find_collection_documents_by_meta", {"meta_filter": {"tag": "x"}}),
+]
+
+
+async def _seed_collection(tools) -> None:
+    await tools["sp"].get_storage(Collection).create(Collection(id="kb-1", description="docs"))
+    await tools["sp"].get_storage(Document).create(
+        Document(id="doc-1", collection_id="kb-1", slug="a", path="a.md", title="A")
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool, extra", _DOC_TOOLS, ids=[t for t, _ in _DOC_TOOLS])
+async def test_a_bad_cursor_on_a_document_tool_is_validation_error(tools, tool, extra) -> None:
+    await _seed_collection(tools)
+    result = await tools["system"].call(
+        tool_name=tool,
+        arguments={"collection_id": "kb-1", "cursor": _forge_cursor("title", "t"), **extra},
+        ctx=ADMIN_CALLER,
+    )
+    assert result.is_error, result.output
+    assert _typ(result) == "validation-error", result.output
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool, extra", _DOC_TOOLS, ids=[t for t, _ in _DOC_TOOLS])
+async def test_a_storage_fault_on_a_document_tool_is_storage_error(tools, monkeypatch, tool, extra) -> None:
+    await _seed_collection(tools)
+    monkeypatch.setattr(tools["sp"].get_storage(Document), "find", _storage_fault)
+    result = await tools["system"].call(
+        tool_name=tool, arguments={"collection_id": "kb-1", **extra}, ctx=ADMIN_CALLER,
+    )
+    assert result.is_error, result.output
+    assert _typ(result) == "storage-error", result.output
