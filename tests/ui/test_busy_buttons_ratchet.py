@@ -1,12 +1,16 @@
 """A ratchet on buttons that go natively ``disabled`` while their request is out (board task 01a12480-2176).
 
-A focused button that turns ``disabled`` drops the focus to ``<body>``. In a dialog the focus trap no longer sees Tab; anywhere, the keyboard user loses the place they were in. The cure is ``<Btn busy={...}>``
+A focused button that turns ``disabled`` drops the focus to ``<body>``: the keyboard user loses the place they were in, and a focus trap can at best put them back inside the dialog. The cure is ``<Btn busy={...}>``
 (``ui/components/shared.jsx``; ``aria-disabled`` and ``aria-busy`` instead of ``disabled``, the click refused, the button still focusable), documented in ``docs/dev/subsystems/ui-foundation.md``. This file counts the
 buttons that are still the old way, per file, and the counts may only go DOWN: a new one fails, and a file that got below its count fails until ``BASELINE`` is lowered (so a number is never a cushion for a later one).
 
 What is counted: a ``<Btn`` or ``<button`` opening tag whose ``disabled={...}`` expression names a request in flight (``busy``, ``saving``, ``loading``, ``pending``, ``sending``, ... in any case or as a part of a longer
 name: ``createBusy``, ``del.loading``, ``attachmentsPending``). ``disabled={!canSubmit}`` and ``disabled={referencing.length > 0}`` are not requests and are not counted; a button with both
-(``disabled={!canSubmit || busy}``) is, and is fixed by splitting it: ``disabled={!canSubmit} busy={busy}``. A ``disabled`` that arrives through a spread (``{...props}``) is not seen. Comments are not code.
+(``disabled={!canSubmit || busy}``) is, and is fixed by splitting it: ``disabled={!canSubmit} busy={busy}``. Comments are not code (a ``//`` that starts its line ends it before a ``/*`` is looked for).
+
+What the scan does NOT see (review of #732, N8): a ``disabled`` that arrives through a spread (``{...props}``); only the FIRST ``disabled={`` of a tag is read (a second one, which React keeps, is invisible); ``disabled = {x}`` with spaces;
+an alias (``const inFlight = del.loading``); and an in-flight name that is not in the list (``testing``, ``fetching``, ``isMutating``, ``installing``, ``refreshing``). ``busy || x``, ``x || busy``, a ternary and a nested JSX
+expression ARE counted. The ticket for widening it (aliases, ``<input>``/``<select>``/``<textarea>``) is T1 of the review.
 """
 
 from __future__ import annotations
@@ -66,7 +70,7 @@ BASELINE: dict[str, int] = {
     "toolsets/python-editor.jsx": 1,
     "triggers.jsx": 17,
     "workers.jsx": 3,
-    "workspaces.jsx": 10,
+    "workspaces.jsx": 9,
     "workspaces/providers.jsx": 1,
     "workspaces/templates.jsx": 1,
 }

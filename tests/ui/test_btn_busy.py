@@ -1,6 +1,6 @@
 """``Btn busy`` keeps a button focusable while its request is out (board task 01a12480-2176).
 
-A button that turns natively ``disabled`` while it has focus drops the focus to ``<body>``: inside a dialog the trap no longer sees Tab, and a keyboard user loses the place they pressed the key in. The
+A button that turns natively ``disabled`` while it has focus drops the focus to ``<body>``: a keyboard user loses the place they pressed the key in. The
 console had ~73 of them (``disabled={busy}`` on a Save, a Delete, a Create). ``Btn`` takes a ``busy`` prop for that: the button stays in the tab order with ``aria-disabled="true"`` and
 ``aria-busy="true"``, and its click does nothing (and is not allowed to submit a form it sits in). ``disabled`` keeps meaning "this cannot be pressed now, whatever the answer".
 

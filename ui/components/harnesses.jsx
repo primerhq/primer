@@ -659,7 +659,7 @@ function HarnessDetail({ id }) {
             <>
               <Btn
                 kind="ghost"
-                busy={uninstallMut.loading}
+                blocked={uninstallMut.loading}
                 onClick={() => { setConfirmUninstall(false); setCascadeDelete(false); }}
               >
                 Cancel
