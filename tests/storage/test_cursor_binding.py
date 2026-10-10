@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import json
+from datetime import datetime
 
 import pytest
 
@@ -22,6 +23,12 @@ from primer.storage._cursor import _decode_cursor_for, _encode_cursor_for
 class _Sample(Identifiable):
     name: str
     count: int = 0
+
+
+class _Typed(Identifiable):
+    ratio: float = 0.0
+    when: datetime | None = None
+    maybe: int | None = None
 
 
 def _forge(keys: list[dict]) -> str:
@@ -192,6 +199,60 @@ def test_a_declared_str_key_refuses_a_number() -> None:
     )
     with pytest.raises(BadRequestError):
         _decode_cursor_for(forged, [OrderBy(field="name", direction="asc")], _Sample)
+
+
+def test_a_same_length_cursor_naming_another_field_is_refused() -> None:
+    # order_by=[name] expects [name, id]. A cursor of the same length whose
+    # first key is ``count`` must still be refused: the field must match, not
+    # only the number of keys.
+    forged = _forge(
+        [
+            {"field": "count", "value": 1, "direction": "asc", "is_null": False},
+            {"field": "id", "value": "s1", "direction": "asc", "is_null": False},
+        ]
+    )
+    with pytest.raises(BadRequestError):
+        _decode_cursor_for(forged, [OrderBy(field="name", direction="asc")], _Sample)
+
+
+def test_a_single_key_cursor_naming_another_field_is_refused() -> None:
+    # No order_by expects exactly [id]. A one-key cursor that names
+    # ``git_token`` has the right length and the wrong field.
+    forged = _forge([{"field": "git_token", "value": "g", "direction": "asc", "is_null": False}])
+    with pytest.raises(BadRequestError):
+        _decode_cursor_for(forged, None, _Sample)
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [("ratio", "x"), ("when", 5), ("maybe", "x")],
+    ids=["float-key-given-a-string", "datetime-key-given-an-int", "optional-int-key-given-a-string"],
+)
+def test_a_mistyped_value_on_a_float_datetime_or_optional_key_is_refused(field: str, value: object) -> None:
+    forged = _forge(
+        [
+            {"field": field, "value": value, "direction": "asc", "is_null": False},
+            {"field": "id", "value": "t1", "direction": "asc", "is_null": False},
+        ]
+    )
+    with pytest.raises(BadRequestError):
+        _decode_cursor_for(forged, [OrderBy(field=field, direction="asc")], _Typed)
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [("ratio", 0.5), ("when", "2026-10-10T00:00:00Z"), ("maybe", 3)],
+    ids=["float-key-given-a-float", "datetime-key-given-a-string", "optional-int-key-given-an-int"],
+)
+def test_a_rightly_typed_value_on_a_float_datetime_or_optional_key_is_accepted(field: str, value: object) -> None:
+    forged = _forge(
+        [
+            {"field": field, "value": value, "direction": "asc", "is_null": False},
+            {"field": "id", "value": "t1", "direction": "asc", "is_null": False},
+        ]
+    )
+    state = _decode_cursor_for(forged, [OrderBy(field=field, direction="asc")], _Typed)
+    assert state["keys"][0]["value"] == value
 
 
 def test_malformed_cursor_still_raises() -> None:

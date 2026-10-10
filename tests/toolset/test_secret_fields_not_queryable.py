@@ -16,6 +16,7 @@ import pytest_asyncio
 from pydantic import SecretStr
 
 from primer.api.registries import ProviderRegistry, WorkspaceRegistry
+from primer.model.except_ import ServerError
 from primer.model.provider import SqliteConfig
 from primer.model.providers.llm import LLMProvider
 from primer.model.workspace import WorkspaceTemplate
@@ -162,3 +163,34 @@ async def test_plain_find_and_order_still_work(tools) -> None:
     )
     assert not found.is_error, found.output
     assert len(json.loads(found.output)["items"]) == 3
+
+
+async def _storage_fault(*args, **kwargs):
+    raise ServerError("database unavailable")
+
+
+@pytest.mark.asyncio
+async def test_a_storage_fault_on_a_system_list_or_find_tool_is_storage_error(tools, monkeypatch) -> None:
+    # A genuine storage fault is not a client error: it keeps type=storage-error,
+    # while a bad cursor (a BadRequestError) answers validation-error.
+    storage = tools["sp"].get_storage(LLMProvider)
+    monkeypatch.setattr(storage, "list", _storage_fault)
+    monkeypatch.setattr(storage, "find", _storage_fault)
+    listed = await tools["system"].call(tool_name="list_llm_providers", arguments={}, ctx=ADMIN_CALLER)
+    found = await tools["system"].call(
+        tool_name="find_llm_providers", arguments={"predicate": None}, ctx=ADMIN_CALLER,
+    )
+    for result in (listed, found):
+        assert result.is_error
+        assert _typ(result) == "storage-error", result.output
+
+
+@pytest.mark.asyncio
+async def test_a_bad_cursor_on_a_workspaces_list_tool_is_validation_error(tools) -> None:
+    result = await tools["workspaces"].call(
+        tool_name="list_workspace_templates",
+        arguments={"cursor": _forge_cursor("provider_id", "p")},
+        ctx=ADMIN_CALLER,
+    )
+    assert result.is_error
+    assert _typ(result) == "validation-error", result.output
