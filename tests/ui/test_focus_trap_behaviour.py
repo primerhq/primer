@@ -54,6 +54,10 @@ function el(name, opts) {
     return flags;
   };
   e.querySelectorAll = function () { return e.focusables.slice(); };      // which descendants match the selector is the browser's job
+  e.matches = function () { return true; };                                // a descendant of a plain dialog is a native stop
+  e.closest = function () { return null; };
+  e.getAttribute = function () { return null; };
+  e.getClientRects = function () { return e.visible ? [{}] : []; };
   e.addEventListener = function (t, fn) { (e.listeners[t] = e.listeners[t] || []).push(fn); };
   e.removeEventListener = function (t, fn) { e.listeners[t] = (e.listeners[t] || []).filter(function (f) { return f !== fn; }); };
   Object.defineProperty(e, 'offsetParent', { get: function () { return e.visible ? {} : null; }, configurable: true });
@@ -147,12 +151,22 @@ var getComputedStyle = function (e) { return { visibility: e.cssVisibility || 'v
 function parseClause(c) {
   var m = /^\s*([a-z]*)(.*)$/.exec(c), conds = [], r, re = /(:not\()?\[([a-z-]+)(\^?=)?(?:"([^"]*)")?\]\)?/g;
   while ((r = re.exec(m[2]))) conds.push({ not: !!r[1], attr: r[2], op: r[3] || null, val: r[4] });
-  return { tag: m[1], conds: conds };
+  return { tag: m[1], conds: conds, notDisabled: m[2].indexOf(':not(:disabled)') >= 0 };
 }
+// :disabled is the attribute on the control, or <fieldset disabled> above it (the attribute alone does not see the second)
+function isDisabled(e) { for (var n = e; n; n = n.parent) { if (n.attrs && 'disabled' in n.attrs && (n === e || n.tag === 'fieldset')) return true; } return false; }
+function firstOfType(e) { return DOC.filter(function (x) { return x.parent === e.parent && x.tag === e.tag; })[0] === e; }
 function matches(e, sel) {
   return sel.split(',').some(function (c) {
+    if (c.indexOf('>') >= 0) {                                    // "details > summary:first-of-type" + the clauses after it
+      var parts = c.split('>'), rest = parts[1];
+      if (!e.parent || e.parent.tag !== parts[0].trim()) return false;
+      if (rest.indexOf(':first-of-type') >= 0 && !firstOfType(e)) return false;
+      c = rest.replace(':first-of-type', '');
+    }
     var p = parseClause(c);
     if (p.tag && e.tag !== p.tag) return false;
+    if (p.notDisabled && isDisabled(e)) return false;
     return p.conds.every(function (k) {
       var has = k.attr in e.attrs, v = e.attrs[k.attr], ok = !has ? false : !k.op ? true : k.op === '=' ? String(v) === k.val : String(v).indexOf(k.val) === 0;
       return k.not ? !ok : ok;
@@ -162,8 +176,10 @@ function matches(e, sel) {
 // what the browser tabs to, whatever the selector says
 function nativeStop(e) {
   var a = e.attrs, t = e.tag;
-  if (!e.visible || e.cssVisibility === 'hidden' || e.cssVisibility === 'collapse' || 'disabled' in a) return false;
-  if ('tabindex' in a) return parseInt(a.tabindex, 10) >= 0;
+  if (!e.visible || e.cssVisibility === 'hidden' || e.cssVisibility === 'collapse' || isDisabled(e)) return false;
+  for (var up = e; up; up = up.parent) { if (up.attrs && 'inert' in up.attrs) return false; }
+  if ('tabindex' in a && isFinite(parseInt(a.tabindex, 10))) return parseInt(a.tabindex, 10) >= 0;      // tabindex="" is no tabindex: the element is a stop by what it is
+  if (t === 'summary') return !!e.parent && e.parent.tag === 'details' && firstOfType(e);
   if (t === 'input' && String(a.type).toLowerCase() === 'radio') {
     var group = DOC.filter(function (x) { return x.tag === 'input' && String(x.attrs.type).toLowerCase() === 'radio' && x.attrs.name === a.name; });
     var checked = group.filter(function (x) { return x.checked; })[0];
@@ -184,6 +200,8 @@ function ne(name, spec, parent) {
   Object.defineProperty(e, 'type', { get: function () { return e.tag === 'input' ? String(e.attrs.type || 'text').toLowerCase() : e.attrs.type; } });         // the normalised value, not the attribute
   e.getAttribute = function (k) { return k in e.attrs ? e.attrs[k] : null; };
   e.querySelectorAll = function (sel) { return DOC.filter(function (x) { return x !== e && e.contains(x) && matches(x, sel); }); };
+  e.matches = function (sel) { return matches(e, sel); };
+  e.closest = function (sel) { var attr = /^\[([a-z-]+)\]$/.exec(sel)[1]; for (var n = e; n; n = n.parent) { if (n.attrs && attr in n.attrs) return n; } return null; };
   return e;
 }
 // opener | dialog(specs...) | after, with PAGE decided by nativeStop. specs: [{ name, tag, attrs, checked, cssVisibility, visible }]
@@ -193,7 +211,7 @@ function scene3(specs) {
   var dialog = ne('dialog', { attrs: { tabindex: '-1' } }); dialog.__node = true;
   var s = { opener: opener, dialog: dialog, after: after };
   DOC.push(opener, dialog);
-  specs.forEach(function (sp) { s[sp.name] = ne(sp.name, sp, dialog); DOC.push(s[sp.name]); });
+  specs.forEach(function (sp) { s[sp.name] = ne(sp.name, sp, sp.within ? s[sp.within] : dialog); DOC.push(s[sp.name]); });
   DOC.push(after);
   DOC.forEach(function (x) { if (nativeStop(x)) PAGE.push(x); });
   document.activeElement = opener;
@@ -609,7 +627,7 @@ def test_two_radio_groups_are_two_tab_stops(ctx) -> None:
     [
         "{name:'ed',tag:'div',attrs:{contenteditable:'true'}}",
         "{name:'ed',tag:'div',attrs:{contenteditable:''}}",
-        "{name:'ed',tag:'summary'}",
+        "{name:'dt',tag:'details'},{name:'ed',tag:'summary',within:'dt'}",       # a summary is a stop as the first summary of a details
         "{name:'ed',tag:'iframe'}",
         "{name:'ed',tag:'audio',attrs:{controls:''}}",
         "{name:'ed',tag:'video',attrs:{controls:''}}",
@@ -751,3 +769,43 @@ def test_a_lost_focus_that_was_not_a_tab_stop_continues_from_its_place(ctx) -> N
     specs = "[{name:'a',tag:'button'},{name:'h',tag:'h3',attrs:{tabindex:'-1'}},{name:'b',tag:'button'}]"
     assert _lost(ctx, specs, "h", "remove", False) == "b"
     assert _lost(ctx, specs, "h", "remove", True) == "a"
+
+
+# ---- review nit 2: what the selector still counted although the browser does not tab to it ----
+
+_FIELDSET = "{name:'fs',tag:'fieldset',attrs:{disabled:''}},{name:'x',tag:'input',within:'fs'},{name:'y',tag:'button',within:'fs'}"
+
+
+def test_the_controls_under_a_disabled_fieldset_are_not_stops(ctx) -> None:
+    """``:not([disabled])`` looks at the control's own attribute; a control under ``<fieldset disabled>`` is disabled too (``:disabled``) and the browser skips it. At an end it became ``last`` and a Tab from the real last
+    stop left the dialog."""
+    end = _tabs(ctx, f"[{{name:'first',tag:'button'}},{{name:'last',tag:'button'}},{_FIELDSET}]", "s.last.focus();")
+    assert end["fwd"] is True and end["toFwd"] == "first", end
+    start = _tabs(ctx, f"[{_FIELDSET},{{name:'first',tag:'button'}},{{name:'last',tag:'button'}}]", "s.first.focus();")
+    assert start["back"] is True and start["toBack"] == "last", start
+
+
+def test_an_inert_subtree_and_an_inert_control_are_not_stops(ctx) -> None:
+    subtree = "{name:'box',tag:'div',attrs:{inert:''}},{name:'z',tag:'button',within:'box'}"
+    end = _tabs(ctx, f"[{{name:'first',tag:'button'}},{{name:'last',tag:'button'}},{subtree}]", "s.last.focus();")
+    assert end["fwd"] is True and end["toFwd"] == "first", end
+    own = _tabs(ctx, "[{name:'first',tag:'button'},{name:'last',tag:'button'},{name:'z',tag:'button',attrs:{inert:''}}]", "s.last.focus();")
+    assert own["fwd"] is True and own["toFwd"] == "first", own
+
+
+def test_an_empty_tabindex_is_no_tabindex(ctx) -> None:
+    """``tabindex=""`` is ignored by the browser: a ``div`` with it is no stop (it matched ``[tabindex]``), and a button with it keeps being one."""
+    div = _tabs(ctx, "[{name:'first',tag:'button'},{name:'last',tag:'button'},{name:'e',tag:'div',attrs:{tabindex:''}}]", "s.last.focus();")
+    assert div["fwd"] is True and div["toFwd"] == "first", div
+    button = _tabs(ctx, "[{name:'first',tag:'button'},{name:'b',tag:'button',attrs:{tabindex:''}}]", "s.first.focus();")
+    assert button["fwd"] is False and button["toFwd"] == "b", button
+    zero = _tabs(ctx, "[{name:'first',tag:'button'},{name:'d',tag:'div',attrs:{tabindex:'0'}}]", "s.first.focus();")
+    assert zero["fwd"] is False and zero["toFwd"] == "d", zero
+
+
+def test_only_the_first_summary_of_a_details_is_a_stop(ctx) -> None:
+    two = "{name:'dt',tag:'details'},{name:'s1',tag:'summary',within:'dt'},{name:'s2',tag:'summary',within:'dt'}"
+    end = _tabs(ctx, f"[{{name:'first',tag:'button'}},{two}]", "s.s1.focus();")
+    assert end["fwd"] is True and end["toFwd"] == "first", f"the second summary was counted as the last stop: {end}"
+    lone = _tabs(ctx, "[{name:'first',tag:'button'},{name:'dt',tag:'details'},{name:'s1',tag:'summary',within:'dt'}]", "s.first.focus();")
+    assert lone["fwd"] is False and lone["toFwd"] == "s1", lone
