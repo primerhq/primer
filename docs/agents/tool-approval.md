@@ -310,7 +310,14 @@ but require human review for any other host.
   that inner call, approving it runs that call and nothing else (the node's
   tool is not run again, and its remaining code does not run: the node's
   output is the inner call's answer), and a decision covers only the gate it
-  named (a sibling gate that shares the event key stays parked).
+  named: the gate id the decision carries is honoured down to a child graph
+  too (`invoke_graph`), so a sibling gate that shares the event key stays
+  parked. An entry whose gate id cannot be read stays parked when the
+  decision names a gate, and a decision that names NO gate (an old client)
+  runs none of several sibling gates that share the key, because it cannot
+  be shown to be any one of them. Limit: the approved inner call runs in the
+  tools of the NODE's own toolset, so the inner tool of another toolset (what
+  a subagent was asked to run) fails with `unknown tool` instead of running.
 - **The parked-tool name is literal `_approval`** in the parked-state
   fields. Code that introspects park state and dispatches on tool
   name treats `_approval` as a special case distinct from real tool

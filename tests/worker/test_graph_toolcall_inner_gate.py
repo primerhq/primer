@@ -7,8 +7,10 @@ node never completed (on main three approvals produced four distinct gates). The
 the graph resume now does the same for a park whose ``original_call`` is not the node's own call.
 
 These cases drive the real ``WorkspaceGraphExecutor`` with a real ``ToolExecutionManager`` and policy-gated tools, the real ``resume_graph_from_checkpoint`` and the drain tap, after a live first run whose
-records go through the real ``translate_stream_event``. The ``call_tool`` cases build the executor the way the worker does (``executor_builders``): no ``tool_manager``, the workspace session and the registry's
-``get_toolset`` as the ``toolset_resolver``; the sibling case drives the real ``resume_graph_engine`` (round 2 of the #724 review: a decision runs only the gate it named, the card shows the call that runs).
+records go through the real ``translate_stream_event``. The ``call_tool`` cases build the executor the way the worker does (``executor_builders``) in three respects: no ``tool_manager``, the workspace session and the
+registry's ``get_toolset`` as the ``toolset_resolver``. They differ in two (round 3 of the #724 review, N4): they pass neither ``approval_resolver`` nor the identity, and ``executor_builders`` passes
+``approval_resolver=pool._approval_resolver``. With the storage-backed resolver the node's own ``system__call_tool`` call is gated first, under the inner tool's policy, so a ``call_tool`` node in the worker needs TWO
+approvals of that policy before the inner call runs; these cases pin the executor's handling of an inner gate (one approval, the inner call runs once), not the number of approvals. The sibling case drives the real ``resume_graph_engine`` (round 2 of the #724 review: a decision runs only the gate it named, the card shows the call that runs).
 """
 
 from __future__ import annotations
@@ -124,7 +126,7 @@ async def _create_the_provider(system_toolset: Any) -> None:
 
 
 def _resolver(provider: Any) -> Any:
-    """``pool._provider_registry.get_toolset`` as ``executor_builders`` wires it: the system toolset for its id, nothing for another."""
+    """``pool._provider_registry.get_toolset`` as ``executor_builders`` wires it, with one difference: the system toolset for its id, and ``None`` for another where the registry raises ``NotFoundError``."""
     async def resolver(toolset_id: str) -> Any:
         return provider if toolset_id == SYSTEM_TOOLSET_ID else None
 
