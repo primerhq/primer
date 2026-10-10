@@ -119,6 +119,7 @@ from primer.model.yield_ import gate_id_of, with_wake_park
 from primer.session.pending_gates import enumerate_pending_gates
 from primer.session.slot_view import overlay_row_on_slot_info, overlay_rows_on_infos
 from primer.storage import raw_generation
+from primer.storage.secret_fields import refuse_secret_fields
 
 
 logger = logging.getLogger(__name__)
@@ -745,6 +746,7 @@ async def list_workspaces(
     order_by: list[OrderBy] | None = Depends(parse_order_by),
     storage=Depends(get_workspace_storage),
 ) -> _PageResp:
+    refuse_secret_fields(WorkspaceRow, order_by=order_by)
     resp = await storage.list(page, order_by=order_by)
     return await _enrich_with_session_counts(resp, request)
 
@@ -758,6 +760,7 @@ async def find_workspaces(
     body: FindRequest,
     storage=Depends(get_workspace_storage),
 ) -> _PageResp:
+    refuse_secret_fields(WorkspaceRow, predicate=body.predicate, order_by=body.order_by)
     return await storage.find(body.predicate, body.page, order_by=body.order_by)
 
 

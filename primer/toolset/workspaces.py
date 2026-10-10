@@ -64,6 +64,7 @@ from primer.model.except_ import (
 )
 from primer.model.except_ import ValidationError as PrimerValidationError
 from primer.model.storage import CursorPage, OffsetPage, OrderBy
+from primer.storage.secret_fields import refuse_secret_fields
 from primer.model.workspace import (
     WORKSPACE_ID_PATTERN,
     Workspace as WorkspaceRow,
@@ -450,7 +451,7 @@ _OnMutate = Callable[[str], Awaitable[None]] | None
 _PrivilegeCheck = Callable[[Any, Any, "ToolContext | None"], ToolCallResult | None] | None
 
 
-def _make_list_handler(storage_factory: Callable[[], Any]) -> ToolHandler:
+def _make_list_handler(storage_factory: Callable[[], Any], model_cls: type) -> ToolHandler:
     async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
         try:
             args = _PaginationArgs.model_validate(arguments)
@@ -460,6 +461,10 @@ def _make_list_handler(storage_factory: Callable[[], Any]) -> ToolHandler:
             if isinstance(exc, ValidationError):
                 return _err_from_validation(exc)
             return _err(str(exc), error_type="bad-request")
+        try:
+            refuse_secret_fields(model_cls, order_by=order_by)
+        except PrimerValidationError as exc:
+            return _err(exc.message, error_type="validation-error")
         return _ok(await storage_factory().list(page, order_by=order_by))
 
     return _handler
@@ -947,7 +952,7 @@ def build_workspaces_toolset(
             "``get_workspace_provider``)."
         ),
         _PaginationArgs,
-        _make_list_handler(_provider_storage),
+        _make_list_handler(_provider_storage, WorkspaceProvider),
         examples=[
             ToolExample(args={}, returns="page of WorkspaceProvider rows"),
             ToolExample(args={"limit": 50, "order_by": ["id:asc"]}),
@@ -1038,7 +1043,7 @@ def build_workspaces_toolset(
             "``get_workspace_template``)."
         ),
         _PaginationArgs,
-        _make_list_handler(_template_storage),
+        _make_list_handler(_template_storage, WorkspaceTemplate),
         examples=[
             ToolExample(args={}, returns="page of WorkspaceTemplate rows"),
             ToolExample(args={"limit": 10}),
@@ -1160,7 +1165,7 @@ def build_workspaces_toolset(
             "fetching one by id (use ``get_workspace``)."
         ),
         _PaginationArgs,
-        _make_list_handler(_workspace_storage),
+        _make_list_handler(_workspace_storage, WorkspaceRow),
         examples=[
             ToolExample(args={}, returns="page of Workspace rows"),
             ToolExample(args={"limit": 20}),
