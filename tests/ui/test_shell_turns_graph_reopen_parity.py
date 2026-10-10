@@ -1,6 +1,6 @@
 """The console numbers a graph session's windows across a REOPEN exactly as the server does, at every cut (ticket 01a11f35, round 3 of #701).
 
-Rule (c): an ``invocation_divider`` closes a graph run that is still open (a record with a ``node_id`` since the last close) and restarts the failure fold, in ``TurnWindowScanner`` and in
+Rule (c): an ``invocation_divider`` closes a graph run that is still open (a record with a ``node_id`` since the last close or copy) and restarts the failure fold, in ``TurnWindowScanner`` and in
 ``SH_newWindowScanner``. The logs below are written by the REAL writers (``tests/session/graph_turn_paths.py``: a failed graph restarted with no message, the old writers' log followed by new invocations, a cancelled
 parked graph, a plain successful reopen); the hand-built shapes cover the divider's edges. For each: the verdict of every record, and for every cut of the log the window each record is filed in and the ordinal of the
 open window, compared with the server's ``turn_windows``.

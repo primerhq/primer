@@ -5,7 +5,7 @@ resume coordinators' early exits; the tool_wait coordinators), and a failed grap
 new one and its end was filed as a copy of the old failure (the second invocation was swallowed: one window, ``usage.turns`` 1, ``/turns/1`` a 404).
 
 The rule (``TurnWindowScanner``, and ``SH_newWindowScanner`` in the console): an ``invocation_divider`` is written ONLY to an ENDED session, so an invocation that is still open when a divider arrives ended without its
-end record. A graph run is "open" when a record with a ``node_id`` came after the last close; the divider then CLOSES it (and is its last record), and in every case it restarts the failure fold (nothing before a
+end record. A graph run is "open" when a record with a ``node_id`` came after the last close or copy; the divider then CLOSES it (and is its last record), and in every case it restarts the failure fold (nothing before a
 reopen is a copy of anything after it). After a closed turn the divider stays INSIDE, the first record of the next window, as before. The residual, accepted and documented: the LAST invocation of a session that
 ended with no end record stays one open window until a reopen.
 
