@@ -54,7 +54,7 @@ from pydantic import BaseModel, Field, ValidationError
 from primer.authz import _role_allows
 from primer.common.validation_errors import without_input
 from primer.model.chat import Tool, ToolCallResult, ToolExample
-from primer.model.common import refuse_served_masks
+from primer.model.common import preserve_masked_secrets, refuse_served_masks
 from primer.model.except_ import (
     BadRequestError,
     ConfigError,
@@ -572,6 +572,12 @@ def _make_update_handler(
             refusal = privilege_check(entity, existing, ctx)
         if refusal is not None:
             return refusal
+        # get_* serves a masked secret (a url file source's password) and this is a full replace, so a caller that reads a row and writes it back would store the mask: the REST routers
+        # run the same helper as an on_pre_update hook. A secret the caller really changed replaces the stored one; a mask for another host or user is refused (01a11d32).
+        try:
+            preserve_masked_secrets(entity, existing)
+        except PrimerValidationError as exc:
+            return _err(exc.message, error_type="validation-error")
         try:
             updated = await storage.update(entity)
         except PrimerError as exc:
@@ -1118,7 +1124,12 @@ def build_workspaces_toolset(
         (
             "Use when editing a recipe in place. Existing materialised "
             "Workspaces are NOT re-materialised; only future creates "
-            "see the new recipe."
+            "see the new recipe. A ``kind=url`` file source's password is "
+            "returned masked (``https://user:**********@host/x``): send the "
+            "body you read back and the stored password is kept for the "
+            "same scheme, host, port and user; a masked URL for another "
+            "host or user answers ``type=validation-error`` (re-enter the "
+            "password)."
         ),
         _UpdateTemplateArgs,
         _make_update_handler(

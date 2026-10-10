@@ -31,6 +31,7 @@ import aiohttp
 from yarl import URL
 
 from primer.common.ssrf import BlockedDestinationError, PublicOnlyResolver, refuse_private_literal
+from primer.common.url_userinfo import mask_userinfo
 from primer.model.except_ import ValidationError as SemanticValidationError
 
 if TYPE_CHECKING:
@@ -62,6 +63,12 @@ def _http_session() -> aiohttp.ClientSession:
     return aiohttp.ClientSession(connector=aiohttp.TCPConnector(resolver=PublicOnlyResolver()))
 
 
+def _shown(url: str) -> str:
+    """``url`` as an error text may name it: the password of its userinfo masked. The fetch itself reads the real URL (aiohttp sends the userinfo as Basic auth); the message goes to the person
+    who created the workspace (a 422 or 500 body) and to the log, and the person who reads it is not the person who stored the credential."""
+    return mask_userinfo(url)
+
+
 class UrlSourceRefusedError(SemanticValidationError, RuntimeError):
     """A url file source points at a destination the guard refuses. It is the caller's input, so it is a 422
     ``/errors/validation-error`` problem, not a 500; it stays a ``RuntimeError`` for callers that catch one."""
@@ -80,7 +87,7 @@ async def _fetch_url(url: str) -> bytes:
         async with asyncio.timeout(_FETCH_TIMEOUT_S):
             return await _fetch_url_unbounded(url)
     except TimeoutError as exc:
-        raise RuntimeError(f"FileSource url={url!r} timed out after {_FETCH_TIMEOUT_S:g}s") from exc
+        raise RuntimeError(f"FileSource url={_shown(url)!r} timed out after {_FETCH_TIMEOUT_S:g}s") from exc
 
 
 async def _fetch_url_unbounded(url: str) -> bytes:
@@ -93,16 +100,16 @@ async def _fetch_url_unbounded(url: str) -> bytes:
                     if resp.status in _REDIRECT_STATUSES:
                         location = resp.headers.get("Location")
                         if not location:
-                            raise RuntimeError(f"FileSource url={url!r} returned {resp.status} without a Location")
+                            raise RuntimeError(f"FileSource url={_shown(url)!r} returned {resp.status} without a Location")
                         url = str(URL(url).join(URL(location)))
                         refuse_private_literal(url)
                         continue
                     if resp.status >= 300:
-                        raise RuntimeError(f"FileSource url={url!r} returned {resp.status}")
+                        raise RuntimeError(f"FileSource url={_shown(url)!r} returned {resp.status}")
                     return await resp.read()
     except BlockedDestinationError as exc:
-        raise UrlSourceRefusedError(f"FileSource url={url!r} refused: {exc}") from exc
-    raise RuntimeError(f"FileSource url={url!r}: more than {_MAX_REDIRECTS} redirects")
+        raise UrlSourceRefusedError(f"FileSource url={_shown(url)!r} refused: {exc}") from exc
+    raise RuntimeError(f"FileSource url={_shown(url)!r}: more than {_MAX_REDIRECTS} redirects")
 
 
 _DocumentResolver = Callable[["FileMount"], Awaitable[bytes]]
@@ -149,7 +156,7 @@ async def resolve_file_sources(
                 actual = hashlib.sha256(content).hexdigest()
                 if actual != expected:
                     raise RuntimeError(
-                        f"FileSource url={url!r} sha256 mismatch: "
+                        f"FileSource url={_shown(url)!r} sha256 mismatch: "
                         f"expected {expected}, got {actual}"
                     )
         elif kind == "document":
