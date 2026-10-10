@@ -308,6 +308,17 @@ def _reads_the_envelope(line: str) -> bool:
         "var ext = ((err && err.envelope && err.envelope.extensions) || {});",
         "const { envelope } = err;",
         "code = e.envelope.detail?.code;",
+        # the shapes the first scan walked around (the #625 review): a bracket access, a destructuring that does not start with it, one over several lines,
+        # an alias, a parameter, a loop, a read on the line after a block comment that mentions it
+        "const e = err['envelope'].extensions;",
+        'const e = err?.["envelope"];',
+        "const { message, envelope } = err;",
+        "const {\n  message,\n  title,\n  envelope,\n} = err;",
+        "const { envelope: env } = err;",
+        "function Handler({ onClose, envelope }) {",
+        "const show = ({ envelope }) => envelope.detail;",
+        "for (const { envelope } of errors) {",
+        "/* the reader does this */\nconst e = err.envelope;",
     ],
 )
 def test_the_scan_sees_a_component_read_the_envelope(line: str) -> None:
@@ -322,6 +333,12 @@ def test_the_scan_sees_a_component_read_the_envelope(line: str) -> None:
         "// err.envelope.extensions.code is read by the reader",
         'title="the problem envelope of a failed write"',
         "const item = list.items.find((x) => x.id === id);",
+        "/* err.envelope.extensions.code\n   is read by the reader */",
+        "// const { message, envelope } = err;",
+        "const note = 'see err.envelope in the docs';",
+        'const url = "http://example.com/a"; const ok = { envelope: 1 };',
+        "const { message, title } = err;",
+        "const extra = { envelopes: [] };",
     ],
 )
 def test_the_scan_leaves_the_reader_and_prose_alone(line: str) -> None:
@@ -366,6 +383,14 @@ def _titles_that_compose_a_code(text: str) -> list[int]:
         "title={toggleError.code\n  ? `Toggle failed (${toggleError.code})`\n  : \"Toggle failed\"}",
         "pushToast({ title: `Failed (${err.code})`, kind: \"error\" })",
         "title={submitError && submitError.code ? submitError.code : \"x\"}",
+        # a `}` of a template placeholder before the code ended the first scan's match
+        'title={isEdit ? `Save (${name}) failed (${error.code})` : "Save failed"}',
+        "pushToast({ title: isEdit ? `Failed (${a})` : `Failed (${err.code})`, kind: \"error\" })",
+        # a destructured code variable, a bracket access, the code on a later line
+        'const { code } = refusal;\n<Banner title={code ? `Save failed (${code})` : "Save failed"} />',
+        'title={`Save failed (${err["code"]})`}',
+        "title={\n  isEdit\n    ? \"Save failed\"\n    : `Create failed (${\n      err.code\n    })`\n}",
+        "pushToast({\n  kind: \"error\",\n  title: `Failed (${r.code})`,\n})",
     ],
 )
 def test_the_title_scan_sees_a_code_in_a_title(text: str) -> None:
@@ -380,6 +405,12 @@ def test_the_title_scan_sees_a_code_in_a_title(text: str) -> None:
         "// title={error.code ? `Save failed (${error.code})` : \"Save failed\"}",
         "detail={error.code ? error.code : \"\"}",
         "<Chip title=\"x\" label={row.code} />",
+        # the word "code" in the words of a title is not a code; the value of `title:` ends at its comma
+        'title={"Verification code"}',
+        "title={`Invalid code ${n}`}",
+        'pushToast({ title: "Code review", detail: err.code })',
+        "title={`${a} of ${b} failed`}",
+        'const { code } = refusal;\n<Banner title="Save failed" detail={code} />',
     ],
 )
 def test_the_title_scan_leaves_plain_titles_and_other_props_alone(text: str) -> None:
@@ -595,16 +626,20 @@ def test_a_malformed_validation_entry_does_not_break_the_reader(errors) -> None:
 
 
 @pytest.mark.parametrize(
-    ("loc", "field", "message"),
+    ("loc", "field", "message", "said"),
     [
-        (["body"], "body", "Field required"),                         # the whole body is missing or not an object: "body: Field required" names nothing
-        (["body", 1], "1", "JSON decode error"),                      # FastAPI's position in a body that is not JSON: "1: JSON decode error"
-        (["body", "items", 2], "items.2", "Input should be a valid string"),   # a list index is not a field
-        (["query"], "query", "Field required"),
-        (["body", "items", 2, "name"], "items.2.name", "Field required"),
+        (["body"], "body", "Field required", "Field required"),                  # the whole body is missing or not an object: "body: Field required" names nothing
+        (["body", 1], "1", "JSON decode error", "JSON decode error"),            # FastAPI's character position in a body that is not JSON: "1: JSON decode error"
+        (["query"], "query", "Field required", "Field required"),
+        (["body", 0], "0", "Input should be a valid string", "Input should be a valid string"),   # two long, ending in a number: a position, as above
+        # a list item of a named field IS a field the person can find: the first version of the skip dropped it (a scalar list item lost its field vs main)
+        (["body", "items", 2], "items.2", "Input should be a valid string", "items.2: Input should be a valid string"),
+        (["body", "members", 0], "members.0", "Input should be a valid string", "members.0: Input should be a valid string"),
+        (["query", "ids", 3], "ids.3", "Input should be a valid integer", "ids.3: Input should be a valid integer"),
+        (["body", "items", 2, "name"], "items.2.name", "Field required", "items.2.name: Field required"),
     ],
 )
-def test_the_field_goes_in_front_of_a_message_only_when_it_names_a_field(loc: list, field: str, message: str) -> None:
+def test_the_field_goes_in_front_of_a_message_only_when_it_names_a_field(loc: list, field: str, message: str, said: str) -> None:
     env = {
         "type": "/errors/validation-error", "title": "Validation Error", "status": 422, "detail": "failed",
         "extensions": {"errors": [{"type": "x", "loc": loc, "msg": message}]},
@@ -612,6 +647,5 @@ def test_the_field_goes_in_front_of_a_message_only_when_it_names_a_field(loc: li
 
     got = _read(_context(), env)
 
-    named = loc[-1] != "body" and loc != ["query"] and not isinstance(loc[-1], int)
     assert got["sentence"] == message and got["field"] == field
-    assert got["message"] == (f"{field}: {message}" if named else message), got
+    assert got["message"] == said, got
