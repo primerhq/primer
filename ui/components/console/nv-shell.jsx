@@ -76,14 +76,16 @@ function NV_ToastHost() {
                   {" · "}
                   {/* The request id is what an operator pastes into a
                       bug report; copy beats transcription. */}
-                  <a
+                  <button
+                    type="button"
+                    aria-label="Copy request id"
                     data-testid="toast-copy-request-id"
                     onClick={function () {
                       if (navigator.clipboard && navigator.clipboard.writeText) {
                         navigator.clipboard.writeText(rid).catch(function () {});
                       }
                     }}
-                  >copy</a>
+                  >copy</button>
                 </div>
               ) : null}
               {Array.isArray(t.actions) && t.actions.length ? (
