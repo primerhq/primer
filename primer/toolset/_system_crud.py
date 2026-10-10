@@ -46,6 +46,7 @@ from primer.model.storage import (
     Predicate,
 )
 from primer.model.yield_ import ToolContext, Yielded, YieldToWorker
+from primer.storage.secret_fields import refuse_secret_fields
 from primer.toolset._system_common import (
     SYSTEM_TOOLSET_ID,
     _DeleteByIdArgs,
@@ -358,6 +359,10 @@ def _crud_tools_for(
             if isinstance(exc, ValidationError):
                 return _err_from_validation(exc)
             return _err(str(exc), error_type="bad-request")
+        try:
+            refuse_secret_fields(model_cls, order_by=order_by)
+        except PrimerValidationError as exc:
+            return _err(exc.message, error_type="validation-error")
         try:
             response = await storage.list(page, order_by=order_by)
         except PrimerError as exc:
@@ -690,6 +695,10 @@ def _crud_tools_for(
             if isinstance(exc, ValidationError):
                 return _err_from_validation(exc)
             return _err(str(exc), error_type="bad-request")
+        try:
+            refuse_secret_fields(model_cls, predicate=predicate, order_by=order_by)
+        except PrimerValidationError as exc:
+            return _err(exc.message, error_type="validation-error")
         try:
             response = await storage.find(predicate, page, order_by=order_by)
         except PrimerError as exc:

@@ -32,6 +32,7 @@ from primer.storage._predicate_common import (
     render_order_by as _render_order_by_common,
     strip_optional as _strip_optional,
 )
+from primer.storage.secret_fields import refuse_secret_path as _refuse_secret_path
 
 
 # ---------- Field-type resolution ----------------------------------------
@@ -65,6 +66,11 @@ def _render_field_expr(model_class: type[BaseModel], path: str) -> str:
         raise BadRequestError(
             f"field {path!r} is not declared on model {model_class.__name__!r}"
         )
+    # The one storage backstop: a secret-bearing field is compared against the
+    # STORED (clear) document, never the masked read, so it cannot be a
+    # predicate / order_by / cursor key (ticket 01a1212a). The REST and tool
+    # layers refuse it first; this catches every internal caller too.
+    _refuse_secret_path(model_class, path)
     json_path = "$." + ".".join(parts)
     # SQLite JSON path keys use $.a.b notation. Field names are valid
     # Python identifiers, so they're safe to inline; we still escape
@@ -201,6 +207,7 @@ class _SqlitePredicateTranslator:
                 f"field {p.left.name!r} is not declared on model "
                 f"{self._model.__name__!r}"
             )
+        _refuse_secret_path(self._model, p.left.name)
         json_path = ("$." + ".".join(parts)).replace("'", "''")
         placeholder = self.append_param(p.right.value)
         return (

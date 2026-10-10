@@ -32,6 +32,7 @@ from primer.api.routers._references import ReferenceCheck, build_reference_block
 from primer.api.pagination import FindRequest, parse_order_by, parse_page
 from primer.model.common import Identifiable, preserve_masked_secrets, refuse_served_masks
 from primer.model.except_ import ConflictError, NotFoundError
+from primer.storage.secret_fields import refuse_secret_fields
 from primer.model.storage import (
     CursorPageResponse,
     FieldRef,
@@ -505,6 +506,7 @@ def make_crud_router(
             order_by: list[OrderBy] | None = Depends(parse_order_by),
             storage=Depends(storage_dep),
         ) -> _PageResp:
+            refuse_secret_fields(model_cls, order_by=order_by)
             predicate = Predicate(
                 left=FieldRef(name=scope_field),
                 op=Op.EQ,
@@ -523,6 +525,7 @@ def make_crud_router(
             body: FindRequest = Body(...),
             storage=Depends(storage_dep),
         ) -> _PageResp:
+            refuse_secret_fields(model_cls, predicate=body.predicate, order_by=body.order_by)
             scope_pred = Predicate(
                 left=FieldRef(name=scope_field),
                 op=Op.EQ,
@@ -674,6 +677,7 @@ def make_crud_router(
             ),
             storage=Depends(storage_dep),
         ) -> _PageResp:
+            refuse_secret_fields(model_cls, order_by=order_by)
             # q present AND this entity is searchable -> ILIKE substring find,
             # preserving the same page/order_by handling and the identical
             # OffsetPageResponse {items, total} shape as the plain list.
@@ -696,6 +700,7 @@ def make_crud_router(
             body: FindRequest,
             storage=Depends(storage_dep),
         ) -> _PageResp:
+            refuse_secret_fields(model_cls, predicate=body.predicate, order_by=body.order_by)
             return await storage.find(
                 body.predicate, body.page, order_by=body.order_by
             )
