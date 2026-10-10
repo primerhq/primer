@@ -8,6 +8,9 @@ What is counted: a ``<Btn`` or ``<button`` opening tag whose ``disabled={...}`` 
 name: ``createBusy``, ``del.loading``, ``attachmentsPending``). ``disabled={!canSubmit}`` and ``disabled={referencing.length > 0}`` are not requests and are not counted; a button with both
 (``disabled={!canSubmit || busy}``) is, and is fixed by splitting it: ``disabled={!canSubmit} busy={busy}``. Comments are not code (a ``//`` that starts its line ends it before a ``/*`` is looked for).
 
+The submit button's own ``disabled={!canSubmit}`` counts too when ``canSubmit`` is a ``const`` of the same file whose initializer folds in a negated request (``const canSubmit = !busy && !!name.trim()``): that is the
+same button turning disabled for the length of its request, one hop away. The cure is to leave the request out of the flag (``const formReady = !!name.trim()``) and say it on the button (``disabled={!formReady} busy={busy}``).
+
 What the scan does NOT see (review of #732, N8): a ``disabled`` that arrives through a spread (``{...props}``); only the FIRST ``disabled={`` of a tag is read (a second one, which React keeps, is invisible); ``disabled = {x}`` with spaces;
 an alias (``const inFlight = del.loading``); and an in-flight name that is not in the list (``testing``, ``fetching``, ``isMutating``, ``installing``, ``refreshing``). ``busy || x``, ``x || busy``, a ternary and a nested JSX
 expression ARE counted. The ticket for widening it (aliases, ``<input>``/``<select>``/``<textarea>``) is T1 of the review.
@@ -27,37 +30,35 @@ IN_FLIGHT = re.compile(
     r"\w*(?:[Bb]usy|[Ss]aving|[Ss]ubmitting|[Ss]kipping|[Pp]ending|[Ll]oading|[Ww]orking|[Dd]eleting|[Cc]reating|[Rr]unning|[Ss]ending|[Ff]iring|[Pp]robing|[Rr]etrying|[Ss]topping|[Dd]raining|[Cc]hecking)\w*"
 )
 BUTTON = re.compile(r"<(?:Btn|button)\b")
+# ``!busy``, ``!create.loading``: a request that is NOT out, as a conjunct of a flag
+NEGATED_IN_FLIGHT = re.compile(r"!\s*(?:\w+\.)*" + IN_FLIGHT.pattern)
+CONST = re.compile(r"\b(?:const|let)\s+(\w+)\s*=")
 DISABLED = re.compile(r"(?<![\w-])disabled=\{")
 
 # the buttons that are still natively disabled while a request is out, per file (can only shrink)
 BASELINE: dict[str, int] = {
-    "admin_users.jsx": 7,
+    "admin_users.jsx": 3,
     "agents.jsx": 3,
-    "api_tokens.jsx": 3,
-    "approvals.jsx": 4,
+    "approvals.jsx": 3,
     "auth.jsx": 3,
     "channel_rules.jsx": 2,
     "channels.jsx": 1,
     "console/nv-mobile-shell.jsx": 3,
     "console/nv-overlays.jsx": 1,
-    "console/nv-platform.jsx": 1,
     "console/nv-session-doc.jsx": 3,
     "console/nv-system.jsx": 1,
     "graph-builder/gb-dryrun.jsx": 1,
     "graph-builder/gb-palette.jsx": 1,
     "graph-builder/graph-builder.jsx": 2,
-    "graphs.jsx": 1,
     "harness_outbound_builder.jsx": 4,
-    "harnesses.jsx": 8,
+    "harnesses.jsx": 9,
     "internal-collections.jsx": 5,
     "knowledge.jsx": 9,
-    "linked_accounts.jsx": 2,
     "mcp.jsx": 3,
-    "model-profiles.jsx": 2,
+    "model-profiles.jsx": 1,
     "provider-catalog.jsx": 1,
     "provider-form.jsx": 4,
     "semantic-search.jsx": 4,
-    "services.jsx": 2,
     "session-detail.jsx": 4,
     "sessions-list.jsx": 3,
     "setup-wizard.jsx": 5,
@@ -65,14 +66,12 @@ BASELINE: dict[str, int] = {
     "shared/session-controls.jsx": 1,
     "shared/transcript.jsx": 2,
     "shell/sh-activity.jsx": 2,
-    "sso_admin.jsx": 5,
+    "sso_admin.jsx": 1,
     "toolsets.jsx": 4,
     "toolsets/python-editor.jsx": 1,
-    "triggers.jsx": 17,
+    "triggers.jsx": 18,
     "workers.jsx": 3,
     "workspaces.jsx": 9,
-    "workspaces/providers.jsx": 1,
-    "workspaces/templates.jsx": 1,
 }
 
 
@@ -88,13 +87,40 @@ def disabled_expression(tag: str) -> str | None:
     return tag[m.end() : i - 1]
 
 
+def initializer(text: str, start: int) -> str:
+    """The text from ``start`` to the first ``;`` outside brackets and strings (an arrow function in the initializer has its own)."""
+    depth, quote = 0, None
+    for i in range(start, min(len(text), start + 4000)):
+        ch = text[i]
+        if quote:
+            if ch == quote and text[i - 1] != "\\":
+                quote = None
+        elif ch in "\"'`":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == ";" and depth <= 0:
+            return text[start:i]
+    return text[start : start + 4000]
+
+
+def folded_flags(text: str) -> set[str]:
+    """The names of the ``const``/``let`` flags in ``text`` whose initializer has a negated request in it (``const canSubmit = !busy && ok``)."""
+    return {m.group(1) for m in CONST.finditer(text) if NEGATED_IN_FLIGHT.search(initializer(text, m.end()))}
+
+
 def busy_disabled(text: str) -> list[tuple[int, str]]:
-    """``(line, expression)`` of every ``<Btn>`` or ``<button>`` in ``text`` whose ``disabled`` names a request in flight."""
+    """``(line, expression)`` of every ``<Btn>`` or ``<button>`` in ``text`` whose ``disabled`` names a request in flight, or negates a flag of the file that has one folded in."""
     text = strip_comments(text)
+    flags = folded_flags(text)
     found = []
     for m in BUTTON.finditer(text):
         expression = disabled_expression(opening_tag(text, m.start()))
-        if expression is not None and IN_FLIGHT.search(expression):
+        if expression is None:
+            continue
+        if IN_FLIGHT.search(expression) or any(re.search(rf"!\s*{re.escape(name)}\b", expression) for name in flags):
             found.append((text.count("\n", 0, m.start()) + 1, " ".join(expression.split())))
     return found
 
@@ -184,3 +210,29 @@ def test_a_file_directly_under_ui_is_counted_and_does_not_raise(tmp_path: Path) 
     (tmp_path / "app.jsx").write_text("<Btn disabled={busy}>x</Btn>\n", encoding="utf-8")
     (tmp_path / "components" / "page.jsx").write_text("<Btn disabled={busy}>x</Btn>\n<Btn disabled={saving}>y</Btn>\n", encoding="utf-8")
     assert counts(tmp_path) == {"app.jsx": 1, "page.jsx": 2}
+
+
+def test_a_flag_with_a_request_folded_in_counts_where_a_button_negates_it() -> None:
+    text = (
+        "const canSubmit = !busy && !!name.trim();\n"
+        "<Btn disabled={!canSubmit}>a</Btn>\n"
+        "<Btn disabled={!canSubmit || other}>b</Btn>\n"
+        "<Btn disabled={canSubmit}>positive use is not the shape</Btn>\n"
+    )
+    assert busy_disabled(text) == [(2, "!canSubmit"), (3, "!canSubmit || other")]
+
+
+def test_a_flag_without_a_request_in_it_does_not() -> None:
+    assert busy_disabled("const canSubmit = !!name.trim();\n<Btn disabled={!canSubmit}>a</Btn>") == []
+    assert busy_disabled("const shown = busy;\n<Btn disabled={!shown}>a</Btn>") == [], "a flag that only READS the request is not a flag with `!busy` in it"
+
+
+def test_the_flag_is_found_through_a_ternary_and_an_arrow_function() -> None:
+    ternary = "const canSubmit = isEdit ? !busy : (!busy && configValid);\n<Btn disabled={!canSubmit}>a</Btn>"
+    assert busy_disabled(ternary) == [(2, "!canSubmit")]
+    arrow = "const canSubmit = !create.loading && fields.every((f) => {\n  if (!f.required) return true;\n  return f.ok;\n});\n<Btn disabled={!canSubmit}>a</Btn>"
+    assert busy_disabled(arrow) == [(5, "!canSubmit")]
+
+
+def test_a_flag_of_another_file_is_not_known_here() -> None:
+    assert busy_disabled("<Btn disabled={!canSubmit}>a</Btn>") == []
