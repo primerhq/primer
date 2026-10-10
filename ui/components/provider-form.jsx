@@ -519,23 +519,29 @@ function PC_ProviderForm({
     }
   };
 
+  // The entry is SHARED with the Register menu (one request, not two), and useResource only copies an entry's state to whoever joins it: a menu request that FAILED reaches every form opened after it,
+  // an edit form included, which would show the menu's old error with Save off and never fetch (nothing polls: pollMs is null). A form that mounts on a failed entry with nothing in flight asks once.
+  React.useEffect(() => {
+    if (types.error && !types.data && !types.loading && typeof types.refetch === "function") types.refetch();
+  }, []);
+
   // Try again repeats the request for the kind's fields. useResource keeps `error` until the answer, so the retry in flight is `types.loading` with the alert still up: the button says it is trying
-  // and stays focusable (aria-disabled, same reason as Save). When the answer arrives the button is gone, and the focus it had is lost to <body>: it goes to the form's first field, unless the operator
-  // has already moved it somewhere else.
+  // and stays focusable (aria-disabled, same reason as Save). When the answer arrives the button is gone, whatever the answer says (the fields, or a map that does not name the kind), and the focus it
+  // had is lost to <body>: it goes to the form's first field, unless the operator has already moved it somewhere else.
   const retryTypes = () => {
     if (types.loading || typeof types.refetch !== "function") return;
     retried.current = true;
     types.refetch();
   };
   React.useEffect(() => {
-    if (!shapeReady || !retried.current) return;
+    if (typesFailed || !retried.current) return;
     retried.current = false;
     const root = rootRef.current;
     const held = document.activeElement;
     if (!root || (held && held !== document.body)) return;
     const first = root.querySelector("input:not([disabled]), select:not([disabled]), textarea:not([disabled])");
     if (first) first.focus();
-  }, [shapeReady]);
+  }, [typesFailed]);
 
   const runTest = async () => {
     setBusy(true);

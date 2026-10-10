@@ -152,7 +152,11 @@ function PC_RegisterDropdown({ klass, onPick }) {
   return (
     <div className="pc-register" data-testid="provider-register">
       <Btn kind="primary" data-testid="provider-register-toggle"
-        onClick={() => setOpen((v) => !v)}>
+        onClick={() => {
+          // A request that failed leaves the entry in error and nothing asks again: opening the menu on it asks once (a request already out is not repeated).
+          if (!open && types.error && !types.data && !types.loading && typeof types.refetch === "function") types.refetch();
+          setOpen((v) => !v);
+        }}>
         Register provider <Icon name={open ? "chevron-up" : "chevron-down"} size={11} />
       </Btn>
       {open ? (
