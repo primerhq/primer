@@ -29,6 +29,8 @@ var React = {
 
 // ---- a fake page: elements in document order, native Tab along it ----
 var PAGE = [];                       // every tabbable element, in document order
+var DOC = [];                        // every element, tabbable or not (a tabindex -1 heading), in document order
+var Node = { DOCUMENT_POSITION_PRECEDING: 2, DOCUMENT_POSITION_FOLLOWING: 4, DOCUMENT_POSITION_CONTAINS: 8, DOCUMENT_POSITION_CONTAINED_BY: 16 };
 var document = {
   activeElement: null,
   contains: function (el) { return PAGE.indexOf(el) >= 0 || el.__node === true; },
@@ -38,6 +40,13 @@ function el(name, opts) {
   var e = { name: name, parent: opts.parent || null, visible: opts.visible !== false, listeners: {}, focusables: [] };
   e.focus = function () { document.activeElement = e; };
   e.contains = function (o) { while (o) { if (o === e) return true; o = o.parent; } return false; };
+  // what the browser says of `o` relative to this element: PRECEDING / FOLLOWING in document order, plus CONTAINS / CONTAINED_BY for an ancestor / descendant
+  e.compareDocumentPosition = function (o) {
+    if (o === e) return 0;
+    var flags = DOC.indexOf(o) > DOC.indexOf(e) ? Node.DOCUMENT_POSITION_FOLLOWING : Node.DOCUMENT_POSITION_PRECEDING;
+    if (e.contains(o)) flags |= Node.DOCUMENT_POSITION_CONTAINED_BY; else if (o.contains && o.contains(e)) flags |= Node.DOCUMENT_POSITION_CONTAINS;
+    return flags;
+  };
   e.querySelectorAll = function () { return e.focusables.slice(); };      // which descendants match the selector is the browser's job
   e.addEventListener = function (t, fn) { (e.listeners[t] = e.listeners[t] || []).push(fn); };
   e.removeEventListener = function (t, fn) { e.listeners[t] = (e.listeners[t] || []).filter(function (f) { return f !== fn; }); };
@@ -49,8 +58,15 @@ function press(node, shift) {
   var ev = { type: 'keydown', key: 'Tab', shiftKey: !!shift, defaultPrevented: false, preventDefault: function () { this.defaultPrevented = true; } };
   (node.listeners['keydown'] || []).forEach(function (fn) { fn(ev); });
   if (!ev.defaultPrevented) {
-    var i = PAGE.indexOf(document.activeElement);
-    var next = PAGE[(i + (shift ? -1 : 1) + PAGE.length) % PAGE.length];
+    var cur = document.activeElement, i = PAGE.indexOf(cur), next;
+    if (i >= 0 || DOC.indexOf(cur) < 0) {
+      next = PAGE[(i + (shift ? -1 : 1) + PAGE.length) % PAGE.length];                  // a tab stop: the next one along the page
+    } else {
+      // parked on an element that is not a tab stop: the browser goes to the next (previous) tab stop from there in document order
+      var pos = DOC.indexOf(cur);
+      var order = shift ? DOC.slice(0, pos).reverse() : DOC.slice(pos + 1);
+      next = order.filter(function (x) { return PAGE.indexOf(x) >= 0; })[0] || PAGE[shift ? PAGE.length - 1 : 0];
+    }
     next.focus();
   }
   return ev;
@@ -85,8 +101,23 @@ function scene() {
   var first = el('first', { parent: dialog }), middle = el('middle', { parent: dialog }), last = el('last', { parent: dialog });
   dialog.focusables = [first, middle, last];
   [opener, dialog, first, middle, last, after].forEach(function (x) { PAGE.push(x); });
+  DOC.length = 0; PAGE.forEach(function (x) { DOC.push(x); });
   document.activeElement = opener;
   return { opener: opener, dialog: dialog, first: first, middle: middle, last: last, after: after };
+}
+// The same dialog with elements that hold focus but are no tab stop (tabindex -1: a heading a removal hands focus to, a status line, a container),
+// before the first tab stop (head), between two (gap), inside the last one (inside) and after it (tail).
+function scene2() {
+  PAGE.length = 0; DOC.length = 0;
+  var opener = el('opener'), after = el('after');
+  var dialog = el('dialog'); dialog.__node = true;
+  var head = el('head', { parent: dialog }), first = el('first', { parent: dialog }), middle = el('middle', { parent: dialog });
+  var gap = el('gap', { parent: dialog }), last = el('last', { parent: dialog }), inside = el('inside', { parent: last }), tail = el('tail', { parent: dialog });
+  dialog.focusables = [first, middle, last];
+  [opener, dialog, first, middle, last, after].forEach(function (x) { PAGE.push(x); });
+  [opener, dialog, head, first, middle, gap, last, inside, tail, after].forEach(function (x) { DOC.push(x); });
+  document.activeElement = opener;
+  return { opener: opener, dialog: dialog, head: head, first: first, middle: middle, gap: gap, last: last, inside: inside, tail: tail, after: after };
 }
 function open(s, opts, deps) {
   var ref = { current: s.dialog };
@@ -313,3 +344,63 @@ def test_hidden_elements_are_not_tab_stops_so_the_wrap_goes_to_the_last_visible_
 
 def test_the_hook_is_published_for_the_components_that_call_it(ctx) -> None:
     assert _ev(ctx, "typeof window.primerApi.useFocusTrap + '/' + typeof window.primerApi.focusablesOf") == "function/function"
+
+
+# ---- round 2 of #705 (board task 01a122c8-33c6): a focus parked on an element that is no tab stop ----
+
+
+def test_tab_from_an_element_after_the_last_tab_stop_wraps_to_the_first(ctx) -> None:
+    """The fake page's native Tab from a tabindex -1 element after the last tab stop goes on to the page behind the scrim; the trap wrapped only when focus WAS the last tab stop (or outside)."""
+    out = _ev(ctx, """(function () {
+      var s = scene2(), ref = open(s); commit();
+      s.tail.focus();
+      var ev = press(s.dialog, false);
+      return { prevented: ev.defaultPrevented, now: document.activeElement.name };
+    })()""")
+    assert out == {"prevented": True, "now": "first"}, "a Tab from after the last tab stop reached the page behind the dialog"
+
+
+def test_shift_tab_from_an_element_before_the_first_tab_stop_wraps_to_the_last(ctx) -> None:
+    out = _ev(ctx, """(function () {
+      var s = scene2(), ref = open(s); commit();
+      s.head.focus();
+      var ev = press(s.dialog, true);
+      return { prevented: ev.defaultPrevented, now: document.activeElement.name };
+    })()""")
+    assert out == {"prevented": True, "now": "last"}, "a Shift+Tab from before the first tab stop reached the page in front of the dialog"
+
+
+def test_tab_from_inside_the_last_tab_stop_wraps_too(ctx) -> None:
+    """An element inside the last tab stop (a tabindex -1 span in a button) has nothing after it in the dialog either."""
+    out = _ev(ctx, """(function () {
+      var s = scene2(), ref = open(s); commit();
+      s.inside.focus();
+      var ev = press(s.dialog, false);
+      return { prevented: ev.defaultPrevented, now: document.activeElement.name };
+    })()""")
+    assert out == {"prevented": True, "now": "first"}
+
+
+def test_a_parked_element_between_two_tab_stops_is_left_to_the_browser(ctx) -> None:
+    """The wrap is for the ends only: between two tab stops the browser's own Tab and Shift+Tab already stay inside."""
+    out = _ev(ctx, """(function () {
+      var s = scene2(), ref = open(s); commit();
+      s.gap.focus();
+      var fwd = press(s.dialog, false), after = document.activeElement.name;
+      s.gap.focus();
+      var back = press(s.dialog, true), before = document.activeElement.name;
+      return { fwd: fwd.defaultPrevented, after: after, back: back.defaultPrevented, before: before };
+    })()""")
+    assert out == {"fwd": False, "after": "last", "back": False, "before": "middle"}
+
+
+def test_without_the_trap_a_native_tab_from_after_the_last_tab_stop_leaves_the_dialog(ctx) -> None:
+    """The control for the three tests above: the same scene with no listener goes to the page behind (Tab) and in front (Shift+Tab); if the fake page stopped modelling that they would pass for the wrong reason."""
+    out = _ev(ctx, """(function () {
+      var s = scene2(), ref = { current: s.dialog };
+      render(ref, false, null, []); commit();
+      s.tail.focus(); press(s.dialog, false); var fwd = document.activeElement.name;
+      s.head.focus(); press(s.dialog, true); var back = document.activeElement.name;
+      return { fwd: fwd, back: back };
+    })()""")
+    assert out == {"fwd": "after", "back": "dialog"}
