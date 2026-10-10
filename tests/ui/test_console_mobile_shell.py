@@ -696,7 +696,7 @@ def test_fact_sheet_is_generic_not_per_entity_kind() -> None:
     """One component reading {name, sub, chip, facts} - no per-kind
     branches for the body (the footer's triggers-vs-everything-else
     split is the one deliberate exception, tested separately below)."""
-    m = re.search(r"function NV_MobileFactSheet\(props\)[\s\S]{0,3600}", MOBILE)
+    m = re.search(r"function NV_MobileFactSheet\(props\)[\s\S]*?\n\}\n", MOBILE)
     assert m
     body = m.group(0)
     assert "cardVM.facts" in body
@@ -716,13 +716,13 @@ def test_fact_rows_filter_out_empty_facts_before_indexing() -> None:
     had one empty fact (e.g. an agent with no model_profile_id yet).
     Caught by an actual live click during the M5 verification pass, not
     a static read - do not remove this filter."""
-    m = re.search(r"function NV_MobileFactSheet\(props\)[\s\S]{0,3600}", MOBILE)
+    m = re.search(r"function NV_MobileFactSheet\(props\)[\s\S]*?\n\}\n", MOBILE)
     assert m
     assert "(cardVM.facts || []).filter(Boolean).map(" in m.group(0)
 
 
 def test_triggers_get_fire_now_everything_else_says_edit_on_desktop() -> None:
-    m = re.search(r"function NV_MobileFactSheet\(props\)[\s\S]{0,3600}", MOBILE)
+    m = re.search(r"function NV_MobileFactSheet\(props\)[\s\S]*?\n\}\n", MOBILE)
     assert m
     body = m.group(0)
     assert 'props.kind === "triggers"' in body
