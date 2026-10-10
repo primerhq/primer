@@ -9,6 +9,7 @@ backend's own predicate translator.
 from __future__ import annotations
 
 import base64
+import datetime
 import json
 from typing import Any
 
@@ -98,21 +99,25 @@ def _value_matches_field(model: type[BaseModel], field: str, value: Any) -> bool
     int field is therefore refused here as a bad cursor, so the two backends
     agree (SQLite would otherwise just return no rows) and neither answers 5xx.
 
-    The id tiebreaker (a text column) is checked by the caller. A dotted path
-    resolves to ``Any`` (the backend compares it as text and would reject a
-    non-string bind too), so only a string is accepted there.
+    The id tiebreaker (a text column) is checked by the caller. Only a type
+    the field actually declares is enforced: a declared string type (``str``,
+    a ``str`` enum, a date or time, all dumped as JSON strings) takes a
+    string; a key with no declared scalar type (a dotted path resolves to
+    ``Any``, as do unions and the like) accepts any JSON scalar, as the
+    server's own cursor for it may carry a number.
     """
     if value is None:
         return True   # a NULL seek key (NULLS LAST); no typed bind
-    annotation = _strip_optional(_field_annotation(model, field))
-    if annotation is bool:
+    declared = _strip_optional(_field_annotation(model, field))
+    if declared is bool:
         return isinstance(value, bool)
-    if annotation is int:
+    if declared is int:
         return isinstance(value, int) and not isinstance(value, bool)
-    if annotation is float:
+    if declared is float:
         return isinstance(value, (int, float)) and not isinstance(value, bool)
-    # str, or a dotted path (``Any``), both compared as text: a string only.
-    return isinstance(value, str)
+    if isinstance(declared, type) and issubclass(declared, (str, datetime.date, datetime.time)):
+        return isinstance(value, str)
+    return True   # no declared scalar type to check against
 
 
 def _decode_cursor_for(
