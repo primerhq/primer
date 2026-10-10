@@ -134,6 +134,21 @@ def test_a_url_password_that_holds_whitespace_is_masked(text: str, secrets: tupl
 
 
 @pytest.mark.parametrize(
+    ("text", "kept"),
+    [
+        pytest.param("https://user:@host.example/x", "https://**********@host.example/x", id="an empty password"),
+        pytest.param("https://ghp_abcdefghij@github.com/org/repo failed again", "https://**********@github.com/org/repo failed again", id="a lone token"),
+    ],
+)
+def test_the_whitespace_reading_that_runs_first_leaves_a_lone_userinfo_to_the_whole_mask(text: str, kept: str) -> None:
+    """Round 3 runs the whitespace-aware reading before the whitespace-free lead. It must not take over a userinfo with no password: the username is then the only candidate secret and is masked whole
+    (the rule of ``mask_userinfo``), which a ``user:**********`` rewrite would have shown."""
+    out = redact_payload({"leaf": text})["leaf"]
+
+    assert out == kept, out
+
+
+@pytest.mark.parametrize(
     "text",
     [
         pytest.param("http://svc error: write to admin@example.com", id="prose that begins with a scheme and holds an e-mail address"),

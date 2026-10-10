@@ -7,7 +7,10 @@ Two URLs have the same origin when their scheme, host and port are equal after t
 port of the scheme (80 for ``http`` / ``ws``, 443 for ``https`` / ``wss``) is the same as no port. The userinfo, path, query and fragment are not part of an origin. A value that is not
 ``scheme://host...`` (a typo, a bare word) is its own origin, compared as the text: unchanged keeps the secret, any change is a move. So is a value whose AUTHORITY (the part between
 ``://`` and the first ``/``, ``?`` or ``#``) holds a backslash, whitespace or a control character: ``urlsplit`` and the client that makes the request read such a host differently
-(``https://attacker.example\\@home.example`` is ``home.example`` to one and ``attacker.example`` to the other), so neither reading is trusted.
+(``https://attacker.example\\@home.example`` is ``home.example`` to one and ``attacker.example`` to the other), so neither reading is trusted. The authority is judged TWICE, because a
+scan for the first ``://`` can be steered to the wrong one: a tab, CR or LF in the scheme separator (``https:<TAB>//attacker.example\\@home.example/x://y``) puts the first ``://`` in the path,
+while ``urlsplit`` drops the control character and reads ``home.example`` and a WHATWG client (``HttpUrl``) reads ``attacker.example`` (review of #711, round 2, N4b). So the netloc ``urlsplit``
+itself read is checked for the same characters, and a value that holds a tab, CR or LF anywhere is compared as text.
 """
 
 from __future__ import annotations
@@ -31,17 +34,24 @@ def _ambiguous_authority(text: str) -> bool:
     return any(ch == "\\" or ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in rest)
 
 
+def _ambiguous_chars(text: str) -> bool:
+    return any(ch == "\\" or ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in text)
+
+
 def origin_of(url: str) -> Origin:
     """``("url", scheme, host, port)`` for a URL with a host, else ``("text", url)``; two values with the same origin compare equal."""
     text = url.strip()
-    if _ambiguous_authority(text):
+    if _ambiguous_authority(text) or any(ch in text for ch in "\t\r\n"):
         return ("text", text)
     try:
         parts = urlsplit(text)
         host = parts.hostname
         port = parts.port
+        netloc = parts.netloc
     except ValueError:
         return ("text", text)
+    if _ambiguous_chars(netloc):
+        return ("text", text)          # the authority urlsplit itself read: a scan for the first :// may have looked at another
     if not parts.scheme or "://" not in text or not host:
         return ("text", text)
     scheme = parts.scheme.lower()

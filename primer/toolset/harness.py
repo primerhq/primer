@@ -32,7 +32,9 @@ from pydantic import SecretStr
 
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.toolset._describe import make_tool
+from primer.model.common import refuse_served_masks
 from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.except_ import ValidationError as PrimerValidationError
 from primer.harness.enqueue import announce_enqueued
 from primer.model.harness import (
     Harness,
@@ -470,6 +472,12 @@ def _make_register_handler(storage_provider: "StorageProvider") -> ToolHandler:
             status=HarnessStatus.DRAFT,
             created_at=datetime.now(timezone.utc),
         )
+        # A create has nothing stored to restore a mask from: the copy-a-harness move (harness__get, a new slug, harness__register) would store the served git_token mask as the token, as
+        # POST /v1/harnesses refuses to (01a1212a, round 3 of #711).
+        try:
+            refuse_served_masks(harness)
+        except PrimerValidationError as exc:
+            return _err(exc.message, error_type="validation-error")
         created = await storage.create(harness)
         return _ok(_harness_dict(created))
 

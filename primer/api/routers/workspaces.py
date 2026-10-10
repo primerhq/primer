@@ -65,7 +65,7 @@ from primer.api.registries import WorkspaceRegistry
 from primer.api.registries.provider_registry import RESERVED_WORKSPACE_PROVIDER_IDS
 from primer.api.routers._crud import make_crud_router
 from primer.common.preview_paths import MAX_PATHS, classify, is_segment, path_syntax_error
-from primer.model.common import preserve_masked_secrets
+from primer.model.common import preserve_masked_secrets, refuse_served_masks
 from primer.api.routers._references import ReferenceCheck
 from primer.bootstrap.defaults import RESERVED_WORKSPACE_TEMPLATES
 from primer.model.except_ import (
@@ -902,6 +902,9 @@ async def create_workspace(
         )
 
     overrides = body.overrides or WorkspaceTemplateOverrides()
+    # The overrides are kept on the workspace row and served masked (overrides.env): a body that sends a served mask back (the copy-a-workspace move) is a 422 before anything is materialised,
+    # because the workspace would start with the mask as the variable's value (01a1212a, round 3 of #711).
+    refuse_served_masks(overrides)
     # Pin the live instance to the caller-supplied id (same id the row is
     # keyed by, below) so re-attach after cache eviction resolves the SAME
     # backend object instead of 404ing.
