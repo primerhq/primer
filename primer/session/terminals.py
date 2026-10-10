@@ -33,10 +33,15 @@ A GRAPH turn is one window too (ticket 01a11f35). Every node of a graph writes i
 ``node_id`` is INSIDE the window, exactly as a delegated record is: it ends nothing, is a copy of nothing and does not touch the scanner's state, so one fan-out of two workers is one window
 instead of three. What closes it is the graph's OWN END, a node-less ``done`` that the writers append when the run ends (:func:`is_graph_end`, ``payload.graph_end``): session dispatch's clean
 completion for a graph run (``stop_reason`` ``stop`` when the graph ended ``completed``, ``error`` when it did not, so every reader of a failed turn reads it as one), and the graph resume
-coordinator before it ends a resumed graph. The executor's own stream writes none (it ends with the End node's output and the end node's exit transition), and the claim adapter's release marker
+coordinators (``resume_graph_engine`` and ``resume_graph_tool_wait``, through ``end_graph``) before they end a resumed graph. NOT EVERY PATH THAT ENDS A GRAPH SESSION WRITES IT: a parked graph that is
+cancelled is ended inline by the pool with no record (agents have the same gap: a ticket), ``resume_engine_session`` ends a graph itself on three early exits, and a log written before the end was a
+record has none. The executor's own stream writes none (it ends with the End node's output and the end node's exit transition), and the claim adapter's release marker
 that may follow a failed end is a copy of it. A graph that parks is not over, so nothing closes it until its resume ends it. The per-record predicates are unchanged on purpose: the final-result
 relay reads the text before the last node's ``done`` and the End output after it (and treats the graph's end as the verdict, not as a text boundary). A graph log written before records carried a
-``node_id`` cannot be told from a non-graph log and keeps the windows it had; one written before the graph's end was a record keeps one window that never closes (open) however many nodes it ran.
+``node_id`` cannot be told from a non-graph log and keeps the windows it had. For every log with a graph run that ended without its end record, rule (c): an ``invocation_divider`` is written ONLY to an ENDED
+session, so a graph run still open before one (a node's record since the last close) ended without its end, and the divider closes that window (and restarts the failure fold: a graph restarted with no
+message writes a divider and no ``user_input``). The residual, accepted and documented: the LAST invocation of a session that ended with no end record stays one open window until a reopen
+(``usage.turns`` one short, ``terminal_seq`` None; its status comes from ``turns.jsonl``).
 Folded on read like the rest, so old graph sessions renumber on the next read (the trace asks for the ordinal the console counted over the same records, so the two stay in step).
 """
 
@@ -50,6 +55,7 @@ _DONE = SessionMessageKind.DONE.value
 _ERROR = SessionMessageKind.ERROR.value
 _CANCELLED = SessionMessageKind.CANCELLED.value
 _USER_INPUT = SessionMessageKind.USER_INPUT.value
+_INVOCATION_DIVIDER = SessionMessageKind.INVOCATION_DIVIDER.value
 
 TERMINAL_KINDS = frozenset({_DONE, _ERROR, _CANCELLED})
 
@@ -145,6 +151,9 @@ class TurnWindowScanner:
     * dispatch's own failure ERROR (:func:`is_dispatch_failure_record`) is a ``COPY`` once the turn has failed, whatever its words.
     * a graph's own end (:func:`is_graph_end`) is a ``COPY`` once the turn has failed (a graph-level error such as ``max_iterations_exceeded`` names no node, so it has already ended the
       window), and an ordinary terminal otherwise.
+    * an ``invocation_divider`` is written only to an ENDED session, so a graph run still open before it (a node's record since the last close) ended without its end record: the divider CLOSES
+      that window (it is its last record). Otherwise it is ``INSIDE``, the first record of the next window. Either way it starts a new turn: the failure state of the invocation before it
+      is forgotten, because nothing before a reopen is a copy of anything after it.
     * any other ``error`` ends a window, unless the turn has already failed and an earlier error of the turn has the same non-empty message.
 
     A notice alone does not make a turn failed: with no ``response.failed`` the dispatch error that follows it (same words) is the only end the
@@ -154,6 +163,7 @@ class TurnWindowScanner:
     def __init__(self) -> None:
         self._failed = False
         self._words: list[str] = []
+        self._graph_open = False          # a graph node's record since the last close: a graph run no terminal has closed yet
 
     def _new_turn(self) -> None:
         self._failed = False
@@ -167,9 +177,25 @@ class TurnWindowScanner:
         return bool(message) and message in self._words
 
     def feed(self, rec: dict[str, Any]) -> str:
+        verdict = self._feed(rec)
+        if verdict == CLOSES:
+            self._graph_open = False
+        return verdict
+
+    def _feed(self, rec: dict[str, Any]) -> str:
+        if rec.get("node_id"):
+            self._graph_open = True
         if is_delegated(rec) or rec.get("node_id"):          # a subagent's record, or a graph node's: the turn is the session's / the graph's, and it is not over
             return INSIDE
         kind = rec.get("kind")
+        if kind == _INVOCATION_DIVIDER:
+            # Written only to an ENDED session (reset._reopen_ended_locked, wake_session's ENDED branch, restart): the invocation before it is over. A graph run it finds open ended WITHOUT its end
+            # record (a log from before the end was a record, a parked graph that was cancelled, a resume path that writes none), so the divider closes it; and nothing written before a divider is a
+            # copy of anything after it (a graph restarted with no message writes a divider and no user_input, so the failure fold restarts here). After a closed turn it stays inside, the
+            # first record of the next window.
+            closes = self._graph_open
+            self._new_turn()
+            return CLOSES if closes else INSIDE
         if kind == _USER_INPUT:
             self._new_turn()
             return INSIDE

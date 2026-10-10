@@ -317,6 +317,7 @@ async def resume_graph_tool_wait(
     """
     from primer.model.tool_call_task import ToolCallTask
     from primer.worker.graph_resume import resume_graph_from_checkpoint
+    from primer.worker.graph_resume_coordinator import end_graph
 
     sid = session.id
     graph_checkpoint = parked.graph_checkpoint
@@ -328,7 +329,7 @@ async def resume_graph_tool_wait(
             " pending_tool_waits entries - ending failed",
             sid,
         )
-        return await pool._end_session(session, reason="failed")
+        return await end_graph(pool, session, reason="failed")
 
     resolved_tool_wait, resolved_tasks = await resolve_ready_graph_tool_waits(
         task_storage, pending_tool_waits,
@@ -340,7 +341,7 @@ async def resume_graph_tool_wait(
             " (of %d pending) fully terminal - ending failed",
             sid, len(pending_tool_waits),
         )
-        return await pool._end_session(session, reason="failed")
+        return await end_graph(pool, session, reason="failed")
 
     workspace = await pool._load_workspace_for_persist(session.workspace_id)
     try:
@@ -351,7 +352,7 @@ async def resume_graph_tool_wait(
             " session %s - ending failed",
             sid,
         )
-        return await pool._end_session(session, reason="failed")
+        return await end_graph(pool, session, reason="failed")
     executor = getattr(executor_or_driver, "_executor", executor_or_driver)
 
     try:
@@ -381,7 +382,7 @@ async def resume_graph_tool_wait(
             " during resume drain - ending failed",
             sid,
         )
-        return await pool._end_session(session, reason="failed")
+        return await end_graph(pool, session, reason="failed")
 
     node_id_by_task_id = {
         task.id: node_id
@@ -403,8 +404,8 @@ async def resume_graph_tool_wait(
             logger.exception(
                 "resume_graph_tool_wait: session %s cannot re-park - ending failed", sid,
             )
-            return await pool._end_session(session, reason="failed")
-    return await pool._end_session(session, reason="completed")
+            return await end_graph(pool, session, reason="failed")
+    return await end_graph(pool, session, reason="completed", executor=executor)
 
 
 async def persist_resume_tool_result_records(

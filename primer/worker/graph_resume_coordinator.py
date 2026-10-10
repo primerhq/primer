@@ -127,19 +127,20 @@ async def write_approval_record_for_graph(
     )
 
 
-async def _write_graph_end(pool: "WorkerPool", session, *, reason: str) -> None:
+async def _write_graph_end(pool: "WorkerPool", session, *, reason: str, executor=None) -> None:
     """Append the graph's own end record (:mod:`primer.session.graph_end`) to the session's log, so the turn this resume finishes is a CLOSED window.
 
     A graph's stream ends with no terminal of its own and this path ends the session through the pool, which writes no record either; dispatch's clean completion writes the end of a run that
     never parked, and a run that did park and is resumed here ends nowhere else. ``reason`` is the one the session is about to be ended with (``completed`` or ``failed``), and the record says
-    the same. Seeded from a FRESH row, like the sibling record writers above and below it (``fresh_session_row_and_last_seq``). Best-effort: a write that fails is logged and the session still
+    the same, unless ``executor`` is given and reports how the graph really ended (``last_done_reason``): then the record is the executor's truth (the row's reason for a drained resume is a
+    known, separate ticket: it ends ``completed`` whatever the graph's own ended reason was). Seeded from a FRESH row, like the sibling record writers above and below it (``fresh_session_row_and_last_seq``). Best-effort: a write that fails is logged and the session still
     ends, as a lost record has never been allowed to keep one alive.
     """
     try:
         if getattr(pool, "_storage", None) is None:
             return
         from primer.model.workspace_session import WorkspaceSession
-        from primer.session.graph_end import graph_end_record
+        from primer.session.graph_end import graph_end_for, graph_end_record
         from primer.session.persistence import WorkspaceMessageWriter
         from primer.session.seq_reservation import advance_last_seq
         from primer.worker.graph_resume import fresh_session_row_and_last_seq
@@ -147,7 +148,8 @@ async def _write_graph_end(pool: "WorkerPool", session, *, reason: str) -> None:
         _fresh, last_seq = await fresh_session_row_and_last_seq(pool, session)
         ws = await pool._load_workspace_for_persist(session.workspace_id)
         writer = WorkspaceMessageWriter(workspace_io=ws, session_id=session.id, start_seq=last_seq)
-        new_seq = await writer.append(graph_end_record(failed=reason != "completed", ended_reason=reason))
+        record = graph_end_for(getattr(executor, "last_done_reason", None), executor) if executor is not None else None
+        new_seq = await writer.append(record or graph_end_record(failed=reason != "completed", ended_reason=reason))
         await writer.flush()
         # ONE field-scoped patch of last_seq (it only advances), not a whole-document update of a row that may have moved: the next writer seeds from it.
         await advance_last_seq(pool._storage.get_storage(WorkspaceSession), session.id, new_seq)
@@ -157,9 +159,12 @@ async def _write_graph_end(pool: "WorkerPool", session, *, reason: str) -> None:
         logger.exception("resume: failed to write the graph's end record for session %s", session.id)
 
 
-async def _end_graph(pool: "WorkerPool", session, *, reason: str):
-    """Close the graph's turn (its end record), then end the session with ``reason``: the order matters, because ending the session can realize a queued steer that reopens it."""
-    await _write_graph_end(pool, session, reason=reason)
+async def end_graph(pool: "WorkerPool", session, *, reason: str, executor=None):
+    """Close the graph's turn (its end record), then end the session with ``reason``: the order matters, because ending the session can realize a queued steer that reopens it.
+
+    Every coordinator that ends a GRAPH session goes through here (this module's resume and ``tool_wait_resume_coordinator.resume_graph_tool_wait``); a path that does not leaves the window open until the
+    next reopen's divider closes it."""
+    await _write_graph_end(pool, session, reason=reason, executor=executor)
     return await pool._end_session(session, reason=reason)
 
 
@@ -203,7 +208,7 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
             "resume: graph session %s resumable but parked_at=None -"
             " ending failed", sid,
         )
-        return await _end_graph(pool, session, reason="failed")
+        return await end_graph(pool, session, reason="failed")
 
     resume_payload = classify_resume_payload(parked, parked_at=session.parked_at)
     workspace = await pool._load_workspace_for_persist(session.workspace_id)
@@ -214,7 +219,7 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
             "resume: failed to build graph executor for session %s -"
             " ending failed", sid,
         )
-        return await _end_graph(pool, session, reason="failed")
+        return await end_graph(pool, session, reason="failed")
     executor = getattr(executor_or_driver, "_executor", executor_or_driver)
 
     # Replies to drain this cycle. A multi-event park accumulates every
@@ -405,7 +410,7 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
                 "resume: graph executor for session %s raised during"
                 " resume drain - ending failed", sid,
             )
-            return await _end_graph(pool, session, reason="failed")
+            return await end_graph(pool, session, reason="failed")
         if resolved_tasks:
             node_id_by_task_id = {
                 task.id: node_id
@@ -435,11 +440,11 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
             logger.exception(
                 "resume: graph session %s cannot re-park - ending failed", sid,
             )
-            return await _end_graph(pool, session, reason="failed")
+            return await end_graph(pool, session, reason="failed")
 
     # Drained to completion (the graph's own state.json carries the
     # real ended_reason; the session row mirrors _GraphTurnDriver).
-    return await _end_graph(pool, session, reason="completed")
+    return await end_graph(pool, session, reason="completed", executor=executor)
 
 
 def graph_value_yield_toolcall(pool: "WorkerPool", checkpoint, tcid, event_key: str | None = None) -> bool:

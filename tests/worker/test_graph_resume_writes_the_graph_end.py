@@ -8,6 +8,7 @@ BEFORE the session is ended (ending can realize a queued steer that reopens it),
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -230,7 +231,7 @@ async def test_a_tool_wait_resume_with_no_pending_entries_ends_the_turn_failed(m
     from primer.worker.tool_wait_resume_coordinator import resume_graph_tool_wait
 
     storage, io, session, parked, factory = await _tool_wait_world(monkeypatch)
-    parked.graph_checkpoint = {**parked.graph_checkpoint, "pending_tool_waits": []}
+    parked = dataclasses.replace(parked, graph_checkpoint={**parked.graph_checkpoint, "pending_tool_waits": []})
     pool = _OrderRecordingPool(storage=storage, io=io, executor_factory=factory)
 
     outcome = await resume_graph_tool_wait(pool, session, parked)
