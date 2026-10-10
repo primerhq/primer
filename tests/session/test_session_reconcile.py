@@ -172,14 +172,14 @@ async def test_one_session_that_cannot_be_updated_does_not_stop_the_rest(fake_st
     storage = fake_storage_provider.get_storage(WorkspaceSession)
     for i in range(205):
         await storage.create(_row(f"s-{i:04d}", "w-gone", SessionStatus.RUNNING))
-    real_update = storage.update
+    real_patch_if = storage.patch_if
 
-    async def flaky_update(entity):
-        if entity.id == "s-0003":
+    async def flaky_patch_if(id, patch, **kwargs):
+        if id == "s-0003":
             raise RuntimeError("row is locked")
-        return await real_update(entity)
+        return await real_patch_if(id, patch, **kwargs)
 
-    storage.update = flaky_update
+    storage.patch_if = flaky_patch_if
 
     reconciled = await reconcile_sessions_to_workspace_lost(fake_storage_provider, "w-gone")
 
