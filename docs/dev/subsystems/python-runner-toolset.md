@@ -144,7 +144,9 @@ carry `data-testid="python-source"`, and the real one is distinguished by
 `data-editor="codemirror"` -- the e2e suite asserts on that, because every
 static test passes either way.
 
-Escape is consumed by the editor, not left for the overlay it sits in. The
+A PLAIN Escape is consumed by the editor, not left for the overlay it sits in
+(Shift, Ctrl, Alt or Meta with Escape is not bound: such a chord is still an
+Escape for the console's stack and closes the overlay). The
 keymap ends with a plain `Escape` entry that returns `true`, so CodeMirror
 calls `preventDefault` and the console's Escape stack (which ignores a
 handled event, see `ui-pages.md`) leaves the toolsets overlay open. Before it,
@@ -155,10 +157,24 @@ stops, so the entry starts the mode itself with `view.setTabFocusMode(2000)`,
 the library's own two seconds. The entry is last on purpose: the completion
 list, the search panel and the other library entries that use Escape run
 first and keep their meaning. `indentWithTab` stays first, so Tab still
-indents; Escape then Tab is how a keyboard user leaves the editor.
+indents; Escape then Tab is how a keyboard user leaves the editor, with two
+caveats: the Tab has to come within the two seconds, and an Escape that the
+selection (collapsing it), the completion list or the search panel used first
+does not start the mode, so those need a SECOND Escape. Ctrl+M (Shift+Alt+M on
+a Mac) is the library's own toggle of the same mode.
 `tests/ui/test_python_editor_escape.py` pins the keymap in V8 and
 `tests/ui_e2e/test_python_editor_escape_journey.py` presses the keys in the
 real overlay.
+
+The editable content is named (`aria-label="Python source"` through
+`EditorView.contentAttributes`, and on the textarea fallback) and described by
+a visually hidden hint (`aria-describedby`; `PY_LEAVE_HINT`) that says all
+three ways out, because an editor that indents on Tab is a keyboard trap (WCAG
+2.1.2) for anyone who is not told. `tests/ui_e2e/test_python_add_function_menu_journey.py`
+checks every way out the hint names in a browser. The "Add function" menu above
+the editor is a layer of the Escape stack while it is open: an Escape closes it,
+focus goes back to its button, and the overlay and the unsaved draft stay
+(`tests/ui/test_python_add_function_menu.py`).
 
 ### Completions
 
