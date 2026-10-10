@@ -148,17 +148,19 @@ def test_u0047_provider_list_reflects_new_row_after_modal_create(
         form = page.get_by_test_id("provider-form-llm_providers")
         form.wait_for(state="visible", timeout=15_000)
 
+        from playwright.sync_api import expect
+
+        # The kind's fields (the Limits box every class has, and anthropic's API key) come from GET /llm_providers/_types. Wait for them: the form
+        # used to be usable before they arrived, and a Save pressed then sent no limits and answered 422 (board task 01a12350-792d; the form now keeps
+        # Save off until they are there, which tests/ui_e2e/test_provider_form_save_journey.py holds with the request delayed).
+        expect(form.get_by_test_id("provider-form-limits")).to_be_visible(timeout=15_000)
         form.locator('[data-field="id"] input').fill(provider_id)
-        api_key_input = form.locator("input[type=password]").first
-        if api_key_input.count():
-            api_key_input.fill("sk-test-placeholder")
+        form.locator("input[type=password]").first.fill("sk-test-placeholder")
 
         # No model step: an LLM provider has no models[] to declare, so
         # Save must already be enabled. This is the regression guard --
         # the old form gated submit on models.length > 0, which made LLM
         # providers uncreatable once the field was removed.
-        from playwright.sync_api import expect
-
         save_btn = form.get_by_test_id("provider-form-save")
         expect(save_btn).to_be_enabled()
         save_btn.click()
