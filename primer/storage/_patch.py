@@ -470,7 +470,11 @@ def compile_postgres(
         non_null = [v for v in allowed if v is not None]
         if non_null:
             arr = ph(json.dumps(non_null, allow_nan=False), "jsonb")
-            parts.append(f"(data -> {f}) IN (SELECT jsonb_array_elements({arr}))")
+            # A filter on the row, never ``IN (SELECT ...)``: the planner turns an IN sub-select into a semi-join, and when
+            # this UPDATE waits on a concurrent writer's row lock, the READ COMMITTED re-check (EvalPlanQual) compares the
+            # committed row with only the list element the first pass matched, refusing a row moved to ANOTHER allowed
+            # value. ``ARRAY(...)`` is computed once per statement, and ``= ANY`` is the same jsonb equality as ``IN``.
+            parts.append(f"(data -> {f}) = ANY(ARRAY(SELECT jsonb_array_elements({arr})))")
         if any(v is None for v in allowed):
             parts.append(f"((data -> {f}) IS NULL OR (data -> {f}) = 'null'::jsonb)")
         clauses.append("(" + " OR ".join(parts) + ")")
