@@ -39,8 +39,10 @@ from primer.model.harness import (
     HarnessDirection,
     HarnessOperation,
     HarnessRendering,
+    GitUrlMaskRefused,
     HarnessStatus,
     apply_git_token_update,
+    refuse_served_git_url,
     validate_git_ref,
     validate_git_url,
 )
@@ -436,7 +438,9 @@ def _make_register_handler(storage_provider: "StorageProvider") -> ToolHandler:
         try:
             validate_git_url(git_url)
             validate_git_ref(ref)
-        except ValueError as exc:
+            # The copy-a-harness move (harness__get, then a new slug): the served url carries a mask, and there is no stored url to restore it from (01a11d32).
+            refuse_served_git_url(git_url)
+        except (ValueError, GitUrlMaskRefused) as exc:
             return _err(str(exc), error_type="validation-error")
 
         # Enforce slug uniqueness

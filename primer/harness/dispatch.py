@@ -26,6 +26,7 @@ from urllib.parse import urlparse
 import jsonschema
 import jsonschema.exceptions
 
+from primer.common.url_userinfo import mask_userinfo
 from primer.harness.dependencies import (
     CanonicalKey,
     DependencyCycleError,
@@ -491,17 +492,20 @@ async def _do_fetch(
                          "path_b": exc.path_b}
                     )
                 except HarnessGitError as exc:
+                    # The dependency's url is a stored error text read by every user: a credential kept in it (a PAT) is masked (01a11d32).
+                    failed_url = current_fetch_target.get("git_url")
+                    failed_url = mask_userinfo(failed_url) if isinstance(failed_url, str) else failed_url
                     if exc.code == "dependency_yaml_invalid":
                         return HarnessStatus.ERROR, json.dumps(
                             {"code": "dependency_yaml_invalid",
                              "message": exc.message,
-                             "git_url": current_fetch_target.get("git_url"),
+                             "git_url": failed_url,
                              "ref": current_fetch_target.get("ref")}
                         )
                     return HarnessStatus.ERROR, json.dumps(
                         {"code": "dependency_fetch_failed",
                          "message": exc.message,
-                         "git_url": current_fetch_target.get("git_url"),
+                         "git_url": failed_url,
                          "ref": current_fetch_target.get("ref"),
                          "inner_code": exc.code}
                     )
