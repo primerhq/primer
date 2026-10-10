@@ -1,7 +1,7 @@
 """A URL field that is served without the password of its userinfo (tickets 01a11cdf part 3 and 01a11d32).
 
 A URL may carry ``user:password@`` (a reverse proxy in front of a server, a private file host): httpx and aiohttp send it as Basic auth, and every API response, CRUD event and tool result used to
-serve it in clear. :data:`MaskedUserinfoUrl` is an :class:`~pydantic.HttpUrl` whose JSON-mode dump masks it (``http://svc:**********@host/v1``; a lone ``https://TOKEN@host`` whole). It masks in a
+serve it in clear (a provider row's CRUD events too). :data:`MaskedUserinfoUrl` is an :class:`~pydantic.HttpUrl` whose JSON-mode dump masks it (``http://svc:**********@host/v1``; a lone ``https://TOKEN@host`` whole). It masks in a
 JSON-mode dump only (the serializer itself returns the value unchanged for a python-mode dump, which is why it is registered ``when_used="always"`` without a return type): a python-mode dump and the
 object itself keep the real URL, which is what the adapters, the probes and the fetch read; ``dump_for_storage`` keeps it for the stored row; ``preserve_masked_secrets`` puts the stored credential
 back when a full-replace PUT sends the served mask back, for the same scheme, host, port and user only. Anything that FINGERPRINTS or COMPARES a row must use the storage form (the served form is the

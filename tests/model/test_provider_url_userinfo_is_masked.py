@@ -347,7 +347,8 @@ def test_a_mask_under_a_new_dict_key_is_refused_and_under_a_known_key_is_bound_t
 
 def test_no_code_under_primer_dumps_with_serialize_as_any() -> None:
     """In pydantic 2.13 ``serialize_as_any=True`` (and ``SerializeAsAny``) skips a field's own serializer: a provider row dumped that way would be served with its URL password in clear and its
-    ``api_key`` unmasked. Nothing in ``primer/`` does it today; this fails the day something does (a comment is not code: the syntax tree is read)."""
+    ``api_key`` unmasked, and so would a workspace template (the password of a ``kind=url`` file source, ``primer/model/masked_url.py``) or a workspace (``overrides``). Every module under
+    ``primer/`` is read, the workspace models included. Nothing does it today; this fails the day something does (a comment is not code: the syntax tree is read)."""
     import ast
     from pathlib import Path
 
@@ -363,4 +364,4 @@ def test_no_code_under_primer_dumps_with_serialize_as_any() -> None:
             )
             if named:
                 offenders.append(f"{path.relative_to(root.parent)}:{getattr(node, 'lineno', '?')}")
-    assert not offenders, f"a provider row dumped with serialize_as_any is served unmasked: {offenders}"
+    assert not offenders, f"a row (a provider, a workspace template, a workspace) dumped with serialize_as_any is served unmasked: {offenders}"

@@ -94,8 +94,8 @@ class _UrlSource(BaseModel):
         ...,
         description=(
             "HTTP(S) URL to fetch the content from. It may carry ``user:password@`` (a private file host): the fetch sends it as Basic auth, and every served copy of the "
-            "template (API responses, events, tool results) shows ``user:**********@`` instead; a PUT of the served body keeps the stored password for the same "
-            "scheme, host, port and user."
+            "template (API responses, tool results) shows ``user:**********@`` instead. A PUT of the served body keeps the stored password: for an admin when the scheme, "
+            "host, port and user are unchanged, for anyone else only when the whole URL is unchanged (any other change that carries the mask is a 422)."
         ),
     )
     sha256: str | None = Field(

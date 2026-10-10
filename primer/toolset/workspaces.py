@@ -98,6 +98,7 @@ from primer.workspace.template_privilege import (
     held_refusal_message,
     refusal_message,
 )
+from primer.workspace.template_secrets import restore_template_secrets
 
 
 if TYPE_CHECKING:
@@ -200,6 +201,11 @@ def _template_refusal(
     except ConfigError as exc:
         return _err(str(exc), error_type="validation-error")
     return None
+
+
+def _restore_template_secrets(entity: WorkspaceTemplate, existing: WorkspaceTemplate | None, ctx: ToolContext | None) -> None:
+    """The REST rule on the masks of a served template body (01a11d32): an admin's password comes back for the same origin and user, a non-admin's only for the whole unchanged URL."""
+    restore_template_secrets(entity, existing, admin=_caller_is_admin(ctx))
 
 
 #: Work carried on after its caller was cancelled. A strong reference: asyncio keeps tasks weakly, so without this a
@@ -449,6 +455,8 @@ def _parse_order_by(spec: list[str] | None) -> list[OrderBy] | None:
 _OnMutate = Callable[[str], Awaitable[None]] | None
 #: ``(entity, existing or None, ctx) -> refusal or None``: a write rule that depends on who the caller is.
 _PrivilegeCheck = Callable[[Any, Any, "ToolContext | None"], ToolCallResult | None] | None
+#: ``(entity, existing, ctx) -> None``: puts the stored secrets back into a full-replace body (raises ``ValidationError`` for a mask that cannot be restored); the default is ``preserve_masked_secrets``.
+_RestoreSecrets = Callable[[Any, Any, "ToolContext | None"], None] | None
 
 
 def _make_list_handler(storage_factory: Callable[[], Any], model_cls: type) -> ToolHandler:
@@ -547,6 +555,7 @@ def _make_update_handler(
     on_update: _OnMutate = None,
     guards: CrudGuards | None = None,
     privilege_check: _PrivilegeCheck = None,
+    restore: _RestoreSecrets = None,
 ) -> ToolHandler:
     guards = guards or CrudGuards(kind=cls_name)
 
@@ -572,10 +581,13 @@ def _make_update_handler(
             refusal = privilege_check(entity, existing, ctx)
         if refusal is not None:
             return refusal
-        # get_* serves a masked secret (a url file source's password) and this is a full replace, so a caller that reads a row and writes it back would store the mask: the REST routers
-        # run the same helper as an on_pre_update hook. A secret the caller really changed replaces the stored one; a mask for another host or user is refused (01a11d32).
+        # get_* serves a masked secret (a url file source's password, an env value) and this is a full replace, so a caller that reads a row and writes it back would store the mask: the REST
+        # routers run the same helper as an on_pre_update hook. A secret the caller really changed replaces the stored one; a mask that cannot be restored for this caller is refused (01a11d32).
         try:
-            preserve_masked_secrets(entity, existing)
+            if restore is not None:
+                restore(entity, existing, ctx)
+            else:
+                preserve_masked_secrets(entity, existing)
         except PrimerValidationError as exc:
             return _err(exc.message, error_type="validation-error")
         try:
@@ -1125,16 +1137,18 @@ def build_workspaces_toolset(
             "Use when editing a recipe in place. Existing materialised "
             "Workspaces are NOT re-materialised; only future creates "
             "see the new recipe. A ``kind=url`` file source's password is "
-            "returned masked (``https://user:**********@host/x``): send the "
-            "body you read back and the stored password is kept for the "
-            "same scheme, host, port and user; a masked URL for another "
-            "host or user answers ``type=validation-error`` (re-enter the "
-            "password)."
+            "returned masked (``https://user:**********@host/x``), and so is an "
+            "``env`` value: send the body you read back and the stored secrets "
+            "are kept (the files are matched by their path). An admin keeps a "
+            "password for the same scheme, host, port and user; any other caller "
+            "keeps it only when the whole URL is unchanged. A masked URL that "
+            "cannot be restored answers ``type=validation-error`` (re-enter "
+            "the password)."
         ),
         _UpdateTemplateArgs,
         _make_update_handler(
             _UpdateTemplateArgs, _template_storage, "WorkspaceTemplate", guards=template_guards,
-            privilege_check=_template_refusal,
+            privilege_check=_template_refusal, restore=_restore_template_secrets,
         ),
         examples=[
             ToolExample(
