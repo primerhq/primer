@@ -108,6 +108,8 @@ The routers' pre-write validators are shared functions over `(entity, storage_pr
 
 For surfaces that are not plain CRUD (WebSocket streams, operation endpoints, predicate-heavy lists like `sessions`), hand-write the router and reuse the shared pieces (`parse_page`, `FindRequest`, `common_responses`, the `Q[ModelT]` type-safe predicate builder in `primer/storage/q.py`).
 
+**A 204 has no body (ticket 01a12350-941b).** A route that answers 204 returns `Response(status_code=204)` (or declares `status_code=204` on the route and returns nothing, which is what `make_crud_router`'s delete does), never `JSONResponse(status_code=204, content=None)`: starlette renders `None` as the four bytes `null` and gives a 204 no `content-length`, so uvicorn expects zero body bytes and raises `Response content longer than Content-Length`, an ERROR logged for every such delete, and the keep-alive connection breaks for the client's next request. The client already has the 204, so a status assertion cannot see it. `tests/api/test_delete_routes_answer_an_empty_204.py` asserts the empty body of the five routes that did it (the trigger and subscription deletes, the API token revoke, the admin revoke of a user's token, the SSO identity unlink) and fails on any `JSONResponse(..., status_code=204)` found in `primer/`.
+
 ## 5. Existing implementations
 
 The factory and the foundation are consumed by these representative routers (full list in section 3):
