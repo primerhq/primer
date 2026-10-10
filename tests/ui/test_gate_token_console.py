@@ -13,6 +13,7 @@ The real ``NV_DecisionCard`` / ``NV_AskCard`` run in V8 on the hook runtime in `
 
 from __future__ import annotations
 
+import functools
 import json
 from pathlib import Path
 
@@ -29,6 +30,30 @@ MOBILE = (ROOT / "ui" / "components" / "console" / "nv-mobile-shell.jsx").read_t
 STALE = {"status": 409, "detail": "this approval was replaced by a newer one; reload the pending list",
          "envelope": {"extensions": {"code": "approval_stale"}}}
 OTHER_409 = {"status": 409, "detail": "Session 'sess-1' changed state", "envelope": {"extensions": {}}}
+FAILED_500 = {"status": 500, "detail": "the store is down", "envelope": {"extensions": {}}}
+
+
+@functools.cache
+def not_pending_404() -> dict:
+    """What ``POST /v1/sessions/<sid>/tool_approval/respond`` answers for a gate that is no longer pending (``NotFoundError`` through the real error handlers), as the console's ``ApiError`` carries it. After a graph
+    ToolCall node's two-phase re-park the FIRST gate's id is pending nowhere, so a card drawn from it gets this and not the 409 ``approval_stale`` (board task 01a124e2-4550)."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from primer.api.errors import register_error_handlers
+    from primer.model.except_ import NotFoundError
+
+    app = FastAPI()
+    register_error_handlers(app)
+
+    @app.post("/v1/sessions/s-1/tool_approval/respond")
+    def respond():
+        raise NotFoundError("No pending tool_approval with tool_call_id 'tc-1' on 's-1'")
+
+    answer = TestClient(app, raise_server_exceptions=False).post("/v1/sessions/s-1/tool_approval/respond", json={})
+    assert answer.status_code == 404, answer.text
+    body = answer.json()
+    return {"status": answer.status_code, "detail": body["detail"], "envelope": body}
 
 
 def _js(ctx, expression: str):
@@ -58,6 +83,18 @@ def test_the_attention_item_carries_the_gate_id_the_row_served(model) -> None:
     ]
     items = _js(model, "SH_toAttentionItems({pending: " + json.dumps(rows) + ", records: []})")
     assert [i["gateId"] for i in items] == ["a" * 32, None]
+
+
+def test_a_gate_that_is_pending_nowhere_is_moved_on_like_a_replaced_one_and_a_failure_is_not(model) -> None:
+    """The respond route answers 409 ``approval_stale`` when the id is pending under ANOTHER gate and 404 when it is pending nowhere (the first gate of a node that re-parked). Both mean the card was drawn from a
+    gate that has moved on. ``SH_isStaleGate`` stays the 409 alone: the question cards and the session detail read it."""
+    moved = "SH_isMovedOnGate(" + json.dumps(not_pending_404()) + ")"
+    assert _js(model, moved) is True
+    assert _js(model, "SH_isMovedOnGate(" + json.dumps(STALE) + ")") is True
+    assert _js(model, "SH_isMovedOnGate(" + json.dumps(OTHER_409) + ")") is False
+    assert _js(model, "SH_isMovedOnGate(" + json.dumps(FAILED_500) + ")") is False
+    assert _js(model, "SH_isMovedOnGate(null)") is False and _js(model, "SH_isMovedOnGate(new Error('boom'))") is False
+    assert _js(model, "SH_isStaleGate(" + json.dumps(not_pending_404()) + ")") is False
 
 
 def test_a_409_with_the_stale_code_is_a_stale_gate_and_nothing_else_is(model) -> None:
@@ -181,6 +218,27 @@ def test_a_stale_reject_says_so_in_words_and_reloads_the_list(decision) -> None:
         "MR.click('nv-reject'); MR.find('nv-reject-reason').props.onChange({ target: { value: 'no' } }); MR.rerender(); MR.click('nv-reject');")
     assert _js(decision, "TOASTS") == ["This approval was replaced; the list is reloaded."]
     assert _js(decision, "RESOLVED") == [1]
+
+
+def test_an_approve_for_a_gate_that_is_pending_nowhere_says_it_moved_on_and_reloads_the_list(decision) -> None:
+    """Board task 01a124e2-4550: the card used to toast the raw ``Approve failed: No pending tool_approval ...`` and leave the list as it was."""
+    decision.eval("NEXT.fail = " + json.dumps(not_pending_404()) + "; MR.click('nv-approve');")
+    assert _js(decision, "TOASTS") == ["This approval was replaced; the list is reloaded."]
+    assert _js(decision, "RESOLVED") == [1], "the pending list is reloaded"
+
+
+def test_a_reject_for_a_gate_that_is_pending_nowhere_says_it_moved_on_and_reloads_the_list(decision) -> None:
+    decision.eval(
+        "NEXT.fail = " + json.dumps(not_pending_404()) + ";"
+        "MR.click('nv-reject'); MR.find('nv-reject-reason').props.onChange({ target: { value: 'no' } }); MR.rerender(); MR.click('nv-reject');")
+    assert _js(decision, "TOASTS") == ["This approval was replaced; the list is reloaded."]
+    assert _js(decision, "RESOLVED") == [1]
+
+
+def test_a_server_failure_is_still_a_failure_and_does_not_reload(decision) -> None:
+    decision.eval("NEXT.fail = " + json.dumps(FAILED_500) + "; MR.click('nv-approve');")
+    assert _js(decision, "TOASTS") == ["Approve failed: the store is down"]
+    assert _js(decision, "RESOLVED") == []
 
 
 def test_any_other_failure_is_still_a_failure_and_does_not_reload(decision) -> None:

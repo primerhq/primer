@@ -16,7 +16,7 @@ import re
 import pytest
 
 from tests.ui._mini_react import mini_react_context, transpile
-from tests.ui.test_gate_token_console import _PRELUDE, ATTENTION, DOC, ROOT, STALE, _js
+from tests.ui.test_gate_token_console import _PRELUDE, ATTENTION, DOC, FAILED_500, ROOT, STALE, _js, not_pending_404
 
 SESSION_DETAIL = (ROOT / "ui" / "components" / "session-detail.jsx").read_text(encoding="utf-8")
 APPROVALS = (ROOT / "ui" / "components" / "approvals.jsx").read_text(encoding="utf-8")
@@ -251,6 +251,28 @@ def test_a_stale_banner_says_so_in_words_and_is_not_an_error_toast() -> None:
         ctx.eval("NEXT.fail = " + json.dumps(STALE) + "; MR.click('approval-banner-approve');")
         ctx.eval("MR.rerender();")
         assert _js(ctx, "TOASTS") == [{"kind": "warning", "title": "This approval was replaced; the list is reloaded."}]
+    finally:
+        ctx.close()
+
+
+def test_a_banner_for_a_gate_that_is_pending_nowhere_says_it_moved_on_and_is_not_an_error_toast() -> None:
+    """Board task 01a124e2-4550: after a graph node's two-phase re-park the first gate's id is pending nowhere (404, not 409 ``approval_stale``)."""
+    ctx = _banner(_BANNER)
+    try:
+        ctx.eval("NEXT.fail = " + json.dumps(not_pending_404()) + "; MR.click('approval-banner-approve');")
+        ctx.eval("MR.rerender();")
+        assert _js(ctx, "TOASTS") == [{"kind": "warning", "title": "This approval was replaced; the list is reloaded."}]
+    finally:
+        ctx.close()
+
+
+def test_a_server_failure_is_still_an_error_toast_on_the_banner() -> None:
+    ctx = _banner(_BANNER)
+    try:
+        ctx.eval("NEXT.fail = " + json.dumps(FAILED_500) + "; MR.click('approval-banner-approve');")
+        ctx.eval("MR.rerender();")
+        toasts = _js(ctx, "TOASTS")
+        assert len(toasts) == 1 and toasts[0]["kind"] == "error" and "Respond failed" in toasts[0]["title"], toasts
     finally:
         ctx.close()
 
