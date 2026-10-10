@@ -135,12 +135,14 @@ def _redact_leaf(text: str) -> str:
 
     ``mask_userinfo`` reads the whole leaf as one URL, so a leaf that begins with a credentialed URL and goes on (a second URL in an error text, a query token) kept the rest in clear.
     """
-    lead = _LEADING_URL.match(text)
-    if lead is not None and "@" in lead.group(0):
-        return mask_userinfo(lead.group(0)) + redact_url_secrets(text[lead.end() :])
+    # The whitespace-aware reading goes FIRST: a password that holds a raw "@" before its whitespace ('https://u:p@ss word@host/x') makes the whitespace-free lead hold an "@" too, so the lead
+    # branch ran first and masked only up to the first space, leaving 'word@' in clear (round 2 review, B2r). For a leaf whose password holds no whitespace both readings give the same text.
     spaced = _mask_spaced_userinfo(text)
     if spaced is not None:
         return spaced
+    lead = _LEADING_URL.match(text)
+    if lead is not None and "@" in lead.group(0):
+        return mask_userinfo(lead.group(0)) + redact_url_secrets(text[lead.end() :])
     return redact_url_secrets(text)          # a credentialed URL inside free text (an error text, a copied log line)
 
 
@@ -159,8 +161,9 @@ def _mask_spaced_userinfo(text: str) -> str | None:
     if whole is None:
         return None
     userinfo, at, _ = whole.group(1).rpartition("@")
-    user, colon, _password = userinfo.partition(":")
-    if not at or not colon or any(ch.isspace() for ch in user):
+    user, colon, password = userinfo.partition(":")
+    # An empty password ('https://user:@host') makes the username the only candidate secret: ``mask_userinfo`` masks it whole, which is the lead branch's job.
+    if not at or not colon or not password or any(ch.isspace() for ch in user):
         return None
     start = whole.start(1)
     return f"{text[:start]}{user}:{URL_MASK}@" + redact_url_secrets(text[start + len(userinfo) + 1 :])

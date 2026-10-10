@@ -1194,6 +1194,11 @@ def build_workspaces_toolset(
         refusal = _refuse_non_admin(admin_only_override_fields(args.overrides), ctx)
         if refusal is not None:
             return refusal
+        # The overrides are kept on the workspace row and served masked (overrides.env): the copy-a-workspace move would start the workspace with the mask as the variable's value (01a1212a, round 3 of #711).
+        try:
+            refuse_served_masks(args.overrides)
+        except PrimerValidationError as exc:
+            return _err(exc.message, error_type="validation-error")
         template = await _template_storage().get(args.template_id)
         if template is None:
             return _err(
