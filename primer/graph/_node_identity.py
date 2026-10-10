@@ -69,7 +69,8 @@ def current_graph_node_id() -> str | None:
 # (primer.agent.tool_manager), and the channel inbox rebuilds a ToolCall node's key WITHOUT a node scope (``tool_approval:<session>:<call id>``,
 # primer.channel.inbox._matching_event_keys), so publishing it for this dispatch would break the approval of a gated ToolCall node. This one is read by two things only: the
 # workspace executor's ``_dispatch_toolcall`` (the id of the call the node wrote its row under becomes the ``ToolCallPart``'s id) and the delegation recorder's stamp
-# (``run_subagent`` takes ``delegate_node_id`` from it when no graph node identity is active), so a run the tool delegates to nests under the node's call.
+# (``run_subagent`` reads it FIRST, before the graph node identity: the innermost node wins, so a ToolCall node inside a subgraph node is stamped with itself and not with the subgraph node's
+# inherited id, and entering a graph node inside the dispatch hides this value, see ``set_current_graph_node_id``), so a run the tool delegates to nests under the node's call.
 _TOOLCALL: contextvars.ContextVar[tuple[str, str] | None] = contextvars.ContextVar(
     "primer_graph_toolcall_node_call", default=None,
 )
