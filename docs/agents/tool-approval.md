@@ -304,6 +304,9 @@ but require human review for any other host.
   True` is set by the resume hook for the one call that was approved;
   subsequent calls to the same tool are gated again. Operators don't
   approve "this tool from now on" - they approve "this specific call".
+  When a graph ToolCall node's tool gates an inner call (it runs a gated
+  tool, or it is `call_tool` gating the tool it was asked to run), the
+  call that was approved is the inner call, and that is the one that runs.
 - **The parked-tool name is literal `_approval`** in the parked-state
   fields. Code that introspects park state and dispatches on tool
   name treats `_approval` as a special case distinct from real tool
