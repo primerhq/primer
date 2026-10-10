@@ -16,7 +16,7 @@ import re
 import pytest
 
 from tests.ui._mini_react import mini_react_context, transpile
-from tests.ui.test_gate_token_console import _PRELUDE, ATTENTION, DOC, FAILED_500, ROOT, STALE, _js, not_pending_404
+from tests.ui.test_gate_token_console import _PRELUDE, ATTENTION, DOC, FAILED_500, MOVED_ON_WORDS, ROOT, STALE, _js, not_pending_404
 
 SESSION_DETAIL = (ROOT / "ui" / "components" / "session-detail.jsx").read_text(encoding="utf-8")
 APPROVALS = (ROOT / "ui" / "components" / "approvals.jsx").read_text(encoding="utf-8")
@@ -261,7 +261,7 @@ def test_a_banner_for_a_gate_that_is_pending_nowhere_says_it_moved_on_and_is_not
     try:
         ctx.eval("NEXT.fail = " + json.dumps(not_pending_404()) + "; MR.click('approval-banner-approve');")
         ctx.eval("MR.rerender();")
-        assert _js(ctx, "TOASTS") == [{"kind": "warning", "title": "This approval was replaced; the list is reloaded."}]
+        assert _js(ctx, "TOASTS") == [{"kind": "warning", "title": MOVED_ON_WORDS}]
     finally:
         ctx.close()
 

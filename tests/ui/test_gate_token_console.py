@@ -31,6 +31,9 @@ STALE = {"status": 409, "detail": "this approval was replaced by a newer one; re
          "envelope": {"extensions": {"code": "approval_stale"}}}
 OTHER_409 = {"status": 409, "detail": "Session 'sess-1' changed state", "envelope": {"extensions": {}}}
 FAILED_500 = {"status": 500, "detail": "the store is down", "envelope": {"extensions": {}}}
+# a 404 is not always a replacement (decided elsewhere, the tool's own yield, a deleted session), so its words do not claim one; the 409 approval_stale keeps "replaced"
+MOVED_ON_WORDS = "This approval has moved on; the list is reloaded."
+REPLACED_WORDS = "This approval was replaced; the list is reloaded."
 
 
 @functools.cache
@@ -87,7 +90,7 @@ def test_the_attention_item_carries_the_gate_id_the_row_served(model) -> None:
 
 def test_a_gate_that_is_pending_nowhere_is_moved_on_like_a_replaced_one_and_a_failure_is_not(model) -> None:
     """The respond route answers 409 ``approval_stale`` when the id is pending under ANOTHER gate and 404 when it is pending nowhere (the first gate of a node that re-parked). Both mean the card was drawn from a
-    gate that has moved on. ``SH_isStaleGate`` stays the 409 alone: the question cards and the session detail read it."""
+    gate that has moved on. ``SH_isStaleGate`` stays the 409 alone: the question cards, the session detail and the mobile Inbox's approval cards read it (nv-mobile-shell.jsx:146; the Inbox words a 404 itself, "That approval has moved on")."""
     moved = "SH_isMovedOnGate(" + json.dumps(not_pending_404()) + ")"
     assert _js(model, moved) is True
     assert _js(model, "SH_isMovedOnGate(" + json.dumps(STALE) + ")") is True
@@ -95,6 +98,20 @@ def test_a_gate_that_is_pending_nowhere_is_moved_on_like_a_replaced_one_and_a_fa
     assert _js(model, "SH_isMovedOnGate(" + json.dumps(FAILED_500) + ")") is False
     assert _js(model, "SH_isMovedOnGate(null)") is False and _js(model, "SH_isMovedOnGate(new Error('boom'))") is False
     assert _js(model, "SH_isStaleGate(" + json.dumps(not_pending_404()) + ")") is False
+
+
+def test_the_words_say_replaced_only_for_the_409_and_moved_on_for_a_404(model) -> None:
+    """A 404 is a gate pending under no approval gate: decided elsewhere ("has no pending tool_approval"), the node re-parked on the tool's own yield ("parked on a different tool"), the first gate of a two-phase
+    re-park, or a deleted session. Only the 409 ``approval_stale`` is a gate that was REPLACED, so only it says so."""
+
+    def words(err: dict, kind: str = "approval") -> str:
+        return _js(model, "SH_movedOnGateWords(" + json.dumps(err) + ", " + json.dumps(kind) + ")")
+
+    assert words(STALE) == REPLACED_WORDS
+    assert words(not_pending_404()) == MOVED_ON_WORDS
+    assert words(not_pending_404(), "question") == "This question has moved on; the list is reloaded."
+    assert words(STALE, "question") == "This question was replaced; the list is reloaded."
+    assert REPLACED_WORDS != MOVED_ON_WORDS
 
 
 def test_a_409_with_the_stale_code_is_a_stale_gate_and_nothing_else_is(model) -> None:
@@ -223,7 +240,7 @@ def test_a_stale_reject_says_so_in_words_and_reloads_the_list(decision) -> None:
 def test_an_approve_for_a_gate_that_is_pending_nowhere_says_it_moved_on_and_reloads_the_list(decision) -> None:
     """Board task 01a124e2-4550: the card used to toast the raw ``Approve failed: No pending tool_approval ...`` and leave the list as it was."""
     decision.eval("NEXT.fail = " + json.dumps(not_pending_404()) + "; MR.click('nv-approve');")
-    assert _js(decision, "TOASTS") == ["This approval was replaced; the list is reloaded."]
+    assert _js(decision, "TOASTS") == [MOVED_ON_WORDS]
     assert _js(decision, "RESOLVED") == [1], "the pending list is reloaded"
 
 
@@ -231,8 +248,17 @@ def test_a_reject_for_a_gate_that_is_pending_nowhere_says_it_moved_on_and_reload
     decision.eval(
         "NEXT.fail = " + json.dumps(not_pending_404()) + ";"
         "MR.click('nv-reject'); MR.find('nv-reject-reason').props.onChange({ target: { value: 'no' } }); MR.rerender(); MR.click('nv-reject');")
-    assert _js(decision, "TOASTS") == ["This approval was replaced; the list is reloaded."]
+    assert _js(decision, "TOASTS") == [MOVED_ON_WORDS]
     assert _js(decision, "RESOLVED") == [1]
+
+
+def test_a_server_failure_on_a_reject_is_still_a_failure_and_does_not_reload(decision) -> None:
+    """The reject arm has its own predicate: a reject that treated every failure as moved on would say so for a 500 and reload a list that has not changed."""
+    decision.eval(
+        "NEXT.fail = " + json.dumps(FAILED_500) + ";"
+        "MR.click('nv-reject'); MR.find('nv-reject-reason').props.onChange({ target: { value: 'no' } }); MR.rerender(); MR.click('nv-reject');")
+    assert _js(decision, "TOASTS") == ["Reject failed: the store is down"]
+    assert _js(decision, "RESOLVED") == []
 
 
 def test_a_server_failure_is_still_a_failure_and_does_not_reload(decision) -> None:
