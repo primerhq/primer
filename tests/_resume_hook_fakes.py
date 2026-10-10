@@ -139,6 +139,18 @@ class FakeSessionStorage:
     async def update(self, row) -> None:
         self._row = row
 
+    async def patch_if(self, id: str, patch: dict, *, where: dict, set_paths=None, conn=None):
+        """The field-scoped fenced write ``advance_last_seq`` makes (the drain tap's ``finish``): applied when every field of ``where`` holds one of the listed values, else ``None``."""
+        from primer.model.except_ import NotFoundError
+
+        if self._row.id != id:
+            raise NotFoundError(id)
+        if any(getattr(self._row, field) not in allowed for field, allowed in where.items()):
+            return None
+        for field, value in patch.items():
+            setattr(self._row, field, value)
+        return self._row
+
 
 class FakeStorage:
     def __init__(self, session_storage) -> None:

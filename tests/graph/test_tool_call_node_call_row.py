@@ -13,7 +13,6 @@ These cases drive the real ``WorkspaceGraphExecutor`` (its own ``_dispatch_toolc
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -23,8 +22,7 @@ from primer.agent.invoke import invocation_depth_guard, run_subagent
 from primer.graph.router import RouterRegistry
 from primer.graph.workspace_executor import WorkspaceGraphExecutor
 from primer.model.chat import ToolResultPart
-from primer.model.graph import Graph, _BeginNode, _EndNode, _StaticEdge, _ToolCallNode
-from primer.session.persistence import _CoalesceState
+from primer.model.graph import FanOutSpec, Graph, _BeginNode, _EndNode, _FanInNode, _FanOutNode, _GraphNodeRef, _StaticEdge, _ToolCallNode
 from tests.agent.test_delegated_runs_carry_a_run_id import _text, _world
 from tests.graph.test_fanout_delegation_order import _js_children, _py_children, _run
 from tests.graph.test_workspace_executor import _make_state_repo
@@ -49,16 +47,18 @@ class _DelegatingManager:
         return ToolResultPart(id=call.id, output=text)
 
 
-def _graph() -> Graph:
+def _graph(arguments: dict | None = None, tool_id: str = "t1__delegate") -> Graph:
     return Graph.model_construct(
         id="g", description="a ToolCall node that delegates", max_iterations=5, harness_id=None,
-        nodes=[_BeginNode(id="begin"), _ToolCallNode(id="tool", tool_id="t1__delegate", arguments={}), _EndNode(id="end", output_template="{{ nodes.tool.text }}")],
+        nodes=[_BeginNode(id="begin"), _ToolCallNode(id="tool", tool_id=tool_id, arguments=arguments or {}), _EndNode(id="end", output_template="{{ nodes.tool.text }}")],
         edges=[_StaticEdge(from_node="begin", to_node="tool"), _StaticEdge(from_node="tool", to_node="end")],
     )
 
 
-async def _executor(tmp_path: Path, *, fail: bool = False) -> tuple[WorkspaceGraphExecutor, _DelegatingManager]:
-    storage, registry = _world([_text("sub answer")])
+async def _executor(
+    tmp_path: Path, *, fail: bool = False, graph: Graph | None = None, graphs: dict[str, Graph] | None = None, answers: int = 1, arguments: dict | None = None
+) -> tuple[WorkspaceGraphExecutor, _DelegatingManager]:
+    storage, registry = _world([_text("sub answer" if answers == 1 else f"sub answer {i}") for i in range(answers)])
     manager = _DelegatingManager(storage, registry, fail=fail)
 
     async def agent_resolver(agent_id: str) -> Any:
@@ -67,10 +67,13 @@ async def _executor(tmp_path: Path, *, fail: bool = False) -> tuple[WorkspaceGra
     async def llm_resolver(agent: Any) -> Any:
         raise NotImplementedError
 
+    async def graph_resolver(graph_id: str) -> Graph:
+        return (graphs or {})[graph_id]
+
     executor = WorkspaceGraphExecutor(
-        graph=_graph(), agent_resolver=agent_resolver, llm_resolver=llm_resolver,  # type: ignore[arg-type]
+        graph=graph or _graph(arguments), agent_resolver=agent_resolver, llm_resolver=llm_resolver,  # type: ignore[arg-type]
         state_repo=await _make_state_repo(tmp_path), graph_session_id="gsid", tool_manager=manager,  # type: ignore[arg-type]
-        router_registry=RouterRegistry(),
+        router_registry=RouterRegistry(), graph_resolver=graph_resolver,
     )
     return executor, manager
 
@@ -141,22 +144,39 @@ async def test_a_tool_that_answers_with_an_error_still_gets_its_result_row(tmp_p
     assert [(r["payload"]["call_id"], r["payload"]["error"]) for r in results] == [(call["payload"]["id"], True)]
 
 
-async def test_the_dispatch_runs_without_a_graph_node_identity_so_the_approval_key_keeps_its_shape(tmp_path: Path) -> None:
-    """The channel inbox rebuilds a ToolCall node's approval key as ``tool_approval:<session>:<call id>`` (``_matching_event_keys``), without a node scope: publishing ``current_graph_node_id`` for this dispatch
-    would add one (``ToolExecutionManager`` folds it into the key). The delegation recorder reads its own ambient value instead."""
+async def test_the_approval_key_of_a_gated_tool_call_node_has_no_node_scope(tmp_path: Path) -> None:
+    """The channel inbox rebuilds a ToolCall node's key as ``tool_approval:<session>:<call id>`` (``_matching_event_keys``), without a node scope: publishing ``current_graph_node_id`` for this dispatch
+    would add one (``ToolExecutionManager`` folds it into the key). Driven through a REAL manager with a policy that gates the tool, so the key is the one production builds."""
     from primer.graph._node_identity import current_graph_node_id
+    from primer.model.yield_ import YieldToWorker
+    from tests.agent.conftest import _EchoProvider
+    from tests.agent.test_tool_manager_approval_gate import _PoliciesOnlyResolver
+    from tests.graph.test_fanout_delegation_order import _Log
 
+    from primer.agent.tool_manager import ToolExecutionManager
+    from primer.model.principal import PrincipalRef
+    from primer.model.tool_approval import RequiredApprovalConfig, ToolApprovalPolicy
+
+    manager = ToolExecutionManager(toolset_providers={"_test": _EchoProvider()}, initiated_by=PrincipalRef.system())  # type: ignore[arg-type]
+    manager._approval_resolver = _PoliciesOnlyResolver([ToolApprovalPolicy(id="p", toolset_id="_test", tool_name="echo", approval=RequiredApprovalConfig())])
     seen: list[Any] = []
-    executor, manager = await _executor(tmp_path)
     real = manager.execute
 
-    async def spy(call: Any, **kw: Any) -> ToolResultPart:
+    async def watching(call: Any, **kw: Any) -> ToolResultPart:
         seen.append(current_graph_node_id())
         return await real(call, **kw)
 
-    manager.execute = spy  # type: ignore[method-assign]
-    await _run(executor)  # type: ignore[arg-type]
-    assert seen == [None]
+    manager.execute = watching  # type: ignore[method-assign]
+    executor, _ = await _executor(tmp_path, graph=_graph({"x": 1}, tool_id="_test__echo"))
+    executor._tool_manager = manager
+    log = _Log()
+    with pytest.raises(YieldToWorker):
+        await _run(executor, log=log)  # type: ignore[arg-type]
+    records = [r.model_dump(mode="json") for r in log.records]
+    (call,) = _tool_calls(records)
+    (pending,) = executor._pending_toolcalls
+    assert pending.parked_event_key == f"tool_approval:unknown:{call['payload']['raw_id']}", pending.parked_event_key
+    assert seen == [None], "no graph node identity is published for a ToolCall node's dispatch"
 
 
 async def test_a_call_that_parks_on_approval_has_its_call_row_and_no_result_row_yet(tmp_path: Path) -> None:
@@ -181,3 +201,184 @@ async def test_a_call_that_parks_on_approval_has_its_call_row_and_no_result_row_
     assert (call["node_id"], call["payload"]["raw_id"]) == (pending.node_id, pending.tool_call_id) == ("tool", manager.handed[0])
     assert pending.parked_event_key == f"tool_approval:s:{manager.handed[0]}", "no node scope in the approval key: the channel inbox rebuilds it without one"
     assert [r for r in records if r["kind"] == "tool_result"] == []
+
+
+# ---- review of #712, round 1 -------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+def _wrapper(graph_id: str, inner_id: str) -> Graph:
+    """begin -> one subgraph node running ``inner_id`` -> end."""
+    return Graph.model_construct(
+        id=graph_id, description=f"a subgraph node that runs {inner_id}", max_iterations=5, harness_id=None,
+        nodes=[_BeginNode(id="begin"), _GraphNodeRef(id="sub", graph_id=inner_id), _EndNode(id="end", output_template="{{ nodes.sub.text }}")],
+        edges=[_StaticEdge(from_node="begin", to_node="sub"), _StaticEdge(from_node="sub", to_node="end")],
+    )
+
+
+@pytest.fixture(params=[0, 1, 2], ids=lambda d: f"depth{d}")
+def depth(request: pytest.FixtureRequest) -> int:
+    """How many subgraph nodes the ToolCall node sits inside."""
+    return request.param
+
+
+async def _nested(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, depth: int) -> tuple[list[dict], _DelegatingManager]:
+    graphs = {"g0": _graph()}
+    top = "g0"
+    for level in range(1, depth + 1):
+        graphs[f"g{level}"] = _wrapper(f"g{level}", top)
+        top = f"g{level}"
+    real_build = WorkspaceGraphExecutor._build_sub_executor
+
+    async def build(self, *a: Any, **k: Any) -> Any:
+        child = await real_build(self, *a, **k)
+        child._tool_manager = self._tool_manager      # production builds one lazily from the workspace session; the test hands the child the manager it counts
+        return child
+
+    monkeypatch.setattr(WorkspaceGraphExecutor, "_build_sub_executor", build)
+    executor, manager = await _executor(tmp_path, graph=graphs[top], graphs=graphs)
+    return await _run(executor), manager  # type: ignore[arg-type]
+
+
+async def test_a_tool_call_node_inside_subgraph_nodes_stamps_its_run_with_its_own_node_not_the_outer_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, depth: int) -> None:
+    """B1 of round 1: the parent's ``_stream_node`` publishes the subgraph node's id for the whole child run, and ``run_subagent`` preferred it over the ToolCall node's own, so the run was stamped ``sub``
+    while its call row is under ``tool`` (the innermost node, which is where ``translate_stream_event`` files it): the run nested under nothing in both readers."""
+    records, manager = await _nested(tmp_path, monkeypatch, depth)
+    (call,) = _tool_calls(records)
+    assert call["node_id"] == "tool"
+    stamps = {(r["payload"]["delegate_tool_call_id"], r["payload"]["delegate_node_id"]) for r in _delegated(records)}
+    assert stamps == {(manager.handed[0], "tool")}, stamps
+
+
+async def test_both_readers_nest_the_run_of_a_tool_call_node_inside_subgraph_nodes_under_its_call(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, depth: int) -> None:
+    records, _ = await _nested(tmp_path, monkeypatch, depth)
+    (call,) = _tool_calls(records)
+    folded = {r["seq"] for r in _delegated(records) if r["kind"] in ("llm_call", "tool_call")}
+    assert folded and set(_py_children(records).get(call["seq"], [])) >= folded, ("timeline", call["seq"], _py_children(records))
+    assert _js_children(records).get(call["seq"]), ("console", call["seq"], _js_children(records))
+
+
+def test_the_innermost_node_wins_the_identity_in_both_orders() -> None:
+    """B1: a ToolCall node's dispatch inside a subgraph node reads the ToolCall's identity; a graph node (an agent node of a graph the tool runs in-process) entered inside a ToolCall node's dispatch hides it
+    and is read instead; leaving it brings the ToolCall's back."""
+    from primer.graph._node_identity import (
+        current_graph_node_id,
+        current_toolcall_id,
+        current_toolcall_node_id,
+        reset_current_graph_node_id,
+        reset_current_toolcall,
+        set_current_graph_node_id,
+        set_current_toolcall,
+    )
+
+    outer = set_current_graph_node_id("sub")
+    try:
+        call = set_current_toolcall("tool", "c1")
+        try:
+            assert (current_toolcall_node_id(), current_toolcall_id(), current_graph_node_id()) == ("tool", "c1", "sub")
+            inner = set_current_graph_node_id("agent")
+            try:
+                assert (current_toolcall_node_id(), current_toolcall_id(), current_graph_node_id()) == (None, None, "agent"), "an inner graph node hides the ToolCall's identity"
+            finally:
+                reset_current_graph_node_id(inner)
+            assert (current_toolcall_node_id(), current_toolcall_id()) == ("tool", "c1"), "and leaving it brings the ToolCall's back"
+        finally:
+            reset_current_toolcall(call)
+        assert (current_toolcall_node_id(), current_graph_node_id()) == (None, "sub")
+    finally:
+        reset_current_graph_node_id(outer)
+
+
+async def test_a_run_delegated_from_an_agent_node_inside_a_tool_calls_dispatch_is_stamped_with_that_agent_node() -> None:
+    """B1: ``run_subagent`` reads the innermost identity. Here the ToolCall's tool runs a graph in-process (``invoke_graph``) and an agent node of it delegates."""
+    from primer.graph._node_identity import (
+        reset_current_graph_node_id,
+        reset_current_toolcall,
+        set_current_graph_node_id,
+        set_current_toolcall,
+    )
+    from primer.session.delegation import DelegationRecorder, reset_delegation_sink, set_delegation_sink
+    from tests.agent.test_delegated_runs_carry_a_run_id import _Bus, _Writer, _payloads
+    from tests.agent.test_delegated_runs_carry_the_graph_node import _one_agent_world
+
+    async def stamps(*, toolcall: str | None, node: str | None, then_node: str | None = None) -> set[str | None]:
+        storage, registry = _one_agent_world("answer")
+        writer = _Writer()
+        sink = set_delegation_sink(DelegationRecorder(writer=writer, event_bus=_Bus(), session_id="sess-1"))
+        tokens: list[tuple[str, Any]] = []
+        try:
+            if node:
+                tokens.append(("node", set_current_graph_node_id(node)))
+            if toolcall:
+                tokens.append(("call", set_current_toolcall(toolcall, "c1")))
+            if then_node:
+                tokens.append(("node", set_current_graph_node_id(then_node)))
+            with invocation_depth_guard():
+                await run_subagent(
+                    agent_id="agent-sub", prompt="go", storage_provider=storage, provider_registry=registry,
+                    principal="user-1", session_id="sess-1", workspace_id="ws-1", invoke_tool_call_id="c1", turn_no=1,
+                )
+        finally:
+            for kind, token in reversed(tokens):
+                (reset_current_graph_node_id if kind == "node" else reset_current_toolcall)(token)
+            reset_delegation_sink(sink)
+        return {p.get("delegate_node_id") for p in _payloads(writer)}
+
+    assert await stamps(toolcall="tool", node=None) == {"tool"}
+    assert await stamps(toolcall="tool", node="sub") == {"tool"}, "a ToolCall node inside a subgraph node: the innermost"
+    assert await stamps(toolcall="tool", node="sub", then_node="agent") == {"agent"}, "an agent node entered inside the ToolCall's dispatch"
+    assert await stamps(toolcall=None, node="sub") == {"sub"}
+
+
+def _fanout_graph(instances: int = 2) -> Graph:
+    return Graph.model_construct(
+        id="gf", description="a fan-out of ToolCall nodes", max_iterations=10, harness_id=None,
+        nodes=[
+            _BeginNode(id="begin"),
+            _FanOutNode(id="fan", specs=[FanOutSpec(kind="broadcast", target_node_id="tool", count=instances)]),
+            _ToolCallNode(id="tool", tool_id="t1__delegate", arguments={}),
+            _FanInNode(id="agg", aggregate_template="{% for n in nodes.tool %}{{ n.text }}{% endfor %}"),
+            _EndNode(id="end", output_template="{{ nodes.agg.text }}"),
+        ],
+        edges=[_StaticEdge(from_node="begin", to_node="fan"), _StaticEdge(from_node="tool", to_node="agg"), _StaticEdge(from_node="agg", to_node="end")],
+    )
+
+
+async def test_a_fan_out_of_tool_call_nodes_writes_a_row_per_instance_and_each_run_nests_under_its_own(tmp_path: Path) -> None:
+    """N1: the rows carry the fan-out-qualified node id (``tool[0]``), not the definition's ``tool``, with a call id of their own, and the runs are told apart by node, not by a raw id."""
+    executor, manager = await _executor(tmp_path, graph=_fanout_graph(), answers=2)
+    records = await _run(executor)  # type: ignore[arg-type]
+    calls = {c["node_id"]: c for c in _tool_calls(records)}
+    assert sorted(calls) == ["tool[0]", "tool[1]"], sorted(calls)
+    assert len({c["payload"]["raw_id"] for c in calls.values()}) == 2 and {c["payload"]["raw_id"] for c in calls.values()} == set(manager.handed)
+    by_seq = {r["seq"]: r for r in records}
+    py, js = _py_children(records), _js_children(records)
+    for node, call in calls.items():
+        for children in (py[call["seq"]], js[call["seq"]]):
+            assert children, (node, "nothing under its call")
+            assert {by_seq[s]["payload"].get("delegate_node_id") for s in children} == {node}, (node, children)
+        assert {r["payload"]["delegate_tool_call_id"] for r in _delegated(records) if r["payload"]["delegate_node_id"] == node} == {call["payload"]["raw_id"]}
+
+
+async def test_a_tool_that_raises_after_delegating_answers_its_row_with_an_error(tmp_path: Path) -> None:
+    """N1: an exception from the dispatch is an error answer under the row's id (the node fails as before), and the run it delegated to is still under the call."""
+    executor, manager = await _executor(tmp_path)
+    real = manager.execute
+
+    async def raises_after_delegating(call: Any, **kw: Any) -> ToolResultPart:
+        await real(call, **kw)
+        raise RuntimeError("the tool broke after delegating")
+
+    manager.execute = raises_after_delegating  # type: ignore[method-assign]
+    records = await _run(executor)  # type: ignore[arg-type]
+    (call,) = _tool_calls(records)
+    results = [r for r in records if r["kind"] == "tool_result" and r["node_id"] == "tool"]
+    assert [(r["payload"]["call_id"], r["payload"]["error"]) for r in results] == [(call["payload"]["id"], True)]
+    assert "the tool broke after delegating" in str(results[0]["payload"]["output"])
+    assert _py_children(records).get(call["seq"]), "the run it delegated to is still under the call"
+
+
+async def test_the_call_row_carries_the_arguments_the_tool_was_called_with(tmp_path: Path) -> None:
+    """N1: ``ToolCallEnd`` carries the node's rendered arguments, which are what the row and the console show."""
+    records, _ = await _records(tmp_path, arguments={"path": ".", "depth": 2})
+    (call,) = _tool_calls(records)
+    assert call["payload"]["arguments"] == {"path": ".", "depth": 2}
