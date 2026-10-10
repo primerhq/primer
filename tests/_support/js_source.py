@@ -6,14 +6,28 @@ a template stay as code (they are: ``title={`Save (${name}) failed (${err.code})
 (``strings=True``), because a quote or a backtick inside one is not the start of a string or a template. Newlines are kept and nothing is removed, so an offset in the
 result is the same offset in the source and a line number is ``src.count("\\n", 0, offset) + 1``.
 
-It is a lexer, not a parser, and two guesses are made. (1) A ``/`` starts a regular-expression literal when the last significant character before it is one of
-``( , = : [ ! & | ? { } ;``, or the last word is ``return``, ``typeof``, ``case``, ``of``, ``in`` (and ``void``, ``delete``, ``throw``, ``else``, ``do``, ``yield``, ``await``,
-``instanceof``), or there is nothing before it; a ``/`` followed by ``>`` (a JSX self-closing tag after a brace) never does, and a literal that does not close on its own line is not
-one (a regex literal cannot span lines), so a wrong guess costs one line at most. Division and JSX text (``and/or``, ``</p>``) are left alone. (2) A quote in JSX text
-(``Don't``) opens a string: a ' or " string ends at the end of its line (a JavaScript string cannot span lines), which limits what such a quote can swallow to the rest of that line.
-A template literal does span lines, so a stray backtick outside one would not be told apart; no file under ``ui/`` has that today. What a wrong guess cannot hide is a lexer that
-LOST ITS PLACE: ``blank`` raises ``ValueError`` when the text ends inside a template literal, a ``${...}`` placeholder or a string, and the scans run it over every component file
-(``tests/ui/test_refusal_reader.py``), so a file the lexer cannot follow fails by name instead of quietly reporting fewer sites.
+It is a lexer, not a parser, and two guesses are made.
+
+(1) A ``/`` starts a regular-expression literal when the last significant character before it is one of ``( , = : [ ! & | ? { } ;``, or it is the ``>`` of an arrow ``=>``, or the
+last word is ``return``, ``typeof``, ``case``, ``of``, ``in`` (and ``void``, ``delete``, ``throw``, ``else``, ``do``, ``yield``, ``await``, ``instanceof``), or there is nothing before it;
+a ``/`` followed by ``>`` (a JSX self-closing tag after a brace) never does, and a literal that does not close on its own line is not one (a regex literal cannot span lines), so a wrong
+guess costs one line at most. Division and JSX text (``and/or``, ``</p>``) are left alone. Two kinds of position are guessed WRONG, in opposite directions:
+
+* A regex that stands after ``)`` (``if (x) /re/.test(y)``), ``+``, ``-``, ``*``, ``%``, ``<``, a ``>`` that is not an arrow, or ``.`` is read as a DIVISION, because there a ``/`` is far more
+  often a division (``f(x) / 2``, ``a < b / c``) and the two cannot be told apart without a parser. A quote or a backtick inside such a regex then opens a string or a template and hides the rest
+  of its line. None is known under ``ui/components`` today (the review of #720 round 2 compared the titles this lexer sees with a Babel parse: 445 against 445); ``tests/ui/test_js_source_lexer.py`` pins the positions as division.
+* JSX text is read as a regex when its ``/`` stands where a regex may: after ``}`` (``{providerId}/{modelName}</span>``), after the ``;`` of an entity (``&lt;sid&gt;/</span>``) or after the word
+  ``in`` (``Open in /find</Btn>``). Eight lines of ``ui/`` are read that way today (agents.jsx:203 and :267, services.jsx:417, internal-collections.jsx:484, graphs.jsx:147, sessions-list.jsx:678,
+  predicate-builder.jsx:245 and design-canvas.jsx:927). The text from that slash to the next ``/`` of the line is blanked when strings are (``strings=True``); none of those stretches holds a title
+  prop, a ``.envelope`` or a ``mutate`` call, and a new one would hide at most the rest of its own line.
+
+(2) A quote in JSX text (``Don't``) opens a string: a ' or " string ends at the end of its line (a JavaScript string cannot span lines), which limits what such a quote can swallow to the rest
+of that line. A template literal does span lines, so a stray backtick outside one would not be told apart; no file under ``ui/`` has that today.
+
+What a wrong guess cannot hide is a lexer that LOST ITS PLACE: ``blank`` raises ``ValueError`` when the text ends inside a template literal, a ``${...}`` placeholder or a string, and the scans
+run it over every component file (``tests/ui/test_refusal_reader.py``), so a file the lexer cannot follow fails by name instead of quietly reporting fewer sites. The string case raises only when the
+text stops INSIDE the string itself: a string ends at its newline (see (2)), so a file whose last line is an unterminated string followed by a newline does not raise; the template and placeholder
+cases do (they span lines).
 """
 
 from __future__ import annotations
@@ -75,6 +89,7 @@ def blank(src: str, *, strings: bool = False, templates: bool = False) -> str:
     # One frame per open construct: ["code", open braces, offset] for the file and for each `${...}` placeholder, ["tpl", offset] for the static text of a template literal.
     stack: list[list] = [["code", 0, 0]]
     last = ""          # the last significant character of the code so far ("" at the start of a code frame: a regex may begin there)
+    arrow = False      # whether that character is the ``>`` of an arrow ``=>`` (an arrow's concise body may be a regex literal)
     i = 0
     while i < n:
         frame = stack[-1]
@@ -91,7 +106,7 @@ def blank(src: str, *, strings: bool = False, templates: bool = False) -> str:
                 j = n if j < 0 else j + 2
                 wipe(i, j)
                 i = j
-            elif c == "/" and nxt != ">" and (last == "" or last in _REGEX_AFTER_CHARS or (last.isalnum() or last in "_$") and _word_before(src, i) in _REGEX_AFTER_WORDS):
+            elif c == "/" and nxt != ">" and (last == "" or last in _REGEX_AFTER_CHARS or (last == ">" and arrow) or (last.isalnum() or last in "_$") and _word_before(src, i) in _REGEX_AFTER_WORDS):
                 end = _regex_end(src, i)
                 if end < 0:
                     last = c
@@ -130,6 +145,7 @@ def blank(src: str, *, strings: bool = False, templates: bool = False) -> str:
                 i += 1
             else:
                 if not c.isspace():
+                    arrow = c == ">" and last == "="
                     last = c
                 i += 1
         else:

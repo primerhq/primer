@@ -303,13 +303,47 @@ def test_no_component_reader_prints_the_auth_gates_bare_code(envelopes, path: st
 # around too: ``err["envelope"]``, ``const { message, envelope } = err`` (it only knew a pattern that STARTS with ``envelope``), the same pattern over several lines,
 # and it took ``//`` inside a string for a comment and read prose in a string or a block comment as code. It now reads the whole file with the comments, the strings
 # and the static text of templates taken out (tests/_support/js_source.py) and looks at three things: a ``.envelope`` access, a bracket access with the name as a
-# literal, and a destructuring pattern (a brace group that names ``envelope`` and is followed by ``=``, a parameter list that goes on, or ``of``/``in``).
+# literal, and a destructuring pattern (a brace group that names ``envelope`` and is followed by ``=``, a parameter list that goes on, or ``of``/``in``; a brace group that a COMMA follows is an
+# element of a list, so the question is asked of the closer of the ``(`` or ``[`` list it sits in: ``({ envelope }, i) =>``, ``[{ envelope }, ...rest] =``).
 _ENVELOPE_DOT = re.compile(r"\.\s*envelope\b")
 _ENVELOPE_BRACKET = re.compile(r"\[\s*(['\"`])envelope\1\s*\]")
 _ENVELOPE_KEY = re.compile(r"[{,]\s*(['\"]?)envelope\1\s*(?=[,:=}])")
-# What follows the closing brace of a destructuring pattern: array closers (``[{ envelope }]``), then ``= value``, ``=>``, ``of`` / ``in`` (a loop head), or the ``)`` of a parameter list and
-# then ``=>`` or a body ``{``.
-_DESTRUCTURED = re.compile(r"\s*(?:\]\s*)*(?:=(?![=>])|=>|(?:of|in)\b|\)\s*(?:=>|\{))")
+# What follows the closing brace of a destructuring pattern: array closers (``[{ envelope }]``), then ``= value``, ``of`` / ``in`` (a loop head), or the ``)`` of a parameter list and
+# then ``=>`` or a body ``{``. (A brace group is never followed by ``=>`` itself: an arrow's parameter pattern sits inside parentheses, so ``=>`` follows the ``)``.)
+_DESTRUCTURED = re.compile(r"\s*(?:\]\s*)*(?:=(?![=>])|(?:of|in)\b|\)\s*(?:=>|\{))")
+_COMMA = re.compile(r"\s*,")
+
+
+def _enclosing_opener(code: str, at: int) -> int:
+    """The offset of the bracket that encloses ``code[at]`` (-1 at the top level)."""
+    depth = 0
+    for j in range(at - 1, -1, -1):
+        ch = code[j]
+        if ch in ")]}":
+            depth += 1
+        elif ch in "([{":
+            if depth == 0:
+                return j
+            depth -= 1
+    return -1
+
+
+def _is_a_pattern(code: str, start: int, end: int) -> bool:
+    """Whether the brace group ``code[start:end]`` is a destructuring pattern.
+
+    It is one when what follows it says so (``=``, ``of`` / ``in``, the ``)`` of a parameter list that ends in ``=>`` or a body). A group that a COMMA follows is one element of a longer
+    list (``({ envelope }, i) => ...``, ``function f({ envelope }, x) {}``, ``const [{ envelope }, ...rest] = list``): the same question is asked of the closer of the ``(`` or ``[`` list
+    it sits in, so a pattern in the middle of a parameter list is found too. An object LITERAL in an argument list (``foo({ envelope: 1 }, x)``) is not: its list is followed by ``;`` or ``)``.
+    """
+    if _DESTRUCTURED.match(code, end):
+        return True
+    if not _COMMA.match(code, end):
+        return False
+    opener = _enclosing_opener(code, start)
+    if opener < 0 or code[opener] not in "([":
+        return False
+    close = close_of(code, opener)
+    return close > 0 and bool(_DESTRUCTURED.match(code, close - 1))
 
 
 def _envelope_reads(text: str) -> list[int]:
@@ -326,7 +360,7 @@ def _envelope_reads(text: str) -> list[int]:
                 continue
             end = close_of(code, i)
             key = _ENVELOPE_KEY.search(visible, i, end) if end > 0 else None
-            if key and _DESTRUCTURED.match(code, end):
+            if key and _is_a_pattern(code, i, end):
                 lines.add(line_of(text, visible.index("envelope", key.start(), key.end())))
     return sorted(lines)
 
@@ -441,7 +475,7 @@ def test_an_offender_appended_to_a_file_that_holds_a_regex_literal_is_found(rel:
 def test_knowledge_jsx_is_read_to_its_end() -> None:
     text = dict(_component_sources())["components/knowledge.jsx"]
 
-    assert len(_titles(text)) >= 18, "knowledge.jsx holds 20 title props: the lexer lost the file after its regex literal"
+    assert len(_titles(text)) >= 18, "knowledge.jsx held 20 title props when this was written and the assertion lets two of them go: fewer means the lexer lost the file after its regex literal"
 
 
 def test_the_lexer_ends_every_component_file_in_the_base_state() -> None:
@@ -482,7 +516,7 @@ def test_the_envelope_scan_still_sees_the_one_reader_that_is_allowed_to() -> Non
 TITLES_SEEN_WHEN_WRITTEN = 445
 _TITLE_START = re.compile(r"\btitle\s*(=\s*\{|:)")
 _CODE_WORD = re.compile(r"\bcode\b")
-_CODE_BRACKET = re.compile(r"\[\s*(['\"])code\1\s*\]")
+_CODE_BRACKET = re.compile(r"\[\s*(['\"`])code\1\s*\]")
 
 
 def _titles(text: str) -> list[tuple[int, bool]]:
@@ -564,7 +598,7 @@ def test_no_banner_title_in_any_component_composes_a_code() -> None:
     for rel, text in _component_sources():
         seen += len(_titles(text))
         offenders += [f"{rel}:{n}" for n in _titles_that_compose_a_code(text)]
-    assert seen >= TITLES_SEEN_WHEN_WRITTEN // 2, f"the scan saw {seen} titles (there were {TITLES_SEEN_WHEN_WRITTEN} when it was written): it is looking at the wrong place"
+    assert seen >= TITLES_SEEN_WHEN_WRITTEN * 9 // 10, f"the scan saw {seen} titles (there were {TITLES_SEEN_WHEN_WRITTEN} when it was written, and the floor is 90 percent of them): it is looking at the wrong place or the lexer lost a file"
     assert not offenders, "a title puts the code in the banner title (the message carries it when there is no sentence):\n" + "\n".join(offenders)
 
 
