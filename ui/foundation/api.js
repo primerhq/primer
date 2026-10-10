@@ -142,12 +142,15 @@
   //             a title alone tells nobody what was refused).
   // options.codeAfterTitle === false keeps that last fallback to the title alone: for a caller whose banner must never show a code (the triggers').
   // Whether a request-validation entry points at a FIELD a person can name: not the whole body or query (loc ["body"]: "body: Field required" names nothing) and
-  // not a position (loc ["body", 1], FastAPI's "JSON decode error" at character 1: "1: JSON decode error"; a list index is not a field).
+  // not a position (loc ["body", 1], FastAPI's "JSON decode error" at character 1: "1: JSON decode error"). A location that is two long and ends in a number is
+  // that position; a longer one that ends in a number is a list item of a named field (["body", "items", 2]: "items.2: Input should be a valid string"), which is
+  // a field a person can find.
   function _namesAField(entry) {
     const loc = entry && entry.loc;
     if (!Array.isArray(loc) || loc.length === 0) return false;
     if (loc.length === 1 && (loc[0] === "body" || loc[0] === "query" || loc[0] === "path")) return false;
-    return typeof loc[loc.length - 1] !== "number";
+    if (loc.length === 2 && typeof loc[1] === "number") return false;
+    return true;
   }
 
   function readRefusal(err, fallback, options) {
