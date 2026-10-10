@@ -60,6 +60,7 @@ from datetime import datetime, timedelta, timezone
 import asyncpg
 import httpx
 import pytest
+from pydantic_core import to_jsonable_python
 from playwright.sync_api import expect
 
 from tests.ui_e2e._studio_helpers import expand_debug_sidebar, open_session_in_studio
@@ -243,7 +244,7 @@ async def _inject_approval_park_async(
             session_id,
             parked_state["yielded"]["event_key"],
             parked_until.isoformat(),
-            now.isoformat(),
+            to_jsonable_python(now),  # parked_at as the storage layer spells it (the flip guards on that spelling)
             json.dumps(parked_state),
         )
     finally:

@@ -29,6 +29,7 @@ import os
 import asyncpg
 import httpx
 import pytest
+from pydantic_core import to_jsonable_python
 from tests._support.model_profiles import agent_model, seed_llm_provider
 
 
@@ -215,7 +216,7 @@ async def _inject_park(
         await _wait_for_worker_idle(conn, session_id)
         await conn.execute(
             sql, session_id, event_key,
-            parked_until.isoformat(), now.isoformat(),
+            parked_until.isoformat(), to_jsonable_python(now),  # parked_at as the storage layer spells it (the flip guards on that spelling)
             json.dumps(parked_state), parked_status,
         )
     finally:
