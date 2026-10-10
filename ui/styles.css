@@ -4830,6 +4830,7 @@ button.nv-trace-line { cursor: pointer; }
   padding: 8px 11px;
   border: 1px solid var(--border);
   border-radius: var(--r-8);
+  background: transparent;
   cursor: pointer;
   font-size: 12.5px;
   font-family: var(--font-mono);
@@ -4926,8 +4927,11 @@ button.nv-trace-line { cursor: pointer; }
   display: flex;
   align-items: center;
   gap: 9px;
+  width: 100%;
   padding: 6px 10px;
+  border: none;
   border-radius: var(--r-6);
+  background: transparent;
   font-size: 12.5px;
   color: var(--text-2);
   cursor: pointer;
@@ -5018,9 +5022,9 @@ button.nv-trace-line { cursor: pointer; }
 .nv-pcard {
   border: 1px solid var(--border);
   border-radius: var(--r-8);
+  position: relative;
   background: var(--bg-1);
   padding: 14px 16px 10px;
-  cursor: pointer;
   display: flex;
   flex-direction: column;
   gap: 9px;
@@ -5032,10 +5036,6 @@ button.nv-trace-line { cursor: pointer; }
   border-color: var(--accent-border);
   background: var(--bg-hover);
   transform: translateY(-1px);
-}
-.nv-pcard:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
 }
 .nv-pcard-status {
   font-family: var(--font-mono);
@@ -5088,9 +5088,14 @@ button.nv-trace-line { cursor: pointer; }
   margin-top: auto; padding-top: 6px;
   border-top: 1px solid var(--border);
 }
-.nv-pcard-open { font-size: 11px; color: var(--accent); opacity: 0.55; transition: opacity 0.12s ease; }
+.nv-pcard-open { border: none; background: transparent; padding: 0; font-size: 11px; color: var(--accent); cursor: pointer; transition: opacity 0.12s ease; }
+.nv-pcard-open::after { content: ""; position: absolute; inset: 0; }
 .nv-pcard:hover .nv-pcard-open { opacity: 1; }
+.nv-pcard-open:focus-visible { opacity: 1; }
+.nv-pcard:focus-within .nv-pcard-open { opacity: 1; }
 .nv-pcard-del {
+  position: relative;
+  z-index: 1;
   border: none;
   background: transparent;
   font-size: 11px;

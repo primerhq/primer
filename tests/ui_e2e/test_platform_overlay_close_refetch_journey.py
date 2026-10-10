@@ -45,7 +45,11 @@ def test_an_edit_made_while_the_overlay_is_open_shows_on_the_card_as_soon_as_it_
         card = page.get_by_test_id(f"nv-pcard:{service_id}")
         expect(card).to_contain_text(f"before-{unique_suffix}", timeout=15_000)
 
-        card.click()
+        # A click on the card's name: the stretched ::after of the Open button covers the whole
+        # card, so the click lands on the button (force, since the span itself is covered) and
+        # opens the overlay; the card div carries no click of its own (static pin:
+        # tests/ui/test_console_clickable_controls_are_focusable.py).
+        card.locator(".nv-pcard-name").click(force=True)
         expect(page.get_by_test_id("nv-overlay-body")).to_be_visible(timeout=15_000)
 
         # A write the overlay would make, made through the API while it is open.

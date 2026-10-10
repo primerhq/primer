@@ -2,7 +2,8 @@
 
 A filter box with only a placeholder, and a filter ``<select>`` whose only text is its first option, are unnamed edit fields and combo boxes to a screen reader. This opens, in one browser and one
 after the other, each Platform list page that has a filter, the create forms whose inputs had a placeholder and nothing else (workspaces, collections, the agent form's tool picker), the speech
-settings, the New workspace overlay and the Activity overlay, and fails on any visible input, select, textarea or button without a name (``tests/ui_e2e/_a11y.py``). The create forms are swept
+settings, the New workspace overlay and the Activity overlay, and the Platform view (its nav rows and the service card grid, filtered to one seeded service by the id the services card shows as its name, so the assert
+is not a race with the 6-card page size), and fails on any visible input, select, textarea or button without a name (``tests/ui_e2e/_a11y.py``). The create forms are swept
 below their header, so the dialog's close button (its own PR) is not this journey's.
 """
 
@@ -10,12 +11,13 @@ from __future__ import annotations
 
 import re
 
+import httpx
 import pytest
 from playwright.sync_api import Page, expect
 
 from tests._support.smk import smk
 from tests.ui_e2e._a11y import unnamed_controls
-from tests.ui_e2e._shell_helpers import open_legacy_route, open_overlay
+from tests.ui_e2e._shell_helpers import open_legacy_route, open_overlay, open_view
 
 pytestmark = smk("SMK-UI-06", status="partial")
 
@@ -37,7 +39,7 @@ def _first_workspace(base_url: str) -> str:
 
 @pytest.mark.ui_e2e
 @pytest.mark.timeout(300)
-def test_the_platform_list_filters_and_plain_create_inputs_have_names(base_url: str, console_url: str, page: Page) -> None:
+def test_the_platform_list_filters_and_plain_create_inputs_have_names(base_url: str, console_url: str, page: Page, unique_suffix: str) -> None:
     unnamed: dict[str, list[str]] = {}
 
     def check(surface: str, root: str) -> None:
@@ -67,6 +69,23 @@ def test_the_platform_list_filters_and_plain_create_inputs_have_names(base_url: 
     for name in ("new-workspace", "activity"):
         open_overlay(page, console_url, wid, name)
         check(f"overlay {name}", f'[data-testid="nv-overlay:{name}"]')
+
+    # The Platform view: its nav rows and the card grid's buttons are swept for names too. One
+    # seeded service, filtered to its id (the services card shows the id as its name; the
+    # name field the operator typed is not drawn on the card), so the assert is not a race
+    # with the 6-card page size; the journey removes it in the finally.
+    with httpx.Client(base_url=base_url, timeout=30.0) as c:
+        r = c.post("/v1/services", json={"name": f"named-sweep-{unique_suffix}", "description": f"sweep-{unique_suffix}", "viewer_auth": "console"})
+        assert r.status_code == 201, r.text
+        service_id = r.json()["id"]
+    try:
+        open_view(page, console_url, wid, "platform:services")
+        page.get_by_test_id("nv-plat-filter").fill(service_id)
+        expect(page.get_by_test_id(f"nv-pcard:{service_id}")).to_be_visible(timeout=15_000)
+        check("platform view", '[data-testid="nv-platform"]')
+    finally:
+        with httpx.Client(base_url=base_url, timeout=30.0) as c:
+            c.delete(f"/v1/services/{service_id}")
 
     report = "\n".join(f"  {surface}\n" + "\n".join(f"      {html}" for html in found) for surface, found in unnamed.items())
     assert not unnamed, f"controls with no name, by surface:\n{report}"

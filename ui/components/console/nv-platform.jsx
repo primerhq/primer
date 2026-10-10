@@ -719,9 +719,10 @@ function NV_PlatNav() {
               var label = id === "providers" ? "Providers"
                 : (page ? page.title : id);
               return (
-                <div key={id} className="nv-plat-row"
+                <button type="button" key={id} className="nv-plat-row"
                   data-active={id === active ? "true" : "false"}
                   data-testid={"nv-plat-row:" + id}
+                  aria-current={id === active ? "page" : undefined}
                   onClick={function () { con.goView("platform", id); }}>
                   <svg width="14" height="14" viewBox="0 0 14 14" fill="none"
                     stroke="currentColor" strokeWidth="1.2"
@@ -729,7 +730,7 @@ function NV_PlatNav() {
                     <path d={NV_PLAT_ICONS[id]} />
                   </svg>
                   <span>{label}</span>
-                </div>
+                </button>
               );
             })}
           </div>
@@ -743,8 +744,7 @@ function NV_PlatCard(props) {
   var c = props.card;
   var facts = (c.facts || []).filter(Boolean);
   return (
-    <div className="nv-pcard" data-testid={"nv-pcard:" + c.name}
-      onClick={props.onOpen}>
+    <div className="nv-pcard" data-testid={"nv-pcard:" + c.name}>
       <div className="nv-pcard-head">
         {c.glyph ? (
           <svg width="12" height="12" viewBox="0 0 12 12"
@@ -779,12 +779,15 @@ function NV_PlatCard(props) {
         </div>
       ) : null}
       <div className="nv-pcard-foot">
-        <span className="nv-pcard-open">Open</span>
+        <button type="button" className="nv-pcard-open"
+          data-testid={"nv-pcard-open:" + c.name}
+          aria-label={"Open " + c.name}
+          onClick={props.onOpen}>Open</button>
         <span style={{ flex: 1 }} />
         {props.onDelete ? (
           <button type="button" className="nv-pcard-del"
             data-testid={"nv-pcard-del:" + c.name}
-            onClick={function (ev) { ev.stopPropagation(); props.onDelete(); }}>
+            onClick={props.onDelete}>
             Delete
           </button>
         ) : null}
