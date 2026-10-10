@@ -1953,7 +1953,7 @@ async def steer_session(
             # the session re-parked under the same key must not cancel the new call (ticket 01a1208d, #702 review B2).
             payload = with_wake_park(make_cancelled_payload(reason=CANCEL_REASON_SUPERSEDED), row.parked_at)
             woken = None
-            for tcid, (key, _row_id) in _pending_targets(row).items():
+            for tcid, (key, entry_row_id) in _pending_targets(row).items():
                 # Only a call whose cancel LANDED is woken: a call whose result landed meanwhile (its guarded
                 # row write was rejected, so it is not in ``cancelled``) keeps the reply the park carries.
                 if tcid not in cancelled:
@@ -1961,6 +1961,15 @@ async def steer_session(
                 # Each cancel is its own leaf of a multi-event park, and the flip writes ``parked_state`` whole: a
                 # further wake starts from the row the previous one wrote, or it drops that leaf (#707 review N2).
                 woken = row if woken is None else (await sessions.get(session_id) or woken)
+                # ... and only while the re-read park still waits on this call, under the same key and row: a park
+                # that moved on between two wakes (the graph parked on another entry under the same raw id) would
+                # take the cancel all the same and answer that entry with it (#707 review round 2, N1).
+                if woken is not row and _pending_targets(woken).get(tcid) != (key, entry_row_id):
+                    logger.info(
+                        "external tool cancel of %r on session %s: the park moved on between two wakes and no "
+                        "longer waits on it, so it is not woken", tcid, session_id,
+                    )
+                    continue
                 await durably_wake_session(
                     woken,
                     event_key=key,
