@@ -305,27 +305,35 @@ def test_no_component_reader_prints_the_auth_gates_bare_code(envelopes, path: st
 # and the static text of templates taken out (tests/_support/js_source.py) and looks at three things: a ``.envelope`` access, a bracket access with the name as a
 # literal, and a destructuring pattern (a brace group that names ``envelope`` and is followed by ``=``, a parameter list that goes on, or ``of``/``in``).
 _ENVELOPE_DOT = re.compile(r"\.\s*envelope\b")
-_ENVELOPE_BRACKET = re.compile(r"\[\s*(['\"])envelope\1\s*\]")
-_ENVELOPE_KEY = re.compile(r"[{,]\s*envelope\s*(?=[,:=}])")
-_DESTRUCTURED = re.compile(r"\s*(?:=(?![=>])|\)\s*(?:=>|\{)|(?:of|in)\b)")
+_ENVELOPE_BRACKET = re.compile(r"\[\s*(['\"`])envelope\1\s*\]")
+_ENVELOPE_KEY = re.compile(r"[{,]\s*(['\"]?)envelope\1\s*(?=[,:=}])")
+# What follows the closing brace of a destructuring pattern: array closers (``[{ envelope }]``), then ``= value``, ``=>``, ``of`` / ``in`` (a loop head), or the ``)`` of a parameter list and
+# then ``=>`` or a body ``{``.
+_DESTRUCTURED = re.compile(r"\s*(?:\]\s*)*(?:=(?![=>])|=>|(?:of|in)\b|\)\s*(?:=>|\{))")
 
 
 def _envelope_reads(text: str) -> list[int]:
     """The lines of ``text`` that read the thrown error's ``envelope``."""
     code = blank(text, strings=True, templates=True)
+    visible = blank(text)  # the same text with only the comments taken out: a quoted key (``{ 'envelope': e }``) and a bracket literal (``err[`envelope`]``) live in a string
     lines = {line_of(text, m.start()) for m in _ENVELOPE_DOT.finditer(code)}
-    for m in _ENVELOPE_BRACKET.finditer(blank(text)):
+    for m in _ENVELOPE_BRACKET.finditer(visible):
         if code[m.start()] == "[":  # the bracket is code, not text inside a string
             lines.add(line_of(text, m.start()))
-    if re.search(r"\benvelope\b", code):
+    if "envelope" in visible:
         for i, ch in enumerate(code):
             if ch != "{":
                 continue
             end = close_of(code, i)
-            key = _ENVELOPE_KEY.search(code, i, end) if end > 0 else None
+            key = _ENVELOPE_KEY.search(visible, i, end) if end > 0 else None
             if key and _DESTRUCTURED.match(code, end):
-                lines.add(line_of(text, code.index("envelope", key.start(), key.end())))
+                lines.add(line_of(text, visible.index("envelope", key.start(), key.end())))
     return sorted(lines)
+
+
+def _describe(text: str, number: int) -> str:
+    """The text of line ``number`` (1-based) as ``line_of`` counts lines: by ``\\n`` only (``splitlines()`` also breaks at a form feed, a vertical tab and U+2028)."""
+    return text.split("\n")[number - 1].strip()
 
 
 def _reads_the_envelope(text: str) -> bool:
@@ -402,8 +410,7 @@ def test_no_component_reads_the_envelope_but_the_python_editor() -> None:
     for rel, text in sources:
         if rel in _MAY_READ_THE_ENVELOPE:
             continue
-        lines = text.splitlines()
-        offenders += [f"{rel}:{n}: {lines[n - 1].strip()[:110]}" for n in _envelope_reads(text)]
+        offenders += [f"{rel}:{n}: {_describe(text, n)[:110]}" for n in _envelope_reads(text)]
     assert len(sources) >= 50, f"the scan found {len(sources)} component files: it is looking at the wrong place"
     assert not offenders, "a component reads a refusal out of the envelope itself instead of window.primerApi.readRefusal:\n" + "\n".join(offenders)
 
@@ -459,7 +466,7 @@ def test_the_envelope_scan_still_sees_the_one_reader_that_is_allowed_to() -> Non
 # every ``title={...}`` prop by its balanced braces and every ``title:`` key up to the end of its value, and asks whether the expression names a ``code``: a
 # property (``err.code``), a destructured variable (``code``) or a bracket access (``err["code"]``). The first version was two regular expressions that stopped at the
 # first ``}`` and only knew ``.code``: a title with a ``${name}`` before the code, a destructured ``code`` and ``err["code"]`` were missed.
-TITLES_SEEN_WHEN_WRITTEN = 425
+TITLES_SEEN_WHEN_WRITTEN = 445
 _TITLE_START = re.compile(r"\btitle\s*(=\s*\{|:)")
 _CODE_WORD = re.compile(r"\bcode\b")
 _CODE_BRACKET = re.compile(r"\[\s*(['\"])code\1\s*\]")

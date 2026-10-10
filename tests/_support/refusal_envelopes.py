@@ -50,6 +50,9 @@ def refusal_envelopes() -> dict[str, dict]:
         name: str = Field(..., min_length=1)
         count: int
 
+    class _ListBody(BaseModel):
+        items: list[str]
+
     class _Page:
         def __init__(self, items):
             self.items = items
@@ -99,6 +102,10 @@ def refusal_envelopes() -> dict[str, dict]:
 
     @app.post("/v1/validated")
     def validated(body: _Body):
+        return {}
+
+    @app.post("/v1/list_item")
+    def list_item(body: _ListBody):
         return {}
 
     check = ReferenceCheck(child_kind="agent", child_storage=lambda request: _FindsOne("builder"), child_field="model.profile_id")
@@ -162,6 +169,9 @@ def refusal_envelopes() -> dict[str, dict]:
         "agent_field": client.post("/v1/agent_field").json(),
         "validated": client.post("/v1/validated", json={"name": ""}).json(),
         "validated_missing": client.post("/v1/validated", json={"count": 1}).json(),
+        # a list item of a named field (loc ["body", "items", 2]) and a body that is not JSON (loc ["body", 1]: the character position), as the real handlers answer them
+        "list_item": client.post("/v1/list_item", json={"items": ["a", "b", 3]}).json(),
+        "json_decode": client.post("/v1/validated", content="{bad", headers={"content-type": "application/json"}).json(),
         "in_use_by": client.delete("/v1/in_use_by").json(),
         "in_use_by_session": client.delete("/v1/in_use_by_session").json(),
         "in_use_by_aggregate": client.delete("/v1/in_use_by_aggregate").json(),
