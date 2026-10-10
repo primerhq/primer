@@ -117,7 +117,9 @@ Four rules make that safe:
   wrote ENDED/`completed` over ENDED/`force_deleted`, or a `WAITING` over an
   ENDED row (resurrecting it with a stale reason). A turn never reopens a
   session; that is `wake_session`'s job. The guard is a CONDITIONAL write
-  (`update_unless`, forbidden status ENDED, as `yields.py` does for a park),
+  (`update_unless`, forbidden status ENDED; the park flip in `yields.py` is
+  guarded the same way, by a `patch_if` whose `where` admits every status but
+  ENDED),
   not a check on the helper's own snapshot: the lifecycle lock is
   process-local (a force-delete on another API process does not serialize with
   this worker) and the reconciler and the pool's `_end_session` do not take it
