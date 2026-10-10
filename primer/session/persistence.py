@@ -1189,7 +1189,9 @@ def stash_graph_scoped_ids(
 
     Mutates ``pending_toolcalls``/``pending_agent_yields`` entries IN PLACE,
     setting ``scoped_tool_call_id`` from ``coalesce_state.scoped_call_ids``
-    keyed by ``(entry["node_id"], entry["tool_call_id"])`` — but only when
+    keyed by ``(entry["node_id"], entry["row_call_id"] or entry["tool_call_id"])``
+    (a ToolCall node's call row was minted under the call id of its FIRST dispatch,
+    which a gate raised inside the approved dispatch no longer carries), but only when
     the entry doesn't already carry one: an entry stashed by an EARLIER park
     in this same checkpoint's history (carried forward through a repark)
     keeps its original id rather than being re-derived (there is nothing to
@@ -1206,7 +1208,7 @@ def stash_graph_scoped_ids(
             if entry.get("scoped_tool_call_id") is not None:
                 continue
             sid = coalesce_state.scoped_call_ids.get(
-                (entry.get("node_id"), entry.get("tool_call_id"))
+                (entry.get("node_id"), entry.get("row_call_id") or entry.get("tool_call_id"))
             )
             if sid is not None:
                 entry["scoped_tool_call_id"] = sid

@@ -36,13 +36,28 @@ _NODE_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 )
 
 
-def set_current_graph_node_id(node_id: str | None) -> contextvars.Token:
-    """Publish the fan-out-instance-qualified node id for the current task."""
-    return _NODE_ID.set(node_id)
+class _Entered:
+    """What :func:`set_current_graph_node_id` changed, for :func:`reset_current_graph_node_id` to put back."""
+
+    __slots__ = ("node", "toolcall")
+
+    def __init__(self, node: contextvars.Token, toolcall: contextvars.Token) -> None:
+        self.node = node
+        self.toolcall = toolcall
 
 
-def reset_current_graph_node_id(token: contextvars.Token) -> None:
-    _NODE_ID.reset(token)
+def set_current_graph_node_id(node_id: str | None) -> _Entered:
+    """Publish the fan-out-instance-qualified node id for the current task.
+
+    Entering a graph node also HIDES the identity of a ToolCall node's dispatch that is in progress above it (01a11faa, review of #712): the innermost node is the one a delegated run belongs
+    to, and an agent node of a graph that a ToolCall node's tool runs in-process (``invoke_graph``) is inside that dispatch, not the ToolCall node. Leaving the node brings it back.
+    """
+    return _Entered(_NODE_ID.set(node_id), _TOOLCALL.set(None))
+
+
+def reset_current_graph_node_id(entered: _Entered) -> None:
+    _TOOLCALL.reset(entered.toolcall)
+    _NODE_ID.reset(entered.node)
 
 
 def current_graph_node_id() -> str | None:

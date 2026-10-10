@@ -255,6 +255,8 @@ class _CheckpointMixin:
                     # 01a0690a: the scoped id the paired durable TOOL_CALL
                     # record carries -- see _PendingToolCall's docstring.
                     "scoped_tool_call_id": p.scoped_tool_call_id,
+                    # 01a11faa: the id of the call row the node wrote -- see _PendingToolCall's docstring.
+                    "row_call_id": p.row_call_id,
                 }
                 for p in self._pending_toolcalls
             ],
@@ -434,6 +436,8 @@ class _CheckpointMixin:
                 # 01a0690a: None for a checkpoint written before this field
                 # existed -- the resume write falls back to the raw id.
                 scoped_tool_call_id=raw.get("scoped_tool_call_id"),
+                # 01a11faa: None for a checkpoint written before nodes wrote a call row -- no row to answer.
+                row_call_id=raw.get("row_call_id"),
             )
             for raw in (payload.get("pending_toolcalls") or [])
         ]
