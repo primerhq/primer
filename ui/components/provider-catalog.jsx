@@ -142,7 +142,7 @@ function PC_RegisterDropdown({ klass, onPick }) {
   const { useResource, apiFetch } = window.primerApi;
   const [open, setOpen] = React.useState(false);
   const types = useResource(
-    `provider-register-types:${klass.plural}`,
+    window.PC_typesKey(klass.plural),
     (signal) => apiFetch("GET", `/${klass.plural}/_types`, null, { signal }),
     { pollMs: null },
   );
