@@ -168,6 +168,14 @@ async def end_graph(pool: "WorkerPool", session, *, reason: str, executor=None):
     return await pool._end_session(session, reason=reason)
 
 
+def _wake_gate_id(raw_payload) -> str | None:
+    """The gate a human decision's wake names (:data:`~primer.model.yield_.WAKE_GATE_ID_KEY`), or ``None`` (a wake from before gates had ids, a machine wake, a reply that is not a dict)."""
+    from primer.model.yield_ import WAKE_GATE_ID_KEY
+
+    named = raw_payload.get(WAKE_GATE_ID_KEY) if isinstance(raw_payload, dict) else None
+    return named if isinstance(named, str) and named else None
+
+
 async def resume_graph_engine(pool: "WorkerPool", session, parked):
     """Resume a graph-bound session parked at a ToolCall approval.
 
@@ -294,6 +302,8 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
                 ).payload,
                 # The FIRED key rides with the reply (C-033 round 2): the raw tool_call_id alone cannot say which of two fan-out siblings it answers.
                 event_key or None,
+                # ... and so does the GATE the decision named, read from the raw wake because classifying strips it: two siblings can share the key, and the approval of one is not the approval of the other.
+                _wake_gate_id(entry.get("payload")),
             )
             for event_key, entry in kept.items()
         ]
@@ -309,13 +319,13 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
             # fail-closed-to-rejected default installing the rejecting
             # override for no reason - mirrors resume_graph_tool_wait's
             # own identical convention for its no-real-approval-here case.
-            replies = [("__tool_wait_wake_only__", {"decision": "approved"}, None)]
+            replies = [("__tool_wait_wake_only__", {"decision": "approved"}, None, None)]
     else:
         resume_event_key = raw_state.get("resume_event_key")
         resumed_tcid = (
             resume_event_key.rsplit(":", 1)[-1] if resume_event_key else None
         )
-        replies = [(resumed_tcid, resume_payload.payload, resume_event_key or None)]
+        replies = [(resumed_tcid, resume_payload.payload, resume_event_key or None, _wake_gate_id(parked.resume_event_payload))]
 
     repark = None
     # 01a0690a piece 3: per-node mint-seq high-water mark, seeded from the
@@ -323,7 +333,7 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
     # any repark this loop produces so a chain of resumes never re-mints a
     # colliding scoped id.
     node_tool_call_seq = dict(getattr(parked, "node_tool_call_seq", None) or {})
-    for tcid, payload, fired_key in replies:
+    for tcid, payload, fired_key, gate_id in replies:
         # Unified nested-yield: when the parked agent-node yielded from
         # INSIDE a nested invoke_agent invocation, its pending entry carries
         # a continuation ``frames`` stack. Run the continuation walk to
@@ -395,6 +405,7 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
                 payload=payload,
                 resumed_tcid=tcid,
                 resumed_event_key=fired_key,
+                resumed_gate_id=gate_id,
                 agent_tool_result=agent_tool_result,
                 pool=pool,
                 session=session,

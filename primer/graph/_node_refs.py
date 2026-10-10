@@ -324,6 +324,8 @@ def _approved_inner_call(entry: "_PendingToolCall", node: "_ToolCallNode") -> di
         return None
     via = meta.get("via_call_tool")
     arguments = original.get("arguments") or {}
+    if not isinstance(arguments, dict) or (via is not None and not isinstance(via, dict)):
+        return None                       # a park whose recorded call cannot be read is the node's own, as before the call was recorded
     if via is None and original["name"] == node.tool_id and arguments == (entry.arguments or {}):
         return None
     return {"name": str(original["name"]), "arguments": dict(arguments), "via_call_tool": via}
@@ -937,7 +939,13 @@ class _PendingToolCall:
         The ``Yielded.resume_metadata`` the underlying tool stamped (e.g.
         ask_user's ``prompt`` / ``response_schema`` / ``tool_call_id``).
         Surfaced to the channel/REST ask_user prompt + handed to the
-        resume hook. Empty for an approval gate.
+        resume hook. For an approval gate it is the gate's own stamps (``policy_id``,
+        ``approval_type``, ``gate_reason``, ``approvers``, ``gate_id``, ``preview``) and the
+        call the gate gates, ``original_call``: the node's own call for the node's own gate, the
+        INNER call for a gate raised inside the node's dispatch, which ``via_call_tool`` marks
+        when ``call_tool`` raised it. The resume READS ``original_call`` and ``via_call_tool``
+        (``_approved_inner_call``) to decide what approving runs, and the projections the
+        operator sees (``_project_gated_call``) are built from them.
     scoped_tool_call_id
         01a0690a: the SCOPED id (``node:tool:turn_no:seq``) the durable
         TOOL_CALL record this park will eventually be answered by was

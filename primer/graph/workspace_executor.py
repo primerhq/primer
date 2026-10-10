@@ -501,7 +501,9 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         ``_approved_inner_call``): that call is run instead, as the agent path
         does with a park's ``original_call``. A park that carries
         ``via_call_tool`` (``call_tool`` gating the tool it was asked to run) is
-        dispatched through the owning toolset provider, which is where that
+        dispatched through the toolset provider that owns it, resolved with the
+        ``toolset_resolver`` the worker wires (this executor holds no provider
+        registry and the worker passes it no manager), which is where that
         handler would have sent it; any other inner call goes through the
         manager with ``bypass_approval=True``, which skips that call's own gate.
         It runs under the fresh id this resume's dispatch was given
@@ -515,19 +517,43 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         import uuid
         from primer.model.chat import ToolCallPart
 
-        manager = await self._manager_for(node)
         call = ToolCallPart(
             id=current_toolcall_id() or str(uuid.uuid4()),
             name=inner_call["name"],
             arguments=inner_call["arguments"],
         )
         if inner_call.get("via_call_tool") is not None:
-            from primer.worker.yield_runtime import _resume_call_tool_dispatch
-
-            return await _resume_call_tool_dispatch(
-                via=inner_call["via_call_tool"], original_call=call, tool_manager=manager,
-            )
+            return await self._dispatch_via_call_tool(call, inner_call["via_call_tool"])
+        manager = await self._manager_for(node)
         return await manager.execute(call, principal=self._principal, bypass_approval=True)
+
+    async def _dispatch_via_call_tool(self, call: "ToolCallPart", via: dict[str, Any]) -> ToolResultPart:
+        """Run the inner call of an approved ``call_tool`` park through the toolset provider that owns it (``via['toolset_id']``), as the ``call_tool`` handler would have after its own gate.
+
+        The provider comes from the ``toolset_resolver`` the worker wires, with the principal the handler stamped at park time. Fails closed to an error result when there is no resolver, no such
+        toolset or the call raises; a further gate raised inside the provider (``YieldToWorker``) is not swallowed, so the two-phase park in the resume loop can re-park on it.
+        """
+        from primer.model.yield_ import YieldToWorker
+
+        toolset_id = via.get("toolset_id")
+        if self._toolset_resolver is None or not toolset_id:
+            return ToolResultPart(
+                id=call.id, error=True,
+                output=json.dumps({"is_error": True, "reason": "call_tool resume: no toolset resolver is wired", "tool_name": call.name}),
+            )
+        try:
+            provider = await self._toolset_resolver(toolset_id)
+            if provider is None:
+                raise LookupError(f"toolset {toolset_id!r} is not available")
+            result = await provider.call(tool_name=call.name, arguments=call.arguments, principal=via.get("principal"))
+        except YieldToWorker:
+            raise
+        except Exception as exc:  # noqa: BLE001 - fail-closed synthesis, as the agent path's
+            return ToolResultPart(
+                id=call.id, error=True,
+                output=json.dumps({"is_error": True, "reason": f"call_tool resume failed: {type(exc).__name__}: {exc}", "tool_name": call.name}),
+            )
+        return ToolResultPart(id=call.id, output=result.output, error=result.is_error)
 
     async def _load_node_history(self, node_id: str) -> list[Message]:
         rel_path = self._state_rel(f"nodes/{node_id}/messages.jsonl")

@@ -89,7 +89,7 @@ from primer.model.turn_log import (
     TurnLogSuperstepStarted,
 )
 from primer.model.workspace_session import SessionStatus
-from primer.model.yield_ import ToolWaitPark, YieldToWorker
+from primer.model.yield_ import ToolWaitPark, YieldToWorker, gate_id_of
 from primer.observability.turn_log_writer import (
     NoopTurnLogWriter,
     TurnLogWriter,
@@ -431,6 +431,7 @@ class _BaseGraphExecutor(
         resume_session_id: str | None = None,
         resolve_provider: "Callable[[str], Awaitable[Any]] | None" = None,
         resumed_event_key: str | None = None,
+        resumed_gate_id: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Restore from a checkpoint and continue graph execution.
 
@@ -488,6 +489,11 @@ class _BaseGraphExecutor(
         ``resumed_tcid`` and NO key (and is not the key-less drain, which names neither) resumes only the FIRST entry that carries it, the primary the park
         projects (tool calls before agent yields), and logs the session and the node it picked; it used to resume every one of them.
 
+        ``resumed_gate_id`` (security review of #724, B1): the gate the decision named. Two siblings can share an event key (a provider numbers its calls ``call_0``
+        itself), and a decision on the key selects both; a ToolCall entry whose gate carries ANOTHER id is not the one decided and stays pending (it is re-parked below),
+        because each entry now runs its own ``original_call`` with the approval bypassed. An entry that carries no id (a park from before gates had ids) is judged by the key
+        alone, as before.
+
         ``resume_session_id`` / ``resolve_provider``: the session being
         resumed and the provider registry's ``get_toolset``, for the
         ``ResumeContext`` a value-yielding tool_call node's resume hook
@@ -542,6 +548,8 @@ class _BaseGraphExecutor(
             # A key that names no entry (a park written before keys were node-scoped): the raw id decides, as it always did.
             tc_pending = [e for e in tc_all if e.tool_call_id == resumed_tcid]
             ay_pending = [e for e in ay_all if e.tool_call_id == resumed_tcid]
+        if resumed_gate_id is not None:
+            tc_pending = [e for e in tc_pending if gate_id_of(e.resume_metadata) in (resumed_gate_id, None)]
         # tool_wait selection is readiness-based (resolved_tool_wait), not
         # resumed_tcid-based — a batch has no single "replying tcid", it
         # has N sibling task ids. See the docstring above.
@@ -678,8 +686,8 @@ class _BaseGraphExecutor(
             # 01a1247f-b4de: a park raised from INSIDE the node's dispatch (a tool that runs a gated tool through the manager, call_tool's gate on its inner tool) gates the INNER call, and approving
             # it runs that call, as the agent path does (``resume_metadata.original_call``); re-dispatching the node's own tool would meet the inner gate again under a new id, for ever. The inner call
             # goes through the same hook, so a rejection (which replaces the hook) cannot run it.
-            inner_call = _approved_inner_call(entry, node_def)
             try:
+                inner_call = _approved_inner_call(entry, node_def)       # inside the try: a park that cannot be read must not leave the call id published for the rest of the task
                 result = await self._dispatch_toolcall_with_bypass(
                     node_def, entry.arguments,
                     **({"inner_call": inner_call} if inner_call is not None else {}),

@@ -36,6 +36,37 @@ from primer.model.graph import (
 from primer.model.yield_ import GATE_ID_KEY, ToolWaitPark, Yielded, YieldToWorker, gate_id_of
 
 
+# The keys of a gate's own metadata that its projection carries besides the call itself and the card's allowlist: why it gated, who may decide it and how an inner ``call_tool`` call is dispatched.
+# The Inbox row reads only the top-level projection and the channel prompt only ``pending_dispatch``, so a key left out here reads as "no such thing" (``approvers`` absent: anyone may decide).
+_PROJECTED_GATE_KEYS = ("policy_id", "approval_type", "gate_reason", "approvers", "via_call_tool")
+
+
+def _project_gated_call(p: "_PendingToolCall", node_tool_id: str | None) -> dict[str, Any]:
+    """The ``resume_metadata`` a pending ToolCall node's park is SHOWN with: the call the gate gates, with its own stamps (security review of #724, B2).
+
+    The gate's ``original_call`` is the call approving it RUNS: the node's own call for the node's own gate, the INNER call for a gate raised inside the node's dispatch (a tool that runs a gated tool,
+    ``call_tool`` gating the tool it was asked to run). The projection used to be rebuilt from the node alone, so the card said 'Approve _y__outer(...)?' for the run of ``_y__inner(...)``. A pending
+    call that carries no ``original_call`` (a park from before it was recorded) falls back to the node's tool and arguments, as before; ``None`` for the tool when even the node is unknown.
+    """
+    meta = p.resume_metadata or {}
+    projected: dict[str, Any] = {}
+    original = meta.get("original_call")
+    if isinstance(original, dict) and original.get("name"):
+        projected["original_call"] = {"id": p.tool_call_id, "name": original["name"], "arguments": dict(original.get("arguments") or {})}
+    elif node_tool_id is not None:
+        projected["original_call"] = {"id": p.tool_call_id, "name": node_tool_id, "arguments": dict(p.arguments)}
+    # The Inbox card's allowlist the gate stamped (design 01a11cd3-66b0): passed on, or the card of a graph approval would fall back to the default rule.
+    if "preview" in meta:
+        projected["preview"] = meta["preview"]
+    for key in _PROJECTED_GATE_KEYS:
+        if key in meta:
+            projected[key] = meta[key]
+    gate_id = gate_id_of(meta)
+    if gate_id is not None:
+        projected[GATE_ID_KEY] = gate_id
+    return projected
+
+
 class _CheckpointMixin:
     """Snapshot / restore / park-yield methods for `_BaseGraphExecutor`."""
 
@@ -66,22 +97,9 @@ class _CheckpointMixin:
                 node_def = self._resolve_node_def(first.node_id)
             except KeyError:
                 node_def = None
-            tool_id = getattr(node_def, "tool_id", None)
-            resume_meta: dict[str, Any] = {}
-            if tool_id is not None:
-                resume_meta["original_call"] = {
-                    "id": first.tool_call_id,
-                    "name": tool_id,
-                    "arguments": first.arguments,
-                }
-                # The Inbox card's allowlist the gate stamped (design 01a11cd3-66b0): this block is rebuilt from the node, so the stamp the pending call
-                # kept is passed on or the card of a graph approval would fall back to the default rule.
-                if "preview" in first.resume_metadata:
-                    resume_meta["preview"] = first.resume_metadata["preview"]
-            # The primary gate's id rides on the key-less projection too, so the Inbox row (which reads only the top-level yield) can name it.
-            primary_gate_id = gate_id_of(first.resume_metadata)
-            if primary_gate_id is not None:
-                resume_meta[GATE_ID_KEY] = primary_gate_id
+            # What the Inbox row (which reads only this top-level yield) shows: the call the primary gate gates (the inner call for a gate raised inside the node's dispatch) with its stamps and its id.
+            # The card's allowlist (design 01a11cd3-66b0) is one of them: passed on, or the card of a graph approval would fall back to the default rule.
+            resume_meta: dict[str, Any] = _project_gated_call(first, getattr(node_def, "tool_id", None))
         else:
             first_ay = self._pending_agent_yields[0]
             primary_event_key = first_ay.event_key
@@ -332,26 +350,13 @@ class _CheckpointMixin:
             node_def = self._resolve_node_def(p.node_id)
         except KeyError:
             node_def = None
-        entry: dict[str, Any] = {
+        # The channel prompt is built from this entry: the call the gate gates (the inner call for a gate raised inside the node's dispatch), its stamps (who may decide it) and the gate's id, which a reply names.
+        return {
             "kind": "_approval",
             "node_id": p.node_id,
             "tool_call_id": p.tool_call_id,
-            "resume_metadata": {
-                "original_call": {
-                    "id": p.tool_call_id,
-                    "name": getattr(node_def, "tool_id", "<unknown>"),
-                    "arguments": dict(p.arguments),
-                },
-            },
+            "resume_metadata": _project_gated_call(p, getattr(node_def, "tool_id", "<unknown>")),
         }
-        # The Inbox card's allowlist the gate stamped (design 01a11cd3-66b0): passed on from the pending call, see _build_pending_park_yield.
-        if "preview" in p.resume_metadata:
-            entry["resume_metadata"]["preview"] = p.resume_metadata["preview"]
-        # The channel prompt is built from this entry, and a reply names the gate it answers: keep the id the entry's own metadata carries.
-        gate_id = gate_id_of(p.resume_metadata)
-        if gate_id is not None:
-            entry["resume_metadata"][GATE_ID_KEY] = gate_id
-        return entry
 
     def restore_state(self, payload: dict[str, Any]) -> None:
         """Inverse of :meth:`snapshot_state` — repopulate executor attrs.
