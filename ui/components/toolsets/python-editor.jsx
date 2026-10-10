@@ -235,9 +235,20 @@ function PY_AddFunction({ onInsert }) {
   var open = openState[0];
   var setOpen = openState[1];
   var scaffolds = window.PY_SCAFFOLDS || [];
+  var wrapRef = React.useRef(null);
+
+  // A layer of the Escape stack (foundation/escape-stack.js) only while it is open, like the console's own menus (NV_useMenuDismiss): an Escape closes the menu and nothing under it, and focus goes back
+  // to the button that opened it. Without this one Escape closed the whole toolsets overlay, with the code that was changed and not saved (board task 01a125ec-4e03).
+  window.primerApi.useEscape(function (ev) {
+    ev.preventDefault();
+    setOpen(false);
+    var wrap = wrapRef.current;
+    var trigger = wrap && wrap.querySelector ? wrap.querySelector('[data-testid="python-add-function"]') : null;
+    if (trigger) trigger.focus();
+  }, open);
 
   return (
-    <div style={{ position: "relative" }}>
+    <div ref={wrapRef} style={{ position: "relative" }}>
       <Btn
         size="sm"
         kind="ghost"

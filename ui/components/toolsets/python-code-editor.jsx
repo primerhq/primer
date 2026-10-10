@@ -300,6 +300,14 @@ function PY_buildHighlight(C) {
 // The editor component.
 // ---------------------------------------------------------------------------
 
+// The accessible name of the editable content, and what a keyboard user is told about leaving it (WCAG 4.1.2 and 2.1.2). Every way out named here is checked in a browser by
+// tests/ui_e2e/test_python_add_function_menu_journey.py: Escape then Tab (the Escape entry of the keymap below starts the tab-focus mode for two seconds); a SECOND Escape when the first one was used by
+// the selection, the completion list or the search panel; and the library's own Ctrl+M toggle.
+var PY_EDITOR_NAME = "Python source";
+var PY_LEAVE_HINT =
+  "Tab indents here. To leave the editor, press Escape and then Tab within two seconds. If the first Escape only collapsed a selection or closed the completion list or the search panel, press Escape again. " +
+  "Ctrl+M (Shift+Alt+M on a Mac) turns Tab-moves-focus on and off.";
+
 function PY_CodeEditor({ value, onChange, diagnostics, viewRef, minHeight }) {
   var hostRef = React.useRef(null);
   var localViewRef = React.useRef(null);
@@ -309,6 +317,8 @@ function PY_CodeEditor({ value, onChange, diagnostics, viewRef, minHeight }) {
   onChangeRef.current = onChange;
 
   var available = typeof window !== "undefined" && !!window.CM6;
+  // The editable content is a contenteditable with no name of its own, and a keyboard user is told nothing about leaving an editor that indents on Tab: it gets a name and a description (a visually hidden hint).
+  var hintId = "py-source-hint-" + String(React.useId()).replace(/[^A-Za-z0-9_-]/g, "");
 
   React.useEffect(function () {
     if (!available || !hostRef.current) return undefined;
@@ -336,6 +346,7 @@ function PY_CodeEditor({ value, onChange, diagnostics, viewRef, minHeight }) {
           C.autocompletion({ override: [PY_completionSource] }),
           PY_buildTheme(C),
           C.EditorView.lineWrapping,
+          C.EditorView.contentAttributes.of({ "aria-label": PY_EDITOR_NAME, "aria-describedby": hintId }),
           C.keymap.of([
             // indentWithTab first: in a code editor Tab should indent, and
             // the operator can still reach the next control with Escape+Tab.
@@ -405,6 +416,7 @@ function PY_CodeEditor({ value, onChange, diagnostics, viewRef, minHeight }) {
       <textarea
         data-testid="python-source"
         data-editor="fallback"
+        aria-label={PY_EDITOR_NAME}
         className="input mono"
         value={value || ""}
         spellCheck={false}
@@ -418,12 +430,15 @@ function PY_CodeEditor({ value, onChange, diagnostics, viewRef, minHeight }) {
   }
 
   return (
-    <div
-      data-testid="python-source"
-      data-editor="codemirror"
-      ref={hostRef}
-      style={{ minHeight: minHeight || 460, overflow: "hidden" }}
-    />
+    <React.Fragment>
+      <div
+        data-testid="python-source"
+        data-editor="codemirror"
+        ref={hostRef}
+        style={{ minHeight: minHeight || 460, overflow: "hidden" }}
+      />
+      <span id={hintId} data-testid="python-source-hint" className="nv-sr-only">{PY_LEAVE_HINT}</span>
+    </React.Fragment>
   );
 }
 
