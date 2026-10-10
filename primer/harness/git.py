@@ -83,17 +83,26 @@ def _inject_token(url: str, token: str | None) -> str:
 
 _TOKEN_PATTERN = re.compile(r"oauth2:[^@\s]+@")
 
+# The userinfo of any OTHER url in the text: a credential kept IN the stored git_url (``https://ghp_xxx@github.com/org/repo``, the personal-access-token shape the harness api accepts and serves
+# masked) is not ours to inject and not the stored ``git_token``, and git echoes the url it was given in stderr ("unable to access 'https://...'"). The userinfo runs to the last ``@`` before the
+# first ``/``, ``?`` or ``#``. The scheme is ``[a-z][a-z0-9]*`` on purpose (the quadratic-scan note on ``primer.common.log._USERINFO``). The marker of our own prefix is left as it is.
+_URL_USERINFO = re.compile(r'(\b[a-z][a-z0-9]*://)(?!oauth2:\*\*\*@)[^/?#\s"]*@', re.IGNORECASE)
+
 
 def _redact(text: str, token: str | None = None) -> str:
     """Strip our injected ``oauth2:<token>@`` prefix; if ``token`` is known,
     also strip its bare appearance anywhere in the string (defence against
     git versions or credential-helpers that echo the secret elsewhere).
+    The userinfo of any other url in the text (a credential kept in the stored
+    ``git_url``) is masked too (ticket 01a11d32).
     """
     out = _TOKEN_PATTERN.sub("oauth2:***@", text)
     if token:
         # Replace the literal token; do not regex-escape with re.escape
         # since `out` is plain text not a pattern.
         out = out.replace(token, "***")
+    if "@" in out and "://" in out:
+        out = _URL_USERINFO.sub(r"\1[REDACTED]@", out)
     return out
 
 

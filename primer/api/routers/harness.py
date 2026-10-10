@@ -42,9 +42,12 @@ from primer.model.harness import (
     HarnessOperation,
     HarnessRendering,
     GitTokenRequired,
+    GitUrlMaskRefused,
     HarnessStatus,
     TrackedEntity,
     apply_git_token_update,
+    refuse_served_git_url,
+    restore_served_git_url,
     validate_git_ref,
     validate_git_url,
 )
@@ -197,6 +200,12 @@ async def create_harness(
                 )
             seen.add(te.template_name)
 
+    # A create has nothing stored to restore a served mask from: the copy-a-harness move would store the mask as the password of the url (01a11d32).
+    try:
+        refuse_served_git_url(body.git_url)
+    except GitUrlMaskRefused as exc:
+        raise HTTPException(status_code=422, detail={"code": "git_url_mask_unrestorable", "message": str(exc)}) from exc
+
     # Inbound harnesses install FROM a git repo, so a remote is mandatory.
     # Outbound harnesses render from the live DB and can be consumed via the
     # bundle tarball, so git is optional — a push target only if the user wants
@@ -327,6 +336,14 @@ async def update_harness(
     harness = await storage.get(harness_id)
     if harness is None:
         raise NotFoundError(f"Harness {harness_id!r} does not exist")
+
+    # The url is served without the password of its userinfo, so the client sends the served one back: put the stored credential back first, for the same scheme, host, port and user only
+    # (another remote is a 422, as the stored token is never carried to one either: SEC-03). The served url is then the stored url and is not a "move" for the token rule below.
+    if "git_url" in body.model_fields_set:
+        try:
+            body.git_url = restore_served_git_url(body.git_url, harness.git_url)
+        except GitUrlMaskRefused as exc:
+            raise HTTPException(status_code=422, detail={"code": "git_url_mask_unrestorable", "message": str(exc)}) from exc
 
     # The stored token never follows git_url to a new remote (SEC-03); the served mask sent back means "unchanged".
     try:

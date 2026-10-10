@@ -6,12 +6,13 @@ import os
 import re
 from datetime import datetime
 from enum import Enum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, SecretStr, field_validator
+from pydantic import BaseModel, Field, PlainSerializer, SecretStr, SerializationInfo, field_validator
 
-from primer.model.common import Identifiable
+from primer.common.url_userinfo import MaskCannotBeRestored, carries_mask, mask_userinfo, restore_userinfo
+from primer.model.common import STORAGE_DUMP_CONTEXT, Identifiable
 from primer.model.principal import PrincipalRef
 
 
@@ -61,6 +62,55 @@ def validate_git_url(url: str) -> str:
             raise ValueError("a file:// git_url must be an absolute path")
         return url
     raise ValueError("git_url must be an https:// URL")
+
+
+def _serialize_git_url(value, info: SerializationInfo):
+    """The dump of a git URL: unchanged in a python-mode dump (git reads the real URL), the real URL under the storage context (``dump_for_storage``), and in a JSON-mode dump the URL with the
+    password of its userinfo masked (``https://reader:**********@host/org/repo.git``; a lone ``https://TOKEN@host``, the personal-access-token-in-the-username shape, whole).
+
+    The same rule as :data:`primer.model.providers._shared.MaskedUserinfoUrl` (the provider Base URL, ticket 01a11cdf part 3) for a ``str`` field: a git URL is not an ``HttpUrl`` (``file://``
+    is allowed under the operator opt-in, and the string is compared and keyed as typed). No return annotation and no ``return_type``: a ``str`` return type makes pydantic 2.13 warn on every
+    python-mode dump, with the URL in the text.
+    """
+    if not info.mode_is_json():
+        return value
+    context = info.context
+    if isinstance(context, dict) and all(context.get(key) == flag for key, flag in STORAGE_DUMP_CONTEXT.items()):
+        return str(value)
+    return mask_userinfo(str(value))
+
+
+#: A git URL served without the password of its userinfo (ticket 01a11d32, the harness family). ``Harness.git_url`` and ``ResolvedDependency.git_url`` are served to every user.
+MaskedGitUrl = Annotated[str, PlainSerializer(_serialize_git_url, when_used="always")]
+
+
+class GitUrlMaskRefused(ValueError):
+    """A ``git_url`` carries the mask a read serves, but the stored one cannot give the credential back to it (another host, user, scheme or port, or nothing stored), or it is a create."""
+
+
+_GIT_URL_UNRESTORABLE = "git_url: re-enter the password: the stored one is kept only for the same host and user"
+
+
+def restore_served_git_url(incoming: str | None, stored: str | None) -> str | None:
+    """``incoming`` with the STORED credential put back when it carries the mask a read served for ``stored``, else ``incoming`` as it is.
+
+    A mask is restored ONLY for the remote it was served for: the scheme, host and port equal the stored URL's and the username is the same (:func:`primer.common.url_userinfo.restore_userinfo`). A
+    mask that cannot be restored raises :class:`GitUrlMaskRefused`: restoring it would give the credential to whatever host the update names (the same rule as SEC-03 for ``git_token``), and
+    keeping it would store the literal mask as the password. A new real password, a removed credential and ``None`` are the person's change and come back as they are.
+    """
+    if incoming is None:
+        return None
+    try:
+        restored = restore_userinfo(incoming, stored or "")
+    except MaskCannotBeRestored as exc:
+        raise GitUrlMaskRefused(f"{_GIT_URL_UNRESTORABLE} ({exc})") from None
+    return incoming if restored is None else restored
+
+
+def refuse_served_git_url(url: str | None) -> None:
+    """Refuse a NEW harness whose ``git_url`` carries the served mask: there is nothing stored to restore it from (the copy-a-harness move would store the mask as the password)."""
+    if url and carries_mask(url):
+        raise GitUrlMaskRefused(_GIT_URL_UNRESTORABLE)
 
 
 def validate_git_ref(ref: str) -> str:
@@ -183,7 +233,7 @@ class ResolvedDependency(BaseModel):
 
     name: str
     slug: str
-    git_url: str
+    git_url: MaskedGitUrl
     ref: str
     subpath: str | None = None
     resolved_commit: str
@@ -196,7 +246,7 @@ class Harness(Identifiable):
     slug: str = Field(..., min_length=2, max_length=64)
     name: str = Field(..., min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=2000)
-    git_url: str | None = Field(default=None, min_length=1)
+    git_url: MaskedGitUrl | None = Field(default=None, min_length=1)
     git_token: SecretStr | None = None
     subpath: str | None = None
     ref: str = Field(default="main", min_length=1)
@@ -309,17 +359,21 @@ class HarnessRendering(Identifiable):
 __all__ = [
     "DependencyRef",
     "GitTokenRequired",
+    "GitUrlMaskRefused",
     "Harness",
     "HarnessDirection",
     "HarnessOperation",
     "HarnessRendering",
     "HarnessStatus",
+    "MaskedGitUrl",
     "OverrideMapping",
     "RenderedEntry",
     "ResolvedDependency",
     "TrackedEntity",
     "apply_git_token_update",
     "file_git_urls_allowed",
+    "refuse_served_git_url",
+    "restore_served_git_url",
     "validate_git_ref",
     "validate_git_url",
 ]
