@@ -288,6 +288,12 @@ function SH_isStaleGate(err) {
   return !!(err && err.status === 409 && ext && ext.code === SH_STALE_GATE_CODE);
 }
 
+// A decision for a gate that has MOVED ON: 409 approval_stale (the id is pending under another gate) or 404 (the id is pending nowhere: the first gate of a graph ToolCall node that re-parked on a second
+// one, board task 01a124e2-4550). The approval cards say the same words and reload for both; SH_isStaleGate stays the 409 alone, which the question cards and the session detail read.
+function SH_isMovedOnGate(err) {
+  return SH_isStaleGate(err) || !!(err && err.status === 404);
+}
+
 function SH_staleGateWords(kind) {
   return "This " + (kind === "question" ? "question" : "approval") + " was replaced; the list is reloaded.";
 }
@@ -305,4 +311,5 @@ window.SH_emptyTriage = SH_emptyTriage;
 window.SH_triageKey = SH_triageKey;
 window.SH_applyTriage = SH_applyTriage;
 window.SH_isStaleGate = SH_isStaleGate;
+window.SH_isMovedOnGate = SH_isMovedOnGate;
 window.SH_staleGateWords = SH_staleGateWords;
