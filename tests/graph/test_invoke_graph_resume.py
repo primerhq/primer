@@ -172,6 +172,7 @@ async def test_resume_invoke_graph_hands_the_child_the_reply_and_the_hook_contex
         "toolcall_payload": {"response": "blue"},
         "resume_session_id": "sess-1",
         "resolve_provider": resolver,
+        "approved": False,       # an answer is not an approval: the child's no-gate rule (for approvals only) is off. It selects no inner call here anyway.
     }
 
 
