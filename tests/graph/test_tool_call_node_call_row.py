@@ -329,6 +329,102 @@ async def test_a_run_delegated_from_an_agent_node_inside_a_tool_calls_dispatch_i
     assert await stamps(toolcall=None, node="sub") == {"sub"}
 
 
+async def test_an_agent_node_of_a_graph_the_tool_runs_in_process_stamps_its_run_with_itself_through_the_real_executor(tmp_path: Path) -> None:
+    """B1 through the production wiring. The hide is pinned above through ``set_current_graph_node_id`` and ``run_subagent`` called by hand, which an executor branch that never hid the ToolCall's identity would
+    pass. Here the ToolCall's tool runs a child graph IN-PROCESS (the ``invoke_graph`` shape: a child ``GraphExecutor`` iterated in the dispatch's own task, so the identity the dispatch published is still set when
+    the child's agent node starts) and that agent node delegates through a real ``ToolExecutionManager``. The node's own dispatch sees ('tool', no graph node); the delegating tool, called from the agent node,
+    sees (no ToolCall, 'a'); the run it starts is stamped 'a'."""
+    from primer.agent.invoke import build_subagent_toolmanager
+    from primer.graph._node_identity import current_graph_node_id, current_toolcall_node_id
+    from primer.graph.executor import GraphExecutor
+    from primer.model.agent import Agent, AgentModel
+    from primer.model.chat import ToolCallResult
+    from primer.model.graph import GraphNodeMessage, GraphThread, _AgentNodeRef
+    from primer.model.model_profile import ModelProfileConfig
+    from primer.model_profile import ResolvedModel
+    from primer.worker.frames import AgentResumeContext
+    from tests.agent.test_delegated_runs_carry_a_run_id import _DelegatingToolset
+    from tests.graph.test_fanout_broadcast_e2e import _InMemoryStorage
+    from tests.graph.test_fanout_delegation_order import _WorkerLLM
+
+    seen: list[tuple[str, str | None, str | None]] = []
+
+    class _IdentityToolset(_DelegatingToolset):
+        """``system__invoke_agent``'s shape (``run_subagent`` under the id the manager was handed), recording which identity the tool is called under."""
+
+        async def call(self, *, tool_name: str, arguments: Any, principal: Any = None, ctx: Any = None) -> ToolCallResult:
+            seen.append(("the delegating tool", current_toolcall_node_id(), current_graph_node_id()))
+            with invocation_depth_guard():
+                text = await run_subagent(
+                    agent_id="agent-sub", prompt="go", storage_provider=self.storage, provider_registry=self.registry,
+                    principal=principal, session_id="s", workspace_id="ws-1", invoke_tool_call_id=ctx.tool_call_id, turn_no=1,
+                )
+            return ToolCallResult(output=text, is_error=False)
+
+    storage, registry = _world([_text("sub answer")])
+    toolset = _IdentityToolset()
+    toolset.storage, toolset.registry = storage, registry
+    registry._toolset = toolset
+    resume_ctx = AgentResumeContext(session_id="s", workspace_id="ws-1", chat_id=None, principal="user-1", tools=["t1__delegate"], turn_no=1)
+    child_graph = Graph.model_construct(
+        id="child", description="begin -> an agent node that delegates -> end", max_iterations=5, harness_id=None,
+        nodes=[_BeginNode(id="begin"), _AgentNodeRef(id="a", agent_id="ag", input_template="go"), _EndNode(id="end", output_template="{{ nodes.a.text }}")],
+        edges=[_StaticEdge(from_node="begin", to_node="a"), _StaticEdge(from_node="a", to_node="end")],
+    )
+
+    async def child_tool_manager(agent: Any) -> Any:
+        return await build_subagent_toolmanager(resume_ctx, storage_provider=storage, provider_registry=registry)
+
+    async def child_agent(agent_id: str) -> Agent:
+        return Agent(id=agent_id, description="the child graph's agent", model=AgentModel(profile_id="p--m"), system_prompt=[])
+
+    async def child_llm(agent: Any, *a: Any, **k: Any) -> Any:
+        return (_WorkerLLM(), ResolvedModel(profile_id="p", provider_id="pv", model_name="m", context_length=128_000, config=ModelProfileConfig()))
+
+    class _InProcessGraphManager:
+        """The node's tool: runs the child graph inside this very call, the way ``invoke_graph`` does."""
+
+        def __init__(self) -> None:
+            self.handed: list[str] = []
+
+        async def execute(self, call: Any, *, principal: str | None = None, bypass_approval: bool = False) -> ToolResultPart:
+            self.handed.append(call.id)
+            seen.append(("the node's own dispatch", current_toolcall_node_id(), current_graph_node_id()))
+            threads: _InMemoryStorage[GraphThread] = _InMemoryStorage(GraphThread)
+            messages: _InMemoryStorage[GraphNodeMessage] = _InMemoryStorage(GraphNodeMessage)
+            thread = await GraphExecutor.open_thread(graph=child_graph, thread_storage=threads, title="child")  # type: ignore[arg-type]
+            child = GraphExecutor(
+                graph=child_graph, agent_resolver=child_agent, llm_resolver=child_llm, thread_storage=threads, message_storage=messages,  # type: ignore[arg-type]
+                graph_thread_id=thread.id, router_registry=RouterRegistry(), tool_manager_resolver=child_tool_manager,
+            )
+            text = ""
+            async for event in child.invoke([]):
+                if type(event).__name__ == "_GraphEndOutputEvent" and isinstance(getattr(event, "text", None), str):
+                    text = event.text
+            return ToolResultPart(id=call.id, output=text or "child done")
+
+    async def agent_resolver(agent_id: str) -> Any:
+        raise KeyError(agent_id)
+
+    async def llm_resolver(agent: Any) -> Any:
+        raise NotImplementedError
+
+    manager = _InProcessGraphManager()
+    executor = WorkspaceGraphExecutor(
+        graph=_graph(), agent_resolver=agent_resolver, llm_resolver=llm_resolver,  # type: ignore[arg-type]
+        state_repo=await _make_state_repo(tmp_path), graph_session_id="gsid", tool_manager=manager,  # type: ignore[arg-type]
+        router_registry=RouterRegistry(),
+    )
+    records = await _run(executor)  # type: ignore[arg-type]
+    assert seen == [("the node's own dispatch", "tool", None), ("the delegating tool", None, "a")], seen
+    (call,) = _tool_calls(records)
+    assert call["node_id"] == "tool" and manager.handed == [call["payload"]["raw_id"]]
+    stamps = {(r["payload"]["delegate_tool_call_id"], r["payload"]["delegate_node_id"], r["payload"]["delegate_depth"]) for r in _delegated(records)}
+    assert stamps == {("call_0", "a", 1)}, "the run the child graph's agent node delegated to is stamped with that node, not with the outer ToolCall node"
+    results = [r for r in records if r["kind"] == "tool_result" and not r["payload"].get("delegated")]
+    assert [(r["payload"]["call_id"], r["payload"]["error"]) for r in results] == [(call["payload"]["id"], False)]
+
+
 def _fanout_graph(instances: int = 2) -> Graph:
     return Graph.model_construct(
         id="gf", description="a fan-out of ToolCall nodes", max_iterations=10, harness_id=None,
