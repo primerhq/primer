@@ -205,6 +205,17 @@ it's called from a context with no implicit session.
   host). The whole fetch must finish within 60 seconds, or it fails
   too. An operator can allow private sources for the whole
   deployment with `workspace_allow_private_url_sources`.
+- A `url` file source may carry `user:password@` (the fetch sends it
+  as Basic auth). A template read back through REST or
+  `get_workspace_template` / `list_workspace_templates` shows it
+  masked (`https://user:**********@host/seed`; a lone
+  `https://TOKEN@host` is masked whole), and so does every error
+  text the fetch raises. To change a template, send the body you
+  read back to `update_workspace_template` (or `PUT`): the stored
+  password is kept for the same scheme, host, port and user; a
+  masked URL for another host or user answers
+  `type=validation-error` (422) and stores nothing, so re-enter the
+  password there. A new real password replaces the stored one.
 
 ### Files and logs
 
