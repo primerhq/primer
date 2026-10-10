@@ -144,6 +144,22 @@ carry `data-testid="python-source"`, and the real one is distinguished by
 `data-editor="codemirror"` -- the e2e suite asserts on that, because every
 static test passes either way.
 
+Escape is consumed by the editor, not left for the overlay it sits in. The
+keymap ends with a plain `Escape` entry that returns `true`, so CodeMirror
+calls `preventDefault` and the console's Escape stack (which ignores a
+handled event, see `ui-pages.md`) leaves the toolsets overlay open. Before it,
+a stray Escape in the source closed the overlay with unsaved edits in it.
+CodeMirror starts its tab-focus mode (the next Tab leaves the editor instead
+of indenting) in a keydown handler that a keymap entry which handles the key
+stops, so the entry starts the mode itself with `view.setTabFocusMode(2000)`,
+the library's own two seconds. The entry is last on purpose: the completion
+list, the search panel and the other library entries that use Escape run
+first and keep their meaning. `indentWithTab` stays first, so Tab still
+indents; Escape then Tab is how a keyboard user leaves the editor.
+`tests/ui/test_python_editor_escape.py` pins the keymap in V8 and
+`tests/ui_e2e/test_python_editor_escape_journey.py` presses the keys in the
+real overlay.
+
 ### Completions
 
 Deliberately not general Python. The completion list covers the six names
