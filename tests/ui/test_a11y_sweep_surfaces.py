@@ -102,7 +102,7 @@ def test_a_provider_form_opens_through_the_first_kind_of_the_register_menu() -> 
     assert 'data-testid={`provider-register-kind-${k}`}' in CATALOG_JSX and 'data-testid={`provider-register-type-${cls.key}`}' in CATALOG_JSX
     registers = [(route, form) for route, forms in surfaces.LEGACY_FORMS.items() for form in forms if form.button == "Register provider"]
     registers += [(nav, form) for nav, forms in surfaces.PLATFORM_FORMS.items() for form in forms if form.button == "Register provider"]
-    assert len(registers) == 9, [route for route, _ in registers]   # seven crud classes, the semantic-search stores and the Platform page's all-types menu (artifact storage: next test)
+    assert len(registers) == 10, [route for route, _ in registers]   # the eight crud classes (artifact storage since #706 serves its kinds), the semantic-search stores and the Platform page's all-types menu
     for route, form in registers:
         assert form.root == surfaces.MODAL, (route, form)
         assert form.then in ('[data-testid^="provider-register-kind-"]', '[data-testid^="provider-register-type-"]'), (route, form)
@@ -112,13 +112,14 @@ def test_a_provider_form_opens_through_the_first_kind_of_the_register_menu() -> 
                 assert form.then is None or form.button == "Register provider", (page, form)
 
 
-def test_a_register_menu_that_is_a_dead_end_is_asserted_dead_not_just_excused() -> None:
-    """The artifact storage class serves no ``/_types``, so its menu says "No kinds available." and no form can be opened (ticket 01a1214c). The sweep checks the menu is still dead."""
-    assert surfaces.DEAD_REGISTER_MENUS == {"providers/artifact_storage": "Register provider"}
-    assert surfaces.DEAD_MENU_TEXT in CATALOG_JSX, "the text the console draws for a menu without kinds"
-    for route in surfaces.DEAD_REGISTER_MENUS:
-        assert surfaces.LEGACY_FORMS[route] == [], route
-        assert "ticket" in surfaces.NO_FORM[f"overlay-page {route}"], "an exemption names the ticket that removes it"
+def test_the_artifact_storage_page_is_swept_through_its_register_menu_and_no_page_is_excused_from_one() -> None:
+    """Round 6 of #668: ``GET /v1/artifact_storage_providers/_types`` is served since #706 (ticket 01a1214c), so the page's Register provider menu lists db, filesystem and s3. The exemption (a
+    dead-menu assertion and a ``NO_FORM`` reason) is gone: the page is in ``LEGACY_FORMS`` with its menu item, like the other crud classes."""
+    assert not hasattr(surfaces, "DEAD_REGISTER_MENUS") and not hasattr(surfaces, "DEAD_MENU_TEXT"), "nothing is excused from its register menu"
+    assert surfaces.LEGACY_FORMS["providers/artifact_storage"] == [surfaces.Form("Register provider", surfaces.MODAL, surfaces.KIND_MENU_ITEM)]
+    assert "overlay-page providers/artifact_storage" not in surfaces.NO_FORM
+    assert "overlay-page providers/artifact_storage / Register provider" in surfaces.expected_surfaces(7)
+    assert len(surfaces.expected_surfaces(7)) == 110
 
 
 def test_every_platform_create_button_the_console_draws_has_a_form_entry() -> None:

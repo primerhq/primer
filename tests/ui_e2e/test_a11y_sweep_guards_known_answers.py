@@ -267,14 +267,14 @@ def test_a_second_marker_after_the_deadline_stops_the_look_and_does_not_wait_wit
 @pytest.mark.ui_e2e
 def test_a_request_the_page_starts_after_the_first_idle_check_is_still_waited_for(blank_console: Page, sweep: Sweep) -> None:
     """N1 of round 5: the ``void`` case above catches a wait that reads the in-flight set once only two times in three (the request event races the round trip). This one is deterministic: the fetch
-    starts 120 ms in, after the first (empty) check and before the second one 250 ms later, is held 700 ms, and draws an input when it is answered."""
+    starts 80 ms in, after the first (empty) check and well before the second one 250 ms later, is held 700 ms, and draws an input when it is answered."""
     def slow(route: Route) -> None:
         blank_console.wait_for_timeout(700)
         route.fulfill(status=200, body="{}")
 
     blank_console.route("**/v1/slow", slow)
     blank_console.evaluate(
-        "setTimeout(() => { void fetch('/v1/slow').then(() => document.querySelector('main').insertAdjacentHTML('beforeend', '<input aria-label=\"Late\">')); }, 120)"
+        "setTimeout(() => { void fetch('/v1/slow').then(() => document.querySelector('main').insertAdjacentHTML('beforeend', '<input aria-label=\"Late\">')); }, 80)"
     )
     sweep.at("surface", "main")
     assert sweep.looks["surface"].examined == 2, "the look was taken before the late request was answered"
@@ -322,3 +322,66 @@ def test_a_page_that_cannot_be_opened_is_a_note_and_an_empty_look_and_the_sweep_
 
     with pytest.raises(SweepDeadlineExceeded):
         sweep.reach("overlay-page skills", late)
+
+
+@pytest.mark.ui_e2e
+def test_two_overlapping_requests_are_both_waited_for(blank_console: Page, sweep: Sweep) -> None:
+    """N4 of round 6: the first request is answered at 100 ms, the second is held 700 ms and draws an input when it is answered. A wait that stops when the set has once been seen empty, or that
+    forgets the second request when the first finishes, looks at the page with one input."""
+    def first(route: Route) -> None:
+        blank_console.wait_for_timeout(100)
+        route.fulfill(status=200, body="{}")
+
+    def second(route: Route) -> None:
+        blank_console.wait_for_timeout(700)
+        route.fulfill(status=200, body="{}")
+
+    blank_console.route("**/v1/first", first)
+    blank_console.route("**/v1/second", second)
+    blank_console.evaluate(
+        "void fetch('/v1/first'); void fetch('/v1/second').then(() => document.querySelector('main').insertAdjacentHTML('beforeend', '<input aria-label=\"Late\">'))"
+    )
+    sweep.at("surface", "main")
+    assert sweep.looks["surface"].examined == 2, "the look was taken before the second request was answered"
+
+
+@pytest.mark.ui_e2e
+def test_a_page_that_cannot_be_opened_spends_the_budget(blank_console: Page) -> None:
+    """N4: a navigation that timed out is a stuck look like any other: the waits after enough of them are short."""
+    sweep = Sweep(blank_console, budget=Budget(limit=2, short_ms=100))
+
+    def stuck() -> None:
+        raise AssertionError("never came up")
+
+    try:
+        assert sweep.budget.used == 0
+        sweep.reach("one", stuck)
+        sweep.reach("two", stuck)
+        assert sweep.budget.used == 2 and sweep.budget.exhausted
+    finally:
+        sweep.close()
+
+
+@pytest.mark.ui_e2e
+def test_the_defaults_of_the_page_are_what_the_budget_has_left(blank_console: Page) -> None:
+    """N3 of round 6: a helper's inner ``goto`` or ``get_attribute`` takes Playwright's default of 30 s, which no deadline caps. ``Sweep.bound_defaults`` sets the page's defaults to what the budget
+    allows, and ``reach`` does it before it opens anything."""
+    from tests.ui_e2e._a11y import SweepDeadlineExceeded
+
+    clock = [1000.0]
+    budget = Budget(deadline_s=100, clock=lambda: clock[0])
+    sweep = Sweep(blank_console, budget=budget)
+    seen: list[float] = []
+    blank_console.set_default_timeout = lambda ms: seen.append(ms)          # type: ignore[method-assign]
+    blank_console.set_default_navigation_timeout = lambda ms: seen.append(ms)   # type: ignore[method-assign]
+    try:
+        budget.wait_ms(1)
+        clock[0] += 90
+        sweep.reach("page", lambda: None)
+        assert seen and max(seen) <= 10_000, seen
+        clock[0] += 20
+        with pytest.raises(SweepDeadlineExceeded):
+            sweep.reach("page two", lambda: None)
+    finally:
+        del blank_console.set_default_timeout, blank_console.set_default_navigation_timeout
+        sweep.close()

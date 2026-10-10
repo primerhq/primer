@@ -356,3 +356,14 @@ def test_the_stuck_looks_shorten_the_waits_but_the_deadline_still_wins() -> None
     clock.now += 10
     with pytest.raises(SweepDeadlineExceeded):
         budget.wait_ms(10_000)
+
+
+def test_a_budget_refuses_a_wait_of_zero_or_less_because_zero_is_no_timeout_in_playwright() -> None:
+    """Round 6, N8: ``short_ms`` and the wait asked for must be positive, or ``wait_ms`` could hand out the 0 that B2-bis was about."""
+    with pytest.raises(ValueError):
+        Budget(short_ms=0)
+    budget = Budget(short_ms=100)
+    for bad in (0, -5):
+        with pytest.raises(ValueError):
+            budget.wait_ms(bad)
+    assert budget.wait_ms(1) == 1
