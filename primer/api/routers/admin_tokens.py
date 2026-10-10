@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import Response
 
 from primer.api.deps import get_storage_provider
 from primer.api.routers._api_tokens_shared import (
@@ -79,7 +79,7 @@ async def admin_revoke_user_token(
         )
     if await revoke_token(storage, row):
         logger.info("admin_tokens.revoke id=%s user=%s name=%s", row.id, user_id, row.name)
-    return JSONResponse(status_code=204, content=None)
+    return Response(status_code=204)
 
 
 __all__ = ["admin_tokens_router"]

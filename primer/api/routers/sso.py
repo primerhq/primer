@@ -81,7 +81,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlencode, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 from pydantic import BaseModel
 
 from primer.api.deps import (
@@ -758,7 +758,7 @@ async def unlink_sso_identity(
         "sso.unlink success user_id=%s identity_id=%s provider_id=%s",
         user.id, identity_id, row.provider_id,
     )
-    return JSONResponse(status_code=204, content=None)
+    return Response(status_code=204)
 
 
 __all__ = ["sso_router", "sso_authed_router"]
