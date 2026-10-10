@@ -106,7 +106,13 @@ def test_a_regex_literal_with_a_quote_inside_a_placeholder_does_not_desync_the_f
 
 @pytest.mark.parametrize(
     "prefix",
-    ["", "(", ", ", "= ", ": ", "[", "!", "&&", "||", "? ", "{", "}", ";", "return ", "typeof ", "case ", "x of ", "x in "],
+    [
+        "", "(", ", ", "= ", ": ", "[", "!", "&&", "||", "? ", "{", "}", ";", "return ", "typeof ", "case ", "x of ", "x in ",
+        # an arrow function's concise body (review of #720, round 2, N2): ``(s) => /"/.test(s)`` was read as a division and the quote hid the rest of its line
+        "=> ", "=>",
+        # the keywords the module docstring names (round 2, N4: only the first eight were in this matrix)
+        "void ", "delete ", "throw ", "else ", "do ", "yield ", "await ", "x instanceof ",
+    ],
     ids=lambda p: repr(p),
 )
 def test_a_regex_literal_is_read_after_every_token_that_allows_one(prefix: str) -> None:
@@ -144,10 +150,36 @@ def test_a_slash_in_jsx_text_after_a_tag_is_not_a_regex() -> None:
 
 
 def test_a_regex_does_not_run_past_the_end_of_its_line() -> None:
-    """No closing slash on the line: it is not a regex literal, and nothing after it is blanked."""
-    out = blank("x = a ? /not closed\nconst e = err.envelope;\n", strings=True, templates=True)
+    """No closing slash on the line: it is not a regex literal, and nothing after it is blanked. The slash on the NEXT line (``a / b``) is what a scan that ran past the newline would take
+    for the closer, so without it the test would pass with the newline stop removed (review of #720, round 2, N4)."""
+    out = blank("x = a ? /not closed\nconst e = err.envelope; const r = a / b;\n", strings=True, templates=True)
+
+    assert "err.envelope" in out and "a / b" in out, out
+
+
+def test_an_escaped_slash_and_an_escaped_quote_in_a_regex_body_do_not_end_it_or_open_a_string() -> None:
+    """``/\\/\\'/``: the first backslash-slash is not the closer and the backslash-quote is not a string."""
+    out = blank("const r = /\\/\\'/; const e = err.envelope;\n", strings=True, templates=True)
 
     assert "err.envelope" in out, out
+
+
+def test_a_regex_after_an_arrow_hides_neither_its_quote_nor_the_rest_of_its_line() -> None:
+    """The case of review #720 round 2, N2: a concise arrow body that is a regex literal, with a banner after it on the same line."""
+    src = 'const hasQuote = (s) => /"/.test(s); const bn = <Banner title={err.code} />;\nconst e = err.envelope;\n'
+
+    out = blank(src, strings=True, templates=True)
+
+    assert "err.code" in out and "err.envelope" in out, out
+
+
+@pytest.mark.parametrize("prefix", [") ", "+ ", "- ", "* ", "< ", "> ", ".", "% "], ids=lambda p: repr(p))
+def test_the_positions_the_lexer_cannot_tell_stay_division(prefix: str) -> None:
+    """After ``)`` (``if (x) /re/.test(y)``), ``+ - * %``, ``<`` / ``>`` (JSX) and ``.`` a ``/`` could be a division or a regex and the lexer takes it for a division: a quote inside a regex there
+    opens a string that hides the rest of its line. The module docstring and ui-foundation.md name these positions; this pins that they are as described (review of #720, round 2, N2)."""
+    out = blank(f'x = a {prefix}/"/.test(y); const e = err.envelope;\n', strings=True, templates=True)
+
+    assert "err.envelope" not in out, (prefix, out)
 
 
 def test_a_slash_inside_a_character_class_does_not_end_the_regex() -> None:
@@ -168,6 +200,14 @@ def test_ending_inside_a_template_a_placeholder_or_a_string_raises(src: str) -> 
     """The scans would otherwise read the rest of the file as if it were text and report fewer sites than there are (a one-file blindness the floors cannot see)."""
     with pytest.raises(ValueError, match="unterminated"):
         blank(src, strings=True, templates=True)
+
+
+def test_the_string_raise_fires_only_when_the_text_ends_inside_the_string_itself() -> None:
+    """A string ends at its newline (a JavaScript string cannot span lines; a quote in JSX text is a guess), so a file that ends with one and a trailing newline does not raise: the raise covers a text
+    that stops mid-string, which is what a truncated read looks like (review of #720, round 2, N5)."""
+    with pytest.raises(ValueError, match="unterminated"):
+        blank("f('abc")
+    blank("f('abc\n")
 
 
 def test_a_string_that_ends_at_the_end_of_its_line_is_not_unterminated() -> None:
