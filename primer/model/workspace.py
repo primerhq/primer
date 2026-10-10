@@ -31,13 +31,13 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    HttpUrl,
     SecretStr,
     field_validator,
     model_validator,
 )
 
 from primer.model.common import Describeable, Identifiable
+from primer.model.masked_url import MaskedUserinfoUrl
 
 _log = logging.getLogger(__name__)
 
@@ -90,9 +90,13 @@ class _UrlSource(BaseModel):
         default="url",
         description="Discriminator tag identifying this as a URL source.",
     )
-    url: HttpUrl = Field(
+    url: MaskedUserinfoUrl = Field(
         ...,
-        description="HTTP(S) URL to fetch the content from.",
+        description=(
+            "HTTP(S) URL to fetch the content from. It may carry ``user:password@`` (a private file host): the fetch sends it as Basic auth, and every served copy of the "
+            "template (API responses, tool results) shows ``user:**********@`` instead. A PUT of the served body keeps the stored password: for an admin when the scheme, "
+            "host, port and user are unchanged, for anyone else only when the whole URL is unchanged (any other change that carries the mask is a 422)."
+        ),
     )
     sha256: str | None = Field(
         default=None,
