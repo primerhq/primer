@@ -65,3 +65,24 @@ async def test_a_template_with_a_real_env_is_created(toolset, sp) -> None:
 
     assert not result.is_error, result.output
     assert (await sp.get_storage(WorkspaceTemplate).get("tpl-copy")).env["API_TOKEN"].get_secret_value() == "a-real-value"
+
+
+# ---- create_workspace: the overrides are stored on the workspace row and served masked (round 3 of #711, nit N2) ----
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("served", ["**********", "**********abcd"], ids=["the bare mask", "the mask with the last four characters"])
+async def test_a_workspace_whose_overrides_env_value_is_a_served_mask_is_refused(toolset, sp, served: str) -> None:
+    """``WorkspaceRow.overrides`` keeps the per-instantiation ``env`` and is served masked, so the copy-a-workspace move (read the row, create another) sent the mask back as the variable's value."""
+    from primer.model.workspace import Workspace
+
+    await toolset.call(tool_name="create_workspace_provider", arguments={"entity": {"id": "local-1", "provider": "local", "config": {"kind": "local", "root_path": "/tmp/x"}}}, ctx=ADMIN_CALLER)
+    await toolset.call(tool_name="create_workspace_template", arguments={"entity": {"id": "tpl-1", "description": "dev", "provider_id": "local-1"}}, ctx=ADMIN_CALLER)
+
+    result = await toolset.call(
+        tool_name="create_workspace", arguments={"id": "ws-copy", "template_id": "tpl-1", "overrides": {"env": {"API_TOKEN": served}}}, ctx=ADMIN_CALLER,
+    )
+
+    assert result.is_error and json.loads(result.output)["type"] == "validation-error", result.output
+    assert "API_TOKEN" in result.output and "re-enter" in result.output
+    assert await sp.get_storage(Workspace).get("ws-copy") is None, "nothing was created"

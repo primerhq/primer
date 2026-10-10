@@ -65,6 +65,59 @@ async def test_a_put_that_moves_the_host_and_keeps_the_key_mask_is_a_422_and_sto
     assert str(stored.config.url) == HOME and stored.config.api_key.get_secret_value() == KEY, "the row is untouched"
 
 
+_BYPASS = [
+    pytest.param("https:\t//attacker.example\\@home.example/mcp/x://y", id="a tab in the scheme separator"),
+    pytest.param("https:\n//attacker.example\\@home.example/mcp/x://y", id="a newline in the scheme separator"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bypass", _BYPASS)
+async def test_an_mcp_url_that_a_scan_for_the_first_scheme_separator_misreads_is_a_move_and_a_422(client, sp, bypass: str) -> None:
+    """``HttpConfig.url`` is a plain string, so nothing normalises ``https:<TAB>//attacker.example\\@home.example/...``: ``urlsplit`` drops the tab and reads ``home.example`` (the stored host) while a
+    WHATWG client reads ``attacker.example``. The origin check called it the same origin and the REAL header secret was kept next to the attacker's host (round 2 review, N4b: ``PUT /v1/toolsets``
+    answered 200)."""
+    from primer.model.provider import Toolset
+
+    body = {"id": "ts-a", "provider": "mcp", "config": {"transport": "http", "config": {"url": f"{HOME}/mcp", "headers": {"Authorization": f"Bearer {KEY}"}}}}
+    created = await client.post("/v1/toolsets?allow_unreachable=true", json=body)
+    assert created.status_code in (200, 201), created.text
+    served = (await client.get("/v1/toolsets/ts-a")).json()
+    served["config"]["config"]["url"] = bypass
+
+    r = await client.put("/v1/toolsets/ts-a?allow_unreachable=true", json=served)
+
+    assert r.status_code == 422, r.text
+    assert "re-enter the" in r.text and KEY not in r.text
+    stored = await sp.get_storage(Toolset).get("ts-a")
+    assert stored.config.config.url == f"{HOME}/mcp" and stored.config.config.headers["Authorization"].get_secret_value() == f"Bearer {KEY}", "the row is untouched"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bypass", _BYPASS)
+async def test_a_kubernetes_apiserver_url_that_is_misread_the_same_way_is_a_move_and_a_422(client, sp, bypass: str) -> None:
+    from primer.model.workspace import WorkspaceProvider
+
+    body = {
+        "id": "wp-k", "provider": "kubernetes",
+        "config": {
+            "kind": "kubernetes", "variant": "system", "namespace": "ns", "reachability": {"kind": "in_cluster"},
+            "connection": {"kind": "service_account_token", "apiserver_url": f"{HOME}:6443", "ca_data": "ca", "token": KEY},
+        },
+    }
+    created = await client.post("/v1/workspace_providers", json=body)
+    assert created.status_code in (200, 201), created.text
+    served = (await client.get("/v1/workspace_providers/wp-k")).json()
+    served["config"]["connection"]["apiserver_url"] = bypass.replace("/mcp/x://y", ":6443/x://y")
+
+    r = await client.put("/v1/workspace_providers/wp-k", json=served)
+
+    assert r.status_code == 422, r.text
+    assert "re-enter the" in r.text and KEY not in r.text
+    stored = await sp.get_storage(WorkspaceProvider).get("wp-k")
+    assert stored.config.connection.apiserver_url == f"{HOME}:6443" and stored.config.connection.token.get_secret_value() == KEY
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("family", IDS)
 async def test_a_put_that_changes_only_the_path_keeps_the_key(client, sp, family: str) -> None:
