@@ -63,16 +63,30 @@ INTERACTIVE = {
 
 def strip_comments(text: str) -> str:
     """``text`` with the comments blanked (newlines kept, so line numbers stay): a block comment anywhere that is not inside a string, and a line comment that starts its line (a ``//`` after code may be
-    inside a URL). A quote opens a string that ends at its closing quote or, for ``'`` and ``"``, at the end of the line (an apostrophe in JSX text is not a string); a backtick string may span lines."""
+    inside a URL). One left-to-right pass: a ``//`` that starts its line ends at the end of the line BEFORE a ``/*`` is looked for, so a glob in a line comment (``// see primer/channel/*/``) does not open a block
+    comment that swallows the code after it (review of #732, B1). A quote opens a string that ends at its closing quote or, for ``'`` and ``"``, at the end of the line (an apostrophe in JSX text is not a string); a
+    backtick string may span lines."""
     out: list[str] = []
     i, n = 0, len(text)
+    line_start = True                                         # only whitespace since the last newline
     while i < n:
         ch = text[i]
-        if text.startswith("/*", i):
+        if ch == "\n":
+            out.append(ch)
+            i += 1
+            line_start = True
+        elif line_start and ch in " \t\r":
+            out.append(ch)
+            i += 1
+        elif line_start and text.startswith("//", i):
+            j = text.find("\n", i)
+            i = n if j < 0 else j                              # the comment goes; the newline stays
+        elif text.startswith("/*", i):
             end = text.find("*/", i + 2)
             end = n if end < 0 else end + 2
             out.append(re.sub(r"[^\n]", " ", text[i:end]))
             i = end
+            line_start = False
         elif ch in "\"'`":
             j = i + 1
             while j < n and text[j] != ch and (ch == "`" or text[j] != "\n"):
@@ -80,10 +94,12 @@ def strip_comments(text: str) -> str:
             end = j + 1 if j < n and text[j] == ch else j
             out.append(text[i:end])
             i = end
+            line_start = False
         else:
             out.append(ch)
             i += 1
-    return re.sub(r"(?m)^(\s*)//.*$", lambda m: m.group(1), "".join(out))
+            line_start = False
+    return "".join(out)
 
 
 def opening_tag(text: str, start: int) -> str:
@@ -294,3 +310,16 @@ def test_an_href_that_is_nothing_does_not_make_a_link() -> None:
 def test_an_attribute_that_only_ends_in_a_handler_name_is_not_a_handler() -> None:
     for attr in ("data-onClick", "aria-onClick", "xonClick", "data-onMouseDown"):
         assert clickable_non_controls(f"<div {attr}={{go}}>x</div>") == [], attr
+
+
+def test_a_block_comment_opener_inside_a_line_comment_does_not_swallow_the_code_after_it() -> None:
+    """Review of #732, B1: ``strip_comments`` blanked from ANY ``/*`` to the next ``*/`` in its first pass and stripped ``//`` comments only afterwards, so a ``/*`` inside a ``//`` comment (a glob path such as
+    ``primer/channel/*/``) swallowed real code: 44-487 of channel_rules.jsx, 77-841 of nv-session-doc.jsx, 4-101 of graphs.jsx. A ``//`` that starts a line ends at the end of the line, before ``/*`` is looked for."""
+    assert clickable_non_controls("// see a/*\n<span onClick={go}>x</span>\n") == [(2, "span")]
+    assert clickable_non_controls("    // see a/* and b\n<span onClick={go}>x</span>\n") == [(2, "span")]
+    assert clickable_non_controls("// a/*\n<span onClick={go}>x</span>\n/* a real block */\n<div onClick={go}>y</div>\n") == [(2, "span"), (4, "div")]
+
+
+def test_a_line_comment_after_code_is_still_not_stripped_because_it_may_be_a_url() -> None:
+    assert clickable_non_controls('const u = "http://x/*";\n<span onClick={go}>x</span>\n') == [(2, "span")], "a // inside a string is not a comment"
+    assert strip_comments("a(); // b\n").startswith("a(); // b"), "only a // that starts its line is blanked"
