@@ -1158,9 +1158,20 @@ function NV_MobileFactSheet(props) {
       con.toast(outcome.title + (outcome.detail ? ": " + outcome.detail : ""), { kind: outcome.kind, requestId: null });
     }, function (e) {
       setFiring(false);
-      // e.message is only the HTTP title; the one reader's text, with the request id for the toast's copy.
+      // e.message is only the HTTP title; the one reader's text. The request id is on the ApiError itself
+      // (readRefusal returns no id) - it is what the toast's copy line shows.
       var refusal = window.primerApi.readRefusal(e);
-      con.toast("Fire failed: " + window.TR_refusalText(e, "Fire failed"), { kind: "error", requestId: refusal.requestId || null });
+      var gone = refusal.code === "trigger_not_found";
+      con.toast(
+        gone ? label + " no longer exists; the list has been refreshed." : "Fire failed: " + window.TR_refusalText(e, "Fire failed"),
+        { kind: "error", requestId: (e && (e.requestId || e.request_id)) || null }
+      );
+      if (gone) {
+        // The desktop list row says these words and refetches (triggers.jsx TR_TriggerRow): the sheet
+        // goes away with the stale row and the phone list reloads.
+        if (props.onClose) props.onClose();
+        if (props.onChanged) props.onChanged();
+      }
     });
   }
 
