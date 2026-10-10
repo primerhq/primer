@@ -54,6 +54,7 @@ async def resume_graph_from_checkpoint(
     node_tool_call_seq: dict[str, int] | None = None,
     resolved_tool_wait: "dict[str, list] | None" = None,
     resumed_event_key: str | None = None,
+    resumed_gate_id: str | None = None,
 ) -> "tuple[str, Any | None, dict[str, int]]":
     """Drive a graph executor's resume stream to completion.
 
@@ -220,6 +221,7 @@ async def resume_graph_from_checkpoint(
             checkpoint,
             resumed_tcid=resumed_tcid,
             resumed_event_key=resumed_event_key,
+            resumed_gate_id=resumed_gate_id,
             agent_tool_result=agent_tool_result,
             toolcall_payload=payload if value_yield_toolcall else None,
             resolved_tool_wait=resolved_tool_wait,

@@ -21,8 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 # (file, function) -> why it is settled
 SETTLED = {
     ("primer/agent/approval.py", "approval_resume_metadata"): "builder",
-    ("primer/graph/_checkpoint.py", "_build_pending_park_yield"): "passes the stamp on",
-    ("primer/graph/_checkpoint.py", "_toolcall_dispatch_entry"): "passes the stamp on",
+    ("primer/graph/_checkpoint.py", "_project_gated_call"): "passes the stamp on (the one projection both the Inbox row and the channel dispatch entry are built with)",
     ("primer/agent/external_tools.py", "call"): "exempt: never an _approval park",
     ("primer/api/routers/workspaces.py", "list_pending_yields"): "response: the whole call, by design",
     ("primer/api/routers/workspaces.py", "list_session_pending_yields"): "response: the whole call, by design",
