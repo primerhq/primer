@@ -13,8 +13,8 @@ import pytest
 from playwright.sync_api import Page, expect
 
 from tests.ui_e2e import _graph_builder_helpers as gb
+from tests.ui_e2e._graph_seed import seed_graph
 from tests.ui_e2e._shell_helpers import open_legacy_route, open_shell
-from tests.ui_e2e.test_escape_closes_one_layer_journey import _seed
 
 _INSIDE = """([sel]) => { const d = document.querySelector(sel), a = document.activeElement; return { inside: !!(d && a && d.contains(a)), body: a === document.body, testid: (a && a.getAttribute && a.getAttribute('data-testid')) || null }; }"""
 
@@ -27,7 +27,7 @@ def _a_workspace_id(base_url: str) -> str:
 @pytest.mark.ui_e2e
 def test_tab_then_enter_in_the_add_step_second_stage_keeps_the_builder_and_its_draft(page: Page, base_url: str, console_url: str, unique_suffix: str) -> None:
     graph_id = f"trap-palette-{unique_suffix}"
-    _seed(base_url, graph_id)
+    seed_graph(base_url, graph_id)
     try:
         open_legacy_route(page, console_url, f"graphs/{graph_id}")
         gb.wait_for_builder(page)

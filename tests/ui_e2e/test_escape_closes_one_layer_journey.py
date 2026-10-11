@@ -16,32 +16,16 @@ from playwright.sync_api import Page, expect
 
 from tests._support.smk import smk
 from tests.ui_e2e import _graph_builder_helpers as gb
+from tests.ui_e2e._graph_seed import seed_graph
 from tests.ui_e2e._shell_helpers import open_legacy_route
 
 pytestmark = smk("SMK-UI-06", status="partial")
 
 
-def _seed(base_url: str, graph_id: str) -> None:
-    nodes = [
-        {"kind": "begin", "id": "begin"},
-        {"kind": "tool_call", "id": "check", "tool_id": "workspaces__list_files", "arguments": {"path": "."}},
-        {"kind": "end", "id": "done", "output_template": ""},
-        {"kind": "end", "id": "other", "output_template": ""},
-    ]
-    edges = [
-        {"kind": "static", "from_node": "begin", "to_node": "check"},
-        {"kind": "conditional", "from_node": "check", "router": {"kind": "json_path", "branches": [
-            {"conditions": [{"path": "ok", "op": "eq", "value": True}, {"path": "n", "op": "gt", "value": 3}], "to_node": "done"}], "default_to": "other"}},
-    ]
-    with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        r = c.post("/v1/graphs", json={"id": graph_id, "description": "escape probe", "nodes": nodes, "edges": edges})
-        assert r.status_code == 201, r.text
-
-
 @pytest.mark.ui_e2e
 def test_escape_in_a_confirm_dialog_over_the_graph_builder_closes_the_dialog_and_not_the_builder(page: Page, base_url: str, console_url: str, unique_suffix: str) -> None:
     graph_id = f"escape-{unique_suffix}"
-    _seed(base_url, graph_id)
+    seed_graph(base_url, graph_id)
     try:
         open_legacy_route(page, console_url, f"graphs/{graph_id}")
         gb.wait_for_builder(page)
@@ -70,7 +54,7 @@ def test_escape_in_a_confirm_dialog_over_the_graph_builder_closes_the_dialog_and
 @pytest.mark.ui_e2e
 def test_escape_in_the_add_step_palette_closes_the_palette_and_not_the_builder(page: Page, base_url: str, console_url: str, unique_suffix: str) -> None:
     graph_id = f"escape-palette-{unique_suffix}"
-    _seed(base_url, graph_id)
+    seed_graph(base_url, graph_id)
     try:
         open_legacy_route(page, console_url, f"graphs/{graph_id}")
         gb.wait_for_builder(page)
