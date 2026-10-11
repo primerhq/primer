@@ -14,7 +14,7 @@ import pytest
 from playwright.sync_api import Page, expect
 
 from tests.ui_e2e._studio_helpers import open_workspace_settings
-from tests.ui_e2e.test_workspace_session_graph_signals import _cleanup, _seed_workspace
+from tests.ui_e2e._workspace_seed import cleanup, seed_workspace
 
 _WHERE = """() => {
   const m = document.querySelector('.modal'), a = document.activeElement;
@@ -26,7 +26,7 @@ _WHERE = """() => {
 @pytest.mark.ui_e2e
 def test_the_destroy_confirm_stays_open_and_keeps_the_focus_while_the_request_is_out(page: Page, base_url: str, console_url: str, unique_suffix: str, tmp_path) -> None:
     wp_id, tpl_id = f"wp-bd-{unique_suffix}", f"tpl-bd-{unique_suffix}"
-    wid = _seed_workspace(base_url, wp_id, tpl_id, tmp_path)
+    wid = seed_workspace(base_url, wp_id, tpl_id, tmp_path)
     held: list = []
     page.route(f"**/v1/workspaces/{wid}", lambda route: held.append(route) if route.request.method == "DELETE" else route.continue_())
     try:
@@ -69,4 +69,4 @@ def test_the_destroy_confirm_stays_open_and_keeps_the_focus_while_the_request_is
         page.unroute_all(behavior="ignoreErrors")
         with httpx.Client(base_url=base_url, timeout=30.0) as client:
             client.delete(f"/v1/workspaces/{wid}")
-        _cleanup(base_url, [f"/v1/workspace_templates/{tpl_id}", f"/v1/workspace_providers/{wp_id}"])
+        cleanup(base_url, [f"/v1/workspace_templates/{tpl_id}", f"/v1/workspace_providers/{wp_id}"])

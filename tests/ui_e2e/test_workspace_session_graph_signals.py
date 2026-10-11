@@ -16,6 +16,7 @@ import pytest
 from playwright.sync_api import expect
 
 from tests.ui_e2e._studio_helpers import open_workspace_settings
+from tests.ui_e2e._workspace_seed import cleanup, seed_workspace
 from tests.ui_e2e import _graph_builder_helpers as gb
 
 
@@ -51,23 +52,6 @@ def _seed_agent(base_url: str, agent_id: str, provider_id: str) -> None:
         assert r.status_code == 201
 
 
-def _seed_workspace(base_url: str, wp_id: str, tpl_id: str, tmp_path) -> str:
-    with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        r = c.post("/v1/workspace_providers", json={
-            "id": wp_id, "provider": "local",
-            "config": {"kind": "local", "root_path": str(tmp_path)},
-        })
-        assert r.status_code == 201
-        r = c.post("/v1/workspace_templates", json={
-            "id": tpl_id, "description": "ws tpl",
-            "provider_id": wp_id, "backend": {"kind": "local"},
-        })
-        assert r.status_code == 201
-        r = c.post("/v1/workspaces", json={"template_id": tpl_id})
-        assert r.status_code == 201
-        return r.json()["id"]
-
-
 def _seed_session(
     base_url: str, workspace_id: str, agent_id: str, *, auto_start: bool = False,
 ) -> str:
@@ -88,15 +72,6 @@ def _cancel_session(base_url: str, workspace_id: str, session_id: str) -> None:
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
         r = c.post(f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel")
         assert r.status_code == 200, r.text
-
-
-def _cleanup(base_url: str, urls: list[str]) -> None:
-    with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        for url in urls:
-            try:
-                c.delete(url)
-            except Exception:  # noqa: BLE001
-                pass
 
 
 # ===========================================================================
@@ -120,7 +95,7 @@ def test_u0079_workspace_destroy_confirm_navigates_back_to_list(
     """
     wp_id = f"wp-79-{unique_suffix}"
     tpl_id = f"tpl-79-{unique_suffix}"
-    wid = _seed_workspace(base_url, wp_id, tpl_id, tmp_path)
+    wid = seed_workspace(base_url, wp_id, tpl_id, tmp_path)
     # The workspace will be destroyed by the test itself — only
     # clean up provider + template.
     cleanup_urls = [
@@ -163,7 +138,7 @@ def test_u0079_workspace_destroy_confirm_navigates_back_to_list(
             f"workspace row still exists after destroy: last status {r.status_code}"
         )
     finally:
-        _cleanup(base_url, cleanup_urls)
+        cleanup(base_url, cleanup_urls)
 
 
 # ===========================================================================
@@ -262,4 +237,4 @@ def test_u0088_graph_editor_discard_reverts_unsaved_add_node(
         gb.expect_clean(page)
         assert gb.outline_row_count(page) == before
     finally:
-        _cleanup(base_url, cleanup_urls)
+        cleanup(base_url, cleanup_urls)
