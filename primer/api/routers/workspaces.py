@@ -66,9 +66,6 @@ from primer.api.registries.provider_registry import RESERVED_WORKSPACE_PROVIDER_
 from primer.api.routers._crud import make_crud_router
 from primer.common.preview_allowlist import (
     _HIDDEN,
-    _PREVIEW_SOURCES,
-    _HIDDEN_PATHS_KEPT,
-    _DEFAULT_TEXT_CHARS,
     _BIG_DOCUMENT_CHARS,
     _REDACT_BUDGET,
     _REDACT_MEMBER_COST,
@@ -81,7 +78,6 @@ from primer.common.preview_allowlist import (
     _preview_stamp,
     _allow_only,
     _value_rule,
-    _of_the_default_kind,
     scrub_args_for_display,
 )
 from primer.model.common import preserve_masked_secrets, refuse_served_masks
