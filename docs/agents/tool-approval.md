@@ -114,6 +114,11 @@ without anyone asking, so it draws only what is declared safe to draw:
 - **`call_tool`.** A policy on the tool `call_tool` runs is filtered by THAT tool's list; a policy on `call_tool` itself shows `toolset_id` and `tool_name` and the inner tool's
   paths, and withholds the arguments of an inner tool it cannot find.
 - **On the phone.** The Inbox card names what it withheld ("Hidden on this card: note, content"). A card that hides ANYTHING is blind, whoever declared the list (the tool's author, the operator, the `default` rule or a park without a stamp): the declared list decides what is drawn, never whether a hidden argument is safe to approve unread (the python source of `update_python_toolset_source`, an agent's system prompt), so Approve is not offered until Show all has put the whole call on the screen for THIS park. Who declared the list only changes the note's words. A value withheld whole (a bare string or list as the arguments) is blind too, and so is a `hidden_keys` the card cannot read. Deny is always offered. Open the session to review the call in full.
+- **On a channel.** The approval prompt a channel posts (Slack, Telegram, Discord) draws the SAME allowlist as the card: `scrub_args_for_display` in
+  `primer.common.preview_allowlist` is the single place both ask "what may this prompt show?" (ticket 01a125ed-9ef6: the channel used to post the raw
+  arguments). A withheld value is drawn as `<hidden>` in the prompt text and in the structured `tool_args` the adapters render, and a bare value no path can
+  name is withheld whole. The decision round-trip reads the original arguments from the park, never from what was posted, so what the prompt withholds
+  changes nothing downstream.
 
 ## Lifecycle and states
 
