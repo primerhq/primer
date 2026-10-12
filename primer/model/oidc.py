@@ -7,12 +7,13 @@ from typing import ClassVar
 from pydantic import Field, SecretStr
 
 from primer.model.common import Identifiable
+from primer.model.masked_url import MaskedUserinfoStr
 
 
 class OidcProvider(Identifiable):
     _id_prefix: ClassVar[str] = "oidc-provider"
     name: str = Field(..., min_length=1, max_length=128)
-    discovery_url: str = Field(..., description="OIDC issuer .well-known/openid-configuration URL")
+    discovery_url: MaskedUserinfoStr = Field(..., description="OIDC issuer .well-known/openid-configuration URL")
     client_id: str = Field(..., min_length=1)
     client_secret: SecretStr | None = Field(default=None)
     scopes: list[str] = Field(default_factory=lambda: ["openid", "email", "profile"])

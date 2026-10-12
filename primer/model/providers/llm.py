@@ -15,7 +15,6 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    HttpUrl,
     model_validator,
 )
 
@@ -227,7 +226,7 @@ class OpenRouterConfig(BaseModel):
             "up on OpenRouter's leaderboard surface."
         ),
     )
-    app_url: HttpUrl | None = Field(
+    app_url: MaskedUserinfoUrl | None = Field(
         default=None,
         description=(
             "Sent as the `HTTP-Referer` HTTP header for OpenRouter "

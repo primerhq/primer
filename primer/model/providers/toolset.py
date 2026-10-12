@@ -14,6 +14,7 @@ from typing import ClassVar, Literal
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr, model_validator
 
 from primer.model.common import Identifiable
+from primer.model.masked_url import MaskedUserinfoStr
 
 
 class OAuthClientCredentials(BaseModel):
@@ -137,7 +138,7 @@ class HttpConfig(BaseModel):
     the same url / headers / oauth; only the client wire protocol differs.
     """
 
-    url: str = Field(
+    url: MaskedUserinfoStr = Field(
         ...,
         min_length=1,
         description="Base URL of the remote MCP server endpoint.",

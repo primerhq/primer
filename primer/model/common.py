@@ -271,6 +271,8 @@ def _preserve(entity: Any, existing: Any, moved: bool) -> None:
             restored_url = _restored_url(name, new_value, old_value)
             if restored_url is not None:
                 setattr(entity, name, restored_url)
+        elif isinstance(new_value, str) and name in _ORIGIN_URL_FIELDS:
+            setattr(entity, name, restore_served_masked_url(new_value, old_value if isinstance(old_value, str) else None, name=name))
         elif isinstance(new_value, BaseModel):
             _preserve(new_value, old_value, moved)
         elif isinstance(new_value, list):
@@ -279,7 +281,7 @@ def _preserve(entity: Any, existing: Any, moved: bool) -> None:
             _preserve_dict(name, new_value, old_value, moved)
 
 
-_UNRESTORABLE = "re-enter the password: the stored one is kept only for the same origin (scheme, host and port) and user"
+REENTER_URL = "re-enter the password: the stored one is kept only for the same origin (scheme, host and port) and user"
 
 
 def _restored_url(name: str, new_value: AnyUrl, old_value: Any) -> AnyUrl | None:
@@ -291,12 +293,12 @@ def _restored_url(name: str, new_value: AnyUrl, old_value: Any) -> AnyUrl | None
     """
     if not isinstance(old_value, AnyUrl):
         if carries_mask(str(new_value)):
-            raise ValidationError(f"{name}: {_UNRESTORABLE}")
+            raise ValidationError(f"{name}: {REENTER_URL}")
         return None
     try:
         restored = restore_userinfo(str(new_value), str(old_value))
     except MaskCannotBeRestored as exc:
-        raise ValidationError(f"{name}: {_UNRESTORABLE} ({exc})") from None
+        raise ValidationError(f"{name}: {REENTER_URL} ({exc})") from None
     if restored is None:
         return None
     try:
@@ -317,7 +319,10 @@ def _refuse_masks(value: Any, name: str, secrets: bool) -> None:
             raise ValidationError(f"{name or 'secret'}: {_NOT_A_SECRET}")
     elif isinstance(value, AnyUrl):
         if carries_mask(str(value)):
-            raise ValidationError(f"{name or 'url'}: {_UNRESTORABLE}")
+            raise ValidationError(f"{name or 'url'}: {REENTER_URL}")
+    elif isinstance(value, str) and name in _ORIGIN_URL_FIELDS:
+        if carries_mask(value):
+            raise ValidationError(f"{name or 'url'}: {REENTER_URL}")
     elif isinstance(value, BaseModel):
         for field in value.__class__.model_fields:
             _refuse_masks(getattr(value, field, None), field, secrets)
@@ -338,6 +343,22 @@ def refuse_served_masks(entity: Any) -> None:
     _refuse_masks(entity, "", True)
 
 
+def restore_served_masked_url(incoming: str, stored: str | None, *, name: str = "url") -> str:
+    """``incoming`` with the stored URL's credential put back when it carries the mask a read served for ``stored``, else ``incoming`` as it is (ticket 01a1294c).
+
+    A router whose update hook restores a single plain-``str`` URL field by name (the OIDC ``discovery_url``) calls this: the field is not an :class:`~pydantic.AnyUrl`, so
+    :func:`preserve_masked_secrets` (which recurses the model) is not the call site. A mask that cannot be restored (the origin or the user changed, or nothing was stored)
+    raises a :class:`~primer.model.except_.ValidationError` (a 422, ``re-enter the password``); a real new URL or a removed credential carries no mask and comes back as sent.
+    """
+    if not carries_mask(incoming):
+        return incoming
+    try:
+        restored = restore_userinfo(incoming, stored or "")
+    except MaskCannotBeRestored as exc:
+        raise ValidationError(f"{name}: {REENTER_URL} ({exc})") from None
+    return incoming if restored is None else restored
+
+
 def _preserve_list(name: str, new_items: list[Any], old_items: Any, moved: bool) -> None:
     if not isinstance(old_items, list) or len(old_items) != len(new_items):
         _refuse_masks(new_items, name, True)          # the items cannot be paired with stored ones: a served mask would be stored as the value
@@ -351,6 +372,8 @@ def _preserve_list(name: str, new_items: list[Any], old_items: Any, moved: bool)
             restored_url = _restored_url(name, new_item, old_item)
             if restored_url is not None:
                 new_items[i] = restored_url
+        elif isinstance(new_item, str) and name in _ORIGIN_URL_FIELDS:
+            new_items[i] = restore_served_masked_url(new_item, old_item if isinstance(old_item, str) else None, name=name)
         elif isinstance(new_item, BaseModel):
             _preserve(new_item, old_item, moved)
         elif isinstance(new_item, dict):
@@ -377,6 +400,8 @@ def _preserve_dict(name: str, new_map: dict[Any, Any], old_map: Any, moved: bool
             restored_url = _restored_url(label, new_v, old_v)
             if restored_url is not None:
                 new_map[k] = restored_url
+        elif isinstance(new_v, str) and k in _ORIGIN_URL_FIELDS:
+            new_map[k] = restore_served_masked_url(new_v, old_v if isinstance(old_v, str) else None, name=label)
         elif isinstance(new_v, BaseModel):
             _preserve(new_v, old_v, moved)
         elif isinstance(new_v, list):
@@ -387,9 +412,11 @@ def _preserve_dict(name: str, new_map: dict[Any, Any], old_map: Any, moved: bool
 
 __all__ = [
     "REENTER_KEY",
+    "REENTER_URL",
     "Describeable",
     "Identifiable",
     "dump_for_storage",
     "preserve_masked_secrets",
     "refuse_served_masks",
+    "restore_served_masked_url",
 ]
