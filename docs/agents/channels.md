@@ -154,7 +154,15 @@ The response path:
    no-op via the atomic guard.
 
 Tool approval forwarding works identically, producing a
-`tool_approval:{sid}:{tcid}` event.
+`tool_approval:{sid}:{tcid}` event. The posted approval prompt draws only the
+arguments the approval allowlist names (the `preview` stamp the park carries,
+else the default rule for an unstamped park: the same policy the console's Inbox
+card applies, in one place, `scrub_args_for_display` in
+`primer.common.preview_allowlist`). A value the allowlist withholds is drawn as
+`<hidden>` in the prompt text and in the structured `tool_args` the adapters
+render, never as the raw value; a bare value no path can name is withheld whole.
+The decision round-trip reads the ORIGINAL arguments from the park, never from
+what was posted, so withholding a value changes nothing downstream.
 
 A channel reply can decide a tool-approval gate only when the gate has no approver restriction. A gate whose policy (or
 verdict) routes it to specific users or roles, or to admins only, is refused when answered from Slack, Discord or Telegram
