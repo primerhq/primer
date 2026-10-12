@@ -22,6 +22,7 @@ from pydantic import ConfigDict, ValidationError
 
 from primer.int.storage_provider import StorageProvider
 from primer.model.common import Identifiable
+from primer.model.except_ import RowDecodeError
 from primer.model.provider import SqliteConfig
 from primer.model.providers.embedding import EmbeddingProvider as LiveEmbeddingProvider
 from primer.model.providers.embedding import HuggingFaceConfig, OpenAIConfig
@@ -95,8 +96,14 @@ def _migration():
 async def test_main_stored_rows_the_live_model_cannot_read(sp: StorageProvider, row_id: str) -> None:
     await _seed(sp)
 
-    with pytest.raises(ValidationError):
+    # 01a1261f-07e0: pre-fix this pin was the raw pydantic ValidationError escaping the read
+    # path; the rejection is now classified (500 /errors/internal, no stored values in the
+    # message, the original rejection on .cause for the server-side traceback only).
+    with pytest.raises(RowDecodeError) as excinfo:
         await sp.get_storage(LiveEmbeddingProvider).get(row_id)
+
+    assert isinstance(excinfo.value.cause, ValidationError)
+    assert KEY not in excinfo.value.message and TOKEN not in excinfo.value.message
 
 
 @pytest.mark.asyncio
