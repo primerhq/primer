@@ -153,3 +153,13 @@ def test_the_workspace_list_is_one_poll_not_two() -> None:
     """The shell and the rail both fetched GET /workspaces every 15 s under different cache keys."""
     assert '"nv-rail-workspaces"' not in RAIL
     assert '"nv-workspaces"' in RAIL and '"nv-workspaces"' in SHELL
+
+@pytest.mark.parametrize("flag", ["interrupt_requested", "pause_requested", "cancel_requested"])
+def test_an_ended_row_with_a_surviving_flag_is_calm(ctx, flag) -> None:
+    """#718 carry-over: an ENDED row that still carries a Stop/Pause/Cancel
+    flag (a Cancel that landed on a row that ended first, or the
+    workspace-lost reconcile, whose patch leaves the flag set) was polled at
+    the fast cadence forever: the row is at rest until a reopen, and the
+    optimistic/live/stopPending legs already cover the in-flight cases. An
+    OPEN row with a flag keeps the fast cadence (pinned above)."""
+    assert _calm(ctx, row={"status": "ended", "turn_status": "idle", flag: True}) is True, flag
