@@ -149,3 +149,56 @@ async def test_restart_409_when_active(active_session_client):
         json={},
     )
     assert resp.status_code == 409
+
+async def test_reopen_clears_the_stale_ended_detail_and_agent_phase(
+    client, app, fake_storage_provider,
+):
+    """#718 carry-over: a reopen that leaves ended_detail or the agent_phase*
+    fields behind labels the session's NEXT end with the previous turn's
+    detail (the row is the one truth about how a session ended, and a reader
+    that serves ended_detail shows the stale value the moment the next turn
+    ends), and shows a phase the session never ran. The reopen already
+    clears the terminal + park + turn bookkeeping of the same dead turn
+    (turn_status, last_turn_error, the park fields) - the detail and the
+    phase belong there too."""
+    from primer.model.workspace_session import (
+        AgentSessionBinding,
+        SessionStatus,
+        WorkspaceSession,
+    )
+
+    wid, sid = "ws-restart", "s-stale-detail"
+    sess = WorkspaceSession(
+        id=sid,
+        workspace_id=wid,
+        binding=AgentSessionBinding(agent_id="ag1"),
+        status=SessionStatus.ENDED,
+        ended_reason="failed",
+        ended_detail="tool_execution_failed",
+        ended_at=_now(),
+        last_seq=3,
+        turn_status="idle",
+        agent_phase="executing",
+        agent_phase_turn_no=7,
+        agent_phase_stamped_at=_now(),
+        created_at=_now(),
+    )
+    await fake_storage_provider.get_storage(WorkspaceSession).create(sess)
+    ws = _FakeWorkspace()
+
+    async def _get(workspace_id: str):
+        return ws if workspace_id == wid else None
+
+    app.state.workspace_registry.get_workspace = _get  # type: ignore[assignment]
+
+    resp = await client.post(
+        f"/v1/workspaces/{wid}/sessions/{sid}/restart",
+        json={"input": "go again"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    row = await fake_storage_provider.get_storage(WorkspaceSession).get(sid)
+    assert row.ended_detail is None
+    assert row.agent_phase is None
+    assert row.agent_phase_turn_no is None
+    assert row.agent_phase_stamped_at is None

@@ -58,9 +58,13 @@ async def _reopen_ended_locked(
     Assumes the caller verified ``row.status == SessionStatus.ENDED``.
     Enforces the ``_RESTARTABLE`` ended_reason guard here (raising
     ConflictError for ``force_deleted`` always, and for ``workspace_lost``
-    UNLESS the workspace has since healed — see below), reopens the
+    UNLESS the workspace has since healed - see below), reopens the
     on-disk slot, writes the ``INVOCATION_DIVIDER`` record, bumps the
-    invocation counter, clears terminal + park bookkeeping, and transitions
+    invocation counter, clears terminal + park bookkeeping (including
+    ``ended_detail`` and the ``agent_phase*`` of the dead turn: the row is
+    the one truth about how a session ended, so a stale detail must not
+    label the NEXT end, and the phase belongs to the turn that is gone),
+    and transitions
     the scheduler row ENDED -> CREATED (turn_status idle). Returns
     ``(reopened_row, invocation_number)``; does NOT publish events (the
     caller owns ticks). The divider is written BEFORE the caller appends any
@@ -142,6 +146,10 @@ async def _reopen_ended_locked(
         "turn_status": "idle",
         "turn_started_at": None,
         "last_turn_error": None,
+        "ended_detail": None,
+        "agent_phase": None,
+        "agent_phase_turn_no": None,
+        "agent_phase_stamped_at": None,
         "last_seq": new_seq,
         "metadata": md,
     })
