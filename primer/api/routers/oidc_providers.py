@@ -7,7 +7,7 @@ from primer.api.routers._crud import make_crud_router
 from primer.api.deps import get_oidc_provider_storage
 from primer.auth import oidc
 from primer.common.origin import origin_of
-from primer.model.common import REENTER_KEY
+from primer.model.common import REENTER_KEY, restore_served_masked_url
 from primer.model.except_ import ValidationError
 from primer.model.oidc import OidcProvider
 
@@ -104,6 +104,8 @@ async def _preserve_client_secret_if_blank(
 
 
 async def _on_pre_update(entity: OidcProvider, existing: OidcProvider, request: Request) -> None:
+    # A full-replace PUT of the served body carries the masked discovery_url back: put the stored credential back (same origin and user only) before the shape / discoverable checks run on it.
+    entity.discovery_url = restore_served_masked_url(entity.discovery_url, existing.discovery_url, name="discovery_url")
     await _preserve_client_secret_if_blank(entity, existing, request)
     _check_discovery_url_shape(entity)
     # Only the changes that can put a broken button on the login screen refetch: turning a provider on, or pointing an enabled one at

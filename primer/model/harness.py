@@ -6,13 +6,14 @@ import os
 import re
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, PlainSerializer, SecretStr, SerializationInfo, field_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator
 
-from primer.common.url_userinfo import MaskCannotBeRestored, carries_mask, mask_userinfo, restore_userinfo
-from primer.model.common import STORAGE_DUMP_CONTEXT, Identifiable
+from primer.common.url_userinfo import MaskCannotBeRestored, carries_mask, restore_userinfo
+from primer.model.common import Identifiable
+from primer.model.masked_url import MaskedGitUrl
 from primer.model.principal import PrincipalRef
 
 
@@ -62,26 +63,6 @@ def validate_git_url(url: str) -> str:
             raise ValueError("a file:// git_url must be an absolute path")
         return url
     raise ValueError("git_url must be an https:// URL")
-
-
-def _serialize_git_url(value, info: SerializationInfo):
-    """The dump of a git URL: unchanged in a python-mode dump (git reads the real URL), the real URL under the storage context (``dump_for_storage``), and in a JSON-mode dump the URL with the
-    password of its userinfo masked (``https://reader:**********@host/org/repo.git``; a lone ``https://TOKEN@host``, the personal-access-token-in-the-username shape, whole).
-
-    The same rule as :data:`primer.model.providers._shared.MaskedUserinfoUrl` (the provider Base URL, ticket 01a11cdf part 3) for a ``str`` field: a git URL is not an ``HttpUrl`` (``file://``
-    is allowed under the operator opt-in, and the string is compared and keyed as typed). No return annotation and no ``return_type``: a ``str`` return type makes pydantic 2.13 warn on every
-    python-mode dump, with the URL in the text.
-    """
-    if not info.mode_is_json():
-        return value
-    context = info.context
-    if isinstance(context, dict) and all(context.get(key) == flag for key, flag in STORAGE_DUMP_CONTEXT.items()):
-        return str(value)
-    return mask_userinfo(str(value))
-
-
-#: A git URL served without the password of its userinfo (ticket 01a11d32, the harness family). ``Harness.git_url`` and ``ResolvedDependency.git_url`` are served to every user.
-MaskedGitUrl = Annotated[str, PlainSerializer(_serialize_git_url, when_used="always")]
 
 
 class GitUrlMaskRefused(ValueError):

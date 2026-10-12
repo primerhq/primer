@@ -85,15 +85,16 @@ def repoints_stored_secrets(entity: Toolset, existing: Toolset) -> bool:
     :func:`~primer.model.common.preserve_masked_secrets` swaps a served mask back for the stored value, so without this check a
     caller who never saw the headers / OAuth client secret could move them to a server of its choosing by editing only the URL.
     It now REFUSES a mask under another origin (scheme, host, port) for every caller, an admin included, and a URL password mask
-    it cannot restore: the refusal counts as a repoint here (the check answers; the write itself is refused with the reason).
+    it cannot restore: the refusal counts as a repoint here (the check answers; the write itself is refused with the reason). Restore BEFORE
+    comparing the endpoint: a same-origin url mask round-trips to the stored url, so it is not a move (the str flavour, ticket 01a1294c).
     """
-    if _endpoint(entity) == _endpoint(existing):
-        return False
     restored = entity.model_copy(deep=True)
     try:
         preserve_masked_secrets(restored, existing)
     except PrimerValidationError:
         return True
+    if _endpoint(restored) == _endpoint(existing):
+        return False
     # SecretStr.__eq__ compares the plaintext, so this sees a restored mask; model_dump() masks secrets and would not.
     return restored != entity
 

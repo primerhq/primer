@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import SecretStr
 
-from primer.model.harness import Harness, HarnessStatus
+from primer.model.harness import Harness, HarnessStatus, ResolvedDependency
 from primer.model.storage import OffsetPage
 from tests.api.test_require_user_admin import _login, _seed
 
@@ -50,6 +50,27 @@ async def test_create_get_and_list_serve_the_url_without_its_password(client, ap
     assert created.json()["git_url"] == MASKED and one.json()["git_url"] == MASKED
     assert [h["git_url"] for h in listed.json()["items"] if h["id"] == hid] == [MASKED]
     assert (await _stored(app, hid)).git_url == URL
+
+
+async def test_a_get_serves_the_git_url_of_a_resolved_dependency_masked(client, app) -> None:
+    """#722 review nit N5: a resolved dependency's git_url is a nested MaskedGitUrl, so a user-tier GET must not serve its password either."""
+    harness = await _put_harness(app)
+    dependency = ResolvedDependency(
+        name="dep",
+        slug="dep",
+        git_url="https://dep:dep-pass@git.example.org/dep.git",
+        ref="main",
+        resolved_commit="c" * 40,
+        bundle_hash="bh",
+        depth=1,
+    )
+    await app.state.storage_provider.get_storage(Harness).update(harness.model_copy(update={"dependencies_resolved": [dependency]}))
+
+    r = await client.get(f"/v1/harnesses/{harness.id}")
+
+    assert r.status_code == 200, r.text
+    assert r.json()["dependencies_resolved"][0]["git_url"] == f"https://dep:{MASK}@git.example.org/dep.git"
+    assert "dep-pass" not in r.text
 
 
 async def test_a_lone_token_in_the_username_slot_is_served_masked_whole(client) -> None:

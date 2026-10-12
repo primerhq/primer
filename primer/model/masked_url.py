@@ -1,4 +1,4 @@
-"""A URL field that is served without the password of its userinfo (tickets 01a11cdf part 3 and 01a11d32).
+"""A URL field that is served without the password of its userinfo (tickets 01a11cdf part 3 and 01a11d32, and 01a1294c for the ``str`` flavour).
 
 A URL may carry ``user:password@`` (a reverse proxy in front of a server, a private file host): httpx and aiohttp send it as Basic auth, and every API response, CRUD event and tool result used to
 serve it in clear (a provider row's CRUD events too). :data:`MaskedUserinfoUrl` is an :class:`~pydantic.HttpUrl` whose JSON-mode dump masks it (``http://svc:**********@host/v1``; a lone ``https://TOKEN@host`` whole). It masks in a
@@ -6,6 +6,10 @@ JSON-mode dump only (the serializer itself returns the value unchanged for a pyt
 object itself keep the real URL, which is what the adapters, the probes and the fetch read; ``dump_for_storage`` keeps it for the stored row; ``preserve_masked_secrets`` puts the stored credential
 back when a full-replace PUT sends the served mask back, for the same scheme, host, port and user only. Anything that FINGERPRINTS or COMPARES a row must use the storage form (the served form is the
 same for two URLs that differ only by password).
+
+:data:`MaskedUserinfoStr` applies the SAME serializer to a plain ``str`` field. Some URL fields are stored as a plain ``str`` (a URL is compared and keyed as typed, and a git URL may be a
+``file://`` under the operator opt-in), so they are not an :class:`~pydantic.HttpUrl`; the :data:`MaskedGitUrl` (the harness ``git_url`` and its resolved dependencies) is this ``str`` flavour, not
+a copy in :mod:`primer.model.harness` (the review of #722, nit N6).
 
 It lives here, not in ``primer.model.providers._shared`` (which re-exports it for the provider models), because the workspace models use it too and importing ``primer.model.providers`` from
 ``primer.model.workspace`` would pull every provider module in.
@@ -44,4 +48,13 @@ MaskedUserinfoUrl = Annotated[
     PlainSerializer(_serialize_url, when_used="always"),
 ]
 
-__all__ = ["MaskedUserinfoUrl"]
+# The same rule for a field stored as a plain ``str`` (a URL is compared and keyed as typed, and a git URL may be a ``file://`` under the operator opt-in), so it is not an :class:`~pydantic.HttpUrl`.
+MaskedUserinfoStr = Annotated[
+    str,
+    PlainSerializer(_serialize_url, when_used="always"),
+]
+
+#: The harness ``git_url`` and its resolved dependencies' ``git_url`` are the shared ``str`` flavour (one rule, one serializer; the review of #722, nit N6).
+MaskedGitUrl = MaskedUserinfoStr
+
+__all__ = ["MaskedGitUrl", "MaskedUserinfoStr", "MaskedUserinfoUrl"]
