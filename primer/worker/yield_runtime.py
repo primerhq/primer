@@ -34,6 +34,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal, NamedTuple
 
+from primer.common.preview_allowlist import (
+    _HIDDEN,
+    _preview_stamp,
+    scrub_args_for_display,
+)
 from primer.model.chat import ToolCallPart, ToolResultPart
 from primer.model.yield_ import (
     YieldCancelled,
@@ -871,9 +876,22 @@ def _build_prompt_envelope(
     if kind == "_approval":
         original = metadata.get("original_call") or {}
         gate_reason = metadata.get("gate_reason")
+        # The prompt (and the structured tool_args) draw only what the approval allowlist names: the stamp the park
+        # wrote into resume_metadata["preview"], else the default rule (the same policy the console applies, in one
+        # place). The decision round-trip reads the ORIGINAL arguments from the park, never from what was posted, so
+        # withholding a value here changes nothing downstream.
+        shown_args, _withheld = scrub_args_for_display(
+            original.get("arguments"), _preview_stamp(metadata)
+        )
+        if isinstance(shown_args, dict):
+            tool_args, prompt_args = shown_args, shown_args
+        elif shown_args in (None, ""):
+            tool_args, prompt_args = None, {}
+        else:                                    # a bare value no path can name: withheld whole
+            tool_args, prompt_args = None, _HIDDEN
         prompt = (
             f"Approve {original.get('name', '<unknown>')}"
-            f"({original.get('arguments') or {}})?"
+            f"({prompt_args})?"
         )
         if gate_reason:
             prompt += f"\nReason: {gate_reason}"
@@ -887,7 +905,7 @@ def _build_prompt_envelope(
             choices=["Approve", "Reject"],
             timeout_at_iso=None,
             tool_name=original.get("name"),
-            tool_args=original.get("arguments") or {},
+            tool_args=tool_args,
             workspace_name=workspace_name,
             session_label=session_label,
             gate_id=gate_id_of(metadata),

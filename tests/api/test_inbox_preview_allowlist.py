@@ -368,11 +368,14 @@ def _nested(width: int, depth: int):
 
 
 def _count_classified(monkeypatch, limit: int) -> list[int]:
-    """Count the positions the walk classifies, and fail the test the moment it passes ``limit`` (so the buggy walk fails in milliseconds, not in minutes)."""
-    from primer.api.routers import workspaces as w
+    """Count the positions the walk classifies, and fail the test the moment it passes ``limit`` (so the buggy walk fails in milliseconds, not in minutes).
+
+    The walk classifies in ``primer.common.preview_allowlist`` (the module the allowlist lives in since 01a125ed-9ef6), so the spy patches
+    that module's ``classify``: patching the workspaces module would count zero calls, the re-export no longer being what the walk binds to."""
+    from primer.common import preview_allowlist as pa
 
     calls = [0]
-    real = w.classify
+    real = pa.classify
 
     def counting(allowed, here):
         calls[0] += 1
@@ -380,7 +383,7 @@ def _count_classified(monkeypatch, limit: int) -> list[int]:
             pytest.fail(f"{calls[0]} positions were classified and the walk was still going (limit {limit})")
         return real(allowed, here)
 
-    monkeypatch.setattr(w, "classify", counting)
+    monkeypatch.setattr(pa, "classify", counting)
     return calls
 
 

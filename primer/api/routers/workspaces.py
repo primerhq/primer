@@ -64,7 +64,26 @@ from primer.api.pagination import FindRequest, parse_order_by, parse_page
 from primer.api.registries import WorkspaceRegistry
 from primer.api.registries.provider_registry import RESERVED_WORKSPACE_PROVIDER_IDS
 from primer.api.routers._crud import make_crud_router
-from primer.common.preview_paths import MAX_PATHS, classify, is_segment, path_syntax_error
+from primer.common.preview_allowlist import (
+    _HIDDEN,
+    _PREVIEW_SOURCES,
+    _HIDDEN_PATHS_KEPT,
+    _DEFAULT_TEXT_CHARS,
+    _BIG_DOCUMENT_CHARS,
+    _REDACT_BUDGET,
+    _REDACT_MEMBER_COST,
+    _REDACT_MAX_ITEMS,
+    _REDACT_MAX_DEPTH,
+    _NAME_SCAN_CHARS,
+    _PAIR_NAME_KEYS,
+    _PAIR_VALUE_KEYS,
+    _parse_container,
+    _preview_stamp,
+    _allow_only,
+    _value_rule,
+    _of_the_default_kind,
+    scrub_args_for_display,
+)
 from primer.model.common import preserve_masked_secrets, refuse_served_masks
 from primer.api.routers._references import ReferenceCheck
 from primer.bootstrap.defaults import RESERVED_WORKSPACE_TEMPLATES
@@ -3015,24 +3034,11 @@ _SECRET_ARG_KEY = re.compile(
     r"|session[_-]?(?:token|key|cookie|secret)|sessionid|(?:^|[^a-z0-9])key(?:$|[^a-z0-9])",
     re.IGNORECASE,
 )
-# A name/value pair written as {"name": "Authorization", "value": "..."}: the value is secret when the name is.
-_PAIR_NAME_KEYS = frozenset({"name", "key", "header", "field", "param", "variable", "var", "env", "label"})
-_PAIR_VALUE_KEYS = frozenset({"value", "val"})
 _REDACTED = "<redacted>"
 # A match starts where a whitespace run starts: a bare leading \\s* rescans the rest of the run from every space in it (quadratic).
 _LINE_BREAKS = re.compile("(?<!\\s)\\s*[\\r\\n\\t\\v\\f\\u2028\\u2029\\u0085]+\\s*")
-# The walker looks no deeper than this, at no more members than this, at no more text per string than this, and at no more than _REDACT_BUDGET
-# characters (a member costs _REDACT_MEMBER_COST) in one walk; what it does not look at is hidden, and a container it cut says how many it left out.
-# This route runs synchronously on the event loop for every open console on every poll, so its work has to be bounded by constants, not by the
-# size of whatever a tool call or a question happened to contain.
-_REDACT_MAX_DEPTH = 8
-_REDACT_MAX_ITEMS = 50
 _REDACT_MAX_TEXT = 2000
-_REDACT_BUDGET = 12000
-_REDACT_MEMBER_COST = 16
 _PROMPT_SCAN_CHARS = 1000          # an ask/wait prompt is cut to this BEFORE it is scrubbed (only 240 characters are ever shown)
-_NAME_SCAN_CHARS = 200             # and so is an argument name
-_BIG_DOCUMENT_CHARS = 1_000_000    # a JSON string bigger than this is text, not a document to parse
 
 # "pass", "pw" and "pswd" are credentials only as a whole name component (DB_PASS, login-pw, --pass), never inside another word (bypass, compass,
 # passenger): a letter on either side means it is part of a longer word. A camelCase component counts too (dbPass, adminPw, rootPwd, sshPass: a capital
@@ -3206,17 +3212,6 @@ def _chars_of(value: Any) -> str:
         return str(len(json.dumps(value, ensure_ascii=False, default=str)))
     except (ValueError, TypeError, RecursionError):
         return "many"
-
-
-def _parse_container(text: str) -> "dict | list | None":
-    """The dict or list ``text`` is a JSON document of, else ``None`` (deeply nested text is not a document, it is a hazard)."""
-    if text.lstrip()[:1] not in ("{", "["):
-        return None
-    try:
-        parsed = json.loads(text)
-    except (ValueError, RecursionError):
-        return None
-    return parsed if isinstance(parsed, (dict, list)) else None
 
 
 def _pair_names_a_secret(mapping: dict) -> bool:
@@ -3418,139 +3413,7 @@ def _redact(value: Any, depth: int = 0, budget: "list[int] | None" = None) -> tu
     return value, False
 
 
-# What an approval card draws for an argument the allowlist withholds. Its word is DIFFERENT from ``_REDACTED``: ``<redacted>`` says the scrubber FOUND a secret in
-# a value it read; ``<hidden>`` says the value was never read at all (design note 01a11cd3-66b0).
-_HIDDEN = "<hidden>"
-_PREVIEW_SOURCES = frozenset({"policy", "tool", "default"})
 _NO_ALLOWLIST = object()           # the scrubber alone: what the unit tests of the scrubber call; the API always passes a stamp or None
-_HIDDEN_PATHS_KEPT = 64
-
-
-def _preview_stamp(metadata: Any) -> dict[str, Any] | None:
-    """The allowlist the park stamped into ``resume_metadata["preview"]`` (``{"paths": [...], "source": "policy" | "tool" | "default"}``), or ``None`` when the
-    row has no usable stamp (parked before the field existed, by a site that does not stamp, or a malformed one): the caller then applies the default rule."""
-    stamp = metadata.get("preview") if isinstance(metadata, dict) else None
-    if not isinstance(stamp, dict):
-        return None
-    paths, source = stamp.get("paths"), stamp.get("source")
-    if source not in _PREVIEW_SOURCES or not isinstance(paths, list) or len(paths) > MAX_PATHS:
-        return None
-    if any(path_syntax_error(path) is not None for path in paths):
-        return None
-    return {"paths": list(paths), "source": source}
-
-
-def _allow_only(args: dict, paths: "list[str]", budget: "list[int] | None" = None) -> tuple[dict, list[str]]:
-    """``args`` with every member the allowlist does not name replaced by ``_HIDDEN``, and the dotted paths that were withheld (each once, in the order met).
-
-    A path allows its whole subtree and a list is transparent (``classify``). A container with an allowed path deeper inside is walked member by member; a member
-    that is not allowed is replaced WITHOUT being looked at: it is not stringified, measured, iterated or compared, so a withheld value cannot leak through
-    anything this function does.
-
-    The walk is bounded by constants, like the scrubber's, and charges the same ``budget`` (the preview's, one element list; a fresh one when not given): every
-    position it visits costs ``_REDACT_MEMBER_COST`` plus the length of the path it built, a container is cut at ``_REDACT_MAX_ITEMS`` members, and what the budget
-    does not cover is withheld and counted (``<N more>``), never walked. Lists are transparent, so without the charge a list of lists with a path deeper inside
-    would be walked in full: ``width ** depth`` visits on the event loop of every poll of the pending-yields route.
-
-    A key that is not one path segment (``entity.id``, ``a b``) is withheld where a path goes deeper: joined with its parents it would read as a nested path and
-    show a value the allowlist never named. A name/value pair (``{"name": ..., "value": ...}``) whose name is not shown whole has its value withheld too: the
-    name was not read, so it cannot be judged, and a secret name makes the value a secret."""
-    hidden: list[str] = []
-    if budget is None:
-        budget = [_REDACT_BUDGET]
-
-    def withhold(path: str) -> str:
-        if len(hidden) < _HIDDEN_PATHS_KEPT and path not in hidden:
-            hidden.append(path)
-        return _HIDDEN
-
-    def more(path: str, count: int) -> str:
-        marker = f"<{count} more>"
-        withhold(f"{path} {marker}" if path else marker)
-        return marker
-
-    def look(path: str) -> str:
-        """``classify`` for one visit, charged to the budget; a position there is no budget left for is not looked at (``none``: withheld)."""
-        if budget[0] <= 0:
-            return "none"
-        budget[0] -= _REDACT_MEMBER_COST + len(path)
-        return classify(paths, path)
-
-    def walk(value: Any, path: str, depth: int, kind: str) -> Any:
-        if kind == "all":
-            return value
-        if kind == "none" or depth > _REDACT_MAX_DEPTH:
-            return withhold(path)
-        if isinstance(value, dict):
-            return walk_dict(value, path, depth)
-        if isinstance(value, (list, tuple)):
-            items: list[Any] = []
-            for index, member in enumerate(value):
-                if index >= _REDACT_MAX_ITEMS or budget[0] <= 0:
-                    items.append(more(path, len(value) - index))
-                    break
-                budget[0] -= _REDACT_MEMBER_COST + len(path)
-                items.append(walk(member, path, depth + 1, kind))          # a list is transparent: its members are at the list's own path
-            return items
-        return withhold(path)          # a deeper path was allowed but the value is a scalar: there is no part of it to show
-
-    def walk_dict(value: dict, path: str, depth: int) -> dict:
-        out: dict[Any, Any] = {}
-        kinds: dict[Any, str] = {}
-        cut = False
-        for index, key in enumerate(value):
-            # the top level is always walked (to the item cap): an argument the budget does not cover is still NAMED on the card, as withheld
-            if index >= _REDACT_MAX_ITEMS or (budget[0] <= 0 and path):
-                out["..."] = more(path, len(value) - index)
-                cut = True
-                break
-            name = str(key)[:_NAME_SCAN_CHARS]
-            child = f"{path}.{name}" if path else name
-            if not is_segment(key):
-                budget[0] -= _REDACT_MEMBER_COST + len(child)
-                kinds[key], out[key] = "none", withhold(child)
-                continue
-            kinds[key] = look(child)
-            out[key] = walk(value[key], child, depth + 1, kinds[key])
-        if cut or any(kinds.get(key) != "all" for key in out if str(key)[:_NAME_SCAN_CHARS].lower() in _PAIR_NAME_KEYS):
-            for key in out:
-                if str(key)[:_NAME_SCAN_CHARS].lower() in _PAIR_VALUE_KEYS and out[key] is not _HIDDEN:
-                    out[key] = withhold(f"{path}.{key}" if path else str(key))
-        return out
-
-    return walk_dict(args, "", 0), hidden
-
-
-def _value_rule(args: dict) -> tuple[dict, list[str]]:
-    """The default rule for a row with NO stamp (design ruling D5), by the VALUE's type since there is no schema to ask: a boolean, a number or ``null`` is shown, text and
-    containers are withheld (not looked at), and so is a value beside a withheld pair name (``name``/``value``). ``args`` with the withheld paths, like
-    :func:`_allow_only`."""
-    hidden: list[str] = []
-    out: dict[Any, Any] = {}
-    for key, value in args.items():
-        if value is None or isinstance(value, (bool, int, float)):
-            out[key] = value
-        else:
-            out[key] = _HIDDEN
-            if len(hidden) < _HIDDEN_PATHS_KEPT:
-                hidden.append(str(key))
-    if any(out[key] is _HIDDEN for key in out if str(key)[:_NAME_SCAN_CHARS].lower() in _PAIR_NAME_KEYS):
-        for key in out:
-            if str(key)[:_NAME_SCAN_CHARS].lower() in _PAIR_VALUE_KEYS and out[key] is not _HIDDEN:
-                out[key] = _HIDDEN
-                if len(hidden) < _HIDDEN_PATHS_KEPT:
-                    hidden.append(str(key))
-    return out, hidden
-
-
-# A name the DEFAULT rule allows (a closed set by its schema: boolean, number, null, enum, const) is drawn when its value is also of that kind: the gate parks BEFORE schema
-# validation, so a model can send any text under such a name, and a secret sent as an "enum" must not ride on the schema's promise.
-_DEFAULT_TEXT_CHARS = 40
-
-
-def _of_the_default_kind(value: Any) -> bool:
-    """A boolean, a number, ``null`` or a short string: what a closed-set argument holds when the call is the one its schema describes."""
-    return value is None or isinstance(value, (bool, int, float)) or (isinstance(value, str) and len(value) <= _DEFAULT_TEXT_CHARS)
 
 
 def _approval_preview(original_call: Any, preview: Any = _NO_ALLOWLIST) -> dict[str, Any] | None:
@@ -3583,18 +3446,9 @@ def _approval_preview(original_call: Any, preview: Any = _NO_ALLOWLIST) -> dict[
     truncated = False
     withheld: list[str] = []
     if preview is not _NO_ALLOWLIST:
-        if isinstance(args, dict):
-            if preview is None:
-                args, withheld = _value_rule(args)
-            else:
-                args, withheld = _allow_only(args, preview["paths"], budget)
-                if preview["source"] == "default":
-                    for key in [k for k, v in args.items() if v is not _HIDDEN and not _of_the_default_kind(v)]:
-                        args[key] = _HIDDEN
-                        if len(withheld) < _HIDDEN_PATHS_KEPT and str(key) not in withheld:
-                            withheld.append(str(key))
-        elif args is not None and args != "":
-            args, truncated = _HIDDEN, True        # no path can name a bare value: it is withheld whole
+        args, withheld = scrub_args_for_display(args, preview)
+        if args is _HIDDEN:
+            truncated = True            # no path can name a bare value: it is withheld whole
     keys: list[str] = []
     if isinstance(args, dict):
         truncated = bool(withheld)

@@ -120,7 +120,8 @@ async def test_dispatch_multi_event_sends_one_message_per_pending_node():
          "resume_metadata": {"prompt": "color?"}},
         {"kind": "_approval", "node_id": "n2", "tool_call_id": "tc2",
          "resume_metadata": {"original_call": {"id": "tc2", "name": "workspace__write",
-                                               "arguments": {"path": "a.txt"}}}},
+                                               "arguments": {"path": "a.txt"}},
+                             "preview": {"paths": ["path"], "source": "tool"}}},
     ]
     sent = await _dispatch_to_channels_multi(
         dispatcher=d, workspace_id="w1", session_id="s1",
