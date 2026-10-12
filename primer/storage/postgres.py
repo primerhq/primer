@@ -82,6 +82,7 @@ from primer.model.except_ import (
     ConflictError,
     NotFoundError,
     ProviderError,
+    RowDecodeError,
     ServerError,
 )
 from primer.model.provider import PostgresConfig
@@ -725,6 +726,24 @@ class PostgresStorage(Storage[ModelT]):
         data["id"] = row["id"]
         return self._model.model_validate(data)
 
+    def _decode_row(self, row: asyncpg.Record) -> ModelT:
+        """``_from_row`` under the read-path contract: a row the model no longer decodes (drifted
+        shape, hand edit, non-object or invalid JSON) is a condition of the stored data, not of the
+        caller's request or of the backend, so it is classified as a
+        :class:`primer.model.except_.RowDecodeError` whose message names the model and the row id,
+        never the stored values (pydantic's own text carries the input, and the input is the stored
+        document -- the m008 rule). ``patch_if`` decodes through ``_from_row`` directly: there the
+        unreadable document is the caller's own patch, reported as itself.
+        """
+        try:
+            return self._from_row(row)
+        except (ValidationError, json.JSONDecodeError, TypeError) as exc:
+            raise RowDecodeError(
+                f"{self._model.__name__} row {row['id']!r} cannot be read back: the stored document "
+                "does not match the model (shape drift or a manual edit); repair or remove the row",
+                cause=exc,
+            ) from exc
+
     # ---------- get / create / update / delete ----------------------------
 
     @asynccontextmanager
@@ -751,7 +770,7 @@ class PostgresStorage(Storage[ModelT]):
             raise self._wrap_db_error(exc) from exc
         if row is None:
             return None
-        return self._from_row(row)
+        return self._decode_row(row)
 
     async def create(self, entity: ModelT, *, conn: Any | None = None) -> ModelT:
         await self._ensure_table()
@@ -784,7 +803,7 @@ class PostgresStorage(Storage[ModelT]):
             ) from exc
         except Exception as exc:
             raise self._wrap_db_error(exc) from exc
-        return self._from_row(row)
+        return self._decode_row(row)
 
     async def update(self, entity: ModelT, *, conn: Any | None = None) -> ModelT:
         await self._ensure_table()
@@ -818,7 +837,7 @@ class PostgresStorage(Storage[ModelT]):
             raise NotFoundError(
                 f"{self._model.__name__} with id {entity_id!r} not found"
             )
-        return self._from_row(row)
+        return self._decode_row(row)
 
     async def update_unless(
         self, entity: ModelT, *, field: str, forbidden: Any,
@@ -875,7 +894,7 @@ class PostgresStorage(Storage[ModelT]):
                     f"{self._model.__name__} with id {entity_id!r} not found"
                 )
             return None
-        return self._from_row(row)
+        return self._decode_row(row)
 
     async def patch_if(
         self,
@@ -1074,7 +1093,7 @@ class PostgresStorage(Storage[ModelT]):
         except Exception as exc:
             raise self._wrap_db_error(exc) from exc
 
-        items = [self._from_row(r) for r in rows]
+        items = [self._decode_row(r) for r in rows]
         return OffsetPageResponse[self._model](  # type: ignore[name-defined]
             offset=page.offset,
             length=len(items),
@@ -1124,7 +1143,7 @@ class PostgresStorage(Storage[ModelT]):
         has_more = len(rows) > page.length
         if has_more:
             rows = rows[: page.length]
-        items = [self._from_row(r) for r in rows]
+        items = [self._decode_row(r) for r in rows]
 
         next_cursor: str | None = None
         if has_more and items:

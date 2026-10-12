@@ -85,6 +85,14 @@ class Storage(ABC, Generic[ModelT]):
             acquiring one from the pool. Lets a caller read inside a
             transaction it already opened. Pool-less backends (SQLite,
             in-memory) ignore it.
+
+        Raises
+        ------
+        primer.model.except_.RowDecodeError
+            A stored row the model can no longer decode: the stored document is not valid JSON,
+            is JSON but not an object, or is an object the model's validation now refuses (shape
+            drift, or a hand edit). The message names the model and the row id, never the stored
+            values.
         """
 
     @abstractmethod
@@ -107,6 +115,11 @@ class Storage(ABC, Generic[ModelT]):
         ------
         primer.model.except_.ConflictError
             An entity with the same id already exists.
+        primer.model.except_.RowDecodeError
+            The read-back of the row the write produced cannot be decoded into the model (the
+            same contract as :meth:`get`): the write itself committed, and the stored document is
+            what the model refuses. The message names the model and the row id, never the stored
+            values.
         """
 
     @abstractmethod
@@ -128,6 +141,11 @@ class Storage(ABC, Generic[ModelT]):
         ------
         primer.model.except_.NotFoundError
             No entity with this id exists.
+        primer.model.except_.RowDecodeError
+            The read-back of the row the write produced cannot be decoded into the model (the
+            same contract as :meth:`get`): the write itself committed, and the stored document is
+            what the model refuses. The message names the model and the row id, never the stored
+            values.
         """
 
     @abstractmethod
@@ -169,6 +187,11 @@ class Storage(ABC, Generic[ModelT]):
         ------
         primer.model.except_.NotFoundError
             No entity with this id exists.
+        primer.model.except_.RowDecodeError
+            The read-back of the row the write produced cannot be decoded into the model (the
+            same contract as :meth:`get`): the write itself committed, and the stored document is
+            what the model refuses. The message names the model and the row id, never the stored
+            values.
         """
 
     @abstractmethod
@@ -316,6 +339,13 @@ class Storage(ABC, Generic[ModelT]):
         -------
         OffsetPageResponse[ModelT] | CursorPageResponse[ModelT]
             Type matches the request's pagination kind.
+
+        Raises
+        ------
+        primer.model.except_.RowDecodeError
+            A stored row the model can no longer decode fails the whole page: the backend decodes
+            the page before it returns it. The message names the model and the row id, never the
+            stored values.
         """
 
     @abstractmethod
@@ -349,4 +379,7 @@ class Storage(ABC, Generic[ModelT]):
             translate, or uses an operand layout the backend does not
             support (e.g. column-vs-column comparison on a backend
             that requires literal-on-the-right).
+        primer.model.except_.RowDecodeError
+            A stored row the model can no longer decode fails the whole page (the same contract
+            as :meth:`list`). The message names the model and the row id, never the stored values.
         """
