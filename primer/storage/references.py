@@ -25,6 +25,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from primer.model.except_ import RowDecodeError
 from primer.model.graph import Graph
 from primer.model.storage import CursorPage, FieldRef, OffsetPage, Op, Predicate, Value
 from primer.model.trigger import Subscription
@@ -49,14 +50,18 @@ _ROW_DECODER = "_from_row"
 def _is_row_decode_failure(exc: BaseException) -> bool:
     """Whether ``exc``, raised by ``storage.list``, means a stored row could not be decoded (as opposed to a bug or an outage).
 
-    A ``ValidationError`` or ``JSONDecodeError`` can only come from the decode. A ``TypeError`` is what the decode raises for JSON that
+    A ``RowDecodeError`` is the backends' own classification of exactly this (raised around the row decoder on the read paths): it
+    always counts. A raw ``ValidationError`` or ``JSONDecodeError`` can only come from the decode (a decode a caller performed itself,
+    or a row the backend has not yet classified). A ``TypeError`` is what the decode raises for JSON that
     is not an object (it writes the row id into it, which fails for an array, a string or null), but it can also be a bug anywhere in
-    the storage call; it counts only when it was raised under the backend's row decoder, so a ``TypeError`` from the rest of the storage
-    call is not reported as a corrupt graph row. The test is the frame, not the cause: a ``TypeError`` raised under the decoder by
+    the storage call; it counts only when it was raised under the backend's row decoder, so a ``TypeError`` from the rest of the
+    storage call is not reported as a corrupt graph row. The test is the frame, not the cause: a ``TypeError`` raised under the decoder by
     anything (a model validator that raises one, which pydantic does not wrap in a ``ValidationError``, as well as non-object JSON)
     counts as an unreadable row, and that is the intent, since the row is one the decoder could not turn into a model. If a backend
     renamed its decoder this would turn the non-object-JSON case back into an error, and the real-SQLite tests for it would fail.
     """
+    if isinstance(exc, RowDecodeError):
+        return True
     if isinstance(exc, _DECODE_ERRORS):
         return True
     if isinstance(exc, TypeError):
