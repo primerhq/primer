@@ -129,7 +129,9 @@ create sessions in batches and start them on demand.
   any error code rests the same way). A graph, a trigger- or
   webhook-started session, a rejected request (bad credentials, a bad
   request, an overflowing context), a code nobody classified and a crash
-  still end it. Watch
+  still end it. A session whose workspace has gone permanently unreachable is
+  closed out by the reconciler as ENDED with the reason `workspace_lost` (it
+  publishes `session.ended` like every other end). Watch
   `session.turn_failed` (`{code, ended}`) for failed turns, not only
   `session.ended`.
 

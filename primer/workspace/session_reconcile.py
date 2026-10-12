@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from pydantic_core import to_jsonable_python
 
+from primer.events.recorder import recorder_for
 from primer.model.except_ import NotFoundError
 from primer.model.storage import CursorPage, FieldRef, Op, Predicate, Value
 from primer.model.workspace_session import NON_ENDED_STATUSES, SessionStatus, WorkspaceSession
@@ -90,6 +91,13 @@ async def reconcile_sessions_to_workspace_lost(
     runs, so refusing would leave a row without a runtime, a retry inside the request cannot make a failing query work, and the probe cannot rescue
     the sessions later because the row is gone. The failure is logged ("failed to query sessions"), the sessions already read are ended, and the
     destroy goes on; the sessions a failed read leaves open are the cost.
+
+    Every session THIS call ends also lands a durable ``session.ended`` event (payload ``{"ended_reason": "workspace_lost"}``, the row's own
+    reason) on the platform event log (the #718 carry-over: reconcile-ended rows published nothing, so event consumers - the session.ended readers,
+    the hold that trusts the terminal instead of polling the row - never saw a workspace-lost end). A row another path ended gets no second event
+    (the first terminal wins, event included). Best-effort like the rest of this function: the recorder comes from the storage provider (a
+    provider without an event store gets a store-less recorder whose emits no-op), and a publish failure is logged and swallowed, never a reason
+    for the probe tick or the destroy to fail.
     """
     try:
         session_storage = sp.get_storage(WorkspaceSession)
@@ -145,6 +153,14 @@ async def reconcile_sessions_to_workspace_lost(
         "agent_phase_turn_no": None,
         "agent_phase_stamped_at": None,
     })
+    try:
+        recorder = recorder_for(sp)
+    except Exception:  # noqa: BLE001 -- the recorder is advisory
+        recorder = None
+        logger.warning(
+            "session reconcile: no event recorder available; sessions ended on %s will not publish session.ended",
+            workspace_id,
+        )
     reconciled = 0
     for sess in open_sessions:
         if sess.status == SessionStatus.ENDED:
@@ -164,6 +180,19 @@ async def reconcile_sessions_to_workspace_lost(
             continue
         if written is not None:
             reconciled += 1
+            if recorder is not None:
+                try:
+                    await recorder.emit(
+                        "session.ended",
+                        workspace_id=workspace_id,
+                        session_id=sess.id,
+                        payload={"ended_reason": "workspace_lost"},
+                    )
+                except Exception:  # noqa: BLE001 -- advisory; the row is the truth
+                    logger.warning(
+                        "session reconcile: session.ended publish failed for %s on %s",
+                        sess.id, workspace_id, exc_info=True,
+                    )
         else:
             await _say_why_refused(session_storage, sess.id, workspace_id)
 

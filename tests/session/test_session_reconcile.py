@@ -257,3 +257,74 @@ async def test_the_same_on_a_real_sqlite_store(tmp_path) -> None:
         assert len(kept) == 30 and all(status == SessionStatus.RUNNING for status, _ in kept.values())
     finally:
         await sp.aclose()
+
+
+# ---- session.ended for the rows reconcile ends (the #718 carry-over) ----------------------------------------------------
+
+
+class _RecordingEventStore:
+    """EventStore duck type that records appends (the recorder contract in
+    primer/events/recorder.py)."""
+
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+
+    async def append(
+        self, *, event_type, actor, payload, entity_kind=None,
+        entity_id=None, workspace_id=None, session_id=None,
+        correlation_id=None, conn=None,
+    ) -> int:
+        self.events.append({
+            "event_type": event_type,
+            "entity_id": entity_id,
+            "payload": payload,
+            "workspace_id": workspace_id,
+            "session_id": session_id,
+        })
+        return len(self.events)
+
+
+@pytest.mark.asyncio
+async def test_reconcile_ends_publish_a_session_ended_for_each_session_it_ends(
+    fake_storage_provider,
+) -> None:
+    """Event consumers (the session.ended readers; the hold that trusts the
+    terminal instead of polling the row) must see a workspace-lost end the
+    way they see every other terminal: the row AND a durable session.ended
+    event carrying the row's own reason. A reconcile-ended row published
+    nothing (the #718 carry-over), so it stayed invisible to them."""
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    await storage.create(_row("s-a", "w-gone", SessionStatus.RUNNING))
+    await storage.create(_row("s-b", "w-gone", SessionStatus.WAITING))
+    store = _RecordingEventStore()
+    fake_storage_provider.get_event_store = lambda: store
+
+    reconciled = await reconcile_sessions_to_workspace_lost(
+        fake_storage_provider, "w-gone",
+    )
+
+    assert reconciled == 2
+    ended = [e for e in store.events if e["event_type"] == "session.ended"]
+    assert {e["session_id"] for e in ended} == {"s-a", "s-b"}
+    for e in ended:
+        assert e["payload"] == {"ended_reason": "workspace_lost"}
+        assert e["workspace_id"] == "w-gone"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_publishes_no_session_ended_for_a_row_it_left_alone(
+    fake_storage_provider,
+) -> None:
+    """A row another path ended is not counted as reconciled and must not
+    get a second session.ended (the first terminal wins, event included)."""
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    await storage.create(_row("s-done", "w-gone", SessionStatus.ENDED))
+    store = _RecordingEventStore()
+    fake_storage_provider.get_event_store = lambda: store
+
+    reconciled = await reconcile_sessions_to_workspace_lost(
+        fake_storage_provider, "w-gone",
+    )
+
+    assert reconciled == 0
+    assert [e for e in store.events if e["event_type"] == "session.ended"] == []
