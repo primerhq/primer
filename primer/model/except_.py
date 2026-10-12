@@ -287,6 +287,27 @@ class ConflictError(PrimerError):
     """
 
 
+class RowDecodeError(PrimerError):
+    """A stored row no longer decodes into the model: its shape drifted, or a hand edit left it unreadable.
+
+    Raised by the storage backends (SQLite and Postgres) when a row read back from the database cannot be
+    turned into the model class the storage is bound to: the stored document is not valid JSON, is JSON but
+    not an object, or is an object the model's validation now refuses. The row was stored by an earlier
+    write, which validated it, so the failure is a condition of the STORED data, not of the caller's request
+    (no amount of retrying the same request helps) and not a backend outage (the database answered; the
+    document it holds is what the model refuses). It is a :class:`PrimerError`, so it maps to 500
+    ``/errors/internal`` through the base row.
+
+    The message names the model and the row id and NEVER the stored values: pydantic's own text carries
+    the input, and the input is the stored document (a Base URL with its password, a config with its key),
+    the same rule the 422 handler applies to the caller's input via ``primer.common.validation_errors.
+    without_input``. The decode failure is kept on ``cause`` for the server-side traceback only.
+
+    ``primer.storage.patch_if`` does NOT raise this: there the unreadable document is the one the caller's
+    own patch produced, and it is reported as the raw ``pydantic.ValidationError``, as itself.
+    """
+
+
 class AuthRequiredError(PrimerError):
     """OAuth consent required before this provider can serve requests.
 
