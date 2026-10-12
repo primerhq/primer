@@ -130,7 +130,11 @@ Four rules make that safe:
   neither overwrites a reason another path just wrote nor puts back a stale
   snapshot's other fields. A patch the fence refuses is read again and logged:
   INFO when the row is ENDED (the other path's reason stands), WARNING naming
-  the session when it is still open; neither is counted as reconciled. The
+  the session when it is still open; neither is counted as reconciled. Every
+  session the reconciler ends publishes a durable `session.ended` carrying its
+  own reason (`workspace_lost`), so event consumers see a workspace-lost end
+  the way they see every other terminal (the #718 carry-over); a row another
+  path ended gets no second event. The
   helper returns what the
   row says afterwards (`_TerminalWrite`: whether it landed, the status and the
   ended reason), and the callers that announce the outcome use that, not the
