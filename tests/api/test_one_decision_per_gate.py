@@ -117,6 +117,11 @@ def _answer(resp: httpx.Response) -> tuple[int, str | None]:
     return resp.status_code, code
 
 
+def _refusal_message(resp: httpx.Response) -> str | None:
+    """The RFC7807 ``detail`` of a refusal: the human message text the fence's ``message`` carries (the #740 r1 pin)."""
+    return resp.json().get("detail") if resp.status_code >= 400 else None
+
+
 async def _records(sp: SqliteStorageProvider, sid: str) -> list[tuple[str, str | None]]:
     page = await sp.get_storage(ToolApprovalRecord).list(OffsetPage(offset=0, length=50))
     return sorted((r.decision, r.decided_by) for r in page.items if r.session_id == sid)
@@ -233,6 +238,7 @@ async def test_a_second_decision_on_a_graph_gate_is_refused_and_the_worker_runs_
     assert {
         "first": _answer(first),
         "second": _answer(refused),
+        "second's refusal text": _refusal_message(refused),
         "the gate's leaf (what the worker drains)": (leaf["decision"], leaf["decided_by"]),
         "ran": tool.ran,
         "records": await _records(sp, sid),
@@ -240,6 +246,7 @@ async def test_a_second_decision_on_a_graph_gate_is_refused_and_the_worker_runs_
     } == {
         "first": (202, None),
         "second": (409, "already_decided"),
+        "second's refusal text": "this approval was already decided; reload the pending list",
         "the gate's leaf (what the worker drains)": ("approved", "testuser"),
         "ran": ["t"],
         "records": [("approved", "testuser")],
@@ -286,12 +293,14 @@ async def test_a_second_decision_on_an_agent_gate_is_refused_with_409_and_the_fi
     assert {
         "first": _answer(first),
         "second": _answer(refused),
+        "second's refusal text": _refusal_message(refused),
         "the stamped decision": row.parked_state["resume_event_payload"]["decision"],
         "the tool ran": any('"ran": true' in str(out) for out in outputs),
         "records": await _records(sp, sid),
     } == {
         "first": (202, None),
         "second": (409, "already_decided"),
+        "second's refusal text": "this approval was already decided; reload the pending list",
         "the stamped decision": "approved",
         "the tool ran": True,
         "records": [("approved", "testuser")],
@@ -338,4 +347,9 @@ async def test_a_second_answer_to_a_question_is_refused_with_409_and_the_first_s
     refused = await client.post(f"/v1/sessions/{sid}/ask_user/respond", json={"tool_call_id": "tc-q", "gate_id": G, "response": "blue"})
     row = await sp.get_storage(WorkspaceSession).get(sid)
 
-    assert (_answer(first), _answer(refused), _stamped_answer(row)) == ((202, None), (409, "already_decided"), "red")
+    assert (
+        _answer(first), _answer(refused), _stamped_answer(row), _refusal_message(refused),
+    ) == (
+        (202, None), (409, "already_decided"), "red",
+        "this question was already answered; reload the pending list",
+    )

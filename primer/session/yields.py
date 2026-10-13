@@ -362,6 +362,9 @@ async def _rearm_if_redelivered(
     if not same:
         return False
     if engine is not None:
+        # Accepted TOCTOU (#740 r1): the row can re-park in the gap between the fresh read and this re-arm, so a refused wake can
+        # occasionally re-arm the lease of a park that is no longer the one compared; the upsert is idempotent and the resume
+        # coordinator's own guards apply at claim time, so the worst case is a harmless extra claim attempt.
         await engine.mark_resumable(ClaimKind.SESSION, session.id)
     return True
 
