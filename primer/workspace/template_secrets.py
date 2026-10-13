@@ -10,6 +10,9 @@ puts them back, for REST and for the ``update_workspace_template`` tool alike, b
   that holds no admin-only setting could otherwise re-aim the admin's credential at any path on the same origin and read the answer through a workspace.
 * An ADMIN keeps the origin rule of every other served mask (:func:`primer.common.url_userinfo.restore_userinfo`): the password comes back for the same scheme, host, port and user, whatever the
   path is.
+* A url whose stored password IS the mask itself is a legacy row (before #721 a template PUT stored any URL as sent; the routes now refuse a literal mask with a 422, so only a direct write plants it).
+  It is refused, for both roles: restoring it would leave the mask in place for the generic positional pass to re-aim another file's stored credential onto that path, so the real password must
+  be re-typed.
 * A refusal is a :class:`~primer.model.except_.ValidationError` (a 422 on REST, ``validation-error`` from the tool) that names no secret: the literal mask must not be stored as the password, and
   the stored credential must not go to a host the caller names.
 * ``env`` is restored by key, as :func:`~primer.model.common.preserve_masked_secrets` does for the rest of the rows.
@@ -28,6 +31,7 @@ from primer.model.workspace import FileMount, WorkspaceTemplate, _UrlSource
 
 _WHOLE_URL = "re-enter the password: the stored one is kept for a non-admin only when the whole URL is unchanged"
 _SAME_ORIGIN = "re-enter the password: the stored one is kept only for the same origin (scheme, host and port) and user"
+_STORED_MASK = "re-enter the password: the stored url is the mask itself (a legacy row); re-type the real password"
 
 
 def _stored_url_sources(stored: WorkspaceTemplate | None) -> dict[str, _UrlSource]:
@@ -48,6 +52,12 @@ def _restore_file(mount: FileMount, kept: dict[str, _UrlSource], admin: bool) ->
     if stored is None:
         raise ValidationError(f"{label}: {_SAME_ORIGIN} (the stored template holds no url source at this path)")
     incoming_url, stored_url = str(source.url), str(stored.url)
+    # A stored url whose password IS the literal mask is a legacy row (before #721 a template PUT stored
+    # any URL as sent; the routes now refuse a literal mask with a 422). Restoring it would leave the
+    # mask in place for the generic positional pass below to re-aim another file's stored credential
+    # onto this path, so refuse it: the real password must be re-typed (ticket 01a128de, #721 r3 nit).
+    if carries_mask(stored_url):
+        raise ValidationError(f"{label}: {_STORED_MASK}")
     if admin:
         try:
             restored = restore_userinfo(incoming_url, stored_url)
