@@ -200,6 +200,7 @@ async def test_postgres_redaction_holds_when_the_pydantic_input_is_short_enough_
     assert _Drift.__name__ in str(err)
     assert row_id in str(err)
     assert short not in str(err)  # the redaction: the (short) stored value is never in the message
+    assert short in str(err.cause)  # the cause still carries it; the message must not
     assert isinstance(err.cause, PydanticValidationError)
 
 
