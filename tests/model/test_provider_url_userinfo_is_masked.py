@@ -19,6 +19,7 @@ from pydantic import AnyUrl, BaseModel
 
 from primer.model.common import STORAGE_DUMP_CONTEXT, dump_for_storage, preserve_masked_secrets
 from primer.model.except_ import ValidationError as PrimerValidationError
+from primer.model.providers.artifact import S3ArtifactConfig
 from primer.model.providers.embedding import EmbeddingProvider, OpenAIConfig
 from primer.model.providers.llm import LLMProvider, OllamaConfig, OpenChatConfig, OpenResponsesConfig, OpenRouterConfig
 from primer.model.providers.speech import SpeechToTextConfig, TextToSpeechConfig
@@ -234,6 +235,32 @@ def test_a_restored_url_over_the_length_limit_is_a_refusal_not_a_crash() -> None
 def test_an_unrestorable_mask_is_refused_in_a_nested_row_too() -> None:
     stored = _embedding("http://proxy.local:8080/v1")
     incoming = _embedding(MASKED)
+
+    with pytest.raises(PrimerValidationError, match="re-enter the password"):
+        preserve_masked_secrets(incoming, stored)
+
+
+def test_a_non_str_stored_value_for_a_str_url_field_is_refused_not_a_type_error() -> None:
+    """The isinstance(old_value, str) guard of the str-URL preserve branch passes None for a
+    non-str stored value, so a served mask is refused with a 422 (re-enter the password) instead
+    of reaching restore_userinfo, which would raise a TypeError for a non-URL stored value.
+
+    A str URL field's stored value is always str or None in practice (the model coerces it), so
+    this pins the defensive path: plant a non-str whose str() is a valid URL (a type mismatch the
+    model cannot produce) and confirm the mask is a clean refusal, not a crash (ticket 01a13264,
+    #746 N2: the predicted SURVIVOR is the guard removed, which lets the non-str reach _split).
+    """
+
+    class _URLStr:  # a non-str whose str() is a valid URL
+        def __init__(self, url: str) -> None:
+            self.url = url
+
+        def __str__(self) -> str:
+            return self.url
+
+    stored = S3ArtifactConfig(bucket="b", endpoint_url="https://reader:real@host/x")
+    object.__setattr__(stored, "endpoint_url", _URLStr("https://reader:real@host/x"))
+    incoming = S3ArtifactConfig(bucket="b", endpoint_url=f"https://reader:{MASK}@host/x")
 
     with pytest.raises(PrimerValidationError, match="re-enter the password"):
         preserve_masked_secrets(incoming, stored)
