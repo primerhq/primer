@@ -389,6 +389,34 @@ async def test_fire_now_disabled_trigger_returns_skipped(client):
 
 
 @pytest.mark.asyncio
+async def test_fire_now_disabled_trigger_keeps_the_row(client):
+    # The disabled-fire contract has two halves: fire_now answers 200 skipped
+    # (test_fire_now_disabled_trigger_returns_skipped) AND the row STAYS - the
+    # fire that refetches the row away is trigger_not_found (a trigger deleted
+    # behind the list's back), not a disabled fire. Pin the row-survives half so
+    # a change that deletes or 404s a disabled trigger on fire is caught (the
+    # #739 r1 nit: the instruction shorthand "disabled fire -> row disappears"
+    # does not match the real server; ticket 01a1296a).
+    r = await client.post(
+        "/v1/triggers",
+        json=_delayed_body(slug="fire-disabled-stays", name="D", enabled=False),
+    )
+    assert r.status_code == 201, r.text
+    tid = r.json()["id"]
+
+    r_fire = await client.post(f"/v1/triggers/{tid}/fire_now")
+    assert r_fire.status_code == 200, r_fire.text
+    assert r_fire.json()["skipped"] is True
+
+    # The row stays: the trigger is still there after the disabled fire (not
+    # deleted, not 404).
+    r_get = await client.get(f"/v1/triggers/{tid}")
+    assert r_get.status_code == 200, r_get.text
+    assert r_get.json()["id"] == tid
+    assert r_get.json()["enabled"] is False
+
+
+@pytest.mark.asyncio
 async def test_fire_now_missing_trigger_returns_404(client):
     r = await client.post("/v1/triggers/tr-doesnotexist/fire_now")
     assert r.status_code == 404
