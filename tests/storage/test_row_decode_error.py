@@ -178,6 +178,31 @@ async def test_postgres_list_a_page_holding_an_undecodable_row_raises_rowdecode_
     _assert_redacted(excinfo.value, row_id=bad_id)
 
 
+@pg
+@pytest.mark.asyncio
+async def test_postgres_redaction_holds_when_the_pydantic_input_is_short_enough_to_show(postgres_storage_provider: PostgresStorageProvider):
+    """The long-id pg pins above (``d1-{_RUN}``) leave the pydantic input_value long enough that
+    ``str(exc)`` truncates the stored value (``s3cret-stored...0``), so a message that appended
+    ``str(exc)`` would NOT show it (the #743 M9 survivor). A short row id AND a short stored value
+    keep the input_value short enough that ``str(exc)`` shows the full value, so appending
+    ``str(exc)`` leaks it: pin the redaction where the leak is visible (ticket 01a12fa9, #743 M9).
+    """
+    short = "k9"
+    s = postgres_storage_provider.get_storage(_Drift)
+    await _fresh_drift_table(postgres_storage_provider, s)
+    row_id = "d1"  # short: the pydantic input_value is not truncated
+    await s.create(_Drift(id=row_id, title="ok", secret=SecretStr(short)))
+    await _drift_postgres_row(postgres_storage_provider, s, row_id, json.dumps({"secret": short}))
+    with pytest.raises(RowDecodeError) as excinfo:
+        await s.get(row_id)
+    err = excinfo.value
+    assert isinstance(err, PrimerError)
+    assert _Drift.__name__ in str(err)
+    assert row_id in str(err)
+    assert short not in str(err)  # the redaction: the (short) stored value is never in the message
+    assert isinstance(err.cause, PydanticValidationError)
+
+
 # ===========================================================================
 # The API surface: a classified 500 with the stored value redacted from the envelope
 # ===========================================================================
