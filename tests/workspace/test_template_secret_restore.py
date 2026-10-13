@@ -53,6 +53,25 @@ def test_a_reorder_keeps_each_password_because_the_files_are_matched_by_path(adm
     assert _urls(incoming) == {"b.txt": B, "a.txt": A}
 
 
+@pytest.mark.parametrize("admin", [True, False], ids=["an admin", "a user"])
+def test_a_reorder_of_a_legacy_row_whose_stored_password_is_the_mask_is_refused_not_reaimed(admin: bool) -> None:
+    # A legacy row plants the literal mask as a stored password (before #721 a template PUT
+    # stored any URL as sent; the routes now refuse a literal mask with a 422, so only a direct
+    # write plants it). The served body then carries the mask at that path, and a reorder of it
+    # must NOT re-aim another file's stored credential onto that path: the generic positional
+    # pass would otherwise restore the admin's a.txt password onto b.txt's /exfil. Refuse it
+    # (ticket 01a128de, #721 r3 nit) instead of storing the re-aim.
+    planted = f"https://reader:{MASK}@files.example.com/exfil"
+    stored = _template([("a.txt", A), ("b.txt", planted)])
+    incoming = _served(stored)
+    incoming.files.reverse()
+
+    with pytest.raises(ValidationError, match="re-enter the password") as caught:
+        restore_template_secrets(incoming, stored, admin=admin)
+
+    assert "s3cr3t" not in str(caught.value)
+
+
 def test_an_admin_may_change_the_path_of_the_url_on_the_same_origin_and_a_user_may_not() -> None:
     stored = _template([("a.txt", A)])
     changed = f"https://reader:{MASK}@files.example.com/elsewhere.txt"
