@@ -386,6 +386,12 @@ function TR_scheduleLabel(trigger) {
 // if a concurrent refetch unmounts it while the write is in flight.
 function TR_focusAfterRowGone(tr) {
   var nextRow = (tr && (tr.nextElementSibling || tr.previousElementSibling)) || null;
+  // The h1 fallback is the FIRST [data-testid="nv-overlay-title"] in document order. That is the
+  // surface's own heading while the shell renders exactly one overlay panel at a time (the e2e
+  // suite addresses surfaces by the single h1.page-title). If a future shell change ever stacks
+  // two overlay panels, this would focus the back panel's h1, not the one that held the gone row,
+  // and the query would need scoping to that panel (the gone row's panel cannot be recovered from
+  // tr once the refetch unmounts it) (#739 r1 nit 2).
   var focusTarget = (nextRow && nextRow.querySelector("[data-testid^='trigger-row-delete-']"))
     || document.querySelector('[data-testid="nv-overlay-title"]');
   if (focusTarget) focusTarget.focus();
