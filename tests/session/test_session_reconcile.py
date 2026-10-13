@@ -328,3 +328,40 @@ async def test_reconcile_publishes_no_session_ended_for_a_row_it_left_alone(
 
     assert reconciled == 0
     assert [e for e in store.events if e["event_type"] == "session.ended"] == []
+
+
+# ---- the advisory recorder guard (pin the try/except around recorder_for) ------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_raising_recorder_for_does_not_stop_the_reconcile(
+    fake_storage_provider, monkeypatch, caplog,
+) -> None:
+    """The recorder is advisory: a storage provider whose recorder construction
+    raises must not fail the probe tick or the destroy (the best-effort contract
+    the #745 reconcile ends carry). The try/except around recorder_for pins this:
+    when the recorder cannot be built, reconcile logs a warning and ends the
+    sessions anyway. Remove the try/except and a raising recorder_for propagates
+    out of the reconcile (the predicted survivor M7), so this test is red without
+    the guard."""
+
+    def _raise(sp):
+        raise RuntimeError("recorder construction blew up")
+
+    monkeypatch.setattr(
+        "primer.workspace.session_reconcile.recorder_for", _raise,
+    )
+    caplog.set_level("WARNING", logger="primer.workspace.session_reconcile")
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    await storage.create(_row("s-no-recorder", "w-gone", SessionStatus.RUNNING))
+
+    reconciled = await reconcile_sessions_to_workspace_lost(
+        fake_storage_provider, "w-gone",
+    )
+
+    assert reconciled == 1
+    row = await storage.get("s-no-recorder")
+    assert row.status == SessionStatus.ENDED
+    assert row.ended_reason == "workspace_lost"
+    warnings = [r for r in caplog.records if "no event recorder available" in r.getMessage()]
+    assert warnings, "a missing recorder must be logged as a warning, not raised"
