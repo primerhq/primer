@@ -10,7 +10,10 @@ Two routers mounted under /v1/:
   :class:`WebSearchRegistry`.
 
 * ``web_search_active_config_router`` -- singleton GET / PUT for
-  :class:`ActiveWebSearchConfig` (lands in Task 6.2).
+  :class:`ActiveWebSearchConfig` (lands in Task 6.2). The PUT's
+  reference check and write are shared with the
+  ``set_web_search_active_config`` system tool
+  (``primer/web_search/active_config.py``).
 
 Cascade-block target: the active-config singleton's ``provider_id``
 (single mode) or ``provider_ids`` (aggregated mode). Custom pre-delete
@@ -39,6 +42,7 @@ from primer.model.web_search import (
     SingleProviderConfig,
     WebSearchProvider,
 )
+from primer.web_search.active_config import save_active_config, unknown_ids_message, unknown_provider_ids
 
 
 logger = logging.getLogger(__name__)
@@ -250,27 +254,15 @@ async def _validate_referenced_providers(
 ) -> None:
     """Validate every provider id referenced by the config exists in
     storage. Raises HTTPException(422) with unknown_ids in the detail
-    if any are missing."""
-    storage = _web_search_provider_storage(request)
-    cfg = config.config
-    ids: list[str] = []
-    if isinstance(cfg, SingleProviderConfig):
-        ids = [cfg.provider_id]
-    elif isinstance(cfg, AggregatedProviderConfig):
-        ids = list(cfg.provider_ids)
-    unknown: list[str] = []
-    for pid in ids:
-        if await storage.get(pid) is None:
-            unknown.append(pid)
+    if any are missing. The check and its words are the ones the
+    ``set_web_search_active_config`` tool runs."""
+    unknown = await unknown_provider_ids(config.config, _web_search_provider_storage(request))
     if unknown:
         raise HTTPException(
             status_code=422,
             detail={
                 "error": "unknown_provider_ids",
-                "message": (
-                    f"active config references unknown provider id(s): "
-                    f"{unknown}"
-                ),
+                "message": unknown_ids_message(unknown),
                 "unknown_ids": unknown,
             },
         )
@@ -332,12 +324,7 @@ async def put_active_config(
             },
         )
     await _validate_referenced_providers(new_row, request)
-    storage = _active_config_storage(request)
-    existing = await storage.get(ACTIVE_WEB_SEARCH_CONFIG_ID)
-    if existing is None:
-        await storage.create(new_row)
-    else:
-        await storage.update(new_row)
+    new_row = await save_active_config(new_row.config, _active_config_storage(request))
     service = getattr(request.app.state, "web_search_service", None)
     if service is not None:
         service.invalidate_active_config()
