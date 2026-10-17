@@ -258,9 +258,10 @@ An agent runs under a **ModelProfile**, not under a provider and a model
 name: the profile is the registry of what a provider can serve. A single
 profile carries `provider_id` (a stored LLM provider), `model_name` (the
 provider-side wire name), `context_length` and an optional `config`
-(for example `reasoning`); an aggregated profile (`kind: "aggregated"`) lists
-two or more other profiles in `members` to fail over across. The ids in this
-documentation follow the convention `<provider id>--<model name>` (for
+(for example `reasoning`; stored, but not applied to model calls yet); an
+aggregated profile (`kind: "aggregated"`) lists two or more other profiles
+in `members` to fail over across. The ids in this documentation follow the
+convention `<provider id>--<model name>` (for
 example `anthropic-1--claude-sonnet-4-6`); primer does not enforce it.
 
 - `system::create_model_profile`, `system::get_model_profile`,
@@ -282,6 +283,29 @@ Create the profile before the agent that names it:
       "provider_id": "lp-claude",
       "model_name": "claude-sonnet-4-6",
       "context_length": 200000
+    }
+  }
+}
+```
+
+An aggregated profile (`kind: "aggregated"`) lists two or more members in
+`members` instead: each must be an existing single profile, with no
+repeats, and the profile itself is not among them; the order is the
+fallback order. `provider_id`, `model_name` and `context_length` stay
+unset on the row:
+
+```json
+{
+  "tool": "system::create_model_profile",
+  "arguments": {
+    "entity": {
+      "id": "fast-with-fallback",
+      "description": "Aggregate of lp-claude--claude-sonnet-4-6, lp-local--qwen",
+      "kind": "aggregated",
+      "members": ["lp-claude--claude-sonnet-4-6", "lp-local--qwen"],
+      "strategy": "sequential",
+      "failover_point": "before_first_token",
+      "failover_on": "transient_and_config"
     }
   }
 }
