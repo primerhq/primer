@@ -119,27 +119,57 @@ stateDiagram-v2
     Error --> [*]
 ```
 
-### Aggregated LLM provider
+### Aggregated model profiles
 
-`LLMProviderType.AGGREGATED` ("aggregated") is a config-only provider that
-wraps a pool of other LLM providers behind one LLM interface. Its
-`AggregatedLLMConfig` carries:
+Aggregation lives on the profile row, not on a provider kind: a
+`ModelProfile` with `kind: "aggregated"` names two or more member profile
+ids in `members`, and the order is the failover chain. The row carries no
+model of its own - `provider_id`, `model_name` and `context_length` are
+null on it - and `resolve_model` (`primer/model_profile/resolver.py`)
+reports the SMALLEST context length over the resolved members as the
+profile's window, so a caller never overpromises it. (The rest of the row
+shape, including `config` and `harness_id`, is the same as a single
+profile's; see "Model profiles" below.)
 
-- `members`: an ordered list of `(provider_id, model_name)` pairs, deduped
-  on the pair preserving first-seen order (min length 1). Each member must
-  reference an existing NON-aggregated provider; existence is checked at
-  resolve time, not at write time.
-- `strategy`: `sequential` (always start at members[0]) or `round_robin`
-  (rotate the starting member once per call; per-process, load-spreading).
+The three routing fields ride on the row with these defaults (from
+`primer/model/model_profile.py`):
+
+- `strategy`: `sequential` (default; always start at members[0]) or
+  `round_robin` (rotate the starting member once per stream call;
+  per-process, load-spreading).
 - `failover_point`: `before_first_token` (default; never re-emits tokens)
   or `mid_stream` (opt-in; may duplicate already-shown tokens).
 - `failover_on`: `transient` (rate-limit / 5xx / timeout / network) or
   `transient_and_config` (default; also auth / bad-request).
 
-The aggregated provider still carries `models` - the virtual model name(s)
-an agent selects. `stream(model=<virtual>)` dispatches to each member using
-that member's own `model_name`; the virtual name is not forwarded
-downstream.
+Every write is checked at WRITE time by the `model_profiles` router and by
+the `create_model_profile` / `update_model_profile` system tools, which
+share `primer/model_profile/checks.py`; each refusal is a 422 carrying
+`{error, field, message}` (the tools answer `validation-error` with the
+same codes):
+
+- `aggregation_too_small` (field `members`): fewer than two members.
+- `self_reference` (field `members`): the profile names itself.
+- `duplicate_member` (field `members`): a member id appears twice.
+- `member_not_found` (field `members`): a member id names no stored
+  profile.
+- `nested_aggregation` (field `members`): a member is itself
+  `kind="aggregated"`.
+- `member_of_another_aggregate` (field `kind`, on update): the row becomes
+  an aggregate while another aggregate still lists it as a member.
+- `provider_not_found` (field `provider_id`): a single profile's provider
+  names no stored LLMProvider.
+
+`AggregatedLLM` (`primer/llm/aggregated.py`) is the adapter an aggregated
+profile resolves to. It resolves each member per `stream` call through the
+`resolve_member` callable (bound by `resolve_llm` to itself, so a member
+resolves recursively by profile id, and editing a member is picked up on
+the next call), and the `ProviderRegistry` keeps ONE `AggregatedLLM`
+instance per profile id, so a `round_robin` cursor persists across calls;
+the router's update and delete hooks drop that instance
+(`invalidate_aggregated_llm`) so the next resolve rebuilds it against the
+row's current shape. `AggregatedLLM.aclose()` is a no-op: downstream
+adapters are owned and cached by the registry.
 
 **Two failover channels.** A member surfaces a failure two ways, and the
 aggregated adapter handles each:
@@ -191,13 +221,10 @@ a raised eligible exception (e.g. a mid-stream timeout) after tokens were
 shown restart on the next member, and the already-streamed tokens may be
 duplicated in the output; this is the documented trade-off of the mode.
 
-**No nesting.** A member that resolves to another aggregated provider (or
-to itself) is rejected at resolve time with `BadRequestError`.
-
-**Ownership.** Downstream adapters are owned and cached by the
-`ProviderRegistry`; `AggregatedLLM.aclose()` is a no-op. Members resolve
-lazily per `stream` call through the registry, so editing a member is
-picked up transparently on the next call.
+**No nesting.** A member that resolves to another aggregated profile (or
+to itself) is refused at write time by the router and the system tools
+(`nested_aggregation`, `member_of_another_aggregate`, above) and refused
+again at resolve time with `BadRequestError`.
 
 ### Model profiles
 
@@ -211,8 +238,12 @@ create may override it per run.
 
 `ModelProfileConfig.reasoning` is a vendor-neutral level mapped per adapter
 in `primer/llm/_reasoning.py`, the same normalisation the adapters already
-do for stop reasons. Where a vendor has no true off, the closest setting is
-used:
+do for stop reasons. The mapping is not applied to calls yet: the agent
+loop (`primer/agent/loop.py`) and compaction (`primer/agent/compaction.py`)
+call `llm.stream` without `extended`, and nothing outside the tests imports
+`primer/llm/_reasoning.py`, so a profile's `config.reasoning` and
+`config.extended` are stored and served but change no call. Where a vendor
+has no true off, the closest setting is used:
 
 | Adapter | Wire shape | OFF maps to |
 | --- | --- | --- |

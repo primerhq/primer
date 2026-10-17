@@ -33,6 +33,10 @@ RETIRED: dict[str, str] = {
         "the studio2 trial was deleted at the S8 flag day",
     r"\b[Cc]lassic console\b":
         "the classic console was deleted at the S8 flag day",
+    r"\bAggregatedLLMConfig\b":
+        "aggregation moved from LLMProvider to ModelProfile (kind aggregated)",
+    r"\bLLMProviderType\.AGGREGATED\b":
+        "aggregation moved from LLMProvider to ModelProfile (kind aggregated)",
 }
 
 EXEMPT = {
@@ -74,6 +78,10 @@ def test_every_pattern_matches_its_sample() -> None:
         r"\b[Dd]ocling\b": "install the Docling extra",
         r"\b[Ss]tudio2\b|\bstudioV2\b": "the studioV2 shell replaced Studio2",
         r"\b[Cc]lassic console\b": "the Classic console still redirects",
+        r"\bAggregatedLLMConfig\b":
+            "the row still carried an AggregatedLLMConfig",
+        r"\bLLMProviderType\.AGGREGATED\b":
+            "the provider type was LLMProviderType.AGGREGATED",
     }
     assert set(samples) == set(RETIRED), (
         "every RETIRED pattern needs a sample proving it matches"
