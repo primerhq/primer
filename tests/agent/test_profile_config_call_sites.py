@@ -164,3 +164,41 @@ class TestCompaction:
         llm = RecordingLLM([_text_round("summary")])
         await _compact(llm, config, tools=tools)
         assert llm.calls and all("extended" not in c for c in llm.calls)
+
+
+class TestCompactionOnAClaudeModelThatRefusesSampling:
+    """The real Anthropic adapter under compaction: compaction asks for
+    temperature 0, which Claude Opus 4.7 and later, Sonnet 5 and later,
+    Haiku 5.5 and Fable refuse on every request. The adapter drops it."""
+
+    @pytest.mark.parametrize("model, kept", [
+        ("claude-opus-4-7", False),
+        ("claude-sonnet-5-5", False),
+        ("claude-sonnet-4-6", True),
+    ])
+    @pytest.mark.parametrize("config", [None, ModelProfileConfig(reasoning=ReasoningLevel.OFF)])
+    async def test_the_summariser_call_carries_no_refused_temperature(
+        self, monkeypatch, model, kept, config,
+    ) -> None:
+        from pydantic import SecretStr
+
+        from primer.llm.anthropic import AnthropicLLM
+        from primer.model.provider import AnthropicConfig, Limits, LLMProvider, LLMProviderType
+        from tests.llm.test_anthropic import _aiter, _ok_events, _patched_client
+
+        client = _patched_client(monkeypatch)
+        client.messages.create.side_effect = lambda **_: _aiter(_ok_events())
+        llm = AnthropicLLM(LLMProvider(
+            id="ant-c", provider=LLMProviderType.ANTHROPIC,
+            config=AnthropicConfig(api_key=SecretStr("sk-ant")),
+            limits=Limits(max_concurrency=1),
+        ))
+        resolved = ResolvedModel(
+            profile_id="p", provider_id="ant-c", model_name=model,
+            context_length=1000, config=config,  # type: ignore[arg-type]
+        )
+        await CompactionStrategy(tail_turns=1).force_compact(
+            agent=_agent(), llm=llm, model=resolved, history=list(HISTORY),
+        )
+        sent = client.messages.create.call_args.kwargs
+        assert ("temperature" in sent) is kept

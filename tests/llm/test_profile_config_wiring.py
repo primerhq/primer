@@ -452,6 +452,26 @@ class TestAnthropicThinkingFitsTheRequest:
         req = _fit({"max_tokens": 8192, "top_k": 20}, model="claude-opus-4-7")
         assert req == {"max_tokens": 8192}
 
+    @pytest.mark.parametrize("model", [
+        "claude-opus-4-7", "claude-opus-4-8", "claude-opus-5", "claude-opus-5-5",
+        "claude-sonnet-5", "claude-sonnet-5-5", "claude-haiku-5-5",
+        "claude-fable-5-1", "claude-mythos-5-1",
+    ])
+    def test_every_call_drops_the_sampling_a_model_refuses(self, model) -> None:
+        """Compaction asks for temperature 0 on every call, profile or not;
+        these models answer any sampling knob (or any but its default) with
+        a 400."""
+        req = _fit({"max_tokens": 2048, "temperature": 0.0, "top_p": 0.9, "top_k": 5}, model=model)
+        assert req == {"max_tokens": 2048}
+
+    @pytest.mark.parametrize("model", [
+        "claude-sonnet-4-6", "claude-opus-4-6", "claude-sonnet-4-5", "claude-haiku-4-5",
+        "claude-opus-6",  # not in the table: left as it was
+    ])
+    def test_a_model_that_takes_sampling_keeps_it_without_thinking(self, model) -> None:
+        req = _fit({"max_tokens": 2048, "temperature": 0.0, "top_p": 0.9}, model=model)
+        assert req == {"max_tokens": 2048, "temperature": 0.0, "top_p": 0.9}
+
     @pytest.mark.parametrize("thinking", [_enabled(1024), _ADAPTIVE])
     @pytest.mark.parametrize("choice", [
         {"type": "any"}, {"type": "tool", "name": "structured_output"},
