@@ -9,8 +9,11 @@ so a typo comes back as a precise error instead of a blank frame:
   early. The source is never concatenated into code, so it cannot escape the
   probe. V8 reports no position inside the script, so a problem names the script
   by its number in the document.
-* an external script must be https and come from one of four CDNs. The frame's
-  CSP is what enforces that in the browser; this gives the agent the error early.
+* an external script must be https and come from one of four CDNs. An HTML script
+  names its URL in ``src`` and an SVG one in ``href`` or ``xlink:href``; the check
+  does not know which kind a script is, so it judges each of the three that is
+  present. The frame's CSP is what enforces that in the browser; this gives the
+  agent the error early.
 
 Known limit: ``new Function`` accepts a top-level ``return`` that a classic script
 rejects. Module scripts and data blocks (``type=module``, ``application/json``,
@@ -52,6 +55,8 @@ _CLASSIC_TYPES = frozenset({
     "text/x-javascript",
 })
 _URL_STRIP = "".join(chr(c) for c in range(0x21))
+#: Where a script names the URL it loads: ``src`` in HTML, ``href`` or ``xlink:href`` in SVG.
+_URL_ATTRIBUTES = ("src", "href", "xlink:href")
 
 
 class _Scripts(HTMLParser):
@@ -96,13 +101,13 @@ def _is_classic(type_attr: str | None) -> bool:
     return essence == "" or essence in _CLASSIC_TYPES
 
 
-def _check_src(number: int, value: str | None) -> list[str]:
+def _check_url(number: int, attribute: str, value: str | None) -> list[str]:
     try:
         parts = urlsplit((value or "").strip(_URL_STRIP))
     except ValueError:
-        return [f"script {number} src must be https"]
+        return [f"script {number} {attribute} must be https"]
     if parts.scheme.lower() != "https" or not parts.netloc:
-        return [f"script {number} src must be https"]
+        return [f"script {number} {attribute} must be https"]
     # Judge the authority as written: a backslash or userinfo that one parser reads
     # as a path or a login is a different host to another, so only a plain host passes.
     netloc = parts.netloc.lower()
@@ -146,9 +151,10 @@ def check_html_scripts(html: str) -> list[str]:
     compiler: _Compiler | None = None
     try:
         for number, (attrs, text) in enumerate(parser.scripts, start=1):
-            if "src" in attrs:
-                problems += _check_src(number, attrs["src"])
-            elif _is_classic(attrs.get("type")):
+            for attribute in _URL_ATTRIBUTES:
+                if attribute in attrs:
+                    problems += _check_url(number, attribute, attrs[attribute])
+            if "src" not in attrs and _is_classic(attrs.get("type")):
                 if compiler is None:
                     compiler = _Compiler()
                 try:

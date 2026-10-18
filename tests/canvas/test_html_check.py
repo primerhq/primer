@@ -97,6 +97,51 @@ def test_module_scripts_still_need_an_allowed_source():
     assert check_html_scripts('<script type=module src="https://esm.sh/x"></script>') == []
 
 
+# --- an SVG script names its url in href or xlink:href ----------------------------------------------------
+
+
+def _svg_script(attribute: str, url: str) -> str:
+    return f'<svg xmlns:xlink="http://www.w3.org/1999/xlink"><script {attribute}="{url}"></script></svg>'
+
+
+@pytest.mark.parametrize("attribute", ["href", "xlink:href", "HREF", "XLink:Href"])
+def test_an_svg_script_loads_from_href_or_xlink_href_so_those_are_judged_like_a_src(attribute):
+    name = attribute.lower()
+    assert check_html_scripts(_svg_script(attribute, "https://evil.example/x.js")) == [f"script 1 loads from evil.example; {ALLOWED}"]
+    assert check_html_scripts(_svg_script(attribute, "http://unpkg.com/x.js")) == [f"script 1 {name} must be https"]
+    assert check_html_scripts(_svg_script(attribute, "//unpkg.com/x.js")) == [f"script 1 {name} must be https"]
+    assert check_html_scripts(_svg_script(attribute, "https://unpkg.com@evil.example/x.js")) == [
+        f"script 1 loads from unpkg.com@evil.example; {ALLOWED}"
+    ]
+    assert check_html_scripts(_svg_script(attribute, "https://cdn.jsdelivr.net/npm/chart.js")) == []
+    assert check_html_scripts(_svg_script(attribute, "  HTTPS://Unpkg.com:443/x.js  ")) == []
+
+
+def test_the_svg_scripts_the_review_found_were_not_judged():
+    loads = f"script 1 loads from evil.example; {ALLOWED}"
+    assert check_html_scripts('<svg><script href="https://evil.example/x.js"></script></svg>') == [loads]
+    assert check_html_scripts('<svg><script xlink:href="https://evil.example/x.js"></script></svg>') == [loads]
+    assert check_html_scripts('<svg><script href="https://evil.example/x.js"/></svg>') == [loads]        # SVG allows self-closing
+
+
+def test_every_url_attribute_a_script_has_is_judged_so_a_good_one_never_excuses_a_bad_one():
+    # the check does not know whether a script is HTML (it loads src) or SVG (href, else xlink:href)
+    good, bad = "https://unpkg.com/a.js", "https://evil.example/b.js"
+    loads = f"script 1 loads from evil.example; {ALLOWED}"
+    assert check_html_scripts(f'<script src="{good}" href="{bad}"></script>') == [loads]
+    assert check_html_scripts(f'<svg><script href="{good}" xlink:href="{bad}"></script></svg>') == [loads]
+    assert check_html_scripts(f'<svg><script href="{bad}" xlink:href="http://unpkg.com/c.js"></script></svg>') == [loads, "script 1 xlink:href must be https"]
+    assert check_html_scripts(f'<svg><script href="{good}" xlink:href="{good}"></script></svg>') == []
+    assert check_html_scripts(f'<script src="{good}"></script><svg><script href="{bad}"></script></svg>') == [f"script 2 loads from evil.example; {ALLOWED}"]
+
+
+def test_a_valueless_or_empty_href_is_not_https_and_an_svg_script_without_a_url_is_compiled():
+    assert check_html_scripts("<svg><script href></script></svg>") == ["script 1 href must be https"]
+    assert check_html_scripts('<svg><script xlink:href=""></script></svg>') == ["script 1 xlink:href must be https"]
+    assert check_html_scripts("<svg><script>var = ;</script></svg>") == ["script 1 does not parse: Unexpected token '='"]
+    assert check_html_scripts("<svg><script>ok()</script></svg>") == []
+
+
 # --- which scripts are compiled -------------------------------------------------------------------
 
 
