@@ -25,7 +25,7 @@ Subsystems exercised in one test:
      nv-session-doc.jsx) renders a pending `_approval` park within the
      shell's poll cadence after JSONB injection — the interactive
      `/approvals` records-sheet was retired in the a-14 fold; its
-     read-only successor (DECISIONS — AUDIT on the platform page)
+     read-only successor (the Decisions audit on the platform page)
      carries no action buttons by design, so actionability now lives
      exclusively on the Inbox rail + this per-session card.
   2. Reject-flow gate: the same Reject button that opens the reason

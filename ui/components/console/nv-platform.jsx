@@ -1063,6 +1063,9 @@ function NV_AuditPendingFetcher({ sid, onRecord }) {
   return null;
 }
 
+// Twenty decisions a page (Platform revamp 01, Task 12): the audit is a table of one-line rows, so a page holds more of them than the card grid does.
+var NV_AUDIT_PAGE_SIZE = 20;
+
 var NV_AUDIT_STATUS_RANK = { pending: 0, approved: 1, rejected: 2, timeout: 3, cancelled: 4 };
 
 // The decisions audit under the approvals cards: who decided what,
@@ -1073,6 +1076,9 @@ var NV_AUDIT_STATUS_RANK = { pending: 0, approved: 1, rejected: 2, timeout: 3, c
 // action buttons - this is a passive record, not a second actionable
 // surface. Approve/Reject stays exactly where it already lives: the
 // Inbox rail and session-detail's NV_DecisionCard/ApprovalBanner.
+// Its header is the kit's, like a page's (Platform revamp 01, Task 12): the
+// title and count, the sort controls, a filter and a pager of its own. The rows
+// are sorted first, then filtered on what a row says, then paged.
 function NV_ApprovalsAudit() {
   var con = NV_useConsole();
   var sortState = React.useState("time");
@@ -1166,39 +1172,51 @@ function NV_ApprovalsAudit() {
     }
     return sortDir === "asc" ? -cmp : cmp;
   });
-  var rows = allRows.slice(0, 30);
+  var paged = PK_usePagedFilter(allRows, {
+    pageSize: NV_AUDIT_PAGE_SIZE,
+    text: function (r) { return [r.sessionId, r.toolPattern, r.status, r.decidedByText].join(" "); },
+  });
+  var rows = paged.visible;
 
   return (
     <div className="nv-audit" data-testid="nv-plat-audit">
       {sessionIds.map(function (sid) {
         return <NV_AuditPendingFetcher key={sid} sid={sid} onRecord={onPendingRecord} />;
       })}
-      <div className="nv-audit-title-row">
-        <div className="nv-audit-title">Decisions — audit</div>
-        <span style={{ flex: 1 }} />
-        <span className="muted text-sm">sort</span>
-        <select
-          className="select"
-          aria-label="Sort decisions"
-          value={sortBy}
-          onChange={function (e) { setSortBy(e.target.value); }}
-          style={{ fontSize: 12 }}
-          data-testid="nv-audit-sort-by"
-        >
-          <option value="time">by time</option>
-          <option value="status">by status</option>
-        </select>
-        <Btn
-          size="sm"
-          kind="ghost"
-          icon={sortDir === "desc" ? "chevron-down" : "chevron-up"}
-          onClick={function () { setSortDir(function (d) { return d === "desc" ? "asc" : "desc"; }); }}
-          title={sortDir === "desc" ? "descending" : "ascending"}
-          data-testid="nv-audit-sort-dir"
-        >
-          {sortDir === "desc" ? "newest" : "oldest"}
-        </Btn>
-      </div>
+      <PK_PageHeader
+        title="Decisions audit"
+        count={NV_countText(["decision", "decisions"], paged.total, allRows.length)}
+        extra={
+          <div className="nv-audit-sort">
+            <span className="muted text-sm">sort</span>
+            <select
+              className="select"
+              aria-label="Sort decisions"
+              value={sortBy}
+              onChange={function (e) { setSortBy(e.target.value); }}
+              style={{ fontSize: 12 }}
+              data-testid="nv-audit-sort-by"
+            >
+              <option value="time">by time</option>
+              <option value="status">by status</option>
+            </select>
+            <Btn
+              size="sm"
+              kind="ghost"
+              icon={sortDir === "desc" ? "chevron-down" : "chevron-up"}
+              onClick={function () { setSortDir(function (d) { return d === "desc" ? "asc" : "desc"; }); }}
+              title={sortDir === "desc" ? "descending" : "ascending"}
+              data-testid="nv-audit-sort-dir"
+            >
+              {sortDir === "desc" ? "newest" : "oldest"}
+            </Btn>
+          </div>
+        }
+        filter={{ value: paged.q, onChange: paged.setQ, label: "Filter decisions", testid: "nv-audit-filter" }}
+        pager={{
+          page: paged.page, pages: paged.pages, from: paged.from, to: paged.to, total: paged.total,
+          onPage: paged.setPage,
+        }} />
       <div className="nv-audit-table">
         <div className="nv-audit-head">
           <span>Session</span><span>Tool</span><span>Status</span>
@@ -1220,7 +1238,11 @@ function NV_ApprovalsAudit() {
         })}
         {!rows.length ? (
           <div className="nv-audit-row nv-audit-empty">
-            <span>No decisions recorded yet.</span>
+            <span>
+              {allRows.length === 0
+                ? "No decisions recorded yet."
+                : NV_emptyText(["decision", "decisions"], paged.q, allRows.length)}
+            </span>
           </div>
         ) : null}
       </div>
