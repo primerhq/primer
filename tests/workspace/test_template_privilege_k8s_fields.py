@@ -9,7 +9,7 @@ this file pins the module's own contract.
 
 from __future__ import annotations
 
-from primer.model.workspace import K8sGpu, K8sToleration, KubernetesTemplateConfig, WorkspaceTemplate
+from primer.model.workspace import DEFAULT_GPU_RESOURCE_NAME, K8sGpu, K8sToleration, KubernetesTemplateConfig, WorkspaceTemplate
 from primer.workspace import template_privilege
 from primer.workspace.template_privilege import (
     admin_only_settings_held,
@@ -78,3 +78,56 @@ def test_the_refusal_names_the_two_new_kinds_of_field():
 
     assert "service accounts" in message and "tolerations" in message
     assert "host mounts" in message and "secret file sources" in message
+
+
+# ---- lead ruling 15 (from the #782 review): a user may use only the default GPU resource name ------------------------------
+
+_GPU_NAME = "backend.gpu.resource_name"
+
+
+def test_the_default_gpu_resource_name_is_not_admin_only():
+    """Naming the default explicitly is the same as leaving it out: both are the user-tier GPU."""
+    assert admin_only_template_changes(_t(gpu=K8sGpu(count=1)), None) == []
+    assert admin_only_template_changes(_t(gpu=K8sGpu(count=1, resource_name=DEFAULT_GPU_RESOURCE_NAME)), None) == []
+    assert admin_only_settings_held(_t(gpu=K8sGpu(count=4, resource_name=DEFAULT_GPU_RESOURCE_NAME))) == []
+
+
+def test_any_other_gpu_resource_name_is_admin_only():
+    """A device-plugin resource name (devices.kubevirt.io/kvm, squat.ai/fuse) hands the pod a host device, not a GPU."""
+    t = _t(gpu=K8sGpu(count=1, resource_name="devices.kubevirt.io/kvm"))
+
+    assert admin_only_template_changes(t, None) == [_GPU_NAME]
+    assert admin_only_settings_held(t) == [_GPU_NAME]
+
+
+def test_changing_or_clearing_a_non_default_gpu_resource_name_is_a_change():
+    stored = _t(gpu=K8sGpu(count=1, resource_name="amd.com/gpu"))
+
+    assert admin_only_template_changes(_t(gpu=K8sGpu(count=1, resource_name="squat.ai/fuse")), stored) == [_GPU_NAME]
+    assert admin_only_template_changes(_t(gpu=K8sGpu(count=1)), stored) == [_GPU_NAME]     # back to the default
+    assert admin_only_template_changes(_t(), stored) == [_GPU_NAME]                          # no GPU at all
+    assert admin_only_template_changes(stored, stored) == []
+
+
+def test_the_count_beside_a_held_gpu_resource_name_is_not_a_change_to_it():
+    stored = _t(gpu=K8sGpu(count=1, resource_name="amd.com/gpu"))
+
+    assert admin_only_template_changes(_t(gpu=K8sGpu(count=2, resource_name="amd.com/gpu")), stored) == []
+
+
+def test_a_user_may_turn_a_default_gpu_into_a_larger_default_gpu():
+    stored = _t(gpu=K8sGpu(count=1))
+
+    assert admin_only_template_changes(_t(gpu=K8sGpu(count=8)), stored) == []
+    assert admin_only_template_changes(_t(), stored) == []
+
+
+def test_the_gpu_resource_name_is_not_one_of_the_top_level_backend_fields():
+    """It is a part of ``gpu``, so ``_K8S_FIELDS`` (which the console mirrors as ``WT_K8S_ADMIN_FIELDS``) stays as it was and the
+    console reports this one by its own name."""
+    assert "gpu" not in template_privilege._K8S_FIELDS
+    assert template_privilege._GPU_RESOURCE_NAME_FIELD == _GPU_NAME
+
+
+def test_the_refusal_names_gpu_resource_names():
+    assert "GPU resource names" in refusal_message([_GPU_NAME])

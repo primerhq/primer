@@ -8,11 +8,15 @@ Templates are user-tier, but a few fields reach the host or the cluster, or read
 * Kubernetes ``service_account_name`` (the account's token and permissions reach the workspace pod) and ``tolerations``
   (the pod may run on nodes the cluster keeps for its own workloads), added with the platform revamp of 2026-10 (design
   14.2);
+* a Kubernetes ``gpu.resource_name`` other than the default ``nvidia.com/gpu`` (lead ruling 15 of plan 08, from the review of
+  #782). The name is an extended resource of the cluster's device plugins, so a user who could write any ``<domain>/<name>``
+  could ask for a KVM or FUSE device (``devices.kubevirt.io/kvm``, ``squat.ai/fuse``) instead of a GPU. The user-tier GPU is
+  the default name, written or left out; the field is reported as ``backend.gpu.resource_name``;
 * a ``kind=secret`` file source (it reads a ``PRIMER_SECRET_*`` value by name), on a template or in the per-workspace
   overrides.
 
-The other Kubernetes placement fields of the revamp stay user-tier: ``node_selector``, ``gpu`` and ``image_pull_policy``
-reach neither the cluster's credentials nor its reserved nodes.
+The other Kubernetes placement fields of the revamp stay user-tier: ``node_selector``, the ``gpu`` count with the default
+resource name, and ``image_pull_policy`` reach neither the cluster's credentials nor its reserved nodes nor its host devices.
 
 A non-admin write that sets one of them to a non-empty value, or changes it from the stored value, is refused. The REST
 routes answer 403 ``forbidden_role``; the ``workspaces`` tools answer ``type=forbidden``. A template that HOLDS any of
@@ -33,6 +37,7 @@ from __future__ import annotations
 from typing import Any
 
 from primer.model.workspace import (
+    DEFAULT_GPU_RESOURCE_NAME,
     ContainerTemplateConfig,
     FileMount,
     KubernetesTemplateConfig,
@@ -49,6 +54,10 @@ _K8S_FIELDS = (
     "tolerations",
 )
 
+#: The admin-only part of ``gpu`` (any resource name but the default). Not in :data:`_K8S_FIELDS`, which names whole backend
+#: fields (the console mirrors it as ``WT_K8S_ADMIN_FIELDS``); the console reports this one by its own name, after those.
+_GPU_RESOURCE_NAME_FIELD = "backend.gpu.resource_name"
+
 
 def _secret_sources(files: list[FileMount]) -> list[tuple[str, str, str | None]]:
     return sorted(
@@ -60,6 +69,7 @@ def _gated_values(template: WorkspaceTemplate | None) -> dict[str, Any]:
     """The admin-only fields of ``template``, each normalised so an absent or empty value compares equal to ``None``."""
     out: dict[str, Any] = {"backend.extra_mounts": None, "files.secret": None}
     out.update({f"backend.{f}": None for f in _K8S_FIELDS})
+    out[_GPU_RESOURCE_NAME_FIELD] = None
     if template is None:
         return out
     backend = template.backend
@@ -71,6 +81,9 @@ def _gated_values(template: WorkspaceTemplate | None) -> dict[str, Any]:
             if isinstance(value, list):
                 value = [v.model_dump(mode="json") for v in value]
             out[f"backend.{f}"] = value or None
+        gpu = backend.gpu
+        if gpu is not None and gpu.resource_name != DEFAULT_GPU_RESOURCE_NAME:
+            out[_GPU_RESOURCE_NAME_FIELD] = gpu.resource_name
     out["files.secret"] = _secret_sources(template.files) or None
     return out
 
@@ -104,7 +117,8 @@ def admin_only_override_fields(overrides: WorkspaceTemplateOverrides | None) -> 
 def refusal_message(fields: list[str]) -> str:
     return (
         f"only an admin may set or change {', '.join(fields)} (host mounts, Kubernetes overlays, service accounts, "
-        "tolerations and secret file sources reach the host, the cluster or operator secrets)"
+        "tolerations, GPU resource names other than the default and secret file sources reach the host, the cluster or "
+        "operator secrets)"
     )
 
 

@@ -73,6 +73,11 @@ _PRIVILEGED = {
         "backend": {"kind": "kubernetes", "image": "alpine:3",
                     "tolerations": [{"key": "gpu", "operator": "Exists", "effect": "NoSchedule"}]},
     },
+    # Lead ruling 15: only the default GPU resource name (nvidia.com/gpu) is user-tier.
+    "gpu.resource_name": {
+        "id": "tpl-k", "provider_id": "p-1", "description": "d",
+        "backend": {"kind": "kubernetes", "image": "alpine:3", "gpu": {"count": 1, "resource_name": "amd.com/gpu"}},
+    },
     "files.secret": {
         "id": "tpl-s", "provider_id": "p-1", "description": "d",
         "files": [{"path": "creds", "source": {"kind": "secret", "name": "OPENAI_API_KEY"}}],
@@ -121,7 +126,35 @@ async def test_a_user_run_may_set_the_user_tier_placement_fields(world) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("field", ["service_account_name", "tolerations"])
+async def test_a_user_run_may_name_the_default_gpu_resource_but_no_other(world) -> None:
+    """Lead ruling 15: through the tools as on REST, nvidia.com/gpu is user-tier and any other resource name is admin-only."""
+    sp, toolset = world
+    default = {"id": "tpl-k", "provider_id": "p-1", "description": "d", "backend": {
+        "kind": "kubernetes", "image": "alpine:3", "gpu": {"count": 2, "resource_name": "nvidia.com/gpu"}}}
+    is_error, answer = await _call(toolset, "create_workspace_template", ctx=_ctx("user"), entity=default)
+    assert not is_error, answer
+
+    other = {**default, "id": "tpl-o", "backend": {**default["backend"], "gpu": {"count": 1, "resource_name": "squat.ai/fuse"}}}
+    is_error, answer = await _call(toolset, "create_workspace_template", ctx=_ctx("user"), entity=other)
+    assert is_error and answer["type"] == "forbidden" and "backend.gpu.resource_name" in answer["message"], answer
+    assert await sp.get_storage(WorkspaceTemplate).get("tpl-o") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resource", ["kubernetes.io/gpu", "requests.nvidia.com/gpu"])
+async def test_a_resource_name_the_api_server_rejects_is_a_validation_error(world, resource) -> None:
+    sp, toolset = world
+    body = {"id": "tpl-k", "provider_id": "p-1", "description": "d", "backend": {
+        "kind": "kubernetes", "image": "alpine:3", "gpu": {"count": 1, "resource_name": resource}}}
+
+    is_error, answer = await _call(toolset, "create_workspace_template", ctx=_ctx("admin"), entity=body)
+
+    assert is_error and answer["type"] == "validation-error" and "resource_name" in answer["message"], answer
+    assert await sp.get_storage(WorkspaceTemplate).get("tpl-k") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["service_account_name", "tolerations", "gpu.resource_name"])
 async def test_a_user_run_cannot_update_or_delete_a_template_that_holds_a_placement_field(world, field) -> None:
     sp, toolset = world
     body = _PRIVILEGED[field]

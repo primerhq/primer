@@ -74,6 +74,11 @@ WORKSPACE_ID_PATTERN = r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
 # Docker templates writes this value and nothing that worked changes.
 DOCKER_RUNTIME_IMAGE = "primer/workspace-runtime:1.1"
 
+# The extended resource a Kubernetes template's ``gpu`` requests when it names none (NVIDIA's device plugin). It is the only GPU
+# resource name a role=user caller may write: any other name asks the cluster for some other device-plugin resource (a KVM or
+# FUSE device, say), which only an admin may do (lead ruling 15 of plan 08; ``primer.workspace.template_privilege``).
+DEFAULT_GPU_RESOURCE_NAME = "nvidia.com/gpu"
+
 # Kubernetes name rules for the template fields that become pod labels, selectors, tolerations, an extended resource name and
 # a service account. The patterns are the structure only; a label key and a resource name carry a prefix that is ALSO capped
 # at 253 characters, which a regular expression cannot say, so the validators below check it too.
@@ -96,6 +101,16 @@ def _is_k8s_label_value(value: str) -> bool:
 
 def _is_k8s_resource_name(name: str) -> bool:
     return re.fullmatch(K8S_RESOURCE_NAME_PATTERN, name) is not None and len(name.rpartition("/")[0]) <= _K8S_PREFIX_MAX
+
+
+def _is_k8s_reserved_resource_name(name: str) -> bool:
+    """Whether the API server refuses ``name`` as an extended (device-plugin) resource of a container.
+
+    The same two tests as Kubernetes' own ``IsExtendedResourceName``: a name with ``kubernetes.io/`` in it is in the native
+    namespace, and a ``requests.`` prefix is the quota convention. Either is rejected when the pod is created, which used to
+    come back as a generic 500 after the create had been rolled back.
+    """
+    return "kubernetes.io/" in name or name.startswith("requests.")
 
 
 # ===========================================================================
@@ -540,9 +555,13 @@ class K8sGpu(BaseModel):
     model_config = ConfigDict(extra="forbid")
     count: int = Field(..., ge=1, description="How many GPUs to request (at least 1).")
     resource_name: str = Field(
-        default="nvidia.com/gpu",
+        default=DEFAULT_GPU_RESOURCE_NAME,
         pattern=K8S_RESOURCE_NAME_PATTERN,
-        description="The extended resource name the cluster's device plugin advertises, for example amd.com/gpu.",
+        description=(
+            "The extended resource name the cluster's device plugin advertises, for example amd.com/gpu. Admin only unless "
+            f"it is the default, {DEFAULT_GPU_RESOURCE_NAME}: any other name asks the cluster for some other device-plugin "
+            "resource. Names under kubernetes.io/ and names that start with requests. are refused, as the API server refuses them."
+        ),
     )
 
     @field_validator("resource_name", mode="before")
@@ -553,7 +572,13 @@ class K8sGpu(BaseModel):
         if isinstance(value, str) and not _is_k8s_resource_name(value):
             raise ValueError(
                 f"GPU resource name {value!r} is not a valid Kubernetes extended resource name: "
-                "use <domain>/<name>, for example nvidia.com/gpu (the domain at most 253 characters)"
+                f"use <domain>/<name>, for example {DEFAULT_GPU_RESOURCE_NAME} (the domain at most 253 characters)"
+            )
+        if isinstance(value, str) and _is_k8s_reserved_resource_name(value):
+            raise ValueError(
+                f"GPU resource name {value!r} is reserved by Kubernetes: a container cannot request a name under kubernetes.io/ "
+                "or one that starts with requests. (the API server refuses it); use the device plugin's own domain, "
+                f"for example {DEFAULT_GPU_RESOURCE_NAME}"
             )
         return value
 
@@ -568,7 +593,8 @@ class KubernetesTemplateConfig(BaseModel):
     The size is ``WorkspaceTemplate.resources`` (requests = limits) and ``pvc_size``. The five placement fields
     (``node_selector``, ``tolerations``, ``gpu``, ``service_account_name``, ``image_pull_policy``) are typed here and
     written by the manifest builder; ``pod_overrides`` still cannot set them. ``tolerations`` and
-    ``service_account_name`` are admin-only (``primer.workspace.template_privilege``). The CPU and memory request and
+    ``service_account_name`` are admin-only, and so is a ``gpu.resource_name`` other than the default
+    (``primer.workspace.template_privilege``). The CPU and memory request and
     limit strings, ``network_policy_name`` and ``container_security_context_overrides`` are not applied; they stay so
     that rows written before the 2026-10 revamp load.
     """
@@ -663,7 +689,8 @@ class KubernetesTemplateConfig(BaseModel):
         default=None,
         description=(
             "Kubernetes only: GPUs for the container, requested and limited as <resource_name>: <count>. "
-            "Any user may set it. null = no GPU."
+            f"Any user may set the count with the default resource name ({DEFAULT_GPU_RESOURCE_NAME}); naming another "
+            "resource is admin-only (see resource_name). null = no GPU."
         ),
     )
     service_account_name: str | None = Field(
@@ -1582,6 +1609,7 @@ __all__ = [
     "ContainerRuntimeConfig",
     "ContainerTemplateConfig",
     "ContainerWorkspaceConfig",
+    "DEFAULT_GPU_RESOURCE_NAME",
     "DOCKER_RUNTIME_IMAGE",
     "DockerRuntimeConfig",
     "FileEntry",

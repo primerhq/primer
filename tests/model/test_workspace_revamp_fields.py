@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from primer.model import workspace as workspace_models
 from primer.model.workspace import (
+    DEFAULT_GPU_RESOURCE_NAME,
     DOCKER_RUNTIME_IMAGE,
     K8S_LABEL_KEY_PATTERN,
     K8S_LABEL_VALUE_PATTERN,
@@ -171,6 +172,38 @@ def test_gpu_defaults_and_bounds():
             K8sGpu(**bad)
 
 
+def test_the_default_gpu_resource_name_is_one_constant():
+    assert DEFAULT_GPU_RESOURCE_NAME == "nvidia.com/gpu"
+    assert K8sGpu.model_fields["resource_name"].default == DEFAULT_GPU_RESOURCE_NAME
+    assert K8sGpu(count=1).resource_name == DEFAULT_GPU_RESOURCE_NAME
+
+
+@pytest.mark.parametrize("name", [
+    "kubernetes.io/gpu",              # the kubernetes.io namespace is Kubernetes' own
+    "foo.kubernetes.io/gpu",          # so is any name that has kubernetes.io/ in it
+    "requests.nvidia.com/gpu",        # the quota convention: the API server refuses the prefix on a container resource
+    "requests.example.com/anything",
+])
+def test_a_gpu_resource_name_the_api_server_rejects_is_a_422(name):
+    """Lead ruling 15: refuse at write time what the API server would refuse at create (it came back as a 500 after a rollback)."""
+    with pytest.raises(ValidationError) as caught:
+        K8sGpu(count=1, resource_name=name)
+    (error,) = caught.value.errors()
+    assert error["loc"] == ("resource_name",)
+    assert "kubernetes.io" in error["msg"] and "requests." in error["msg"] and name in error["msg"]
+
+
+@pytest.mark.parametrize("name", ["nvidia.com/gpu", "amd.com/gpu", "example.com/kubernetes", "kubernetes.io.example.com/gpu",
+                                  "my-requests.example.com/gpu", "gpu.intel.com/i915"])
+def test_a_gpu_resource_name_outside_kubernetes_own_namespace_is_accepted(name):
+    assert K8sGpu(count=1, resource_name=name).resource_name == name
+
+
+def test_a_template_with_a_reserved_gpu_resource_name_is_refused_as_a_whole():
+    with pytest.raises(ValidationError, match="resource_name"):
+        KubernetesTemplateConfig(image="rt", gpu={"count": 1, "resource_name": "kubernetes.io/gpu"})
+
+
 def test_service_account_and_pull_policy():
     ok = KubernetesTemplateConfig(image="rt", service_account_name="primer-runner", image_pull_policy="IfNotPresent")
     assert ok.service_account_name == "primer-runner"
@@ -250,8 +283,17 @@ def test_the_new_fields_say_who_uses_them_and_who_may_write_them():
         assert "Kubernetes" in fields[name].description, name
     for name in ("tolerations", "service_account_name"):
         assert "Admin only" in fields[name].description, name
-    for name in ("node_selector", "gpu", "image_pull_policy"):
+    for name in ("node_selector", "image_pull_policy"):
         assert "Admin only" not in fields[name].description, name
+
+
+def test_the_gpu_says_the_count_is_user_tier_and_another_resource_name_is_admin_only():
+    """Lead ruling 15: a user may use only the default resource name; any other is admin-only. (The pin that said `gpu` has no
+    admin-only part moved here with it.)"""
+    gpu = KubernetesTemplateConfig.model_fields["gpu"].description
+    assert "Any user may set the count" in gpu and DEFAULT_GPU_RESOURCE_NAME in gpu and "admin-only" in gpu
+    name = K8sGpu.model_fields["resource_name"].description
+    assert "Admin only" in name and DEFAULT_GPU_RESOURCE_NAME in name
 
 
 def test_the_patterns_match_what_kubernetes_accepts():
@@ -266,6 +308,6 @@ def test_the_patterns_match_what_kubernetes_accepts():
 
 
 def test_the_new_names_are_exported():
-    for name in ("DOCKER_RUNTIME_IMAGE", "K8S_LABEL_KEY_PATTERN", "K8S_LABEL_VALUE_PATTERN", "K8S_RESOURCE_NAME_PATTERN",
+    for name in ("DEFAULT_GPU_RESOURCE_NAME", "DOCKER_RUNTIME_IMAGE", "K8S_LABEL_KEY_PATTERN", "K8S_LABEL_VALUE_PATTERN", "K8S_RESOURCE_NAME_PATTERN",
                  "K8S_SERVICE_ACCOUNT_PATTERN", "K8sToleration", "K8sGpu", "WorkspaceResourceOverrides"):
         assert name in workspace_models.__all__, name
