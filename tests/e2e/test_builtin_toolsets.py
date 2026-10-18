@@ -567,3 +567,4 @@ async def test_the_builtin_catalogue_lists_every_wired_toolset_with_its_tools(cl
         assert grouped[tid]["available"] is True, grouped[tid]
         assert grouped[tid]["tools"], f"{tid} listed no tools"
         assert (await client.get(f"/v1/toolsets/{tid}")).status_code == 200, tid
+    assert isinstance(grouped["collections"]["internal_search"], bool), grouped["collections"]
