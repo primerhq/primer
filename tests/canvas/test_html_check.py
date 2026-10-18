@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
 import time
 
 import pytest
 
+from py_mini_racer import JSTimeoutException
 from py_mini_racer import MiniRacer as RealMiniRacer
 
 from primer.canvas.html_check import SCRIPT_HOSTS, check_html_scripts
+from primer.canvas.lang import parse_program
+from primer.canvas.state import CanvasState, Limits, apply_batch
 
 ALLOWED = "only cdnjs.cloudflare.com, cdn.jsdelivr.net, unpkg.com and esm.sh are allowed"
 
@@ -250,6 +255,7 @@ class _Spy:
 
     def __init__(self):
         self.ctx = RealMiniRacer()
+        self.thread = threading.get_ident()
         self.closed = False
         self.evals: list[tuple[str, int | None]] = []
         _Spy.made.append(self)
@@ -297,21 +303,113 @@ def test_the_source_travels_as_data_inside_a_fixed_probe(spy):
     assert code.endswith(")") and " " not in code                  # the line separator is escaped, so it cannot end the literal
 
 
-def test_the_engine_is_closed_even_when_it_fails_and_a_failure_is_a_problem(spy, monkeypatch):
-    from py_mini_racer import JSTimeoutException
-
-    def boom(self, code, timeout=None):
-        raise JSTimeoutException()
-
-    monkeypatch.setattr(_Spy, "eval", boom)
-    assert check_html_scripts("<script>a()</script><script>b()</script>") == [
-        "script 1 could not be checked: the syntax check failed",
-        "script 2 could not be checked: the syntax check failed",
-    ]
-    assert spy.made[0].closed
-
-
 def test_a_top_level_return_is_the_known_blind_spot():
     # new Function() accepts what a classic script refuses; the browser reports it at run time.
     # The module says so. Wrapping the source to catch it would let a crafted script reach the probe.
     assert check_html_scripts("<script>return 1</script>") == []
+
+
+# --- safe wherever it is called, and closed on every failure -------------------------------------------------
+
+THREE_SCRIPTS = '<script>a()</script><script src="http://evil.example/x.js"></script><script>b()</script>'
+UNCHECKED_AROUND_ONE_BAD_SOURCE = [
+    "script 1 could not be checked: the syntax check failed",
+    "script 2 src must be https",
+    "script 3 could not be checked: the syntax check failed",
+]
+
+
+async def test_it_works_on_a_thread_that_has_a_running_event_loop():
+    # mini-racer adopts the running loop of the thread that makes an engine and then refuses a timeout: an AssertionError
+    assert check_html_scripts("<script>ok()</script><script>var = ;</script>") == ["script 2 does not parse: Unexpected token '='"]
+    assert check_html_scripts("<script>ok()</script>") == []
+
+
+def test_it_works_under_asyncio_run():
+    async def main():
+        return check_html_scripts("<script>var = ;</script>")
+
+    assert asyncio.run(main()) == ["script 1 does not parse: Unexpected token '='"]
+
+
+async def test_apply_batch_with_the_check_works_inside_a_running_loop():
+    refused = apply_batch(
+        CanvasState.empty(), parse_program('root = Column([v])\nv = Html("<script>var = ;</script>")'), limits=Limits(), script_check=check_html_scripts
+    )
+    assert refused.state is None
+    assert [e.render() for e in refused.errors] == ["line 2: v: script 1 does not parse: Unexpected token '='"]
+    fine = apply_batch(
+        CanvasState.empty(), parse_program('root = Column([v])\nv = Html("<script>ok()</script>")'), limits=Limits(), script_check=check_html_scripts
+    )
+    assert fine.errors == () and fine.state is not None
+
+
+def test_with_no_loop_running_the_engine_lives_on_the_callers_thread(spy):
+    check_html_scripts("<script>a()</script>")
+    (engine,) = spy.made
+    assert engine.thread == threading.get_ident()
+
+
+async def test_with_a_loop_running_the_engine_lives_on_a_worker_thread_that_is_gone_afterwards(spy):
+    assert check_html_scripts("<script>a()</script><script>b()</script>") == []
+    (engine,) = spy.made
+    assert engine.thread != threading.get_ident() and engine.closed and len(engine.evals) == 2
+    assert not [t for t in threading.enumerate() if t.name.startswith("canvas-script-check")]
+
+
+@pytest.mark.parametrize("failure", [JSTimeoutException(), AssertionError("To apply a timeout in an async context"), RuntimeError("boom"), ValueError("bad"), MemoryError()],
+                         ids=lambda failure: type(failure).__name__)
+def test_any_failure_of_the_engine_is_a_problem_never_an_exception(spy, monkeypatch, failure):
+    def boom(self, code, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(_Spy, "eval", boom)
+    assert check_html_scripts(THREE_SCRIPTS) == UNCHECKED_AROUND_ONE_BAD_SOURCE
+    assert spy.made[0].closed
+
+
+def test_an_engine_that_cannot_start_is_a_problem_for_each_inline_script(monkeypatch):
+    import py_mini_racer
+
+    class Broken:
+        def __init__(self):
+            raise RuntimeError("no engine here")
+
+    monkeypatch.setattr(py_mini_racer, "MiniRacer", Broken)
+    assert check_html_scripts(THREE_SCRIPTS) == UNCHECKED_AROUND_ONE_BAD_SOURCE
+
+
+def test_an_engine_whose_memory_limit_cannot_be_set_is_closed_and_a_problem(spy, monkeypatch):
+    def refuse(self, limit):
+        raise RuntimeError("no limit")
+
+    monkeypatch.setattr(_Spy, "set_hard_memory_limit", refuse)
+    assert check_html_scripts("<script>a()</script>") == ["script 1 could not be checked: the syntax check failed"]
+    assert spy.made[0].closed
+
+
+def test_a_close_that_fails_changes_no_answer(spy, monkeypatch):
+    def refuse(self):
+        self.ctx.close()
+        raise RuntimeError("close failed")
+
+    monkeypatch.setattr(_Spy, "close", refuse)
+    assert check_html_scripts("<script>var = ;</script>") == ["script 1 does not parse: Unexpected token '='"]
+
+
+async def test_a_worker_thread_that_cannot_be_started_is_a_problem_not_an_exception(monkeypatch):
+    class NoThreads:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def submit(self, *args, **kwargs):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr("primer.canvas.html_check.ThreadPoolExecutor", NoThreads)
+    assert check_html_scripts(THREE_SCRIPTS) == UNCHECKED_AROUND_ONE_BAD_SOURCE

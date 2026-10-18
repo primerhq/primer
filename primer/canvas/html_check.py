@@ -15,6 +15,14 @@ so a typo comes back as a precise error instead of a blank frame:
   present. The frame's CSP is what enforces that in the browser; this gives the
   agent the error early.
 
+Call it off the event loop (``await asyncio.to_thread(check_html_scripts, html)``): it
+blocks until V8 has answered, milliseconds as a rule and a second at the very most for
+each script. It is safe wherever it is called all the same. mini-racer adopts the running
+loop of the thread that makes an engine and then refuses a timeout, so on a thread that
+has a running loop the engine is made and used on a worker thread instead. Whatever goes
+wrong with the engine, that or anything else, is a problem in the result ("could not be
+checked"), never an exception: the check fails closed.
+
 Known limit: ``new Function`` accepts a top-level ``return`` that a classic script
 rejects. Module scripts and data blocks (``type=module``, ``application/json``,
 ``importmap`` ...) are not compiled. Pure: no I/O besides the throwaway engine.
@@ -22,7 +30,9 @@ rejects. Module scripts and data blocks (``type=module``, ``application/json``,
 
 from __future__ import annotations
 
+import asyncio
 import json
+from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
@@ -121,11 +131,14 @@ class _Compiler:
     """One throwaway V8 context that only ever parses."""
 
     def __init__(self) -> None:
-        from py_mini_racer import JSEvalException, MiniRacer
+        from py_mini_racer import MiniRacer
 
-        self.failure = JSEvalException
         self._ctx = MiniRacer()
-        self._ctx.set_hard_memory_limit(_ENGINE_MEMORY_BYTES)
+        try:
+            self._ctx.set_hard_memory_limit(_ENGINE_MEMORY_BYTES)
+        except Exception:
+            self._ctx.close()
+            raise
 
     def problem(self, source: str) -> str | None:
         message = self._ctx.eval(_PROBE + json.dumps(source) + ")", timeout=_ENGINE_TIMEOUT_MS)
@@ -138,6 +151,52 @@ class _Compiler:
         self._ctx.close()
 
 
+def _unchecked(number: int) -> str:
+    return f"script {number} could not be checked: the syntax check failed"
+
+
+def _compile_scripts(scripts: list[tuple[int, str]]) -> dict[int, str]:
+    """The problem with each inline script that has one, by script number.
+
+    One engine serves every script. Whatever goes wrong with it (it cannot start, it times
+    out, it runs out of memory, it raises something nobody expected) is "could not be
+    checked" for the scripts it did not answer for: the check fails closed. Never raises.
+    """
+    try:
+        compiler = _Compiler()
+    except Exception:
+        return {number: _unchecked(number) for number, _ in scripts}
+    problems: dict[int, str] = {}
+    try:
+        for number, source in scripts:
+            try:
+                message = compiler.problem(source)
+            except Exception:
+                problems[number] = _unchecked(number)
+            else:
+                if message is not None:
+                    problems[number] = f"script {number} does not parse: {message}"
+    finally:
+        try:
+            compiler.close()
+        except Exception:  # the answers are already in; a failed close cannot change them
+            pass
+    return problems
+
+
+def _compile(scripts: list[tuple[int, str]]) -> dict[int, str]:
+    """:func:`_compile_scripts`, on a worker thread when this thread has a running event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return _compile_scripts(scripts)
+    try:
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="canvas-script-check") as pool:
+            return pool.submit(_compile_scripts, scripts).result()
+    except Exception:
+        return {number: _unchecked(number) for number, _ in scripts}
+
+
 def check_html_scripts(html: str) -> list[str]:
     """Problems with the scripts in ``html``, numbered from 1 in document order.
 
@@ -147,27 +206,18 @@ def check_html_scripts(html: str) -> list[str]:
     parser = _Scripts()
     parser.feed(html)
     parser.close()
-    problems: list[str] = []
-    compiler: _Compiler | None = None
-    try:
-        for number, (attrs, text) in enumerate(parser.scripts, start=1):
-            for attribute in _URL_ATTRIBUTES:
-                if attribute in attrs:
-                    problems += _check_url(number, attribute, attrs[attribute])
-            if "src" not in attrs and _is_classic(attrs.get("type")):
-                if compiler is None:
-                    compiler = _Compiler()
-                try:
-                    message = compiler.problem(text)
-                except compiler.failure:
-                    problems.append(f"script {number} could not be checked: the syntax check failed")
-                else:
-                    if message is not None:
-                        problems.append(f"script {number} does not parse: {message}")
-    finally:
-        if compiler is not None:
-            compiler.close()
-    return problems
+    found: dict[int, list[str]] = {}
+    inline: list[tuple[int, str]] = []
+    for number, (attrs, text) in enumerate(parser.scripts, start=1):
+        for attribute in _URL_ATTRIBUTES:
+            if attribute in attrs:
+                found.setdefault(number, []).extend(_check_url(number, attribute, attrs[attribute]))
+        if "src" not in attrs and _is_classic(attrs.get("type")):
+            inline.append((number, text))
+    if inline:
+        for number, problem in _compile(inline).items():
+            found.setdefault(number, []).append(problem)
+    return [problem for number in sorted(found) for problem in found[number]]
 
 
 __all__ = ["SCRIPT_HOSTS", "check_html_scripts"]
