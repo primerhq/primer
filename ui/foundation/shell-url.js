@@ -33,7 +33,7 @@ var SH_OVERLAYS = [
   // gone, embedded pickers (AP_ToolPicker, GB_ToolPicker) are the only
   // surface left - an old ?overlay=tools link should fail to parse, not
   // open a blank panel.
-  "toolsets", "workers", "approvals",
+  "toolsets", "approvals",
   "harnesses", "services", "channels", "workspaces", "new-session",
   // Create-workspace (wiring plan P3): the designer's instantiation
   // form, distinct from "workspaces" (the management surface).

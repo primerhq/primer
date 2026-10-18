@@ -57,8 +57,6 @@ LEGACY_FORMS: dict[str, list[Form]] = {
     "triggers": [Form("Create trigger", MODAL)],
     "toolsets": [Form("New toolset", MODAL)],
     "approvals": [],
-    "workers": [],
-    "health": [],
     "harnesses": [Form("Register harness", MODAL)],
     "services": [Form("New service", MODAL)],
     "workspaces": [Form("New workspace", MODAL)],
@@ -88,8 +86,6 @@ LEGACY_TITLES: dict[str, str] = {
     "triggers": "Triggers",
     "toolsets": "Toolsets",
     "approvals": "Approvals",
-    "workers": "Workers",
-    "health": "Health",
     "harnesses": "Harnesses",
     "services": "Services",
     "workspaces": "Workspaces",
@@ -144,8 +140,6 @@ SYSTEM_FORMS: dict[str, list[Form]] = {
 
 NO_FORM: dict[str, str] = {
     "overlay-page approvals": "its policies are created on the Platform view (platform-view approvals, New policy)",
-    "overlay-page workers": "a list of workers with Drain; nothing is created from it",
-    "overlay-page health": "the health of the workers, read only; nothing is created from it",
     "platform-view tools": "the tool catalogue is read-only",
     "system-view dashboard": "the dashboard shows the install's state; nothing is created from it",
     "system-view apikeys": "the admin view of every user's tokens only lists and revokes; a token is created from Profile",
@@ -238,8 +232,6 @@ FLOORS: dict[str, int] = {
     "overlay-page toolsets": 2,
     "overlay-page toolsets / New toolset": 2,
     "overlay-page approvals": 0,                        # a list page whose body, on a fresh install, is its empty state with no control in it (the policies are created on the Platform view)
-    "overlay-page workers": 1,
-    "overlay-page health": 1,
     "overlay-page harnesses": 3,
     "overlay-page harnesses / Register harness": 3,
     "overlay-page services": 1,

@@ -719,13 +719,6 @@ var NV_OVERLAY_MOUNTS = {
       return <window.ToolsetsPage pushToast={window.primerApi.toastPush} />;
     },
   },
-  // Workers + Health collapse into one overlay; health is a section.
-  workers: {
-    render: function (state) {
-      if (state.section === "health") return <window.HealthPage sessions={null} />;
-      return <window.WorkersPage pushToast={window.primerApi.toastPush} />;
-    },
-  },
   // List/records and the policy editor are ONE overlay: the id slot
   // decides which renders (same "list and record are ONE overlay"
   // convention as `agents` above) - uiv2 Wave 3 routing fix (item 0).
@@ -849,7 +842,6 @@ var NV_OVERLAY_TITLES = {
   graphs: "Graphs",
   triggers: "Triggers",
   toolsets: "Toolsets",
-  workers: "Workers",
   approvals: "Approvals",
   harnesses: "Harnesses",
   services: "Services",
@@ -864,7 +856,6 @@ var NV_OVERLAY_TITLES = {
 var NV_OVERLAY_SECTION_TITLES = {
   "channels:rules": "Channel rules",
   "workspaces:templates": "Workspace templates",
-  "workers:health": "Health",
 };
 
 function NV_overlayTitle(overlay) {

@@ -74,14 +74,13 @@ def test_fake_sessions_annotation_removed() -> None:
     assert "session{onWorker" not in src
 
 
-def test_the_host_no_longer_passes_a_fake_sessions_prop() -> None:
-    """The page reads workers from the API; a seeded sessions prop was
-    design-canvas mock data leaking into production state."""
+def test_no_overlay_hosts_the_workers_page() -> None:
+    """D4 (2026-10-18): the Dashboard's worker card is the one worker
+    surface; no overlay mounts the Workers page anymore."""
     host = (UI / "components" / "console" / "nv-overlays.jsx").read_text(
         encoding="utf-8"
     )
-    assert "window.WorkersPage" in host
-    assert "<window.WorkersPage sessions=" not in host
+    assert "window.WorkersPage" not in host
 
 
 # ---- Dead-worker cleanup affordances (bug #17) -------------------------
