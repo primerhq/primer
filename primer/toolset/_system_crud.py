@@ -1170,8 +1170,8 @@ def _describe_tool_tool(
         try:
             # One listing answers all three outcomes (found, no such tool with the toolset's names to offer, no such toolset). It is made as the run's own
             # principal, as ``list_toolset_tools`` and ``call_tool`` hand their inner provider, so a toolset with per-user OAuth state answers for the person
-            # the run is for. ``ToolContext.principal`` comes with the call_tool role change (pivot P1 slice 1); a context without it lists anonymously.
-            entries = await list_toolset_entries(registry, args.toolset_id, principal=getattr(ctx, "principal", None))
+            # the run is for: ``ToolContext.principal``, which the dispatch layer put there (never an argument a model chose). A call with no context lists anonymously.
+            entries = await list_toolset_entries(registry, args.toolset_id, principal=ctx.principal if ctx is not None else None)
         except NotFoundError:
             return _err(f"no toolset {args.toolset_id!r}", error_type="not-found")
         except AuthRequiredError:

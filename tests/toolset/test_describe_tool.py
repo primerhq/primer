@@ -297,15 +297,30 @@ async def test_the_listing_is_made_as_the_principal_the_runs_context_carries(res
     """A toolset with per-user state (an MCP toolset's OAuth token cache) answers for the person the run is for, so the listing gets the principal STRING on the
     run's context, as ``call_tool`` hands its inner provider; no context, or one with none, lists anonymously.
 
-    The handler is called directly with a stand-in context: only the ``principal`` attribute is the contract here.
+    The handler is called directly with a stand-in context: only the ``principal`` attribute is the contract here, and a context always has it
+    (``ToolContext.principal`` defaults to ``None``), so a stand-in that lacks it is not a context.
     """
     rec = Scripted([scripted_tool("go")], roles={"go": "user"})
     _, (_, handler) = _describe_tool_tool(Registry({"rec": rec}, reserved_provider_registry), None)
     arguments = {"toolset_id": "rec", "tool_name": "go"}
     assert not (await handler(arguments, ctx=SimpleNamespace(principal="alice"))).is_error
     await handler(arguments)
-    await handler(arguments, ctx=SimpleNamespace())
+    await handler(arguments, ctx=SimpleNamespace(principal=None))
     assert rec.listed_as == ["alice", None, None]
+
+
+async def test_a_principal_argument_the_model_supplies_is_ignored(reserved_provider_registry):  # noqa: F811
+    """The listing is made as the run's own principal, the one the dispatch layer put on the context, and never as one a model names: ``describe_tool`` takes no
+    ``principal`` argument (``list_toolset_tools`` and ``call_tool`` take none either), so a toolset keyed per user cannot be listed as somebody else through it."""
+    rec = Scripted([scripted_tool("go")], roles={"go": "user"})
+    _, (_, handler) = _describe_tool_tool(Registry({"rec": rec}, reserved_provider_registry), None)
+    asked = {"toolset_id": "rec", "tool_name": "go", "principal": "mallory"}
+
+    assert not (await handler(asked, ctx=SimpleNamespace(principal="alice"))).is_error
+    assert not (await handler(asked)).is_error
+    assert not (await handler(asked, ctx=SimpleNamespace(principal=None))).is_error
+
+    assert rec.listed_as == ["alice", None, None], "a principal the model supplied reached the provider"
 
 
 @pytest.mark.parametrize("arguments", [{}, {"toolset_id": "misc"}, {"tool_name": "uuid_v4"}, {"toolset_id": "", "tool_name": "x"}, {"toolset_id": "misc", "tool_name": ""}])
