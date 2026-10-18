@@ -16,7 +16,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -200,6 +200,18 @@ class AppConfig(BaseSettings):
             "mounts. None (default) means 'use the env-backed provider' "
             "(PRIMER_SECRET_<NAME>). Set to a SecretProviderConfig to "
             "override."
+        ),
+    )
+
+    # --- Encryption at rest ----------------------------------------------
+    encryption_key: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Key material for the values primer stores encrypted: the MCP OAuth tokens and client secrets. At least 16 characters, and the SAME "
+            "value on every server process (the API and each worker), so a value one process sealed another opens. Env: PRIMER_ENCRYPTION_KEY. "
+            "Unset, a key derived from the session secret is used and a warning is logged at start: anyone who can read the database can read "
+            "the session secret too, so the values are then only obfuscated. Changing the key makes every stored value unreadable and the "
+            "toolsets that held them are connected again."
         ),
     )
 
