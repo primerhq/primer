@@ -11,22 +11,31 @@
   make it, so a stale or forged park cannot run an admin tool for a user-role run;
 * a pause of the inner tool (``YieldToWorker``) is not swallowed into an error result. It propagates, and the resume coordinator re-parks the
   session on the tool's own event (``tests/worker/test_approval_yield_repark.py`` pins that half).
+
+A gate raised inside a SUBAGENT (a nested frame) is answered by ``primer.worker.frames.apply_leaf``, which runs the same re-run with the subagent's
+resumed manager: the inner tool runs as the subagent, which runs as its parent session, and a pause of it parks the whole chain again
+(``Reparked``), the subagent's frame kept. Before this, ``apply_leaf`` sent the park's bare inner tool name to the subagent's manager, which could
+not route it, and the whole delegation failed.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from primer.agent.tool_manager import ToolExecutionManager
-from primer.model.chat import ToolCallPart
+from primer.model.chat import Message, ToolCallPart, ToolResultPart
 from primer.model.principal import PrincipalRef
 from primer.model.tool_approval import ToolApprovalPolicy
 from primer.model.yield_ import ToolContext, Yielded, YieldToWorker
 from primer.toolset.system import build_system_toolset
-from primer.worker.frames import AgentFrame, AgentResumeContext
+from primer.worker.continuation import Deliver, Repark, resume_continuation
+from primer.worker.frames import AgentFrame, AgentResumeContext, Reparked, apply_leaf
+from primer.worker.session_resume_coordinator import build_invocation_services
 from primer.worker.yield_runtime import _resume_call_tool_dispatch, _resume_tool_approval
 from tests.agent.test_inner_dispatch import ADMIN, USER, _Failing, _Recorder, _Session, _Yielding
 from tests.toolset.test_call_tool_door import _Registry as _DoorRegistry
@@ -198,18 +207,39 @@ class _NestedPause(_Yielding):
         raise paused
 
 
-async def test_an_approved_inner_tool_that_pauses_inside_a_nested_run_fails_closed():
+def _delegate_park() -> dict[str, Any]:
+    """A session's park of a gated ``call_tool`` on ``rec.delegate``, a tool that delegates to a child run."""
+    return {
+        "yielded": {
+            "resume_metadata": {
+                "original_call": {"id": "call-outer", "name": "delegate", "arguments": {}},
+                "via_call_tool": {"toolset_id": "rec", "tool_name": "delegate"},
+            },
+        },
+    }
+
+
+async def test_an_approved_inner_tool_that_pauses_inside_a_nested_run_fails_closed_on_the_session_path():
     """The coordinator's flat re-park keeps no frames, so the answer to a nested run's question would be delivered to the nested run's call and the
-    ``call_tool`` call would never be answered. Such a pause is refused with an error result (what every pause got before this path let one through)
-    instead of being parked wrongly."""
-    part = await _resume_call_tool_dispatch(
-        via={"toolset_id": "rec", "tool_name": "delegate"},
-        original_call=ToolCallPart(id="call-outer", name="delegate", arguments={}),
-        tool_manager=_Manager(_NestedPause(), USER),
-    )
+    ``call_tool`` call would never be answered. On the session path (``_resume_tool_approval``) such a pause is refused with an error result (what
+    every pause got before this path let one through) instead of being parked wrongly. The behaviour a fix must reach is pinned by the strict xfail
+    in ``tests/worker/test_approval_yield_repark.py``."""
+    part = await _resume_tool_approval(blob=_delegate_park(), payload={"decision": "approved"}, tool_manager=_Manager(_NestedPause(), USER))
     assert part.error is True and part.id == "call-outer"
     body = json.loads(part.output)
     assert body["is_error"] is True and body["tool_name"] == "delegate" and "nested" in body["reason"], body
+
+
+async def test_the_rerun_hands_a_nested_pause_on_with_its_frames():
+    """The refusal above belongs to the session path, whose re-park is the one that drops frames. The re-run itself hands the pause on, frames intact,
+    so the nested walk (``apply_leaf``), whose re-park keeps every frame, can park the whole chain again."""
+    with pytest.raises(YieldToWorker) as paused:
+        await _resume_call_tool_dispatch(
+            via={"toolset_id": "rec", "tool_name": "delegate"},
+            original_call=ToolCallPart(id="call-outer", name="delegate", arguments={}),
+            tool_manager=_Manager(_NestedPause(), USER),
+        )
+    assert [frame.tool_call_id for frame in paused.value.frames] == ["call-outer"], "the child's answer goes to the call_tool call"
 
 
 async def test_an_inner_error_that_is_not_a_pause_is_still_an_error_result():
@@ -292,3 +322,157 @@ async def test_a_park_made_for_an_admin_run_is_not_run_by_a_user_run_that_resume
 
     assert part.error is True and json.loads(part.output)["type"] == "forbidden"
     assert recorder.calls == []
+
+
+# ---- inside a subagent: a nested frame's approval goes through apply_leaf ---------------------------------------------------------------------------
+
+APPROVED = {"decision": "approved"}
+
+
+def _subagent_services(registry: Any, parent: PrincipalRef | None) -> Any:
+    """The services the worker hands the continuation walk to resume session ``s-1`` (``build_invocation_services``), whose run is ``parent``. The
+    subagent's manager is the one the real ``build_subagent_toolmanager`` builds over ``registry``."""
+    pool = SimpleNamespace(_storage=None, _provider_registry=registry, _approval_resolver=None)
+    return build_invocation_services(pool, SimpleNamespace(id="s-1", initiated_by=parent), None, None, None)
+
+
+def _subagent_frame(initiated_by: PrincipalRef | None = USER) -> AgentFrame:
+    """The subagent that called ``system__call_tool``: the session's call ``call-invoke`` started it, and its own ``call_tool`` call (``call-outer``,
+    the id the park carries) waits for the approval. ``initiated_by`` is what the frame stored."""
+    asked = Message(role="assistant", parts=[ToolCallPart(
+        id="call-outer", name="system__call_tool", arguments={"toolset_id": "rec", "tool_name": "user_x", "arguments": {"a": 1}},
+    )])
+    return AgentFrame(
+        agent_id="sub", llm_messages=[asked.model_dump(mode="json")], tool_call_id="call-invoke", depth=1,
+        context=AgentResumeContext("s-1", "ws-1", None, None, ["system__call_tool"], initiated_by=initiated_by, turn_no=3),
+    )
+
+
+def _call_tool_leaf(toolset_id: str, tool_name: str, **via: Any) -> Yielded:
+    """An approval park of ``system__call_tool`` as the handler writes it, for an inner tool the test's registry holds."""
+    return Yielded(tool_name="_approval", event_key="tool_approval:s-1:call-outer", resume_metadata={
+        "original_call": {"id": "call-outer", "name": tool_name, "arguments": {"a": 1}},
+        "via_call_tool": {"toolset_id": toolset_id, "tool_name": tool_name, **via},
+    })
+
+
+async def test_an_approved_call_tool_gate_inside_a_subagent_runs_the_inner_tool_as_the_subagent(system_toolset, recorder, sp, pr):  # noqa: F811
+    """The bug (case S2 of the #787 review): the park the real ``call_tool`` handler wrote, approved in a SUBAGENT's frame. ``apply_leaf`` sent the
+    bare inner name to the subagent's manager, which raised ``UnsupportedContentError: unknown tool 'user_x'``, and nothing ran."""
+    blob = await _park_through_call_tool(system_toolset, sp, "user_x", USER)
+
+    out = await apply_leaf(
+        _subagent_frame(), Yielded.from_jsonable(blob["yielded"]), APPROVED, _subagent_services(_DoorRegistry(pr, {"rec": recorder}), USER),
+    )
+
+    assert isinstance(out, ToolResultPart), out
+    assert (out.id, out.error, json.loads(out.output)) == ("call-outer", False, {"ran": "user_x"}), "the result answers the subagent's call_tool call"
+    ((name, arguments, principal, ctx),) = recorder.calls
+    assert (name, arguments, principal) == ("user_x", {"a": 1}, None)
+    # The context of the SUBAGENT's resumed manager: its session, workspace and turn, ranked as the session it runs in.
+    assert (ctx.tool_call_id, ctx.session_id, ctx.workspace_id, ctx.turn_no, ctx.initiated_by) == ("call-outer", "s-1", "ws-1", 3, USER)
+
+
+@pytest.mark.parametrize("parent, runs", [(USER, False), (ADMIN, True)], ids=["a-users-session-is-refused", "an-admins-session-runs-it"])
+async def test_inside_a_subagent_the_inner_role_is_checked_against_the_session_it_runs_in(  # noqa: F811
+    system_toolset, recorder, sp, pr, parent: PrincipalRef, runs: bool,
+):
+    """A park the handler wrote for an ADMIN run, in a frame that stored that admin, approved and resumed in a session whose run is ``parent``. The
+    rank is the session's: nothing stored in the park (the frame's ``initiated_by``, a ``via_call_tool.principal``) is read."""
+    blob = await _park_through_call_tool(system_toolset, sp, "admin_x", ADMIN)
+
+    out = await apply_leaf(
+        _subagent_frame(initiated_by=ADMIN), Yielded.from_jsonable(blob["yielded"]), APPROVED,
+        _subagent_services(_DoorRegistry(pr, {"rec": recorder}), parent),
+    )
+
+    if runs:
+        assert out.error is False and [c[0] for c in recorder.calls] == ["admin_x"], out.output
+    else:
+        assert out.error is True and json.loads(out.output)["type"] == "forbidden", out.output
+        assert recorder.calls == [], "an admin-only tool ran in a user's session because its park was written for an admin"
+
+
+async def test_inside_a_subagent_a_legacy_park_principal_is_never_read(system_toolset, recorder, pr):  # noqa: F811
+    """A park from before the pivot carries a principal a model chose (and no tool name); the provider's principal is never that value."""
+    leaf = _call_tool_leaf("rec", "user_x", principal="mallory")
+    del leaf.resume_metadata["via_call_tool"]["tool_name"]
+
+    out = await apply_leaf(_subagent_frame(), leaf, APPROVED, _subagent_services(_DoorRegistry(pr, {"rec": recorder}), USER))
+
+    assert out.error is False, out.output
+    ((_name, _arguments, principal, ctx),) = recorder.calls
+    assert principal is None and ctx.principal is None
+
+
+async def test_a_rejected_call_tool_gate_inside_a_subagent_never_runs_the_inner_tool(system_toolset, recorder, sp, pr):  # noqa: F811
+    blob = await _park_through_call_tool(system_toolset, sp, "user_x", USER)
+
+    out = await apply_leaf(
+        _subagent_frame(), Yielded.from_jsonable(blob["yielded"]), {"decision": "rejected", "reason": "not now"},
+        _subagent_services(_DoorRegistry(pr, {"rec": recorder}), USER),
+    )
+
+    assert out.error is True and out.id == "call-outer"
+    assert json.loads(out.output) == {"rejected": True, "reason": "not now", "tool_name": "user_x", "arguments": {"a": 1}}
+    assert recorder.calls == []
+
+
+async def test_an_inner_tool_that_fails_inside_a_subagent_answers_its_call_with_an_error(system_toolset, pr):  # noqa: F811
+    """A failure that is not a pause is the subagent's to read, as the result of its call_tool call: the delegation goes on."""
+    out = await apply_leaf(_subagent_frame(), _call_tool_leaf("f", "boom"), APPROVED, _subagent_services(_DoorRegistry(pr, {"f": _Failing()}), USER))
+
+    assert isinstance(out, ToolResultPart) and out.error is True and out.id == "call-outer"
+    body = json.loads(out.output)
+    assert body["is_error"] is True and body["tool_name"] == "boom" and "NotFoundError" in body["reason"], body
+
+
+async def test_an_approved_inner_tool_that_pauses_inside_a_subagent_parks_the_chain_again_with_the_subagents_frame(system_toolset, pr):  # noqa: F811
+    """The inner tool pauses (as ``ask_user`` does): the leaf is ``Reparked`` under the subagent's call_tool call, and the walk keeps the subagent's
+    frame, whose turn has not moved (the same call now waits for the tool's own event)."""
+    services = _subagent_services(_DoorRegistry(pr, {"y": _Yielding()}), USER)
+    frame = _subagent_frame()
+
+    out = await apply_leaf(frame, _call_tool_leaf("y", "wait"), APPROVED, services)
+    walk = await resume_continuation([frame], _call_tool_leaf("y", "wait"), APPROVED, services)
+
+    assert isinstance(out, Reparked), out
+    assert (out.new_yield.tool_call_id, out.new_yield.yielded.event_key) == ("call-outer", "k:call-outer")
+    assert isinstance(walk, Repark), walk
+    assert walk.frames == [frame] and (walk.leaf.tool_name, walk.leaf.event_key) == ("wait", "k:call-outer")
+
+
+async def test_an_approved_inner_tool_whose_child_run_pauses_inside_a_subagent_parks_with_both_frames(system_toolset, pr):  # noqa: F811
+    """The inner tool delegates and its child run pauses (``invoke_agent``'s yield, the child's frame on it). The walk's re-park keeps every frame, so
+    unlike the session path this parks the chain again: the subagent's frame, then the child's, whose answer goes to the subagent's call_tool call."""
+    walk = await resume_continuation(
+        [_subagent_frame()], _call_tool_leaf("n", "delegate"), APPROVED, _subagent_services(_DoorRegistry(pr, {"n": _NestedPause()}), USER),
+    )
+
+    assert isinstance(walk, Repark), walk
+    assert [(frame.agent_id, frame.tool_call_id) for frame in walk.frames] == [("sub", "call-invoke"), ("child", "call-outer")]
+    assert walk.leaf.tool_name == "ask_user"
+
+
+async def test_the_walk_delivers_the_inner_result_to_the_subagent_and_the_subagents_answer_to_the_session(system_toolset, recorder, sp, pr):  # noqa: F811
+    """The whole nested walk (case S2b of the #787 review): the leaf is answered with the inner tool's result, the subagent's turn resumes with it as
+    the result of its call_tool call, and the session's call gets the subagent's answer. The walk used to raise before the subagent resumed."""
+    blob = await _park_through_call_tool(system_toolset, sp, "user_x", USER)
+    resumed: list[dict[str, Any]] = []
+
+    async def resume_subagent(**kw: Any) -> str:
+        resumed.append(kw)
+        return "done"
+
+    services = dataclasses.replace(_subagent_services(_DoorRegistry(pr, {"rec": recorder}), USER), resume_subagent=resume_subagent)
+    frame = _subagent_frame()
+
+    out = await resume_continuation([frame], Yielded.from_jsonable(blob["yielded"]), APPROVED, services)
+
+    assert isinstance(out, Deliver), out
+    assert (out.tool_result.id, out.tool_result.error, json.loads(out.tool_result.output)) == ("call-invoke", False, {"output": "done"})
+    (kw,) = resumed
+    child = kw["child_result"]
+    assert (child.id, child.error, json.loads(child.output)) == ("call-outer", False, {"ran": "user_x"})
+    assert (kw["agent_id"], kw["invoke_tool_call_id"], kw["llm_messages"]) == ("sub", "call-invoke", frame.llm_messages)
+    assert [c[0] for c in recorder.calls] == ["user_x"]

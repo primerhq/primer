@@ -43,7 +43,7 @@ from primer.worker.yield_resume_registry import (
     ResumeContext,
     get_resume_hook,
 )
-from primer.worker.yield_runtime import classify_approval_payload
+from primer.worker.yield_runtime import _resume_call_tool_dispatch, classify_approval_payload
 
 
 # ===========================================================================
@@ -618,9 +618,15 @@ async def apply_leaf(
         Classify ``payload`` via :func:`classify_approval_payload`. On
         ``approved`` rebuild the original :class:`ToolCallPart` from
         ``leaf.resume_metadata["original_call"]`` and re-dispatch it through
-        the innermost host's tool manager with ``bypass_approval=True``; if
-        that raises :class:`YieldToWorker` return a :class:`Reparked`. On any
-        non-approved decision synthesise the fail-closed error result.
+        the innermost host's tool manager with ``bypass_approval=True``. A
+        park ``system__call_tool`` wrote (``via_call_tool``) names the INNER
+        tool instead, which that manager cannot route: it re-runs through
+        :func:`~primer.worker.yield_runtime._resume_call_tool_dispatch`, the
+        session path's re-run, with that manager's context (the subagent's
+        session and turn, ranked as its parent session), the inner role
+        checked again. If either raises :class:`YieldToWorker` return a
+        :class:`Reparked`. On any non-approved decision synthesise the
+        fail-closed error result.
 
     yielding-tool leaf (``ask_user`` / ``sleep`` / ``watch_files`` /
     ``subscribe_to_trigger``)
@@ -629,7 +635,8 @@ async def apply_leaf(
         the innermost frame's pending ``tool_call_id``.
     """
     if leaf.tool_name == "_approval":
-        original_raw = (leaf.resume_metadata or {}).get("original_call") or {}
+        metadata = leaf.resume_metadata or {}
+        original_raw = metadata.get("original_call") or {}
         original_call = ToolCallPart(
             id=original_raw.get("id", "unknown"),
             name=original_raw.get("name", "unknown"),
@@ -640,7 +647,21 @@ async def apply_leaf(
             tool_manager = await services.build_subagent_toolmanager(
                 inner_frame.context
             )
+            # A gate ``system__call_tool`` raised parks the INNER tool's bare
+            # name, which the subagent's manager cannot route (its tools need
+            # not list it): the inner tool re-runs through the re-run the
+            # session path uses, as this subagent (the context of its resumed
+            # manager, the inner role checked again, nothing stored with the
+            # park read). Any pause, nested or not, parks the chain again: this
+            # walk's re-park keeps every frame.
+            via = metadata.get("via_call_tool")
             try:
+                if via is not None:
+                    return await _resume_call_tool_dispatch(
+                        via=via,
+                        original_call=original_call,
+                        tool_manager=tool_manager,
+                    )
                 return await tool_manager.execute(
                     original_call, bypass_approval=True
                 )
