@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from primer.common.entity_checks import EntityCheckError
 from primer.common.preview_paths import missing_paths
+from primer.common.toolset_ids import toolset_id_spellings
 from primer.model.model_profile import ModelProfile
 from primer.model.provider import LLMProvider
 from primer.model.storage import OffsetPage
@@ -32,25 +33,30 @@ ToolSchemaOf = Callable[[str, str], Awaitable["dict[str, Any] | None"]]
 async def check_policy_unique(
     entity: ToolApprovalPolicy, *, storage_provider: "StorageProvider", skip_id: str | None = None,
 ) -> None:
-    """At most one policy per ``(toolset_id, tool_name)``; ``skip_id`` is the row being updated (it may match itself)."""
+    """At most one policy per ``(toolset_id, tool_name)``; ``skip_id`` is the row being updated (it may match itself).
+
+    The toolset is read as the platform reads it: ``_system`` is the retired id of ``system`` and the registry runs one provider for both, so a policy under
+    either spelling is the policy of the same tool (and the resolver would have to settle the pair as duplicates).
+    """
     storage = storage_provider.get_storage(ToolApprovalPolicy)
-    predicate = (
-        Q(ToolApprovalPolicy)
-        .where("toolset_id", entity.toolset_id)
-        .where("tool_name", entity.tool_name)
-        .build()
-    )
-    page = await storage.find(predicate, OffsetPage(offset=0, length=10))
-    for existing in page.items:
-        if skip_id is not None and existing.id == skip_id:
-            continue
-        raise EntityCheckError(
-            "conflict",
-            f"a ToolApprovalPolicy for "
-            f"toolset_id={entity.toolset_id!r}, "
-            f"tool_name={entity.tool_name!r} already exists "
-            f"(id={existing.id!r})",
+    for spelling in toolset_id_spellings(entity.toolset_id):
+        predicate = (
+            Q(ToolApprovalPolicy)
+            .where("toolset_id", spelling)
+            .where("tool_name", entity.tool_name)
+            .build()
         )
+        page = await storage.find(predicate, OffsetPage(offset=0, length=10))
+        for existing in page.items:
+            if skip_id is not None and existing.id == skip_id:
+                continue
+            raise EntityCheckError(
+                "conflict",
+                f"a ToolApprovalPolicy for "
+                f"toolset_id={entity.toolset_id!r}, "
+                f"tool_name={entity.tool_name!r} already exists "
+                f"(id={existing.id!r})",
+            )
 
 
 async def check_approval_config(entity: ToolApprovalPolicy, *, storage_provider: "StorageProvider") -> None:

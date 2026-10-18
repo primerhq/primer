@@ -29,6 +29,7 @@ from primer.agent.approval import (
 from primer.agent.inner_dispatch import dispatch_inner_tool, inner_role_refusal
 from primer.authz import _role_allows
 from primer.common.entity_checks import EntityCheckError
+from primer.common.toolset_ids import canonical_toolset_id
 from primer.agent.tool_schemas import find_tool
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.toolset._describe import make_tool
@@ -903,8 +904,13 @@ def _call_tool_tool(
         except ValidationError as exc:
             return _err_from_validation(exc)
 
+        # The toolset as the platform knows it. The registry runs ONE provider for a retired id and its current one (``_system`` is ``system``), so
+        # everything decided below is about the tool that RUNS: the approval policy, the role message, the park the card and the resume read. Looked up
+        # under the id the model spelled, a policy on ``system::x`` let ``call_tool(toolset_id="_system", tool_name="x")`` run the same tool ungated.
+        toolset_id = canonical_toolset_id(args.toolset_id)
+
         try:
-            provider = await registry.get_toolset(args.toolset_id)
+            provider = await registry.get_toolset(toolset_id)
         except NotFoundError as exc:
             return _err_from_primer(exc, error_type="not-found")
         except PrimerError as exc:
@@ -915,7 +921,7 @@ def _call_tool_tool(
         # the approval gate, so a call the run may not make never draws an approval card an admin could approve on its behalf. A call
         # with no context (or a context that names no initiator) ranks as an ordinary user (``run_principal``).
         refusal = inner_role_refusal(
-            provider, toolset_id=args.toolset_id, tool_name=args.tool_name, ctx=ctx,
+            provider, toolset_id=toolset_id, tool_name=args.tool_name, ctx=ctx,
         )
         if refusal is not None:
             return refusal
@@ -936,24 +942,24 @@ def _call_tool_tool(
         # bypass the gate.
         if approval_resolver is not None and ctx is None:
             policy = await approval_resolver.find(
-                toolset_id=args.toolset_id, tool_name=args.tool_name,
+                toolset_id=toolset_id, tool_name=args.tool_name,
             )
             if policy is not None and policy.enabled:
                 return _err(
                     f"tool {args.tool_name!r} in toolset "
-                    f"{args.toolset_id!r} requires approval but there is "
+                    f"{toolset_id!r} requires approval but there is "
                     "no session or chat to park for it; invoke it through "
                     "an agent session or chat.",
                     error_type="approval-required",
                 )
         if approval_resolver is not None and ctx is not None:
             policy = await approval_resolver.find(
-                toolset_id=args.toolset_id, tool_name=args.tool_name,
+                toolset_id=toolset_id, tool_name=args.tool_name,
             )
             if policy is not None and policy.enabled:
                 approval_ctx = ApprovalContext(
                     tool_name=args.tool_name,
-                    toolset_id=args.toolset_id,
+                    toolset_id=toolset_id,
                     arguments=args.arguments or {},
                     agent_id=None,
                     session_id=ctx.session_id,
@@ -1018,13 +1024,13 @@ def _call_tool_tool(
                                 # No principal: the re-run takes the run's own,
                                 # never one stored with the park.
                                 via_call_tool={
-                                    "toolset_id": args.toolset_id,
+                                    "toolset_id": toolset_id,
                                     "tool_name": args.tool_name,
                                 },
                                 # The card filters the INNER call's arguments by the INNER tool's allowlist (design 01a11cd3-66b0). The
                                 # descriptor is looked up through the registry (under a clock); an inner tool that cannot be found has no
                                 # schema to prove anything closed, so every argument is withheld.
-                                preview=resolve_preview(policy=policy, tool=await find_tool(registry, args.toolset_id, args.tool_name)),
+                                preview=resolve_preview(policy=policy, tool=await find_tool(registry, toolset_id, args.tool_name)),
                             ),
                         ),
                         tool_call_id=ctx.tool_call_id,
@@ -1035,7 +1041,7 @@ def _call_tool_tool(
         try:
             result = await dispatch_inner_tool(
                 provider=provider,
-                toolset_id=args.toolset_id,
+                toolset_id=toolset_id,
                 tool_name=args.tool_name,
                 arguments=args.arguments,
                 ctx=ctx,

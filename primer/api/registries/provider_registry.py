@@ -13,6 +13,7 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from primer.common.toolset_ids import canonical_toolset_id
 from primer.int.coordinator import InvalidationBus, InvalidationSubscription, RateLimiter
 from primer.int.cross_encoder import CrossEncoder
 from primer.int.embedder import Embedder
@@ -240,23 +241,8 @@ RESERVED_LLM_IDS: frozenset[str] = frozenset()
 # Workspace providers: id "local" is the local-filesystem backend.
 RESERVED_WORKSPACE_PROVIDER_IDS: frozenset[str] = frozenset({"local"})
 
-# Backward-compat: the four `_*` ids shipped before the underscore-
-# prefix convention was retired. Agents persisted before the rename
-# may still reference them, so the registry maps the old ids to the
-# new ones transparently on lookup. Remove this map after a deprecation
-# window (when the operator-saved configs have been re-saved).
-_TOOLSET_ID_ALIASES: dict[str, str] = {
-    "_system": "system",
-    "_workspaces": "workspaces",
-    "_search": "search",
-    "_misc": "misc",
-}
-
-
-def canonical_toolset_id(toolset_id: str) -> str:
-    """The id the registry resolves ``toolset_id`` to: a retired underscore-prefixed id maps to its current one, any other id is
-    returned unchanged. Public so the agent reference check resolves a tool id's toolset exactly as a turn does."""
-    return _TOOLSET_ID_ALIASES.get(toolset_id, toolset_id)
+# The retired `_*` toolset ids (`_system` for `system`, ...) and their mapping live in primer/common/toolset_ids.py, which the approval gate shares and which
+# imports nothing; `get_toolset` below resolves an old id to its current one through `canonical_toolset_id`, re-exported here as it always was.
 
 
 def _build_default_toolset_factory(

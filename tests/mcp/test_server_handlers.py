@@ -420,6 +420,33 @@ async def test_invoke_approval_required_blocks(
 
 
 @pytest.mark.asyncio
+async def test_invoke_policy_stored_under_the_retired_toolset_id_blocks(
+    fake_storage_provider, fake_provider_registry_with_tools, system_actor,
+) -> None:
+    """A policy written for ``_misc`` (``ToolApprovalPolicy.toolset_id`` takes any string) gates the tool the MCP catalogue names ``misc__uuid_v4``: the
+    registry runs one provider for the retired and the current id, so the gate reads them as one toolset (the approval-gate bypass through a toolset-id alias)."""
+    deps = _deps_with_resolver(
+        fake_storage_provider, fake_provider_registry_with_tools,
+    )
+    await update_exposure(
+        enabled=True, allowed_tools=["misc__uuid_v4"],
+        updated_by="alice", deps=deps,
+    )
+    await _seed_required_policy(
+        fake_storage_provider, toolset_id="_misc", tool_name="uuid_v4",
+    )
+
+    with pytest.raises(NotExposed) as excinfo:
+        await invoke_exposed(
+            scoped_id="misc__uuid_v4", arguments={},
+            principal=None, actor=system_actor, deps=deps,
+        )
+    assert excinfo.value.reason == "approval_required"
+    provider = await fake_provider_registry_with_tools.get_toolset("misc")
+    assert provider.calls == [], "the tool ran although a policy gates it"
+
+
+@pytest.mark.asyncio
 async def test_invoke_disabled_policy_does_not_block(
     fake_storage_provider, fake_provider_registry_with_tools, system_actor,
 ) -> None:

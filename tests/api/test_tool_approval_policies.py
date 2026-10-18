@@ -86,6 +86,18 @@ async def test_duplicate_toolset_tool_409(client):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("first", "second"), [("system", "_system"), ("_system", "system")])
+async def test_duplicate_under_the_other_spelling_of_the_toolset_409(client, first, second):
+    """``_system`` is the retired id of ``system`` and the registry runs one provider for both, so a second policy for the same tool under the other
+    spelling is a duplicate (the approval-gate bypass through a toolset-id alias)."""
+    body = {"id": "p-1", "toolset_id": first, "tool_name": "shell_exec", "approval": {"type": "required"}}
+    assert (await client.post("/v1/tool_approval_policies", json=body)).status_code == 201
+    r = await client.post("/v1/tool_approval_policies", json={**body, "id": "p-2", "toolset_id": second})
+    assert r.status_code == 409, r.text
+    assert "p-1" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_list_and_delete(client):
     body = {
         "id": "p-list",

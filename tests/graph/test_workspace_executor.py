@@ -1548,6 +1548,46 @@ class TestToolCallApprovalWiring:
         assert captured["approval_resolver"] is sentinel
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("policy_toolset", ["system", "_system"])
+    async def test_a_tool_call_node_with_the_retired_prefix_is_gated_by_the_policy_of_the_toolset(
+        self, tmp_path, fake_storage_provider, policy_toolset,
+    ):
+        """A graph author can write ``_system__echo`` as a node's ``tool_id`` (the registry resolves ``_system`` to the ``system`` provider), and the node dispatches
+        through a manager that keys the approval gate on the toolset id AS WRITTEN. A policy on ``system::echo`` (or one stored under ``_system``) must gate that
+        node all the same: parked for approval, the tool never run (the approval-gate bypass through a toolset-id alias)."""
+        from primer.agent.approval import ApprovalResolver
+        from primer.model.graph import _ToolCallNode
+        from primer.model.tool_approval import RequiredApprovalConfig, ToolApprovalPolicy
+        from primer.model.yield_ import YieldToWorker
+
+        provider = _FakeToolsetProvider(tool_id="echo", output="echo-out")
+        store = fake_storage_provider.get_storage(ToolApprovalPolicy)
+        await store.create(ToolApprovalPolicy(id="tap-1", toolset_id=policy_toolset, tool_name="echo", approval=RequiredApprovalConfig()))
+        resolved: list[str] = []
+
+        async def toolset_resolver(toolset_id: str):
+            resolved.append(toolset_id)
+            return provider
+
+        async def _ar(agent_id): raise KeyError(agent_id)
+        async def _lr(a): raise NotImplementedError
+
+        executor = WorkspaceGraphExecutor(
+            graph=Graph(id="g", description="d", nodes=[_BeginNode(id="b"), _EndNode(id="e")], edges=[_StaticEdge(from_node="b", to_node="e")]),
+            agent_resolver=_ar, llm_resolver=_lr,  # type: ignore[arg-type]
+            state_repo=await _make_state_repo(tmp_path), graph_session_id="gsid-alias",
+            workspace_session=_FakeWorkspaceSession(),  # type: ignore[arg-type]
+            toolset_resolver=toolset_resolver, approval_resolver=ApprovalResolver(storage=store),
+        )
+
+        with pytest.raises(YieldToWorker) as parked:
+            await executor._dispatch_toolcall(_ToolCallNode(id="t", tool_id="_system__echo", arguments={}), {})
+
+        assert resolved == ["_system"], "the node resolved its toolset by the id as written, as the registry does"
+        assert parked.value.yielded.tool_name == "_approval" and parked.value.yielded.resume_metadata["policy_id"] == "tap-1"
+        assert provider.calls == [], "the tool ran although its call was parked for approval"
+
+    @pytest.mark.asyncio
     async def test_with_bypass_redispatches_with_bypass_true(self, tmp_path):
         """On resume, _dispatch_toolcall_with_bypass must re-dispatch with
         bypass_approval=True so the gate does not re-fire (infinite park)."""

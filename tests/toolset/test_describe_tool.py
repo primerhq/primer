@@ -6,7 +6,8 @@ for ONE ``(toolset_id, tool_name)`` from the tool catalog (``primer.toolset.tool
 
 * the output keys are exactly the contract (the wiki's reference pages and the agents read them), and each value is the catalog's, not a second opinion;
 * the call example names the right door: ``call_tool`` for a toolset, a direct call for the two scopes ``call_tool`` cannot reach;
-* the gate is the LIVE one, read from the same ``ApprovalResolver`` the gates use (an operator's edit shows; a disabled row does not), never the shipped default;
+* the gate is the LIVE one, read from the same ``ApprovalResolver`` the gates use (an operator's edit shows; a disabled row does not), never the shipped default,
+  and under whichever spelling of the toolset it is asked for (``_misc`` is ``misc``);
 * the refusals: an unknown toolset, an unknown tool (naming the toolset's tools), a toolset that will not list, bad arguments; an OAuth consent request is not
   swallowed;
 * it is a plain read: role user, no pause, no workspace (so it can be exposed over MCP), and it works without a run context.
@@ -24,15 +25,16 @@ from jsonschema import Draft202012Validator
 from primer.agent.approval import ApprovalResolver
 from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
 from primer.bootstrap.seed import crud_policy_id, ensure_crud_approval_policies
+from primer.common.toolset_ids import TOOLSET_ID_ALIASES
 from primer.mcp.safety import is_exposable
 from primer.model.chat import Tool, ToolCallResult
 from primer.model.except_ import AuthRequiredError
 from primer.model.principal import PrincipalRef
 from primer.model.tool_approval import PolicyApprovalConfig, RequiredApprovalConfig, ToolApprovalPolicy
 from primer.model.yield_ import ToolContext
-from primer.toolset._system_crud import _describe_tool_tool
+from primer.toolset._system_crud import _describe_tool_tool, _live_approval_gate
 from primer.toolset.system import build_system_toolset
-from primer.toolset.tool_catalog import collect_tool_entries
+from primer.toolset.tool_catalog import ToolEntry, collect_tool_entries
 from tests.mcp.test_required_role_completeness import reserved_provider_registry  # noqa: F401  (the fixture: a registry with every built-in toolset wired)
 from tests.toolset._scripted_toolset import Registry, Scripted, scripted_tool
 
@@ -209,6 +211,47 @@ async def test_with_no_resolver_wired_nothing_is_gated(sp, reserved_provider_reg
     _, (_, handler) = _describe_tool_tool(reserved_provider_registry, None)
     out = json.loads((await handler({"toolset_id": "misc", "tool_name": "uuid_v4"})).output)
     assert out["approval"] == {"gated": False}
+
+
+# ---- one toolset, several spellings ----------------------------------------------------------------------------------------------------------------------
+#
+# ``_misc`` is the retired id of ``misc`` and the registry runs the same provider for both. A policy on one spelling gates the other (the approval-gate bypass
+# through a toolset-id alias, see tests/toolset/test_approval_gate_toolset_aliases.py), so the gate this tool reports must not depend on the spelling it was asked about
+# or the one a descriptor carries.
+
+ALIASES = sorted(TOOLSET_ID_ALIASES.items())
+TOOL = {"system": "list_agents", "workspaces": "list_workspaces", "misc": "get_datetime", "search": "find"}
+
+
+@pytest.mark.parametrize(("alias", "current"), ALIASES)
+async def test_a_tool_is_described_the_same_whichever_spelling_of_its_toolset_is_asked_for(sp, reserved_provider_registry, alias, current):  # noqa: F811
+    search = Scripted([scripted_tool("find", toolset_id="search")], roles={"find": "user"})
+    toolset = build_system_toolset(storage_provider=sp, provider_registry=Registry({"search": search}, reserved_provider_registry))
+    tool = TOOL[current]
+    await sp.get_storage(ToolApprovalPolicy).create(_policy("tap-1", current, tool))
+
+    by_current, by_alias = await _described(toolset, current, tool), await _described(toolset, alias, tool)
+
+    assert by_alias == by_current, "the answer depends on the spelling of the toolset"
+    assert by_alias["toolset_id"] == current and by_alias["scoped_id"] == f"{current}__{tool}" and by_alias["reference"] == f"reference/tools/{current}/{tool}"
+    assert by_alias["approval"] == {"gated": True, "type": "required", "policy_id": "tap-1"}
+
+
+@pytest.mark.parametrize(("alias", "current"), ALIASES)
+@pytest.mark.parametrize("policy_spelling", ["current", "retired"])
+@pytest.mark.parametrize("entry_spelling", ["current", "retired"])
+async def test_the_live_gate_is_the_same_whichever_spelling_names_the_toolset(sp, alias, current, policy_spelling, entry_spelling):
+    """``_live_approval_gate`` asks the resolver for the entry's ``(toolset_id, tool)``: a descriptor that carries a retired id, or a policy stored under one, is the
+    same toolset, so the answer is the same."""
+    spelled = {"current": current, "retired": alias}
+    await sp.get_storage(ToolApprovalPolicy).create(_policy("tap-1", spelled[policy_spelling], "go"))
+    resolver = ApprovalResolver(storage=sp.get_storage(ToolApprovalPolicy))
+    entry = ToolEntry(
+        toolset_id=spelled[entry_spelling], tool=scripted_tool("go", toolset_id=spelled[entry_spelling]),
+        required_role="user", pauses_turn=False, needs_workspace=False, default_gate=None,
+    )
+
+    assert await _live_approval_gate(resolver, entry) == {"gated": True, "type": "required", "policy_id": "tap-1"}
 
 
 # ---- the refusals --------------------------------------------------------------------------------------------------------------------------------------

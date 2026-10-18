@@ -12,6 +12,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
+from primer.common.toolset_ids import canonical_toolset_id
 from primer.int.toolset import ToolsetProvider
 from primer.model.chat import Tool, ToolCallResult
 from primer.model.except_ import AuthRequiredError, NotFoundError
@@ -81,6 +82,7 @@ class Scripted(ToolsetProvider):
 class Registry:
     """Resolves a toolset by id: the scripted providers first, then ``real`` (a ``ProviderRegistry``) when given, else the real not-found error.
 
+    A retired alias (``_search``) is mapped to its current id first, as ``ProviderRegistry.get_toolset`` does, so a scripted ``search`` answers to both spellings.
     Every other attribute is the real registry's, so a toolset built over this stand-in can still invalidate and look things up.
     """
 
@@ -89,6 +91,7 @@ class Registry:
         self._real = real
 
     async def get_toolset(self, toolset_id: str) -> ToolsetProvider:
+        toolset_id = canonical_toolset_id(toolset_id)
         if toolset_id in self._providers:
             return self._providers[toolset_id]
         if self._real is not None:

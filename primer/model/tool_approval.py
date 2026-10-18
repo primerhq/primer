@@ -127,9 +127,15 @@ class ToolApprovalPolicy(Identifiable):
         min_length=1,
         description=(
             "Toolset id the policy applies to. May be a reserved "
-            "internal toolset (``_system``, ``_workspaces``, "
-            "``_misc``, ``_search``, ``web``) or a user-created "
-            "Toolset row's id."
+            "internal toolset (``system``, ``workspaces``, "
+            "``misc``, ``web``, ``crud``, ...) or a user-created "
+            "Toolset row's id. The retired underscore ids "
+            "(``_system``, ``_workspaces``, ``_misc``, ``_search``) "
+            "name the same toolset as the current id and are matched "
+            "as such: the policy gates the tool whichever way a call "
+            "spells its toolset, and a second policy for the same "
+            "tool under the other spelling is refused. Write the "
+            "current id."
         ),
     )
     tool_name: str = Field(
