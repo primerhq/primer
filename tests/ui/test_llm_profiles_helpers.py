@@ -17,6 +17,7 @@ What the block pins, in the order of the plan's Review Focus:
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -208,8 +209,16 @@ def test_the_name_rule(ctx, name, error) -> None:
     assert js(ctx, f"MP_nameError({json.dumps(name)})") == error
 
 
-def test_the_name_rule_is_the_character_set_of_a_profile_id_the_console_builds(ctx) -> None:
-    """Plan 02's ``PC_profileIdFor`` builds ids from ``[A-Za-z0-9][A-Za-z0-9._-]*`` (conflict C9): the aggregate's name is held to the same set."""
+def test_the_name_rule_is_the_pattern_the_register_overlay_builds_profile_ids_from(ctx) -> None:
+    """Conflict C9: ``PC_profileIdFor`` (seam I-5, ``providers/register-common.jsx``) builds the ids of imported profiles from ``PC_ID_RE``. The aggregate's name is held to the very same
+    pattern, so an id the console builds is always an id the console accepts, and the one is not edited without the other."""
+    common = (ROOT / "ui" / "components" / "providers" / "register-common.jsx").read_text(encoding="utf-8")
+    found = re.search(r"const PC_ID_RE = /(.+)/;", common)
+    assert found, "register-common.jsx no longer declares PC_ID_RE as a literal"
+    assert js(ctx, "MP_NAME_RULE.source") == found.group(1)
+
+
+def test_the_name_rule_accepts_and_refuses_the_ids_it_should(ctx) -> None:
     for ok in ("a", "A1", "1a", "a.b_c-d", "vllm-gx10--qwen3.8-27b"):
         assert js(ctx, f"MP_nameError({json.dumps(ok)})") is None, ok
     for bad in ("a:b", "a/b", "a\\b", "é", "a+b", "_a"):
