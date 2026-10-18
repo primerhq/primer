@@ -33,15 +33,17 @@ from tests.events.test_wait_for_event_tool import sp  # noqa: F401
 ADMIN = PrincipalRef(type="user", id="u-admin", display="admin", role="admin", source="local")
 USER = PrincipalRef(type="user", id="u-1", display="user", role="user", source="local")
 
-# Every way of naming what the feed shows a non-admin: an exact lifecycle type, a prefix glob, the four exact kinds.
+# Every way of naming what the feed shows a non-admin: an exact lifecycle type, a prefix glob, the four exact kinds. The canvas events are
+# visible like the session events (pivot P5, the lead's ruling after S2: the canvas is part of every user's chat in the shared install).
 LIFECYCLE = [
     "session.ended", "session.*", "session.?arked", "workspace.file_changed", "workspace.*",
+    "canvas.updated", "canvas.event", "canvas.*", "canvas.e?ent",
     "tool.called", "turn.started", "trigger.fired", "llm.called",
 ]
 # Kinds the feed hides from a non-admin, and globs that could reach one even when part of what they match is shown.
 HIDDEN = [
     "collection.document_pushed", "agent.updated", "approval.requested", "graph.node_entered", "agent.*", "*",
-    "tool.*", "turn.*", "llm.called*", "session*", "sess?on.ended", "[sw]ession.ended",
+    "tool.*", "turn.*", "llm.called*", "session*", "sess?on.ended", "[sw]ession.ended", "canvas*", "canvas", "[c]anvas.event",
 ]
 
 
@@ -86,7 +88,7 @@ async def test_one_hidden_kind_refuses_the_whole_wait_and_the_message_names_it(s
         "type": "forbidden",
         "message": (
             "this run's principal is not an admin, so it may wait only on the event kinds the event feed shows a non-admin "
-            "(session.*, workspace.*, llm.called, tool.called, trigger.fired, turn.started); refused: 'agent.*'"
+            "(session.*, workspace.*, canvas.*, llm.called, tool.called, trigger.fired, turn.started); refused: 'agent.*'"
         ),
     }
     assert await _subscriptions(sp) == []

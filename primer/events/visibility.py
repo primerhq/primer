@@ -5,12 +5,17 @@
 tool result, so a run whose principal is not an admin may wait only on those same kinds (``primer/toolset/events_wait.py``). Both read
 this module, so the two cannot drift. Prefixes and exact names, checked against the event type: the allowlist bounds the SHAPE of what a
 non-admin sees, redaction (:mod:`primer.events.redaction`) bounds the values.
+
+The canvas events (``canvas.updated`` and ``canvas.event``, pivot P5) are visible like the session events: the canvas is part of every
+user's chat in the shared install, and what they carry (element ids, the rev, the user's own validated choice or click and who made it)
+is what the chat transcript already shows. Their values are bounded where they are recorded (``primer.canvas.service``) and masked by
+the same redaction as the rest.
 """
 
 from __future__ import annotations
 
-#: Event-type prefixes a non-admin may see: the session and workspace lifecycle.
-USER_SAFE_PREFIXES: tuple[str, ...] = ("session.", "workspace.")
+#: Event-type prefixes a non-admin may see: the session and workspace lifecycle, and the session canvas.
+USER_SAFE_PREFIXES: tuple[str, ...] = ("session.", "workspace.", "canvas.")
 #: Exact event types a non-admin may see.
 USER_SAFE_TYPES: frozenset[str] = frozenset({"tool.called", "turn.started", "trigger.fired", "llm.called"})
 

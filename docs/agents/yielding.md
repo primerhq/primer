@@ -269,8 +269,8 @@ session.
   `wait_for_event` is open to every user, but the event that wakes it
   becomes your tool result, so a run started by a non-admin may wait
   only on the kinds `GET /v1/events` shows a non-admin: `session.*`,
-  `workspace.*`, `tool.called`, `turn.started`, `trigger.fired` and
-  `llm.called`. Any other kind (an entity's `created` / `updated` /
+  `workspace.*`, `canvas.*`, `tool.called`, `turn.started`,
+  `trigger.fired` and `llm.called`. Any other kind (an entity's `created` / `updated` /
   `deleted` events, `collection.document_pushed`, `approval.*`, the
   graph node events), and any glob that could match one (`*`,
   `agent.*`, `turn.*`), is refused with `type=forbidden` and nothing

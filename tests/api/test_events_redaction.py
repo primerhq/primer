@@ -103,6 +103,20 @@ async def test_user_reads_are_scoped_and_allowlisted(client, app) -> None:
         entity_id="s-red", workspace_id="ws-red",
         payload={"session_id": "s-red"},
     )
+    # The canvas is part of every user's chat in the shared install: its events are read like the session's (pivot P5).
+    await store.append(
+        event_type="canvas.updated", entity_kind="session", entity_id="s-red", workspace_id="ws-red", session_id="s-red",
+        payload={"rev": 2, "source": "agent", "by": "agent", "changed": {"added": ["t"], "updated": ["root"], "removed": []}, "element_count": 1},
+    )
+    await store.append(
+        event_type="canvas.event", entity_kind="session", entity_id="s-red", workspace_id="ws-red", session_id="s-red",
+        payload={"id": "e1", "seq": 1, "rev": 2, "element": "go", "type": "Button", "kind": "click", "by": "alice", "wake": True},
+    )
+    # ... but only in the workspace the canvas belongs to.
+    await store.append(
+        event_type="canvas.event", entity_kind="session", entity_id="s-other", workspace_id="ws-other", session_id="s-other",
+        payload={"id": "e1", "seq": 1, "rev": 1, "element": "go", "type": "Button", "kind": "click", "by": "bob", "wake": True},
+    )
 
     await _login_as_user(client, app)
     # The platform log is not theirs: a workspace filter is mandatory.
@@ -115,8 +129,8 @@ async def test_user_reads_are_scoped_and_allowlisted(client, app) -> None:
     assert scoped.status_code == 200, scoped.text
     types = [e["event_type"] for e in scoped.json()["items"]]
     # Entity CRUD (whose payloads mirror stored rows) never reaches a
-    # non-admin; the session lifecycle does.
-    assert types == ["session.started"]
+    # non-admin; the session lifecycle and the session canvas do.
+    assert types == ["session.started", "canvas.updated", "canvas.event"]
 
 
 @pytest.mark.asyncio
