@@ -77,3 +77,28 @@ def test_the_allowlisted_overlays_pass() -> None:
         },
         container_security_context_overrides={},
     ))
+
+
+# ---- platform revamp 2026-10 (plan 08, task 2): the typed placement fields do not widen the allowlist ---------------------
+
+@pytest.mark.parametrize("overlay, key", [
+    ({"nodeSelector": {"a": "b"}}, "nodeSelector"),
+    ({"tolerations": []}, "tolerations"),
+    ({"serviceAccountName": "x"}, "serviceAccountName"),
+])
+def test_pod_overrides_still_cannot_set_the_placement_keys(overlay, key) -> None:
+    """Node selector, tolerations and the service account are typed template fields now, written by the manifest builder.
+    ``pod_overrides`` stays an allowlist and still refuses them, so a user-tier template cannot reach the admin-only two
+    through the free-form overlay."""
+    with pytest.raises(ConfigError, match=key):
+        _validate_template_overrides(_template(pod_overrides=overlay))
+
+
+def test_the_typed_placement_fields_pass_the_overlay_check() -> None:
+    from primer.model.workspace import K8sGpu, K8sToleration
+
+    _validate_template_overrides(_template(
+        node_selector={"gpu": "true"},
+        tolerations=[K8sToleration(key="gpu", operator="Exists", effect="NoSchedule")],
+        gpu=K8sGpu(count=1), service_account_name="runner", image_pull_policy="Always",
+    ))

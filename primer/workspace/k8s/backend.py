@@ -178,6 +178,24 @@ def _validate_template_overrides(template: WorkspaceTemplate) -> None:
     )
 
 
+# The two keys of the per-workspace Secret (see ``_create_secret``). The container ``envFrom``s that Secret, and an explicit ``env``
+# entry beats ``envFrom`` in Kubernetes, so a template or override that set either name would replace the token the platform
+# dials the runtime with. The token comes only from the Secret: neither source is taken for these names.
+_RUNTIME_TOKEN_ENV_NAMES: frozenset[str] = frozenset({"PRIMER_RUNTIME_TOKEN", "RUNTIME_TOKEN"})
+
+_GIB = 2**30
+_MIB = 2**20
+
+
+def _bytes_to_quantity(n: int) -> str:
+    """A Kubernetes quantity for ``n`` bytes: ``<n>Gi`` when it is whole GiB, ``<n>Mi`` when whole MiB, else the plain number."""
+    if n % _GIB == 0:
+        return f"{n // _GIB}Gi"
+    if n % _MIB == 0:
+        return f"{n // _MIB}Mi"
+    return str(n)
+
+
 def _build_statefulset_manifest(
     *,
     sts_name: str,
@@ -186,6 +204,7 @@ def _build_statefulset_manifest(
     template: WorkspaceTemplate,
     provider_cfg: KubernetesWorkspaceConfig,
     obj_name: str | None = None,
+    overrides: WorkspaceTemplateOverrides | None = None,
 ) -> dict[str, Any]:
     """Compose the StatefulSet body for a workspace Pod.
 
@@ -195,12 +214,27 @@ def _build_statefulset_manifest(
     and ``spec.serviceName`` is set to ``obj_name`` so the STS binds to
     the matching Headless Service. ``workspace-id=<id>`` lands on the pod
     template labels to match the Service selector.
+
+    ``overrides`` are this workspace's own tweaks (platform revamp 2026-10): their ``env`` goes on top of the template's in
+    the container's ``env`` (never the runtime token names), and ``resources`` replaces the template's CPU and memory (and
+    the GPU, when the template has one, is added) and the PVC request. The template's placement fields land on the pod:
+    ``nodeSelector``, ``tolerations``, ``serviceAccountName`` and, on the container, ``imagePullPolicy``. They are set
+    BEFORE ``pod_overrides`` is merged, which cannot set any of them (see :data:`_POD_OVERRIDES_ALLOWED`).
     """
     assert isinstance(template.backend, KubernetesTemplateConfig)
     tcfg = template.backend
     if obj_name is None:
         from primer.workspace.k8s.naming import k8s_object_name
         obj_name = k8s_object_name(workspace_id)
+
+    merged = BaseWorkspaceBackend.merge_overrides(template, overrides)
+    refused_env = sorted(name for name in merged.env if name in _RUNTIME_TOKEN_ENV_NAMES)
+    if refused_env:
+        logger.warning(
+            "workspace %s: not setting env %s from the template or overrides; the runtime token comes only from "
+            "the workspace Secret", workspace_id, ", ".join(refused_env),
+        )
+    size = overrides.resources if overrides is not None else None
 
     base_container: dict[str, Any] = {
         "name": "workspace",
@@ -210,8 +244,9 @@ def _build_statefulset_manifest(
             {"name": "ws", "mountPath": tcfg.workdir},
         ] + [vm.model_dump(exclude_none=True) if hasattr(vm, "model_dump") else dict(vm) for vm in tcfg.extra_volume_mounts],
         "env": [
-            {"name": k, "value": v.get_secret_value()}
-            for k, v in template.env.items()
+            {"name": k, "value": v}
+            for k, v in merged.env_unwrapped().items()
+            if k not in _RUNTIME_TOKEN_ENV_NAMES
         ],
         "envFrom": [
             {"secretRef": {"name": obj_name}},
@@ -230,13 +265,22 @@ def _build_statefulset_manifest(
         base_container["command"] = ["sleep", "infinity"]
     if tcfg.args is not None:
         base_container["args"] = list(tcfg.args)
-    if template.resources.cpu_cores is not None or template.resources.memory_bytes is not None:
-        limits: dict[str, str] = {}
-        if template.resources.cpu_cores is not None:
-            limits["cpu"] = str(template.resources.cpu_cores)
-        if template.resources.memory_bytes is not None:
-            limits["memory"] = str(template.resources.memory_bytes)
-        base_container["resources"] = {"limits": limits, "requests": limits}
+    if tcfg.image_pull_policy is not None:
+        base_container["imagePullPolicy"] = tcfg.image_pull_policy
+    # Requests = limits. A per-workspace size wins over the template's, field by field.
+    cpu_cores = size.cpu_cores if size is not None and size.cpu_cores is not None else template.resources.cpu_cores
+    memory_bytes = (
+        size.memory_bytes if size is not None and size.memory_bytes is not None else template.resources.memory_bytes
+    )
+    limits: dict[str, str] = {}
+    if cpu_cores is not None:
+        limits["cpu"] = str(cpu_cores)
+    if memory_bytes is not None:
+        limits["memory"] = str(memory_bytes)
+    if tcfg.gpu is not None:
+        limits[tcfg.gpu.resource_name] = str(tcfg.gpu.count)
+    if limits:
+        base_container["resources"] = {"limits": limits, "requests": dict(limits)}
 
     container = base_container
 
@@ -253,6 +297,12 @@ def _build_statefulset_manifest(
         base_pod["imagePullSecrets"] = [
             {"name": n} for n in provider_cfg.image_pull_secrets
         ]
+    if tcfg.node_selector:
+        base_pod["nodeSelector"] = dict(tcfg.node_selector)
+    if tcfg.tolerations:
+        base_pod["tolerations"] = [t.model_dump(exclude_none=True) for t in tcfg.tolerations]
+    if tcfg.service_account_name is not None:
+        base_pod["serviceAccountName"] = tcfg.service_account_name
 
     pod = _deep_merge(base_pod, tcfg.pod_overrides or {})
 
@@ -263,9 +313,12 @@ def _build_statefulset_manifest(
     }
     annotations: dict[str, str] = {}
 
+    disk_bytes = size.disk_bytes if size is not None else None
     pvc_spec: dict[str, Any] = {
         "accessModes": list(tcfg.pvc_access_modes),
-        "resources": {"requests": {"storage": tcfg.pvc_size}},
+        "resources": {
+            "requests": {"storage": _bytes_to_quantity(disk_bytes) if disk_bytes is not None else tcfg.pvc_size},
+        },
     }
     if tcfg.storage_class is not None:
         pvc_spec["storageClassName"] = tcfg.storage_class
@@ -474,6 +527,7 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
             template=template,
             provider_cfg=self._config,
             obj_name=obj_name,
+            overrides=overrides,
         )
         await self._tracked(created, "statefulset", self._apps_v1.create_namespaced_stateful_set(
             namespace=self._config.namespace,
