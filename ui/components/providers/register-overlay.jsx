@@ -13,7 +13,7 @@
 // - otherwise the schema-driven PC_ProviderForm in its framed layout (the form classes, and a wizard class whose own page is not loaded).
 //
 // Seam I-3: PC_RegisterOverlay({ initialClass, allowedClasses?, excludeKinds?, editRow?, onClose(), onSaved(row), onDeleted?(id) }). `excludeKinds` is
-// added to the built-in kinds the Type select leaves out (Plan 04 passes ["local"]); without `onDeleted` the overlay closes itself after a delete.
+// added to the built-in kinds the Type select leaves out; without `onDeleted` the overlay closes itself after a delete.
 
 // The wizard classes' pages, merged in by the files that define them (each does Object.assign(window.PC_REGISTER_PAGES || {}, { <key>: Page })). A page
 // takes { klass, editRow, excludeKinds, frame, onSaved(row), onClose() } and returns frame({ body, footerLeft?, footerRight, error? }).
