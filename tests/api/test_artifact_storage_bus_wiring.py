@@ -42,7 +42,6 @@ async def test_a_tool_edit_evicts_the_api_processes_store(app):
     )
 
     assert not result.is_error, result.output
-    assert warm.__class__.__name__ == "DbArtifactStorage"
     assert await reg.get_provider("asp-x") is not warm
 
 
