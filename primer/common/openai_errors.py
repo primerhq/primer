@@ -16,6 +16,7 @@ from openai import (
     BadRequestError as OpenAIBadRequestError,
     InternalServerError as OpenAIInternalServerError,
     RateLimitError as OpenAIRateLimitError,
+    UnprocessableEntityError as OpenAIUnprocessableEntityError,
 )
 
 from primer.model.except_ import (
@@ -39,6 +40,7 @@ def classify_openai_exception(exc: Exception) -> PrimerError:
     | AuthenticationError (401) | AuthenticationError |
     | RateLimitError (429) | RateLimitError |
     | BadRequestError (400) | BadRequestError (carries error code) |
+    | UnprocessableEntityError (422) | BadRequestError (carries status 422) |
     | InternalServerError (5xx) | ServerError |
     | Other APIStatusError with status >= 500 | ServerError |
     | Other APIStatusError | ProviderError |
@@ -64,7 +66,10 @@ def classify_openai_exception(exc: Exception) -> PrimerError:
             status_code=getattr(exc, "status_code", 429),
             cause=exc,
         )
-    if isinstance(exc, OpenAIBadRequestError):
+    # A 422 is how an OpenAI-compatible server (vLLM, any FastAPI app)
+    # rejects a request that failed its validation: the request was refused,
+    # exactly as a 400 is, and the Anthropic classifier already maps it so.
+    if isinstance(exc, (OpenAIBadRequestError, OpenAIUnprocessableEntityError)):
         return BadRequestError(
             getattr(exc, "message", str(exc)) or "OpenAI rejected the request",
             status_code=getattr(exc, "status_code", 400),

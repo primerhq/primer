@@ -34,6 +34,15 @@ def _make_openai_error(cls: type, *, status_code: int = 400, code: str | None = 
 
 
 class TestClassifyOpenaiException:
+    def test_unprocessable_entity_maps_to_bad_request(self) -> None:
+        """An OpenAI-compatible server (vLLM) rejects a request that fails its
+        validation with a 422: a refused request, like a 400."""
+        sdk_exc = _make_openai_error(openai.UnprocessableEntityError, status_code=422)
+        result = classify_openai_exception(sdk_exc)
+        assert isinstance(result, BadRequestError)
+        assert result.status_code == 422
+        assert result.cause is sdk_exc
+
     def test_authentication_error_maps_to_primer_authentication(self) -> None:
         sdk_exc = _make_openai_error(openai.AuthenticationError, status_code=401)
         result = classify_openai_exception(sdk_exc)

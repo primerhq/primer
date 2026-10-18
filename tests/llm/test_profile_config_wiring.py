@@ -442,6 +442,31 @@ class TestTheKnobsReachTheWire:
         await _call_under(OpenChatLLM(_openchat(OpenChatFlavor.OPENAI)), _cfg(ReasoningLevel.LOW), model="my-deployment")
         assert [("reasoning_effort" in b) for b in bodies] == [True, False]
 
+    async def test_openchat_vllm_422_on_the_template_switch_retries_without_it(self, monkeypatch) -> None:
+        """vLLM validates the request body and answers 422 for a field it
+        refuses; the classifier maps it to BadRequestError, so the guard
+        makes the call once more without the profile's settings."""
+        http = _sdk_http_module()
+        bodies: list[dict] = []
+
+        def _handle(request):
+            body = json.loads(request.content)
+            bodies.append(body)
+            if "chat_template_kwargs" in body:
+                return http.Response(422, json={"detail": [{
+                    "type": "extra_forbidden", "loc": ["body", "chat_template_kwargs"],
+                    "msg": "Extra inputs are not permitted", "input": {"enable_thinking": False},
+                }]})
+            return http.Response(200, content=_SSE, headers={"content-type": "text/event-stream"})
+
+        real = AsyncOpenAI
+        monkeypatch.setattr(
+            "primer.llm.openchat.AsyncOpenAI",
+            lambda **kw: real(**kw, http_client=http.AsyncClient(transport=http.MockTransport(_handle))),
+        )
+        await _call_under(OpenChatLLM(_openchat(OpenChatFlavor.VLLM)), _cfg(ReasoningLevel.OFF), model="qwen3")
+        assert [("chat_template_kwargs" in b) for b in bodies] == [True, False]
+
     async def test_openchat_vllm_sends_the_template_switch_in_the_body(self, monkeypatch) -> None:
         wire = _wire_for("openchat", monkeypatch)
         await _call_under(OpenChatLLM(_openchat(OpenChatFlavor.VLLM)), _cfg(ReasoningLevel.OFF))
