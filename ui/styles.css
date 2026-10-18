@@ -5566,6 +5566,7 @@ button.nv-trace-line { cursor: pointer; }
 .pk-overlay .modal-b { padding: 18px 20px; }
 .pk-foot {
   display: flex;
+  flex-wrap: wrap;
   width: 100%;
   justify-content: space-between;
   align-items: center;
@@ -5573,6 +5574,8 @@ button.nv-trace-line { cursor: pointer; }
 }
 .pk-foot-left,
 .pk-foot-right { display: flex; align-items: center; gap: 8px; }
+/* on a sheet too narrow for both sides (320px), the action's side wraps to a line of its own and stays on the right */
+.pk-foot-right { margin-left: auto; }
 .pk-selector {
   display: flex;
   flex-direction: column;
@@ -5607,7 +5610,7 @@ button.nv-trace-line { cursor: pointer; }
   top: calc(100% + 6px);
   left: 0;
   min-width: 100%;
-  max-height: 340px;
+  max-height: min(70vh, 460px);
   overflow-y: auto;
   display: flex;
   flex-direction: column;
