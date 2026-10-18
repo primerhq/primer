@@ -5861,6 +5861,47 @@ button.nv-trace-line { cursor: pointer; }
 }
 
 /* =========================================================================
+   Register provider overlay, LLM pages (plan 02 Task 12): the models page's heading, the context window and status in the check table's last column, and the
+   line that says where a partial import stands.
+   ========================================================================= */
+
+.pc-import-head { outline: none; display: flex; flex-direction: column; gap: 2px; }
+.pc-import-head:focus-visible { box-shadow: 0 0 0 3px var(--accent-dim); border-radius: var(--r-6); }
+.pc-import-title { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.pc-import-sub { font-size: 12px; color: var(--green); }
+.pc-import-extra { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.pc-import-context {
+  width: 100%;
+  height: 30px;
+  box-sizing: border-box;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-6);
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12.5px;
+  outline: none;
+}
+.pc-import-context:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
+.pc-import-context[aria-invalid="true"] { border-color: var(--red); }
+.pc-import-context[readonly] { color: var(--text-3); }
+.pc-import-status { min-height: 14px; font-size: 11px; line-height: 1.3; color: var(--text-3); overflow-wrap: anywhere; }
+.pc-import-status[data-tone="ok"] { color: var(--green); }
+.pc-import-status[data-tone="error"] { color: var(--red); }
+.pc-import-summary {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--amber);
+  border-radius: var(--r-6);
+  font-size: 12px;
+  color: var(--text-2);
+}
+@media (max-width: 639px) {
+  .pc-import-context { height: var(--tap-min); }
+}
+
+/* =========================================================================
    nv- SYSTEM (wiring plan P5 T11): dashboard health cards, worker fleet,
    the cross-workspace attention panel, the profile page.
    ========================================================================= */
