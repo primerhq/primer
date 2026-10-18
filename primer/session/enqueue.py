@@ -115,8 +115,10 @@ async def wake_session(
     EARLIER human action, not fresh intent). A pause is a control a human
     exercised on purpose; wake_session must not be the place that quietly
     decides an unrelated automated event counts as that human changing
-    their mind. See the ``pause_requested`` handling below -- a non-human
-    wake queues instead of clearing it, so a new caller literally cannot
+    their mind. See the pause handling below -- a non-human wake of a
+    session paused on purpose (``pause_requested``, or status PAUSED with
+    no flag, which is how the pause route pauses an idle session) queues
+    instead of clearing the pause, so a new caller literally cannot
     compile without someone consciously stating which side of that line
     they're on.
 
@@ -166,11 +168,17 @@ async def wake_session(
                         session_id,
                     )
 
-        if row.pause_requested and not human_intent:
+        if (row.pause_requested or row.status == SessionStatus.PAUSED) and not human_intent:
             # 01a08c08: the operator paused this session on purpose; a
             # non-human wake (trigger fire, agent-to-agent steer, a
             # queued message replaying) must not be the thing that
-            # silently un-pauses it. Queue the instruction through the
+            # silently un-pauses it. The pause is on purpose whether it
+            # landed while a turn ran (pause_requested: the worker honours
+            # the flag at the next turn boundary and writes PAUSED, the flag
+            # still set) or while the session was idle (the pause route
+            # writes PAUSED straight onto a CREATED or WAITING row and sets
+            # no flag), so either one holds the session.
+            # Queue the instruction through the
             # SAME pending-message mechanism deliver_steer already uses
             # for a busy session (store_pending_steer / realize_next_
             # pending), rather than forcing a resume nobody asked for or
