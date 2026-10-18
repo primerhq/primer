@@ -113,6 +113,42 @@ class TestEachAdapterTranslatesForItsOwnWire:
         llm = OpenResponsesLLM(_openresponses(OpenResponsesFlavor.OPENAI))
         assert llm.profile_extended(_cfg(ReasoningLevel.HIGH)) == {"reasoning_effort": "high"}
 
+    @pytest.mark.parametrize("model, level, expected", [
+        ("gpt-4o", ReasoningLevel.LOW, {}),  # does not reason: no effort at all
+        ("gpt-4.1", ReasoningLevel.HIGH, {}),
+        ("gpt-5-chat-latest", ReasoningLevel.OFF, {}),
+        ("o3", ReasoningLevel.OFF, {"reasoning_effort": "low"}),
+        ("o4-mini", ReasoningLevel.MINIMAL, {"reasoning_effort": "low"}),
+        ("gpt-5", ReasoningLevel.OFF, {"reasoning_effort": "minimal"}),
+        ("gpt-5-mini", ReasoningLevel.HIGH, {"reasoning_effort": "high"}),
+        ("gpt-5.1", ReasoningLevel.OFF, {"reasoning_effort": "none"}),
+        ("gpt-5.1", ReasoningLevel.MINIMAL, {"reasoning_effort": "low"}),
+        ("gpt-5.1-codex", ReasoningLevel.OFF, {"reasoning_effort": "low"}),
+        ("gpt-5-pro", ReasoningLevel.LOW, {"reasoning_effort": "high"}),
+        # Not in the table: the generic value; the stream-open guard covers a refusal.
+        ("my-deployment", ReasoningLevel.OFF, {"reasoning_effort": "minimal"}),
+    ])
+    def test_openchat_openai_effort_is_the_models(self, model, level, expected) -> None:
+        llm = OpenChatLLM(_openchat(OpenChatFlavor.OPENAI))
+        assert llm.profile_extended(_cfg(level), model=model) == expected
+
+    @pytest.mark.parametrize("model, level, expected", [
+        ("gpt-4o-mini", ReasoningLevel.HIGH, {}),
+        ("o3-mini", ReasoningLevel.OFF, {"reasoning_effort": "low"}),
+        ("gpt-5.2", ReasoningLevel.OFF, {"reasoning_effort": "none"}),
+    ])
+    def test_openresponses_effort_is_the_models(self, model, level, expected) -> None:
+        llm = OpenResponsesLLM(_openresponses(OpenResponsesFlavor.OPENAI))
+        assert llm.profile_extended(_cfg(level), model=model) == expected
+
+    def test_a_model_that_does_not_reason_drops_a_passthrough_effort_too(self, caplog) -> None:
+        """The typed level wins, and the model takes no effort at all."""
+        caplog.set_level(logging.DEBUG, logger="primer.llm._reasoning")
+        llm = OpenChatLLM(_openchat(OpenChatFlavor.OPENAI))
+        cfg = _cfg(ReasoningLevel.LOW, reasoning_effort="high", seed=1)
+        assert llm.profile_extended(cfg, model="gpt-4o") == {"seed": 1}
+        assert any("does not reason" in r.getMessage() for r in caplog.records)
+
     def test_openresponses_vllm_maps_nothing_but_keeps_the_passthrough(self) -> None:
         """Verified against a live vLLM: its Responses endpoint honours no
         reasoning knob, so the mapping emits none (and warns)."""
@@ -346,6 +382,36 @@ class TestTheKnobsReachTheWire:
         assert body["reasoning_effort"] == "low"
         assert body["seed"] == 7
 
+    async def test_openchat_sends_no_effort_to_a_model_that_does_not_reason(self, monkeypatch) -> None:
+        wire = _wire_for("openchat", monkeypatch)
+        await _call_under(OpenChatLLM(_openchat(OpenChatFlavor.OPENAI)), _cfg(ReasoningLevel.LOW), model="gpt-4o")
+        assert "reasoning_effort" not in _body(wire)
+
+    async def test_openchat_retries_once_without_an_effort_the_model_refuses(self, monkeypatch) -> None:
+        """A deployment name the table cannot classify gets the generic value;
+        when the model refuses it, the call is made again without it."""
+        http = _sdk_http_module()
+        bodies: list[dict] = []
+
+        def _handle(request):
+            body = json.loads(request.content)
+            bodies.append(body)
+            if "reasoning_effort" in body:
+                return http.Response(400, json={"error": {
+                    "message": "Unsupported parameter: 'reasoning_effort' is not supported with this model.",
+                    "type": "invalid_request_error", "param": "reasoning_effort",
+                    "code": "unsupported_parameter",
+                }})
+            return http.Response(200, content=_SSE, headers={"content-type": "text/event-stream"})
+
+        real = AsyncOpenAI
+        monkeypatch.setattr(
+            "primer.llm.openchat.AsyncOpenAI",
+            lambda **kw: real(**kw, http_client=http.AsyncClient(transport=http.MockTransport(_handle))),
+        )
+        await _call_under(OpenChatLLM(_openchat(OpenChatFlavor.OPENAI)), _cfg(ReasoningLevel.LOW), model="my-deployment")
+        assert [("reasoning_effort" in b) for b in bodies] == [True, False]
+
     async def test_openchat_vllm_sends_the_template_switch_in_the_body(self, monkeypatch) -> None:
         wire = _wire_for("openchat", monkeypatch)
         await _call_under(OpenChatLLM(_openchat(OpenChatFlavor.VLLM)), _cfg(ReasoningLevel.OFF))
@@ -410,12 +476,16 @@ class TestTheKnobsReachTheWire:
 class TestEveryKindAcceptsItsTranslation:
     """The translation lands in each adapter's request, not in its drop list."""
 
-    def test_openresponses_sends_reasoning_effort_as_reasoning(self) -> None:
+    @pytest.mark.parametrize("model, level, effort", [
+        (None, ReasoningLevel.HIGH, "high"),
+        ("gpt-5.1", ReasoningLevel.OFF, "none"),
+    ])
+    def test_openresponses_sends_reasoning_effort_as_reasoning(self, model, level, effort) -> None:
         from primer.llm.openresponses import _extract_extended_kwargs
 
         llm = OpenResponsesLLM(_openresponses(OpenResponsesFlavor.OPENAI))
-        assert _extract_extended_kwargs(llm.profile_extended(_cfg(ReasoningLevel.HIGH))) == {
-            "reasoning": {"effort": "high"},
+        assert _extract_extended_kwargs(llm.profile_extended(_cfg(level), model=model)) == {
+            "reasoning": {"effort": effort},
         }
 
     @pytest.mark.parametrize("model, expected", [

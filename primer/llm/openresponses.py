@@ -949,7 +949,7 @@ class OpenResponsesLLM(LLM):
     ) -> dict[str, Any]:
         """``reasoning_effort`` (sent as ``reasoning.effort``); vLLM's Responses
         endpoint honours no reasoning knob, so that flavor maps none."""
-        return openresponses_extended(config, flavor=self._config.flavor.value)
+        return openresponses_extended(config, flavor=self._config.flavor.value, model=model)
 
     async def stream(  # type: ignore[override]
         self,

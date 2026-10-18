@@ -38,7 +38,7 @@ from primer.model.model_profile import ModelProfileConfig, ReasoningLevel
 logger = logging.getLogger(__name__)
 
 
-# OpenAI Responses has no true off; "minimal" is its floor.
+# OpenAI, a model the table does not know: no true off, "minimal" the floor.
 _OPENAI_EFFORT: dict[ReasoningLevel, str] = {
     ReasoningLevel.OFF: "minimal",
     ReasoningLevel.MINIMAL: "minimal",
@@ -46,6 +46,75 @@ _OPENAI_EFFORT: dict[ReasoningLevel, str] = {
     ReasoningLevel.MEDIUM: "medium",
     ReasoningLevel.HIGH: "high",
 }
+
+# OpenAI effort values are the model's: o-series and the codex models start
+# at "low", gpt-5 at "minimal", gpt-5.1 and later have a true "none" (and no
+# "minimal"), gpt-5-pro takes only "high".
+_LOW_FLOOR = {
+    ReasoningLevel.OFF: "low", ReasoningLevel.MINIMAL: "low",
+    ReasoningLevel.LOW: "low", ReasoningLevel.MEDIUM: "medium",
+    ReasoningLevel.HIGH: "high",
+}
+_OPENAI_EFFORT_BY_FAMILY: dict[str, dict[ReasoningLevel, str]] = {
+    "o-series": _LOW_FLOOR,
+    "codex": _LOW_FLOOR,
+    "gpt-5": _OPENAI_EFFORT,
+    "gpt-5.1+": {**_LOW_FLOOR, ReasoningLevel.OFF: "none"},
+    "pro": dict.fromkeys(ReasoningLevel, "high"),
+}
+
+_OPENAI_GPT = re.compile(r"gpt-(\d+)(?:\.(\d+))?")
+
+
+def openai_family(model: str | None) -> str | None:
+    """The effort family of an OpenAI model id: ``"no-reasoning"``, an effort
+    family of :data:`_OPENAI_EFFORT_BY_FAMILY`, or None when the table does
+    not know it (a deployment name, a self-hosted model)."""
+    name = (model or "").lower()
+    if name.startswith("ft:"):
+        name = name[3:]
+    name = name.rsplit("/", 1)[-1]
+    if name.startswith(("gpt-4", "gpt-3.5", "chatgpt-")) or "-chat" in name:
+        return "no-reasoning"
+    if re.match(r"o\d", name):
+        if name.startswith(("o1-mini", "o1-preview")):
+            return "no-reasoning"
+        return "o-series"
+    match = _OPENAI_GPT.match(name)
+    if match and int(match.group(1)) >= 5:
+        if "-pro" in name:
+            return "pro"
+        if "codex" in name:
+            return "codex"
+        if (int(match.group(1)), int(match.group(2) or 0)) == (5, 0):
+            return "gpt-5"
+        return "gpt-5.1+"
+    return None
+
+
+def _openai_effort(config: ModelProfileConfig, model: str | None) -> dict[str, Any]:
+    """``reasoning_effort`` for an OpenAI model, with the value the model takes.
+
+    A model that does not reason (gpt-4o, gpt-4.1, the chat models) refuses
+    the parameter, so none is sent, logged once at DEBUG. A model the table
+    does not know gets the generic value; the stream-open guard retries once
+    without it if the model refuses.
+    """
+    level = config.reasoning
+    assert level is not None
+    family = openai_family(model)
+    if family == "no-reasoning":
+        debug_once(
+            ("openai-no-reasoning", str(model)),
+            "OpenAI model %s does not reason; the profile's reasoning level "
+            "(%s) is not sent",
+            model, level.value,
+        )
+        out = dict(config.extended or {})
+        out.pop("reasoning_effort", None)
+        return out
+    efforts = _OPENAI_EFFORT_BY_FAMILY.get(family or "", _OPENAI_EFFORT)
+    return _merge(config, {"reasoning_effort": efforts[level]})
 
 # Gemini 2.5 takes a token budget; 0 turns thinking off where the model allows.
 _GEMINI_BUDGET: dict[ReasoningLevel, int] = {
@@ -208,7 +277,7 @@ def _merge(config: ModelProfileConfig, mapped: dict[str, Any]) -> dict[str, Any]
 
 
 def openresponses_extended(
-    config: ModelProfileConfig, *, flavor: str | None = None,
+    config: ModelProfileConfig, *, flavor: str | None = None, model: str | None = None,
 ) -> dict[str, Any]:
     """Reasoning knobs for the OpenAI Responses wire.
 
@@ -231,11 +300,11 @@ def openresponses_extended(
             extra={"reasoning": level.value, "flavor": flavor},
         )
         return dict(config.extended or {})
-    return _merge(config, {"reasoning_effort": _OPENAI_EFFORT[level]})
+    return _openai_effort(config, model)
 
 
 def openchat_extended(
-    config: ModelProfileConfig, *, flavor: str | None = None,
+    config: ModelProfileConfig, *, flavor: str | None = None, model: str | None = None,
 ) -> dict[str, Any]:
     """Reasoning knobs for the Chat Completions wire.
 
@@ -244,7 +313,9 @@ def openchat_extended(
     false the response carries ``reasoning: null`` and real content; without
     it, reasoning is emitted and ``content`` is null.
 
-    Real OpenAI on this wire takes ``reasoning_effort``.
+    Real OpenAI on this wire takes ``reasoning_effort``, with the value the
+    model takes, and none for a model that does not reason (see
+    :func:`_openai_effort`).
     """
     level = config.reasoning
     if level is None:
@@ -255,7 +326,7 @@ def openchat_extended(
                 "enable_thinking": level is not ReasoningLevel.OFF,
             },
         })
-    return _merge(config, {"reasoning_effort": _OPENAI_EFFORT[level]})
+    return _openai_effort(config, model)
 
 
 def anthropic_extended(
@@ -563,6 +634,7 @@ __all__ = [
     "debug_once",
     "gemini_extended",
     "ollama_extended",
+    "openai_family",
     "openchat_extended",
     "openresponses_extended",
     "openrouter_extended",
