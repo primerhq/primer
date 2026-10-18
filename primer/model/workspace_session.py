@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum, StrEnum
-from typing import TYPE_CHECKING, Annotated, Any, Literal, Union
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal, Union
 
 from pydantic import BaseModel, Field, computed_field, field_validator
 
@@ -1228,6 +1228,26 @@ class PeerAttribution(BaseModel):
         return cls.model_validate(attribution[PEER_PAYLOAD_KEY])
 
 
+class PeerMessage(Identifiable):
+    """One delivered session-to-session message (message_session): the rate limit's ledger. Only a sender's newest PEER_RATE_LIMIT rows are kept.
+
+    A row carries who sent to whom and how, never the text. The sender's recent rows are what the limit counts (``primer.session.peer_messages``);
+    a refused attempt writes none, so a refusal never spends the sender's allowance.
+    """
+
+    _id_prefix: ClassVar[str | None] = "pmsg"
+
+    from_session_id: str = Field(..., min_length=1)
+    from_workspace_id: str = Field(..., min_length=1)
+    to_session_id: str = Field(..., min_length=1)
+    to_workspace_id: str = Field(..., min_length=1)
+    hops: int = Field(..., ge=1, description="The hop count of the message (see PeerAttribution.hops).")
+    delivery: Literal["woken", "queued"] = Field(
+        ..., description="How the message reached the target: it started a turn (woken) or waited for a turn boundary (queued).",
+    )
+    sent_at: datetime
+
+
 # ===========================================================================
 # Forward-reference resolution
 # ===========================================================================
@@ -1273,6 +1293,7 @@ __all__ = [
     "NON_ENDED_STATUSES_NOT_PAUSED",
     "PEER_PAYLOAD_KEY",
     "PeerAttribution",
+    "PeerMessage",
     "SessionMessageKind",
     "SessionMessageRecord",
     "WorkspaceSession",
