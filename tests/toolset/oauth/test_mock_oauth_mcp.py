@@ -288,6 +288,17 @@ def test_deny_next_authorize(mock_oauth_mcp):
     assert mock_oauth_mcp.state.deny_next_authorize is False
 
 
+def test_only_one_of_two_simultaneous_authorizations_is_denied(mock_oauth_mcp):
+    from concurrent.futures import ThreadPoolExecutor
+
+    mock_oauth_mcp.state.deny_next_authorize = True
+    _, challenge = _pkce()
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        answers = list(pool.map(lambda n: _redirect_query(_authorize(mock_oauth_mcp, challenge, state=f"s-{n}")), range(8)))
+    assert sum("error" in answer for answer in answers) == 1
+    assert sum("code" in answer for answer in answers) == 7
+
+
 # ---- refresh tokens -------------------------------------------------------------------------------------------------------------------------------------------------------
 
 

@@ -290,8 +290,11 @@ def build_mock_oauth_mcp_app(state: MockOAuthState, *, base_url: str) -> Starlet
             return _error(400, "invalid_request", "state is required")
         if q.get("resource") != mcp_url:
             return _error(400, "invalid_request", f"resource must be {mcp_url}")
-        if state.deny_next_authorize:
-            state.deny_next_authorize = False
+        with books.lock:                                # check and reset together: "the next" request is one request, even when two arrive at once
+            deny = state.deny_next_authorize
+            if deny:
+                state.deny_next_authorize = False
+        if deny:
             return _redirect(redirect_uri, {"error": "access_denied", "state": client_state})
         code = "mock-code-" + secrets.token_hex(16)
         with books.lock:
