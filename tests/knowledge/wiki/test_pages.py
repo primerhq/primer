@@ -170,7 +170,7 @@ def test_a_frontmatter_only_page_has_just_its_heading():
 
 
 def test_crlf_and_a_byte_order_mark_are_tolerated():
-    text = "﻿---\r\ntitle: T\r\nsummary: S\r\n---\r\nline one\r\nline two\r\n"
+    text = chr(0xFEFF) + "---\r\ntitle: T\r\nsummary: S\r\n---\r\nline one\r\nline two\r\n"
     page = parse_page_source(text, path="a")
     assert page.body == "# T\n\nline one\nline two\n"
 

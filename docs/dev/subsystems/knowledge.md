@@ -43,6 +43,9 @@ Degrade with a pointer: a surface that cannot serve a request says what will. Se
 | `primer/knowledge/lifecycle.py` | `enable_search`, `disable_search`, `search_status`, `validate_search_config`. |
 | `primer/knowledge/importer.py` | `import_zip`: archive directories mapped onto the tree. |
 | `primer/knowledge/system_collection.py` | `regenerate_system_collection`: the platform's self-description. |
+| `primer/knowledge/wiki/pages.py` | The platform wiki's hand-written pages: `parse_page_source` (the frontmatter rules), `load_source_pages` (files to page paths and kinds), `WikiPage`, `WikiSourceError`, `resolve_wiki_dir`. |
+| `primer/knowledge/wiki/reference.py` | `reference_pages`: one generated page per tool entry under `reference/tools/<toolset>/<tool>`, plus the index pages above them. |
+| `primer/knowledge/wiki/build.py` | `build_wiki`: the table of contents, the `## Pages` listings, the link check (`wiki_links`, `unresolved_links`) and the content hash. |
 | `primer/api/routers/knowledge.py` | Collection CRUD plus the docs, grep, import and search-lifecycle routes. |
 | `primer/toolset/collections.py` | The always-on `collections` toolset agents navigate with. |
 
@@ -99,6 +102,8 @@ A miss carries alternatives. `DocumentTreeService.resolve` raises with the sibli
 
 The regenerator writes through the service directly rather than the API, because the 403 guards users, not the platform describing itself.
 
+**The platform wiki build (pivot P1, tasks 8 to 10).** `primer/knowledge/wiki/` builds the pages of the platform wiki as pure functions. Nothing calls it yet: `regenerate_system_collection` still writes the old layout until a later slice wires the build in behind the version stamp. `load_source_pages` reads the hand-written sources under `docs/wiki/` (`PRIMER_WIKI_DIR` overrides the folder). One page per `.md` file, its path the file path without `.md`; a folder's own page is its `index.md` (the root's is the table of contents) and every folder needs one; each path segment matches `[a-z0-9-]+`; files starting with `_` or `.` are not pages. A page opens with YAML frontmatter between two `---` lines: `title` and `summary` (one line, at most 160 characters) are required; `audience` (`user` or `admin`), `tools`, `related` and `order` are optional; any other key is an error. The body must not open with a `# ` heading, because the build renders `# <title>` itself. A mistake raises `WikiSourceError`, whose message names the file and the rule. `reference_pages` renders one page per tool entry at `reference/tools/<toolset>/<tool>` under the headings `What it does`, `Call it`, `Arguments`, `Facts`, `Examples` and `Used in` (the `Example:` lines that `make_tool` renders into a description are shown under `Examples`, not twice), and the index pages `reference`, `reference/tools` and `reference/tools/<toolset>`. It reads each entry through the `ToolEntryView` protocol, the fields of the tool catalog's `ToolEntry`, so `primer.knowledge` does not import `primer.toolset` (the two packages import each other's modules). `build_wiki(source_root, entries, legacy_pages=)` adds a `## Pages` list to every section page, turns the root page into the table of contents, links every tool page back to the feature pages that link to it, and returns every page outside `this-install/` together with one sha256 over them (path, title, meta and body, sorted by path). It raises `WikiSourceError` for a hand-written page on `reference` or `this-install` (those paths are generated or live) and for a legacy page that shadows another page. A link that goes nowhere is logged and left to `unresolved_links`: `related` entries count as links, and the live roots under `this-install` resolve although the build holds no page there. A later slice's coverage tests assert that `unresolved_links` is empty.
+
 ## 10. Testing patterns
 
 Tree behaviour is tested against a real sqlite provider rather than a fake, because the transactional pairing and the `UNIQUE` constraint are the things under test.
@@ -106,6 +111,8 @@ Tree behaviour is tested against a real sqlite provider rather than a fake, beca
 `tests/knowledge/test_delete_unindexes.py` pins the three defects the v2 model was built to close: a delete removes its vectors, a delete removes its content row, and only one chunk-id shape exists. They pass against the implementation, which is the point: they fail loudly if a refactor reintroduces the orphaning.
 
 `tests/docs/test_s2_grep_clean.py` pins the deletions, so a removed surface cannot creep back by import.
+
+`tests/knowledge/wiki/` pins the wiki build: golden bodies for a tool page, the table of contents and the section listings, the frontmatter rules one by one, and a sweep that renders every tool of the built-in toolsets (`tests/docs/_live_toolsets.py`), so a tool description that breaks the page shape fails there.
 
 ## 11. Historical decisions
 

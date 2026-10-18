@@ -29,6 +29,7 @@ SUMMARY_MAX = 160
 
 PageKind = Literal["toc", "section", "guide", "reference", "live", "legacy"]
 
+_BOM = chr(0xFEFF)  # some editors start a UTF-8 file with a byte order mark
 _FRONTMATTER_KEYS = ("title", "summary", "audience", "tools", "related", "order")
 _AUDIENCES = ("user", "admin")
 _HEADING_RE = re.compile(r"#(?:[ \t]|$)")
@@ -55,6 +56,28 @@ class WikiPage:
     meta: dict[str, Any]
 
 
+def sibling_key(page: WikiPage) -> tuple[int, int, str, str, str]:
+    """Sort key for pages that share a parent: ``order`` first (a page without one comes last), then title, then path."""
+    order = page.meta.get("order")
+    return (
+        0 if order is not None else 1,
+        order if order is not None else 0,
+        page.title.casefold(),
+        page.title,
+        page.path,
+    )
+
+
+_LABEL_ESCAPE_RE = re.compile(r"([\\\[\]])")
+
+
+def page_line(page: WikiPage, *, depth: int = 0) -> str:
+    """``- [<title>](<path>) - <summary>``: the one line every listing uses (no dash when the summary is empty)."""
+    label = _LABEL_ESCAPE_RE.sub(r"\\\1", page.title)
+    line = f"{'  ' * depth}- [{label}]({page.path})"
+    return f"{line} - {page.summary}" if page.summary else line
+
+
 def resolve_wiki_dir() -> Path:
     """``$PRIMER_WIKI_DIR`` when set, else ``docs/wiki`` beside the ``primer`` package.
 
@@ -68,7 +91,7 @@ def resolve_wiki_dir() -> Path:
 
 
 def _split_frontmatter(text: str, label: str) -> tuple[str, str]:
-    lines = text.lstrip("﻿").replace("\r\n", "\n").split("\n")
+    lines = text.lstrip(_BOM).replace("\r\n", "\n").split("\n")
     if lines[0].rstrip() != "---":
         raise WikiSourceError(
             f"{label}: the page must start with a frontmatter block (YAML between two '---' lines)"
@@ -220,6 +243,8 @@ __all__ = [
     "WikiPage",
     "WikiSourceError",
     "load_source_pages",
+    "page_line",
     "parse_page_source",
     "resolve_wiki_dir",
+    "sibling_key",
 ]
