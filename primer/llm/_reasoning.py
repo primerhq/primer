@@ -439,7 +439,15 @@ def gemini_extended(
 
 
 def ollama_extended(config: ModelProfileConfig) -> dict[str, Any]:
-    """Reasoning knobs for Ollama, which takes a plain ``think`` boolean."""
+    """Reasoning knobs for Ollama, which takes a plain ``think`` boolean.
+
+    Ollama's native ``/api/chat`` answers ``think`` on a model without the
+    thinking capability with a 400 ("does not support thinking"), and which
+    pulled models can think is the server's to say. The adapter opens its
+    stream lazily, so that 400 arrives as the call's first event, and
+    :func:`profile_stream` makes the call once more without ``think``, logs
+    it once, and calls that model without it for the rest of the process.
+    """
     level = config.reasoning
     if level is None:
         return dict(config.extended or {})
