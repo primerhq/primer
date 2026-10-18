@@ -45,8 +45,11 @@ RESERVED_IDS = frozenset({"true", "false", "null"})
 MAX_DEPTH = 32
 #: Syntax errors reported before the rest are only counted.
 MAX_ERRORS = 50
+#: Most digits in an integer a program may write; a longer one is "number is out of range".
+MAX_INT_DIGITS = 15
+#: The same limit as a magnitude: the largest integer, and negated the smallest, a program may write.
+MAX_INT = 10**MAX_INT_DIGITS - 1
 
-_MAX_INT_DIGITS = 15
 _CLIP = 32
 
 _ID_RULE = "a lowercase letter, then lowercase letters, digits or _, at most 32"
@@ -535,7 +538,7 @@ class _Stmt:
         text = m.group()
         self.i = m.end()
         if m.group(1) is None and m.group(2) is None:
-            if len(text.lstrip("-")) > _MAX_INT_DIGITS:
+            if len(text.lstrip("-")) > MAX_INT_DIGITS:
                 raise _Fail(MSG_NUMBER_RANGE)
             return int(text)
         number = float(text)
@@ -738,8 +741,7 @@ def format_value(value: Any) -> str:
 
 
 def _format(value: Any, depth: int) -> str:
-    if depth > MAX_DEPTH:
-        raise ValueError(MSG_TOO_DEEP)
+    """``depth`` is how many lists and objects enclose ``value``; the parser reads at most MAX_DEPTH of them."""
     if value is KEEP:
         return "..."
     if isinstance(value, Ref):
@@ -759,8 +761,12 @@ def _format(value: Any, depth: int) -> str:
             raise ValueError("cannot write a non-finite number")
         return repr(value)
     if isinstance(value, (list, tuple)):
+        if depth >= MAX_DEPTH:
+            raise ValueError(MSG_TOO_DEEP)
         return "[" + ", ".join(_format(v, depth + 1) for v in value) + "]"
     if isinstance(value, dict):
+        if depth >= MAX_DEPTH:
+            raise ValueError(MSG_TOO_DEEP)
         pairs = (
             f"{json.dumps(str(k), ensure_ascii=False)}: {_format(v, depth + 1)}"
             for k, v in value.items()
@@ -774,6 +780,8 @@ __all__ = [
     "KEEP",
     "MAX_DEPTH",
     "MAX_ERRORS",
+    "MAX_INT",
+    "MAX_INT_DIGITS",
     "RESERVED_IDS",
     "ROOT_ID",
     "Append",

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from primer.canvas.lang import parse_program
+from primer.canvas.lang import SetProp, parse_program
 from primer.canvas.state import (
     ROOT_ELEMENT,
     BatchResult,
@@ -16,7 +16,9 @@ from primer.canvas.state import (
     Changed,
     Limits,
     apply_batch,
+    check_json_value,
 )
+from tests.canvas._program_gen import nested
 
 GOLDEN = Path(__file__).parent / "golden"
 S = CanvasState.empty()
@@ -497,6 +499,59 @@ def test_an_html_value_is_json_of_at_most_a_thousand_characters():
     cleared = run("viz.value = null", r.state)
     assert cleared.state.values == {} and cleared.state.value_set_by == {} and cleared.changed == Changed((), ("viz",), ())
     assert run("viz.value = null", s).changed == Changed()
+
+    # A value the parser would refuse is refused here too, or canvas_get could print a program that cannot be read back
+    # (design 8.4). The parser reads integers of at most 15 digits and nests lists and objects at most 32 levels, and a
+    # hand-built statement, which is what a JSON op becomes, never meets the parser: so the batch holds it to the same.
+    def refused(value):
+        result = apply_batch(s, [SetProp(1, "viz", "value", value)], limits=L)
+        assert result.state is None
+        return [e.render() for e in result.errors]
+
+    out_of_range = ["line 1: number is out of range"]
+    assert refused(10**15) == refused(-(10**15)) == refused(10**16) == refused(10**400) == out_of_range
+    assert refused(10**5000) == refused(-(10**5000)) == out_of_range             # too long even to print as text
+    assert refused([[10**15]]) == refused({"k": [10**16]}) == out_of_range
+    too_deep = ["line 1: lists and objects are nested more than 32 levels deep"]
+    assert refused(nested(33)) == refused(nested(33, "o")) == refused(nested(33, "lo")) == refused(nested(200)) == too_deep
+    assert refused(float("nan")) == refused(float("inf")) == ["line 1: value must be JSON: no NaN or infinity"]
+    for value in (10**15 - 1, -(10**15 - 1), nested(32), nested(32, "o"), nested(32, "lo")):
+        accepted = apply_batch(s, [SetProp(1, "viz", "value", value)], limits=L)
+        assert accepted.errors == () and accepted.state.values == {"viz": value}
+
+
+def test_a_value_json_cannot_measure_is_a_line_error_never_a_crash(monkeypatch):
+    # check_json_value bounds what json.dumps can meet (an integer of 4301 digits makes it raise ValueError), so this
+    # cannot happen; if it ever does, one agent's value must not be able to crash a batch
+    from types import SimpleNamespace
+
+    import primer.canvas.state as state_module
+
+    s = run(G("playlist_create.cl")).state
+
+    def refuse(*args, **kwargs):
+        raise ValueError("Exceeds the limit (4300 digits) for integer string conversion")
+
+    monkeypatch.setattr(state_module, "json", SimpleNamespace(dumps=refuse))
+    r = apply_batch(s, [SetProp(1, "viz", "value", 5)], limits=L)
+    assert r.state is None
+    assert [e.render() for e in r.errors] == ["line 1: value must be JSON (text, numbers, true, false, null, lists and objects)"]
+
+
+def test_check_json_value_is_the_one_judge_of_a_value():
+    from primer.canvas.lang import MSG_BARE_ID, Ref
+
+    assert check_json_value({"a": [1, 2.5, "x", None, True, {"b": []}]}) is None
+    assert check_json_value(10**15 - 1) is None and check_json_value(-(10**15 - 1)) is None
+    assert check_json_value(10**15) == check_json_value(10**5000) == "number is out of range"       # compared, never turned into text
+    assert check_json_value(nested(32)) is None
+    assert check_json_value(nested(33)) == check_json_value(nested(200)) == "lists and objects are nested more than 32 levels deep"
+    assert check_json_value(float("nan")) == "value must be JSON: no NaN or infinity"
+    assert check_json_value({1: 2}) == "value must be JSON: object keys are strings"
+    assert check_json_value(Ref("a")) == MSG_BARE_ID
+    assert check_json_value(object()) == "value must be JSON (text, numbers, true, false, null, lists and objects)"
+    cannot = "value contains a character that cannot be stored (a NUL or a lone surrogate)"
+    assert check_json_value("a\x00b") == check_json_value(["ok", {"k": "\ud800"}]) == cannot
 
 
 def test_clearing_a_select_value_goes_back_to_its_initial_value():
