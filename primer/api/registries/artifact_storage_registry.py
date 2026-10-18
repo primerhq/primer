@@ -4,6 +4,12 @@ Caches one live :class:`primer.int.artifact_storage.ArtifactStorage` per
 ``ArtifactStorageProvider`` row id, lazy-constructs from the row config,
 invalidates on demand. Mirrors
 :class:`primer.api.registries.semantic_search_registry.SemanticSearchRegistry`.
+
+:meth:`ArtifactStorageRegistry.get_default` is the one entry point the artifact
+consumers use. It returns the routing store
+(:class:`primer.artifact.routing.RoutingArtifactStorage`), which writes to the
+active provider and finds an artifact again through its location record; the
+provider instances it routes to are the ones this registry caches.
 """
 
 from __future__ import annotations
@@ -13,10 +19,13 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from primer.artifact.routing import RoutingArtifactStorage
+
 # Reserved id of the auto-seeded default provider (the DB backend), so chat
 # media works with zero operator configuration. Re-exported: it is defined in
-# the leaf ``primer.artifact.factory`` because ``primer.artifact`` must not
-# import ``primer.api`` (its check is imported by the system toolset, which
+# the leaf ``primer.model.providers.artifact`` (and re-exported by
+# ``primer.artifact.factory``) because ``primer.artifact`` must not import
+# ``primer.api`` (its check is imported by the system toolset, which
 # ``primer.api`` imports).
 from primer.artifact.factory import DEFAULT_ARTIFACT_PROVIDER_ID
 
@@ -47,6 +56,7 @@ class ArtifactStorageRegistry:
         self._factory = factory or _default_factory
         self._instances: dict[str, "ArtifactStorage"] = {}
         self._lock = asyncio.Lock()
+        self._routing: RoutingArtifactStorage | None = None
 
     async def get_provider(self, provider_id: str) -> "ArtifactStorage":
         """Resolve a row to its live ArtifactStorage instance (cached per id)."""
@@ -83,9 +93,26 @@ class ArtifactStorageRegistry:
                 )
         return provider
 
-    async def get_default(self) -> "ArtifactStorage":
-        """Resolve the deployment's default artifact provider."""
-        return await self.get_provider(self._default_provider_id)
+    async def get_default(self) -> RoutingArtifactStorage:
+        """The store every artifact consumer uses: one routing store, built on first use and then returned every time.
+
+        It routes a put to the active provider (resolved through :meth:`get_provider`) and a get or a delete to the provider recorded for the
+        artifact; an id with no record is read from the database directly. It needs no provider row to exist at construction, builds no provider
+        instance, and holds nothing that an invalidation or a flush would have to drop.
+        """
+        if self._routing is None:
+            from primer.artifact.db import DbArtifactStorage
+            from primer.model.artifact import ArtifactLocation
+            from primer.model.providers.artifact import ActiveArtifactStorageConfig
+
+            self._routing = RoutingArtifactStorage(
+                resolve=self.get_provider,
+                fallback=DbArtifactStorage(self._storage_provider),
+                locations=self._storage_provider.get_storage(ArtifactLocation),
+                active_config=self._storage_provider.get_storage(ActiveArtifactStorageConfig),
+                default_provider_id=self._default_provider_id,
+            )
+        return self._routing
 
     async def invalidate(self, provider_id: str) -> None:
         async with self._lock:

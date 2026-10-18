@@ -1,12 +1,16 @@
 """Pre-write checks for ``ArtifactStorageProvider`` rows, shared by the REST route and the system tools (ticket 01a1226f, the D3/D5 shared-validator pattern).
 
-The reserved default (``artifact-storage-default``) is the row ``ArtifactStorageRegistry.get_default()`` reads, and the factory builds only the kinds in
+The reserved default (``artifact-storage-default``) is the row ``ArtifactStorageRegistry.get_default()`` used to resolve, and the factory builds only the kinds in
 ``BUILDABLE_KINDS`` (today ``db``). A write that set the default to any other kind was accepted (an update, or a create while the row was missing), and
 afterwards every consumer of the default failed with a ``ConfigError``: channel media on the Telegram, Slack and Discord adapters, ``agent/inform.py``, the
 artifact serve route, the workspace routes, ``event_dispatch``, ``yield_runtime`` and ``executor_builders``. Only the DELETE of the reserved row was guarded.
 
+Since the routing store (``primer/artifact/routing.py``), ``get_default()`` no longer resolves this row to serve a consumer: the reserved id means "the database", the store new
+artifacts go to until another is selected, and an artifact with no location record is read by a direct ``DbArtifactStorage``. The rule below still holds the row to a kind the
+factory can build, which for as long as ``db`` is the only buildable kind is "the reserved default stays a database provider".
+
 This module must not import ``primer.api``: ``primer.toolset.system`` imports it at module level and ``primer.api`` imports ``primer.toolset.system``. The
-default id therefore comes from the leaf ``primer.artifact.factory``.
+default id therefore comes from the leaf ``primer.model.providers.artifact`` (``primer.artifact.factory`` re-exports it).
 """
 
 from __future__ import annotations

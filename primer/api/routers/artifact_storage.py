@@ -75,8 +75,9 @@ async def _reject_reserved_delete(entity_id: str, request: Request) -> None:
 # lists mirror the config models in primer/model/providers/artifact.py (tests/api/test_artifact_storage_types.py holds them to the models); a row of this class has no fields of its own, no limits
 # block and no model list to discover.
 #
-# THE LABELS TELL THE TRUTH ABOUT WHAT A ROW DOES. ``build_artifact_storage`` (primer/artifact/factory.py) builds only the ``db`` backend, and every consumer reads ONLY the reserved row
-# (``ArtifactStorageRegistry.get_default()``, id ``artifact-storage-default``): a ``filesystem`` or ``s3`` row can be stored and is never used, and a ``db`` row registered here is not the default.
+# THE LABELS TELL THE TRUTH ABOUT WHAT A ROW DOES. ``build_artifact_storage`` (primer/artifact/factory.py) builds only the ``db`` backend, and every consumer goes through ``ArtifactStorageRegistry.get_default()``, the routing store
+# (primer/artifact/routing.py): a put goes to the ACTIVE provider (``ActiveArtifactStorageConfig``; the database, through the reserved ``artifact-storage-default``, until another is selected) and a get or a delete follows the
+# artifact's location record. So a ``filesystem`` or ``s3`` row can be stored but cannot be built, and a ``db`` row registered here is not the default.
 # The test builds a row of each kind and requires 'not implemented' in the label of every kind the factory refuses, so the labels change by themselves when a backend ships.
 #
 # This router MUST be mounted before the CRUD router in _app_routes.py, or GET /{id} swallows "_types".
