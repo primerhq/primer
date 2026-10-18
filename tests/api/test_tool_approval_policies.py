@@ -201,3 +201,72 @@ class TestLlmJudgeModelValidation:
             "/v1/tool_approval_policies", json=self._body("no-such", "m"),
         )
         assert r.status_code == 422, r.text
+
+
+# ---- the write-time toolset_id check (pivot P1 follow-ups 2) ------------------------------------------------------
+
+
+_PY_SRC = (
+    "@primer_tool()\n"
+    "def t1(x: str) -> str:\n"
+    "    'Doc for t1.'\n"
+    "    return x\n"
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("toolset_id", ["System", " system", "no-such-toolset"])
+async def test_create_for_a_toolset_the_platform_does_not_run_is_422_naming_the_field(client, toolset_id):
+    """The id is judged exactly, as the registry and the gate judge it (no case folding, no trimming): a policy that names no toolset would be stored and gate nothing, so it is refused with the field named."""
+    r = await client.post(
+        "/v1/tool_approval_policies",
+        json={"id": "p-ts", "toolset_id": toolset_id, "tool_name": "x", "approval": {"type": "required"}},
+    )
+    assert r.status_code == 422, r.text
+    errors = r.json()["extensions"]["errors"]
+    assert any(list(e["loc"]) == ["body", "toolset_id"] for e in errors), errors
+    assert any(toolset_id in e["msg"] for e in errors)
+
+
+@pytest.mark.asyncio
+async def test_update_to_a_toolset_the_platform_does_not_run_is_422_and_the_row_is_unchanged(client):
+    body = {"id": "p-up", "toolset_id": "system", "tool_name": "x", "approval": {"type": "required"}}
+    assert (await client.post("/v1/tool_approval_policies", json=body)).status_code == 201
+
+    r = await client.put("/v1/tool_approval_policies/p-up", json={**body, "toolset_id": "System"})
+
+    assert r.status_code == 422, r.text
+    errors = r.json()["extensions"]["errors"]
+    assert any(list(e["loc"]) == ["body", "toolset_id"] for e in errors), errors
+    got = await client.get("/v1/tool_approval_policies/p-up")
+    assert got.status_code == 200 and got.json()["toolset_id"] == "system"
+
+
+@pytest.mark.asyncio
+async def test_a_retired_spelling_of_a_reserved_toolset_stays_writable(client):
+    r = await client.post(
+        "/v1/tool_approval_policies",
+        json={"id": "p-alias", "toolset_id": "_misc", "tool_name": "x", "approval": {"type": "required"}},
+    )
+    assert r.status_code == 201, r.text
+
+
+@pytest.mark.asyncio
+async def test_a_policy_for_a_stored_custom_toolset_stays_writable(client, fake_storage_provider):
+    """The write-time id check knows the stored toolsets, not only the reserved ones: a policy for an operator toolset stays writable."""
+    from primer.model.provider import Toolset, ToolsetProviderType
+    from primer.model.providers.toolset import PythonConfig
+
+    await fake_storage_provider.get_storage(Toolset).create(
+        Toolset(
+            id="py-ts",
+            provider=ToolsetProviderType.PYTHON,
+            config=PythonConfig(source=_PY_SRC, source_version=1),
+        )
+    )
+
+    r = await client.post(
+        "/v1/tool_approval_policies",
+        json={"id": "p-pyts", "toolset_id": "py-ts", "tool_name": "x", "approval": {"type": "required"}},
+    )
+    assert r.status_code == 201, r.text

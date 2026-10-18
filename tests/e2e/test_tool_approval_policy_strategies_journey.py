@@ -44,6 +44,12 @@ Pinned invariants:
     — bad Rego never persists.
   * The LLM-judge provider+model lookup runs server-side at
     create/update time — orphans never persist.
+  * Every policy this journey writes sits on a toolset the platform
+    runs: the write-time toolset_id check resolves the id (a reserved
+    id or a stored Toolset row), so the journey writes every policy
+    under the reserved ``misc`` toolset; the unique tool-name
+    suffixes keep the (toolset_id, tool_name) pairs of steps 8-9
+    distinct.
   * Uniqueness is on `(toolset_id, tool_name)` — both fields
     appear in the conflict detail; the skip-own-id rule lets a
     PUT keep the row's identity without faking a duplicate.
@@ -207,7 +213,7 @@ async def test_t0858_tool_approval_policy_multi_strategy_journey(
             base,
             json=_policy_policy_body(
                 valid_rego_pid,
-                toolset_id=f"ts-rego-{unique_suffix}",
+                toolset_id="misc",
                 tool_name=f"rego.tool.{unique_suffix}",
                 rego=_VALID_REGO,
             ),
@@ -225,7 +231,7 @@ async def test_t0858_tool_approval_policy_multi_strategy_journey(
             base,
             json=_policy_policy_body(
                 bad_rego_pid,
-                toolset_id=f"ts-bad-{unique_suffix}",
+                toolset_id="misc",
                 tool_name=f"bad.tool.{unique_suffix}",
                 rego=_BAD_REGO,
             ),
@@ -251,7 +257,7 @@ async def test_t0858_tool_approval_policy_multi_strategy_journey(
             base,
             json=_llm_policy_body(
                 llm_ok_pid,
-                toolset_id=f"ts-llm-{unique_suffix}",
+                toolset_id="misc",
                 tool_name=f"llm.tool.{unique_suffix}",
                 provider_id=llm_id,
                 model=judge_model,
@@ -270,7 +276,7 @@ async def test_t0858_tool_approval_policy_multi_strategy_journey(
             base,
             json=_llm_policy_body(
                 f"pol-llm-noprov-{unique_suffix}",
-                toolset_id=f"ts-noprov-{unique_suffix}",
+                toolset_id="misc",
                 tool_name=f"noprov.tool.{unique_suffix}",
                 provider_id="this-provider-id-does-not-exist",
                 model=judge_model,
@@ -294,7 +300,7 @@ async def test_t0858_tool_approval_policy_multi_strategy_journey(
             base,
             json=_llm_policy_body(
                 f"pol-llm-nomodel-{unique_suffix}",
-                toolset_id=f"ts-nomodel-{unique_suffix}",
+                toolset_id="misc",
                 tool_name=f"nomodel.tool.{unique_suffix}",
                 provider_id=llm_id,
                 model="this-model-is-not-on-the-provider",

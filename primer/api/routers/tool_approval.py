@@ -22,8 +22,14 @@ from primer.api.deps import (
 from fastapi import HTTPException
 from primer.api.errors import common_responses
 from primer.api.routers._crud import make_crud_router
+from primer.api.registries.provider_registry import RESERVED_TOOLSET_ROW_IDS
 from primer.int.claim import ClaimEngine
-from primer.agent.approval_checks import check_approval_config, check_policy_unique, check_preview_args
+from primer.agent.approval_checks import (
+    check_approval_config,
+    check_policy_unique,
+    check_preview_args,
+    check_toolset_id,
+)
 from primer.agent.tool_schemas import find_tool_schema
 from primer.common.entity_checks import EntityCheckError
 from primer.int.event_bus import EventBus
@@ -63,6 +69,19 @@ def _as_rest_error(exc: EntityCheckError) -> Exception:
     if exc.kind == "conflict":
         return ConflictError(exc.message)
     return _validation_error(field_path=exc.field or "", message=exc.message)
+
+
+async def _validate_toolset_id(
+    entity: ToolApprovalPolicy,
+    *,
+    storage_provider,
+) -> None:
+    try:
+        await check_toolset_id(
+            entity, storage_provider=storage_provider, reserved_toolset_ids=RESERVED_TOOLSET_ROW_IDS,
+        )
+    except EntityCheckError as exc:
+        raise _as_rest_error(exc) from exc
 
 
 async def _validate_uniqueness(
@@ -378,6 +397,7 @@ def make_tool_approval_router() -> APIRouter:
     async def on_pre_create(entity: ToolApprovalPolicy, request: Request) -> None:
         storage_provider = get_storage_provider(request)
         provider_registry = get_provider_registry(request)
+        await _validate_toolset_id(entity, storage_provider=storage_provider)
         await _validate_uniqueness(entity, storage_provider=storage_provider)
         # The config check reads provider rows through the registry's own storage provider, as it always did.
         await _validate_approval_config(entity, storage_provider=provider_registry._sp)  # noqa: SLF001
@@ -390,6 +410,7 @@ def make_tool_approval_router() -> APIRouter:
     ) -> None:
         storage_provider = get_storage_provider(request)
         provider_registry = get_provider_registry(request)
+        await _validate_toolset_id(entity, storage_provider=storage_provider)
         await _validate_uniqueness(entity, storage_provider=storage_provider, skip_id=existing.id)
         await _validate_approval_config(entity, storage_provider=provider_registry._sp)  # noqa: SLF001
         await _validate_preview_args(entity, provider_registry=provider_registry)
