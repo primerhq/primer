@@ -35,7 +35,8 @@ from primer.api.registries import ProviderRegistry
 from primer.claim.adapters.sessions import SessionClaimAdapter
 from primer.claim.in_memory import InMemoryClaimEngine
 from primer.int.claim import ClaimKind
-from primer.model.chat import Message, ToolCallPart, ToolResultPart
+from primer.int.toolset import ToolsetProvider
+from primer.model.chat import Message, Tool, ToolCallPart, ToolResultPart
 from primer.model.scheduler import WorkerConfig
 from primer.model.tool_approval import ToolApprovalPolicy
 from primer.model.workspace_session import (
@@ -45,11 +46,13 @@ from primer.model.workspace_session import (
 )
 from primer.model.yield_ import ToolContext, Yielded, YieldToWorker
 from primer.toolset.system import build_system_toolset
+from primer.worker.frames import AgentFrame, AgentResumeContext
 from primer.worker.pool import WorkerPool
 from primer.worker.yield_runtime import ParkedState
 
 from tests.agent.test_inner_dispatch import USER, _Session
 from tests.conftest import _FakeStorageProvider
+from tests.toolset.test_call_tool_door import _Registry as _DoorRegistry
 from tests.toolset.test_system import _required_policy
 
 
@@ -500,3 +503,140 @@ async def test_a_gated_ask_user_through_call_tool_reparks_and_the_answer_lands_o
     assert json.loads(result.output) == {"response": "yes"}
     done = await session_storage.get(sid)
     assert done is not None and done.parked_status is None and done.status != SessionStatus.ENDED
+
+
+# ---- an approved tool whose CHILD run pauses (held: strict xfail) -----------------------------------------------------------------------------------
+
+
+class _DelegatesAndPauses(ToolsetProvider):
+    """Toolset ``rec`` with one role-user tool, ``delegate``, standing in for ``invoke_agent``: it starts a child run that asks the user a question,
+    and raises the yield ``invoke_agent`` raises then (the child's question, the child's frame on it keyed by THIS call's id)."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def required_role(self, tool_name: str) -> str:
+        return "user"
+
+    async def list_tools(self, *, principal=None):
+        yield Tool(
+            id="delegate", description="delegates to a child run", toolset_id="rec",
+            args_schema={"type": "object", "properties": {}, "additionalProperties": True},
+        )
+
+    async def call(self, *, tool_name, arguments, principal=None, ctx=None):
+        self.calls.append(ctx.tool_call_id)
+        paused = YieldToWorker(
+            Yielded(
+                tool_name="ask_user", event_key=f"ask_user:{ctx.session_id}:child-call", timeout=600.0,
+                resume_metadata={"prompt": "Which one?"},
+            ),
+            tool_call_id="child-call",
+        )
+        paused.frames = [AgentFrame(
+            agent_id="child", llm_messages=[], tool_call_id=ctx.tool_call_id, depth=1,
+            context=AgentResumeContext(ctx.session_id, ctx.workspace_id, None, None, [], initiated_by=ctx.initiated_by),
+        )]
+        raise paused
+
+
+async def _approve_a_tool_whose_child_run_pauses(monkeypatch, *, through_call_tool: bool):
+    """A user's session approves a gated tool that delegates, and the child run pauses. Driven through the real pool resume and the real tool
+    manager, on the park the real ``call_tool`` handler writes (``through_call_tool``) or on the agent's own gated call of ``rec__delegate``.
+    Returns the session row after the resume, the session's executor, the delegating toolset and the session's call id."""
+    sid = f"sess-nested-pause-{'call-tool' if through_call_tool else 'direct'}"
+    outer = "tc-outer"
+    storage_provider = _FakeStorageProvider()
+    provider = _DelegatesAndPauses()
+    real = ProviderRegistry(
+        storage_provider,  # type: ignore[arg-type]
+        llm_factory=lambda p: object(),  # type: ignore[arg-type,return-value]
+        embedder_factory=lambda p: object(),  # type: ignore[arg-type,return-value]
+        cross_encoder_factory=lambda p: object(),  # type: ignore[arg-type,return-value]
+        toolset_factory=lambda p: object(),  # type: ignore[arg-type,return-value]
+    )
+    registry = _DoorRegistry(real, {"rec": provider})
+    yielded = None
+    if through_call_tool:
+        system_toolset = build_system_toolset(storage_provider=storage_provider, provider_registry=registry)  # type: ignore[arg-type]
+        real._system_toolset_provider = system_toolset  # type: ignore[attr-defined]
+        await storage_provider.get_storage(ToolApprovalPolicy).create(_required_policy("rec", "delegate"))
+        arguments = {"toolset_id": "rec", "tool_name": "delegate", "arguments": {}}
+        ctx = ToolContext(tool_call_id=outer, session_id=sid, workspace_id=f"ws-{sid}", initiated_by=USER)
+        with pytest.raises(YieldToWorker) as gate:
+            await system_toolset.call(tool_name="call_tool", ctx=ctx, arguments=arguments)
+        yielded, parked_name = gate.value.yielded, "delegate"
+        outer_call = ToolCallPart(id=outer, name="system__call_tool", arguments=arguments)
+        manager = ToolExecutionManager.for_workspace(
+            toolset_providers={"system": system_toolset}, session=_Session(sid, f"ws-{sid}"), initiated_by=USER, provider_registry=registry,
+        )
+    else:
+        parked_name = "rec__delegate"
+        outer_call = ToolCallPart(id=outer, name=parked_name, arguments={})
+        manager = ToolExecutionManager.for_workspace(
+            toolset_providers={"rec": provider}, session=_Session(sid, f"ws-{sid}"), initiated_by=USER, tools=[parked_name],
+        )
+    session_storage = storage_provider.get_storage(WorkspaceSession)
+    engine = _build_engine(session_storage)
+    pool = _build_pool(storage_provider, engine)
+    await session_storage.create(_make_approval_parked_session(
+        sid,
+        tool_call_id=outer,
+        real_tool_name=parked_name,
+        real_arguments={},
+        resume_event_payload={"decision": "approved"},
+        llm_messages=[Message(role="assistant", parts=[outer_call]).model_dump(mode="json")],
+        yielded=yielded,
+    ))
+    executor = _RecordingExecutor(tool_manager=manager)
+    monkeypatch.setattr(pool, "_load_workspace_for_persist", lambda _ws_id: _async_return(_NoopPersist()))
+    monkeypatch.setattr(pool, "_build_agent_executor", lambda _s, _w: _async_return(executor))
+
+    await pool._run_engine_session(await _claim_session(engine, sid))
+    return await session_storage.get(sid), executor, provider, outer
+
+
+_NESTED_PAUSE_SHAPES = pytest.mark.parametrize(
+    "through_call_tool", [True, False], ids=["the-inner-tool-of-call-tool", "a-directly-gated-delegating-tool"],
+)
+
+
+@pytest.mark.asyncio
+@_NESTED_PAUSE_SHAPES
+async def test_an_approved_tool_whose_child_run_pauses_reaches_the_childs_pause(monkeypatch, through_call_tool: bool):
+    """SCENARIO (holds whatever the session path does with it): the approval re-ran the delegating tool once, under the session's call id, and the
+    child run's pause reached the session path."""
+    row, _executor, provider, outer = await _approve_a_tool_whose_child_run_pauses(monkeypatch, through_call_tool=through_call_tool)
+
+    assert provider.calls == [outer]
+    assert row is not None and row.status != SessionStatus.ENDED
+
+
+@pytest.mark.asyncio
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "held: the session path's re-park (repark_resumed_yield_outcome) keeps no frames, so a pause inside a nested agent or graph run after an "
+        "approval is answered with an error (call_tool) or parked without the child's frame (a directly gated delegating tool)"
+    ),
+)
+@_NESTED_PAUSE_SHAPES
+async def test_an_approved_tool_whose_child_run_pauses_parks_the_session_on_the_childs_question(monkeypatch, through_call_tool: bool):
+    """BEHAVIOUR a fix must reach: the session parks again on the child's question with the child's frame kept under the session's call, so the
+    answer unwinds through the child run to that call. Today a call_tool re-run is refused with an error result (``_resume_tool_approval``), and a
+    directly gated delegating tool is parked flat without the frame, so the child's answer would be delivered to the child's own call id."""
+    row, executor, _provider, outer = await _approve_a_tool_whose_child_run_pauses(monkeypatch, through_call_tool=through_call_tool)
+
+    state = (row.parked_state if row is not None else None) or {}
+    broken = []
+    if executor.injected:
+        broken.append(f"the session's call was answered instead of waiting for the child: {executor.injected[0][-1].parts[0].output}")
+    if row is None or row.parked_status != "parked":
+        broken.append(f"the session is not parked again: parked_status={getattr(row, 'parked_status', None)!r}")
+    if (state.get("yielded") or {}).get("tool_name") != "ask_user":
+        broken.append(f"the park is not the child's question: {state.get('yielded')}")
+    kept = [frame.get("tool_call_id") for frame in state.get("frames") or []]
+    if kept != [outer]:
+        broken.append(f"the child's frame is not kept under the session's call {outer!r}: frames keyed {kept}")
+    assert not broken, broken
