@@ -13,7 +13,7 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
-from typing import Any
+from typing import Any, ClassVar
 
 import mcp.types as mcp_types
 from mcp import ClientSession
@@ -82,6 +82,10 @@ class McpToolsetProvider(ToolsetProvider):
     sub-project ``oauth`` MUST be ``None``; passing anything else is
     accepted (the field is stored) but unused.
     """
+
+    # Listing means a round trip to another process or host that can be down, can need a sign-in, or can accept the
+    # connection and never answer: a turn bounds it and leaves the toolset out when it cannot list (design 20 Q4).
+    lists_remotely: ClassVar[bool] = True
 
     def __init__(
         self,

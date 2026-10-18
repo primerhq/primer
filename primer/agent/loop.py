@@ -12,6 +12,9 @@ Behaviour:
   the tool catalogue from the supplied :class:`ToolExecutionManager`, and
   the resolved profile's config (reasoning, extended) translated for the
   adapter's wire.
+  Toolsets the manager left out of the turn (an MCP toolset that could not
+  list its tools) are named, with the reason, in a notice added to the system
+  message of the prompt that is SENT; the notice is never kept or persisted.
 * Yields every event live (no buffering at this layer).
 * When the assistant emits :class:`ToolCallPart`s, dispatches each via
   the manager, synthesises an :class:`ExtendedEvent(_ExecutorToolResult)`
@@ -36,6 +39,7 @@ import primer.observability.metrics as _metrics
 
 from primer.agent.interrupt import Interrupted, interruptible
 from primer.agent.stoppable_call import run_stoppable
+from primer.agent.tool_listing import unavailable_toolsets_notice, with_system_notice
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.common.context_overflow import is_context_overflow_error
 from primer.common.log import redact_credentials
@@ -304,7 +308,10 @@ async def run_agent_turn(
     tool_manager
         Source of the tool catalogue + dispatch surface. Pass an
         empty :class:`ToolExecutionManager` if the agent should run
-        without tools.
+        without tools. Its ``unavailable_toolsets()`` (when it has the
+        method) is read before every model call: the toolsets it names
+        are told to the model in the system message of the outgoing prompt
+        only, never in ``prompt`` or ``messages_out``.
     prompt
         The full prompt at turn start: typically
         ``[system?, *history, *new_user_messages]``.
@@ -541,6 +548,13 @@ async def run_agent_turn(
         else:
             send_prompt = prompt
             guard_state = "none"
+        # An MCP toolset that could not list its tools was left out of ``tools``; the model is told so (design 20 Q4). Added
+        # to the OUTGOING copy only, after the guard has judged the real prompt: ``prompt`` (what the next round extends)
+        # and ``messages_out`` (what is persisted) never carry it, because it describes this turn's catalogue and the next
+        # turn lists again. Read through ``getattr``: a duck-typed manager without the method sends the prompt as it was.
+        unavailable_toolsets = getattr(tool_manager, "unavailable_toolsets", None)
+        if unavailable_toolsets is not None:
+            send_prompt = with_system_notice(send_prompt, unavailable_toolsets_notice(unavailable_toolsets()))
         buffered: list[StreamEvent] = []
         held_done: StreamEvent | None = None
         call_t0 = time.monotonic()
