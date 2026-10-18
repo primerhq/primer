@@ -507,9 +507,12 @@ _RECOGNISED_EXTENDED_PASSTHROUGH: frozenset[str] = frozenset({
 def _extract_extended_kwargs(extended: dict[str, Any] | None) -> dict[str, Any]:
     """Project the universal ``extended`` dict onto Gemini config kwargs.
 
-    Recognised keys are forwarded; ``thinking_budget`` and
-    ``include_thoughts`` fold into a single ``thinking_config`` dict;
-    unknown keys are dropped with a single DEBUG log line listing them.
+    Recognised keys are forwarded; ``thinking_budget`` (Gemini 2.5),
+    ``thinking_level`` (Gemini 3 and later) and ``include_thoughts`` fold
+    into a single ``thinking_config`` dict. A model takes a budget or a
+    level, never both: with both present the level is kept and the budget
+    dropped. Unknown keys are dropped with a single DEBUG log line listing
+    them.
     """
     if not extended:
         return {}
@@ -520,7 +523,12 @@ def _extract_extended_kwargs(extended: dict[str, Any] | None) -> dict[str, Any]:
 
     for key, value in extended.items():
         if key == "thinking_budget":
-            thinking_kwargs["thinking_budget"] = value
+            if "thinking_level" in extended:
+                dropped.append(key)
+            else:
+                thinking_kwargs["thinking_budget"] = value
+        elif key == "thinking_level":
+            thinking_kwargs["thinking_level"] = value
         elif key == "include_thoughts":
             thinking_kwargs["include_thoughts"] = value
         elif key in _RECOGNISED_EXTENDED_PASSTHROUGH:
@@ -916,8 +924,9 @@ class GeminiLLM(LLM):
     def profile_extended(
         self, config: ModelProfileConfig, *, model: str | None = None,
     ) -> dict[str, Any]:
-        """A thinking-token budget (0 asks for no thinking)."""
-        return gemini_extended(config)
+        """A thinking budget within the model's range (Gemini 2.5), or a
+        thinking level (Gemini 3 and later)."""
+        return gemini_extended(config, model=model)
 
     async def stream(  # type: ignore[override]
         self,

@@ -139,13 +139,18 @@ class TestAnthropic:
 
 
 class TestGeminiAndOllama:
-    def test_gemini_off_is_a_zero_budget(self) -> None:
-        assert gemini_extended(_cfg(ReasoningLevel.OFF)) == {"thinking_budget": 0}
+    """The Gemini shape is the model's; the per-family table is pinned in
+    tests/llm/test_profile_config_wiring.py."""
+
+    def test_gemini_2_5_flash_off_is_a_zero_budget(self) -> None:
+        assert gemini_extended(_cfg(ReasoningLevel.OFF), model="gemini-2.5-flash") == {
+            "thinking_budget": 0,
+        }
 
     def test_gemini_budget_grows_with_level(self) -> None:
         assert (
-            gemini_extended(_cfg(ReasoningLevel.HIGH))["thinking_budget"]
-            > gemini_extended(_cfg(ReasoningLevel.LOW))["thinking_budget"]
+            gemini_extended(_cfg(ReasoningLevel.HIGH), model="gemini-2.5-flash")["thinking_budget"]
+            > gemini_extended(_cfg(ReasoningLevel.LOW), model="gemini-2.5-flash")["thinking_budget"]
         )
 
     def test_ollama_uses_a_boolean(self) -> None:

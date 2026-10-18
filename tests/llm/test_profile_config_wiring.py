@@ -187,9 +187,44 @@ class TestEachAdapterTranslatesForItsOwnWire:
             "format": {"type": "json_schema"}, "effort": "low",
         }
 
-    def test_gemini_takes_a_thinking_budget(self) -> None:
+    @pytest.mark.parametrize("model, level, expected", [
+        # Gemini 2.5: a budget within the model's range.
+        ("gemini-2.5-flash", ReasoningLevel.OFF, {"thinking_budget": 0}),
+        ("gemini-2.5-flash", ReasoningLevel.HIGH, {"thinking_budget": 24576}),
+        ("gemini-2.5-flash-lite", ReasoningLevel.OFF, {"thinking_budget": 0}),
+        ("gemini-2.5-flash-lite-preview-09-2025", ReasoningLevel.MINIMAL, {"thinking_budget": 512}),
+        ("gemini-2.5-pro", ReasoningLevel.OFF, {"thinking_budget": 128}),  # cannot turn off
+        ("gemini-2.5-pro", ReasoningLevel.LOW, {"thinking_budget": 2048}),
+        # Gemini 3 and later: a thinking level, OFF the lowest the model has.
+        ("gemini-3-pro-preview", ReasoningLevel.OFF, {"thinking_level": "low"}),
+        ("gemini-3-pro-preview", ReasoningLevel.HIGH, {"thinking_level": "high"}),
+        ("gemini-3-flash-preview", ReasoningLevel.OFF, {"thinking_level": "minimal"}),
+        ("gemini-3-flash-preview", ReasoningLevel.MEDIUM, {"thinking_level": "medium"}),
+        ("models/gemini-3.1-pro-preview", ReasoningLevel.MINIMAL, {"thinking_level": "low"}),
+    ])
+    def test_gemini_takes_the_shape_of_the_model(self, model, level, expected) -> None:
         llm = GeminiLLM(_gemini())
-        assert llm.profile_extended(_cfg(ReasoningLevel.OFF)) == {"thinking_budget": 0}
+        assert llm.profile_extended(_cfg(level), model=model) == expected
+
+    def test_gemini_2_5_pro_off_is_logged_once(self, caplog) -> None:
+        caplog.set_level(logging.DEBUG, logger="primer.llm._reasoning")
+        llm = GeminiLLM(_gemini())
+        for _ in range(2):
+            llm.profile_extended(_cfg(ReasoningLevel.OFF), model="gemini-2.5-pro")
+        assert len([r for r in caplog.records if "cannot turn thinking off" in r.getMessage()]) == 1
+
+    @pytest.mark.parametrize("model", ["gemini-2.0-flash", "gemma-3-27b-it", None])
+    def test_gemini_sends_no_reasoning_to_a_model_without_the_control(self, model) -> None:
+        llm = GeminiLLM(_gemini())
+        assert llm.profile_extended(_cfg(ReasoningLevel.HIGH, seed=2), model=model) == {"seed": 2}
+
+    def test_gemini_never_sends_a_budget_and_a_level(self) -> None:
+        """The typed level wins over a passthrough of the other knob."""
+        llm = GeminiLLM(_gemini())
+        on_3 = llm.profile_extended(_cfg(ReasoningLevel.LOW, thinking_budget=99), model="gemini-3-pro-preview")
+        on_25 = llm.profile_extended(_cfg(ReasoningLevel.LOW, thinking_level="high"), model="gemini-2.5-flash")
+        assert on_3 == {"thinking_level": "low"}
+        assert on_25 == {"thinking_budget": 2048}
 
     def test_ollama_takes_a_think_flag(self) -> None:
         llm = OllamaLLM(_ollama())
@@ -362,8 +397,52 @@ class TestEveryKindAcceptsItsTranslation:
         from primer.llm.gemini import _extract_extended_kwargs
 
         llm = GeminiLLM(_gemini())
-        out = _extract_extended_kwargs(llm.profile_extended(_cfg(ReasoningLevel.OFF)))
+        knobs = llm.profile_extended(_cfg(ReasoningLevel.OFF), model="gemini-2.5-flash")
+        out = _extract_extended_kwargs(knobs)
         assert out["thinking_config"].thinking_budget == 0
+        assert out["thinking_config"].thinking_level is None
+
+    def test_gemini_folds_the_level_into_thinking_config(self) -> None:
+        from primer.llm.gemini import _extract_extended_kwargs
+
+        llm = GeminiLLM(_gemini())
+        knobs = llm.profile_extended(_cfg(ReasoningLevel.LOW), model="gemini-3-pro-preview")
+        config = _extract_extended_kwargs(knobs)["thinking_config"]
+        assert config.thinking_level.value == "LOW"
+        assert config.thinking_budget is None
+
+    def test_gemini_with_both_knobs_keeps_the_level(self) -> None:
+        from primer.llm.gemini import _extract_extended_kwargs
+
+        config = _extract_extended_kwargs(
+            {"thinking_budget": 512, "thinking_level": "high"},
+        )["thinking_config"]
+        assert config.thinking_level.value == "HIGH" and config.thinking_budget is None
+
+    async def test_gemini_retries_once_without_a_setting_the_model_refuses(self, monkeypatch, caplog) -> None:
+        """A model the table gets wrong answers 400: the call is made again
+        without the profile's settings, and that is logged once."""
+        from tests.llm.test_gemini import _aiter as _gaiter
+        from tests.llm.test_gemini import _make_api_error, _ok_chunks
+        from tests.llm.test_gemini import _patched_client as _gemini_client
+
+        caplog.set_level(logging.DEBUG, logger="primer.llm._reasoning")
+        client = _gemini_client(monkeypatch)
+
+        def _answer(**kwargs):
+            if kwargs["config"].thinking_config is not None:
+                raise _make_api_error(400, message="Budget 0 is invalid. This model only works in thinking mode.")
+            return _gaiter(_ok_chunks())
+
+        client.aio.models.generate_content_stream.side_effect = _answer
+        llm = GeminiLLM(_gemini())
+        knobs = llm.profile_extended(_cfg(ReasoningLevel.OFF), model="gemini-2.5-flash")
+        events = [ev async for ev in profile_stream(llm, knobs, model="gemini-2.5-flash", messages=_HI)]
+        assert any(type(e).__name__ == "TextDelta" for e in events)
+        calls = client.aio.models.generate_content_stream.call_args_list
+        assert len(calls) == 2
+        assert calls[1].kwargs["config"].thinking_config is None
+        assert any("thinking mode" in r.getMessage() for r in caplog.records)
 
     def test_ollama_sends_think_at_the_top_level(self) -> None:
         from primer.llm.ollama import _build_options_and_kwargs

@@ -47,7 +47,7 @@ _OPENAI_EFFORT: dict[ReasoningLevel, str] = {
     ReasoningLevel.HIGH: "high",
 }
 
-# Gemini takes a token budget; 0 disables thinking outright.
+# Gemini 2.5 takes a token budget; 0 turns thinking off where the model allows.
 _GEMINI_BUDGET: dict[ReasoningLevel, int] = {
     ReasoningLevel.OFF: 0,
     ReasoningLevel.MINIMAL: 512,
@@ -55,6 +55,24 @@ _GEMINI_BUDGET: dict[ReasoningLevel, int] = {
     ReasoningLevel.MEDIUM: 8192,
     ReasoningLevel.HIGH: 24576,
 }
+
+# Gemini 2.5 budget range per model: (lowest budget, highest, can turn off).
+_GEMINI_25_RANGE: dict[str, tuple[int, int, bool]] = {
+    "pro": (128, 32768, False),
+    "flash": (1, 24576, True),
+    "flash-lite": (512, 24576, True),
+}
+
+# Gemini 3 and later take a thinking level instead of a budget; OFF and
+# MINIMAL ask for the lowest level the model has (Flash has "minimal", Pro
+# starts at "low").
+_GEMINI_LEVEL: dict[ReasoningLevel, str] = {
+    ReasoningLevel.LOW: "low",
+    ReasoningLevel.MEDIUM: "medium",
+    ReasoningLevel.HIGH: "high",
+}
+
+_GEMINI_ID = re.compile(r"gemini-(\d+)(?:\.(\d+))?-(flash-lite|flash|pro)")
 
 # Anthropic, Claude 4.5 and earlier: a thinking block with a token budget.
 _ANTHROPIC_BUDGET: dict[ReasoningLevel, int | None] = {
@@ -297,12 +315,56 @@ def _dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
-def gemini_extended(config: ModelProfileConfig) -> dict[str, Any]:
-    """Reasoning knobs for the Gemini wire (a thinking-token budget)."""
+def gemini_extended(
+    config: ModelProfileConfig, *, model: str | None = None,
+) -> dict[str, Any]:
+    """Reasoning knobs for the Gemini wire, shaped for ``model``.
+
+    Gemini 2.5 takes a thinking budget, kept within the model's range: 2.5
+    Pro cannot turn thinking off (a zero budget is a 400), so OFF sends its
+    lowest budget, 128, logged once at DEBUG. Gemini 3 and later take
+    ``thinking_level`` instead, never a budget and never both; OFF asks for
+    the model's lowest level. A model with no thinking control (2.0 and
+    earlier) or one the table does not know gets no reasoning parameter,
+    logged once; the stream-open guard covers anything else a model refuses.
+    """
     level = config.reasoning
+    out = dict(config.extended or {})
     if level is None:
-        return dict(config.extended or {})
-    return _merge(config, {"thinking_budget": _GEMINI_BUDGET[level]})
+        return out
+    match = _GEMINI_ID.search((model or "").lower())
+    version = (int(match.group(1)), int(match.group(2) or 0)) if match else None
+    if version is None or version < (2, 5):
+        debug_once(
+            ("gemini-no-reasoning", str(model)),
+            "Gemini model %s has no thinking control the adapter knows; the "
+            "profile's reasoning level (%s) is not sent",
+            model, level.value,
+        )
+        return out
+    variant = match.group(3)
+    if version >= (3, 0):
+        out.pop("thinking_budget", None)
+        if level in (ReasoningLevel.OFF, ReasoningLevel.MINIMAL):
+            out["thinking_level"] = "minimal" if variant.startswith("flash") else "low"
+        else:
+            out["thinking_level"] = _GEMINI_LEVEL[level]
+        return out
+    out.pop("thinking_level", None)
+    lowest, highest, can_turn_off = _GEMINI_25_RANGE[variant]
+    budget = _GEMINI_BUDGET[level]
+    if budget == 0 and not can_turn_off:
+        debug_once(
+            ("gemini-cannot-turn-off", str(model)),
+            "Gemini model %s cannot turn thinking off; OFF sends its lowest "
+            "thinking budget, %d",
+            model, lowest,
+        )
+        budget = lowest
+    elif budget:
+        budget = min(max(budget, lowest), highest)
+    out["thinking_budget"] = budget
+    return out
 
 
 def ollama_extended(config: ModelProfileConfig) -> dict[str, Any]:
