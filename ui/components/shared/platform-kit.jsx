@@ -1,4 +1,4 @@
-/* global React */
+/* global React, Modal */
 // The platform kit (PK_*): the page and form primitives every revamped Platform page and overlay is built from, so the pages share one
 // header, one card, one grid and one overlay (the master plan's kit contract; docs/dev/subsystems/ui-foundation.md, "Platform kit"). Loaded
 // right after shared/form-field.jsx and before every page component (ui/index.html); every export is on window. The components hold only
@@ -265,4 +265,280 @@ function PK_usePagedFilter(items, opts) {
   };
 }
 
-Object.assign(window, { PK_PageHeader, PK_CardGrid, PK_Card, PK_usePagedFilter });
+// ---- form primitives --------------------------------------------------------------------------------------------------------------------------------
+// The alignment rules of design 6.2: every label on one line, help and errors under their control, short fields in a two- or three-column grid
+// whose controls share a top edge and a height (34px), related fields in a bordered box with a small-caps title, Cancel on the left and the
+// primary action on the right.
+
+// The type selector at the centre top of a form overlay, larger than the other controls (design 6.1): "Register a", then a button holding the
+// current type's icon and label and a caret that opens the list of types. A pick reports the new value and closes the list; Escape closes only
+// the list. A locked selector (edit mode) shows its type and opens nothing.
+function PK_Selector(props) {
+  var sel = props.selector;
+  var openState = React.useState(false);
+  var open = openState[0] && !sel.locked;
+  var setOpen = openState[1];
+  var boxRef = React.useRef(null);
+  var triggerRef = React.useRef(null);
+  var listRef = React.useRef(null);
+  window.primerApi.useEscape(function (ev) {
+    if (ev && typeof ev.preventDefault === "function") ev.preventDefault();
+    setOpen(false);
+    PK_focus(triggerRef);
+  }, open);
+  PK_useOutsideClick(open, boxRef, function () { setOpen(false); });
+  React.useEffect(function () {
+    if (open) PK_focusFirstItem(listRef);
+  }, [open]);
+  var options = sel.options || [];
+  var current = options.filter(function (o) { return o.value === sel.value; })[0] || { value: sel.value, label: String(sel.value || "") };
+  return (
+    <div className="pk-selector">
+      {sel.prefix ? <div className="pk-selector-prefix">{sel.prefix}</div> : null}
+      <span className="pk-selector-anchor" ref={boxRef}
+        onBlur={function (ev) { if (open && PK_focusLeft(ev)) setOpen(false); }}>
+        <button type="button" ref={triggerRef} className="pk-selector-btn" data-testid={sel.testid}
+          aria-haspopup="menu" aria-expanded={open ? "true" : "false"} aria-disabled={sel.locked ? "true" : undefined}
+          onClick={function (ev) { PK_stop(ev); if (!sel.locked) setOpen(!open); }}>
+          {current.iconPath ? (
+            <svg width="16" height="16" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" aria-hidden="true">
+              <path d={current.iconPath} />
+            </svg>
+          ) : null}
+          <span className="pk-selector-label">{current.label}</span>
+          {sel.locked ? null : <span className="pk-selector-caret" aria-hidden="true">▾</span>}
+        </button>
+        {open ? (
+          <div className="pk-selector-menu" role="menu" ref={listRef} data-testid={sel.testid + ":menu"}
+            onClick={PK_stop} onKeyDown={PK_menuKeys}>
+            {options.map(function (o) {
+              var on = o.value === sel.value;
+              return (
+                <button type="button" key={o.value} role="menuitemradio" aria-checked={on ? "true" : "false"} className="pk-selector-item"
+                  data-testid={sel.testid + ":" + o.value}
+                  onClick={function (ev) {
+                    PK_stop(ev);
+                    setOpen(false);
+                    PK_focus(triggerRef);
+                    sel.onChange(o.value);
+                  }}>
+                  {o.iconPath ? (
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" aria-hidden="true">
+                      <path d={o.iconPath} />
+                    </svg>
+                  ) : <span className="pk-selector-noicon" aria-hidden="true" />}
+                  <span>{o.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+      </span>
+    </div>
+  );
+}
+
+// PK_FormOverlay: the one overlay shell of the revamped forms. It is a shared Modal (the Escape stack, the focus trap, the scrim that closes it,
+// and the bottom sheet on a phone) with the kit's class and the given test id, 720px wide unless `width` says otherwise, the title centred, the
+// optional type selector at the top of the body, and a footer of two sides: `left` (Cancel) and `right` (the primary action). Neither the dialog
+// nor any kit overlay rule uses a transform, so a position: fixed child (a full-screen editor) covers the viewport, not the dialog.
+function PK_FormOverlay(props) {
+  var footer = props.footer || {};
+  return (
+    <Modal title={props.title} onClose={props.onClose} width={props.width || 720} className="pk-overlay" testid={props.testid}
+      footer={
+        <div className="pk-foot">
+          <div className="pk-foot-left">{footer.left || null}</div>
+          <div className="pk-foot-right">{footer.right || null}</div>
+        </div>
+      }>
+      {props.selector ? <PK_Selector selector={props.selector} /> : null}
+      {props.children}
+    </Modal>
+  );
+}
+
+// PK_Grid: the form grid. One, two (the default) or three equal columns; the controls of a row share their top edge; one column below 520px.
+function PK_Grid(props) {
+  var cols = props.cols === 1 || props.cols === 3 ? props.cols : 2;
+  return <div className="pk-form-grid" data-cols={String(cols)}>{props.children}</div>;
+}
+
+// PK_Field: one labelled form row, the shared FormField with the kit's classes. The label is one line; `help` and `error` sit UNDER the control
+// (the error as FormField's role="alert"), and the control is described by them. It never passes FormField's inline `hint`. `span: "full"` takes
+// the whole grid row. `required` draws an asterisk that assistive tech does not read: the control says it is required itself (`required` or
+// `aria-required`), because the children pass through untouched apart from FormField's id and description.
+function PK_Field(props) {
+  var Field = window.FormField;
+  var label = props.required ? (
+    <React.Fragment>
+      {props.label}
+      <span className="pk-required" aria-hidden="true">{" *"}</span>
+    </React.Fragment>
+  ) : props.label;
+  return (
+    <Field className={"field pk-field" + (props.span === "full" ? " pk-span-full" : "")} labelClassName="field-label pk-label"
+      label={label} help={props.help} err={props.error}>
+      {props.children}
+    </Field>
+  );
+}
+
+// PK_Section: related fields in a bordered box with a small-caps title ("LIMITS AND RETRIES"), a group named by that title; the fields sit in a
+// PK_Grid of `cols` columns.
+function PK_Section(props) {
+  var titleId = React.useId() + "title";
+  return (
+    <div className="pk-section" role="group" aria-labelledby={titleId} data-testid={props.testid}>
+      <div className="pk-section-title" id={titleId}>{props.title}</div>
+      <PK_Grid cols={props.cols}>{props.children}</PK_Grid>
+    </div>
+  );
+}
+
+// PK_Fold: the "▸ More ..." disclosure. `open` is the INITIAL state only; `onToggle(open)` reports each change. The folded children are not
+// mounted. Inside a grid the fold takes a whole row.
+function PK_Fold(props) {
+  var openState = React.useState(!!props.open);
+  var open = openState[0];
+  function toggle() {
+    var next = !open;
+    openState[1](next);
+    if (props.onToggle) props.onToggle(next);
+  }
+  return (
+    <div className="pk-fold" data-testid={props.testid}>
+      <button type="button" className="pk-fold-toggle" data-testid={props.testid + ":toggle"} aria-expanded={open ? "true" : "false"}
+        onClick={toggle}>
+        <span className="pk-fold-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
+        {" " + props.label}
+      </button>
+      {open ? <div className="pk-fold-body">{props.children}</div> : null}
+    </div>
+  );
+}
+
+// PK_Segmented: a small set of exclusive choices ("Sequential fallback | Round robin"), a group of toggle buttons; the current one is pressed.
+function PK_Segmented(props) {
+  return (
+    <div className="pk-seg" role="group" aria-label={props.ariaLabel} data-testid={props.testid}>
+      {(props.options || []).map(function (o) {
+        var on = o.value === props.value;
+        return (
+          <button type="button" key={o.value} className="pk-seg-btn" data-testid={props.testid + ":" + o.value}
+            aria-pressed={on ? "true" : "false"} onClick={function () { if (!on) props.onChange(o.value); }}>{o.label}</button>
+        );
+      })}
+    </div>
+  );
+}
+
+// PK_RowTable: an editable list of rows (models, environment, files, node selector, tolerations). "+ Add" appends a row with "" in each column
+// (a select column starts on its first option); "✕" removes a row; every edit hands the parent the next rows. Each control is named by its
+// column and row number ("Model 1"); a secret column is a password input the browser does not fill in.
+function PK_RowTable(props) {
+  var columns = props.columns || [];
+  var rows = props.rows || [];
+  var template = columns.map(function (c) { return c.width || "minmax(0, 1fr)"; }).concat(["auto"]).join(" ");
+  function blank() {
+    var row = {};
+    columns.forEach(function (c) {
+      row[c.key] = c.input === "select" && c.options && c.options.length ? c.options[0] : "";
+    });
+    return row;
+  }
+  function edit(i, key, value) {
+    props.onChange(rows.map(function (row, j) {
+      if (j !== i) return row;
+      var next = Object.assign({}, row);
+      next[key] = value;
+      return next;
+    }));
+  }
+  return (
+    <div className="pk-rowtable" data-testid={props.testid}>
+      <div className="pk-rowtable-head">
+        <span className="pk-rowtable-title">{props.title || ""}</span>
+        <button type="button" className="pk-rowtable-add" data-testid={props.testid + ":add"}
+          onClick={function () { props.onChange(rows.concat([blank()])); }}>{props.addLabel}</button>
+      </div>
+      {rows.length && columns.length > 1 ? (
+        <div className="pk-rowtable-row pk-rowtable-cols" style={{ gridTemplateColumns: template }} aria-hidden="true">
+          {columns.map(function (c) { return <span key={c.key}>{c.label}</span>; })}
+          <span />
+        </div>
+      ) : null}
+      {rows.map(function (row, i) {
+        return (
+          <div key={i} className="pk-rowtable-row" style={{ gridTemplateColumns: template }}>
+            {columns.map(function (c) {
+              var testid = props.testid + ":" + i + ":" + c.key;
+              var name = c.label + " " + (i + 1);
+              var value = row[c.key] == null ? "" : String(row[c.key]);
+              function onChange(ev) { edit(i, c.key, ev.target.value); }
+              if (c.input === "select") {
+                return (
+                  <select key={c.key} className="pk-rowtable-input" data-testid={testid} aria-label={name} value={value} onChange={onChange}>
+                    {(c.options || []).map(function (o) { return <option key={o} value={o}>{o}</option>; })}
+                  </select>
+                );
+              }
+              var type = c.input === "secret" ? "password" : c.input === "number" ? "number" : "text";
+              return (
+                <input key={c.key} className="pk-rowtable-input" data-testid={testid} aria-label={name} type={type}
+                  autoComplete={c.input === "secret" ? "off" : undefined} value={value} onChange={onChange} />
+              );
+            })}
+            <button type="button" className="pk-rowtable-remove" data-testid={props.testid + ":remove:" + i}
+              aria-label={"Remove row " + (i + 1)}
+              onClick={function () { props.onChange(rows.filter(function (_row, j) { return j !== i; })); }}>✕</button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// PK_CheckTable: a list to tick (the import checklist of design 6.4, the members of an aggregated profile of design 7.2). A checkbox per row,
+// named by the row's label; the header's "Select all" is ticked when every row that can be ticked is, and `onToggleAll(checked, keys)` names the
+// rows it applies to. A `disabled` row (already imported, say) cannot be toggled, is left out of toggle-all and is drawn muted. A row's `extra`
+// sits in its last column, under `extraLabel`. The body scrolls past 320px.
+function PK_CheckTable(props) {
+  var rows = props.rows || [];
+  var uid = React.useId();
+  var live = rows.filter(function (r) { return !r.disabled; });
+  var liveKeys = live.map(function (r) { return r.key; });
+  var allChecked = live.length > 0 && live.every(function (r) { return !!r.checked; });
+  var hasExtra = !!props.extraLabel || rows.some(function (r) { return r.extra != null; });
+  var cls = "pk-checktable" + (hasExtra ? " pk-checktable-has-extra" : "");
+  return (
+    <div className={cls} data-testid={props.testid}>
+      <div className="pk-checktable-row pk-checktable-head">
+        <input type="checkbox" id={uid + "all"} data-testid={props.testid + ":all"} aria-label="Select all"
+          checked={allChecked} disabled={!live.length}
+          onChange={function () { if (live.length) props.onToggleAll(!allChecked, liveKeys); }} />
+        <label className="pk-checktable-label" htmlFor={uid + "all"}>Select all</label>
+        {hasExtra ? <span className="pk-checktable-extra">{props.extraLabel || ""}</span> : null}
+      </div>
+      <div className="pk-checktable-body">
+        {rows.map(function (r, i) {
+          var id = uid + "row" + i;
+          return (
+            <div key={r.key} className="pk-checktable-row" data-disabled={r.disabled ? "true" : undefined}>
+              <input type="checkbox" id={id} data-testid={props.testid + ":" + r.key} aria-label={r.label}
+                checked={!!r.checked} disabled={!!r.disabled}
+                onChange={function () { if (!r.disabled) props.onToggle(r.key); }} />
+              <label className="pk-checktable-label" htmlFor={id}>{r.label}</label>
+              {hasExtra ? <div className="pk-checktable-extra">{r.extra != null ? r.extra : null}</div> : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+Object.assign(window, {
+  PK_PageHeader, PK_CardGrid, PK_Card, PK_usePagedFilter,
+  PK_FormOverlay, PK_Grid, PK_Field, PK_Section, PK_Fold, PK_Segmented, PK_RowTable, PK_CheckTable,
+});

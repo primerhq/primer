@@ -141,8 +141,12 @@ function fmtDate(d) {
 
 // Modal — desktop: centered dialog. Mobile: bottom sheet via the
 // same API. Consumers (every form modal in the app) get the mobile
-// behavior automatically.
-const Modal = ({ title, onClose, children, footer, danger, width }) => {
+// behavior automatically. `className` (optional) is appended to the
+// dialog's own class ("modal", or "sheet" on a phone) and `testid`
+// (optional) becomes the dialog's data-testid: the platform kit's
+// PK_FormOverlay styles and names its dialog through them. Without them
+// the markup is unchanged.
+const Modal = ({ title, onClose, children, footer, className, testid, danger, width }) => {
   const useViewport = (window.primerApi && window.primerApi.useViewport) || null;
   const vp = useViewport ? useViewport() : { isMobile: false };
   const isMobile = !!vp.isMobile;
@@ -167,10 +171,11 @@ const Modal = ({ title, onClose, children, footer, danger, width }) => {
     return (
       <div className="sheet-overlay" onClick={onClose}>
         <div
-          className="sheet"
+          className={"sheet" + (className ? " " + className : "")}
           role="dialog"
           aria-modal="true"
           aria-label={typeof title === "string" ? title : undefined}
+          data-testid={testid}
           tabIndex={-1}
           ref={dialogRef}
           onClick={(e) => e.stopPropagation()}
@@ -190,10 +195,11 @@ const Modal = ({ title, onClose, children, footer, danger, width }) => {
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div
-        className="modal"
+        className={"modal" + (className ? " " + className : "")}
         role="dialog"
         aria-modal="true"
         aria-label={typeof title === "string" ? title : undefined}
+        data-testid={testid}
         tabIndex={-1}
         ref={dialogRef}
         style={width ? { width } : undefined}

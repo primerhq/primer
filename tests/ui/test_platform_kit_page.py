@@ -97,6 +97,10 @@ def css_body(selector: str, media: str | None = None, css: str = CSS) -> str:
     return "\n".join(bodies)
 
 
+# the transform property itself, not text-transform
+TRANSFORM = re.compile(r"(?<![\w-])transform\s*:")
+
+
 def declarations(body: str) -> dict[str, str]:
     out = {}
     for part in body.split(";"):
@@ -380,7 +384,7 @@ def test_card_css_stretches_open_and_lifts_menu_and_status_above_it() -> None:
         d = declarations(css_body(selector))
         assert d.get("position") in ("relative", "absolute"), selector
         assert int(d.get("z-index", "0")) >= 1, f"{selector} must sit above the stretched Open"
-    moved = [s for _at, selectors, body in css_rules() for s in selectors if s.startswith(".pk-") and "transform" in body]
+    moved = [s for _at, selectors, body in css_rules() for s in selectors if s.startswith(".pk-") and TRANSFORM.search(body)]
     assert not moved, f"a kit rule that transforms makes a containing block of its own: {moved}"
 
 
