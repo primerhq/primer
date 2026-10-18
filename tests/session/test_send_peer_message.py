@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -102,6 +102,38 @@ def _expect_refusal(info, error_type: str, message: str | None = None) -> None:
     assert info.value.error_type == error_type
     if message is not None:
         assert info.value.message == message
+
+
+# ---- the copy ---------------------------------------------------------------------------------------------------------------------
+
+
+def test_the_copy_is_the_plans_character_for_character():
+    """Every refusal and note the sending agent reads is quoted in the plan and used as written; an edit here must be a deliberate one."""
+    assert peer_messages.REFUSE_SELF == "a session cannot message itself"
+    assert peer_messages.REFUSE_NO_CALLER == "message_session works only inside a workspace session"
+    assert peer_messages.REFUSE_NOT_FOUND == "Session {session_id!r} does not exist in this workspace"
+    assert peer_messages.REFUSE_RANK == (
+        "session {session_id!r} runs at a higher rank ({target_rank}) than this session ({sender_rank}); "
+        "a session may message only sessions at or below its own rank"
+    )
+    assert peer_messages.REFUSE_BUSY == "session {session_id!r} is {reason}; nothing was sent (mode if_idle)"
+    assert peer_messages.REFUSE_ENDED == "session {session_id!r} has ended ({ended_reason}) and cannot take a message"
+    assert peer_messages.NOTE_WOKEN == "Delivered: the session starts its next turn with your message."
+    assert peer_messages.NOTE_REOPENED == "Delivered: the session had ended; it reopens and starts a new turn with your message."
+    assert peer_messages.NOTE_QUEUED_BUSY == "Queued: the session is in a turn; it reads your message when that turn ends."
+    assert peer_messages.NOTE_QUEUED_GATE == (
+        "Queued: the session is waiting on {parked_on}; your message does not answer it, and the session reads it after that wait and its turn end."
+    )
+    assert peer_messages.NOTE_QUEUED_EVENT == (
+        "Queued: the session is waiting for an event. If it waits for session.messaged, that wait ends now; it reads your message when its turn ends."
+    )
+    assert peer_messages.NOTE_QUEUED_PAUSED == "Queued: the session is paused; it reads your message after it is resumed."
+    assert peer_messages.NOTE_GRAPH == " This restarts the graph: your message is the input of its next run."
+    assert peer_messages.NOTE_GRAPH_STORED_INPUT == (
+        " This graph session runs on its stored graph_input, so its next run uses that input and your message is only recorded."
+    )
+    assert peer_messages.PEER_PREFIX_AGENT == "[from session {session_id} (agent {agent_id})]"
+    assert peer_messages.PEER_PREFIX_GRAPH == "[from session {session_id} (graph {graph_id})]"
 
 
 # ---- the delivery table: every state a target can be in ---------------------------------------------------------------------------
@@ -604,6 +636,16 @@ async def test_two_senders_do_not_wait_for_each_other(monkeypatch):
     assert other.delivery == "woken" and not first.done()
     release.set()
     assert (await first).delivery == "woken"
+
+
+async def test_the_ledger_is_written_in_utc_whatever_zone_the_clock_was_given_in():
+    """The storage orders a datetime by its text, so a row in another zone would sort among the wrong neighbours."""
+    world = await _world()
+    await seed_session(world, sid="ses-b", turn_no=1)
+    await _send(world, "ses-b", now=NOW.astimezone(timezone(timedelta(hours=4))))
+    await _send(world, "ses-b", now=NOW.replace(tzinfo=None))
+    rows = await _ledger(world)
+    assert [r.sent_at for r in rows] == [NOW, NOW] and {r.sent_at.utcoffset() for r in rows} == {timedelta(0)}
 
 
 async def test_the_locks_of_senders_that_are_done_are_not_kept():
