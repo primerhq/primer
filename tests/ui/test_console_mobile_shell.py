@@ -40,7 +40,7 @@ reused directly rather than re-fetched) + Platform sections as
 read-only lists: NV_PLAT_GROUPS' own navs (nv-platform.jsx) minus
 "providers" (no generic {list, card} entry to reuse), each nav's
 entities via NV_PLAT_PAGES[nav].list/.card - the SAME "nv-plat:" + nav
-cache key and {name, sub, chip, facts} view-model the desktop cards
+cache key and {name, sub, badge, status, facts} view-model the desktop cards
 use - opening ONE generic fact-sheet BottomSheet rather than 13 bespoke
 ones. Triggers get a real Fire-now (fire_now, newly ported to sh-api.jsx
 - the classic ui/components/triggers.jsx already had it); every other
@@ -697,15 +697,19 @@ def test_platform_row_opens_the_generic_fact_sheet() -> None:
 
 
 def test_fact_sheet_is_generic_not_per_entity_kind() -> None:
-    """One component reading {name, sub, chip, facts} - no per-kind
-    branches for the body (the footer's triggers-vs-everything-else
-    split is the one deliberate exception, tested separately below)."""
+    """One component reading the card view model {name, sub, badge,
+    status, facts} - no per-kind branches for the body (the footer's
+    triggers-vs-everything-else split is the one deliberate exception,
+    tested separately below). Platform revamp seam I-8: the old `chip`
+    became a `badge` or a `status`, so the sheet reads those."""
     m = re.search(r"function NV_MobileFactSheet\(props\)[\s\S]*?\n\}\n", MOBILE)
     assert m
     body = m.group(0)
     assert "cardVM.facts" in body
     assert "cardVM.sub" in body
-    assert "cardVM.chip" in body
+    assert "cardVM.badge" in body
+    assert "cardVM.status" in body
+    assert "cardVM.chip" not in body
     for bespoke in ("agents", "graphs", "toolsets", "channels", "harnesses"):
         assert ('"' + bespoke + '"') not in body, bespoke
 
@@ -723,6 +727,11 @@ def test_fact_rows_filter_out_empty_facts_before_indexing() -> None:
     m = re.search(r"function NV_MobileFactSheet\(props\)[\s\S]*?\n\}\n", MOBILE)
     assert m
     assert "(cardVM.facts || []).filter(Boolean).map(" in m.group(0)
+    # Platform revamp seam I-8: a fact may also be a plain string (one
+    # line), which must be drawn whole rather than indexed as a pair
+    # (f[0] of a string is its first letter); test_mobile_more_reachability.py
+    # renders one.
+    assert "Array.isArray(f)" in m.group(0)
 
 
 def test_triggers_get_fire_now_everything_else_says_edit_on_desktop() -> None:

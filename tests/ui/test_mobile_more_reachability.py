@@ -53,8 +53,8 @@ function reparse() { __con = Object.assign({}, __con, { view: fresh() }); }
 var NV_HealthCards = function () { return React.createElement("div", { "data-testid": "health-cards" }); };
 var NV_PLAT_GROUPS = [{ label: "Build", ids: ["agents", "toolsets"] }];
 window.NV_PLAT_PAGES = {
-  agents: { title: "Agents", list: function () {}, card: function (row) { return { name: "agent " + row.id }; } },
-  toolsets: { title: "Toolsets", list: function () {}, card: function (row) { return { name: "toolset " + row.id }; } },
+  agents: { title: "Agents", list: function () {}, card: function (row) { return { id: row.id, name: "agent " + row.id, sub: "", facts: [] }; } },
+  toolsets: { title: "Toolsets", list: function () {}, card: function (row) { return { id: row.id, name: "toolset " + row.id, sub: "", facts: [] }; } },
 };
 window.primerApi = {
   apiFetch: function () {},
@@ -332,7 +332,7 @@ def _fire_now_wiring(app, envelope: dict) -> None:
         "var REFETCHES = 0; var TOASTS = [];"
         "NV_PLAT_GROUPS = [{ label: 'Automation', ids: ['triggers'] }];"
         "window.NV_PLAT_PAGES = { triggers: { title: 'Triggers', noun: ['trigger', 'triggers'], list: function () {},"
-        " card: function (row) { return { name: row.id, facts: [] }; } } };"
+        " card: function (row) { return { id: row.id, name: row.id, sub: '', facts: [] }; } } };"
         "ITEMS = [{ id: 'tr-1', name: 'Nightly', slug: 'nightly' }];"
         "window.primerApi.useResource = function () { return { data: { items: ITEMS }, loading: false, error: null, degraded: false,"
         " refetch: function () { REFETCHES += 1; } }; };"
@@ -363,6 +363,53 @@ def test_the_platform_keeps_the_sheet_and_list_alone_for_other_refusals(app) -> 
         {"text": "Fire failed: Your session has ended; sign in again.", "requestId": "req-0000000000bb"}]
     assert app.has("nv-mob-fact-fire"), "the sheet stays on the live row"
     assert app.js("REFETCHES") == 0
+
+
+# --- the fact sheet draws the card view model (seam I-8) ---------------------------------------------------------------------
+
+
+def _open_sheet(app, card_js: str) -> None:
+    """The agents section with one row whose card is ``card_js``, opened on that row's fact sheet the way a link to the row opens it."""
+    app.js("window.NV_PLAT_PAGES.agents.card = " + card_js + '; ITEMS = [{ id: "a1" }];')
+    app.mount("PlatformHost", '{ initial: { kind: "agents", id: "a1" } }')
+    assert app.attr("sheet", "data-open") == "true"
+
+
+def test_the_platform_list_hands_the_console_to_card(app) -> None:
+    app.js("var SEEN = [];")
+    _open_sheet(app, 'function (row, con) { SEEN.push(con); return { id: row.id, name: row.id, sub: "", facts: [] }; }')
+    assert app.js("SEEN.length > 0 && SEEN.every(function (c) { return c === __con; })"), "card(row, con) gets the console on the phone too"
+
+
+def test_the_fact_sheet_shows_badge_and_status(app) -> None:
+    _open_sheet(app, 'function (row) { return { id: row.id, name: row.id, sub: "a toolset", badge: "built in",'
+                     ' status: { label: "available", tone: "ok" }, facts: [] }; }')
+    texts = app.data("MR.texts()")
+    assert "built in" in texts and "available" in texts
+    assert app.js('MR.find("nv-mob-fact-body") !== null')
+    status = app.data('MR.subtree("nv-mob-fact-body").filter(function (e) { return /nv-mob-fact-status/.test(e.className); })')
+    assert len(status) == 1 and status[0]["type"] == "span", "a status with no action is text"
+
+
+def test_a_clickable_status_on_the_fact_sheet_closes_the_sheet_and_runs_its_action(app) -> None:
+    app.js("var RAN = 0;")
+    _open_sheet(app, 'function (row) { return { id: row.id, name: row.id, sub: "", facts: [],'
+                     ' status: { label: "Internal search: off", tone: "warn", testid: "chip-a1", onClick: function () { RAN += 1; } } }; }')
+    chip = app.js('MR.find("chip-a1").type')
+    assert chip == "button"
+    assert "touch-target" in app.js('MR.find("chip-a1").props.className').split()
+    assert app.js('MR.find("chip-a1").props.children') == "Internal search: off"
+    app.click("chip-a1")
+    assert app.attr("sheet", "data-open") == "false", "the sheet closes first"
+    assert app.js("RAN") == 1, "then the action runs, once"
+
+
+def test_a_plain_string_fact_is_one_line(app) -> None:
+    _open_sheet(app, 'function (row) { return { id: row.id, name: row.id, sub: "", facts: ["vLLM · 1 model", null, ["context", "8192"]] }; }')
+    texts = app.data("MR.texts()")
+    assert "vLLM · 1 model" in texts, "the string is drawn whole, not as a key and a value cut from its first letters"
+    assert "v" not in texts and "L" not in texts
+    assert "context" in texts and "8192" in texts
 
 
 # --- the More tab ------------------------------------------------------------------------------------------------------------

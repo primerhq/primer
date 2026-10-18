@@ -215,25 +215,32 @@ function NV_addChannelProvider(con) {
   con.goView("platform", "providers");
 }
 
-// Per-entity page config. list() returns a promise of {items}; card()
-// maps a row to the prototype's card VM; open() addresses the shared
-// overlays; create() either hosts the entity's form on this page
-// (setModal) or opens a management overlay (tests/ui/
+// Per-entity page config. list() returns a promise of {items}; card(row, con)
+// maps a row to the ONE card view model of every Platform page (seam I-8):
+//   { id, name, sub, badge?, icon?: { path, tone? }, status?: { label, tone:
+//     "ok"|"warn"|"error"|"muted", onClick?, testid? }, facts }
+// id is the record id (the scoped id for a tool); badge is a short neutral
+// word ("built in", a backend kind); facts holds strings and [key, value]
+// pairs, and the null NV_fact answers for a missing value, which every
+// renderer drops; con is the console (NV_useConsole()), so a status with an
+// onClick can open a dialog or an overlay, and is drawn as a button. open()
+// addresses the shared overlays; create() either hosts the entity's form on
+// this page (setModal) or opens a management overlay (tests/ui/
 // test_platform_create_opens_the_form.py tabulates which); delPath() names
 // the DELETE route (null = no delete from the card, e.g. providers where
-// the catalog owns lifecycle).
+// the catalog owns lifecycle). tests/ui/test_platform_card_view_model.py
+// holds every entry to the card shape.
 var NV_PLAT_PAGES = {
   profiles: {
     title: "Model profiles", noun: ["model profile", "model profiles"], createLabel: "New profile",
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/model_profiles?limit=200", null, { signal: signal });
     },
-    card: function (row) {
+    card: function (row, con) {
       return {
-        name: row.id,
+        id: row.id, name: row.id,
         sub: [row.provider_id, row.model_name || row.model]
           .filter(Boolean).join(" · "),
-        chip: null,
         facts: [
           NV_fact("context", row.context_length),
           NV_fact("reasoning",
@@ -257,15 +264,14 @@ var NV_PLAT_PAGES = {
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/agents?limit=200", null, { signal: signal });
     },
-    card: function (row) {
+    card: function (row, con) {
       var ident = NV_identity({ kind: "agent", agent_id: row.id });
       return {
-        name: row.id, sub: row.description || "",
-        glyph: ident.d, color: ident.color,
-        chip: row.status ? {
-          label: row.status,
-          color: row.status === "ok" ? "var(--green)" : "var(--attention)",
-        } : null,
+        id: row.id, name: row.id, sub: row.description || "",
+        icon: { path: NV_PLAT_ICONS.agents, tone: ident.color },
+        status: row.status ? {
+          label: row.status, tone: row.status === "ok" ? "ok" : "warn",
+        } : undefined,
         facts: [
           NV_fact("profile", row.model_profile_id),
           NV_fact("tools", NV_countOf(row.tools)),
@@ -284,11 +290,10 @@ var NV_PLAT_PAGES = {
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/graphs?limit=200", null, { signal: signal });
     },
-    card: function (row) {
+    card: function (row, con) {
       return {
-        name: row.id, sub: row.description || "No description",
-        glyph: NV_GRAPH_GLYPH.d, color: NV_GRAPH_GLYPH.color,
-        chip: null,
+        id: row.id, name: row.id, sub: row.description || "No description",
+        icon: { path: NV_PLAT_ICONS.graphs, tone: NV_GRAPH_GLYPH.color },
         facts: [
           NV_fact("nodes", NV_countOf(row.nodes)),
           NV_fact("edges", NV_countOf(row.edges)),
@@ -304,11 +309,11 @@ var NV_PLAT_PAGES = {
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/workspaces?limit=200", null, { signal: signal });
     },
-    card: function (row) {
+    card: function (row, con) {
       return {
-        name: row.name || row.id,
+        id: row.id, name: row.name || row.id,
         sub: row.name ? row.id : (row.template_id || ""),
-        chip: row.status ? { label: row.status, color: "var(--text-3)" } : null,
+        status: row.status ? { label: row.status, tone: "muted" } : undefined,
         facts: [
           NV_fact("template", row.template_id),
           NV_fact("provider", row.provider_id),
@@ -327,12 +332,10 @@ var NV_PLAT_PAGES = {
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/tools", null, { signal: signal });
     },
-    card: function (row) {
+    card: function (row, con) {
       return {
-        name: row.id, sub: row.tagline || row.description || "",
-        chip: row.builtin
-          ? { label: "built-in", color: "var(--blue)" }
-          : { label: row.kind || "registered", color: "var(--text-3)" },
+        id: row.id, name: row.id, sub: row.tagline || row.description || "",
+        badge: row.builtin ? "built in" : (row.kind || "registered"),
         // notes 3.1: red = unreachable, not amber (amber is in-progress).
         status: row.available === false
           ? { label: "unavailable", tone: "error" }
@@ -360,15 +363,16 @@ var NV_PLAT_PAGES = {
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/tools/catalogue", null, { signal: signal });
     },
-    card: function (row) {
+    card: function (row, con) {
       var scoped = String(row.id || "");
       var sep = scoped.indexOf("__");
       var toolset = sep > 0 ? scoped.slice(0, sep) : "";
       var bare = sep > 0 ? scoped.slice(sep + 2) : scoped;
       var desc = String(row.description || "").split("\n")[0];
       return {
-        name: bare, sub: desc, _key: scoped,
-        chip: toolset ? { label: toolset, color: "var(--violet)" } : null,
+        // the scoped id is the card's id: two toolsets may each have a "search"
+        id: scoped, name: bare, sub: desc,
+        badge: toolset || undefined,
         facts: [NV_fact("scoped id", scoped)],
       };
     },
@@ -384,11 +388,11 @@ var NV_PLAT_PAGES = {
       return apiFetch("GET", "/workspace_templates?limit=200", null,
         { signal: signal });
     },
-    card: function (row) {
+    card: function (row, con) {
       var backend = (row.backend && row.backend.kind) || "local";
       return {
-        name: row.id, sub: row.description || "",
-        chip: { label: backend, color: "var(--teal)" },
+        id: row.id, name: row.id, sub: row.description || "",
+        badge: backend,
         facts: [
           NV_fact("provider", row.provider_id),
           NV_fact("image", row.backend && row.backend.image),
@@ -410,11 +414,10 @@ var NV_PLAT_PAGES = {
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/collections?limit=200", null, { signal: signal });
     },
-    card: function (row) {
+    card: function (row, con) {
       return {
-        name: row.id, sub: row.description || "",
-        chip: row.system
-          ? { label: "system", color: "var(--blue)" } : null,
+        id: row.id, name: row.id, sub: row.description || "",
+        badge: row.system ? "system" : undefined,
         facts: [
           NV_fact("documents", NV_countOf(row.documents || row.doc_count)),
           NV_fact("search", row.search
@@ -434,13 +437,11 @@ var NV_PLAT_PAGES = {
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/triggers?limit=200", null, { signal: signal });
     },
-    card: function (row) {
+    card: function (row, con) {
       return {
-        name: row.id, sub: row.description || row.schedule || "",
-        chip: {
-          label: row.enabled === false ? "disabled" : "enabled",
-          color: row.enabled === false ? "var(--text-4)" : "var(--green)",
-        },
+        id: row.id, name: row.id, sub: row.description || row.schedule || "",
+        status: row.enabled === false
+          ? { label: "disabled", tone: "muted" } : { label: "enabled", tone: "ok" },
         facts: [
           NV_fact("kind", row.kind),
           NV_fact("schedule", row.schedule),
@@ -457,13 +458,12 @@ var NV_PLAT_PAGES = {
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/channels?limit=200", null, { signal: signal });
     },
-    card: function (row) {
+    card: function (row, con) {
       return {
-        name: row.id, sub: row.provider_id || row.kind || "",
-        chip: row.status ? {
-          label: row.status,
-          color: row.status === "ok" ? "var(--green)" : "var(--attention)",
-        } : null,
+        id: row.id, name: row.id, sub: row.provider_id || row.kind || "",
+        status: row.status ? {
+          label: row.status, tone: row.status === "ok" ? "ok" : "warn",
+        } : undefined,
         facts: [
           NV_fact("kind", row.kind),
           NV_fact("provider", row.provider_id),
@@ -480,10 +480,10 @@ var NV_PLAT_PAGES = {
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/harnesses?limit=200", null, { signal: signal });
     },
-    card: function (row) {
+    card: function (row, con) {
       return {
-        name: row.slug || row.id, sub: row.description || "",
-        chip: row.kind ? { label: row.kind, color: "var(--text-3)" } : null,
+        id: row.id, name: row.slug || row.id, sub: row.description || "",
+        badge: row.kind || undefined,
         facts: [
           NV_fact("agent", row.agent_id),
           NV_fact("workspace", row.workspace_id),
@@ -504,13 +504,12 @@ var NV_PLAT_PAGES = {
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/services?limit=200", null, { signal: signal });
     },
-    card: function (row) {
+    card: function (row, con) {
       return {
-        name: row.id, sub: row.description || "",
-        chip: row.state ? {
-          label: row.state,
-          color: row.state === "running" ? "var(--green)" : "var(--text-3)",
-        } : null,
+        id: row.id, name: row.id, sub: row.description || "",
+        status: row.state ? {
+          label: row.state, tone: row.state === "running" ? "ok" : "muted",
+        } : undefined,
         facts: [
           NV_fact("workspace", row.workspace_id),
           NV_fact("version", row.active_version || row.version),
@@ -527,21 +526,18 @@ var NV_PLAT_PAGES = {
       return apiFetch("GET", "/tool_approval_policies?limit=200", null,
         { signal: signal });
     },
-    card: function (row) {
+    card: function (row, con) {
       return {
         // rev-2 synthesis Wave 3 item 48/49: title is the mono TOOL
         // PATTERN (toolset_id__tool_name), not the policy's own
         // entity id - the id still addresses Open/Delete, it just
         // isn't the thing an operator scans the grid for.
+        id: row.id,
         name: NV_approvalToolPattern(row),
         sub: "strategy: " + NV_approvalStrategyLabel(row),
-        // .nv-pcard-chip (bare mono, no pill border) is the mockup's
-        // "active" treatment - .nv-pcard-status (bordered pill) is a
-        // DIFFERENT, unrelated affordance used by other entities.
-        chip: {
-          label: row.enabled ? "active" : "disabled",
-          color: row.enabled ? "var(--green)" : "var(--text-3)",
-        },
+        // Whether the policy is in force is the card's status (seam I-8).
+        status: row.enabled
+          ? { label: "active", tone: "ok" } : { label: "disabled", tone: "muted" },
         facts: NV_approvalFacts(row),
       };
     },
@@ -740,35 +736,54 @@ function NV_PlatNav() {
   );
 }
 
+// One card of the page, drawn from the card view model (seam I-8): the
+// type icon in its tone, the name, the badge and the status; a status
+// with an onClick is a button above the stretched Open (a click on it
+// runs the action and never opens the card); at most three facts, each a
+// string (one line) or a [key, value] pair.
 function NV_PlatCard(props) {
   var c = props.card;
-  var facts = (c.facts || []).filter(Boolean);
+  var facts = (c.facts || []).filter(Boolean).slice(0, 3);
+  var icon = c.icon || null;
+  var status = c.status || null;
   return (
     <div className="nv-pcard" data-testid={"nv-pcard:" + c.name}>
       <div className="nv-pcard-head">
-        {c.glyph ? (
-          <svg width="12" height="12" viewBox="0 0 12 12"
-            style={{ flexShrink: 0, color: c.color }}>
-            <path d={c.glyph} fill="currentColor" />
+        {icon && icon.path ? (
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"
+            stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"
+            aria-hidden="true"
+            style={{ flexShrink: 0, color: icon.tone || "var(--text-4)" }}>
+            <path d={icon.path} />
           </svg>
         ) : null}
         <span className="nv-pcard-name">{c.name}</span>
         <span style={{ flex: 1 }} />
-        {c.status ? (
-          <span className="nv-pcard-status" data-tone={c.status.tone}>
-            {c.status.label}
-          </span>
-        ) : null}
-        {c.chip ? (
-          <span className="nv-pcard-chip" style={{ color: c.chip.color }}>
-            {c.chip.label}
+        {c.badge ? <span className="nv-pcard-badge">{c.badge}</span> : null}
+        {status && typeof status.onClick === "function" ? (
+          <button type="button" className="nv-pcard-status nv-pcard-status-btn"
+            data-tone={status.tone} data-testid={status.testid}
+            onClick={function (ev) {
+              if (ev && ev.stopPropagation) ev.stopPropagation();
+              status.onClick();
+            }}>{status.label}</button>
+        ) : status ? (
+          <span className="nv-pcard-status" data-tone={status.tone}>
+            {status.label}
           </span>
         ) : null}
       </div>
       {c.sub ? <div className="nv-pcard-sub">{c.sub}</div> : null}
       {facts.length ? (
         <div className="nv-pcard-facts">
-          {facts.map(function (f) {
+          {facts.map(function (f, i) {
+            if (!Array.isArray(f)) {
+              return (
+                <div key={"s" + i} className="nv-fact-row">
+                  <span className="nv-fact-v">{f}</span>
+                </div>
+              );
+            }
             return (
               <div key={f[0]} className="nv-fact-row">
                 <span className="nv-fact-k">{f[0]}</span>
@@ -1353,7 +1368,7 @@ function NV_PlatListPage(props) {
   var items = (res.data && res.data.items) || [];
 
   var cards = items.map(function (row) {
-    return page.card(row);
+    return page.card(row, con);
   }).map(function (c, i) { c._row = items[i]; return c; });
   var total = cards.length;
   var ql = q.trim().toLowerCase();
@@ -1442,7 +1457,7 @@ function NV_PlatListPage(props) {
           {visible.map(function (c) {
             var deletable = page.delPath && page.delPath(c._row);
             return (
-              <NV_PlatCard key={c._key || c.name} card={c}
+              <NV_PlatCard key={c.id} card={c}
                 onOpen={function () { openRow(c._row); }}
                 onDelete={deletable
                   ? function () { del(c._row); } : null} />
