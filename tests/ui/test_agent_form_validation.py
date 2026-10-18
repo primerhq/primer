@@ -121,7 +121,8 @@ def test_creating_and_editing_both_check_before_they_post_and_only_creating_chec
     body = _modal()
     submit = body[body.index("const submit = async () => {"):]
 
-    check = re.search(r'const problems = AG_validateNewAgent\(isEdit \? "" : id, description\);\s*if \(Object\.keys\(problems\)\.length\) \{ setFieldErrors\(problems\); return; \}', submit)
+    # the refusal also calls refused(): it brings the first message into view (review of #779, required fix 3; tests/ui/test_agent_refusal_reveal.py)
+    check = re.search(r'const problems = AG_validateNewAgent\(isEdit \? "" : id, description\);\s*if \(Object\.keys\(problems\)\.length\) \{ setFieldErrors\(problems\); refused\(\); return; \}', submit)
     assert check, "both modes stop on a refusal, and an edit passes a blank id so only its description is checked"
     assert "if (!isEdit) {\n      const problems" not in submit, "the check is no longer create-only"
     assert check.start() < submit.index("body = {"), "before the body is built, so nothing is sent"

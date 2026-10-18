@@ -6,6 +6,8 @@
   before it closes the overlay (Review Focus 4). Full screen is a focus trap: Tab and Shift+Tab stay inside it however often they are pressed (review of #779).
   A two-part prompt is saved as two parts.
 * A response format that does not parse reopens the folded Advanced section and sends nothing (Review Focus 5).
+* A refused save brings its message into view: the overlay's body scrolls (the create form is about 1400px tall, with about 620px in sight at 1366x768), so the
+  first message is scrolled into view inside the body and its field takes the focus (review of #779, required fix 3).
 * The Chat button makes its session in the default workspace and opens it in the studio. It used to post a session route that does not exist. Opening the
   session in the studio goes through the router shim's session route (platform revamp plan 01, task 13), so that half needs that change in the build under test.
   The default workspace is the ONE row ``GET /v1/workspaces`` flags ``is_default`` (lead ruling, review of #779: no fallback to the first workspace), so this
@@ -197,11 +199,49 @@ def test_a_response_format_that_does_not_parse_reopens_advanced_and_sends_nothin
         toggle.click()
         modal.locator("#na-response-format").fill("{")
         toggle.click()  # fold it away again, then press Create
+        # The body scrolls and the Advanced fold is its last block: scroll it to the top so the fold is out of sight, as it is for an operator who has just read
+        # the form from the top. Only a refusal that scrolls to its message can then show it (review of #779, required fix 3).
+        modal.locator(".modal-b").evaluate("el => { el.scrollTop = 0 }")
+        expect(toggle).not_to_be_in_viewport()
         modal.get_by_test_id("agent-form-submit").click()
 
         expect(modal.get_by_test_id("agent-advanced-fold:toggle")).to_have_attribute("aria-expanded", "true", timeout=5_000)
-        expect(modal.get_by_role("alert").filter(has_text="JSON parse:")).to_be_visible(timeout=5_000)
+        alert = modal.get_by_role("alert").filter(has_text="JSON parse:")
+        expect(alert).to_be_visible(timeout=5_000)
+        expect(alert).to_be_in_viewport(ratio=1, timeout=5_000)  # inside the visible part of the body, whole: not left below the fold
+        expect(modal.locator("#na-response-format")).to_be_focused()  # and the field it is about takes the focus
         assert posts == [], "an unparseable response format must not be sent"
+    finally:
+        _remove(base_url, f"/v1/agents/{agent_id}", f"/v1/llm_providers/{provider_id}")
+
+
+def test_a_refused_create_scrolls_its_message_into_view_inside_the_body(page: Page, base_url: str, console_url: str, unique_suffix: str) -> None:  # Review Focus 5
+    """A blank description is refused before anything is sent, and its message sits near the TOP of a form whose body is scrolled to the BOTTOM: the message
+    must be scrolled into view inside the body, and the description field must take the focus."""
+    provider_id = f"llm-agv-{unique_suffix}"
+    agent_id = f"ag-agv-{unique_suffix}"
+    posts: list[str] = []
+    page.on("request", lambda r: posts.append(r.url) if r.method == "POST" and r.url.rstrip("/").endswith("/v1/agents") else None)
+    with httpx.Client(base_url=base_url, timeout=30.0) as c:
+        _seed_provider(c, provider_id)
+    try:
+        open_legacy_route(page, console_url, "agents")
+        page.get_by_role("button", name="New agent").first.click()
+        modal = page.locator(".modal").first
+        expect(modal.get_by_text("New agent", exact=True)).to_be_visible(timeout=5_000)
+        modal.locator("#na-id").fill(agent_id)
+        modal.locator("#na-model-profile").select_option(value=profile_id_for(provider_id, "fake-model"))
+
+        # The description is left blank. Scroll the body to its end: the description field is far above, out of sight.
+        description = modal.locator("#na-description")
+        modal.locator(".modal-b").evaluate("el => { el.scrollTop = el.scrollHeight }")
+        expect(description).not_to_be_in_viewport()
+        modal.get_by_test_id("agent-form-submit").click()
+
+        alert = modal.get_by_role("alert").filter(has_text="Describe what this agent is for")
+        expect(alert).to_be_in_viewport(ratio=1, timeout=5_000)
+        expect(description).to_be_focused()
+        assert posts == [], "a create without a description must not be sent"
     finally:
         _remove(base_url, f"/v1/agents/{agent_id}", f"/v1/llm_providers/{provider_id}")
 

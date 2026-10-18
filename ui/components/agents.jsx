@@ -491,6 +491,23 @@ function AG_otherFieldErrors(fieldErrors, paths) {
     });
 }
 
+// A save the form refuses is brought into view (platform revamp Review Focus 5; review of #779, required fix 3). The overlay's body scrolls (the edit form is
+// about 1900px tall and the window shows about 620 of it), and a message sits under its own field, often far from the Save button the operator just pressed: a
+// refusal out of sight reads as a button that does nothing. After every refused save the FIRST message of the overlay (the first role="alert" in the dialog) is
+// scrolled into view inside the body, and the control it describes takes the focus, so the keyboard carries on from the field to fix. A message under a field is the
+// shared form field's alert, which ties itself to its control with aria-describedby, and that is how the control is found; the line above the footer, and a field made
+// of several controls (the system prompt, the tools), have no such control and are only scrolled to. It runs from an effect, after the commit that draws the message.
+// The message is CENTRED in the body, so the field just above it is in sight with it ("nearest" left the message flush against an edge, clipped by a fraction of a
+// pixel, and its field above the top edge when the body had scrolled past it); the focus does not scroll on its own (preventScroll), so the body moves once.
+function AG_revealRefusal() {
+  const dialog = document.querySelector('[data-testid="agent-form"]');
+  const message = dialog ? dialog.querySelector('[role="alert"]') : null;
+  if (!message) return;
+  const control = message.id ? dialog.querySelector('[aria-describedby~="' + message.id + '"]') : null;
+  message.scrollIntoView({ block: "center" });
+  if (control && typeof control.focus === "function") control.focus({ preventScroll: true });
+}
+
 // The system prompt as tabs over ONE editor (platform revamp design 9): a tab per part ("Part 1", "Part 2"), "+ Part" and "Remove part" beside them,
 // and a Full screen toggle that lifts the box over the window. `parts` is the agent's list of prompt strings (the runtime joins them with a blank
 // line) and always holds at least one; `onChange(next)` hands the parent the new list. The tab that is shown is a position, kept in range when the
@@ -683,6 +700,13 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
   );
   const [responseFormatError, setResponseFormatError] = React.useState(null);
   const [fieldErrors, setFieldErrors] = React.useState({});
+  // How many saves the form has refused. Every refusal (the checks before a request, and the server's 422) bumps it, and the effect brings the first message into view
+  // (AG_revealRefusal): the message is drawn by the commit that follows the bump, so it exists when the effect looks for it.
+  const [refusals, setRefusals] = React.useState(0);
+  const refused = () => setRefusals((n) => n + 1);
+  React.useEffect(() => {
+    if (refusals > 0) AG_revealRefusal();
+  }, [refusals]);
   // uiv2 Wave 2 (a-11): the two numerics that had NO control anywhere in
   // the app before this wave (grep-confirmed against agents.jsx pre-
   // change). max_tool_turns has a real server default (50, not null) -
@@ -742,6 +766,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
           // A refusal on a field inside a fold would be said where nobody looks: open the fold it belongs to.
           if (AG_fieldError(map, "body.response_format")) setAdvancedOpens((n) => n + 1);
           if (AG_fieldError(map, "body.tts_voice")) setVoiceOpens((n) => n + 1);
+          refused();
         } else if (typeof pushToast === "function") {
           pushToast({
             kind: "error",
@@ -760,9 +785,9 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
     // An existing agent's id is locked, so an edit passes a blank one and can only be refused for its description (a blank one used to be replaced
     // by a placeholder text and saved).
     const problems = AG_validateNewAgent(isEdit ? "" : id, description);
-    if (Object.keys(problems).length) { setFieldErrors(problems); return; }
+    if (Object.keys(problems).length) { setFieldErrors(problems); refused(); return; }
     // A number the browser could not read is already an error under its field (see numberErrors): nothing is sent until it is fixed or cleared.
-    if (Object.keys(numberErrors).length) return;
+    if (Object.keys(numberErrors).length) { refused(); return; }
     // response_format: parse the textarea once here so a malformed
     // schema is caught client-side (open Advanced + show the error)
     // before the request goes out. Empty text == no structured output.
@@ -773,6 +798,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
       } catch (e) {
         setResponseFormatError(String(e.message || e));
         setAdvancedOpens((n) => n + 1);
+        refused();
         return;
       }
     }

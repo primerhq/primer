@@ -22,6 +22,9 @@ The stubs stand in for what the console around the form provides:
   ``useMutation`` is the real one.
 * ``window.addEventListener`` and ``window.removeEventListener`` add to and remove from ``__listeners``; the real Escape stack registers its one
   ``keydown`` listener there, and ``press_escape`` answers it.
+* ``document`` is a fake with ONE query, the one the form makes when a refused save is brought into view (``AG_revealRefusal``): ``querySelector`` answers the
+  overlay's dialog, and the dialog answers the first ``role="alert"`` it drew and the control an alert is the description of (``aria-describedby``). Any other
+  query throws, so a new one in the form needs a line here. What was scrolled into view and what took the focus is recorded in order (``reveals``).
 * ``window.primerApi.useFocusTrap`` only RECORDS its calls (the real ``foundation/focus-trap.js`` needs a DOM; what the trap does is pinned in
   ``test_focus_trap_behaviour.py`` on a fake page and in a real browser by ``tests/ui_e2e/test_agent_overlay_journey.py``). ``trap_report`` tells what the prompt
   editor asked of it: whether the trap is on, whether it is on the full-screen box, and which element ``initial`` names.
@@ -197,6 +200,45 @@ function __options(testid) {
   })(__hostOf(testid).children);
   return out;
 }
+// The DOM the form reaches for when it brings a refused save into view. The context has no document: this one answers the dialog and the two queries made on it,
+// from what the form drew (a host element with role "alert", in tree order; the host element whose aria-describedby lists an id). A query it does not know throws.
+var __reveals = [];
+function __hostElements(root, visit) {
+  (function walk(n) {
+    if (n == null || typeof n !== "object") return;
+    if (Array.isArray(n)) { n.forEach(walk); return; }
+    if (!n.__el) return;
+    if (typeof n.type === "string") visit(n);
+    walk(typeof n.type === "function" && n.type !== React.Fragment ? n.out : n.children);
+  })(root);
+}
+function __domNode(el) {
+  return {
+    id: el.props.id,
+    scrollIntoView: function (opts) { __reveals.push({ call: "scrollIntoView", text: __joinText(el), opts: opts }); },
+    focus: function (opts) { __reveals.push({ call: "focus", id: el.props.id, testid: el.props["data-testid"] || null, opts: opts || null }); },
+  };
+}
+var document = {
+  querySelector: function (selector) {
+    if (selector !== '[data-testid="agent-form"]') throw new Error("fake document: no query " + selector);
+    var dialog = MR.find("agent-form");
+    if (!dialog) return null;
+    return {
+      querySelector: function (inner) {
+        var describes = /^\[aria-describedby~="(.*)"\]$/.exec(inner);
+        if (inner !== '[role="alert"]' && !describes) throw new Error("fake document: no query " + inner);
+        var found = null;
+        __hostElements(dialog, function (el) {
+          if (found) return;
+          var hit = describes ? String(el.props["aria-describedby"] || "").split(/\s+/).indexOf(describes[1]) >= 0 : el.props.role === "alert";
+          if (hit) found = el;
+        });
+        return found ? __domNode(found) : null;
+      },
+    };
+  },
+};
 // What the prompt editor asked of useFocusTrap in its LAST render: is the trap on, is it attached to the full-screen box (the ref it was given is the box's
 // own), and does `initial` name the editor (the editor's ref is pointed at a marker for the call: a ref is never attached to a node here).
 function __trapReport() {
@@ -353,6 +395,12 @@ testids_under.__test__ = False  # a test module imports it, and pytest collects 
 def press_escape(ctx: Any) -> None:
     """Answer Escape as the window does: call every ``keydown`` listener registered through ``window.addEventListener``, then re-render."""
     ctx.eval("__pressEscape()")
+
+
+def reveals(ctx: Any) -> list[dict]:
+    """What the form brought into view after a refused save, in order: ``{"call": "scrollIntoView", "text", "opts"}`` for the message it scrolled to (its text
+    is what the form drew) and ``{"call": "focus", "id", "testid", "opts"}`` for the control it gave the focus to."""
+    return json.loads(ctx.eval("JSON.stringify(__reveals)"))
 
 
 def trap_report(ctx: Any) -> dict:
