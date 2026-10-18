@@ -3,9 +3,11 @@
 Built with every optional collaborator wired (the real app wires them): a tool that exists only then, such as ``web::download``, which needs a
 workspace registry, is a real tool. A name is stale only if no wiring has it.
 
-``built_in_tools()`` maps ``toolset id -> {spelling -> Tool}``. A tool is reachable under every spelling the docs use: its registered id, and
-that id without the ``<toolset>__`` prefix (the harness toolset registers ``harness__list`` and the agent docs call it ``harness::harness__list``
-while the dev docs write the scoped id ``harness__list``).
+``built_in_providers()`` maps ``toolset id -> provider`` for ALL nine reserved toolsets (``RESERVED_TOOLSET_IDS``, ``collections`` included: a
+check that left one out would pass for every document that names its tools). ``built_in_tools()`` maps ``toolset id -> {spelling -> Tool}`` and
+derives from it. A tool is reachable under every spelling the docs use: its registered id, and that id without the ``<toolset>__`` prefix (the
+harness toolset registers ``harness__list`` and the agent docs call it ``harness::harness__list`` while the dev docs write the scoped id
+``harness__list``).
 """
 
 from __future__ import annotations
@@ -14,12 +16,15 @@ import asyncio
 from functools import lru_cache
 from unittest.mock import MagicMock
 
+from primer.int.toolset import ToolsetProvider
 from primer.model.chat import Tool
 
 
 @lru_cache(maxsize=1)
-def built_in_tools() -> dict[str, dict[str, Tool]]:
+def built_in_providers() -> dict[str, ToolsetProvider]:
+    """The nine reserved toolsets' providers, keyed by toolset id. Shared and cached: read them, do not change them."""
     from primer.api.registries import ProviderRegistry
+    from primer.toolset.collections import build_collections_toolset
     from primer.toolset.crud import build_crud_toolset
     from primer.toolset.harness import build_harness_toolset_provider
     from primer.toolset.misc import build_misc_toolset
@@ -46,6 +51,9 @@ def built_in_tools() -> dict[str, dict[str, Tool]]:
             workspace_registry=MagicMock(),
         ),
         "crud": build_crud_toolset(storage_provider=sp),
+        "collections": build_collections_toolset(
+            storage_provider=sp, provider_registry=registry, semantic_search_registry=MagicMock(),
+        ),
         "harness": build_harness_toolset_provider(storage_provider=sp),
         "trigger": build_trigger_toolset_provider(storage_provider=sp),
         "workspaces": build_workspaces_toolset(storage_provider=sp, workspace_registry=MagicMock()),
@@ -55,6 +63,12 @@ def built_in_tools() -> dict[str, dict[str, Tool]]:
         ),
         "misc": build_misc_toolset(),
     }
+    return providers
+
+
+@lru_cache(maxsize=1)
+def built_in_tools() -> dict[str, dict[str, Tool]]:
+    providers = built_in_providers()
 
     async def collect() -> dict[str, dict[str, Tool]]:
         built: dict[str, dict[str, Tool]] = {}

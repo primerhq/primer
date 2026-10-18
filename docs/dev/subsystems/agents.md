@@ -66,6 +66,7 @@ erDiagram
 | `primer/agent/summary_input.py` | `reduce_summary_input`: pure reduction of the head a summariser whose call overflowed is retried on (tool results left out, a bounded rolling fold, single units cut) and the `SummaryInputReduction` the marker records. |
 | `primer/model/thread.py` | `Thread` plus `ThreadMessage` Pydantic models. |
 | `primer/model/tool_approval.py` | `ToolApprovalPolicy` plus the discriminated `ApprovalConfig` union. |
+| `primer/toolset/tool_catalog.py` | The tool catalog: `ToolEntry` (a tool plus the role that may run it, whether it pauses the turn, whether it needs a workspace, the approval gate that ships on it, and whether `call_tool` reaches it), the seven session file tools (`workspace__*`) and the client tool (`client__*`) as descriptors, `collect_tool_entries` over a set of providers, and `find_tool_entry` / `list_toolset_entries` for a run in flight. Read by `system__describe_tool`. |
 
 ## 5. Data model
 
