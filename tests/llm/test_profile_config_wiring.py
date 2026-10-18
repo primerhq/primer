@@ -119,10 +119,72 @@ class TestEachAdapterTranslatesForItsOwnWire:
         llm = OpenResponsesLLM(_openresponses(OpenResponsesFlavor.VLLM))
         assert llm.profile_extended(_cfg(ReasoningLevel.OFF, seed=4)) == {"seed": 4}
 
-    def test_anthropic_takes_a_thinking_block(self) -> None:
+    @pytest.mark.parametrize("model, level, expected", [
+        # Claude 4.5 and earlier: a thinking budget, never effort.
+        ("claude-haiku-4-5", ReasoningLevel.OFF, {"thinking": {"type": "disabled"}}),
+        ("claude-sonnet-4-5-20250929", ReasoningLevel.LOW,
+         {"thinking": {"type": "enabled", "budget_tokens": 4096}}),
+        ("claude-opus-4-5", ReasoningLevel.HIGH,
+         {"thinking": {"type": "enabled", "budget_tokens": 32768}}),
+        ("claude-3-7-sonnet-20250219", ReasoningLevel.MINIMAL,
+         {"thinking": {"type": "enabled", "budget_tokens": 1024}}),
+        # Claude 4.6: adaptive and effort; thinking is off when omitted.
+        ("claude-sonnet-4-6", ReasoningLevel.OFF, {}),
+        ("claude-opus-4-6", ReasoningLevel.MINIMAL,
+         {"thinking": {"type": "adaptive"}, "output_config": {"effort": "low"}}),
+        # Claude Opus 4.7 / 4.8, Opus 5, Sonnet 5, Haiku 5.5: disabled is accepted.
+        ("claude-opus-4-7", ReasoningLevel.OFF, {"thinking": {"type": "disabled"}}),
+        ("claude-opus-4-8", ReasoningLevel.MEDIUM,
+         {"thinking": {"type": "adaptive"}, "output_config": {"effort": "medium"}}),
+        ("claude-opus-5", ReasoningLevel.OFF, {"thinking": {"type": "disabled"}}),
+        ("claude-opus-5", ReasoningLevel.HIGH,
+         {"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}),
+        ("claude-sonnet-5", ReasoningLevel.OFF, {"thinking": {"type": "disabled"}}),
+        ("claude-sonnet-5", ReasoningLevel.LOW,
+         {"thinking": {"type": "adaptive"}, "output_config": {"effort": "low"}}),
+        ("claude-haiku-5-5", ReasoningLevel.OFF, {"thinking": {"type": "disabled"}}),
+        ("claude-haiku-5-5", ReasoningLevel.MEDIUM,
+         {"thinking": {"type": "adaptive"}, "output_config": {"effort": "medium"}}),
+        # Claude Sonnet 5.5 refuses disabled: between_tools is its off.
+        ("claude-sonnet-5-5", ReasoningLevel.OFF, {"thinking": {"type": "between_tools"}}),
+        ("claude-sonnet-5-5", ReasoningLevel.HIGH,
+         {"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}),
+        # Claude Opus 5.5, Fable, Mythos: thinking cannot be turned off.
+        ("claude-opus-5-5", ReasoningLevel.OFF, {"output_config": {"effort": "low"}}),
+        ("claude-opus-5-5", ReasoningLevel.MEDIUM,
+         {"thinking": {"type": "adaptive"}, "output_config": {"effort": "medium"}}),
+        ("claude-fable-5-1", ReasoningLevel.OFF, {"output_config": {"effort": "low"}}),
+        ("claude-mythos-5-1", ReasoningLevel.HIGH,
+         {"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}),
+        # No thinking control at all: nothing is sent.
+        ("claude-3-5-haiku-20241022", ReasoningLevel.HIGH, {}),
+    ])
+    def test_anthropic_takes_the_shape_of_the_model(self, model, level, expected) -> None:
         llm = AnthropicLLM(_anthropic())
-        assert llm.profile_extended(_cfg(ReasoningLevel.OFF)) == {
-            "thinking": {"type": "disabled"},
+        assert llm.profile_extended(_cfg(level), model=model) == expected
+
+    @pytest.mark.parametrize("model", ["claude-opus-6", "my-proxy-model", None])
+    def test_anthropic_sends_no_reasoning_to_a_model_it_does_not_know(self, model, caplog) -> None:
+        caplog.set_level(logging.DEBUG, logger="primer.llm._reasoning")
+        llm = AnthropicLLM(_anthropic())
+        for _ in range(2):
+            assert llm.profile_extended(_cfg(ReasoningLevel.HIGH, metadata={"user_id": "u"}), model=model) == {
+                "metadata": {"user_id": "u"},
+            }
+        hits = [r for r in caplog.records if "not in the model table" in r.getMessage()]
+        assert len(hits) == 1
+
+    def test_anthropic_off_where_omitted_drops_a_passthrough_thinking(self) -> None:
+        """The typed level wins over the same key in ``extended``."""
+        llm = AnthropicLLM(_anthropic())
+        cfg = _cfg(ReasoningLevel.OFF, thinking={"type": "adaptive"})
+        assert llm.profile_extended(cfg, model="claude-sonnet-4-6") == {}
+
+    def test_anthropic_effort_keeps_a_passthrough_output_config(self) -> None:
+        llm = AnthropicLLM(_anthropic())
+        cfg = _cfg(ReasoningLevel.LOW, output_config={"format": {"type": "json_schema"}})
+        assert llm.profile_extended(cfg, model="claude-opus-4-7")["output_config"] == {
+            "format": {"type": "json_schema"}, "effort": "low",
         }
 
     def test_gemini_takes_a_thinking_budget(self) -> None:
@@ -150,7 +212,7 @@ class TestEachAdapterTranslatesForItsOwnWire:
 
     def test_the_passthrough_rides_along_with_the_level(self) -> None:
         llm = AnthropicLLM(_anthropic())
-        assert llm.profile_extended(_cfg(ReasoningLevel.OFF, top_k=20)) == {
+        assert llm.profile_extended(_cfg(ReasoningLevel.OFF, top_k=20), model="claude-haiku-4-5") == {
             "top_k": 20, "thinking": {"type": "disabled"},
         }
 
@@ -284,13 +346,17 @@ class TestEveryKindAcceptsItsTranslation:
             "reasoning": {"effort": "high"},
         }
 
-    def test_anthropic_sends_the_thinking_block(self) -> None:
+    @pytest.mark.parametrize("model, expected", [
+        ("claude-haiku-4-5", {"thinking": {"type": "enabled", "budget_tokens": 4096}}),
+        ("claude-sonnet-4-6",
+         {"thinking": {"type": "adaptive"}, "output_config": {"effort": "low"}}),
+    ])
+    def test_anthropic_sends_the_shape_of_the_model(self, model, expected) -> None:
         from primer.llm.anthropic import _extract_extended_kwargs
 
         llm = AnthropicLLM(_anthropic())
-        assert _extract_extended_kwargs(llm.profile_extended(_cfg(ReasoningLevel.LOW))) == {
-            "thinking": {"type": "enabled", "budget_tokens": 4096},
-        }
+        knobs = llm.profile_extended(_cfg(ReasoningLevel.LOW), model=model)
+        assert _extract_extended_kwargs(knobs) == expected
 
     def test_gemini_folds_the_budget_into_thinking_config(self) -> None:
         from primer.llm.gemini import _extract_extended_kwargs
@@ -314,7 +380,7 @@ class TestEveryKindAcceptsItsTranslation:
 # Anthropic: a thinking request the Messages API accepts                      #
 # --------------------------------------------------------------------------- #
 
-from primer.llm.anthropic import _fit_thinking  # noqa: E402
+from primer.llm.anthropic import _fit_sampling, _fit_thinking  # noqa: E402
 
 _TOOL_ROUND = [
     Message(role="user", parts=[TextPart(text="go")]),
@@ -325,6 +391,16 @@ _TOOL_ROUND = [
 
 def _enabled(budget: int) -> dict:
     return {"type": "enabled", "budget_tokens": budget}
+
+
+_ADAPTIVE = {"type": "adaptive"}
+
+
+def _fit(req: dict, *, messages=_HI, model: str = "claude-sonnet-4-5", provider_id: str = "a") -> dict:
+    """What the adapter's stream does: fit the thinking, then the sampling."""
+    _fit_thinking(req, messages=messages, provider_id=provider_id)
+    _fit_sampling(req, model=model, provider_id=provider_id)
+    return req
 
 
 class TestAnthropicThinkingFitsTheRequest:
@@ -349,31 +425,52 @@ class TestAnthropicThinkingFitsTheRequest:
         assert req["thinking"] == _enabled(1024)
 
     def test_no_room_for_the_minimum_budget_turns_thinking_off(self) -> None:
-        req = {"max_tokens": 1024, "thinking": _enabled(1024), "temperature": 0.0}
-        _fit_thinking(req, messages=_HI, provider_id="a")
+        req = _fit({"max_tokens": 1024, "thinking": _enabled(1024), "temperature": 0.0})
         assert req == {"max_tokens": 1024, "temperature": 0.0}
 
-    def test_the_sampling_knobs_thinking_refuses_are_dropped(self) -> None:
-        req = {
-            "max_tokens": 8192, "thinking": _enabled(1024),
+    @pytest.mark.parametrize("thinking, model", [
+        (_enabled(1024), "claude-sonnet-4-5"),
+        (_ADAPTIVE, "claude-sonnet-4-6"),  # adaptive included
+    ])
+    def test_the_sampling_knobs_thinking_refuses_are_dropped(self, thinking, model) -> None:
+        req = _fit({
+            "max_tokens": 8192, "thinking": thinking,
             "temperature": 0.0, "top_k": 20, "top_p": 0.5,
-        }
-        _fit_thinking(req, messages=_HI, provider_id="a")
-        assert req == {"max_tokens": 8192, "thinking": _enabled(1024)}
+        }, model=model)
+        assert req == {"max_tokens": 8192, "thinking": thinking}
 
     def test_the_sampling_values_thinking_allows_are_kept(self) -> None:
-        req = {"max_tokens": 8192, "thinking": _enabled(1024), "temperature": 1, "top_p": 0.97}
-        _fit_thinking(req, messages=_HI, provider_id="a")
+        req = _fit({"max_tokens": 8192, "thinking": _enabled(1024), "temperature": 1, "top_p": 0.97})
         assert req["temperature"] == 1 and req["top_p"] == 0.97
 
+    def test_without_thinking_sampling_is_kept_where_the_model_takes_it(self) -> None:
+        req = _fit({"max_tokens": 8192, "temperature": 0.0, "top_k": 20}, model="claude-sonnet-4-6")
+        assert req == {"max_tokens": 8192, "temperature": 0.0, "top_k": 20}
+
+    def test_a_passthrough_top_k_is_dropped_where_the_model_takes_none(self) -> None:
+        """Claude Opus 4.7 and later refuse sampling knobs, thinking or not."""
+        req = _fit({"max_tokens": 8192, "top_k": 20}, model="claude-opus-4-7")
+        assert req == {"max_tokens": 8192}
+
+    @pytest.mark.parametrize("thinking", [_enabled(1024), _ADAPTIVE])
     @pytest.mark.parametrize("choice", [
         {"type": "any"}, {"type": "tool", "name": "structured_output"},
     ])
-    def test_a_forced_tool_runs_without_thinking(self, choice) -> None:
-        req = {"max_tokens": 8192, "thinking": _enabled(1024), "tool_choice": choice, "temperature": 0.0}
-        _fit_thinking(req, messages=_HI, provider_id="a")
+    def test_a_forced_tool_runs_without_thinking(self, choice, thinking) -> None:
+        req = _fit({"max_tokens": 8192, "thinking": thinking, "tool_choice": choice, "temperature": 0.0},
+                   model="claude-sonnet-4-6")
         assert "thinking" not in req
         assert req["temperature"] == 0.0
+
+    def test_adaptive_thinking_continues_a_tool_round(self) -> None:
+        """Adaptive thinking drops manual mode's thinking-block requirement."""
+        req = _fit({"max_tokens": 8192, "thinking": _ADAPTIVE, "tool_choice": {"type": "auto"}},
+                   messages=_TOOL_ROUND, model="claude-sonnet-4-6")
+        assert req["thinking"] == _ADAPTIVE
+
+    def test_adaptive_thinking_has_no_budget_to_fit(self) -> None:
+        req = _fit({"max_tokens": 1024, "thinking": _ADAPTIVE}, model="claude-sonnet-4-6")
+        assert req == {"max_tokens": 1024, "thinking": _ADAPTIVE}
 
     def test_a_tool_round_continuation_runs_without_thinking(self) -> None:
         """primer does not send thinking blocks back in the history, so the
@@ -382,40 +479,53 @@ class TestAnthropicThinkingFitsTheRequest:
         _fit_thinking(req, messages=_TOOL_ROUND, provider_id="a")
         assert "thinking" not in req
 
-    @pytest.mark.parametrize("thinking", [None, {"type": "disabled"}])
-    def test_no_thinking_and_disabled_thinking_are_left_alone(self, thinking) -> None:
+    @pytest.mark.parametrize("thinking", [
+        None, {"type": "disabled"}, {"type": "between_tools"},
+    ])
+    def test_no_thinking_and_thinking_off_are_left_alone(self, thinking) -> None:
         req = {"max_tokens": 1024, "temperature": 0.0, "top_k": 5}
         if thinking is not None:
             req["thinking"] = thinking
         before = dict(req)
-        _fit_thinking(req, messages=_TOOL_ROUND, provider_id="a")
+        _fit(req, messages=_TOOL_ROUND, model="claude-sonnet-4-5")
         assert req == before
 
     def test_each_adjustment_is_logged_once(self, caplog) -> None:
         caplog.set_level(logging.DEBUG, logger="primer.llm.anthropic")
         for _ in range(3):
-            _fit_thinking(
-                {"max_tokens": 4096, "thinking": _enabled(4096), "temperature": 0.0},
-                messages=_HI, provider_id="ant-x",
-            )
+            _fit({"max_tokens": 4096, "thinking": _enabled(4096), "temperature": 0.0},
+                 provider_id="ant-x")
         hits = [r for r in caplog.records if "ant-x" in r.getMessage()]
         assert len(hits) == 2  # the budget, the sampling knobs: once each
 
-    async def test_stream_applies_the_fit_to_the_profile_thinking(self, monkeypatch) -> None:
-        """End to end through the adapter: the agent's default cap (4096) and
-        compaction's temperature 0 with a LOW (4096-token) budget."""
+    async def _stream(self, monkeypatch, model: str, level: ReasoningLevel, **kwargs) -> dict:
         client = _patched_client(monkeypatch)
         client.messages.create.return_value = _aiter(_ok_events())
         llm = AnthropicLLM(_anthropic())
-        knobs = profile_extended(llm, _cfg(ReasoningLevel.LOW), model="claude-sonnet-4-5")
-        async for _ in profile_stream(
-            llm, knobs, model="claude-sonnet-4-5", messages=_HI, temperature=0.0,
-        ):
+        knobs = profile_extended(llm, _cfg(level), model=model)
+        async for _ in profile_stream(llm, knobs, model=model, messages=_HI, **kwargs):
             pass
-        kwargs = client.messages.create.call_args.kwargs
+        return client.messages.create.call_args.kwargs
+
+    async def test_stream_fits_a_budget_model(self, monkeypatch) -> None:
+        """Claude 4.5: the agent's default cap (4096) and compaction's
+        temperature 0 with a LOW (4096-token) budget."""
+        kwargs = await self._stream(monkeypatch, "claude-sonnet-4-5", ReasoningLevel.LOW, temperature=0.0)
         assert kwargs["thinking"] == _enabled(2048)
         assert kwargs["max_tokens"] == 4096
         assert "temperature" not in kwargs
+        assert "output_config" not in kwargs
+
+    async def test_stream_sends_adaptive_thinking_and_effort_on_4_6(self, monkeypatch) -> None:
+        kwargs = await self._stream(monkeypatch, "claude-sonnet-4-6", ReasoningLevel.LOW, temperature=0.0)
+        assert kwargs["thinking"] == _ADAPTIVE
+        assert kwargs["output_config"] == {"effort": "low"}
+        assert "temperature" not in kwargs
+
+    async def test_stream_to_an_unknown_model_sends_no_reasoning(self, monkeypatch) -> None:
+        kwargs = await self._stream(monkeypatch, "claude-opus-6", ReasoningLevel.HIGH, temperature=0.0)
+        assert "thinking" not in kwargs and "output_config" not in kwargs
+        assert kwargs["temperature"] == 0.0
 
 
 # --------------------------------------------------------------------------- #
@@ -492,7 +602,7 @@ class TestAnAggregatedProfile:
         """Member a fails at connect, member b serves: each call carried its
         own member's config, translated for that member's kind."""
         a = Member(translate=ollama_extended, connect_exc=RateLimitError("busy"))
-        b = Member(translate=anthropic_extended)
+        b = Member(translate=lambda c: anthropic_extended(c, model="claude-opus-4-7"))
         llm = _aggregate([
             ("m-a", a, _cfg(ReasoningLevel.HIGH, seed=1)),
             ("m-b", b, _cfg(ReasoningLevel.OFF)),

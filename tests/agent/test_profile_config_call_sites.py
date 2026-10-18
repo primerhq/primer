@@ -121,7 +121,10 @@ class TestAgentTurn:
         """Same profile, another kind of adapter: its own translation."""
         from primer.llm._reasoning import anthropic_extended
 
-        llm = RecordingLLM([_text_round("ok")], translate=anthropic_extended)
+        llm = RecordingLLM(
+            [_text_round("ok")],
+            translate=lambda c: anthropic_extended(c, model="claude-opus-4-7"),
+        )
         await _turn(llm, CONFIG)
         assert llm.calls[0]["extended"] == {"seed": 3, "thinking": {"type": "disabled"}}
 
