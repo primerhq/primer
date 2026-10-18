@@ -490,12 +490,12 @@ async def list_embedding_provider_types() -> dict[str, dict[str, Any]]:
             "config_fields": [
                 _form_field(
                     "token",
-                    "HF token",
+                    "API token (optional)",
                     "password",
-                    required=True,
                     help_=(
-                        "Required to pull the transformer model, even for "
-                        "public models."
+                        "Used to pull models from the Hugging Face Hub and "
+                        "to check them. Needed only for gated or private "
+                        "models."
                     ),
                 ),
             ],
