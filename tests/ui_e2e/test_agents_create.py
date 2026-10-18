@@ -137,9 +137,9 @@ def test_u0006_new_agent_modal_creates_row_and_closes(
             #
             # Selector strategy: use the htmlFor/id pairs added to
             # NewAgentModal (na-id, na-description, na-model-profile,
-            # na-temperature - system prompt became a repeatable part
-            # list, platform wave P1b item 8, and dropped its single id
-            # in favor of per-index data-testids). These are
+            # na-temperature - the system prompt is a set of tabs over
+            # one editor, platform revamp design 9, with testids of its
+            # own). These are
             # semantic IDs tied to the JSX, more stable than
             # get_by_label substring matches (which hit strict-mode
             # violations when labels share words). When the JSX
@@ -149,14 +149,12 @@ def test_u0006_new_agent_modal_creates_row_and_closes(
             modal.locator("#na-description").fill(
                 f"u0006 seed {unique_suffix}",
             )
-            # uiv2 Wave 2: the model-profile <select> became a stacked
-            # AG_ProfilePicker (mockup's own picker style - one bordered
-            # row per profile, click to pick) - one picker, not a pair:
+            # the model profile is a dropdown (platform revamp design 9):
             # an agent names a ModelProfile, which already pins the
             # provider and the wire model name.
-            modal.get_by_test_id(
-                f"agent-profile-row-{profile_id_for(provider_id, 'fake-model')}",
-            ).click()
+            modal.locator("#na-model-profile").select_option(
+                value=profile_id_for(provider_id, "fake-model"),
+            )
 
             # Submit.
             modal.get_by_role("button", name="Create").click()
@@ -164,15 +162,15 @@ def test_u0006_new_agent_modal_creates_row_and_closes(
             # uiv2 Wave 2 (RETARGETED): the modal does NOT disappear -
             # it transitions in place to the new agent's edit view
             # (still one `.modal`, new content). Confirm the
-            # transition landed on the right row: the Name field is
+            # transition landed on the right row: the Id field is
             # now locked and holds the new agent's id, and the modal's
-            # title names the row ("Agent - <id>") where it said just
-            # "Agent" while creating. (There is no verb chip any more.)
+            # title reads "Edit agent" where it said "New agent" while
+            # creating. (The title no longer carries the id.)
             expect(modal.locator("#na-id")).to_have_value(
                 agent_id, timeout=10_000,
             )
-            expect(modal.locator("h1.page-title")).to_contain_text(
-                agent_id, timeout=5_000,
+            expect(modal.get_by_text("Edit agent", exact=True)).to_be_visible(
+                timeout=5_000,
             )
 
             # Success toast appears. Toast container is portal'd
@@ -186,8 +184,8 @@ def test_u0006_new_agent_modal_creates_row_and_closes(
             # so a future spec change that decouples nav-and-title
             # gives a clearer failure.
             wait_for_overlay_url(page, f"agents/{agent_id}", timeout=10_000)
-            page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
-                state="visible", timeout=10_000,
+            expect(page.locator("#na-id")).to_have_value(
+                agent_id, timeout=10_000,
             )
         finally:
             _delete_agent_if_exists(base_url, agent_id)
@@ -240,9 +238,9 @@ def test_u0007_new_agent_create_422_renders_inline_field_errors(
 
         modal.locator("#na-id").fill(agent_id)
         modal.locator("#na-description").fill("u0007 422 probe")
-        modal.get_by_test_id(
-            f"agent-profile-row-{profile_id_for(provider_id, 'fake-model')}",
-        ).click()
+        modal.locator("#na-model-profile").select_option(
+            value=profile_id_for(provider_id, "fake-model"),
+        )
         # uiv2 Wave 2: temperature moved out from behind the old
         # "Advanced" tab - it is always visible now, right under the
         # profile picker (a-11: numerics live near what they gate).
@@ -254,18 +252,17 @@ def test_u0007_new_agent_create_422_renders_inline_field_errors(
 
         modal.get_by_role("button", name="Create").click()
 
-        # An inline field-help error must appear somewhere in the modal
-        # body. The exact loc-key the server emits depends on which
-        # validator fires; we look for ANY field-help-red marker. The
-        # pattern in NewAgentModal is
-        # `<div className="field-help" style="color: var(--red)">`.
+        # The 422 shows as the Temperature row's alert line, under its
+        # input: a kit field's error is FormField's `role="alert"` line
+        # (platform revamp design 9). The server's message for a
+        # temperature below zero says "greater than or equal to 0".
         #
         # Waited on FIRST, and with no networkidle before it: the shell
         # polls for as long as it is mounted, so the network is never
         # idle and that wait could only time out. This one settles on the
         # thing the 422 actually produces, which also makes the
         # still-open check below non-racy.
-        red_helps = modal.locator('.field-help[style*="--red"]')
+        red_helps = modal.get_by_role("alert").filter(has_text="greater than or equal to 0")
         red_helps.first.wait_for(state="visible", timeout=10_000)
 
         # Modal STAYS OPEN on 422 (a success would close it).
@@ -341,8 +338,8 @@ def test_u0020_agent_delete_confirms_removes_and_navigates_back_to_list(
         try:
             # Land directly on the agent's detail page.
             open_legacy_route(page, console_url, f"agents/{agent_id}")
-            page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
-                state="visible", timeout=10_000,
+            expect(page.locator("#na-id")).to_have_value(
+                agent_id, timeout=10_000,
             )
 
             # Click the Delete button in the agent editor's own footer

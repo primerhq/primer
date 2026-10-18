@@ -197,18 +197,12 @@ def test_u0033_agent_detail_deep_link_survives_reload(
 
     try:
         open_legacy_route(page, console_url, f"agents/{agent_id}")
-        page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
-            state="visible", timeout=10_000,
-        )
-        # The locked Name field is the form's own confirmation that it
+        # The locked Id field is the form's own confirmation that it
         # opened bound to THIS agent, not a blank create form.
-        expect(page.locator("#na-id")).to_have_value(agent_id)
+        expect(page.locator("#na-id")).to_have_value(agent_id, timeout=10_000)
 
         page.reload(wait_until="domcontentloaded")
-        page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
-            state="visible", timeout=10_000,
-        )
-        expect(page.locator("#na-id")).to_have_value(agent_id)
+        expect(page.locator("#na-id")).to_have_value(agent_id, timeout=10_000)
         assert f"overlay=agents::{agent_id}" in page.url, (
             f"reload dropped the addressed agent: {page.url}"
         )

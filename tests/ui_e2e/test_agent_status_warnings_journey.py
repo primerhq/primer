@@ -67,7 +67,7 @@ def test_the_agent_page_lists_the_output_cap_warning_and_keeps_the_verdict_green
 ) -> None:
     with _provider_and_agents(base_url, unique_suffix) as (capped, _sane):
         open_legacy_route(page, console_url, f"agents/{capped}")
-        page.locator("h1.page-title").get_by_text(capped).first.wait_for(state="visible", timeout=10_000)
+        expect(page.locator("#na-id")).to_have_value(capped, timeout=10_000)
 
         warnings = page.get_by_test_id("ag-status-warnings")
         expect(warnings).to_be_visible(timeout=15_000)
@@ -82,7 +82,7 @@ def test_the_agent_page_shows_no_warnings_block_for_a_cap_that_fits(
 ) -> None:
     with _provider_and_agents(base_url, unique_suffix) as (_capped, sane):
         open_legacy_route(page, console_url, f"agents/{sane}")
-        page.locator("h1.page-title").get_by_text(sane).first.wait_for(state="visible", timeout=10_000)
+        expect(page.locator("#na-id")).to_have_value(sane, timeout=10_000)
 
         # The control must not pass because the panel has not loaded: wait for its verdict first.
         expect(page.get_by_text("All references resolve").first).to_be_visible(timeout=15_000)

@@ -51,21 +51,23 @@ def _the_create_form_refuses(page: Page, console_url: str) -> None:
     # (a) a name that would need escaping in every URL, with a description.
     modal.locator("#na-id").fill("Bad Name!")
     modal.locator("#na-description").fill("A typo that used to be permanent")
-    modal.get_by_role("button", name="Create").click()
-    expect(modal.get_by_test_id("na-id-error")).to_contain_text("lowercase letters, digits, hyphens and underscores", timeout=5_000)
-    expect(modal.get_by_test_id("na-id-error")).to_contain_text("cannot change")
+    modal.get_by_test_id("agent-form-submit").click()
+    # A refusal is the field's alert line, under the field (the kit's PK_Field).
+    id_error = modal.get_by_role("alert").filter(has_text="lowercase letters, digits, hyphens and underscores")
+    expect(id_error).to_be_visible(timeout=5_000)
+    expect(id_error).to_contain_text("cannot change")
     assert posts == [], "a refused name must not be sent"
 
     # Typing in the field takes its message away.
     modal.locator("#na-id").fill("refund-triage")
-    expect(modal.get_by_test_id("na-id-error")).to_have_count(0)
+    expect(id_error).to_have_count(0)
 
     # (b) an empty form: the name is optional, the description is not.
     modal.locator("#na-id").fill("")
     modal.locator("#na-description").fill("")
-    modal.get_by_role("button", name="Create").click()
-    expect(modal.get_by_test_id("na-description-error")).to_contain_text("Describe", timeout=5_000)
-    expect(modal.get_by_test_id("na-id-error")).to_have_count(0)
+    modal.get_by_test_id("agent-form-submit").click()
+    expect(modal.get_by_role("alert").filter(has_text="Describe what this agent is for")).to_be_visible(timeout=5_000)
+    expect(id_error).to_have_count(0)
     assert posts == [], "an empty form must not be sent"
 
 
@@ -104,15 +106,15 @@ def test_editing_an_agent_refuses_a_blank_description_and_saves_the_trimmed_one(
         description = page.locator("#na-description")
 
         description.fill("   ")
-        page.get_by_role("button", name="Save changes").click()
-        expect(page.get_by_test_id("na-description-error")).to_contain_text("Describe", timeout=5_000)
+        page.get_by_test_id("agent-form-submit").click()
+        expect(page.get_by_role("alert").filter(has_text="Describe what this agent is for")).to_be_visible(timeout=5_000)
         assert puts == [], "a blank description must not be sent on an edit either"
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
             assert c.get(f"/v1/agents/{agent_id}").json()["description"] == "before the journey"
 
         description.fill("  edited by the journey  ")
-        expect(page.get_by_test_id("na-description-error")).to_have_count(0)
-        page.get_by_role("button", name="Save changes").click()
+        expect(page.get_by_role("alert").filter(has_text="Describe what this agent is for")).to_have_count(0)
+        page.get_by_test_id("agent-form-submit").click()
 
         deadline = time.time() + 15
         saved = ""

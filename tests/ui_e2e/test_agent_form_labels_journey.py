@@ -1,7 +1,8 @@
 """Journey: the agent form names the rows that hold a custom widget (console review C-003, the agents surface).
 
-The model-profile picker, the system-prompt parts and the tool picker were each under a bare ``<label>`` that named nothing; each row is now a group named by its label,
-and every system-prompt part is a textarea with a name of its own ("System prompt part 1", "System prompt part 2").
+The model-profile picker, the system-prompt parts and the tool picker were each under a bare ``<label>`` that named nothing. The rebuilt overlay (platform revamp design 9)
+labels the model profile as a dropdown, names the prompt row and the tool row as groups by their label, and shows the system prompt parts as tabs over one editor that is
+named after the part it shows ("System prompt part 1", "System prompt part 2").
 """
 
 from __future__ import annotations
@@ -22,9 +23,10 @@ def test_the_custom_widget_rows_are_groups_named_by_their_label_and_each_prompt_
     modal = page.locator(".modal").first
     modal.wait_for(state="visible", timeout=5_000)
 
-    for name in ("Model profile", "System prompt", "Tools"):
+    for name in ("System prompt", "Tools"):
         expect(modal.get_by_role("group", name=re.compile(rf"^{name}"))).to_have_count(1)
-    # the plain inputs were already labelled by hand and stay so
+    expect(modal.get_by_label("Model profile")).to_have_count(1)  # a labelled dropdown now
+    # the plain inputs are labelled by their row and stay so
     expect(modal.get_by_label("Temperature")).to_have_count(1)
 
     first = modal.get_by_label("System prompt part 1")
@@ -32,4 +34,5 @@ def test_the_custom_widget_rows_are_groups_named_by_their_label_and_each_prompt_
     first.fill("You triage refunds.")
     modal.get_by_test_id("agent-system-prompt-add").click()
     expect(modal.get_by_label("System prompt part 2")).to_have_count(1)
+    modal.get_by_role("tab", name="Part 1").click()
     expect(modal.get_by_label("System prompt part 1")).to_have_value("You triage refunds.")
