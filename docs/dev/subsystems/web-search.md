@@ -107,6 +107,10 @@ The entities:
 - `primer/web_search/tavily.py`, `primer/web_search/firecrawl.py`,
   `primer/web_search/exa.py`: the three keyed REST adapters.
 - `primer/web_search/service.py`: `WebSearchService`.
+- `primer/web_search/active_config.py`: `unknown_provider_ids`,
+  `unknown_ids_message` and `save_active_config`, the active-config check and
+  singleton write that the PUT route and the `set_web_search_active_config`
+  tool share. `primer/web_fetch/active_config.py` is its web fetch twin.
 - `primer/api/registries/web_search_registry.py`: `WebSearchRegistry` and
   `default_web_search_factory`.
 - `primer/api/routers/web_search.py`: the CRUD router, the `_test` / `_types`
@@ -114,6 +118,9 @@ The entities:
 - `primer/toolset/web/__init__.py`: `build_web_toolset` factory.
 - `primer/toolset/web/tools.py`: `WebSearchArgs` / `HttpRequestArgs`, the
   descriptor factories, and the async handlers.
+- `primer/toolset/_system_web.py`: `web_active_config_tools`, the four
+  `system` tools that read and set the web search and web fetch active
+  config (registered by `build_system_toolset`).
 - `primer/toolset/internal.py`: `InternalToolsetProvider` (the immutable static
   registry the `web` toolset is built on).
 - `primer/api/app.py`: `_bootstrap_web_search` plus the lifespan wiring that
@@ -241,13 +248,29 @@ REST (`primer/api/routers/web_search.py`, all under `/v1`):
   `subsystem_not_bootstrapped` if missing (never lazy-creates).
 - `PUT /v1/web_search_active_config`: validates every referenced provider id
   exists (422 `unknown_provider_ids` with the bad-id list otherwise), writes, then
-  calls `service.invalidate_active_config()`.
+  calls `service.invalidate_active_config()`. The check and the write are
+  `primer/web_search/active_config.py`, shared with the set tool below;
+  `PUT /v1/web_fetch_active_config` does the same through
+  `primer/web_fetch/active_config.py`.
 
 Agent-facing tools: the `web` internal toolset (`build_web_toolset`,
 `primer/toolset/web/__init__.py`) exposes `web__web_search` (delegating to the
 `WebSearchService`) and `web__http_request` (an `httpx.AsyncClient`-backed fetch
 that returns `{status, headers, body, truncated}` with the body capped at 1 MB by
 default).
+
+The `system` toolset carries the active-config twins of the singleton routes
+(`primer/toolset/_system_web.py`), all `required_role="admin"` like the routes:
+`system__get_web_search_active_config` and `system__get_web_fetch_active_config`
+return `{config, providers}`, the stored config plus the first 200 provider rows
+by id as `{id, provider_type}` (the ids a set may name), or `type=unavailable`
+when the singleton is missing. `system__set_web_search_active_config` and
+`system__set_web_fetch_active_config` take `{config}` and answer the stored
+`{config}`; an unknown id (the route's words) or an empty list (the argument
+validation) is `type=validation-error` and stores nothing. A set is one row
+write, so it stays interruptible. The four are ingested into `_internal_tools`
+with the rest of the `system` toolset and are reachable over `POST /v1/mcp` once
+exposed.
 
 **Outbound request guard (SSRF).** `http_request`, the workspace-only
 `download`, and the `local` web-fetch adapter build their default
@@ -326,6 +349,16 @@ Python: `WebSearchAdapter`, `SearchHit`, the named exceptions (re-exported from
   seconds; the PUT route calls the sync `invalidate_active_config()` on success.
   The TTL is the safety net for multi-process deployments where the in-process
   invalidate call does not reach every worker.
+- **One check, two callers**: the PUT routes and the set tools run
+  `unknown_provider_ids` and `save_active_config`
+  (`primer/web_search/active_config.py`, `primer/web_fetch/active_config.py`), so
+  a tool cannot store what the route refuses, and both refuse in the words of
+  `unknown_ids_message`. The tools leave the cache to its 5 s TTL: the cache is
+  local to one process and a tool may run in another (a worker), so a local drop
+  would look like parity and do nothing where it matters. Their descriptions
+  promise the change within 5 seconds, and
+  `tests/toolset/test_system_web_active_config.py` ties that promise to the
+  services' `cache_ttl_seconds` default.
 - **Reserved ids**: `RESERVED_WEB_SEARCH_IDS = {'DuckDuckGo'}` and the singleton id
   `_active_web_search_config` gate the router create / delete paths and the
   bootstrap writes.
@@ -355,6 +388,20 @@ Python: `WebSearchAdapter`, `SearchHit`, the named exceptions (re-exported from
   storage gets the DDG row plus the single-mode singleton pointing at it,
   re-running does not error or overwrite, and the `web__web_search` wire shape is
   unchanged post-bootstrap.
+- `tests/web_search/test_active_config.py` and
+  `tests/web_fetch/test_active_config.py` cover the shared check and write on a
+  real sqlite store: unknown ids in config order, the route's words, create when
+  missing then replace, the routes calling these very functions, and a REST pin
+  of the 422 `unknown_provider_ids` body and of the route's cache drop (after a
+  write only).
+- `tests/toolset/test_system_web_active_config.py` covers the four `system`
+  tools through the real toolset: admin role, MCP-exposable, conforming
+  descriptions that promise the 5 s TTL (pinned to `cache_ttl_seconds`), the
+  get's `{config, providers}`, an ordered list stored without duplicates, an
+  unknown id and an empty list refused with nothing stored, and
+  `type=unavailable` with no singleton.
+  `tests/e2e/test_web_active_config_tools_journey.py` has a scripted admin agent
+  set an ordered fetch list and reads it back over REST.
 - `tests/toolset/web/test_factory.py` and `tests/toolset/web/test_tools.py` cover
   the toolset: `list_tools` yielding exactly two ids, dispatch through a fake
   `WebSearchService`, the required `web_search_service` kwarg, the
