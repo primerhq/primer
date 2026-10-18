@@ -104,6 +104,14 @@ function unlabelled(testid) {
   }).map(function (n) { return n.props["data-testid"] || n.type; });
 }
 function fieldError(label) { var f = MR.findProp("label", label); return f ? (f.props.error || null) : "no such field"; }
+// The <button> a Btn draws, pressed as a click on the page reaches it. MR.click calls the onClick of the Btn COMPONENT, which is the overlay's own handler; a busy Btn hands the
+// button underneath a refusal instead, and that is the one a person's press reaches.
+function pressHost(testid) {
+  var host = allUnder(testid).filter(function (n) { return n.type === "button"; })[0];
+  if (!host) throw new Error("no button under " + testid);
+  host.props.onClick({ preventDefault: function () {}, stopPropagation: function () {} });
+  MR.rerender();
+}
 """
 
 FILES = (UI / "components" / "shared.jsx", UI / "components" / "shared" / "form-field.jsx", UI / "components" / "shared" / "platform-kit.jsx")
@@ -251,6 +259,22 @@ def aggregate_row(ctx, **routing) -> dict:
 def assert_not_alphabetical(order: list[str]) -> None:
     """A scenario whose expected order is alphabetical, either way, cannot tell a payload that keeps the order on screen from one that sorts its members. Refuse to run on one."""
     assert order != sorted(order) and order != sorted(order, reverse=True), f"{order} is an alphabetical order"
+
+
+def hold_the_request(ctx) -> None:
+    """The next request stays out until ``PENDING[0]`` answers it."""
+    ctx.eval("ANSWER = function () { return new Promise(function (resolve) { PENDING.push(resolve); }); };")
+
+
+def dismiss(ctx, cancel: str) -> None:
+    """The person closes the overlay: Cancel tells the host (``onClose``), and the host takes the overlay off the screen."""
+    click(ctx, cancel)
+    ctx.eval("MR.rerender({ open: false, existing: null, prefill: null, providers: [], onSaved: function () {}, onClose: function () {} })")
+
+
+def press_host(ctx, testid: str) -> None:
+    """Press the real ``<button>`` a ``Btn`` draws (``pressHost``): a busy ``Btn`` has swapped its handler for a refusal there."""
+    ctx.eval(f"pressHost({json.dumps(testid)})")
 
 
 # ---- create --------------------------------------------------------------------------------------------------------------------------------------------
@@ -537,6 +561,22 @@ def test_the_press_is_busy_while_the_request_is_out_and_a_second_press_sends_not
     assert saved_count(ctx) == 1 and closed_count(ctx) == 1
 
 
+def test_a_save_that_lands_after_the_overlay_was_dismissed_reports_and_closes_nothing(ctx) -> None:
+    """``onSaved`` and ``onClose`` are the host's (``NV_ProfileModalHost`` clears its one modal), so a save still out when the person dismisses the overlay must not call them when it lands: the
+    host may be showing something else by then. The row WAS saved, so the toast still says so."""
+    mount(ctx)
+    type_(ctx, "mp-aggregate-name", "late")
+    pick_two(ctx)
+    hold_the_request(ctx)
+    click(ctx, "mp-aggregate-submit")
+    dismiss(ctx, "mp-aggregate-cancel")
+    assert closed_count(ctx) == 1, "Cancel's own call"
+    ctx.eval("PENDING[0]({ id: 'late' })")
+    settle(ctx)
+    assert saved_count(ctx) == 0 and closed_count(ctx) == 1, "the host heard nothing from an overlay that was gone"
+    assert toasts(ctx) == [{"kind": "success", "text": "Created aggregated profile late"}]
+
+
 def test_a_press_while_the_form_is_not_ready_sends_nothing(ctx) -> None:
     mount(ctx)
     click(ctx, "mp-aggregate-submit")
@@ -670,6 +710,35 @@ def test_loading_and_load_error_states(ctx) -> None:
     assert "the list is down" in text_at(ctx, "mp-aggregate-load-error")
     click(ctx, "mp-aggregate-load-retry")
     assert len(js(ctx, "RETRIES")) == 1
+
+
+def test_try_again_says_it_is_trying_while_the_retry_is_out(ctx) -> None:
+    """``useResource`` keeps ``error`` until the answer and turns ``loading`` on for the retry, so the alert is still up while the request is out and the button is the one place that can say so:
+    busy (``aria-busy``, ``aria-disabled``, the press refused, still focusable) and "Trying again" until the answer comes."""
+    failed = json.dumps({"type": "/errors/internal", "title": "Server error", "status": 500, "detail": "the list is down"})
+    down = f"new window.primerApi.ApiError({failed})"
+    retry = 'MR.find("mp-aggregate-load-retry").props'
+    host = 'allUnder("mp-aggregate-load-retry").filter(function (n) { return n.type === "button"; })[0].props'
+
+    ctx.eval(f"LIST = {{ data: undefined, error: {down}, loading: false }}; mount({{}});")
+    assert text_at(ctx, "mp-aggregate-load-retry") == "Try again" and js(ctx, f"{retry}.busy") is False
+    assert js(ctx, f'{host}["aria-busy"]') is None
+    click(ctx, "mp-aggregate-load-retry")
+    assert len(js(ctx, "RETRIES")) == 1
+
+    ctx.eval(f"LIST = {{ data: undefined, error: {down}, loading: true }}; MR.rerender();")  # what the hook answers while the retry is out
+    assert text_at(ctx, "mp-aggregate-load-retry") == "Trying again…"
+    assert js(ctx, f"{retry}.busy") is True and js(ctx, f"{retry}.disabled") is None, "busy, never natively disabled"
+    assert js(ctx, f'{host}["aria-busy"]') == "true" and js(ctx, f'{host}["aria-disabled"]') == "true"
+    assert prop(ctx, "mp-aggregate-load-error", "role") == "alert" and "the list is down" in text_at(ctx, "mp-aggregate-load-error"), "the alert stays up through the retry"
+    assert not present(ctx, "mp-aggregate-loading")
+    press_host(ctx, "mp-aggregate-load-retry")
+    assert len(js(ctx, "RETRIES")) == 1, "a press on a button that is busy asks for nothing more"
+
+    ctx.eval(f"LIST = {{ data: undefined, error: {down}, loading: false }}; MR.rerender();")  # it failed again
+    assert text_at(ctx, "mp-aggregate-load-retry") == "Try again" and js(ctx, f"{retry}.busy") is False
+    press_host(ctx, "mp-aggregate-load-retry")
+    assert len(js(ctx, "RETRIES")) == 2, "and when it is not busy a press asks again"
 
 
 def test_a_list_that_failed_after_it_had_loaded_keeps_showing_the_loaded_rows(ctx) -> None:
@@ -953,6 +1022,18 @@ def test_the_single_press_is_busy_while_the_request_is_out_and_sends_once(ctx) -
     ctx.eval("PENDING[0]({ id: 'p-a' })")
     settle(ctx)
     assert saved_count(ctx) == 1 and closed_count(ctx) == 1
+
+
+def test_a_single_save_that_lands_after_the_overlay_was_dismissed_reports_and_closes_nothing(ctx) -> None:
+    single(ctx, FULL_SINGLE)
+    hold_the_request(ctx)
+    click(ctx, "mp-single-submit")
+    dismiss(ctx, "mp-single-cancel")
+    assert closed_count(ctx) == 1, "Cancel's own call"
+    ctx.eval("PENDING[0]({ id: 'p-a' })")
+    settle(ctx)
+    assert saved_count(ctx) == 0 and closed_count(ctx) == 1, "the host heard nothing from an overlay that was gone"
+    assert toasts(ctx) == [{"kind": "success", "text": "Saved p-a"}]
 
 
 def test_the_single_cancel_closes_without_a_request(ctx) -> None:
