@@ -17,6 +17,7 @@ import pytest
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.workspace_session import SessionStatus
 from primer.session.enqueue import wake_session
+from primer.session.reset import SessionResetDeps, reset_session
 from primer.workspace.local.state import _GitCommandError
 from tests.session._peer_fakes import make_world, records, seed_session, slot
 
@@ -269,4 +270,19 @@ async def test_a_failure_of_the_divider_write_while_reopening_is_still_not_found
     with pytest.raises(NotFoundError, match="was removed while reopening") as info:
         await _wake(world)
     assert isinstance(info.value.__cause__, OSError)
+    await _assert_still_ended(world)
+
+
+async def test_reset_session_passes_no_guard_and_reports_a_workspace_error_as_it_is():
+    """``reset_session`` shares the reopen body with the wake but never wrapped it: a workspace error reaches its caller untranslated, as before."""
+    world = make_world()
+    await _seed_ended(world)
+
+    async def reopen():
+        raise OSError(5, "Input/output error")
+
+    slot(world, "ses-b").reopen = reopen
+    deps = SessionResetDeps(storage_provider=world.sp, workspace_registry=world.registry, event_bus=None)
+    with pytest.raises(OSError, match="Input/output error"):
+        await reset_session(workspace_id="ws-1", session_id="ses-b", deps=deps)
     await _assert_still_ended(world)

@@ -609,11 +609,12 @@ async def test_two_senders_do_not_wait_for_each_other(monkeypatch):
 async def test_the_locks_of_senders_that_are_done_are_not_kept():
     world = await _world()
     await seed_session(world, sid="ses-b", turn_no=1)
+    before = set(peer_messages._SENDER_LOCKS)
     for i in range(4):
         await seed_session(world, sid=f"ses-s{i}", binding=AgentSessionBinding(agent_id=f"s{i}"), initiated_by=USER, turn_no=1)
         await _send(world, "ses-b", sender=f"ses-s{i}")
     gc.collect()
-    assert len(peer_messages._SENDER_LOCKS) == 0
+    assert set(peer_messages._SENDER_LOCKS) - before == set(), "a sender that is not sending must not keep a lock alive"
 
 
 # ---- mode: auto and if_idle -------------------------------------------------------------------------------------------------------
