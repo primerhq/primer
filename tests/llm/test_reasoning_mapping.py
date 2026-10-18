@@ -399,6 +399,40 @@ class TestProfileStream:
         await stream.aclose()
         assert llm.closed == 1
 
+    async def test_openai_moderation_text_is_not_a_refusal_of_reasoning_effort(self) -> None:
+        """It links to OpenAI's reasoning guide; it names no setting the call sent."""
+        llm = _Provider(lambda ext: "raise", message=(
+            "Invalid prompt: your prompt was flagged as potentially violating our "
+            "usage policy. Please try again with a different prompt: "
+            "https://platform.openai.com/docs/guides/reasoning#advice-on-prompting"
+        ))
+        with pytest.raises(BadRequestError):
+            await _drain(profile_stream(llm, {"reasoning_effort": "low"}, model="o3", messages=[]))
+        assert len(llm.calls) == 1
+
+    async def test_a_seed_only_profile_is_not_retried_on_a_thinking_400(self) -> None:
+        llm = _Provider(lambda ext: "raise", message="thinking is not supported for this model")
+        with pytest.raises(BadRequestError):
+            await _drain(profile_stream(llm, {"seed": 1}, model="m", messages=[]))
+        assert len(llm.calls) == 1
+
+    @pytest.mark.parametrize("knobs, message", [
+        ({"reasoning_effort": "low"}, "Unsupported parameter: 'reasoning.effort' is not supported with this model."),
+        ({"thinking": {"type": "enabled", "budget_tokens": 1024}}, '"thinking.type.enabled" is not supported for this model'),
+        ({"thinking": {"type": "enabled", "budget_tokens": 1024}}, "budget_tokens: must be less than max_tokens"),
+        ({"output_config": {"effort": "low"}}, "output_config.effort: Extra inputs are not permitted"),
+        ({"thinking_budget": 0}, "Budget 0 is invalid. This model only works in thinking mode."),
+        ({"thinking_level": "low"}, "Thinking level is not supported for this model."),
+        ({"think": True}, '"llama3.2" does not support thinking'),
+        ({"chat_template_kwargs": {"enable_thinking": False}}, "Extra inputs are not permitted: body.chat_template_kwargs"),
+        ({"reasoning": {"effort": "none"}}, "Reasoning is mandatory for this endpoint and cannot be disabled."),
+        ({"seed": 1}, "seed is not supported by this model"),
+    ])
+    async def test_each_setting_is_recognised_by_its_own_words(self, knobs, message) -> None:
+        llm = _Provider(lambda ext: "raise" if ext else None, message=message)
+        await _drain(profile_stream(llm, knobs, model="m", messages=[]))
+        assert len(llm.calls) == 2
+
     async def test_a_key_is_matched_as_a_word_not_inside_another(self) -> None:
         """A passthrough ``user`` knob must not match "username" in an unrelated 400."""
         llm = _Provider(lambda ext: "raise", message="invalid username field")
