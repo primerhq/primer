@@ -25,7 +25,9 @@ in primer. In a session or graph, `ask_user` parks on an
 `ask_user:{sid}:{tcid}` key (`ask_user:{sid}:{node}:{tcid}` inside a graph
 node: two fan-out siblings can share a `tcid`) and resumes when the user replies in a
 channel. `subscribe_to_trigger` parks on a `trigger:{sid}:{trigger_id}` key
-(the session is in the key: two sessions subscribed to one trigger do not share one) and resumes when the trigger fires. Tool approval reuses the same
+(the session is in the key: two sessions subscribed to one trigger do not share one) and resumes when the trigger fires. `canvas_wait` parks on a `canvaswait:{sid}:{tcid}` key
+(`canvaswait:{sid}:{node}:{tcid}` inside a graph node) and resumes when the user clicks or
+chooses something on the session's canvas. Tool approval reuses the same
 primitive - a `_approval` yield parks the call until the operator's
 decision arrives. In a session or graph the shape is always
 identical: yield → park → external event → resume.
@@ -301,6 +303,19 @@ session.
   is masked, so read such a field through the entity's own tool. You cannot
   read a secret back through an event; ask the operator if a task
   needs one.
+- **`canvas_wait` ends only on an event that wakes you, unless you name
+  `kinds`, and it returns at once when that event already happened.**
+  Without `kinds`, a Button click or an Html emit ends the wait; a
+  Select change, an audio event and a link open do not (a Select
+  with `wake=true` does). Name `kinds` (`change`, `play`, ...) to wait
+  for a silent one. The canvas keeps the events you have not read, so a
+  wait that finds a matching one among them returns it without
+  parking, and the event is marked read. A click that arrived while
+  your turn was running was queued as a steer; when it ends a wait
+  the queued copy is dropped, so you are told once. `ids` limits the
+  wait to some elements, `timeout_s` (1 to 86400, default 600) ends it
+  with `{timeout: true}`, and the result carries the canvas `rev` and
+  the current `values`.
 
 ## Related
 
