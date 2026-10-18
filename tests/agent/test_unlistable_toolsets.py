@@ -11,12 +11,15 @@ wait must never turn it into "this toolset is unavailable". Those tests are mark
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import shutil
 import socket
 import sys
 import threading
 import time
 import uuid
 from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 
 import pytest
 
@@ -34,13 +37,15 @@ from primer.agent.tool_listing import (
     with_system_notice,
 )
 from primer.agent.tool_manager import ToolExecutionManager
+from primer.agent.workspace_executor import WorkspaceAgentExecutor
 from primer.int.toolset import ToolsetProvider
-from primer.model.chat import Done, Message, TextPart, Tool, ToolCallPart, ToolCallResult
+from primer.model.chat import Done, Message, TextDelta, TextPart, Tool, ToolCallPart, ToolCallResult
 from primer.model.except_ import AuthRequiredError, ConfigError, NetworkError, ProviderError
 from primer.model.principal import PrincipalRef
 from primer.model.provider import HttpConfig, McpConfig, StdioConfig, TransportType
 from primer.toolset.mcp import McpToolsetProvider
 from tests.agent import test_subagent_stop as subagent_stop
+from tests.agent import test_workspace_executor as ws_exec
 from tests.agent.test_run_agent_turn_seam import AGENT, MODEL, _Manager, _RoundsLLM
 
 _SCHEMA = {"type": "object", "properties": {}, "additionalProperties": False}
@@ -752,3 +757,218 @@ async def test_a_stop_during_a_subagents_turn_start_listing_ends_it_before_the_m
         call.cancel()
         await asyncio.gather(call, return_exceptions=True)
         subagent_stop._kill_marked(marker)
+
+
+# ---- A Stop EVENT during the turn-start listing ends the turn at once ----------------------------------------------
+#
+# A top-level turn is stopped by the session's Stop EVENT: dispatch binds it with ``bind_interrupt_event`` and sets it when the
+# operator presses Stop. Only the loop reads it, and the loop starts after the tools are listed, so a listing that hangs held the
+# Stop until its bound ran out unless the listing is inside the Stop scope. These tests drive the REAL executor and the REAL
+# manager and leave the bound at its default (60 s): a Stop that is only acted on when the bound runs out cannot pass them.
+
+needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git CLI not available on PATH (StateRepo needs it)")
+
+_INPUT = [Message(role="user", parts=[TextPart(text="hi")])]
+
+
+def _answering_llm() -> ws_exec._FakeLLM:
+    """A model that would answer at once if the turn ever reached it (``.calls`` is what it was asked)."""
+    return ws_exec._FakeLLM(scripts=[[TextDelta(text="hi", index=0), Done(stop_reason="stop", raw_reason="stop")]])
+
+
+@contextlib.asynccontextmanager
+async def _real_executor(tmp_path: Path, providers: dict, llm) -> AsyncIterator[tuple[WorkspaceAgentExecutor, ToolExecutionManager, Path]]:
+    """A real ``WorkspaceAgentExecutor`` over a real local workspace session, its manager built over ``providers``; and the
+    ``messages.jsonl`` the turn persists to."""
+    backend, workspace, session = await ws_exec._build_session(tmp_path)
+    try:
+        manager = ToolExecutionManager.for_workspace(toolset_providers=providers, session=session)
+        executor = WorkspaceAgentExecutor(
+            agent=ws_exec._agent(system_prompt=["base"]), llm=llm, llm_model=ws_exec._model(), tool_manager=manager,
+            session=session,
+        )
+        history = workspace.root / workspace.template.state_path / "sessions" / session.session_id / "messages.jsonl"
+        yield executor, manager, history
+    finally:
+        await session.aclose()
+        await backend.aclose()
+
+
+async def _invoke(executor: WorkspaceAgentExecutor) -> list:
+    return [ev async for ev in executor.invoke(list(_INPUT))]
+
+
+async def _ends_within(turn: asyncio.Task, seconds: float) -> float:
+    """Seconds until ``turn`` ends. Fails, and ends the turn, when it is still going after ``seconds``: the Stop was not acted on."""
+    started = time.monotonic()
+    done, _pending = await asyncio.wait({turn}, timeout=seconds)
+    took = time.monotonic() - started
+    if not done:
+        turn.cancel()
+        await asyncio.gather(turn, return_exceptions=True)
+        pytest.fail(f"the turn was still listing {seconds:g}s after the Stop: it is only acted on when the listing's bound runs out")
+    turn.result()  # a turn that raised fails the test with that error
+    return took
+
+
+@needs_git
+async def test_a_stop_event_during_the_listing_ends_the_turn_at_once(tmp_path):
+    llm = _answering_llm()
+    remote = _Remote(hang=True)
+    async with _real_executor(tmp_path, {"kb": remote}, llm) as (executor, manager, history):
+        stop = asyncio.Event()
+        executor.bind_interrupt_event(stop)
+        recorded = history.read_bytes()
+        before = asyncio.all_tasks()
+        turn = asyncio.create_task(_invoke(executor))
+        await _listing_started(remote)  # in flight: the Stop lands on the listing, not before it
+
+        stop.set()
+        took = await _ends_within(turn, 10)
+
+        assert took < tool_listing.TURN_TOOLSET_LIST_TIMEOUT_S / 10, "the turn waited for the listing's bound"
+        assert turn.result() == [], "a turn stopped at its start yields nothing"
+        assert executor.was_interrupted is True
+        assert llm.calls == [], "the model was called after the Stop"
+        assert history.read_bytes() == recorded, "a turn stopped at its start wrote to the session's history"
+        assert remote.listing_cancelled, "the listing was left running"
+        assert manager.unavailable_toolsets() == {}, "a cancelled listing is not a toolset that cannot list"
+        await _no_tasks_beyond(before)
+
+
+@needs_git
+async def test_a_stop_during_the_listing_leaves_nothing_of_an_earlier_invoke_behind(tmp_path):
+    """``_run_loop`` resets the outcomes of the latest invoke, and a turn stopped at its listing never reaches it. An executor
+    that was used before must not hand dispatch the park or the calls of that invoke, and must not read the Stop as a tool-turn cap."""
+    remote = _Remote(hang=True)
+    async with _real_executor(tmp_path, {"kb": remote}, _answering_llm()) as (executor, _manager, _history):
+        stop = asyncio.Event()
+        executor.bind_interrupt_event(stop)
+        executor.stopped_park = object()  # type: ignore[assignment]
+        executor.stopped_calls = [object()]
+        executor.hit_tool_turn_cap = True
+        turn = asyncio.create_task(_invoke(executor))
+        await _listing_started(remote)
+
+        stop.set()
+        await _ends_within(turn, 10)
+
+        assert executor.was_interrupted is True
+        assert executor.stopped_park is None and executor.stopped_calls == []
+        assert executor.hit_tool_turn_cap is False
+        assert executor.last_done_reason is None, "a stale cap made the stopped turn read as capped"
+
+
+@needs_git
+async def test_a_stop_that_is_already_set_ends_the_turn_before_any_listing_starts(tmp_path):
+    llm = _answering_llm()
+    remote = _Remote(hang=True)
+    async with _real_executor(tmp_path, {"kb": remote}, llm) as (executor, _manager, history):
+        stop = asyncio.Event()
+        stop.set()  # the Stop landed before the turn began
+        executor.bind_interrupt_event(stop)
+        recorded = history.read_bytes()
+
+        turn = asyncio.create_task(_invoke(executor))
+        took = await _ends_within(turn, 10)
+
+        assert took < tool_listing.TURN_TOOLSET_LIST_TIMEOUT_S / 10
+        assert remote.listings == 0, "a listing was started for a turn that was already stopped"
+        assert turn.result() == [] and executor.was_interrupted is True
+        assert llm.calls == []
+        assert history.read_bytes() == recorded
+
+
+@needs_git
+async def test_a_turn_with_nothing_bound_still_waits_for_its_listing(tmp_path):
+    """The scope is transparent for a caller that never bound a Stop event: the listing is waited for, and left out when it
+    cannot list, exactly as before."""
+    llm = _answering_llm()
+    remote = _Remote(raises=NetworkError("could not connect to the MCP server: refused"))
+    async with _real_executor(tmp_path, {"kb": remote}, llm) as (executor, manager, _history):
+        events = await asyncio.wait_for(_invoke(executor), 30)
+
+        assert executor.was_interrupted is False
+        assert len(llm.calls) == 1 and events
+        assert manager.unavailable_toolsets() == {"kb": "could not connect to the MCP server: refused"}
+
+
+@needs_git
+async def test_a_stop_event_during_a_stdio_listing_ends_the_turn_and_the_launched_server_goes_down(tmp_path):
+    """The same through the REAL stdio provider: a process that starts and never answers ``initialize``, so it is the listing
+    that hangs. The Stop ends the turn well inside the bound (the SDK's own wait for the process to exit comes first), and the
+    server the listing launched is gone."""
+    marker = f"primer-listing-{uuid.uuid4().hex}"
+    provider = McpToolsetProvider(
+        toolset_id="ext",
+        config=McpConfig(
+            transport=TransportType.STDIO,
+            # Not an MCP server: it starts, reads nothing and never answers ``initialize``.
+            config=StdioConfig(command=[sys.executable, "-c", f"import time; time.sleep(120)  # {marker}"]),
+        ),
+    )
+    llm = _answering_llm()
+    try:
+        async with _real_executor(tmp_path, {"ext": provider}, llm) as (executor, _manager, history):
+            stop = asyncio.Event()
+            executor.bind_interrupt_event(stop)
+            recorded = history.read_bytes()
+            turn = asyncio.create_task(_invoke(executor))
+            await subagent_stop._until(lambda: subagent_stop._marked_pids(marker) or turn.done())  # the handshake is in flight
+            assert not turn.done(), f"the turn ended before it reached the listing: {turn.exception()!r}"
+
+            stop.set()
+            took = await _ends_within(turn, 30)
+
+            assert took < tool_listing.TURN_TOOLSET_LIST_TIMEOUT_S / 4, "the turn waited for the listing's bound"
+            assert turn.result() == [] and executor.was_interrupted is True
+            assert llm.calls == []
+            assert history.read_bytes() == recorded
+            await subagent_stop._until(lambda: not subagent_stop._marked_pids(marker))  # the server went down with the listing
+    finally:
+        subagent_stop._kill_marked(marker)
+
+
+async def _loop_over(manager: ToolExecutionManager, stop: asyncio.Event) -> tuple[_RoundsLLM, list, list[bool], list[Message]]:
+    """``run_agent_turn`` handed no ``tools`` (a subagent, a graph node), so it lists them itself, with ``interrupt=stop``."""
+    llm = _RoundsLLM(0)
+    interrupted: list[bool] = []
+    messages_out: list[Message] = []
+    events = [
+        ev
+        async for ev in run_agent_turn(
+            agent=AGENT, llm=llm, llm_model=MODEL, tool_manager=manager, prompt=_prompt(system=True),
+            messages_out=messages_out, interrupt=stop, interrupted_out=interrupted,
+        )
+    ]
+    return llm, events, interrupted, messages_out
+
+
+async def test_a_stop_event_during_the_loops_own_listing_ends_the_turn_at_once():
+    stop = asyncio.Event()
+    remote = _Remote(hang=True)
+    turn = asyncio.create_task(_loop_over(_manager(kb=remote), stop))
+    await _listing_started(remote)
+
+    stop.set()
+    took = await _ends_within(turn, 10)
+
+    llm, events, interrupted, messages_out = turn.result()
+    assert took < tool_listing.TURN_TOOLSET_LIST_TIMEOUT_S / 10, "the turn waited for the listing's bound"
+    assert interrupted == [True], "the turn did not say it ended because of the Stop"
+    assert events == [] and messages_out == [] and llm.sent == []
+    assert remote.listing_cancelled
+
+
+async def test_a_stop_event_already_set_never_starts_the_loops_own_listing():
+    stop = asyncio.Event()
+    stop.set()
+    remote = _Remote(hang=True)
+    turn = asyncio.create_task(_loop_over(_manager(kb=remote), stop))
+
+    await _ends_within(turn, 10)
+
+    llm, events, interrupted, _messages_out = turn.result()
+    assert remote.listings == 0, "a listing was started for a turn that was already stopped"
+    assert interrupted == [True] and events == [] and llm.sent == []
+

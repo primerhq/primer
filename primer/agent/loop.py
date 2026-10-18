@@ -411,9 +411,10 @@ async def run_agent_turn(
     tools
         The tool catalogue to offer the model, already fetched by the caller.
         ``None`` (the default) fetches it from ``tool_manager.list_tools`` at the
-        top of the turn, exactly as before. A caller that needs the catalogue
-        itself (to size the prompt before the turn starts) fetches it once and
-        passes it here so the loop does not fetch it a second time.
+        top of the turn, exactly as before, inside the ``interrupt`` scope: a Stop
+        during that listing ends the turn like any other. A caller that needs the
+        catalogue itself (to size the prompt before the turn starts) fetches it
+        once and passes it here so the loop does not fetch it a second time.
     budget
         Optional :class:`PromptGuard`; see its docstring. ``None`` (the default)
         sends every prompt exactly as the loop built it.
@@ -426,8 +427,10 @@ async def run_agent_turn(
         Optional Stop signal (the session dispatch sets it). The loop races it
         against every wait for the model's next event, so a model that has not
         produced its first token is stoppable too (see
-        :func:`primer.agent.interrupt.interruptible`). When it fires the turn
-        ends CLEANLY (no exception), after the provider stream is closed.
+        :func:`primer.agent.interrupt.interruptible`), and against the listing of
+        the tools when the loop makes it itself (``tools`` not given). When it
+        fires the turn ends CLEANLY (no exception), after the provider stream is
+        closed.
         A call that is already RUNNING is stopped too (slice B1): it runs as its
         own task (:func:`primer.agent.stoppable_call.run_stoppable`) and an
         interruptible call is cancelled (its cleanup, an exec's process-group
@@ -517,7 +520,15 @@ async def run_agent_turn(
         for this -- see each caller's own handling.
     """
     if tools is None:
-        tools = await tool_manager.list_tools(principal=principal)
+        # A remote toolset can take up to its bound to list (primer.agent.tool_listing): the listing is inside the Stop scope too,
+        # so a Stop that lands during it, or before the turn began, ends the turn before a listing starts or a model call is made.
+        try:
+            async with interruptible(interrupt):
+                tools = await tool_manager.list_tools(principal=principal)
+        except Interrupted:
+            if interrupted_out is not None:
+                interrupted_out.append(True)
+            return
     # The profile's own settings, translated once for this adapter's wire and
     # model and sent with every call of the turn; empty when the profile asks
     # for none.

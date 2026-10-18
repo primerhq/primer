@@ -1498,6 +1498,115 @@ class TestAStopThatLandsBeforeTheBatchThroughTheWholeTurn:
         assert row.status == SessionStatus.WAITING and row.ended_reason is None
 
 
+class TestAStopDuringTheTurnStartListingThroughTheWholeTurn:
+    """A turn begins by listing the tools of its toolsets, and the listing of an MCP toolset can take as long as its bound (60 s)
+    when the server accepts the connection and never answers. The Stop event is read by the loop, which has not started, so the
+    executor puts the listing inside the Stop scope. The real ``invoke`` of the executor base, the real manager and the real
+    remote-listing wait run here (only the server and the model are doubles); the Stop is delivered the way POST .../interrupt
+    does it, and the bound stays at its default, so a Stop that is only acted on when the bound runs out fails the wait below."""
+
+    async def test_the_session_rests_at_once_without_a_model_call(
+        self, seeded_session, fake_workspace_io, fake_event_bus, fake_storage_provider,
+    ) -> None:
+        import time
+
+        import primer.workspace  # noqa: F401  (ToolCallContext.model_rebuild)
+        from primer.agent import tool_listing
+        from primer.agent.base import _BaseAgentExecutor
+        from primer.agent.tool_manager import ToolExecutionManager
+        from primer.model.agent import Agent, AgentModel
+        from primer.model.chat import Tool
+        from primer.model.model_profile import ModelProfileConfig
+        from primer.model.principal import PrincipalRef
+        from primer.model_profile import ResolvedModel
+
+        sid = seeded_session.id
+
+        class _SilentServer:
+            """An MCP toolset whose server accepts the connection and never answers."""
+
+            lists_remotely = True
+
+            def __init__(self) -> None:
+                self.entered = asyncio.Event()
+                self.cancelled = False
+
+            def required_role(self, tool_name: str) -> str:
+                return "user"
+
+            async def list_tools(self, *, principal=None):
+                self.entered.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    self.cancelled = True
+                    raise
+                yield Tool(id="never", description="x", toolset_id="kb", args_schema={})  # pragma: no cover
+
+        class _Llm:
+            """Would answer, if the turn ever got to it."""
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def stream(self, **_kwargs):
+                self.calls += 1
+
+                async def gen():
+                    yield TextDelta(text="hello", index=0)
+                    yield Done(stop_reason="stop", raw_reason="stop")
+
+                return gen()
+
+        class _Executor(_BaseAgentExecutor):
+            def __init__(self, llm, manager) -> None:
+                super().__init__(
+                    agent=Agent(id="ag", description="x", model=AgentModel(profile_id="p--m"), max_tool_turns=10),
+                    llm=llm, llm_model=ResolvedModel(
+                        profile_id="p", provider_id="prov", model_name="m", context_length=4096,
+                        config=ModelProfileConfig(),
+                    ),
+                    tool_manager=manager,
+                )
+                self.persisted: list[Any] = []
+
+            async def _load_history(self):
+                return []
+
+            async def _persist_turn(self, turn_messages) -> None:
+                self.persisted.append(list(turn_messages))
+
+            async def _replace_compacted_head(self, compacted, **_kwargs):
+                return None
+
+        server = _SilentServer()
+        llm = _Llm()
+        manager = ToolExecutionManager(toolset_providers={"kb": server}, initiated_by=PrincipalRef.system())  # type: ignore[arg-type]
+        executor = _Executor(llm, manager)
+        turn = asyncio.create_task(
+            _run(fake_storage_provider, fake_workspace_io, fake_event_bus, executor, sid, timeout=20.0)
+        )
+        await asyncio.wait_for(server.entered.wait(), 5)  # the turn is inside the listing
+
+        await _request_stop(fake_storage_provider, fake_event_bus, sid)
+        stopped_at = time.monotonic()
+        outcome = await turn
+
+        assert time.monotonic() - stopped_at < tool_listing.TURN_TOOLSET_LIST_TIMEOUT_S / 10, "the turn waited for the bound"
+        assert outcome.success is True and outcome.drop_lease is True
+        records = _records(fake_workspace_io, sid)
+        kinds = [r["kind"] for r in records]
+        assert SessionMessageKind.CANCELLED in kinds and SessionMessageKind.DONE not in kinds
+        cancelled = next(r for r in records if r["kind"] == SessionMessageKind.CANCELLED)
+        assert cancelled["payload"]["reason"] == "operator_interrupt"
+        row = await fake_storage_provider.get_storage(WorkspaceSession).get(sid)
+        assert row.status == SessionStatus.WAITING and row.ended_at is None and row.interrupt_requested is False
+        assert executor.was_interrupted is True
+        assert llm.calls == 0, "the model was called after the Stop"
+        assert executor.persisted == [], "a turn stopped at its listing wrote its history"
+        assert server.cancelled, "the listing was left running"
+
+
 class TestAStopFollowedByAHumanSteer:
     """A steer that lands while a turn runs flips ``turn_status`` to claimable, and ``wake_session`` then
     clears ``interrupt_requested`` on the row. The cancel arm used to decide Stop-vs-End from that flag,

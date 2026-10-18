@@ -59,6 +59,7 @@ from primer.agent.events import (
     Subscription,
     _ExecutorToolResult,
 )
+from primer.agent.interrupt import Interrupted, interruptible
 from primer.agent.overflow import cap_newest_round, completed_rounds, kept_rounds, reduce_for_persist, tool_rounds
 from primer.agent.prompt_render import render_system_prompt_or_raw
 from primer.agent.prune import PruneSet
@@ -242,8 +243,9 @@ class _BaseAgentExecutor(ABC):
         # bind_interrupt_event). None for every caller that is never stopped.
         self._interrupt_event: asyncio.Event | None = None
         # True when the LATEST invoke() ended because the Stop signal fired (the loop
-        # returns cleanly, so there is no exception to read). Reset at the start of
-        # every invoke; dispatch reads it after the event stream ends.
+        # returns cleanly, so there is no exception to read; so does a Stop that lands
+        # while the tools are being listed). Reset at the start of every invoke;
+        # dispatch reads it after the event stream ends.
         self.was_interrupted: bool = False
         # The park a Stop ended in the LATEST invoke() (see run_agent_turn's ``stopped_park_out``), else None. Dispatch
         # reads it in the cancelled exit: what the park's tool had already created (an external tool's pending call
@@ -365,6 +367,13 @@ class _BaseAgentExecutor(ABC):
         End-of-turn persistence runs once the LLM produces a
         non-tool-use stop. Streaming chunks are NOT persisted -- only
         the materialised :class:`Message` is.
+
+        A Stop (the event bound by :meth:`bind_interrupt_event`) ends the
+        turn cleanly with ``was_interrupted`` set, whenever it lands. While
+        the tools are still being listed (a remote toolset can take up to
+        its bound) the turn ends at once, before any event, model call or
+        write; later the loop ends it and the rounds that completed are
+        kept.
         """
         # An output cap that fills the window can never be served by a provider that checks it. The reactive guard in
         # ``_recover_from_overflow`` acts only AFTER a rejection, so say it up front, once per turn, and run the turn
@@ -393,7 +402,21 @@ class _BaseAgentExecutor(ABC):
         # synchronous, so steers on non-compaction turns are never deferred.
         # The part of every prompt no history can give back: the compaction counts it, and the
         # catalogue is handed to the loop so it is fetched once per invoke.
-        tools = await self._tool_manager.list_tools(principal=self._principal)
+        #
+        # Listing a remote toolset can take up to its bound (primer.agent.tool_listing), and the Stop event is read by the
+        # loop, which has not started: so the listing is inside the Stop scope, and a Stop ends the turn here at once,
+        # before a model call. Nothing has run and there is nothing to persist. ``_run_loop`` is what resets the outcomes
+        # of the latest invoke and it is not reached, so they are reset here. An event that is already set returns before
+        # a listing starts.
+        try:
+            async with interruptible(self._interrupt_event):
+                tools = await self._tool_manager.list_tools(principal=self._principal)
+        except Interrupted:
+            self.was_interrupted = True
+            self.stopped_park = None
+            self.stopped_calls = []
+            self.hit_tool_turn_cap = False
+            return
         fixed_overhead = await self.fixed_overhead_tokens(tools)
         snapshot = await self._open_compaction_window()
         notes: list[ExtendedEvent] = []
@@ -928,7 +951,9 @@ class _BaseAgentExecutor(ABC):
     def bind_interrupt_event(self, event: "asyncio.Event | None") -> None:
         """Bind the Stop signal: the agent loop races it against every wait for the
         model's next event (see :func:`primer.agent.loop.run_agent_turn`), so a model
-        that has not produced its first token is stoppable too.
+        that has not produced its first token is stoppable too, and :meth:`invoke`
+        races it against the turn-start listing of the tools, which can take as long
+        as a remote toolset's bound.
 
         Post-construction setter, not a constructor parameter: the caller
         (``primer.session.dispatch``) creates its cancel event only after the executor
