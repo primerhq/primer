@@ -875,11 +875,14 @@ def test_a_refusal_the_single_form_has_no_field_for_is_drawn_above_the_footer(ct
     assert closed_count(ctx) == 0
 
 
-def test_there_is_no_reasoning_control(ctx) -> None:
+def test_there_is_no_reasoning_control_until_task_7_and_config_is_kept_as_stored(ctx) -> None:
+    """Model calls apply a profile's ``config`` now. The overlay does not draw a control for it yet: the Reasoning control returns in plan 03 Task 7, and until then ``config`` is kept as stored."""
     single(ctx, FULL_SINGLE)
     assert not present(ctx, "profile-reasoning-segment")
-    assert "Reasoning" not in js(ctx, 'textOf(MR.find("mp-single"))'), "the server ignores a profile's reasoning (C1), so the form does not offer it"
+    assert "Reasoning" not in js(ctx, 'textOf(MR.find("mp-single"))'), "the Reasoning control returns in plan 03 Task 7; until then the form does not draw one"
     assert not present(ctx, "profile-model-picker") and not present(ctx, "profile-provider-picker"), "the discovered-models picker and the provider row picker are gone"
+    click(ctx, "mp-single-submit")
+    assert calls(ctx)[0][2]["config"] == FULL_SINGLE["config"], "a save sends config back as stored"
 
 
 def test_the_legacy_create_path_posts_a_single_profile(ctx) -> None:

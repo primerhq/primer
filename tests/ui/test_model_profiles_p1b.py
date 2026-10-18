@@ -94,10 +94,9 @@ def test_modal_provider_is_a_select_of_the_llm_providers() -> None:
 # (tests/ui/test_llm_profile_overlays.py).
 
 
-def test_the_overlay_offers_no_reasoning_control_the_server_ignores() -> None:
-    """Replaces test_modal_reasoning_is_a_segmented_control_not_a_select. A profile's ``config.reasoning`` is stored and served but no model call reads it yet (the agent loop
-    and compaction pass no ``extended``; plan 03, conflict C1), so a control for it would be one the server ignores. The value still round-trips: the overlay sends ``config`` back
-    whole (MP_editBody). The control returns with the wiring (Plan 03, Task 7)."""
+def test_the_overlay_offers_no_reasoning_control_until_plan_03_task_7() -> None:
+    """Replaces test_modal_reasoning_is_a_segmented_control_not_a_select. Model calls apply a profile's ``config`` (reasoning, extended) now; the overlay does not draw a control
+    for it yet. The Reasoning control returns in plan 03 Task 7, which flips this pin, and until then ``config`` is kept as stored: the overlay sends it back whole (MP_editBody)."""
     modal = _modal_src()
     assert "profile-reasoning-segment" not in modal
     assert "MP_REASONING_LEVELS.map(" not in modal

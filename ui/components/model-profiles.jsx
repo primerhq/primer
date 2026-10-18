@@ -487,11 +487,11 @@ function MP_ProfileModal(props) {
 const MP_READONLY_FIELDSET = { display: "flex", flexDirection: "column", gap: 16, minWidth: 0, margin: 0, padding: 0, border: "none" };
 
 // The single profile's overlay (design 7.1: "opening a profile shows its overlay for viewing and editing the fields the model allows"): the id (fixed once the profile exists),
-// the description, the provider and the model it names, and the context window. A profile's `config` (reasoning, extended) is not drawn, because no model call reads it yet
-// (plan 03, conflict C1), but it is the profile's: an edit sends the stored row back with these four fields laid over it (MP_editBody), so `config` and every other field the
-// form does not draw round-trip untouched. `prefill` is the legacy single create that the Providers page still opens ("New profile" under a provider, until Plan 02 removes
-// it); there is no other single create. The fields start from the profile the overlay is mounted with and then belong to the person typing: a new `providers` array (the host
-// hands over a fresh empty one on every render until its list loads) must not wipe a draft.
+// the description, the provider and the model it names, and the context window. A profile's `config` (reasoning, extended) is not drawn here: the Reasoning control returns in
+// plan 03 Task 7, and until then `config` is kept as stored. Model calls apply it, so a save must not lose it: an edit sends the stored row back with these four fields laid over
+// it (MP_editBody), and `config` and every other field the form does not draw round-trip untouched. `prefill` is the legacy single create that the Providers page still opens
+// ("New profile" under a provider, until Plan 02 removes it); there is no other single create. The fields start from the profile the overlay is mounted with and then belong to
+// the person typing: a new `providers` array (the host hands over a fresh empty one on every render until its list loads) must not wipe a draft.
 function MP_SingleProfileOverlay({ existing, providers, prefill, onClose, onSaved }) {
   const isEdit = existing != null;
   const managed = MP_isManaged(existing);
