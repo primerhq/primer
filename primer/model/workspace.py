@@ -15,6 +15,8 @@ Models exported:
   :class:`WorkspaceResourceOverrides` (a per-workspace CPU / memory / disk size).
 * :class:`K8sToleration` + :class:`K8sGpu` -- typed Kubernetes placement fields of
   :class:`KubernetesTemplateConfig`.
+* :class:`WorkspaceProviderChoice` / :class:`WorkspaceProviderChoices` -- the id, kind
+  and label of a provider, which any signed-in user may list (the provider row is admin-only).
 * :class:`FileEntry` -- user-facing file listing entry returned from
   :meth:`Workspace.list_files`.
 * ``WORKSPACE_ID_PATTERN`` -- the one rule for caller-supplied workspace ids.
@@ -1431,6 +1433,41 @@ class WorkspaceProvider(Identifiable):
         return self
 
 
+class WorkspaceProviderChoice(BaseModel):
+    """One workspace provider as ANY signed-in user may see it: enough to name it in a template, nothing of how to reach it.
+
+    ``GET /v1/workspace_providers`` is admin-only because a provider row carries its connection (a kubeconfig path, a
+    service-account token, a remote runtime's TLS key). A non-admin still has to pick a provider for a template, so
+    ``GET /v1/workspace_providers/_choices`` and the ``list_workspace_provider_choices`` tool answer with this and no
+    other field of the row (platform revamp 2026-10, plan 08 task 7, design 14.2).
+    """
+
+    id: str = Field(..., description="The provider's id: what a template's ``provider_id`` holds.")
+    kind: Literal["local", "container", "kubernetes"] = Field(
+        ..., description="The provider's backend kind, the value of ``WorkspaceProvider.provider``.",
+    )
+    label: str = Field(
+        ...,
+        description=(
+            "What a person calls it: ``Local``, ``Docker``, ``Podman``, ``containerd`` (a container provider by its runtime) "
+            "or ``Kubernetes``."
+        ),
+    )
+    default_image: str | None = Field(
+        default=None,
+        description=(
+            "The image a container provider's template runs when it names none (the primer workspace runtime image); "
+            "``null`` for a provider kind that has no image to pre-fill."
+        ),
+    )
+
+
+class WorkspaceProviderChoices(BaseModel):
+    """Every workspace provider as a :class:`WorkspaceProviderChoice`, sorted by id."""
+
+    items: list[WorkspaceProviderChoice] = Field(..., description="Every provider, sorted by id.")
+
+
 # ===========================================================================
 # Persisted Workspace record
 # ===========================================================================
@@ -1671,6 +1708,8 @@ __all__ = [
     "WorkspaceChannelLink",
     "WorkspaceDiagnosticResult",
     "WorkspaceProvider",
+    "WorkspaceProviderChoice",
+    "WorkspaceProviderChoices",
     "WorkspaceProviderConfig",
     "WorkspaceProviderType",
     "WorkspaceResourceOverrides",
