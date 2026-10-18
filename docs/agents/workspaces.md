@@ -85,7 +85,8 @@ Three rows make up the workspace surface:
 
 The fixed directory layout under each workspace:
 - (workspace root) - files the agent reads and writes; arbitrary
-  layout.
+  layout. One name is special: `agents.md` (see "Workspace
+  instructions (agents.md)" below).
 - `.state/` - the git-tracked state repo. Per-session subtree at
   `.state/sessions/<sid>/` (LLM message history as commits).
   Shared subtree at `.state/shared/` (cross-session coordination).
@@ -104,6 +105,49 @@ contexts that have no implicit session. They expose the same
 operations (list / get / create / delete workspaces; read / write
 files; watch for file changes) so an external MCP-connected agent
 can drive workspace state directly.
+
+## Workspace instructions (agents.md)
+
+A workspace can carry standing instructions for every agent that runs
+in it: a file named `agents.md` at the workspace root (`AGENTS.md` is
+read only when there is no `agents.md`). Primer reads it at the start
+of every turn and adds it to the agent's system prompt, after the
+section that describes the workspace and the session, under the
+heading "Workspace instructions (agents.md)". It applies to every
+agent that runs in the workspace, whichever agent it is: the agent a
+session is bound to, each agent node of a graph run, and a subagent
+started with `system::invoke_agent`.
+
+- **Edits apply from the next turn.** The file is read again for each
+  turn (and for each graph run), so editing it - with the session
+  `write` or `edit` tool, or `workspaces::write_workspace_file` -
+  changes what the agents there are told from then on. A turn that is
+  already running keeps the text it started with.
+- **The model sees it as written.** Braces and template syntax in the
+  file (`{{ x }}`, `{% if %}`) are not interpreted.
+- **At most 32 KiB.** Only the first 32768 bytes are used; a longer
+  file is cut there and followed by a line that says so
+  (`[truncated: agents.md is N bytes; only the first 32768 bytes are
+  included]`). It is sent with every model call of every turn, so keep
+  it short.
+- **No file is normal.** A workspace without one has no workspace
+  instructions, and a file with nothing in it adds nothing. A file that
+  cannot be read (`agents.md` is a directory, or the read fails) is
+  skipped with a warning in the server log, and the turn runs without
+  it.
+- **One file, at the root.** There is no per-user file and no file in a
+  sub-folder.
+
+Put in it what every agent in this workspace should know or follow:
+conventions, commands to run, what not to touch. It is a prompt, not a
+permission: it adds text for the model to read and grants no tool.
+
+**Who can change it.** Any session in the workspace can write
+`agents.md`, so any session there can change what every agent in the
+workspace is told from the next turn on, including agents started by
+someone with more rights than the writer. A workspace is a trust
+boundary: sessions and users that must not steer each other's agents
+belong in different workspaces.
 
 ## Lifecycle and states
 
@@ -442,6 +486,11 @@ session is outside the group, so it is not killed.
   `/v1/health` reports the rule under `workspaces.local`
   (`distributed`, `enforcing`, `refusing_local`, `local_workspaces`,
   `unusable`), with the switch off too.
+- **`agents.md` is editable by every session in the workspace.**
+  Primer puts its contents in the system prompt of every agent that
+  runs there, so a session that rewrites it changes what the other
+  agents are told, whoever started them. The workspace is the trust
+  boundary. See "Workspace instructions (agents.md)".
 - **Multi-session shared filesystem is collaborative, not
   isolated.** Two simultaneous sessions on the same workspace
   WILL race on file writes. Coordinate via `.state/shared/`.

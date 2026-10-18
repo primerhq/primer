@@ -23,7 +23,9 @@ EVERY agent in the graph is augmented before invocation:
 
 * the session's :attr:`AgentSession.system_prompt_fragment` is
   appended to the agent's ``system_prompt`` (so the LLM sees
-  workspace-tool documentation),
+  workspace-tool documentation), followed by the workspace's
+  ``agents.md`` when the caller passes it as ``workspace_instructions``
+  (see :mod:`primer.workspace.instructions`),
 * the session's workspace tools are composed into each per-node
   :class:`ToolExecutionManager` (so the LLM can actually call
   ``read``, ``write``, ``exec``, etc).
@@ -59,6 +61,7 @@ from primer.observability.turn_log_writer import (
     TurnLogWriter,
     WorkspaceTurnLogWriter,
 )
+from primer.workspace.instructions import workspace_instructions_parts
 
 
 if TYPE_CHECKING:
@@ -88,7 +91,9 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
 
     Optional workspace augmentation: pass ``workspace_session`` to
     have every agent in the graph receive the session's
-    ``system_prompt_fragment`` + workspace tools.
+    ``system_prompt_fragment`` + workspace tools, and
+    ``workspace_instructions`` (the text of the workspace's ``agents.md``,
+    read by the caller for this run) to have each of them follow it.
     """
 
     def __init__(
@@ -119,9 +124,10 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         artifact_storage: "ArtifactStorage | None" = None,
         turn_no: int | None = None,
         tool_calls_as_claims_enabled: bool = False,
+        workspace_instructions: str | None = None,
     ) -> None:
         wrapped_agent_resolver = self._wrap_agent_resolver(
-            agent_resolver, workspace_session
+            agent_resolver, workspace_session, workspace_instructions
         )
         wrapped_tool_manager_resolver = self._wrap_tool_manager_resolver(
             tool_manager_resolver, workspace_session, identity
@@ -142,6 +148,9 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         self._state_repo = state_repo
         self._graph_session_id = graph_session_id
         self._workspace_session = workspace_session
+        # The workspace's agents.md as read for this run; subgraph children are
+        # built from it again (see ``_build_sub_executor``).
+        self._workspace_instructions = workspace_instructions
         self._identity = identity
         # Override the base's in-memory context with real workspace ids so node
         # templates can reference {{ ctx.artifact_dir }} etc. Subgraph children
@@ -296,16 +305,25 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
     def _wrap_agent_resolver(
         base: Callable[[str], Awaitable["Agent"]],
         workspace_session: "AgentSession | None",
+        workspace_instructions: str | None = None,
     ) -> Callable[[str], Awaitable["Agent"]]:
-        """Append the workspace's ``system_prompt_fragment`` to every agent."""
-        if workspace_session is None:
+        """Append the workspace's ``system_prompt_fragment``, then its agents.md, to every agent.
+
+        The fragment needs the holder session; the instructions are the workspace's and do not, so a legacy
+        graph session without a holder still has its agents follow them.
+        """
+        if workspace_session is None and workspace_instructions is None:
             return base
 
         async def _resolve(agent_id: str) -> "Agent":
             agent = await base(agent_id)
-            composite_system_prompt = list(agent.system_prompt) + [
-                workspace_session.system_prompt_fragment
+            appended = [
+                *([workspace_session.system_prompt_fragment] if workspace_session is not None else []),
+                *workspace_instructions_parts(agent, workspace_instructions),
             ]
+            if not appended:
+                return agent
+            composite_system_prompt = [*agent.system_prompt, *appended]
             # Copy the agent and replace ONLY the system prompt. This used to rebuild it
             # from seven named fields, so every other one (max_tool_turns,
             # max_output_tokens, ...) silently reset to its default for every node of a
@@ -728,6 +746,9 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             state_repo=self._state_repo,
             graph_session_id=sub_gsid,
             workspace_session=self._workspace_session,
+            # The child re-wraps the RAW resolver, so it has to be handed the file
+            # too, or every agent below the first level would run without it.
+            workspace_instructions=self._workspace_instructions,
             tool_manager_resolver=self._raw_tool_manager_resolver,
             graph_resolver=self._graph_resolver,
             router_registry=self._router_registry,

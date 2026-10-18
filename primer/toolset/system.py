@@ -135,6 +135,7 @@ from primer.knowledge.checks import check_collection_system_flag
 from primer.knowledge.lifecycle import purge_collection
 from primer.toolset.toolset_checks import check_toolset_on_create, check_toolset_on_update, toolset_admin_reason
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
+from primer.workspace.instructions import load_workspace_instructions
 
 # Re-exported helpers / argument models / parsers (shared surface).
 from primer.toolset._system_common import (
@@ -953,6 +954,27 @@ def build_system_toolset(
             ..., min_length=1, description="Input for the subagent."
         )
 
+    async def _workspace_instructions_of(ctx: ToolContext | None) -> str | None:
+        """The agents.md of the workspace the calling run is in, for the subagent it starts.
+
+        ``None`` outside a workspace (a chat, a call with no context), when the toolset was built without a
+        workspace registry, or when the lookup fails: the subagent then runs without the file rather than not at all.
+        The workspace is the calling run's own (``ctx.workspace_id``); a tool argument never names one.
+        """
+        workspace_id = getattr(ctx, "workspace_id", None)
+        if workspace_id is None or workspace_registry is None:
+            return None
+        try:
+            workspace = await workspace_registry.get_workspace(workspace_id)
+        except Exception as exc:  # noqa: BLE001 - a lookup that fails must not stop the subagent
+            logger.warning(
+                "invoke_agent: workspace %s could not be resolved for its instructions; "
+                "the subagent runs without them: %s",
+                workspace_id, exc,
+            )
+            return None
+        return await load_workspace_instructions(workspace)
+
     async def _invoke_agent_handler(
         arguments: dict[str, Any], *, ctx: ToolContext | None = None,
     ) -> ToolCallResult:
@@ -962,6 +984,7 @@ def build_system_toolset(
             return _err_from_validation(exc)
         try:
             with invocation_depth_guard():
+                workspace_instructions = await _workspace_instructions_of(ctx)
                 text = await run_subagent(
                     agent_id=args.agent_id,
                     prompt=args.prompt,
@@ -982,6 +1005,7 @@ def build_system_toolset(
                         or PrincipalRef.unattributed()
                     ),
                     turn_no=getattr(ctx, "turn_no", None),
+                    workspace_instructions=workspace_instructions,
                 )
         except InvocationDepthExceeded as exc:
             return _err(

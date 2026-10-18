@@ -1447,6 +1447,7 @@ async def compact_session_endpoint(
     from primer.model.graph import build_execution_context
     from primer.model_profile import resolve_llm
     from primer.session.compaction import compact_session, guard_compactable
+    from primer.workspace.instructions import load_workspace_instructions, workspace_instructions_parts
     from primer.workspace.session import reconstruct_compacted_history, workspace_system_prompt_fragment
     from primer.worker.io_shim import _WorkspaceIOShim
 
@@ -1515,10 +1516,15 @@ async def compact_session_endpoint(
         return reconstruct_compacted_history(fresh_text.splitlines())
 
     # The fixed part of the prompt, as far as this route can count it: the system prompt as the executor
-    # renders it (the agent's own plus the workspace fragment it appends). The tool schemas live behind the
-    # session's executor, which this route does not build, so they are NOT counted here (the figures are a
-    # floor; the marker's ``fixed_overhead_tokens`` says what they include).
-    system_prompt = [*agent.system_prompt, workspace_system_prompt_fragment(session_id)]
+    # renders it (the agent's own, the workspace fragment it appends, and the workspace's agents.md, read now
+    # as the next turn will read it). The tool schemas live behind the session's executor, which this route does
+    # not build, so they are NOT counted here (the figures are a floor; the marker's ``fixed_overhead_tokens``
+    # says what they include).
+    system_prompt = [
+        *agent.system_prompt,
+        workspace_system_prompt_fragment(session_id),
+        *workspace_instructions_parts(agent, await load_workspace_instructions(workspace)),
+    ]
     system_messages = [Message(role="system", parts=[TextPart(text=render_system_prompt_or_raw(
         system_prompt, build_execution_context(),
     ))])]
