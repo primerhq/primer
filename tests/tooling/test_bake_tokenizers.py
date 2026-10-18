@@ -195,7 +195,9 @@ def test_a_server_trickling_one_byte_at_a_time_cannot_outlast_the_deadline():
             bake_mod.fetch(url, timeout_s=1.0)
     finally:
         server.close()
-    assert time.monotonic() - started < 2.5, "it must give up at the deadline, not when the trickle ends"
+    # The trickle ends at about 6 s (30 bytes, 0.2 s apart). 4.5 s still separates the
+    # 1 s deadline from that end. The old 2.5 s failed under CI load (2.53 s observed).
+    assert time.monotonic() - started < 4.5, "it must give up at the deadline, not when the trickle ends"
 
 
 def test_a_server_that_accepts_and_never_answers_is_bounded():
