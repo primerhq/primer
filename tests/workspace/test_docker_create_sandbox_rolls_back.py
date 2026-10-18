@@ -6,6 +6,12 @@ running and its volume behind, and the backend could not clean them up: it works
 none was returned. The rollback removes the container BY NAME (the create may have been cancelled before it returned a handle) and
 the volume only if this call made it, on its own task and bounded (``roll_back_shielded``).
 
+A readiness timeout reaches the caller as the ``ConfigError`` that names the image (platform revamp 2026-10, plan 08 task 5:
+the runtime never answered, so a custom image without it is the likeliest cause); it used to be the bare ``TimeoutError``
+("Runtime did not become ready within 30.0s", a 500). What these tests pin is the rollback, which is unchanged: the container
+and the volume this call made are removed whichever error ends it. A caller's own ``asyncio.timeout`` still surfaces as a
+``TimeoutError`` (it reaches ``create_sandbox`` as a cancel, which is not the silent-runtime error).
+
 These run WITHOUT a Docker daemon: a small stateful fake stands in for the aiodocker client.
 """
 
@@ -144,7 +150,7 @@ def _nothing_left(docker: _FakeDocker) -> bool:
 async def test_a_readiness_timeout_removes_the_container_and_the_volume_it_made(monkeypatch):
     docker = _FakeDocker()
     _ws_sandbox(monkeypatch, _readiness_times_out)
-    with pytest.raises(TimeoutError, match="did not become ready"):
+    with pytest.raises(ConfigError, match="did not answer"):
         await _create(_adapter(docker))
     assert _nothing_left(docker) and docker.removed == [f"container:{NAME}", f"volume:{VOLUME}"]
 
@@ -211,7 +217,7 @@ async def test_a_volume_that_was_already_there_is_not_removed(monkeypatch):
     """A retry with the same id finds the data of an earlier life; it is not this call's to delete."""
     docker = _FakeDocker(volume_exists=True)
     _ws_sandbox(monkeypatch, _readiness_times_out)
-    with pytest.raises(TimeoutError):
+    with pytest.raises(ConfigError):
         await _create(_adapter(docker))
     assert docker.containers_present == set() and docker.volumes_present == {VOLUME}
     assert docker.removed == [f"container:{NAME}"]
@@ -251,7 +257,7 @@ async def test_a_volume_the_daemon_refused_is_not_claimed(monkeypatch):
     docker.volume_create_error = aiodocker.DockerError(409, {"message": "volume name is already in use"})
     docker.volumes_present.add(VOLUME)  # the other create made it
     _ws_sandbox(monkeypatch, _readiness_times_out)
-    with pytest.raises(TimeoutError):
+    with pytest.raises(ConfigError):
         await _create(_adapter(docker))
     assert docker.volumes_present == {VOLUME}
 
@@ -266,7 +272,7 @@ async def test_a_volume_request_that_dropped_the_connection_is_still_claimed(mon
 
     docker.volumes.create.side_effect = create_then_drop
     _ws_sandbox(monkeypatch, _readiness_times_out)
-    with pytest.raises(TimeoutError):
+    with pytest.raises(ConfigError):
         await _create(_adapter(docker))
     assert _nothing_left(docker)
 
@@ -300,7 +306,7 @@ async def test_a_rollback_that_hangs_does_not_hold_the_caller_past_its_bound(mon
     docker.container_delete_gate = asyncio.Event()
     _ws_sandbox(monkeypatch, _readiness_times_out)
     try:
-        with pytest.raises(TimeoutError, match="did not become ready"):
+        with pytest.raises(ConfigError, match="did not answer"):
             await asyncio.wait_for(_create(_adapter(docker)), timeout=2)
         assert docker.containers_present == {NAME}  # still being removed, in the background
     finally:
@@ -312,7 +318,7 @@ async def test_a_failing_container_removal_neither_masks_the_error_nor_skips_the
     docker = _FakeDocker()
     docker.container_delete_error = aiodocker.DockerError(500, {"message": "the daemon fell over"})
     _ws_sandbox(monkeypatch, _readiness_times_out)
-    with pytest.raises(TimeoutError, match="did not become ready"):
+    with pytest.raises(ConfigError, match="did not answer"):
         await _create(_adapter(docker))
     assert docker.volumes_present == set() and docker.containers_present == {NAME}
 

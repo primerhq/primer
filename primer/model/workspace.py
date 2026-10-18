@@ -465,11 +465,13 @@ class ContainerTemplateConfig(BaseModel):
     )
     cpu_cores: float | None = Field(
         default=None,
-        description="docker --cpus value; null = unlimited.",
+        description="docker --cpus value; null = unlimited. overrides.resources.cpu_cores replaces it for one workspace.",
     )
     memory_bytes: int | None = Field(
         default=None,
-        description="docker --memory value in bytes; null = unlimited.",
+        description=(
+            "docker --memory value in bytes; null = unlimited. overrides.resources.memory_bytes replaces it for one workspace."
+        ),
     )
     extra_mounts: list[ContainerMount] = Field(
         default_factory=list,
@@ -948,8 +950,9 @@ class WorkspaceTemplateOverrides(BaseModel):
     resources: WorkspaceResourceOverrides | None = Field(
         default=None,
         description=(
-            "Per-workspace size. Kubernetes takes cpu_cores, memory_bytes and disk_bytes. Docker can take "
-            "cpu_cores and memory_bytes (it has no disk quota); Local can take none."
+            "Per-workspace size. Kubernetes takes cpu_cores, memory_bytes and disk_bytes. Docker takes cpu_cores and "
+            "memory_bytes and refuses disk_bytes (it has no disk quota); Local takes none and refuses all three. A size "
+            "the provider cannot take is a 422 naming overrides.resources.<field>."
         ),
     )
 

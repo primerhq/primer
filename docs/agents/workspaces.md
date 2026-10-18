@@ -538,6 +538,18 @@ session is outside the group, so it is not killed.
   and its volume, a local provider's root is removed, Kubernetes
   deletes the PVC. The one exception is a workspace on a local
   provider this deployment refuses, which loses only its row.
+- **A Docker template's image must contain the primer workspace
+  runtime.** The image a Docker template names is the image that runs
+  (the form pre-fills `primer/workspace-runtime:1.1`, which is also the
+  default when a template names none). The container's own entrypoint
+  must be the runtime server, so build a custom image `FROM
+  primer/workspace-runtime:1.1`. If the container starts but its
+  runtime does not answer within 30 seconds, `create_workspace` fails
+  with a 503 whose message names the image ("the workspace runtime did
+  not answer within 30s in a container of image '...'") and nothing is
+  left behind. A Docker workspace takes `overrides.resources`
+  `cpu_cores` and `memory_bytes` from the create call; `disk_bytes` is
+  refused.
 - **A failed create leaves nothing behind.** The workspace row is
   written last, with `phase="running"`, and a failure after the
   live instance exists tears it down again, so there is no

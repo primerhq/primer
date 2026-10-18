@@ -24,7 +24,9 @@ from primer.model.workspace import (
     ContainerWorkspaceConfig,
     ResourceLimits,
     VolumeMount,
+    WorkspaceResourceOverrides,
     WorkspaceTemplate,
+    WorkspaceTemplateOverrides,
 )
 from primer.workspace.container.backend import ContainerWorkspaceBackend
 from primer.workspace.runtime.adapter import ContainerRuntimeAdapter
@@ -166,18 +168,123 @@ async def test_destroy_nonexistent_raises(tmp_path: Path) -> None:
     await backend.aclose()
 
 
+class _RecordingAdapter(_FakeAdapter):
+    """Remembers what ``create_sandbox`` was asked for (the image to run, the size to apply)."""
+
+    def __init__(self, tmp_path: Path) -> None:
+        super().__init__(tmp_path)
+        self.calls: list[dict] = []
+
+    async def create_sandbox(self, **kwargs) -> Sandbox:
+        self.calls.append(kwargs)
+        return await super().create_sandbox(**kwargs)
+
+
 @pytest.mark.asyncio
-async def test_image_required(tmp_path: Path) -> None:
-    """Empty image is refused at create time (template parses but is unusable)."""
-    adapter = _FakeAdapter(tmp_path)
+async def test_an_empty_image_runs_the_runtime_image(tmp_path: Path) -> None:
+    """Platform revamp 2026-10, design 14.2: the built-in runtime image is the default when a template names none. This used to
+    pin the opposite (an empty image was a ``ConfigError``: "template has no image"), when the Docker adapter ran the runtime
+    image whatever the template said; now the image a template names is the image that runs, and naming none runs the runtime."""
+    adapter = _RecordingAdapter(tmp_path)
     backend = ContainerWorkspaceBackend(_config(), adapter=adapter)
     await backend.initialize()
     template = WorkspaceTemplate(
         id="t1", provider_id="c1", description="",
         backend=ContainerTemplateConfig(image=""),
     )
-    with pytest.raises(ConfigError, match="image"):
-        await backend.create(template)
+    await backend.create(template)
+    assert adapter.calls[0]["image"] == "primer/workspace-runtime:1.1"
+    await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_template_with_the_default_image_runs_the_runtime_image(tmp_path: Path) -> None:
+    adapter = _RecordingAdapter(tmp_path)
+    backend = ContainerWorkspaceBackend(_config(), adapter=adapter)
+    await backend.initialize()
+    await backend.create(WorkspaceTemplate(id="t1", provider_id="c1", description="", backend=ContainerTemplateConfig()))
+    assert adapter.calls[0]["image"] == "primer/workspace-runtime:1.1"
+    await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_the_templates_own_image_reaches_the_adapter(tmp_path: Path) -> None:
+    adapter = _RecordingAdapter(tmp_path)
+    backend = ContainerWorkspaceBackend(_config(), adapter=adapter)
+    await backend.initialize()
+    await backend.create(_template())
+    assert adapter.calls[0]["image"] == "alpine:latest"
+    await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_size_overrides_replace_the_template_cpu_and_memory(tmp_path: Path) -> None:
+    """A per-workspace size (design 14.3) wins over the template's, field by field, for the CPU and memory Docker can apply."""
+    adapter = _RecordingAdapter(tmp_path)
+    backend = ContainerWorkspaceBackend(_config(), adapter=adapter)
+    await backend.initialize()
+    template = WorkspaceTemplate(
+        id="t1", provider_id="c1", description="",
+        backend=ContainerTemplateConfig(image="alpine:latest", cpu_cores=1, memory_bytes=2**30),
+    )
+    over = WorkspaceTemplateOverrides(resources=WorkspaceResourceOverrides(cpu_cores=2, memory_bytes=2 * 2**30))
+    await backend.create(template, overrides=over)
+    resources = adapter.calls[0]["resources"]
+    assert (resources.cpu_cores, resources.memory_bytes) == (2.0, 2147483648)
+    await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_an_override_of_one_field_keeps_the_templates_other_field(tmp_path: Path) -> None:
+    adapter = _RecordingAdapter(tmp_path)
+    backend = ContainerWorkspaceBackend(_config(), adapter=adapter)
+    await backend.initialize()
+    template = WorkspaceTemplate(
+        id="t1", provider_id="c1", description="",
+        backend=ContainerTemplateConfig(image="alpine:latest", cpu_cores=1, memory_bytes=2**30),
+    )
+    await backend.create(template, overrides=WorkspaceTemplateOverrides(resources=WorkspaceResourceOverrides(memory_bytes=2**31)))
+    resources = adapter.calls[0]["resources"]
+    assert (resources.cpu_cores, resources.memory_bytes) == (1.0, 2**31)
+    await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_without_overrides_the_template_size_is_used(tmp_path: Path) -> None:
+    adapter = _RecordingAdapter(tmp_path)
+    backend = ContainerWorkspaceBackend(_config(), adapter=adapter)
+    await backend.initialize()
+    template = WorkspaceTemplate(
+        id="t1", provider_id="c1", description="",
+        backend=ContainerTemplateConfig(image="alpine:latest", cpu_cores=1, memory_bytes=2**30),
+    )
+    await backend.create(template)
+    await backend.create(template, overrides=WorkspaceTemplateOverrides())
+    await backend.create(template, overrides=WorkspaceTemplateOverrides(resources=WorkspaceResourceOverrides()))
+    for call in adapter.calls:
+        assert (call["resources"].cpu_cores, call["resources"].memory_bytes) == (1.0, 2**30)
+    await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_template_with_no_size_and_no_override_is_unlimited(tmp_path: Path) -> None:
+    adapter = _RecordingAdapter(tmp_path)
+    backend = ContainerWorkspaceBackend(_config(), adapter=adapter)
+    await backend.initialize()
+    await backend.create(_template())
+    assert (adapter.calls[0]["resources"].cpu_cores, adapter.calls[0]["resources"].memory_bytes) == (None, None)
+    await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_disk_override_is_not_passed_on(tmp_path: Path) -> None:
+    """Docker has no disk quota, and the registry refuses the override before it gets here; the backend does not invent one."""
+    adapter = _RecordingAdapter(tmp_path)
+    backend = ContainerWorkspaceBackend(_config(), adapter=adapter)
+    await backend.initialize()
+    over = WorkspaceTemplateOverrides(resources=WorkspaceResourceOverrides(disk_bytes=2**30))
+    await backend.create(_template(), overrides=over)
+    assert adapter.calls[0]["resources"].disk_bytes is None
     await backend.aclose()
 
 

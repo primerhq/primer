@@ -59,6 +59,13 @@ class ContainerRuntimeAdapter(ABC):
         """Pull image (per ``pull_policy``), create named volume, create
         container, start it, return a Sandbox handle.
 
+        ``image`` is the image to run; it must contain the primer workspace
+        runtime (the container's own entrypoint is the runtime server), and an
+        empty ``image`` runs the built-in runtime image. A container whose
+        runtime never answers raises a ``ConfigError`` that names the image.
+        ``resources`` carries the CPU and memory to apply (the template's, or
+        the per-workspace override's where it sets them).
+
         ``token`` is the per-workspace runtime bearer; the adapter injects
         it as ``PRIMER_RUNTIME_TOKEN`` env var. ``reachability`` decides
         port-binding (``host_port``) vs network attach (``bridge_network``).
