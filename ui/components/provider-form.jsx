@@ -494,11 +494,11 @@ function PC_FocusAfterRetry({ retried, failed, rootRef }) {
 // (`submitLabel`) on the right, and the save refusal as `error`. Inside the frame the fields are kit fields (the label alone on its line, the help under
 // the control), `kindSelect` adds a Type select of the kinds the server serves minus the built-in ones and `excludeKinds` (locked when editing; a change
 // writes `provider` and clears `config`), the limits are PC_LimitsSection's, and `readOnly` (a built-in row with nothing to configure) says so and offers
-// no submit. `classKey` is the PC_CLASSES key the frame registers. The kit is used only in the framed branch.
+// no submit. `classKey` is the PC_CLASSES key the frame registers. `blocked` (the overlay's own request, a Delete, is out) holds Test and the submit off. The kit is used only in the framed branch.
 function PC_ProviderForm({
   plural, typesPath, value, onChange, onSubmit, onTest, onCancel, editing,
   existingId, canInvalidate,
-  frame, classKey, kindSelect, excludeKinds, canTest, submitLabel, readOnly,
+  frame, classKey, kindSelect, excludeKinds, canTest, submitLabel, readOnly, blocked,
 }) {
   const { useResource, apiFetch, useCapabilities, capabilityHint,
     EXTRA_FOR_PROVIDER_TYPE } = window.primerApi;
@@ -786,12 +786,12 @@ function PC_ProviderForm({
     const footerRight = (
       <React.Fragment>
         {canTest && !editing ? (
-          <Btn kind="ghost" data-testid="provider-form-test" onClick={runTest} busy={busy} blocked={saving} disabled={!shapeReady}>
+          <Btn kind="ghost" data-testid="provider-form-test" onClick={runTest} busy={busy} blocked={saving || !!blocked} disabled={!shapeReady}>
             Test
           </Btn>
         ) : null}
         {readOnly ? null : (
-          <Btn kind="primary" data-testid="provider-form-save" onClick={submit} busy={saving} blocked={busy} disabled={!formReady}>
+          <Btn kind="primary" data-testid="provider-form-save" onClick={submit} busy={saving} blocked={busy || !!blocked} disabled={!formReady}>
             {submitLabel || "Save"}
           </Btn>
         )}

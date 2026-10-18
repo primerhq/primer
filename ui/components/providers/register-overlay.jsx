@@ -15,18 +15,20 @@
 //
 // The parts a page hands to frame: `body` (the page's content), `footerLeft` (Cancel) and `footerRight` (the action; Test and the submit) for the two sides of
 // the footer, `error` (a refusal, shown as the body's last line) and `busy` (true while a request of the page's own, a save or a test, is out: the overlay keeps
-// the type selector shut, and holds Delete off, until it is answered, because a switch then would unmount the page and swallow the answer).
+// the type selector shut, and holds Delete off, until it is answered, because a switch then would unmount the page and swallow the answer). The page is handed the same
+// word the other way round: `blocked` is true while the overlay's own request, a Delete, is out, and the page holds its actions off meanwhile (`<Btn blocked>`: aria-disabled,
+// a refused click, no aria-busy), so a Save or a Test cannot run beside a Delete of the same row.
 //
 // Seam I-3: PC_RegisterOverlay({ initialClass, allowedClasses?, excludeKinds?, editRow?, onClose(), onSaved(row), onDeleted?(id) }). `excludeKinds` is
 // added to the built-in kinds the Type select leaves out; without `onDeleted` the overlay closes itself after a delete. In edit mode a class that has a
 // draft Test (`draftTest`) still offers none: the draft holds the served MASK of every secret and a `_test` route builds its adapter from the draft alone.
 
 // The wizard classes' pages, merged in by the files that define them (each does Object.assign(window.PC_REGISTER_PAGES || {}, { <key>: Page })). A page
-// takes { klass, editRow, excludeKinds, frame, onSaved(row), onClose() } and returns frame({ body, footerLeft?, footerRight, error?, busy? }).
+// takes { klass, editRow, excludeKinds, frame, blocked, onSaved(row), onClose() } and returns frame({ body, footerLeft?, footerRight, error?, busy? }).
 window.PC_REGISTER_PAGES = Object.assign(window.PC_REGISTER_PAGES || {}, {});
 
-// The panel classes' own create forms, read when they are needed (their files load after this one). Each takes { existing, frame, onSaved, onClose,
-// pushToast } (Tasks 17 to 19 give them `frame` and `onSaved`).
+// The panel classes' own create forms, read when they are needed (their files load after this one). Each takes { existing, frame, blocked, onSaved, onClose,
+// pushToast } (Tasks 17 to 19 give them `frame`, `blocked` and `onSaved`).
 const PC_PANEL_FORMS = {
   ssp: () => window.SSPCreateModal,
   workspace: () => window.WorkspaceProviderCreateModal,
@@ -167,7 +169,7 @@ function PC_FramePublisher({ store, classKey, body, left, right, busy, onBusy })
 // The page of a form class (and of a wizard class whose own page is not loaded): the schema-driven form in its framed layout. An edit starts from the full
 // served row (PC_draftFromRow), so every field the form does not show is sent back unchanged; the body goes out with the wire names (PC_wireBody). A
 // built-in row whose kind has nothing to configure is shown read-only.
-function PC_RegisterFormPage({ klass, editRow, excludeKinds, frame, onSaved, onClose }) {
+function PC_RegisterFormPage({ klass, editRow, excludeKinds, frame, blocked, onSaved, onClose }) {
   const editing = !!editRow;
   const [draft, setDraft] = React.useState(() => (editing ? window.PC_draftFromRow(klass.plural, editRow) : {}));
   const types = window.PC_useTypes(klass.plural);
@@ -188,7 +190,7 @@ function PC_RegisterFormPage({ klass, editRow, excludeKinds, frame, onSaved, onC
   return (
     <window.PC_ProviderForm plural={klass.plural} value={draft} onChange={setDraft} onSubmit={submit} onCancel={onClose}
       editing={editing} existingId={editing ? editRow.id : null} frame={frame} classKey={klass.key} kindSelect
-      excludeKinds={excludeKinds} canTest={!!klass.draftTest && !editing} submitLabel={editing ? "Save" : "Register"} readOnly={readOnly} />
+      excludeKinds={excludeKinds} canTest={!!klass.draftTest && !editing} submitLabel={editing ? "Save" : "Register"} readOnly={readOnly} blocked={blocked} />
   );
 }
 
@@ -319,7 +321,7 @@ function PC_RegisterOverlay({ initialClass, allowedClasses, excludeKinds, editRo
   if (!klass) {
     page = <PC_RegisterNotice key={String(classKey)} frame={frame} onClose={close}>This console has no provider class "{String(classKey)}".</PC_RegisterNotice>;
   } else {
-    const pageProps = { klass, editRow: editRow || null, excludeKinds, frame, onSaved: saved, onClose: close };
+    const pageProps = { klass, editRow: editRow || null, excludeKinds, frame, blocked: deleting, onSaved: saved, onClose: close };
     const Page = (window.PC_REGISTER_PAGES || {})[classKey];
     if (Page) {
       page = <Page key={classKey} {...pageProps} />;
@@ -327,7 +329,7 @@ function PC_RegisterOverlay({ initialClass, allowedClasses, excludeKinds, editRo
       const panelOf = PC_PANEL_FORMS[classKey];
       const Panel = panelOf ? panelOf() : null;
       page = Panel ? (
-        <Panel key={classKey} existing={editRow || null} frame={frame} onSaved={saved} onClose={close} pushToast={api.toastPush} />
+        <Panel key={classKey} existing={editRow || null} frame={frame} blocked={deleting} onSaved={saved} onClose={close} pushToast={api.toastPush} />
       ) : (
         <PC_RegisterNotice key={classKey} frame={frame} onClose={close}>The {klass.noun} provider form is not loaded in this console.</PC_RegisterNotice>
       );
