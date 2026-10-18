@@ -80,7 +80,14 @@ async def test_a_name_that_is_not_a_model_id_is_an_invalid_name_result_and_no_re
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("body", [{"models": []}, {}, {"models": "BAAI/bge-small-en-v1.5"}, {"models": [1]}])
+async def test_an_empty_list_is_422(client) -> None:
+    r = await client.post(ROUTE, json={"models": []})
+
+    assert r.status_code == 422, r.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [{}, {"models": "BAAI/bge-small-en-v1.5"}, {"models": [1]}, {"models": None}])
 async def test_a_body_without_a_list_of_names_is_422(client, body: dict) -> None:
     r = await client.post(ROUTE, json=body)
 
@@ -88,17 +95,25 @@ async def test_a_body_without_a_list_of_names_is_422(client, body: dict) -> None
 
 
 @pytest.mark.asyncio
+async def test_51_models_is_422(client) -> None:
+    with respx.mock:
+        r = await client.post(ROUTE, json={"models": [f"org/model-{i}" for i in range(51)]})
+
+        assert r.status_code == 422, r.text
+        assert respx.calls.call_count == 0, "a list over the cap asks the Hub nothing"
+
+
+@pytest.mark.asyncio
 @respx.mock
-async def test_50_models_is_the_most_and_51_is_422(client) -> None:
-    names = [f"org/model-{i}" for i in range(51)]
-    for name in names[:50]:
+async def test_50_models_are_answered_in_order(client) -> None:
+    names = [f"org/model-{i}" for i in range(50)]
+    for name in names:
         respx.get(_url(name)).mock(return_value=httpx.Response(200))
 
-    ok = await client.post(ROUTE, json={"models": names[:50]})
-    too_many = await client.post(ROUTE, json={"models": names})
+    r = await client.post(ROUTE, json={"models": names})
 
-    assert ok.status_code == 200 and len(ok.json()["models"]) == 50, ok.text
-    assert too_many.status_code == 422, too_many.text
+    assert r.status_code == 200, r.text
+    assert [m["name"] for m in r.json()["models"]] == names
 
 
 @pytest.mark.asyncio

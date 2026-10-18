@@ -21,6 +21,9 @@ Plus entity-specific operations:
 * ``check_huggingface_models`` - look Hugging Face Hub models up with a token
   before a Hugging Face embedding or cross-encoder provider is registered
   (stores nothing; :mod:`primer.common.hf_hub`).
+* ``test_embedding_provider``, ``test_cross_encoder_provider`` - test a draft
+  provider before it is created (the models an openai or gemini server lists,
+  or the Hub check of a Hugging Face one); they store nothing.
 * ``list_toolset_tools`` — enumerate the tools a toolset exposes.
 * ``call_tool`` — meta-dispatch: invoke any tool from any toolset.
 * Graph threads CRUD — ``list/get/create/update/delete_graph_thread``.
@@ -63,7 +66,8 @@ This module is a thin facade over the decomposed implementation:
 * :mod:`primer.toolset._system_web` - the four web search / web fetch
   active-config tools (they run the PUT routes' check and write).
 * :mod:`primer.toolset._system_probes` - the tools that probe a provider
-  before it is registered and store nothing (the Hugging Face Hub check).
+  before it is registered and store nothing (the Hugging Face Hub check and
+  the draft tests of embedding and cross-encoder providers).
 
 ``build_system_toolset`` (below) wires those into one provider and adds
 the bespoke tools that close over its per-build dependencies
@@ -183,7 +187,7 @@ from primer.toolset._system_crud import (
     _update_schema,
 )
 
-# Provider probes (the Hugging Face Hub check).
+# Provider probes (the Hugging Face Hub check, the draft tests).
 from primer.toolset._system_probes import probe_tools
 
 # Re-exported hand-written tools.

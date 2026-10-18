@@ -145,6 +145,16 @@ and a `db` row registered from the menu is not the default. `tests/api/test_arti
 served fields to the config models in `primer/model/providers/artifact.py`, builds a row of each kind through the
 factory to keep the labels true, and builds a row from what the form is told to ask for.
 
+Serve a draft test where a draft can be tested. A class whose provider can be exercised before it is saved exposes
+`POST /v1/{plural}/_test`, taking the draft row with every key optional and answering HTTP 200 with `{ok: true, ...}` or
+`{ok: false, error}` (a draft that cannot be a row is `invalid draft: ...`, and the configured secrets are masked out of an
+upstream failure). Mount it with the `_types` router, BEFORE the CRUD router, or the literal path falls through to `/{id}` and
+answers 405. The classes that serve one are embedding and cross_encoder (`primer/api/routers/providers.py`: the models an
+openai or gemini server lists, or the Hub check of a Hugging Face one; see `docs/dev/subsystems/model-providers.md`), stt and
+tts (`speech.py`), web_search and web_fetch, and ssp (`ssp/_test`). The LLM class has no `_test`: its draft is probed by
+`POST /v1/llm_providers/_discover_models`. artifact_storage, `channel_providers` and `workspace_providers` serve none. The
+console offers a Test button only on a class that serves one, so a Test that answers 405 is never on screen.
+
 ## 5. Existing implementations
 
 LLM adapters (`primer/llm/`, re-exported from `primer.llm`):

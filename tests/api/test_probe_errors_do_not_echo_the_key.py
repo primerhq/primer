@@ -184,6 +184,53 @@ class TestDraftTestRoutes:
         assert "LocalProtocolError" in body["error"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("padding", PADDING, ids=["newline", "space", "tab", "crlf"])
+    async def test_the_openai_embedding_test_route_does_not_echo_the_key(self, client, port, padding) -> None:
+        """``POST /v1/embedding_providers/_test`` sends the padded key to the server it was given and the real h11 refuses it (``LocalProtocolError``)."""
+        r = await client.post("/v1/embedding_providers/_test", json={
+            "provider": "openai", "config": {"url": f"http://127.0.0.1:{port}/v1", "flavor": "lmstudio", "api_key": KEY + padding},
+        })
+
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["ok"] is False
+        _assert_clean(r.text)
+        assert "LocalProtocolError" in body["error"] and "[REDACTED]" in body["error"], f"what failed must still be said, with the key masked: {body['error']!r}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("padding", PADDING, ids=["newline", "space", "tab", "crlf"])
+    async def test_the_gemini_embedding_test_route_does_not_echo_the_key(self, client, padding) -> None:
+        """The same route for ``gemini``: ``_hermetic`` points Gemini at the loopback fixture, and the real h11 refuses the padded ``x-goog-api-key``."""
+        r = await client.post("/v1/embedding_providers/_test", json={"provider": "gemini", "config": {"api_key": KEY + padding}})
+
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["ok"] is False
+        _assert_clean(r.text)
+        assert "LocalProtocolError" in body["error"] and "[REDACTED]" in body["error"], f"what failed must still be said, with the key masked: {body['error']!r}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("route", ["embedding_providers", "cross_encoder_providers"])
+    @pytest.mark.parametrize("padding", PADDING, ids=["newline", "space", "tab", "crlf"])
+    async def test_the_huggingface_test_routes_refuse_a_padded_token_before_sending_it(self, client, port, monkeypatch, route, padding) -> None:
+        """A token the header cannot carry is a ``bad_token`` result with no request, so no transport error can quote it (the Hub check, ``primer/common/hf_hub.py``).
+
+        The Hub is pointed at the loopback fixture: were the token ever sent, h11 would refuse it there and the answer would say ``LocalProtocolError``, never reach the real Hub.
+        """
+        monkeypatch.setenv("HF_ENDPOINT", f"http://127.0.0.1:{port}")
+
+        r = await client.post(f"/v1/{route}/_test", json={
+            "provider": "huggingface", "config": {"token": KEY + padding}, "models": [{"name": "BAAI/bge-small-en-v1.5"}],
+        })
+
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["ok"] is False
+        _assert_clean(r.text)
+        assert [check["status"] for check in body["checks"]] == ["bad_token"], f"the token must be refused before any request: {body}"
+        assert "LocalProtocolError" not in r.text
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("provider_type", ["exa", "firecrawl"])
     async def test_the_web_fetch_test_route_does_not_echo_the_key(self, client, provider_type) -> None:
         r = await client.post("/v1/web_fetch_providers/_test", json={

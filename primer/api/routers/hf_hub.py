@@ -14,7 +14,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from primer.api.errors import common_responses
-from primer.common.hf_hub import HfModelCheck, check_hf_models
+from primer.common.hf_hub import MAX_MODELS_PER_CHECK, HfModelCheck, check_hf_models
 
 hf_hub_router = APIRouter(tags=["providers"])
 
@@ -23,7 +23,7 @@ class _HfCheckBody(BaseModel):
     models: list[str] = Field(
         ...,
         min_length=1,
-        max_length=50,
+        max_length=MAX_MODELS_PER_CHECK,
         description="Model names to look up, as `namespace/name` (or a bare `name`). The answer lists them in this order.",
     )
     token: str | None = Field(

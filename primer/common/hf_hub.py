@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 __all__ = [
     "HF_ENDPOINT_DEFAULT",
     "HF_REPO_ID_RE",
+    "MAX_MODELS_PER_CHECK",
     "HfCheckStatus",
     "HfModelCheck",
     "check_hf_models",
@@ -33,6 +34,12 @@ __all__ = [
 ]
 
 HF_ENDPOINT_DEFAULT = "https://huggingface.co"
+
+#: The most names one check is asked about: every name is a request, made one after another, so the callers (the route, the tool, the draft tests) bound the list.
+MAX_MODELS_PER_CHECK = 50
+
+#: Redirects followed for one name. The Hub redirects a renamed repository once; a longer chain is a loop or a misconfigured mirror, and is that name's error.
+_MAX_REDIRECTS = 3
 
 #: What a model name may be: ``name`` or ``namespace/name``. Narrower than ``huggingface_hub``'s ``validate_repo_id`` (ASCII only, and it must start with a letter or a digit);
 #: a name containing ".." or "--" fails as well (the library's rule), see :func:`_is_model_id`. Because only these characters reach the request path, a name cannot add a
@@ -127,30 +134,51 @@ async def check_hf_models(
 ) -> list[HfModelCheck]:
     """One verdict per name, in the order given, asked one request after another. Never raises.
 
+    ``endpoint`` is for tests. The route, the tool and the draft tests never pass it: the Hub is :func:`hf_endpoint` (``HF_ENDPOINT``, set by whoever runs the deployment), and an
+    endpoint taken from a request would turn this into a way to send a token to any host.
+
     ``token`` is sent as a ``Bearer`` header and only when it is not empty. A name that is not a model id gets ``invalid_name`` and no request is made for it; a token that
     cannot be a header value gets ``bad_token`` for every name that is a model id, also without a request (the HTTP library would refuse it and the failure would read as a
-    network error). A network failure, or any failure of the request itself, is that name's ``error``: its detail names the host and the kind of failure, never the
-    library's text, which can quote the request (the token, the URL of a mirror with credentials).
+    network error). A request that fails is that name's ``error``: its detail names the host and the kind of failure, never the library's text, which can quote the request
+    (the token, the URL of a mirror with credentials).
+
+    When the failure is one of reach (a connection that could not be made or kept, a timeout, DNS, a proxy, or a client that could not be built), the Hub is out of reach for
+    every name, so the names after it get the same ``error`` without a request of their own instead of a timeout apiece. A failure of one name only (a redirect loop,
+    something unforeseen) does not stop the rest, and neither does an answer from the Hub, whatever its status.
     """
     base = (endpoint if endpoint is not None else hf_endpoint()).rstrip("/")
     token = token or None
     headers = {"Authorization": f"Bearer {token}"} if token is not None else {}
     results: list[HfModelCheck] = []
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        for name in names:
-            if not _is_model_id(name):
-                results.append(_result(name, "invalid_name"))
-            elif token is not None and not _is_sendable(token):
-                results.append(_result(name, "bad_token", _UNSENDABLE_TOKEN))
-            else:
-                results.append(await _check_one(client, base, name, headers))
+    out_of_reach: str | None = None  # the detail of the first request that found the Hub out of reach
+    for name in names:
+        if not _is_model_id(name):
+            results.append(_result(name, "invalid_name"))
+        elif token is not None and not _is_sendable(token):
+            results.append(_result(name, "bad_token", _UNSENDABLE_TOKEN))
+        elif out_of_reach is not None:
+            results.append(_result(name, "error", out_of_reach))
+        else:
+            check, unreachable = await _check_one(base, name, headers, timeout)
+            results.append(check)
+            if unreachable:
+                out_of_reach = check.detail
     return results
 
 
-async def _check_one(client: httpx.AsyncClient, base: str, name: str, headers: dict[str, str]) -> HfModelCheck:
+async def _check_one(base: str, name: str, headers: dict[str, str], timeout: float) -> tuple[HfModelCheck, bool]:
+    """The verdict on ``name`` and whether the request found the Hub out of reach.
+
+    The client is built here, inside the ``try``: what httpx reads to build one (a proxy variable it cannot parse) can raise, and nothing may raise out of a function
+    that never raises. One client per name costs about 5 ms and closes its connection with the name, which is all a request that never reads its body could reuse anyway.
+    """
+    built = False
     try:
-        # The body is never read: the verdict is in the status and two headers, and a mirror cannot make this hold memory by streaming one.
-        async with client.stream("GET", f"{base}/api/models/{name}/auth-check", headers=headers) as response:
-            return _verdict(name, response)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, max_redirects=_MAX_REDIRECTS) as client:
+            built = True
+            # The body is never read: the verdict is in the status and two headers, and a mirror cannot make this hold memory by streaming one.
+            async with client.stream("GET", f"{base}/api/models/{name}/auth-check", headers=headers) as response:
+                return _verdict(name, response), False
     except Exception as exc:  # noqa: BLE001 -- a diagnostic that never raises: whatever went wrong is this name's result
-        return _result(name, "error", f"Could not reach {_host_of(base)} ({type(exc).__name__})")
+        detail = f"Could not reach {_host_of(base)} ({type(exc).__name__})"
+        return _result(name, "error", detail), not built or isinstance(exc, httpx.TransportError)
