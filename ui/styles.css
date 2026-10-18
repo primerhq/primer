@@ -3302,6 +3302,7 @@ input, textarea, select { font: inherit; color: inherit; }
   color: var(--text-3);
 }
 .nv-theme-row .nv-seg { display: flex; width: 100%; margin: 0; }
+.nv-theme-glyph { margin-right: 5px; }
 
 /* View host placeholder (real views land in P2/P4/P5) */
 .nv-view { flex: 1; min-height: 0; display: flex; }
@@ -5980,7 +5981,11 @@ button.nv-mob-ws-picker { cursor: pointer; }
    already auto-fill/minmax responsive - no override needed. */
 .nv-mob-more { padding: var(--mobile-pad-y) var(--mobile-pad-x); }
 .nv-mob-profile { margin-bottom: 14px; }
-.nv-mob-more .nv-seg { margin-top: 10px; }
+/* D3: the card's Theme row is the desktop menu's, a .nv-theme-label over a full-width .nv-seg. The later .nv-seg rule (display: inline-flex) would
+   shrink-wrap the control, and at width 100% the generic rule's 6px side margin would overhang the card and scroll the tab sideways, so the control
+   is a block flex box with no margin of its own. */
+.nv-mob-profile .nv-theme-label { padding: 8px 2px 6px; }
+.nv-mob-profile .nv-seg { display: flex; width: 100%; margin: 0; }
 .nv-mob-more-section-label {
   font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em;
   text-transform: uppercase; color: var(--text-3);

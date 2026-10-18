@@ -1,8 +1,8 @@
-"""Journey: the profile menu offers Light, Dark and System, and Your profile (platform revamp D3, 2026-10-18).
+"""Journey: the profile menu offers Light, Dark and System, and Your profile; the phone's More tab offers them too (platform revamp D3, 2026-10-18).
 
-Before: an unlabelled two-way pill that shrink-wrapped to its text. Once Light or Dark was chosen the console never followed the operating system again, and the
-menu had no way to your own profile. Now a labelled Theme row has three choices: System follows the OS live and after a reload, Light and Dark do not, the same
-choices are palette verbs, and Your profile opens System > Profile for every role.
+Before: an unlabelled two-way pill that shrink-wrapped to its text. Once Light or Dark was chosen the console never followed the operating system again, a
+phone never restored the theme a user had chosen, and the menu had no way to your own profile. Now a labelled Theme row has three choices: System follows the OS
+live and after a reload, Light and Dark do not, the same choices are palette verbs, and Your profile opens System > Profile for every role.
 
 The OS colour scheme is the browser's own (``page.emulate_media``) and nothing is mocked: the choice goes through the real tweaks store and the real inline
 bootstrap of ``index.html``. ``tests/ui/test_profile_menu_theme.py`` runs the same helpers in V8; this proves the page. ``data-theme`` is checked on ``<html>``
@@ -16,7 +16,9 @@ import re
 import pytest
 from playwright.sync_api import Page, expect
 
-from tests.ui_e2e._shell_helpers import run_verb
+from tests.ui_e2e._shell_helpers import open_mobile_shell, run_verb
+
+PHONE = {"width": 390, "height": 844}
 
 
 def _html(page: Page):
@@ -108,3 +110,45 @@ def test_the_theme_verbs_run_from_the_palette(page: Page) -> None:
     expect(_html(page)).to_have_attribute("data-theme", "light")
     run_verb(page, "Switch To System Theme")
     expect(_html(page)).to_have_attribute("data-theme", "dark")   # System under a dark OS
+
+
+@pytest.mark.ui_e2e
+def test_the_phone_offers_the_three_choices_and_your_profile(page: Page, console_url: str) -> None:
+    page.set_viewport_size(PHONE)
+    page.emulate_media(color_scheme="light")
+    open_mobile_shell(page, console_url)
+    page.get_by_role("tab", name="More").click()
+    seg = page.get_by_test_id("nv-mob-theme-seg")
+    expect(seg).to_be_visible(timeout=10_000)
+    expect(seg.get_by_role("button")).to_have_count(3)
+    # the buttons are flex containers on the phone, which drop a space character at the start of a text run: the gap after the glyph is its own margin
+    glyph_gap = page.evaluate(
+        "() => getComputedStyle(document.querySelector('[data-testid=\"nv-mob-theme:light\"] .nv-theme-glyph')).marginRight"
+    )
+    assert glyph_gap == "5px"
+
+    page.get_by_test_id("nv-mob-theme:dark").click()
+    expect(_html(page)).to_have_attribute("data-theme", "dark")
+    page.get_by_test_id("nv-mob-theme:system").click()
+    expect(_html(page)).to_have_attribute("data-theme", "light")   # the light OS, not the dark the user had just picked
+
+    page.get_by_test_id("nv-mob-setting:profile").click()
+    expect(page.get_by_test_id("nv-mob-system-screen")).to_be_visible(timeout=10_000)
+    expect(page.get_by_test_id("nv-sys-profile")).to_be_visible()
+
+
+@pytest.mark.ui_e2e
+def test_the_phone_restores_the_theme_the_user_chose(page: Page, console_url: str) -> None:
+    """Another account on this browser chose Dark last (the browser-wide tweak says dark), but this user's own choice is Light. The desktop restored the
+    user's own key once the username was known; the phone never did, so it kept the other account's colour."""
+    page.set_viewport_size(PHONE)
+    open_mobile_shell(page, console_url)
+    # the console's own fallback while the status read has no name is "anon"
+    username = page.evaluate("() => fetch('/v1/auth/status').then((r) => r.json()).then((s) => s.username)") or "anon"
+    page.evaluate(
+        "(u) => { localStorage.setItem('primer.theme.' + u, 'light'); localStorage.setItem('primer.tweaks', JSON.stringify({ theme: 'dark' })); }",
+        username,
+    )
+    page.reload()
+    expect(page.get_by_test_id("nv-mobile-shell")).to_be_visible(timeout=20_000)
+    expect(_html(page)).to_have_attribute("data-theme", "light", timeout=10_000)

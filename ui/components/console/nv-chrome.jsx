@@ -116,13 +116,15 @@ function NV_useThemeRestore(con) {
 }
 
 // "<glyph> Name" for one choice. The glyph is decoration, so a button's
-// accessible name is its label alone.
+// accessible name is its label alone. The gap between them is the glyph's own
+// margin (.nv-theme-glyph), not a space character: the phone's buttons are
+// flex containers, which drop the whitespace at the start of a text run.
 function NV_ThemeChoiceLabel(props) {
   var choice = NV_THEME_CHOICES.filter(function (c) { return c.value === props.value; })[0];
   if (!choice) return null;
   return (
     <React.Fragment>
-      <span aria-hidden="true">{choice.icon}</span>{" "}{choice.label}
+      <span className="nv-theme-glyph" aria-hidden="true">{choice.icon}</span>{choice.label}
     </React.Fragment>
   );
 }
