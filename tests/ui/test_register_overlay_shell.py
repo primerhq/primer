@@ -23,12 +23,13 @@ from tests.ui.test_platform_kit_page import css_body, declarations
 
 STUBS = r"""
 var PAGE_PROPS = [], PANEL_PROPS = [], SAVED = [], DELETED = [], CLOSED = 0;
-var STUB_ERROR = null, STUB_BUSY = false;
+var STUB_ERROR = null, STUB_BUSY = false, STUB_QUIT = false;
 var PAGE_MOUNTS = 0, PAGE_UNMOUNTS = 0;
 function StubPage(props) {
   PAGE_PROPS.push(props);
   var s = React.useState("");
   React.useEffect(function () { PAGE_MOUNTS += 1; return function () { PAGE_UNMOUNTS += 1; }; }, []);
+  if (STUB_QUIT) return null;
   return props.frame({
     body: el("div", { "data-testid": "stub-body" },
       el("input", { "data-testid": "stub-input", value: s[0], onChange: function (e) { s[1](e.target.value); } })),
@@ -342,6 +343,46 @@ def test_a_slot_shows_only_the_parts_of_its_own_class(ctx) -> None:
     assert ctx.eval("MR.find('slotted') === null") is True, "the parts are another class's"
     ctx.eval("publish('llm', 'the new page'); MR.rerender();")
     assert ctx.eval("textOf(MR.find('slotted'))") == "the new page"
+
+
+def test_a_page_that_stops_calling_frame_leaves_nothing_in_the_shell(ctx) -> None:
+    """Re-review of #773: the publisher never unpublished. A page that stops calling ``frame()`` after it has published (a loading state, an empty state) left its last
+    parts in the store, so the slots went on drawing a body and a footer whose handlers belong to a page that is no longer asking for them, and a click on the stale Save
+    ran. The publisher takes what it published away when it unmounts, and a page that publishes again is drawn again."""
+    _mount(ctx, initialClass="llm")
+    assert ctx.eval("MR.find('stub-body') !== null && MR.find('stub-next') !== null && MR.find('stub-cancel') !== null") is True
+    ctx.eval("STUB_QUIT = true; MR.rerender();")
+    for testid in ("stub-body", "stub-input", "stub-cancel", "stub-next"):
+        assert ctx.eval(f"MR.find({json.dumps(testid)}) === null") is True, f"{testid} is still drawn by a page that stopped publishing"
+    assert ctx.eval("textOf(MR.find('pc-register'))").count("Next") == 0, "no stale footer in the dialog"
+    assert ctx.eval("MR.find('pc-register-type') !== null") is True, "the shell itself stays"
+    ctx.eval("STUB_QUIT = false; MR.rerender();")
+    assert ctx.eval("MR.find('stub-body') !== null && MR.find('stub-next') !== null && MR.find('stub-cancel') !== null") is True, "a page that publishes again is drawn again"
+    ctx.eval("MR.click('stub-next')")
+    assert js(ctx, "SAVED") == [{"id": "made-1"}], "and its handlers are the live ones"
+
+
+def test_a_page_that_stops_publishing_no_longer_holds_the_selector_shut(ctx) -> None:
+    """The request a page had out is not the overlay's to wait for once the page has stopped publishing: ``busy`` goes with what was published, or the type selector
+    would stay shut for good."""
+    _mount(ctx, initialClass="llm")
+    ctx.eval("STUB_BUSY = true; MR.rerender();")
+    assert ctx.eval("MR.find('pc-register-type').props['aria-disabled']") == "true"
+    ctx.eval("STUB_QUIT = true; MR.rerender();")
+    assert ctx.eval("MR.find('pc-register-type').props['aria-disabled'] === undefined") is True
+    ctx.eval("MR.click('pc-register-type')")
+    assert ctx.eval("MR.find('pc-register-type:menu') !== null") is True, "and it opens"
+
+
+def test_a_pick_does_not_unpublish_the_page_that_replaces_the_old_one(ctx) -> None:
+    """The old page's publisher unmounts in the same commit that mounts the new page's, after the new one has written its parts: it must take away only its OWN
+    parts, or every pick would leave the shell empty."""
+    _mount(ctx, initialClass="llm")
+    ctx.eval("MR.click('pc-register-type'); MR.click('pc-register-type:embedding');")
+    assert ctx.eval("PAGE_PROPS[PAGE_PROPS.length - 1].klass.key") == "embedding"
+    assert ctx.eval("MR.find('stub-body') !== null && MR.find('stub-next') !== null && MR.find('stub-cancel') !== null") is True
+    ctx.eval("STUB_BUSY = true; MR.rerender();")
+    assert ctx.eval("MR.find('pc-register-type').props['aria-disabled']") == "true", "and the new page's busy is the one the overlay knows"
 
 
 def test_a_wizard_page_gets_the_page_contract(ctx) -> None:

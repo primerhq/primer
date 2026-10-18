@@ -138,16 +138,29 @@ function PC_FrameSlot({ store, part, classKey }) {
 }
 
 // What frame() returns: it draws nothing itself. `onBusy(busy)` tells the overlay whether the page has a request out. The parts it already holds are kept while nothing it
-// was handed has changed, so a slot that shows them is not asked to render again.
+// was handed has changed, so a slot that shows them is not asked to render again. When the publisher unmounts (the page stops calling frame(), or the page is replaced by the next
+// type's) it takes back what it published: the parts, if they are still ITS parts (on a pick the new page's publisher has already written by the time the old one's cleanup runs, and
+// those are not the old one's to take), and the page's `busy`; the slots then draw nothing, so a handler of a page that has stopped asking to be drawn cannot be pressed.
 function PC_FramePublisher({ store, classKey, body, left, right, busy, onBusy }) {
   const held = store.parts;
   if (!held || held.classKey !== classKey || held.body !== body || held.left !== left || held.right !== right) {
     store.parts = { classKey, body, left, right };
   }
+  const mine = React.useRef(null);
+  mine.current = store.parts;
+  const onBusyRef = React.useRef(onBusy);
+  onBusyRef.current = onBusy;
   React.useLayoutEffect(() => {
     store.refresh();
     onBusy(busy);
   });
+  React.useLayoutEffect(() => () => {
+    if (store.parts === mine.current) {
+      store.parts = null;
+      store.refresh();
+    }
+    onBusyRef.current(false);
+  }, [store]);
   return null;
 }
 
