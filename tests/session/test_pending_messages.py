@@ -4,10 +4,14 @@ Spec: docs/superpowers/ux-revamp/02-s1-design.md sections 3 and 4
 (M5 routing rule). asyncio_mode=auto, so async tests need no marker.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+
+import pytest
 
 from primer.model.workspace_session import (
     AgentSessionBinding,
+    PeerAttribution,
     PendingSessionMessage,
     SessionStatus,
     WorkspaceSession,
@@ -37,7 +41,7 @@ class _PendingStorage:
             pass
 
         p = _P()
-        p.items = items[: page.length]
+        p.items = items[page.offset : page.offset + page.length]
         return p
 
 
@@ -316,3 +320,168 @@ async def test_missing_workspace_registry_skips_the_record_not_the_drop():
             workspace_registry=None,
         )
     assert len(sp.pending.rows) == _MAX_PENDING_PER_SESSION
+
+
+# ---- a message from another session never costs a person's queued steer (pivot P3 slice B, lead ruling R1) ---------------------------
+#
+# The cap is 50 messages per session. A peer message (``attribution["peer"]``) is refused when 50 already wait, and the cap drops the oldest
+# peer message before it drops anything else, so a peer can never push a person's steer out, even when two senders pass the check at once.
+
+
+def _peer(hops: int = 1) -> dict:
+    return PeerAttribution(
+        from_session_id="ses-a", from_workspace_id="ws-1", from_agent_id="planner", hops=hops,
+    ).as_attribution()
+
+
+def _peer_text(label: str) -> str:
+    return f"[from session ses-a (agent planner)]\n{label}"
+
+
+def _seed(sp, rows) -> None:
+    """Queue ``rows``, oldest first, as ``(text, attribution)`` pairs, directly and at strictly increasing times in the past, as the cap tests above do:
+    which row is the oldest must never depend on the clock the test runs at."""
+    base = datetime.now(UTC) - timedelta(hours=1)
+    for i, (text, attribution) in enumerate(rows):
+        ts = base + timedelta(seconds=i)
+        row = PendingSessionMessage(
+            id=f"s:pending:{ts.isoformat()}:{i:08x}", session_id="s", parts=[{"type": "text", "text": text}],
+            attribution=attribution, enqueued_at=ts, created_at=ts,
+        )
+        sp.pending.rows[row.id] = row
+
+
+def _queued_texts(sp) -> list[str]:
+    ordered = sorted(sp.pending.rows.values(), key=lambda r: (r.enqueued_at, r.id))
+    return [p["text"] for row in ordered for p in row.parts]
+
+
+def _dropped(ws) -> list[dict]:
+    return [
+        r["payload"] for r in _decode_records(ws) if r["kind"] == "pause_superseded" and r["payload"]["action"] == "dropped"
+    ]
+
+
+async def _session_with(sp, rows) -> WorkspaceSession:
+    session = _row("s")
+    await sp.sessions.create(session)
+    _seed(sp, rows)
+    return session
+
+
+async def test_a_persons_steer_at_the_cap_evicts_the_oldest_peer_message_not_the_oldest_row():
+    from primer.session.pending_messages import _MAX_PENDING_PER_SESSION
+
+    sp, ws = _SP(), _FakeWorkspace()
+    session = await _session_with(sp, [
+        (_peer_text(f"peer-{i}"), _peer()) if i in (3, 7) else (f"person-{i}", None) for i in range(_MAX_PENDING_PER_SESSION)
+    ])
+    await store_pending_steer(storage_provider=sp, session=session, text="fresh", workspace_registry=_FakeRegistry(ws))
+
+    queued = _queued_texts(sp)
+    assert len(queued) == _MAX_PENDING_PER_SESSION
+    assert "person-0" in queued, "the cap dropped a person's oldest steer while a peer message was queued"
+    assert _peer_text("peer-3") not in queued, "the oldest peer message is the one that goes"
+    assert _peer_text("peer-7") in queued and "fresh" in queued
+    [dropped] = _dropped(ws)
+    assert dropped["text"] == _peer_text("peer-3"), "the record names the peer text"
+    assert str(_MAX_PENDING_PER_SESSION) in dropped["reason"]
+
+
+async def test_a_persons_steer_at_the_cap_with_no_peer_message_queued_evicts_the_oldest_row_as_before():
+    """Only a ``peer`` attribution counts: a message with some other attribution is an ordinary one."""
+    from primer.session.pending_messages import _MAX_PENDING_PER_SESSION
+
+    sp, ws = _SP(), _FakeWorkspace()
+    session = await _session_with(sp, [
+        (f"msg-{i}", {"channel": "slack"} if i % 2 else None) for i in range(_MAX_PENDING_PER_SESSION)
+    ])
+    await store_pending_steer(storage_provider=sp, session=session, text="fresh", workspace_registry=_FakeRegistry(ws))
+
+    queued = _queued_texts(sp)
+    assert len(queued) == _MAX_PENDING_PER_SESSION
+    assert "msg-0" not in queued and "msg-1" in queued and "fresh" in queued
+    [dropped] = _dropped(ws)
+    assert dropped["text"] == "msg-0"
+
+
+async def test_the_cap_drops_every_queued_peer_message_before_it_touches_a_persons_row():
+    """More over the cap than there are peer messages: all of them go first, oldest first, and only then the oldest of the rest."""
+    from primer.session.pending_messages import _MAX_PENDING_PER_SESSION
+
+    sp, ws = _SP(), _FakeWorkspace()
+    session = await _session_with(sp, [
+        (_peer_text(f"peer-{i}"), _peer()) if i in (10, 30) else (f"person-{i}", None) for i in range(_MAX_PENDING_PER_SESSION + 3)
+    ])
+    await store_pending_steer(storage_provider=sp, session=session, text="fresh", workspace_registry=_FakeRegistry(ws))
+
+    queued = _queued_texts(sp)
+    assert len(queued) == _MAX_PENDING_PER_SESSION
+    assert [d["text"] for d in _dropped(ws)] == [_peer_text("peer-10"), _peer_text("peer-30"), "person-0", "person-1"]
+    assert "person-2" in queued and "fresh" in queued
+
+
+async def test_a_peer_message_is_refused_at_the_cap_before_anything_is_stored():
+    from primer.model.except_ import ConflictError
+    from primer.session.pending_messages import _MAX_PENDING_PER_SESSION, PendingQueueFull
+
+    sp, ws = _SP(), _FakeWorkspace()
+    session = await _session_with(sp, [(f"person-{i}", None) for i in range(_MAX_PENDING_PER_SESSION)])
+    before = dict(sp.pending.rows)
+    with pytest.raises(PendingQueueFull) as info:
+        await store_pending_steer(
+            storage_provider=sp, session=session, text=_peer_text("one more"), workspace_registry=_FakeRegistry(ws), attribution=_peer(),
+        )
+    assert isinstance(info.value, ConflictError)
+    assert sp.pending.rows == before, "the refused message changed the queue"
+    assert ws.message_lines == [] and (await sp.sessions.get("s")).last_seq == session.last_seq, "a refusal records nothing and reserves no seq"
+
+
+async def test_a_peer_message_is_refused_at_the_cap_whoever_filled_it():
+    from primer.session.pending_messages import _MAX_PENDING_PER_SESSION, PendingQueueFull
+
+    sp, ws = _SP(), _FakeWorkspace()
+    session = await _session_with(sp, [(_peer_text(f"peer-{i}"), _peer()) for i in range(_MAX_PENDING_PER_SESSION)])
+    with pytest.raises(PendingQueueFull):
+        await store_pending_steer(
+            storage_provider=sp, session=session, text=_peer_text("one more"), workspace_registry=_FakeRegistry(ws), attribution=_peer(),
+        )
+    assert len(sp.pending.rows) == _MAX_PENDING_PER_SESSION and _dropped(ws) == []
+
+
+async def test_a_peer_message_is_stored_when_the_queue_is_one_short_of_the_cap():
+    from primer.session.pending_messages import _MAX_PENDING_PER_SESSION
+
+    sp, ws = _SP(), _FakeWorkspace()
+    session = await _session_with(sp, [(f"person-{i}", None) for i in range(_MAX_PENDING_PER_SESSION - 1)])
+    await store_pending_steer(
+        storage_provider=sp, session=session, text=_peer_text("last one"), workspace_registry=_FakeRegistry(ws), attribution=_peer(),
+    )
+    assert len(sp.pending.rows) == _MAX_PENDING_PER_SESSION
+    assert "person-0" in _queued_texts(sp) and _dropped(ws) == []
+
+
+# ---- a queued peer message that the pause cannot hold again is dropped, never lost silently --------------------------------------------
+
+
+def _wake_deps(ws):
+    return SimpleNamespace(workspace_registry=_FakeRegistry(ws), event_bus=None)
+
+
+async def test_a_peer_row_the_pause_hold_cannot_requeue_because_the_queue_filled_up_is_dropped_with_a_record(monkeypatch):
+    """The drain replays a queued message as a non-human wake, and a pause that landed since holds it by storing it again. If other senders filled the
+    queue in that instant the store is refused (a peer message never evicts a person's steer): the message is dropped on the record, not lost."""
+    from primer.session.pending_messages import PendingQueueFull
+
+    sp, ws = _SP(), _FakeWorkspace()
+    await _session_with(sp, [(_peer_text("p1"), _peer())])
+
+    async def _wake(**kw):
+        raise PendingQueueFull("the queue is full")
+
+    monkeypatch.setattr("primer.session.pending_messages.wake_session", _wake)
+    did = await realize_next_pending(storage_provider=sp, workspace_id="ws-1", session_id="s", wake_deps=_wake_deps(ws))
+
+    assert did is False and sp.pending.rows == {}
+    [dropped] = _dropped(ws)
+    assert dropped["text"] == _peer_text("p1") and "full" in dropped["reason"]

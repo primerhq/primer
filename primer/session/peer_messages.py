@@ -20,7 +20,8 @@ them all, a text that is empty or longer than ``PEER_MESSAGE_MAX_CHARS`` and a `
 5. the chain of peer messages is shorter than ``MAX_PEER_HOPS`` (``hop-limit``);
 6. the sender has sent fewer than ``PEER_RATE_LIMIT`` messages in the last ``PEER_RATE_WINDOW`` (``rate-limited``);
 7. with ``mode="if_idle"``, the target would start a turn now (``conflict``);
-8. the target can take a message at all: an ended session that cannot be reopened refuses (``conflict``).
+8. the target can take a message at all (``conflict``), which the delivery decides itself: an ended session that cannot be reopened refuses, and so
+   does a target whose queue already holds the cap's worth of waiting messages (a peer message never takes a person's place in it: lead ruling R1).
 """
 
 from __future__ import annotations
@@ -51,6 +52,7 @@ from primer.model.workspace_session import (
 )
 from primer.session.steer_delivery import (
     DELIVERED_MISSING,
+    DELIVERED_QUEUE_FULL,
     DELIVERED_QUEUED,
     DELIVERED_SKIPPED_BUSY,
     SteerDelivery,
@@ -104,6 +106,8 @@ REFUSE_RANK = (
 REFUSE_NO_PRINCIPAL = "this session's run has no recorded principal, so it cannot message another session"  # forbidden
 REFUSE_BUSY = "session {session_id!r} is {reason}; nothing was sent (mode if_idle)"  # conflict
 REFUSE_ENDED = "session {session_id!r} has ended ({ended_reason}) and cannot take a message"  # conflict
+# Not in the plan (lead ruling R1 on #788): the target's queue of waiting messages is at its cap, and a peer message never takes a person's place in it.
+REFUSE_QUEUE_FULL = "session {session_id!r} is busy and its queue of waiting messages is full; nothing was sent, retry later"  # conflict
 # The tool's argument model rejects these first; they keep the service safe for any other caller (an empty text would re-arm a session with nothing).
 REFUSE_TEXT = "a message is 1 to {limit} characters; write larger outputs to a file and send its path"  # bad-request
 REFUSE_MODE = "mode is auto or if_idle, not {mode!r}"  # bad-request
@@ -353,6 +357,10 @@ async def send_peer_message(
     caught by the delivery (``skip``, refused, nothing stored), but a pause that lands in it holds the message like any other non-human wake, and
     the result says ``queued``.
 
+    The delivery also refuses, with nothing written (``conflict``), a target whose queue of waiting messages is full. That is decided by the queue when
+    it stores the message, for both ways a message is queued (behind a turn or a park, and behind a pause), and is the busy answer: the sender may retry.
+    Two senders can still pass that check together; the queue's cap then drops the oldest PEER message, never a person's steer.
+
     Once the message is delivered the call succeeds: a ledger row that cannot be written is logged, not raised (the sender would send the message
     again), at the price of one delivered message the rate limit does not count.
 
@@ -442,6 +450,10 @@ async def send_peer_message(
         if delivery.outcome == DELIVERED_SKIPPED_BUSY:
             # The target had a turn open by the time the delivery looked (the guards saw it idle): nothing was stored.
             raise PeerMessageRefused("conflict", REFUSE_BUSY.format(session_id=target.id, reason="busy"))
+        if delivery.outcome == DELIVERED_QUEUE_FULL:
+            # The target's queue of waiting messages is full (checked by the queue itself, under the delivery, for both ways a message is queued):
+            # nothing was stored, so no ledger row is written and the allowance is not spent.
+            raise PeerMessageRefused("conflict", REFUSE_QUEUE_FULL.format(session_id=target.id))
         if delivery.outcome == DELIVERED_MISSING:
             raise await _refusal_for_missing(sessions, target.id, delivery)
         how: Literal["woken", "queued"] = "queued" if delivery.outcome == DELIVERED_QUEUED else "woken"
@@ -545,6 +557,7 @@ __all__ = [
     "REFUSE_NOT_FOUND",
     "REFUSE_NO_CALLER",
     "REFUSE_NO_PRINCIPAL",
+    "REFUSE_QUEUE_FULL",
     "REFUSE_RANK",
     "REFUSE_RATE",
     "REFUSE_SELF",

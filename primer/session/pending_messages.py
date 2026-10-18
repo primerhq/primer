@@ -26,8 +26,10 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from primer.model.except_ import ConflictError
 from primer.model.storage import FieldRef, OffsetPage, Op, OrderBy, Predicate, Value
 from primer.model.workspace_session import (
+    PEER_PAYLOAD_KEY,
     PeerAttribution,
     PendingSessionMessage,
     SessionMessageKind,
@@ -49,6 +51,54 @@ logger = logging.getLogger(__name__)
 # turn at a time before their own message gets a turn," which is worse.
 _MAX_PENDING_PER_SESSION = 50
 
+# Why a message was dropped, as the PAUSE_SUPERSEDED record says it (the console shows "queued message dropped (<reason>): <text>").
+_REASON_CAP = f"pending queue exceeded {_MAX_PENDING_PER_SESSION}"
+_REASON_QUEUE_FULL = (
+    f"the pending queue is full ({_MAX_PENDING_PER_SESSION}), and a message from another session does not evict a person's"
+)
+
+_OLDEST_FIRST = [
+    OrderBy(field="enqueued_at", direction="asc"),
+    OrderBy(field="id", direction="asc"),
+]
+
+
+class PendingQueueFull(ConflictError):
+    """A message from another session was refused: the session already has ``_MAX_PENDING_PER_SESSION`` messages waiting.
+
+    The queue's cap drops the oldest message to make room, and a message from another session (``message_session``, pivot P3) must never do that to a
+    person's steer: three senders at the rate limit can fill a busy coordinator's queue. So such a message is refused instead, before anything is
+    written, and its sender is told the session is busy. A person's steer, a trigger and a channel reply are not refused: they take the room.
+    """
+
+
+def _carries_peer(attribution: dict | None) -> bool:
+    """Whether a queued message's attribution says it came from another session.
+
+    Reads the key and not the value, as :meth:`PeerAttribution.from_attribution` does to tell "no peer" from "a malformed peer": the cap must be able to
+    tell a message from another session without validating it.
+    """
+    return isinstance(attribution, dict) and PEER_PAYLOAD_KEY in attribution
+
+
+def _queued_for(session_id: str) -> Predicate:
+    return Predicate(left=FieldRef(name="session_id"), op=Op.EQ, right=Value(value=session_id))
+
+
+def _text_of(row: PendingSessionMessage) -> str:
+    return "\n".join(
+        p.get("text", "") for p in row.parts
+        if isinstance(p, dict) and p.get("type") == "text" and p.get("text")
+    )
+
+
+async def _queue_is_full(storage: Any, session_id: str) -> bool:
+    """Whether ``session_id`` already has ``_MAX_PENDING_PER_SESSION`` messages waiting: the row at that position exists."""
+    page = await storage.find(
+        _queued_for(session_id), OffsetPage(offset=_MAX_PENDING_PER_SESSION - 1, length=1), order_by=_OLDEST_FIRST,
+    )
+    return bool(page.items)
+
 
 async def store_pending_steer(
     *,
@@ -67,7 +117,20 @@ async def store_pending_steer(
     seq is RESERVED on the stored row (``reserve_next_seq``: it reads the
     row fresh and takes the next seq, so the snapshot passed in may be stale
     and the row's ``last_seq`` moves), not taken from ``session.last_seq``.
+
+    A message from another session (``attribution`` carries a ``peer``) never
+    takes room from a person: when the session already has the cap's worth of
+    messages waiting it raises :class:`PendingQueueFull` before anything is
+    written. Two such messages can still pass that check together (the check
+    and the store are not one step), and then the cap drops the oldest PEER
+    message first (``_enforce_pending_cap``), so a person's steer is never the
+    one that goes.
     """
+    storage = storage_provider.get_storage(PendingSessionMessage)
+    if _carries_peer(attribution) and await _queue_is_full(storage, session.id):
+        raise PendingQueueFull(
+            f"Session {session.id!r} already has {_MAX_PENDING_PER_SESSION} messages waiting; a message from another session does not take their place"
+        )
     now = datetime.now(UTC)
     row = PendingSessionMessage(
         id=f"{session.id}:pending:{now.isoformat()}:{uuid.uuid4().hex[:8]}",
@@ -78,7 +141,7 @@ async def store_pending_steer(
         enqueued_at=now,
         created_at=now,
     )
-    await storage_provider.get_storage(PendingSessionMessage).create(row)
+    await storage.create(row)
     await _enforce_pending_cap(
         storage_provider=storage_provider,
         session=session,
@@ -95,19 +158,20 @@ async def _enforce_pending_cap(
     workspace_registry: Any,
     event_bus: Any | None,
 ) -> None:
-    """Drop the oldest queued steer(s) once the session exceeds the cap.
+    """Drop queued messages once the session exceeds the cap: the oldest message from another session first, then the oldest of the rest.
 
     The drop must never be silent -- that would reintroduce the exact
     defect this task exists to remove, one layer down. Every drop writes
     a PAUSE_SUPERSEDED(action="dropped") record naming the dropped text,
     so an operator asking "did that ever arrive" can find the answer.
+
+    A message from another session goes before anything else (pivot P3, lead ruling R1): the queue is a person's place to leave a steer, and a peer
+    must not be able to fill it with traffic that pushes the steer out. A person's steer that takes the queue past the cap therefore drops the oldest
+    peer message; only when there is none does it drop the oldest row, as it always did.
     """
     storage = storage_provider.get_storage(PendingSessionMessage)
     page = await storage.find(
-        Predicate(
-            left=FieldRef(name="session_id"), op=Op.EQ,
-            right=Value(value=session.id),
-        ),
+        _queued_for(session.id),
         # Fetches a generous ceiling, not just cap+1: this runs after
         # every single store_pending_steer call, so the excess is
         # normally exactly one row -- but fetching more stays correct
@@ -117,27 +181,28 @@ async def _enforce_pending_cap(
         # OffsetPage.length is itself capped at 200 storage-wide, so this
         # can't just keep multiplying the cap for "more margin".
         OffsetPage(offset=0, length=min(_MAX_PENDING_PER_SESSION * 3, 200)),
-        order_by=[
-            OrderBy(field="enqueued_at", direction="asc"),
-            OrderBy(field="id", direction="asc"),
-        ],
+        order_by=_OLDEST_FIRST,
     )
     rows = list(page.items)
-    if len(rows) <= _MAX_PENDING_PER_SESSION:
+    excess = len(rows) - _MAX_PENDING_PER_SESSION
+    if excess <= 0:
         return
-    for row in rows[: len(rows) - _MAX_PENDING_PER_SESSION]:
+    victims = [row for row in rows if _carries_peer(row.attribution)][:excess]
+    if len(victims) < excess:
+        # Fewer messages from other sessions than rows over the cap: they all go, and the oldest of the rest make up the difference.
+        gone = {row.id for row in victims}
+        victims += [row for row in rows if row.id not in gone][: excess - len(victims)]
+    for row in victims:
         await storage.delete(row.id)
-        text = "\n".join(
-            p.get("text", "") for p in row.parts
-            if isinstance(p, dict) and p.get("type") == "text" and p.get("text")
-        )
         await _record_dropped_pending(
             workspace_registry=workspace_registry,
             event_bus=event_bus,
             storage_provider=storage_provider,
-            session=session,
-            dropped_text=text,
+            workspace_id=session.workspace_id,
+            session_id=session.id,
+            dropped_text=_text_of(row),
             enqueued_at=row.enqueued_at,
+            reason=_REASON_CAP,
         )
 
 
@@ -146,32 +211,34 @@ async def _record_dropped_pending(
     workspace_registry: Any,
     event_bus: Any | None,
     storage_provider: Any,
-    session: WorkspaceSession,
+    workspace_id: str,
+    session_id: str,
     dropped_text: str,
     enqueued_at: datetime,
+    reason: str,
 ) -> None:
-    """Best-effort announcement of a capacity-dropped pending message.
+    """Best-effort announcement of a dropped pending message: what it said, when it was queued, and why it was dropped.
 
     Advisory, like every other tick publish in this module's family: a
     write failure here must not block the steer that triggered it, but it
     IS logged (unlike a plain advisory) because a swallowed exception here
     would defeat the entire point of this function.
 
-    The record's seq is RESERVED on the row before it is written (``session`` is the caller's snapshot, possibly stale, and the
-    row's ``last_seq`` has to move so the next writer does not repeat the seq: ticket 01a11cd8).
+    The record's seq is RESERVED on the row before it is written (the row's ``last_seq`` has to move so the next writer does not repeat the seq:
+    ticket 01a11cd8).
     """
     if workspace_registry is None:
         return
     try:
-        ws = await workspace_registry.get_workspace(session.workspace_id)
+        ws = await workspace_registry.get_workspace(workspace_id)
         if ws is None:
             return
-        reserved = await reserve_next_seq(storage_provider.get_storage(WorkspaceSession), session.id)
+        reserved = await reserve_next_seq(storage_provider.get_storage(WorkspaceSession), session_id)
         if reserved is None:
-            logger.warning("pending_messages: no seq could be reserved to record a dropped pending message for session %s", session.id)
+            logger.warning("pending_messages: no seq could be reserved to record a dropped pending message for session %s", session_id)
             return
         writer = WorkspaceMessageWriter(
-            workspace_io=ws, session_id=session.id, start_seq=reserved - 1,
+            workspace_io=ws, session_id=session_id, start_seq=reserved - 1,
         )
         seq = await writer.append(SessionMessageRecord(
             seq=1,  # overwritten by the writer's monotonic counter
@@ -180,7 +247,7 @@ async def _record_dropped_pending(
                 "action": "dropped",
                 "text": dropped_text,
                 "enqueued_at": enqueued_at.isoformat(),
-                "reason": f"pending queue exceeded {_MAX_PENDING_PER_SESSION}",
+                "reason": reason,
             },
             created_at=datetime.now(UTC),
         ))
@@ -188,16 +255,16 @@ async def _record_dropped_pending(
     except Exception:  # noqa: BLE001 -- advisory, never block the steer
         logger.exception(
             "pending_messages: failed to record a dropped pending message "
-            "for session %s", session.id,
+            "for session %s", session_id,
         )
         return
     if event_bus is not None:
         try:
-            await event_bus.publish(f"session:{session.id}:tick", {"seq": seq})
+            await event_bus.publish(f"session:{session_id}:tick", {"seq": seq})
         except Exception:  # noqa: BLE001 -- advisory
             logger.exception(
                 "pending_messages: failed to publish dropped-pending tick "
-                "for session %s", session.id,
+                "for session %s", session_id,
             )
 
 
@@ -221,27 +288,35 @@ async def realize_next_pending(
     reply chain at hop 1 whenever a reply was queued behind a turn. A
     malformed attribution is logged and the message is realized as a plain
     one: it must not be lost, and it must not wedge the queue.
+
+    A message from another session that the pause now holding it cannot queue again, because the queue filled up meanwhile (a peer message never
+    evicts a person's steer: :class:`PendingQueueFull`, lead ruling R1), is dropped, on the record, and the drain goes on to the next row. The drop is
+    announced like a cap drop, and it does not use up the checkpoint. Nothing else is skipped: the rows behind a realized one wait for the next
+    checkpoint, as ever.
     """
+    while True:
+        realized = await _realize_oldest(
+            storage_provider=storage_provider, workspace_id=workspace_id, session_id=session_id, wake_deps=wake_deps,
+        )
+        if realized is not None:
+            return realized
+
+
+async def _realize_oldest(
+    *,
+    storage_provider: Any,
+    workspace_id: str,
+    session_id: str,
+    wake_deps: Any,
+) -> bool | None:
+    """One pass of :func:`realize_next_pending`: the oldest row, woken or dropped. ``None`` is a row the session refused and this dropped: look at the next."""
     storage = storage_provider.get_storage(PendingSessionMessage)
-    page = await storage.find(
-        Predicate(
-            left=FieldRef(name="session_id"), op=Op.EQ,
-            right=Value(value=session_id),
-        ),
-        OffsetPage(offset=0, length=1),
-        order_by=[
-            OrderBy(field="enqueued_at", direction="asc"),
-            OrderBy(field="id", direction="asc"),
-        ],
-    )
+    page = await storage.find(_queued_for(session_id), OffsetPage(offset=0, length=1), order_by=_OLDEST_FIRST)
     rows = list(page.items)
     if not rows:
         return False
     row = rows[0]
-    text = "\n".join(
-        p.get("text", "") for p in row.parts
-        if isinstance(p, dict) and p.get("type") == "text" and p.get("text")
-    )
+    text = _text_of(row)
     await storage.delete(row.id)
     if not text:
         # Reaped rather than left at the head of the queue, where it
@@ -252,20 +327,34 @@ async def realize_next_pending(
         peer = PeerAttribution.from_attribution(row.attribution)
     except ValidationError:
         logger.warning("realize: ignoring a malformed peer attribution on pending row %s", row.id)
-    await wake_session(
-        workspace_id=workspace_id,
-        session_id=session_id,
-        instruction=text,
-        # 01a08c08: this is a REPLAY of an earlier human message that
-        # arrived while the session was busy, released now by the drain
-        # checkpoint -- not fresh intent at this moment. If the session
-        # has since been paused, this wake must queue behind that pause
-        # like any other non-human wake, not resume it.
-        human_intent=False,
-        peer=peer,
-        deps=wake_deps,
-    )
+    try:
+        await wake_session(
+            workspace_id=workspace_id,
+            session_id=session_id,
+            instruction=text,
+            # 01a08c08: this is a REPLAY of an earlier human message that
+            # arrived while the session was busy, released now by the drain
+            # checkpoint -- not fresh intent at this moment. If the session
+            # has since been paused, this wake must queue behind that pause
+            # like any other non-human wake, not resume it.
+            human_intent=False,
+            peer=peer,
+            deps=wake_deps,
+        )
+    except PendingQueueFull:
+        logger.info("realize: dropped a queued message from another session on %s (queue full)", session_id)
+        await _record_dropped_pending(
+            workspace_registry=wake_deps.workspace_registry,
+            event_bus=wake_deps.event_bus,
+            storage_provider=storage_provider,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            dropped_text=text,
+            enqueued_at=row.enqueued_at,
+            reason=_REASON_QUEUE_FULL,
+        )
+        return None
     return True
 
 
-__all__ = ["realize_next_pending", "store_pending_steer"]
+__all__ = ["PendingQueueFull", "realize_next_pending", "store_pending_steer"]
