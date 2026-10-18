@@ -24,7 +24,8 @@
 // draft Test (`draftTest`) still offers none: the draft holds the served MASK of every secret and a `_test` route builds its adapter from the draft alone.
 
 // The wizard classes' pages, merged in by the files that define them (each does Object.assign(window.PC_REGISTER_PAGES || {}, { <key>: Page })). A page
-// takes { klass, editRow, excludeKinds, frame, blocked, onSaved(row), onClose() } and returns frame({ body, footerLeft?, footerRight, error?, busy? }).
+// takes { klass, editRow, excludeKinds, frame, blocked, onSaved(row, words?), onClose() } and returns frame({ body, footerLeft?, footerRight, error?, busy? }). `onSaved` toasts,
+// tells the caller and closes the overlay, so a page that saved calls it and nothing else; `words` ({ title?, detail? }) is for a page whose toast has more to say than the id.
 window.PC_REGISTER_PAGES = Object.assign(window.PC_REGISTER_PAGES || {}, {});
 
 // The panel classes' own create forms, read when they are needed (their files load after this one). Each takes { existing, frame, blocked, onSaved, onClose,
@@ -265,10 +266,12 @@ function PC_RegisterOverlay({ initialClass, allowedClasses, excludeKinds, editRo
   };
   const title = editing ? `Edit ${editRow.id}` : "Register provider";
 
-  // A page's save: one toast, then the caller hears the row, then the overlay closes.
-  const saved = (row) => {
+  // A page's save: one toast, then the caller hears the row, then the overlay closes. A page that has more to say than the id (the LLM page's import of profiles: "<id>: 3 profiles
+  // imported") hands its own words as the second argument, `{ title?, detail? }`; whatever it leaves out is said as it always was. The caller still hears only the row.
+  const saved = (row, words) => {
     const id = (row && row.id) || (editRow && editRow.id) || "";
-    toast({ kind: "success", title: editing ? "Provider saved" : "Provider registered", detail: id });
+    const own = words && typeof words === "object" ? words : {};
+    toast({ kind: "success", title: own.title || (editing ? "Provider saved" : "Provider registered"), detail: own.detail || id });
     if (typeof onSaved === "function") onSaved(row);
     close();
   };
