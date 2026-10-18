@@ -49,6 +49,9 @@ MAX_ERRORS = 50
 MAX_INT_DIGITS = 15
 #: The same limit as a magnitude: the largest integer, and negated the smallest, a program may write.
 MAX_INT = 10**MAX_INT_DIGITS - 1
+#: The same limit for a float VALUE (``state.check_json_value``): a float of this magnitude or more is refused. Postgres JSONB stores a number
+#: as a numeric and reads a float of magnitude 1e16 or more back as an int, so a stored value past this would not round-trip (#790 review).
+MAX_FLOAT = float(10**MAX_INT_DIGITS)
 
 _CLIP = 32
 
@@ -781,6 +784,7 @@ __all__ = [
     "KEEP",
     "MAX_DEPTH",
     "MAX_ERRORS",
+    "MAX_FLOAT",
     "MAX_INT",
     "MAX_INT_DIGITS",
     "RESERVED_IDS",

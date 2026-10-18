@@ -12,6 +12,11 @@ After the write, and best effort (a canvas that has been written never fails bec
 * the ``canvas`` frame on the session's delta channel, so a console refetches the snapshot.
 
 A refused batch or a refused event writes nothing and announces nothing.
+
+The workspace an announcement is made in is the one the canvas row names (``SessionCanvas.workspace_id``), never the caller's: the
+non-admin event feed is read per workspace, and the record is appended through the workspace's own log, so a caller's idea of the
+workspace (a route's path segment, a stale context) must not move where a session's canvas speaks. The caller's ``workspace_id`` only
+names the workspace of a canvas that does not exist yet, and is the row's from then on.
 """
 
 from __future__ import annotations
@@ -298,12 +303,14 @@ class CanvasService:
         """The canvas of ``row`` as a pure ``CanvasState``: copies, so what a caller does to it never reaches the row."""
         return CanvasState(row.rev, copy.deepcopy(row.elements), copy.deepcopy(row.values), dict(row.value_set_by))
 
+    async def current(self, session_id: str) -> SessionCanvas | None:
+        """The stored row, or ``None`` when the session has none. For a caller that has no workspace id to give ``snapshot``."""
+        return await self._store().get(session_id)
+
     async def unseen_events(self, session_id: str) -> list[CanvasEvent]:
         """The events the agent has not read yet: those after ``seen_event_seq``, oldest first."""
         row = await self._store().get(session_id)
-        if row is None:
-            return []
-        return [event for event in row.events if event.seq > row.seen_event_seq]
+        return row.unseen_events() if row is not None else []
 
     async def mark_seen(self, session_id: str, through_seq: int) -> None:
         """Raise ``seen_event_seq`` to ``through_seq`` (never lower it, never past the last event). One fenced patch of that field."""
@@ -363,7 +370,7 @@ class CanvasService:
                 continue                     # another writer got in first: read the fresh row and decide again
             await self._announce_batch(
                 written, result.state, result.changed, statements, source=source, by=by, call_id=call_id,
-                session_id=session_id, workspace_id=workspace_id,
+                session_id=session_id, workspace_id=written.workspace_id,
             )
             return ApplyOutcome(written.rev, result.changed, result.warnings)
         raise ConflictError(_CONFLICT)
@@ -533,7 +540,7 @@ class CanvasService:
                 raise CanvasEventRefused("unknown_element", f"'{element}' is not on the canvas any more") from None
             if written is None:
                 continue                     # another writer got in first: read the fresh row and judge the event again
-            await self._announce_event(written, event, session_id=session_id, workspace_id=workspace_id)
+            await self._announce_event(written, event, session_id=session_id, workspace_id=written.workspace_id)
             return event
         raise ConflictError(_CONFLICT)
 

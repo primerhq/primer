@@ -29,10 +29,11 @@ GARBAGE = [
     "n6 = Column([n6])",
 ]
 UNPARSEABLE = "x y z"
-#: Html values at the edge of what the language reads: its widest integers, its deepest nesting, extreme floats.
+#: Html values at the edge of what the language reads: its widest integers, its deepest nesting, extreme floats (the largest a batch takes is
+#: just under 1e15, the integers' limit: a float of 1e15 or more is refused, #790 review).
 EDGE_VALUES = [
-    "999999999999999", "-999999999999999", "[" * 32 + "]" * 32, "1e300", "-0.0", "5e-324",
-    '{"a": {"b": [1e300, -0.0, 5e-324]}}',
+    "999999999999999", "-999999999999999", "[" * 32 + "]" * 32, "999999999999999.5", "-0.0", "5e-324",
+    '{"a": {"b": [999999999999999.5, -0.0, 5e-324]}}',
 ]
 
 

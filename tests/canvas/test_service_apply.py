@@ -684,3 +684,43 @@ async def test_two_batches_at_once_both_land():
     row = await w.canvas("s1")
     assert row.rev == 3 and {"one", "two"} <= set(row.elements) and sorted([one.rev, two.rev]) == [2, 3]
     assert [e.payload["rev"] for e in await w.events("canvas.updated")] == [1, *sorted([one.rev, two.rev])]
+
+
+# ---- the canvas row names its workspace ----------------------------------------------------------------------------------------------
+
+
+async def test_an_existing_canvas_speaks_in_its_own_workspace_never_the_callers():
+    """The row says which workspace its session lives in. A caller's idea of it (a route's path segment, a stale context) must not move
+    where the canvas announces itself or writes its record: the non-admin event feed is read per workspace, so a wrong id would put one
+    workspace's canvas on another workspace's feed (#790 review)."""
+    w = make_world()
+    await seed_session(w)                                    # session s1 lives in ws-1
+    await _apply(w, G("playlist_create.cl"))                 # its canvas is created under ws-1
+    out = await w.service.apply(
+        session_id="s1", workspace_id="ws-2", statements=parse_program('extra = Text("x")\nroot += [extra]'), unit="line",
+        base_rev=None, source="operator", by="alice",
+    )
+    assert out.rev == 2 and (await w.canvas("s1")).workspace_id == "ws-1"
+    assert [(e.workspace_id, e.payload["rev"]) for e in await w.events("canvas.updated")] == [("ws-1", 1), ("ws-1", 2)]
+    assert [r["payload"]["rev"] for r in w.records("s1", "canvas_op", workspace_id="ws-1")] == [1, 2]
+    assert w.records("s1", workspace_id="ws-2") == [], "the other workspace's log was not written"
+
+
+async def test_a_clear_speaks_in_the_canvas_workspace_too():
+    w = make_world()
+    await seed_session(w)
+    await _apply(w, G("playlist_create.cl"))
+    await w.service.clear(session_id="s1", workspace_id="ws-2", by="alice")
+    assert [e.workspace_id for e in await w.events("canvas.updated")] == ["ws-1", "ws-1"]
+    assert w.records("s1", workspace_id="ws-2") == []
+
+
+async def test_a_new_canvas_takes_the_callers_workspace_and_keeps_it():
+    w = make_world()
+    await seed_session(w, workspace_id="ws-7")
+    await w.service.apply(
+        session_id="s1", workspace_id="ws-7", statements=parse_program('t = Text("x")\nroot += [t]'), unit="line", base_rev=None,
+        source="operator", by="alice",
+    )
+    assert (await w.canvas("s1")).workspace_id == "ws-7"
+    assert [e.workspace_id for e in await w.events("canvas.updated")] == ["ws-7"]

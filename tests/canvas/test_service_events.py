@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -228,6 +229,9 @@ _NAME_RULE = "an emit name is 1 to 64 letters, digits, _ . : or -, and does not 
     ("viz", "set_value", {"value": "x" * 1001}, "invalid_value", "a value is at most 1000 characters"),
     ("viz", "set_value", {"value": float("inf")}, "invalid_value", "value must be JSON: no NaN or infinity"),
     ("viz", "set_value", {"value": 10**30}, "invalid_value", "number is out of range"),
+    # a float of 1e15 or more: Postgres JSONB reads 1e16 and up back as an int, so it is refused like an int of 16 digits (#790 review)
+    ("viz", "set_value", {"value": 1e16}, "invalid_value", "number is out of range"),
+    ("viz", "emit", {"name": "go", "data": {"n": [1e15]}}, "invalid_value", "number is out of range"),
     ("player", "play", {"position": -1}, "invalid_value", "a position is 0 to 86400 seconds"),
     ("player", "pause", {"position": 86401}, "invalid_value", "a position is 0 to 86400 seconds"),
     ("player", "ended", {"position": float("nan")}, "invalid_value", "a position is 0 to 86400 seconds"),
@@ -245,6 +249,29 @@ async def test_refusals(world_with_playlist, element, kind, kwargs, code, messag
     assert (exc.value.code, exc.value.message) == (code, message) and str(exc.value) == message
     assert spy.patches == [] and (await w.canvas("s1")).model_dump() == before, "a refused event writes nothing"
     assert len(w.bus.published) == published and len(await w.events("canvas.event")) == logged
+
+
+def _options_of(lengths: list[int]) -> list[str]:
+    """Distinct options of exactly these lengths (each starts with its index)."""
+    return [str(i) + "x" * (n - 1) for i, n in enumerate(lengths)]
+
+
+async def test_a_select_choice_is_capped_at_a_thousand_characters_of_json():
+    """A choice goes into the ring and out in the platform event, so its JSON is held to the limit of every event value (#790 review:
+    the cap on a Select ``change`` was not pinned). A multiple Select of 200-character options can reach it."""
+    fits, over = _options_of([197, 197, 197, 197, 196]), _options_of([197, 197, 197, 197, 197])
+    compact = {"separators": (",", ":"), "ensure_ascii": False}
+    assert len(json.dumps(fits, **compact)) == 1000 and len(json.dumps(over, **compact)) == 1001
+    w = make_world()
+    await seed_session(w)
+    await _apply(w, f'root = Column([a, b])\na = Select("A", {json.dumps(fits)}, multiple=true)\nb = Select("B", {json.dumps(over)}, multiple=true)')
+    spy = StoreSpy(w)
+    with pytest.raises(CanvasEventRefused) as exc:
+        await _event(w, "b", "change", value=over)
+    assert (exc.value.code, exc.value.message) == ("invalid_value", "a value is at most 1000 characters")
+    assert spy.patches == [] and (await w.canvas("s1")).event_seq == 0, "the refused choice wrote nothing"
+    ev = await _event(w, "a", "change", value=fits)
+    assert ev.value == fits and (await w.canvas("s1")).values == {"a": fits}, "exactly 1000 characters is the last that fits"
 
 
 async def test_a_list_longer_than_the_options_is_refused_without_being_read():
@@ -284,6 +311,18 @@ async def test_a_disabled_or_hidden_element_does_not_take_events():
         assert (exc.value.code, exc.value.message) == ("element_disabled", f"'{element}' is disabled or hidden")
     assert (await _event(w, "ok", "click")).label == "Fine"
     assert (await w.canvas("s1")).event_seq == 1
+
+
+async def test_a_disabled_container_does_not_block_its_descendants():
+    """Only a HIDDEN container takes what is in it out of the user's reach. ``disabled`` is a flag on the element it is set on: the
+    controls inside a disabled Card or Row keep their own state (#790 review: a change that read ``disabled`` up the tree survived)."""
+    w = make_world()
+    await seed_session(w)
+    await _apply(w, 'root = Column([card, outer])\ncard = Card([inner])\ninner = Button("Inner")\ncard.disabled = true\n'
+                    'outer = Column([mid])\nmid = Row([deep])\ndeep = Button("Deep")\nouter.disabled = true\nmid.disabled = true')
+    assert (await _event(w, "inner", "click")).label == "Inner"
+    assert (await _event(w, "deep", "click")).label == "Deep"
+    assert (await w.canvas("s1")).event_seq == 2
 
 
 async def test_a_hidden_container_further_up_blocks_its_descendants():
@@ -587,3 +626,16 @@ async def test_a_canvas_deleted_under_an_event_refuses_it(world_with_playlist):
     with pytest.raises(CanvasEventRefused) as exc:
         await _event(w, "play", "click")
     assert exc.value.code == "unknown_element" and await w.events("canvas.event") == []
+
+
+# ---- the canvas row names its workspace ----------------------------------------------------------------------------------------------
+
+
+async def test_an_event_is_announced_in_the_workspace_the_canvas_names_never_the_callers(world_with_playlist):
+    """The non-admin event feed is read per workspace, and ``canvas.event`` carries what a user typed: a caller's wrong workspace id
+    must not put it on another workspace's feed (#790 review)."""
+    w = world_with_playlist                                    # the canvas of s1 lives in ws-1
+    ev = await w.service.record_event(session_id="s1", workspace_id="ws-2", element="genre", kind="change", value="Lo-fi", by="alice")
+    [logged] = await w.events("canvas.event")
+    assert (logged.workspace_id, logged.payload["id"]) == ("ws-1", ev.id)
+    assert (await w.canvas("s1")).workspace_id == "ws-1"

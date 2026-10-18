@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import AsyncIterator
+from pathlib import Path
+
 import pytest
+import pytest_asyncio
 from pydantic import ValidationError
 
 from primer.canvas.catalog import EVENT_KINDS
@@ -19,7 +24,10 @@ from primer.model.canvas import (
     SessionCanvas,
 )
 from primer.model.common import dump_for_storage
+from primer.model.except_ import RowDecodeError
+from primer.model.provider import SqliteConfig
 from primer.model.workspace_session import SessionMessageKind
+from primer.storage.sqlite import SqliteStorageProvider
 from primer.tap.event import TapEventClass
 
 
@@ -97,6 +105,31 @@ async def test_read_gives_the_stored_row(fake_storage_provider):
     await fake_storage_provider.get_storage(CanvasSettings).create(CanvasSettings(id=CANVAS_SETTINGS_ID, max_elements=50, strict_mode=True))
     settings = await read_canvas_settings(fake_storage_provider)
     assert (settings.max_elements, settings.strict_mode) == (50, True)
+
+
+@pytest_asyncio.fixture
+async def sqlite_provider(tmp_path: Path) -> AsyncIterator[SqliteStorageProvider]:
+    """The real storage, for the one test that needs a stored row the model no longer reads (the in-memory fake never decodes)."""
+    provider = SqliteStorageProvider(SqliteConfig(path=tmp_path / "data.sqlite"))
+    await provider.initialize()
+    try:
+        yield provider
+    finally:
+        await provider.aclose()
+
+
+async def test_an_undecodable_settings_row_raises_and_never_falls_back_to_the_defaults(sqlite_provider):
+    """A settings row the model no longer reads (drift, a hand edit) must be SEEN. Falling back to the defaults would quietly drop an
+    operator's strict mode and media policy for every canvas, and the next save would overwrite the row with them (#790 review)."""
+    storage = sqlite_provider.get_storage(CanvasSettings)
+    await storage.create(CanvasSettings(id=CANVAS_SETTINGS_ID, strict_mode=True, media_policy="none"))
+    assert (await read_canvas_settings(sqlite_provider)).media_policy == "none"
+    table = storage._table  # noqa: SLF001
+    await sqlite_provider.connection.execute(f'UPDATE "{table}" SET data = ? WHERE id = ?', (json.dumps({"media_policy": "bogus"}), CANVAS_SETTINGS_ID))
+    await sqlite_provider.connection.commit()
+    with pytest.raises(RowDecodeError) as excinfo:
+        await read_canvas_settings(sqlite_provider)
+    assert CANVAS_SETTINGS_ID in str(excinfo.value) and "bogus" not in str(excinfo.value), "it names the row, never the stored value"
 
 
 async def test_write_creates_the_row_and_the_next_write_replaces_it(fake_storage_provider):
