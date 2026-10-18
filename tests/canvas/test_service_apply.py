@@ -604,3 +604,83 @@ async def test_the_snapshot_is_the_stored_row_and_state_of_copies_it():
     state.elements["genre"]["props"]["label"] = "changed"
     state.values["x"] = 1
     assert snap.elements["genre"]["props"]["label"] == "Genre" and snap.values == {}, "state_of hands out copies"
+
+
+# ---- the record rule, pinned in the data ----------------------------------------------------------------------------------------------
+
+
+async def test_a_turn_that_starts_between_the_read_and_the_reservation_gets_no_record(caplog):
+    """The guard is in the reservation itself, not only in the read before it: a worker that claims the session in between makes the
+    reservation fail, and the row it finds next is running."""
+    w = make_world()
+    await seed_session(w, turn_status="idle", last_seq=5)
+    sessions = w.sessions
+    real, state = sessions.patch_if, {"claimed": False}
+
+    async def claimed_first(id, patch=None, *, where, set_paths=None, conn=None):  # noqa: A002
+        if not state["claimed"]:
+            state["claimed"] = True
+            await real(id, {"turn_status": "running"}, where={"turn_status": ["idle"]})          # a worker claims the session
+        return await real(id, patch, where=where, set_paths=set_paths, conn=conn)
+
+    sessions.patch_if = claimed_first
+    with caplog.at_level(logging.DEBUG, logger="primer.canvas.records"):
+        out = await _apply(w, G("playlist_create.cl"))
+    row = await w.sessions.get("s1")
+    assert out.rev == 1 and (row.turn_status, row.last_seq) == ("running", 5), "no seq was reserved under a running turn"
+    assert w.records("s1") == [] and "a turn is running; the canvas record is skipped" in caplog.text
+
+
+async def test_a_seq_a_steer_took_in_between_is_not_reused():
+    w = make_world()
+    await seed_session(w, turn_status="idle", last_seq=5)
+    sessions = w.sessions
+    real, state = sessions.patch_if, {"stolen": False}
+
+    async def steer_first(id, patch=None, *, where, set_paths=None, conn=None):  # noqa: A002
+        if not state["stolen"]:
+            state["stolen"] = True
+            await real(id, {"last_seq": 6}, where={"last_seq": [5]})                         # wake_session wrote its USER_INPUT at 6
+        return await real(id, patch, where=where, set_paths=set_paths, conn=conn)
+
+    sessions.patch_if = steer_first
+    await _apply(w, G("playlist_create.cl"))
+    assert [r["seq"] for r in w.records("s1", "canvas_op")] == [7] and (await w.sessions.get("s1")).last_seq == 7
+
+
+async def test_a_session_that_is_deleted_under_the_reservation_takes_no_record():
+    w = make_world()
+    await seed_session(w, turn_status="idle", last_seq=5)
+    sessions = w.sessions
+    real, state = sessions.patch_if, {"deleted": False}
+
+    async def deleted_first(id, patch=None, *, where, set_paths=None, conn=None):  # noqa: A002
+        if not state["deleted"]:
+            state["deleted"] = True
+            await sessions.delete(id)
+        return await real(id, patch, where=where, set_paths=set_paths, conn=conn)
+
+    sessions.patch_if = deleted_first
+    out = await _apply(w, G("playlist_create.cl"))
+    assert out.rev == 1 and w.records("s1") == []
+
+
+async def test_two_batches_at_once_both_land():
+    w = make_world()
+    await seed_session(w)
+    await _apply(w, G("playlist_create.cl"))
+    store = w.sp.get_storage(SessionCanvas)
+    real_get = store.get
+
+    async def slow_get(id, *, conn=None):  # noqa: A002
+        row = await real_get(id)
+        await asyncio.sleep(0)               # both writers read the row before either writes it
+        return row
+
+    store.get = slow_get
+    one, two = await asyncio.gather(
+        _apply(w, 'one = Text("1")\nroot += [one]'), _apply(w, 'two = Text("2")\nroot += [two]', src="agent", by="agent"),
+    )
+    row = await w.canvas("s1")
+    assert row.rev == 3 and {"one", "two"} <= set(row.elements) and sorted([one.rev, two.rev]) == [2, 3]
+    assert [e.payload["rev"] for e in await w.events("canvas.updated")] == [1, *sorted([one.rev, two.rev])]

@@ -72,6 +72,14 @@ def test_the_limits_are_ranged(field, low, high):
             CanvasSettings(id=CANVAS_SETTINGS_ID, **{field: outside})
 
 
+def test_settings_round_trip_through_the_storage_dump():
+    settings = CanvasSettings(
+        id=CANVAS_SETTINGS_ID, media_policy="allowlist", media_allowlist=["media.example.com", "*.example.org"], strict_mode=True,
+        max_elements=50, max_html_bytes=2048, max_canvas_bytes=20000, max_events=20, max_waking_events_per_minute=3,
+    )
+    assert CanvasSettings.model_validate(dump_for_storage(settings)) == settings
+
+
 def test_the_media_policy_is_one_of_the_three():
     for policy in ("any-https", "allowlist", "none"):
         assert CanvasSettings(id=CANVAS_SETTINGS_ID, media_policy=policy).media_policy == policy
