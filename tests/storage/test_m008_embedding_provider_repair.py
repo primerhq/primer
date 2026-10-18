@@ -240,22 +240,25 @@ async def test_the_log_names_the_id_and_the_provider_and_never_the_config(sp: St
 # ---- it is registered, and the runner applies it ----------------------------------------------------------------------------------------------------------------------
 
 
-def test_the_migration_is_the_latest_registered_one() -> None:
+def test_the_migration_is_registered_as_version_eight() -> None:
+    """It pinned "the LATEST registered one" until migration 9 landed; what it means to pin is the version and the place in the
+    chain, not that nothing follows."""
     from primer.storage.migrations import LATEST_VERSION, MIGRATIONS
 
-    assert _migration().version == 8 == LATEST_VERSION
-    assert MIGRATIONS[-1].version == 8 and type(MIGRATIONS[-1]).__name__ == "M008EmbeddingProviderRepair"
+    assert _migration().version == 8 <= LATEST_VERSION
+    assert MIGRATIONS[7].version == 8 and type(MIGRATIONS[7]).__name__ == "M008EmbeddingProviderRepair"
 
 
 @pytest.mark.asyncio
 async def test_the_runner_applies_it_to_a_database_at_version_seven(sp: StorageProvider) -> None:
-    from primer.storage.migrations import run_migrations
+    from primer.storage.migrations import LATEST_VERSION, run_migrations
 
     await _seed(sp)
     await sp.set_schema_version(7)
 
     version = await run_migrations(sp, is_fresh_install=False)
 
-    assert version == 8 and (await sp.get_system_state()).schema_version == 8
+    # Every migration newer than the stored version runs, so the database ends at the latest (it ended at 8 before migration 9).
+    assert version == LATEST_VERSION and (await sp.get_system_state()).schema_version == LATEST_VERSION
     page = await sp.get_storage(LiveEmbeddingProvider).list(OffsetPage(offset=0, length=100))
     assert len(page.items) == len(BROKEN) + len(HEALTHY)
