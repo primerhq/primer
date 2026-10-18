@@ -15,6 +15,7 @@ for ONE ``(toolset_id, tool_name)`` from the tool catalog (``primer.toolset.tool
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -247,6 +248,21 @@ async def test_an_oauth_consent_request_is_not_swallowed(sp, reserved_provider_r
     toolset = build_system_toolset(storage_provider=sp, provider_registry=Registry({"mcp-x": needs_consent}, reserved_provider_registry))
     with pytest.raises(AuthRequiredError):
         await _describe(toolset, "mcp-x", "go")
+
+
+async def test_the_listing_is_made_as_the_principal_the_runs_context_carries(reserved_provider_registry):  # noqa: F811
+    """A toolset with per-user state (an MCP toolset's OAuth token cache) answers for the person the run is for, so the listing gets the principal STRING on the
+    run's context, as ``call_tool`` hands its inner provider; no context, or one with none, lists anonymously.
+
+    The handler is called directly with a stand-in context: only the ``principal`` attribute is the contract here.
+    """
+    rec = Scripted([scripted_tool("go")], roles={"go": "user"})
+    _, (_, handler) = _describe_tool_tool(Registry({"rec": rec}, reserved_provider_registry), None)
+    arguments = {"toolset_id": "rec", "tool_name": "go"}
+    assert not (await handler(arguments, ctx=SimpleNamespace(principal="alice"))).is_error
+    await handler(arguments)
+    await handler(arguments, ctx=SimpleNamespace())
+    assert rec.listed_as == ["alice", None, None]
 
 
 @pytest.mark.parametrize("arguments", [{}, {"toolset_id": "misc"}, {"tool_name": "uuid_v4"}, {"toolset_id": "", "tool_name": "x"}, {"toolset_id": "misc", "tool_name": ""}])
