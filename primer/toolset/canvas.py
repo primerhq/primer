@@ -1,15 +1,17 @@
-"""``canvas`` reserved internal toolset: draw on the session's canvas and read what the user did there (pivot P5, Task 9; design 8.3).
+"""``canvas`` reserved internal toolset: draw on the session's canvas and read what the user did there (pivot P5, Tasks 9 and 10; design 8.3).
 
-Tool catalog (2 tools so far)
------------------------------
+Tool catalog (3 tools)
+----------------------
 
 * ``canvas_get``   - the canvas as a Canvas Lang program (or the stored JSON), the values the user set and the events since the last read.
 * ``canvas_apply`` - one atomic batch of Canvas Lang statements (or JSON ops); every bad line is reported with its signature, and a batch
   with any error applies nothing.
+* ``canvas_wait``  - PAUSES the turn until the user acts on the canvas: a one-shot ``EventSubscription`` on ``canvas.event``, parked like
+  ``wait_for_event``; it returns at once when a matching event arrived since the agent's last read.
 
-Both act on the CALLING session's canvas (``ToolContext.session_id``), so they are role ``user``, need a workspace session (they are
+All three act on the CALLING session's canvas (``ToolContext.session_id``), so they are role ``user``, need a workspace session (they are
 dropped from chat tool contexts and are not exposable over MCP), and have no argument that names another session. ``canvas_apply`` is not
-interruptible (the snapshot write, then the record and the announcement); ``canvas_get`` is.
+interruptible (the snapshot write, then the record and the announcement); the other two are.
 
 The state, its rules and its announcements live in :class:`primer.canvas.service.CanvasService`; this module is the agent's door to it:
 argument models, the error shapes an agent can act on, and the descriptions (copied character for character from the plan).
@@ -40,12 +42,21 @@ from primer.canvas.service import (
     CanvasRevConflict,
     CanvasService,
 )
+from primer.canvas.wait import (
+    CANVAS_WAIT_TOOL,
+    canvas_wait_event_key,
+    canvas_wait_filter,
+    canvas_wait_matches,
+    consume_events,
+)
 from primer.model.chat import Tool, ToolCallResult, ToolExample
-from primer.model.except_ import ConflictError
-from primer.model.yield_ import ToolContext
+from primer.model.event import EventSubscription, SessionWakeSink
+from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.yield_ import ToolContext, YieldCancelled, YieldTimeout, Yielded
 from primer.toolset._describe import make_tool
 from primer.toolset._system_common import _err_from_validation
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
+from primer.worker.yield_resume_registry import ResumeContext, register_resume_hook
 
 if TYPE_CHECKING:
     from primer.int.storage_provider import StorageProvider
@@ -62,6 +73,8 @@ _MAX_IDS = 50
 _NO_SESSION = "the canvas belongs to a workspace session; this call has none"
 
 _ElementId = Annotated[str, Field(pattern=ID_PATTERN)]
+#: Every kind of event a canvas element sends (``primer.model.canvas.CANVAS_EVENT_KINDS``; a test pins that they are the same).
+_EventKind = Literal["click", "change", "emit", "set_value", "play", "pause", "ended", "open"]
 
 
 # ===========================================================================
@@ -154,6 +167,24 @@ class _CanvasApplyArgs(BaseModel):
     @classmethod
     def _ops_fit(cls, raw: Any) -> Any:
         return ensure_ops_fit(raw)
+
+
+class _CanvasWaitArgs(BaseModel):
+    ids: list[_ElementId] | None = Field(
+        default=None,
+        max_length=_MAX_IDS,
+        description="Wait only for events on these elements (at most 50). Omit for any element.",
+    )
+    kinds: list[_EventKind] | None = Field(
+        default=None,
+        description="Wait for events of these kinds, whether or not they wake you. Omit to wait for an event that wakes you.",
+    )
+    timeout_s: float = Field(
+        default=600,
+        ge=1,
+        le=86400,
+        description="Give up after this many seconds (1 to 86400, default 600); the tool then returns {timeout: true}.",
+    )
 
 
 # ===========================================================================
@@ -274,6 +305,138 @@ def _make_canvas_apply(service: CanvasService):
 
 
 # ===========================================================================
+# canvas_wait
+# ===========================================================================
+
+
+def _make_canvas_wait(service: CanvasService, storage_provider: "StorageProvider"):
+    async def _canvas_wait(arguments: dict[str, Any], *, ctx: ToolContext | None = None) -> ToolCallResult | Yielded:
+        scope = _scope(ctx)
+        if scope is None or ctx is None:
+            return _no_session()
+        try:
+            args = _CanvasWaitArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        session_id, workspace_id = scope
+        ids, kinds = list(args.ids or []), list(args.kinds or [])
+        meta = {"ids": ids, "kinds": kinds}
+        # Inside a graph node the key carries the node (two concurrent siblings of one superstep can share a raw provider id), as
+        # ``ask_user``'s and ``sleep``'s do. Lazy import: primer.graph imports the toolsets transitively at package-init time.
+        from primer.graph._node_identity import current_graph_node_id
+
+        event_key = canvas_wait_event_key(ctx, current_graph_node_id())
+
+        # The cursor is pinned FIRST, then the canvas is checked for events the agent has not read (#790 review). The other order
+        # leaves a gap: a click recorded after the check and before the pin is in the log before the cursor, so the subscription
+        # never sees it, and the check never did. In this order an event is either already in the canvas when it is checked, or is
+        # emitted after the pin and so reaches the subscription; the dispatcher holds a delivery until the park is visible.
+        subscriptions = storage_provider.get_storage(EventSubscription)
+        created = await subscriptions.create(
+            EventSubscription(
+                description=f"canvas_wait park for session {session_id}",
+                filter=canvas_wait_filter(session_id, ids=ids, kinds=kinds),
+                sink=SessionWakeSink(event_key=event_key, session_id=session_id),
+                managed_by="system",
+            )
+        )
+        events = storage_provider.get_event_store()
+        try:
+            await events.set_cursor(created.id, await events.max_id())
+            row = await service.snapshot(session_id, workspace_id=workspace_id)
+        except Exception:
+            await _discard(storage_provider, created.id)
+            raise
+        waiting = [event.public() for event in row.unseen_events() if canvas_wait_matches(meta, event.public())]
+        if waiting:
+            await _discard(storage_provider, created.id)
+            await consume_events(service, storage_provider, session_id, waiting)
+            return _ok({"events": waiting, "values": row.values, "rev": row.rev})
+        return Yielded(
+            tool_name="",  # stamped by the provider
+            event_key=event_key,
+            timeout=args.timeout_s,
+            resume_metadata={
+                "subscription_id": created.id,
+                "ids": ids,
+                "kinds": kinds,
+                "after_event_seq": row.event_seq,
+            },
+        )
+
+    return _canvas_wait
+
+
+async def _discard(storage_provider: "StorageProvider", subscription_id: str) -> None:
+    """Delete a wait's subscription and its cursor when nothing will deliver to it. Best effort: the dispatcher collects an orphan anyway.
+
+    The two deletes are tried apart (a cursor is worth removing even when the subscription is already gone), and a subscription that is
+    already gone is not a problem: the dispatcher deletes a one-shot when it delivers.
+    """
+    try:
+        await storage_provider.get_storage(EventSubscription).delete(subscription_id)
+    except NotFoundError:
+        pass
+    except Exception:  # noqa: BLE001 - an orphaned one-shot is garbage-collected by the dispatcher
+        logger.warning("canvas_wait: subscription %s could not be removed", subscription_id, exc_info=True)
+    try:
+        await storage_provider.get_event_store().delete_cursor(subscription_id)
+    except Exception:  # noqa: BLE001 - a cursor with no subscription is harmless and pruned with the log
+        logger.warning("canvas_wait: the cursor of subscription %s could not be removed", subscription_id, exc_info=True)
+
+
+async def canvas_wait_resume(meta: dict[str, Any], payload: Any, rctx: ResumeContext) -> ToolCallResult:
+    """Format the result of a woken ``canvas_wait`` park.
+
+    ``payload`` is the event envelope the dispatcher published (the ``canvas.event`` itself is its ``payload`` key, and the result lists
+    it under ``events``), or a synthetic timeout or cancel.
+
+    With ``rctx.resolve_provider`` the result also carries the canvas's ``rev`` and ``values`` as they are now. The event that ended the
+    wait is marked seen and its queued copy is dropped (a click that arrived while the turn was running was queued as a steer), so the
+    agent gets the click once. A timeout or a cancel removes the wait's subscription, which nothing will deliver to. Without the
+    registry the result is the event alone. A canvas that cannot be read never fails the resume: the wake is the answer.
+    """
+    service, storage_provider = await _resolve_canvas(rctx)
+    state: dict[str, Any] = {}
+    if service is not None and rctx.session_id:
+        try:
+            row = await service.current(rctx.session_id)
+        except Exception:  # noqa: BLE001 - the wake is the answer; the extras are not
+            logger.warning("canvas_wait: the canvas of session %s could not be read", rctx.session_id, exc_info=True)
+        else:
+            state = {"rev": row.rev if row is not None else 0, "values": row.values if row is not None else {}}
+    if isinstance(payload, (YieldTimeout, YieldCancelled)):
+        # Nothing will ever deliver to this wait's subscription (a delivery deletes its one-shot): remove it now instead of leaving it for
+        # the dispatcher to collect the next time an event of the session passes, so a wait on a quiet element leaves nothing behind.
+        stale = meta.get("subscription_id") if isinstance(meta, dict) else None
+        if storage_provider is not None and isinstance(stale, str):
+            await _discard(storage_provider, stale)
+        if isinstance(payload, YieldTimeout):
+            return _ok({"timeout": True, **state})
+        return _ok({"cancelled": True, "cancel_reason": payload.reason})
+    found = payload.get("payload") if isinstance(payload, dict) else None
+    events = [found] if isinstance(found, dict) else []
+    if service is not None and storage_provider is not None and rctx.session_id:
+        await consume_events(service, storage_provider, rctx.session_id, events)
+    return _ok({"events": events, **state})
+
+
+async def _resolve_canvas(rctx: ResumeContext) -> tuple[CanvasService | None, Any]:
+    """The canvas service (and its storage) behind the registry, or ``(None, None)`` where the resume has no registry to ask."""
+    if rctx.resolve_provider is None:
+        return None, None
+    try:
+        provider = await rctx.resolve_provider(CANVAS_TOOLSET_ID)
+        return provider.service, provider.storage_provider
+    except Exception:  # noqa: BLE001 - a resume without the extras is still a resume
+        logger.warning("canvas_wait: the canvas toolset could not be resolved for session %s", rctx.session_id, exc_info=True)
+        return None, None
+
+
+register_resume_hook(CANVAS_WAIT_TOOL, canvas_wait_resume)
+
+
+# ===========================================================================
 # The toolset
 # ===========================================================================
 
@@ -384,6 +547,34 @@ def build_canvas_toolset(
             ),
             _make_canvas_apply(service),
         ),
+        "canvas_wait": (
+            make_tool(
+                id="canvas_wait",
+                toolset_id=toolset_id,
+                purpose=(
+                    "Pause this turn until the user acts on the canvas; returns the matching events with the current values, or "
+                    "{timeout: true}."
+                ),
+                when=(
+                    "Use when your next step depends on a click or a choice and you have nothing else to do meanwhile. ids limits it "
+                    "to some elements, kinds to some event kinds (click, change, emit, set_value, play, pause, ended, open); without "
+                    "kinds it waits for an event that wakes (a Button click or an Html emit). It returns at once if such an event "
+                    "arrived since your last canvas read. timeout_s defaults to 600 (at most 86400)."
+                ),
+                args_schema=_CanvasWaitArgs.model_json_schema(),
+                examples=[
+                    ToolExample(
+                        args={"ids": ["ok", "cancel"]},
+                        returns="``{events: [{id, element, kind, ...}], values, rev}``",
+                        note="yielding; worker released",
+                    ),
+                ],
+                yields=True,
+                requires_workspace=True,
+                required_role="user",
+            ),
+            _make_canvas_wait(service, storage_provider),
+        ),
     }
     logger.info("canvas toolset assembled with %d tools (id=%s)", len(registry), toolset_id)
     return CanvasToolsetProvider(registry, service=service, storage_provider=storage_provider, toolset_id=toolset_id)
@@ -394,4 +585,5 @@ __all__ = [
     "ID_PATTERN",
     "CanvasToolsetProvider",
     "build_canvas_toolset",
+    "canvas_wait_resume",
 ]

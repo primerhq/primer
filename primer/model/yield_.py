@@ -176,6 +176,10 @@ class Yielded:
           siblings can share a raw ``tool_call_id``.
         * ``watch:{session_id}:{tool_call_id}`` — wakes from the
           local filesystem watcher.
+        * ``canvaswait:{session_id}:{tool_call_id}``: wakes when a
+          ``canvas.event`` the wait asked for is delivered by the event
+          dispatcher (``canvas_wait``; inside a graph node it is
+          ``canvaswait:{session_id}:{node}:{tool_call_id}``).
         * ``mcp_task:{server_id}:{task_id}`` — wakes when the MCP
           server signals task completion.
     timeout

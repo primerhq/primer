@@ -1,4 +1,6 @@
-"""The ``canvas`` toolset: canvas_get and canvas_apply, and the registrations that make it a built-in (pivot P5, Task 9; design 8.3)."""
+"""The ``canvas`` toolset: canvas_get and canvas_apply, and the registrations that make it a built-in (pivot P5, Tasks 9 and 10; design 8.3).
+
+``canvas_wait`` has its own file (``test_canvas_wait.py``); the registrations are checked here for all three tools."""
 
 from __future__ import annotations
 
@@ -77,6 +79,14 @@ async def test_the_result_of_an_apply_says_what_changed(provider, ctx):
         "added": ["title", "cover", "controls", "genre", "play", "player", "more", "viz"], "updated": ["root"], "removed": [],
     }
     assert body["warnings"] == [] and set(body) == {"rev", "changed", "warnings"}
+
+
+async def test_a_warning_reaches_the_agent(provider, ctx, world):
+    await call(provider, "canvas_apply", {"source": G("playlist_create.cl")}, ctx)
+    await _click(world, "genre", "change", value="Lo-fi")
+    is_error, body = await call(provider, "canvas_apply", {"source": 'genre = Select("Genre", ["Jazz", "Classical"])'}, ctx)
+    assert not is_error and body["warnings"] == ["genre: the user's value was reset because the element changed"]
+    assert body["changed"] == {"added": [], "updated": ["genre"], "removed": []}
 
 
 async def test_an_apply_is_a_record_of_the_agent_in_the_session(provider, ctx, world):
@@ -422,19 +432,21 @@ async def _tools(provider) -> dict[str, Any]:
 
 async def test_the_tool_flags(provider):
     tools = await _tools(provider)
-    assert set(tools) >= {"canvas_get", "canvas_apply"}
+    assert list(tools) == ["canvas_get", "canvas_apply", "canvas_wait"]
     assert {t.required_role for t in tools.values()} == {"user"} and all(t.requires_workspace for t in tools.values())
-    assert tools["canvas_apply"].interruptible is False and tools["canvas_get"].interruptible is True
-    assert not tools["canvas_get"].yields and not tools["canvas_apply"].yields
+    assert (tools["canvas_apply"].interruptible, tools["canvas_get"].interruptible, tools["canvas_wait"].interruptible) == (False, True, True)
+    assert (tools["canvas_get"].yields, tools["canvas_apply"].yields, tools["canvas_wait"].yields) == (False, False, True)
     assert all(t.toolset_id == "canvas" for t in tools.values())
     assert all(provider.requires_workspace(name) and provider.required_role(name) == "user" for name in tools)
 
 
 async def test_the_tools_are_not_exposable_over_mcp(provider):
+    """They act on the calling session's canvas (Decision 16), and canvas_wait parks: neither survives the stateless MCP surface."""
     from primer.mcp.safety import is_exposable
 
-    for tool in (await _tools(provider)).values():
-        assert is_exposable(tool, provider=provider) == (False, "needs_workspace"), tool.id
+    reasons = {"canvas_get": "needs_workspace", "canvas_apply": "needs_workspace", "canvas_wait": "yielding_unsupported"}
+    tools = await _tools(provider)
+    assert {tid: is_exposable(tool, provider=provider) for tid, tool in tools.items()} == {tid: (False, why) for tid, why in reasons.items()}
 
 
 async def test_the_apply_description_teaches_the_whole_language(provider):
@@ -507,14 +519,18 @@ async def test_the_catalogue_lists_canvas_last_and_opens_it(client):
     assert detail["builtin"] is True and detail["description"] == "Show controls, media and HTML above the chat, and read the user's clicks"
     grouped = {it["id"]: it for it in (await client.get("/v1/tools")).json()["items"]}
     assert grouped["canvas"]["available"] is True
-    assert {t["id"] for t in grouped["canvas"]["tools"]} >= {"canvas_get", "canvas_apply"}
-    assert {t["scoped_id"] for t in grouped["canvas"]["tools"]} >= {"canvas__canvas_get", "canvas__canvas_apply"}
+    assert [t["id"] for t in grouped["canvas"]["tools"]] == ["canvas_get", "canvas_apply", "canvas_wait"]
+    assert {t["scoped_id"] for t in grouped["canvas"]["tools"]} == {"canvas__canvas_get", "canvas__canvas_apply", "canvas__canvas_wait"}
+    badges = {t["id"]: (t["yields"], t["requires_workspace"], t["required_role"], t["interruptible"]) for t in grouped["canvas"]["tools"]}
+    assert badges == {
+        "canvas_get": (False, True, "user", True), "canvas_apply": (False, True, "user", False), "canvas_wait": (True, True, "user", True),
+    }
 
 
 @pytest.mark.asyncio
 async def test_the_flat_tool_catalogue_lists_the_canvas_tools(client):
     flat = {item["id"] for item in (await client.get("/v1/tools/catalogue")).json()["items"]}
-    assert {"canvas__canvas_get", "canvas__canvas_apply"} <= flat
+    assert {"canvas__canvas_get", "canvas__canvas_apply", "canvas__canvas_wait"} <= flat
 
 
 @pytest.mark.asyncio
@@ -530,16 +546,19 @@ def test_the_catalogue_reserved_ids_and_the_docs_registry_agree():      # pivot 
     assert {spec["id"] for spec in providers._BUILTIN_TOOLSETS} == RESERVED_TOOLSET_IDS == set(built_in_providers())
     # The docs registry keys a toolset's tools by their bare ids (docs write ``canvas::canvas_get`` or ``canvas__canvas_get``: the scan splits
     # the toolset off); the scoped id is the catalog entry's (the next test).
-    assert {"canvas_get", "canvas_apply"} <= set(built_in_tools()["canvas"])
+    assert {"canvas_get", "canvas_apply", "canvas_wait"} <= set(built_in_tools()["canvas"])
 
 
 async def test_the_tool_catalog_lists_the_canvas_tools():               # the wiki's reference pages are built from it
     collect_tool_entries = pytest.importorskip("primer.toolset.tool_catalog").collect_tool_entries   # P1 Task 5
     entries = await collect_tool_entries(built_in_providers())
     canvas = {e.scoped_id: e for e in entries if e.toolset_id == "canvas"}
-    assert set(canvas) == {"canvas__canvas_get", "canvas__canvas_apply"}
+    assert set(canvas) == {"canvas__canvas_get", "canvas__canvas_apply", "canvas__canvas_wait"}
     assert all(e.required_role == "user" and e.needs_workspace and e.via_call_tool for e in canvas.values())
-    assert all(e.pauses_turn is False and e.default_gate is None for e in canvas.values())
+    assert all(e.default_gate is None for e in canvas.values())
+    assert {name: e.pauses_turn for name, e in canvas.items()} == {
+        "canvas__canvas_get": False, "canvas__canvas_apply": False, "canvas__canvas_wait": True,
+    }
 
 
 def test_the_console_names_the_canvas_toolset_last():

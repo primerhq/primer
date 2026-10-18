@@ -174,6 +174,9 @@ EXAMINED_AND_INTERRUPTIBLE = {
     # pivot P5: a read, and a mark of the events it showed as seen (one fenced patch of one field); a cancel loses at worst the mark,
     # and the events are shown again
     (CANVAS_TOOLSET_ID, "canvas_get"),
+    # pivot P5: a one-shot subscription and its pinned cursor (the shape of wait_for_event), then the park; a cancel leaves an orphan
+    # subscription the dispatcher collects
+    (CANVAS_TOOLSET_ID, "canvas_wait"),
 }
 
 
