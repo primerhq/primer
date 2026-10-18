@@ -45,9 +45,24 @@ class _RecordingBackend(_StubBackend):
         return await super().create(template, overrides=overrides, workspace_id=workspace_id, resolvers=resolvers)
 
 
+class _Calls(list):
+    """What the backends were asked to ``create`` (the list itself), plus ``built``: the provider ids the registry's factory was
+    asked to build a backend for. A refused create must reach neither, because every check of ``WorkspaceRegistry.materialise``
+    runs before ``get_backend`` (review of #789, nit 1): ``create`` alone would stay empty even if a check moved after the backend
+    had been built."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.built: list[str] = []
+
+
+def _assert_nothing_built(calls: _Calls) -> None:
+    assert (list(calls), calls.built) == ([], []), "a refused create reached the backend factory or create()"
+
+
 @pytest.fixture
-def calls() -> list:
-    return []
+def calls() -> _Calls:
+    return _Calls()
 
 
 @pytest.fixture
@@ -74,7 +89,11 @@ async def sp() -> _SP:
 
 @pytest.fixture
 def toolset(sp, calls):
-    registry = WorkspaceRegistry(sp, factory=lambda provider: _RecordingBackend(provider, calls))
+    def factory(provider):
+        calls.built.append(provider.id)
+        return _RecordingBackend(provider, calls)
+
+    registry = WorkspaceRegistry(sp, factory=factory)
     return build_workspaces_toolset(storage_provider=sp, workspace_registry=registry)
 
 
@@ -94,7 +113,7 @@ async def test_docker_disk_override_answers_validation_error_naming_the_field(to
     assert out["type"] == "validation-error"
     assert "overrides.resources.disk_bytes" in out["message"]
     assert "Docker cannot limit a workspace's disk" in out["message"]
-    assert calls == []
+    _assert_nothing_built(calls)
     assert (await sp.get_storage(Workspace).list(_page())).items == []
 
 
@@ -104,21 +123,21 @@ async def test_a_local_size_override_answers_validation_error(toolset, calls):
     assert result.is_error and json.loads(result.output)["type"] == "validation-error"
     message = json.loads(result.output)["message"]
     assert "overrides.resources.cpu_cores" in message and "overrides.resources.memory_bytes" in message
-    assert calls == []
+    _assert_nothing_built(calls)
 
 
 async def test_kubernetes_takes_every_size_and_the_backend_sees_it(toolset, calls):
     result = await _create(toolset, "tpl-k3s", {"cpu_cores": 4, "memory_bytes": 8 * 2**30, "disk_bytes": 21474836480})
 
     assert not result.is_error, result.output
-    assert len(calls) == 1 and calls[0].resources.disk_bytes == 21474836480
+    assert len(calls) == 1 and calls[0].resources.disk_bytes == 21474836480 and calls.built == ["k3s"]
 
 
 async def test_docker_takes_cpu_and_memory(toolset, calls):
     result = await _create(toolset, "tpl-dock", {"cpu_cores": 1.5, "memory_bytes": 2147483648})
 
     assert not result.is_error, result.output
-    assert calls[0].resources.cpu_cores == 1.5
+    assert calls[0].resources.cpu_cores == 1.5 and calls.built == ["dock"]
 
 
 def _page():
@@ -136,7 +155,7 @@ async def test_an_absurd_size_override_answers_validation_error_naming_the_field
 
     assert result.is_error and json.loads(result.output)["type"] == "validation-error", result.output
     assert field in json.loads(result.output)["message"]
-    assert calls == []
+    _assert_nothing_built(calls)
 
 
 async def test_a_gpu_count_above_the_cap_is_a_validation_error_on_the_template_write(toolset, sp):
@@ -160,7 +179,7 @@ async def test_a_template_with_an_absurd_memory_answers_validation_error_naming_
     assert result.is_error and json.loads(result.output)["type"] == "validation-error", result.output
     message = json.loads(result.output)["message"]
     assert "template 'tpl-big'" in message and "resources.memory_bytes" in message
-    assert calls == []
+    _assert_nothing_built(calls)
 
 
 #: What an ``invalid_env_name`` refusal says (lead ruling 17 of plan 08, FINAL from the review of #789).
@@ -182,7 +201,7 @@ async def test_a_bad_env_name_in_the_overrides_answers_validation_error_naming_i
     assert result.is_error and json.loads(result.output)["type"] == "validation-error", result.output
     assert f"overrides.env.{ascii(name)}: " in json.loads(result.output)["message"]
     assert "the-secret-value" not in result.output
-    assert calls == []
+    _assert_nothing_built(calls)
 
 
 async def test_an_invalid_env_name_is_refused_with_the_kubernetes_rule_in_the_message(toolset, calls):
@@ -193,7 +212,7 @@ async def test_an_invalid_env_name_is_refused_with_the_kubernetes_rule_in_the_me
     )
 
     assert result.is_error and json.loads(result.output)["message"] == f"overrides.env.'1BAD': {_INVALID_ENV_NAME}", result.output
-    assert calls == []
+    _assert_nothing_built(calls)
 
 
 async def test_a_257_character_env_name_answers_validation_error_and_the_message_cuts_it(toolset, calls):
@@ -208,7 +227,7 @@ async def test_a_257_character_env_name_answers_validation_error_and_the_message
     assert result.is_error and json.loads(result.output)["type"] == "validation-error", result.output
     message = json.loads(result.output)["message"]
     assert message.startswith("overrides.env.") and name not in message and "..." in message
-    assert calls == []
+    _assert_nothing_built(calls)
 
 
 async def test_a_name_with_a_newline_is_shown_escaped_in_the_message(toolset, calls):
@@ -221,7 +240,7 @@ async def test_a_name_with_a_newline_is_shown_escaped_in_the_message(toolset, ca
     assert result.is_error and json.loads(result.output)["type"] == "validation-error", result.output
     message = json.loads(result.output)["message"]
     assert "\n" not in message and "'a\\nb'" in message, message
-    assert calls == []
+    _assert_nothing_built(calls)
 
 
 @pytest.mark.parametrize("name", ["1BAD", "has space", "a" * 257, "PRIMER_RUNTIME_TOKEN", "RUNTIME_TOKEN"])
@@ -239,7 +258,7 @@ async def test_a_template_env_the_cluster_would_refuse_answers_validation_error(
     if len(ascii(name)) <= 80:
         assert f"env.{ascii(name)}: " in message
     assert "the-secret-value" not in result.output
-    assert calls == []
+    _assert_nothing_built(calls)
 
 
 @pytest.mark.parametrize("name", _KUBERNETES_NAMES)
