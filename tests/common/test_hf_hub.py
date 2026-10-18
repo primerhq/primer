@@ -183,6 +183,133 @@ async def test_a_renamed_model_is_followed_to_its_new_name() -> None:
     assert (await _check_one()).status == "ok"
 
 
+@respx.mock
+async def test_a_redirect_to_another_origin_does_not_carry_the_token() -> None:
+    """Following a redirect must not hand the token to whoever the Hub (or a mirror) points at."""
+    elsewhere = "https://elsewhere.test/api/models/x/auth-check"
+    respx.get(_url()).mock(return_value=httpx.Response(307, headers={"Location": elsewhere}))
+    landed = respx.get(elsewhere).mock(return_value=httpx.Response(200))
+
+    check = await _check_one(token=TOKEN)
+
+    assert check.status == "ok"
+    assert "authorization" not in landed.calls.last.request.headers
+    assert respx.calls[0].request.headers["Authorization"] == f"Bearer {TOKEN}", "the first hop did carry it"
+
+
+@respx.mock
+async def test_a_chain_of_three_redirects_is_followed() -> None:
+    hops = [_url(), f"{HUB}/r1", f"{HUB}/r2", f"{HUB}/r3"]
+    for here, there in zip(hops, hops[1:]):
+        respx.get(here).mock(return_value=httpx.Response(307, headers={"Location": there}))
+    respx.get(hops[-1]).mock(return_value=httpx.Response(200))
+
+    assert (await _check_one()).status == "ok"
+    assert respx.calls.call_count == 4
+
+
+@respx.mock
+async def test_a_fourth_redirect_is_an_error_and_not_followed() -> None:
+    """The budget is three (a renamed repository is one): a longer chain is a loop or a misconfigured mirror."""
+    hops = [_url(), f"{HUB}/r1", f"{HUB}/r2", f"{HUB}/r3", f"{HUB}/r4"]
+    for here, there in zip(hops, hops[1:]):
+        respx.get(here).mock(return_value=httpx.Response(307, headers={"Location": there}))
+
+    check = await _check_one()
+
+    assert (check.ok, check.status, check.detail) == (False, "error", "Could not reach hub.test (TooManyRedirects)")
+    assert [str(call.request.url) for call in respx.calls] == hops[:4], "r4 is never asked"
+
+
+@respx.mock
+async def test_a_redirect_loop_is_that_names_error_and_the_next_name_is_still_asked() -> None:
+    loop = _url("org/one")
+    looping = respx.get(loop).mock(return_value=httpx.Response(307, headers={"Location": loop}))
+    respx.get(_url("org/two")).mock(return_value=httpx.Response(200))
+
+    results = await check_hf_models(["org/one", "org/two"], token=None, endpoint=HUB)
+
+    assert [(r.name, r.status, r.detail) for r in results] == [
+        ("org/one", "error", "Could not reach hub.test (TooManyRedirects)"),
+        ("org/two", "ok", "Can be pulled"),
+    ]
+    assert looping.call_count == 4, "the first request and the three redirects the budget allows"
+
+
+# ---- a Hub that cannot be reached is asked once -----------------------------------------------------------------------------------------------------------------
+
+THREE = ["org/one", "org/two", "org/three"]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [httpx.ConnectError("refused"), httpx.ConnectTimeout("slow"), httpx.ReadTimeout("slow")],
+    ids=["connect error", "connect timeout", "read timeout"],
+)
+@respx.mock
+async def test_after_the_first_transport_failure_the_rest_get_the_same_result_without_a_request(failure: Exception) -> None:
+    """A Hub that does not answer would otherwise cost a timeout (10 seconds) per name."""
+    respx.get(_url(THREE[0])).mock(side_effect=failure)
+
+    results = await check_hf_models(THREE, token=TOKEN, endpoint=HUB)
+
+    detail = f"Could not reach hub.test ({type(failure).__name__})"
+    assert [(r.name, r.ok, r.status, r.detail) for r in results] == [(name, False, "error", detail) for name in THREE]
+    assert respx.calls.call_count == 1
+    assert TOKEN not in "".join(r.model_dump_json() for r in results)
+
+
+@respx.mock
+async def test_a_name_that_is_not_a_model_id_still_says_so_after_a_transport_failure() -> None:
+    respx.get(_url("org/one")).mock(side_effect=httpx.ConnectError("refused"))
+
+    results = await check_hf_models(["org/one", "../x", "org/two"], token=None, endpoint=HUB)
+
+    assert [(r.name, r.status) for r in results] == [("org/one", "error"), ("../x", "invalid_name"), ("org/two", "error")]
+    assert respx.calls.call_count == 1
+
+
+@respx.mock
+async def test_an_answer_from_the_hub_is_not_a_transport_failure_and_the_rest_are_still_asked() -> None:
+    respx.get(_url(THREE[0])).mock(return_value=httpx.Response(500))
+    respx.get(_url(THREE[1])).mock(return_value=httpx.Response(200))
+    respx.get(_url(THREE[2])).mock(return_value=httpx.Response(403, headers={"X-Error-Code": "GatedRepo"}))
+
+    results = await check_hf_models(THREE, token=None, endpoint=HUB)
+
+    assert [r.status for r in results] == ["error", "ok", "gated"]
+    assert respx.calls.call_count == 3
+
+
+@respx.mock
+async def test_a_failure_that_is_not_one_of_reach_does_not_stop_the_rest() -> None:
+    respx.get(_url(THREE[0])).mock(side_effect=RuntimeError("something nobody foresaw"))
+    respx.get(_url(THREE[1])).mock(return_value=httpx.Response(200))
+    respx.get(_url(THREE[2])).mock(return_value=httpx.Response(200))
+
+    results = await check_hf_models(THREE, token=None, endpoint=HUB)
+
+    assert [r.status for r in results] == ["error", "ok", "ok"]
+
+
+async def test_a_client_that_cannot_be_built_is_a_result_and_stops_the_rest(monkeypatch: pytest.MonkeyPatch) -> None:
+    """What httpx reads to build a client (a proxy variable it cannot parse) can raise; a function that never raises must not let it out."""
+    built: list[dict] = []
+
+    def cannot_be_built(*args, **kwargs):
+        built.append(kwargs)
+        raise ValueError("Unknown scheme for proxy URL 'nonsense'")
+
+    monkeypatch.setattr(httpx, "AsyncClient", cannot_be_built)
+
+    results = await check_hf_models(THREE, token=TOKEN, endpoint=HUB)
+
+    assert [(r.status, r.detail) for r in results] == [("error", "Could not reach hub.test (ValueError)")] * 3
+    assert len(built) == 1, "the other names are not tried: every one would fail the same way"
+    assert "nonsense" not in "".join(r.model_dump_json() for r in results)
+    assert built[0]["follow_redirects"] is True and built[0]["max_redirects"] == 3 and built[0]["timeout"] == 10.0
+
+
 # ---- names the Hub is never asked about -------------------------------------------------------------------------------------------------------------------------
 
 

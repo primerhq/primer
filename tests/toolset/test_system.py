@@ -741,6 +741,157 @@ class TestHuggingFaceCheck:
 
 
 # ===========================================================================
+# Provider extras: the draft tests of embedding and cross-encoder providers
+# ===========================================================================
+
+
+class TestDraftTestTools:
+    """``test_embedding_provider`` and ``test_cross_encoder_provider`` answer like ``POST /v1/embedding_providers/_test`` and
+    ``POST /v1/cross_encoder_providers/_test`` and store nothing. Every upstream is mocked with ``respx``.
+    """
+
+    HUB = "https://hub.test"
+    TOOLS = ("test_embedding_provider", "test_cross_encoder_provider")
+
+    @pytest.fixture(autouse=True)
+    def _hub(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("HF_ENDPOINT", self.HUB)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", TOOLS)
+    async def test_tools_are_admin_only(self, system_toolset, name: str) -> None:
+        tools = {t.id: t async for t in system_toolset.list_tools()}
+
+        assert tools[name].required_role == "admin"
+        assert system_toolset.required_role(name) == "admin"
+        assert tools[name].yields is False
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_tools_answer_like_the_routes(self, system_toolset) -> None:
+        """The same cores answer the tool and the route; gemini via respx is the arm that needs Google, the Hub is the other."""
+        from primer.api.routers.providers import (
+            cross_encoder_draft_test,
+            embedding_draft_test,
+        )
+        from primer.llm.gemini import GEMINI_BASE_URL
+
+        respx.get(f"{GEMINI_BASE_URL}/models").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "models": [
+                        {
+                            "name": "models/gemini-embedding-001",
+                            "supportedGenerationMethods": ["embedContent"],
+                        },
+                        {
+                            "name": "models/gemini-2.5-flash",
+                            "supportedGenerationMethods": ["generateContent"],
+                        },
+                    ]
+                },
+            )
+        )
+        respx.get(f"{self.HUB}/api/models/BAAI/bge-reranker-v2-m3/auth-check").mock(
+            return_value=httpx.Response(200)
+        )
+        gemini = {"provider": "gemini", "config": {"api_key": "AIza-test-KEY-9876"}}
+        reranker = {"models": [{"name": "BAAI/bge-reranker-v2-m3"}]}
+
+        embedding = await system_toolset.call(
+            tool_name="test_embedding_provider", arguments=gemini
+        )
+        cross_encoder = await system_toolset.call(
+            tool_name="test_cross_encoder_provider", arguments=reranker
+        )
+
+        assert not embedding.is_error, embedding.output
+        assert json.loads(embedding.output) == await embedding_draft_test(gemini)
+        assert json.loads(embedding.output) == {
+            "ok": True,
+            "models": ["gemini-embedding-001"],
+        }
+        assert not cross_encoder.is_error, cross_encoder.output
+        assert json.loads(cross_encoder.output) == await cross_encoder_draft_test(
+            reranker
+        )
+        assert json.loads(cross_encoder.output)["ok"] is True
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_the_hub_check_of_an_embedding_draft_is_an_answer(
+        self, system_toolset
+    ) -> None:
+        respx.get(f"{self.HUB}/api/models/org/gated/auth-check").mock(
+            return_value=httpx.Response(403, headers={"X-Error-Code": "GatedRepo"})
+        )
+
+        result = await system_toolset.call(
+            tool_name="test_embedding_provider",
+            arguments={
+                "provider": "huggingface",
+                "config": {"token": "hf_secret_1234"},
+                "models": [{"name": "org/gated"}],
+            },
+        )
+
+        assert not result.is_error, "a model the Hub refuses is an answer, not a tool error"
+        body = json.loads(result.output)
+        assert body["ok"] is False and body["models"] == []
+        assert "1 of 1 models failed the Hub check: org/gated (gated)" in body["error"]
+        assert "hf_secret_1234" not in result.output
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", TOOLS)
+    async def test_a_draft_that_is_not_a_row_is_an_answer_not_a_tool_error(
+        self, system_toolset, name: str
+    ) -> None:
+        result = await system_toolset.call(tool_name=name, arguments={})
+
+        assert not result.is_error
+        body = json.loads(result.output)
+        assert body["ok"] is False and body["error"].startswith("invalid draft")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", TOOLS)
+    @pytest.mark.parametrize(
+        "arguments",
+        [{"models": "BAAI/bge-small-en-v1.5"}, {"config": "nope"}, {"provider": 5}],
+    )
+    async def test_arguments_of_the_wrong_shape_are_a_validation_error(
+        self, system_toolset, name: str, arguments: dict
+    ) -> None:
+        result = await system_toolset.call(tool_name=name, arguments=arguments)
+
+        assert result.is_error
+        assert json.loads(result.output)["type"] == "validation-error"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_id_and_limits_in_the_arguments_are_ignored_and_nothing_is_stored(
+        self, system_toolset, sp
+    ) -> None:
+        respx.get(f"{self.HUB}/api/models/BAAI/bge-small-en-v1.5/auth-check").mock(
+            return_value=httpx.Response(200)
+        )
+
+        result = await system_toolset.call(
+            tool_name="test_embedding_provider",
+            arguments={
+                "id": "ignored",
+                "limits": "ignored",
+                "provider": "huggingface",
+                "models": [{"name": "BAAI/bge-small-en-v1.5"}],
+            },
+        )
+
+        assert json.loads(result.output)["ok"] is True
+        assert await sp.get_storage(EmbeddingProvider).get("ignored") is None
+        assert sp.get_storage(EmbeddingProvider)._data == {}
+
+
+# ===========================================================================
 # Toolset extras: list_toolset_tools, call_tool
 # ===========================================================================
 

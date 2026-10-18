@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any, NoReturn
 from uuid import uuid4
 
@@ -36,7 +37,8 @@ import httpx
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path, Query, Request
 from pydantic import BaseModel, Field, ValidationError
 
-from primer.llm._failure import describe_failure
+from primer.common.hf_hub import MAX_MODELS_PER_CHECK, check_hf_models
+from primer.llm._failure import describe_failure, scrubbed_event_text
 from primer.llm.anthropic import _discover_anthropic_models
 from primer.llm.gemini import _discover_gemini_models
 from primer.llm.openrouter import _discover_openrouter_models
@@ -69,6 +71,7 @@ from primer.api.registries.provider_registry import (
 )
 from primer.api.routers._cdc_hooks import register_cdc_kind
 from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
+from primer.api.routers._probe_text import draft_error
 from primer.api.routers._probe_text import validation_detail as _validation_detail
 from primer.common.entity_checks import EntityCheckError
 from primer.common.log import redact_url_secrets
@@ -534,6 +537,150 @@ async def list_cross_encoder_provider_types() -> dict[str, dict[str, Any]]:
             "discoverable": False,
         },
     })
+
+
+# ---- Draft tests: embedding and cross-encoder providers ---------------------
+#
+# ``POST /embedding_providers/_test`` and ``POST /cross_encoder_providers/_test`` answer, for a draft nobody has saved, whether the provider would work. They are the
+# counterpart of the speech and web ``_test`` routes (``speech.py``, ``web_search.py``): always HTTP 200, ``{"ok": true, ...}`` or ``{"ok": false, "error": ...}``, nothing
+# stored. Before them the console's Test on these classes answered 405, because the literal path fell through to the CRUD ``/{id}`` route, which has no POST.
+#
+# The draft is a row the form has not finished (every key optional, ``id`` and ``limits`` ignored). It is validated into a transient row of the REAL model class, so the
+# message for a draft that cannot be a row is the class's own, at the field. Then, by kind:
+#
+# * ``openai``: the server's own ``GET <url>/models``, the probe behind ``_discover_models`` (chat models included);
+# * ``gemini``: Google's ListModels, kept to the ``embedContent`` models (the same probe as ``_discover_models``);
+# * ``huggingface`` (embedding and cross encoder): there is no inventory to list, so each model the draft names is looked up on the Hub with the draft's token
+#   (``primer/common/hf_hub.py``; the answer is ``checks`` plus the names that passed).
+#
+# The route functions are not called ``test_*`` on purpose: pytest collects every ``test_*`` function a test module imports.
+
+
+class _ModelProviderDraft(BaseModel):
+    """A half-filled embedding or cross-encoder form, deliberately all-optional and loosely typed.
+
+    The point of ``_test`` is to answer a draft the console has not finished typing. Typing the fields here would make FastAPI reject a wrong shape with a 422 before the
+    handler could say WHICH field is wrong, so validation happens inside, against the real row model (the same reason as the speech drafts, ``speech._SttDraft``).
+    ``id`` and ``limits`` are accepted and ignored: nothing is stored and nothing is rate limited.
+    """
+
+    id: str | None = None
+    provider: str | None = None
+    config: Any = None
+    models: Any = None
+    limits: Any = None
+
+
+def _invalid_draft(text: str) -> dict[str, Any]:
+    return {"ok": False, "error": f"invalid draft: {text}"}
+
+
+def _validated_draft(model_cls: type, draft: dict[str, Any], *, default_provider: str | None = None) -> Any:
+    """``draft`` validated into a transient ``model_cls`` row; ``pydantic.ValidationError`` says what is wrong, in the class's own words.
+
+    What the draft leaves out is filled in with what cannot matter to a test: no ``config`` is an empty one (so an ``openai`` draft is told it needs a ``url``, and a
+    Hugging Face or Gemini draft, whose keys are optional, is valid), no ``models`` is a placeholder model (a probe never reads the row's models; a Hub check reads the
+    DRAFT's, see :func:`_hub_draft_test`), and ``id`` and ``limits`` are synthesised, whatever the draft holds for them.
+    """
+    body: dict[str, Any] = {
+        "id": f"_probe_{uuid4().hex[:8]}",
+        "config": {} if draft.get("config") is None else draft["config"],
+        "models": draft.get("models") or [{"name": "_probe"}],
+        "limits": {"max_concurrency": 1},
+    }
+    provider = draft.get("provider") or default_provider
+    if provider is not None:
+        body["provider"] = provider
+    return model_cls.model_validate(body)
+
+
+def _draft_failure(exc: BaseException, config: Any) -> str:
+    """What a failed probe says, with the draft's configured secrets (its key, the password of its Base URL) and any URL credentials masked out of it."""
+    text = exc.message if isinstance(exc, BadRequestError) else f"{type(exc).__name__}: {exc}"
+    return scrubbed_event_text(text, SimpleNamespace(config=config))
+
+
+async def _hub_draft_test(draft: dict[str, Any], row: Any) -> dict[str, Any]:
+    """The Hub check of a Hugging Face draft (embedding or cross encoder): one verdict per model the DRAFT names."""
+    if not draft.get("models"):
+        return _invalid_draft("models: give at least one model name to check")
+    if len(row.models) > MAX_MODELS_PER_CHECK:
+        return _invalid_draft(f"models: at most {MAX_MODELS_PER_CHECK} model names can be checked at once")
+    token = row.config.token.get_secret_value() if row.config.token is not None else None
+    checks = await check_hf_models([model.name for model in row.models], token=token or None)
+    failed = [check for check in checks if not check.ok]
+    answer: dict[str, Any] = {
+        "ok": not failed,
+        "models": [check.name for check in checks if check.ok],
+        "checks": [check.model_dump() for check in checks],
+    }
+    if failed:
+        listed = ", ".join(f"{check.name} ({check.status})" for check in failed)
+        answer["error"] = f"{len(failed)} of {len(checks)} models failed the Hub check: {listed}"
+    return answer
+
+
+async def embedding_draft_test(draft: dict[str, Any]) -> dict[str, Any]:
+    """Test a draft embedding provider (``provider``, ``config``, ``models``; every key optional). Stores nothing, never raises.
+
+    ``{"ok": true, "models": [names the server lists]}`` for ``openai`` and ``gemini``; ``{"ok": <all passed>, "models": [names that passed], "checks": [...]}`` plus an
+    ``error`` naming the models that failed for ``huggingface``; ``{"ok": false, "error": "invalid draft: ..."}`` for a draft that cannot be a row;
+    ``{"ok": false, "error": <text>}`` for an upstream failure, the configured secrets masked out of it.
+    """
+    try:
+        row = _validated_draft(EmbeddingProvider, draft)
+    except ValidationError as exc:
+        return _invalid_draft(draft_error(exc))
+    if row.provider is EmbeddingProviderType.HUGGINGFACE:
+        return await _hub_draft_test(draft, row)
+    config = _unwrap_secrets(row.config.model_dump(mode="python"))
+    try:
+        if row.provider is EmbeddingProviderType.OPENAI:
+            found = await _probe_openai_compatible_models(config)
+        elif row.provider is EmbeddingProviderType.GEMINI:
+            found = await _probe_gemini_models(config, method="embedContent")
+        else:
+            # A kind added to EmbeddingProviderType without a test arm here: say so instead of probing it as something it is not.
+            return {"ok": False, "error": f"a draft test is not available for embedding provider {row.provider.value!r}"}
+    except Exception as exc:  # noqa: BLE001 -- a diagnostic that never raises: whatever the probe said is the answer
+        return {"ok": False, "error": _draft_failure(exc, row.config)}
+    return {"ok": True, "models": [model["name"] for model in found["models"]]}
+
+
+async def cross_encoder_draft_test(draft: dict[str, Any]) -> dict[str, Any]:
+    """Test a draft cross-encoder provider: the Hub check of the models it names (see :func:`embedding_draft_test` for the answers).
+
+    The one cross-encoder kind is ``huggingface``, so ``provider`` may be left out.
+    """
+    try:
+        row = _validated_draft(CrossEncoderProvider, draft, default_provider=CrossEncoderProviderType.HUGGINGFACE.value)
+    except ValidationError as exc:
+        return _invalid_draft(draft_error(exc))
+    return await _hub_draft_test(draft, row)
+
+
+@embedding_provider_types_router.post(
+    "/embedding_providers/_test",
+    responses=common_responses(500),
+    summary=(
+        "Test a draft embedding provider before it is saved: list the models an openai or gemini server offers, or check each named Hugging Face model on the Hub. "
+        "Returns {ok, models} or {ok=false, error}."
+    ),
+)
+async def draft_test_embedding_provider(body: _ModelProviderDraft) -> dict[str, Any]:
+    return await embedding_draft_test(body.model_dump())
+
+
+@cross_encoder_provider_types_router.post(
+    "/cross_encoder_providers/_test",
+    responses=common_responses(500),
+    summary=(
+        "Test a draft cross-encoder provider before it is saved: check each named Hugging Face model on the Hub with the token. "
+        "Returns {ok, models, checks} or {ok=false, error}."
+    ),
+)
+async def draft_test_cross_encoder_provider(body: _ModelProviderDraft) -> dict[str, Any]:
+    return await cross_encoder_draft_test(body.model_dump())
 
 
 llm_provider_router = make_crud_router(
