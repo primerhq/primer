@@ -125,7 +125,16 @@ The entities:
   registry the `web` toolset is built on).
 - `primer/api/app.py`: `_bootstrap_web_search` plus the lifespan wiring that
   constructs the registry, service, and toolset.
-- `ui/components/provider-catalog.jsx`: the `web_search` class on the unified provider catalog's rail, reached at `#/providers?class=web_search`.
+- `ui/components/provider-catalog.jsx`: the `web_search` class on the unified
+  provider catalog's rail, reached at `#/providers?class=web_search`. The
+  console create and edit work against this model because the catalog's
+  `save()` names the body through `PC_wireBody` (`provider-form.jsx`): the
+  form's `provider` becomes `provider_type` and the config gains the
+  `type` discriminant; `openEdit` seeds the draft through
+  `PC_draftFromRow`, which maps the row's `provider_type` back onto the
+  form's `provider`. The old console body `{id, provider: "tavily",
+  config: {api_key}}` was a 422: `provider` is not a model field and the
+  config had no `type` (design 13.4).
 
 ## 5. Data model
 

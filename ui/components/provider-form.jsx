@@ -374,6 +374,14 @@ function PC_LimitsFieldset({ value, onChange }) {
 // which is a string, and an emptied box stores "". Both are rejected:
 // "" fails float parsing, and a numeric string only survives because
 // Pydantic coerces it. Send numbers as numbers and drop the empties.
+//
+// Text boxes have the same mirror problem (ticket T3, design 13.4): an
+// emptied OPTIONAL box stored "" and was sent as "", which the server
+// reads as a value (a base URL of "" is a 422, a key of "" is stored and
+// masked on read). A row or config field the shape does not mark required
+// is omitted when its value is empty after trimming; a REQUIRED box keeps
+// its "" (Save is withheld for it by missingRequired, and the refusal
+// names the field).
 function PC_submittable(draft, shape, selectedType) {
   const out = { ...draft };
   // The type dropdown has the same fault limits had: `selectedType` falls
@@ -390,17 +398,62 @@ function PC_submittable(draft, shape, selectedType) {
     const next = { ...obj };
     (fields || []).forEach((f) => {
       const norm = PC_normalizeField(f);
-      if (norm.type !== "number") return;
+      if (norm.type === "number") {
+        const raw = next[norm.key];
+        if (raw === "" || raw == null) delete next[norm.key];
+        else if (typeof raw === "string") next[norm.key] = Number(raw);
+        return;
+      }
+      if (norm.required) return;
       const raw = next[norm.key];
-      if (raw === "" || raw == null) delete next[norm.key];
-      else if (typeof raw === "string") next[norm.key] = Number(raw);
+      if (typeof raw === "string" && raw.trim() === "") delete next[norm.key];
     });
     return next;
   };
   const cleaned = clean(out, shape && shape.row_fields);
   cleaned.config = clean(out.config, shape && shape.config_fields);
-  if (cleaned.config == null) delete cleaned.config;
+  // The kinds that serve config fields require the `config` key itself,
+  // even when every one of them is optional and untouched: a Hugging Face
+  // embedding with the token box untouched posts config: {}, not no key
+  // (no key is a 422 "body.config: Field required"; the cross-encoder
+  // form has the same fault). A kind without config fields keeps sending
+  // nothing.
+  if (shape && shape.config_fields && shape.config_fields.length
+    && (cleaned.config == null || Object.keys(cleaned.config).length === 0)) {
+    cleaned.config = {};
+  } else if (cleaned.config == null) {
+    delete cleaned.config;
+  }
   return cleaned;
+}
+
+// The web classes (web_search, web_fetch) name their kind
+// `provider_type` on the wire and carry the same value as the
+// `config.type` discriminant, but the form speaks `provider` everywhere:
+// the dropdown, the _types key, PC_submittable's type fallback. A served
+// row has provider_type and no provider, and the model validator matches
+// provider_type against config.type, so the old console body
+// {id, provider: "tavily", config: {api_key}} 422'd (design 13.4). The
+// two edges convert: PC_draftFromRow seeds the draft from a served row,
+// PC_wireBody names the wire body; the form internals never learn the
+// server's names.
+const PC_WEB_PLURALS = ["web_search_providers", "web_fetch_providers"];
+
+function PC_draftFromRow(plural, row) {
+  if (PC_WEB_PLURALS.includes(plural)) {
+    return { ...row, provider: row.provider_type };
+  }
+  return { ...row };
+}
+
+function PC_wireBody(plural, body) {
+  if (!PC_WEB_PLURALS.includes(plural)) return body;
+  const { provider, ...rest } = body;
+  return {
+    ...rest,
+    provider_type: provider,
+    config: { ...(body.config || {}), type: provider },
+  };
 }
 
 // The cache key of a class's GET /<plural>/_types. The Register menu (provider-catalog.jsx, PC_RegisterDropdown) and this form read the SAME URL, and used to read it under two keys, so a form
@@ -750,5 +803,7 @@ function PC_ProviderForm({
 window.PC_FIELD_TYPES = PC_FIELD_TYPES;
 window.PC_normalizeField = PC_normalizeField;
 window.PC_submittable = PC_submittable;
+window.PC_draftFromRow = PC_draftFromRow;
+window.PC_wireBody = PC_wireBody;
 window.PC_typesKey = PC_typesKey;
 window.PC_ProviderForm = PC_ProviderForm;

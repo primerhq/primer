@@ -956,7 +956,10 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
   function openEdit(k, row) {
     setFormKlass(k);
     setEditingRow(row);
-    setDraft(row);
+    // The web classes name their kind provider_type on the served row;
+    // the form speaks provider (PC_draftFromRow maps the kind for the
+    // web plurals and shallow-copies the rest).
+    setDraft(window.PC_draftFromRow(k.plural, row));
     setFormOpen(true);
     selectClass(k.key);
     selectInstance(row.id);
@@ -976,7 +979,10 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
     const path = wasEditingId
       ? `/${targetKlass.plural}/${encodeURIComponent(wasEditingId)}`
       : `/${targetKlass.plural}`;
-    await apiFetch(method, path, body);
+    // The web classes speak provider_type and config.type on the wire;
+    // PC_wireBody names the body for them and passes every other class
+    // through unchanged.
+    await apiFetch(method, path, window.PC_wireBody(targetKlass.plural, body));
     // Refresh the list beside the form. setReloadKey bumps a counter
     // nothing depends on, so a created/updated provider never appeared
     // until the operator navigated away and back: the row action beside
