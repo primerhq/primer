@@ -80,7 +80,9 @@ class ModelProfileConfig(BaseModel):
         default=None,
         description=(
             "Reasoning effort for this profile. None defers to the vendor "
-            "default. Mapped per adapter onto the vendor's own wire shape."
+            "default. Mapped onto the setting the provider and the model "
+            "take; a model with no such control gets none, and a call the "
+            "provider refuses for it is made again without it."
         ),
     )
     extended: dict[str, Any] = Field(
@@ -177,7 +179,12 @@ class ModelProfile(Describeable):
     )
     config: ModelProfileConfig = Field(
         default_factory=ModelProfileConfig,
-        description="API-level tunables applied to every call under this profile.",
+        description=(
+            "API-level tunables applied to every model call under this "
+            "profile, translated for its provider and model. Not applied "
+            "when kind=\"aggregated\": each member's own config applies to "
+            "the calls that member serves."
+        ),
     )
     harness_id: str | None = Field(
         default=None,

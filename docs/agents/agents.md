@@ -289,16 +289,22 @@ example `anthropic-1--claude-sonnet-4-6`); primer does not enforce it.
 A profile's `config` is applied to every model call made under it: each call
 of an agent's turns and compactions, and of a graph agent node that runs on
 it. `config.reasoning` is `off`, `minimal`, `low`, `medium` or `high` (null
-keeps the vendor default) and is mapped onto each vendor's own setting:
-`reasoning_effort` on OpenAI, a thinking budget on Anthropic and Gemini,
-Ollama's `think`, `chat_template_kwargs.enable_thinking` on a self-hosted
-OpenAI-compatible server, `reasoning.effort` on OpenRouter. Some vendors
-have no true off, and a model that cannot do what the level asks may refuse
-the call, so set `reasoning` only on a profile whose model supports it.
-`config.extended` holds provider-specific knobs passed to the provider
-as-is (for example `{"top_k": 20}`); a key the provider adapter does not
-know is ignored. Two profiles on one model with different `config` are how
-the same model is offered with reasoning on and off. In an aggregated
+keeps the vendor default) and is mapped onto the setting each model takes:
+on Claude, a thinking budget up to Claude 4.5 and adaptive thinking with an
+effort level from Claude 4.6; on Gemini, a thinking budget on 2.5 and a
+thinking level from Gemini 3; `reasoning_effort` on OpenAI's reasoning
+models, with the values each takes; Ollama's `think`;
+`chat_template_kwargs.enable_thinking` on a self-hosted OpenAI-compatible
+server; `reasoning.effort` on OpenRouter. Where a model has no true off, the
+closest setting is used (its lowest effort, budget or level), and a model
+with no reasoning control (gpt-4o, an older Claude or Gemini) gets none. A
+setting never makes a call fail: when the provider still refuses it, the
+call is made again without the profile's settings, and that model is called
+without them from then on. `config.extended` holds provider-specific knobs
+passed to the provider as-is (for example `{"top_k": 20}`); a key the
+provider adapter does not know is ignored, and a refused one is handled
+like a refused level. Two profiles on one model with different `config` are
+how the same model is offered with reasoning on and off. In an aggregated
 profile, each member's own `config` applies to the calls that member
 serves; the aggregate's own `config` is not applied.
 
@@ -326,17 +332,18 @@ Create the profile before the agent that names it:
 }
 ```
 
-A profile with extended thinking turned on:
+The same model registered again with reasoning on, as a second profile
+(on Claude Sonnet 4.6 this is adaptive thinking at medium effort):
 
 ```json
 {
   "tool": "system::create_model_profile",
   "arguments": {
     "entity": {
-      "id": "lp-claude--claude-sonnet-4-5-think",
-      "description": "Claude Sonnet 4.5 with extended thinking",
+      "id": "lp-claude--claude-sonnet-4-6-think",
+      "description": "Claude Sonnet 4.6 with adaptive thinking at medium effort",
       "provider_id": "lp-claude",
-      "model_name": "claude-sonnet-4-5",
+      "model_name": "claude-sonnet-4-6",
       "context_length": 200000,
       "config": {"reasoning": "medium"}
     }
