@@ -4,7 +4,9 @@ Endpoints (all under ``/v1/auth``):
 
 * ``GET  /status``    — returns ``{has_user, authenticated, username}``.
                         Used by the UI to decide register vs login vs main
-                        app on initial load. Public.
+                        app on initial load. Public. It also says how the
+                        request is signed in (``sign_in_method`` and, for
+                        single sign-on, ``sign_in_provider``).
 * ``POST /register``  — body ``{username, password}``. Only valid when no
                         user exists yet (single-user v1). 409 if any user
                         already registered; 422 on weak password. Sets
@@ -29,6 +31,7 @@ import logging
 import re
 import uuid
 from datetime import datetime, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
@@ -40,6 +43,7 @@ from primer.auth.throttle import LoginThrottle
 from primer.auth.tokens import sign_session
 from primer.auth.user_writes import stamp_login, write_user_fields
 from primer.model.except_ import NotFoundError
+from primer.model.oidc import OidcProvider
 from primer.model.user import User
 from primer.storage._predicate import FieldRef, Op, Predicate, Value
 from primer.model.storage import OffsetPage
@@ -110,6 +114,23 @@ class AuthStatus(BaseModel):
             "(llm_provider, model_profile, default_workspace, "
             "operator_agent, builder_agent, system_collection). Empty when "
             "setup_complete is true."
+        ),
+    )
+    sign_in_method: Literal["password", "sso", "api_token", "auth_disabled"] | None = Field(
+        default=None,
+        description=(
+            "How this request is signed in: 'password' (a password login), "
+            "'sso' (a single sign-on login through sign_in_provider), "
+            "'api_token' (a bearer API key) or 'auth_disabled' (auth is off; "
+            "every request runs as the built-in system admin). Unset when not "
+            "signed in."
+        ),
+    )
+    sign_in_provider: str | None = Field(
+        default=None,
+        description=(
+            "When sign_in_method is 'sso': the single sign-on provider's name, "
+            "or its id when that provider no longer exists. Unset otherwise."
         ),
     )
 
@@ -215,6 +236,35 @@ def _set_session_cookie(
 # ---------------------------------------------------------------------------
 
 
+async def _sign_in_of(request: Request) -> tuple[str | None, str | None]:
+    """How the request is signed in, as ``(sign_in_method, sign_in_provider)``; ``(None, None)`` when it is not signed in.
+
+    Read from ``request.state.actor``, the ``Principal`` the auth middleware resolved from the auth path that won (see
+    :class:`primer.model.principal.Principal`): a ``system`` actor is auth switched off, an ``api_token`` actor is a bearer key, and
+    a ``user`` actor is a cookie session whose ``source`` is ``"local"`` for a password login or the OIDC provider id for a single
+    sign-on login (``primer/api/routers/sso.py`` mints that cookie with ``src=provider.id``). Only the SSO case reads storage, for the
+    provider's name. A provider deleted since the login, or a read that fails, falls back to its id, so this public boot probe still
+    answers.
+    """
+    actor = getattr(request.state, "actor", None)
+    if actor is None:
+        return None, None
+    if actor.type == "system":
+        return "auth_disabled", None
+    if actor.type == "api_token":
+        return "api_token", None
+    if actor.type != "user":
+        return None, None
+    if actor.source == "local":
+        return "password", None
+    try:
+        provider = await get_storage_provider(request).get_storage(OidcProvider).get(actor.source)
+    except Exception:  # noqa: BLE001
+        logger.exception("auth.status: reading SSO provider %s failed; reporting its id", actor.source)
+        return "sso", actor.source
+    return "sso", provider.name if provider is not None else actor.source
+
+
 @auth_router.get("/status", response_model=AuthStatus)
 async def auth_status(request: Request) -> AuthStatus:
     """Probe used by the UI to pick register / login / main flow."""
@@ -223,6 +273,7 @@ async def auth_status(request: Request) -> AuthStatus:
     user = getattr(request.state, "user", None)
     has_user = await _has_any_user(request)
     setup = await evaluate_setup_state(get_storage_provider(request))
+    sign_in_method, sign_in_provider = await _sign_in_of(request)
     return AuthStatus(
         has_user=has_user,
         authenticated=user is not None,
@@ -233,6 +284,8 @@ async def auth_status(request: Request) -> AuthStatus:
         ),
         setup_complete=setup.complete,
         setup_missing=setup.missing,
+        sign_in_method=sign_in_method,
+        sign_in_provider=sign_in_provider,
     )
 
 
