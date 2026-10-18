@@ -1,0 +1,283 @@
+"""The plain-JS helpers of the LLM profile overlays (Platform revamp Plan 03, Task 2).
+
+``ui/components/model-profiles.jsx`` keeps every decision of the profile forms that is not drawing in one block of plain JavaScript between the
+two marker lines below: no JSX, no hook, ``function`` declarations and ``var`` constants, so each is a global in the console bundle and in a bare V8
+context. The block is evaluated here exactly as written, on top of ``ui/foundation/api.js`` (``readRefusal`` and ``ApiError``), one fresh MiniRacer
+context per test.
+
+What the block pins, in the order of the plan's Review Focus:
+
+* the body of an EDIT is the stored row with the form's fields laid over it (``MP_editBody``), because PUT is a full replace and a form that rebuilds
+  the body from what it draws drops ``config``, ``harness_id`` and every field it does not show;
+* the order of the members is the failover chain: ticking, unticking and moving never reorder the others;
+* the defaults of the routing choices are the model's, read from ``ModelProfile.model_fields``, and the option values are the model's enum values;
+* a refused save is told under the field it is about (``MP_refusalErrors``).
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from tests.ui._llm_profile_fixtures import FULL_AGG, ROWS, router_envelopes
+
+ROOT = Path(__file__).resolve().parents[2]
+SRC = ROOT / "ui" / "components" / "model-profiles.jsx"
+API = ROOT / "ui" / "foundation" / "api.js"
+
+START = "// ---- MP helpers: plain JS, no JSX (tests/ui/test_llm_profiles_helpers.py evaluates this block) ----"
+END = "// ---- end MP helpers ----"
+
+R = json.dumps(ROWS)
+RULE = "Use letters, digits, dots, dashes and underscores, and start with a letter or a digit."
+
+
+def helper_block() -> str:
+    src = SRC.read_text(encoding="utf-8")
+    assert src.count(START) == 1 and src.count(END) == 1, "the helper block is bounded by its two marker lines, once each"
+    start = src.index(START) + len(START)
+    return src[start : src.index(END, start)]
+
+
+@pytest.fixture
+def ctx():
+    from py_mini_racer import MiniRacer
+
+    c = MiniRacer()
+    try:
+        c.eval("var window = globalThis;")
+        c.eval(API.read_text(encoding="utf-8"))
+        c.eval(helper_block())
+        yield c
+    finally:
+        c.close()
+
+
+def js(ctx, expr: str):
+    return json.loads(ctx.eval(f"JSON.stringify({expr})"))
+
+
+# ---- the block itself --------------------------------------------------------------------------------------------------------------------------------
+
+
+def test_the_helper_block_holds_no_hook_and_no_react() -> None:
+    block = helper_block()
+    assert "React." not in block and "useResource" not in block and "useState" not in block, "a helper is a plain function of its arguments"
+
+
+def test_every_helper_is_a_global_of_the_bundle(ctx) -> None:
+    for name in ("MP_fmtTokens", "MP_isSingle", "MP_isManaged", "MP_memberRows", "MP_toggleMember", "MP_toggleAllMembers", "MP_moveMember",
+                 "MP_aggregateWindow", "MP_windowText", "MP_nameError", "MP_aggregateBody", "MP_editBody", "MP_refusalErrors"):
+        assert ctx.eval(f"typeof {name}") == "function", name
+    for name in ("MP_AGGREGATE_DEFAULTS", "MP_ROUTING_OPTIONS", "MP_ROUTING_HELP", "MP_FAILOVER_POINT_OPTIONS", "MP_FAILOVER_POINT_HELP",
+                 "MP_FAILOVER_ON_OPTIONS", "MP_FAILOVER_ON_HELP"):
+        assert ctx.eval(f"typeof {name}") != "undefined", name
+
+
+# ---- the routing choices ----------------------------------------------------------------------------------------------------------------------------
+
+
+def test_defaults_are_the_backend_defaults(ctx) -> None:
+    from primer.model.model_profile import ModelProfile
+
+    fields = ModelProfile.model_fields
+    assert js(ctx, "MP_AGGREGATE_DEFAULTS") == {k: fields[k].default.value for k in ("strategy", "failover_point", "failover_on")}
+    assert js(ctx, "MP_AGGREGATE_DEFAULTS.failover_on") == "transient_and_config"
+
+
+def test_option_values_are_the_backend_enum_values_and_labels_are_the_designs(ctx) -> None:
+    from primer.model.model_profile import FailoverClasses, FailoverPoint, RoutingStrategy
+
+    for name, enum in (("MP_ROUTING_OPTIONS", RoutingStrategy), ("MP_FAILOVER_POINT_OPTIONS", FailoverPoint), ("MP_FAILOVER_ON_OPTIONS", FailoverClasses)):
+        assert {o["value"] for o in js(ctx, name)} == {e.value for e in enum}
+    assert [o["label"] for o in js(ctx, "MP_ROUTING_OPTIONS")] == ["Sequential fallback", "Round robin"]
+    assert [o["label"] for o in js(ctx, "MP_FAILOVER_POINT_OPTIONS")] == ["Before the first token", "Also mid-stream"]
+    assert [o["label"] for o in js(ctx, "MP_FAILOVER_ON_OPTIONS")] == ["Transient errors", "Also auth and config errors"]
+    assert js(ctx, "MP_ROUTING_HELP") == {
+        "sequential": "Always try profile 1 first; if it answers 429, a 5xx or times out, move to the next.",
+        "round_robin": "Rotate which profile goes first on each call.",
+    }
+    assert js(ctx, "MP_FAILOVER_POINT_HELP") == "Failing over mid-stream can repeat text the user has already seen."
+    assert js(ctx, "MP_FAILOVER_ON_HELP") == "Transient errors are 429, 5xx, timeouts and network failures."
+
+
+# ---- numbers ----------------------------------------------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("n", "text"),
+    [(262144, "262,144"), (8192, "8,192"), (999, "999"), (1000000, "1,000,000"), (0, ""), (-5, ""), (12.5, ""), (None, ""), ("abc", ""), ("8192", "")],
+)
+def test_fmt_tokens(ctx, n, text) -> None:
+    assert js(ctx, f"MP_fmtTokens({json.dumps(n)})") == text
+
+
+def test_fmt_tokens_never_asks_the_locale(ctx) -> None:
+    """The grouping is the same on every machine the console runs on, and in this test."""
+    assert "toLocaleString" not in helper_block()
+
+
+# ---- the kinds ---------------------------------------------------------------------------------------------------------------------------------------
+
+
+def test_single_and_managed(ctx) -> None:
+    assert js(ctx, '[MP_isSingle({ kind: "single" }), MP_isSingle({}), MP_isSingle({ kind: "aggregated" })]') == [True, True, False]
+    assert js(ctx, '[MP_isManaged({ harness_id: "h1" }), MP_isManaged({ harness_id: null }), MP_isManaged({}), MP_isManaged(null)]') == [True, False, False, False]
+
+
+# ---- the members table --------------------------------------------------------------------------------------------------------------------------------
+
+
+def test_member_rows_list_single_profiles_checked_first_in_member_order(ctx) -> None:
+    assert js(ctx, f'MP_memberRows({R}, ["p-b", "p-a"], null)') == [
+        {"id": "p-b", "checked": True, "order": 1, "window": 8192},
+        {"id": "p-a", "checked": True, "order": 2, "window": 32768},
+        {"id": "p-c", "checked": False, "order": None, "window": 131072},
+    ]
+
+
+def test_the_unticked_rows_follow_by_id_whatever_order_the_list_came_in(ctx) -> None:
+    rows = json.dumps([{"id": "z", "kind": "single", "context_length": 1}, {"id": "m", "kind": "single", "context_length": 2}, {"id": "a", "kind": "single", "context_length": 3}])
+    assert [r["id"] for r in js(ctx, f'MP_memberRows({rows}, ["m"], null)')] == ["m", "a", "z"]
+
+
+def test_a_member_missing_from_the_list_stays_ticked_with_no_window(ctx) -> None:
+    assert js(ctx, f'MP_memberRows({R}, ["p-gone", "p-a"], null)')[0] == {"id": "p-gone", "checked": True, "order": 1, "window": None}
+
+
+def test_a_member_listed_twice_is_one_row(ctx) -> None:
+    ids = [r["id"] for r in js(ctx, f'MP_memberRows({R}, ["p-a", "p-a", "p-b"], null)')]
+    assert ids == ["p-a", "p-b", "p-c"], "a repeated key would be two checkboxes with one name"
+
+
+def test_the_edited_aggregate_is_not_its_own_candidate(ctx) -> None:
+    rows = json.dumps([*ROWS, {"id": "self", "kind": "single", "context_length": 10}])
+    assert "self" not in [r["id"] for r in js(ctx, f'MP_memberRows({rows}, [], "self")')]
+
+
+def test_an_aggregated_row_is_never_a_candidate(ctx) -> None:
+    assert "agg-x" not in [r["id"] for r in js(ctx, f"MP_memberRows({R}, [], null)")]
+
+
+def test_toggle_appends_or_removes_and_keeps_the_others_in_order(ctx) -> None:
+    assert js(ctx, 'MP_toggleMember(["a", "b", "c"], "b")') == ["a", "c"]
+    assert js(ctx, 'MP_toggleMember(["a", "c"], "b")') == ["a", "c", "b"]
+    assert js(ctx, f'MP_toggleAllMembers(["p-b"], {R}, null, true)') == ["p-b", "p-a", "p-c"]
+    assert js(ctx, f'MP_toggleAllMembers(["p-b"], {R}, null, false)') == []
+
+
+def test_toggle_all_leaves_the_edited_aggregate_out_and_none_of_the_inputs_changed(ctx) -> None:
+    rows = json.dumps([*ROWS, {"id": "self", "kind": "single", "context_length": 10}])
+    assert js(ctx, f'MP_toggleAllMembers([], {rows}, "self", true)') == ["p-a", "p-b", "p-c"]
+    assert js(ctx, '(function () { var m = ["a"]; MP_toggleMember(m, "b"); MP_toggleMember(m, "a"); return m; })()') == ["a"]
+    assert js(ctx, f'(function () {{ var m = ["p-b"]; MP_toggleAllMembers(m, {R}, null, true); return m; }})()') == ["p-b"]
+
+
+def test_move_swaps_with_a_neighbour_and_stops_at_the_ends(ctx) -> None:
+    assert js(ctx, 'MP_moveMember(["a", "b", "c"], "c", -1)') == ["a", "c", "b"]
+    assert js(ctx, 'MP_moveMember(["a", "b", "c"], "a", -1)') == ["a", "b", "c"]
+    assert js(ctx, 'MP_moveMember(["a", "b", "c"], "c", 1)') == ["a", "b", "c"]
+    assert js(ctx, 'MP_moveMember(["a", "b", "c"], "zz", 1)') == ["a", "b", "c"]
+    assert js(ctx, '(function () { var m = ["a", "b"]; MP_moveMember(m, "b", -1); return m; })()') == ["a", "b"]
+
+
+# ---- the window --------------------------------------------------------------------------------------------------------------------------------------
+
+
+def test_the_window_is_the_smallest_member_window_or_unknown(ctx) -> None:
+    assert js(ctx, f'MP_aggregateWindow(["p-a", "p-b"], {R})') == 8192
+    for members in ('[]', '["p-a", "p-gone"]', '["p-a", "agg-x"]'):
+        assert js(ctx, f"MP_aggregateWindow({members}, {R})") is None
+    assert js(ctx, f'MP_windowText(["p-a", "p-b"], {R})') == "8,192 (the smallest of the picked profiles)"
+    assert js(ctx, f"MP_windowText([], {R})") == "Pick the profiles first."
+    assert js(ctx, f'MP_windowText(["p-gone"], {R})') == "Unknown: a picked profile is not loaded."
+
+
+# ---- the name ---------------------------------------------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("name", "error"),
+    [("", "Enter a name."), ("   ", "Enter a name."), ("fast-with-fallback", None), ("Fast_1.v2", None), (" padded ", None), ("a/b", RULE), ("-a", RULE), ("a b", RULE), (".a", RULE)],
+)
+def test_the_name_rule(ctx, name, error) -> None:
+    assert js(ctx, f"MP_nameError({json.dumps(name)})") == error
+
+
+def test_the_name_rule_is_the_character_set_of_a_profile_id_the_console_builds(ctx) -> None:
+    """Plan 02's ``PC_profileIdFor`` builds ids from ``[A-Za-z0-9][A-Za-z0-9._-]*`` (conflict C9): the aggregate's name is held to the same set."""
+    for ok in ("a", "A1", "1a", "a.b_c-d", "vllm-gx10--qwen3.8-27b"):
+        assert js(ctx, f"MP_nameError({json.dumps(ok)})") is None, ok
+    for bad in ("a:b", "a/b", "a\\b", "é", "a+b", "_a"):
+        assert js(ctx, f"MP_nameError({json.dumps(bad)})") == RULE, bad
+
+
+# ---- the bodies --------------------------------------------------------------------------------------------------------------------------------------
+
+
+def test_the_create_body_has_exactly_the_aggregated_keys(ctx) -> None:
+    body = 'MP_aggregateBody({ name: " fast ", members: ["p-b", "p-a"], strategy: "round_robin", failover_point: "mid_stream", failover_on: "transient" })'
+    assert js(ctx, body) == {
+        "id": "fast", "description": "Aggregate of p-b, p-a", "kind": "aggregated", "members": ["p-b", "p-a"],
+        "strategy": "round_robin", "failover_point": "mid_stream", "failover_on": "transient",
+    }
+
+
+def test_the_create_body_copies_the_members(ctx) -> None:
+    assert js(ctx, '(function () { var m = ["a", "b"]; var b = MP_aggregateBody({ name: "x", members: m, strategy: "sequential", failover_point: "mid_stream", failover_on: "transient" }); m.push("c"); return b.members; })()') == ["a", "b"]
+
+
+def test_an_edit_body_keeps_every_field_the_form_does_not_show(ctx) -> None:
+    expected = {k: v for k, v in FULL_AGG.items() if k not in ("agent_count", "graph_node_count", "_window")}
+    assert js(ctx, f'MP_editBody({json.dumps(FULL_AGG)}, {{ strategy: "round_robin" }})') == {**expected, "strategy": "round_robin"}
+    assert js(ctx, f'(function () {{ var e = {json.dumps(FULL_AGG)}; MP_editBody(e, {{ strategy: "x" }}); return e.strategy; }})()') == "sequential"
+
+
+def test_an_edit_body_drops_only_what_the_server_adds_or_the_page_annotates(ctx) -> None:
+    row = {"id": "a", "agent_count": 1, "graph_node_count": 2, "_window": 3, "_other": 4, "config": {"extended": {"k": 1}}, "harness_id": None, "members": None}
+    assert js(ctx, f"MP_editBody({json.dumps(row)}, {{}})") == {"id": "a", "config": {"extended": {"k": 1}}, "harness_id": None, "members": None}
+
+
+# ---- a refusal under the field it is about ---------------------------------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def envelopes(fake_storage_provider) -> dict:
+    return router_envelopes(fake_storage_provider)
+
+
+def _refusal(ctx, envelope: dict, field_map: dict) -> dict:
+    return js(ctx, f"MP_refusalErrors(new window.primerApi.ApiError({json.dumps(envelope)}), {json.dumps(field_map)})")
+
+
+def _message(ctx, envelope: dict) -> str:
+    return js(ctx, f"window.primerApi.readRefusal(new window.primerApi.ApiError({json.dumps(envelope)})).message")
+
+
+def test_a_refusal_lands_under_the_field_it_names(ctx, envelopes) -> None:
+    create = {"id": "name", "members": "members"}
+    assert _refusal(ctx, envelopes["member_not_found"], create) == {"fields": {"members": "member profile 'p-gone' does not exist"}, "form": None}
+    conflict = _refusal(ctx, envelopes["conflict"], create)
+    assert conflict == {"fields": {"name": _message(ctx, envelopes["conflict"])}, "form": None}
+    assert "p-a" in conflict["fields"]["name"], "the server's own words, naming the id that is taken"
+    provider = _refusal(ctx, envelopes["provider_not_found"], create)
+    assert provider == {"fields": {}, "form": _message(ctx, envelopes["provider_not_found"])}, "a field the form does not draw is a form-level error"
+
+
+def test_a_conflict_on_an_edit_is_not_a_name_error(ctx, envelopes) -> None:
+    """The overlay passes the ``id`` key only in create mode: a 409 on an edit (a managed row, a path/body mismatch) is about the form, not the name."""
+    edit = {"members": "members", "description": "description"}
+    assert _refusal(ctx, envelopes["conflict"], edit) == {"fields": {}, "form": _message(ctx, envelopes["conflict"])}
+
+
+def test_a_refusal_that_is_not_an_api_error_is_a_form_error(ctx) -> None:
+    got = js(ctx, 'MP_refusalErrors(new Error("network down"), { id: "name", members: "members" })')
+    assert got == {"fields": {}, "form": "network down"}
+    assert js(ctx, 'MP_refusalErrors(null, { id: "name" })') == {"fields": {}, "form": "Request failed"}
+
+
+def test_a_field_named_like_an_object_property_is_not_mistaken_for_a_mapped_one(ctx) -> None:
+    envelope = {"type": "/errors/validation-error", "title": "Validation Error", "status": 422, "detail": "no", "extensions": {"error": "x_y", "field": "constructor", "message": "no"}}
+    assert _refusal(ctx, envelope, {"members": "members"}) == {"fields": {}, "form": "no"}

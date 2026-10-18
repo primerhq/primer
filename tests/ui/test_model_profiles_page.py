@@ -80,34 +80,16 @@ class TestAggregatedKindSupport:
     """01a067c4: MP_ProfileModal/MP_ProfileCard support kind="aggregated"
     profiles -- an ordered pool of other "single" profiles with a
     routing/failover policy -- alongside the pre-existing single shape.
+
+    Platform revamp Plan 03: the aggregated form is its own overlay,
+    MP_AggregateOverlay (a PK_FormOverlay on the platform kit), which the
+    hook-free MP_ProfileModal dispatcher hands an aggregated or a new profile
+    to. There is no Single/Aggregated kind toggle any more, so the source
+    pins of the toggle (its gate on allProfiles, its lock on edit, the
+    candidate filter, the reorder function, the body branch on kind and the
+    save gate) are gone; what they guarded is pinned by behaviour in
+    tests/ui/test_llm_profile_overlays.py and tests/ui/test_llm_profiles_helpers.py.
     """
-
-    def test_kind_toggle_is_gated_on_allProfiles(self) -> None:
-        """Per-provider PC_ProfilesPanel (provider-catalog.jsx) mounts
-        this modal WITHOUT allProfiles, exactly as it always has (its own
-        call site is untouched by this change) -- so the toggle must not
-        appear there, degrading that caller to its old single-kind-only
-        behaviour automatically."""
-        src = _src()
-        assert "supportsAggregated = Array.isArray(allProfiles)" in src
-        assert "supportsAggregated && (" in src
-
-    def test_kind_toggle_locks_on_edit(self) -> None:
-        """Converting an existing row's kind in place is not modelled as
-        an edit -- delete and recreate under the intended kind."""
-        src = _src()
-        assert "!isEdit && setKind" in src
-
-    def test_member_picker_excludes_self_and_aggregated_candidates(self) -> None:
-        src = _src()
-        assert 'p.kind !== "aggregated"' in src
-        assert "p.id !== id" in src
-        assert "!members.includes(p.id)" in src
-
-    def test_members_are_reorderable(self) -> None:
-        """Order is the failover order, so it has to be editable."""
-        src = _src()
-        assert "const moveMember =" in src
 
     def test_routing_and_failover_controls_present(self) -> None:
         """Enum strings match the backend StrEnums exactly (relocated
@@ -118,20 +100,6 @@ class TestAggregatedKindSupport:
             "transient", "transient_and_config",
         ):
             assert token in src, f"{token} missing"
-
-    def test_submit_body_branches_on_kind(self) -> None:
-        src = _src()
-        assert 'kind: "aggregated"' in src
-        assert "strategy," in src
-        assert "failover_point: failoverPoint," in src
-        assert "failover_on: failoverOn," in src
-
-    def test_minimum_two_members_is_surfaced_in_the_save_gate(self) -> None:
-        """The backend rejects < 2 members (ruling 6); the modal's own
-        Save gate mirrors it so a submit is not the first time an
-        operator learns this."""
-        src = _src()
-        assert "members.length >= 2" in src
 
     def test_card_shows_a_kind_chip_for_aggregated_rows(self) -> None:
         src = _src()

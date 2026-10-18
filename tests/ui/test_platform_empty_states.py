@@ -3,9 +3,9 @@
 A page entry may set ``emptyText`` and ``emptyAction: {label, run(con)}``. With no rows the empty state shows ``emptyText`` (else the generic
 ``NV_emptyText``) and a button (``nv-plat-empty-action``) that runs ``emptyAction.run(con)``; without ``emptyAction`` the page keeps its create
 button when it has one. A filter that hides every row is unchanged ("No X match" and Clear filter). The LLM profiles page uses both hooks: it has
-no single-profile create any more (design 7.1, the lead's settlement: single profiles come from the Register provider overlay's import, and Plan 03
-adds "+ Aggregate"), so its empty state points at Providers › LLM. The phone list reads the same two hooks
-(``tests/ui/test_mobile_more_reachability.py``).
+no single-profile create (design 7.1, the lead's settlement: single profiles come from the Register provider overlay's import), so its empty state
+points at Providers › LLM, and its one header action is "+ Aggregate" (Plan 03, Task 2), which hosts the aggregated profile overlay. The phone list
+reads the same two hooks (``tests/ui/test_mobile_more_reachability.py``).
 
 The page runs here for real (``tests/ui/_platform_page_harness.py``).
 """
@@ -91,9 +91,11 @@ def test_a_page_with_no_create_and_no_hooks_offers_no_button(page_ctx) -> None:
     assert js(page_ctx, 'MR.subtree("nv-plat-empty").filter(function (e) { return e.type === "button"; })') == []
 
 
-def test_the_profiles_entry_has_no_create_and_points_to_providers_llm(page_ctx) -> None:
+def test_the_profiles_entry_offers_aggregate_and_points_to_providers_llm_when_empty(page_ctx) -> None:
     p = "NV_PLAT_PAGES.profiles"
-    assert page_ctx.eval(f"{p}.createLabel === null && typeof {p}.create === 'undefined'")
+    assert page_ctx.eval(f"{p}.createLabel") == "+ Aggregate", "design 7.1: no New profile, one action"
+    page_ctx.eval(f"MODALS = []; {p}.create(CON, function (m) {{ MODALS.push(m); }});")
+    assert js(page_ctx, "MODALS") == [{"kind": "profile", "row": None}], "the action hosts the profile overlay with no row: the dispatcher draws the aggregate create form"
     assert page_ctx.eval(f"{p}.emptyText") == "No LLM profiles yet. Register an LLM provider to import its models."
     assert page_ctx.eval(f"{p}.emptyAction.label") == "Open Providers › LLM"
     page_ctx.eval(f"{p}.emptyAction.run(CON);")
@@ -101,13 +103,18 @@ def test_the_profiles_entry_has_no_create_and_points_to_providers_llm(page_ctx) 
     assert page_ctx.eval(f"typeof {p}.open") == "function", "a profile still opens in its own overlay"
 
 
-def test_the_profiles_page_draws_no_create_button_and_its_empty_state_points_to_providers(page_ctx) -> None:
+def test_the_profiles_page_draws_aggregate_and_its_empty_state_points_to_providers(page_ctx) -> None:
     page_ctx.eval("CON.view = { name: 'platform', nav: 'profiles', sub: null }; ITEMS = []; MR.mount(NV_PlatListPage, { nav: 'profiles' });")
-    assert page_ctx.eval('MR.find("nv-plat-create") === null'), "no single-profile create"
+    assert page_ctx.eval('MR.find("nv-plat-create").props.children') == "+ Aggregate", "the header's one action"
+    assert "New profile" not in js(page_ctx, "MR.texts()"), "no single-profile create"
     assert "No LLM profiles yet. Register an LLM provider to import its models." in js(page_ctx, "MR.texts()")
+    assert js(page_ctx, 'MR.subtree("nv-plat-empty").filter(function (e) { return e.type === "button"; }).length') == 1, "the empty state offers the way out, not a second create"
     page_ctx.eval('MR.click("nv-plat-empty-action")')
     assert js(page_ctx, "CALLS") == [["goView", "platform", "providers", "llm"]]
     page_ctx.eval("window.MP_ProfileModal = function (p) { return React.createElement('div', { 'data-testid': 'mp-modal', 'data-existing': p.existing && p.existing.id }); };"
                   "ITEMS = [{ id: 'p1', provider_id: 'llm-1', model_name: 'm' }]; MR.rerender();")
+    assert page_ctx.eval('MR.find("mp-modal") === null')
+    page_ctx.eval('MR.click("nv-plat-create")')
+    assert page_ctx.eval('MR.find("mp-modal") !== null && MR.find("mp-modal").props["data-existing"] === null'), "+ Aggregate hosts the profile overlay with no profile"
     page_ctx.eval('MR.click("nv-pcard-open:p1")')
     assert page_ctx.eval('MR.find("mp-modal").props["data-existing"]') == "p1", "Open still hosts the profile's own form (NV_ProfileModalHost)"
