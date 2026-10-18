@@ -255,9 +255,11 @@ it's called from a context with no implicit session.
   template without them stays yours to edit. This does not stop a
   non-admin from creating a workspace from such a template and
   running code (for example their own `init_commands` overrides)
-  next to its mounts and secret files, so an admin must not put
-  host-privileged mounts or secrets in a template ordinary users
-  may instantiate. `create_workspace` refuses a `secret` file in
+  next to its mounts, secret files and service account (the pod runs
+  as that account, so their code holds its token and permissions), so
+  an admin must not put host-privileged mounts, secrets or a service
+  account with real permissions in a template ordinary users may
+  instantiate. `create_workspace` refuses a `secret` file in
   `overrides.files` the same way.
 - Kubernetes overlays must stay on an allowlist, whoever calls:
   volumes are `emptyDir` or `configMap` only, mounts carry `name`,

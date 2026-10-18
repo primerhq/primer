@@ -25,9 +25,11 @@ admin-free template stays fully user-editable. Deleting a template that holds th
 
 What the held rule does NOT do: it stops a non-admin from REWRITING (or deleting) an admin-held template, not from
 creating a workspace FROM it. A user may still instantiate such a template, with their own user-tier
-``init_commands`` overrides, and run code alongside its mounts and secret files. So an admin must not put host-privileged
-mounts or secrets in a template that ordinary users may instantiate. ``init_commands`` are NOT gated: on the local backend they run in a host shell, but a role=user caller
-already runs any command in that same shell through a workspace session's exec tool, so gating them closes nothing.
+``init_commands`` overrides, and run code alongside its mounts, secret files and service account (the workspace pod runs as
+that account, so the user's code holds its token and permissions). So an admin must not put host-privileged mounts, secrets
+or a service account with real permissions in a template that ordinary users may instantiate. ``init_commands`` are NOT
+gated: on the local backend they run in a host shell, but a role=user caller already runs any command in that same shell
+through a workspace session's exec tool, so gating them closes nothing.
 
 The Kubernetes overlays are also checked against an allowlist for every caller (``primer.workspace.k8s.backend``).
 """
