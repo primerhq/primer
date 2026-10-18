@@ -44,7 +44,7 @@ from pydantic import BaseModel
 
 from primer.common.context_overflow import is_context_overflow, is_context_overflow_error
 from primer.int.llm import LLM
-from primer.llm._reasoning import debug_once, profile_extended
+from primer.llm._reasoning import debug_once, profile_extended, profile_stream
 from primer.llm.counting import REJECTED_ERRORS, TRANSIENT_ERRORS
 from primer.model.chat import Error as ChatError
 from primer.model.chat import Message, StreamEvent, Tool, ToolChoice
@@ -177,23 +177,6 @@ def _yielded_eligible(code: str | None, failover_on: FailoverClasses) -> bool:
     return failover_on == FailoverClasses.TRANSIENT_AND_CONFIG
 
 
-def _member_extended(
-    llm: LLM, resolved: "ResolvedModel", extended: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    """The ``extended`` one member's call sends.
-
-    The member's own profile config, translated for the member's adapter,
-    under the caller's per-call ``extended`` (which wins on a key
-    collision, being the more specific instruction). A member whose config
-    asks for nothing gets the caller's value unchanged, so its call is made
-    exactly as before.
-    """
-    own = profile_extended(llm, getattr(resolved, "config", None))
-    if not own:
-        return extended
-    return {**own, **(extended or {})}
-
-
 async def _safe_aclose(agen: AsyncIterator[StreamEvent]) -> None:
     aclose = getattr(agen, "aclose", None)
     if aclose is None:
@@ -234,14 +217,18 @@ class AggregatedLLM(LLM):
             self._cursor = (self._cursor + 1) % n
         return [members[(start + i) % n] for i in range(n)]
 
-    def profile_extended(self, config: ModelProfileConfig) -> dict[str, Any]:
+    def profile_extended(
+        self, config: ModelProfileConfig, *, model: str | None = None,
+    ) -> dict[str, Any]:
         """Nothing: each member applies its own profile's config to the calls it serves.
 
         The aggregated profile's own ``config`` has no single wire to be
         translated for (its members may be different kinds of provider), so
         it is not applied; a non-empty one is logged once at DEBUG. Each
-        member's call carries that member's config instead (see
-        :func:`_member_extended`).
+        member's call carries that member's config instead, translated for
+        the member's adapter and model, under the caller's per-call
+        ``extended`` (which wins on a key collision), through
+        :func:`primer.llm._reasoning.profile_stream`.
         """
         if config.reasoning is not None or config.extended:
             debug_once(
@@ -291,7 +278,11 @@ class AggregatedLLM(LLM):
                     f"{member_id!r} resolves to another aggregated "
                     f"profile; nesting/self-reference is not allowed",
                 )
-            agen = llm.stream(
+            agen = profile_stream(
+                llm,
+                profile_extended(
+                    llm, getattr(resolved, "config", None), model=resolved.model_name,
+                ),
                 model=resolved.model_name,
                 messages=messages,
                 temperature=temperature,
@@ -301,7 +292,7 @@ class AggregatedLLM(LLM):
                 response_format=response_format,
                 tools=tools,
                 tool_choice=tool_choice,
-                extended=_member_extended(llm, resolved, extended),
+                extended=extended,
             )
             # The per-member ``finally`` is the single cleanup point: it
             # acloses ``agen`` on EVERY exit path - failover-continue, a

@@ -944,7 +944,9 @@ class OpenResponsesLLM(LLM):
             await self._client.close()
             self._client = None
 
-    def profile_extended(self, config: ModelProfileConfig) -> dict[str, Any]:
+    def profile_extended(
+        self, config: ModelProfileConfig, *, model: str | None = None,
+    ) -> dict[str, Any]:
         """``reasoning_effort`` (sent as ``reasoning.effort``); vLLM's Responses
         endpoint honours no reasoning knob, so that flavor maps none."""
         return openresponses_extended(config, flavor=self._config.flavor.value)

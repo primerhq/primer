@@ -209,7 +209,9 @@ class OpenChatLLM(LLM):
             await self._client.close()
             self._client = None
 
-    def profile_extended(self, config: ModelProfileConfig) -> dict[str, Any]:
+    def profile_extended(
+        self, config: ModelProfileConfig, *, model: str | None = None,
+    ) -> dict[str, Any]:
         """The flavor picks the wire: ``reasoning_effort`` for OpenAI, the chat
         template's ``enable_thinking`` switch for the self-hosted servers."""
         return openchat_extended(config, flavor=self._config.flavor.value)

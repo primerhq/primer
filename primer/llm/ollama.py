@@ -504,7 +504,9 @@ class OllamaLLM(LLM):
             await self._client.close()
             self._client = None
 
-    def profile_extended(self, config: ModelProfileConfig) -> dict[str, Any]:
+    def profile_extended(
+        self, config: ModelProfileConfig, *, model: str | None = None,
+    ) -> dict[str, Any]:
         """Ollama's plain ``think`` flag."""
         return ollama_extended(config)
 

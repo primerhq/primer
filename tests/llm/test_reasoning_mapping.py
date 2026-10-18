@@ -23,17 +23,21 @@ from primer.llm._reasoning import (
     openresponses_extended,
     openrouter_extended,
     profile_extended,
-    profile_stream_kwargs,
+    profile_stream,
 )
+from primer.model.chat import Done, Error, TextDelta
+from primer.model.except_ import BadRequestError
 from primer.model.model_profile import ModelProfileConfig, ReasoningLevel
 
 
 @pytest.fixture(autouse=True)
 def _fresh_once_log():
-    """Each test sees the "log once" record empty, whatever ran before it."""
+    """Each test sees the "log once" record and the refusal memo empty."""
     _reasoning._LOGGED_ONCE.clear()
+    _reasoning._REFUSED.clear()
     yield
     _reasoning._LOGGED_ONCE.clear()
+    _reasoning._REFUSED.clear()
 
 
 def _cfg(level=None, **extended):
@@ -169,14 +173,14 @@ class TestOpenRouter:
 
 
 class _Translating:
-    """Stands in for an adapter: records the configs it was asked to translate."""
+    """Stands in for an adapter: records the configs (and models) it was asked to translate."""
 
     def __init__(self, out: dict) -> None:
         self.out = out
-        self.seen: list[ModelProfileConfig] = []
+        self.seen: list[tuple[ModelProfileConfig, str | None]] = []
 
-    def profile_extended(self, config: ModelProfileConfig) -> dict:
-        self.seen.append(config)
+    def profile_extended(self, config: ModelProfileConfig, *, model: str | None = None) -> dict:
+        self.seen.append((config, model))
         return dict(self.out)
 
 
@@ -185,38 +189,33 @@ class _NoMapping:
 
 
 class TestProfileExtended:
-    """The one entry every call site uses to apply a profile's config."""
+    """The one entry every call site uses to translate a profile's config."""
 
     def test_no_config_sends_nothing(self) -> None:
         llm = _Translating({"x": 1})
         assert profile_extended(llm, None) == {}
-        assert profile_stream_kwargs(llm, None) == {}
         assert llm.seen == []
 
     def test_an_empty_config_sends_nothing_and_is_not_translated(self) -> None:
         """An empty config is inert: the call is made exactly as before."""
         llm = _Translating({"x": 1})
-        assert profile_stream_kwargs(llm, ModelProfileConfig()) == {}
+        assert profile_extended(llm, ModelProfileConfig(), model="m") == {}
         assert llm.seen == []
 
     def test_something_that_is_not_a_profile_config_sends_nothing(self) -> None:
         """A test double's resolved model may carry anything (a MagicMock
         attribute); only a real ``ModelProfileConfig`` is applied."""
         llm = _Translating({"x": 1})
-        assert profile_stream_kwargs(llm, object()) == {}  # type: ignore[arg-type]
+        assert profile_extended(llm, object(), model="m") == {}  # type: ignore[arg-type]
         assert llm.seen == []
 
-    def test_the_adapter_translates_for_its_own_wire(self) -> None:
+    def test_the_adapter_translates_for_its_wire_and_the_model(self) -> None:
         cfg = _cfg(ReasoningLevel.LOW, seed=3)
         llm = _Translating({"reasoning_effort": "low", "seed": 3})
-        assert profile_stream_kwargs(llm, cfg) == {
-            "extended": {"reasoning_effort": "low", "seed": 3},
+        assert profile_extended(llm, cfg, model="gpt-5") == {
+            "reasoning_effort": "low", "seed": 3,
         }
-        assert llm.seen == [cfg]
-
-    def test_a_translation_that_yields_nothing_sends_nothing(self) -> None:
-        """vLLM's Responses endpoint, say: the level maps to no knob."""
-        assert profile_stream_kwargs(_Translating({}), _cfg(ReasoningLevel.OFF)) == {}
+        assert llm.seen == [(cfg, "gpt-5")]
 
     def test_an_object_without_a_mapping_gets_the_passthrough(self, caplog) -> None:
         caplog.set_level(logging.DEBUG, logger="primer.llm._reasoning")
@@ -233,3 +232,152 @@ class TestProfileExtended:
             profile_extended(_NoMapping(), _cfg(ReasoningLevel.HIGH))
         hits = [r for r in caplog.records if "_NoMapping" in r.getMessage()]
         assert len(hits) == 1
+
+
+_OK = [TextDelta(text="ok", index=0), Done(stop_reason="stop", raw_reason="stop")]
+
+
+class _Provider:
+    """A fake adapter whose answer depends on what the call carried.
+
+    ``refuse`` decides, from a call's ``extended``, how the provider refuses
+    it: ``"raise"`` (an eager adapter's BadRequestError at stream open),
+    ``"yield"`` (a lazily-opened adapter's fatal first event), or ``None``.
+    """
+
+    def __init__(self, refuse, *, message: str = "Unsupported parameter: 'reasoning_effort'",
+                 code: str | None = "bad_request", after_first: bool = False) -> None:
+        self.refuse = refuse
+        self.message = message
+        self.code = code
+        self.after_first = after_first
+        self.calls: list[dict] = []
+        self.closed = 0
+
+    def stream(self, **kwargs):
+        self.calls.append(kwargs)
+        how = self.refuse(kwargs.get("extended"))
+
+        async def _gen():
+            try:
+                if how == "raise":
+                    raise BadRequestError(self.message, code=self.code, status_code=400)
+                if self.after_first and how == "yield":
+                    yield TextDelta(text="partial", index=0)
+                if how == "yield":
+                    yield Error(fatal=True, code=self.code, message=self.message)
+                    return
+                for ev in _OK:
+                    yield ev
+            finally:
+                self.closed += 1
+
+        return _gen()
+
+
+def _refuses_knobs(extended):
+    return "raise" if extended and "reasoning_effort" in extended else None
+
+
+async def _drain(it) -> list:
+    return [ev async for ev in it]
+
+
+class TestProfileStream:
+    """A profile setting must never turn a call that works into one that fails."""
+
+    async def test_no_knobs_is_the_plain_call(self) -> None:
+        llm = _Provider(lambda ext: None)
+        await _drain(profile_stream(llm, {}, model="m", messages=[]))
+        assert llm.calls == [{"model": "m", "messages": []}]
+
+    async def test_the_knobs_ride_under_the_callers_extended(self) -> None:
+        llm = _Provider(lambda ext: None)
+        await _drain(profile_stream(
+            llm, {"reasoning_effort": "low", "seed": 1},
+            model="m", messages=[], extended={"seed": 2},
+        ))
+        assert llm.calls[0]["extended"] == {"reasoning_effort": "low", "seed": 2}
+
+    async def test_a_refusal_at_open_is_retried_once_without_the_settings(self, caplog) -> None:
+        caplog.set_level(logging.DEBUG, logger="primer.llm._reasoning")
+        llm = _Provider(_refuses_knobs)
+        events = await _drain(profile_stream(
+            llm, {"reasoning_effort": "minimal"}, model="gpt-4o", messages=[],
+        ))
+        assert [type(e).__name__ for e in events] == ["TextDelta", "Done"]
+        assert len(llm.calls) == 2
+        assert "extended" not in llm.calls[1]
+        assert any("gpt-4o" in r.getMessage() and "reasoning_effort" in r.getMessage()
+                   for r in caplog.records)
+
+    async def test_a_yielded_refusal_at_open_is_retried_too(self) -> None:
+        """Ollama and Gemini open lazily and report a 400 as a fatal first event."""
+        llm = _Provider(
+            lambda ext: "yield" if ext else None,
+            message='"llama3.2" does not support thinking',
+        )
+        events = await _drain(profile_stream(llm, {"think": True}, model="llama3.2", messages=[]))
+        assert [type(e).__name__ for e in events] == ["TextDelta", "Done"]
+        assert len(llm.calls) == 2
+
+    async def test_the_caller_extended_stays_on_the_retry(self) -> None:
+        llm = _Provider(_refuses_knobs)
+        await _drain(profile_stream(
+            llm, {"reasoning_effort": "low"}, model="m", messages=[], extended={"seed": 2},
+        ))
+        assert llm.calls[1]["extended"] == {"seed": 2}
+
+    async def test_a_refused_setting_costs_one_failed_request_not_one_per_call(self) -> None:
+        llm = _Provider(_refuses_knobs)
+        for _ in range(3):
+            await _drain(profile_stream(llm, {"reasoning_effort": "low"}, model="m", messages=[]))
+        assert len(llm.calls) == 4  # one refusal, then three plain calls
+        assert all("extended" not in c for c in llm.calls[1:])
+
+    async def test_another_model_or_setting_is_tried_afresh(self) -> None:
+        llm = _Provider(_refuses_knobs)
+        await _drain(profile_stream(llm, {"reasoning_effort": "low"}, model="m", messages=[]))
+        await _drain(profile_stream(llm, {"reasoning_effort": "low"}, model="other", messages=[]))
+        assert llm.calls[2]["extended"] == {"reasoning_effort": "low"}
+
+    async def test_a_400_that_names_no_setting_is_not_retried(self) -> None:
+        llm = _Provider(_refuses_knobs, message="prompt is too long: 250000 tokens > 200000 maximum")
+        with pytest.raises(BadRequestError):
+            await _drain(profile_stream(llm, {"reasoning_effort": "low"}, model="m", messages=[]))
+        assert len(llm.calls) == 1
+
+    async def test_a_transient_failure_is_not_a_refusal(self) -> None:
+        llm = _Provider(lambda ext: "yield", message="reasoning server overloaded", code="rate_limit")
+        events = await _drain(profile_stream(llm, {"reasoning_effort": "low"}, model="m", messages=[]))
+        assert len(llm.calls) == 1
+        assert isinstance(events[0], Error) and events[0].code == "rate_limit"
+
+    async def test_a_failure_after_the_first_event_is_never_retried(self) -> None:
+        """Output already reached the consumer; a retry would repeat it."""
+        llm = _Provider(lambda ext: "yield", after_first=True)
+        events = await _drain(profile_stream(llm, {"reasoning_effort": "low"}, model="m", messages=[]))
+        assert len(llm.calls) == 1
+        assert [type(e).__name__ for e in events] == ["TextDelta", "Error"]
+
+    async def test_a_retry_that_fails_too_is_not_remembered(self) -> None:
+        """The setting was not the cause; the next call carries it again."""
+        llm = _Provider(lambda ext: "raise")
+        for _ in range(2):
+            with pytest.raises(BadRequestError):
+                await _drain(profile_stream(llm, {"reasoning_effort": "low"}, model="m", messages=[]))
+        assert [("extended" in c) for c in llm.calls] == [True, False, True, False]
+
+    async def test_a_consumer_that_stops_early_closes_the_provider_stream(self) -> None:
+        llm = _Provider(lambda ext: None)
+        stream = profile_stream(llm, {"reasoning_effort": "low"}, model="m", messages=[])
+        await stream.__anext__()
+        await stream.aclose()
+        assert llm.closed == 1
+
+    async def test_a_key_is_matched_as_a_word_not_inside_another(self) -> None:
+        """A passthrough ``user`` knob must not match "username" in an unrelated 400."""
+        llm = _Provider(lambda ext: "raise", message="invalid username field")
+        with pytest.raises(BadRequestError):
+            await _drain(profile_stream(llm, {"user": "u-1"}, model="m", messages=[]))
+        assert len(llm.calls) == 1

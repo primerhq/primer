@@ -39,7 +39,7 @@ from primer.agent.stoppable_call import run_stoppable
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.common.context_overflow import is_context_overflow_error
 from primer.common.log import redact_credentials
-from primer.llm._reasoning import profile_stream_kwargs
+from primer.llm._reasoning import profile_extended, profile_stream
 from primer.llm._tokenizer.char_fallback import count_tokens_char_fallback
 from primer.media.hydrate import hydrate_prompt_parts
 from primer.model.chat import (
@@ -296,9 +296,11 @@ async def run_agent_turn(
     llm, llm_model
         LLM client + model resolved by the caller. Every call of the turn
         sends ``llm_model.config`` (the profile's reasoning level and
-        ``extended`` knobs) translated for ``llm``'s wire, as
-        ``stream(extended=...)``; a missing or empty config sends no
-        ``extended`` at all.
+        ``extended`` knobs) translated for ``llm``'s wire and model, as
+        ``stream(extended=...)``; a provider that refuses those settings at
+        stream open gets the call once more without them
+        (:func:`primer.llm._reasoning.profile_stream`). A missing or empty
+        config sends no ``extended`` at all.
     tool_manager
         Source of the tool catalogue + dispatch surface. Pass an
         empty :class:`ToolExecutionManager` if the agent should run
@@ -510,8 +512,11 @@ async def run_agent_turn(
     if tools is None:
         tools = await tool_manager.list_tools(principal=principal)
     # The profile's own settings, translated once for this adapter's wire and
-    # sent with every call of the turn; empty when the profile asks for none.
-    profile_kwargs = profile_stream_kwargs(llm, getattr(llm_model, "config", None))
+    # model and sent with every call of the turn; empty when the profile asks
+    # for none.
+    profile_knobs = profile_extended(
+        llm, getattr(llm_model, "config", None), model=llm_model.model_name,
+    )
 
     tool_round = initial_tool_round
     while True:
@@ -540,7 +545,9 @@ async def run_agent_turn(
         held_done: StreamEvent | None = None
         call_t0 = time.monotonic()
         call_usage: Usage | None = None
-        stream = llm.stream(
+        stream = profile_stream(
+            llm,
+            profile_knobs,
             model=llm_model.model_name,
             messages=send_prompt,
             temperature=agent.temperature,
@@ -548,7 +555,6 @@ async def run_agent_turn(
             response_format=response_format,
             tools=tools,
             tool_choice="auto",
-            **profile_kwargs,
         )
         stream_it = stream.__aiter__()
         try:

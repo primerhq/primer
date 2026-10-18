@@ -43,10 +43,12 @@ from primer.model.provider import (
 
 @pytest.fixture(autouse=True)
 def _fresh_once_log():
-    """Each test sees the "log once" record empty, whatever ran before it."""
+    """Each test sees the "log once" record and the refusal memo empty."""
     _reasoning._LOGGED_ONCE.clear()
+    _reasoning._REFUSED.clear()
     yield
     _reasoning._LOGGED_ONCE.clear()
+    _reasoning._REFUSED.clear()
 
 
 def _cfg(level: ReasoningLevel | None = None, **extended) -> ModelProfileConfig:
@@ -190,7 +192,7 @@ import json  # noqa: E402
 
 from openai import AsyncOpenAI  # noqa: E402
 
-from primer.llm._reasoning import profile_stream_kwargs  # noqa: E402
+from primer.llm._reasoning import profile_extended, profile_stream  # noqa: E402
 from primer.model.chat import Message, TextPart, ToolCallPart, ToolResultPart  # noqa: E402
 from tests.llm.test_anthropic import _aiter, _ok_events, _patched_client  # noqa: E402
 from tests.llm.test_openrouter import _sdk_http_module, _Wire  # noqa: E402
@@ -222,9 +224,10 @@ def _wire_for(module: str, monkeypatch: pytest.MonkeyPatch) -> _Wire:
     return wire
 
 
-async def _call_under(llm, cfg: ModelProfileConfig | None) -> None:
+async def _call_under(llm, cfg: ModelProfileConfig | None, *, model: str = "m") -> None:
     try:
-        async for _ in llm.stream(model="m", messages=_HI, **profile_stream_kwargs(llm, cfg)):
+        knobs = profile_extended(llm, cfg, model=model)
+        async for _ in profile_stream(llm, knobs, model=model, messages=_HI):
             pass
     finally:
         await llm.aclose()
@@ -404,9 +407,9 @@ class TestAnthropicThinkingFitsTheRequest:
         client = _patched_client(monkeypatch)
         client.messages.create.return_value = _aiter(_ok_events())
         llm = AnthropicLLM(_anthropic())
-        async for _ in llm.stream(
-            model="claude-sonnet-4-5", messages=_HI, temperature=0.0,
-            **profile_stream_kwargs(llm, _cfg(ReasoningLevel.LOW)),
+        knobs = profile_extended(llm, _cfg(ReasoningLevel.LOW), model="claude-sonnet-4-5")
+        async for _ in profile_stream(
+            llm, knobs, model="claude-sonnet-4-5", messages=_HI, temperature=0.0,
         ):
             pass
         kwargs = client.messages.create.call_args.kwargs
@@ -446,7 +449,9 @@ class Member(LLM):
         self._connect_exc = connect_exc
         self.calls: list[dict[str, Any]] = []
 
-    def profile_extended(self, config: ModelProfileConfig) -> dict[str, Any]:
+    def profile_extended(
+        self, config: ModelProfileConfig, *, model: str | None = None,
+    ) -> dict[str, Any]:
         return self._translate(config)
 
     async def stream(self, *, model, messages, **kwargs):  # type: ignore[override]
@@ -500,7 +505,8 @@ class TestAnAggregatedProfile:
     async def test_the_aggregate_own_config_is_not_sent_to_a_member(self) -> None:
         b = Member()
         llm = _aggregate([("m-b", b, _cfg(ReasoningLevel.OFF))], own=_cfg(ReasoningLevel.HIGH))
-        await _drain_agg(llm, **profile_stream_kwargs(llm, llm._profile.config))
+        knobs = profile_extended(llm, llm._profile.config, model="virtual")
+        await _drain_agg(llm, **({"extended": knobs} if knobs else {}))
         assert b.calls[0]["extended"] == {"think": False}
 
     async def test_a_member_with_no_config_is_called_exactly_as_before(self) -> None:
