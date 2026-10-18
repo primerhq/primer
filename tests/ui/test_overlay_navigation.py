@@ -27,6 +27,7 @@ SHIM_JS = (UI / "foundation" / "shell-router-shim.js").read_text(encoding="utf-8
 SHELL = (UI / "components" / "console" / "nv-shell.jsx").read_text(encoding="utf-8")
 OVERLAYS_PATH = UI / "components" / "console" / "nv-overlays.jsx"
 CATALOG = (UI / "components" / "provider-catalog.jsx").read_text(encoding="utf-8")
+CSS = (UI / "styles.css").read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -485,6 +486,37 @@ def test_the_approvals_editor_closes_to_the_approvals_page_not_to_a_list_overlay
     assert log["closeTo"] == [{"name": "platform", "nav": "approvals"}]
     assert log["open"] == [], "the editor's close used to open the approvals LIST as an overlay"
     assert log["closed"] == 0, "closeOverlayTo does the closing itself; the adapter forwards to it and adds no second step"
+
+
+def _css_z_indexes(selector: str) -> set[int]:
+    """Every z-index declared by a top-level rule whose selector is exactly ``selector``."""
+    found: set[int] = set()
+    for rule in re.finditer(r"^" + re.escape(selector) + r"\s*\{([^}]*)\}", CSS, re.M):
+        found.update(int(z) for z in re.findall(r"z-index:\s*(\d+)", rule.group(1)))
+    return found
+
+
+@pytest.mark.parametrize(
+    "overlay",
+    [{"name": "agents", "section": None, "id": "a1"}, {"name": "collections", "section": None, "id": "c1"}],
+    ids=["agent", "collection"],
+)
+def test_the_bypass_wrappers_are_on_the_overlay_layer_above_the_topbar(host, overlay):
+    """The agent editor and the collection browser draw their own Modal, inside two bare ``position: fixed`` wrappers. A fixed element is its own stacking context, so with
+    no z-index the wrappers painted at level 0, under the topbar (60): at 1366x768 the editor's header Close sat beneath it and could not be clicked (CI, and a real user)."""
+    host.mount(overlay)
+    layer = host.eval("MR.find('nv-overlay-body').props.style.zIndex")
+    assert isinstance(layer, int), "the outer wrapper must carry a z-index"
+    for testid in ("nv-overlay-body", "nv-overlay:" + overlay["name"]):
+        style = host.eval("MR.find(" + json.dumps(testid) + ").props.style")
+        assert style == {"position": "fixed", "inset": 0, "zIndex": layer}, testid
+
+    topbar, scrim = _css_z_indexes(".nv-topbar"), _css_z_indexes(".nv-scrim")
+    shared_dialogs, toasts = _css_z_indexes(".modal-overlay"), _css_z_indexes(".toast-stack")
+    assert topbar and scrim and shared_dialogs and toasts, "the pattern must still read styles.css"
+    assert layer > max(topbar), "above the topbar, or its header covers the editor's"
+    assert {layer} == scrim, "the layer .nv-scrim uses: every other overlay in this file sits on it"
+    assert layer < min(shared_dialogs) and layer < min(toasts), "below the shared dialogs a page opens from inside (the delete confirm) and the toasts"
 
 
 # ---------------------------------------------------------------------------
