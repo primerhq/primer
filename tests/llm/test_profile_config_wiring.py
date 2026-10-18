@@ -413,3 +413,112 @@ class TestAnthropicThinkingFitsTheRequest:
         assert kwargs["thinking"] == _enabled(2048)
         assert kwargs["max_tokens"] == 4096
         assert "temperature" not in kwargs
+
+
+# --------------------------------------------------------------------------- #
+# An aggregated profile: each member applies its own config                   #
+# --------------------------------------------------------------------------- #
+
+from collections.abc import Callable  # noqa: E402
+from typing import Any  # noqa: E402
+
+from primer.llm._reasoning import anthropic_extended, ollama_extended  # noqa: E402
+from primer.llm.aggregated import AggregatedLLM  # noqa: E402
+from primer.model.chat import Done, TextDelta  # noqa: E402
+from primer.model.except_ import RateLimitError  # noqa: E402
+from primer.model.model_profile import ModelProfile  # noqa: E402
+from primer.model_profile.resolver import ResolvedModel  # noqa: E402
+
+_ANSWER = [TextDelta(text="ok", index=0), Done(stop_reason="stop", raw_reason="stop")]
+
+
+class Member(LLM):
+    """A fake member adapter of one kind: translates with that kind's mapping,
+    records every stream call's keyword arguments, and can fail at connect."""
+
+    def __init__(
+        self,
+        *,
+        translate: Callable[[ModelProfileConfig], dict[str, Any]] = ollama_extended,
+        connect_exc: Exception | None = None,
+    ) -> None:
+        self._translate = translate
+        self._connect_exc = connect_exc
+        self.calls: list[dict[str, Any]] = []
+
+    def profile_extended(self, config: ModelProfileConfig) -> dict[str, Any]:
+        return self._translate(config)
+
+    async def stream(self, *, model, messages, **kwargs):  # type: ignore[override]
+        self.calls.append({"model": model, **kwargs})
+        if self._connect_exc is not None:
+            raise self._connect_exc
+        for ev in _ANSWER:
+            yield ev
+
+    async def count_tokens(self, *, model, messages, tools=None) -> int:  # pragma: no cover
+        return 1
+
+
+def _aggregate(members: list[tuple[str, Member, ModelProfileConfig]], *, own: ModelProfileConfig | None = None):
+    profile = ModelProfile(
+        id="agg-cfg", description="pool", kind="aggregated",
+        members=[m[0] for m in members], config=own or ModelProfileConfig(),
+    )
+    table = {mid: (llm, cfg) for mid, llm, cfg in members}
+
+    async def resolve(member_id: str):
+        llm, cfg = table[member_id]
+        return llm, ResolvedModel(
+            profile_id=member_id, provider_id=f"prov-{member_id}",
+            model_name=f"model-{member_id}", context_length=8192, config=cfg,
+        )
+
+    return AggregatedLLM(profile, resolve_member=resolve)
+
+
+async def _drain_agg(llm: AggregatedLLM, **kwargs) -> None:
+    async for _ in llm.stream(model="virtual", messages=_HI, **kwargs):
+        pass
+
+
+class TestAnAggregatedProfile:
+    async def test_each_member_applies_its_own_config_when_it_serves(self) -> None:
+        """Member a fails at connect, member b serves: each call carried its
+        own member's config, translated for that member's kind."""
+        a = Member(translate=ollama_extended, connect_exc=RateLimitError("busy"))
+        b = Member(translate=anthropic_extended)
+        llm = _aggregate([
+            ("m-a", a, _cfg(ReasoningLevel.HIGH, seed=1)),
+            ("m-b", b, _cfg(ReasoningLevel.OFF)),
+        ])
+        await _drain_agg(llm)
+        assert a.calls[0]["extended"] == {"seed": 1, "think": True}
+        assert b.calls[0]["extended"] == {"thinking": {"type": "disabled"}}
+        assert b.calls[0]["model"] == "model-m-b"
+
+    async def test_the_aggregate_own_config_is_not_sent_to_a_member(self) -> None:
+        b = Member()
+        llm = _aggregate([("m-b", b, _cfg(ReasoningLevel.OFF))], own=_cfg(ReasoningLevel.HIGH))
+        await _drain_agg(llm, **profile_stream_kwargs(llm, llm._profile.config))
+        assert b.calls[0]["extended"] == {"think": False}
+
+    async def test_a_member_with_no_config_is_called_exactly_as_before(self) -> None:
+        b = Member()
+        llm = _aggregate([("m-b", b, ModelProfileConfig())])
+        await _drain_agg(llm)
+        assert b.calls[0]["extended"] is None
+
+    async def test_a_per_call_extended_rides_on_top_of_the_member_config(self) -> None:
+        b = Member()
+        llm = _aggregate([("m-b", b, _cfg(ReasoningLevel.HIGH, seed=1))])
+        await _drain_agg(llm, extended={"seed": 9})
+        assert b.calls[0]["extended"] == {"seed": 9, "think": True}
+
+    def test_its_own_config_translates_to_nothing_and_is_logged_once(self, caplog) -> None:
+        caplog.set_level(logging.DEBUG, logger="primer.llm._reasoning")
+        llm = _aggregate([("m-b", Member(), ModelProfileConfig())])
+        for _ in range(2):
+            assert llm.profile_extended(_cfg(ReasoningLevel.LOW, seed=2)) == {}
+        hits = [r for r in caplog.records if "agg-cfg" in r.getMessage()]
+        assert len(hits) == 1

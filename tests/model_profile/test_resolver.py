@@ -355,3 +355,53 @@ class TestResolveLlmAggregated:
         llm2, _ = await resolve_llm(sp, registry, default_profile_id="agg-1")
         assert llm1 is llm2
         assert registry.aggregated_calls == ["agg-1", "agg-1"]
+
+
+class TestAggregatedMembersApplyTheirOwnConfig:
+    """End to end through resolve_llm: the member that serves a call of an
+    aggregated profile sends ITS OWN profile's config, translated for its
+    own adapter; the aggregate's own config is not applied."""
+
+    async def test_the_member_that_serves_brings_its_own_config(
+        self, sp: StorageProvider,
+    ) -> None:
+        from primer.llm._reasoning import anthropic_extended, profile_stream_kwargs
+        from primer.model.chat import Message, TextPart
+        from primer.model.except_ import RateLimitError
+        from tests.llm.test_profile_config_wiring import Member
+
+        store = sp.get_storage(ModelProfile)
+        await store.create(ModelProfile(
+            id="lf-a", description="a", provider_id="prov-a", model_name="ma",
+            context_length=4096,
+            config=ModelProfileConfig(reasoning=ReasoningLevel.HIGH, extended={"seed": 1}),
+        ))
+        await store.create(ModelProfile(
+            id="lf-b", description="b", provider_id="prov-b", model_name="mb",
+            context_length=8192, config=ModelProfileConfig(reasoning=ReasoningLevel.OFF),
+        ))
+        await store.create(ModelProfile(
+            id="agg-cfg", description="pool", kind="aggregated",
+            members=["lf-a", "lf-b"],
+            config=ModelProfileConfig(reasoning=ReasoningLevel.LOW),
+        ))
+        adapters = {
+            "prov-a": Member(connect_exc=RateLimitError("busy")),  # Ollama-kind
+            "prov-b": Member(translate=anthropic_extended),
+        }
+
+        class _Registry(_FakeProviderRegistry):
+            async def get_llm(self, provider_id: str):
+                self.calls.append(provider_id)
+                return adapters[provider_id]
+
+        llm, resolved = await resolve_llm(sp, _Registry(sp), default_profile_id="agg-cfg")
+        async for _ in llm.stream(
+            model="ignored",
+            messages=[Message(role="user", parts=[TextPart(text="hi")])],
+            **profile_stream_kwargs(llm, resolved.config),
+        ):
+            pass
+        assert adapters["prov-a"].calls[0]["extended"] == {"seed": 1, "think": True}
+        assert adapters["prov-b"].calls[0]["extended"] == {"thinking": {"type": "disabled"}}
+        assert adapters["prov-b"].calls[0]["model"] == "mb"

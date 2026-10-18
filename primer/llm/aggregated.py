@@ -23,6 +23,12 @@ Two failover channels, mirroring the real adapters:
   member (already-shown tokens may duplicate); in ``BEFORE_FIRST_TOKEN``
   mode a post-commit failure is surfaced/propagated (never re-emit).
 
+Profile config: each member's call carries THAT member's own profile config
+(reasoning, extended), translated for the member's own adapter, so a pool
+of differently-configured members keeps each one's settings. The
+aggregated profile's own ``config`` is not applied: it has no single wire
+to be translated for (see :meth:`AggregatedLLM.profile_extended`).
+
 Ownership: downstream LLMs are owned/cached by the ProviderRegistry.
 ``AggregatedLLM.aclose`` is a no-op.
 """
@@ -38,6 +44,7 @@ from pydantic import BaseModel
 
 from primer.common.context_overflow import is_context_overflow, is_context_overflow_error
 from primer.int.llm import LLM
+from primer.llm._reasoning import debug_once, profile_extended
 from primer.llm.counting import REJECTED_ERRORS, TRANSIENT_ERRORS
 from primer.model.chat import Error as ChatError
 from primer.model.chat import Message, StreamEvent, Tool, ToolChoice
@@ -57,6 +64,7 @@ from primer.model.model_profile import (
     FailoverClasses,
     FailoverPoint,
     ModelProfile,
+    ModelProfileConfig,
     RoutingStrategy,
 )
 from primer.model.token_count import TokenCount
@@ -169,6 +177,23 @@ def _yielded_eligible(code: str | None, failover_on: FailoverClasses) -> bool:
     return failover_on == FailoverClasses.TRANSIENT_AND_CONFIG
 
 
+def _member_extended(
+    llm: LLM, resolved: "ResolvedModel", extended: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """The ``extended`` one member's call sends.
+
+    The member's own profile config, translated for the member's adapter,
+    under the caller's per-call ``extended`` (which wins on a key
+    collision, being the more specific instruction). A member whose config
+    asks for nothing gets the caller's value unchanged, so its call is made
+    exactly as before.
+    """
+    own = profile_extended(llm, getattr(resolved, "config", None))
+    if not own:
+        return extended
+    return {**own, **(extended or {})}
+
+
 async def _safe_aclose(agen: AsyncIterator[StreamEvent]) -> None:
     aclose = getattr(agen, "aclose", None)
     if aclose is None:
@@ -208,6 +233,24 @@ class AggregatedLLM(LLM):
             start = self._cursor
             self._cursor = (self._cursor + 1) % n
         return [members[(start + i) % n] for i in range(n)]
+
+    def profile_extended(self, config: ModelProfileConfig) -> dict[str, Any]:
+        """Nothing: each member applies its own profile's config to the calls it serves.
+
+        The aggregated profile's own ``config`` has no single wire to be
+        translated for (its members may be different kinds of provider), so
+        it is not applied; a non-empty one is logged once at DEBUG. Each
+        member's call carries that member's config instead (see
+        :func:`_member_extended`).
+        """
+        if config.reasoning is not None or config.extended:
+            debug_once(
+                ("aggregated-own-config", self._profile.id),
+                "aggregated model profile %s: its own config is not applied; "
+                "each member's own config applies to the calls it serves",
+                self._profile.id,
+            )
+        return {}
 
     def _log_failover(self, member_id: str, reason: str) -> None:
         logger.info(
@@ -258,7 +301,7 @@ class AggregatedLLM(LLM):
                 response_format=response_format,
                 tools=tools,
                 tool_choice=tool_choice,
-                extended=extended,
+                extended=_member_extended(llm, resolved, extended),
             )
             # The per-member ``finally`` is the single cleanup point: it
             # acloses ``agen`` on EVERY exit path - failover-continue, a

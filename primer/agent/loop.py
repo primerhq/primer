@@ -9,7 +9,9 @@ no matter which entry point invoked the agent.
 Behaviour:
 
 * Calls ``llm.stream(...)`` with the supplied prompt, ``response_format``,
-  and the tool catalogue from the supplied :class:`ToolExecutionManager`.
+  the tool catalogue from the supplied :class:`ToolExecutionManager`, and
+  the resolved profile's config (reasoning, extended) translated for the
+  adapter's wire.
 * Yields every event live (no buffering at this layer).
 * When the assistant emits :class:`ToolCallPart`s, dispatches each via
   the manager, synthesises an :class:`ExtendedEvent(_ExecutorToolResult)`
@@ -37,6 +39,7 @@ from primer.agent.stoppable_call import run_stoppable
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.common.context_overflow import is_context_overflow_error
 from primer.common.log import redact_credentials
+from primer.llm._reasoning import profile_stream_kwargs
 from primer.llm._tokenizer.char_fallback import count_tokens_char_fallback
 from primer.media.hydrate import hydrate_prompt_parts
 from primer.model.chat import (
@@ -291,7 +294,11 @@ async def run_agent_turn(
     agent
         The agent definition (used for ``temperature``).
     llm, llm_model
-        LLM client + model resolved by the caller.
+        LLM client + model resolved by the caller. Every call of the turn
+        sends ``llm_model.config`` (the profile's reasoning level and
+        ``extended`` knobs) translated for ``llm``'s wire, as
+        ``stream(extended=...)``; a missing or empty config sends no
+        ``extended`` at all.
     tool_manager
         Source of the tool catalogue + dispatch surface. Pass an
         empty :class:`ToolExecutionManager` if the agent should run
@@ -502,6 +509,9 @@ async def run_agent_turn(
     """
     if tools is None:
         tools = await tool_manager.list_tools(principal=principal)
+    # The profile's own settings, translated once for this adapter's wire and
+    # sent with every call of the turn; empty when the profile asks for none.
+    profile_kwargs = profile_stream_kwargs(llm, getattr(llm_model, "config", None))
 
     tool_round = initial_tool_round
     while True:
@@ -538,6 +548,7 @@ async def run_agent_turn(
             response_format=response_format,
             tools=tools,
             tool_choice="auto",
+            **profile_kwargs,
         )
         stream_it = stream.__aiter__()
         try:
