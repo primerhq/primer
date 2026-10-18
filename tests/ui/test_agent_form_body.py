@@ -1,8 +1,11 @@
 """What the agent form sends when it saves (platform revamp plan 05, Task 1; design section 9: the rebuilt overlay saves what the form sends today).
 
-A characterization test. Each expected body is derived from the submit code of ``AG_NewAgentModal`` (``ui/components/agents.jsx``) as it is, and
-the overlay rebuild (plan 05, Task 4) must keep every one of them green UNCHANGED. The form runs in V8 (``tests/ui/_agent_form_harness.py``) with the
-real ``useMutation``, and the body is read from the recorded ``apiFetch`` call.
+A characterization test. Each expected body is derived from the submit code of ``AG_NewAgentModal`` (``ui/components/agents.jsx``), and the overlay
+rebuild (plan 05, Task 4) must keep every one of them green UNCHANGED. The form runs in V8 (``tests/ui/_agent_form_harness.py``) with the real
+``useMutation``, and the body is read from the recorded ``apiFetch`` call.
+
+Two lossy saves the plan found (its open point 1) are fixed on the lead's call, and the last two sections pin them: a stored unbounded
+``max_tool_turns`` (null) was saved back as 50, and a stored multi-part ``compaction_prompt`` was saved back joined into one part.
 """
 
 from __future__ import annotations
@@ -72,15 +75,6 @@ def test_an_agent_on_a_deleted_profile_keeps_that_profile_on_save(ctx):  # plan 
     assert body(ctx)["model"] == {"profile_id": "gone"}
 
 
-def test_known_quirks_kept_as_today(ctx):
-    """Kept on purpose (design 9: same body). The lead decides whether to fix them (plan 05, open point 1); flip this test in the task that does.
-
-    The unbounded turn cap is fixed (the tests below). The multi-part compaction prompt is still joined into one part."""
-    mount(ctx, existing={**FULL, "compaction_prompt": ["Keep sources.", "Keep the file under edit."]})
-    click(ctx, "agent-form-submit")
-    assert body(ctx)["compaction_prompt"] == ["Keep sources.\n\nKeep the file under edit."]
-
-
 def _attr(ctx, testid: str, name: str):
     """One prop of the element with that testid, as the form rendered it (None when the element has no such prop)."""
     return json.loads(ctx.eval(f"JSON.stringify({{v: MR.find({json.dumps(testid)}).props[{json.dumps(name)}]}})")).get("v")
@@ -128,3 +122,47 @@ def test_a_new_agent_starts_at_the_default_turn_cap_and_can_be_cleared_to_no_lim
     type_into(ctx, "agent-max-tool-turns", "")
     click(ctx, "agent-form-submit")
     assert body(ctx)["max_tool_turns"] is None
+
+
+# ---- a multi-part compaction prompt (plan 05 open point 1, fixed on the lead's call) --------------------------------------------------------------
+# compaction_prompt is a list of parts the runtime joins (primer/model/agent.py). The form shows the parts as one text, joined with a blank line,
+# and saved that text as ONE part, so any edit of the agent rewrote a stored multi-part prompt. Saved with the text it showed, the stored parts
+# now go back unchanged. An edited text is saved as one part, as before.
+
+PARTS = ["Keep sources.", "Keep the file under edit."]
+MULTI_PART = {**FULL, "compaction_prompt": PARTS}
+
+
+def test_a_multi_part_compaction_prompt_left_alone_is_saved_back_as_its_parts(ctx):
+    mount(ctx, existing=MULTI_PART)
+    type_into(ctx, "agent-description", "Triages refund requests")
+    click(ctx, "agent-form-submit")
+    assert body(ctx) == {**{k: v for k, v in MULTI_PART.items() if k != "harness_id"}, "description": "Triages refund requests"}
+
+
+def test_a_multi_part_compaction_prompt_shows_as_one_text_with_a_blank_line_between_the_parts(ctx):
+    mount(ctx, existing=MULTI_PART)
+    assert _attr(ctx, "agent-compaction-prompt", "value") == "Keep sources.\n\nKeep the file under edit."
+
+
+def test_an_edited_compaction_prompt_is_saved_as_one_part(ctx):
+    mount(ctx, existing=MULTI_PART)
+    type_into(ctx, "agent-compaction-prompt", "Keep sources and the file under edit.")
+    click(ctx, "agent-form-submit")
+    assert body(ctx)["compaction_prompt"] == ["Keep sources and the file under edit."]
+
+
+def test_an_edit_typed_back_to_the_text_it_showed_keeps_the_parts(ctx):
+    """What decides is the text, not a key press: an edit the operator undoes by hand rewrites nothing."""
+    mount(ctx, existing=MULTI_PART)
+    type_into(ctx, "agent-compaction-prompt", "Keep sources.")
+    type_into(ctx, "agent-compaction-prompt", "Keep sources.\n\nKeep the file under edit.")
+    click(ctx, "agent-form-submit")
+    assert body(ctx)["compaction_prompt"] == PARTS
+
+
+def test_a_cleared_compaction_prompt_is_saved_empty(ctx):
+    mount(ctx, existing=MULTI_PART)
+    type_into(ctx, "agent-compaction-prompt", "")
+    click(ctx, "agent-form-submit")
+    assert body(ctx)["compaction_prompt"] == []
