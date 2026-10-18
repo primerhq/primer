@@ -251,8 +251,9 @@ class WorkspaceRegistry:
         and leaves nothing behind. The same door refuses the other inputs a
         cluster would reject late and as a 500 (lead ruling 17 of plan 08): an
         environment variable name that Kubernetes would refuse (not its
-        ``^[-._a-zA-Z][-._a-zA-Z0-9]*$`` pattern, or over 256 characters; so
-        ``my-var`` and ``a.b`` pass) or that is one the platform sets itself
+        ``^[-._a-zA-Z][-._a-zA-Z0-9]*$`` pattern, ``.``, ``..`` or a name
+        starting with ``..``, or over 256 characters; so ``my-var`` and
+        ``a.b`` pass) or that is one the platform sets itself
         (:mod:`primer.workspace.env_names`), and a template CPU or memory
         above the sane maxima.
         """

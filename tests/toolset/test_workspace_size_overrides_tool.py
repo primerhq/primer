@@ -183,14 +183,14 @@ async def test_a_template_with_an_absurd_memory_answers_validation_error_naming_
 
 
 #: What an ``invalid_env_name`` refusal says (lead ruling 17 of plan 08, FINAL from the review of #789).
-_INVALID_ENV_NAME = "An environment variable name is 1 to 256 characters of ASCII letters, digits, '_', '-' and '.', and does not start with a digit. Rename or remove it."
+_INVALID_ENV_NAME = "An environment variable name is 1 to 256 characters of ASCII letters, digits, '_', '-' and '.'. It does not start with a digit or with '..', and it is not '.'. Rename or remove it."
 
-#: Names Kubernetes accepts that the first (POSIX-only) version of the rule refused, one that starts with an underscore, and the
-#: longest allowed.
-_KUBERNETES_NAMES = ["my-var", "a.b", "_x", "a" * 256]
+#: Names Kubernetes accepts that the first (POSIX-only) version of the rule refused, one that starts with an underscore, dots that
+#: are not the ``.`` / ``..`` / ``..x`` start, and the longest allowed.
+_KUBERNETES_NAMES = ["my-var", "a.b", "_x", ".x", "x..", "a" * 256]
 
 
-@pytest.mark.parametrize("name", ["1BAD", "a b", "A=B", "", "café", "RUNTIME_TOKEN", "PRIMER_RUNTIME_TOKEN"])
+@pytest.mark.parametrize("name", ["1BAD", "a b", "A=B", "", "café", ".", "..", "..x", "RUNTIME_TOKEN", "PRIMER_RUNTIME_TOKEN"])
 async def test_a_bad_env_name_in_the_overrides_answers_validation_error_naming_it(toolset, calls, name):
     result = await toolset.call(
         tool_name="create_workspace",
@@ -243,7 +243,7 @@ async def test_a_name_with_a_newline_is_shown_escaped_in_the_message(toolset, ca
     _assert_nothing_built(calls)
 
 
-@pytest.mark.parametrize("name", ["1BAD", "has space", "a" * 257, "PRIMER_RUNTIME_TOKEN", "RUNTIME_TOKEN"])
+@pytest.mark.parametrize("name", ["1BAD", "has space", "a" * 257, ".", "..", "..x", "PRIMER_RUNTIME_TOKEN", "RUNTIME_TOKEN"])
 async def test_a_template_env_the_cluster_would_refuse_answers_validation_error(toolset, sp, calls, name):
     await sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate(
         id="tpl-env", provider_id="k3s", description="d", backend=KubernetesTemplateConfig(image="rt:1"),
