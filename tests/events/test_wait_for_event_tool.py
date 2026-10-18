@@ -22,6 +22,7 @@ from primer.toolset.events_wait import (
     make_wait_for_event_handler,
     wait_for_event_resume,
 )
+from tests._support.caller import ADMIN_CALLER
 
 # asyncio_mode = "auto" in pyproject.toml: async tests need no marker.
 
@@ -46,10 +47,14 @@ async def sp(tmp_path: Path) -> AsyncIterator[SqliteStorageProvider]:
 
 
 def _ctx(session_id="sess-1", tool_call_id="call-1") -> ToolContext:
+    # An admin's run: these tests wait on kinds the event feed hides from a
+    # non-admin (collection.*, "*"), which a non-admin run is refused (pivot
+    # P1; tests/events/test_wait_for_event_kinds.py pins that rule).
     return ToolContext(
         tool_call_id=tool_call_id,
         session_id=session_id,
         workspace_id="w",
+        initiated_by=ADMIN_CALLER.initiated_by,
     )
 
 
@@ -93,6 +98,7 @@ async def test_handler_rejects_chat_surface_and_bad_regex(sp):
         ctx=_ctx(),
     )
     assert bad_regex.is_error
+    assert json.loads(bad_regex.output)["type"] == "validation-error"
     # Nothing half-created.
     from primer.model.storage import OffsetPage
 

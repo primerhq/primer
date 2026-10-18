@@ -120,6 +120,14 @@ async def test_ask_user_and_wait_for_event_are_role_user(system_toolset):
     assert {(await _tool(system_toolset, n)).required_role for n in ("ask_user", "wait_for_event")} == {"user"}
 
 
+async def test_a_user_run_cannot_widen_wait_for_event_through_call_tool(system_toolset):
+    """``wait_for_event`` is role user, so ``call_tool`` runs it for a user-role run, and the tool's own rule still holds: a non-admin waits only
+    on the kinds the event feed shows it (tests/events/test_wait_for_event_kinds.py). Refused before anything is stored."""
+    r = await system_toolset.call(tool_name="call_tool", ctx=_ctx(USER), arguments={
+        "toolset_id": "system", "tool_name": "wait_for_event", "arguments": {"event_types": ["agent.*"]}})
+    assert r.is_error and json.loads(r.output)["type"] == "forbidden"
+
+
 # ---- escalation: a user-role run reaching an admin tool through call_tool ----------------------------------------------------------------------------------
 
 
