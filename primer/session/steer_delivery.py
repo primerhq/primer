@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from primer.model.except_ import ConflictError, NotFoundError
-from primer.model.workspace_session import WorkspaceSession
+from primer.model.workspace_session import PeerAttribution, WorkspaceSession
 from primer.session.enqueue import SessionWakeDeps, wake_session
 from primer.session.pending_messages import store_pending_steer
 from primer.session.steer_routing import ROUTE_PENDING, route_steer
@@ -46,12 +46,26 @@ async def deliver_steer(
     claim_engine: Any,
     workspace_registry: Any,
     event_bus: Any = None,
+    peer: PeerAttribution | None = None,
 ) -> SteerDelivery:
     """Steer ``session_id`` with ``text``, honouring the parallelism mode.
 
     ``parallelism="skip"`` drops the steer when the target already has a
     non-terminal turn; ``"queue"`` stores it as a pending row the drain
     checkpoint realizes. An idle target is woken immediately.
+
+    ``peer`` (pivot P3) says the text was sent by another session
+    (``message_session``). It goes to :func:`wake_session` when the target
+    is woken, and into the pending row's ``attribution`` when the message
+    is queued, so the sender and the hop count reach the USER_INPUT record
+    whichever way the message is delivered.
+
+    The outcome is ``DELIVERED_QUEUED`` when the message was stored and not
+    written: the target had a turn open, or :func:`wake_session` held the
+    message because the session is paused (it returns the row untouched,
+    ``turn_status`` not claimable). A wake that lands arms the turn
+    (``claimable``) and reports ``DELIVERED_WOKEN``; so does a wake that
+    returns nothing, which is what the test doubles do.
 
     ``human_intent`` (01a08c08, required, no default): forwarded verbatim
     to :func:`wake_session` -- True for a channel thread reply, False for
@@ -79,10 +93,11 @@ async def deliver_steer(
             text=text,
             workspace_registry=workspace_registry,
             event_bus=event_bus,
+            attribution=peer.as_attribution() if peer is not None else None,
         )
         return SteerDelivery(outcome=DELIVERED_QUEUED, session_id=session_id)
     try:
-        await wake_session(
+        woken = await wake_session(
             workspace_id=row.workspace_id,
             session_id=session_id,
             instruction=text,
@@ -94,6 +109,7 @@ async def deliver_steer(
                 workspace_registry=workspace_registry,
                 event_bus=event_bus,
             ),
+            peer=peer,
         )
     except (NotFoundError, ConflictError):
         # Raced deletion, or an ENDED session whose ended_reason forbids a
@@ -104,6 +120,8 @@ async def deliver_steer(
             exc_info=True,
         )
         return SteerDelivery(outcome=DELIVERED_MISSING)
+    if woken is not None and woken.turn_status != "claimable":
+        return SteerDelivery(outcome=DELIVERED_QUEUED, session_id=session_id)
     return SteerDelivery(outcome=DELIVERED_WOKEN, session_id=session_id)
 
 

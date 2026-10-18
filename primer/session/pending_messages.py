@@ -24,8 +24,11 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from pydantic import ValidationError
+
 from primer.model.storage import FieldRef, OffsetPage, Op, OrderBy, Predicate, Value
 from primer.model.workspace_session import (
+    PeerAttribution,
     PendingSessionMessage,
     SessionMessageKind,
     SessionMessageRecord,
@@ -210,6 +213,14 @@ async def realize_next_pending(
     Returns True when a row was realized and the session woken. The row
     is deleted before the wake so a crash between the two loses the
     follow-up rather than replaying it forever.
+
+    A message that came from another session carries its sender and hop
+    count in ``attribution`` (pivot P3); they go back into the wake, so the
+    USER_INPUT record names the sender and the session's ``peer_hops``
+    becomes the message's hop count. Dropping them here would restart every
+    reply chain at hop 1 whenever a reply was queued behind a turn. A
+    malformed attribution is logged and the message is realized as a plain
+    one: it must not be lost, and it must not wedge the queue.
     """
     storage = storage_provider.get_storage(PendingSessionMessage)
     page = await storage.find(
@@ -236,6 +247,11 @@ async def realize_next_pending(
         # Reaped rather than left at the head of the queue, where it
         # would block every later follow-up behind an empty wake.
         return False
+    peer = None
+    try:
+        peer = PeerAttribution.from_attribution(row.attribution)
+    except ValidationError:
+        logger.warning("realize: ignoring a malformed peer attribution on pending row %s", row.id)
     await wake_session(
         workspace_id=workspace_id,
         session_id=session_id,
@@ -246,6 +262,7 @@ async def realize_next_pending(
         # has since been paused, this wake must queue behind that pause
         # like any other non-human wake, not resume it.
         human_intent=False,
+        peer=peer,
         deps=wake_deps,
     )
     return True
