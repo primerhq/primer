@@ -27,7 +27,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from primer.authz import _ROLE_RANK
+from primer.authz import _ROLE_RANK, principal_rank, rank_label
 from primer.events.redaction import MASK
 from primer.model.principal import PrincipalRef
 from primer.model.trigger import Subscription, Trigger
@@ -94,12 +94,12 @@ async def principal_for_fire(sub: Subscription, storage_provider: Any) -> Princi
 
 
 def _rank(ref: PrincipalRef | None) -> int:
-    """How far ``ref`` reaches through the role floors: system clears all of them, an unattributed run is an ordinary user."""
-    if ref is None:
-        ref = PrincipalRef.unattributed()
-    if ref.type == "system":
-        return len(_ROLE_RANK)
-    return _ROLE_RANK.get(ref.role, -1)
+    """How far ``ref`` reaches through the role floors: system clears all of them, an unattributed run is an ordinary user.
+
+    The rule is :func:`primer.authz.principal_rank`, shared with the peer messages one session sends another
+    (:mod:`primer.session.peer_messages`): both decide whether a run may drive a session that runs at its creator's rank.
+    """
+    return principal_rank(ref)
 
 
 async def refuse_steer_above_fire(sub: Subscription, session: Any, storage_provider: Any) -> str | None:
@@ -125,9 +125,7 @@ async def refuse_steer_above_fire(sub: Subscription, session: Any, storage_provi
 
 def _rank_label(ref: PrincipalRef | None) -> str:
     """The rank of ``ref`` in words, without naming who it is (the reason is stored on the subscription row)."""
-    if ref is None:
-        return "user (unattributed)"
-    return "system" if ref.type == "system" else str(ref.role)
+    return rank_label(ref)
 
 
 # ---------------------------------------------------------------------------

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from primer.authz import _ROLE_RANK, _role_allows
+from primer.authz import _ROLE_RANK, _role_allows, principal_rank
 from primer.model.principal import Principal, PrincipalRef
 
 
@@ -107,3 +107,52 @@ def test_principalref_projection_duck_types_like_principal() -> None:
 
 def test_role_rank_ordering() -> None:
     assert _ROLE_RANK["restricted"] < _ROLE_RANK["user"] < _ROLE_RANK["admin"]
+
+
+# ---- principal_rank: how far a run reaches when it steers another session (pivot P3) ---------------------------------------------
+
+
+def _ref(role, type_="user"):
+    return PrincipalRef(type=type_, id="x", display="x", role=role, source="local")
+
+
+def test_principal_rank_orders_system_admin_user_restricted():
+    assert principal_rank(PrincipalRef.system()) == 3
+    assert principal_rank(_ref("admin")) == 2
+    assert principal_rank(_ref("user")) == 1
+    assert principal_rank(_ref("restricted")) == 0
+    assert principal_rank(_ref("auditor")) == -1
+    assert principal_rank(None) == 1
+
+
+def test_system_ranks_above_every_role():
+    """A system run clears every role floor, so it outranks an admin; the rank is derived from the table, not a literal."""
+    assert principal_rank(PrincipalRef.system()) == len(_ROLE_RANK) > max(_ROLE_RANK.values())
+
+
+def test_a_run_nobody_can_name_ranks_as_an_ordinary_user():
+    """No recorded initiator is the unattributed stand-in: a user, never the system (security review A-20)."""
+    assert principal_rank(None) == principal_rank(PrincipalRef.unattributed()) == _ROLE_RANK["user"]
+
+
+def test_an_unranked_role_loses_every_comparison():
+    assert principal_rank(_ref(None)) == principal_rank(_ref("auditor")) == -1 < principal_rank(_ref("restricted"))
+
+
+def test_a_live_principal_ranks_like_its_persisted_projection():
+    assert principal_rank(_user("admin")) == principal_rank(_ref("admin")) == 2
+
+
+def test_the_trigger_steer_rank_is_the_shared_rank():
+    from primer.trigger.owner import _rank
+
+    for ref in (None, PrincipalRef.system(), PrincipalRef.unattributed(), _ref("admin"), _ref("user", "trigger"), _ref(None, "api_token")):
+        assert _rank(ref) == principal_rank(ref)
+
+
+def test_the_trigger_steer_rank_goes_through_the_shared_rule(monkeypatch):
+    """No second copy of the rule: the trigger's ``_rank`` calls ``principal_rank``, so changing the rule there changes both."""
+    import primer.trigger.owner as owner
+
+    monkeypatch.setattr(owner, "principal_rank", lambda ref: 42)
+    assert owner._rank(_ref("user")) == 42
