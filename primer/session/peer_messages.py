@@ -341,7 +341,9 @@ async def send_peer_message(
     The rate check, the delivery and the ledger write are one step under the sender's lock, so concurrent sends of one sender cannot all pass at
     the limit. The state the guards and the result describe (is a turn open, what the session waits on, is it paused) is read once, just before the
     delivery; the delivery reads the row again and is what decides, so a session that changed in between is delivered to by its new state and
-    the result says what happened (``delivery``).
+    the result says what happened (``delivery``). For ``mode="if_idle"`` that means: a turn that opens in between is caught by the delivery
+    (``skip``, refused, nothing stored), but a pause that lands in between holds the message like any other non-human wake, and the result says
+    ``queued``.
 
     Two events follow a delivery: ``session.messaged`` always (it carries the attribution, never the text, so a session waiting on it for
     ``wait_for_event`` is woken as by a doorbell while the message itself stays queued for the turn boundary), and ``session.steered`` too when the
