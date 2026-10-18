@@ -20,11 +20,13 @@ import pytest
 
 from primer.model.chat import Message, ToolCallPart, ToolCallResult, ToolResultPart
 from primer.model.workspace_session import SessionMessageKind, SessionMessageRecord
+from primer.model.yield_ import ToolContext
 from primer.session.persistence import WorkspaceMessageWriter
 from primer.toolset.mcp import mcp_task_resume
 from primer.worker.session_resume_coordinator import inject_resume_and_continue
 from primer.worker.yield_resume_registry import ResumeContext
 from primer.worker.yield_runtime import _resume_call_tool_dispatch, _resume_tool_approval
+from tests.agent.test_inner_dispatch import ADMIN
 
 PASSWORD = "hunter2pw"
 KEY = "SKSECRET123456"
@@ -36,12 +38,22 @@ def _clean(text: str) -> bool:
     return PASSWORD not in text and KEY not in text and BEARER not in text
 
 
+# The approved re-run checks the inner tool's role (``required_role``) against the resumed run's context before it reaches the provider, so the fakes declare
+# one and the manager hands back an admin's context: the provider is really reached, and the assertions below are about what it returns.
+
+
 class _Raising:
+    def required_role(self, tool_name):
+        return "admin"
+
     async def call(self, *, tool_name, arguments, principal=None, ctx=None):
         raise httpx.ConnectError(f"[Errno 111] Connection refused for url '{LEAKY_URL}'")
 
 
 class _ErrorResult:
+    def required_role(self, tool_name):
+        return "admin"
+
     async def call(self, *, tool_name, arguments, principal=None, ctx=None):
         return ToolCallResult(output=f"Server error '500 Internal Server Error' for url '{LEAKY_URL}'", is_error=True)
 
@@ -57,6 +69,9 @@ class _Registry:
 class _Manager:
     def __init__(self, provider) -> None:
         self._provider_registry = _Registry(provider)
+
+    def context_for(self, call_id, *, principal=None):
+        return ToolContext(tool_call_id=call_id, session_id="s1", workspace_id="w1", initiated_by=ADMIN, principal=principal)
 
 
 _CALL = ToolCallPart(id="c1", name="http_request", arguments={})
@@ -112,6 +127,7 @@ async def test_the_approved_call_tool_redispatch_carries_no_credential(provider)
     part = await _resume_call_tool_dispatch(via=_VIA, original_call=_CALL, tool_manager=_Manager(provider))
 
     assert part.error is True and _clean(part.output)
+    assert "[REDACTED]" in part.output, "the provider was reached and its text masked, not refused before it ran"
 
 
 @pytest.mark.asyncio
@@ -121,6 +137,7 @@ async def test_the_session_resumes_approval_branch_carries_no_credential() -> No
     part = await _resume_tool_approval(blob=blob, payload={"decision": "approved"}, tool_manager=_Manager(_ErrorResult()))
 
     assert part.error is True and _clean(part.output)
+    assert "[REDACTED]" in part.output, "the provider was reached and its text masked, not refused before it ran"
 
 
 def test_a_failed_mcp_task_resume_hook_output_carries_no_credential() -> None:
@@ -218,5 +235,5 @@ async def test_the_shared_resume_tail_hands_the_model_and_the_record_a_clean_res
     await inject_resume_and_continue(pool, session, Executor(), parked, part)
 
     context = " ".join(p.output for m in injected for p in m.parts if isinstance(p, ToolResultPart))
-    assert context and _clean(context)
+    assert context and _clean(context) and "[REDACTED]" in context
     assert lines and _clean(b"".join(lines).decode())

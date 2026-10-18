@@ -43,6 +43,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from primer.agent.inner_dispatch import dispatch_inner_tool
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.graph._node_identity import current_toolcall_id
 from primer.graph.base import DEFAULT_MAX_PARALLEL_NODES, _BaseGraphExecutor
@@ -57,6 +58,7 @@ from primer.model.graph import (
 )
 from primer.model.principal import PrincipalRef
 from primer.model.workspace_session import SessionStatus
+from primer.model.yield_ import YieldToWorker
 from primer.observability.turn_log_writer import (
     TurnLogWriter,
     WorkspaceTurnLogWriter,
@@ -522,7 +524,9 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         dispatched through the toolset provider that owns it, resolved with the
         ``toolset_resolver`` the worker wires (this executor holds no provider
         registry and the worker passes it no manager), which is where that
-        handler would have sent it; any other inner call goes through the
+        handler would have sent it, and as that handler would have run it: with
+        this node's context and the inner tool's role checked again
+        (:meth:`_dispatch_via_call_tool`); any other inner call goes through the
         manager with ``bypass_approval=True``, which skips that call's own gate.
         It runs under the fresh id this resume's dispatch was given
         (``current_toolcall_id``), so a gate raised inside it still has a key of
@@ -541,18 +545,21 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             arguments=inner_call["arguments"],
         )
         if inner_call.get("via_call_tool") is not None:
-            return await self._dispatch_via_call_tool(call, inner_call["via_call_tool"])
+            return await self._dispatch_via_call_tool(node, call, inner_call["via_call_tool"])
         manager = await self._manager_for(node)
         return await manager.execute(call, principal=self._principal, bypass_approval=True)
 
-    async def _dispatch_via_call_tool(self, call: "ToolCallPart", via: dict[str, Any]) -> ToolResultPart:
+    async def _dispatch_via_call_tool(
+        self, node: "_ToolCallNode", call: "ToolCallPart", via: dict[str, Any],
+    ) -> ToolResultPart:
         """Run the inner call of an approved ``call_tool`` park through the toolset provider that owns it (``via['toolset_id']``), as the ``call_tool`` handler would have after its own gate.
 
-        The provider comes from the ``toolset_resolver`` the worker wires, with the principal the handler stamped at park time. Fails closed to an error result when there is no resolver, no such
-        toolset or the call raises; a further gate raised inside the provider (``YieldToWorker``) is not swallowed, so the two-phase park in the resume loop can re-park on it.
+        The provider comes from the ``toolset_resolver`` the worker wires. It is run by the helper the handler uses (:func:`primer.agent.inner_dispatch.dispatch_inner_tool`), with the context the node's
+        own manager builds for a call of this run (``context_for(call.id, principal=self._principal)``: the workspace session, the run's identity, and the principal string the first dispatch gave
+        it), so a tool that needs them works and the inner tool's ``required_role`` is checked against the run's identity again. A principal stored with the park (one from before pivot P1 holds a
+        model's choice) is never read. Fails closed to an error result when there is no resolver, no such toolset or the call raises; a further gate or pause raised inside the provider
+        (``YieldToWorker``) is not swallowed, so the two-phase park in the resume loop can re-park on it.
         """
-        from primer.model.yield_ import YieldToWorker
-
         toolset_id = via.get("toolset_id")
         if self._toolset_resolver is None or not toolset_id:
             return ToolResultPart(
@@ -563,7 +570,13 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             provider = await self._toolset_resolver(toolset_id)
             if provider is None:
                 raise LookupError(f"toolset {toolset_id!r} is not available")
-            result = await provider.call(tool_name=call.name, arguments=call.arguments, principal=via.get("principal"))
+            result = await dispatch_inner_tool(
+                provider=provider,
+                toolset_id=toolset_id,
+                tool_name=call.name,
+                arguments=call.arguments,
+                ctx=(await self._manager_for(node)).context_for(call.id, principal=self._principal),
+            )
         except YieldToWorker:
             raise
         except Exception as exc:  # noqa: BLE001 - fail-closed synthesis, as the agent path's

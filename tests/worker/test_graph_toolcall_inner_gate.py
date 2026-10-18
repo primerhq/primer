@@ -34,7 +34,7 @@ from primer.model.principal import PrincipalRef
 from primer.model.tool_approval import ApproverSpec, RequiredApprovalConfig, ToolApprovalPolicy
 from primer.model.yield_ import YieldToWorker, gate_id_of, with_wake_gate
 from primer.session.persistence import _CoalesceState, stash_graph_scoped_ids, translate_stream_event
-from primer.toolset.system import SYSTEM_TOOLSET_ID
+from primer.toolset.system import SYSTEM_TOOLSET_ID, build_system_toolset
 from primer.worker import graph_resume_coordinator
 from primer.worker.graph_resume import resume_graph_from_checkpoint
 from primer.worker.yield_runtime import ParkedState
@@ -49,8 +49,10 @@ from tests._resume_hook_fakes import (
     RecordingWorkspaceIO,
     waiting_graph_session,
 )
+from tests.agent.test_inner_dispatch import ADMIN, USER, _Recorder, _Yielding
 from tests.agent.test_tool_manager_approval_gate import _PoliciesOnlyResolver
 from tests.graph.test_workspace_executor import _make_state_repo
+from tests.toolset.test_call_tool_door import _Registry
 
 # Re-export so pytest resolves the real system toolset fixtures the neighbouring call_tool tests use.
 from tests.toolset.test_system import _llm, pr, sp, system_toolset  # noqa: F401
@@ -76,9 +78,12 @@ def _graph(tool_id: str, arguments: dict) -> Graph:
     )
 
 
-async def _executor(tmp_path: Path, manager: Any, graph: Graph, *, toolset_resolver: Any = None) -> WorkspaceGraphExecutor:
+async def _executor(
+    tmp_path: Path, manager: Any, graph: Graph, *, toolset_resolver: Any = None, identity: PrincipalRef | None = None, principal: str | None = None,
+) -> WorkspaceGraphExecutor:
     """With a ``manager`` the executor is handed it. Without one it is built the way the worker builds it (``executor_builders``): no ``tool_manager``, the workspace session and the registry's
-    ``get_toolset`` as ``toolset_resolver``, and it makes its own manager."""
+    ``get_toolset`` as ``toolset_resolver``, and it makes its own manager. ``identity`` and ``principal`` are the run's persisted attribution and principal string (the worker passes the session's
+    ``initiated_by`` and ``None``); omitted, the executor has none, as in the cases that predate them."""
     async def agent_resolver(agent_id: str) -> Any:
         raise KeyError(agent_id)
 
@@ -90,6 +95,7 @@ async def _executor(tmp_path: Path, manager: Any, graph: Graph, *, toolset_resol
         state_repo=await _make_state_repo(tmp_path), graph_session_id="gsid", tool_manager=manager,  # type: ignore[arg-type]
         router_registry=RouterRegistry(),
         workspace_session=None if manager is not None else _workspace_session(), toolset_resolver=toolset_resolver,  # type: ignore[arg-type]
+        identity=identity, principal=principal,
     )
 
 
@@ -396,3 +402,125 @@ async def test_what_the_operator_is_shown_for_a_call_tool_gate_is_the_inner_tool
     for where, meta in (("projection", yld.yielded.resume_metadata), ("dispatch entry", checkpoint["pending_dispatch"][0]["resume_metadata"])):
         assert meta["original_call"]["name"] == "get_llm_provider" and meta["original_call"]["arguments"] == {"id": "anthropic-1"}, (where, meta["original_call"])
         assert meta["via_call_tool"]["toolset_id"] == SYSTEM_TOOLSET_ID, where
+
+
+# ---- pivot P1, task 4: the approved inner tool re-runs as the graph run, with the inner role checked again ----------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def rec() -> _Recorder:
+    return _Recorder({"user_x": "user", "admin_x": "admin"})
+
+
+@pytest.fixture
+def pausing() -> _Yielding:
+    return _Yielding()
+
+
+@pytest.fixture
+def rec_system_toolset(sp, pr, rec: _Recorder, pausing: _Yielding):  # noqa: F811
+    """The real system toolset (``call_tool`` resolves its inner toolsets through its registry) with the recording toolset ``rec`` and the pausing toolset ``y`` under their own ids."""
+    provider = build_system_toolset(
+        storage_provider=sp,  # type: ignore[arg-type]
+        provider_registry=_Registry(pr, {"rec": rec, "y": pausing}),  # type: ignore[arg-type]
+    )
+    pr._system_toolset_provider = provider  # type: ignore[attr-defined]
+    return provider
+
+
+def _resolver_of(**providers: Any) -> Any:
+    """The executor's ``toolset_resolver`` over test providers by id (the worker's is ``pool._provider_registry.get_toolset``)."""
+    async def resolver(toolset_id: str) -> Any:
+        return providers.get(toolset_id)
+
+    return resolver
+
+
+def _call_tool_graph(toolset_id: str, tool_name: str, arguments: dict | None = None) -> Graph:
+    return _graph(f"{SYSTEM_TOOLSET_ID}__call_tool", {"toolset_id": toolset_id, "tool_name": tool_name, "arguments": arguments or {}})
+
+
+@pytest.mark.asyncio
+async def test_an_approved_call_tool_inner_tool_reruns_with_the_node_context(rec_system_toolset, rec, sp, tmp_path: Path) -> None:  # noqa: F811
+    """The approved inner tool runs as the graph run, as the first dispatch did: the context carries the workspace session the executor holds (the graph session's own, in the worker), the run's identity and the run's
+    principal string, and the executor gives the provider the principal the manager gave the first run (``self._principal``), never one stored with the park. Before, it ran with no context at all."""
+    await sp.get_storage(ToolApprovalPolicy).create(_policy("rec", "user_x"))
+    resolver = _resolver_of(system=rec_system_toolset, rec=rec)
+    graph = _call_tool_graph("rec", "user_x", {"a": 1})
+
+    async def build() -> WorkspaceGraphExecutor:
+        return await _executor(tmp_path, None, graph, toolset_resolver=resolver, identity=USER, principal="alice")
+
+    checkpoint, live, seq0 = await _park(await build())
+    (parked,) = checkpoint["pending_toolcalls"]
+    assert parked["resume_metadata"]["via_call_tool"] == {"toolset_id": "rec", "tool_name": "user_x"} and rec.calls == [], "the gate parks the call before the inner tool runs"
+
+    written, repark, _ = await _resume(checkpoint, await build(), parked, seq0)
+
+    assert repark is None
+    ((name, arguments, principal, ctx),) = rec.calls
+    assert (name, arguments, principal) == ("user_x", {"a": 1}, "alice")
+    assert (ctx.session_id, ctx.workspace_id, ctx.initiated_by, ctx.principal) == ("s", "ws-1", USER, "alice")
+    assert ctx.tool_call_id, "the context names the call the re-run is made under"
+    call = _call_row(live)
+    (result,) = _results(written)
+    assert (result["payload"]["call_id"], result["payload"]["error"]) == (call["payload"]["id"], False)
+    assert json.loads(result["payload"]["output"]) == {"ran": "user_x"}
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_call_tool_park_principal_is_not_forwarded_by_a_graph_rerun(rec_system_toolset, rec, sp, tmp_path: Path) -> None:  # noqa: F811
+    """A park from before the pivot carries ``via_call_tool.principal``, a value a model chose that an MCP toolset keys its OAuth tokens on: the re-run never reads it."""
+    await sp.get_storage(ToolApprovalPolicy).create(_policy("rec", "user_x"))
+    resolver = _resolver_of(system=rec_system_toolset, rec=rec)
+    graph = _call_tool_graph("rec", "user_x")
+
+    checkpoint, _live, seq0 = await _park(await _executor(tmp_path, None, graph, toolset_resolver=resolver, identity=USER))
+    (parked,) = checkpoint["pending_toolcalls"]
+    parked["resume_metadata"]["via_call_tool"]["principal"] = "mallory"
+
+    _written, repark, _ = await _resume(checkpoint, await _executor(tmp_path, None, graph, toolset_resolver=resolver, identity=USER), parked, seq0)
+
+    assert repark is None and len(rec.calls) == 1
+    assert rec.calls[0][2] is None and rec.calls[0][3].principal is None
+
+
+@pytest.mark.asyncio
+async def test_an_approved_call_tool_inner_tool_is_not_run_by_a_graph_run_that_may_not_run_it(rec_system_toolset, rec, sp, tmp_path: Path) -> None:  # noqa: F811
+    """The role is checked again on the re-run, against the identity of the executor that resumes: a park made by an admin-initiated run, resumed by one whose identity is a user's (a stale or forged
+    park), is refused, and the admin tool never runs."""
+    await sp.get_storage(ToolApprovalPolicy).create(_policy("rec", "admin_x"))
+    resolver = _resolver_of(system=rec_system_toolset, rec=rec)
+    graph = _call_tool_graph("rec", "admin_x")
+
+    checkpoint, live, seq0 = await _park(await _executor(tmp_path, None, graph, toolset_resolver=resolver, identity=ADMIN))
+    (parked,) = checkpoint["pending_toolcalls"]
+    assert rec.calls == []
+
+    written, repark, _ = await _resume(checkpoint, await _executor(tmp_path, None, graph, toolset_resolver=resolver, identity=USER), parked, seq0)
+
+    assert repark is None and rec.calls == [], "the approval ran an admin tool for a run that is not an admin"
+    call = _call_row(live)
+    (result,) = _results(written)
+    assert (result["payload"]["call_id"], result["payload"]["error"]) == (call["payload"]["id"], True)
+    assert json.loads(result["payload"]["output"])["type"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_an_approved_call_tool_inner_tool_that_pauses_parks_the_node_again(rec_system_toolset, pausing, sp, tmp_path: Path) -> None:  # noqa: F811
+    """The two-phase park through ``call_tool``: the approval is phase one; the approved tool then pauses the turn for its OWN event (phase two). The pause must reach the resume loop, which records the node
+    as waiting on the new key; it is not an error result. The context is what lets the tool pause at all (``_Yielding`` reads ``ctx.tool_call_id`` for its key)."""
+    await sp.get_storage(ToolApprovalPolicy).create(_policy("y", "wait"))
+    resolver = _resolver_of(system=rec_system_toolset, y=pausing)
+    graph = _call_tool_graph("y", "wait")
+
+    checkpoint, _live, seq0 = await _park(await _executor(tmp_path, None, graph, toolset_resolver=resolver, identity=USER))
+    (first,) = checkpoint["pending_toolcalls"]
+    assert first["tool_name"] == "_approval"
+
+    _written, repark, _ = await _resume(checkpoint, await _executor(tmp_path, None, graph, toolset_resolver=resolver, identity=USER), first, seq0)
+
+    assert repark is not None, "the approved inner tool paused, and the node did not wait again"
+    (second,) = repark.graph_checkpoint["pending_toolcalls"]
+    assert second["tool_name"] == "wait", "the new park names the inner tool, so the node waits on the tool's own event and no longer on the approval"
+    assert second["parked_event_key"] == f"k:{second['tool_call_id']}" and second["parked_event_key"] != first["parked_event_key"]
