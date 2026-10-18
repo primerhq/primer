@@ -139,7 +139,14 @@ async def test_embedding_types_require_at_least_one_model(client) -> None:
         assert models["required"] is True
     hf = body[EmbeddingProviderType.HUGGINGFACE.value]["config_fields"]
     assert _keys(hf) == ["token"]
-    assert _field(hf, "token")["required"] is True
+    # The model makes the token optional (primer/model/providers/embedding.py
+    # HuggingFaceConfig.token is `ApiKeySecret | None`, and an empty config is
+    # a valid row), so _types must not claim it is required: the revamp's
+    # Register overlay builds its Hugging Face token box from this descriptor.
+    token = _field(hf, "token")
+    assert token["required"] is False
+    assert token["label"] == "API token (optional)"
+    assert token["type"] == "password", "a token box that echoes the secret back is a leak"
     openai = body[EmbeddingProviderType.OPENAI.value]["config_fields"]
     assert _field(openai, "flavor")["options"] == [
         f.value for f in OpenAIEmbeddingFlavor
