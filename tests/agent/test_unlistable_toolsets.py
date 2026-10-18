@@ -674,7 +674,7 @@ async def test_a_server_that_accepts_and_never_answers_is_left_out_within_the_bo
     assert time.monotonic() - started < 10
     assert [t.id for t in tools] == ["misc__a"]
     assert mgr.unavailable_toolsets() == {"kb": "did not list its tools within 0.5s"}
-    assert asyncio.all_tasks() - before == set(), "the SDK's transport tasks went down with the listing"
+    await _no_tasks_beyond(before)  # the SDK's transport tasks went down with the listing
 
 
 async def test_a_cancel_while_the_real_server_hangs_is_not_swallowed(silent_server):
@@ -687,7 +687,7 @@ async def test_a_cancel_while_the_real_server_hangs_is_not_swallowed(silent_serv
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, 15)
     assert task.cancelled()
-    assert asyncio.all_tasks() - before == set()
+    await _no_tasks_beyond(before)
 
 
 async def test_a_stop_during_a_subagents_turn_start_listing_ends_it_before_the_model(monkeypatch):
