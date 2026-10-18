@@ -291,6 +291,29 @@ async def test_a_pause_hold_reports_queued_and_keeps_the_attribution(seed):
     assert world.scheduler.enqueued == [] and world.engine.upserts == []
 
 
+async def test_the_pause_route_pauses_an_idle_session_without_the_flag_and_a_machine_message_does_not_resume_it():
+    """The premise of the hold, through the real route: pausing an idle session writes PAUSED and sets no ``pause_requested``, so a hold keyed on
+    the flag alone let any trigger, agent or peer resume it."""
+    from primer.api.routers.sessions import pause_session
+
+    world = make_world()
+    await seed_session(world, sid="ses-b", turn_no=1)
+    await pause_session(workspace_id="ws-1", session_id="ses-b", sessions=world.sessions)
+    paused = await world.sessions.get("ses-b")
+    assert (paused.status, paused.pause_requested) == (SessionStatus.PAUSED, False)
+
+    held = await _send(world, "ses-b", peer=None, text="from a trigger")
+    assert held.outcome == DELIVERED_QUEUED
+    assert (await world.sessions.get("ses-b")).status == SessionStatus.PAUSED
+    assert world.scheduler.enqueued == [] and len(await _pending(world)) == 1
+
+    resumed = await _send(world, "ses-b", peer=None, text="carry on", human_intent=True)
+    assert resumed.outcome == DELIVERED_WOKEN
+    row = await world.sessions.get("ses-b")
+    assert (row.status, row.turn_status) == (SessionStatus.RUNNING, "claimable")
+    assert world.scheduler.enqueued == ["ses-b"]
+
+
 @pytest.mark.parametrize("seed", [{}, {"pause_requested": True}])
 async def test_a_person_message_resumes_a_paused_session_and_starts_a_fresh_chain(seed):
     world = make_world()
