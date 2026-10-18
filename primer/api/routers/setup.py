@@ -36,7 +36,7 @@ from primer.bootstrap.operator_defaults import (
     planner_agent,
     tool_runner_agent,
 )
-from primer.bootstrap.seed import default_profile_id, run_ensure_pass
+from primer.bootstrap.seed import builtin_toolset_providers, default_profile_id, run_ensure_pass
 from primer.bootstrap.setup_state import (
     MISSING_BUILDER_AGENT,
     MISSING_DEFAULT_WORKSPACE,
@@ -70,16 +70,14 @@ setup_router = APIRouter(prefix="/setup", tags=["setup"])
 async def seed_now(request: Request) -> dict:
     """Idempotently ensure the seeded world, then report setup state."""
     storage_provider = get_storage_provider(request)
-    toolsets = {
-        name: getattr(request.app.state, f"{name}_toolset")
-        for name in ("system", "crud")
-        if getattr(request.app.state, f"{name}_toolset", None) is not None
-    }
+    provider_registry = get_provider_registry(request)
     result = await run_ensure_pass(
         storage_provider,
         workspace_registry=get_workspace_registry(request),
-        toolset_providers=toolsets,
-        provider_registry=get_provider_registry(request),
+        # Every built-in toolset, from the live registry (seed.py): the map
+        # used to name only system and crud, so a seed lost the other pages.
+        toolset_providers=await builtin_toolset_providers(provider_registry),
+        provider_registry=provider_registry,
         semantic_search_registry=get_semantic_search_registry(request),
     )
     state = await evaluate_setup_state(storage_provider)

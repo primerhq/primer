@@ -854,7 +854,7 @@ def _make_lifespan(config: AppConfig):
         provider_registry._crud_toolset_provider = crud_toolset  # noqa: SLF001
         app.state.crud_toolset = crud_toolset
 
-        from primer.bootstrap.seed import run_ensure_pass
+        from primer.bootstrap.seed import builtin_toolset_providers, run_ensure_pass
         from primer.workspace.local_policy import validate_default_template
 
         # Fail the boot, loudly, when the default workspace would be seeded on a provider this
@@ -866,19 +866,10 @@ def _make_lifespan(config: AppConfig):
         _ensure = await run_ensure_pass(
             storage_provider,
             workspace_registry=workspace_registry,
-            toolset_providers={
-                "system": system_toolset,
-                "crud": crud_toolset,
-                "workspaces": ws_toolset,
-                "misc": misc_toolset,
-                "web": web_toolset,
-                "harness": harness_toolset,
-                "trigger": trigger_toolset,
-                "workspace_ext": workspace_ext_toolset,
-                # The superseded standalone call also passed this one; the
-                # /tools subtree loses the collections toolset without it.
-                "collections": collections_toolset,
-            },
+            # Every built-in toolset, from the live registry (seed.py): all
+            # the reserved providers are on it by this point (built above).
+            # A hand-written map here used to drift from the seed route's.
+            toolset_providers=await builtin_toolset_providers(provider_registry),
             provider_registry=provider_registry,
             semantic_search_registry=semantic_search_registry,
             default_workspace_template=config.default_workspace_template,
