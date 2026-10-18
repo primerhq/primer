@@ -3291,6 +3291,18 @@ input, textarea, select { font: inherit; color: inherit; }
 }
 .nv-seg button[data-active="true"] { background: var(--bg-elev); color: var(--text); }
 
+/* D3: the profile menu's Theme row, a label over a control that spans the menu (Light | Dark | System). The generic .nv-seg rule above is overridden
+   by a later one (the new-session overlay's segmented control, display: inline-flex), which shrink-wraps every .nv-seg to its text; this row is where
+   the control should be full width, so it says so with a selector that out-ranks both. The phone's More tab reuses the label (.nv-mob-profile). */
+.nv-theme-row { padding: 0 6px 6px; }
+.nv-theme-label {
+  padding: 2px 3px 5px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+.nv-theme-row .nv-seg { display: flex; width: 100%; margin: 0; }
+
 /* View host placeholder (real views land in P2/P4/P5) */
 .nv-view { flex: 1; min-height: 0; display: flex; }
 .nv-view-pending {
@@ -4805,6 +4817,8 @@ button.nv-trace-line { cursor: pointer; }
   margin-top: 8px;
 }
 .nv-adv-body .nv-field:last-child { margin-bottom: 0; }
+/* .nv-seg is also declared with the profile menu rules (display: flex, gap, padding, margin). This later rule wins `display`, so a bare .nv-seg
+   is inline-flex and shrink-wraps; the Theme rows that need the whole width restore it under .nv-theme-row and .nv-mob-profile. */
 .nv-seg {
   display: inline-flex;
   border: 1px solid var(--border);

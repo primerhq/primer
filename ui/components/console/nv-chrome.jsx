@@ -32,28 +32,105 @@ function NV_run(con, id, arg) {
 
 // Theme is a per-user preference (notes 1.1); there is no prefs endpoint
 // (grepped primer/api/routers, primer/model - none), so localStorage keyed
-// by username is the fallback the wiring notes call acceptable. This runs
-// once username resolves and corrects any theme the shared tweaks store
-// (ui/foundation/tweaks.js, one browser-wide key) applied before login.
+// by username is the fallback the wiring notes call acceptable.
+//
+// Three choices (platform revamp D3): Light, Dark and System. The choice is
+// stored per user under primer.theme.<username> as light | dark | system, and
+// mirrored into the browser-wide tweak (ui/foundation/tweaks.js) as light |
+// dark | null, where null is "follow the OS": the inline bootstrap of
+// index.html and tweaks.js's matchMedia listener already read null that way,
+// on a reload and live, so System needs no code in either of them. What the
+// style sheet keys on, <html data-theme>, is only ever light or dark: no
+// token block defines "system", so painting the word would drop every colour.
+var NV_THEME_CHOICES = [
+  { value: "light", label: "Light", icon: "☀" },
+  { value: "dark", label: "Dark", icon: "☾" },
+  { value: "system", label: "System", icon: "⌘" },
+];
+
 function NV_themeStorageKey(username) {
   return "primer.theme." + (username || "anon");
+}
+
+function NV_isThemeChoice(value) {
+  return NV_THEME_CHOICES.some(function (c) { return c.value === value; });
+}
+
+// The scheme the OS prefers now. Dark without matchMedia, as the bootstrap
+// script of index.html resolves it.
+function NV_osTheme() {
+  try {
+    if (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) return "light";
+  } catch (_e) { /* an engine without the query: dark, as the bootstrap */ }
+  return "dark";
+}
+
+// The value data-theme gets for a choice: light or dark, always.
+function NV_resolveTheme(choice) {
+  return choice === "light" || choice === "dark" ? choice : NV_osTheme();
+}
+
+// The user's choice as stored: their own key, else the browser-wide light or
+// dark an older version of this menu left in the tweak, else System (nothing
+// stored means the page follows the OS, which is what System says). Never
+// throws: a blocked localStorage or a corrupt value reads as System.
+function NV_themeChoice(username) {
+  try {
+    var own = localStorage.getItem(NV_themeStorageKey(username));
+    if (NV_isThemeChoice(own)) return own;
+    var tweaks = JSON.parse(localStorage.getItem("primer.tweaks") || "{}");
+    if (tweaks && (tweaks.theme === "light" || tweaks.theme === "dark")) return tweaks.theme;
+  } catch (_e) { /* private mode, a value that is not JSON, etc. */ }
+  return "system";
+}
+
+// The one place a choice takes effect: the tweak (null for System), the
+// attribute the style sheet reads, the user's own key, and a re-render so the
+// menu shows the pressed choice. env is { username, bump() }: the console
+// context has both, and so does the shell's themeEnvRef for the palette verbs.
+// A value that is not a choice is System, never painted as it is.
+function NV_applyThemeChoice(env, choice) {
+  var picked = NV_isThemeChoice(choice) ? choice : "system";
+  window.primerApi.setTweak("theme", picked === "system" ? null : picked);
+  document.documentElement.setAttribute("data-theme", NV_resolveTheme(picked));
+  try {
+    localStorage.setItem(NV_themeStorageKey(env.username), picked);
+  } catch (_e) { /* private mode, quota, etc. - non-fatal */ }
+  env.bump();
+}
+
+// Applies the user's stored choice once the username resolves (and again for
+// the next user): the tweaks store is one browser-wide key, so it may still
+// hold whoever used this browser last. A user who never chose keeps what the
+// page painted. The desktop (NV_ActivityBar) and the phone (NV_MobileShell)
+// both call it; before D3 only the desktop restored, so a phone kept the last
+// account's colour.
+function NV_useThemeRestore(con) {
+  React.useEffect(function () {
+    if (!con.username) return;
+    try {
+      var saved = localStorage.getItem(NV_themeStorageKey(con.username));
+      if (NV_isThemeChoice(saved)) NV_applyThemeChoice(con, saved);
+    } catch (_e) { /* private mode, quota, etc. - non-fatal */ }
+  }, [con.username]);
+}
+
+// "<glyph> Name" for one choice. The glyph is decoration, so a button's
+// accessible name is its label alone.
+function NV_ThemeChoiceLabel(props) {
+  var choice = NV_THEME_CHOICES.filter(function (c) { return c.value === props.value; })[0];
+  if (!choice) return null;
+  return (
+    <React.Fragment>
+      <span aria-hidden="true">{choice.icon}</span>{" "}{choice.label}
+    </React.Fragment>
+  );
 }
 
 function NV_ActivityBar() {
   var con = NV_useConsole();
   var initials = String(con.username || "?").slice(0, 2).toLowerCase();
-  React.useEffect(function () {
-    if (!con.username) return;
-    try {
-      var saved = localStorage.getItem(NV_themeStorageKey(con.username));
-      var current = document.documentElement.getAttribute("data-theme");
-      if (saved && saved !== current) {
-        window.primerApi.setTweak("theme", saved);
-        document.documentElement.setAttribute("data-theme", saved);
-        con.bump();
-      }
-    } catch (_e) { /* private mode, quota, etc. - non-fatal */ }
-  }, [con.username]);
+  NV_useThemeRestore(con);
   return (
     <div className="nv-actbar" data-testid="nv-actbar" role="navigation" aria-label="Views">
       <div className="nv-actbar-logo" title="primer"><NV_Logo /></div>
@@ -112,15 +189,7 @@ function NV_menuFocusLeft(ev, triggerTestId) {
 
 function NV_ProfileMenu() {
   var con = NV_useConsole();
-  var theme = document.documentElement.getAttribute("data-theme") || "dark";
-  function setTheme(next) {
-    window.primerApi.setTweak("theme", next);
-    document.documentElement.setAttribute("data-theme", next);
-    try {
-      localStorage.setItem(NV_themeStorageKey(con.username), next);
-    } catch (_e) { /* private mode, quota, etc. - non-fatal */ }
-    con.bump();
-  }
+  var choice = NV_themeChoice(con.username);
   return (
     <div className="nv-profile-menu" data-testid="nv-profile-menu"
       onClick={function (ev) { ev.stopPropagation(); }}
@@ -132,13 +201,38 @@ function NV_ProfileMenu() {
           <div className="nv-profile-role">{con.role}</div>
         </div>
       </div>
-      <div className="nv-seg" data-testid="nv-theme-seg">
-        <button type="button" data-active={theme === "dark" ? "true" : "false"}
-          onClick={function () { setTheme("dark"); }}>Dark</button>
-        <button type="button" data-active={theme === "light" ? "true" : "false"}
-          onClick={function () { setTheme("light"); }}>Light</button>
+      {/* The three buttons are written out, not mapped from NV_THEME_CHOICES, so each carries a literal data-verb the dual-render guard can read
+          (tests/ui/test_shell_dual_render_guard.py): the pointer affordances of the theme.* palette verbs. */}
+      <div className="nv-theme-row" data-testid="nv-theme-row">
+        <div className="nv-theme-label" id="nv-theme-label">Theme</div>
+        <div className="nv-seg" data-testid="nv-theme-seg" role="group" aria-labelledby="nv-theme-label">
+          <button type="button" data-testid="nv-theme:light" data-verb="theme.light"
+            data-active={choice === "light" ? "true" : "false"}
+            aria-pressed={choice === "light" ? "true" : "false"}
+            onClick={function () { NV_applyThemeChoice(con, "light"); }}>
+            <NV_ThemeChoiceLabel value="light" />
+          </button>
+          <button type="button" data-testid="nv-theme:dark" data-verb="theme.dark"
+            data-active={choice === "dark" ? "true" : "false"}
+            aria-pressed={choice === "dark" ? "true" : "false"}
+            onClick={function () { NV_applyThemeChoice(con, "dark"); }}>
+            <NV_ThemeChoiceLabel value="dark" />
+          </button>
+          <button type="button" data-testid="nv-theme:system" data-verb="theme.system"
+            data-active={choice === "system" ? "true" : "false"}
+            aria-pressed={choice === "system" ? "true" : "false"}
+            onClick={function () { NV_applyThemeChoice(con, "system"); }}>
+            <NV_ThemeChoiceLabel value="system" />
+          </button>
+        </div>
       </div>
       <div className="nv-menu-sep" />
+      <button type="button" className="nv-menu-row"
+        data-verb="view.profile" data-testid="nv-go-profile"
+        onClick={function () {
+          con.toggleMenu(null);
+          NV_run(con, "view.profile");
+        }}>Your profile</button>
       {con.role !== "restricted" ? (
         <button type="button" className="nv-menu-row"
           data-verb="view.system" data-testid="nv-go-system"
@@ -279,3 +373,11 @@ function NV_Topbar() {
 
 window.NV_ActivityBar = NV_ActivityBar;
 window.NV_Topbar = NV_Topbar;
+// The theme helpers: the palette verbs (nv-shell.jsx) call NV_applyThemeChoice, and the phone's More tab (nv-mobile-shell.jsx) uses the rest.
+window.NV_THEME_CHOICES = NV_THEME_CHOICES;
+window.NV_osTheme = NV_osTheme;
+window.NV_resolveTheme = NV_resolveTheme;
+window.NV_themeChoice = NV_themeChoice;
+window.NV_applyThemeChoice = NV_applyThemeChoice;
+window.NV_useThemeRestore = NV_useThemeRestore;
+window.NV_ThemeChoiceLabel = NV_ThemeChoiceLabel;
