@@ -532,6 +532,37 @@ function AG_ManagedSummary({ existing }) {
   );
 }
 
+// Where a refusal of the form goes. A save the server refuses with 422 carries one message per field path, kept in the form's `fieldErrors` map under
+// those paths ("body.temperature", "body.system_prompt.1"). AG_FIELD_PATHS is every path the overlay draws a field for; AG_fieldError(map, path) is the
+// message for one field (its own, else the first under it, so "body.system_prompt.1" is the system prompt's; "body.tools_extra" is not under "body.tools");
+// AG_otherFieldErrors(map, paths) is one line ("harness_id: Extra inputs are not permitted") for every message that no field in `paths` owns, so a
+// refusal on a field the form does not show is said above the footer and not stored under a key nothing reads. An empty or null message is no message.
+const AG_FIELD_PATHS = [
+  "body.id", "body.description", "body.model", "body.system_prompt", "body.compaction_prompt", "body.temperature",
+  "body.max_tool_turns", "body.max_output_tokens", "body.tools", "body.tts_voice", "body.response_format",
+];
+
+function AG_fieldError(fieldErrors, path) {
+  var map = fieldErrors || {};
+  if (map[path]) return map[path];
+  var keys = Object.keys(map);
+  for (var i = 0; i < keys.length; i++) {
+    if (keys[i].indexOf(path + ".") === 0 && map[keys[i]]) return map[keys[i]];
+  }
+  return undefined;
+}
+
+function AG_otherFieldErrors(fieldErrors, paths) {
+  var map = fieldErrors || {};
+  return Object.keys(map)
+    .filter(function (key) {
+      return !!map[key] && !paths.some(function (p) { return key === p || key.indexOf(p + ".") === 0; });
+    })
+    .map(function (key) {
+      return key === "body" ? map[key] : key.replace(/^body\./, "") + ": " + map[key];
+    });
+}
+
 // The system prompt as tabs over ONE editor (platform revamp design 9): a tab per part ("Part 1", "Part 2"), "+ Part" and "Remove part" beside them,
 // and a Full screen toggle that lifts the box over the window. `parts` is the agent's list of prompt strings (the runtime joins them with a blank
 // line) and always holds at least one; `onChange(next)` hands the parent the new list. The tab that is shown is a position, kept in range when the
