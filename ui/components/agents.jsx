@@ -448,6 +448,14 @@ function AG_validateNewAgent(id, description) {
   return problems;
 }
 
+// A number typed into a field that is a limit (Max output tokens): true when it rounds down to less than 1, which no limit can be (0, a negative number, 0.5).
+// An empty field is no number and no limit, so it is not "under one"; text the browser cannot read arrives as "" and has its own error (numberHandlers).
+function AG_underOne(text) {
+  if (String(text == null ? "" : text).trim() === "") return false;
+  const n = Number(text);
+  return Number.isFinite(n) && Math.floor(n) < 1;
+}
+
 // The locked summary of a harness-managed agent: read-only values under their captions, so a definition list (a caption names a value, not a control).
 function AG_ManagedSummary({ existing }) {
   return (
@@ -851,16 +859,17 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
     try { await create.mutate(body); } catch (_e) { /* surfaced via onError */ }
   };
 
-  // The two handlers of a number input. onChange keeps what was typed AND whether the browser could read it; onInput reads only the second. The browser
-  // reports "" for text it cannot read, and React sends no change for an input whose value stays "": the first unreadable character typed into an EMPTY
-  // field would never reach onChange, but the native input event always reaches onInput.
-  const numberHandlers = (path, set, message) => {
+  // The two handlers of a number input. onChange keeps what was typed AND whether the field can take it; onInput reads only the second. The browser reports ""
+  // for text it cannot read, and React sends no change for an input whose value stays "": the first unreadable character typed into an EMPTY field would never
+  // reach onChange, but the native input event always reaches onInput. `refuses(text)` (optional) names a number that WAS read but is no value for the field, and it
+  // is said with the same message: a limit under 1 (AG_underOne) would otherwise be read as an empty field, which means no limit.
+  const numberHandlers = (path, set, message, refuses) => {
     const note = (e) => {
-      const unreadable = !!(e.target.validity && e.target.validity.badInput);
+      const bad = !!(e.target.validity && e.target.validity.badInput) || (typeof refuses === "function" && refuses(e.target.value));
       setNumberErrors((m) => {
-        if (!!m[path] === unreadable) return m;
+        if (!!m[path] === bad) return m;
         const next = { ...m };
-        if (unreadable) next[path] = message; else delete next[path];
+        if (bad) next[path] = message; else delete next[path];
         return next;
       });
     };
@@ -1044,7 +1053,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
             min="1"
             placeholder="No limit"
             value={maxOutputTokens}
-            {...numberHandlers("body.max_output_tokens", setMaxOutputTokens, "Enter a whole number, or leave it empty for no limit.")}
+            {...numberHandlers("body.max_output_tokens", setMaxOutputTokens, "Enter a whole number, or leave it empty for no limit.", AG_underOne)}
           />
         </PK_Field>
       </PK_Grid>

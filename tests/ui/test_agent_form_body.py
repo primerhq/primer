@@ -275,6 +275,74 @@ def test_a_cleared_number_field_is_still_no_limit_not_an_error(ctx):
     assert body(ctx)["max_output_tokens"] is None
 
 
+# ---- a typed 0 or negative Max output tokens (review of #779, nit 3) ------------------------------------------------------------------------------------
+# An EMPTY Max output tokens is no limit, and a typed 0 or negative number was read as "no limit" too: the field saved null without a word, the opposite of what
+# was typed. It is an error under the field now, the message the field says for text the browser cannot read, and nothing is sent until the operator types a number
+# of 1 or more or clears the field. Max tool turns keeps its own rule (above): a typed 0 or negative saves the server default, 50, and says nothing.
+
+OUTPUT_TOKENS_MESSAGE = "Enter a whole number, or leave it empty for no limit."
+
+
+@pytest.mark.parametrize("typed", ["0", "-1", "-25", "0.5", "-0.3"])
+def test_a_typed_zero_or_negative_output_token_limit_is_an_error_and_sends_nothing(ctx, typed):
+    mount(ctx, existing=FULL)
+    type_into(ctx, "agent-max-output-tokens", typed)
+    assert prop(ctx, "field:Max output tokens", "data-error") == OUTPUT_TOKENS_MESSAGE
+    click(ctx, "agent-form-submit")
+    assert calls(ctx) == []
+
+
+@pytest.mark.parametrize("typed", ["0", "-1"])
+def test_the_input_event_hears_a_zero_or_negative_output_token_limit_too(ctx, typed):
+    """The native input event reaches the field first when React sends no change; the rule is the same on both."""
+    mount(ctx)
+    type_into(ctx, "agent-id", "refund-triage")
+    type_into(ctx, "agent-description", "Triages refunds")
+    type_into(ctx, "agent-max-output-tokens", typed, event="input")
+    assert prop(ctx, "field:Max output tokens", "data-error") == OUTPUT_TOKENS_MESSAGE
+    click(ctx, "agent-form-submit")
+    assert calls(ctx) == []
+
+
+def test_the_output_token_error_goes_when_the_limit_is_a_positive_number(ctx):
+    mount(ctx, existing=FULL)
+    type_into(ctx, "agent-max-output-tokens", "0")
+    type_into(ctx, "agent-max-output-tokens", "512")
+    assert prop(ctx, "field:Max output tokens", "data-error") == ""
+    click(ctx, "agent-form-submit")
+    assert body(ctx)["max_output_tokens"] == 512
+
+
+def test_the_output_token_error_goes_when_the_field_is_cleared_and_a_cleared_field_is_no_limit(ctx):
+    mount(ctx, existing=FULL)
+    type_into(ctx, "agent-max-output-tokens", "-4")
+    assert prop(ctx, "field:Max output tokens", "data-error") == OUTPUT_TOKENS_MESSAGE
+    type_into(ctx, "agent-max-output-tokens", "")
+    assert prop(ctx, "field:Max output tokens", "data-error") == ""
+    click(ctx, "agent-form-submit")
+    assert body(ctx)["max_output_tokens"] is None
+
+
+def test_the_smallest_limit_is_one_and_a_fraction_above_one_rounds_down(ctx):
+    mount(ctx, existing=FULL)
+    type_into(ctx, "agent-max-output-tokens", "1")
+    assert prop(ctx, "field:Max output tokens", "data-error") == ""
+    type_into(ctx, "agent-max-output-tokens", "1.9")
+    assert prop(ctx, "field:Max output tokens", "data-error") == ""
+    click(ctx, "agent-form-submit")
+    assert body(ctx)["max_output_tokens"] == 1
+
+
+def test_a_zero_or_negative_output_token_limit_leaves_the_other_number_fields_alone(ctx):
+    """Max tool turns and Temperature have their own rules; only the limit that has no default to fall back to refuses a value under 1."""
+    mount(ctx, existing=FULL)
+    type_into(ctx, "agent-max-output-tokens", "0")
+    type_into(ctx, "agent-max-tool-turns", "0")
+    type_into(ctx, "agent-temperature", "0")
+    assert prop(ctx, "field:Max tool turns", "data-error") == "" and prop(ctx, "field:Temperature", "data-error") == ""
+    assert prop(ctx, "field:Max output tokens", "data-error") == OUTPUT_TOKENS_MESSAGE
+
+
 # ---- system prompt parts nobody touched (lead notes on #755, review item d) ---------------------------------------------------------------------------
 # Every save trimmed the parts and dropped the blank ones, so a stored part with spaces around it, or an empty one, was rewritten by a save that was about
 # something else. A part the operator did not touch goes back exactly as it was stored; a part they typed is trimmed, and one left blank is dropped.

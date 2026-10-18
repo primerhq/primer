@@ -140,6 +140,19 @@ def test_the_prompt_tabs_full_screen_and_a_two_part_save(page: Page, base_url: s
         # The full-screen editor covers the window. A smaller box means an ancestor of the editor has a transform, which turns position: fixed into
         # "fixed inside that ancestor": report it, never loosen this.
         assert box["width"] >= viewport["width"] - 2 and box["height"] >= viewport["height"] - 2, (box, viewport)
+        # And it is ABOVE the console's topbar, not only as large as the window (the detail overlay is hosted in a wrapper at z-index 80 so that the topbar, at 60,
+        # is under it): the point at the topbar's centre must hit the full-screen box, never a topbar control (review of #779, nit 2).
+        topbar = page.get_by_test_id("nv-topbar").bounding_box()
+        assert topbar is not None
+        hit = page.evaluate(
+            """([x, y]) => {
+                const el = document.elementFromPoint(x, y);
+                const layer = document.querySelector('[data-testid="agent-system-prompt"]');
+                return { inside: !!(el && layer && layer.contains(el)), top: el ? (el.getAttribute('data-testid') || el.tagName) : null };
+            }""",
+            [topbar["x"] + topbar["width"] / 2, topbar["y"] + topbar["height"] / 2],
+        )
+        assert hit["inside"], f"the centre of the topbar is not covered by the full-screen layer: {hit['top']!r} is on top of it"
 
         # The layer is a focus trap (review of #779, required fix 2). Tab used to walk from the editor on to the controls the layer covers: 23 presses reached the
         # covered Cancel button, and the Enter that followed closed the overlay and lost the draft. Press Tab, then Shift+Tab, more times than the layer has stops
