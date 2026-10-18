@@ -231,11 +231,14 @@ it's called from a context with no implicit session.
   find predicate either, because the row stores them in clear while
   every read masks them.
 - Some template fields are admin-only: container `extra_mounts`,
-  Kubernetes `extra_volumes`, `extra_volume_mounts`, `pod_overrides`
-  and `container_security_context_overrides`, and any file whose
-  `source.kind` is `secret`. A call that sets one of them, or changes
-  it from the stored value, answers `type=forbidden` unless the run
-  was started by an admin (over MCP: unless the caller is an admin).
+  Kubernetes `extra_volumes`, `extra_volume_mounts`, `pod_overrides`,
+  `container_security_context_overrides`, `service_account_name` and
+  `tolerations`, and any file whose `source.kind` is `secret`. The other
+  Kubernetes placement fields, `node_selector`, `gpu` and
+  `image_pull_policy`, are not admin-only. A call that sets one of the
+  admin-only fields, or changes it from the stored value, answers
+  `type=forbidden` unless the run was started by an admin (over MCP:
+  unless the caller is an admin).
   A template that already holds any of them can only be updated by
   an admin, whatever the update changes (`type=forbidden`, "holds
   admin-only settings"), and so can only be deleted by an admin; a

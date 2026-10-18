@@ -5,8 +5,14 @@ Templates are user-tier, but a few fields reach the host or the cluster, or read
 
 * container ``extra_mounts`` (a host bind mount);
 * Kubernetes ``extra_volumes``, ``extra_volume_mounts``, ``pod_overrides`` and ``container_security_context_overrides``;
+* Kubernetes ``service_account_name`` (the account's token and permissions reach the workspace pod) and ``tolerations``
+  (the pod may run on nodes the cluster keeps for its own workloads), added with the platform revamp of 2026-10 (design
+  14.2);
 * a ``kind=secret`` file source (it reads a ``PRIMER_SECRET_*`` value by name), on a template or in the per-workspace
   overrides.
+
+The other Kubernetes placement fields of the revamp stay user-tier: ``node_selector``, ``gpu`` and ``image_pull_policy``
+reach neither the cluster's credentials nor its reserved nodes.
 
 A non-admin write that sets one of them to a non-empty value, or changes it from the stored value, is refused. The REST
 routes answer 403 ``forbidden_role``; the ``workspaces`` tools answer ``type=forbidden``. A template that HOLDS any of
@@ -34,7 +40,14 @@ from primer.model.workspace import (
     WorkspaceTemplateOverrides,
 )
 
-_K8S_FIELDS = ("extra_volumes", "extra_volume_mounts", "pod_overrides", "container_security_context_overrides")
+_K8S_FIELDS = (
+    "extra_volumes",
+    "extra_volume_mounts",
+    "pod_overrides",
+    "container_security_context_overrides",
+    "service_account_name",
+    "tolerations",
+)
 
 
 def _secret_sources(files: list[FileMount]) -> list[tuple[str, str, str | None]]:
@@ -90,8 +103,8 @@ def admin_only_override_fields(overrides: WorkspaceTemplateOverrides | None) -> 
 
 def refusal_message(fields: list[str]) -> str:
     return (
-        f"only an admin may set or change {', '.join(fields)} (host mounts, Kubernetes overlays and secret file "
-        "sources reach the host, the cluster or operator secrets)"
+        f"only an admin may set or change {', '.join(fields)} (host mounts, Kubernetes overlays, service accounts, "
+        "tolerations and secret file sources reach the host, the cluster or operator secrets)"
     )
 
 

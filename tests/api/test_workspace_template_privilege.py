@@ -12,6 +12,9 @@ could:
 Each of those is admin-only now: a non-admin write that sets one of them, or changes it from the stored value, answers
 403 ``forbidden_role``. The rest of a template stays user-tier, and an admin may still write all of it. A Kubernetes overlay
 outside the allowlist is refused for an admin too (422).
+
+Platform revamp 2026-10 (design 14.2): the Kubernetes ``service_account_name`` and ``tolerations``, typed template fields
+now, are admin-only the same way; ``node_selector``, ``gpu`` and ``image_pull_policy`` stay user-tier.
 """
 
 from __future__ import annotations
@@ -70,6 +73,8 @@ _GATED_BODIES = {
     "extra_volumes": _k8s(extra_volumes=[{"name": "scratch", "emptyDir": {}}]),
     "extra_volume_mounts": _k8s(extra_volume_mounts=[{"name": "scratch", "mountPath": "/scratch"}]),
     "pod_overrides": _k8s(pod_overrides={"dnsPolicy": "ClusterFirst"}),
+    "service_account_name": _k8s(service_account_name="runner"),
+    "tolerations": _k8s(tolerations=[{"key": "gpu", "operator": "Exists", "effect": "NoSchedule"}]),
     "files.secret": {"id": "tpl-s", "provider_id": "p-1", "description": "d", "files": [_SECRET_FILE]},
 }
 # The k8s allowlist refuses every non-empty container_security_context_overrides (the backend never applied it), so an
@@ -155,6 +160,45 @@ async def test_an_admin_can_create_a_template_that_sets_an_admin_only_field(app,
     r = await admin.post("/v1/workspace_templates", json=_GATED_BODIES[field])
 
     assert r.status_code == 201, r.text
+
+
+@pytest.mark.asyncio
+async def test_a_user_may_set_node_selector_gpu_and_pull_policy(app, user) -> None:  # noqa: F811
+    """Design 14.2: node selector, GPU and pull policy are user-tier; only the service account and tolerations are not."""
+    body = _k8s(node_selector={"gpu": "true"}, gpu={"count": 1}, image_pull_policy="Always")
+
+    r = await user.post("/v1/workspace_templates", json=body)
+
+    assert r.status_code == 201, r.text
+    stored = await app.state.storage_provider.get_storage(WorkspaceTemplate).get("tpl-k")
+    assert stored.backend.node_selector == {"gpu": "true"}
+    assert stored.backend.gpu.count == 1 and stored.backend.image_pull_policy == "Always"
+
+
+@pytest.mark.asyncio
+async def test_a_user_may_still_edit_a_template_that_holds_only_user_tier_placement(app, user) -> None:  # noqa: F811
+    """A template with a node selector, GPU and pull policy holds nothing admin-only, so it stays fully user-editable."""
+    body = _k8s(node_selector={"gpu": "true"}, gpu={"count": 1}, image_pull_policy="Always")
+    assert (await user.post("/v1/workspace_templates", json=body)).status_code == 201
+
+    edited = _k8s(node_selector={"gpu": "false"}, gpu={"count": 2}, image_pull_policy="Never")
+    r = await user.put("/v1/workspace_templates/tpl-k", json=edited)
+
+    assert r.status_code == 200, r.text
+    assert r.json()["backend"]["node_selector"] == {"gpu": "false"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["service_account_name", "tolerations"])
+async def test_a_user_cannot_clear_a_placement_field_an_admin_set(app, admin, user, field) -> None:  # noqa: F811
+    """Clearing an admin-only value is a change too, and a template that holds one is not user-editable at all."""
+    assert (await admin.post("/v1/workspace_templates", json=_GATED_BODIES[field])).status_code == 201
+
+    r = await user.put("/v1/workspace_templates/tpl-k", json=_k8s())
+
+    _assert_forbidden_role(r, field)
+    stored = await app.state.storage_provider.get_storage(WorkspaceTemplate).get("tpl-k")
+    assert getattr(stored.backend, field)
 
 
 @pytest.mark.asyncio
