@@ -525,20 +525,7 @@ async def test_t0717_ic_config_delete_racing_5_agents_search_calls(
 async def test_t0424_search_toolset_tools_before_activation_clean_envelope(
     client: httpx.AsyncClient,
 ) -> None:
-    """T0424 — The `_search` toolset is wired by the internal-collections
-    subsystem on bootstrap. Before the subsystem is activated, the
-    toolset doesn't exist, but the route is still mounted. GETting
-    /v1/toolsets/_search/tools must produce a clean envelope —
-    typically 404 ``/errors/not-found`` (toolset absent) or 200 with
-    an empty tools list if the route short-circuits.
-
-    Priority 5 — IC subsystem gating. The contract is: never
-    /errors/internal under subsystem-off probing. Other reserved
-    toolset ids (_system, _workspaces, _misc, web) are unconditional
-    so this only applies to _search.
-
-    Setup ensures the subsystem is OFF (idempotent DELETE).
-    """
+    """T0424 - ``_search`` is a retired alias of ``search``, and no toolset answers either id (the catalogue stopped listing ``search`` in the platform revamp). GETting /v1/toolsets/_search/tools must produce a clean envelope, never /errors/internal. Setup ensures the subsystem is OFF (idempotent DELETE)."""
     # Ensure subsystem is OFF.
     await client.delete("/v1/internal_collections/config")
 

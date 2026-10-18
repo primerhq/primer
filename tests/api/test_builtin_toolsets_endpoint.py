@@ -4,29 +4,11 @@ from __future__ import annotations
 
 import pytest
 
+from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
+from primer.api.routers import providers
 
-@pytest.mark.asyncio
-async def test_builtin_toolsets_returns_seven_items(client):
-    r = await client.get("/v1/toolsets/builtin")
-    assert r.status_code == 200, r.text
-    body = r.json()
-    items = body["items"]
-    ids = [it["id"] for it in items]
-    assert ids == ["system", "workspaces", "search", "misc", "web", "harness", "trigger"]
-
-
-@pytest.mark.asyncio
-async def test_builtin_toolsets_search_unavailable_when_ic_off(client):
-    r = await client.get("/v1/toolsets/builtin")
-    assert r.status_code == 200, r.text
-    by_id = {it["id"]: it for it in r.json()["items"]}
-    # In-process test fixture has no IC config row → search is unavailable
-    assert by_id["search"]["available"] is False
-    # Always-on built-ins are available
-    assert by_id["system"]["available"] is True
-    assert by_id["workspaces"]["available"] is True
-    assert by_id["misc"]["available"] is True
-    assert by_id["web"]["available"] is True
+# The built-in toolsets an agent can bind, in catalogue order (platform revamp, design section 11).
+BUILTIN_IDS = ["system", "workspaces", "collections", "misc", "web", "harness", "trigger", "workspace_ext", "crud"]
 
 
 @pytest.mark.asyncio
@@ -62,15 +44,15 @@ async def test_builtin_toolsets_route_not_shadowed_by_crud_get_by_id(client):
 
 @pytest.mark.asyncio
 async def test_all_tools_returns_one_entry_per_toolset(client):
-    """The fan-out endpoint includes every built-in toolset (always-on
-    + search) regardless of availability so the UI can render the
-    grouped picker without a second round-trip."""
+    """The fan-out endpoint includes every built-in toolset regardless
+    of availability so the UI can render the grouped picker without a
+    second round-trip."""
     r = await client.get("/v1/tools")
     assert r.status_code == 200, r.text
     body = r.json()
     ids = [it["id"] for it in body["items"]]
-    # All five built-ins appear (search is gated but still listed).
-    for required in ("system", "workspaces", "search", "misc", "web"):
+    # Every built-in the catalogue lists appears.
+    for required in BUILTIN_IDS:
         assert required in ids, f"missing built-in {required!r} in {ids!r}"
 
 
@@ -130,10 +112,69 @@ async def test_all_tools_carries_the_interruptible_flag(client):
 
 
 @pytest.mark.asyncio
-async def test_all_tools_marks_search_unavailable_without_ic(client):
-    r = await client.get("/v1/tools")
-    by_id = {it["id"]: it for it in r.json()["items"]}
-    assert by_id["search"]["available"] is False
-    assert "unavailable_reason" in by_id["search"]
-    # Tools list stays empty for unavailable toolsets.
-    assert by_id["search"]["tools"] == []
+async def test_builtin_toolsets_lists_every_toolset_an_agent_can_bind(client):
+    r = await client.get("/v1/toolsets/builtin")
+    assert r.status_code == 200, r.text
+    assert [it["id"] for it in r.json()["items"]] == BUILTIN_IDS
+
+
+def test_the_catalogue_is_exactly_the_reserved_toolset_ids():
+    ids = [spec["id"] for spec in providers._BUILTIN_TOOLSETS]
+    assert len(ids) == len(set(ids)) == 9
+    assert set(ids) == RESERVED_TOOLSET_IDS
+
+
+@pytest.mark.asyncio
+async def test_every_catalogue_id_resolves_through_get_toolset_without_storage(fake_storage_provider):
+    from primer.api.registries import ProviderRegistry
+    from primer.model.except_ import NotFoundError
+
+    built_in = {spec["id"]: object() for spec in providers._BUILTIN_TOOLSETS}
+    registry = ProviderRegistry(
+        fake_storage_provider,
+        llm_factory=lambda p: object(), embedder_factory=lambda p: object(),
+        cross_encoder_factory=lambda p: object(), toolset_factory=lambda t: object(),
+        **{f"{tid}_toolset_provider": provider for tid, provider in built_in.items()},
+    )
+    for tid, provider in built_in.items():
+        assert await registry.get_toolset(tid) is provider, tid
+    with pytest.raises(NotFoundError):
+        await registry.get_toolset("search")
+
+
+@pytest.mark.asyncio
+async def test_no_route_lists_a_search_toolset(client):
+    builtin = [it["id"] for it in (await client.get("/v1/toolsets/builtin")).json()["items"]]
+    grouped = [it["id"] for it in (await client.get("/v1/tools")).json()["items"]]
+    flat = {item["id"].split("__", 1)[0] for item in (await client.get("/v1/tools/catalogue")).json()["items"]}
+    assert "search" not in builtin
+    assert "search" not in grouped
+    assert "search" not in flat
+
+
+@pytest.mark.asyncio
+async def test_every_built_in_toolset_is_always_on_and_available(client):
+    items = (await client.get("/v1/toolsets/builtin")).json()["items"]
+    assert all(it["always_on"] is True and it["available"] is True for it in items), items
+
+
+@pytest.mark.asyncio
+async def test_every_catalogue_id_opens_its_detail(client):
+    for it in (await client.get("/v1/toolsets/builtin")).json()["items"]:
+        r = await client.get(f"/v1/toolsets/{it['id']}")
+        assert r.status_code == 200, (it["id"], r.text)
+        body = r.json()
+        assert body["builtin"] is True, body
+        assert body["description"] == it["tagline"], body
+
+
+def test_every_toolset_a_seeded_agent_binds_is_in_the_catalogue():
+    from primer.agent.agent_checks import toolset_id_of
+    from primer.bootstrap.operator_defaults import (
+        BUILDER_TOOLS, EXPLORER_TOOLS, OPERATOR_TOOLS, PLANNER_TOOLS, TOOL_RUNNER_TOOLS,
+    )
+
+    catalogue = {spec["id"] for spec in providers._BUILTIN_TOOLSETS}
+    seeded = (OPERATOR_TOOLS, BUILDER_TOOLS, PLANNER_TOOLS, EXPLORER_TOOLS, TOOL_RUNNER_TOOLS)
+    bound = {toolset_id_of(tool) for tools in seeded for tool in tools}
+    assert bound <= catalogue, sorted(bound - catalogue)

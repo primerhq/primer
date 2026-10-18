@@ -91,7 +91,7 @@ async def test_the_flat_catalogue_lists_every_tool_the_grouped_catalogue_lists(c
 
 @pytest.mark.asyncio
 async def test_the_flat_catalogue_asks_the_registry_for_every_built_in_toolset(client, monkeypatch) -> None:
-    """The fake test app's registry has no ``trigger`` / ``harness`` / ``search`` provider, so the route cannot be seen listing
+    """The fake test app's registry has no ``trigger`` / ``harness`` / ``collections`` provider, so the route cannot be seen listing
     their tools there. A spy registry answers every toolset with one tool and records what was asked."""
     from types import SimpleNamespace
 
