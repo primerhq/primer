@@ -471,7 +471,7 @@ const PC_SECRET_KEPT_HELP = "Stored secrets are shown masked; leave it as is to 
 
 // Two layouts, one form. Without `frame` the form lays itself out (fields, the probe panel, its own footer row): the legacy catalog's modal mounts it so.
 // With `frame` (the Register provider overlay, plan 02 Task 10) it hands its parts to the frame and returns what the frame returns:
-// frame({ body, footerLeft, footerRight, error, busy }), with Cancel on the left, Test (only when `canTest`: a class with a draft _test route) and the submit
+// frame({ body, footerLeft, footerRight, error, busy }), with Cancel on the left, Test (only when `canTest`: a class with a draft _test route; never to an edit) and the submit
 // (`submitLabel`) on the right, and the save refusal as `error`. Inside the frame the fields are kit fields (the label alone on its line, the help under
 // the control), `kindSelect` adds a Type select of the kinds the server serves minus the built-in ones and `excludeKinds` (locked when editing; a change
 // writes `provider` and clears `config`), the limits are PC_LimitsSection's, and `readOnly` (a built-in row with nothing to configure) says so and offers
@@ -770,9 +770,11 @@ function PC_ProviderForm({
     const footerLeft = typeof onCancel === "function" ? (
       <Btn kind="ghost" data-testid="provider-form-cancel" onClick={onCancel}>Cancel</Btn>
     ) : null;
+    // An edit never offers a draft Test, whatever `canTest` says: the draft holds the served MASK of every secret and `_test` builds its adapter from the draft alone, so
+    // it would report a failure for a provider that works (plan 02: "No masked secret reaches a probe. Edit mode never sends a draft to ... `_test`").
     const footerRight = (
       <React.Fragment>
-        {canTest ? (
+        {canTest && !editing ? (
           <Btn kind="ghost" data-testid="provider-form-test" onClick={runTest} busy={busy} blocked={saving} disabled={!shapeReady}>
             Test
           </Btn>

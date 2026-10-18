@@ -1,7 +1,7 @@
 """The schema-driven provider form inside the Register overlay's frame (plan 02, Task 10; design 6.2 and 6.7).
 
 ``PC_ProviderForm`` with a ``frame`` prop hands its parts to the frame instead of laying itself out: ``frame({ body, footerLeft, footerRight, error, busy })``,
-with Cancel on the left, Test (only where a draft test route exists) and the submit on the right, the save refusal as ``error`` and ``busy``
+with Cancel on the left, Test (only where a draft test route exists, and never when editing) and the submit on the right, the save refusal as ``error`` and ``busy``
 while a save or a test is out. Inside the frame the
 fields are kit fields (the label alone on its line, the help under the control), the kind is a Type select of the kinds the server serves minus the
 built-in ones, and an edit sends back every field it did not show. Without ``frame`` the form is the layout it always was (its pins live in
@@ -161,6 +161,16 @@ def test_test_is_offered_only_when_can_test(ctx, can_test: bool) -> None:
     _mount(ctx, plural="artifact_storage_providers", classKey="artifact_storage", kindSelect=True, canTest=can_test)
     _serve(ctx, "artifact_storage_providers")
     assert (ctx.eval("MR.find('provider-form-test') !== null") is True) is can_test
+
+
+def test_test_is_never_offered_when_editing(ctx) -> None:
+    """Review of #773: an edit's draft holds the served MASK of every secret, and a draft ``_test`` builds its adapter from the draft alone, so Test would report a
+    failure for a provider that works. The form never offers it to an edit, whatever the class says (plan 02: edit mode never sends a draft to ``_test``)."""
+    row = {"id": "tav", "provider_type": "tavily", "provider": "tavily", "config": {"type": "tavily", "api_key": "**********1234"}}
+    _mount(ctx, plural="web_search_providers", classKey="web_search", kindSelect=True, canTest=True, editing=True, existingId="tav", value=row, submitLabel="Save")
+    _serve(ctx, "web_search_providers")
+    assert ctx.eval("MR.find('provider-form-test') === null") is True
+    assert ctx.eval("MR.find('provider-form-save') !== null") is True
 
 
 def test_the_frame_is_told_when_a_request_is_out(ctx) -> None:
