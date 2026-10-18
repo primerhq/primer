@@ -151,9 +151,8 @@ def test_the_id_sent_is_the_trimmed_one() -> None:
 def test_each_field_shows_its_message_and_drops_it_when_edited() -> None:
     body = _modal()
 
-    for key, field, testid in (("body.id", "id", "na-id-error"), ("body.description", "description", "na-description-error")):
-        assert f'fieldErrors["{key}"] && (' in body, f"{key} has a place to show"
-        assert f'data-testid="{testid}"' in body
+    for key, field in (("body.id", "id"), ("body.description", "description")):
+        assert f'AG_fieldError(fieldErrors, "{key}")' in body, f"{key} has a place to show (the kit field's error, under its control)"
         assert re.search(r"set" + field.capitalize() + r"\(e\.target\.value\);\s*setFieldErrors\(\(m\) => \(\{ \.\.\.m, \"" + re.escape(key) + r"\": undefined \}\)\);", body), f"typing in {field} clears its message"
 
 

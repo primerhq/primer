@@ -33,27 +33,29 @@ class TestFormSendsTheProfileShape:
         assert "a.model?.model_name" not in src
 
     def test_picker_lists_profiles_not_providers(self) -> None:
-        """uiv2 Wave 2: retargeted from a <select htmlFor="na-model-
-        profile"> to the stacked AG_ProfilePicker (mockup's own picker
-        style - one bordered row per profile, the bound one tinted) - a
-        button-per-row group has no single focusable target for a plain
-        <label for>, so the row is a FormField (a group named by its label)
-        and the picker has its own data-testid."""
+        """Platform revamp design 9 (layout A): the profile is a plain dropdown
+        in the Id row, labelled by its kit row (uiv2 Wave 2 had stacked
+        AG_ProfilePicker buttons, which have no single target for a
+        <label for>). tests/ui/test_agent_overlay_layout.py runs it."""
         src = _src()
         assert '"/model_profiles?limit=200"' in src
-        assert '<FormField label="Model profile"' in src
-        assert "<AG_ProfilePicker" in src
+        assert '<PK_Field label="Model profile"' in src
+        assert 'id="na-model-profile"' in src
+        assert "function AG_ProfilePicker(" not in src
+        assert "<AG_ProfilePicker" not in src
 
     def test_submit_is_blocked_without_a_profile(self) -> None:
-        assert "disabled={!profileId || create.loading}" in _src()
+        src = _src()
+        assert "disabled={!profileId}" in src
+        assert "busy={create.loading}" in src
 
     def test_surfaces_the_profile_field_error(self) -> None:
-        assert 'fieldErrors["body.model.profile_id"]' in _src()
+        assert 'AG_fieldError(fieldErrors, "body.model")' in _src()
 
     def test_says_the_profile_is_only_a_default(self) -> None:
         """Sessions and chats may override it per run; an operator picking
         a model here should not think it is pinned."""
-        assert "DEFAULT model" in _src()
+        assert "The default; a run can override it" in _src()
 
     def test_keeps_a_dangling_profile_selectable(self) -> None:
         """Editing an unrelated field must not silently repoint the agent

@@ -38,7 +38,7 @@ DISABLED = re.compile(r"(?<![\w-])disabled=\{")
 # the buttons that are still natively disabled while a request is out, per file (can only shrink)
 BASELINE: dict[str, int] = {
     "admin_users.jsx": 3,
-    "agents.jsx": 3,
+    "agents.jsx": 1,
     "approvals.jsx": 3,
     "auth.jsx": 3,
     "channel_rules.jsx": 2,

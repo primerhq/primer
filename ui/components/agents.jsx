@@ -1,4 +1,4 @@
-/* global React, Icon, StatusPill, Btn, Modal, Banner, CardList, Card, Fab, relativeTime, FormField */
+/* global React, Icon, StatusPill, Btn, Modal, Banner, CardList, Card, Fab, relativeTime, PK_FormOverlay, PK_Grid, PK_Field, PK_Fold */
 
 // Agents page + detail wired to the real API. The Designer's mock-data
 // scaffold was replaced in Phase 2 — every fetch goes through
@@ -324,42 +324,47 @@ function AgentsPage({ onOpen, pushToast, startCreate }) {
 // ============================================================================
 
 function AG_Toggle({ checked, onChange, label, help, disabled, testid }) {
+  // The switch and its label are one line; the help sits UNDER them (design 6.2), under the label text, and the switch is described by it.
+  const helpId = React.useId();
   return (
-    <label
-      style={{
-        display: "flex", alignItems: "flex-start", gap: 10,
-        cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.5 : 1,
-      }}
-    >
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        disabled={disabled}
-        data-testid={testid}
-        onClick={() => !disabled && onChange(!checked)}
+    <div>
+      <label
         style={{
-          flex: "0 0 auto", width: 34, height: 20, borderRadius: 999,
-          border: "1px solid var(--border)", padding: 0, marginTop: 1,
-          background: checked ? "var(--accent)" : "var(--bg-2)",
-          position: "relative", cursor: disabled ? "default" : "pointer",
-          transition: "background 0.12s ease",
+          display: "flex", alignItems: "center", gap: 10,
+          cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.5 : 1,
         }}
       >
-        <span
+        <button
+          type="button"
+          role="switch"
+          aria-checked={checked}
+          aria-describedby={help ? helpId : undefined}
+          disabled={disabled}
+          data-testid={testid}
+          onClick={() => !disabled && onChange(!checked)}
           style={{
-            position: "absolute", top: 1, left: checked ? 15 : 1,
-            width: 16, height: 16, borderRadius: "50%",
-            background: checked ? "var(--accent-fg)" : "var(--text-3)",
-            transition: "left 0.12s ease",
+            flex: "0 0 auto", width: 34, height: 20, borderRadius: 999,
+            border: "1px solid var(--border)", padding: 0,
+            background: checked ? "var(--accent)" : "var(--bg-2)",
+            position: "relative", cursor: disabled ? "default" : "pointer",
+            transition: "background 0.12s ease",
           }}
-        />
-      </button>
-      <span style={{ fontSize: 12.5, lineHeight: 1.4 }}>
-        {label}
-        {help && <span className="muted"> — {help}</span>}
-      </span>
-    </label>
+        >
+          <span
+            style={{
+              position: "absolute", top: 1, left: checked ? 15 : 1,
+              width: 16, height: 16, borderRadius: "50%",
+              background: checked ? "var(--accent-fg)" : "var(--text-3)",
+              transition: "left 0.12s ease",
+            }}
+          />
+        </button>
+        <span data-testid={testid ? testid + "-label" : undefined} style={{ fontSize: 12.5, lineHeight: 1.4 }}>{label}</span>
+      </label>
+      {help && (
+        <div className="field-help" id={helpId} data-testid={testid ? testid + "-help" : undefined} style={{ marginLeft: 44 }}>{help}</div>
+      )}
+    </div>
   );
 }
 
@@ -368,86 +373,9 @@ function AG_Toggle({ checked, onChange, label, help, disabled, testid }) {
 // New agent modal
 // ============================================================================
 
-function AG_ProfilePicker({ profiles, loading, value, onChange, missingId }) {
-  // uiv2 Wave 2: the mockup renders model profiles as stacked
-  // selectable rows (bound one green-bordered/green-mono, the rest
-  // plain) rather than a <select> - same data (GET /model_profiles),
-  // just a richer picker matching the reference exactly.
-  return (
-    <div className="col" style={{ gap: 6 }} data-testid="agent-profile-picker">
-      {missingId && (
-        <div style={{
-          border: "1px solid var(--red)", borderRadius: 6, padding: "8px 10px",
-          color: "var(--red)",
-        }} data-testid="agent-profile-row-missing">
-          <span className="mono">{missingId}</span> <span className="text-sm">(missing) — pick another below</span>
-        </div>
-      )}
-      {loading && profiles.length === 0 && (
-        <div className="muted text-sm" style={{ padding: 10 }}>Loading model profiles…</div>
-      )}
-      {!loading && profiles.length === 0 && (
-        <div className="field-help" style={{ color: "var(--amber)" }}>
-          No model profiles configured. Create one at <span className="mono">/providers?class=llm</span> first.
-        </div>
-      )}
-      {profiles.map((pr) => {
-        const active = pr.id === value;
-        return (
-          <button type="button" key={pr.id}
-            onClick={() => onChange(pr.id)}
-            data-testid={`agent-profile-row-${pr.id}`}
-            data-active={active ? "true" : "false"}
-            style={{
-              display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2,
-              textAlign: "left", padding: "8px 10px", borderRadius: 6, cursor: "pointer",
-              border: "1px solid " + (active ? "var(--accent)" : "var(--border)"),
-              background: active ? "var(--accent-dim)" : "var(--bg-1)",
-            }}>
-            <span className="mono" style={{ color: active ? "var(--accent)" : "var(--text)", fontSize: 12.5 }}>{pr.id}</span>
-            <span className="muted text-sm" style={{ fontSize: 11 }}>
-              {pr.provider_id}/{pr.model_name}
-              {pr.config?.reasoning ? ` · reasoning ${pr.config.reasoning}` : ""}
-            </span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-// uiv2 Wave 2: everything JSON-visible with no mockup form field
-// (description was already homed; response_format/allow_external_tools/
-// compaction_tool_access are real but rare enough the mockup's own
-// minimal example never shows them) - kept reachable behind one
-// collapsed disclosure rather than cluttering the two-column layout.
-function AG_AdvancedDisclosure({ open, onToggle, children }) {
-  // Controlled (not self-contained state): submit() must be able to
-  // force this open when response_format fails to parse, the same way
-  // the old tabbed layout jumped to the Advanced tab on that error.
-  return (
-    <div className="panel" data-testid="agent-advanced-disclosure">
-      <button type="button" onClick={onToggle}
-        style={{
-          display: "flex", alignItems: "center", gap: 6, width: "100%",
-          background: "none", border: "none", cursor: "pointer", padding: "8px 10px",
-          color: "var(--text-2)", fontSize: 12,
-        }}>
-        <Icon name={open ? "chevron-down" : "chevron-right"} size={11} />
-        Advanced
-      </button>
-      {open && (
-        <div style={{ padding: "0 10px 10px", display: "flex", flexDirection: "column", gap: 12 }}>
-          {children}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // uiv2 Wave 2 (a-6, re-homed as a collapsible panel rather than its own
 // tab): unchanged fetch/table from the old Sessions tab, just a smaller
-// footprint so it fits the consolidated form's right column.
+// footprint so it sits at the foot of the consolidated form.
 function AG_SessionsPanel({ agentId }) {
   const { useResource, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
@@ -512,7 +440,7 @@ function AG_validateNewAgent(id, description) {
   var problems = {};
   var name = String(id || "").trim();
   if (name && !/^(?!.*__)[a-z0-9][a-z0-9_-]{0,62}$/.test(name)) {
-    problems["body.id"] = "Use lowercase letters, digits, hyphens and underscores, starting with a letter or digit (up to 63 characters), for example refund-triage. Two underscores in a row are reserved for the agents a harness installs. The name cannot change after the agent is created.";
+    problems["body.id"] = "Use lowercase letters, digits, hyphens and underscores, starting with a letter or digit (up to 63 characters), for example refund-triage. Two underscores in a row are reserved for the agents a harness installs. The id cannot change after the agent is created.";
   }
   if (!String(description || "").trim()) {
     problems["body.description"] = "Describe what this agent is for: other agents find it by its description.";
@@ -649,6 +577,26 @@ function AG_PromptTabs({ parts, onChange }) {
   );
 }
 
+// What a save sends for the system prompt. `parts` is what the form holds, `stored` the list the agent was loaded with. A part the operator did not touch goes
+// back exactly as it was stored (a part with spaces around it, or an empty one, is not rewritten by a save that was about something else); a part they typed is
+// trimmed, and one left blank is dropped (an add-then-leave-blank part must not send a hole in the array). A stored part excuses ONE part of the form, so a
+// second copy the operator typed is theirs. With no stored parts the form's one empty part is dropped, and the prompt is [].
+function AG_systemPromptForSave(parts, stored) {
+  var untouched = Array.isArray(stored) ? stored.slice() : [];
+  var out = [];
+  parts.forEach(function (part) {
+    var at = untouched.indexOf(part);
+    if (at >= 0) {
+      untouched.splice(at, 1);
+      out.push(part);
+      return;
+    }
+    var text = part.trim();
+    if (text) out.push(text);
+  });
+  return out;
+}
+
 function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDelete, onChat, chatLoading }) {
   // Same modal serves both create (existing == null) and edit
   // (existing == agent row). In edit mode the id field is locked,
@@ -670,11 +618,11 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
     (signal) => apiFetch("GET", "/model_profiles?limit=200", null, { signal }),
     { pollMs: null }
   );
-  // The Advanced tab gates a tts_voice picker on the speech capability
+  // The Voice fold gates a tts_voice picker on the speech capability
   // and fills it from the voice list. Both were read here while only
   // AgentsPage fetched them, so opening this modal and reaching that
-  // tab threw ReferenceError: caps is not defined, and the whole tab
-  // rendered nothing -- taking the rest of its fields down with it.
+  // picker threw ReferenceError: caps is not defined, and the whole
+  // form rendered nothing -- taking the rest of its fields down with it.
   const caps = window.primerApi.useCapabilities();
   const voices = useResource(
     "agents:voices",
@@ -695,8 +643,8 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
   // Platform wave P1b item 8: system_prompt is ALREADY list[str] server-
   // side (primer/model/agent.py:143, joined with "\n\n" at prompt-render
   // time) - the only gap was this form flattening it to one textarea. A
-  // saved agent with N parts loads as N textareas; a legacy/absent value
-  // defaults to one empty part so the editor always has at least one row.
+  // saved agent with N parts loads as N tabs over one editor; a legacy/absent
+  // value defaults to one empty part so the editor always has at least one.
   const _initialSystemPromptParts = () => {
     const p = existing?.system_prompt;
     return Array.isArray(p) && p.length ? p : [""];
@@ -743,7 +691,14 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
   const [maxOutputTokens, setMaxOutputTokens] = React.useState(
     existing?.max_output_tokens != null ? String(existing.max_output_tokens) : ""
   );
-  const [showAdvanced, setShowAdvanced] = React.useState(false);
+  // PK_Fold's `open` is only its STARTING state, so the form opens a fold for the operator by changing its key: the new fold starts open. The values live
+  // here, not in the fold, so a fold that is remounted (or closed) loses and hides nothing. The Advanced fold opens when its response format does not parse or the
+  // server refuses it; the Voice fold, when the server refuses the voice.
+  const [advancedOpens, setAdvancedOpens] = React.useState(0);
+  const [voiceOpens, setVoiceOpens] = React.useState(0);
+  // A number input the browser cannot read reports "" (validity.badInput), and "" means "model default" or "no limit": it would save as that. It is an error
+  // under the field instead, and nothing is sent until the operator fixes or clears it. Keyed by the field's path, like the server's refusals.
+  const [numberErrors, setNumberErrors] = React.useState({});
   // Raw-JSON + cross-reference view (synthesis doc: "JSON can survive as
   // a secondary/advanced view but must not be the landing IA") - edit
   // mode only, folds AG_ConfigTab's read-only render + AG_ReferencesPanel
@@ -761,7 +716,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
   // it in the list so editing an unrelated field does not silently repoint
   // the agent at whatever happens to sort first.
   const selectedProfile = profileOptions.find((pr) => pr.id === profileId);
-  const profileMissing = !!profileId && !selectedProfile && !profiles.loading;
+  const profileMissing = !!profileId && !selectedProfile && !profiles.loading && !profiles.error;
 
   const create = useMutation(
     (body) => isEdit
@@ -777,6 +732,9 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
           const map = {};
           for (const fe of err.fieldErrors) map[(fe.loc || []).join(".")] = fe.msg;
           setFieldErrors(map);
+          // A refusal on a field inside a fold would be said where nobody looks: open the fold it belongs to.
+          if (AG_fieldError(map, "body.response_format")) setAdvancedOpens((n) => n + 1);
+          if (AG_fieldError(map, "body.tts_voice")) setVoiceOpens((n) => n + 1);
         } else if (typeof pushToast === "function") {
           pushToast({
             kind: "error",
@@ -796,8 +754,10 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
     // by a placeholder text and saved).
     const problems = AG_validateNewAgent(isEdit ? "" : id, description);
     if (Object.keys(problems).length) { setFieldErrors(problems); return; }
+    // A number the browser could not read is already an error under its field (see numberErrors): nothing is sent until it is fixed or cleared.
+    if (Object.keys(numberErrors).length) return;
     // response_format: parse the textarea once here so a malformed
-    // schema is caught client-side (jump to Advanced + show the error)
+    // schema is caught client-side (open Advanced + show the error)
     // before the request goes out. Empty text == no structured output.
     let responseFormatValue = null;
     if (responseFormat.trim() !== "") {
@@ -805,11 +765,11 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
         responseFormatValue = JSON.parse(responseFormat);
       } catch (e) {
         setResponseFormatError(String(e.message || e));
-        setShowAdvanced(true);
+        setAdvancedOpens((n) => n + 1);
         return;
       }
     }
-    // Agent.tools is the list of scoped tool ids — no separate
+    // Agent.tools is the list of scoped tool ids - no separate
     // allowlist field; an empty list means no tools registered.
     const tools = [...selectedScopedIds].sort();
     const body = {
@@ -818,9 +778,8 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
       description: description.trim(),
       model: { profile_id: profileId },
       tools,
-      // Empty parts dropped on save - an add-then-leave-blank part must
-      // not send a hole in the array.
-      system_prompt: systemPromptParts.map((p) => p.trim()).filter(Boolean),
+      // The parts nobody touched go back as stored; a typed part is trimmed and a blank one dropped (AG_systemPromptForSave).
+      system_prompt: AG_systemPromptForSave(systemPromptParts, existing?.system_prompt),
       // The stored parts when the text is the one the form showed (see
       // _joinPrompt above), so a save does not rewrite a multi-part prompt.
       compaction_prompt: Array.isArray(existing?.compaction_prompt) && compactionPrompt === _joinPrompt(existing.compaction_prompt)
@@ -859,14 +818,36 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
     try { await create.mutate(body); } catch (_e) { /* surfaced via onError */ }
   };
 
-  const selectedCount = selectedScopedIds.size;
-  // Edit mode identifies the specific row in the title itself (same
-  // "Noun - id" pattern as KN_CollectionDetail).
-  const modalTitle = (
-    <h1 className="page-title" style={{ font: "inherit", margin: 0, display: "inline" }}>
-      {isEdit ? `Agent — ${existing.id}` : "Agent"}
-    </h1>
-  );
+  // The field a number input feeds: its change handler keeps what was typed AND whether the browser could read it.
+  const onNumber = (path, set, message) => (e) => {
+    set(e.target.value);
+    const unreadable = !!(e.target.validity && e.target.validity.badInput);
+    setNumberErrors((m) => {
+      if (!!m[path] === unreadable) return m;
+      const next = { ...m };
+      if (unreadable) next[path] = message; else delete next[path];
+      return next;
+    });
+  };
+
+  // The model profile dropdown. A profile the agent names that is no longer in the list stays the selection (a native select would otherwise show its first
+  // option and the save would repoint the agent): it is the first option, marked "(missing)" when the list loaded and plain when the load failed.
+  const profilesFailed = !!profiles.error;
+  const profileGone = !!profileId && !selectedProfile && !profiles.loading;
+  const profilesLoadError = profilesFailed
+    ? (profiles.error.detail || profiles.error.message || profiles.error.title || "")
+    : "";
+  const profileError = AG_fieldError(fieldErrors, "body.model")
+    || (profilesFailed ? "Could not load the model profiles" + (profilesLoadError ? ": " + profilesLoadError : ".") : null)
+    || (profileMissing ? "This profile no longer exists. Pick another one." : null);
+  const profileHelp = !profiles.loading && !profilesFailed && profileOptions.length === 0
+    ? "No model profiles yet. Register an LLM provider and import its models first."
+    : "The default; a run can override it";
+
+  // Refusals that no field of the overlay owns are said in one line above the footer. A voice control that is not drawn (text to speech is not set up) owns none.
+  const voiceShown = !!(caps.data && caps.data.speech && caps.data.speech.tts_configured);
+  const shownPaths = voiceShown ? AG_FIELD_PATHS : AG_FIELD_PATHS.filter((path) => path !== "body.tts_voice");
+  const otherErrors = AG_otherFieldErrors(fieldErrors, shownPaths);
 
   // uiv2 Wave 2 (harness_id): a managed row 409s on any PUT
   // (routers/agents.py) - AG_ConfigTab used to just hide its Edit
@@ -875,317 +856,243 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
   // than rendering inputs Save can never persist.
   if (isManaged) {
     return (
-      <Modal
-        title={modalTitle}
+      <PK_FormOverlay
+        title="Managed agent"
         onClose={onClose}
-        footer={<Btn kind="ghost" onClick={onClose}>Close</Btn>}
+        testid="agent-form"
+        footer={{ right: <Btn kind="ghost" data-testid="agent-form-close" onClick={onClose}>Close</Btn> }}
       >
         <Banner kind="info" title={`Managed by harness ${existing.harness_id}`}
-          detail="Direct edits are blocked - update the harness's sync/uninstall flow instead." />
+          detail="Direct edits are blocked. Update the harness's sync or uninstall flow instead." />
         <AG_ManagedSummary existing={existing} />
-      </Modal>
+      </PK_FormOverlay>
     );
   }
 
   return (
-    <Modal
-      title={modalTitle}
-      width={760}
+    <PK_FormOverlay
+      title={isEdit ? "Edit agent" : "New agent"}
       onClose={onClose}
-      footer={
-        <>
-          {isEdit && onDelete && (
-            <Btn kind="ghost" onClick={onDelete} style={{ marginRight: "auto", color: "var(--red)" }}>Delete</Btn>
-          )}
-          {isEdit && onChat && (
-            <Btn kind="ghost" icon="send" onClick={onChat} disabled={chatLoading}>
-              {chatLoading ? "Opening chat…" : "Chat"}
+      testid="agent-form"
+      footer={{
+        left: (
+          <>
+            <Btn kind="ghost" data-testid="agent-form-cancel" onClick={onClose}>Cancel</Btn>
+            {isEdit && onDelete && (
+              <Btn kind="ghost" data-testid="agent-form-delete" onClick={onDelete} style={{ color: "var(--red)" }}>Delete</Btn>
+            )}
+          </>
+        ),
+        right: (
+          <>
+            {isEdit && onChat && (
+              <Btn kind="ghost" icon="send" data-testid="agent-form-chat" onClick={onChat} busy={chatLoading}>
+                {chatLoading ? "Opening chat…" : "Chat"}
+              </Btn>
+            )}
+            <Btn
+              kind="primary"
+              icon={isEdit ? "check" : "plus"}
+              data-testid="agent-form-submit"
+              onClick={submit}
+              disabled={!profileId}
+              busy={create.loading}
+            >
+              {create.loading ? (isEdit ? "Saving…" : "Creating…") : (isEdit ? "Save" : "Create")}
             </Btn>
-          )}
-          <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn
-            kind="primary"
-            icon={isEdit ? "check" : "plus"}
-            data-testid="agent-form-submit"
-            onClick={submit}
-            disabled={!profileId || create.loading}
-          >
-            {create.loading ? (isEdit ? "Saving…" : "Creating…") : (isEdit ? "Save changes" : "Create")}
-          </Btn>
-        </>
-      }
+          </>
+        ),
+      }}
     >
       {isEdit && <AG_StatusPanel id={existing.id} status={status} />}
-      <div style={{
-        display: "grid",
-        gridTemplateColumns: "minmax(0, 1fr) 340px",
-        gap: 22,
-        marginTop: isEdit ? 14 : 0,
-      }}>
-        <div className="col" style={{ gap: 14, minWidth: 0 }}>
-          <div className="field">
-            <label className="field-label" htmlFor="na-id">
-              Name {isEdit
-                ? <span className="hint">locked — id cannot change after create</span>
-                : <span className="hint">optional — backend assigns if blank</span>}
-            </label>
-            <input
-              id="na-id"
-              data-testid="agent-id"
-              className="input"
-              value={id}
-              onChange={(e) => { setId(e.target.value); setFieldErrors((m) => ({ ...m, "body.id": undefined })); }}
-              placeholder="e.g. refund-triage"
-              aria-invalid={!!fieldErrors["body.id"]}
-              disabled={isEdit}
-              style={{ width: "100%" }}
-            />
-            {fieldErrors["body.id"] && (
-              <div className="field-help" style={{ color: "var(--red)" }} data-testid="na-id-error">{fieldErrors["body.id"]}</div>
-            )}
-          </div>
-          <div className="field">
-            <label className="field-label" htmlFor="na-description">Description</label>
-            <input
-              id="na-description"
-              data-testid="agent-description"
-              className="input"
-              value={description}
-              onChange={(e) => { setDescription(e.target.value); setFieldErrors((m) => ({ ...m, "body.description": undefined })); }}
-              aria-invalid={!!fieldErrors["body.description"]}
-              style={{ width: "100%" }}
-            />
-            {fieldErrors["body.description"] && (
-              <div className="field-help" style={{ color: "var(--red)" }} data-testid="na-description-error">{fieldErrors["body.description"]}</div>
-            )}
-          </div>
-          <FormField label="Model profile" hint="default, overridable per run">
-            <AG_ProfilePicker
-              profiles={profileOptions}
-              loading={profiles.loading}
-              value={profileId}
-              onChange={setProfileId}
-              missingId={profileMissing ? profileId : null}
-            />
-            <div className="field-help">
-              This is the agent's DEFAULT model. A session or chat may name a
-              different profile at invocation time.
-            </div>
-            {fieldErrors["body.model.profile_id"] && (
-              <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.model.profile_id"]}</div>
-            )}
-          </FormField>
-          {/* uiv2 Wave 2 (a-11): the numerics live right under the
-              profile picker, not tucked behind Advanced - they gate the
-              same model call the profile does. */}
-          <div style={{ display: "flex", gap: 10 }}>
-            <div className="field" style={{ flex: 1 }}>
-              <label className="field-label" htmlFor="na-temperature">
-                Temperature <span className="hint">optional</span>
-              </label>
-              <input id="na-temperature" className="input" type="number" step="0.05" min="0"
-                value={temperature} onChange={(e) => setTemperature(e.target.value)} style={{ width: "100%" }} />
-              {fieldErrors["body.temperature"] && (
-                <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.temperature"]}</div>
-              )}
-            </div>
-            <div className="field" style={{ flex: 1 }}>
-              <label className="field-label" htmlFor="na-max-tool-turns">Max tool turns</label>
-              <input id="na-max-tool-turns" data-testid="agent-max-tool-turns" className="input" type="number" step="1" min="1"
-                placeholder="No limit"
-                value={maxToolTurns} onChange={(e) => setMaxToolTurns(e.target.value)} style={{ width: "100%" }} />
-            </div>
-            <div className="field" style={{ flex: 1 }}>
-              <label className="field-label" htmlFor="na-max-output-tokens">
-                Max output tokens <span className="hint">optional</span>
-              </label>
-              <input id="na-max-output-tokens" className="input" type="number" step="1" min="1"
-                value={maxOutputTokens} onChange={(e) => setMaxOutputTokens(e.target.value)} style={{ width: "100%" }} />
-            </div>
-          </div>
-          <FormField label="System prompt" hint="optional · parts">
-            {/* Platform wave P1b item 8: repeatable textarea list - one
-                array element per part, no delimiter tricks. Agent.
-                system_prompt is already list[str] (primer/model/agent.py:
-                143), joined with "\n\n" at prompt-render time; this is FE
-                work on the existing field, not a new one. */}
-            {systemPromptParts.map((part, i) => (
-              <div key={i} style={{ display: "flex", gap: 6, alignItems: "flex-start", marginBottom: 6 }}>
-                <textarea
-                  data-testid={`agent-system-prompt-part-${i}`}
-                  aria-label={`System prompt part ${i + 1}`}
-                  className="textarea"
-                  style={{ flex: 1 }}
-                  value={part}
-                  onChange={(e) => {
-                    const next = systemPromptParts.slice();
-                    next[i] = e.target.value;
-                    setSystemPromptParts(next);
-                  }}
-                  rows={3}
-                />
-                <Btn kind="ghost" size="sm" icon="x"
-                  data-testid={`agent-system-prompt-remove-${i}`}
-                  disabled={systemPromptParts.length === 1}
-                  title={systemPromptParts.length === 1
-                    ? "at least one part stays in the editor"
-                    : "remove this part"}
-                  onClick={() => setSystemPromptParts(
-                    systemPromptParts.filter((_, j) => j !== i))}
-                />
-              </div>
-            ))}
-            <Btn kind="ghost" size="sm" icon="plus"
-              data-testid="agent-system-prompt-add"
-              onClick={() => setSystemPromptParts(systemPromptParts.concat([""]))}>
-              Add part
-            </Btn>
-          </FormField>
-          {/* uiv2 Wave 2 (b-2): a separately-labeled field, not a second
-              unlabeled textarea under the System prompt heading - the
-              schema already treats these as distinct concepts
-              (compaction_prompt is its own field, system_prompt an
-              unbounded ordered list, confirmed live pre-wave). One-pass
-              adjustable if the user rules b-2 differently. */}
-          <div className="field">
-            <label className="field-label" htmlFor="na-compaction-prompt">
-              Compaction prompt <span className="hint">optional · used when the conversation outgrows the LLM context window</span>
-            </label>
-            <textarea
-              id="na-compaction-prompt"
-              data-testid="agent-compaction-prompt"
-              className="textarea"
-              value={compactionPrompt}
-              onChange={(e) => setCompactionPrompt(e.target.value)}
-              rows={3}
-              placeholder="Instructions the runtime uses to summarise older turns when context is tight. Empty = use the framework default."
-            />
-            <div className="field-help">
-              Agent-specific because <em>what to keep</em> depends on the agent's purpose — a researcher may
-              want to preserve cited sources, a coder the current file under edit.
-            </div>
-            <p className="help-text">
-              Leave blank to use the default prompt (recommended unless your agent has a domain-specific compaction need).
-              The default is designed to preserve system context, recent turns, and pending tool calls.
-            </p>
-          </div>
-          <div className="field">
-            {/* Platform wave P1b item 4 / uiv2 Wave 2 ruling: the
-                reference shows an "Autonomous" inherit/on/off segment,
-                but autonomous (workspace_session.py:421) lives on the
-                SESSION binding, not the Agent definition - Agent has no
-                such field, and neither /agents create nor update accepts
-                one (confirmed against primer/model/agent.py). Rendering
-                a segment that silently no-ops would lie about what Save
-                does, so it stays disabled with an explanatory note
-                (August-round precedent) rather than a fake write or a
-                unilateral backend addition - flagged to the user as its
-                own open decision. */}
-            <span>Autonomous</span>
-            <div className="chip-group" data-testid="agent-autonomous-segment"
-              style={{ opacity: 0.55, pointerEvents: "none", width: "fit-content" }}
-              aria-disabled="true">
-              {["inherit", "on", "off"].map((v) => (
-                <span key={v} className={"chip" + (v === "inherit" ? " active" : "")}>{v}</span>
+      <PK_Grid cols={2}>
+        <PK_Field label="Id" help={isEdit ? "The id cannot change after the agent is created." : undefined} error={AG_fieldError(fieldErrors, "body.id")}>
+          <input
+            id="na-id"
+            data-testid="agent-id"
+            className="input"
+            value={id}
+            onChange={(e) => { setId(e.target.value); setFieldErrors((m) => ({ ...m, "body.id": undefined })); }}
+            placeholder="Optional, e.g. refund-triage"
+            disabled={isEdit}
+          />
+        </PK_Field>
+        <PK_Field label="Model profile" required help={profileHelp} error={profileError}>
+          <select
+            id="na-model-profile"
+            data-testid="agent-model-profile"
+            className="select"
+            aria-required="true"
+            value={profileId}
+            onChange={(e) => setProfileId(e.target.value)}
+          >
+            {profileGone && <option value={profileId}>{profilesFailed ? profileId : profileId + " (missing)"}</option>}
+            {profiles.loading && profileOptions.length === 0 && <option value="">Loading model profiles…</option>}
+            {!profiles.loading && profileOptions.length === 0 && !profileId && <option value="">No model profiles yet</option>}
+            {profileOptions.map((pr) => <option key={pr.id} value={pr.id}>{pr.id}</option>)}
+          </select>
+        </PK_Field>
+        <PK_Field label="Description" span="full" required error={AG_fieldError(fieldErrors, "body.description")}>
+          <input
+            id="na-description"
+            data-testid="agent-description"
+            className="input"
+            value={description}
+            onChange={(e) => { setDescription(e.target.value); setFieldErrors((m) => ({ ...m, "body.description": undefined })); }}
+            placeholder="What this agent is for"
+            aria-required="true"
+          />
+        </PK_Field>
+      </PK_Grid>
+      <PK_Field label="System prompt" help="The parts are joined with a blank line when the prompt is built."
+        error={AG_fieldError(fieldErrors, "body.system_prompt")}>
+        <AG_PromptTabs parts={systemPromptParts} onChange={setSystemPromptParts} />
+      </PK_Field>
+      {/* uiv2 Wave 2 (b-2): a separately-labeled field, not a second
+          unlabeled textarea under the System prompt heading - the
+          schema already treats these as distinct concepts
+          (compaction_prompt is its own field, system_prompt an
+          unbounded ordered list, confirmed live pre-wave). */}
+      <PK_Field label="Compaction prompt" help="Leave empty to use the default compaction prompt."
+        error={AG_fieldError(fieldErrors, "body.compaction_prompt")}>
+        <textarea
+          id="na-compaction-prompt"
+          data-testid="agent-compaction-prompt"
+          className="textarea mono"
+          value={compactionPrompt}
+          onChange={(e) => setCompactionPrompt(e.target.value)}
+          rows={7}
+          placeholder="How to summarise older turns when the conversation outgrows the context window"
+          style={{ resize: "vertical", fontFamily: "var(--font-mono)", fontSize: 12 }}
+        />
+      </PK_Field>
+      {/* uiv2 Wave 2 (a-11): the numerics sit in one row under the
+          prompts, not tucked behind Advanced - they gate the same model
+          call the profile does. */}
+      <PK_Grid cols={3}>
+        <PK_Field label="Temperature" error={numberErrors["body.temperature"] || AG_fieldError(fieldErrors, "body.temperature")}>
+          <input
+            id="na-temperature"
+            data-testid="agent-temperature"
+            className="input"
+            type="number"
+            step="0.05"
+            min="0"
+            placeholder="Model default"
+            value={temperature}
+            onChange={onNumber("body.temperature", setTemperature, "Enter a number, or leave it empty for the model default.")}
+          />
+        </PK_Field>
+        <PK_Field label="Max tool turns" error={numberErrors["body.max_tool_turns"] || AG_fieldError(fieldErrors, "body.max_tool_turns")}>
+          <input
+            id="na-max-tool-turns"
+            data-testid="agent-max-tool-turns"
+            className="input"
+            type="number"
+            step="1"
+            min="1"
+            placeholder="No limit"
+            value={maxToolTurns}
+            onChange={onNumber("body.max_tool_turns", setMaxToolTurns, "Enter a whole number, or leave it empty for no limit.")}
+          />
+        </PK_Field>
+        <PK_Field label="Max output tokens" help="Empty means no limit"
+          error={numberErrors["body.max_output_tokens"] || AG_fieldError(fieldErrors, "body.max_output_tokens")}>
+          <input
+            id="na-max-output-tokens"
+            data-testid="agent-max-output-tokens"
+            className="input"
+            type="number"
+            step="1"
+            min="1"
+            placeholder="No limit"
+            value={maxOutputTokens}
+            onChange={onNumber("body.max_output_tokens", setMaxOutputTokens, "Enter a whole number, or leave it empty for no limit.")}
+          />
+        </PK_Field>
+      </PK_Grid>
+      <PK_Field label="Tools" help="Pick single tools, never whole toolsets" error={AG_fieldError(fieldErrors, "body.tools")}>
+        <window.ToolPicker selected={selectedScopedIds} onChange={setSelectedScopedIds} pageSize={6} />
+      </PK_Field>
+      {voiceShown && (
+        <PK_Fold key={"voice-" + voiceOpens} open={voiceOpens > 0} label="Voice" testid="agent-voice-fold">
+          <PK_Field label="Text-to-speech voice" error={AG_fieldError(fieldErrors, "body.tts_voice")}>
+            <select
+              id="na-tts-voice"
+              className="select"
+              data-testid="agent-tts-voice"
+              value={ttsVoice || ""}
+              onChange={(e) => setTtsVoice(e.target.value || null)}
+            >
+              <option value="">(use the global default)</option>
+              {((voices.data && voices.data.voices) || []).map((name) => (
+                <option key={name} value={name}>{name}</option>
               ))}
-            </div>
-            <div className="field-help" data-testid="agent-autonomous-note">
-              Autonomous is a per-session control (set at session create or
-              binding switch), not part of the agent definition itself -
-              there is nothing here for Save to write yet.
-            </div>
-          </div>
-          {!!(caps.data && caps.data.speech && caps.data.speech.tts_configured) && (
-            <div className="field">
-              <label className="field-label" htmlFor="na-tts-voice">Voice <span className="hint">optional</span></label>
-              <select
-                id="na-tts-voice"
-                className="select"
-                data-testid="agent-tts-voice"
-                value={ttsVoice || ""}
-                onChange={(e) => setTtsVoice(e.target.value || null)}
-                style={{ width: "100%" }}
-              >
-                <option value="">(use the global default)</option>
-                {((voices.data && voices.data.voices) || []).map((name) => (
-                  <option key={name} value={name}>{name}</option>
-                ))}
-              </select>
-              {ttsVoice ? (
-                <div className="field-help" data-testid="agent-voice-pairing-note">
-                  {ttsVoice} · pairs with the identity chip
-                </div>
-              ) : null}
-            </div>
-          )}
-        </div>
-        <div className="col" style={{ gap: 12, minWidth: 0 }}>
-          <FormField label="Tools" hint={"scoped ids \u2014 never whole toolsets"}>
-            <window.ToolPicker selected={selectedScopedIds} onChange={setSelectedScopedIds} pageSize={6} />
-          </FormField>
-          {isEdit && <AG_SessionsPanel agentId={existing.id} />}
-          <AG_AdvancedDisclosure open={showAdvanced} onToggle={() => setShowAdvanced((v) => !v)}>
-            <AG_Toggle
-              checked={compactionToolAccess}
-              onChange={setCompactionToolAccess}
-              testid="na-compaction-tool-access"
-              label="Tool access during compaction"
-              help="let the compaction prompt call this agent's tools while summarising — e.g. dump the compacted content to workspace files. Runs in a bounded, ephemeral loop; the tool calls don't enter conversation history. Leave off for plain text-only compaction."
-            />
-            <AG_Toggle
-              checked={allowExternalTools}
-              onChange={setAllowExternalTools}
-              testid="na-allow-external-tools"
-              label="Allow external tools"
-              help="let API callers attach their own per-invocation tool definitions when invoking this agent. When the model calls one, the turn pauses until the caller responds through the invocation API. Leave off to reject invocation bodies carrying external tools."
-            />
-            <div className="field">
-              <label className="field-label" htmlFor="na-response-format">
-                Response format <span className="hint">optional · structured-output JSON Schema</span>
-              </label>
-              <textarea
-                id="na-response-format"
-                className="textarea mono"
-                value={responseFormat}
-                onChange={(e) => setResponseFormat(e.target.value)}
-                onBlur={() => {
-                  // Validate-on-blur like the graph editor's GR_JsonField:
-                  // empty == no schema (cleared), otherwise must parse.
-                  if (responseFormat.trim() === "") {
-                    setResponseFormatError(null);
-                    return;
-                  }
-                  try {
-                    JSON.parse(responseFormat);
-                    setResponseFormatError(null);
-                  } catch (e) {
-                    setResponseFormatError(String(e.message || e));
-                  }
-                }}
-                rows={5}
-                placeholder={'{\n  "type": "object",\n  "properties": { "verdict": { "type": "string" } },\n  "required": ["verdict"]\n}'}
-                style={{ width: "100%", fontFamily: "IBM Plex Mono", fontSize: 12 }}
-                data-testid="agent-response-format"
-              />
-              <div className="field-help">
-                When set, the LLM is constrained to emit JSON matching this schema (same shape
-                as a graph agent-node's <span className="mono">response_format</span>). Leave blank
-                to run the agent unconstrained. Validated as a JSON Schema on save.
+            </select>
+            {ttsVoice ? (
+              <div className="field-help" data-testid="agent-voice-pairing-note">
+                {ttsVoice} · pairs with the identity chip
               </div>
-              {responseFormatError && (
-                <div className="field-help" style={{ color: "var(--red)" }}>JSON parse: {responseFormatError}</div>
-              )}
-              {fieldErrors["body.response_format"] && (
-                <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.response_format"]}</div>
-              )}
-            </div>
-          </AG_AdvancedDisclosure>
-          {isEdit && (
-            <AG_JsonDisclosure agent={existing} open={showJson} onToggle={() => setShowJson((v) => !v)} />
-          )}
+            ) : null}
+          </PK_Field>
+        </PK_Fold>
+      )}
+      <PK_Fold key={"adv-" + advancedOpens} open={advancedOpens > 0} label="Advanced" testid="agent-advanced-fold">
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <AG_Toggle
+            checked={compactionToolAccess}
+            onChange={setCompactionToolAccess}
+            testid="na-compaction-tool-access"
+            label="Tool access during compaction"
+            help="Let the compaction prompt call this agent's tools while it summarises, for example to save the summary to workspace files. The calls run in a bounded loop (Max tool turns, or 8 rounds when it has no limit) and do not enter the conversation history. Leave off for text-only compaction."
+          />
+          <AG_Toggle
+            checked={allowExternalTools}
+            onChange={setAllowExternalTools}
+            testid="na-allow-external-tools"
+            label="Allow external tools"
+            help="Let API callers attach their own tool definitions when they invoke this agent. When the model calls one, the turn pauses until the caller answers through the invocation API. Leave off to refuse such calls."
+          />
+          <PK_Field label="Response format" help="A JSON Schema the answer must match. Leave empty to run the agent unconstrained."
+            error={responseFormatError ? "JSON parse: " + responseFormatError : AG_fieldError(fieldErrors, "body.response_format")}>
+            <textarea
+              id="na-response-format"
+              className="textarea mono"
+              value={responseFormat}
+              onChange={(e) => setResponseFormat(e.target.value)}
+              onBlur={() => {
+                // Validate-on-blur like the graph editor's GR_JsonField:
+                // empty == no schema (cleared), otherwise must parse.
+                if (responseFormat.trim() === "") {
+                  setResponseFormatError(null);
+                  return;
+                }
+                try {
+                  JSON.parse(responseFormat);
+                  setResponseFormatError(null);
+                } catch (e) {
+                  setResponseFormatError(String(e.message || e));
+                }
+              }}
+              rows={5}
+              placeholder={'{\n  "type": "object",\n  "properties": { "verdict": { "type": "string" } },\n  "required": ["verdict"]\n}'}
+              style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}
+              data-testid="agent-response-format"
+            />
+          </PK_Field>
         </div>
-      </div>
-    </Modal>
+      </PK_Fold>
+      {isEdit && <AG_SessionsPanel agentId={existing.id} />}
+      {isEdit && (
+        <AG_JsonDisclosure agent={existing} open={showJson} onToggle={() => setShowJson((v) => !v)} />
+      )}
+      {otherErrors.length > 0 && (
+        <div role="alert" data-testid="agent-form-error" className="field-help" style={{ color: "var(--red)" }}>
+          <Icon name="x-circle" size={11} style={{ verticalAlign: -1, marginRight: 3 }} />
+          {otherErrors.join("; ")}
+        </div>
+      )}
+    </PK_FormOverlay>
   );
 }
 
@@ -1238,15 +1145,31 @@ function AgentDetail({ agentId, pushToast }) {
 
   // "Chat" button: open an interactive session bound to this agent.
   // No auto_start - the session detail view takes the first message,
-  // the same way the old chat detail page did.
+  // the same way the old chat detail page did. A session lives in a
+  // workspace and the only create route is POST /workspaces/{wid}/sessions
+  // (there is no POST /sessions), so it is made in the DEFAULT workspace:
+  // the row GET /workspaces flags is_default, else the first one. The router
+  // is told the session's workspace, so the studio opens it there.
   const startChatMut = useMutation(
-    () => apiFetch("POST", "/sessions", {
-      binding: { kind: "agent", agent_id: id },
-      auto_start: false,
-    }),
+    async () => {
+      const list = await apiFetch("GET", "/workspaces?limit=200");
+      const rows = (list && list.items) || [];
+      const target = rows.find((w) => w.is_default === true) || rows[0];
+      if (!target) {
+        const none = new Error("A chat runs in a workspace, and there is none yet. Create a workspace, then open the chat again.");
+        none.title = "No workspace to chat in";
+        none.detail = "Create a workspace first, then open the chat again.";
+        throw none;
+      }
+      const row = await apiFetch("POST", `/workspaces/${encodeURIComponent(target.id)}/sessions`, {
+        binding: { kind: "agent", agent_id: id },
+        auto_start: false,
+      });
+      return { row, workspaceId: target.id };
+    },
     {
       invalidates: ["sessions:list"],
-      onSuccess: (row) => navigate("/sessions/" + row.id),
+      onSuccess: ({ row, workspaceId }) => navigate("/sessions/" + (row.session_id || row.id), { workspace_id: workspaceId }),
       onError: (err) => {
         if (typeof pushToast === "function") {
           pushToast({

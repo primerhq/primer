@@ -5,6 +5,10 @@ picker (a column of buttons), the system-prompt parts (a list of textareas) and 
 ``role="group"`` named by its label, since no native control is its direct child), and every system-prompt part carries its own ``aria-label``. The locked summary of a
 harness-managed agent drew ``<span className="field-label">Name</span><div>value</div>`` four times: captions for read-only values, with nothing to label; it is a
 ``<dl>`` now (``AG_ManagedSummary``).
+
+The overlay rebuild (platform revamp plan 05, design 9) draws every row as a kit ``PK_Field`` (the same ``FormField`` with the kit's classes): the model profile is a native
+select labelled by its row, the prompt tabs and the tool picker are named groups, and the editor of the prompt tabs is named after the part it shows. The real kit's labels
+are checked in ``tests/ui/test_agent_overlay_real_kit.py``.
 """
 
 from __future__ import annotations
@@ -27,10 +31,10 @@ def _function(name: str) -> str:
     return SRC[start:SRC.index("\n}\n", start) + len("\n}\n")]
 
 
-def test_the_three_custom_widget_rows_are_form_fields() -> None:
-    assert '<FormField label="Model profile" hint="default, overridable per run">' in SRC
-    assert '<FormField label="System prompt" hint="optional · parts">' in SRC
-    assert re.search(r'<FormField label="Tools" hint=\{"scoped ids \\u2014 never whole toolsets"\}>\s*<window\.ToolPicker', SRC)
+def test_the_custom_widget_rows_are_kit_fields() -> None:
+    assert '<PK_Field label="System prompt"' in SRC
+    assert re.search(r'<PK_Field label="Tools"[^>]*>\s*<window\.ToolPicker', SRC)
+    assert '<PK_Field label="Model profile"' in SRC and 'id="na-model-profile"' in SRC, "the profile is a native select now, labelled by its row"
     assert 'id="na-model-profile-label"' not in SRC, "the hand-made label id is the FormField's now"
 
 
@@ -40,7 +44,9 @@ def test_each_system_prompt_part_is_named() -> None:
 
 
 def test_the_form_declares_the_row_it_uses() -> None:
-    assert re.match(r"/\* global [^*]*\bFormField\b", SRC)
+    for name in ("PK_FormOverlay", "PK_Grid", "PK_Field", "PK_Fold"):
+        assert re.match(r"/\* global [^*]*\b" + name + r"\b", SRC), name
+    assert not re.match(r"/\* global [^*]*\bFormField\b", SRC), "no FormField is left in the file; the kit's PK_Field wraps it"
 
 
 # ---- the managed agent's locked summary ---------------------------------------------------------------------------------------------------------------

@@ -9,11 +9,16 @@ The stubs stand in for what the console around the form provides:
 
 * ``Icon`` and ``StatusPill`` render nothing, and ``relativeTime`` says "now".
 * ``Btn``, ``Banner`` and ``Modal`` render plain elements that keep the ``data-testid``. ``Btn`` also keeps ``disabled``, and ``busy`` as ``data-busy``.
+* ``PK_FormOverlay``, ``PK_Grid``, ``PK_Field`` and ``PK_Fold`` stand in for the platform kit (``ui/components/shared/platform-kit.jsx``): each draws one element
+  with the props it was given as ``data-*`` attributes (``data-title``, ``data-help``, ``data-error``, ``data-span``, ``data-required``, ``data-open``) and
+  ``PK_Field`` wraps the real ``FormField``. ``PK_Fold`` draws its children even when it is closed, so a test can reach a folded control; the real fold does
+  not mount them (the journeys run on the real kit). ``PK_FormOverlay`` registers its ``onClose`` on the real Escape stack, as the ``Modal`` it is built on does.
 * ``window.ToolPicker`` is one button, ``tool-picker-stub``. Its ``data-selected`` is the sorted selection as JSON, and a click selects
   ``web__search`` and ``system__list_files``.
 * ``window.primerApi.useResource`` answers the model profiles (``PROFILES``) and the voices. Any other key has no data.
 * ``useCapabilities`` reports text to speech as set up or not (``agent_form(tts_configured=...)``), and ``useRouter`` navigates nowhere.
-* ``apiFetch`` records each call and resolves with the body plus an id. The body is recorded as JSON, which is what the wire carries.
+* ``apiFetch`` records each call and resolves with the body plus an id. The body is recorded as JSON, which is what the wire carries. ``set_api`` gives
+  one ``METHOD path`` another answer, ``reject_next`` makes the next call fail, and ``navigations`` lists what ``useRouter().navigate`` was asked for.
   ``useMutation`` is the real one.
 * ``window.addEventListener`` and ``window.removeEventListener`` add to and remove from ``__listeners``; the real Escape stack registers its one
   ``keydown`` listener there, and ``press_escape`` answers it.
@@ -56,11 +61,15 @@ DEFAULTS = {
 MANAGED = {**FULL, "harness_id": "h1"}
 
 _FILES = ("foundation/escape-stack.js", "foundation/use-mutation.js", "components/shared/form-field.jsx", "components/agents.jsx")
+_KIT_FILE = "components/shared/platform-kit.jsx"
 
 _STUBS = r"""
 var __calls = [];
 var __recorded = { closes: 0, created: [], toasts: [], deletes: 0, chats: 0 };
 var __listeners = [];
+var __rejectNext = null;
+var __apiAnswers = {};
+var __navigations = [];
 var __resources = {
   "agents:model-profiles": { data: { items: PROFILES }, loading: false, error: null },
   "agents:voices": { data: { voices: ["alloy", "nova"] }, loading: false },
@@ -76,7 +85,9 @@ function Btn(p) {
   return React.createElement("button", { "data-testid": p["data-testid"], disabled: p.disabled, "data-busy": p.busy ? "true" : "false", onClick: p.onClick }, p.children);
 }
 function Banner(p) { return React.createElement("div", { "data-testid": p["data-testid"] }, p.title, p.detail, p.children); }
-function Modal(p) { return React.createElement("div", { "data-testid": "modal" }, p.title, p.children, p.footer); }
+function Modal(p) {
+  return React.createElement("div", { "data-testid": p.testid || "modal", "data-title": typeof p.title === "string" ? p.title : undefined }, p.title, p.children, p.footer);
+}
 window.ToolPicker = function (p) {
   return React.createElement("button", {
     "data-testid": "tool-picker-stub",
@@ -90,13 +101,21 @@ window.primerApi = {
     return { data: null, loading: false, error: null, refetch: function () {} };
   },
   useCapabilities: function () { return { data: { speech: { tts_configured: TTS_CONFIGURED } } }; },
-  useRouter: function () { return { navigate: function () {}, params: {} }; },
+  useRouter: function () {
+    return { navigate: function (path, opts) { __navigations.push({ path: path, opts: opts === undefined ? null : opts }); }, params: {} };
+  },
   apiFetch: function (method, path, body) {
     __calls.push({ method: method, path: path, body: body === undefined ? null : JSON.parse(JSON.stringify(body)) });
+    if (__rejectNext) { var failure = __rejectNext; __rejectNext = null; return Promise.reject(failure); }
+    var answer = __apiAnswers[method + " " + path];
+    if (answer !== undefined) {
+      if (answer.__pending) return new Promise(function () {});
+      return answer.__reject !== undefined ? Promise.reject(answer.__reject) : Promise.resolve(JSON.parse(JSON.stringify(answer)));
+    }
     return Promise.resolve(Object.assign({ id: "agent-new" }, body));
   },
 };
-function __mount(existing) {
+function __mount(existing, chatLoading) {
   var props = {
     onClose: function () { __recorded.closes++; },
     onCreate: function (row) { __recorded.created.push(row); },
@@ -108,14 +127,23 @@ function __mount(existing) {
     props.status = STATUS_OK;
     props.onDelete = function () { __recorded.deletes++; };
     props.onChat = function () { __recorded.chats++; };
-    props.chatLoading = false;
+    props.chatLoading = !!chatLoading;
   }
   MR.mount(AG_NewAgentModal, props);
 }
-function __typeInto(testid, value) {
+// AgentDetail, the page that hosts the overlay in the console: it loads the agent and its status (answered here), and owns Delete and Chat.
+function __mountDetail(row) {
+  __resources["agent-detail:" + row.id] = { data: row, loading: false, error: null };
+  __resources["agent-status:" + row.id] = STATUS_OK;
+  MR.mount(AgentDetail, { agentId: row.id, pushToast: function (t) { __recorded.toasts.push(t); } });
+}
+function __typeInto(testid, value, badInput) {
   var el = MR.find(testid);
   if (!el) throw new Error("no element with data-testid " + testid);
-  el.props.onChange({ target: { value: value } });
+  var target = { value: value };
+  // A number input the browser cannot read: its value is "" and validity.badInput says why.
+  if (badInput) target.validity = { badInput: true };
+  el.props.onChange({ target: target });
   MR.rerender();
 }
 // Every element with exactly this test id, in tree order. A component that takes a data-testid prop (Btn) is found before the element it renders.
@@ -136,17 +164,31 @@ function __prop(testid, name) {
   }
   return undefined;
 }
-function __textOf(testid) {
-  var all = __withTestid(testid);
-  var el = all.filter(function (e) { return typeof e.type === "string"; })[0] || all[0];
+function __joinText(node) {
   var out = [];
   (function collect(n) {
     if (n == null || typeof n === "boolean") return;
     if (typeof n === "string" || typeof n === "number") { out.push(String(n)); return; }
     if (Array.isArray(n)) { n.forEach(collect); return; }
     if (n.__el) collect(typeof n.type === "function" && n.type !== React.Fragment ? n.out : n.children);
-  })(el);
+  })(node);
   return out.join("");
+}
+function __hostOf(testid) {
+  var all = __withTestid(testid);
+  return all.filter(function (e) { return typeof e.type === "string"; })[0] || all[0];
+}
+function __textOf(testid) { return __joinText(__hostOf(testid)); }
+function __options(testid) {
+  var out = [];
+  (function walk(n) {
+    if (n == null || typeof n !== "object") return;
+    if (Array.isArray(n)) { n.forEach(walk); return; }
+    if (!n.__el) return;
+    if (n.type === "option") { out.push({ value: n.props.value, text: __joinText(n.children) }); return; }
+    walk(typeof n.type === "function" && n.type !== React.Fragment ? n.out : n.children);
+  })(__hostOf(testid).children);
+  return out;
 }
 function __pressEscape() {
   __listeners.filter(function (l) { return l.type === "keydown"; }).forEach(function (l) {
@@ -175,36 +217,72 @@ function __setParts(parts) {
 """
 
 
-@functools.lru_cache(maxsize=1)
-def _code() -> str:
-    return "\n;\n".join(transpile(ROOT / "ui" / rel) for rel in _FILES)
+_KIT_STUBS = r"""
+function PK_FormOverlay(p) {
+  window.primerApi.useEscape(p.onClose);
+  return React.createElement("div", { "data-testid": p.testid, "data-title": p.title },
+    React.createElement("div", { "data-testid": "overlay-body" }, p.children),
+    React.createElement("div", { "data-testid": "overlay-footer-left" }, p.footer && p.footer.left),
+    React.createElement("div", { "data-testid": "overlay-footer-right" }, p.footer && p.footer.right));
+}
+function PK_Grid(p) {
+  return React.createElement("div", { "data-testid": "grid:" + (p.cols === 1 || p.cols === 3 ? p.cols : 2) }, p.children);
+}
+function PK_Field(p) {
+  return React.createElement("div", {
+    "data-testid": "field:" + p.label, "data-help": p.help || "", "data-error": p.error || "", "data-span": p.span || "", "data-required": String(!!p.required),
+  }, React.createElement(FormField, { label: p.label, help: p.help, err: p.error }, p.children));
+}
+function PK_Fold(p) {
+  return React.createElement("div", { "data-testid": p.testid, "data-open": String(!!p.open) }, React.createElement("span", null, p.label), p.children);
+}
+"""
 
 
-def _prelude(tts_configured: bool) -> str:
+@functools.lru_cache(maxsize=2)
+def _code(real_kit: bool) -> str:
+    files = _FILES[:3] + (_KIT_FILE,) + _FILES[3:] if real_kit else _FILES
+    return "\n;\n".join(transpile(ROOT / "ui" / rel) for rel in files)
+
+
+def _prelude(tts_configured: bool, real_kit: bool) -> str:
     return (
         f"var PROFILES = {json.dumps(PROFILES)};\nvar STATUS_OK = {json.dumps(STATUS_OK)};\n"
-        f"var TTS_CONFIGURED = {json.dumps(tts_configured)};\n" + _STUBS
+        f"var TTS_CONFIGURED = {json.dumps(tts_configured)};\n" + _STUBS + ("" if real_kit else _KIT_STUBS)
     )
 
 
 @contextlib.contextmanager
-def agent_form(*, tts_configured: bool = True) -> Iterator[Any]:
-    """A fresh context holding the form, closed on exit."""
-    ctx = mini_react_context(_code(), _prelude(tts_configured))
+def agent_form(*, tts_configured: bool = True, real_kit: bool = False) -> Iterator[Any]:
+    """A fresh context holding the form, closed on exit.
+
+    The platform kit is stubbed (see the module docstring) unless ``real_kit``: then the real ``ui/components/shared/platform-kit.jsx`` is loaded, on a
+    ``Modal`` stub that keeps the test id and the title the kit gives it, for the few tests that must see what the real fold and the real field do.
+    """
+    ctx = mini_react_context(_code(real_kit), _prelude(tts_configured, real_kit))
     try:
         yield ctx
     finally:
         ctx.close()
 
 
-def mount(ctx: Any, existing: dict | None = None) -> None:
-    """Mount ``AG_NewAgentModal``: the create form, or with ``existing`` the edit form, with the props ``AgentDetail`` passes."""
-    ctx.eval(f"__mount({json.dumps(existing)})")
+def mount(ctx: Any, existing: dict | None = None, *, chat_loading: bool = False) -> None:
+    """Mount ``AG_NewAgentModal``: the create form, or with ``existing`` the edit form, with the props ``AgentDetail`` passes (``chat_loading`` is its
+    ``chatLoading``: the Chat request is out)."""
+    ctx.eval(f"__mount({json.dumps(existing)}, {json.dumps(chat_loading)})")
 
 
-def type_into(ctx: Any, testid: str, value: str) -> None:
-    """Call the element's ``onChange({target: {value}})`` and re-render. Throws ``no element with data-testid <testid>`` when there is none."""
-    ctx.eval(f"__typeInto({json.dumps(testid)}, {json.dumps(value)})")
+def mount_detail(ctx: Any, existing: dict) -> None:
+    """Mount ``AgentDetail`` for that agent row, which hosts the overlay in the console and owns its Delete and Chat."""
+    ctx.eval(f"__mountDetail({json.dumps(existing)})")
+
+
+def type_into(ctx: Any, testid: str, value: str, *, bad_input: bool = False) -> None:
+    """Call the element's ``onChange({target: {value}})`` and re-render. Throws ``no element with data-testid <testid>`` when there is none.
+
+    ``bad_input`` adds ``validity: {badInput: true}`` to the target: what a number input reports (with value ``""``) for text the browser cannot read.
+    """
+    ctx.eval(f"__typeInto({json.dumps(testid)}, {json.dumps(value)}, {json.dumps(bad_input)})")
 
 
 def click(ctx: Any, testid: str) -> None:
@@ -274,3 +352,39 @@ def set_parts(ctx: Any, new_parts: list[str]) -> None:
 def closes(ctx: Any) -> int:
     """How many times Escape reached the host's close handler (the overlay's Modal, in the real form)."""
     return int(ctx.eval("__recorded.closes"))
+
+
+def set_resource(ctx: Any, key: str, value: dict) -> None:
+    """Replace what ``useResource(key)`` answers, before ``mount``. ``{"data": ..., "loading": ..., "error": ...}``."""
+    ctx.eval(f"__resources[{json.dumps(key)}] = {json.dumps(value)}")
+
+
+def set_api(ctx: Any, method: str, path: str, answer: dict) -> None:
+    """Answer ``apiFetch(method, path)`` with ``answer`` (a copy each time) instead of the default echo of the body. ``{"__pending": True}`` never answers
+    (a request that stays out); ``{"__reject": error}`` fails with ``error``."""
+    ctx.eval(f"__apiAnswers[{json.dumps(method + ' ' + path)}] = {json.dumps(answer)}")
+
+
+def reject_next(ctx: Any, error: dict) -> None:
+    """Make the next ``apiFetch`` call reject with ``error``, as the API client does (``status``, ``fieldErrors``, ``title``, ``detail``)."""
+    ctx.eval(f"__rejectNext = {json.dumps(error)}")
+
+
+def navigations(ctx: Any) -> list[dict]:
+    """What ``useRouter().navigate`` was asked for, in order: ``{"path", "opts"}`` (``opts`` None when it was called with one argument)."""
+    return json.loads(ctx.eval("JSON.stringify(__navigations)"))
+
+
+def recorded(ctx: Any) -> dict:
+    """What the host callbacks saw: ``closes``, ``created`` (rows), ``toasts``, ``deletes`` and ``chats``."""
+    return json.loads(ctx.eval("JSON.stringify(__recorded)"))
+
+
+def options(ctx: Any, testid: str) -> list[dict]:
+    """The ``{value, text}`` of the ``<option>`` elements of the select with that test id, in order."""
+    return json.loads(ctx.eval(f"JSON.stringify(__options({json.dumps(testid)}))"))
+
+
+def texts(ctx: Any) -> list[str]:
+    """Every text node the form drew (``MR.texts()``)."""
+    return json.loads(ctx.eval("JSON.stringify(MR.texts())"))
