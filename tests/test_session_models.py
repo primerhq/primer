@@ -373,6 +373,11 @@ class TestSessionMessageKind:
             # human message, or held while an automated one was queued or
             # dropped (01a08c08).
             "pause_superseded",
+            # The agent canvas (pivot P5, design 8.5): an applied batch and a
+            # user interaction are appended to the session record log. Display
+            # only, never history. The pin follows the design, which adds two.
+            "canvas_op",
+            "canvas_event",
             "yielded",
             "resumed",
             "done",

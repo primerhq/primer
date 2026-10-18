@@ -64,6 +64,11 @@ var SA_SKIP_IN_TRANSCRIPT = {
   // (primer/agent/compaction.py): session-record visibility for operators
   // and the paged /messages read; not conversation.
   compaction_note: true,
+  // The agent canvas records (pivot P5): an applied batch and a user interaction. Display
+  // only, never history. Skipped until they are rendered as chips by pivot P5 Task 22, so
+  // neither falls through to the generic lifecycle bubble the mapper gives every unmapped kind.
+  canvas_op: true,
+  canvas_event: true,
 };
 
 var SA_KIND_TO_TRANSCRIPT = {
