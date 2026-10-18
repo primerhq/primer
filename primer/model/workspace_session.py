@@ -1126,6 +1126,22 @@ class SessionMessageKind(StrEnum):
     # paused and stored the instruction as a PendingSessionMessage
     # (``pending_id``) instead of clearing the pause -- the pause holds.
     PAUSE_SUPERSEDED = "pause_superseded"
+    # An applied canvas batch (pivot P5, design 8.5). Payload: ``{"rev": int,
+    # "source": "agent" | "operator", "by": str, "changed": {"added": [id],
+    # "updated": [id], "removed": [id]}, "ops": [op] (or "ops_truncated": true
+    # past 16 KiB), "call_id": str (an agent batch only)}``. Written by
+    # primer.canvas.service: through the turn's own writer when the agent
+    # applies it inside a turn, else (an operator's batch) through a seq
+    # reserved on the row, and skipped while a turn is running, because the
+    # turn's writer owns the seqs then. Display only, never history, and
+    # never sent to the model.
+    CANVAS_OP = "canvas_op"
+    # A user interaction with the canvas that did not start a turn (pivot P5,
+    # design 8.5). Payload: a ``CanvasEvent`` dump without ``client_event_id``
+    # (primer.model.canvas.CanvasEvent.public). Display only, never history.
+    CANVAS_EVENT = "canvas_event"
+
+
 class SessionMessageRecord(BaseModel):
     """One row in the per-session append-only message log.
 

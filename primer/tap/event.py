@@ -72,6 +72,14 @@ class TapEventClass(StrEnum):
     # an automated message was queued/dropped). Surfaced, not skipped: the
     # record exists so the change is never silent.
     PAUSE_SUPERSEDED = "pause_superseded"
+    # Mirror SessionMessageKind.CANVAS_OP and CANVAS_EVENT (pivot P5): the
+    # canvas records ride the tap like any other record, so a live console
+    # shows who changed the canvas and who clicked what. The transcript
+    # renderer shows them as chips (ui/components/session-adapter.jsx).
+    CANVAS_OP = "canvas_op"
+    CANVAS_EVENT = "canvas_event"
+
+
 class TapEvent(BaseModel):
     """Normalised tap event ready for wire transmission.
 

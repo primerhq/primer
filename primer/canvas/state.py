@@ -50,9 +50,7 @@ from primer.canvas.lang import (
     clip,
     id_problem,
 )
-
-#: The root element: always present, always a Column. Never mutate it; copy it.
-ROOT_ELEMENT: dict[str, Any] = {"type": "Column", "props": {}, "children": []}
+from primer.model.canvas import ROOT_ELEMENT  # re-exported: the model owns the constant, the batch module is where it is used
 
 _GONE = object()
 _RESET_WARNING = "{id}: the user's value was reset because the element changed"

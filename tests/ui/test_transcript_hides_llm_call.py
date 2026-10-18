@@ -80,3 +80,19 @@ def test_compaction_note_is_hidden_by_both_renderers() -> None:
     body = body[: body.index("\n}\n")]
     guard = body.index('kind === "compaction_note"')
     assert guard < body.index("Unknown / future frame kinds") and "return null" in body[guard : guard + 80]
+
+
+def test_the_canvas_record_kinds_are_hidden_by_both_renderers() -> None:
+    """Pivot P5 Task 5: ``canvas_op`` and ``canvas_event`` are display-only records the canvas chips will render (Task 22); until
+    then neither renderer may show them as the generic lifecycle bubble or the dim unknown-kind line."""
+    adapter = SRC.read_text(encoding="utf-8")
+    table = adapter[adapter.index("var SA_SKIP_IN_TRANSCRIPT = ") :]
+    table = table[: table.index("};")]
+    assert "canvas_op: true" in table and "canvas_event: true" in table
+    assert "rendered as chips by pivot P5 Task 22" in table
+    frame = FRAME.read_text(encoding="utf-8")
+    body = frame[frame.index("function _SLS_Frame") :]
+    body = body[: body.index("\n}\n")]
+    for kind in ("canvas_op", "canvas_event"):
+        guard = body.index(f'kind === "{kind}"')
+        assert guard < body.index("Unknown / future frame kinds") and "return null" in body[guard : guard + 80], kind

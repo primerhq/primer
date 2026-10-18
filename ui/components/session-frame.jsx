@@ -109,6 +109,8 @@ function _SLS_Frame({ m }) {
   // A compaction that could not reduce the prompt and wrote no marker: session-record visibility for
   // operators and the paged /messages read, not conversation.
   if (kind === "compaction_note") return null;
+  // The agent canvas records (pivot P5): display-only, rendered as chips by the transcript (pivot P5 Task 22), not here.
+  if (kind === "canvas_op" || kind === "canvas_event") return null;
 
   // Coalesced assistant blob.
   if (kind === "_assistant_message") {
