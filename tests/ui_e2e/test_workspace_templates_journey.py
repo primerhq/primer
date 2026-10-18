@@ -11,10 +11,14 @@ Pinned invariants:
     (description visible in the input).
   * Save (PUT) closes the modal; the detail header re-renders with
     the new description.
-  * Delete confirmation says 'deletion is safe' and removes the row.
+  * Delete confirmation says 'deletion is safe' and removes the row; the
+    overlay closes and the operator lands on the Platform templates page
+    (the address is checked AFTER the delete).
 """
 
 from __future__ import annotations
+
+import re
 
 import httpx
 import pytest
@@ -128,10 +132,29 @@ def test_workspace_template_create_edit_delete_journey(
             "button", name="Delete template"
         ).first.click()
 
-        wait_for_overlay_url(page, "workspaces/templates")
-        # Scope to page body to exclude the transient "Template deleted" toast.
+        # The overlay closes and the operator is on the Platform templates
+        # page (revamp design 10). This step used to wait for the address
+        # ``overlay=workspaces:templates``, which is also a PREFIX of the
+        # address from before the delete (``overlay=workspaces:templates:
+        # <id>``): it passed at once, whatever the delete did, and the
+        # delete opened the Workspaces overlay on a record called
+        # "templates" ("workspace not found"). Check the address after.
+        templates_page = page.get_by_test_id("nv-plat-page:templates")
+        expect(templates_page).to_be_visible(timeout=15_000)
+        expect(page.locator('[data-testid^="nv-overlay:"]')).to_have_count(0)
+        expect(page).not_to_have_url(re.compile(r"overlay="), timeout=5_000)
+        expect(page).to_have_url(
+            re.compile(r"view=platform(:|%3A)templates"), timeout=5_000,
+        )
+        # The row is gone. Scope the page assertion to the page (the
+        # transient "Template deleted" toast renders the id too, outside
+        # it), and ask the API as well.
         expect(
-            page_body.get_by_text(template_id, exact=True)
+            templates_page.get_by_text(template_id, exact=True)
         ).to_have_count(0, timeout=5_000)
+        with httpx.Client(base_url=base_url, timeout=30.0) as c:
+            assert c.get(
+                f"/v1/workspace_templates/{template_id}"
+            ).status_code == 404
     finally:
         _cleanup(base_url, [template_id], [provider_id])

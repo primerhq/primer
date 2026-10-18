@@ -20,8 +20,8 @@ Pages traversed:
 
   /graphs (list) → /graphs/{gid} (modal create flow) →
   page.reload() on /graphs/{gid} (persistence check) →
-  /graphs (breadcrumb back; row in list) → /graphs/{gid}
-  (click row; node still there)
+  the Platform graphs page (breadcrumb back; card in the grid) →
+  /graphs/{gid} (reopened; node still there)
 
 Multi-feature exercise:
 
@@ -35,13 +35,17 @@ Multi-feature exercise:
   6. page.reload() — editor re-mounts, loads from the server,
      and the added node IS in the rendered editor
      (without this, an in-memory-only edit would slip through)
-  7. Breadcrumb back to /graphs — list shows the new id
-  8. Click row → /graphs/{gid} — editor still intact
+  7. Breadcrumb back: the overlay closes onto the Platform graphs
+     page (revamp design 10: it used to render the graphs LIST inside
+     the overlay), whose grid shows the new id
+  8. Reopen /graphs/{gid}: editor still intact
 
 Covers backlog item U0107.
 """
 
 from __future__ import annotations
+
+import re
 
 import httpx
 import pytest
@@ -130,10 +134,11 @@ def test_u0107_graph_builder_persistence_journey(
          If the PUT body didn't actually persist the new node,
          the next assertion (editor still has the staged node count
          after reload) fails — this is the load-bearing check.
-      7. Click the "Graphs" breadcrumb → /graphs list — new row
-         visible with our id.
-      8. Click the row → /graphs/{gid} — editor + saved nodes
-         still intact.
+      7. Click the "Graphs" breadcrumb: the overlay closes and the
+         Platform graphs page is on screen (no overlay in the
+         address); its grid has a card with our id.
+      8. Reopen /graphs/{gid} (the address a card's Open writes):
+         editor + saved nodes still intact.
 
     Multi-page (3 distinct pages) + reload + modal + editor +
     cross-page nav. No LLM required.
@@ -227,17 +232,28 @@ def test_u0107_graph_builder_persistence_journey(
             page.locator('[data-testid="gb-outline-row"]', has_text="Finish").first
         ).to_be_visible(timeout=10_000)
 
-        # ----- 7. Click "Graphs" breadcrumb → /graphs list ---------
+        # ----- 7. Click "Graphs" breadcrumb → the Platform page ----
+        # The crumb used to open the graphs LIST as an overlay over the
+        # page it was opened from (a second copy of that page). It
+        # closes the overlay and lands on the Platform graphs page.
         page.get_by_test_id("nv-overlay-crumb").click()
-        wait_for_overlay_url(page, "graphs", timeout=10_000)
-        expect(page.locator("h1.page-title")).to_have_text(
-            "Graphs", timeout=10_000,
+        expect(page.get_by_test_id("nv-plat-page:graphs")).to_be_visible(
+            timeout=10_000,
         )
-        row = page.locator("tbody tr", has_text=graph_id)
-        expect(row).to_be_visible(timeout=15_000)
+        expect(page.locator('[data-testid^="nv-overlay:"]')).to_have_count(0)
+        expect(page).not_to_have_url(re.compile(r"overlay="), timeout=5_000)
+        expect(page).to_have_url(
+            re.compile(r"view=platform(:|%3A)graphs"), timeout=5_000,
+        )
+        page.get_by_test_id("nv-plat-filter").fill(graph_id)
+        expect(
+            page.get_by_test_id(f"nv-pcard-del:{graph_id}")
+        ).to_be_attached(timeout=15_000)
 
-        # ----- 8. Click row → back to /graphs/{gid} ----------------
-        row.first.click()
+        # ----- 8. Reopen the graph → /graphs/{gid} -----------------
+        # The address a card's Open writes; the card's own test ids are
+        # not part of this journey.
+        open_legacy_route(page, console_url, f"graphs/{graph_id}")
         wait_for_overlay_url(page, f"graphs/{graph_id}")
         expect(page.locator("h1.page-title", has_text=graph_id)).to_be_visible(
             timeout=15_000,

@@ -14,6 +14,7 @@ test.
 
 from __future__ import annotations
 
+import re
 from contextlib import contextmanager
 from collections.abc import Iterator
 
@@ -302,14 +303,18 @@ def test_u0020_agent_delete_confirms_removes_and_navigates_back_to_list(
     unique_suffix: str,
 ) -> None:
     """U0020 - From an agent's detail page, clicking Delete opens the
-    confirm modal; confirming closes the dialog, navigates back to
-    /agents, surfaces a success toast ("Agent deleted"), and the
-    agent is absent from the backend (verified via API).
+    confirm modal; confirming closes the dialog, closes the agent
+    overlay and lands on the Platform agents page, surfaces a success
+    toast ("Agent deleted"), and the agent is absent from the backend
+    (verified via API).
 
     Mutation-feedback contract from UI spec §3 for the DELETE leg:
       * confirm dialog must appear before the destructive action
       * confirming → dialog closes
-      * navigates back to list (/agents)
+      * the overlay closes and the user is on the Platform agents page
+        (revamp design 10): this used to pin the OPPOSITE, the agents
+        LIST rendered inside the overlay, which is the second copy of
+        the Platform page the revamp removed
       * success toast appears
       * row is gone from storage
 
@@ -368,10 +373,21 @@ def test_u0020_agent_delete_confirms_removes_and_navigates_back_to_list(
             # Dialog closes.
             confirm.wait_for(state="hidden", timeout=10_000)
 
-            # Navigates back to /agents (the UI's success path).
-            wait_for_overlay_url(page, "agents", timeout=10_000)
-            page.locator("h1.page-title").get_by_text("Agents").first.wait_for(
-                state="visible", timeout=5_000,
+            # The overlay closes and the user lands on the Platform agents
+            # page (the UI's success path): no overlay is mounted, the
+            # address names the page and no overlay, and the page's own
+            # marker is on screen. The agent was opened from a pasted
+            # overlay link (the Studio underneath), so there is no
+            # Platform page to "go back" to: the shim sends it there.
+            expect(page.locator('[data-testid^="nv-overlay:"]')).to_have_count(
+                0, timeout=10_000,
+            )
+            expect(page).not_to_have_url(re.compile(r"overlay="), timeout=5_000)
+            expect(page).to_have_url(
+                re.compile(r"view=platform(:|%3A)agents"), timeout=5_000,
+            )
+            expect(page.get_by_test_id("nv-plat-page:agents")).to_be_visible(
+                timeout=10_000,
             )
 
             # Success toast surfaces. The toast title is "Agent deleted"

@@ -12,11 +12,14 @@ Pinned invariants:
   * Submit closes the modal AND navigates to the detail page.
   * The Templates tab renders an empty state when nothing references
     the provider.
-  * Delete from the detail page returns the operator to the list and
-    the row is gone.
+  * Delete from the detail page closes the overlay and lands on the
+    Platform Providers page (the address is checked AFTER the delete),
+    and the row is gone.
 """
 
 from __future__ import annotations
+
+import re
 
 import httpx
 import pytest
@@ -138,17 +141,31 @@ def test_workspace_provider_create_detail_delete_journey(
             "button", name="Delete provider"
         ).first.click()
 
-        # URL navigates back to /workspaces/providers and the row is gone.
-        wait_for_overlay_url(page, "workspaces/providers")
-        # Scope the assertion to the page body (table/empty state) to avoid
-        # matching the transient "Provider deleted" toast which also renders
-        # the provider id in its detail field.
-        # The overlay body is the successor to .page-body, and it is
-        # still the right scope: the toast stack renders at the
-        # shell root, outside it.
-        page_body = page.get_by_test_id("nv-overlay-body")
+        # The overlay closes and the operator is on the Platform Providers
+        # page (revamp design 10). This step used to wait for the address
+        # ``overlay=providers:workspace``, which is also a PREFIX of the
+        # address from before the delete (``overlay=providers:workspace:
+        # <id>``): it passed at once, whatever the delete did, and the
+        # delete opened the Workspaces overlay on a record called
+        # "providers" ("workspace not found"). Check the address after.
+        providers_page = page.get_by_test_id("nv-plat-page:providers")
+        expect(providers_page).to_be_visible(timeout=15_000)
+        expect(page.locator('[data-testid^="nv-overlay:"]')).to_have_count(0)
+        expect(page).not_to_have_url(re.compile(r"overlay="), timeout=5_000)
+        expect(page).to_have_url(
+            re.compile(r"view=platform(:|%3A)providers"), timeout=5_000,
+        )
+        # The row is gone. Scope the page assertion to the page (the toast
+        # stack renders at the shell root, outside it, and the transient
+        # "Provider deleted" toast also renders the id in its detail), and
+        # ask the API too: which provider type the page shows is not part
+        # of this journey.
         expect(
-            page_body.get_by_text(provider_id, exact=True)
+            providers_page.get_by_text(provider_id, exact=True)
         ).to_have_count(0, timeout=5_000)
+        with httpx.Client(base_url=base_url, timeout=30.0) as c:
+            assert c.get(
+                f"/v1/workspace_providers/{provider_id}"
+            ).status_code == 404
     finally:
         _cleanup(base_url, [provider_id])
