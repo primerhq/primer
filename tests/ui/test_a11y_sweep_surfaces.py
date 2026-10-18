@@ -119,7 +119,7 @@ def test_the_artifact_storage_page_is_swept_through_its_register_menu_and_no_pag
     assert surfaces.LEGACY_FORMS["providers/artifact_storage"] == [surfaces.Form("Register provider", surfaces.MODAL, surfaces.KIND_MENU_ITEM)]
     assert "overlay-page providers/artifact_storage" not in surfaces.NO_FORM
     assert "overlay-page providers/artifact_storage / Register provider" in surfaces.expected_surfaces(7)
-    assert len(surfaces.expected_surfaces(7)) == 110
+    assert len(surfaces.expected_surfaces(7)) == 109   # the Platform profiles page lost its New profile form (Platform revamp, design 7.1)
 
 
 def test_every_platform_create_button_the_console_draws_has_a_form_entry() -> None:

@@ -404,6 +404,30 @@ def test_a_clickable_status_on_the_fact_sheet_closes_the_sheet_and_runs_its_acti
     assert app.js("RAN") == 1, "then the action runs, once"
 
 
+def test_the_phone_list_uses_the_empty_text_and_action(app) -> None:
+    """Seam I-9 on the phone: a section with no rows says the page's own words and offers its way out as a tap-sized button."""
+    app.js("var GOT = []; window.NV_PLAT_PAGES.agents.noun = ['agent', 'agents'];"
+           "window.NV_PLAT_PAGES.agents.emptyText = 'No LLM profiles yet. Register an LLM provider to import its models.';"
+           "window.NV_PLAT_PAGES.agents.emptyAction = { label: 'Open Providers › LLM', run: function (con) { GOT.push(con === __con); } };"
+           "ITEMS = [];")
+    app.mount("PlatformHost", '{ initial: { kind: "agents", id: null } }')
+    assert app.has("nv-mob-plat-empty:agents")
+    texts = app.data("MR.texts()")
+    assert "No LLM profiles yet. Register an LLM provider to import its models." in texts and "No agents yet." not in texts
+    assert app.js('MR.find("nv-mob-plat-empty-action").type') == "button"
+    assert "touch-target" in app.js('MR.find("nv-mob-plat-empty-action").props.className').split()
+    assert app.js('MR.find("nv-mob-plat-empty-action").props.children') == "Open Providers › LLM"
+    app.click("nv-mob-plat-empty-action")
+    assert app.data("GOT") == [True], "the action ran once, with the console"
+
+
+def test_a_phone_section_without_hooks_keeps_the_generic_empty_text(app) -> None:
+    app.js("window.NV_PLAT_PAGES.agents.noun = ['agent', 'agents']; ITEMS = [];")
+    app.mount("PlatformHost", '{ initial: { kind: "agents", id: null } }')
+    assert "No agents yet." in app.data("MR.texts()")
+    assert not app.has("nv-mob-plat-empty-action")
+
+
 def test_a_plain_string_fact_is_one_line(app) -> None:
     _open_sheet(app, 'function (row) { return { id: row.id, name: row.id, sub: "", facts: ["vLLM · 1 model", null, ["context", "8192"]] }; }')
     texts = app.data("MR.texts()")
