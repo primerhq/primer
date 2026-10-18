@@ -81,6 +81,13 @@ function SH_indexOfIn(list, value) {
   return -1;
 }
 
+// Is `key` a key of `table` itself? The tables of the grammar (SH_VIEWS, SH_VIEW_SUBS, SH_VIEW_REDIRECTS) are plain objects, and `key in table` is also true for what a
+// plain object inherits ("constructor", "__proto__", "toString"). A pasted view=constructor:x then read SH_VIEWS.constructor.indexOf, which is not a function, and threw while
+// the console loaded, and view=toString was taken for a view of that name. A name that came from an address is looked up here, never with `in`.
+function SH_hasOwn(table, key) {
+  return Object.prototype.hasOwnProperty.call(table, key);
+}
+
 function SH_parseDoc(raw) {
   if (!raw) return null;
   var colon = raw.indexOf(":");
@@ -138,13 +145,13 @@ function SH_parseView(raw) {
   if (!raw) return { name: "studio", nav: null, sub: null };
   var bits = String(raw).split(":");
   var name = SH_decode(bits[0]);
-  if (!(name in SH_VIEWS)) return { name: "studio", nav: null, sub: null };
+  if (!SH_hasOwn(SH_VIEWS, name)) return { name: "studio", nav: null, sub: null };
   var nav = bits.length > 1 && bits[1] ? SH_decode(bits[1]) : null;
-  var moved = nav ? SH_VIEW_REDIRECTS[name + ":" + nav] : null;
+  var moved = nav && SH_hasOwn(SH_VIEW_REDIRECTS, name + ":" + nav) ? SH_VIEW_REDIRECTS[name + ":" + nav] : null;
   if (moved) return { name: moved.name, nav: moved.nav, sub: null };
   if (nav && SH_VIEWS[name].indexOf(nav) < 0) nav = null;
   var sub = null;
-  var subs = nav ? SH_VIEW_SUBS[name + ":" + nav] : null;
+  var subs = nav && SH_hasOwn(SH_VIEW_SUBS, name + ":" + nav) ? SH_VIEW_SUBS[name + ":" + nav] : null;
   if (subs && bits.length > 2 && bits[2]) {
     sub = SH_decode(bits[2]);
     if (subs.indexOf(sub) < 0) sub = null;
@@ -204,12 +211,13 @@ function SH_buildUrl(state) {
   // Studio is the unwritten default: only the other views serialize,
   // so every historical URL round-trips byte-identical.
   if (s.view && s.view.name && s.view.name !== "studio"
-      && (s.view.name in SH_VIEWS)) {
+      && SH_hasOwn(SH_VIEWS, s.view.name)) {
     var vv = s.view.name;
     if (s.view.nav && SH_VIEWS[s.view.name].indexOf(s.view.nav) >= 0) {
       vv += ":" + SH_encodeRef(s.view.nav);
       // The type is the third segment, written only for a nav that has a list of them and only when it is on that list (the parser's own rule).
-      var subs = SH_VIEW_SUBS[s.view.name + ":" + s.view.nav];
+      var subKey = s.view.name + ":" + s.view.nav;
+      var subs = SH_hasOwn(SH_VIEW_SUBS, subKey) ? SH_VIEW_SUBS[subKey] : null;
       if (subs && s.view.sub && subs.indexOf(s.view.sub) >= 0) {
         vv += ":" + SH_encodeRef(s.view.sub);
       }
