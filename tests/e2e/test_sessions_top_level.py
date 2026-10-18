@@ -19,6 +19,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from tests._support.mock_llm import Rule
 from tests._support.model_profiles import agent_model, seed_llm_provider
 from tests.e2e.conftest import pgvector_ssp_body
 
@@ -235,13 +236,59 @@ async def _create_workspace_and_session(
 
 @pytest.mark.asyncio
 async def test_t0038_session_resume_is_idempotent(
-    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path, mock_llm,
 ) -> None:
-    env = await _full_setup(client, unique_suffix, tmp_path)
+    """Resume twice in a row: both 200, both ``running``.
+
+    The second resume is a no-op only while the session is still RUNNING; once it has ENDED a resume is a (correct) 409. So the turn the
+    first resume starts must outlast both requests. It used to run on the placeholder-keyed anthropic provider, whose 401 the worker
+    turns into ENDED/failed (``auth_error`` is not a resting failure, primer/session/dispatch.py) well inside a second, so the test passed
+    only when the second request happened to arrive first. It now runs on the scripted mock LLM with a slow stream (about 40 s), and the
+    ``finally`` cancels the session.
+    """
+    registry, mock_url = mock_llm
+    scenario = f"t0038-slow-{unique_suffix}"
+    registry.register(
+        scenario,
+        [Rule(emit_text=" ".join(["word"] * 40), text_chunk_words=1, chunk_delay_s=1.0)],
+    )
+    provider_id = f"llm-{unique_suffix}"
+    agent_id = f"agent-{unique_suffix}"
+    wp_id = f"wp-{unique_suffix}"
+    tpl_id = f"wt-{unique_suffix}"
+    env = {
+        "provider_id": provider_id, "agent_id": agent_id, "wp_id": wp_id, "tpl_id": tpl_id,
+    }
     workspace_id: str | None = None
+    session_id: str | None = None
     try:
+        pr = await seed_llm_provider(client, {
+            "id": provider_id,
+            "provider": "openchat",
+            "models": [{"name": scenario, "context_length": 32_768}],
+            "config": {"url": mock_url, "flavor": "lmstudio"},
+            "limits": {"max_concurrency": 1},
+        })
+        assert pr.status_code == 201, pr.text
+        ag = await client.post("/v1/agents", json={
+            "id": agent_id,
+            "description": "test agent",
+            "model": agent_model(provider_id, scenario),
+            "tools": [],
+        })
+        assert ag.status_code == 201, ag.text
+        wp = await client.post(
+            "/v1/workspace_providers", json=_workspace_provider_body(wp_id, tmp_path),
+        )
+        assert wp.status_code == 201, wp.text
+        tpl = await client.post(
+            "/v1/workspace_templates",
+            json=_workspace_template_body(tpl_id, provider_id=wp_id),
+        )
+        assert tpl.status_code == 201, tpl.text
+
         workspace_id, session_id = await _create_workspace_and_session(
-            client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
+            client, tpl_id=tpl_id, agent_id=agent_id,
         )
 
         first = await client.post(
