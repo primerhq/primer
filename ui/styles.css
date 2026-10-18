@@ -4966,6 +4966,37 @@ button.nv-trace-line { cursor: pointer; }
 }
 .nv-plat-row-icon { flex-shrink: 0; color: var(--text-4); }
 .nv-plat-row[data-active="true"] .nv-plat-row-icon { color: var(--accent); }
+/* The Providers row's sub-entries, one per provider type (seam I-1): always visible, indented under the row with a guide line at the row icon's
+   centre. Dense rows like the ones above, so the same reduced token-driven height (see .nv-fam-pill). */
+.nv-plat-subs {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 1px 0 4px 17px;
+  padding-left: 7px;
+  border-left: 1px solid var(--border);
+}
+.nv-plat-sub {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 3px 8px;
+  border: none;
+  border-radius: var(--r-6);
+  background: transparent;
+  font-size: 12px;
+  text-align: left;
+  color: var(--text-3);
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  min-height: calc(var(--hit) - 12px);
+}
+.nv-plat-sub:hover { background: var(--bg-hover); color: var(--text); }
+.nv-plat-sub[data-active="true"] {
+  background: var(--bg-active);
+  color: var(--text);
+}
 .nv-plat-main { flex: 1; min-width: 0; overflow-y: auto; }
 .nv-plat-wrap { max-width: 1020px; margin: 0 auto; padding: 20px 24px 50px; }
 .nv-plat-head {

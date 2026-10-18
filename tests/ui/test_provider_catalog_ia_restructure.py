@@ -283,7 +283,8 @@ def test_fields_and_probe_panel_are_a_real_css_grid() -> None:
 
 def test_platform_page_mounts_the_catalog_inline_not_via_overlay() -> None:
     src = _platform()
-    assert 'if (nav === "providers") return <NV_ProvidersPlatPage />;' in src
+    # The page hands the catalog the view's provider type ("all" without one): view=platform:providers:<type>, Platform revamp Plan 01 Task 6 (seam I-1).
+    assert 'if (nav === "providers") return <NV_ProvidersPlatPage type={con.view.sub || "all"} />;' in src
     inline = src[src.index("function NV_ProvidersPlatPage"):]
     inline = inline[:inline.index("\nfunction NV_PlatPage")]
     assert "<window.ProviderCatalog" in inline

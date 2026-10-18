@@ -123,5 +123,19 @@
       "setup",
       "profile"
     ]
+  },
+  "view_subs": {
+    "platform:providers": [
+      "llm",
+      "embedding",
+      "ssp",
+      "cross_encoder",
+      "workspace",
+      "web_search",
+      "channel",
+      "artifact_storage",
+      "tts",
+      "stt"
+    ]
   }
 }

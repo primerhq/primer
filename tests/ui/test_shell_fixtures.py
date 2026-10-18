@@ -36,7 +36,7 @@ def _manifest() -> dict:
 def test_manifest_exists_and_parses() -> None:
     assert MANIFEST.is_file(), "the designer package needs a manifest"
     man = _manifest()
-    assert set(man) == {"surfaces", "doc_kinds", "overlays", "views"}
+    assert set(man) == {"surfaces", "doc_kinds", "overlays", "views", "view_subs"}
 
 
 def test_manifest_pins_the_doc_kinds_and_overlay_names() -> None:

@@ -373,7 +373,7 @@ function NV_Shell() {
       }
       pendingPushRef.current = false;
     }
-  }, [wid, view && view.name, view && view.nav,
+  }, [wid, view && view.name, view && view.nav, view && view.sub,
     doc && doc.kind, doc && doc.ref,
     overlay && overlay.name, overlay && overlay.section,
     overlay && overlay.id, anchor]);
@@ -453,9 +453,10 @@ function NV_Shell() {
     setView(null);
   }, [setView]);
 
-  var goView = React.useCallback(function (name, nav) {
+  // sub: the third segment of the view, the provider type of Platform > Providers (seam I-1); it means nothing for a nav that has no types, and the URL builder drops it there.
+  var goView = React.useCallback(function (name, nav, sub) {
     markPush();
-    setView({ name: name, nav: nav || null });
+    setView({ name: name, nav: nav || null, sub: sub || null });
     setOpenMenu(null);
   }, [setView, setOpenMenu, markPush]);
 
@@ -583,7 +584,7 @@ function NV_Shell() {
   var ctx = React.useMemo(function () {
     return {
       wid: wid,
-      view: view || { name: "studio", nav: null },
+      view: view || { name: "studio", nav: null, sub: null },
       doc: doc,
       overlay: overlay,
       anchor: anchor,

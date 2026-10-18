@@ -52,7 +52,7 @@ def _ctx():
         "var modals = [], overlays = [], views = [];"
         "var con = {"
         " openOverlay: function (a, b, c) { overlays.push([a, b === undefined ? null : b, c === undefined ? null : c]); },"
-        " goView: function (a, b) { views.push([a, b === undefined ? null : b]); } };"
+        " goView: function (a, b, c) { views.push([a, b === undefined ? null : b, c === undefined ? null : c]); } };"
         "function setModal(m) { modals.push(m); }"
     )
     return ctx
@@ -100,14 +100,15 @@ def test_the_host_knows_what_to_show_from_the_provider_fetch(resource: str, expe
     assert ctx.eval(f"NV_channelCreateState({resource})") == expected
 
 
-def test_with_no_channel_provider_the_way_out_is_the_platform_providers_page() -> None:
+def test_with_no_channel_provider_the_way_out_is_the_platform_providers_page_at_the_channels_type() -> None:
     """The Providers catalogue is mounted inline on the Platform page (test_console_platform.py pins that the page addresses no providers overlay), so the
-    way out is a view change. It opens on every family: the address has no slot for a family on an inline page."""
+    way out is a view change. It opens on the Channels type (``view=platform:providers:channel``, Platform revamp Plan 01 Task 6, seam I-1): the address has a slot
+    for a provider type now, and the type is the one the operator is missing."""
     ctx = _ctx()
 
     ctx.eval("NV_addChannelProvider(con);")
 
-    assert _js(ctx, "views") == [["platform", "providers"]]
+    assert _js(ctx, "views") == [["platform", "providers", "channel"]]
     assert _js(ctx, "overlays") == [], "the page must not address a providers overlay"
     assert _js(ctx, "modals") == []
 

@@ -8,6 +8,8 @@
 //
 //   #/w/{wid}?doc=<kind>:<ref>&overlay=<name>[:<section>[:<id>]]#<anchor>
 //
+// and the view, view=<name>[:<nav>[:<sub>]], is one more query key (absent = the studio).
+//
 // The fragment is everything after the FIRST "#", so the second "#" is a
 // character this module owns; that keeps the spec's literal "#turn-42"
 // and "#L10-L30" spellings.
@@ -106,14 +108,31 @@ var SH_VIEWS = {
   ],
 };
 
+// A nav that has sub-entries admits a third segment, view=<name>:<nav>:<sub> (Platform revamp, seam I-1). Keyed "<name>:<nav>". Today only Platform > Providers has
+// one: the provider type, in the order the sidebar lists them (TTS and ASR last). Every type is a key of PROVIDER_CLASSES (components/provider-catalog.jsx), which
+// tests/ui/test_shell_url.py holds it to, and ui/fixtures/shell/manifest.json mirrors it as "view_subs". A sub the list does not name is dropped on parse and never
+// written, so a pasted link with a type that does not exist opens the nav itself (Providers, every type) and the address bar is rewritten without it.
+var SH_VIEW_SUBS = {
+  "platform:providers": [
+    "llm", "embedding", "ssp", "cross_encoder", "workspace", "web_search",
+    "channel", "artifact_storage", "tts", "stt",
+  ],
+};
+
 function SH_parseView(raw) {
-  if (!raw) return { name: "studio", nav: null };
+  if (!raw) return { name: "studio", nav: null, sub: null };
   var bits = String(raw).split(":");
   var name = SH_decode(bits[0]);
-  if (!(name in SH_VIEWS)) return { name: "studio", nav: null };
+  if (!(name in SH_VIEWS)) return { name: "studio", nav: null, sub: null };
   var nav = bits.length > 1 && bits[1] ? SH_decode(bits[1]) : null;
   if (nav && SH_VIEWS[name].indexOf(nav) < 0) nav = null;
-  return { name: name, nav: nav };
+  var sub = null;
+  var subs = nav ? SH_VIEW_SUBS[name + ":" + nav] : null;
+  if (subs && bits.length > 2 && bits[2]) {
+    sub = SH_decode(bits[2]);
+    if (subs.indexOf(sub) < 0) sub = null;
+  }
+  return { name: name, nav: nav, sub: sub };
 }
 
 function SH_parseOverlay(raw) {
@@ -172,6 +191,11 @@ function SH_buildUrl(state) {
     var vv = s.view.name;
     if (s.view.nav && SH_VIEWS[s.view.name].indexOf(s.view.nav) >= 0) {
       vv += ":" + SH_encodeRef(s.view.nav);
+      // The type is the third segment, written only for a nav that has a list of them and only when it is on that list (the parser's own rule).
+      var subs = SH_VIEW_SUBS[s.view.name + ":" + s.view.nav];
+      if (subs && s.view.sub && subs.indexOf(s.view.sub) >= 0) {
+        vv += ":" + SH_encodeRef(s.view.sub);
+      }
     }
     query.push("view=" + vv);
   }
@@ -238,4 +262,5 @@ window.SH_parseUrl = SH_parseUrl;
 window.SH_buildUrl = SH_buildUrl;
 window.SH_parseAnchor = SH_parseAnchor;
 window.SH_VIEWS = SH_VIEWS;
+window.SH_VIEW_SUBS = SH_VIEW_SUBS;
 window.SH_parseView = SH_parseView;
