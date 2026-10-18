@@ -1231,18 +1231,45 @@ function NV_MobileFactSheet(props) {
   );
 }
 
-// Section list (NV_PLAT_GROUPS - the SAME grouped navs nv-platform.jsx's
-// own left nav renders, "providers" filtered out below since it has no
-// NV_PLAT_PAGES entry - its class-catalog shape does not fit the generic
-// {list, card} contract every other nav uses) -> filter + entity rows
-// (NV_PLAT_PAGES[nav].list/.card, same "nv-plat:" + nav cache key the
-// desktop Platform page uses) -> a row opens the fact sheet above.
+// The head of a Platform screen on the phone: Back, then what the screen is.
+function NV_MobilePlatHead(props) {
+  return (
+    <div className="nv-mob-files-head">
+      <button type="button" className="nv-mob-back touch-target"
+        data-testid="nv-mob-plat-back"
+        onClick={props.onBack}>&lsaquo; Back</button>
+      <span className="nv-mob-screen-title"
+        data-testid="nv-mob-plat-title">{props.title}</span>
+    </div>
+  );
+}
+
+// The Platform sections (design 4.3; seam I-2 on phones): the SAME entries the
+// desktop sidebar draws, every id of NV_PLAT_GROUPS (nv-platform.jsx) for which
+// NV_platNavAvailable is true, labelled by NV_platNavLabel. Four kinds of page
+// sit behind a section:
+//   * a generic nav (agents, toolsets ...) is a filter + entity rows
+//     (NV_PLAT_PAGES[nav].list/.card, same "nv-plat:" + nav cache key the
+//     desktop Platform page uses) -> a row opens the fact sheet above;
+//   * Providers has no page-table entry (its page is the catalogue), so it is a
+//     second-level list: All providers, then one entry per provider type (the
+//     grammar's SH_VIEW_SUBS, labelled like the sidebar's sub-entries); a pick
+//     shows window.ProviderCatalog at that type, and Back goes to the list of
+//     types, then to the sections;
+//   * a custom page (Web, Workspace templates) mounts the component another
+//     file exports on window, with no props, under Back and its label, and is a
+//     section only while that component is loaded;
+//   * the catalogue and the custom pages are the desktop pages hosted as they
+//     are (as the System pages are): a read-mostly phone layout for each is
+//     separate work.
 //
-// props.pending ({kind, id} | null): M5 spec pt 6 - an incoming URL
+// props.pending ({kind, id, sub?} | null): M5 spec pt 6 - an incoming URL
 // naming a desktop-only overlay (or a palette entity row, while mobile)
 // resolves to this SAME fact sheet once that section's list has loaded
 // far enough to find the row by id, rather than a second bespoke
-// single-item fetch per kind.
+// single-item fetch per kind. A view=platform:<nav>[:<sub>] link arrives the
+// same way with no id: it opens the section, and for Providers the type (sub),
+// and is consumed as soon as it has.
 function NV_MobilePlatform(props) {
   // The console, handed to every page.card(row, con) as the desktop page does (seam I-8): a card's status may act through it.
   var con = NV_useConsole();
@@ -1250,6 +1277,15 @@ function NV_MobilePlatform(props) {
   var navState = React.useState(null);
   var nav = navState[0];
   var setNav = navState[1];
+  // Providers only: null is the list of types, "all" or a type key is the catalogue at that type.
+  var subState = React.useState(null);
+  var sub = subState[0];
+  var setSub = subState[1];
+  // Counts the times the catalogue is opened from outside itself (a pick in the list of types, a link), and keys it: a new instance starts with no
+  // instance open. A move the catalogue makes itself (its own chips) does not count, since a remount would close the form a card click has just opened.
+  var epochState = React.useState(0);
+  var epoch = epochState[0];
+  var setEpoch = epochState[1];
   var qState = React.useState("");
   var q = qState[0];
   var setQ = qState[1];
@@ -1257,13 +1293,20 @@ function NV_MobilePlatform(props) {
   var sheet = sheetState[0];
   var setSheet = sheetState[1];
 
-  var page = nav ? window.NV_PLAT_PAGES[nav] : null;
+  // The section on screen: the open nav while a page is behind it, else the list of sections (a custom page whose component went away is never a blank screen).
+  var shown = nav && window.NV_platNavAvailable(nav) ? nav : null;
+  var isProviders = shown === "providers";
+  var customKey = shown && Object.prototype.hasOwnProperty.call(window.NV_PLAT_CUSTOM_PAGES, shown)
+    ? window.NV_PLAT_CUSTOM_PAGES[shown] : null;
+  var Custom = customKey ? window[customKey] : null;
+  var page = shown && !isProviders && !customKey ? window.NV_PLAT_PAGES[nav] : null;
+  var types = window.NV_platProviderTypes();
   // The More tab hides its dashboard (profile, settings, health cards) while a section is open, so the section fills the screen.
   React.useEffect(function () {
-    if (props.onNavChange) props.onNavChange(!!nav);
-  }, [nav]);
+    if (props.onNavChange) props.onNavChange(!!shown);
+  }, [shown]);
   var res = window.primerApi.useResource(
-    nav ? "nv-plat:" + nav : "nv-mob-plat:_none",
+    page ? "nv-plat:" + nav : "nv-mob-plat:_none",
     function (signal) {
       return page ? page.list(apiFetch, signal) : Promise.resolve({ items: [] });
     },
@@ -1271,23 +1314,35 @@ function NV_MobilePlatform(props) {
   );
   var items = (res.data && res.data.items) || [];
 
+  // The link this list has already looked at: one that is applied over two passes (it opens the section first) counts once.
+  var seen = React.useRef(null);
   React.useEffect(function () {
-    if (!props.pending) return;
-    if (nav !== props.pending.kind) {
-      setNav(props.pending.kind);
+    var want = props.pending;
+    if (!want) return;
+    // A type belongs to Providers alone, and only one the grammar lists opens the catalogue; any other link to Providers opens its list of types.
+    var wantSub = want.kind === "providers" && want.sub && types.indexOf(want.sub) >= 0 ? want.sub : null;
+    if (seen.current !== want) {
+      seen.current = want;
+      // Every link to a type starts its catalogue over, the type it is already on included: the way back to that type's cards from one of its
+      // instances (as on the desktop).
+      if (wantSub) setEpoch(function (e) { return e + 1; });
+    }
+    if (nav !== want.kind || sub !== wantSub) {
+      setNav(want.kind);
+      setSub(wantSub);
       return;
     }
     // A link to a whole section (no row id) is done once the section is open. Left pending until the list had loaded, a Back tap
     // in that first moment re-opened the section (the effect saw a pending kind that was not the open nav).
-    if (!props.pending.id) {
+    if (!want.id) {
       if (props.onPendingConsumed) props.onPendingConsumed();
       return;
     }
     if (res.loading) return;
-    var row = items.find(function (r) { return r.id === props.pending.id; });
+    var row = items.find(function (r) { return r.id === want.id; });
     if (row && page) setSheet({ kind: nav, cardVM: page.card(row, con), row: row });
     if (props.onPendingConsumed) props.onPendingConsumed();
-  }, [props.pending, nav, res.loading]);
+  }, [props.pending, nav, sub, res.loading]);
 
   var ql = q.trim().toLowerCase();
   var visible = !page ? [] : items.filter(function (row) {
@@ -1296,11 +1351,11 @@ function NV_MobilePlatform(props) {
     return (vm.name + " " + (vm.sub || "")).toLowerCase().indexOf(ql) >= 0;
   });
 
-  if (!nav) {
+  if (!shown) {
     return (
       <div className="nv-mob-plat-sections" data-testid="nv-mob-plat-sections">
         {NV_PLAT_GROUPS.map(function (g) {
-          var ids = g.ids.filter(function (id) { return window.NV_PLAT_PAGES[id]; });
+          var ids = g.ids.filter(function (id) { return window.NV_platNavAvailable(id); });
           if (!ids.length) return null;
           return (
             <div key={g.label} className="nv-mob-plat-group">
@@ -1310,8 +1365,8 @@ function NV_MobilePlatform(props) {
                   return (
                     <button type="button" key={id} className="card card-interactive"
                       data-testid={"nv-mob-plat-nav:" + id}
-                      onClick={function () { setNav(id); setQ(""); }}>
-                      <div className="card-title">{window.NV_PLAT_PAGES[id].title}</div>
+                      onClick={function () { setNav(id); setSub(null); setQ(""); }}>
+                      <div className="card-title">{window.NV_platNavLabel(id)}</div>
                     </button>
                   );
                 })}
@@ -1323,14 +1378,65 @@ function NV_MobilePlatform(props) {
     );
   }
 
+  if (isProviders) {
+    var typeLabel = function (t) {
+      return t === "all" ? "All providers" : (window.NV_PROVIDER_TYPE_LABELS[t] || t);
+    };
+    return (
+      <div className="nv-mob-plat-list" data-testid="nv-mob-plat-page:providers">
+        {sub ? (
+          <React.Fragment>
+            <NV_MobilePlatHead title={typeLabel(sub)}
+              onBack={function () { setSub(null); }} />
+            <div className="nv-mob-plat-body" data-testid="nv-mob-plat-catalog">
+              <window.ProviderCatalog key={epoch}
+                initialClass={sub}
+                initialInstanceId={null}
+                onNavigate={function (ref) {
+                  // The catalogue's own chips move it to another type: the title follows, and the catalogue stays mounted.
+                  if (ref && ref.kind === "provider-class" && types.indexOf(ref.classKey) >= 0) setSub(ref.classKey);
+                }}
+              />
+            </div>
+          </React.Fragment>
+        ) : (
+          <React.Fragment>
+            <NV_MobilePlatHead title="Providers"
+              onBack={function () { setNav(null); }} />
+            <div className="card-list" data-testid="nv-mob-plat-types">
+              {["all"].concat(types).map(function (t) {
+                return (
+                  <button type="button" key={t} className="card card-interactive"
+                    data-testid={"nv-mob-plat-sub:" + t}
+                    onClick={function () {
+                      setEpoch(function (e) { return e + 1; });
+                      setSub(t);
+                    }}>
+                    <div className="card-title">{typeLabel(t)}</div>
+                  </button>
+                );
+              })}
+            </div>
+          </React.Fragment>
+        )}
+      </div>
+    );
+  }
+
+  if (Custom) {
+    return (
+      <div className="nv-mob-plat-list" data-testid={"nv-mob-plat-page:" + shown}>
+        <NV_MobilePlatHead title={window.NV_platNavLabel(shown)}
+          onBack={function () { setNav(null); }} />
+        <div className="nv-mob-plat-body"><Custom /></div>
+      </div>
+    );
+  }
+
   return (
     <div className="nv-mob-plat-list" data-testid={"nv-mob-plat-page:" + nav}>
-      <div className="nv-mob-files-head">
-        <button type="button" className="nv-mob-back touch-target"
-          data-testid="nv-mob-plat-back"
-          onClick={function () { setNav(null); }}>&lsaquo; Back</button>
-        <span className="nv-mob-screen-title">{page.title}</span>
-      </div>
+      <NV_MobilePlatHead title={page.title}
+        onBack={function () { setNav(null); }} />
       <input className="nv-input" data-testid="nv-mob-plat-filter"
         aria-label={"Filter " + page.title.toLowerCase()}
         placeholder={"Filter " + page.title.toLowerCase() + "…"}
@@ -1501,8 +1607,9 @@ function NV_MobileShell() {
     con.closeOverlay();
   }, [con.overlay]);
 
-  // A pasted ?view=platform:<nav> link (or the palette's Platform verb) lands on the More tab with that section open; it used to
-  // leave the shell on Inbox. ?view=system:* is a full-screen takeover below.
+  // A pasted ?view=platform:<nav>[:<sub>] link (or the palette's Platform verb) lands on the More tab with that section open (and, for Providers,
+  // the type: the grammar's third segment); it used to leave the shell on Inbox. A nav with no page behind it right now (a custom page whose
+  // component is not loaded) leaves the section list showing, never a blank screen. ?view=system:* is a full-screen takeover below.
   // Keyed on the view OBJECT, not its name and nav: running the same link again after Back is a navigation that changes neither, and
   // the shell's goView (or a pasted link, which arrives as a hashchange) hands over a fresh object each time. A fresh object also
   // arrives on every popstate, though, and on a phone nothing else clears ?view=platform:<x>, so an Android back gesture used to
@@ -1512,8 +1619,8 @@ function NV_MobileShell() {
   React.useEffect(function () {
     if (!(con.view && con.view.name === "platform")) return;
     setActiveTab("more");
-    if (con.view.nav && window.NV_PLAT_PAGES && window.NV_PLAT_PAGES[con.view.nav]) {
-      setPendingFactSheet({ kind: con.view.nav, id: null });
+    if (con.view.nav && window.NV_platNavAvailable(con.view.nav)) {
+      setPendingFactSheet({ kind: con.view.nav, id: null, sub: con.view.sub || null });
     }
     if (con.clearView) con.clearView();
   }, [con.view]);

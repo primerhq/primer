@@ -6707,6 +6707,8 @@ button.nv-mob-ws-picker { cursor: pointer; }
   margin: 12px 2px 6px;
 }
 .nv-mob-plat-list .nv-input { margin: 0 var(--mobile-pad-x) 10px; width: auto; }
+/* A Platform page the phone hosts as it is (a provider type's catalogue, a custom page): wide content scrolls inside this box, never the tab or the document. */
+.nv-mob-plat-body { min-width: 0; overflow-x: auto; }
 .nv-mob-fact-sheet { display: flex; flex-direction: column; gap: 8px; }
 .nv-mob-fact-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .nv-mob-fact-chip {
