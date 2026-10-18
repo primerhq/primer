@@ -293,7 +293,8 @@ setting is used:
 | `gemini`, 2.0 and earlier, or a model not in the table | nothing | nothing |
 | `openresponses`, `openchat` (openai): o-series and codex models | `reasoning_effort` (`reasoning.effort` on Responses), from `low` | `low` |
 | same, gpt-5 | from `minimal` | `minimal` |
-| same, gpt-5.1 and later | `none`, then from `low` | `none` |
+| same, gpt-5.1 to 5.x | `none`, then from `low` | `none` |
+| same, GPT-6 and later (gpt-6-astra has no `none`, gpt-6.1-sol neither `none` nor `minimal`) | from `low` | `low` |
 | same, gpt-5-pro | `high` only | `high` |
 | same, a model that does not reason (gpt-4o, gpt-4.1) | nothing | nothing |
 | same, a model not in the table (a deployment name, a self-hosted model) | `reasoning_effort` from `minimal` | `minimal` |
