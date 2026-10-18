@@ -6,7 +6,7 @@ left and the page's action on the right. A page renders INTO the overlay through
 own page from ``PC_REGISTER_PAGES`` (Tasks 12 to 15; stubbed here), a form class the schema form, a panel class its own create form. Changing the type
 remounts the page (typed values are dropped) and nothing else: the dialog, its scrim and its focus trap stay mounted, which is what keeps the focus where the operator
 left it; the type selector is shut while a request of the page's is out; edit mode locks the type, titles "Edit <id>", offers Delete behind a confirm (never on a
-built-in row) and Invalidate for a class that caches adapters; a save toasts and closes.
+built-in row) and no draft Test, and Invalidate for a class that caches adapters; a save toasts and closes.
 
 Everything runs in V8 with the real kit, form and foundation (``tests/ui/_register_harness.py``); the ``_types`` maps are what the route functions answer
 and the refusals are what the real routers answer.
@@ -407,6 +407,25 @@ def test_artifact_storage_offers_no_test_until_its_route_exists(ctx) -> None:
     _serve(ctx, "artifact_storage_providers")
     assert ctx.eval("MR.find('provider-form-test') === null") is True
     assert js(ctx, "options('pc-field:type')") == ["db", "filesystem", "s3"]
+
+
+def test_edit_mode_offers_no_draft_test(ctx) -> None:
+    """Review of #773: an edit offered Test and posted the draft to ``/{plural}/_test``. The draft's secret is the served MASK, and the route builds its adapter from
+    the draft alone (it never reads the stored row), so Test reported a failure for a provider that works. Global constraint of plan 02: no masked secret reaches a
+    probe; edit mode never sends a draft to ``_discover_models``, ``_test`` or the Hub check. Web Search has a draft ``_test`` route (a create offers Test, pinned
+    in ``test_a_web_search_registers_with_the_wire_body``) and an edit of its row has none."""
+    row = {"id": "tavily-prod", "provider_type": "tavily", "config": {"type": "tavily", "api_key": "**********1234"}}
+    _mount(ctx, initialClass="web_search", editRow=row)
+    _serve(ctx, "web_search_providers")
+    assert ctx.eval("MR.find('provider-form-test') === null") is True, "no Test button"
+    assert all(not t.startswith("provider-form-test") for t in js(ctx, "testids('pc-register')")), "and no Test result to show"
+    footer = js(ctx, "testids('pc-register')")
+    assert "provider-form-save" in footer and "provider-form-cancel" in footer and "pc-register-delete" in footer
+    ctx.eval("press('provider-form-save')")
+    assert settle(ctx) == "fulfilled"
+    calls = js(ctx, "CALLS")
+    assert [(c["method"], c["path"]) for c in calls] == [("PUT", "/web_search_providers/tavily-prod")], "the only request an edit can send is the save"
+    assert all("_test" not in c["path"] for c in calls)
 
 
 def test_edit_round_trips_every_unshown_field(ctx) -> None:

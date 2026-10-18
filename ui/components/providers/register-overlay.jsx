@@ -18,7 +18,8 @@
 // the type selector shut, and holds Delete off, until it is answered, because a switch then would unmount the page and swallow the answer).
 //
 // Seam I-3: PC_RegisterOverlay({ initialClass, allowedClasses?, excludeKinds?, editRow?, onClose(), onSaved(row), onDeleted?(id) }). `excludeKinds` is
-// added to the built-in kinds the Type select leaves out; without `onDeleted` the overlay closes itself after a delete.
+// added to the built-in kinds the Type select leaves out; without `onDeleted` the overlay closes itself after a delete. In edit mode a class that has a
+// draft Test (`draftTest`) still offers none: the draft holds the served MASK of every secret and a `_test` route builds its adapter from the draft alone.
 
 // The wizard classes' pages, merged in by the files that define them (each does Object.assign(window.PC_REGISTER_PAGES || {}, { <key>: Page })). A page
 // takes { klass, editRow, excludeKinds, frame, onSaved(row), onClose() } and returns frame({ body, footerLeft?, footerRight, error?, busy? }).
@@ -168,10 +169,13 @@ function PC_RegisterFormPage({ klass, editRow, excludeKinds, frame, onSaved, onC
       : await apiFetch("POST", `/${klass.plural}`, wire);
     onSaved(row && typeof row === "object" ? row : wire);
   };
+  // Test posts the DRAFT to `/{plural}/_test`, and the route builds its adapter from the draft alone (it never reads the stored row). An edit's draft is the served row,
+  // whose secrets are the MASK: Test would report a failure for a provider that works. So an edit has no draft Test, whatever the class offers (plan 02: "No masked
+  // secret reaches a probe. Edit mode never sends a draft to `_discover_models`, `_test` or the Hub check").
   return (
     <window.PC_ProviderForm plural={klass.plural} value={draft} onChange={setDraft} onSubmit={submit} onCancel={onClose}
       editing={editing} existingId={editing ? editRow.id : null} frame={frame} classKey={klass.key} kindSelect
-      excludeKinds={excludeKinds} canTest={!!klass.draftTest} submitLabel={editing ? "Save" : "Register"} readOnly={readOnly} />
+      excludeKinds={excludeKinds} canTest={!!klass.draftTest && !editing} submitLabel={editing ? "Save" : "Register"} readOnly={readOnly} />
   );
 }
 
