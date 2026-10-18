@@ -1318,7 +1318,7 @@ function NV_MobilePlatform(props) {
     function (signal) {
       return page ? page.list(apiFetch, signal) : Promise.resolve({ items: [] });
     },
-    { pollMs: 15000, deps: [nav] }
+    { pollMs: page && page.poll === false ? 0 : 15000, deps: [nav] }
   );
   var items = (res.data && res.data.items) || [];
 

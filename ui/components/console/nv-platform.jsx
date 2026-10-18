@@ -358,7 +358,9 @@ function NV_platFilterText(vm) {
 // shape. An entry may also set emptyText and emptyAction: { label, run(con) }
 // (seam I-9): a page with no rows says its own words and offers that way out
 // instead of the generic sentence and its create button
-// (tests/ui/test_platform_empty_states.py).
+// (tests/ui/test_platform_empty_states.py). poll: false stops the 15 s re-poll of
+// its list, and refresh: true gives its header a Refresh button that reloads it
+// (the Tools page: tests/ui/test_platform_tools_page.py).
 var NV_PLAT_PAGES = {
   profiles: {
     title: "LLM Profiles", noun: ["model profile", "model profiles"],
@@ -475,6 +477,9 @@ var NV_PLAT_PAGES = {
   },
   tools: {
     title: "Tools", noun: ["tool", "tools"],
+    // The catalogue asks every toolset live, so it loads on open and on the
+    // header's Refresh instead of polling (design 13.5).
+    poll: false, refresh: true,
     // Flat catalogue of every tool on the install, searchable and
     // paged like any platform page. Approval policies point here.
     list: function (apiFetch, signal) {
@@ -791,6 +796,10 @@ function NV_approvalAt(iso) {
 // Twelve cards a page (design 13.5): the full-width grid is two to six cards across, and twelve is whole rows at two, three, four and six. The pager
 // is the kit header's, next to the filter (design 5.1); there is no second pager below the grid.
 var NV_PLAT_PAGE_SIZE = 12;
+
+// How often a Platform list is asked for again, in ms. A page whose entry says `poll: false` is loaded when it opens and by its own Refresh button instead: the tool catalogue is built by
+// asking every toolset live (ten seconds each at worst), so re-asking it four times a minute for as long as the page stayed open was the page's whole cost (design 13.5).
+var NV_PLAT_POLL_MS = 15000;
 
 function NV_PlatNav() {
   var con = NV_useConsole();
@@ -1300,12 +1309,26 @@ function NV_PlatListPage(props) {
 
   var page = NV_PLAT_PAGES[nav] || null;
   var listKey = "nv-plat:" + nav;
+  // How many loads of the list are in flight, counted by the page itself and only for a page with a Refresh: useResource reports `loading` for the FIRST load of a resource only (a refetch
+  // keeps the data it has and says nothing), so without this a Refresh could never say it is on its way. Every load that starts ends, whether it answers, fails or is superseded.
+  var flightState = React.useState(0);
+  var inFlight = flightState[0];
+  var setInFlight = flightState[1];
   var res = window.primerApi.useResource(
     listKey,
     function (signal) {
-      return page.list(apiFetch, signal);
+      if (!page.refresh) return page.list(apiFetch, signal);
+      setInFlight(function (n) { return n + 1; });
+      function settle() { setInFlight(function (n) { return Math.max(0, n - 1); }); }
+      return page.list(apiFetch, signal).then(function (data) {
+        settle();
+        return data;
+      }, function (err) {
+        settle();
+        throw err;
+      });
     },
-    { pollMs: 15000, deps: [nav] }
+    { pollMs: page.poll === false ? 0 : NV_PLAT_POLL_MS, deps: [nav] }
   );
   // ADM-16: closing an overlay refreshes the list behind it (see NV_overlayClosed).
   var overlayOpen = !!con.overlay;
@@ -1349,6 +1372,18 @@ function NV_PlatListPage(props) {
       <button key="extra" type="button" className="pk-extra" data-testid="nv-plat-extra"
         onClick={function () { page.extraNav.run(con, setModal); }}>
         {page.extraNav.label}
+      </button>
+    );
+  }
+  // Refresh reloads the list on demand, for a page that does not poll. While a load is on its way it says "Refreshing…" and a click does nothing (aria-disabled, not disabled, so the
+  // keyboard focus is not lost when it greys).
+  var refreshing = !!page.refresh && (!!res.loading || inFlight > 0);
+  if (page.refresh) {
+    extraControls.push(
+      <button key="refresh" type="button" className="pk-extra" data-testid="nv-plat-refresh"
+        aria-busy={refreshing ? "true" : undefined} aria-disabled={refreshing ? "true" : undefined}
+        onClick={function () { if (!refreshing) res.refetch(); }}>
+        {refreshing ? "Refreshing…" : "Refresh"}
       </button>
     );
   }
@@ -1508,6 +1543,7 @@ function NV_Platform() {
 }
 
 window.NV_PLAT_PAGES = NV_PLAT_PAGES;
+window.NV_PLAT_POLL_MS = NV_PLAT_POLL_MS;
 window.NV_PROVIDER_TYPE_LABELS = NV_PROVIDER_TYPE_LABELS;
 window.NV_platProviderTypes = NV_platProviderTypes;
 window.NV_platNavCurrent = NV_platNavCurrent;
