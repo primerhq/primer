@@ -593,8 +593,8 @@ _SETTING_WORDS: dict[str, tuple[str, ...]] = {
     "reasoning_effort": ("reasoning.effort",),
     "thinking": ("budget_tokens",),
     "output_config": ("output_config.effort", "effort"),
-    "thinking_budget": ("thinking_config", "budget", "thinking mode"),
-    "thinking_level": ("thinking_config", "thinking level"),
+    "thinking_budget": ("thinking_config", "budget", "thinking mode", "thinking"),
+    "thinking_level": ("thinking_config", "thinking level", "thinking"),
     "think": ("does not support thinking",),
     "chat_template_kwargs": ("enable_thinking",),
 }
