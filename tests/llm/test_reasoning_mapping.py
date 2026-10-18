@@ -471,6 +471,8 @@ class TestProfileStream:
         ({"output_config": {"effort": "low"}}, "output_config.effort: Extra inputs are not permitted"),
         ({"thinking_budget": 0}, "Budget 0 is invalid. This model only works in thinking mode."),
         ({"thinking_level": "low"}, "Thinking level is not supported for this model."),
+        ({"thinking_budget": 1024}, "Thinking is not supported for this model."),
+        ({"thinking_level": "low"}, "Thinking is not supported for this model."),
         ({"think": True}, '"llama3.2" does not support thinking'),
         ({"chat_template_kwargs": {"enable_thinking": False}}, "Extra inputs are not permitted: body.chat_template_kwargs"),
         ({"reasoning": {"effort": "none"}}, "Reasoning is mandatory for this endpoint and cannot be disabled."),
