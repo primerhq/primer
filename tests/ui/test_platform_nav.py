@@ -6,6 +6,10 @@ would mount.
 
 Task 6 (this file's first half): the Providers row has one sub-entry per provider type, always visible; the entry of the open type is the current one and the Providers row is current
 only on All; a click goes to the type; the page mounts the catalog at the type.
+
+Task 7 (the second half): the sidebar's groups are the design's (section 4.1) with no Workspaces row; ``web`` and ``templates`` are custom pages that exist only while the component that
+draws them is loaded (``window.WEB_SettingsPage``, ``window.WT_TemplatesPage``: Plans 04 and 08 ship them) and mount inside the Platform page frame; a link to a custom page whose component is
+not loaded renders Providers, not a blank page; the page titles read "LLM Profiles" and "Channels".
 """
 
 from __future__ import annotations
@@ -15,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.ui._platform_page_harness import platform_page_context
+from tests.ui._platform_page_harness import PLATFORM, platform_navs, platform_page_context
 
 ROOT = Path(__file__).resolve().parents[2]
 SHELL_URL = (ROOT / "ui" / "foundation" / "shell-url.js").read_text(encoding="utf-8")
@@ -36,13 +40,36 @@ window.ProviderCatalog = function (p) {
 """
 
 
+# The text of an element tree, for the label of a nav row; and a stand-in for a custom page's component (what a later plan ships on window).
+TEXT = """
+function TXT(n) {
+  if (n == null || typeof n === "boolean") return "";
+  if (typeof n === "string" || typeof n === "number") return String(n);
+  if (Array.isArray(n)) return n.map(TXT).join("");
+  return n.__el ? TXT(n.children) : "";
+}
+var STAND_IN_PROPS = [];
+function STAND_IN(id) {
+  return function (props) { STAND_IN_PROPS.push(Object.keys(props || {})); return React.createElement("div", { "data-testid": id }); };
+}
+"""
+
+GROUPS = ["Intelligence", "Workbench", "Automation", "Governance"]
+SIDEBAR = [
+    ("Intelligence", ["providers", "profiles", "agents", "graphs"]),
+    ("Workbench", ["templates", "toolsets", "tools", "collections", "web"]),
+    ("Automation", ["triggers", "channels", "harnesses", "services"]),
+    ("Governance", ["approvals"]),
+]
+
+
 def js(ctx, expr: str):
     return json.loads(ctx.eval("JSON.stringify(" + expr + ")"))
 
 
 @pytest.fixture
 def nav_ctx():
-    ctx = platform_page_context(prelude_extra=SHELL_URL + CATALOG)
+    ctx = platform_page_context(prelude_extra=SHELL_URL + CATALOG + TEXT)
     try:
         yield ctx
     finally:
@@ -255,3 +282,152 @@ def test_the_address_does_not_move_to_the_type_it_is_already_on(nav_ctx) -> None
 def test_new_channel_with_no_provider_goes_to_the_channel_type(nav_ctx) -> None:
     nav_ctx.eval("NV_addChannelProvider(CON);")
     assert js(nav_ctx, "CALLS") == [["goView", "platform", "providers", "channel"]]
+
+
+# ---- Task 7: the groups, the custom pages and the titles ------------------------------------------------------------------------------
+
+
+def _row_ids(ctx) -> list[str]:
+    return js(ctx, 'MR.findAll("nv-plat-row:").map(function (e) { return e.props["data-testid"].slice("nv-plat-row:".length); })')
+
+
+def _row_label(ctx, nav: str) -> str:
+    return ctx.eval(f'TXT(MR.find("nv-plat-row:{nav}").children)')
+
+
+LOAD_BOTH = "window.WEB_SettingsPage = STAND_IN('web-stand-in'); window.WT_TemplatesPage = STAND_IN('templates-stand-in');"
+
+
+def test_the_sidebar_has_the_new_groups_and_no_workspaces_row(nav_ctx) -> None:
+    nav_ctx.eval("MR.mount(NV_PlatNav, {});")
+    pages = set(platform_navs())
+    expected = [nav for nav in js(nav_ctx, "SH_VIEWS.platform") if nav == "providers" or nav in pages]
+    assert _row_ids(nav_ctx) == expected, "one row per available id of the grammar, in the grammar's order"
+    assert "workspaces" not in _row_ids(nav_ctx) and nav_ctx.eval('MR.find("nv-plat-row:workspaces") === null')
+    texts = js(nav_ctx, "MR.texts()")
+    assert [t for t in texts if t in GROUPS] == GROUPS
+
+
+def test_the_groups_hold_the_rows_of_the_design(nav_ctx) -> None:
+    """Design 4.1: Intelligence (Providers, LLM Profiles, Agents, Graphs), Workbench (Workspace templates, Toolsets, Tools, Collections, Web), Automation, Governance."""
+    assert js(nav_ctx, "NV_PLAT_GROUPS") == [{"label": label, "ids": ids} for label, ids in SIDEBAR]
+    flat = [nav for _, ids in SIDEBAR for nav in ids]
+    assert js(nav_ctx, "SH_VIEWS.platform") == flat, "the sidebar's order is the grammar's order"
+    nav_ctx.eval(LOAD_BOTH + " MR.mount(NV_PlatNav, {});")
+    assert _row_ids(nav_ctx) == flat, "with both custom pages loaded every id of the grammar has its row"
+
+
+def test_custom_rows_show_only_while_their_component_is_loaded(nav_ctx) -> None:
+    nav_ctx.eval("MR.mount(NV_PlatNav, {});")
+    assert nav_ctx.eval('MR.find("nv-plat-row:web") === null && MR.find("nv-plat-row:templates") === null'), "no placeholder row ships"
+    nav_ctx.eval(LOAD_BOTH + " MR.rerender();")
+    assert _row_label(nav_ctx, "web") == "Web" and _row_label(nav_ctx, "templates") == "Workspace templates"
+    nav_ctx.eval("delete window.WEB_SettingsPage; MR.rerender();")
+    assert nav_ctx.eval('MR.find("nv-plat-row:web") === null') and nav_ctx.eval('!!MR.find("nv-plat-row:templates")'), "each row follows its own component"
+
+
+def test_a_component_that_is_not_a_function_does_not_make_its_row(nav_ctx) -> None:
+    nav_ctx.eval('window.WEB_SettingsPage = { not: "a component" }; window.WT_TemplatesPage = null; MR.mount(NV_PlatNav, {});')
+    assert nav_ctx.eval('MR.find("nv-plat-row:web") === null && MR.find("nv-plat-row:templates") === null')
+
+
+def test_a_custom_row_goes_to_its_page_and_is_current_on_it(nav_ctx) -> None:
+    nav_ctx.eval(LOAD_BOTH + ' CON.view = { name: "platform", nav: "web", sub: null }; MR.mount(NV_PlatNav, {});')
+    assert nav_ctx.eval('MR.find("nv-plat-row:web").props["aria-current"]') == "page"
+    assert nav_ctx.eval('MR.find("nv-plat-row:providers").props["aria-current"] === undefined')
+    nav_ctx.eval('MR.click("nv-plat-row:templates");')
+    assert js(nav_ctx, "CALLS") == [["goView", "platform", "templates"]]
+
+
+def test_a_custom_page_mounts_its_component_in_the_page_frame(nav_ctx) -> None:
+    nav_ctx.eval(LOAD_BOTH + ' CON.view = { name: "platform", nav: "web", sub: null }; MR.mount(NV_PlatPage, {});')
+    assert nav_ctx.eval('MR.find("nv-plat-page:web").props.className') == "nv-plat-wrap"
+    inside = js(nav_ctx, 'MR.subtree("nv-plat-page:web").map(function (e) { return e.testid; })')
+    assert "web-stand-in" in inside and "templates-stand-in" not in inside
+    assert js(nav_ctx, "STAND_IN_PROPS") == [[]], "the component reads the console itself and is given no props"
+    nav_ctx.eval('CON.view = { name: "platform", nav: "templates", sub: null }; MR.rerender();')
+    assert nav_ctx.eval('MR.find("nv-plat-page:web") === null') and nav_ctx.eval('!!MR.find("nv-plat-page:templates")')
+    assert "templates-stand-in" in js(nav_ctx, 'MR.subtree("nv-plat-page:templates").map(function (e) { return e.testid; })')
+
+
+def test_a_custom_page_link_with_no_component_falls_back_to_providers(nav_ctx) -> None:
+    """Review Focus 5: ``view=platform:web`` before Plan 04 ships lands on Providers (every type), with its row current: no blank page, no error."""
+    for nav in ("web", "templates"):
+        nav_ctx.eval(f'CON.view = {{ name: "platform", nav: "{nav}", sub: null }}; CATALOG_SEEN.length = 0; MR.mount(NV_Platform, {{}});')
+        assert js(nav_ctx, "CATALOG_SEEN[CATALOG_SEEN.length - 1].initialClass") == "all", nav
+        assert nav_ctx.eval('!!MR.find("nv-plat-page:providers")') and nav_ctx.eval(f'MR.find("nv-plat-page:{nav}") === null'), nav
+        assert nav_ctx.eval('MR.find("nv-plat-row:providers").props["aria-current"]') == "page", nav
+        assert nav_ctx.eval(f'MR.find("nv-plat-row:{nav}") === null'), nav
+
+
+def test_a_retired_nav_in_the_state_falls_back_to_providers_too(nav_ctx) -> None:
+    """The grammar no longer admits ``workspaces``, but a view object can still carry any id (a caller's mistake): the page shows Providers, not a blank list page."""
+    nav_ctx.eval('CON.view = { name: "platform", nav: "workspaces", sub: null }; CATALOG_SEEN.length = 0; MR.mount(NV_Platform, {});')
+    assert js(nav_ctx, "CATALOG_SEEN[CATALOG_SEEN.length - 1].initialClass") == "all"
+    assert nav_ctx.eval('MR.find("nv-plat-row:providers").props["aria-current"]') == "page"
+
+
+def test_the_labels_read_llm_profiles_and_channels(nav_ctx) -> None:
+    nav_ctx.eval("MR.mount(NV_PlatNav, {});")
+    assert _row_label(nav_ctx, "profiles") == "LLM Profiles"
+    assert _row_label(nav_ctx, "channels") == "Channels"
+    assert _row_label(nav_ctx, "providers") == "Providers"
+    dash = chr(0x2014)
+    assert not any(dash in text for text in js(nav_ctx, "MR.texts()")), "no rendered text of the sidebar carries the long dash"
+    titles = js(nav_ctx, "Object.keys(NV_PLAT_PAGES).map(function (k) { return NV_PLAT_PAGES[k].title; })")
+    assert not any(dash in title for title in titles), titles
+
+
+def test_the_list_pages_draw_the_new_titles(nav_ctx) -> None:
+    for nav, title in (("profiles", "LLM Profiles"), ("channels", "Channels")):
+        nav_ctx.eval(f'ITEMS = []; MR.mount(NV_PlatListPage, {{ nav: "{nav}" }});')
+        assert title in js(nav_ctx, "MR.texts()"), nav
+        assert nav_ctx.eval('MR.find("nv-plat-filter").props["aria-label"]') == f"Filter {title.lower()}"
+
+
+def test_the_workspaces_and_templates_pages_are_gone_from_the_table_and_the_page() -> None:
+    """Design 14.1 and 14.2: Workspaces leaves the Platform view, and Workspace templates is a custom page (Plan 08's), so the generic entries and the JSON form that wiped template fields go."""
+    keys = platform_navs()
+    assert "workspaces" not in keys and "templates" not in keys
+    src = PLATFORM.read_text(encoding="utf-8")
+    assert "NV_TemplateModal" not in src and 'modal.kind === "template"' not in src
+    assert "NV_deleteConfirm" in src and 'nav === "workspaces"' in src, "the pure delete prompt for a workspace is kept (test_platform_delete_confirm.py)"
+
+
+def test_the_custom_pages_and_their_labels_are_the_seam(nav_ctx) -> None:
+    """Seam I-2: Plans 04 and 08 export ``WEB_SettingsPage`` and ``WT_TemplatesPage`` and the Platform view does the rest."""
+    assert js(nav_ctx, "NV_PLAT_CUSTOM_PAGES") == {"web": "WEB_SettingsPage", "templates": "WT_TemplatesPage"}
+    assert js(nav_ctx, "NV_PLAT_CUSTOM_LABELS") == {"web": "Web", "templates": "Workspace templates"}
+    for name in ("NV_PLAT_CUSTOM_PAGES", "NV_PLAT_CUSTOM_LABELS", "NV_platNavAvailable", "NV_platResolveNav", "NV_platNavLabel"):
+        assert nav_ctx.eval(f"typeof window.{name} !== 'undefined'"), name
+
+
+@pytest.mark.parametrize(
+    "nav,loaded,available",
+    [
+        ("providers", False, True), ("agents", False, True), ("approvals", False, True),
+        ("web", False, False), ("web", True, True), ("templates", False, False), ("templates", True, True),
+        ("workspaces", False, False), ("workspaces", True, False), ("bogus", False, False), ("constructor", False, False), ("toString", False, False),
+    ],
+)
+def test_a_nav_is_available_when_it_has_a_page_or_a_loaded_component(nav_ctx, nav: str, loaded: bool, available: bool) -> None:
+    if loaded:
+        nav_ctx.eval(LOAD_BOTH)
+    assert nav_ctx.eval(f"NV_platNavAvailable({json.dumps(nav)})") is available
+    assert nav_ctx.eval(f"NV_platResolveNav({json.dumps(nav)})") == (nav if available else "providers")
+
+
+@pytest.mark.parametrize(
+    "nav,label",
+    [("providers", "Providers"), ("profiles", "LLM Profiles"), ("channels", "Channels"), ("agents", "Agents"), ("approvals", "Approval policies"),
+     ("web", "Web"), ("templates", "Workspace templates"), ("not-a-nav", "not-a-nav")],
+)
+def test_a_nav_label_is_providers_the_custom_label_or_the_pages_title(nav_ctx, nav: str, label: str) -> None:
+    assert nav_ctx.eval(f"NV_platNavLabel({json.dumps(nav)})") == label
+
+
+def test_the_current_nav_resolves_through_availability(nav_ctx) -> None:
+    assert nav_ctx.eval('NV_platNavCurrent({ name: "platform", nav: "web", sub: null })') == "providers", "a custom page that is not loaded is Providers"
+    nav_ctx.eval(LOAD_BOTH)
+    assert nav_ctx.eval('NV_platNavCurrent({ name: "platform", nav: "web", sub: null })') == "web"
+    assert nav_ctx.eval('NV_platNavCurrent({ name: "platform", nav: "templates", sub: null })') == "templates"

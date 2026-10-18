@@ -94,18 +94,33 @@ function SH_parseDoc(raw) {
 
 // The three-view console (wiring plan P0 T3). Absent view = studio,
 // which is also how every pre-existing URL parses forward. Nav ids
-// are the designer prototype's PLATNAV/SYSNAV vocabularies verbatim.
+// are the sidebar's, in the sidebar's order (Platform revamp, design 4.1):
+// "web" and "templates" are custom pages (seam I-2) whose row exists only
+// while the component that draws them is loaded, so the grammar admits them
+// before they ship and a link to one that is not there opens Providers.
+// "workspaces" (Platform) and "setup" (System) are retired navs: they are not
+// in the lists, and a link that names one is redirected (SH_VIEW_REDIRECTS).
 var SH_VIEWS = {
   studio: [],
   platform: [
-    "providers", "profiles", "toolsets", "tools", "collections",
-    "workspaces", "templates", "agents", "graphs", "triggers",
-    "channels", "harnesses", "services", "approvals",
+    "providers", "profiles", "agents", "graphs", "templates", "toolsets",
+    "tools", "collections", "web", "triggers", "channels", "harnesses",
+    "services", "approvals",
   ],
   system: [
     "dashboard", "users", "apikeys", "sso", "mcp", "internal",
-    "activity", "setup", "profile",
+    "activity", "profile",
   ],
+};
+
+// Old links (seam I-7). A retired nav is answered by a view that exists, applied by SH_parseView BEFORE it validates the nav, so the address bar is then
+// rewritten to the target's canonical form (a link is never replayed as written, and never lands on a blank page):
+//   view=platform:workspaces  -> the studio (the Workspaces page left the Platform view; the studio rail's workspace menu has New session, Settings and Delete)
+//   view=system:setup         -> the System dashboard (the Setup page left the System view; its checks live on the dashboard's Setup card)
+// "platform:templates" needs none: it is the new Workspace templates page. Keyed "<name>:<nav>", like SH_VIEW_SUBS; a sub on a redirected link is dropped.
+var SH_VIEW_REDIRECTS = {
+  "platform:workspaces": { name: "studio", nav: null },
+  "system:setup": { name: "system", nav: "dashboard" },
 };
 
 // A nav that has sub-entries admits a third segment, view=<name>:<nav>:<sub> (Platform revamp, seam I-1). Keyed "<name>:<nav>". Today only Platform > Providers has
@@ -125,6 +140,8 @@ function SH_parseView(raw) {
   var name = SH_decode(bits[0]);
   if (!(name in SH_VIEWS)) return { name: "studio", nav: null, sub: null };
   var nav = bits.length > 1 && bits[1] ? SH_decode(bits[1]) : null;
+  var moved = nav ? SH_VIEW_REDIRECTS[name + ":" + nav] : null;
+  if (moved) return { name: moved.name, nav: moved.nav, sub: null };
   if (nav && SH_VIEWS[name].indexOf(nav) < 0) nav = null;
   var sub = null;
   var subs = nav ? SH_VIEW_SUBS[name + ":" + nav] : null;
@@ -263,4 +280,5 @@ window.SH_buildUrl = SH_buildUrl;
 window.SH_parseAnchor = SH_parseAnchor;
 window.SH_VIEWS = SH_VIEWS;
 window.SH_VIEW_SUBS = SH_VIEW_SUBS;
+window.SH_VIEW_REDIRECTS = SH_VIEW_REDIRECTS;
 window.SH_parseView = SH_parseView;

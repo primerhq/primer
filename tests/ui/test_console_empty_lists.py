@@ -118,7 +118,8 @@ def test_every_platform_page_declares_its_noun() -> None:
 
     keys = json.loads(ctx.eval("JSON.stringify(Object.keys(NV_PLAT_PAGES))"))
 
-    assert len(keys) >= 13 and "tools" in keys, keys
+    # 11 generic pages since Workspaces and Workspace templates left the table (Platform revamp Plan 01 Task 7, design 14.1 and 14.2).
+    assert len(keys) >= 11 and "tools" in keys, keys
     for key in keys:
         noun = json.loads(ctx.eval(f"JSON.stringify(NV_PLAT_PAGES[{json.dumps(key)}].noun)"))
         assert isinstance(noun, list) and len(noun) == 2 and all(isinstance(w, str) and w for w in noun), (key, noun)

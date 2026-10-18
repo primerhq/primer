@@ -3,11 +3,12 @@
 // config-driven card page per entity, ported from the prototype's
 // PLATFORM region. Cards open the SHARED overlays (the same component
 // whether reached from a card, the palette, or a pasted link), create
-// buttons open the entity's own form (hosted on this page for templates,
-// toolsets and triggers; the entity's create overlay
-// for the rest: tests/ui/test_platform_create_opens_the_form.py tabulates
-// it), delete is inline with confirm - a referenced entity's 409/422
-// surfaces as the refusal toast.
+// buttons open the entity's own form, hosted on this page
+// (tests/ui/test_platform_create_opens_the_form.py tabulates which), delete is
+// inline with confirm - a referenced entity's 409/422 surfaces as the refusal
+// toast. Two nav ids are custom pages (seam I-2): "web" and "templates" mount
+// a component another file exports on window, and their sidebar row exists
+// only while that component is loaded.
 //
 // Providers get the family pills over the REAL per-class plurals (the
 // S4 catalog's registry) and open the catalog overlay at that class;
@@ -19,7 +20,6 @@ var NV_PLAT_ICONS = {
     + "M5.5 7.8v3.4",
   agents: "M7 1.5 12.5 7 7 12.5 1.5 7Z",
   graphs: "M1.5 2.5h4v3.4h-4Z M8.5 8.1h4v3.4h-4Z M5.5 4.2h3v5.8",
-  workspaces: "M2 4.5 7 2l5 2.5v5L7 12 2 9.5Z M7 7v5 M2 4.5 7 7l5-2.5",
   toolsets: "M9.8 1.8a3 3 0 0 0-3.4 4L2 10.2 3.8 12l4.4-4.4a3 3 0 0 0 "
     + "4-3.4L10 6.4 7.6 4Z",
   collections: "M3.5 1.5h7v11h-5.5a1.5 1.5 0 0 0-1.5 1.5Z M3.5 1.5V14",
@@ -32,20 +32,20 @@ var NV_PLAT_ICONS = {
     + "2-6.5 4.3",
   services: "M7 1.5a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11Z M1.5 7h11 "
     + "M7 1.5c2.4 2.6 2.4 8.4 0 11-2.4-2.6-2.4-8.4 0-11",
+  // Web (a custom page): a wireframe globe, a circle cut by a meridian and two parallels, so it reads apart from services' globe (an equator and a lens).
+  web: "M7 1.5a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11Z M7 1.5v11 "
+    + "M2 4.8h10 M2 9.2h10",
   approvals: "M7 1.5 12 3v4c0 3-2.2 5-5 6-2.8-1-5-3-5-6V3Z "
     + "M4.8 7l1.6 1.6L9.6 5.4",
 };
 
+// The sidebar's groups (design 4.1), in the order of the grammar (ui/foundation/shell-url.js SH_VIEWS.platform, held equal by
+// tests/ui/test_console_platform.py). "providers" mounts the catalogue and "web" and "templates" are custom pages (NV_PLAT_CUSTOM_PAGES);
+// every other id is an NV_PLAT_PAGES entry. Workspaces is not here: the Workspaces page left the Platform view (design 14.1).
 var NV_PLAT_GROUPS = [
   { label: "Intelligence", ids: ["providers", "profiles", "agents", "graphs"] },
-  // "templates" retired as a peer nav id (uiv2 US-011a): it folded into
-  // Workspaces (WorkspacesPage's own "Manage templates" link opens the
-  // workspaces:templates overlay section instead). The grammar
-  // (shell-url.js SH_VIEWS.platform) and this file's own per-entity
-  // config still admit view=platform:templates so an old deep link
-  // keeps working - there is just no row for it here anymore.
   { label: "Workbench",
-    ids: ["workspaces", "toolsets", "tools", "collections"] },
+    ids: ["templates", "toolsets", "tools", "collections", "web"] },
   { label: "Automation", ids: ["triggers", "channels", "harnesses", "services"] },
   { label: "Governance", ids: ["approvals"] },
 ];
@@ -230,10 +230,45 @@ function NV_platProviderTypes() {
   return Array.isArray(subs) ? subs.slice() : [];
 }
 
+// Custom pages (seam I-2). Two nav ids are not NV_PLAT_PAGES entries: their page is a component another file exports on window
+// (WEB_SettingsPage, Platform revamp Plan 04; WT_TemplatesPage, Plan 08), read with no props because it reads the console itself.
+// A custom nav exists only while its component is loaded: no row until then, and a link to it opens Providers (every type), so no placeholder
+// page ever ships and a pasted link is never a blank page.
+var NV_PLAT_CUSTOM_PAGES = { web: "WEB_SettingsPage", templates: "WT_TemplatesPage" };
+var NV_PLAT_CUSTOM_LABELS = { web: "Web", templates: "Workspace templates" };
+
+function NV_platHas(table, id) {
+  return !!table && Object.prototype.hasOwnProperty.call(table, id);
+}
+
+// Is there a page behind this nav id right now? Providers always; a custom page when its component is a function on window; any other id when it
+// has an NV_PLAT_PAGES entry (a retired id, such as "workspaces", has none).
+function NV_platNavAvailable(id) {
+  if (id === "providers") return true;
+  if (NV_platHas(NV_PLAT_CUSTOM_PAGES, id)) {
+    return typeof window[NV_PLAT_CUSTOM_PAGES[id]] === "function";
+  }
+  return NV_platHas(window.NV_PLAT_PAGES, id);
+}
+
+// The nav to show for a requested one: itself when it has a page, else Providers.
+function NV_platResolveNav(nav) {
+  return NV_platNavAvailable(nav) ? nav : "providers";
+}
+
+// A nav's name in the sidebar: "Providers", a custom page's label, or its entry's title (the sidebar and the phone's section list read the
+// same title). An id with none is shown as itself rather than as nothing.
+function NV_platNavLabel(id) {
+  if (id === "providers") return "Providers";
+  if (NV_platHas(NV_PLAT_CUSTOM_LABELS, id)) return NV_PLAT_CUSTOM_LABELS[id];
+  var page = NV_platHas(window.NV_PLAT_PAGES, id) ? window.NV_PLAT_PAGES[id] : null;
+  return page && page.title ? page.title : id;
+}
+
 // Which sidebar entry the open view marks as current: a nav id, or "providers:<type>" for an open provider type. The Providers row itself is
-// current only on All (no type), so the row and the type entries never both claim the page.
+// current only on All (no type), so the row and the type entries never both claim the page. A nav with no page behind it is Providers.
 function NV_platNavCurrent(view) {
-  var nav = (view && view.nav) || "providers";
+  var nav = NV_platResolveNav((view && view.nav) || "providers");
   if (nav === "providers" && view && view.sub
       && NV_platProviderTypes().indexOf(view.sub) >= 0) {
     return "providers:" + view.sub;
@@ -274,7 +309,7 @@ function NV_providersNavigate(con, ref) {
 // create button (tests/ui/test_platform_empty_states.py).
 var NV_PLAT_PAGES = {
   profiles: {
-    title: "Model profiles", noun: ["model profile", "model profiles"],
+    title: "LLM Profiles", noun: ["model profile", "model profiles"],
     // No single-profile create (design 7.1): a single profile comes from the
     // Register provider overlay's import, so an empty page points there.
     // Plan 03 adds "+ Aggregate".
@@ -352,26 +387,6 @@ var NV_PLAT_PAGES = {
     create: function (con, setModal) { setModal({ kind: "graph" }); },
     delPath: function (row) { return "/graphs/" + encodeURIComponent(row.id); },
   },
-  workspaces: {
-    title: "Workspaces", noun: ["workspace", "workspaces"], createLabel: "New workspace",
-    list: function (apiFetch, signal) {
-      return apiFetch("GET", "/workspaces?limit=200", null, { signal: signal });
-    },
-    card: function (row, con) {
-      return {
-        id: row.id, name: row.name || row.id,
-        sub: row.name ? row.id : (row.template_id || ""),
-        status: row.status ? { label: row.status, tone: "muted" } : undefined,
-        facts: [
-          NV_fact("template", row.template_id),
-          NV_fact("provider", row.provider_id),
-        ],
-      };
-    },
-    open: function (con, row) { con.openOverlay("workspaces", null, row.id); },
-    create: function (con) { con.openOverlay("new-workspace", null, null); },
-    delPath: function (row) { return "/workspaces/" + encodeURIComponent(row.id); },
-  },
   toolsets: {
     title: "Toolsets", noun: ["toolset", "toolsets"], createLabel: "New toolset",
     // GET /tools is the CATALOGUE: built-ins (system, workspaces, web,
@@ -430,33 +445,6 @@ var NV_PLAT_PAGES = {
         sep > 0 ? String(row.id).slice(0, sep) : null);
     },
   },
-  templates: {
-    title: "Workspace templates", noun: ["workspace template", "workspace templates"], createLabel: "New template",
-    list: function (apiFetch, signal) {
-      return apiFetch("GET", "/workspace_templates?limit=200", null,
-        { signal: signal });
-    },
-    card: function (row, con) {
-      var backend = (row.backend && row.backend.kind) || "local";
-      return {
-        id: row.id, name: row.id, sub: row.description || "",
-        badge: backend,
-        facts: [
-          NV_fact("provider", row.provider_id),
-          NV_fact("image", row.backend && row.backend.image),
-        ],
-      };
-    },
-    open: function (con, row, setModal) {
-      setModal({ kind: "template", row: row });
-    },
-    create: function (con, setModal) {
-      setModal({ kind: "template", row: null });
-    },
-    delPath: function (row) {
-      return "/workspace_templates/" + encodeURIComponent(row.id);
-    },
-  },
   collections: {
     title: "Collections", noun: ["collection", "collections"], createLabel: "New collection",
     list: function (apiFetch, signal) {
@@ -501,7 +489,7 @@ var NV_PLAT_PAGES = {
     delPath: function (row) { return "/triggers/" + encodeURIComponent(row.id); },
   },
   channels: {
-    title: "Channels — rooms & rules", createLabel: "New channel",
+    title: "Channels", createLabel: "New channel",
     noun: ["channel", "channels"],
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/channels?limit=200", null, { signal: signal });
@@ -756,13 +744,14 @@ function NV_PlatNav() {
   return (
     <div className="nv-plat-nav" data-testid="nv-plat-nav">
       {NV_PLAT_GROUPS.map(function (group) {
+        // A custom page whose component is not loaded has no row (seam I-2).
+        var ids = group.ids.filter(NV_platNavAvailable);
+        if (!ids.length) return null;
         return (
           <div key={group.label}>
             <div className="nv-plat-group-label">{group.label}</div>
-            {group.ids.map(function (id) {
-              var page = NV_PLAT_PAGES[id];
-              var label = id === "providers" ? "Providers"
-                : (page ? page.title : id);
+            {ids.map(function (id) {
+              var label = NV_platNavLabel(id);
               return (
                 <React.Fragment key={id}>
                   <button type="button" className="nv-plat-row"
@@ -1057,112 +1046,6 @@ function NV_ProfileModalHost(props) {
   );
 }
 
-// Workspace-template create/edit. Until now templates had NO page at
-// all (live finding 2026-08-26): id + description + provider are
-// first-class fields, the backend spec stays JSON for everything the
-// schema can express.
-function NV_TemplateModal(props) {
-  var apiFetch = window.primerApi.apiFetch;
-  var row = props.row || null;
-  var isEdit = !!row;
-  var idState = React.useState(row ? row.id : "");
-  var descState = React.useState((row && row.description) || "");
-  var provState = React.useState((row && row.provider_id) || "");
-  var backendState = React.useState(JSON.stringify(
-    (row && row.backend) || { kind: "local" }, null, 2));
-  var errState = React.useState(null);
-  var busyState = React.useState(false);
-  var providers = window.primerApi.useResource(
-    "nv-plat:ws-providers",
-    function (signal) {
-      return apiFetch("GET", "/workspace_providers?limit=200", null,
-        { signal: signal });
-    },
-    { pollMs: 0 }
-  );
-  var provItems = (providers.data && providers.data.items) || [];
-  React.useEffect(function () {
-    if (!provState[0] && provItems.length) provState[1](provItems[0].id);
-  }, [provItems.length]);
-
-  function save() {
-    var backend;
-    try {
-      backend = JSON.parse(backendState[0] || "{}");
-    } catch (e) {
-      errState[1]("Backend spec is not valid JSON: " + e.message);
-      return;
-    }
-    var body = {
-      id: idState[0], description: descState[0],
-      provider_id: provState[0], backend: backend,
-    };
-    busyState[1](true);
-    errState[1](null);
-    var call = isEdit
-      ? apiFetch("PUT", "/workspace_templates/"
-        + encodeURIComponent(row.id), body)
-      : apiFetch("POST", "/workspace_templates", body);
-    call.then(props.onSaved, function (e) {
-      busyState[1](false);
-      errState[1](e.detail || e.message);
-    });
-  }
-
-  return (
-    <Modal
-      title={isEdit ? "Edit template · " + row.id : "New workspace template"}
-      onClose={props.onClose}
-      footer={
-        <React.Fragment>
-          <Btn kind="ghost" onClick={props.onClose}>Cancel</Btn>
-          <Btn kind="primary" onClick={save} busy={busyState[0]}
-            data-testid="template-save">
-            {busyState[0] ? "Saving…" : isEdit ? "Save template" : "Create template"}
-          </Btn>
-        </React.Fragment>
-      }>
-      <div className="nv-modal-form" data-testid="template-form">
-        <label className="nv-mf-field">
-          <span className="nv-mf-label">id</span>
-          <input value={idState[0]} disabled={isEdit}
-            data-testid="template-id"
-            placeholder="my-template"
-            onChange={function (ev) { idState[1](ev.target.value); }} />
-        </label>
-        <label className="nv-mf-field">
-          <span className="nv-mf-label">description</span>
-          <input value={descState[0]}
-            placeholder="What workspaces from this template are for"
-            onChange={function (ev) { descState[1](ev.target.value); }} />
-        </label>
-        <label className="nv-mf-field">
-          <span className="nv-mf-label">workspace provider</span>
-          <select value={provState[0]}
-            onChange={function (ev) { provState[1](ev.target.value); }}>
-            {provItems.map(function (p) {
-              return <option key={p.id} value={p.id}>{p.id}</option>;
-            })}
-          </select>
-        </label>
-        <label className="nv-mf-field">
-          <span className="nv-mf-label">backend spec (JSON)</span>
-          <textarea rows={8} value={backendState[0]} spellCheck={false}
-            className="nv-mf-mono"
-            onChange={function (ev) { backendState[1](ev.target.value); }} />
-          <span className="nv-mf-help">
-            {"{\"kind\": \"local\"} runs on the server's disk; a "
-              + "kubernetes backend names image, resources and pvc."}
-          </span>
-        </label>
-        {errState[0] ? (
-          <div className="nv-form-error">{errState[0]}</div>
-        ) : null}
-      </div>
-    </Modal>
-  );
-}
-
 // uiv2 Wave 3 (a-14 fold): headless per-session pending fetcher, same
 // N+1 pattern approvals.jsx's old AP_RecordFetcher used (GET /yields/
 // pending is the cheaper cross-workspace call but never carries tool_
@@ -1396,14 +1279,28 @@ function NV_ProvidersPlatPage(props) {
   );
 }
 
+// A custom page (seam I-2): the component another file exports on window, in the same frame the other pages have. It is given no props (it reads the
+// console itself) and is only mounted while it is loaded, which NV_platResolveNav has already checked.
+function NV_CustomPlatPage(props) {
+  var Page = window[NV_PLAT_CUSTOM_PAGES[props.nav]];
+  return (
+    <div className="nv-plat-main">
+      <div className="nv-plat-wrap" data-testid={"nv-plat-page:" + props.nav}>
+        <Page />
+      </div>
+    </div>
+  );
+}
+
 // The Platform page for the open nav. This function only chooses: the page that has hooks is NV_PlatListPage, keyed on the nav so each nav is
 // its own instance that mounts and unmounts whole. Returning Providers from the SAME instance that otherwise calls a dozen hooks (the early
 // return used to sit before them) left the page just left with hooks that never ran again, so their cleanups never ran and its list went on
 // polling every 15 s while Providers stayed open (admin review 2026-10-08; tests/ui/test_platform_page_hooks.py).
 function NV_PlatPage() {
   var con = NV_useConsole();
-  var nav = con.view.nav || "providers";
+  var nav = NV_platResolveNav(con.view.nav || "providers");
   if (nav === "providers") return <NV_ProvidersPlatPage type={con.view.sub || "all"} />;
+  if (NV_platHas(NV_PLAT_CUSTOM_PAGES, nav)) return <NV_CustomPlatPage key={nav} nav={nav} />;
   return <NV_PlatListPage key={nav} nav={nav} />;
 }
 
@@ -1418,7 +1315,7 @@ function NV_PlatListPage(props) {
   var pageNo = pageState[0];
   var setPageNo = pageState[1];
   // Inline create/edit modal for entities whose form is a component of
-  // its own (model profiles, workspace templates): {kind, row}.
+  // its own (model profiles, the create dialogs hosted below): {kind, row}.
   var modalState = React.useState(null);
   var modal = modalState[0];
   var setModal = modalState[1];
@@ -1561,11 +1458,6 @@ function NV_PlatListPage(props) {
             onClose={function () { setModal(null); }}
             onSaved={function () { setModal(null); res.refetch(); }} />
         ) : null}
-        {modal && modal.kind === "template" ? (
-          <NV_TemplateModal row={modal.row}
-            onClose={function () { setModal(null); }}
-            onSaved={function () { setModal(null); res.refetch(); }} />
-        ) : null}
         {modal && modal.kind === "toolset" ? (
           <NV_ToolsetCreateHost
             onClose={function () { setModal(null); }}
@@ -1673,6 +1565,11 @@ window.NV_PROVIDER_TYPE_LABELS = NV_PROVIDER_TYPE_LABELS;
 window.NV_platProviderTypes = NV_platProviderTypes;
 window.NV_platNavCurrent = NV_platNavCurrent;
 window.NV_providersNavigate = NV_providersNavigate;
+window.NV_PLAT_CUSTOM_PAGES = NV_PLAT_CUSTOM_PAGES;
+window.NV_PLAT_CUSTOM_LABELS = NV_PLAT_CUSTOM_LABELS;
+window.NV_platNavAvailable = NV_platNavAvailable;
+window.NV_platResolveNav = NV_platResolveNav;
+window.NV_platNavLabel = NV_platNavLabel;
 window.NV_emptyText = NV_emptyText;
 window.NV_countText = NV_countText;
 window.NV_Platform = NV_Platform;

@@ -79,6 +79,14 @@ order the sidebar lists them (`llm`, `embedding`, `ssp`, `cross_encoder`,
 `workspace`, `web_search`, `channel`, `artifact_storage`, `tts`, `stt`). A sub
 that is not on the list is dropped, and the address bar is rewritten without it.
 
+Two navs are retired and answered by a redirect, so an old link still lands on a
+page: `view=platform:workspaces` opens the studio (the Workspaces page left the
+Platform view) and `view=system:setup` opens the System dashboard (the Setup
+page left the System view). `view=platform:templates` needs none: it is the
+Workspace templates page. `web` and `templates` are custom pages whose sidebar
+row exists only while the component that draws them is loaded; the grammar
+admits both ids, and a link to one that is not loaded opens Providers.
+
 Verb navigation writes history. Transient UI (palette open, toasts) stays
 out of the URL. Refresh and pasted links restore exactly.
 

@@ -38,14 +38,15 @@ from tests.ui_e2e._shell_helpers import (
 pytestmark = smk("SMK-UI-01", status="partial")
 
 
-# legacy route -> mobile Platform nav id (NV_PLAT_GROUPS). Two routes name
-# a SECTION of a nav ("workspaces/templates", "channels/rules") that mobile
-# has no distinct drill-down for (NV_MobilePlatform is flat per top-level
-# nav id) - they land on the same base list as their parent nav, which is
-# still a faithful "no table" check for that same underlying page.
+# legacy route -> mobile Platform nav id (NV_PLAT_GROUPS). A route may name
+# a SECTION of a nav ("channels/rules") that mobile has no distinct drill-down
+# for (NV_MobilePlatform is flat per top-level nav id) - it lands on the same
+# base list as its parent nav, which is still a faithful "no table" check for
+# that same underlying page. "/workspaces" and "/workspaces/templates" left
+# with the Workspaces page (Platform revamp Plan 01 Task 7, design 14.1): the
+# phone's More tab lists no Workspaces section, and the templates page is a
+# custom page (seam I-2) that the phone mounts once Plan 08 ships it.
 MOBILE_PLATFORM_ROUTES = {
-    "/workspaces": "workspaces",
-    "/workspaces/templates": "workspaces",
     "/agents": "agents",
     "/graphs": "graphs",
     "/knowledge/collections": "collections",
