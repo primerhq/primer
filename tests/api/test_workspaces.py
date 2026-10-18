@@ -30,6 +30,7 @@ from primer.model.except_ import (
     NotFoundError,
 )
 from primer.model.workspace_session import SessionInfo, SessionStatus
+from primer.workspace.local.state import _GitCommandError
 from primer.model.storage import CursorPageResponse, OffsetPage, OffsetPageResponse
 from pydantic import SecretStr
 
@@ -935,6 +936,76 @@ class TestWorkspaceRouter:
         assert got_ended.ended_reason == "completed"
 
     @pytest.mark.asyncio
+    async def test_the_registry_says_a_workspace_is_being_destroyed_from_the_first_step_to_the_row_delete(
+        self, client, wsr, monkeypatch
+    ) -> None:
+        """The runtime goes first and the row last, so the row alone cannot tell a caller that a workspace is on its way out; the registry says so."""
+        await client.post("/v1/workspace_providers", json=_provider().model_dump(mode="json"))
+        await client.post("/v1/workspace_templates", json=_template().model_dump(mode="json"))
+        wid = (await client.post("/v1/workspaces", json={"template_id": "tpl-1"})).json()["id"]
+        started, release = asyncio.Event(), asyncio.Event()
+        real_destroy = _FakeBackend.destroy
+
+        async def slow_destroy(self_, workspace_id):
+            started.set()
+            await release.wait()
+            await real_destroy(self_, workspace_id)
+
+        monkeypatch.setattr(_FakeBackend, "destroy", slow_destroy)
+        assert not wsr.is_being_destroyed(wid)
+        destroying = asyncio.create_task(wsr.destroy(wid))
+        await asyncio.wait_for(started.wait(), 5)
+        assert wsr.is_being_destroyed(wid) and not wsr.is_being_destroyed("some-other-workspace")
+        release.set()
+        await destroying
+        assert not wsr.is_being_destroyed(wid)
+        assert (await client.get(f"/v1/workspaces/{wid}")).status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_a_destroy_that_fails_stops_being_a_destroy(self, client, wsr, monkeypatch) -> None:
+        await client.post("/v1/workspace_providers", json=_provider().model_dump(mode="json"))
+        await client.post("/v1/workspace_templates", json=_template().model_dump(mode="json"))
+        wid = (await client.post("/v1/workspaces", json={"template_id": "tpl-1"})).json()["id"]
+
+        async def failing_destroy(self_, workspace_id):
+            raise RuntimeError("the runtime would not stop")
+
+        monkeypatch.setattr(_FakeBackend, "destroy", failing_destroy)
+        with pytest.raises(RuntimeError, match="would not stop"):
+            await wsr.destroy(wid)
+        assert not wsr.is_being_destroyed(wid)
+
+    @pytest.mark.asyncio
+    async def test_two_overlapping_destroys_hold_the_mark_until_both_end(self, client, wsr, monkeypatch) -> None:
+        await client.post("/v1/workspace_providers", json=_provider().model_dump(mode="json"))
+        await client.post("/v1/workspace_templates", json=_template().model_dump(mode="json"))
+        wid = (await client.post("/v1/workspaces", json={"template_id": "tpl-1"})).json()["id"]
+        first_in, second_in, release_first, release_second = (asyncio.Event() for _ in range(4))
+        real_destroy = _FakeBackend.destroy
+        calls: list[int] = []
+
+        async def slow_destroy(self_, workspace_id):
+            calls.append(1)
+            n = len(calls)
+            (first_in if n == 1 else second_in).set()
+            await (release_first if n == 1 else release_second).wait()
+            if n == 1:
+                await real_destroy(self_, workspace_id)
+
+        monkeypatch.setattr(_FakeBackend, "destroy", slow_destroy)
+        first = asyncio.create_task(wsr.destroy(wid))
+        await asyncio.wait_for(first_in.wait(), 5)
+        second = asyncio.create_task(wsr.destroy(wid))
+        await asyncio.wait_for(second_in.wait(), 5)
+        release_first.set()
+        await first
+        assert wsr.is_being_destroyed(wid), "the second destroy is still running"
+        release_second.set()
+        with pytest.raises(NotFoundError):
+            await second          # the row is already gone
+        assert not wsr.is_being_destroyed(wid)
+
+    @pytest.mark.asyncio
     async def test_create_rolls_back_live_workspace_when_row_write_fails(
         self, client, wsr, sp
     ) -> None:
@@ -1475,6 +1546,72 @@ class TestSessionsSubResource:
         assert (body["status"], body["turn_status"], body["parked_status"]) == ("running", "claimable", None)
         pending = await sp.get_storage(PendingSessionMessage).find(None, OffsetPage(offset=0, length=10))
         assert list(pending.items) == [], "the instruction was queued behind a park instead of delivered"
+
+    async def _seed_created_session_and_fail_its_slot_write(self, client, wsr, sp, monkeypatch, *, before_failing=None):
+        """A CREATED session on a live workspace whose slot write fails the way the local state repo fails once the directory is gone (git exits
+        non-zero: a RuntimeError, not an OSError). ``before_failing`` runs inside the write, where a delete lands."""
+        from primer.model.workspace_session import AgentSessionBinding, WorkspaceSession
+
+        wid = await self._setup(client, wsr)
+        await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
+            id="sess-1", workspace_id=wid, binding=AgentSessionBinding(agent_id="agt-1"),
+            status=SessionStatus.CREATED, created_at=datetime.now(timezone.utc),
+        ))
+        slot = (await (await wsr.get_backend("local-1")).get(wid))._sessions["sess-1"]
+
+        async def failing_write(content, *, extra_parts=None):
+            if before_failing is not None:
+                await before_failing(wid)
+            raise _GitCommandError(("add", "--", "sessions/sess-1/messages.jsonl"), 128, "fatal: not a git repository")
+
+        monkeypatch.setattr(slot, "append_instruction", failing_write)
+        return wid
+
+    @pytest.mark.asyncio
+    async def test_a_steer_racing_a_workspace_delete_that_has_finished_answers_not_found(
+        self, client, wsr, sp, monkeypatch
+    ) -> None:
+        """e2e T0716, made deterministic: the delete runs to the end INSIDE the steer's write (runtime gone, sessions ended, row deleted), and the write
+        then fails. The steer answers a clean 404; it used to leak /errors/internal (500) for the git failure."""
+        from primer.model.workspace_session import WorkspaceSession
+
+        async def delete_the_workspace(wid):
+            await wsr.destroy(wid)
+
+        wid = await self._seed_created_session_and_fail_its_slot_write(client, wsr, sp, monkeypatch, before_failing=delete_the_workspace)
+        steer = await client.post(f"/v1/workspaces/{wid}/sessions/sess-1/steer", json={"instruction": "T0716 race"})
+        assert steer.status_code == 404, steer.text
+        body = steer.json()
+        assert body["type"] == "/errors/not-found" and "was removed while writing" in body["detail"], body
+        assert (await client.get(f"/v1/workspaces/{wid}")).status_code == 404
+        row = await sp.get_storage(WorkspaceSession).get("sess-1")
+        assert (row.status, row.ended_reason, row.turn_status) == (SessionStatus.ENDED, "workspace_lost", "idle"), "the failed steer must not revive the session"
+
+    @pytest.mark.asyncio
+    async def test_a_steer_racing_a_workspace_delete_that_is_still_running_answers_not_found(
+        self, client, wsr, sp, monkeypatch
+    ) -> None:
+        """The same race one step earlier: the runtime is gone, the destroy is still running, and the row is still there."""
+        started, release = asyncio.Event(), asyncio.Event()
+        real_destroy = _FakeBackend.destroy
+
+        async def slow_destroy(self_, workspace_id):
+            started.set()
+            await release.wait()
+            await real_destroy(self_, workspace_id)
+
+        wid = await self._seed_created_session_and_fail_its_slot_write(client, wsr, sp, monkeypatch)
+        monkeypatch.setattr(_FakeBackend, "destroy", slow_destroy)
+        deleting = asyncio.create_task(client.delete(f"/v1/workspaces/{wid}"))
+        await asyncio.wait_for(started.wait(), 5)
+        try:
+            steer = await client.post(f"/v1/workspaces/{wid}/sessions/sess-1/steer", json={"instruction": "T0716 race"})
+        finally:
+            release.set()
+        deleted = await deleting
+        assert steer.status_code == 404, steer.text
+        assert steer.json()["type"] == "/errors/not-found" and "was removed while writing" in steer.json()["detail"]
+        assert deleted.status_code == 204, deleted.text
 
 
 # ===========================================================================

@@ -99,6 +99,8 @@ class WorkspaceRegistry:
         self._factory = factory or _make_default_factory(subprocess_timeout_seconds)
         self._cache: dict[str, "WorkspaceBackend"] = {}
         self._lock = asyncio.Lock()
+        # Workspace ids a destroy() is running for in this process (a count, so two overlapping destroys of one id hold the mark until both end).
+        self._destroying: dict[str, int] = {}
 
     # ---- backend cache -----------------------------------------------
 
@@ -169,6 +171,15 @@ class WorkspaceRegistry:
                 )
 
     # ---- per-workspace helpers ---------------------------------------
+
+    def is_being_destroyed(self, workspace_id: str) -> bool:
+        """Whether a :meth:`destroy` of *workspace_id* is running in this process.
+
+        :meth:`destroy` takes the runtime down first and deletes the row last, so for that long the row says the workspace exists although nothing
+        is left of it. A caller whose write to the workspace failed (a steer that raced the delete) asks here, because the row alone would tell it the
+        workspace is fine. Process-local: a destroy running in another process is not seen, and its row delete is what shows it.
+        """
+        return self._destroying.get(workspace_id, 0) > 0
 
     async def get_workspace_row(self, workspace_id: str) -> WorkspaceRow:
         """Fetch the persisted ``Workspace`` row; 404 if missing."""
@@ -271,31 +282,43 @@ class WorkspaceRegistry:
         cannot make a failing query work, and the probe cannot end the
         sessions later (the row is deleted). The failure is logged ("session
         reconcile: failed to query sessions") and the destroy goes on.
+
+        From the first step to the row delete :meth:`is_being_destroyed` is true for the id, so a caller whose write to the workspace failed under
+        a racing destroy can tell that from a fault (the session wake does).
         """
         row = await self.get_workspace_row(workspace_id)
+        # From here to the row delete the runtime may be gone while the row still says the workspace exists: see is_being_destroyed.
+        self._destroying[workspace_id] = self._destroying.get(workspace_id, 0) + 1
         try:
-            backend = await self.get_backend(row.provider_id)
-        except WorkspaceRefusedError:
-            # An explicit destroy is how an operator abandons a workspace this deployment refuses
-            # (ticket 01a1072f). The backend is not reachable by policy, so only the row goes (and its
-            # sessions, below): whatever the workspace left on the provider's disk stays for the operator.
-            logger.warning(
-                "WorkspaceRegistry: destroying workspace %s on the refused local provider %s drops "
-                "its row only; its files are left in place",
-                workspace_id, row.provider_id,
-            )
-            backend = None
-        try:
-            if backend is not None:
-                await backend.destroy(workspace_id)
-        except NotFoundError:
-            # Row exists but backend has no live instance; still drop
-            # the row so callers can re-materialise without a stale
-            # collision.
-            pass
+            try:
+                backend = await self.get_backend(row.provider_id)
+            except WorkspaceRefusedError:
+                # An explicit destroy is how an operator abandons a workspace this deployment refuses
+                # (ticket 01a1072f). The backend is not reachable by policy, so only the row goes (and its
+                # sessions, below): whatever the workspace left on the provider's disk stays for the operator.
+                logger.warning(
+                    "WorkspaceRegistry: destroying workspace %s on the refused local provider %s drops "
+                    "its row only; its files are left in place",
+                    workspace_id, row.provider_id,
+                )
+                backend = None
+            try:
+                if backend is not None:
+                    await backend.destroy(workspace_id)
+            except NotFoundError:
+                # Row exists but backend has no live instance; still drop
+                # the row so callers can re-materialise without a stale
+                # collision.
+                pass
 
-        await reconcile_sessions_to_workspace_lost(self._sp, workspace_id)
-        await self._sp.get_storage(WorkspaceRow).delete(workspace_id)
+            await reconcile_sessions_to_workspace_lost(self._sp, workspace_id)
+            await self._sp.get_storage(WorkspaceRow).delete(workspace_id)
+        finally:
+            left = self._destroying[workspace_id] - 1
+            if left > 0:
+                self._destroying[workspace_id] = left
+            else:
+                del self._destroying[workspace_id]
 
 
 __all__ = ["WorkspaceRegistry"]
