@@ -16,7 +16,7 @@ import httpx
 import pytest
 from playwright.sync_api import expect
 
-from tests.ui_e2e._shell_helpers import open_view
+from tests.ui_e2e._shell_helpers import default_wid, open_view
 from tests.ui_e2e._studio_helpers import open_workspace_settings, open_session_in_studio
 
 
@@ -285,7 +285,7 @@ def test_u0073_worker_pill_reflects_drain_within_polling(
         # nv-shell.jsx's own hashchange wiring. open_view uses the
         # browser's native window.location.hash assignment instead, which
         # unambiguously queues a hashchange task per spec.
-        open_view(page, console_url, "primer", "system:dashboard")
+        open_view(page, console_url, default_wid(console_url), "system:dashboard")
         row = page.get_by_test_id(f"nv-worker:{worker_id}")
         # With the navigation itself now reliable, this covers only the
         # genuine remaining async chain (mount -> fetch -> render) under

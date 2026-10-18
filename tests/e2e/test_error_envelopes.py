@@ -11,6 +11,7 @@ import asyncio
 
 import httpx
 import pytest
+from tests._support.default_workspace import default_workspace_id
 from tests._support.model_profiles import agent_model, seed_llm_provider
 
 
@@ -1104,3 +1105,44 @@ async def test_t0725_openresponses_flavor_whitespace_only_clean_envelope(
             f"4xx on POST should not leave a persisted row: "
             f"{got.status_code}: {got.text}"
         )
+
+
+# ============================================================================
+# The default workspace (prime) cannot be deleted (pivot P2 Task 2)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_deleting_the_default_workspace_is_a_clean_403_and_changes_nothing(
+    client: httpx.AsyncClient,
+) -> None:
+    """The default workspace is the one the console opens on first login, so ``DELETE`` on it is refused.
+
+    ``WorkspaceRegistry.destroy`` is the funnel the REST route and the ``delete_workspace`` tool share and refuses first, before it touches the
+    row, a backend or a session. The route answers 403 problem+json (the ``HTTPException`` convention of the other reserved-id guards, so the
+    keys sit under ``extensions``), the workspace is still there, and its row says ``is_default``. Which workspace is the default is read from
+    the server (``primer`` on an install that predates the column, ``prime`` on a fresh one).
+
+    The shared server must survive a regression of this rule: if the delete is ever let through, the ``finally`` runs the ensure pass, which
+    re-creates a missing default workspace, so later journeys still have one.
+    """
+    wid = await default_workspace_id(client)
+    try:
+        resp = await client.delete(f"/v1/workspaces/{wid}")
+        assert resp.status_code == 403, resp.text
+        assert resp.headers["content-type"].startswith("application/problem+json"), resp.headers
+        envelope = resp.json()
+        assert envelope["type"] == "/errors/forbidden", envelope
+        assert envelope["status"] == 403, envelope
+        assert "default workspace" in envelope["detail"], envelope
+        extensions = envelope["extensions"]
+        assert extensions["error"] == "reserved_workspace", envelope
+        assert extensions["kind"] == "workspace", envelope
+        assert extensions["workspace_id"] == wid, envelope
+
+        still = await client.get(f"/v1/workspaces/{wid}")
+        assert still.status_code == 200, still.text
+        assert still.json()["is_default"] is True, still.json()
+    finally:
+        if (await client.get(f"/v1/workspaces/{wid}")).status_code == 404:
+            await client.post("/v1/setup/seed")

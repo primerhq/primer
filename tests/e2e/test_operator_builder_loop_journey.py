@@ -29,6 +29,7 @@ import json
 import httpx
 import pytest
 
+from tests._support.default_workspace import default_workspace_id
 from tests._support.mock_llm import Rule
 from tests._support.model_profiles import profile_id_for
 
@@ -172,6 +173,8 @@ async def test_operator_delegates_construction_and_invokes_the_result(
     # ----- Seed the world, then repoint the seeded agents -------------
     seeded = await client.post("/v1/setup/seed")
     assert seeded.status_code == 200, seeded.text
+    # The default workspace is "primer" on an install that predates default_workspace_id and "prime" on a fresh one: ask, never name it.
+    wid = await default_workspace_id(client)
 
     originals: dict[str, dict] = {}
     session_id: str | None = None
@@ -189,14 +192,14 @@ async def test_operator_delegates_construction_and_invokes_the_result(
 
         # ----- Drive the loop -----------------------------------------
         sess = await client.post(
-            "/v1/workspaces/primer/sessions",
+            f"/v1/workspaces/{wid}/sessions",
             json={"binding": {"kind": "agent", "agent_id": "operator"}},
         )
         assert sess.status_code in (200, 201), sess.text
         session_id = sess.json()["id"]
 
         steer = await client.post(
-            f"/v1/workspaces/primer/sessions/{session_id}/steer",
+            f"/v1/workspaces/{wid}/sessions/{session_id}/steer",
             json={"instruction": "I need something that answers weather questions"},
         )
         assert steer.status_code in (200, 201, 202), steer.text
