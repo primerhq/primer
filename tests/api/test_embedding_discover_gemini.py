@@ -4,8 +4,9 @@
 'gemini'": only ``openai`` had a branch. Gemini's ListModels names the methods each model supports, so the catalogue that backs
 the LLM form (``generateContent`` models) also backs the embedding form (``embedContent`` models): one probe, two methods.
 
-Google is mocked with respx at the HTTP boundary (the key needs a real account); no key here is real. The credential pins for
-the draft probes live in ``test_probe_errors_do_not_echo_the_key.py`` and ``test_probe_routes_do_not_echo_credentials.py``.
+Google is mocked with respx at the HTTP boundary (the key needs a real account); no key here is real. The pins that no probe
+echoes a credential (the configured key, a Base URL password) are ``test_probe_errors_do_not_echo_the_key.py`` and
+``test_probe_errors_do_not_echo_credentials.py``; the Gemini LLM probe is in both, and this file adds the embedding route's own.
 """
 
 from __future__ import annotations
