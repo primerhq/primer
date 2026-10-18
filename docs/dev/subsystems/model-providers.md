@@ -237,69 +237,107 @@ reasoning settings. An Agent references a profile id, and session
 create may override it per run.
 
 **Every call made under a profile applies its config.** A profile's
-`config` carries `reasoning` (a vendor-neutral level) and `extended`
+`config` carries `reasoning` (a vendor-neutral level: `off`, `minimal`,
+`low`, `medium`, `high`, or null for the vendor default) and `extended`
 (provider-specific knobs, passed through). Every model call made under a
 profile sends it: each call of an agent turn (`primer/agent/loop.py`, which
-sessions, subagents and graph agent nodes all run) and
-each call of both compaction summarisers (`primer/agent/compaction.py`).
-The call site hands the resolved profile's config (`ResolvedModel.config`)
-and the call's model to `profile_extended(llm, config, model=...)` in
-`primer/llm/_reasoning.py`, which asks the adapter to translate it
-(`LLM.profile_extended(config, model=...)`: each adapter calls its own
-mapping in `_reasoning.py`, passing its flavor where the flavor decides the
-wire), and sends the result as `stream(extended=...)` through
-`profile_stream`, which makes the call once more without the settings when
-the provider refuses them at stream open.
-A call with no config, or a config that asks for nothing, sends no
-`extended` at all, exactly as before. The adapter's whitelist then projects
-`extended` onto the SDK request and DEBUG-logs any key it does not know. On
-a key collision the typed `reasoning` level wins over the same key in
-`extended`. `RetryingLLM` forwards the translation to the adapter it wraps;
-an adapter with no mapping forwards `extended` and logs the level once at
-DEBUG as not applied. The approval gate's LLM judge is not a profile call
-(its policy names a provider and a model), so no profile config applies to
-it.
+sessions, subagents and graph agent nodes all run) and each call of both
+compaction summarisers (`primer/agent/compaction.py`). The call site hands
+the resolved profile's config (`ResolvedModel.config`) and the call's model
+to `profile_extended(llm, config, model=...)` in `primer/llm/_reasoning.py`,
+which asks the adapter to translate it (`LLM.profile_extended(config,
+model=...)`): the right shape is a property of the model as well as of the
+provider, so each adapter's mapping in `_reasoning.py` takes its flavor and
+the model. The result goes out as `stream(extended=...)` through
+`profile_stream`. A call with no config, or a config that asks for nothing,
+sends no `extended` at all, exactly as before. The adapter's whitelist then
+projects `extended` onto the SDK request and DEBUG-logs any key it does not
+know. On a key collision the typed `reasoning` level wins over the same key
+in `extended`. `RetryingLLM` forwards the translation to the adapter it
+wraps; an adapter with no mapping forwards `extended` and logs the level
+once at DEBUG as not applied. The approval gate's LLM judge is not a profile
+call (its policy names a provider and a model), so no profile config applies
+to it.
 
-`ModelProfileConfig.reasoning` is a vendor-neutral level mapped per adapter
-in `primer/llm/_reasoning.py`, the same normalisation the adapters already
-do for stop reasons. Where a vendor has no true off, the closest setting is
-used:
+**A setting never fails a call.** A model table can be wrong or behind, and
+a level can be set on a model that cannot honour it, so `profile_stream`
+guards stream open. When the provider refuses the call before its first
+event (a `BadRequestError` from an eager adapter, or a fatal first event,
+which is how the lazily-opened Ollama and Gemini adapters report a 400) and
+the message names one of the settings (a reasoning word, or the name of a
+key the profile sent), the call is made once more exactly as it would be
+without the profile's settings, and the refusal is logged once at DEBUG.
+When that retry works, the adapter instance calls that model without those
+settings for the rest of the process, so a refused setting costs one failed
+request, not one per call; when the retry fails too, nothing is remembered
+and the failure is the call's own. A failure after the first event is never
+retried, because output has already reached the consumer. Where a model has
+no control for a level at all, the mapping sends nothing and logs that once
+at DEBUG.
 
-| Adapter | Wire shape | OFF maps to |
+**Per model.** `ModelProfileConfig.reasoning` is mapped per adapter and per
+model in `primer/llm/_reasoning.py`, the same normalisation the adapters
+already do for stop reasons. Where a model has no true off, the closest
+setting is used:
+
+| Adapter, model | Wire shape | OFF sends |
 | --- | --- | --- |
-| `openresponses` | `reasoning.effort` | `minimal` (no true off) |
-| `openchat` (openai) | `reasoning_effort` | `minimal` |
+| `anthropic`, Claude 4.5 and earlier (Sonnet 3.7, Opus 4 to 4.5, Sonnet 4 and 4.5, Haiku 4.5) | `thinking: {type: enabled, budget_tokens}` (MINIMAL 1024, LOW 4096, MEDIUM 16384, HIGH 32768), never `effort` | `thinking: {type: disabled}` |
+| `anthropic`, Claude Opus 4.6, Sonnet 4.6 | `thinking: {type: adaptive}` and `output_config.effort` (MINIMAL and LOW `low`, MEDIUM `medium`, HIGH `high`) | nothing (thinking is off when omitted) |
+| `anthropic`, Claude Opus 4.7, 4.8 and 5, Sonnet 5, Haiku 5.5 | adaptive and `output_config.effort` | `thinking: {type: disabled}` |
+| `anthropic`, Claude Sonnet 5.5 | adaptive and `output_config.effort` | `thinking: {type: between_tools}` (it refuses `disabled`) |
+| `anthropic`, Claude Opus 5.5, Fable, Mythos | adaptive and `output_config.effort` | no `thinking`, and `output_config.effort: low` (thinking cannot be turned off) |
+| `anthropic`, Claude 3.5 and earlier, or a model not in the table | nothing | nothing |
+| `gemini`, 2.5 | `thinking_config.thinking_budget` within the model's range (Pro 128 to 32768, Flash up to 24576, Flash-Lite 512 to 24576) | `0`; on 2.5 Pro, which cannot turn thinking off, its lowest budget `128` |
+| `gemini`, 3 and later | `thinking_config.thinking_level` (never a budget, never both) | the model's lowest level: `minimal` on Flash, `low` on Pro |
+| `gemini`, 2.0 and earlier, or a model not in the table | nothing | nothing |
+| `openresponses`, `openchat` (openai): o-series and codex models | `reasoning_effort` (`reasoning.effort` on Responses), from `low` | `low` |
+| same, gpt-5 | from `minimal` | `minimal` |
+| same, gpt-5.1 and later | `none`, then from `low` | `none` |
+| same, gpt-5-pro | `high` only | `high` |
+| same, a model that does not reason (gpt-4o, gpt-4.1) | nothing | nothing |
+| same, a model not in the table (a deployment name, a self-hosted model) | `reasoning_effort` from `minimal` | `minimal` |
 | `openchat` (vllm/ollama/lmstudio/other) | `chat_template_kwargs.enable_thinking` (request body) | `false` |
-| `anthropic` | `thinking.type` + `budget_tokens` | `disabled` |
-| `gemini` | `thinking_config.thinking_budget` | `0` |
 | `ollama` | `think` | `false` |
 | `openrouter` | `reasoning.effort` (request body) | `none` |
+
+Models are matched by their ids: `claude-<family>-<major>[-<minor>]` with any
+date or `@date` suffix, the older `claude-3-x-<family>`, and Fable and Mythos
+by name; `gemini-<major>.<minor>-<pro|flash|flash-lite>`; OpenAI ids with a
+fine-tune or provider prefix stripped. What no table can predict is the
+stream-open guard's: OpenRouter's mandatory-reasoning models refuse
+`effort: "none"`, Ollama answers `think` on a model without the thinking
+capability with a 400, and a deployment name can hide an OpenAI model that
+does not reason. Each costs one failed request per process, and the model
+then runs without the setting.
 
 **Onto the wire.** The openai SDK refuses a keyword it does not know, so a
 knob that is not one of its parameters travels in `extra_body`: `openchat`
 sends `reasoning_effort` as the SDK parameter and `chat_template_kwargs` in
 the request body, and `openrouter` sends its `reasoning` object in the body.
 `openresponses` turns `reasoning_effort` into `reasoning.effort`, `gemini`
-folds `thinking_budget` into `thinking_config`, `ollama` sends `think` at
-the top level and `anthropic` sends the `thinking` block.
+folds `thinking_budget` or `thinking_level` into `thinking_config` (keeping
+the level when both arrive), `ollama` sends `think` at the top level and
+`anthropic` sends the `thinking` block and `output_config`.
 
-**Anthropic thinking has rules of its own.** Manual thinking
-(`thinking.type: "enabled"`) needs a budget of at least 1024 tokens that
-stays below `max_tokens`, no `temperature` other than 1, no `top_k`, a
-`top_p` of at least 0.95, no forced tool, and a final assistant turn that
-starts with a thinking block. The calls a profile applies to were not set
-up with those in mind (compaction samples at temperature 0; the adapter's
-default `max_tokens` is 4096, which is the LOW budget), so `_fit_thinking`
-in `primer/llm/anthropic.py` makes such a request valid instead of letting
-it fail: a budget that is not below `max_tokens` is lowered to half of it
-(not under 1024), the sampling knobs thinking refuses are dropped, and a
-call that continues a tool round (its last message is a tool result),
-forces a tool, or has no room for the minimum budget runs without thinking.
-primer does not send thinking blocks back in the history, so in a turn that
-uses tools only the first call thinks. Each adjustment is logged once at
-DEBUG. Claude 4.7 and later models refuse `thinking.type: "enabled"` with a
-400; leave `reasoning` unset on their profiles and pass
-`{"thinking": {"type": "adaptive"}}` through `extended` instead.
+**Anthropic: the rest of the request.** Thinking has rules the call's other
+settings can break, so `_fit_thinking` and `_fit_sampling` in
+`primer/llm/anthropic.py` make such a request valid instead of letting it
+fail, each kind of adjustment logged once at DEBUG. A call that forces a
+tool runs without thinking. Manual thinking (Claude 4.5 and earlier) needs a
+budget of at least 1024 tokens that stays below `max_tokens`, so a budget
+that does not fit is lowered to half of `max_tokens` (not under 1024), and
+when even that does not fit the call runs without thinking; manual thinking
+also needs the final assistant turn to start with a thinking block, which
+primer's history never carries (it does not send thinking blocks back), so a
+call that continues a tool round runs without it. Adaptive thinking has
+neither rule and thinks on every call of a tool round. While thinking is on,
+manual or adaptive, `temperature` other than 1, `top_k` and `top_p` below
+0.95 are dropped. And a model that takes no sampling knobs at all (Claude
+Opus 4.7 and later, Sonnet 5 and later, Haiku 5.5, Fable, Mythos) loses
+`temperature`, `top_p` and `top_k` on every call, profile or not:
+compaction asks for temperature 0, and those models answer any sampling knob
+with a 400.
 
 **Aggregated profiles.** Each member's call carries that member's own
 profile config, translated for the member's own adapter, so a pool keeps
@@ -309,22 +347,15 @@ so there is no one wire to translate it for); a non-empty one is logged
 once at DEBUG. A per-call `extended` from the caller (no call site passes
 one today) wins over a member's on a key collision.
 
-**OFF and the levels are requests.** A model that cannot turn reasoning off
-may refuse OFF (an always-thinking Gemini model and a zero budget,
-OpenRouter's mandatory-reasoning models and `effort: "none"`), and a model
-that does not reason may refuse a level (`reasoning_effort` on a
-non-reasoning OpenAI model). Set `reasoning` only on a profile whose model
-supports it; the refusal reaches the turn as the provider's error.
-
 **vLLM is asymmetric and this was verified against a live server, not
 assumed.** On Chat Completions, `chat_template_kwargs.enable_thinking:
 false` works: the response carries `reasoning: null` and real content. On
 the Responses endpoint, that key, `extra_body.chat_template_kwargs`, a
 top-level `enable_thinking`, and a native `reasoning.effort` are all
 accepted WITHOUT error and all ignored, with reasoning emitted regardless.
-So `openresponses` + `vllm` maps nothing and logs a warning naming the
-`openchat` provider type as the way to get the control. An operator who
-needs reasoning control against vLLM must use `openchat`.
+So `openresponses` + `vllm` maps nothing and says so once per process at
+DEBUG, naming the `openchat` provider type as the way to get the control.
+An operator who needs reasoning control against vLLM must use `openchat`.
 
 ### Transport retries
 
