@@ -1344,7 +1344,18 @@ function NV_MobilePlatform(props) {
         {!visible.length && !res.loading && !res.error ? (
           <div className="card-list-empty"
             data-testid={"nv-mob-plat-empty:" + nav}>
-            {window.NV_emptyText(page.noun, q, items.length)}
+            {/* A page's own empty words and way out (seam I-9), as on the desktop page. */}
+            <div>
+              {items.length === 0 && page.emptyText
+                ? page.emptyText : window.NV_emptyText(page.noun, q, items.length)}
+            </div>
+            {items.length === 0 && page.emptyAction ? (
+              <button type="button" className="nv-btn-primary touch-target nv-mob-plat-empty-action"
+                data-testid="nv-mob-plat-empty-action"
+                onClick={function () { page.emptyAction.run(con); }}>
+                {page.emptyAction.label}
+              </button>
+            ) : null}
           </div>
         ) : null}
         {visible.map(function (row) {

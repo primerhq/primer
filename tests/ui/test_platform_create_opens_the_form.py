@@ -30,8 +30,8 @@ SERVICES = (UI / "components" / "services.jsx").read_text(encoding="utf-8")
 
 # What each page's create does: ("modal", kind) hosts a form on the page; ("overlay", name, section) opens a management overlay.
 EXPECTED_CREATE = {
-    # a form hosted on the Platform page
-    "profiles": ("modal", "profile"),
+    # a form hosted on the Platform page (profiles has no create: design 7.1, single profiles come from the Register provider overlay's import;
+    # its empty state points at Providers > LLM, tests/ui/test_platform_empty_states.py, and Plan 03 adds "+ Aggregate")
     "templates": ("modal", "template"),
     "toolsets": ("modal", "toolset"),
     "triggers": ("modal", "trigger"),

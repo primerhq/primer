@@ -6638,4 +6638,6 @@ button.nv-mob-fact-status { cursor: pointer; }
 .nv-mob-fact-k { color: var(--text-3); }
 .nv-mob-fact-v { color: var(--text); text-align: right; word-break: break-word; }
 .nv-mob-fact-line { display: block; color: var(--text); word-break: break-word; }
+/* the way out of an empty Platform section (a page's emptyAction, seam I-9) */
+.nv-mob-plat-empty-action { margin-top: 10px; }
 .nv-mob-fact-edit-note { color: var(--text-3); font-size: 12px; padding: 6px 0; }

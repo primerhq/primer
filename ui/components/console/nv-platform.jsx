@@ -3,8 +3,8 @@
 // config-driven card page per entity, ported from the prototype's
 // PLATFORM region. Cards open the SHARED overlays (the same component
 // whether reached from a card, the palette, or a pasted link), create
-// buttons open the entity's own form (hosted on this page for model
-// profiles, templates, toolsets and triggers; the entity's create overlay
+// buttons open the entity's own form (hosted on this page for templates,
+// toolsets and triggers; the entity's create overlay
 // for the rest: tests/ui/test_platform_create_opens_the_form.py tabulates
 // it), delete is inline with confirm - a referenced entity's 409/422
 // surfaces as the refusal toast.
@@ -229,10 +229,22 @@ function NV_addChannelProvider(con) {
 // test_platform_create_opens_the_form.py tabulates which); delPath() names
 // the DELETE route (null = no delete from the card, e.g. providers where
 // the catalog owns lifecycle). tests/ui/test_platform_card_view_model.py
-// holds every entry to the card shape.
+// holds every entry to the card shape. An entry may also set emptyText and
+// emptyAction: { label, run(con) } (seam I-9): a page with no rows says its
+// own words and offers that way out instead of the generic sentence and its
+// create button (tests/ui/test_platform_empty_states.py).
 var NV_PLAT_PAGES = {
   profiles: {
-    title: "Model profiles", noun: ["model profile", "model profiles"], createLabel: "New profile",
+    title: "Model profiles", noun: ["model profile", "model profiles"],
+    // No single-profile create (design 7.1): a single profile comes from the
+    // Register provider overlay's import, so an empty page points there.
+    // Plan 03 adds "+ Aggregate".
+    createLabel: null,
+    emptyText: "No LLM profiles yet. Register an LLM provider to import its models.",
+    emptyAction: {
+      label: "Open Providers › LLM",
+      run: function (con) { con.goView("platform", "providers", "llm"); },
+    },
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/model_profiles?limit=200", null, { signal: signal });
     },
@@ -253,9 +265,6 @@ var NV_PLAT_PAGES = {
     // (live finding 2026-08-26).
     open: function (con, row, setModal) {
       setModal({ kind: "profile", row: row });
-    },
-    create: function (con, setModal) {
-      setModal({ kind: "profile", row: null });
     },
     delPath: function (row) { return "/model_profiles/" + encodeURIComponent(row.id); },
   },
@@ -1440,12 +1449,21 @@ function NV_PlatListPage(props) {
         ) : null}
         {!visible.length && !res.loading && !res.error ? (
           <div className="nv-plat-empty" data-testid="nv-plat-empty">
-            <div>{NV_emptyText(page.noun, q, total)}</div>
+            <div>
+              {total === 0 && page.emptyText
+                ? page.emptyText : NV_emptyText(page.noun, q, total)}
+            </div>
             {ql && total > 0 ? (
               <button type="button" className="nv-btn-secondary"
                 data-testid="nv-plat-clear-filter"
                 onClick={function () { setQ(""); setPageNo(0); }}>
                 Clear filter
+              </button>
+            ) : page.emptyAction ? (
+              <button type="button" className="nv-btn-primary"
+                data-testid="nv-plat-empty-action"
+                onClick={function () { page.emptyAction.run(con); }}>
+                {page.emptyAction.label}
               </button>
             ) : createLabel ? (
               <button type="button" className="nv-btn-primary"
