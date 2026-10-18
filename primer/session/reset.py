@@ -11,6 +11,8 @@ invoke; ``restart_session`` (Task 7) chains reset + wake.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -47,6 +49,7 @@ async def _reopen_ended_locked(
     session_id: str,
     sessions: Any,
     workspace_registry: Any,
+    workspace_write: Callable[[], AbstractAsyncContextManager[None]] | None = None,
 ) -> tuple[WorkspaceSession, int]:
     """Reopen an ENDED session row IN PLACE — lock-free reopen body.
 
@@ -88,6 +91,12 @@ async def _reopen_ended_locked(
     entirely or still ``phase != "running"``, the 409 stands - nothing to
     reopen into. ``force_deleted`` is a DIFFERENT, deliberate operator
     action (not a probe artifact) and stays permanent unconditionally.
+
+    ``workspace_write`` (optional) is a factory of the context manager that wraps the writes INTO the workspace and nothing else: the slot reopen
+    and the invocation divider. ``wake_session`` passes its guard there, the one that reports a failed write as "the workspace was removed". The
+    calls this function makes to the database stay outside it: the ``workspace_lost`` recheck, the workspace lookup (which reads the workspace row
+    and its template) and the closing row update. A refused pool connection is an ``OSError`` too, and under that guard it was reported as a
+    removal of a workspace nobody had touched. Without the argument (``reset_session``) nothing wraps anything and every failure surfaces as it is.
     """
     if row.ended_reason not in _RESTARTABLE:
         recoverable = False
@@ -105,24 +114,26 @@ async def _reopen_ended_locked(
 
     invocation = int(row.metadata.get("invocation", 1)) + 1
 
-    # 1. Reopen the on-disk slot (ENDED -> RUNNING; sanctioned exception).
+    # Resolving the workspace is a lookup in the database (its row, its template), not a write into the workspace: it stays outside the guard.
     ws = await workspace_registry.get_workspace(workspace_id)
-    slot = await ws.get_session(session_id)
-    if slot is not None:
-        await slot.reopen()
+    async with workspace_write() if workspace_write is not None else nullcontext():
+        # 1. Reopen the on-disk slot (ENDED -> RUNNING; sanctioned exception).
+        slot = await ws.get_session(session_id)
+        if slot is not None:
+            await slot.reopen()
 
-    # 2. Append the invocation divider to messages.jsonl, seeded past
-    #    existing history so seqs stay monotonic.
-    writer = WorkspaceMessageWriter(
-        workspace_io=ws, session_id=session_id, start_seq=row.last_seq,
-    )
-    new_seq = await writer.append(SessionMessageRecord(
-        seq=1,  # overwritten by the writer's counter
-        kind=SessionMessageKind.INVOCATION_DIVIDER,
-        payload={"invocation": invocation},
-        created_at=datetime.now(timezone.utc),
-    ))
-    await writer.flush()
+        # 2. Append the invocation divider to messages.jsonl, seeded past
+        #    existing history so seqs stay monotonic.
+        writer = WorkspaceMessageWriter(
+            workspace_io=ws, session_id=session_id, start_seq=row.last_seq,
+        )
+        new_seq = await writer.append(SessionMessageRecord(
+            seq=1,  # overwritten by the writer's counter
+            kind=SessionMessageKind.INVOCATION_DIVIDER,
+            payload={"invocation": invocation},
+            created_at=datetime.now(timezone.utc),
+        ))
+        await writer.flush()
 
     # 3. Re-open the scheduler row: ENDED -> CREATED, clear terminal +
     #    park bookkeeping; bump the invocation counter + last_seq.
