@@ -23,8 +23,9 @@ import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from primer.bootstrap.prime import resolve_default_workspace_id
 from primer.model.except_ import NotFoundError, ValidationError
-from primer.model.workspace_refusal import WorkspaceRefusedError
+from primer.model.workspace_refusal import ReservedWorkspaceError, WorkspaceRefusedError
 from primer.model.workspace import WORKSPACE_ID_PATTERN, Workspace as WorkspaceRow
 from primer.model.workspace import (
     WorkspaceProvider,
@@ -296,6 +297,12 @@ class WorkspaceRegistry:
     async def destroy(self, workspace_id: str) -> None:
         """Destroy the live workspace AND drop the persisted row.
 
+        Refuses the default workspace (prime) with :class:`ReservedWorkspaceError`, as the FIRST thing it does: before the row is
+        read, before any backend is built or called, before a session is touched. This is the one funnel every workspace delete passes
+        (the REST route and the ``delete_workspace`` tool both end here), so the rule lives here and the layers above only translate
+        the error. The default is whatever :func:`~primer.bootstrap.prime.resolve_default_workspace_id` names, so it is the recorded id,
+        or, on an install that predates the record, the legacy ``primer`` row.
+
         Reconciles open sessions to ENDED/``workspace_lost`` BEFORE the
         row is deleted (real bug fixed here: the row used to be
         hard-deleted first, but the probe's own ``workspace_lost``
@@ -317,6 +324,8 @@ class WorkspaceRegistry:
         From the first step to the row delete :meth:`is_being_destroyed` is true for the id, so a caller whose write to the workspace failed under
         a racing destroy can tell that from a fault (the session wake does).
         """
+        if workspace_id == await resolve_default_workspace_id(self._sp):
+            raise ReservedWorkspaceError(workspace_id)
         row = await self.get_workspace_row(workspace_id)
         # From here to the row delete the runtime may be gone while the row still says the workspace exists: see is_being_destroyed.
         self._destroying[workspace_id] = self._destroying.get(workspace_id, 0) + 1

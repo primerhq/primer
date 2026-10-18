@@ -226,7 +226,12 @@ it's called from a context with no implicit session.
 - `workspaces::delete_workspace` - destroys the workspace: its
   files and every session's history are deleted with it and its open
   sessions end `workspace_lost`. Returns once the teardown has been
-  requested (the REST route answers 204).
+  requested (the REST route answers 204). The default workspace
+  (prime) cannot be deleted: the tool returns `type=forbidden` and the
+  REST route answers 403 with `extensions.error` `reserved_workspace`;
+  nothing is torn down and its sessions keep running. The
+  `GET /v1/workspaces` rows and `GET /v1/workspaces/{id}` carry
+  `is_default: true` on that one workspace.
 
 ### Providers and templates
 
@@ -529,6 +534,11 @@ session is outside the group, so it is not killed.
 - **Multi-session shared filesystem is collaborative, not
   isolated.** Two simultaneous sessions on the same workspace
   WILL race on file writes. Coordinate via `.state/shared/`.
+- **The default workspace cannot be deleted.** `DELETE /v1/workspaces/{id}`
+  and `delete_workspace` refuse it (403 `reserved_workspace` /
+  `type=forbidden`) before anything else happens, so a refused delete
+  never ends a session or removes a file. Other workspaces delete as
+  below.
 - **Workspace delete is synchronous.** `DELETE /v1/workspaces/{id}`
   (and `delete_workspace`) answers 204 only after the backend
   teardown has been requested and the row is gone. On k8s that

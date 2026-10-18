@@ -6,7 +6,7 @@ runtime, and so :mod:`primer.model.except_` (a CRLF file) stays untouched.
 
 from __future__ import annotations
 
-from primer.model.except_ import ConflictError
+from primer.model.except_ import ConflictError, PrimerError
 
 
 class WorkspaceRefusedError(ConflictError):
@@ -55,4 +55,26 @@ class WorkspaceRefusedError(ConflictError):
         return extensions
 
 
-__all__ = ["WorkspaceRefusedError"]
+class ReservedWorkspaceError(PrimerError):
+    """The default workspace (prime) was asked to be deleted.
+
+    Raised by :meth:`primer.api.registries.workspace_registry.WorkspaceRegistry.destroy`, the one funnel every workspace delete
+    passes, before it reads the row or touches a backend. The REST route turns it into a 403 ``reserved_workspace`` and the
+    ``delete_workspace`` tool into a ``forbidden`` result; neither lets it escape (it is not in the API's error map, so an
+    uncaught one would be a 500). Nothing is torn down and no session is ended when it is raised.
+
+    The default workspace is the one the console opens on first login and the home of the prime operator, so it is protected
+    for as long as it is the default. Renaming it stays allowed: only the delete is refused.
+    """
+
+    def __init__(self, workspace_id: str) -> None:
+        super().__init__(f"workspace {workspace_id!r} is the default workspace (prime) and cannot be deleted")
+        self.workspace_id = workspace_id
+
+    @property
+    def problem_extensions(self) -> dict[str, object]:
+        """Structured fields for the RFC7807 envelope, so a client can tell this refusal from any other 403."""
+        return {"error": "reserved_workspace", "workspace_id": self.workspace_id}
+
+
+__all__ = ["ReservedWorkspaceError", "WorkspaceRefusedError"]
