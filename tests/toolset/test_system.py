@@ -915,29 +915,35 @@ class TestToolsetExtras:
         await system_toolset.call(
             tool_name="create_llm_provider", arguments={"entity": body}
         )
+        arguments = {
+            "toolset_id": SYSTEM_TOOLSET_ID,
+            "tool_name": "get_llm_provider",
+            "arguments": {"id": "anthropic-1"},
+        }
         result = await system_toolset.call(
-            tool_name="call_tool",
-            arguments={
-                "toolset_id": SYSTEM_TOOLSET_ID,
-                "tool_name": "get_llm_provider",
-                "arguments": {"id": "anthropic-1"},
-            },
+            tool_name="call_tool", arguments=arguments, ctx=_ctx(),
         )
         assert not result.is_error
         assert json.loads(result.output)["id"] == "anthropic-1"
+        # The same call with no context ranks as an ordinary user: the admin inner tool is refused (pivot P1).
+        refused = await system_toolset.call(tool_name="call_tool", arguments=arguments)
+        assert json.loads(refused.output)["type"] == "forbidden"
 
     @pytest.mark.asyncio
     async def test_call_tool_propagates_inner_error(self, system_toolset) -> None:
+        arguments = {
+            "toolset_id": SYSTEM_TOOLSET_ID,
+            "tool_name": "get_llm_provider",
+            "arguments": {"id": "missing"},
+        }
         result = await system_toolset.call(
-            tool_name="call_tool",
-            arguments={
-                "toolset_id": SYSTEM_TOOLSET_ID,
-                "tool_name": "get_llm_provider",
-                "arguments": {"id": "missing"},
-            },
+            tool_name="call_tool", arguments=arguments, ctx=_ctx(),
         )
         assert result.is_error
         assert json.loads(result.output)["type"] == "not-found"
+        # With no context the role check refuses it before the inner tool runs (pivot P1).
+        refused = await system_toolset.call(tool_name="call_tool", arguments=arguments)
+        assert json.loads(refused.output)["type"] == "forbidden"
 
 
 # ===========================================================================
@@ -1612,11 +1618,14 @@ def _required_policy(toolset_id: str, tool_name: str):
 def _ctx(tool_call_id="call-1", session_id="sess-1", chat_id=None):
     from primer.model.yield_ import ToolContext
 
+    # An admin's run: call_tool checks the INNER tool's role against the run's principal (pivot P1), and these tests run admin tools
+    # (get_llm_provider) through it. A context with no principal ranks as an ordinary user and is refused them.
     return ToolContext(
         tool_call_id=tool_call_id,
         session_id=session_id,
         workspace_id="ws-1",
         chat_id=chat_id,
+        initiated_by=ADMIN_CALLER.initiated_by,
     )
 
 
@@ -1685,17 +1694,20 @@ class TestCallToolApprovalGate:
     ) -> None:
         # No session/chat to park onto (ctx is None) -> the gate must NOT
         # be bypassed; the call fails closed with approval-required.
+        # The gated inner tool is a USER-role one: a call with no context
+        # ranks as an ordinary user, so an admin tool would be refused by
+        # the role check before the gate is reached (pivot P1).
         from primer.model.tool_approval import ToolApprovalPolicy
 
         await sp.get_storage(ToolApprovalPolicy).create(
-            _required_policy(SYSTEM_TOOLSET_ID, "get_llm_provider")
+            _required_policy(SYSTEM_TOOLSET_ID, "list_toolset_tools")
         )
         result = await system_toolset.call(
             tool_name="call_tool",
             arguments={
                 "toolset_id": SYSTEM_TOOLSET_ID,
-                "tool_name": "get_llm_provider",
-                "arguments": {"id": "anthropic-1"},
+                "tool_name": "list_toolset_tools",
+                "arguments": {"toolset_id": SYSTEM_TOOLSET_ID},
             },
         )
         assert result.is_error

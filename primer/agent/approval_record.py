@@ -63,7 +63,9 @@ def record_from_parked_blob(
     ``blob['yielded']['resume_metadata']`` carries ``original_call`` (the
     gated ``id``/``name``/``arguments``) plus ``policy_id`` /
     ``approval_type`` / ``gate_reason`` and, for ``call_tool`` meta-dispatch,
-    ``via_call_tool`` (inner toolset id + principal).
+    ``via_call_tool`` (the inner toolset and tool; a park written before
+    pivot P1 carries the inner toolset and a model-chosen ``principal``
+    instead, which is read here for the audit field only).
 
     ``gate_event_key`` defaults to None (backward/forward compatible with
     every existing caller); a caller with a real ``ParkedState.yielded.

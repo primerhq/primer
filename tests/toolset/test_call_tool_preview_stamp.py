@@ -5,14 +5,16 @@
 1. A policy on the INNER tool: the handler parks for approval itself, with the INNER call as ``original_call`` (name and arguments) and ``via_call_tool``. The card
    must filter those arguments by the INNER tool's list, so the handler looks the inner tool up (the registry, under a clock) and resolves the stamp like the agent loop does
    (policy list, else the tool's declaration, else the closed-set default). An inner tool that cannot be found has no descriptor to take a schema from: every argument is
-   withheld, and the stamp says ``default`` with no paths.
-2. A policy on ``call_tool`` itself, gated by the tool manager: its arguments are ``{toolset_id, tool_name, arguments, principal}``. Its own declaration shows the first
+   withheld, and the stamp says ``default`` with no paths. An inner TOOLSET that cannot be found is refused ``not-found`` before the gate (pivot P1: the handler resolves
+   the provider first, to check the inner tool's role), so it never parks.
+2. A policy on ``call_tool`` itself, gated by the tool manager: its arguments are ``{toolset_id, tool_name, arguments}``. Its own declaration shows the first
    two; the inner ``arguments`` are shown by the inner tool's paths (``arguments.<path>``) when the manager holds the inner descriptor, and withheld otherwise. An operator's
    list on the ``call_tool`` policy is taken as it is.
 """
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -20,6 +22,7 @@ import pytest
 from primer.agent.approval import ApprovalResolver
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.model.chat import ToolCallPart, ToolCallResult
+from primer.model.except_ import NotFoundError
 from primer.model.principal import PrincipalRef
 from primer.model.tool_approval import RequiredApprovalConfig, ToolApprovalPolicy
 from primer.model.yield_ import ToolContext, YieldToWorker
@@ -62,7 +65,8 @@ class _Registry:
 
     async def get_toolset(self, toolset_id: str):
         if toolset_id not in self._providers:
-            raise KeyError(toolset_id)
+            # What ProviderRegistry.get_toolset raises for an id it does not hold.
+            raise NotFoundError(f"Toolset {toolset_id!r} does not exist")
         return self._providers[toolset_id]
 
 
@@ -128,10 +132,15 @@ async def test_a_toolset_that_fails_to_list_has_every_argument_withheld_and_the_
 
 
 @pytest.mark.asyncio
-async def test_an_unknown_inner_toolset_has_every_argument_withheld() -> None:
-    meta = await _park_inner({}, _policy("pv", "inner"))
+async def test_an_unknown_inner_toolset_is_refused_before_the_gate_and_draws_no_card() -> None:
+    """Pivot P1: the handler resolves the inner provider first (the role check needs it), so an unknown toolset is ``not-found`` and nothing parks;
+    before, the gate ran first and parked a card, with every argument withheld, for a call that could not run."""
+    _, (_, handler) = _call_tool_tool(_Registry({}), _Resolver(_policy("pv", "inner")))  # type: ignore[arg-type]
+    ctx = ToolContext(tool_call_id="call-1", session_id="sess-1", workspace_id="ws-1", chat_id=None)
 
-    assert meta["preview"] == {"paths": [], "source": "default"}
+    result = await handler({"toolset_id": "pv", "tool_name": "inner", "arguments": ARGS}, ctx=ctx)
+
+    assert result.is_error and json.loads(result.output)["type"] == "not-found"
 
 
 # ---- the declaration of call_tool itself ------------------------------------------------------------------------------------------------------------------
@@ -140,7 +149,7 @@ async def test_an_unknown_inner_toolset_has_every_argument_withheld() -> None:
 def test_call_tool_declares_the_two_arguments_that_say_which_tool_it_runs() -> None:
     _, (tool, _) = _call_tool_tool(_Registry({}), None)  # type: ignore[arg-type]
 
-    assert tool.preview_args == ("toolset_id", "tool_name"), "the inner arguments and the principal are not named: they are filtered by the inner tool's list or withheld"
+    assert tool.preview_args == ("toolset_id", "tool_name"), "the inner arguments are not named: they are filtered by the inner tool's list or withheld"
 
 
 # ---- 2. a policy on call_tool itself: the tool manager gates it -------------------------------------------------------------------------------------------
