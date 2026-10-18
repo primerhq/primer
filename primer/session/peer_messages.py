@@ -169,8 +169,13 @@ def _sent_by(sender_session_id: str) -> Predicate:
 
 
 def _as_utc(moment: datetime) -> datetime:
-    """A stored time with no zone is read as UTC (the ledger is always written in UTC)."""
-    return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
+    """``moment`` in UTC. A time with no zone is read as UTC: the ledger is always written in UTC.
+
+    The storage orders a datetime by its text, so every row must carry the same zone for "newest" to mean newest.
+    """
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=UTC)
+    return moment.astimezone(UTC)
 
 
 async def check_peer_rate(storage_provider: Any, sender_session_id: str, *, now: datetime) -> None:
@@ -373,7 +378,7 @@ async def send_peer_message(
             ),
         )
     hops = next_peer_hops(sender)
-    sent_at = now or datetime.now(UTC)
+    sent_at = _as_utc(now) if now is not None else datetime.now(UTC)
 
     async with _sender_lock(sender.id):
         await check_peer_rate(storage_provider, sender.id, now=sent_at)
