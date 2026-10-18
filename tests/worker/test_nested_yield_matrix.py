@@ -61,6 +61,7 @@ from primer.model.chat import (
     ToolCallStart,
     ToolResultPart,
 )
+from primer.model.principal import PrincipalRef
 from primer.model.scheduler import WorkerConfig
 from primer.model.tool_approval import (
     RequiredApprovalConfig,
@@ -176,6 +177,33 @@ class _GatedYieldingToolset:
             ),
             tool_call_id=ctx.tool_call_id,
         )
+
+
+class _RoleRecordingToolset:
+    """Toolset 'rec': ``user_x`` (any user may run it) and the admin-only ``admin_x``. Records the name of every call that ran."""
+
+    def __init__(self) -> None:
+        self.ran: list[str] = []
+        self.contexts: list[Any] = []
+
+    async def list_tools(self, *, principal: str | None = None) -> AsyncIterator[Tool]:
+        for name in ("user_x", "admin_x"):
+            yield Tool(
+                id=name,
+                description=f"the {name} tool",
+                toolset_id="rec",
+                args_schema={"type": "object", "properties": {}, "additionalProperties": True},
+            )
+
+    def required_role(self, tool_name: str) -> str:
+        return "admin" if tool_name == "admin_x" else "user"
+
+    async def call(
+        self, *, tool_name, arguments, principal=None, ctx=None
+    ) -> ToolCallResult:  # noqa: ANN001
+        self.ran.append(tool_name)
+        self.contexts.append(ctx)
+        return ToolCallResult(output=json.dumps({"ran": tool_name}), is_error=False)
 
 
 class _ProviderRow:
@@ -321,13 +349,24 @@ def _sub_history(scoped_name: str, call_id: str) -> list[dict]:
     return [assistant.model_dump(mode="json")]
 
 
-def _context(*, tools: list[str], sid: str) -> AgentResumeContext:
+#: The run principal of the sessions below. A subagent runs as its parent session, and the fake toolsets above declare
+#: their tools admin-only, so the delegations here are an admin's.
+_ADMIN = PrincipalRef(type="user", id="u-admin", display="admin", role="admin", source="local")
+_USER = PrincipalRef(type="user", id="u-1", display="user", role="user", source="local")
+
+
+def _context(
+    *, tools: list[str], sid: str, initiated_by: PrincipalRef | None = _ADMIN,
+) -> AgentResumeContext:
+    """A frame's context as ``run_subagent`` writes it: it carries the calling run's principal (``None`` is a frame
+    written before the field existed)."""
     return AgentResumeContext(
         session_id=sid,
         workspace_id=f"ws-{sid}",
         chat_id=None,
         principal="user-1",
         tools=tools,
+        initiated_by=initiated_by,
     )
 
 
@@ -338,13 +377,14 @@ def _agent_frame(
     sub_history: list[dict],
     tools: list[str],
     depth: int = 0,
+    initiated_by: PrincipalRef | None = _ADMIN,
 ) -> AgentFrame:
     return AgentFrame(
         agent_id="agent-sub",
         llm_messages=sub_history,
         tool_call_id=invoke_tcid,
         depth=depth,
-        context=_context(tools=tools, sid=sid),
+        context=_context(tools=tools, sid=sid, initiated_by=initiated_by),
     )
 
 
@@ -388,6 +428,7 @@ def _make_session(
     resume_event_payload: dict | None,
     session_history: list[dict] | None = None,
     turn_no: int = 0,
+    initiated_by: PrincipalRef | None = _ADMIN,
 ) -> WorkspaceSession:
     """Build a resumable agent session row parked on ``leaf`` with ``frames``.
 
@@ -395,6 +436,8 @@ def _make_session(
     innermost LEAF yield, ``parked.tool_call_id`` is the leaf's tcid,
     ``parked.frames`` is the root-first caller stack, and ``parked.llm_messages``
     is the SESSION's own in-progress turn (the invoke_agent tool_use).
+    ``initiated_by`` is the session's run principal, the one its resumed
+    subagents run as.
     """
     parked_at = datetime.now(timezone.utc) - timedelta(seconds=5)
     stamped = Yielded(
@@ -431,6 +474,7 @@ def _make_session(
         binding=AgentSessionBinding(kind="agent", agent_id="agent-sub"),
         status=SessionStatus.RUNNING,
         created_at=datetime.now(timezone.utc),
+        initiated_by=initiated_by,
         turn_no=turn_no,
         parked_status="resumable",
         parked_event_key=leaf.event_key,
@@ -953,3 +997,71 @@ async def test_subagent_approval_on_yielding_tool_reparks_then_completes(monkeyp
 # branch re-parks the graph session on the deeper leaf. Re-implementing the full
 # graph-session worker loop here would duplicate that coverage with heavier
 # scaffolding for no added faithfulness, so it is intentionally omitted.
+
+
+# ===========================================================================
+# Scenario 6: a resumed subagent runs as its session (security)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_a_frame_that_names_no_initiator_resumes_as_its_session_not_as_the_system(monkeypatch):
+    """FULL session loop. A user's session called invoke_agent; the subagent called
+    the gated ``rec__user_x``, and the park is one written before
+    ``AgentResumeContext.initiated_by`` existed, so its frame names no initiator.
+    Deliver APPROVE: the approved tool runs, then the subagent's turn goes on with
+    a call to the admin-only ``rec__admin_x``. The resume used to build the
+    subagent's manager from that frame, which fell back to the system principal,
+    and the admin-only tool ran in a user's session. The subagent runs as its
+    session now: the approved user tool runs and the admin-only call is refused."""
+    sid = "sess-sub-legacy-frame"
+    invoke_tcid = "invoke-tc-legacy"
+    gated_call_id = "gated-call-legacy"
+    tools = ["rec__user_x", "rec__admin_x"]
+
+    toolset = _RoleRecordingToolset()
+    llm = _ScriptedLLM(
+        scripts=[_tool_call_script("rec__admin_x", "admin-call"), _final_text_script("done")]
+    )
+    registry = _ProviderRegistry(llm=llm, toolset=toolset)
+    resolver = _PoliciesOnlyResolver(
+        [
+            ToolApprovalPolicy(
+                id="p", toolset_id="rec", tool_name="user_x", approval=RequiredApprovalConfig(),
+            )
+        ]
+    )
+    base = _FakeStorageProvider()
+    agent_storage = _AgentStorageProvider(
+        base=base, agent=_agent(tools=tools), provider_row=_provider_row()
+    )
+    pool, engine = _build_pool(
+        base_storage=base, agent_storage=agent_storage, registry=registry, resolver=resolver,
+    )
+
+    frame = _agent_frame(
+        sid=sid,
+        invoke_tcid=invoke_tcid,
+        sub_history=_sub_history("rec__user_x", gated_call_id),
+        tools=tools,
+        initiated_by=None,
+    )
+    sess = _make_session(
+        sid,
+        leaf=_approval_leaf(sid=sid, gated_call_id=gated_call_id, gated_name="rec__user_x"),
+        leaf_tcid=gated_call_id,
+        invoke_tcid=invoke_tcid,
+        frames=[frame],
+        resume_event_payload={"decision": "approved"},
+        initiated_by=_USER,
+    )
+    await base.get_storage(WorkspaceSession).create(sess)
+    assert ParkedState.from_jsonable(sess.parked_state).frames[0].context.initiated_by is None
+
+    executor = _wire_session_executor(pool, monkeypatch)
+    await pool._run_engine_session(await _claim(engine, sid))
+
+    part = _injected_tool_result(executor, invoke_tcid)
+    assert part.error is False and json.loads(part.output) == {"output": "done"}
+    assert toolset.ran == ["user_x"], "the resumed subagent ran an admin-only tool in a user's session"
+    assert llm._scripts == [], "the subagent's turn went on past the refused call"

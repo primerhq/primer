@@ -10,11 +10,20 @@ the pure continuation walk:
 * ``_repark_continuation`` - asserts a ``Repark`` outcome is turned into the
   right ParkedState (new frames + new leaf, session turn preserved) and a
   drop-lease ParkRequest listening on the new leaf's event key.
+
+Both subagent callables are handed the frame's context with ``initiated_by``
+replaced by the resumed session's run principal: a resumed subagent runs as its
+parent session, never as a principal stored in the park.
 """
 
+import dataclasses
 from datetime import datetime, timezone
+from types import SimpleNamespace
+
+import pytest
 
 import primer.agent.invoke as invoke_mod
+from primer.model.principal import PrincipalRef
 from primer.model.yield_ import Yielded
 from primer.worker.continuation import InvocationServices, Repark
 from primer.worker.frames import AgentFrame, AgentResumeContext
@@ -82,22 +91,23 @@ async def test_build_invocation_services_forwards_bound_deps(monkeypatch):
     tm = _FakeToolManager(graph_services)
 
     services = pool._build_invocation_services(
-        "session", "workspace", "executor", tm,
+        _Session(), "workspace", "executor", tm,
     )
     assert isinstance(services, InvocationServices)
 
-    out = await services.build_subagent_toolmanager("CTX")
+    out = await services.build_subagent_toolmanager(_stored_context())
     assert out == "TOOLMGR"
-    assert captured["build"]["context"] == "CTX"
+    assert captured["build"]["context"] == _stored_context(initiated_by=_RUN)
     assert captured["build"]["storage_provider"] == "STORAGE"
     assert captured["build"]["provider_registry"] == "REGISTRY"
     assert captured["build"]["approval_resolver"] == "APPROVAL"
 
     text = await services.resume_subagent(
-        agent_id="a1", context="CTX2", llm_messages=[{"role": "assistant"}],
+        agent_id="a1", context=_stored_context(), llm_messages=[{"role": "assistant"}],
         child_result="CHILD", depth=2, invoke_tool_call_id="tc9",
     )
     assert text == "RESUMED-TEXT"
+    assert captured["resume"]["context"] == _stored_context(initiated_by=_RUN)
     assert captured["resume"]["agent_id"] == "a1"
     assert captured["resume"]["child_result"] == "CHILD"
     assert captured["resume"]["depth"] == 2
@@ -136,9 +146,57 @@ def test_build_invocation_services_without_a_registry_has_no_resolver():
     assert services.resolve_provider is None
 
 
+#: The run principal of the session ``_Session`` stands for.
+_RUN = PrincipalRef(type="user", id="u-7", display="u7", role="admin", source="local")
+
+
 class _Session:
     id = "ses-1"
     turn_no = 7
+    initiated_by = _RUN
+
+
+def _stored_context(*, initiated_by: PrincipalRef | None = None) -> AgentResumeContext:
+    """A frame's context as the park stores it (``None``: a frame written before ``initiated_by`` existed)."""
+    return AgentResumeContext("ses-1", "ws", None, "u", ["t__x"], initiated_by=initiated_by, turn_no=4)
+
+
+@pytest.mark.parametrize(
+    "stored, session_principal, expected",
+    [
+        (None, _RUN, _RUN),
+        (PrincipalRef.system(), _RUN, _RUN),
+        (PrincipalRef.system(), None, PrincipalRef.unattributed()),
+    ],
+    ids=["frame-names-no-initiator", "frame-stored-system", "a-session-that-names-no-initiator-is-an-unattributed-user"],
+)
+async def test_the_subagent_callables_rank_a_resumed_subagent_as_its_session(monkeypatch, stored, session_principal, expected):
+    """Never a principal stored in the park: a frame written before ``initiated_by`` existed names none (and the builder used to fall back to the
+    system principal), and one written before security review A-20 stored the system principal for a session that names no initiator."""
+    seen: list = []
+
+    async def fake_build(context, **_deps):
+        seen.append(context)
+        return "TOOLMGR"
+
+    async def fake_resume(*, context, **_kw):
+        seen.append(context)
+        return "TEXT"
+
+    monkeypatch.setattr(invoke_mod, "build_subagent_toolmanager", fake_build)
+    monkeypatch.setattr(invoke_mod, "resume_subagent", fake_resume)
+    services = _bare_pool()._build_invocation_services(
+        SimpleNamespace(id="ses-1", initiated_by=session_principal), "workspace", "executor", None,
+    )
+    frame_context = _stored_context(initiated_by=stored)
+
+    await services.build_subagent_toolmanager(frame_context)
+    await services.resume_subagent(
+        agent_id="a1", context=frame_context, llm_messages=[], child_result="CHILD", depth=1, invoke_tool_call_id="tc",
+    )
+
+    assert seen == [dataclasses.replace(frame_context, initiated_by=expected)] * 2, "the rest of the frame's context is handed on as stored"
+    assert frame_context.initiated_by == stored, "the frame's own context is not changed"
 
 
 def test_repark_continuation_builds_parked_state_and_request():

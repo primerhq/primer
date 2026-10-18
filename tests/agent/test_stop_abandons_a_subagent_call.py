@@ -189,6 +189,11 @@ class _SpawnToolset(_PlainToolset):
     async def list_tools(self, *, principal: str | None = None) -> AsyncIterator[Tool]:
         yield Tool(id="spawn", description="d", toolset_id="t1", args_schema={"type": "object", "properties": {}})
 
+    def required_role(self, tool_name: str) -> str:
+        # The floor ``system__invoke_agent`` declares. These runs name no initiator, so they run as an unattributed user (the admin
+        # floor inherited from ``_PlainToolset`` only let it run through the system principal the subagent builder used to fall back to).
+        return "user"
+
     async def call(self, *, tool_name, arguments, principal=None, ctx=None) -> ToolCallResult:
         text = await run_subagent(
             agent_id="agent-b", prompt="do the inner thing", storage_provider=self.storage, provider_registry=self.registry,

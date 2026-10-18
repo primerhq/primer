@@ -40,6 +40,17 @@ def _pool_event_recorder(pool):
 
     return recorder_for(storage, getattr(pool, "_event_bus", None))
 
+
+def session_run_principal(session) -> PrincipalRef:
+    """The principal every run of ``session`` is ranked as: its ``initiated_by``, else an unattributed (ordinary) user.
+
+    Never the system principal, which clears every role floor (security review A-20): a row saved before attribution landed, and the
+    "main" session a workspace create used to seed, name no initiator, and a user can reach both. The session's own turn, its graph's
+    nodes, and a subagent resumed inside it (``build_invocation_services``) are all ranked by this one rule.
+    """
+    return getattr(session, "initiated_by", None) or PrincipalRef.unattributed()
+
+
 if TYPE_CHECKING:
     from primer.worker.pool import WorkerPool
 
@@ -331,7 +342,7 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
     # created before this attribution landed and on the "main" session a
     # workspace create used to seed with none; a user can reach both, so
     # they rank as an ordinary user, never as system (security review A-20).
-    initiated_by = session.initiated_by or PrincipalRef.unattributed()
+    initiated_by = session_run_principal(session)
     gis = pool._build_graph_invocation_services(
         workspace=workspace,
         workspace_session=agent_session,
@@ -485,7 +496,7 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
     # per-node ToolExecutionManager so a tool_call node's
     # create_workspace_session inherits it (see build_agent_executor). An
     # unattributed row fails closed, as in build_agent_executor.
-    initiated_by = session.initiated_by or PrincipalRef.unattributed()
+    initiated_by = session_run_principal(session)
 
     async def tool_manager_resolver(agent):
         toolset_ids = _toolset_ids_from_scoped(agent.tools)
