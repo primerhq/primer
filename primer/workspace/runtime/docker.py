@@ -1,9 +1,18 @@
 """DockerRuntimeAdapter -- talks to the Docker Engine API via aiodocker.
 
-``create_sandbox`` and ``get_sandbox`` now provision the workspace runtime
-image (``primer/workspace-runtime:1.1``) and return a :class:`WSSandbox`
-backed by a :class:`RuntimeClient`.  The old ``DockerSandbox`` class has
-been removed.
+``create_sandbox`` and ``get_sandbox`` provision the image the template names and
+return a :class:`WSSandbox` backed by a :class:`RuntimeClient`.  The old
+``DockerSandbox`` class has been removed.
+
+The template's image is the image that RUNS (platform revamp 2026-10, design 14.2
+and 20 Q6; until then the adapter always ran ``primer/workspace-runtime:1.1`` and
+only recorded the typed image in a label, so the form's Image field did nothing).
+It must contain the primer workspace runtime: the adapter sets no ``Cmd``, so the
+image's own entrypoint is the runtime server, and a custom image is built
+``FROM primer/workspace-runtime:1.1``.  A template that names no image runs
+``primer/workspace-runtime:1.1`` (:data:`DOCKER_RUNTIME_IMAGE`).  A container whose
+runtime never answers fails with an error that names the image
+(:func:`_silent_runtime_message`), and the create's rollback still removes it.
 
 Container lifecycle (stop / remove) is delegated to a lightweight
 :class:`_DockerContainerHandle` that wraps the aiodocker container object.
@@ -19,6 +28,7 @@ from typing import Any, Literal
 from primer.int.sandbox import Sandbox
 from primer.model.except_ import ConfigError
 from primer.model.workspace import (
+    DOCKER_RUNTIME_IMAGE,
     ContainerReachabilityBridge,
     ContainerReachabilityConfig,
     ContainerReachabilityHostPort,
@@ -35,10 +45,21 @@ logger = logging.getLogger(__name__)
 
 
 _LABEL_KEY = "primer.workspace.id"
-_RUNTIME_IMAGE = "primer/workspace-runtime:1.1"
+# The image a container runs when its template names none. The model owns the value (the migration that rewrites stored Docker
+# templates writes it too); the module name stays for the imports that use it.
+_RUNTIME_IMAGE = DOCKER_RUNTIME_IMAGE
 _RUNTIME_PORT = 5959
 _READY_POLL_INTERVAL_S = 0.1
 _READY_TIMEOUT_S = 30.0
+
+
+def _silent_runtime_message(image: str) -> str:
+    """What a person reads when a container started but its runtime never answered (design 20 Q6): it names the image, because
+    the likeliest cause is an image that does not contain the primer workspace runtime."""
+    return (
+        f"the workspace runtime did not answer within {_READY_TIMEOUT_S:g}s in a container of image {image!r}. "
+        f"A custom image must contain the primer workspace runtime (build it FROM {DOCKER_RUNTIME_IMAGE})."
+    )
 
 
 class _DockerContainerHandle:
@@ -269,10 +290,10 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
     ) -> Sandbox:
         assert self._docker is not None, "call initialize() first"
 
-        # Always use the runtime image as the base; the caller-supplied
-        # ``image`` is recorded in labels for traceability but the
-        # runtime server is the actual entrypoint.
-        runtime_image = _RUNTIME_IMAGE
+        # The template's image is the image that runs; it must contain the primer workspace runtime, which is its own
+        # entrypoint (no ``Cmd`` is set below). An empty image runs the built-in runtime image. This is what is inspected,
+        # pulled, run and recorded in the label.
+        runtime_image = image or _RUNTIME_IMAGE
 
         # Backwards-compat: legacy callers (the live docker integration
         # tests) don't pass reachability/token. Default to host_port on
@@ -369,7 +390,7 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
             "WorkingDir": workdir,
             "Labels": {
                 _LABEL_KEY: name,
-                "primer.workspace.template.image": image,
+                "primer.workspace.template.image": runtime_image,
             },
             "HostConfig": host_config,
             "ExposedPorts": {f"{_RUNTIME_PORT}/tcp": {}},
@@ -409,9 +430,16 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
                     owns_container = False
                 raise
             await container.start()
-            return await _make_ws_sandbox(
-                self._docker, container, name, token, reachability=reachability,
-            )
+            try:
+                return await _make_ws_sandbox(
+                    self._docker, container, name, token, reachability=reachability,
+                )
+            except TimeoutError as exc:
+                # The container started and its runtime never answered (the ready marker did not appear in time, or the
+                # hello did not come): say which image, since an image without the runtime is the likeliest cause. Inside
+                # the ``try`` so the rollback below still removes the container and the volume. A cancel, or a caller's
+                # ``asyncio.timeout`` (which reaches this frame as a cancel), is not a TimeoutError here and passes through.
+                raise ConfigError(_silent_runtime_message(runtime_image)) from exc
         except BaseException:
             # Nothing has been handed back yet, so the backend (whose own rollback works on the returned sandbox) cannot
             # clean up: a readiness timeout, a failed start or connect, a cancel or a caller's timeout anywhere from the

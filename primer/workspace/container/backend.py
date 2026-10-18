@@ -39,6 +39,7 @@ from primer.model.except_ import ConfigError, NotFoundError
 from pydantic import SecretStr
 
 from primer.model.workspace import (
+    DOCKER_RUNTIME_IMAGE,
     ContainerReachabilityHostPort,
     ContainerTemplateConfig,
     ContainerWorkspaceConfig,
@@ -72,6 +73,18 @@ def _host_uid_gid() -> str | None:
         return f"{os.getuid()}:{os.getgid()}"  # type: ignore[attr-defined]
     except AttributeError:
         return None
+
+
+def _container_limits(
+    spec: ContainerTemplateConfig, overrides: WorkspaceTemplateOverrides | None,
+) -> ResourceLimits:
+    """The size the adapter applies: the per-workspace override's CPU and memory (design 14.3) where it sets them, else the
+    template's. Docker has no disk quota, so ``overrides.resources.disk_bytes`` is not applied (the registry refuses it first,
+    ``primer.workspace.size_overrides``)."""
+    size = overrides.resources if overrides is not None else None
+    cpu_cores = size.cpu_cores if size is not None and size.cpu_cores is not None else spec.cpu_cores
+    memory_bytes = size.memory_bytes if size is not None and size.memory_bytes is not None else spec.memory_bytes
+    return ResourceLimits(cpu_cores=cpu_cores, memory_bytes=memory_bytes, network="full")
 
 
 def _adapter_for(cfg: ContainerWorkspaceConfig) -> ContainerRuntimeAdapter:
@@ -155,20 +168,16 @@ class ContainerWorkspaceBackend(BaseWorkspaceBackend):
         # ``list()`` works uniformly.
         name = f"{_NAME_PREFIX}{workspace_id}"
         volume = f"{name}-data"
-        image = spec.image
-        if not image:
-            raise ConfigError("template has no image")
+        # A template that names no image runs the built-in runtime image (design 14.2); one that names an image runs that
+        # image, which must contain the primer workspace runtime (the adapter says so when the runtime never answers).
+        image = spec.image or DOCKER_RUNTIME_IMAGE
 
         token = secrets.token_urlsafe(32)
         reachability = self._config.reachability
 
-        # Resource limits live on the template in the redesigned model;
-        # build the legacy ResourceLimits shape the adapter still consumes.
-        resources = ResourceLimits(
-            cpu_cores=spec.cpu_cores,
-            memory_bytes=spec.memory_bytes,
-            network="full",
-        )
+        # Resource limits live on the template in the redesigned model, and a per-workspace override replaces them field by
+        # field; build the legacy ResourceLimits shape the adapter still consumes.
+        resources = _container_limits(spec, overrides)
 
         sandbox = await self._adapter.create_sandbox(
             name=name,

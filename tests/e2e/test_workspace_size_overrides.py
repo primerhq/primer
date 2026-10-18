@@ -8,7 +8,9 @@ honour is a 422 naming ``overrides.resources.<field>`` (Local takes none, Docker
 Lead-scheduled. ``test_kubernetes_override_env_and_size_reach_the_pod`` needs a Kubernetes cluster the platform runs inside
 (``workspace:kubernetes``), like ``test_smk_workspaces.py::test_kubernetes_backend``, whose topology notes apply (point
 ``PRIMER_E2E_BASE_URL`` at the in-cluster ``primer-api`` Service; ``PRIMER_K8S_RUNTIME_IMAGE`` or ``PRIMER_K8S_REGISTRY`` names a
-cluster-pullable runtime image; ``PRIMER_K8S_NAMESPACE`` defaults to ``primer-workspaces``). The refusal tests need only the
+cluster-pullable runtime image; ``PRIMER_K8S_NAMESPACE`` defaults to ``primer-workspaces``).
+``test_a_docker_workspace_gets_its_cpu_and_memory`` needs a Docker daemon the server reaches (``workspace:container``) and the
+``primer/workspace-runtime:1.1`` image, and reads the limits back with ``docker inspect``. The refusal tests need only the
 server. Never run any of them alongside another e2e run.
 """
 
@@ -278,4 +280,60 @@ async def test_a_bad_environment_variable_name_is_a_422_that_names_it(authed_cli
         listing = await authed_client.get("/v1/workspaces")
         assert not [w for w in listing.json()["items"] if w.get("template_id") == tpl], listing.text
     finally:
+        await _drop(authed_client, wp=wp, tpl=tpl)
+
+
+# ---- Docker applies the per-workspace CPU and memory (plan 08 task 5) -----------------------------------------------------
+
+
+def _docker_inspect(name: str) -> dict | None:
+    """``docker inspect <name>`` parsed (the first object), or None when docker is not on the path or the container is not there."""
+    if shutil.which("docker") is None:
+        return None
+    try:
+        out = subprocess.run(["docker", "inspect", name], capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0 or not out.stdout.strip():
+        return None
+    parsed = json.loads(out.stdout)
+    return parsed[0] if parsed else None
+
+
+@requires("workspace:container")
+async def test_a_docker_workspace_gets_its_cpu_and_memory(authed_client, unique_suffix):
+    """The override replaces the template's CPU and memory on the container (``NanoCpus`` and ``Memory``), and the template's
+    image is the image that runs. The template says 1 CPU and 512 MiB; the workspace asks for half a CPU and 256 MiB."""
+    wp, tpl = f"wpdk-{unique_suffix}", f"tpldk-{unique_suffix}"
+    wid: str | None = None
+    await _provider_and_template(
+        authed_client, wp=wp, tpl=tpl,
+        provider={
+            "provider": "container",
+            "config": {
+                "kind": "container", "runtime": "docker",
+                "connection": {"kind": "socket", "socket_path": "/var/run/docker.sock"},
+                "reachability": {"kind": "host_port", "bind_host": "127.0.0.1"},
+            },
+        },
+        backend={"kind": "container", "image": "primer/workspace-runtime:1.1", "cpu_cores": 1, "memory_bytes": 536870912},
+    )
+    try:
+        rw = await authed_client.post(
+            "/v1/workspaces",
+            json={"template_id": tpl, "overrides": {"resources": {"cpu_cores": 0.5, "memory_bytes": 268435456}}},
+        )
+        assert rw.status_code in (200, 201), rw.text
+        wid = rw.json()["id"]
+        info = _docker_inspect(f"workspace-{wid}")
+        if info is None:
+            pytest.skip("docker is not reachable from the test runner, so the container's limits cannot be read")
+        assert info["HostConfig"]["NanoCpus"] == 500000000, info["HostConfig"]
+        assert info["HostConfig"]["Memory"] == 268435456, info["HostConfig"]
+        assert info["Config"]["Image"] == "primer/workspace-runtime:1.1", info["Config"]["Image"]
+        assert info["Config"]["Labels"]["primer.workspace.template.image"] == "primer/workspace-runtime:1.1"
+    finally:
+        if wid is not None:
+            d = await authed_client.delete(f"/v1/workspaces/{wid}")
+            assert d.status_code in (204, 404), d.text
         await _drop(authed_client, wp=wp, tpl=tpl)
