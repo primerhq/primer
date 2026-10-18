@@ -168,8 +168,10 @@ async def resume_graph_from_checkpoint(
     ) if (resumed_tcid is not None or key_selects) else False
 
     # Only the tool_call-approval rejection path uses the bypass override; an
-    # agent-node yield carries its result via ``agent_tool_result``, and a
-    # value-yielding tool_call carries it via ``toolcall_payload``.
+    # agent-node yield carries its result via ``agent_tool_result``, a
+    # value-yielding tool_call carries it via ``toolcall_payload``, and so does
+    # an agent node's own approval gate (the executor applies the decision with
+    # the node's own manager; nothing here builds its answer).
     if (
         decision != "approved"
         and agent_tool_result is None
@@ -211,6 +213,12 @@ async def resume_graph_from_checkpoint(
         for raw in checkpoint.get("pending_toolcalls") or []:
             if raw.get("scoped_tool_call_id") is not None:
                 tap.coalesce_state.scoped_call_ids[(raw["node_id"], raw.get("row_call_id") or raw["tool_call_id"])] = raw["scoped_tool_call_id"]
+        # ... and so did an agent node's call when the entry is the node's OWN approval gate, which the executor answers itself (the approved call's result, or the rejection): that answer is
+        # written under the id of the call row, and a tool that pauses again directly re-parks the node under the same call, so its entry gets the id back from this state. Any other agent
+        # yield (an ``ask_user``, a nested run) is answered by the coordinator, which writes its own record from the entry, and is left out.
+        for raw in checkpoint.get("pending_agent_yields") or []:
+            if raw.get("scoped_tool_call_id") is not None and raw.get("tool_name") == "_approval" and not raw.get("frames"):
+                tap.coalesce_state.scoped_call_ids[(raw["node_id"], raw["tool_call_id"])] = raw["scoped_tool_call_id"]
 
     # The ResumeContext a value-yielding tool_call node's hook receives is
     # built from the session being resumed and the provider registry, the
@@ -229,7 +237,9 @@ async def resume_graph_from_checkpoint(
             wake_only=wake_only,
             **({} if decision == "approved" else {"approved": False}),     # the no-gate rule refuses an approval that cannot be shown to be one gate; a timeout, a rejection or a cancel rejects what it selects
             agent_tool_result=agent_tool_result,
-            toolcall_payload=payload if value_yield_toolcall else None,
+            # The reply of the answered gate, whatever it is: a value-yielding tool_call node reads the operator's answer from it and an agent node's own
+            # approval gate (no ``agent_tool_result`` delivered) is applied from it. An entry that needs neither ignores it.
+            toolcall_payload=payload,
             resolved_tool_wait=resolved_tool_wait,
             resume_session_id=getattr(session, "id", None),
             resolve_provider=registry.get_toolset if registry is not None else None,

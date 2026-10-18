@@ -23,12 +23,14 @@ from __future__ import annotations
 import asyncio
 import functools
 import json
+import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from primer.agent.loop import run_agent_turn
 from primer.agent.prompt_render import render_system_prompt_or_raw
 from primer.agent.tool_manager import ToolExecutionManager
+from primer.common.log import redact_credentials
 from primer.graph._node_identity import current_graph_node_id
 from primer.graph._node_refs import (
     _fanout_scope,
@@ -38,7 +40,7 @@ from primer.graph._node_refs import (
     await_tool_dispatch_barrier,
 )
 from primer.graph.template import render_input_template
-from primer.model.chat import Message, StreamEvent, TextPart, ToolTurnCapReached
+from primer.model.chat import Message, StreamEvent, TextPart, ToolResultPart, ToolTurnCapReached
 from primer.model.graph import GraphContext, NodeOutput, _AgentNodeRef
 from primer.model.principal import PrincipalRef
 from primer.model.yield_ import ToolWaitPark, YieldToWorker
@@ -49,6 +51,9 @@ if TYPE_CHECKING:
 
     from primer.model.agent import Agent
     from primer.session.persistence import _CoalesceState
+
+
+logger = logging.getLogger(__name__)
 
 
 def _make_node_scoped_call_resolver(
@@ -337,11 +342,60 @@ class _AgentNodeMixin:
             history + all_new, context.iteration,
         )
 
+    async def _answer_parked_approval(
+        self, pending: "_PendingAgentYield", tool_manager: ToolExecutionManager, decision: Any,
+    ) -> ToolResultPart:
+        """The tool result of the node's own parked approval gate, as the agent session gives it.
+
+        ``decision`` is the payload the person's decision arrived as (``{"decision": "approved" | "rejected", ...}``, a ``YieldTimeout``, a ``YieldCancelled``;
+        anything else, ``None`` included, is a rejection). It is applied by the helper the agent session resumes its own gate with
+        (:func:`primer.worker.yield_runtime._resume_tool_approval`), with THIS node's manager and the executor's principal string, so a graph gate has no rules
+        of its own:
+
+        * approved: the gated call runs (``bypass_approval``) with the context of the resumed node (its session, the run's identity, the principal string a first
+          dispatch would have been given), and the real result is the answer. A park made by ``system__call_tool`` runs its inner tool through
+          :func:`primer.agent.inner_dispatch.dispatch_inner_tool`, with the inner tool's role checked again and a principal stored with the park never read;
+        * anything else: nothing runs, and the answer is the error result that says the call was rejected (timed out, cancelled);
+        * a tool that pauses again (``YieldToWorker``) is not an error: it leaves, stamped with this node's in-progress turn (the assistant message that made the
+          call, so the next resume pairs the tool's own answer with it), and the resume loop parks the node again on the tool's own event;
+        * any other failure of the call is an error result the node continues from, as the agent session's resume treats it, and is logged.
+        """
+        # Function-local: primer.worker.frames imports primer.graph at module level, so primer.worker is imported from here when the call is made.
+        from primer.worker.yield_runtime import _resume_tool_approval
+
+        try:
+            answer = await _resume_tool_approval(
+                blob={"yielded": {"resume_metadata": dict(pending.resume_metadata)}},
+                payload=decision,
+                tool_manager=tool_manager,
+                principal=self._principal,
+            )
+        except (YieldToWorker, ToolWaitPark) as paused:
+            if not paused.llm_messages:
+                paused.llm_messages = list(pending.llm_messages)
+            raise
+        except Exception as exc:  # noqa: BLE001 - fail-closed synthesis, as the agent session's resume does
+            logger.exception("resume: the approved call of node %r (tool call %r) raised; answering it with an error result", pending.node_id, pending.tool_call_id)
+            original = (pending.resume_metadata or {}).get("original_call") or {}
+            answer = ToolResultPart(
+                id=pending.tool_call_id,
+                output=json.dumps({
+                    "is_error": True,
+                    "reason": f"approval resume failed: {type(exc).__name__}: {redact_credentials(str(exc))}",
+                    "tool_name": original.get("name", "unknown"),
+                }),
+                error=True,
+            )
+        # The answer is to the call the entry waits on, which the model made and the prompt holds as a tool_use; the id the helper reads is the park's own record of that call (``original_call``).
+        return answer if answer.id == pending.tool_call_id else answer.model_copy(update={"id": pending.tool_call_id})
+
     async def _resume_agent_node(
         self,
         pending: "_PendingAgentYield",
-        tool_result_msg: Message,
+        tool_result_msg: Message | None,
         out_holder: dict,
+        *,
+        decision: Any = None,
     ) -> AsyncIterator[StreamEvent]:
         """Continue a parked agent node's turn with the injected tool result.
 
@@ -350,6 +404,12 @@ class _AgentNodeMixin:
         context) + the rehydrated in-progress assistant turn + the
         ``tool_result_msg`` (the human's ask_user answer / approval
         verdict), then continues ``run_agent_turn`` to completion.
+
+        ``tool_result_msg`` is ``None`` when the caller delivers no answer. For the node's OWN approval gate that is the normal case: the decision is in
+        ``decision`` and is applied here (:meth:`_answer_parked_approval`), because the approved call must run with THIS node's manager. The answer
+        is yielded as the ``tool_result`` event of the call, so the drain records it under the call's row, before the continued turn. A tool that pauses
+        again leaves as the ``YieldToWorker`` it raised and the node is parked again (nothing is answered or persisted). Any other entry with no answer is
+        given an empty result, as it always was.
 
         01a06933: an async GENERATOR, not an awaited coroutine — forwards
         every event the continued ``run_agent_turn`` call produces
@@ -378,6 +438,14 @@ class _AgentNodeMixin:
         agent = await self._agent_resolver(node.agent_id)
         llm, llm_model = await self._resolve_node_llm(node, agent)
         tool_manager = await self._select_node_tool_manager(node, agent)
+
+        if tool_result_msg is None:
+            if pending.is_own_approval_gate:
+                answer = await self._answer_parked_approval(pending, tool_manager, decision)
+                yield self._toolcall_answer_event(pending.node_id, context, answer.id, answer)
+                tool_result_msg = Message(role="tool", parts=[answer])
+            else:
+                tool_result_msg = Message(role="tool", parts=[ToolResultPart(id=pending.tool_call_id, output="")])
 
         # The same scope the first dispatch rendered with (``_stream_node``): a parked fan-out
         # instance's template uses fanout_index / fanout_item, and the checkpoint restores the

@@ -60,6 +60,26 @@ async def test_resume_approved_invokes_original_call():
     assert res.error is False
 
 
+class _PrincipalAwareToolManager:
+    """The real manager takes the principal string of the run (``ToolExecutionManager.execute(call, principal=, bypass_approval=)``)."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str | None, bool]] = []
+
+    async def execute(self, call: ToolCallPart, *, principal: str | None = None, bypass_approval: bool = False):
+        self.calls.append((call.name, principal, bypass_approval))
+        return ToolResultPart(id=call.id, output="ran", error=False)
+
+
+@pytest.mark.asyncio
+async def test_resume_approved_runs_the_call_with_the_resumed_runs_principal_string():
+    """A graph executor resumes its agent node's gate through this with the principal string it dispatches with; the agent session passes none (the test above: its manager takes no such argument)."""
+    tm = _PrincipalAwareToolManager()
+    res = await _resume_tool_approval(blob=_blob(), payload={"decision": "approved"}, tool_manager=tm, principal="alice")
+    assert tm.calls == [("delete_workspace", "alice", True)]
+    assert res.error is False
+
+
 @pytest.mark.asyncio
 async def test_resume_rejected_synthesises_error():
     tm = _FakeToolManager()
