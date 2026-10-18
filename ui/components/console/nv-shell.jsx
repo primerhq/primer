@@ -471,13 +471,15 @@ function NV_Shell() {
 
   // Opens a session in the studio from wherever it was asked for: a session row on an agent's, a toolset's or a workspace's detail. The session
   // is a studio document, so the overlay closes, the studio is selected and the session opens as a promoted tab, in ONE history entry (the palette does the
-  // same in three calls). The files sidebar, the terminal and the rail follow the session's workspace when the rail's own cache knows it; a session created a
-  // moment ago is not in it yet, and then the workspace stays as it is: tabs are global, so the session shows all the same.
-  var openSessionInStudio = React.useCallback(function (sid) {
+  // same in three calls). The files sidebar, the terminal and the rail follow the session's workspace: the one the caller names (a session row carries
+  // its own workspace_id), else the one the rail's cache knows, else the one already selected. A session created a moment ago is not in the cache yet;
+  // tabs are global, so it shows all the same.
+  var openSessionInStudio = React.useCallback(function (sid, owid) {
     if (!sid) return;
     var meta = resolveSessionMeta(sid);
+    var target = owid || (meta && meta.wid) || null;
     markPush();
-    if (meta && meta.wid) setWid(meta.wid);
+    if (target) setWid(target);
     setOverlay(null);
     setView({ name: "studio", nav: null, sub: null });
     setTgModel(function (m) {

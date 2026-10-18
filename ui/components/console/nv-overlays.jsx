@@ -820,8 +820,8 @@ var NV_OVERLAY_MOUNTS = {
             pushToast={window.primerApi.toastPush}
             onNavigate={function () {}}
             onOpenSession={function (sid) {
-              shell.closeOverlay();
-              shell.openDoc({ kind: "session", ref: sid, preview: false });
+              // The overlay's id IS the workspace the session lives in; openDoc closes the overlay and opens the session in the studio.
+              shell.openDoc({ kind: "session", ref: sid, workspace_id: state.id, preview: false });
             }}
           />
         );
@@ -897,6 +897,12 @@ function NV_LegacyOverlay(props) {
     // Leave the overlay for a view in one navigation (a mount whose Close or Back means "back to its Platform page").
     closeOverlayTo: function (v) { con.closeOverlayTo(v); },
     openDoc: function (d) {
+      // A session is a studio document: it opens in the studio whatever view the overlay was opened over (a Platform view would hide the tab it
+      // opened), in the workspace the caller names (d.workspace_id) or, failing that, the one the rail knows. The overlay closes with it.
+      if (d.kind === "session") {
+        con.openSessionInStudio(d.ref, d.workspace_id);
+        return;
+      }
       con.closeOverlay();
       con.setDoc({ kind: d.kind, ref: d.ref });
       if (con.promoteDoc) con.promoteDoc(d.kind + ":" + d.ref);
@@ -1019,8 +1025,9 @@ function NV_OverlayHost() {
       function (n, s, i) { conRef.current.openOverlay(n, s, i); },
       // A bare list path (a detail's Delete and Back) closes the overlay onto the entity's Platform page, never onto a list inside an overlay.
       function (v) { conRef.current.closeOverlayTo(v); },
-      // "/sessions/<id>" (a session row on an agent's, a toolset's or a workspace's detail) is a studio document, not an overlay.
-      function (sid) { conRef.current.openSessionInStudio(sid); }
+      // "/sessions/<id>" (a session row on an agent's, a toolset's or a workspace's detail) is a studio document, not an overlay; a row passes its
+      // own workspace_id along.
+      function (sid, wid) { conRef.current.openSessionInStudio(sid, wid); }
     );
   }
   var overlay = con.overlay;

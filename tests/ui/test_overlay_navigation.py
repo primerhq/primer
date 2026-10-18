@@ -58,7 +58,7 @@ def navigate(overlay, path: str, opts=None, *, close_to: bool = True, open_sessi
             "(function () { var calls = [];"
             " var open = function (n, s, i) { calls.push(['open', n, s, i]); };"
             " var closeTo = function (t) { calls.push(['closeTo', t]); };"
-            " var openSession = function (sid) { calls.push(['openSession', sid]); };"
+            " var openSession = function (sid, wid) { calls.push(['openSession', sid, wid]); };"
             f" SH_shimNavigate({json.dumps(overlay)}, open, {json.dumps(path)}, {json.dumps(opts)},"
             f" {'closeTo' if close_to else 'undefined'}, {'openSession' if open_session else 'undefined'});"
             " return calls; })()",
@@ -247,8 +247,19 @@ def test_the_records_of_templates_and_providers_and_workspaces_still_open_their_
     ids=["agent", "toolset", "workspace", "no-overlay"],
 )
 def test_a_session_path_opens_the_session_in_the_studio(overlay):
-    """Chat on an agent, a session row on a toolset or a workspace: ``/sessions/<id>`` used to reopen the CURRENT overlay with the session id in its tab slot."""
-    assert navigate(overlay, "/sessions/ses-1") == [["openSession", "ses-1"]]
+    """A session row on an agent's, a toolset's or a workspace's detail: ``/sessions/<id>`` used to reopen the CURRENT overlay with the session id in its tab slot."""
+    assert navigate(overlay, "/sessions/ses-1") == [["openSession", "ses-1", None]]
+
+
+def test_a_session_row_passes_its_own_workspace_along():
+    """A path cannot carry the session's workspace and a session row does: ``navigate("/sessions/<id>", { workspace_id })``."""
+    overlay = {"name": "agents", "section": None, "id": "a1"}
+    assert navigate(overlay, "/sessions/ses-1", {"workspace_id": "w9"}) == [["openSession", "ses-1", "w9"]]
+
+
+@pytest.mark.parametrize("opts", [None, {}, {"workspace_id": None}, {"workspace_id": ""}, {"tab": "tools"}], ids=["none", "empty", "null", "blank", "other-key"])
+def test_a_session_path_with_no_workspace_names_none(opts):
+    assert navigate({"name": "agents", "id": "a1"}, "/sessions/ses-1", opts) == [["openSession", "ses-1", None]]
 
 
 def test_a_session_path_without_the_opener_keeps_todays_behaviour():
@@ -268,13 +279,14 @@ def test_install_passes_open_session_into_navigate():
             ctx,
             "(function () { var calls = []; var overlay = { name: 'agents', section: null, id: 'a1' };"
             " SH_installRouterShim(function () { return overlay; }, function (n, s, i) { calls.push(['open', n, s, i]); },"
-            "   function (t) { calls.push(['closeTo', t]); }, function (sid) { calls.push(['openSession', sid]); });"
-            " window.primerApi.useRouter().navigate('/sessions/ses-7');"
+            "   function (t) { calls.push(['closeTo', t]); }, function (sid, wid) { calls.push(['openSession', sid, wid]); });"
+            " window.primerApi.useRouter().navigate('/sessions/ses-7', { workspace_id: 'w3' });"
+            " window.primerApi.useRouter().navigate('/sessions/ses-8');"
             " return calls; })()",
         )
     finally:
         ctx.close()
-    assert calls == [["openSession", "ses-7"]]
+    assert calls == [["openSession", "ses-7", "w3"], ["openSession", "ses-8", None]]
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +327,7 @@ def _run_shell_source(source: str, tail: str, meta: dict | None = None) -> list:
 
 
 CLOSE_START = "  var closeOverlayTo = React.useCallback(function (target) {"
-SESSION_START = "  var openSessionInStudio = React.useCallback(function (sid) {"
+SESSION_START = "  var openSessionInStudio = React.useCallback(function (sid, owid) {"
 
 
 def test_close_overlay_to_is_one_history_entry():
@@ -353,6 +365,21 @@ def test_open_session_in_studio_follows_the_session_to_its_workspace_when_the_ra
     assert ["setWid", "w2"] in calls
 
 
+def test_open_session_in_studio_prefers_the_workspace_the_caller_names_over_the_rail_cache():
+    """A session row carries its own workspace_id; the rail's cache is a poll that may not know a session created a moment ago, or may know it by an older row."""
+    src = _slice_callback(SHELL, SESSION_START)
+    named = _run_shell_source(src, " openSessionInStudio('ses-1', 'w3');", meta={"ses-1": {"wid": "w2", "name": "n"}})
+    assert [c for c in named if c[0] == "setWid"] == [["setWid", "w3"]], "the caller's workspace, once, and not the cache's"
+    unknown_to_the_rail = _run_shell_source(src, " openSessionInStudio('ses-1', 'w3');")
+    assert ["setWid", "w3"] in unknown_to_the_rail and unknown_to_the_rail.count(["markPush"]) == 1
+
+
+def test_open_session_in_studio_with_no_workspace_anywhere_leaves_the_selected_one_alone():
+    src = _slice_callback(SHELL, SESSION_START)
+    for tail in (" openSessionInStudio('ses-1');", " openSessionInStudio('ses-1', null);", " openSessionInStudio('ses-1', '');"):
+        assert all(c[0] != "setWid" for c in _run_shell_source(src, tail)), tail
+
+
 def test_open_session_in_studio_without_an_id_does_nothing():
     src = _slice_callback(SHELL, SESSION_START)
     assert _run_shell_source(src, " openSessionInStudio('');") == []
@@ -378,19 +405,26 @@ _PRELUDE = (
     + "\n"
     + SHIM_JS
     + r"""
-var LOG = { closeTo: [], open: [], closed: 0, sessions: [] };
+var LOG = { closeTo: [], open: [], closed: 0, sessions: [], docs: [], promoted: [] };
 var __con = {
   wid: "w1", role: "admin", overlay: null, registry: { get: function () { return null; } },
   openOverlay: function (n, s, i) { LOG.open.push([n, s || null, i || null]); },
   closeOverlay: function () { LOG.closed += 1; },
   closeOverlayTo: function (v) { LOG.closeTo.push(v); },
-  openSessionInStudio: function (sid) { LOG.sessions.push(sid); },
-  setDoc: function () {}, promoteDoc: function () {},
+  openSessionInStudio: function (sid, wid) { LOG.sessions.push([sid, wid || null]); },
+  setDoc: function (d) { LOG.docs.push(d); }, promoteDoc: function (id) { LOG.promoted.push(id); },
 };
 function NV_useConsole() { return __con; }
 window.primerApi = { useFocusTrap: function () {}, focusablesOf: function () { return []; }, useEscape: function () {} };
-function __stub(name) { return function () { return React.createElement("div", { "data-testid": "stub:" + name }); }; }
-["AgentDetail", "GraphDetail", "ToolsetDetail", "TR_TriggersPage", "HarnessesPage", "SV_ServicesPage", "ProviderCatalog", "WorkspaceTemplateDetail", "WorkspaceProviderDetail", "WorkspaceDetail"].forEach(function (n) {
+// Each stub keeps the props its mount handed it, so a test can call the handlers the real page would.
+window.__props = {};
+function __stub(name) {
+  return function (props) {
+    window.__props[name] = props;
+    return React.createElement("div", { "data-testid": "stub:" + name });
+  };
+}
+["AgentDetail", "GraphDetail", "ToolsetDetail", "TR_TriggersPage", "HarnessesPage", "SV_ServicesPage", "ProviderCatalog", "WorkspaceTemplateDetail", "WorkspaceProviderDetail", "WorkspaceDetail", "ApprovalsPage", "CollectionsPage"].forEach(function (n) {
   window[n] = __stub(n);
 });
 window.AP_PolicyDetail = function (props) { window.__apProps = props; return React.createElement("div", { "data-testid": "stub:policy" }); };
@@ -428,10 +462,13 @@ def host(overlays_code):
 
 def test_the_overlay_host_installs_the_shim_over_the_consoles_two_navigations(host):
     host.mount({"name": "agents", "section": None, "id": "a1"}, "NV_OverlayHost")
-    host.eval("(function () { var r = window.primerApi.useRouter(); r.navigate('/agents'); r.navigate('/sessions/ses-3'); r.navigate('/agents/a2'); return 1; })()")
+    host.eval(
+        "(function () { var r = window.primerApi.useRouter(); r.navigate('/agents'); r.navigate('/sessions/ses-3');"
+        " r.navigate('/sessions/ses-4', { workspace_id: 'w5' }); r.navigate('/agents/a2'); return 1; })()"
+    )
     log = host.log()
     assert log["closeTo"] == [{"name": "platform", "nav": "agents", "sub": None}], "a bare list path closes the overlay to its Platform page"
-    assert log["sessions"] == ["ses-3"], "a session path opens the session in the studio"
+    assert log["sessions"] == [["ses-3", None], ["ses-4", "w5"]], "a session path opens the session in the studio, in its own workspace when the row named one"
     assert log["open"] == [["agents", None, "a2"]], "a record path still opens the record"
 
 
@@ -486,6 +523,31 @@ def test_the_approvals_editor_closes_to_the_approvals_page_not_to_a_list_overlay
     assert log["closeTo"] == [{"name": "platform", "nav": "approvals"}]
     assert log["open"] == [], "the editor's close used to open the approvals LIST as an overlay"
     assert log["closed"] == 0, "closeOverlayTo does the closing itself; the adapter forwards to it and adds no second step"
+
+
+def test_a_workspace_sessions_row_opens_the_session_in_the_studio_in_that_workspace(host):
+    """The workspace settings overlay lists the workspace's sessions. A row used to close the overlay and open the tab, and a Platform view under the overlay hid the tab."""
+    host.mount({"name": "workspaces", "section": "detail", "id": "w9"})
+    host.eval("(function () { window.__props.WorkspaceDetail.onOpenSession('ses-4'); return 1; })()")
+    log = host.log()
+    assert log["sessions"] == [["ses-4", "w9"]], "the overlay's id IS the workspace the session lives in"
+    assert log["closed"] == 0 and log["docs"] == [], "openSessionInStudio closes the overlay and opens the tab itself; the adapter adds no second step"
+
+
+def test_the_adapter_opens_a_session_document_in_the_studio_and_every_other_document_as_before(host):
+    """``shell.openDoc({kind: "session"})`` goes through ``con.openSessionInStudio`` (the approvals mount uses it too); another kind keeps closing the overlay and opening the tab."""
+    host.mount({"name": "approvals", "section": None, "id": None})
+    host.eval("(function () { window.__props.ApprovalsPage.onNavigate('sessions', 'ses-5'); return 1; })()")
+    log = host.log()
+    assert log["sessions"] == [["ses-5", None]], "no workspace is known to this caller: the shell falls back to its rail cache"
+    assert log["closed"] == 0 and log["docs"] == [] and log["promoted"] == []
+
+    host.mount({"name": "collections", "section": None, "id": "c1"})
+    host.eval("(function () { window.__props.CollectionsPage.onOpen('c1'); return 1; })()")
+    log = host.log()
+    assert log["sessions"] == [["ses-5", None]], "a wiki document is not a session"
+    assert log["closed"] == 1
+    assert log["docs"] == [{"kind": "wiki", "ref": "c1/c1"}] and log["promoted"] == ["wiki:c1/c1"]
 
 
 def _css_z_indexes(selector: str) -> set[int]:

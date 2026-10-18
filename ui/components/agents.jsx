@@ -481,7 +481,7 @@ function AG_SessionsPanel({ agentId }) {
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               {items.slice(0, 10).map((s) => (
                 <div key={s.id || s.session_id}
-                  onClick={() => navigate("/sessions/" + (s.id || s.session_id))}
+                  onClick={() => navigate("/sessions/" + (s.id || s.session_id), { workspace_id: s.workspace_id })}
                   style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 11.5 }}>
                   <StatusPill status={s.status} />
                   <span className="mono muted" style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
