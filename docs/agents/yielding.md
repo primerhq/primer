@@ -274,7 +274,10 @@ session.
   `deleted` events, `collection.document_pushed`, `approval.*`, the
   graph node events), and any glob that could match one (`*`,
   `agent.*`, `turn.*`), is refused with `type=forbidden` and nothing
-  waits: name the kinds you need. An admin's run may wait on any kind.
+  waits: name the kinds you need. Such a run also may not pass `expr`
+  (a rego module), and its `fields` matchers may use only the `eq` and
+  `prefix` ops (`regex` is refused): filter with those instead. An
+  admin's run may wait on any kind, with `expr` and `regex`.
 - **`wait_for_event` returns the event with stored secrets masked.**
   A CRUD event's payload is the entity's stored row; before it reaches
   your transcript every secret-bearing field (MCP `headers` and `env`

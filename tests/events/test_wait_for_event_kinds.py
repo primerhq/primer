@@ -1,9 +1,15 @@
-"""A run whose principal is not an admin waits only on the kinds the REST event feed shows it (pivot P1, the lead's ruling on #764).
+"""What a run whose principal is not an admin may ask ``wait_for_event`` for (pivot P1, the lead's rulings on #764).
 
-``system__wait_for_event`` is role user, and the event that wakes it becomes the run's tool result. So a non-admin run may wait only on
-what ``GET /v1/events`` would show it: the lifecycle kinds of ``primer.events.visibility``, the feed's own rule (one copy, read by both).
-Any other kind, or a glob that could match one, is refused with ``type=forbidden`` before anything is stored. An admin, and the system
-principal, wait on any kind. A context that names no initiator ranks as an ordinary user, as it does for ``call_tool``.
+``system__wait_for_event`` is role user. A non-admin run is held to three limits, each refused with ``type=forbidden`` before anything is
+stored; an admin, and the system principal, keep all three. A context that names no initiator ranks as an ordinary user, as for ``call_tool``.
+
+* The kinds: the event that wakes the wait becomes the run's tool result, so it may wait only on what ``GET /v1/events`` shows a non-admin:
+  the lifecycle kinds of ``primer.events.visibility``, the feed's own rule (one copy, read by both). A glob that could match another kind is
+  refused too.
+* No ``expr``: the dispatcher evaluates the rego module server-side, where ``opa.runtime().env`` reads the process environment (secrets
+  included); whether the wait wakes or times out would leak it one bit at a time.
+* No ``regex`` field matcher: patterns run in the shared, leader-elected dispatcher loop, where a catastrophic one stalls everyone's
+  subscriptions. ``eq`` and ``prefix`` stay open.
 """
 
 from __future__ import annotations
@@ -92,3 +98,60 @@ def test_the_rule_is_the_event_feeds_own():
     kinds = sorted(ACTION_EVENT_TYPES) + [f"{kind}.{verb}" for kind in ("agent", "graph", "collection", "document", "toolset") for verb in ("created", "updated", "deleted")]
     assert {kind: visibility.user_safe_glob(kind) for kind in kinds} == {kind: visibility.user_safe(kind) for kind in kinds}
     assert any(visibility.user_safe(kind) for kind in kinds) and not all(visibility.user_safe(kind) for kind in kinds)
+
+
+# ---- expr and regex: admin runs only ------------------------------------------------------------------------------------------------------------------
+
+EXPR = 'package primer.event_filter\nmatch := input.payload.collection_id == "kb"\n'
+REGEX = [{"path": "payload.path", "op": "regex", "value": "^guides/"}]
+EQ_AND_PREFIX = [{"path": "payload.workspace_id", "op": "eq", "value": "w"}, {"path": "payload.path", "op": "prefix", "value": "src/"}]
+
+
+@pytest.mark.parametrize("who", [USER, None], ids=["user", "no-initiator"])
+async def test_a_non_admin_may_not_pass_an_expr(sp, who):  # noqa: F811
+    result = await make_wait_for_event_handler(sp)({"event_types": ["session.ended"], "expr": EXPR}, ctx=_ctx(who))
+
+    assert json.loads(result.output) == {
+        "type": "forbidden",
+        "message": (
+            "this run's principal is not an admin, so it may not pass an expr (a rego module the platform evaluates); "
+            "filter with fields matchers instead"
+        ),
+    }
+    assert await _subscriptions(sp) == [], "a refused wait stores no subscription, so the dispatcher never evaluates the expr"
+
+
+@pytest.mark.parametrize("who", [USER, None], ids=["user", "no-initiator"])
+async def test_a_non_admin_fields_matcher_may_not_use_regex(sp, who):  # noqa: F811
+    fields = EQ_AND_PREFIX + REGEX
+    result = await make_wait_for_event_handler(sp)({"event_types": ["workspace.file_changed"], "fields": fields}, ctx=_ctx(who))
+
+    assert json.loads(result.output) == {
+        "type": "forbidden",
+        "message": (
+            "this run's principal is not an admin, so its fields matchers may use only the eq and prefix ops; "
+            "refused regex on: 'payload.path'"
+        ),
+    }
+    assert await _subscriptions(sp) == []
+
+
+async def test_a_non_admin_may_use_eq_and_prefix_matchers(sp):  # noqa: F811
+    result = await make_wait_for_event_handler(sp)(
+        {"event_types": ["workspace.file_changed"], "fields": EQ_AND_PREFIX}, ctx=_ctx(USER),
+    )
+
+    assert isinstance(result, Yielded), result
+    [stored] = await _subscriptions(sp)
+    assert [(m.path, m.op) for m in stored.filter.fields] == [("payload.workspace_id", "eq"), ("payload.path", "prefix")]
+
+
+@pytest.mark.parametrize("who", [ADMIN, PrincipalRef.system()], ids=["admin", "system"])
+async def test_an_admin_keeps_expr_and_regex(sp, who):  # noqa: F811
+    result = await make_wait_for_event_handler(sp)(
+        {"event_types": ["collection.document_pushed"], "expr": EXPR, "fields": REGEX}, ctx=_ctx(who),
+    )
+
+    assert isinstance(result, Yielded), result
+    [stored] = await _subscriptions(sp)
+    assert stored.filter.expr == EXPR and [(m.op, m.value) for m in stored.filter.fields] == [("regex", "^guides/")]

@@ -1314,7 +1314,9 @@ def build_system_toolset(
                 # Generated from the feed's own rule (primer.events.visibility), so this cannot drift from it.
                 + ", ".join(f"``{kind}``" for kind in user_safe_kinds())
                 + "); any other kind, or a glob that could match one, "
-                "is refused with ``type=forbidden``."
+                "is refused with ``type=forbidden``, and so is an ``expr`` "
+                "or a ``regex`` field matcher from such a run (``eq`` and "
+                "``prefix`` matchers stay open)."
             ),
             args_schema=_WaitForEventArgs.model_json_schema(),
             examples=[
