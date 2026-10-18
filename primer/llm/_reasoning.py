@@ -583,15 +583,20 @@ def profile_extended(
     return translate(config, model=model)
 
 
-# Stems a provider's refusal of a reasoning setting carries, matched without
-# case. The wire names differ (OpenAI "reasoning_effort" or "reasoning.effort",
-# Anthropic "thinking" and "output_config.effort", Gemini "thinking_budget",
-# "thinking_level" or "thinking mode", Ollama "does not support thinking",
-# OpenRouter "reasoning"), so a refusal is recognised by these, or by the name
-# of a key the profile sent.
-_REFUSAL_STEMS: tuple[str, ...] = (
-    "reason", "think", "effort", "budget", "chat_template_kwargs", "output_config",
-)
+# The words that name a setting in a provider's refusal of it, beyond its own
+# key: its wire alias, and that setting's own refusal wording. A refusal is
+# counted only when it names a setting the call actually sent, so a 400 about
+# something else is never retried (OpenAI's moderation text links to its
+# reasoning guide, and a seed-only profile is not a thinking setting).
+_SETTING_WORDS: dict[str, tuple[str, ...]] = {
+    "reasoning_effort": ("reasoning.effort",),
+    "thinking": ("budget_tokens",),
+    "output_config": ("output_config.effort", "effort"),
+    "thinking_budget": ("thinking_config", "budget", "thinking mode"),
+    "thinking_level": ("thinking_config", "thinking level"),
+    "think": ("does not support thinking",),
+    "chat_template_kwargs": ("enable_thinking",),
+}
 
 # Codes that say a call failed for a reason other than what it asked for.
 _NOT_A_REFUSAL: frozenset[str] = frozenset({
@@ -606,13 +611,14 @@ _REFUSED: set[tuple[int, str, str]] = set()
 
 
 def _names_a_setting(message: str | None, knobs: dict[str, Any]) -> bool:
+    """Whether a refusal names one of the settings this call sent: its key,
+    its wire alias, or its own refusal wording, each as a whole word."""
     text = (message or "").lower()
-    if any(stem in text for stem in _REFUSAL_STEMS):
-        return True
-    return any(
-        re.search(rf"(?<![a-z0-9_]){re.escape(str(key).lower())}(?![a-z0-9_])", text)
-        for key in knobs
-    )
+    for key in knobs:
+        for word in (str(key).lower(), *_SETTING_WORDS.get(str(key), ())):
+            if re.search(rf"(?<![a-z0-9_]){re.escape(word)}(?![a-z0-9_])", text):
+                return True
+    return False
 
 
 async def _aclose(agen: Any) -> None:
@@ -632,8 +638,10 @@ def profile_stream(llm: Any, knobs: dict[str, Any], **kwargs: Any) -> AsyncItera
     When the provider refuses the call at stream open (a ``BadRequestError``
     raised before the first event, or a fatal first event, which is how the
     lazily-opened Ollama and Gemini adapters report a 400) and its message
-    names one of the settings, the call is made once more exactly as it would
-    be without the profile's settings, and the refusal is logged once at DEBUG.
+    names one of the settings this call sent (its key, its wire alias or its
+    own refusal wording, :data:`_SETTING_WORDS`), the call is made once more
+    exactly as it would be without the profile's settings, and the refusal is
+    logged once at DEBUG.
     When that call works, the model is called without those settings for the
     rest of the process. A failure after the first event is never retried:
     output has already reached the consumer.
