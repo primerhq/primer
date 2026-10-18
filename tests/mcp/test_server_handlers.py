@@ -447,6 +447,61 @@ async def test_invoke_policy_stored_under_the_retired_toolset_id_blocks(
 
 
 @pytest.mark.asyncio
+async def test_invoke_allowlisted_retired_alias_spelling_meets_the_canonical_rego_gate(
+    fake_storage_provider, fake_provider_registry_with_tools, system_actor,
+) -> None:
+    """An allowlist row spelled with the retired id (``_misc__uuid_v4``) misses the routing map (it lists canonical scoped ids) and takes the fallback ``__`` split, so the raw alias reaches the gate; the ApprovalContext must carry the canonical toolset id, or a Rego policy written against ``misc`` never sees it (``input.toolset_id`` would be ``_misc``). The row is seeded straight into storage: write-time validation only knows the CURRENT catalogue, so this shape is the allowlist an operator saved before the rename (the catalogue advertised ``_misc__uuid_v4`` then)."""
+    from datetime import datetime, timezone
+
+    from primer.model.mcp_exposure import McpExposure
+    from primer.model.tool_approval import (
+        PolicyApprovalConfig,
+        ToolApprovalPolicy,
+    )
+
+    deps = _deps_with_resolver(
+        fake_storage_provider, fake_provider_registry_with_tools,
+    )
+    await fake_storage_provider.get_storage(McpExposure).create(
+        McpExposure(
+            enabled=True,
+            allowed_tools=["_misc__uuid_v4"],
+            updated_at=datetime.now(timezone.utc),
+            updated_by="alice",
+        )
+    )
+    await fake_storage_provider.get_storage(ToolApprovalPolicy).create(
+        ToolApprovalPolicy(
+            toolset_id="misc",
+            tool_name="uuid_v4",
+            enabled=True,
+            approval=PolicyApprovalConfig(
+                policy=(
+                    "package primer.tool_approval\n"
+                    "default required := false\n"
+                    "default reason := \"\"\n"
+                    "required if input.toolset_id == \"misc\"\n"
+                    "reason := \"gated by the misc policy\" if "
+                    "input.toolset_id == \"misc\"\n"
+                ),
+            ),
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+
+    with pytest.raises(NotExposed) as excinfo:
+        await invoke_exposed(
+            scoped_id="_misc__uuid_v4", arguments={},
+            principal=None, actor=system_actor, deps=deps,
+        )
+    assert excinfo.value.reason == "approval_required"
+    provider = await fake_provider_registry_with_tools.get_toolset("misc")
+    assert provider.calls == [], (
+        "the tool ran although the canonical rego policy gates it"
+    )
+
+
+@pytest.mark.asyncio
 async def test_invoke_disabled_policy_does_not_block(
     fake_storage_provider, fake_provider_registry_with_tools, system_actor,
 ) -> None:

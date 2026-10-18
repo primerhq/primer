@@ -27,6 +27,7 @@ from primer.agent.tool_manager import invoke_one
 # ``_role_allows`` used by :func:`invoke_exposed` below) so anything that
 # references ``primer.mcp.dispatch._role_allows`` keeps working unchanged.
 from primer.authz import _ROLE_RANK, _role_allows  # noqa: F401
+from primer.common.toolset_ids import canonical_toolset_id
 from primer.mcp.exposure import (
     ExposureDeps,
     _iter_catalogue,
@@ -123,6 +124,13 @@ async def _enforce_approval_gate(
     resolver = getattr(deps, "approval_resolver", None)
     if resolver is None:
         return
+    # The fallback first-``__`` split in the dispatch path can hand the
+    # gate the retired alias spelling of a live toolset (``_misc`` for
+    # ``misc``); the registry resolves that alias and the call IS
+    # dispatched, so the gate must see the canonical id the policies
+    # are written against, or a Rego or LLM gate reading
+    # ``input.toolset_id`` would never match it.
+    toolset_id = canonical_toolset_id(toolset_id)
     policy = await resolver.find(toolset_id=toolset_id, tool_name=bare_name)
     if policy is None or not policy.enabled:
         return
@@ -225,11 +233,14 @@ async def invoke_exposed(
     if entry is not None:
         toolset_id, bare_name = entry
     else:
-        # Not in the live catalogue (toolset gone or tool removed since
-        # the allowlist was written). Fall back to a first-``__`` split
-        # purely to preserve the provider_missing / tool_missing reason
-        # distinction below; the resolved id is never dispatched because
-        # the provider/tool lookup that follows fails for it by design.
+        # Not in the live catalogue. Either a retired-alias spelling of
+        # a live toolset (``_misc__uuid_v4``: the routing map lists the
+        # canonical scoped ids) -- the registry resolves the alias, so
+        # the call IS dispatched and the approval gate canonicalises
+        # the id before it sees it -- or the toolset/tool is genuinely
+        # gone and the provider/tool lookup below fails by design. The
+        # first-``__`` split preserves that reason distinction either
+        # way.
         toolset_id, bare_name = scoped_id.split("__", 1)
     provider = await deps.provider_registry.get_toolset(toolset_id)
     if provider is None:
