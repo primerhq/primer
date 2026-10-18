@@ -1129,7 +1129,11 @@ async def _live_approval_gate(approval_resolver: "ApprovalResolver | None", entr
 
 
 def _description_document(entry: ToolEntry, approval: dict[str, Any]) -> dict[str, Any]:
-    """The ``describe_tool`` document of one catalog entry (the keys are a contract: the wiki's reference pages and the agents read them)."""
+    """The ``describe_tool`` document of one catalog entry (the keys are a contract: the agents read them).
+
+    ``reference`` is the path of the tool's page in the platform wiki (``reference/tools/<toolset>/<tool>``, pivot P1 slices 6-7). A deployment that has not built the wiki has no
+    such page, so the path may lead nowhere.
+    """
     tool = entry.tool
     arguments = tool.examples[0].args if tool.examples else {}
     if entry.via_call_tool:
@@ -1196,8 +1200,10 @@ def _describe_tool_tool(
                 "Use when you know which tool you want and need its exact arguments before calling it; it is far smaller than "
                 "``list_toolset_tools``, which returns a whole toolset. ``call.example`` is the call to make: ``call_tool`` arguments for a "
                 "toolset's tool, or a direct call by scoped id for the session file tools (toolset ``workspace``) and the client tool "
-                "(toolset ``client``), which ``call_tool`` cannot reach. ``approval`` is the gate on the tool now, and ``reference`` the path "
-                "of its page in the platform wiki. An unknown toolset or tool returns ``type=not-found``, naming the toolset's tools."
+                "(toolset ``client``), which ``call_tool`` cannot reach. ``approval`` is the gate on the tool now. ``reference`` is the path of the "
+                "tool's page in the platform wiki; the page exists once the wiki is built, so until then it may be absent. Describing a tool "
+                "does not mean this run may call it: ``required_role`` is the role it needs, and ``call_tool`` refuses a tool above this run's "
+                "role with ``type=forbidden``. An unknown toolset or tool returns ``type=not-found``, naming the toolset's tools."
             ),
             args_schema=_DescribeToolArgs.model_json_schema(),
             examples=[

@@ -4,13 +4,15 @@ An agent that carries only ``call_tool`` needs a cheap way to learn the exact ar
 for ONE ``(toolset_id, tool_name)`` from the tool catalog (``primer.toolset.tool_catalog``), so the built-in toolsets, a user-made toolset, the session file tools
 (``workspace``) and the client tool (``client``) are described the same way. What is pinned here:
 
-* the output keys are exactly the contract (the wiki's reference pages and the agents read them), and each value is the catalog's, not a second opinion;
+* the output keys are exactly the contract (the agents read them), and each value is the catalog's, not a second opinion;
 * the call example names the right door: ``call_tool`` for a toolset, a direct call for the two scopes ``call_tool`` cannot reach;
 * the gate is the LIVE one, read from the same ``ApprovalResolver`` the gates use (an operator's edit shows; a disabled row does not), never the shipped default,
   and under whichever spelling of the toolset it is asked for (``_misc`` is ``misc``);
 * the refusals: an unknown toolset, an unknown tool (naming the toolset's tools), a toolset that will not list, bad arguments; an OAuth consent request is not
   swallowed;
-* it is a plain read: role user, no pause, no workspace (so it can be exposed over MCP), and it works without a run context.
+* it is a plain read: role user, no pause, no workspace (so it can be exposed over MCP), and it works without a run context;
+* describing a tool is not permission to call it: its ``required_role`` is above the run's role, ``call_tool`` still refuses it with ``type=forbidden``, and the descriptor
+  says so (and that the wiki page ``reference`` names may be absent: the platform wiki is pivot P1 slices 6-7).
 """
 
 from __future__ import annotations
@@ -327,6 +329,29 @@ async def test_a_principal_argument_the_model_supplies_is_ignored(reserved_provi
 async def test_bad_arguments_are_a_validation_error(system_toolset, arguments):
     r = await system_toolset.call(tool_name="describe_tool", ctx=_ctx(), arguments=arguments)
     assert r.is_error and json.loads(r.output)["type"] == "validation-error"
+
+
+# ---- describing is not permission ----------------------------------------------------------------------------------------------------------------------------
+
+
+async def test_describing_an_admin_tool_for_a_user_run_does_not_make_it_callable(system_toolset):
+    """``describe_tool`` is role user and answers for any tool, so a user-role run can read an admin tool's document. The document says what the tool needs
+    (``required_role``) and gives the call to make; ``call_tool`` still refuses it for this run, with ``type=forbidden``."""
+    out = await _described(system_toolset, "system", "get_llm_provider")
+    assert out["required_role"] == "admin" and out["call"]["via"] == "call_tool"
+
+    refused = await system_toolset.call(tool_name="call_tool", ctx=_ctx(), arguments=out["call"]["example"])
+
+    assert refused.is_error and json.loads(refused.output)["type"] == "forbidden"
+
+
+async def test_its_description_says_a_described_tool_may_still_be_refused_and_the_reference_page_may_be_missing(system_toolset):
+    """What the model reads. The wiki page ``reference`` names exists once the platform wiki is built (pivot P1 slices 6-7); until then the path leads nowhere. And a tool
+    above the run's role is described all the same, then refused by ``call_tool`` as ``forbidden``."""
+    text = (await _tool(system_toolset, "describe_tool")).description
+
+    assert "``required_role``" in text and "``type=forbidden``" in text and "does not mean this run may call it" in text
+    assert "``reference``" in text and "may be absent" in text
 
 
 # ---- what kind of tool it is ---------------------------------------------------------------------------------------------------------------------------
