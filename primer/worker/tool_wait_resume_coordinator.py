@@ -359,17 +359,15 @@ async def resume_graph_tool_wait(
         _decision, repark, node_tool_call_seq = await resume_graph_from_checkpoint(
             executor=executor,
             checkpoint=graph_checkpoint,
-            # No ToolCall-approval gate is involved in a pure tool_wait
-            # resume (resumed_tcid=None keeps value_yield_toolcall False,
-            # since that check is gated on resumed_tcid is not None) - an
-            # explicit "approved" payload avoids
-            # classify_approval_payload's fail-closed-to-rejected default
-            # spuriously monkeypatching _dispatch_toolcall_with_bypass,
-            # even though tc_pending is structurally empty here (a pure
-            # tool_wait park has no _PendingToolCall/_PendingAgentYield
-            # at all).
+            # No human gate is involved in a pure tool_wait resume (resumed_tcid=None keeps value_yield_toolcall False, since that check is gated on
+            # resumed_tcid is not None) - an explicit "approved" payload avoids classify_approval_payload's fail-closed-to-rejected default spuriously
+            # monkeypatching _dispatch_toolcall_with_bypass. That payload decides NOTHING: a pure tool_wait park has no _PendingToolCall/_PendingAgentYield
+            # at all (by construction, _build_pending_tool_wait_park is only chosen when none is pending), and ``wake_only`` makes it so here too: it selects
+            # no ToolCall or agent-yield entry, so a pending approval gate could not be run (the executor runs an agent node's approved gate itself) on a
+            # payload nobody decided.
             payload={"decision": "approved"},
             resumed_tcid=None,
+            wake_only=True,
             agent_tool_result=None,
             pool=pool,
             session=session,

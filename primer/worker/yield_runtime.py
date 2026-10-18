@@ -713,13 +713,19 @@ async def _resume_tool_approval(
     blob: dict,
     payload: "dict | YieldTimeout | YieldCancelled | Any",
     tool_manager: Any,
+    principal: str | None = None,
 ) -> ToolResultPart:
-    """Resume a session parked on a tool-approval gate.
+    """Resume a run parked on a tool-approval gate.
 
     Classifies the event payload and either re-dispatches the
     original tool call (decision=approved) or synthesises an error
     ToolResultPart (decision=rejected, timeout, cancelled, or any
     malformed payload — fail-closed).
+
+    The agent session resumes through this, and so does the AGENT NODE of a graph
+    (:meth:`primer.graph._agent_node._AgentNodeMixin._answer_parked_approval`, with
+    the node's own manager): one rule for what an approval runs and what a refusal
+    tells the model, wherever the gate sat.
 
     Parameters
     ----------
@@ -737,6 +743,12 @@ async def _resume_tool_approval(
         (or compatible duck-type) that exposes
         ``execute(call, *, bypass_approval=True) -> ToolResultPart``.
         Only called on the approved path.
+    principal
+        The principal string the RESUMED run dispatches its tools with (a graph
+        executor's ``principal``; ``None`` for a run that has none, as the agent
+        session does). The approved call is made with it, so the tool sees what its
+        first dispatch would have given it. It is the run's own, never a value stored
+        with the park.
 
     Returns
     -------
@@ -769,8 +781,12 @@ async def _resume_tool_approval(
                 via=via,
                 original_call=original_call,
                 tool_manager=tool_manager,
+                principal=principal,
             )
-        return await tool_manager.execute(original_call, bypass_approval=True)
+        # ``principal`` only when the run has one: a manager stand-in written before it existed takes no such argument.
+        return await tool_manager.execute(
+            original_call, bypass_approval=True, **({"principal": principal} if principal is not None else {}),
+        )
 
     return ToolResultPart(
         id=original_call.id,
@@ -789,6 +805,7 @@ async def _resume_call_tool_dispatch(
     via: dict[str, Any],
     original_call: ToolCallPart,
     tool_manager: Any,
+    principal: str | None = None,
 ) -> ToolResultPart:
     """Dispatch an approved ``call_tool`` inner tool via its toolset provider, as the resumed run.
 
@@ -798,7 +815,9 @@ async def _resume_call_tool_dispatch(
 
     * the provider gets the context of the RESUMED run, ``tool_manager.context_for(original_call.id)``: the session, identity and turn of
       the manager that is resuming the park, never a value stored with it. A manager that has no ``context_for`` (or no session to build one
-      from) gives ``None``, and the run is ranked as an unattributed user;
+      from) gives ``None``, and the run is ranked as an unattributed user. ``principal`` is the principal string the resumed run dispatches
+      with (a graph executor's; ``None`` for the agent session), handed to ``context_for`` so the provider keys per-user state on the run's
+      own, as the first dispatch would have;
     * the inner tool's ``required_role`` is checked against that context's principal again (``forbidden``), because the approval decided about
       this call and not about who may make it: a stale or forged park cannot run an admin tool for a run that is not an admin;
     * ``via`` names the toolset (``toolset_id``); a park written before pivot P1 also carries a ``principal`` a model chose, which is never
@@ -835,7 +854,11 @@ async def _resume_call_tool_dispatch(
             toolset_id=toolset_id,
             tool_name=original_call.name,
             arguments=original_call.arguments,
-            ctx=context_for(original_call.id) if context_for is not None else None,
+            ctx=(
+                None if context_for is None
+                else context_for(original_call.id, principal=principal) if principal is not None
+                else context_for(original_call.id)
+            ),
         )
     except YieldToWorker as paused:
         if getattr(paused, "frames", None):

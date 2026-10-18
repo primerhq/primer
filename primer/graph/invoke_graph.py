@@ -230,8 +230,10 @@ async def resume_invoke_graph(
 
     ``payload`` also reaches the child as ``toolcall_payload``: a
     value-yielding ``tool_call`` node inside the child (``ask_user``, a python
-    toolset's tool) takes the operator's reply from it, and the executor
-    ignores it for an approval gate. ``resume_session_id`` and
+    toolset's tool) takes the operator's reply from it, and so does an agent
+    node's own approval gate (the node's manager runs the approved call, or the
+    model reads the rejection); a ToolCall node's approval gate ignores it.
+    ``resume_session_id`` and
     ``resolve_provider`` are the session being resumed and the provider
     registry's ``get_toolset``, for the ``ResumeContext`` that node's resume
     hook receives. They default ``None`` for a caller with no value-yielding

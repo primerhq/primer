@@ -515,6 +515,14 @@ class _BaseGraphExecutor(
         ``wake_only`` (round 3, N5): the resume is a ``tool_wait`` batch's readiness and nothing was decided by a human, so NO ToolCall or agent-yield entry is selected, whatever tool_call_id
         a provider chose for a pending gate. (The reply used to carry a sentinel id for this; an id is not a safe way to say "no entry".)
 
+        ``toolcall_payload``: the payload the answered gate's decision or reply arrived as. A value-yielding ``tool_call`` node takes the operator's reply from it. An agent node's OWN approval gate
+        (``_PendingAgentYield.is_own_approval_gate``) that no ``agent_tool_result`` was delivered for is answered from it by the node's own manager (``_resume_agent_node``): an approval runs the
+        gated call with the resumed node's context and the real result is what the model reads, anything else (a rejection, a timeout, a cancel, a payload that cannot be read) runs nothing and the
+        model reads the rejection the agent session would give it; a tool that pauses again parks the node again on its own event. Such a gate follows the selection rules of a ToolCall entry that
+        runs an inner call, and it is counted with them: a wake that names a gate runs only the entry of that gate (an entry whose gate id is missing or cannot be read stays pending), and an approval that
+        names none runs at most ONE gated call among them, none of them when it selects several (a rejection that names none rejects every gate it selects). Before, every such gate was answered with an
+        empty SUCCESSFUL result.
+
         ``resume_session_id`` / ``resolve_provider``: the session being
         resumed and the provider registry's ``get_toolset``, for the
         ``ResumeContext`` a value-yielding tool_call node's resume hook
@@ -572,17 +580,22 @@ class _BaseGraphExecutor(
             # A key that names no entry (a park written before keys were node-scoped): the raw id decides, as it always did.
             tc_pending = [e for e in tc_all if e.tool_call_id == resumed_tcid]
             ay_pending = [e for e in ay_all if e.tool_call_id == resumed_tcid]
+        # The agent node's OWN approval gates that no answer was delivered for are answered below by the node's own manager, which RUNS the gated call on an approval (``_resume_agent_node``):
+        # they are entries that run a gated call just as a ToolCall entry that runs an inner call is, and one decision judges them together.
+        answering = [e for e in ay_pending if agent_tool_result is None and e.is_own_approval_gate]
         if resumed_gate_id is not None:
             tc_pending = [e for e in tc_pending if gate_id_of(e.resume_metadata) == resumed_gate_id]
+            ay_pending = [e for e in ay_pending if e not in answering or gate_id_of(e.resume_metadata) == resumed_gate_id]
         elif approved:
             running_an_inner_call = [e for e in tc_pending if self._would_run_an_inner_call(e)]
-            if len(running_an_inner_call) > 1:
+            if len(running_an_inner_call) + len(answering) > 1:
                 logger.warning(
-                    "resume_from_checkpoint: session %s: the wake names no gate and %d selected entries would each run a gated inner call (nodes %s); a decision cannot be shown to be "
+                    "resume_from_checkpoint: session %s: the wake names no gate and %d selected entries would each run a gated call (nodes %s); a decision cannot be shown to be "
                     "any one of them, so none runs and all stay pending",
-                    resume_session_id, len(running_an_inner_call), [e.node_id for e in running_an_inner_call],
+                    resume_session_id, len(running_an_inner_call) + len(answering), [e.node_id for e in (*running_an_inner_call, *answering)],
                 )
                 tc_pending = [e for e in tc_pending if e not in running_an_inner_call]
+                ay_pending = [e for e in ay_pending if e not in answering]
         # tool_wait selection is readiness-based (resolved_tool_wait), not
         # resumed_tcid-based — a batch has no single "replying tcid", it
         # has N sibling task ids. See the docstring above.
@@ -925,12 +938,10 @@ class _BaseGraphExecutor(
                     # resume-drain tap (worker/graph_resume.py) actually
                     # see them; they were never reachable at all before.
                     out_holder: dict = {}
-                    async for _ev in self._resume_agent_node(
-                        ay, agent_tool_result if agent_tool_result is not None
-                        else Message(role="tool", parts=[
-                            ToolResultPart(id=ay.tool_call_id, output="")]),
-                        out_holder,
-                    ):
+                    # No delivered answer for the node's own approval gate: the decision (``toolcall_payload``) is applied by the node's own manager inside
+                    # ``_resume_agent_node``, which runs the approved call or hands the model the rejection. It used to be answered here with an empty
+                    # successful result whatever was decided.
+                    async for _ev in self._resume_agent_node(ay, agent_tool_result, out_holder, decision=toolcall_payload):
                         yield _ev
                     out = out_holder["output"]
                 except YieldToWorker as yld:
@@ -1028,9 +1039,11 @@ class _BaseGraphExecutor(
                     # patching _dispatch_toolcall_with_bypass, which is
                     # called ONLY by the tc_pending loop above. An agent-node
                     # yield's rejection is instead fed in as a normal
-                    # tool-result Message via `agent_tool_result` (see the
-                    # `async for _ev in self._resume_agent_node(...)` call
-                    # above) - _resume_agent_node never calls
+                    # tool-result Message (an error result that says the call
+                    # was rejected, built by `_resume_agent_node` from the
+                    # decision it is given - see the `async for _ev in
+                    # self._resume_agent_node(...)` call above) -
+                    # _resume_agent_node never calls
                     # _dispatch_toolcall_with_bypass, so it has no path to
                     # raise this exception.
                     detail = (
@@ -1081,10 +1094,13 @@ class _BaseGraphExecutor(
         # Resume the selected tool_wait entries (01a0518b boundary d,
         # graph third-list): continue each ready node's turn with its
         # assembled batch results injected as the tool-role message.
-        # _resume_agent_node only ever reads .node_id / .llm_messages /
-        # .iteration off its ``pending`` argument (confirmed by close
-        # reading of that method's body) - a ``_PendingToolWait`` duck-
-        # types into it directly, no dedicated resume method needed.
+        # Given a tool-result message (as it is here), _resume_agent_node
+        # only ever reads .node_id / .llm_messages / .iteration off its
+        # ``pending`` argument (confirmed by close reading of that method's
+        # body; it reads the entry's gate fields only to answer an approval
+        # gate that was given no message, which is never a tool_wait entry) -
+        # a ``_PendingToolWait`` duck-types into it directly, no dedicated
+        # resume method needed.
         for tw in tw_pending:
             token = set_current_graph_node_id(tw.node_id)
             try:

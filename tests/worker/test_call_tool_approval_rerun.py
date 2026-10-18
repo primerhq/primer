@@ -112,6 +112,18 @@ async def test_a_manager_that_cannot_give_a_context_ranks_the_run_as_an_unattrib
     assert refused.error is True and json.loads(refused.output)["type"] == "forbidden" and len(rec.calls) == 1
 
 
+async def test_the_rerun_hands_the_resumed_runs_principal_string_to_the_context():
+    """A graph executor dispatches with a principal string (an MCP toolset keys its per-user state on it); the re-run asks the manager for the context with THAT, and the
+    provider is handed it. The agent session has none and asks as before (the cases above)."""
+    rec = _Recorder({"user_x": "user"})
+    manager = _Manager(rec, USER)
+    part = await _resume_call_tool_dispatch(via=_via(), original_call=CALL, tool_manager=manager, principal="alice")
+    assert part.error is False
+    ((_name, _arguments, principal, ctx),) = rec.calls
+    assert principal == "alice" and ctx.principal == "alice"
+    assert manager.context_requests == [("call-outer", "alice")]
+
+
 # ---- the principal ------------------------------------------------------------------------------------------------------------------------------------
 
 

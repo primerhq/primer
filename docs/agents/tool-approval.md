@@ -178,6 +178,21 @@ A policy itself has no lifecycle beyond `enabled / disabled`. The
   "cancelled by operator". Cancelling the yield is deciding the gate,
   so only a user the gate's approvers admit (or an admin) can do it;
   see "Who may decide a gate" under Gotchas.
+- **in a graph.** The agent node of a graph resumes the way an agent
+  session does. Approved: the node's own manager runs the gated call
+  with the node's context (its session and the run's identity), and the
+  model reads the tool's real result. When the gate was on `call_tool`,
+  the inner tool runs and its role is checked again. A tool that then
+  pauses the turn (`ask_user`, `wait_for_event`, `sleep`) parks the node
+  again until it is answered, and the answer comes back as the result of
+  the call the model made. Rejected, timed out or cancelled: nothing
+  runs, and the model reads the same rejection result as in a session
+  (an error result that says the call was rejected and why), never an
+  empty success. This holds for the agent nodes of a child graph that an
+  agent runs with `invoke_graph` too. One approval runs one gate: an
+  approval that names a gate runs only that one, and one that names none,
+  among several gates it cannot tell apart (a graph park from before the
+  node was part of the gate's key), runs none of them.
 
 ## Pending-approval HTTP endpoints
 

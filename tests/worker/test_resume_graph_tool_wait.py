@@ -102,6 +102,49 @@ async def test_resume_graph_tool_wait_drains_to_completion(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_resume_graph_tool_wait_hands_the_adapter_a_wake_that_decided_nothing(monkeypatch) -> None:
+    """The "approved" payload this coordinator gives ``resume_graph_from_checkpoint`` is made up (it only keeps the adapter from classifying a missing decision as a rejection): it decides nothing.
+    ``wake_only`` selects no ToolCall or agent-yield entry, so a human gate in the checkpoint (a pure tool_wait park has none) could not be run on it. The executor RUNS an agent node's approved gate
+    itself, so this is what stands between a tool_wait wake and an approval nobody gave."""
+    import primer.worker.graph_resume as graph_resume
+
+    ex = await _mk_parallel_executor()
+    _patch_run_agent_turn(monkeypatch, {
+        "agent-a": _tool_wait_park("A", "1"),
+        "agent-b": _tool_wait_park("B", "1"),
+    })
+    with pytest.raises(ToolWaitPark) as excinfo:
+        async for _ev in ex.invoke([]):
+            pass
+    graph_checkpoint = excinfo.value.graph_checkpoint
+
+    storage = _StorageProvider()
+    task_storage = storage.get_storage(ToolCallTask)
+    for scoped_id in ("A:tool:0:1", "B:tool:0:1"):
+        await task_storage.create(_make_parked_batch(scoped_id, state=ToolCallTaskState.DONE, output="result"))
+
+    seen: dict = {}
+    real = graph_resume.resume_graph_from_checkpoint
+
+    async def spy(**kwargs):
+        seen.update(kwargs)
+        return await real(**kwargs)
+
+    monkeypatch.setattr(graph_resume, "resume_graph_from_checkpoint", spy)
+    pool = _FakePool(storage=storage, workspace_io=_FakeWorkspaceIO(), executor_factory=_mk_parallel_executor)
+    parked = ToolWaitParkedState(
+        outstanding_task_ids=["A:tool:0:1", "B:tool:0:1"], notifying_task_ids=[],
+        event_key="tool_wait:A:tool:0:1", llm_messages=[], turn_no=0,
+        started_at=_now(), graph_checkpoint=graph_checkpoint,
+    )
+
+    outcome = await resume_graph_tool_wait(pool, _session(), parked)
+
+    assert outcome == "ENDED:completed"
+    assert seen["wake_only"] is True and seen["resumed_tcid"] is None and seen["agent_tool_result"] is None
+
+
+@pytest.mark.asyncio
 async def test_resume_graph_tool_wait_partial_wake_reparks_on_remaining_node(
     monkeypatch,
 ) -> None:

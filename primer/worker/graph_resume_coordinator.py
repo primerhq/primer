@@ -661,8 +661,11 @@ async def graph_agent_tool_result(
 ):
     """Build the tool_result Message an agent-node yield continues from
     (e.g. the ask_user answer). Returns None for tool_call approvals /
-    agent-node approvals (those take the bypass/verdict path) or when
-    the fired tcid is not a hook-backed agent yield.
+    agent-node approvals or when the fired tcid is not a hook-backed agent
+    yield. A tool_call node's approval takes the bypass/verdict path; an agent
+    node's own approval gate is answered by the executor itself
+    (``_resume_agent_node``, from the decision it is handed): the approved call
+    must run with the resumed node's manager, which only the executor builds.
 
     The hook gets the same :class:`ResumeContext` the agent-session path
     builds (session_resume_coordinator.py): every registered hook takes

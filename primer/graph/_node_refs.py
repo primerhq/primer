@@ -1008,6 +1008,16 @@ class _PendingAgentYield:
     # -- the id the paired durable TOOL_CALL record actually carries.
     scoped_tool_call_id: str | None = None
 
+    @property
+    def is_own_approval_gate(self) -> bool:
+        """True for an approval gate the NODE'S OWN agent raised (``_approval``, no ``frames``).
+
+        The executor answers such an entry itself when it is resumed with a decision and no answer: it runs the approved call with the node's manager, or hands
+        the model the rejection. The leaf of a nested entry (``frames``) belongs to a subagent or a child graph, and the worker's continuation walk resolves
+        it; a yielding tool's entry (``ask_user``) is answered by its resume hook.
+        """
+        return self.tool_name == "_approval" and not self.frames
+
 
 @dataclass
 class _PendingToolWait:
