@@ -57,7 +57,18 @@ def test_the_grammar_reads_any_quoted_id_not_only_lowercase_words() -> None:
 
 
 def test_every_platform_view_of_the_shell_is_swept_and_none_that_does_not_exist() -> None:
-    assert sorted(surfaces.PLATFORM_FORMS) == sorted(_grammar("platform"))
+    """A custom page whose component is not shipped has no nav row to open (seam I-2), so it waits in ``PENDING_CUSTOM_PAGES`` until the plan that ships it adds its rows (Plans 04 and 08)."""
+    assert sorted(surfaces.PLATFORM_FORMS) == sorted(set(_grammar("platform")) - surfaces.PENDING_CUSTOM_PAGES)
+    assert surfaces.PENDING_CUSTOM_PAGES <= set(_grammar("platform")), "a pending page that the grammar does not admit"
+    assert not surfaces.PENDING_CUSTOM_PAGES & set(surfaces.PLATFORM_FORMS), "a page is either pending or swept"
+    assert surfaces.PENDING_CUSTOM_PAGES == {"web", "templates"}
+
+
+def test_the_retired_views_are_no_longer_swept() -> None:
+    """Workspaces left the Platform view and Setup left the grammar (Platform revamp Plan 01 Task 7): a sweep that visited them by address would land on the studio and the dashboard."""
+    assert "workspaces" not in surfaces.PLATFORM_FORMS and "setup" not in surfaces.SYSTEM_VIEWS
+    assert not [name for name in surfaces.FLOORS if name.startswith(("platform-view workspaces", "platform-view templates", "system-view setup"))]
+    assert "system-view setup" not in surfaces.NO_FORM
 
 
 def test_every_system_view_of_the_shell_is_swept() -> None:
@@ -72,7 +83,6 @@ def test_a_page_with_no_form_says_why() -> None:
     assert no_form == set(surfaces.NO_FORM), (sorted(no_form), sorted(surfaces.NO_FORM))
     for name, why in surfaces.NO_FORM.items():
         assert len(why.split()) >= 4, f"{name}: say why it has no create form"
-    assert "wizard" in surfaces.NO_FORM["system-view setup"], "N5: its provider fix action opens the wizard that creates one; the wizard is not swept"
 
 
 def test_the_system_views_that_open_a_create_form_are_swept_through_it() -> None:
@@ -119,7 +129,7 @@ def test_the_artifact_storage_page_is_swept_through_its_register_menu_and_no_pag
     assert surfaces.LEGACY_FORMS["providers/artifact_storage"] == [surfaces.Form("Register provider", surfaces.MODAL, surfaces.KIND_MENU_ITEM)]
     assert "overlay-page providers/artifact_storage" not in surfaces.NO_FORM
     assert "overlay-page providers/artifact_storage / Register provider" in surfaces.expected_surfaces(7)
-    assert len(surfaces.expected_surfaces(7)) == 109   # the Platform profiles page lost its New profile form (Platform revamp, design 7.1)
+    assert len(surfaces.expected_surfaces(7)) == 104   # the Platform profiles page lost its New profile form (Platform revamp, design 7.1); Workspaces, Workspace templates and Setup left the swept views (Task 7)
 
 
 def test_every_platform_create_button_the_console_draws_has_a_form_entry() -> None:

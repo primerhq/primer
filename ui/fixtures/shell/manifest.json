@@ -99,13 +99,13 @@
     "platform": [
       "providers",
       "profiles",
+      "agents",
+      "graphs",
+      "templates",
       "toolsets",
       "tools",
       "collections",
-      "workspaces",
-      "templates",
-      "agents",
-      "graphs",
+      "web",
       "triggers",
       "channels",
       "harnesses",
@@ -120,7 +120,6 @@
       "mcp",
       "internal",
       "activity",
-      "setup",
       "profile"
     ]
   },

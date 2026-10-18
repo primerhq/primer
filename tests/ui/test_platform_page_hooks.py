@@ -66,7 +66,9 @@ def test_the_page_that_chooses_calls_no_hook_of_its_own_beyond_reading_the_conso
 
     assert "React.use" not in body and "useResource" not in body, "the chooser must not own the list page's state, effects or resource"
     assert "var con = NV_useConsole();" in body
+    assert 'var nav = NV_platResolveNav(con.view.nav || "providers");' in body, "a nav whose page is not loaded is Providers (seam I-2)"
     assert 'return <NV_ProvidersPlatPage type={con.view.sub || "all"} />;' in body, "Providers is mounted at the view's type, or at All (seam I-1)"
+    assert "<NV_CustomPlatPage" in body and "NV_PLAT_CUSTOM_PAGES" in body, "a custom page is mounted in its frame (seam I-2)"
 
 
 def test_each_nav_gets_its_own_instance_of_the_page_that_has_the_hooks() -> None:

@@ -27,15 +27,43 @@ def _grammar_platform_navs() -> list[str]:
     return re.findall(r'"([a-z]+)"', m.group(1))
 
 
+def _custom_pages() -> dict[str, str]:
+    """``NV_PLAT_CUSTOM_PAGES``: the nav ids whose page is a component exported on ``window`` by another file (seam I-2), read from the source."""
+    m = re.search(r"var NV_PLAT_CUSTOM_PAGES = \{([^}]*)\}", PLAT)
+    assert m, "NV_PLAT_CUSTOM_PAGES is gone"
+    return dict(re.findall(r'(\w+): "(\w+)"', m.group(1)))
+
+
+def _sidebar_groups() -> list[tuple[str, list[str]]]:
+    """``NV_PLAT_GROUPS`` from the source: (label, ids) per group."""
+    block = PLAT[PLAT.index("var NV_PLAT_GROUPS = ["):]
+    block = block[:block.index("\n];")]
+    return [(label, re.findall(r'"(\w+)"', ids)) for label, ids in re.findall(r'label: "(\w+)",\s*ids: \[([^\]]*)\]', block)]
+
+
 def test_nav_covers_the_grammar():
     # Every nav id the URL grammar admits renders a row; a grammar id
     # with no page would be an address that renders nothing.
+    custom = _custom_pages()
     for nav in _grammar_platform_navs():
         if nav == "providers":
             continue  # providers mounts window.ProviderCatalog inline, not an NV_PLAT_PAGES entry
+        if nav in custom:
+            # a custom page (seam I-2, Platform revamp Plan 01 Task 7): its component is exported on window by its own file and its row exists while it is loaded
+            assert f"{nav}: {{" not in PLAT.split("var NV_PLAT_PAGES = {", 1)[1].split("\n};", 1)[0], f"{nav} is a custom page: it has no generic page config"
+            continue
         assert f"{nav}: {{" in PLAT, f"no page config for {nav}"
+    assert set(custom) <= set(_grammar_platform_navs()), "a custom page for an id the grammar does not admit is an address nobody can reach"
     for group in ("Intelligence", "Workbench", "Automation", "Governance"):
         assert group in PLAT
+
+
+def test_the_sidebar_order_is_the_grammar_order():
+    """Platform revamp Plan 01 Task 7 (design 4.1): ``SH_VIEWS.platform`` is ``NV_PLAT_GROUPS`` flattened, so the order of the sidebar and the order of the grammar cannot drift."""
+    groups = _sidebar_groups()
+    assert [label for label, _ in groups] == ["Intelligence", "Workbench", "Automation", "Governance"]
+    assert [nav for _, ids in groups for nav in ids] == _grammar_platform_navs()
+    assert "workspaces" not in [nav for _, ids in groups for nav in ids], "Workspaces left the Platform view (design 14.1)"
 
 
 def test_cards_open_shared_overlays():
@@ -48,11 +76,16 @@ def test_cards_open_shared_overlays():
     # window.ProviderCatalog directly (see NV_ProvidersPlatPage) instead
     # of addressing it through con.openOverlay at all.
     opens = re.findall(r"con\.openOverlay\(\"([a-z-]+)\"", PLAT)
+    #
+    # RETARGET (Platform revamp Plan 01 Task 7, design 14.1): "workspaces" and
+    # "new-workspace" dropped out on purpose - the Workspaces page left the
+    # Platform view, so no card of this file opens the workspace overlay (the
+    # studio rail's workspace menu still does: nv-chrome.jsx).
     assert set(opens) >= {"agents", "graphs", "toolsets", "collections",
-                          "workspaces", "new-workspace", "triggers",
-                          "channels", "harnesses", "services",
+                          "triggers", "channels", "harnesses", "services",
                           "approvals"}
     assert "providers" not in opens
+    assert "workspaces" not in opens and "new-workspace" not in opens
 
 
 def test_delete_is_confirm_guarded():

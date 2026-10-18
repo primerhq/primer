@@ -42,7 +42,9 @@ def card(ctx, nav: str, row: str):
 
 
 def test_the_table_is_read_from_the_source() -> None:
-    assert len(NAVS) >= 13 and {"profiles", "agents", "tools", "approvals"} <= set(NAVS)
+    # 11 generic pages: Workspaces and Workspace templates left the table (Platform revamp Plan 01 Task 7, design 14.1 and 14.2); templates is a custom page now.
+    assert len(NAVS) >= 11 and {"profiles", "agents", "tools", "approvals"} <= set(NAVS)
+    assert not {"workspaces", "templates"} & set(NAVS)
 
 
 @pytest.mark.parametrize("nav", NAVS)          # every key of NV_PLAT_PAGES, read from the source
@@ -80,8 +82,6 @@ def test_old_chips_become_badges_or_status(page_ctx) -> None:
     ("agents", '{ id: "a", status: "ok" }', {"label": "ok", "tone": "ok"}),
     ("agents", '{ id: "a", status: "degraded" }', {"label": "degraded", "tone": "warn"}),
     ("agents", '{ id: "a" }', None),
-    ("workspaces", '{ id: "w", status: "running" }', {"label": "running", "tone": "muted"}),
-    ("workspaces", '{ id: "w" }', None),
     ("channels", '{ id: "c", status: "ok" }', {"label": "ok", "tone": "ok"}),
     ("channels", '{ id: "c", status: "error" }', {"label": "error", "tone": "warn"}),
     ("services", '{ id: "s", state: "running" }', {"label": "running", "tone": "ok"}),
@@ -97,8 +97,6 @@ def test_each_entry_maps_its_state_to_one_status(page_ctx, nav, row, expected) -
 
 
 @pytest.mark.parametrize(("nav", "row", "expected"), [
-    ("templates", '{ id: "t", backend: { kind: "kubernetes" } }', "kubernetes"),
-    ("templates", '{ id: "t" }', "local"),
     ("collections", '{ id: "c", system: true }', "system"),
     ("collections", '{ id: "c" }', None),
     ("harnesses", '{ id: "h", kind: "outbound" }', "outbound"),

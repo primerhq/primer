@@ -14,6 +14,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 MODULE = ROOT / "ui" / "foundation" / "shell-url.js"
 INDEX = ROOT / "ui" / "index.html"
@@ -356,3 +358,77 @@ def test_every_sub_list_belongs_to_a_nav_of_the_grammar() -> None:
     for key in json.loads(ctx.eval("JSON.stringify(SH_VIEW_SUBS)")):
         name, _, nav = key.partition(":")
         assert nav in views[name], f"{key}: a sub list for a nav the grammar does not admit can never be reached"
+
+
+# ---------------------------------------------------------------------------
+# The new Platform navs, and old links (Platform revamp Plan 01, Task 7; seams I-2 and I-7; Review Focus 1).
+# ---------------------------------------------------------------------------
+
+PLATFORM_NAVS = [
+    "providers", "profiles", "agents", "graphs", "templates", "toolsets", "tools", "collections", "web",
+    "triggers", "channels", "harnesses", "services", "approvals",
+]
+SYSTEM_NAVS = ["dashboard", "users", "apikeys", "sso", "mcp", "internal", "activity", "profile"]
+
+
+def test_the_grammar_lists_the_navs_in_the_order_of_the_sidebar() -> None:
+    """``SH_VIEWS.platform`` is the sidebar's order (``NV_PLAT_GROUPS`` flattened: tests/ui/test_console_platform.py), and Workspaces and Setup are gone from it."""
+    views = json.loads(_ctx().eval("JSON.stringify(SH_VIEWS)"))
+    assert views["platform"] == PLATFORM_NAVS
+    assert views["system"] == SYSTEM_NAVS
+    assert "workspaces" not in views["platform"] and "setup" not in views["system"]
+
+
+@pytest.mark.parametrize("raw,view", [
+    ("#/w/ws-1?view=platform:workspaces", {"name": "studio", "nav": None, "sub": None}),
+    ("#/?view=system:setup", {"name": "system", "nav": "dashboard", "sub": None}),
+    ("#/?view=platform:templates", {"name": "platform", "nav": "templates", "sub": None}),
+    ("#/?view=platform:web", {"name": "platform", "nav": "web", "sub": None}),
+])
+def test_old_and_new_platform_links_parse_to_their_page(raw: str, view: dict) -> None:
+    assert json.loads(_ctx().eval(f"JSON.stringify(SH_parseUrl({json.dumps(raw)}).view)")) == view
+
+
+def test_an_old_workspaces_link_rebuilds_as_the_studio() -> None:
+    assert _ctx().eval("SH_buildUrl(SH_parseUrl('#/w/ws-1?view=platform:workspaces'))") == "#/w/ws-1"
+
+
+def test_an_old_setup_link_rebuilds_as_the_dashboard() -> None:
+    assert _ctx().eval("SH_buildUrl(SH_parseUrl('#/?view=system:setup'))") == "#/?view=system:dashboard"
+
+
+def test_a_redirect_keeps_the_rest_of_the_address() -> None:
+    """Only the view is redirected: the workspace, the document, the overlay and the anchor of the old link are still there."""
+    ctx = _ctx()
+    rebuilt = ctx.eval("SH_buildUrl(SH_parseUrl('#/w/ws-1?view=platform:workspaces&doc=session:s1&overlay=agents::a1#turn-3'))")
+    assert rebuilt == "#/w/ws-1?doc=session:s1&overlay=agents::a1#turn-3"
+
+
+def test_a_redirect_ignores_any_third_segment() -> None:
+    ctx = _ctx()
+    assert json.loads(ctx.eval("JSON.stringify(SH_parseUrl('#/?view=platform:workspaces:llm').view)")) == {"name": "studio", "nav": None, "sub": None}
+
+
+def test_the_redirect_table_is_on_window_and_every_target_is_a_valid_view() -> None:
+    ctx = _ctx()
+    redirects = json.loads(ctx.eval("JSON.stringify(SH_VIEW_REDIRECTS)"))
+    assert redirects == {"platform:workspaces": {"name": "studio", "nav": None}, "system:setup": {"name": "system", "nav": "dashboard"}}
+    views = json.loads(ctx.eval("JSON.stringify(SH_VIEWS)"))
+    for source, target in redirects.items():
+        name, _, nav = source.partition(":")
+        assert nav not in views[name], f"{source} is a redirect, so the grammar no longer admits it"
+        assert target["name"] in views and (target["nav"] is None or target["nav"] in views[target["name"]]), target
+
+
+def test_a_redirect_is_not_applied_to_a_nav_that_still_exists() -> None:
+    """``view=platform:templates`` needs none (it is the new page)."""
+    ctx = _ctx()
+    redirects = json.loads(ctx.eval("JSON.stringify(Object.keys(SH_VIEW_REDIRECTS))"))
+    assert "platform:templates" not in redirects and "platform:web" not in redirects
+
+
+def test_workspace_settings_and_old_provider_class_overlays_still_parse() -> None:
+    ctx = _ctx()
+    assert json.loads(ctx.eval("JSON.stringify(SH_parseUrl('#/?overlay=workspaces::ws-1').overlay)")) == {"name": "workspaces", "section": None, "id": "ws-1"}
+    assert json.loads(ctx.eval("JSON.stringify(SH_parseUrl('#/?overlay=providers:tts').overlay)"))["section"] == "tts"
+    assert json.loads(ctx.eval("JSON.stringify(SH_parseUrl('#/?overlay=providers:ssp:store-1').overlay)")) == {"name": "providers", "section": "ssp", "id": "store-1"}

@@ -5,7 +5,7 @@ shell without a row here fails that test, and a row cannot be dropped without it
 asserts it visited exactly that, so a form that silently failed to open (the old helper returned quietly when its button was missing) is a failure, not a pass.
 
 A form entry is ``Form(button, root, then)``: the button that is pressed, the root of what it opens, and (only for the provider register menus) the menu item that is picked after it. ``MODAL`` is
-the dialog nearly every form opens; the Platform page's New workspace opens the New workspace overlay. A form root is never the root of its page (the page is on screen before the button is pressed,
+the dialog every form opens now (``NEW_WORKSPACE_OVERLAY``, the root of the New workspace overlay, stays a known form root: the Platform page's own New workspace form left with the Workspaces page). A form root is never the root of its page (the page is on screen before the button is pressed,
 so a sweep rooted there records the page and calls it the form); the sweep also asserts the root is absent before the click. An empty list says the page has no form, and ``NO_FORM`` says why.
 
 Only the FIRST kind's form of a provider class is swept (the first item of its register menu): the other kinds draw other fields and are not looked at.
@@ -112,15 +112,18 @@ LEGACY_TITLES: dict[str, str] = {
     "ssp": "Providers",
 }
 
-# the Platform VIEW (view=platform:<id>: what every Platform nav row opens), one entry per id of the shell's grammar (ui/foundation/shell-url.js SH_VIEWS.platform)
+# the custom Platform pages (seam I-2) whose component is not shipped yet: ``web`` (Plan 04) and ``templates`` (Plan 08) are ids of the shell's grammar, but their nav row exists only while
+# ``window.WEB_SettingsPage`` / ``window.WT_TemplatesPage`` is loaded, so the sweep has no page to open for them. The plan that ships a page removes its id from this set and adds its
+# ``PLATFORM_FORMS`` and ``FLOORS`` rows in the same PR (``tests/ui/test_a11y_sweep_surfaces.py`` holds the two together).
+PENDING_CUSTOM_PAGES: set[str] = {"web", "templates"}
+
+# the Platform VIEW (view=platform:<id>: what every Platform nav row opens), one entry per id of the shell's grammar (ui/foundation/shell-url.js SH_VIEWS.platform) that is not a pending custom page
 PLATFORM_FORMS: dict[str, list[Form]] = {
     "providers": [_register(TYPE_MENU_ITEM)],
     "profiles": [],
     "toolsets": [Form("New toolset", MODAL)],
     "tools": [],
     "collections": [Form("New collection", MODAL)],
-    "workspaces": [Form("New workspace", NEW_WORKSPACE_OVERLAY)],
-    "templates": [Form("New template", MODAL)],
     "agents": [Form("New agent", MODAL)],
     "graphs": [Form("New graph", MODAL)],
     "triggers": [Form("New trigger", MODAL)],
@@ -131,7 +134,7 @@ PLATFORM_FORMS: dict[str, list[Form]] = {
 }
 
 # the System VIEWS (view=system:<id>), one entry per id of ui/foundation/shell-url.js SH_VIEWS.system, and the create forms three of them open from their own page
-SYSTEM_VIEWS: list[str] = ["dashboard", "users", "apikeys", "sso", "mcp", "internal", "activity", "setup", "profile"]
+SYSTEM_VIEWS: list[str] = ["dashboard", "users", "apikeys", "sso", "mcp", "internal", "activity", "profile"]
 
 SYSTEM_FORMS: dict[str, list[Form]] = {
     "users": [Form("Create user", MODAL)],
@@ -150,7 +153,6 @@ NO_FORM: dict[str, str] = {
     "system-view mcp": "the MCP page lists the install's MCP servers and their tools; nothing is created from it",
     "system-view internal": "its Configure form is swept through the overlay-page of the internal collections",
     "system-view activity": "the activity feed is read only",
-    "system-view setup": "the readiness checks and their fix actions; its provider fix action opens the setup wizard, which creates a provider and is not swept",
 }
 
 PHONE_TABS = ["Inbox", "Spaces", "Files", "More"]
@@ -287,10 +289,6 @@ FLOORS: dict[str, int] = {
     "platform-view tools": 1,
     "platform-view collections": 0,                     # likewise: the empty state of an install with no collection has no control; the page and its list having loaded is the check
     "platform-view collections / New collection": 2,
-    "platform-view workspaces": 1,
-    "platform-view workspaces / New workspace": 1,
-    "platform-view templates": 1,
-    "platform-view templates / New template": 2,
     "platform-view agents": 3,
     "platform-view agents / New agent": 14,
     "platform-view graphs": 1,
@@ -315,7 +313,6 @@ FLOORS: dict[str, int] = {
     "system-view mcp": 10,
     "system-view internal": 1,
     "system-view activity": 4,
-    "system-view setup": 2,
     "system-view profile": 3,
     "system-view profile / Create token": 1,
     "graph builder": 3,

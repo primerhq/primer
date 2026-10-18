@@ -32,7 +32,6 @@ SERVICES = (UI / "components" / "services.jsx").read_text(encoding="utf-8")
 EXPECTED_CREATE = {
     # a form hosted on the Platform page (profiles has no create: design 7.1, single profiles come from the Register provider overlay's import;
     # its empty state points at Providers > LLM, tests/ui/test_platform_empty_states.py, and Plan 03 adds "+ Aggregate")
-    "templates": ("modal", "template"),
     "toolsets": ("modal", "toolset"),
     "triggers": ("modal", "trigger"),
     "services": ("modal", "service"),
@@ -42,9 +41,8 @@ EXPECTED_CREATE = {
     "agents": ("modal", "agent"),
     "graphs": ("modal", "graph"),
     "approvals": ("modal", "policy"),
-    # the entity's own create overlay (workspaces)
-    "workspaces": ("overlay", "new-workspace", None),
-    # still the legacy list first (their own change each)
+    # Workspaces and Workspace templates are not generic Platform pages any more (Platform revamp Plan 01 Task 7, design 14.1 and 14.2): the studio rail's
+    # workspace menu owns the workspace, and templates is a custom page (seam I-2, Plan 08), so neither has a row here.
 }
 
 _OPEN_CONTEXTS: list = []
