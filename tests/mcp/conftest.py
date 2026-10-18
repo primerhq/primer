@@ -17,6 +17,7 @@ from collections.abc import Callable
 
 import pytest
 
+from primer.common.toolset_ids import canonical_toolset_id
 from primer.model.chat import Tool, ToolCallResult
 from primer.model.principal import Principal
 
@@ -105,7 +106,9 @@ class FakeProviderRegistry:
         self._providers = providers
 
     async def get_toolset(self, toolset_id: str) -> FakeToolsetProvider | None:
-        return self._providers.get(toolset_id)
+        # Mirror the production registry: resolve retired ``_*`` ids to
+        # their current prefix-less ids.
+        return self._providers.get(canonical_toolset_id(toolset_id))
 
 
 def _make_tool(
