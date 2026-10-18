@@ -411,6 +411,9 @@ async def _build_subsystem_for_request(
     )
     if workspace_ext_ts is not None:
         toolsets["workspace_ext"] = workspace_ext_ts
+    canvas_ts = getattr(request.app.state, "canvas_toolset", None)
+    if canvas_ts is not None:
+        toolsets["canvas"] = canvas_ts
     subsystem = build_subsystem(
         config=cfg,
         storage_provider=storage_provider,

@@ -6,16 +6,21 @@ import json
 from pathlib import Path
 
 import pytest
-from pydantic import TypeAdapter, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError, field_validator
 
 from primer.canvas.lang import Append, Assign, Clear, Delete, Ref, SetProp, parse_program
 from primer.canvas.ops import (
+    MAX_OPS_CHARS,
+    MAX_SOURCE_CHARS,
+    OP_SHAPES,
     AppendOp,
     CanvasOp,
     ClearOp,
     DeleteOp,
     PropOp,
     SetOp,
+    ensure_ops_fit,
+    ops_errors,
     ops_to_statements,
     statements_to_ops,
 )
@@ -225,3 +230,104 @@ def test_statements_that_cannot_be_named_are_a_value_error(program):
 def test_statements_to_ops_refuses_what_is_not_a_statement():
     with pytest.raises(TypeError):
         statements_to_ops([object()])
+
+
+# ---- the size of a batch (pivot P5, Task 9: the lead's ruling after S2) ----------------------------------------------------------------
+
+
+def test_the_caps_of_the_two_inputs_are_the_same():
+    assert MAX_SOURCE_CHARS == MAX_OPS_CHARS == 600_000
+
+
+def _clears(n: int) -> list[dict]:
+    return [{"op": "clear"}] * n
+
+
+def test_ops_of_exactly_the_cap_fit_and_one_more_does_not():
+    each = len(json.dumps({"op": "clear"}, separators=(",", ":")))
+    fits = (MAX_OPS_CHARS - 1) // (each + 1)
+    size = len(json.dumps(_clears(fits), separators=(",", ":")))
+    assert size <= MAX_OPS_CHARS < size + each + 1
+    assert ensure_ops_fit(_clears(fits)) == _clears(fits)
+    with pytest.raises(Exception) as exc:
+        ensure_ops_fit(_clears(fits + 1))
+    assert "ops hold 600001 characters of JSON; the limit is 600000" in str(exc.value)
+
+
+def test_the_size_is_counted_in_characters_not_bytes_or_escapes():
+    pad = "\u00e9" * 300_000
+    ops = [{"op": "prop", "id": "a", "prop": "b", "value": pad}]
+    assert len(json.dumps(ops, separators=(",", ":"), ensure_ascii=False)) < MAX_OPS_CHARS < len(json.dumps(ops, separators=(",", ":")))
+    assert ensure_ops_fit(ops) is ops
+
+
+def test_none_and_things_that_are_not_json():
+    assert ensure_ops_fit(None) is None
+    with pytest.raises(Exception) as exc:
+        ensure_ops_fit([{"op": object()}])
+    assert "ops must be a list of JSON objects" in str(exc.value)
+    cyclic: list = []
+    cyclic.append(cyclic)
+    with pytest.raises(Exception) as exc:
+        ensure_ops_fit(cyclic)
+    assert "ops must be a list of JSON objects" in str(exc.value)
+
+
+class _Batch(BaseModel):
+    ops: list[CanvasOp] | None = None
+
+    @field_validator("ops", mode="before")
+    @classmethod
+    def _fit(cls, raw):
+        return ensure_ops_fit(raw)
+
+
+def test_the_size_check_runs_before_any_op_is_built():
+    huge = [{"op": "set", "id": "t", "type": "Text", "props": {"text": "x" * 10_000}}] * 70
+    with pytest.raises(ValidationError) as exc:
+        _Batch.model_validate({"ops": huge})
+    [error] = exc.value.errors()
+    assert error["type"] == "ops_too_large" and error["loc"] == ("ops",)
+    assert error["msg"].startswith("ops hold ") and "the limit is 600000" in error["msg"]
+
+
+# ---- the malformed ops, by number --------------------------------------------------------------------------------------------------------
+
+
+def _problems(*ops: object):
+    with pytest.raises(ValidationError) as exc:
+        _Batch.model_validate({"ops": list(ops)})
+    return ops_errors(exc.value)
+
+
+def test_each_malformed_op_is_one_error_with_its_number_and_the_shapes():
+    errors = _problems({"op": "clear"}, {"op": "set", "id": "t"}, {"op": "prop", "id": "a"}, {"op": "nope"})
+    assert [(e.line, e.unit, e.message) for e in errors] == [
+        (2, "op", "type: Field required"),
+        (3, "op", "prop: Field required; value: Field required"),
+        (4, "op", "op must be one of set, prop, append, delete or clear"),
+    ]
+    assert all(e.expected == " | ".join(OP_SHAPES) for e in errors)
+    assert [e.render() for e in errors][0].startswith("op 2: type: Field required (")
+
+
+def test_an_error_with_no_op_in_it_is_not_an_ops_error():
+    class Both(_Batch):
+        base_rev: int | None = None
+
+    with pytest.raises(ValidationError) as exc:
+        Both.model_validate({"ops": [{"op": "nope"}], "base_rev": "x"})
+    assert ops_errors(exc.value) is None
+    with pytest.raises(ValidationError) as exc:
+        Both.model_validate({"ops": "not a list"})
+    assert ops_errors(exc.value) is None, "the ops field itself is wrong: there is no op to number"
+
+
+def test_an_op_with_many_problems_shows_three_and_counts_the_rest():
+    [error] = _problems({"op": "set", "id": 1, "type": 2, "props": 3, "children": 4})
+    assert error.message.count(";") == 3 and error.message.endswith("; and 1 more problems")
+
+
+def test_names_the_input_chose_are_clipped():
+    [error] = _problems({"op": "set", "id": "t", "type": "Text", "k" * 500: 1})
+    assert len(error.message) < 100 and error.message.endswith("...: Extra inputs are not permitted")

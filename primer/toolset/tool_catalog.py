@@ -2,7 +2,7 @@
 
 The platform has three kinds of agent-callable tool and, until now, no single place that lists them:
 
-* the tools of the nine built-in toolsets (``primer.api.registries.provider_registry.RESERVED_TOOLSET_IDS``), run by ``system__call_tool`` from a
+* the tools of the ten built-in toolsets (``primer.api.registries.provider_registry.RESERVED_TOOLSET_IDS``), run by ``system__call_tool`` from a
   ``(toolset_id, tool_name)`` pair;
 * the seven SESSION file tools (``workspace__ls``, ``read``, ``write``, ``edit``, ``glob``, ``grep``, ``exec``): one set per workspace session, never a
   registry's, always on for an agent bound to a workspace;

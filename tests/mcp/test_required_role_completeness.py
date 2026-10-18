@@ -25,6 +25,7 @@ import pytest
 from primer.api.registries import ProviderRegistry, WorkspaceRegistry
 from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
 from primer.mcp.safety import is_exposable, tool_scoped_id
+from primer.toolset.canvas import build_canvas_toolset
 from primer.toolset.collections import build_collections_toolset
 from primer.toolset.harness import build_harness_toolset_provider
 from primer.toolset.misc import build_misc_toolset
@@ -95,6 +96,9 @@ def reserved_provider_registry(fake_storage_provider) -> ProviderRegistry:
 
     crud_toolset = build_crud_toolset(storage_provider=fake_storage_provider)
     registry._crud_toolset_provider = crud_toolset  # noqa: SLF001
+
+    canvas_toolset = build_canvas_toolset(storage_provider=fake_storage_provider)
+    registry._canvas_toolset_provider = canvas_toolset  # noqa: SLF001
 
     # search.py only needs a subsystem for its handlers (call()); list_tools()
     # never touches it, so a bare mock is a faithful stand-in here.

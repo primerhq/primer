@@ -184,6 +184,8 @@ _TRIGGER_TOOLSET_ID = "trigger"
 _WORKSPACE_EXT_TOOLSET_ID = "workspace_ext"
 _COLLECTIONS_TOOLSET_ID = "collections"
 _CRUD_TOOLSET_ID = "crud"
+# The session canvas (pivot P5, design 8.3): canvas_get, canvas_apply and canvas_wait.
+_CANVAS_TOOLSET_ID = "canvas"
 
 # Public: ids that are always resolvable by the live registry (built-in
 # providers), so external reference-integrity checks can skip the
@@ -198,6 +200,7 @@ RESERVED_TOOLSET_IDS: frozenset[str] = frozenset({
     _WORKSPACE_EXT_TOOLSET_ID,
     _COLLECTIONS_TOOLSET_ID,
     _CRUD_TOOLSET_ID,
+    _CANVAS_TOOLSET_ID,
 })
 
 # Toolset ids that are SCOPES of the tool manager, not built-in providers: ``external`` is the invoker-supplied per-invocation
@@ -323,6 +326,7 @@ class ProviderRegistry:
         trigger_toolset_provider: ToolsetProvider | None = None,
         workspace_ext_toolset_provider: ToolsetProvider | None = None,
         crud_toolset_provider: ToolsetProvider | None = None,
+        canvas_toolset_provider: ToolsetProvider | None = None,
         rate_limiter: RateLimiter | None = None,
         trace_llm_io: bool = False,
     ) -> None:
@@ -385,6 +389,9 @@ class ProviderRegistry:
         # ToolExecutionManager resolution choke point).
         self._workspace_ext_toolset_provider = workspace_ext_toolset_provider
         self._crud_toolset_provider = crud_toolset_provider
+        # Reserved id ``canvas`` resolves to the always-on session-canvas toolset built at app startup (pivot P5): its tools act
+        # on the calling workspace session's canvas, so they are dropped from chat contexts like ``workspace_ext``'s.
+        self._canvas_toolset_provider = canvas_toolset_provider
 
         self._llm_cache: dict[str, LLM] = {}
         self._embedder_cache: dict[str, Embedder] = {}
@@ -583,6 +590,12 @@ class ProviderRegistry:
             and toolset_id == _CRUD_TOOLSET_ID
         ):
             return self._crud_toolset_provider
+        # Reserved id `canvas` resolves to the always-on session-canvas toolset built at app startup (pivot P5).
+        if (
+            self._canvas_toolset_provider is not None
+            and toolset_id == _CANVAS_TOOLSET_ID
+        ):
+            return self._canvas_toolset_provider
         async with self._lock:
             cached = self._toolset_cache.get(toolset_id)
             if cached is not None:

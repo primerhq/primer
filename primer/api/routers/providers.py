@@ -1811,6 +1811,7 @@ _BUILTIN_TOOLSETS: list[dict] = [
     {"id": "trigger", "tagline": "Trigger + subscription CRUD and fire_now", "icon": "clock", "always_on": True},
     {"id": "workspace_ext", "tagline": "Workspace-session waits: sleep, watch_files, invoke_graph, subscribe_to_trigger, subscribe_to_channel_event", "icon": "zap", "always_on": True},
     {"id": "crud", "tagline": "Create and update agents, graphs, triggers and Python toolsets, behind approval policies", "icon": "edit", "always_on": True},
+    {"id": "canvas", "tagline": "Show controls, media and HTML above the chat, and read the user's clicks", "icon": "layout", "always_on": True},
 ]
 
 async def _internal_search_on(storage_provider) -> bool | None:

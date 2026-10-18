@@ -163,7 +163,8 @@ def _element_lines(eid: str, state: CanvasState, *, full: bool) -> list[str]:
     return lines
 
 
-def _preorder(state: CanvasState, starts: Sequence[str]) -> list[str]:
+def preorder(state: CanvasState, starts: Sequence[str]) -> list[str]:
+    """The ids of the elements under ``starts`` (each included) in pre-order, once each; an id with no element is skipped."""
     seen: set[str] = set()
     order: list[str] = []
     for start in starts:
@@ -201,7 +202,7 @@ def decompile(
         lines.append("# part of the canvas: " + ", ".join(ids))
         lines += [f"# no element named '{eid}'" for eid in ids if eid not in state.elements]
     if state.element_count() or ids:
-        for eid in _preorder(state, starts):
+        for eid in preorder(state, starts):
             lines += _element_lines(eid, state, full=full)
     if events:
         lines.append(f"# events since your last read ({len(events)}):")
@@ -211,4 +212,4 @@ def decompile(
     return "\n".join(lines) + "\n"
 
 
-__all__ = ["MAX_EVENT_LINES", "decompile", "event_line"]
+__all__ = ["MAX_EVENT_LINES", "decompile", "event_line", "preorder"]

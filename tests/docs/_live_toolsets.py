@@ -3,8 +3,8 @@
 Built with every optional collaborator wired (the real app wires them): a tool that exists only then, such as ``web::download``, which needs a
 workspace registry, is a real tool. A name is stale only if no wiring has it.
 
-``built_in_providers()`` maps ``toolset id -> provider`` for ALL nine reserved toolsets (``RESERVED_TOOLSET_IDS``, ``collections`` included: a
-check that left one out would pass for every document that names its tools). ``built_in_tools()`` maps ``toolset id -> {spelling -> Tool}`` and
+``built_in_providers()`` maps ``toolset id -> provider`` for ALL ten reserved toolsets (``RESERVED_TOOLSET_IDS``, ``collections`` included: a
+check that left one out would pass for every document that names its tools; ``canvas`` joined with pivot P5, design 8.3). ``built_in_tools()`` maps ``toolset id -> {spelling -> Tool}`` and
 derives from it. A tool is reachable under every spelling the docs use: its registered id, and that id without the ``<toolset>__`` prefix (the
 harness toolset registers ``harness__list`` and the agent docs call it ``harness::harness__list`` while the dev docs write the scoped id
 ``harness__list``).
@@ -22,8 +22,9 @@ from primer.model.chat import Tool
 
 @lru_cache(maxsize=1)
 def built_in_providers() -> dict[str, ToolsetProvider]:
-    """The nine reserved toolsets' providers, keyed by toolset id. Shared and cached: read them, do not change them."""
+    """The ten reserved toolsets' providers, keyed by toolset id. Shared and cached: read them, do not change them."""
     from primer.api.registries import ProviderRegistry
+    from primer.toolset.canvas import build_canvas_toolset
     from primer.toolset.collections import build_collections_toolset
     from primer.toolset.crud import build_crud_toolset
     from primer.toolset.harness import build_harness_toolset_provider
@@ -62,6 +63,7 @@ def built_in_providers() -> dict[str, ToolsetProvider]:
             web_search_service=MagicMock(), web_fetch_service=MagicMock(), workspace_registry=MagicMock(),
         ),
         "misc": build_misc_toolset(),
+        "canvas": build_canvas_toolset(storage_provider=sp),
     }
     return providers
 
