@@ -51,9 +51,24 @@ class _RecordingBackend(_FakeBackend):
         )
 
 
+class _Calls(list):
+    """What the backends were asked to ``create`` (the list itself), plus ``built``: the provider ids the registry's factory was
+    asked to build a backend for. A refused create must reach neither, because every check of ``WorkspaceRegistry.materialise``
+    runs before ``get_backend`` (review of #789, nit 1): ``create`` alone would stay empty even if a check moved after the backend
+    had been built (a Docker daemon connected to, a cluster client opened)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.built: list[str] = []
+
+
+def _assert_nothing_built(calls: _Calls) -> None:
+    assert (list(calls), calls.built) == ([], []), "a refused create reached the backend factory or create()"
+
+
 @pytest.fixture
-def backend_calls() -> list:
-    return []
+def backend_calls() -> _Calls:
+    return _Calls()
 
 
 @pytest.fixture
@@ -68,10 +83,14 @@ def app(sp, backend_calls):
         llm_factory=lambda p: object(), embedder_factory=lambda p: object(),
         cross_encoder_factory=lambda p: object(), toolset_factory=lambda t: object(),
     )
+    def factory(provider):
+        backend_calls.built.append(provider.id)
+        return _RecordingBackend(provider, backend_calls)
+
     return create_test_app(
         storage_provider=sp,  # type: ignore[arg-type]
         provider_registry=registry,
-        workspace_registry=WorkspaceRegistry(sp, factory=lambda provider: _RecordingBackend(provider, backend_calls)),
+        workspace_registry=WorkspaceRegistry(sp, factory=factory),
     )
 
 
@@ -128,7 +147,8 @@ async def test_docker_disk_override_is_a_422_naming_the_field(client, backend_ca
         "type": "unsupported_by_provider",
     }]
     assert body["detail"] == "overrides.resources.disk_bytes: Docker cannot limit a workspace's disk. Remove this override."
-    assert backend_calls == [] and await _workspace_rows(sp) == []
+    _assert_nothing_built(backend_calls)
+    assert await _workspace_rows(sp) == []
 
 
 async def test_local_size_override_is_a_422(client, backend_calls, sp):
@@ -140,7 +160,8 @@ async def test_local_size_override_is_a_422(client, backend_calls, sp):
         "msg": "A Local workspace runs on the server itself and cannot be sized. Remove this override.",
         "type": "unsupported_by_provider",
     }]
-    assert backend_calls == [] and await _workspace_rows(sp) == []
+    _assert_nothing_built(backend_calls)
+    assert await _workspace_rows(sp) == []
 
 
 async def test_local_names_every_size_field_it_was_given(client, backend_calls):
@@ -148,14 +169,14 @@ async def test_local_names_every_size_field_it_was_given(client, backend_calls):
 
     assert r.status_code == 422
     assert [e["loc"][-1] for e in r.json()["extensions"]["errors"]] == ["cpu_cores", "memory_bytes", "disk_bytes"]
-    assert backend_calls == []
+    _assert_nothing_built(backend_calls)
 
 
 async def test_docker_cpu_and_memory_reach_the_backend(client, backend_calls):
     r = await _create(client, "tpl-dock", {"cpu_cores": 1.5, "memory_bytes": 2147483648})
 
     assert r.status_code == 201, r.text
-    assert len(backend_calls) == 1
+    assert len(backend_calls) == 1 and backend_calls.built == ["dock"]
     sent = backend_calls[0]["overrides"].resources
     assert sent.cpu_cores == 1.5 and sent.memory_bytes == 2147483648 and sent.disk_bytes is None
 
@@ -175,7 +196,7 @@ async def test_a_zero_size_is_refused_by_the_model(client, backend_calls):
 
     assert r.status_code == 422
     assert r.json()["extensions"]["errors"][0]["loc"][-1] == "cpu_cores"
-    assert backend_calls == []
+    _assert_nothing_built(backend_calls)
 
 
 async def test_no_size_is_asked_of_any_provider_when_the_override_has_none(client, backend_calls):
@@ -184,7 +205,7 @@ async def test_no_size_is_asked_of_any_provider_when_the_override_has_none(clien
         assert r.status_code == 201, (template_id, r.text)
     r = await client.post("/v1/workspaces", json={"template_id": "tpl-loc", "overrides": {"env": {"A": "b"}, "resources": {}}})
     assert r.status_code == 201, r.text
-    assert len(backend_calls) == 4
+    assert len(backend_calls) == 4 and backend_calls.built == ["loc", "dock", "k3s"]      # one backend per provider, built on first use
 
 
 async def test_the_refusal_comes_before_the_id_is_taken(client, backend_calls, sp):
@@ -193,9 +214,18 @@ async def test_the_refusal_comes_before_the_id_is_taken(client, backend_calls, s
         "id": "ws-sized", "template_id": "tpl-loc", "overrides": {"resources": {"memory_bytes": 2**30}},
     })
     assert refused.status_code == 422 and await _workspace_rows(sp) == []
+    _assert_nothing_built(backend_calls)
 
     again = await client.post("/v1/workspaces", json={"id": "ws-sized", "template_id": "tpl-loc"})
     assert again.status_code == 201, again.text
+
+
+async def test_an_accepted_create_builds_a_backend_so_the_nothing_built_assertions_can_fail(client, backend_calls):
+    """The control for ``_assert_nothing_built`` in every refusal test: the recorder does see the backend a create builds."""
+    r = await client.post("/v1/workspaces", json={"template_id": "tpl-k3s"})
+
+    assert r.status_code == 201, r.text
+    assert backend_calls.built == ["k3s"] and len(backend_calls) == 1
 
 
 def test_the_422_is_documented_on_the_create_route(app):
@@ -217,7 +247,8 @@ async def test_an_absurd_size_override_is_a_422_with_the_field_in_loc(client, ba
     assert r.status_code == 422, r.text
     errors = r.json()["extensions"]["errors"]
     assert [e["loc"] for e in errors] == [["body", "overrides", "resources", field]], errors
-    assert backend_calls == [] and await _workspace_rows(sp) == []
+    _assert_nothing_built(backend_calls)
+    assert await _workspace_rows(sp) == []
 
 
 async def test_the_caps_themselves_are_accepted(client, backend_calls):
@@ -251,7 +282,8 @@ async def test_a_template_with_an_absurd_cpu_is_a_422_that_names_the_template_an
     assert body["type"] == "/errors/validation-error"
     assert "template 'tpl-big'" in body["detail"] and "resources.cpu_cores" in body["detail"], body
     assert "errors" not in body["extensions"], body
-    assert backend_calls == [] and await _workspace_rows(sp) == []
+    _assert_nothing_built(backend_calls)
+    assert await _workspace_rows(sp) == []
 
     ok = await client.post("/v1/workspaces", json={"template_id": "tpl-big", "overrides": {"resources": {"cpu_cores": 2}}})
     assert ok.status_code == 201, ok.text     # the override replaces the absurd field
@@ -276,7 +308,8 @@ async def test_an_invalid_env_name_in_the_overrides_is_a_422_naming_it(client, b
         "loc": ["body", "overrides", "env", name], "msg": _INVALID_ENV_NAME, "type": "invalid_env_name",
     }]
     assert body["detail"] == f"overrides.env.{ascii(name)}: {_INVALID_ENV_NAME}"
-    assert backend_calls == [] and await _workspace_rows(sp) == []
+    _assert_nothing_built(backend_calls)
+    assert await _workspace_rows(sp) == []
 
 
 async def test_a_257_character_env_name_is_a_422_and_the_message_cuts_it(client, backend_calls, sp):
@@ -290,7 +323,8 @@ async def test_a_257_character_env_name_is_a_422_and_the_message_cuts_it(client,
         "loc": ["body", "overrides", "env", name], "msg": _INVALID_ENV_NAME, "type": "invalid_env_name",
     }]
     assert name not in body["detail"] and "..." in body["detail"]
-    assert backend_calls == [] and await _workspace_rows(sp) == []
+    _assert_nothing_built(backend_calls)
+    assert await _workspace_rows(sp) == []
 
 
 async def test_a_name_with_a_newline_is_shown_escaped_in_the_message(client, backend_calls):
@@ -301,7 +335,7 @@ async def test_a_name_with_a_newline_is_shown_escaped_in_the_message(client, bac
     body = r.json()
     assert "\n" not in body["detail"] and "'a\\nb'" in body["detail"], body["detail"]
     assert body["extensions"]["errors"][0]["loc"] == ["body", "overrides", "env", "a\nb"]
-    assert backend_calls == []
+    _assert_nothing_built(backend_calls)
 
 
 @pytest.mark.parametrize("template_id", ["tpl-loc", "tpl-dock", "tpl-k3s"])
@@ -314,7 +348,7 @@ async def test_a_runtime_token_name_is_a_422_that_names_it_and_never_shows_the_v
     assert body["extensions"]["errors"][0]["loc"] == ["body", "overrides", "env", name]
     assert body["extensions"]["errors"][0]["type"] == "reserved_env_name"
     assert name in body["detail"] and "hunter2" not in r.text
-    assert backend_calls == []
+    _assert_nothing_built(backend_calls)
 
 
 @pytest.mark.parametrize("name, kind", [
@@ -339,7 +373,8 @@ async def test_a_template_env_the_cluster_would_refuse_is_a_422_at_create(client
         assert f"env.{ascii(name)}:" in body["detail"]
     assert "errors" not in body["extensions"]      # the name is stored in the template, not sent in this request: no `loc`
     assert "the-secret-value" not in r.text
-    assert backend_calls == [] and await _workspace_rows(sp) == []
+    _assert_nothing_built(backend_calls)
+    assert await _workspace_rows(sp) == []
 
 
 @pytest.mark.parametrize("template_id", ["tpl-loc", "tpl-dock", "tpl-k3s"])
