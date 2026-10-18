@@ -343,7 +343,7 @@ var NV_PLAT_PAGES = {
     delPath: function (row) { return "/model_profiles/" + encodeURIComponent(row.id); },
   },
   agents: {
-    title: "Agents", noun: ["agent", "agents"], createLabel: "New agent",
+    title: "Agents", noun: ["agent", "agents"], createLabel: "+ Agent",
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/agents?limit=200", null, { signal: signal });
     },
