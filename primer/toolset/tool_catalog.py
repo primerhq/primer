@@ -185,9 +185,10 @@ async def list_toolset_entries(
     The session and client scopes answer from their static descriptors. Any other id is resolved through ``provider_registry`` and listed under the
     ``LIST_TIMEOUT_S`` clock, as ``principal`` (the run's own, for a toolset that keeps per-user state such as an OAuth token cache; ``None`` is anonymous).
 
-    Raises :class:`NotFoundError` for an unknown toolset (the registry's answer) and :class:`ProviderError` for one that does not list in time or fails with a bare
-    exception; any other :class:`PrimerError` from the registry or the listing propagates as it is, and so does :class:`AuthRequiredError`: the consent URL
-    it carries is for the person, so the caller must not read it as "no such tool".
+    Raises :class:`NotFoundError` for an unknown toolset and for that only (the registry's answer; a "not found" from the listing itself is reported as a
+    :class:`ProviderError`), and :class:`ProviderError` for a toolset that does not list in time or fails with a bare exception. Any other :class:`PrimerError`
+    from the registry or the listing propagates as it is, and so does :class:`AuthRequiredError`: the consent URL it carries is for the person, so the caller
+    must not read it as "no such tool".
     """
     if toolset_id == SESSION_TOOLSET_ID:
         return _session_entries()
@@ -197,6 +198,8 @@ async def list_toolset_entries(
     try:
         async with asyncio.timeout(LIST_TIMEOUT_S):
             return [_entry(provider, tool.toolset_id or toolset_id, tool) async for tool in provider.list_tools(principal=principal)]
+    except NotFoundError as exc:
+        raise ProviderError(f"toolset {toolset_id!r} could not list its tools: {exc.message}", cause=exc) from exc
     except PrimerError:
         raise
     except TimeoutError as exc:
