@@ -26,12 +26,14 @@ raises ConflictError.
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 from primer.int.claim import ClaimKind
-from primer.model.except_ import NotFoundError
+from primer.model.except_ import NotFoundError, PrimerError
 from primer.model.workspace_session import (
     PEER_PAYLOAD_KEY,
     PeerAttribution,
@@ -84,6 +86,74 @@ async def _reopen_a_stale_ended_slot(slot: Any) -> None:
     reopen = getattr(slot, "reopen", None)
     if status is not None and reopen is not None and await status() == SessionStatus.ENDED:
         await reopen()
+
+
+async def _workspace_is_gone(workspace_registry: Any, workspace_id: str) -> bool:
+    """Whether *workspace_id* has been, or is being, destroyed.
+
+    Used after a workspace write failed, to tell the destroy undoing the write from a fault of the write. True when this process is destroying the
+    workspace right now (``is_being_destroyed``: the runtime goes first and the row last, so the row alone cannot say so in between), when its row is
+    gone, or when the registry can hand out no live instance for it. False when it can say none of that, and when a check cannot be made at all: a
+    check that itself fails is no evidence that the workspace is gone, so the original failure stands.
+    """
+    if workspace_registry is None:
+        return False
+    being_destroyed = getattr(workspace_registry, "is_being_destroyed", None)
+    if callable(being_destroyed) and being_destroyed(workspace_id):
+        return True
+    for lookup in ("get_workspace_row", "get_workspace"):
+        look = getattr(workspace_registry, lookup, None)
+        if look is None:
+            continue
+        try:
+            await look(workspace_id)
+        except NotFoundError:
+            return True
+        except Exception:  # noqa: BLE001 -- see above: a failed check proves nothing
+            logger.warning(
+                "wake_session: could not tell whether workspace %s is gone (%s)", workspace_id, lookup, exc_info=True,
+            )
+            return False
+    return False
+
+
+@asynccontextmanager
+async def _workspace_write(
+    deps: "SessionWakeDeps", *, workspace_id: str, what: str,
+) -> AsyncIterator[None]:
+    """Run the workspace-side writes of a wake, and turn a failure that is the workspace going away under them into a NotFoundError (404).
+
+    ``WorkspaceRegistry.destroy`` tears the runtime down (the cached instance goes, the sessions on it end, the directory is removed), ends the
+    sessions' rows and only then deletes the workspace row, and none of that is serialised against a caller that already holds the live workspace. A
+    delete that lands during a wake therefore fails the writes that follow (e2e ``test_t0716_workspace_delete_racing_steer_clean_envelopes``):
+
+    * a filesystem error (``OSError``) is reported as the removal it nearly always is, as it always was;
+    * the local state repository's other failure, a git command that exits non-zero in a directory that is gone (a ``RuntimeError``), is reported as one
+      only when the registry says the workspace is gone or going (:func:`_workspace_is_gone`); with the workspace alive it is a real fault and keeps its
+      type and its traceback;
+    * a ``PrimerError`` already carries its own envelope (an ENDED slot refuses an instruction with a ConflictError, 409) and passes through, and so
+      does the writer's timeout (503: the workspace is there and slow, which is not a removal).
+
+    The original failure stays on ``__cause__`` for the log.
+    """
+    try:
+        yield
+    except WorkspaceWriteTimeout:
+        # A TimeoutError is an OSError: without this the writer's "the workspace did not accept the write" would be reported as "the workspace was removed"
+        # (404). It is a 503 (WorkspaceUnreachableError) and passes through.
+        raise
+    except PrimerError:
+        raise
+    except OSError as exc:
+        raise NotFoundError(f"workspace {workspace_id!r} was removed while {what}") from exc
+    except Exception as exc:
+        if not await _workspace_is_gone(deps.workspace_registry, workspace_id):
+            raise
+        logger.info(
+            "wake_session: workspace %s was removed while %s; answering not-found (%s: %s)",
+            workspace_id, what, type(exc).__name__, exc,
+        )
+        raise NotFoundError(f"workspace {workspace_id!r} was removed while {what}") from exc
 
 
 async def wake_session(
@@ -160,13 +230,14 @@ async def wake_session(
             # raises ConflictError for non-restartable ended_reasons. After
             # this, row is CREATED and the normal wake flow below appends the
             # USER_INPUT (after the divider) and runs the turn.
-            row, _invocation = await _reopen_ended_locked(
-                row=row,
-                workspace_id=workspace_id,
-                session_id=session_id,
-                sessions=sessions,
-                workspace_registry=deps.workspace_registry,
-            )
+            async with _workspace_write(deps, workspace_id=workspace_id, what=f"reopening session {session_id!r}"):
+                row, _invocation = await _reopen_ended_locked(
+                    row=row,
+                    workspace_id=workspace_id,
+                    session_id=session_id,
+                    sessions=sessions,
+                    workspace_registry=deps.workspace_registry,
+                )
             # Surface the invocation divider live before the USER_INPUT tick
             # below (mirrors reset_session's divider tick). Advisory.
             if deps.event_bus is not None:
@@ -241,13 +312,16 @@ async def wake_session(
             # is in hand, a workspace DELETE racing this same wake_session can
             # still tear down the on-disk root out from under the writes below
             # (WorkspaceRegistry.destroy: pop-from-cache -> aclose -> rmtree,
-            # not serialised against a caller already holding `ws`) - a plain
-            # filesystem OSError (e.g. FileNotFoundError mid-rmtree) from
-            # either write is exactly that race, not a real internal error,
-            # so map it to the same NotFoundError this function already
-            # raises for "workspace not found" rather than letting it surface
-            # as an unhandled 500 (01a0518a/5e4f8c39 follow-up: T0716).
-            try:
+            # not serialised against a caller already holding `ws`). That is
+            # not a real internal error, so _workspace_write maps it to the same
+            # NotFoundError this function already raises for "workspace not
+            # found" rather than letting it surface as an unhandled 500: a
+            # filesystem OSError always, and any other failure (the local state
+            # repo's git command failing in a directory that is gone) when the
+            # registry says the workspace is gone or going (T0716).
+            async with _workspace_write(
+                deps, workspace_id=workspace_id, what=f"writing session {session_id!r}'s instruction",
+            ):
                 slot = await ws.get_session(session_id)
                 if slot is not None:
                     await _reopen_a_stale_ended_slot(slot)
@@ -268,15 +342,6 @@ async def wake_session(
                     created_at=datetime.now(timezone.utc),
                 ))
                 await writer.flush()
-            except WorkspaceWriteTimeout:
-                # A TimeoutError is an OSError: without this the writer's "the workspace did not accept the write" would be reported
-                # as "the workspace was removed" (404). It is a 503 (WorkspaceUnreachableError) and passes through.
-                raise
-            except OSError as exc:
-                raise NotFoundError(
-                    f"workspace {workspace_id!r} was removed while writing "
-                    f"session {session_id!r}'s instruction"
-                ) from exc
 
         # Replace the active external tool set for the turn this wake
         # triggers (None = leave the set unchanged; [] = clear it). Dumped

@@ -21,6 +21,7 @@ from primer.model.workspace_session import GraphSessionBinding, PendingSessionMe
 from primer.model.yield_ import ToolContext
 from primer.toolset.workspaces import build_workspaces_toolset
 from tests.session._peer_fakes import make_world, records, seed_session, slot
+from primer.workspace.local.state import _GitCommandError
 from tests.toolset._desc_conformance import assert_tool_conforms
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
@@ -301,6 +302,35 @@ async def test_the_real_workspace_lost_reconcile_of_a_parked_session_then_a_stee
         assert (body["status"], body["delivery"]) == ("running", "woken")
     else:
         assert result.is_error and body["type"] == "conflict"
+
+
+# ---- the workspace is removed while the steer is delivered -------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        pytest.param(lambda: FileNotFoundError(2, "No such file or directory"), id="a filesystem error"),
+        pytest.param(
+            lambda: _GitCommandError(("add", "--", "sessions/ses-b/messages.jsonl"), 128, "fatal: not a git repository"), id="a git failure",
+        ),
+    ],
+)
+async def test_steering_while_the_workspace_is_removed_answers_not_found_with_the_removal_message(failure):
+    """The row exists and the workspace goes away under the write: the answer says so, not that the session does not exist."""
+    world = make_world(with_bus=True)
+    await seed_session(world, sid="ses-b", turn_no=1)
+
+    async def vanish(content, *, extra_parts=None):
+        world.registry.remove("ws-1")
+        raise failure()
+
+    slot(world, "ses-b").append_instruction = vanish
+    result, body = await _steer(world, "ses-b")
+    assert result.is_error
+    assert body == {"type": "not-found", "message": "workspace 'ws-1' was removed while writing session 'ses-b''s instruction"}
+    assert await _pending(world) == [] and await _steered_events(world) == []
+    assert world.scheduler.enqueued == [] and (await world.sessions.get("ses-b")).turn_status == "idle"
 
 
 async def test_a_conflict_from_the_slot_of_a_live_session_is_answered_as_a_conflict_in_the_slots_words():
