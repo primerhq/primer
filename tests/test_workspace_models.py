@@ -464,9 +464,10 @@ class TestKubernetesWorkspaceConfig:
 
 
 class TestContainerTemplateConfig:
-    def test_minimum_image_required(self):
-        with pytest.raises(ValidationError):
-            ContainerTemplateConfig()  # image is required
+    def test_image_defaults_to_the_runtime_image(self):
+        # Design 14.2 (platform revamp 2026-10): Docker runs the image a template names, and the built-in
+        # runtime image is the default when none is set, so the image is no longer required.
+        assert ContainerTemplateConfig().image == "primer/workspace-runtime:1.1"
 
     def test_full_shape(self):
         tpl = ContainerTemplateConfig(
