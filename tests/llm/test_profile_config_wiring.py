@@ -731,6 +731,14 @@ class TestAnthropicThinkingFitsTheRequest:
         req = _fit({"max_tokens": 2048, "temperature": 0.0, "top_p": 0.9, "top_k": 5}, model=model)
         assert req == {"max_tokens": 2048}
 
+    def test_an_unknown_model_keeps_its_sampling_and_says_so_once(self, caplog) -> None:
+        caplog.set_level(logging.DEBUG, logger="primer.llm.anthropic")
+        for _ in range(2):
+            req = _fit({"max_tokens": 2048, "temperature": 0.0}, model="claude-opus-6", provider_id="ant-u")
+            assert req == {"max_tokens": 2048, "temperature": 0.0}
+        hits = [r for r in caplog.records if "not in the model table" in r.getMessage()]
+        assert len(hits) == 1
+
     @pytest.mark.parametrize("model", [
         "claude-sonnet-4-6", "claude-opus-4-6", "claude-sonnet-4-5", "claude-haiku-4-5",
         "claude-opus-6",  # not in the table: left as it was
