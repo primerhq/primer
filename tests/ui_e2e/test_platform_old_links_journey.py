@@ -3,8 +3,9 @@
 * ``view=platform:workspaces`` opens the studio: the Workspaces page left the Platform view, and the studio rail's workspace menu has New session, Settings and Delete. The address bar is
   rewritten without ``view=``.
 * ``view=platform:templates`` opens the Workspace templates page. That page is a custom page (seam I-2) that exists while ``window.WT_TemplatesPage`` is loaded (Plan 08 ships it); until then a stand-in
-  the journey installs before the bundle runs plays it, and the real bundle overrides the stand-in once it ships. Its sidebar row is the current one.
-* ``view=system:setup`` opens the System dashboard (the Setup page left the System view), and the address reads ``view=system:dashboard``.
+  (``install_templates_page_stand_in``) installed before the bundle runs plays it, and the real bundle overrides the stand-in once it ships. The journey asserts the frame ``nv-plat-page:templates``
+  and its current sidebar row, never what the stand-in draws.
+* ``view=system:setup`` opens the System dashboard (the grammar has no setup nav; Plan 10 Task 8 takes the Setup page out of the System view), and the address reads ``view=system:dashboard``.
 * ``overlay=providers:tts``, the old provider-class link, still opens the Providers overlay at that class, and ``overlay=workspaces::<id>`` still opens the workspace's settings.
 * ``view=platform:web`` before Plan 04 ships opens Providers (every type) with no blank page and no error (Review Focus 5).
 """
@@ -17,16 +18,9 @@ import pytest
 from playwright.sync_api import Page, expect
 
 from tests._support.smk import smk
-from tests.ui_e2e._shell_helpers import open_legacy_route, open_view
+from tests.ui_e2e._shell_helpers import install_templates_page_stand_in, open_legacy_route, open_view
 
 pytestmark = smk("SMK-UI-03", status="partial")
-
-# What Plan 08's page will be: a function on window that draws something. React is global by the time it is called (the bundle has loaded), not when this script runs.
-TEMPLATES_STAND_IN = """
-window.WT_TemplatesPage = function () {
-  return window.React.createElement("div", { "data-testid": "wt-stand-in" }, "Workspace templates");
-};
-"""
 
 
 def _open(page: Page, console_url: str, view: str, marker: str) -> None:
@@ -64,11 +58,10 @@ def test_an_old_workspaces_link_opens_the_studio(page: Page, console_url: str) -
 
 
 def test_an_old_templates_link_opens_the_templates_page(page: Page, console_url: str) -> None:
-    page.add_init_script(TEMPLATES_STAND_IN)
-    page.reload()
+    install_templates_page_stand_in(page)
     _open(page, console_url, "platform:templates", "nv-plat-page:templates")
 
-    expect(page.get_by_test_id("wt-stand-in")).to_be_visible(timeout=10_000)
+    expect(page.get_by_test_id("nv-plat-page:templates")).to_be_visible(timeout=10_000)
     expect(page.get_by_test_id("nv-plat-row:templates")).to_have_attribute("aria-current", "page")
     expect(page.get_by_test_id("nv-plat-row:templates")).to_contain_text("Workspace templates")
     expect(page.get_by_test_id("nv-plat-row:workspaces")).to_have_count(0)
