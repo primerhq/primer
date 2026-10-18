@@ -50,6 +50,9 @@ erDiagram
 | `primer/workspace/container/backend.py`, `primer/workspace/k8s/backend.py` | The container and Kubernetes `WorkspaceBackend` implementations. |
 | `primer/workspace/runtime/` | The `ContainerRuntimeAdapter` ABC; `docker.py` (real), `podman.py` + `containerd/adapter.py` (stubs that raise `ConfigError`); `WSSandbox`, `RuntimeClient`, `protocol.py`, `url.py`. |
 | `primer/workspace/k8s/naming.py` | `k8s_object_name()` hashes long workspace ids to DNS-1123-safe object names. |
+| `primer/workspace/size_overrides.py` | Which provider can honour which per-workspace size (`UNSUPPORTED_RESOURCE_OVERRIDES`), the 422 for one it cannot (`ResourceOverrideRefused`, `refuse_unsupported_resource_overrides`), and the create-time check of the CPU and memory a template sets (`refuse_oversized_template_sizes`); called from `WorkspaceRegistry.materialise` before any backend runs. |
+| `primer/workspace/env_names.py` | Which environment variable names a create accepts (a POSIX name, and never `PRIMER_RUNTIME_TOKEN` or `RUNTIME_TOKEN`) and the 422 for one it refuses (`EnvNameRefused`, `refuse_bad_env_names`); called from `WorkspaceRegistry.materialise`. |
+| `primer/workspace/template_privilege.py` | The template fields only an admin may write (`admin_only_template_changes`, `admin_only_settings_held`), shared by the template routes and the `workspaces` tools. |
 | `primer/workspace/files.py` | `resolve_file_sources()` resolves every `FileSource` variant in the platform process before the backend writes the bytes. |
 | `primer/workspace/probe.py` | `WorkspaceProbeTask`, the phase-driving health probe. |
 | `primer/workspace/factory.py` | `WorkspaceBackendFactory`, provider row to backend dispatch. |
