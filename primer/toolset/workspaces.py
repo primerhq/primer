@@ -10,7 +10,8 @@ Tool catalog
 
 Provider (CRUD minus update):
     list_workspace_providers, get_workspace_provider,
-    create_workspace_provider, delete_workspace_provider
+    create_workspace_provider, delete_workspace_provider,
+    list_workspace_provider_choices (user tier: id, kind and label only)
 
 Template (full CRUD):
     list_workspace_templates, get_workspace_template,
@@ -106,6 +107,7 @@ from primer.toolset._system_guards import (
     refuse_update,
 )
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
+from primer.workspace.provider_choices import list_provider_choices
 from primer.workspace.reserved import reserved_tree, reserved_tree_for, reserved_trees
 from primer.workspace.template_privilege import (
     admin_only_override_fields,
@@ -284,6 +286,10 @@ class _PaginationArgs(BaseModel):
 
 class _IdArgs(BaseModel):
     id: str = Field(..., min_length=1, description="Entity id.")
+
+
+class _NoArgs(BaseModel):
+    """A tool that takes no arguments."""
 
 
 class _CreateProviderArgs(BaseModel):
@@ -1101,6 +1107,45 @@ def build_workspaces_toolset(
             ToolExample(args={"id": "local-1"}, returns="{deleted: true, id: ...}"),
         ],
         required_role="admin",
+    )
+    registry[name] = entry
+
+    async def _list_workspace_provider_choices(arguments: dict[str, Any]) -> ToolCallResult:
+        try:
+            _NoArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        try:
+            return _ok(await list_provider_choices(_provider_storage()))
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="storage-error")
+
+    name, entry = _tool(
+        "list_workspace_provider_choices",
+        (
+            "List every workspace provider by id, kind and label, sorted by id: ``items`` of ``{id, kind, label, default_image}``. "
+            "``kind`` is ``local``, ``container`` or ``kubernetes``; ``label`` is Local, Docker, Podman, containerd or Kubernetes; "
+            "``default_image`` is the image a container provider runs when a template names none (``primer/workspace-runtime:1.1``), "
+            "null for the other kinds. Never returns a provider's configuration. Takes no arguments."
+        ),
+        (
+            "Use when you are not an admin and need the id to put in a template's ``provider_id`` "
+            "(``create_workspace_template``), or to see which kinds of workspace this deployment offers: "
+            "``list_workspace_providers`` is admin-only because a provider row holds its connection. Not for reading a "
+            "provider's configuration (an admin uses ``get_workspace_provider``)."
+        ),
+        _NoArgs,
+        _list_workspace_provider_choices,
+        examples=[
+            ToolExample(
+                args={},
+                returns=(
+                    '{"items": [{"id": "docker-1", "kind": "container", "label": "Docker", '
+                    '"default_image": "primer/workspace-runtime:1.1"}]}'
+                ),
+            ),
+        ],
+        required_role="user",
     )
     registry[name] = entry
 

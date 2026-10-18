@@ -111,9 +111,11 @@ from primer.model.workspace import (
     WorkspaceChannelLink,
     WorkspaceDiagnosticResult,
     WorkspaceProvider,
+    WorkspaceProviderChoices,
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
+from primer.workspace.provider_choices import list_provider_choices
 from primer.workspace.state_helpers import has_unsafe_commit_chars
 from primer.workspace.reserved import reserved_tree, reserved_tree_for, reserved_trees
 from primer.workspace.diagnostic import (
@@ -542,6 +544,31 @@ provider_router = make_crud_router(
         ),
     ],
 )
+
+
+# The provider list a non-admin may see (platform revamp 2026-10, plan 08 task 7). ``provider_router`` is admin-only because a provider row
+# carries its connection, but a template names its provider and the template form lists them, so every signed-in user gets the id, kind and
+# label of each provider and nothing else. This router is included BEFORE ``provider_router`` (``_app_routes.py``): its literal
+# ``/workspace_providers/_choices`` would otherwise be read by ``GET /workspace_providers/{id}`` as a provider id.
+provider_choices_router = APIRouter(tags=["workspace-providers"])
+
+
+@provider_choices_router.get(
+    "/workspace_providers/_choices",
+    response_model=WorkspaceProviderChoices,
+    summary="List workspace providers by id, kind and label (any signed-in user)",
+    responses=common_responses(500),
+)
+async def list_workspace_provider_choices(
+    storage=Depends(get_workspace_provider_storage),
+) -> WorkspaceProviderChoices:
+    """Every workspace provider as ``{id, kind, label, default_image}``, sorted by id.
+
+    ``kind`` is ``local``, ``container`` or ``kubernetes``. ``label`` is what a person calls it (``Local``, ``Docker``, ``Podman``,
+    ``containerd`` or ``Kubernetes``). ``default_image`` is the image a container provider runs when a template names none, and ``null``
+    for the other kinds. The provider's configuration is never part of the answer.
+    """
+    return await list_provider_choices(storage)
 
 
 # ===========================================================================
@@ -3869,6 +3896,7 @@ __all__ = [
     "events_router",
     "files_router",
     "log_router",
+    "provider_choices_router",
     "provider_router",
     "sessions_router",
     "template_router",

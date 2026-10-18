@@ -11,6 +11,7 @@ mcp_tools:
   - workspaces::create_workspace_provider
   - workspaces::get_workspace_provider
   - workspaces::list_workspace_providers
+  - workspaces::list_workspace_provider_choices
   - workspaces::delete_workspace_provider
   - workspaces::create_workspace_template
   - workspaces::get_workspace_template
@@ -240,6 +241,17 @@ it's called from a context with no implicit session.
   `workspaces::list_workspace_providers` /
   `workspaces::delete_workspace_provider` - the registered compute
   substrates (local / Docker / Kubernetes and any custom backends).
+- `workspaces::list_workspace_provider_choices` - every provider by
+  `id`, `kind` (`local`, `container` or `kubernetes`), `label` (`Local`,
+  `Docker`, `Podman`, `containerd` or `Kubernetes`) and `default_image`
+  (the image a container provider's template runs when it names none,
+  `primer/workspace-runtime:1.1`; null for the other kinds), sorted by
+  id. It takes no arguments and any signed-in user may call it:
+  `list_workspace_providers` and `get_workspace_provider` are admin-only
+  because a provider row holds its connection, so this is how a
+  non-admin finds the `provider_id` to put in a template. It never
+  returns a provider's configuration. REST:
+  `GET /v1/workspace_providers/_choices`.
 - `workspaces::create_workspace_template` /
   `workspaces::get_workspace_template` /
   `workspaces::list_workspace_templates` /

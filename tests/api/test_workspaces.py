@@ -2287,6 +2287,7 @@ class TestWorkspacesToolsetRegistration:
             "list_workspace_files",
             "write_workspace_file",
             "get_workspace_log",
+            "list_workspace_provider_choices",
         ):
             assert name in names, f"missing {name}"
         # 28 minus watch_files + invoke_graph (moved to workspace_ext) = 26,
@@ -2294,8 +2295,9 @@ class TestWorkspacesToolsetRegistration:
         # restart_workspace_session (Task 8) = 28, plus interrupt_workspace_session
         # (task 01a10871, Stop as a system tool) = 29, plus
         # read_workspace_session_messages (A-22) = 30, plus
-        # find_sessions (P2 Task 11) = 31.
-        assert len(names) == 31
+        # find_sessions (P2 Task 11) = 31, plus list_workspace_provider_choices
+        # (platform revamp 2026-10, plan 08 task 7) = 32.
+        assert len(names) == 32
         assert "create_workspace_session" in names
         assert "cancel_workspace_session" in names
         assert "workspace_tap" in names

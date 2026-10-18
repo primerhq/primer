@@ -218,6 +218,11 @@ def _mount_routers(
     # Workspaces. NAME-COLLISION: the workspace PROVIDER CRUD is system
     # configuration => admin; the workspace FEATURE (workspaces + their
     # session/files/log/yields/events sub-resources) is => require_user.
+    # The id/kind/label list of providers is the one provider read a
+    # non-admin needs (a template names its provider), so it is user tier,
+    # and it MUST be included before provider_router: its literal
+    # /workspace_providers/_choices would otherwise be read by GET /{id}.
+    app.include_router(workspaces_router.provider_choices_router, prefix=prefix, dependencies=user_dep)
     app.include_router(workspaces_router.provider_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(workspaces_router.template_router, prefix=prefix, dependencies=user_dep)
     app.include_router(workspaces_router.workspace_router, prefix=prefix, dependencies=user_dep)

@@ -452,9 +452,11 @@ class TestCatalog:
         # (task 01a10871, Stop as a system tool) = 29, plus
         # read_workspace_session_messages (A-22: the supported transcript
         # reader, since raw .state reads are admin-only) = 30, plus
-        # find_sessions (pivot P2) = 31.
-        assert len(names) == 31
+        # find_sessions (pivot P2) = 31, plus list_workspace_provider_choices
+        # (platform revamp 2026-10, plan 08 task 7) = 32.
+        assert len(names) == 32
         assert "read_workspace_session_messages" in names
+        assert "list_workspace_provider_choices" in names
         assert "create_workspace_session" in names
         assert "interrupt_workspace_session" in names
         assert "cancel_workspace_session" in names
@@ -558,10 +560,12 @@ class TestBootstrapIngestsWorkspacesTools:
         # plus workspace_tap = 27, plus restart_workspace_session (Task 8)
         # = 28, plus interrupt_workspace_session (task 01a10871) = 29,
         # plus read_workspace_session_messages (A-22) = 30, plus
-        # find_sessions (pivot P2) = 31.
-        assert len(ws_ingested) == 31
+        # find_sessions (pivot P2) = 31, plus list_workspace_provider_choices
+        # (platform revamp 2026-10, plan 08 task 7) = 32.
+        assert len(ws_ingested) == 32
         assert "workspaces::read_workspace_session_messages" in ws_ingested
         assert "workspaces::find_sessions" in ws_ingested
+        assert "workspaces::list_workspace_provider_choices" in ws_ingested
         for expected in (
             "workspaces::list_workspace_providers",
             "workspaces::create_workspace_template",
