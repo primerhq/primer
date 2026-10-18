@@ -5023,20 +5023,12 @@ button.nv-trace-line { cursor: pointer; }
   font-size: 13px;
 }
 .nv-audit { margin-top: 22px; }
-/* uiv2 Wave 3 (a-14 fold): sort controls sit beside the title now that
-   the records-sheet's own header row retired along with it. */
-.nv-audit-title-row {
+/* The audit's header is the kit's (.pk-header: title, count, filter, pager); the sort controls the records-sheet's header row used to hold (uiv2 Wave 3, a-14
+   fold) are its `extra`, on one line. */
+.nv-audit-sort {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 8px;
-}
-.nv-audit-title {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-3);
 }
 .nv-audit-table {
   border: 1px solid var(--border);
