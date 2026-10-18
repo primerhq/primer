@@ -85,8 +85,9 @@ def test_a_bare_list_path_closes_the_overlay_to_its_page(plural, target):
 
 
 @pytest.mark.parametrize("plural,target", LIST_TARGETS)
-def test_a_pasted_link_opened_from_the_studio_lands_on_the_same_page(plural, target):
-    """Review Focus 2: the overlay was not opened from its Platform page (a pasted link, the palette): the target is the entity's page all the same."""
+def test_the_target_is_the_entitys_page_whatever_overlay_is_open_and_a_trailing_slash_is_ignored(plural, target):
+    """Review Focus 2: an overlay opened by a pasted link or the palette sits over the STUDIO, not over its own Platform page. The shim knows nothing of what is under the overlay; the
+    target is a function of the path alone (here an unrelated agent overlay is the open one, and the path has a trailing slash)."""
     assert navigate({"name": "agents", "section": None, "id": "x1"}, "/" + plural + "/") == [["closeTo", target]]
 
 
@@ -388,7 +389,7 @@ var __con = {
 function NV_useConsole() { return __con; }
 window.primerApi = { useFocusTrap: function () {}, focusablesOf: function () { return []; }, useEscape: function () {} };
 function __stub(name) { return function () { return React.createElement("div", { "data-testid": "stub:" + name }); }; }
-["GraphDetail", "ProviderCatalog", "WorkspaceTemplateDetail", "WorkspaceProviderDetail", "WorkspaceDetail", "ToolsetDetail"].forEach(function (n) {
+["AgentDetail", "GraphDetail", "ToolsetDetail", "TR_TriggersPage", "HarnessesPage", "SV_ServicesPage", "ProviderCatalog", "WorkspaceTemplateDetail", "WorkspaceProviderDetail", "WorkspaceDetail"].forEach(function (n) {
   window[n] = __stub(n);
 });
 window.AP_PolicyDetail = function (props) { window.__apProps = props; return React.createElement("div", { "data-testid": "stub:policy" }); };
@@ -639,7 +640,8 @@ def test_every_literal_list_navigation_in_the_pages_is_redirected_or_listed():
             first = target.split("/")[0]
             if first in overlays:
                 found.setdefault(target, set()).add(path.name)
-    assert found, "the scan must find the pages' navigations"
+    known = {"agents", "graphs", "toolsets", "triggers", "harnesses", "services", "workspaces", "workspaces/templates", "workspaces/providers", "providers"}
+    assert known <= set(found), f"the scan no longer finds the pages' navigations (missing {sorted(known - set(found))}); fix the pattern, not the table"
     unnamed = {t: sorted(files) for t, files in found.items() if t not in table and t not in NOT_YET_REDIRECTED}
     assert not unnamed, f"these list paths would open a list inside an overlay; add them to SH_SHIM_LIST_TARGETS: {unnamed}"
     for target in NOT_YET_REDIRECTED:
