@@ -22,6 +22,9 @@ The stubs stand in for what the console around the form provides:
   ``useMutation`` is the real one.
 * ``window.addEventListener`` and ``window.removeEventListener`` add to and remove from ``__listeners``; the real Escape stack registers its one
   ``keydown`` listener there, and ``press_escape`` answers it.
+* ``window.primerApi.useFocusTrap`` only RECORDS its calls (the real ``foundation/focus-trap.js`` needs a DOM; what the trap does is pinned in
+  ``test_focus_trap_behaviour.py`` on a fake page and in a real browser by ``tests/ui_e2e/test_agent_overlay_journey.py``). ``trap_report`` tells what the prompt
+  editor asked of it: whether the trap is on, whether it is on the full-screen box, and which element ``initial`` names.
 
 A test mounts the form (``mount``), drives it (``type_into``, ``click``) and reads what it sent (``calls``, ``body``). It reads what the form drew
 with ``prop``, ``text_of`` and ``testids_under``. ``prop`` reads the element a ``Btn`` RENDERS (a ``data-busy`` is on the ``<button>``, not on the ``Btn``
@@ -70,6 +73,7 @@ var __listeners = [];
 var __rejectNext = null;
 var __apiAnswers = {};
 var __navigations = [];
+var __focusTraps = [];
 var __resources = {
   "agents:model-profiles": { data: { items: PROFILES }, loading: false, error: null },
   "agents:voices": { data: { voices: ["alloy", "nova"] }, loading: false },
@@ -101,6 +105,7 @@ window.primerApi = {
     return { data: null, loading: false, error: null, refetch: function () {} };
   },
   useCapabilities: function () { return { data: { speech: { tts_configured: TTS_CONFIGURED } } }; },
+  useFocusTrap: function (ref, active, opts, deps) { __focusTraps.push({ ref: ref, active: !!active, opts: opts || null, deps: deps || null }); },
   useRouter: function () {
     return { navigate: function (path, opts) { __navigations.push({ path: path, opts: opts === undefined ? null : opts }); }, params: {} };
   },
@@ -191,6 +196,18 @@ function __options(testid) {
     walk(typeof n.type === "function" && n.type !== React.Fragment ? n.out : n.children);
   })(__hostOf(testid).children);
   return out;
+}
+// What the prompt editor asked of useFocusTrap in its LAST render: is the trap on, is it attached to the full-screen box (the ref it was given is the box's
+// own), and does `initial` name the editor (the editor's ref is pointed at a marker for the call: a ref is never attached to a node here).
+function __trapReport() {
+  var last = __focusTraps[__focusTraps.length - 1];
+  if (!last) return null;
+  var box = MR.find("agent-system-prompt"), editor = MR.find("agent-system-prompt-editor");
+  var marker = { focus: function () {} }, saved = editor.props.ref.current;
+  editor.props.ref.current = marker;
+  var names = !!last.opts && typeof last.opts.initial === "function" && last.opts.initial() === marker;
+  editor.props.ref.current = saved;
+  return { active: last.active, onBox: !!box && box.props.ref === last.ref, initialIsEditor: names, calls: __focusTraps.length };
 }
 function __pressEscape() {
   __listeners.filter(function (l) { return l.type === "keydown"; }).forEach(function (l) {
@@ -336,6 +353,11 @@ testids_under.__test__ = False  # a test module imports it, and pytest collects 
 def press_escape(ctx: Any) -> None:
     """Answer Escape as the window does: call every ``keydown`` listener registered through ``window.addEventListener``, then re-render."""
     ctx.eval("__pressEscape()")
+
+
+def trap_report(ctx: Any) -> dict:
+    """What the prompt editor asked of ``useFocusTrap`` in its last render: ``{"active", "onBox", "initialIsEditor", "calls"}`` (see the module docstring)."""
+    return json.loads(ctx.eval("JSON.stringify(__trapReport())"))
 
 
 def mount_prompt_tabs(ctx: Any, parts: list[str]) -> None:
