@@ -104,25 +104,38 @@ class TestOpenChat:
 
 
 class TestAnthropic:
-    def test_off_disables_thinking(self) -> None:
-        assert anthropic_extended(_cfg(ReasoningLevel.OFF)) == {
+    """The shape is the model's; the per-family table is pinned in
+    tests/llm/test_profile_config_wiring.py."""
+
+    def test_off_disables_thinking_on_a_budget_model(self) -> None:
+        assert anthropic_extended(_cfg(ReasoningLevel.OFF), model="claude-haiku-4-5") == {
             "thinking": {"type": "disabled"},
         }
 
-    def test_levels_carry_a_token_budget(self) -> None:
-        out = anthropic_extended(_cfg(ReasoningLevel.HIGH))
+    def test_levels_carry_a_token_budget_on_a_budget_model(self) -> None:
+        out = anthropic_extended(_cfg(ReasoningLevel.HIGH), model="claude-haiku-4-5")
         assert out["thinking"]["type"] == "enabled"
         assert out["thinking"]["budget_tokens"] > 0
 
     def test_budget_grows_with_level(self) -> None:
         budgets = [
-            anthropic_extended(_cfg(lvl))["thinking"]["budget_tokens"]
+            anthropic_extended(_cfg(lvl), model="claude-sonnet-4-5")["thinking"]["budget_tokens"]
             for lvl in (
                 ReasoningLevel.MINIMAL, ReasoningLevel.LOW,
                 ReasoningLevel.MEDIUM, ReasoningLevel.HIGH,
             )
         ]
         assert budgets == sorted(budgets)
+
+    def test_effort_grows_with_level_on_an_adaptive_model(self) -> None:
+        efforts = [
+            anthropic_extended(_cfg(lvl), model="claude-opus-4-7")["output_config"]["effort"]
+            for lvl in (
+                ReasoningLevel.MINIMAL, ReasoningLevel.LOW,
+                ReasoningLevel.MEDIUM, ReasoningLevel.HIGH,
+            )
+        ]
+        assert efforts == ["low", "low", "medium", "high"]
 
 
 class TestGeminiAndOllama:

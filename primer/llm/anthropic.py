@@ -24,7 +24,7 @@ from pydantic import BaseModel as PydanticBaseModel
 from primer.common.anthropic_errors import classify_anthropic_exception
 from primer.int.llm import LLM
 from primer.llm._failure import describe_failure
-from primer.llm._reasoning import anthropic_extended, debug_once
+from primer.llm._reasoning import anthropic_extended, claude_traits, debug_once
 from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout, _open_with_connect_timeout
 from primer.llm._tokenizer.anthropic import count_tokens_anthropic_detailed
 from primer.model.chat import (
@@ -287,6 +287,9 @@ _RECOGNISED_EXTENDED_PASSTHROUGH: frozenset[str] = frozenset({
     "service_tier",
     "cache_control",
     "thinking",
+    # ``effort`` lives here on Claude 4.6 and later (and structured outputs'
+    # ``format``); primer.llm._reasoning.anthropic_extended sets the effort.
+    "output_config",
 })
 
 
@@ -308,13 +311,16 @@ def _extract_extended_kwargs(extended: dict[str, Any] | None) -> dict[str, Any]:
     return out
 
 
-# Manual extended thinking (``thinking.type == "enabled"``) has rules of its
-# own: a budget of at least 1024 tokens that stays below ``max_tokens``
-# (thinking counts toward it), no steering of sampling (temperature only 1,
-# no top_k, top_p only 0.95 to 1), no forced tool, and a final assistant
-# turn that starts with a thinking block.
+# Thinking has rules of its own. Manual thinking (``thinking.type ==
+# "enabled"``, Claude 4.5 and earlier) needs a budget of at least 1024 tokens
+# that stays below ``max_tokens`` (thinking counts toward it) and a final
+# assistant turn that starts with a thinking block; adaptive thinking (Claude
+# 4.6 and later) drops both. Neither allows a forced tool, and while either is
+# on, sampling may not be steered (temperature only 1, no top_k, top_p only
+# 0.95 to 1).
 _MIN_THINKING_BUDGET = 1024
 _MIN_THINKING_TOP_P = 0.95
+_THINKING_ON = ("enabled", "adaptive")
 
 
 def _no_thinking(request: dict[str, Any], provider_id: str, key: str, why: str) -> None:
@@ -329,29 +335,36 @@ def _no_thinking(request: dict[str, Any], provider_id: str, key: str, why: str) 
 def _fit_thinking(
     request: dict[str, Any], *, messages: list[Message], provider_id: str,
 ) -> None:
-    """Make a request that enables manual thinking one the Messages API accepts, in place.
+    """Make a request that turns thinking on one the Messages API accepts, in place.
 
     A profile's reasoning level becomes a ``thinking`` block
     (:func:`primer.llm._reasoning.anthropic_extended`) on calls whose other
-    settings were chosen without it: compaction samples at temperature 0, the
-    adapter's default ``max_tokens`` is 4096, a structured-output call forces
-    a tool. Rather than fail such a call, the request gives up what thinking
-    cannot carry, and each kind of adjustment is logged once at DEBUG:
+    settings were chosen without it: the adapter's default ``max_tokens`` is
+    4096, a structured-output call forces a tool. Rather than fail such a
+    call, the request gives up what thinking cannot carry, and each kind of
+    adjustment is logged once at DEBUG:
 
-    * a call that continues a tool round (its last message is a tool result),
-      or that forces a tool, runs without thinking. primer does not send
-      thinking blocks back in the history, so a continuation's final
-      assistant turn cannot start with one;
-    * a budget that is not below ``max_tokens`` is lowered to half of it, so
-      the answer keeps the other half, but not under the 1024-token minimum;
-      when even that does not fit, the call runs without thinking;
-    * ``temperature`` other than 1, ``top_k``, and ``top_p`` below 0.95 are
-      dropped.
+    * a call that forces a tool runs without thinking;
+    * manual thinking only: a call that continues a tool round (its last
+      message is a tool result) runs without thinking, because primer does
+      not send thinking blocks back in the history and a manual-thinking
+      continuation's final assistant turn must start with one;
+    * manual thinking only: a budget that is not below ``max_tokens`` is
+      lowered to half of it, so the answer keeps the other half, but not
+      under the 1024-token minimum; when even that does not fit, the call
+      runs without thinking.
 
-    A ``disabled`` thinking block, or none, is left alone.
+    Any other thinking block (``disabled``, ``between_tools``), or none, is
+    left alone. The sampling knobs are :func:`_fit_sampling`'s.
     """
     thinking = request.get("thinking")
-    if not isinstance(thinking, dict) or thinking.get("type") != "enabled":
+    if not isinstance(thinking, dict) or thinking.get("type") not in _THINKING_ON:
+        return
+    choice = request.get("tool_choice")
+    if isinstance(choice, dict) and choice.get("type") in ("any", "tool"):
+        _no_thinking(request, provider_id, "forced-tool", "it forces a tool")
+        return
+    if thinking.get("type") != "enabled":
         return
     if messages and messages[-1].role == "tool":
         _no_thinking(
@@ -359,10 +372,6 @@ def _fit_thinking(
             "it continues a tool round, and primer does not send thinking "
             "blocks back in the history",
         )
-        return
-    choice = request.get("tool_choice")
-    if isinstance(choice, dict) and choice.get("type") in ("any", "tool"):
-        _no_thinking(request, provider_id, "forced-tool", "it forces a tool")
         return
     max_tokens = request.get("max_tokens")
     budget = thinking.get("budget_tokens")
@@ -382,23 +391,38 @@ def _fit_thinking(
             "below max_tokens %d; lowered to %d",
             provider_id, budget, max_tokens, fitted, log=logger,
         )
+
+
+def _fit_sampling(request: dict[str, Any], *, model: str, provider_id: str) -> None:
+    """Drop, in place, the sampling knobs the model or its thinking refuses.
+
+    While thinking is on (manual or adaptive), ``temperature`` other than 1,
+    ``top_k`` and ``top_p`` below 0.95 are dropped. A model that takes no
+    sampling knobs at all (see :class:`primer.llm._reasoning.ClaudeTraits`)
+    also loses the ``top_k`` a profile's ``extended`` passes through. Each
+    kind of drop is logged once at DEBUG.
+    """
     dropped: list[str] = []
-    temperature = request.get("temperature")
-    if temperature is not None and temperature != 1:
-        dropped.append("temperature")
-    if "top_k" in request:
+    traits = claude_traits(model)
+    if traits is not None and not traits.sampling and "top_k" in request:
         dropped.append("top_k")
-    top_p = request.get("top_p")
-    if top_p is not None and top_p < _MIN_THINKING_TOP_P:
-        dropped.append("top_p")
+    thinking = request.get("thinking")
+    if isinstance(thinking, dict) and thinking.get("type") in _THINKING_ON:
+        temperature = request.get("temperature")
+        if temperature is not None and temperature != 1:
+            dropped.append("temperature")
+        if "top_k" in request and "top_k" not in dropped:
+            dropped.append("top_k")
+        top_p = request.get("top_p")
+        if top_p is not None and top_p < _MIN_THINKING_TOP_P:
+            dropped.append("top_p")
     for key in dropped:
         del request[key]
     if dropped:
         debug_once(
-            ("anthropic-thinking", provider_id, "sampling", ",".join(dropped)),
-            "Anthropic provider %s: thinking does not allow %s; dropped from "
-            "calls that think",
-            provider_id, ", ".join(dropped), log=logger,
+            ("anthropic-sampling", provider_id, str(model), ",".join(dropped)),
+            "Anthropic provider %s: model %s does not take %s here; dropped",
+            provider_id, model, ", ".join(dropped), log=logger,
         )
 
 
@@ -768,9 +792,11 @@ class AnthropicLLM(LLM):
     def profile_extended(
         self, config: ModelProfileConfig, *, model: str | None = None,
     ) -> dict[str, Any]:
-        """A ``thinking`` block with a token budget, or thinking disabled; see
-        :func:`_fit_thinking` for what a request gives up to carry one."""
-        return anthropic_extended(config)
+        """The thinking shape ``model`` takes (a budget on Claude 4.5 and
+        earlier, adaptive thinking and effort on 4.6 and later); see
+        :func:`_fit_thinking` and :func:`_fit_sampling` for what a request
+        gives up to carry it."""
+        return anthropic_extended(config, model=model)
 
     async def stream(  # type: ignore[override]
         self,
@@ -825,6 +851,7 @@ class AnthropicLLM(LLM):
 
         request.update(_extract_extended_kwargs(extended))
         _fit_thinking(request, messages=messages, provider_id=self._provider.id)
+        _fit_sampling(request, model=model, provider_id=self._provider.id)
 
         logger.info(
             "Anthropic stream starting",

@@ -28,6 +28,7 @@ import json
 import logging
 import re
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Any
 
 from primer.model.chat import Error as ChatError
@@ -55,7 +56,7 @@ _GEMINI_BUDGET: dict[ReasoningLevel, int] = {
     ReasoningLevel.HIGH: 24576,
 }
 
-# Anthropic: a thinking block with an explicit token budget, or disabled.
+# Anthropic, Claude 4.5 and earlier: a thinking block with a token budget.
 _ANTHROPIC_BUDGET: dict[ReasoningLevel, int | None] = {
     ReasoningLevel.OFF: None,
     ReasoningLevel.MINIMAL: 1024,
@@ -63,6 +64,88 @@ _ANTHROPIC_BUDGET: dict[ReasoningLevel, int | None] = {
     ReasoningLevel.MEDIUM: 16384,
     ReasoningLevel.HIGH: 32768,
 }
+
+# Anthropic, Claude 4.6 and later: adaptive thinking, its depth set by effort.
+_ANTHROPIC_EFFORT: dict[ReasoningLevel, str] = {
+    ReasoningLevel.MINIMAL: "low",
+    ReasoningLevel.LOW: "low",
+    ReasoningLevel.MEDIUM: "medium",
+    ReasoningLevel.HIGH: "high",
+}
+
+
+@dataclass(frozen=True)
+class ClaudeTraits:
+    """What one Claude model takes, from the Messages API's per-model table.
+
+    ``thinking``: ``"budget"`` (``{type: enabled, budget_tokens}``, Claude 4.5
+    and earlier), ``"adaptive"`` (``{type: adaptive}`` with
+    ``output_config.effort``, Claude 4.6 and later) or ``"none"`` (no
+    thinking control, Claude 3.5 and earlier). ``off``: what OFF sends:
+    ``"omit"`` (thinking is off when the parameter is absent), ``"disabled"``,
+    ``"between_tools"`` (Claude Sonnet 5.5, which refuses ``disabled``) or
+    ``"low_effort"`` (thinking cannot be turned off: omit it and ask for low
+    effort). ``sampling``: whether ``temperature``, ``top_p`` and ``top_k``
+    are taken at all (Claude Opus 4.7 and later, Sonnet 5 and later, Haiku
+    5.5, Fable and Mythos refuse them, or any but the default value).
+    """
+
+    thinking: str
+    off: str
+    sampling: bool
+
+
+_BUDGET = ClaudeTraits(thinking="budget", off="disabled", sampling=True)
+_ADAPTIVE_OFF_BY_DEFAULT = ClaudeTraits(thinking="adaptive", off="omit", sampling=True)
+_ADAPTIVE_DISABLE = ClaudeTraits(thinking="adaptive", off="disabled", sampling=False)
+_ADAPTIVE_BETWEEN_TOOLS = ClaudeTraits(thinking="adaptive", off="between_tools", sampling=False)
+_ALWAYS_THINKING = ClaudeTraits(thinking="adaptive", off="low_effort", sampling=False)
+_NO_THINKING = ClaudeTraits(thinking="none", off="omit", sampling=True)
+
+# (family, major, minor) -> traits. A model the table does not name is
+# unknown, and gets no reasoning parameter at all.
+_CLAUDE_TABLE: dict[tuple[str, int, int], ClaudeTraits] = {
+    ("opus", 4, 0): _BUDGET,
+    ("opus", 4, 1): _BUDGET,
+    ("opus", 4, 5): _BUDGET,
+    ("sonnet", 3, 7): _BUDGET,
+    ("sonnet", 4, 0): _BUDGET,
+    ("sonnet", 4, 5): _BUDGET,
+    ("haiku", 4, 5): _BUDGET,
+    ("opus", 4, 6): _ADAPTIVE_OFF_BY_DEFAULT,
+    ("sonnet", 4, 6): _ADAPTIVE_OFF_BY_DEFAULT,
+    ("opus", 4, 7): _ADAPTIVE_DISABLE,
+    ("opus", 4, 8): _ADAPTIVE_DISABLE,
+    ("opus", 5, 0): _ADAPTIVE_DISABLE,
+    ("sonnet", 5, 0): _ADAPTIVE_DISABLE,
+    ("haiku", 5, 5): _ADAPTIVE_DISABLE,
+    ("sonnet", 5, 5): _ADAPTIVE_BETWEEN_TOOLS,
+    ("opus", 5, 5): _ALWAYS_THINKING,
+}
+
+# claude-<family>-<major>[-<minor>] (a date or "@date" suffix may follow), and
+# the older claude-<major>[-<minor>]-<family>.
+_CLAUDE_ID = re.compile(r"claude-(opus|sonnet|haiku)-(\d+)(?:-(\d{1,2}))?(?!\d)")
+_CLAUDE_OLD_ID = re.compile(r"claude-(\d+)(?:-(\d))?-(opus|sonnet|haiku)")
+
+
+def claude_traits(model: str | None) -> ClaudeTraits | None:
+    """The traits of the Claude model ``model`` names, or None when the table does not know it."""
+    name = (model or "").lower()
+    if "claude-fable" in name or "claude-mythos" in name:
+        return _ALWAYS_THINKING
+    match = _CLAUDE_ID.search(name)
+    if match:
+        family, major, minor = match.group(1), int(match.group(2)), int(match.group(3) or 0)
+        return _CLAUDE_TABLE.get((family, major, minor))
+    old = _CLAUDE_OLD_ID.search(name)
+    if old:
+        major, minor, family = int(old.group(1)), int(old.group(2) or 0), old.group(3)
+        if (family, major, minor) in _CLAUDE_TABLE:
+            return _CLAUDE_TABLE[(family, major, minor)]
+        if major <= 3:
+            return _NO_THINKING
+    return None
 
 # OpenRouter normalises reasoning across its upstreams with one ``reasoning``
 # object; "none" is its documented off switch (a model whose reasoning is
@@ -157,17 +240,61 @@ def openchat_extended(
     return _merge(config, {"reasoning_effort": _OPENAI_EFFORT[level]})
 
 
-def anthropic_extended(config: ModelProfileConfig) -> dict[str, Any]:
-    """Reasoning knobs for the Anthropic Messages wire."""
+def anthropic_extended(
+    config: ModelProfileConfig, *, model: str | None = None,
+) -> dict[str, Any]:
+    """Reasoning knobs for the Anthropic Messages wire, shaped for ``model``.
+
+    Claude 4.5 and earlier take a thinking budget (never ``effort``); Claude
+    4.6 and later take adaptive thinking with ``output_config.effort``
+    (MINIMAL and LOW ask for low). OFF is whatever the model accepts:
+    nothing where thinking is off by default, ``disabled``, ``between_tools``
+    on Claude Sonnet 5.5, or, where thinking cannot be turned off (Claude
+    Opus 5.5, Fable, Mythos), no thinking parameter and low effort. A model
+    the table does not know, or one with no thinking control, gets no
+    reasoning parameter at all, logged once at DEBUG. The adapter fits the
+    rest of the request to what thinking allows (``_fit_thinking`` and
+    ``_fit_sampling`` in :mod:`primer.llm.anthropic`).
+    """
     level = config.reasoning
+    out = dict(config.extended or {})
     if level is None:
-        return dict(config.extended or {})
-    budget = _ANTHROPIC_BUDGET[level]
-    if budget is None:
-        return _merge(config, {"thinking": {"type": "disabled"}})
-    return _merge(config, {
-        "thinking": {"type": "enabled", "budget_tokens": budget},
-    })
+        return out
+    traits = claude_traits(model)
+    if traits is None or traits.thinking == "none":
+        debug_once(
+            ("anthropic-no-reasoning", str(model)),
+            "Claude model %s: %s; the profile's reasoning level (%s) is not sent",
+            model,
+            "no thinking control" if traits is not None else "not in the model table",
+            level.value,
+        )
+        return out
+    if traits.thinking == "budget":
+        budget = _ANTHROPIC_BUDGET[level]
+        if budget is None:
+            return {**out, "thinking": {"type": "disabled"}}
+        return {**out, "thinking": {"type": "enabled", "budget_tokens": budget}}
+    if level is ReasoningLevel.OFF:
+        if traits.off == "disabled":
+            return {**out, "thinking": {"type": "disabled"}}
+        if traits.off == "between_tools":
+            return {**out, "thinking": {"type": "between_tools"}}
+        out.pop("thinking", None)
+        if traits.off == "low_effort":
+            out["output_config"] = {**_dict(out.get("output_config")), "effort": "low"}
+        return out
+    return {
+        **out,
+        "thinking": {"type": "adaptive"},
+        "output_config": {
+            **_dict(out.get("output_config")), "effort": _ANTHROPIC_EFFORT[level],
+        },
+    }
+
+
+def _dict(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
 
 
 def gemini_extended(config: ModelProfileConfig) -> dict[str, Any]:
@@ -364,7 +491,9 @@ async def _stream_with_fallback(
 
 
 __all__ = [
+    "ClaudeTraits",
     "anthropic_extended",
+    "claude_traits",
     "debug_once",
     "gemini_extended",
     "ollama_extended",

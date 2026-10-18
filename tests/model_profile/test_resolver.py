@@ -387,7 +387,7 @@ class TestAggregatedMembersApplyTheirOwnConfig:
         ))
         adapters = {
             "prov-a": Member(connect_exc=RateLimitError("busy")),  # Ollama-kind
-            "prov-b": Member(translate=anthropic_extended),
+            "prov-b": Member(translate=lambda c: anthropic_extended(c, model="claude-opus-4-7")),
         }
 
         class _Registry(_FakeProviderRegistry):
