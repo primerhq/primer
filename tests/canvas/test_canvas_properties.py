@@ -11,9 +11,6 @@ from primer.canvas.lang import CanvasLangError, parse_program
 from primer.canvas.state import CanvasState, Changed, Limits, apply_batch, json_equal
 from tests.canvas._program_gen import UNPARSEABLE, program
 
-MISSING = object()
-
-
 def assert_sound(state: CanvasState) -> None:
     """The invariants every accepted canvas keeps."""
     elements = state.elements
@@ -61,7 +58,7 @@ def assert_changed_matches(before: CanvasState, after: CanvasState, changed: Cha
         eid
         for eid in after.elements
         if eid in before.elements
-        and (after.elements[eid] != before.elements[eid] or after.values.get(eid, MISSING) != before.values.get(eid, MISSING))
+        and (after.elements[eid] != before.elements[eid] or not json_equal(before.current_value(eid), after.current_value(eid)))
     }
     assert set(changed.updated) == expected
 

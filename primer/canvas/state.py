@@ -50,7 +50,6 @@ from primer.canvas.lang import (
 #: The root element: always present, always a Column. Never mutate it; copy it.
 ROOT_ELEMENT: dict[str, Any] = {"type": "Column", "props": {}, "children": []}
 
-_MISSING = object()
 _GONE = object()
 _RESET_WARNING = "{id}: the user's value was reset because the element changed"
 
@@ -778,10 +777,7 @@ def _diff(before: CanvasState, after: CanvasState) -> Changed:
     for eid, element in after.elements.items():
         if eid not in before.elements:
             continue
-        old = before.values.get(eid, _MISSING)
-        new = after.values.get(eid, _MISSING)
-        value_changed = (old is _MISSING) != (new is _MISSING) or (old is not _MISSING and not json_equal(old, new))
-        if element != before.elements[eid] or value_changed:
+        if element != before.elements[eid] or not json_equal(before.current_value(eid), after.current_value(eid)):
             updated.append(eid)
     return Changed(added, tuple(updated), removed)
 

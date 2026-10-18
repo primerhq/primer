@@ -634,3 +634,11 @@ def test_a_bool_is_not_a_number_when_values_are_compared():
     assert json_equal(1, 1.0) and json_equal([1, "a"], (1, "a")) and json_equal({"a": [True]}, {"a": [True]})
     assert not json_equal(True, 1) and not json_equal(0, False) and not json_equal([True], [1]) and not json_equal("1", 1)
     assert not json_equal({"a": 1}, {"a": 1, "b": 2}) and not json_equal(None, 0)
+
+
+def test_a_change_is_a_change_of_the_elements_effective_value_not_of_a_stored_entry():
+    s = run('genre.value = "Jazz"', _built()).state                 # the agent sets the choice back to the initial value
+    assert s.values == {"genre": "Jazz"} and s.value_set_by == {"genre": "agent"}
+    r = run('genre = Select("Genre", ["Jazz", "Lo-fi", "Classical"], "Jazz")', s)
+    assert r.state.values == {} and r.changed == Changed()          # the entry went, what the element shows did not
+    assert run('genre.value = "Classical"', s).changed == Changed((), ("genre",), ())
