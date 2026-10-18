@@ -1136,9 +1136,10 @@ function NV_MobileProfileTheme() {
 }
 
 // Generic across every entity kind (13+ Platform navs) - rather than a
-// bespoke sheet per kind, this reads the SAME {name, sub, chip, facts}
-// view-model nv-platform.jsx's own page.card(row) already produces for
-// its desktop cards. Triggers keep a real action (the fire_now endpoint
+// bespoke sheet per kind, this reads the SAME card view model
+// {id, name, sub, badge, status, facts} nv-platform.jsx's own
+// page.card(row, con) already produces for its desktop cards (seam I-8).
+// A status with an onClick is a button: it closes the sheet, then runs. Triggers keep a real action (the fire_now endpoint
 // this phase ports to the console - see sh-api.jsx); everything else's
 // footer is a plain "Edit on desktop" note - no create/edit/delete here.
 function NV_MobileFactSheet(props) {
@@ -1147,6 +1148,7 @@ function NV_MobileFactSheet(props) {
   var firing = firingState[0];
   var setFiring = firingState[1];
   var cardVM = props.cardVM || {};
+  var status = cardVM.status || null;
 
   function fireNow() {
     if (!props.row || firing) return;
@@ -1190,10 +1192,20 @@ function NV_MobileFactSheet(props) {
       )}>
       <div className="nv-mob-fact-sheet" data-testid="nv-mob-fact-body">
         {cardVM.sub ? <div className="card-subtitle">{cardVM.sub}</div> : null}
-        {cardVM.chip ? (
-          <span className="nv-mob-fact-chip" style={{ color: cardVM.chip.color }}>
-            {cardVM.chip.label}
-          </span>
+        {cardVM.badge || status ? (
+          <div className="nv-mob-fact-tags">
+            {cardVM.badge ? <span className="nv-mob-fact-chip">{cardVM.badge}</span> : null}
+            {status && typeof status.onClick === "function" ? (
+              <button type="button" className="nv-mob-fact-status touch-target"
+                data-tone={status.tone} data-testid={status.testid || "nv-mob-fact-status"}
+                onClick={function () {
+                  if (props.onClose) props.onClose();
+                  status.onClick();
+                }}>{status.label}</button>
+            ) : status ? (
+              <span className="nv-mob-fact-status" data-tone={status.tone}>{status.label}</span>
+            ) : null}
+          </div>
         ) : null}
         {/* NV_fact(k, v) (nv-platform.jsx) returns null for an empty/
             missing value - the desktop card renderer already
@@ -1201,7 +1213,11 @@ function NV_MobileFactSheet(props) {
             mapping the raw array here crashed on f[0] the first time a
             row had any empty fact (e.g. an agent with no profile set
             yet), a real bug this live pass caught. */}
-        {(cardVM.facts || []).filter(Boolean).map(function (f) {
+        {(cardVM.facts || []).filter(Boolean).map(function (f, i) {
+          // A string fact is one line, drawn whole (f[0] of a string is its first letter).
+          if (!Array.isArray(f)) {
+            return <div key={"s" + i} className="nv-mob-fact-row nv-mob-fact-line">{f}</div>;
+          }
           return (
             <div key={f[0]} className="nv-mob-fact-row">
               <span className="nv-mob-fact-k">{f[0]}</span>
@@ -1227,6 +1243,8 @@ function NV_MobileFactSheet(props) {
 // far enough to find the row by id, rather than a second bespoke
 // single-item fetch per kind.
 function NV_MobilePlatform(props) {
+  // The console, handed to every page.card(row, con) as the desktop page does (seam I-8): a card's status may act through it.
+  var con = NV_useConsole();
   var apiFetch = window.primerApi.apiFetch;
   var navState = React.useState(null);
   var nav = navState[0];
@@ -1266,14 +1284,14 @@ function NV_MobilePlatform(props) {
     }
     if (res.loading) return;
     var row = items.find(function (r) { return r.id === props.pending.id; });
-    if (row && page) setSheet({ kind: nav, cardVM: page.card(row), row: row });
+    if (row && page) setSheet({ kind: nav, cardVM: page.card(row, con), row: row });
     if (props.onPendingConsumed) props.onPendingConsumed();
   }, [props.pending, nav, res.loading]);
 
   var ql = q.trim().toLowerCase();
   var visible = !page ? [] : items.filter(function (row) {
     if (!ql) return true;
-    var vm = page.card(row);
+    var vm = page.card(row, con);
     return (vm.name + " " + (vm.sub || "")).toLowerCase().indexOf(ql) >= 0;
   });
 
@@ -1330,7 +1348,7 @@ function NV_MobilePlatform(props) {
           </div>
         ) : null}
         {visible.map(function (row) {
-          var vm = page.card(row);
+          var vm = page.card(row, con);
           return (
             <button type="button" key={row.id} className="card card-interactive"
               data-testid={"nv-mob-plat-row:" + row.id}
