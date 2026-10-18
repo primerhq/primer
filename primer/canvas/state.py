@@ -47,6 +47,7 @@ from primer.canvas.lang import (
     Ref,
     SetProp,
     Statement,
+    clip,
     id_problem,
 )
 
@@ -190,7 +191,7 @@ def name_arguments(
         given[param.name] = value
     for name, value in kwargs:
         if param_for(spec, name) is None:
-            problems.append(Problem(f"{spec.type} has no property '{name}'", property_help(spec.type)))
+            problems.append(Problem(f"{spec.type} has no property '{clip(name)}'", property_help(spec.type)))
         elif name in given:
             problems.append(Problem(f"'{name}' is given twice", sig))
         else:
@@ -211,6 +212,11 @@ def _choices(props: Mapping[str, Any]) -> list[str]:
     return [o if isinstance(o, str) else o[0] for o in props["options"]]
 
 
+def _shown(value: Any) -> str:
+    """An agent's value as a message shows it: a reference as its plain id, and never more than a few characters."""
+    return clip(value.id if isinstance(value, Ref) else str(value))
+
+
 def check_select_value(eid: str, props: Mapping[str, Any], value: Any) -> str | None:
     """Whether ``value`` fits a Select's options and its ``multiple`` flag."""
     choices = _choices(props)
@@ -219,14 +225,14 @@ def check_select_value(eid: str, props: Mapping[str, Any], value: Any) -> str | 
             return f"'{eid}' is multiple: its value must be a list of options"
         for item in value:
             if item not in choices:
-                return f"'{item}' is not one of the options of '{eid}'"
+                return f"'{_shown(item)}' is not one of the options of '{eid}'"
         if len(set(value)) != len(value):
             return f"'{eid}' lists an option twice"
         return None
     if isinstance(value, (list, tuple)):
         return f"'{eid}' takes a single option, not a list"
     if value not in choices:
-        return f"'{value}' is not one of the options of '{eid}'"
+        return f"'{_shown(value)}' is not one of the options of '{eid}'"
     return None
 
 
@@ -482,7 +488,7 @@ class _Batch:
             return
         spec = CATALOG.get(st.type)
         if spec is None:
-            self.err(line, f"unknown element type '{st.type}'", ", ".join(CATALOG))
+            self.err(line, f"unknown element type '{clip(st.type)}'", ", ".join(CATALOG))
             return
         if st.id == ROOT_ID and st.type != "Column":
             self.err(line, "root is always a Column")
@@ -542,7 +548,7 @@ class _Batch:
             return
         param = param_for(spec, st.prop)
         if param is None:
-            self.err(line, f"{spec.type} has no property '{st.prop}'", property_help(spec.type))
+            self.err(line, f"{spec.type} has no property '{clip(st.prop)}'", property_help(spec.type))
             return
         value = st.value
         if value is KEEP:

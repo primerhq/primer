@@ -209,18 +209,19 @@ class CanvasLangError(ValueError):
         return (CanvasLangError, (self.errors,))
 
 
-def _clip(word: str) -> str:
+def clip(word: str) -> str:
+    """``word`` cut to a few characters: a message says which text the agent sent, it does not echo all of it."""
     return word if len(word) <= _CLIP else word[:_CLIP] + "..."
 
 
 def id_problem(word: str) -> str | None:
     """Why ``word`` cannot be an element id, or None when it can."""
     if not isinstance(word, str):
-        return f"{_clip(repr(word))} is not an element id ({_ID_RULE})"
+        return f"{clip(repr(word))} is not an element id ({_ID_RULE})"
     if word in RESERVED_IDS:
         return f"'{word}' is reserved (it means a value); pick another element id"
     if IDENT_RE.match(word) is None:
-        return f"'{_clip(word)}' is not an element id ({_ID_RULE})"
+        return f"'{clip(word)}' is not an element id ({_ID_RULE})"
     return None
 
 
@@ -394,7 +395,7 @@ class _Stmt:
             raise _Fail(MSG_NOT_A_STATEMENT)
         prop = m.group()
         if _PROP_RE.match(prop) is None:
-            raise _Fail(f"'{_clip(prop)}' is not a property name ({_PROP_RULE})")
+            raise _Fail(f"'{clip(prop)}' is not a property name ({_PROP_RULE})")
         self.i = m.end()
         self._ws()
         if self._peek() != "=" or self.s.startswith("==", self.i):
@@ -480,7 +481,7 @@ class _Stmt:
             return None
         name = m.group()
         if _PROP_RE.match(name) is None:
-            raise _Fail(f"'{_clip(name)}' is not a property name ({_PROP_RULE})")
+            raise _Fail(f"'{clip(name)}' is not a property name ({_PROP_RULE})")
         self.i = j + 1
         return name
 
@@ -673,7 +674,7 @@ class _Stmt:
 
 
 def _normalize(text: str) -> str:
-    if text.startswith("﻿"):
+    if text.startswith("\ufeff"):
         text = text[1:]
     if "\r" in text:
         text = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -794,6 +795,7 @@ __all__ = [
     "Ref",
     "SetProp",
     "Statement",
+    "clip",
     "format_value",
     "id_problem",
     "parse_program",

