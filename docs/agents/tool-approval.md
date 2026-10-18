@@ -42,9 +42,15 @@ working). Write new policies with the current id. A second policy for
 the same tool under the other spelling is refused as a duplicate; if
 two such rows already exist they are settled as duplicates are: the
 tool is gated unconditionally and, unless the rows agree on who may
-decide, only an admin may. The approval card and the audit record name
-the current id, and a Rego or LLM gate reads it as `input.toolset_id`,
-whichever spelling the call used.
+decide, only an admin may. The gate itself sees one id: a Rego or LLM
+policy reads the current id as `input.toolset_id`, whichever spelling
+the call used. The park keeps the name as written, though: a call gated
+by the tool manager (an agent, a subagent or a graph node) parks under
+the spelling the model used (an agent that named `_system__create_agent`
+parks under it), and the approval card and the audit record's
+`tool_name` show that spelling; only a `call_tool` park carries the
+current id (in its `via_call_tool` block, which is also the audit
+record's `toolset_id`).
 
 The thing that catches everyone is the interaction with MCP. The MCP
 exposure layer treats "this tool has a `required`-type policy" as
