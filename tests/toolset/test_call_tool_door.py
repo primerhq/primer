@@ -120,11 +120,17 @@ async def test_ask_user_and_wait_for_event_are_role_user(system_toolset):
     assert {(await _tool(system_toolset, n)).required_role for n in ("ask_user", "wait_for_event")} == {"user"}
 
 
-async def test_a_user_run_cannot_widen_wait_for_event_through_call_tool(system_toolset):
-    """``wait_for_event`` is role user, so ``call_tool`` runs it for a user-role run, and the tool's own rule still holds: a non-admin waits only
-    on the kinds the event feed shows it (tests/events/test_wait_for_event_kinds.py). Refused before anything is stored."""
+@pytest.mark.parametrize("wait", [
+    {"event_types": ["agent.*"]},
+    {"event_types": ["session.ended"], "expr": "package primer.event_filter\nmatch := true\n"},
+    {"event_types": ["session.ended"], "fields": [{"path": "payload.x", "op": "regex", "value": "a"}]},
+], ids=["hidden-kind", "expr", "regex-matcher"])
+async def test_a_user_run_cannot_widen_wait_for_event_through_call_tool(system_toolset, wait):
+    """``wait_for_event`` is role user, so ``call_tool`` runs it for a user-role run, and the tool's own limits still hold for a non-admin: only
+    the kinds the event feed shows it, no ``expr``, no ``regex`` matcher (tests/events/test_wait_for_event_kinds.py). Refused before anything is
+    stored (this toolset's storage has no event store, so a wait that got further would raise)."""
     r = await system_toolset.call(tool_name="call_tool", ctx=_ctx(USER), arguments={
-        "toolset_id": "system", "tool_name": "wait_for_event", "arguments": {"event_types": ["agent.*"]}})
+        "toolset_id": "system", "tool_name": "wait_for_event", "arguments": wait})
     assert r.is_error and json.loads(r.output)["type"] == "forbidden"
 
 

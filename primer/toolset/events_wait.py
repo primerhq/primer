@@ -52,7 +52,9 @@ class _WaitForEventArgs(BaseModel):
         min_length=1,
         description=(
             "Event-type globs to wake on, e.g. "
-            '["collection.document_pushed"] or ["agent.*"].'
+            '["collection.document_pushed"] or ["agent.*"]. A run whose '
+            "principal is not an admin may name only the kinds the event "
+            "feed shows a non-admin (see the tool description)."
         ),
     )
     fields: list[FieldMatcher] | None = Field(
@@ -60,14 +62,16 @@ class _WaitForEventArgs(BaseModel):
         description=(
             "Structural conditions, each {path, op: eq|prefix|regex, "
             "value}; paths resolve into the envelope then the payload "
-            '(e.g. "payload.collection_id").'
+            '(e.g. "payload.collection_id"). The regex op is for admin '
+            "runs only."
         ),
     )
     expr: str | None = Field(
         default=None,
         description=(
             "Optional rego module (package primer.event_filter, boolean "
-            "`match` rule) evaluated with the event as input."
+            "`match` rule) evaluated with the event as input. Admin runs "
+            "only."
         ),
     )
     timeout_seconds: float | None = Field(
@@ -80,17 +84,39 @@ class _WaitForEventArgs(BaseModel):
     )
 
 
-def _kinds_refused_to(ctx: ToolContext, event_types: list[str]) -> list[str]:
-    """The globs of ``event_types`` the run may not wait on: none for an admin, else every glob that could match a kind the REST event
-    feed hides from a non-admin (``primer.events.visibility``, the feed's own rule).
+_NOT_ADMIN = "this run's principal is not an admin, so "
 
-    The tool is role user, and the event that wakes it becomes the run's tool result, so a non-admin run may wait only on what
-    ``GET /v1/events`` would show it. The run's principal is the context's (``run_principal``: no initiator ranks as an ordinary user),
-    under the role floor's own predicate, so the system principal and an admin wait on any kind.
+
+def _non_admin_refusal(ctx: ToolContext, args: _WaitForEventArgs) -> str | None:
+    """Why this run may not make this wait (the ``forbidden`` message), or ``None``: always ``None`` for an admin.
+
+    The tool is role user (pivot P1). A run whose principal is not an admin (``run_principal`` under the role floor's own predicate: a
+    context with no initiator is not an admin, the system principal is) is held to three limits, checked in this order:
+
+    * the kinds: the event that wakes the wait becomes the run's tool result, so it may wait only on what ``GET /v1/events`` shows a
+      non-admin (``primer.events.visibility``, the feed's own rule; a glob that could match a hidden kind is refused too);
+    * no ``expr``: the dispatcher evaluates the rego module server-side, where builtins such as ``opa.runtime()`` read the process
+      environment (secrets included), and whether the wait wakes or times out turns that into a one-bit oracle;
+    * no ``regex`` field matcher: patterns run in the shared, leader-elected dispatcher loop, so a catastrophic one stalls every
+      subscription. ``eq`` and ``prefix`` stay open.
     """
     if _role_allows(run_principal(ctx), "admin"):
-        return []
-    return [glob for glob in event_types if not user_safe_glob(glob)]
+        return None
+    hidden = [glob for glob in args.event_types if not user_safe_glob(glob)]
+    if hidden:
+        return (
+            _NOT_ADMIN + "it may wait only on the event kinds the event feed shows a non-admin ("
+            + ", ".join(user_safe_kinds()) + "); refused: " + ", ".join(repr(glob) for glob in hidden)
+        )
+    if args.expr is not None:
+        return _NOT_ADMIN + "it may not pass an expr (a rego module the platform evaluates); filter with fields matchers instead"
+    regex = [matcher.path for matcher in args.fields or [] if matcher.op == "regex"]
+    if regex:
+        return (
+            _NOT_ADMIN + "its fields matchers may use only the eq and prefix ops; refused regex on: "
+            + ", ".join(repr(path) for path in regex)
+        )
+    return None
 
 
 def make_wait_for_event_handler(storage_provider: "StorageProvider"):
@@ -109,16 +135,10 @@ def make_wait_for_event_handler(storage_provider: "StorageProvider"):
                 "not available on this surface",
                 error_type="unsupported-surface",
             )
-        refused = _kinds_refused_to(ctx, args.event_types)
-        if refused:
-            return _err(
-                "this run's principal is not an admin, so it may wait only "
-                "on the event kinds the event feed shows a non-admin ("
-                + ", ".join(user_safe_kinds())
-                + "); refused: "
-                + ", ".join(repr(glob) for glob in refused),
-                error_type="forbidden",
-            )
+        # Before anything is stored: a refused wait leaves no subscription for the dispatcher to evaluate.
+        refusal = _non_admin_refusal(ctx, args)
+        if refusal is not None:
+            return _err(refusal, error_type="forbidden")
         for matcher in args.fields or []:
             if matcher.op == "regex":
                 try:
