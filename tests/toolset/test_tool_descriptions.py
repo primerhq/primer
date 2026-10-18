@@ -35,6 +35,7 @@ from primer.workspace.local.tools.exec_ import Exec
 
 # build_* factories.
 from primer.api.registries import ProviderRegistry, WorkspaceRegistry
+from primer.toolset.canvas import CANVAS_TOOLSET_ID, build_canvas_toolset
 from primer.toolset.misc import MISC_TOOLSET_ID, build_misc_toolset
 from primer.toolset.harness import HARNESS_TOOLSET_ID, build_harness_toolset_provider
 from primer.toolset.trigger import TRIGGER_TOOLSET_ID, build_trigger_toolset_provider
@@ -101,6 +102,8 @@ def _build_providers():
         build_workspace_ext_toolset(
             storage_provider=_FakeStorageProvider(),
         ),
+        # canvas (pivot P5): the longest descriptions of any toolset, so the anatomy is worth holding it to.
+        build_canvas_toolset(storage_provider=_FakeStorageProvider()),
         build_system_toolset(
             storage_provider=system_sp,  # type: ignore[arg-type]
             provider_registry=system_pr,
@@ -128,13 +131,14 @@ async def test_every_internal_toolset_conforms():
     # The id-set is the real guard: it catches ANY provider silently
     # dropping out of the registry, regardless of its tool count, and is
     # not brittle to tool-count changes. The seen count floor is a coarse
-    # secondary sanity check (~159 internal tools across the seven toolsets).
+    # secondary sanity check (~159 internal tools across the eight toolsets).
     expected_ids = {
         MISC_TOOLSET_ID,
         HARNESS_TOOLSET_ID,
         TRIGGER_TOOLSET_ID,
         WORKSPACES_TOOLSET_ID,
         WORKSPACE_EXT_TOOLSET_ID,
+        CANVAS_TOOLSET_ID,
         SYSTEM_TOOLSET_ID,
         "web",
     }
