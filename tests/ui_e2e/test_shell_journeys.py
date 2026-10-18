@@ -280,7 +280,7 @@ def test_a_file_opens_as_a_preview_tab(
 
 
 @pytest.mark.ui_e2e
-@pytest.mark.parametrize("name", ["providers", "agents", "collections", "workers"])
+@pytest.mark.parametrize("name", ["providers", "agents", "collections"])
 def test_a_management_surface_opens_as_an_overlay(
     page, console_url: str, seeded: dict[str, str], name: str
 ) -> None:

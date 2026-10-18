@@ -74,6 +74,12 @@ def test_dashboard_composition():
     assert "pendingYields" in SYS, "404 fallback fan-out"
 
 
+def test_the_worker_card_has_no_manage_button():
+    """D4: Manage opened a second copy of this list. Drain and Purge dead stay (test_dashboard_composition)."""
+    assert "nv-sys-workers-manage" not in SYS
+    assert 'openOverlay("workers"' not in SYS
+
+
 def test_health_cards_match_notes_not_the_old_scheduler_dump():
     # notes section 4: scheduler / worker pool / sessions active /
     # attention count - NOT the old platform/in-flight/claims/missed-

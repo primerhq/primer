@@ -41,10 +41,6 @@ _ROUTES: list[tuple[str, str]] = [
     # The subsystem now has its own overlay; it used to resolve to the
     # knowledge browser, which is a different surface entirely.
     ("subsystems/internal-collections", "Internal collections"),
-    ("workers",                         "Workers"),
-    # health resolves to overlay=workers:health, whose sectioned title
-    # is "Health" (SH_OVERLAY_SECTION_TITLES).
-    ("health",                          "Health"),
 ]
 
 

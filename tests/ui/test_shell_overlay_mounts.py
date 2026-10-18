@@ -34,7 +34,6 @@ DESIGNATIONS = {
     "graphs": ("graphs.jsx", "GraphsPage"),
     "triggers": ("triggers.jsx", "TR_TriggersPage"),
     "toolsets": ("toolsets.jsx", "ToolsetsPage"),
-    "workers": ("workers.jsx", "WorkersPage"),
     "approvals": ("approvals.jsx", "ApprovalsPage"),
     "harnesses": ("harnesses.jsx", "HarnessesPage"),
     "services": ("services.jsx", "SV_ServicesPage"),
@@ -68,12 +67,17 @@ def test_every_designated_component_is_actually_exported() -> None:
         assert component in exporter, f"{component} missing from {filename}"
 
 
-def test_workers_and_channels_carry_their_second_surface() -> None:
-    """Pinned decision 3 collapses Health into workers:health, and the
-    section 3 list pairs channel instances with channel rules."""
+def test_channels_carry_their_second_surface() -> None:
+    """The section 3 list pairs channel instances with channel rules."""
     src = _host()
-    assert "window.HealthPage" in src and '"health"' in src
     assert "window.ChannelRulesPage" in src and '"rules"' in src
+
+
+def test_the_workers_overlay_is_gone() -> None:
+    """D4 (2026-10-18): the Dashboard's worker card is the one worker surface; its Manage button opened this overlay and nothing else did."""
+    assert "workers" not in _mount_names()
+    src = _host()
+    assert "window.WorkersPage" not in src and "window.HealthPage" not in src
 
 
 def test_switching_workspace_is_a_verb() -> None:

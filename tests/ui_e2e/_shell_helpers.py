@@ -283,8 +283,6 @@ LEGACY_ROUTE_OVERLAYS = {
     "toolsets": "toolsets",
     "tools": "tools",
     "approvals": "approvals",
-    "workers": "workers",
-    "health": "workers:health",
     "harnesses": "harnesses",
     "services": "services",
     "workspaces": "workspaces",
