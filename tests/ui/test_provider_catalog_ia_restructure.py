@@ -150,7 +150,10 @@ def test_edit_prefills_and_locks_the_row_and_updates_via_put() -> None:
     src = _catalog()
     open_edit = src[src.index("function openEdit"):]
     open_edit = open_edit[:open_edit.index("\n  }\n")]
-    assert "setDraft(row);" in open_edit
+    # The draft is seeded through PC_draftFromRow (design 13.4): the web
+    # classes name their kind provider_type on the served row, and the
+    # form speaks provider.
+    assert "setDraft(window.PC_draftFromRow(k.plural, row));" in open_edit
 
     save = src[src.index("const save = async (body) =>"):]
     save = save[:save.index("let body;")]
