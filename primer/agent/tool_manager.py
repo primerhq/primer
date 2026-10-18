@@ -16,10 +16,16 @@ Routing rules:
 Errors:
 
 * Unknown tool name -> :class:`UnsupportedContentError`.
-* :class:`AuthRequiredError` from an MCP toolset -> propagates so the
-  workspace executor can transition the session to WAITING /
-  ``_ToolApprovalWaiting``.
-* Any other :class:`PrimerError` -> caught and converted to a
+* A toolset that cannot LIST its tools does not end the turn. An MCP toolset
+  (``ToolsetProvider.lists_remotely``) that fails to list, needs a sign-in or
+  does not answer within :data:`primer.agent.tool_listing.TURN_TOOLSET_LIST_TIMEOUT_S`
+  is left out of the catalogue: :meth:`ToolExecutionManager.unavailable_toolsets`
+  says why, the agent loop tells the model, and a call that names one of its
+  tools is answered with a tool error. Any other provider that fails to list
+  still fails the turn.
+* :class:`AuthRequiredError` raised by a CALL -> propagates so the workspace
+  executor can transition the session to WAITING / ``_ToolApprovalWaiting``.
+* Any other :class:`PrimerError` from a call -> caught and converted to a
   :class:`ToolResultPart` with ``error=True`` so the LLM can react
   rather than the executor crashing.
 """
@@ -28,12 +34,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
+from primer.agent import tool_listing
 from primer.agent.approval import (
     ApprovalContext,
     ApprovalResolver,
@@ -122,6 +129,12 @@ def _wrapped_call(arguments: object) -> tuple[str, dict] | None:
         return None
     inner = arguments.get("arguments")
     return f"{toolset_id}{_SCOPE_SEPARATOR}{tool_name}", inner if isinstance(inner, dict) else {}
+
+
+async def _replay(tools: list[Tool]) -> AsyncIterator[Tool]:
+    """A listing that was already fetched, as the async iterator ``provider.list_tools`` is, so the walk in ``list_tools`` has one shape."""
+    for tool in tools:
+        yield tool
 
 
 def _without_credentials(result: ToolResultPart) -> ToolResultPart:
@@ -258,6 +271,10 @@ class ToolExecutionManager:
         # through ``call_tool`` was never in the visible catalogue.
         self._descriptors: dict[str, Tool] = {}
         self._catalogue: list[Tool] | None = None
+        # Toolset id -> why it was left out of THIS manager's catalogue (an MCP toolset that could not list its tools).
+        # Set with the catalogue and kept for the manager's life; the manager is built per turn, so the next turn lists
+        # the toolset again (no tool-list cache).
+        self._unavailable: dict[str, str] = {}
         self._index_lock = asyncio.Lock()
 
         if self._workspace_tools and self._workspace_session is None:
@@ -388,11 +405,19 @@ class ToolExecutionManager:
         Emitted ``Tool.id`` values are scoped: ``toolset_id__bare_name``.
         Bare tool ids that already contain ``__`` raise :class:`ConfigError`
         because the double underscore is reserved as the scope separator.
+
+        A toolset whose provider lists remotely (``lists_remotely``: MCP) is listed
+        first, all of them at once and each bounded
+        (:func:`primer.agent.tool_listing.list_remote_toolset`). One that cannot
+        list is LEFT OUT instead of failing the turn, and
+        :meth:`unavailable_toolsets` says why. Cancelling this call cancels those
+        listings and is never absorbed.
         """
         async with self._index_lock:
             if self._catalogue is not None:
                 return list(self._catalogue)
             catalogue: list[Tool] = []
+            unavailable: dict[str, str] = {}
             # The ``workspace_ext`` toolset is special: its tools are
             # registered into the agent's tool context ONLY inside a
             # workspace session. On a chat (no workspace session) they are
@@ -404,6 +429,11 @@ class ToolExecutionManager:
             # any non-session caller (chats and bare managers) gets the
             # filter - these tools require a session to function anyway.
             suppress_workspace_ext = self._workspace_session is None
+            # The remote toolsets (MCP) are listed first and together, so one that hangs costs the turn its bound once,
+            # not once per toolset. The walk below then takes them in registration order like every other toolset.
+            remote = await self._list_remote_toolsets(
+                principal=principal, skip_workspace_ext=suppress_workspace_ext,
+            )
             # Toolset-provider tools (each provider yields tools by their
             # bare name; we scope on the way out).
             for toolset_id, provider in self._toolsets.items():
@@ -417,7 +447,20 @@ class ToolExecutionManager:
                     # references one gets the standard "not registered"
                     # rejection in ``_execute_inner``.
                     continue
-                async for t in provider.list_tools(principal=principal):
+                listing = remote.get(toolset_id)
+                if listing is not None and listing.reason is not None:
+                    # Cannot list: left out of the turn, nothing of it enters the routing table.
+                    unavailable[toolset_id] = listing.reason
+                    logger.warning(
+                        "ToolExecutionManager: toolset left out of the turn; it cannot list its tools",
+                        extra={"toolset": toolset_id, "reason": listing.reason},
+                    )
+                    continue
+                async for t in (
+                    provider.list_tools(principal=principal)
+                    if listing is None
+                    else _replay(listing.tools)
+                ):
                     if _SCOPE_SEPARATOR in t.id:
                         raise ConfigError(
                             f"tool {t.id!r} from toolset {toolset_id!r} "
@@ -485,8 +528,65 @@ class ToolExecutionManager:
                 # getattr: the ABC always has it, but tests (and embedders) hand in duck-typed tools.
                 if not getattr(ws_tool, "interruptible", True):
                     self._uninterruptible.add(scoped_id)
+            # Together, once the walk is whole: a listing that fails or is cancelled halfway leaves neither behind.
+            self._unavailable = unavailable
             self._catalogue = catalogue
             return list(self._catalogue)
+
+    async def _list_remote_toolsets(
+        self,
+        *,
+        principal: str | None,
+        skip_workspace_ext: bool,
+    ) -> dict[str, tool_listing.ToolListing]:
+        """List every remote toolset at once, each bounded; toolset id -> what it answered.
+
+        A provider is remote when it says so (``lists_remotely``). It is read with ``is True`` as well as ``getattr``:
+        a duck-typed fake or a mock that has no such flag lists as it always has, and so must any other provider.
+        The ``workspace_ext`` toolset is not asked on a chat, as in the walk. The bound is read from the module at the
+        moment of listing, so a test can lower it.
+        """
+        remote = {
+            toolset_id: provider
+            for toolset_id, provider in self._toolsets.items()
+            if getattr(provider, "lists_remotely", False) is True
+            and not (skip_workspace_ext and toolset_id == WORKSPACE_EXT_TOOLSET_ID)
+        }
+        if not remote:
+            return {}
+        timeout_s = tool_listing.TURN_TOOLSET_LIST_TIMEOUT_S
+        # gather, not a TaskGroup or a loop of waits: it is how the calling task's cancellation reaches every listing,
+        # and ``list_remote_toolset`` answers its failures as values, so no sibling is ever cancelled for another's sake.
+        listings = await asyncio.gather(
+            *(
+                tool_listing.list_remote_toolset(provider, principal=principal, timeout_s=timeout_s)
+                for provider in remote.values()
+            )
+        )
+        return dict(zip(remote, listings))
+
+    def unavailable_toolsets(self) -> dict[str, str]:
+        """Toolset id -> why it was left out of this turn (an MCP toolset that could not list its tools); a copy.
+
+        Empty until :meth:`list_tools` has run, and when nothing was left out. The agent loop reads it every model
+        call and tells the model (:func:`primer.agent.tool_listing.with_system_notice`); a call into one of these
+        toolsets is answered with the reason (:meth:`_left_out_toolset`).
+        """
+        return dict(self._unavailable)
+
+    def _left_out_toolset(self, scoped_name: str) -> tuple[str, str] | None:
+        """``(toolset id, reason)`` of the left-out toolset a scoped tool name belongs to, or ``None``.
+
+        There is no routing entry for these tools (they were never listed), so the name is matched on its prefix; a
+        toolset id may itself hold the separator, so the most specific id wins.
+        """
+        match: tuple[str, str] | None = None
+        for toolset_id, reason in self._unavailable.items():
+            if scoped_name.startswith(f"{toolset_id}{_SCOPE_SEPARATOR}") and (
+                match is None or len(toolset_id) > len(match[0])
+            ):
+                match = (toolset_id, reason)
+        return match
 
     def is_notifying(self, tool_name: str) -> bool:
         """True iff the SCOPED ``tool_name`` was declared notifying.
@@ -644,6 +744,16 @@ class ToolExecutionManager:
         else:
             entry = self._tool_to_toolset.get(call.name)
             if entry is None:
+                left_out = self._left_out_toolset(call.name)
+                if left_out is not None:
+                    # The model names a tool of a toolset that could not list this turn (from an earlier turn's history,
+                    # or a guess): nothing is dispatched, and it is told why instead of "unknown tool".
+                    left_out_id, reason = left_out
+                    return ToolResultPart(
+                        id=call.id,
+                        output=f"toolset {left_out_id} is unavailable this turn: {reason}",
+                        error=True,
+                    )
                 raise UnsupportedContentError(
                     f"unknown tool {call.name!r}; not registered with any toolset "
                     "or workspace"

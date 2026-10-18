@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from primer.model.chat import Tool, ToolCallResult
 
@@ -46,6 +46,13 @@ class ToolsetProvider(ABC):
     Subclasses are bound to one configured toolset; ``list_tools`` /
     ``call`` are the only operations.
     """
+
+    #: ``True`` for a provider whose :meth:`list_tools` goes over a network or starts a process, so it can fail, or never
+    #: answer, for reasons outside this process (an MCP server). A turn lists such a toolset bounded and leaves it out
+    #: of the turn when it cannot list (:mod:`primer.agent.tool_listing`); a provider that lists in-process leaves this
+    #: ``False``, and a failure to list stays the turn's failure. Read with ``getattr(provider, "lists_remotely", False)``
+    #: by callers that are handed duck-typed fakes.
+    lists_remotely: ClassVar[bool] = False
 
     @abstractmethod
     def list_tools(
