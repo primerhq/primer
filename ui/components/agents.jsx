@@ -496,7 +496,8 @@ function AG_otherFieldErrors(fieldErrors, paths) {
 // line) and always holds at least one; `onChange(next)` hands the parent the new list. The tab that is shown is a position, kept in range when the
 // list shrinks: removing the selected part selects the next one (or the one before, at the end), so the next keystroke never goes to a part that is
 // gone. Full screen is a layer of the Escape stack (foundation/escape-stack.js): Escape leaves it first and only the next Escape closes the overlay
-// behind it, so the draft is not lost. The editor takes the focus when full screen opens.
+// behind it, so the draft is not lost. The editor takes the focus when full screen opens. Its z-index is above the layers inside the dialog (the tool
+// picker's sticky group headers are 1, the kit's selector menu 3): at 1 a toolset header showed on top of the full-screen editor.
 function AG_PromptTabs({ parts, onChange }) {
   const [active, setActive] = React.useState(0);
   const [fullScreen, setFullScreen] = React.useState(false);
@@ -516,7 +517,7 @@ function AG_PromptTabs({ parts, onChange }) {
     color, fontSize: 12, whiteSpace: "nowrap", cursor: "pointer", flexShrink: 0,
   });
   const box = fullScreen
-    ? { position: "fixed", inset: 0, zIndex: 1, background: "var(--bg-1)", display: "flex", flexDirection: "column" }
+    ? { position: "fixed", inset: 0, zIndex: 10, background: "var(--bg-1)", display: "flex", flexDirection: "column" }
     : {
       border: "1px solid " + (focused ? "var(--accent)" : "var(--border)"), borderRadius: "var(--r-8)", overflow: "hidden",
       background: "var(--bg)", display: "flex", flexDirection: "column", boxShadow: focused ? "0 0 0 3px var(--accent-dim)" : "none",
@@ -818,16 +819,20 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
     try { await create.mutate(body); } catch (_e) { /* surfaced via onError */ }
   };
 
-  // The field a number input feeds: its change handler keeps what was typed AND whether the browser could read it.
-  const onNumber = (path, set, message) => (e) => {
-    set(e.target.value);
-    const unreadable = !!(e.target.validity && e.target.validity.badInput);
-    setNumberErrors((m) => {
-      if (!!m[path] === unreadable) return m;
-      const next = { ...m };
-      if (unreadable) next[path] = message; else delete next[path];
-      return next;
-    });
+  // The two handlers of a number input. onChange keeps what was typed AND whether the browser could read it; onInput reads only the second. The browser
+  // reports "" for text it cannot read, and React sends no change for an input whose value stays "": the first unreadable character typed into an EMPTY
+  // field would never reach onChange, but the native input event always reaches onInput.
+  const numberHandlers = (path, set, message) => {
+    const note = (e) => {
+      const unreadable = !!(e.target.validity && e.target.validity.badInput);
+      setNumberErrors((m) => {
+        if (!!m[path] === unreadable) return m;
+        const next = { ...m };
+        if (unreadable) next[path] = message; else delete next[path];
+        return next;
+      });
+    };
+    return { onChange: (e) => { set(e.target.value); note(e); }, onInput: note };
   };
 
   // The model profile dropdown. A profile the agent names that is no longer in the list stays the selection (a native select would otherwise show its first
@@ -980,7 +985,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
             min="0"
             placeholder="Model default"
             value={temperature}
-            onChange={onNumber("body.temperature", setTemperature, "Enter a number, or leave it empty for the model default.")}
+            {...numberHandlers("body.temperature", setTemperature, "Enter a number, or leave it empty for the model default.")}
           />
         </PK_Field>
         <PK_Field label="Max tool turns" error={numberErrors["body.max_tool_turns"] || AG_fieldError(fieldErrors, "body.max_tool_turns")}>
@@ -993,7 +998,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
             min="1"
             placeholder="No limit"
             value={maxToolTurns}
-            onChange={onNumber("body.max_tool_turns", setMaxToolTurns, "Enter a whole number, or leave it empty for no limit.")}
+            {...numberHandlers("body.max_tool_turns", setMaxToolTurns, "Enter a whole number, or leave it empty for no limit.")}
           />
         </PK_Field>
         <PK_Field label="Max output tokens" help="Empty means no limit"
@@ -1007,7 +1012,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
             min="1"
             placeholder="No limit"
             value={maxOutputTokens}
-            onChange={onNumber("body.max_output_tokens", setMaxOutputTokens, "Enter a whole number, or leave it empty for no limit.")}
+            {...numberHandlers("body.max_output_tokens", setMaxOutputTokens, "Enter a whole number, or leave it empty for no limit.")}
           />
         </PK_Field>
       </PK_Grid>

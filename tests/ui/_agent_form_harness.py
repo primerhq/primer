@@ -137,13 +137,15 @@ function __mountDetail(row) {
   __resources["agent-status:" + row.id] = STATUS_OK;
   MR.mount(AgentDetail, { agentId: row.id, pushToast: function (t) { __recorded.toasts.push(t); } });
 }
-function __typeInto(testid, value, badInput) {
+function __typeInto(testid, value, badInput, eventName) {
   var el = MR.find(testid);
   if (!el) throw new Error("no element with data-testid " + testid);
   var target = { value: value };
   // A number input the browser cannot read: its value is "" and validity.badInput says why.
   if (badInput) target.validity = { badInput: true };
-  el.props.onChange({ target: target });
+  var handler = el.props[eventName === "input" ? "onInput" : "onChange"];
+  if (typeof handler !== "function") throw new Error("element " + testid + " has no " + (eventName === "input" ? "onInput" : "onChange"));
+  handler({ target: target });
   MR.rerender();
 }
 // Every element with exactly this test id, in tree order. A component that takes a data-testid prop (Btn) is found before the element it renders.
@@ -277,12 +279,14 @@ def mount_detail(ctx: Any, existing: dict) -> None:
     ctx.eval(f"__mountDetail({json.dumps(existing)})")
 
 
-def type_into(ctx: Any, testid: str, value: str, *, bad_input: bool = False) -> None:
+def type_into(ctx: Any, testid: str, value: str, *, bad_input: bool = False, event: str = "change") -> None:
     """Call the element's ``onChange({target: {value}})`` and re-render. Throws ``no element with data-testid <testid>`` when there is none.
 
     ``bad_input`` adds ``validity: {badInput: true}`` to the target: what a number input reports (with value ``""``) for text the browser cannot read.
+    ``event="input"`` calls ``onInput`` instead, the native input event: React sends no change for an input whose value stays ``""``, so it is the only
+    event that hears the first unreadable character typed into an empty number field.
     """
-    ctx.eval(f"__typeInto({json.dumps(testid)}, {json.dumps(value)}, {json.dumps(bad_input)})")
+    ctx.eval(f"__typeInto({json.dumps(testid)}, {json.dumps(value)}, {json.dumps(bad_input)}, {json.dumps(event)})")
 
 
 def click(ctx: Any, testid: str) -> None:

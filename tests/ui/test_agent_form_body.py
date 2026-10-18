@@ -248,6 +248,25 @@ def test_the_error_goes_when_the_number_can_be_read_again(ctx, testid):
     assert len(calls(ctx)) == 1
 
 
+@pytest.mark.parametrize("testid", list(NOT_A_NUMBER))
+def test_the_input_event_hears_text_typed_into_an_empty_number_field(ctx, testid):
+    """React sends no change for an input whose value stays "" (the browser reads unreadable text as ""), so a first character like "e" typed into an
+    EMPTY field reaches only the native input event. Found in a real browser: with onChange alone the error never showed and the save went out."""
+    label, message = NOT_A_NUMBER[testid]
+    mount(ctx)
+    type_into(ctx, "agent-id", "refund-triage")
+    type_into(ctx, "agent-description", "Triages refunds")
+    type_into(ctx, testid, "")
+    type_into(ctx, testid, "", bad_input=True, event="input")
+    assert prop(ctx, f"field:{label}", "data-error") == message
+    click(ctx, "agent-form-submit")
+    assert calls(ctx) == []
+    type_into(ctx, testid, "", event="input")  # the "e" is deleted: the field is empty and readable again
+    assert prop(ctx, f"field:{label}", "data-error") == ""
+    click(ctx, "agent-form-submit")
+    assert len(calls(ctx)) == 1
+
+
 def test_a_cleared_number_field_is_still_no_limit_not_an_error(ctx):
     """Cleared by hand the value is "" and badInput is false: that is the empty field, which means no limit."""
     mount(ctx, existing=FULL)

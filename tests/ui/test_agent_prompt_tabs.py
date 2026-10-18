@@ -10,6 +10,9 @@ leaves full screen first, so the draft in the overlay behind it is not lost.
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 
 from tests.ui._agent_form_harness import (
@@ -114,3 +117,16 @@ def test_full_screen_toggles_and_escape_leaves_it_before_closing_the_overlay(ctx
     assert prop(ctx, "agent-system-prompt", "data-fullscreen") == "false" and closes(ctx) == 0
     press_escape(ctx)
     assert closes(ctx) == 1
+
+
+def test_full_screen_is_above_every_layer_inside_the_dialog(ctx):
+    """Found in a real browser: the tool picker's toolset headers are ``position: sticky`` at z-index 1, and a full-screen editor at z-index 1 sat UNDER them
+    (a "system, 6 tools" row showed over the editor). The layers inside the dialog are those headers (read from the picker's source) and the kit's selector
+    menu (z-index 3 in ``styles.css``); the full-screen box must be above all of them."""
+    ui = Path(__file__).resolve().parents[2] / "ui"
+    picker = [int(n) for n in re.findall(r"zIndex: (\d+)", (ui / "components" / "shared" / "tool-picker.jsx").read_text(encoding="utf-8"))]
+    assert picker, "the picker's sticky header z-index is no longer in its source: update this test"
+    mount_prompt_tabs(ctx, ["A"])
+    click(ctx, "agent-system-prompt-fullscreen")
+    style = prop(ctx, "agent-system-prompt", "style")
+    assert style["position"] == "fixed" and style["zIndex"] > max(picker + [3])
