@@ -1,13 +1,15 @@
-"""Per-workspace size and env overrides against a real cluster (platform revamp 2026-10, plan 08).
+"""Per-workspace size and env overrides (platform revamp 2026-10, plan 08).
 
 ``POST /v1/workspaces`` takes ``overrides.env`` and ``overrides.resources`` (``cpu_cores``, ``memory_bytes``, ``disk_bytes``).
 On Kubernetes both land in the workspace's pod: the override env in the container's ``env`` (it used to reach only the init
-commands), the size in the container's requests and limits and in the PVC request.
+commands), the size in the container's requests and limits and in the PVC request. A size the workspace's provider cannot
+honour is a 422 naming ``overrides.resources.<field>`` (Local takes none, Docker has no disk quota).
 
-Lead-scheduled: this needs a Kubernetes cluster the platform runs inside (``workspace:kubernetes``), like
-``test_smk_workspaces.py::test_kubernetes_backend``, whose topology notes apply (point ``PRIMER_E2E_BASE_URL`` at the in-cluster
-``primer-api`` Service; ``PRIMER_K8S_RUNTIME_IMAGE`` or ``PRIMER_K8S_REGISTRY`` names a cluster-pullable runtime image;
-``PRIMER_K8S_NAMESPACE`` defaults to ``primer-workspaces``). Never run it alongside another e2e run.
+Lead-scheduled. ``test_kubernetes_override_env_and_size_reach_the_pod`` needs a Kubernetes cluster the platform runs inside
+(``workspace:kubernetes``), like ``test_smk_workspaces.py::test_kubernetes_backend``, whose topology notes apply (point
+``PRIMER_E2E_BASE_URL`` at the in-cluster ``primer-api`` Service; ``PRIMER_K8S_RUNTIME_IMAGE`` or ``PRIMER_K8S_REGISTRY`` names a
+cluster-pullable runtime image; ``PRIMER_K8S_NAMESPACE`` defaults to ``primer-workspaces``). The refusal tests need only the
+server. Never run any of them alongside another e2e run.
 """
 
 from __future__ import annotations
@@ -154,3 +156,72 @@ async def test_kubernetes_override_env_and_size_reach_the_pod(authed_client, uni
             assert d.status_code in (204, 404), d.text
         await authed_client.delete(f"/v1/workspace_templates/{tpl}")
         await authed_client.delete(f"/v1/workspace_providers/{wp}")
+
+
+# ---- a size the provider cannot honour is refused (plan 08 task 4; master Review Focus 5) ----------------------------------
+
+
+async def _provider_and_template(authed_client, *, wp: str, tpl: str, provider: dict, backend: dict) -> None:
+    rp = await authed_client.post("/v1/workspace_providers", json={"id": wp, **provider})
+    assert rp.status_code in (200, 201), rp.text
+    rt = await authed_client.post(
+        "/v1/workspace_templates",
+        json={"id": tpl, "description": "plan 08 size refusal", "provider_id": wp, "backend": backend},
+    )
+    assert rt.status_code in (200, 201), rt.text
+
+
+async def _drop(authed_client, *, wp: str, tpl: str) -> None:
+    await authed_client.delete(f"/v1/workspace_templates/{tpl}")
+    await authed_client.delete(f"/v1/workspace_providers/{wp}")
+
+
+async def test_a_local_workspace_cannot_be_sized(authed_client, unique_suffix, tmp_path):
+    """A Local workspace runs on the server itself: any size field is a 422 naming it, and nothing is created."""
+    wp, tpl = f"wpl-{unique_suffix}", f"tpll-{unique_suffix}"
+    await _provider_and_template(
+        authed_client, wp=wp, tpl=tpl,
+        provider={"provider": "local", "config": {"kind": "local", "root_path": str(tmp_path)}},
+        backend={"kind": "local"},
+    )
+    try:
+        r = await authed_client.post(
+            "/v1/workspaces", json={"template_id": tpl, "overrides": {"resources": {"cpu_cores": 1}}},
+        )
+        assert r.status_code == 422, r.text
+        body = r.json()
+        assert body["type"] == "/errors/validation-error", body
+        assert body["extensions"]["errors"][0]["loc"] == ["body", "overrides", "resources", "cpu_cores"], body
+        assert body["extensions"]["errors"][0]["type"] == "unsupported_by_provider", body
+        listing = await authed_client.get("/v1/workspaces")
+        assert not [w for w in listing.json()["items"] if w.get("template_id") == tpl], listing.text
+    finally:
+        await _drop(authed_client, wp=wp, tpl=tpl)
+
+
+async def test_a_docker_disk_override_is_refused(authed_client, unique_suffix):
+    """Docker has no disk quota. Only the provider and template ROWS exist (no daemon is needed: the check runs before the
+    backend is asked to build anything), and the refusal names ``disk_bytes``."""
+    wp, tpl = f"wpd-{unique_suffix}", f"tpld-{unique_suffix}"
+    await _provider_and_template(
+        authed_client, wp=wp, tpl=tpl,
+        provider={
+            "provider": "container",
+            "config": {
+                "kind": "container", "runtime": "docker",
+                "connection": {"kind": "socket", "socket_path": "/var/run/docker.sock"},
+                "reachability": {"kind": "host_port", "bind_host": "127.0.0.1"},
+            },
+        },
+        backend={"kind": "container", "image": "primer/workspace-runtime:1.1"},
+    )
+    try:
+        r = await authed_client.post(
+            "/v1/workspaces", json={"template_id": tpl, "overrides": {"resources": {"disk_bytes": 10737418240}}},
+        )
+        assert r.status_code == 422, r.text
+        errors = r.json()["extensions"]["errors"]
+        assert [e["loc"] for e in errors] == [["body", "overrides", "resources", "disk_bytes"]], errors
+        assert errors[0]["msg"] == "Docker cannot limit a workspace's disk. Remove this override.", errors
+    finally:
+        await _drop(authed_client, wp=wp, tpl=tpl)

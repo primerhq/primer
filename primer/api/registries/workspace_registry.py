@@ -38,6 +38,7 @@ from primer.workspace.resolvers import (
     make_secret_resolver,
 )
 from primer.workspace.session_reconcile import reconcile_sessions_to_workspace_lost
+from primer.workspace.size_overrides import asks_for_a_size, refuse_unsupported_resource_overrides
 
 
 if TYPE_CHECKING:
@@ -236,6 +237,13 @@ class WorkspaceRegistry:
         it names a directory under the local workspace root, a container
         name and a k8s object name, so only a single DNS-1123 label is
         admitted (``WORKSPACE_ID_PATTERN``; #680 N7).
+
+        So is the per-workspace size (platform revamp 2026-10, master Review
+        Focus 5): a size the template's provider cannot honour (Local takes
+        none, Docker has no disk quota) is a 422 naming
+        ``overrides.resources.<field>`` (:mod:`primer.workspace.size_overrides`),
+        raised BEFORE :meth:`get_backend`, so a refused create builds nothing
+        and leaves nothing behind.
         """
         if workspace_id is not None and re.fullmatch(
             WORKSPACE_ID_PATTERN, workspace_id
@@ -246,6 +254,12 @@ class WorkspaceRegistry:
                 f"'-', at most 63 characters) matching {WORKSPACE_ID_PATTERN} "
                 "(it names a directory under the workspace root)"
             )
+        if asks_for_a_size(overrides):
+            # Read only when a size is asked for: the common create pays no extra lookup. A provider that does not exist
+            # is get_backend's 404, not this check's.
+            provider = await self._sp.get_storage(WorkspaceProvider).get(template.provider_id)
+            if provider is not None:
+                refuse_unsupported_resource_overrides(provider.config.kind, overrides)
         backend = await self.get_backend(template.provider_id)
         resolvers = FileResolvers(
             document_resolver=make_document_resolver(self._sp),

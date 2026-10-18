@@ -203,8 +203,14 @@ it's called from a context with no implicit session.
   an `id`, it must be one DNS-1123 label: lowercase letters, digits and
   `-`, starting and ending with a letter or digit, at most 63 characters
   (`WORKSPACE_ID_PATTERN` in `primer/model/workspace.py`) - anything else
-  is a validation error. Returns the stored row (the REST route answers
-  201).
+  is a validation error. `overrides.resources` (`cpu_cores`,
+  `memory_bytes`, `disk_bytes`, each a positive number) sizes this one
+  workspace instead of the template: Kubernetes takes all three, Docker
+  takes `cpu_cores` and `memory_bytes` only (it has no disk quota), and a
+  Local workspace takes none. A size the provider cannot honour answers
+  `type=validation-error` (REST: 422) naming
+  `overrides.resources.<field>`, and nothing is created. Returns the
+  stored row (the REST route answers 201).
 - `workspaces::get_workspace` - fetch by id.
 - `workspaces::list_workspaces` - paginated.
 - `workspaces::delete_workspace` - destroys the workspace: its
