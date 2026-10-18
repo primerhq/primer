@@ -214,6 +214,28 @@ function MP_refusalErrors(err, fieldMap) {
   }
   return { fields: fields, form: refusal.message };
 }
+
+// The context window as typed: a whole number of tokens, 1 or more. The field is a number input, but "1e3" and "12.5" are numbers to it and neither is a window.
+function MP_contextError(text) {
+  var typed = text == null ? "" : String(text);
+  if (!typed.trim()) return "Enter the context window.";
+  if (!/^[1-9][0-9]*$/.test(typed)) return "Enter a whole number of tokens, 1 or more.";
+  return null;
+}
+
+// The options of the provider select: every LLM provider as "<id> (<type>)", in the order given. A profile can name a provider that is not in the list (it was deleted, or the
+// list is capped): that provider stays an option, marked, so showing the form never changes the profile's provider.
+function MP_providerOptions(providers, currentId) {
+  var options = [];
+  var listed = false;
+  (providers || []).forEach(function (p) {
+    if (!p || p.id == null) return;
+    if (p.id === currentId) listed = true;
+    options.push({ value: p.id, label: p.provider ? p.id + " (" + p.provider + ")" : p.id });
+  });
+  if (currentId && !listed) options.push({ value: currentId, label: currentId + " (not found)" });
+  return options;
+}
 // ---- end MP helpers ----
 
 function MP_ReasoningChip({ level }) {
@@ -449,243 +471,130 @@ function MP_ProfileModal(props) {
   return <MP_AggregateOverlay key={key} existing={existing} onClose={props.onClose} onSaved={props.onSaved} />;
 }
 
-// The single profile's overlay (view, edit, and the legacy create the Providers page still opens with a prefill). Doubles as the edit form per the console convention: a
-// non-null `existing` locks the id and switches POST to PUT-replace.
-function MP_SingleProfileOverlay({ onClose, onSaved, existing, providers, prefill }) {
-  const { useMutation, useResource, apiFetch } = window.primerApi;
-  const isEdit = existing != null;
-  const [id, setId] = React.useState("");
-  const [description, setDescription] = React.useState("");
-  const [providerId, setProviderId] = React.useState("");
-  const [modelName, setModelName] = React.useState("");
-  const [contextLength, setContextLength] = React.useState("");
-  const [reasoning, setReasoning] = React.useState("");
-  const [fieldErrors, setFieldErrors] = React.useState({});
-
-  React.useEffect(() => {
-    setFieldErrors({});
-    // `prefill` seeds a CREATE (from a discovery row on the provider page);
-    // `existing` is an EDIT and locks the id. Neither is the other: a
-    // prefilled form is still a new row the operator may rename.
-    const seed = existing || prefill || null;
-    setId(seed?.id || "");
-    setDescription(seed?.description || "");
-    setProviderId(seed?.provider_id || (providers[0]?.id || ""));
-    setModelName(seed?.model_name || "");
-    setContextLength(String(seed?.context_length || 128000));
-    setReasoning(seed?.config?.reasoning || "");
-  }, [existing, prefill, providers]);
-
-  // Item 2: the two-column picker's right side needs to know whether the
-  // SELECTED provider's kind is discoverable - same /_types source and
-  // same discoverable gate P1a's card facts use, not a new rule.
-  const types = useResource(
-    "mp-modal:llm-types",
-    (signal) => apiFetch("GET", "/llm_providers/_types", null, { signal }),
-    { pollMs: null },
-  );
-  const selectedProvider = providers.find((p) => p.id === providerId);
-  const discoverable = !!(selectedProvider && types.data
-    && types.data[selectedProvider.provider]
-    && types.data[selectedProvider.provider].discoverable);
-  const discovered = useResource(
-    discoverable ? `mp-modal:discovered:${providerId}` : null,
-    (signal) => apiFetch(
-      "GET", `/llm_providers/${encodeURIComponent(providerId)}/discovered_models`,
-      null, { signal },
-    ),
-    { pollMs: null, deps: [providerId] },
-  );
-  const discoveredModels = (discoverable && discovered.data && discovered.data.models) || [];
-
-  const save = useMutation(
-    (body) => (isEdit
-      ? apiFetch("PUT", `/model_profiles/${encodeURIComponent(existing.id)}`, body)
-      : apiFetch("POST", "/model_profiles", body)),
-    { invalidates: ["model-profiles:list"] }
-  );
-
-  const submit = async () => {
-    setFieldErrors({});
-    const body = {
-      id: id.trim(),
-      description: description.trim(),
-      provider_id: providerId,
-      model_name: modelName.trim(),
-      context_length: Number(contextLength) || 0,
-      config: reasoning ? { reasoning } : {},
-    };
-    try {
-      await save.mutate(body);
-      onSaved && onSaved();
-      onClose();
-    } catch (err) {
-      const fe = {};
-      (err.fieldErrors || []).forEach((fieldErr) => {
-        fe[(fieldErr.loc || []).join(".")] = fieldErr.msg;
-      });
-      // The provider-exists guard returns a 422 with a `field` key rather
-      // than a pydantic loc list, so surface it on the right control
-      // (provider_id / model_name).
-      const refused = window.primerApi.readRefusal(err);
-      if (refused.field && refused.sentence) {
-        fe[`body.${refused.field}`] = refused.sentence;
-      }
-      setFieldErrors(fe);
-      if (Object.keys(fe).length === 0) throw err;
-    }
-  };
-
-  const errFor = (name) => fieldErrors[`body.${name}`];
-  const canSave = id.trim() && providerId && modelName.trim();
-  return (
-    <Modal
-      onClose={onClose}
-      title={isEdit ? `Edit ${existing.id}` : "Model profile"}
-      footer={
-        <>
-          <Btn onClick={onClose}>Cancel</Btn>
-          <Btn variant="primary" onClick={submit} disabled={!canSave} busy={save.loading}>
-            {isEdit ? "Save" : "Create"}
-          </Btn>
-        </>
-      }
-    >
-      <div className="field">
-        <label htmlFor="mp-id">Id</label>
-        <input id="mp-id" value={id} disabled={isEdit}
-          onChange={(e) => setId(e.target.value)}
-          placeholder="gx10--qwen-fast" />
-        {errFor("id") && <div className="field-help warn">{errFor("id")}</div>}
-        {!isEdit && (
-          <div className="field-help">
-            Any id works. Migrated profiles use
-            {" "}<code>&lt;provider&gt;--&lt;model&gt;</code>, but yours can
-            say what it is for.
-          </div>
-        )}
-      </div>
-      <div className="field">
-        <label htmlFor="mp-description">Description</label>
-        <input id="mp-description" value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          placeholder="Qwen with reasoning suppressed for cheap turns." />
-        {errFor("description") && (
-          <div className="field-help warn">{errFor("description")}</div>
-        )}
-      </div>
-
-        <>
-          {/* Item 2: two-column picker - left Provider (rows, selected
-              state), right Model ("probed live" when the selected provider's
-              kind is discoverable, else a free-text fallback - the SAME
-              degrade the generic provider form uses, not a new rule). */}
-          <div className="row" style={{ gap: 16, alignItems: "flex-start" }}>
-            <div className="col" style={{ flex: 1, minWidth: 0 }}>
-              <label>Provider</label>
-              <div className="pc-register-panel" data-testid="profile-provider-picker"
-                style={{ position: "static", boxShadow: "none", width: "100%" }}>
-                {providers.map((p) => (
-                  <button type="button" key={p.id} className="pc-register-row"
-                    data-testid={`profile-provider-row-${p.id}`}
-                    data-selected={p.id === providerId ? "true" : "false"}
-                    onClick={() => setProviderId(p.id)}>
-                    <span>{p.id}</span>
-                    <span className="pc-register-annotation muted">{p.provider}</span>
-                  </button>
-                ))}
-              </div>
-              {errFor("provider_id") && (
-                <div className="field-help warn">{errFor("provider_id")}</div>
-              )}
-            </div>
-            <div className="col" style={{ flex: 1, minWidth: 0 }}>
-              <label>
-                Model
-                {discoverable ? (
-                  <span className="muted text-sm" style={{ marginLeft: 6 }}>probed live</span>
-                ) : null}
-              </label>
-              {discoverable ? (
-                <div className="pc-register-panel" data-testid="profile-model-picker"
-                  style={{ position: "static", boxShadow: "none", width: "100%" }}>
-                  {discoveredModels.length === 0 ? (
-                    <div className="pc-register-empty muted text-sm">
-                      {discovered.loading ? "Probing…" : "No models discovered."}
-                    </div>
-                  ) : discoveredModels.map((m, i) => {
-                    const name = (m && m.name) || m;
-                    return (
-                      <button type="button" key={i} className="pc-register-row"
-                        data-testid={`profile-model-row-${name}`}
-                        data-selected={name === modelName ? "true" : "false"}
-                        onClick={() => setModelName(name)}>
-                        <span className="mono">{name}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              ) : (
-                // Degrade path: the selected provider's kind has no live
-                // discovery endpoint (routers/providers.py's discoverable
-                // flag) - free text is the only honest option, matching
-                // provider-form.jsx's own fallback for the same case.
-                <input value={modelName} onChange={(e) => setModelName(e.target.value)}
-                  placeholder="qwen" data-testid="profile-model-freetext" />
-              )}
-              <div className="field-help">
-                The provider-side wire name. Several profiles may share one -- that
-                is the point of profiles.
-              </div>
-              {errFor("model_name") && (
-                <div className="field-help warn">{errFor("model_name")}</div>
-              )}
-            </div>
-          </div>
-
-          <div className="field">
-            <label htmlFor="mp-context-length">Context length</label>
-            <input id="mp-context-length" type="number" value={contextLength}
-              onChange={(e) => setContextLength(e.target.value)} />
-            {errFor("context_length") && (
-              <div className="field-help warn">{errFor("context_length")}</div>
-            )}
-          </div>
-          <div className="field">
-            <label>Reasoning <span className="muted text-sm">vendor-neutral</span></label>
-            {/* Item 2: segmented control replaces the plain <select> - same
-                off/minimal/low/medium/high values, reusing the app's own
-                .chip-group/.chip pattern (P1a's family chips, the Autonomous
-                segment on the agent modal) rather than a fifth control shape. */}
-            <div className="chip-group" data-testid="profile-reasoning-segment">
-              <span className={"chip" + (reasoning === "" ? " active" : "")}
-                onClick={() => setReasoning("")}>vendor default</span>
-              {MP_REASONING_LEVELS.map((lvl) => (
-                <span key={lvl} className={"chip" + (reasoning === lvl ? " active" : "")}
-                  onClick={() => setReasoning(lvl)}>{lvl}</span>
-              ))}
-            </div>
-            <div className="field-help">
-              Mapped onto each vendor's own wire shape. Not every vendor has a
-              true off: the OpenAI Responses API floors at "minimal", and vLLM's
-              Responses endpoint ignores the setting entirely (use an
-              <code>openchat</code> provider there).
-            </div>
-          </div>
-        </>
-      {/* Item 2: footnote verbatim from the vision doc. */}
-      <div className="field-help" data-testid="profile-modal-footnote">
-        The unit agents bind to — overridable at session create, binding
-        switch, and per graph node. Deleting is blocked while anything
-        references it.
-      </div>
-    </Modal>
-  );
-}
-
-// A harness-managed aggregate is shown, not edited: its fields sit in a disabled fieldset, so every native control under it (the kit's checkboxes and segmented buttons too) is
+// A harness-managed profile is shown, not edited: its fields sit in a disabled fieldset, so every native control under it (the kit's checkboxes and segmented buttons too) is
 // read-only without the kit growing a prop for it. The fieldset takes over the column layout of the overlay body it sits in.
 const MP_READONLY_FIELDSET = { display: "flex", flexDirection: "column", gap: 16, minWidth: 0, margin: 0, padding: 0, border: "none" };
+
+// The single profile's overlay (design 7.1: "opening a profile shows its overlay for viewing and editing the fields the model allows"): the id (fixed once the profile exists),
+// the description, the provider and the model it names, and the context window. A profile's `config` (reasoning, extended) is not drawn, because no model call reads it yet
+// (plan 03, conflict C1), but it is the profile's: an edit sends the stored row back with these four fields laid over it (MP_editBody), so `config` and every other field the
+// form does not draw round-trip untouched. `prefill` is the legacy single create that the Providers page still opens ("New profile" under a provider, until Plan 02 removes
+// it); there is no other single create. The fields start from the profile the overlay is mounted with and then belong to the person typing: a new `providers` array (the host
+// hands over a fresh empty one on every render until its list loads) must not wipe a draft.
+function MP_SingleProfileOverlay({ existing, providers, prefill, onClose, onSaved }) {
+  const isEdit = existing != null;
+  const managed = MP_isManaged(existing);
+  const seed = existing || prefill || {};
+  const [id, setId] = React.useState(() => seed.id || "");
+  const [description, setDescription] = React.useState(() => seed.description || "");
+  const [providerId, setProviderId] = React.useState(() => seed.provider_id || "");
+  const [modelName, setModelName] = React.useState(() => seed.model_name || "");
+  const [contextText, setContextText] = React.useState(() => String(seed.context_length || 128000));
+  const [touched, setTouched] = React.useState({});
+  const [saving, setSaving] = React.useState(false);
+  const [refused, setRefused] = React.useState({ fields: {}, form: null });
+
+  // Until a provider is chosen the select shows the first one, so that is the value (the list may arrive after the overlay opens).
+  const provider = providerId || (providers && providers[0] ? providers[0].id : "");
+  const idError = !isEdit && id.trim() ? MP_nameError(id) : null;
+  const descriptionError = description.trim() ? null : "Enter a description.";
+  const modelError = modelName.trim() ? null : "Enter the model name.";
+  const contextError = MP_contextError(contextText);
+  const formReady = !managed && (isEdit || MP_nameError(id) === null) && !descriptionError && !!provider && !modelError && !contextError;
+  // A blank field is not a mistake until it has been typed in; a complaint from the server is about what was in the field, so editing the field takes it away.
+  const shown = (field, error) => (touched[field] ? error : null) || undefined;
+  const forget = (field) => setRefused((r) => {
+    if (!r.fields[field]) return r;
+    const fields = Object.assign({}, r.fields);
+    delete fields[field];
+    return { fields, form: r.form };
+  });
+  const typed = (field, set) => (e) => {
+    set(e.target.value);
+    setTouched((t) => (t[field] ? t : Object.assign({}, t, { [field]: true })));
+    forget(field);
+  };
+
+  const submit = async () => {
+    if (saving || !formReady) return;
+    setSaving(true);
+    setRefused({ fields: {}, form: null });
+    const api = window.primerApi;
+    const draft = { description: description.trim(), provider_id: provider, model_name: modelName.trim(), context_length: Number(contextText) };
+    let row;
+    try {
+      row = isEdit
+        ? await api.apiFetch("PUT", "/model_profiles/" + encodeURIComponent(existing.id), MP_editBody(existing, draft))
+        : await api.apiFetch("POST", "/model_profiles", Object.assign({ id: id.trim() }, draft));
+    } catch (err) {
+      const where = { description: "description", provider_id: "provider", model_name: "model", context_length: "context" };
+      if (!isEdit) where.id = "id";
+      setRefused(MP_refusalErrors(err, where));
+      setSaving(false);
+      return;
+    }
+    setSaving(false);
+    const name = isEdit ? existing.id : id.trim();
+    api.toastPush({ kind: "success", text: (isEdit ? "Saved " : "Created ") + name });
+    if (onSaved) onSaved(row);
+    onClose();
+  };
+
+  const fields = (
+    <>
+      <PK_Field label="Id" error={idError || refused.fields.id || undefined}>
+        <input value={id} readOnly={isEdit} autoFocus={!isEdit} autoComplete="off" spellCheck={false}
+          placeholder="<provider>--<model>" data-testid="mp-single-id" onChange={typed("id", setId)} />
+      </PK_Field>
+      <PK_Field label="Description" error={shown("description", descriptionError) || refused.fields.description}>
+        <input value={description} data-testid="mp-single-description" onChange={typed("description", setDescription)} />
+      </PK_Field>
+      <PK_Grid cols={2}>
+        <PK_Field label="Provider" error={refused.fields.provider || undefined}>
+          <select value={provider} data-testid="mp-single-provider" onChange={typed("provider", setProviderId)}>
+            {MP_providerOptions(providers, provider).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </PK_Field>
+        <PK_Field label="Model" error={shown("model", modelError) || refused.fields.model}>
+          <input value={modelName} autoComplete="off" spellCheck={false} data-testid="mp-single-model" onChange={typed("model", setModelName)} />
+        </PK_Field>
+      </PK_Grid>
+      <PK_Field label="Context window" help="The most tokens the model accepts in one request. Compaction uses it."
+        error={shown("context", contextError) || refused.fields.context}>
+        <input type="number" min={1} step={1} value={contextText} data-testid="mp-single-context" onChange={typed("context", setContextText)} />
+      </PK_Field>
+    </>
+  );
+
+  return (
+    <PK_FormOverlay
+      title={managed ? "LLM profile" : isEdit ? "Edit LLM profile" : "New LLM profile"}
+      testid="mp-single"
+      onClose={onClose}
+      footer={{
+        left: <Btn data-testid="mp-single-cancel" onClick={onClose}>{managed ? "Close" : "Cancel"}</Btn>,
+        right: managed ? null : (
+          <Btn kind="primary" data-testid="mp-single-submit" disabled={!formReady} busy={saving} onClick={submit}>
+            {isEdit ? "Save" : "Create"}
+          </Btn>
+        ),
+      }}
+    >
+      {managed ? (
+        <div data-testid="mp-single-managed">
+          <Banner kind="info" title={"Managed by harness " + existing.harness_id + ". Re-run the harness to change it."} />
+        </div>
+      ) : null}
+      {managed ? <fieldset disabled style={MP_READONLY_FIELDSET}>{fields}</fieldset> : fields}
+      <div className="field-help" data-testid="profile-modal-footnote">
+        Agents bind to a profile. A session, a binding switch or a graph node can override it. Deleting is refused while anything uses it.
+      </div>
+      {refused.form ? (
+        <div className="field-help" role="alert" data-testid="mp-single-error" style={{ color: "var(--red)" }}>{refused.form}</div>
+      ) : null}
+    </PK_FormOverlay>
+  );
+}
 
 // The aggregated profile's overlay (design 7.2): create with no `existing`, view and edit with one. Name, the members table with the order (the failover chain), the routing
 // switch, the folded Advanced choices and the smallest context window of the picked members. The model requires a description the design has no field for: a create writes
@@ -739,7 +648,7 @@ function MP_AggregateOverlay({ existing, onClose, onSaved }) {
     let row;
     try {
       row = isEdit
-        ? await api.apiFetch("PUT", "/model_profiles/" + encodeURIComponent(existing.id), MP_editBody(existing, Object.assign({ description, members }, routing)))
+        ? await api.apiFetch("PUT", "/model_profiles/" + encodeURIComponent(existing.id), MP_editBody(existing, Object.assign({ description: description.trim(), members }, routing)))
         : await api.apiFetch("POST", "/model_profiles", MP_aggregateBody(Object.assign({ name, members }, routing)));
     } catch (err) {
       setRefused(MP_refusalErrors(err, isEdit ? { members: "members", description: "description" } : { id: "name", members: "members" }));
@@ -851,7 +760,7 @@ function MP_AggregateOverlay({ existing, onClose, onSaved }) {
 // aria-disabled and keeps its tab stop (never `disabled`). `tokens` is the window, a number or null; it is not called `window`, which would hide the global in this function.
 // `movable` is false on a row nobody may change (a harness-managed aggregate): the order is told, the buttons are not drawn.
 function MP_MemberExtra({ id, tokens, order, onUp, onDown, movable }) {
-  const arrow = { minWidth: 24, padding: "2px 6px", lineHeight: 1.2 };
+  const arrow = { minWidth: 24, minHeight: 24, padding: "2px 6px", lineHeight: 1.2 };
   return (
     <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
       <span data-testid={"mp-member-window:" + id} style={{ color: "var(--text-3)", fontVariantNumeric: "tabular-nums" }}>

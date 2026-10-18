@@ -20,7 +20,7 @@ import json
 
 import pytest
 
-from tests.ui._llm_profile_fixtures import FULL_AGG, ROWS, router_envelopes
+from tests.ui._llm_profile_fixtures import FULL_AGG, FULL_SINGLE, PROVIDERS, ROWS, router_envelopes
 from tests.ui._mini_react import ROOT, mini_react_context, transpile
 
 UI = ROOT / "ui"
@@ -30,7 +30,8 @@ RULE = "Use letters, digits, dots, dashes and underscores, and start with a lett
 HARNESS_NOTE = "Managed by harness h1. Re-run the harness to change it."
 TAKEN = "ModelProfile with id 'p-a' already exists"
 GONE = "member profile 'p-gone' does not exist"
-SINGLE = {"id": "s", "kind": "single", "provider_id": "lp", "model_name": "m", "context_length": 5, "description": "d"}
+WHOLE = "Enter a whole number of tokens, 1 or more."
+FOOTNOTE = "Agents bind to a profile. A session, a binding switch or a graph node can override it. Deleting is refused while anything uses it."
 
 PRELUDE = r"""
 var CALLS = [], TOASTS = [], SAVED = [], CLOSED = [], RETRIES = [], PENDING = [], ASKED = [];
@@ -45,7 +46,6 @@ window.primerApi = {
     return { data: LIST.data, error: LIST.error, loading: LIST.loading, degraded: false, refetch: function () { RETRIES.push(1); } };
   },
   toastPush: function (t) { TOASTS.push(t); },
-  useMutation: function (fn) { return { mutate: fn, loading: false }; },
 };
 """
 
@@ -607,17 +607,17 @@ def test_the_dispatcher_routes_by_kind_and_open(ctx) -> None:
     assert present(ctx, "mp-aggregate"), "no profile and no prefill: the create form is the aggregate's"
     mount(ctx, {"existing": FULL_AGG})
     assert present(ctx, "mp-aggregate")
-    mount(ctx, {"existing": SINGLE})
-    assert not present(ctx, "mp-aggregate"), "a single profile is the single overlay's"
-    mount(ctx, {"prefill": {"provider_id": "lp"}})
-    assert not present(ctx, "mp-aggregate"), "the legacy single create (a prefill) is the single overlay's"
+    mount(ctx, {"existing": FULL_SINGLE, "providers": PROVIDERS})
+    assert not present(ctx, "mp-aggregate") and present(ctx, "mp-single"), "a single profile is the single overlay's"
+    mount(ctx, {"prefill": {"provider_id": "lp"}, "providers": PROVIDERS})
+    assert not present(ctx, "mp-aggregate") and present(ctx, "mp-single"), "the legacy single create (a prefill) is the single overlay's"
 
 
 def test_a_different_profile_in_the_same_place_is_a_fresh_overlay(ctx) -> None:
     """The dispatcher keys the overlay on the profile's id: one mounted over another never inherits the first one's draft."""
     mount(ctx)
     type_(ctx, "mp-aggregate-name", "draft")
-    ctx.eval(f"MR.rerender(Object.assign({{}}, {{ open: true, existing: {json.dumps(FULL_AGG)}, prefill: null, providers: [], onSaved: function () {{}}, onClose: function () {{}} }}))")
+    ctx.eval(f"MR.rerender({{ open: true, existing: {json.dumps(FULL_AGG)}, prefill: null, providers: [], onSaved: function () {{}}, onClose: function () {{}} }})")
     assert prop(ctx, "mp-aggregate-name", "value") == "agg-1"
     assert title(ctx) == "Edit aggregated profile"
 
@@ -632,6 +632,11 @@ def test_every_input_is_named_by_its_label(ctx) -> None:
     mount(ctx)
     assert js(ctx, 'unlabelled("mp-aggregate")') == []
     assert js(ctx, 'allUnder("mp-aggregate").filter(function (n) { return n.type === "input"; }).length') >= 5, "the name, select-all and the three rows: the walk did reach them"
+    for props in ({"existing": FULL_SINGLE, "providers": PROVIDERS}, {"prefill": {"provider_id": "lp"}, "providers": PROVIDERS}):
+        mount(ctx, props)
+        assert js(ctx, 'unlabelled("mp-single")') == []
+        kinds = js(ctx, 'allUnder("mp-single").filter(function (n) { return n.type === "input" || n.type === "select"; }).map(function (n) { return n.type; })')
+        assert sorted(kinds) == ["input", "input", "input", "input", "select"], "id, description, model, context window and the provider select: the walk did reach them"
 
 
 def test_every_button_that_is_only_an_arrow_has_a_name(ctx) -> None:
@@ -649,7 +654,223 @@ def test_the_file_exports_the_dispatcher_and_the_aggregate_overlay() -> None:
         assert line in SOURCE
 
 
-def test_the_aggregate_overlay_uses_kit_rows_and_btn_kind() -> None:
-    body = SOURCE[SOURCE.index("function MP_AggregateOverlay("):SOURCE.index("function MP_AllProfilesPanel(")]
-    assert "field-label" not in body, "every form row is a PK_Field"
-    assert "variant=" not in body, "Btn takes kind, not variant"
+def test_the_overlays_use_kit_rows_and_btn_kind() -> None:
+    single = SOURCE[SOURCE.index("function MP_SingleProfileOverlay("):SOURCE.index("function MP_AggregateOverlay(")]
+    aggregate = SOURCE[SOURCE.index("function MP_AggregateOverlay("):SOURCE.index("function MP_AllProfilesPanel(")]
+    for body in (single, aggregate):
+        assert "field-label" not in body, "every form row is a PK_Field"
+        assert "variant=" not in body, "Btn takes kind, not variant"
+        assert "useMutation" not in body, "the request is the overlay's own, with its own busy flag"
+
+
+def test_the_file_holds_no_em_dash() -> None:
+    assert "\u2014" not in SOURCE
+
+
+# ---- the single profile's overlay (Task 3) --------------------------------------------------------------------------------------------------------------
+
+
+def single(ctx, row=None, *, providers=PROVIDERS, prefill=None) -> None:
+    props: dict = {"providers": providers}
+    if row is not None:
+        props["existing"] = row
+    if prefill is not None:
+        props["prefill"] = prefill
+    mount(ctx, props)
+
+
+def single_title(ctx) -> str:
+    return prop(ctx, "mp-single", "aria-label")
+
+
+def test_the_titles_and_buttons_of_the_single_overlay_follow_its_mode(ctx) -> None:
+    single(ctx, FULL_SINGLE)
+    assert single_title(ctx) == "Edit LLM profile" and prop(ctx, "mp-single", "className") == "modal pk-overlay"
+    assert text_at(ctx, "mp-single-submit") == "Save" and text_at(ctx, "mp-single-cancel") == "Cancel"
+    single(ctx, prefill={"provider_id": "lp"})
+    assert single_title(ctx) == "New LLM profile"
+    assert text_at(ctx, "mp-single-submit") == "Create" and text_at(ctx, "mp-single-cancel") == "Cancel"
+    single(ctx, {**FULL_SINGLE, "harness_id": "h1"})
+    assert single_title(ctx) == "LLM profile"
+
+
+def test_the_fields_of_an_edit_hold_the_stored_values(ctx) -> None:
+    single(ctx, FULL_SINGLE)
+    assert prop(ctx, "mp-single-id", "value") == "p-a" and prop(ctx, "mp-single-id", "readOnly") is True
+    assert prop(ctx, "mp-single-description", "value") == "old"
+    assert prop(ctx, "mp-single-provider", "value") == "lp"
+    assert prop(ctx, "mp-single-model", "value") == "qwen"
+    assert prop(ctx, "mp-single-context", "value") == "32768" and prop(ctx, "mp-single-context", "type") == "number"
+    assert js(ctx, 'MR.findProp("label", "Context window").props.help') == "The most tokens the model accepts in one request. Compaction uses it."
+    assert text_at(ctx, "profile-modal-footnote") == FOOTNOTE
+
+
+def test_the_provider_select_lists_the_llm_providers_by_id_and_type(ctx) -> None:
+    single(ctx, FULL_SINGLE)
+    options = js(ctx, 'allUnder("mp-single-provider").filter(function (n) { return n.type === "option"; }).map(function (n) { return [n.props.value, textOf(n)]; })')
+    assert options == [["lp", "lp (openchat)"], ["other", "other (anthropic)"]]
+
+
+def test_a_single_edit_keeps_every_field_the_form_does_not_show(ctx) -> None:
+    single(ctx, FULL_SINGLE)
+    type_(ctx, "mp-single-description", "new words")
+    click(ctx, "mp-single-submit")
+    sent = {k: v for k, v in FULL_SINGLE.items() if k not in ("agent_count", "graph_node_count")}
+    assert calls(ctx) == [["PUT", "/model_profiles/p-a", {**sent, "description": "new words"}]], "config (reasoning, extended) goes back whole"
+    assert toasts(ctx) == [{"kind": "success", "text": "Saved p-a"}]
+    assert saved_count(ctx) == 1 and closed_count(ctx) == 1
+
+
+def test_changing_the_model_and_the_window_changes_only_those(ctx) -> None:
+    single(ctx, FULL_SINGLE)
+    type_(ctx, "mp-single-model", "qwen-2")
+    type_(ctx, "mp-single-context", "65536")
+    ctx.eval('MR.find("mp-single-provider").props.onChange({ target: { value: "other" } }); MR.rerender();')
+    click(ctx, "mp-single-submit")
+    sent = {k: v for k, v in FULL_SINGLE.items() if k not in ("agent_count", "graph_node_count")}
+    assert calls(ctx)[0][2] == {**sent, "model_name": "qwen-2", "context_length": 65536, "provider_id": "other"}
+
+
+def test_a_managed_single_profile_offers_no_save(ctx) -> None:
+    single(ctx, {**FULL_SINGLE, "harness_id": "h1"})
+    assert not present(ctx, "mp-single-submit")
+    assert text_at(ctx, "mp-single-managed") == HARNESS_NOTE
+    assert text_at(ctx, "mp-single-cancel") == "Close"
+    fieldsets = js(ctx, 'allUnder("mp-single").filter(function (n) { return n.type === "fieldset"; }).map(function (n) { return n.props.disabled; })')
+    assert fieldsets == [True], "every control under it is read-only"
+    single(ctx, FULL_SINGLE)
+    assert js(ctx, 'allUnder("mp-single").filter(function (n) { return n.type === "fieldset"; }).length') == 0 and not present(ctx, "mp-single-managed")
+
+
+def test_the_context_window_must_be_a_whole_number(ctx) -> None:
+    single(ctx, FULL_SINGLE)
+    type_(ctx, "mp-single-context", "0")
+    assert field_error(ctx, "Context window") == WHOLE
+    assert js(ctx, 'MR.find("mp-single-submit").props.disabled') is True
+    type_(ctx, "mp-single-context", "")
+    assert field_error(ctx, "Context window") == "Enter the context window."
+    type_(ctx, "mp-single-context", "4096")
+    assert field_error(ctx, "Context window") is None and js(ctx, 'MR.find("mp-single-submit").props.disabled') is False
+
+
+def test_an_unlisted_provider_is_kept(ctx) -> None:
+    single(ctx, {**FULL_SINGLE, "provider_id": "gone"})
+    assert prop(ctx, "mp-single-provider", "value") == "gone"
+    options = js(ctx, 'allUnder("mp-single-provider").filter(function (n) { return n.type === "option"; }).map(function (n) { return textOf(n); })')
+    assert options == ["lp (openchat)", "other (anthropic)", "gone (not found)"]
+    click(ctx, "mp-single-submit")
+    assert calls(ctx)[0][2]["provider_id"] == "gone"
+
+
+def test_a_refused_save_names_the_field(ctx, envelopes) -> None:
+    single(ctx, FULL_SINGLE)
+    reject_with(ctx, envelopes["provider_not_found"])
+    click(ctx, "mp-single-submit")
+    settle(ctx)
+    assert "no-such-provider" in field_error(ctx, "Provider")
+    assert field_error(ctx, "Description") is None and field_error(ctx, "Model") is None
+    assert closed_count(ctx) == 0 and saved_count(ctx) == 0 and toasts(ctx) == []
+    assert prop(ctx, "mp-single-description", "value") == "old"
+    ctx.eval('MR.find("mp-single-provider").props.onChange({ target: { value: "other" } }); MR.rerender();')
+    assert field_error(ctx, "Provider") is None, "the refusal was about the old choice"
+
+
+def test_a_refusal_the_single_form_has_no_field_for_is_drawn_above_the_footer(ctx, envelopes) -> None:
+    single(ctx, FULL_SINGLE)
+    reject_with(ctx, envelopes["member_not_found"])
+    click(ctx, "mp-single-submit")
+    settle(ctx)
+    assert prop(ctx, "mp-single-error", "role") == "alert" and "p-gone" in text_at(ctx, "mp-single-error")
+    assert closed_count(ctx) == 0
+
+
+def test_there_is_no_reasoning_control(ctx) -> None:
+    single(ctx, FULL_SINGLE)
+    assert not present(ctx, "profile-reasoning-segment")
+    assert "Reasoning" not in js(ctx, 'textOf(MR.find("mp-single"))'), "the server ignores a profile's reasoning (C1), so the form does not offer it"
+    assert not present(ctx, "profile-model-picker") and not present(ctx, "profile-provider-picker"), "the discovered-models picker and the provider row picker are gone"
+
+
+def test_the_legacy_create_path_posts_a_single_profile(ctx) -> None:
+    single(ctx, prefill={"provider_id": "lp"})
+    assert prop(ctx, "mp-single-id", "readOnly") is False and prop(ctx, "mp-single-id", "placeholder") == "<provider>--<model>"
+    assert prop(ctx, "mp-single-provider", "value") == "lp"
+    assert js(ctx, 'MR.find("mp-single-submit").props.disabled') is True
+    type_(ctx, "mp-single-id", "lp--qwen")
+    type_(ctx, "mp-single-description", "d")
+    type_(ctx, "mp-single-model", "qwen")
+    type_(ctx, "mp-single-context", "8192")
+    assert js(ctx, 'MR.find("mp-single-submit").props.disabled') is False
+    click(ctx, "mp-single-submit")
+    assert calls(ctx) == [["POST", "/model_profiles", {"id": "lp--qwen", "description": "d", "provider_id": "lp", "model_name": "qwen", "context_length": 8192}]]
+    assert toasts(ctx) == [{"kind": "success", "text": "Created lp--qwen"}]
+    assert saved_count(ctx) == 1 and closed_count(ctx) == 1
+
+
+def test_a_create_shows_no_complaint_about_a_field_nobody_has_touched(ctx) -> None:
+    single(ctx, prefill={"provider_id": "lp"})
+    for label in ("Id", "Description", "Model", "Context window"):
+        assert field_error(ctx, label) is None, label
+    type_(ctx, "mp-single-description", "")
+    assert field_error(ctx, "Description") == "Enter a description."
+    type_(ctx, "mp-single-model", " ")
+    assert field_error(ctx, "Model") == "Enter the model name."
+
+
+def test_a_created_profiles_id_must_be_addressable(ctx) -> None:
+    single(ctx, prefill={"provider_id": "lp"})
+    type_(ctx, "mp-single-id", "a/b")
+    assert field_error(ctx, "Id") == RULE
+    assert js(ctx, 'MR.find("mp-single-submit").props.disabled') is True
+
+
+def test_a_taken_id_is_named_under_id_on_a_create(ctx, envelopes) -> None:
+    single(ctx, prefill={"provider_id": "lp"})
+    type_(ctx, "mp-single-id", "p-a")
+    type_(ctx, "mp-single-description", "d")
+    type_(ctx, "mp-single-model", "m")
+    reject_with(ctx, envelopes["conflict"])
+    click(ctx, "mp-single-submit")
+    settle(ctx)
+    assert field_error(ctx, "Id") == TAKEN
+    assert closed_count(ctx) == 0 and prop(ctx, "mp-single-description", "value") == "d"
+
+
+def test_the_provider_falls_back_to_the_first_provider_that_arrives(ctx) -> None:
+    """A create with no provider in its prefill starts on the first provider, whenever the list arrives (the host loads it)."""
+    single(ctx, prefill={}, providers=[])
+    ctx.eval(f"MR.rerender({{ open: true, existing: null, prefill: {{}}, providers: {json.dumps(PROVIDERS)}, onSaved: function () {{}}, onClose: function () {{}} }})")
+    assert prop(ctx, "mp-single-provider", "value") == "lp"
+    type_(ctx, "mp-single-id", "x")
+    type_(ctx, "mp-single-description", "d")
+    type_(ctx, "mp-single-model", "m")
+    click(ctx, "mp-single-submit")
+    assert calls(ctx)[0][2]["provider_id"] == "lp", "what the select shows is what is sent"
+
+
+def test_the_single_press_is_busy_while_the_request_is_out_and_sends_once(ctx) -> None:
+    single(ctx, FULL_SINGLE)
+    ctx.eval("ANSWER = function () { return new Promise(function (resolve) { PENDING.push(resolve); }); };")
+    click(ctx, "mp-single-submit")
+    assert js(ctx, 'MR.find("mp-single-submit").props.busy') is True
+    assert js(ctx, 'MR.find("mp-single-submit").props.disabled') is False, "the request is not folded into disabled"
+    click(ctx, "mp-single-submit")
+    assert len(calls(ctx)) == 1
+    ctx.eval("PENDING[0]({ id: 'p-a' })")
+    settle(ctx)
+    assert saved_count(ctx) == 1 and closed_count(ctx) == 1
+
+
+def test_the_single_cancel_closes_without_a_request(ctx) -> None:
+    single(ctx, FULL_SINGLE)
+    type_(ctx, "mp-single-description", "draft")
+    click(ctx, "mp-single-cancel")
+    assert closed_count(ctx) == 1 and calls(ctx) == []
+
+
+def test_a_providers_list_that_changes_does_not_wipe_the_draft(ctx) -> None:
+    """The old form re-seeded itself whenever the ``providers`` array it was handed was a new object; the host builds a new empty one on every render until the list loads."""
+    single(ctx, FULL_SINGLE)
+    type_(ctx, "mp-single-description", "mid-sentence")
+    ctx.eval(f"MR.rerender({{ open: true, existing: {json.dumps(FULL_SINGLE)}, prefill: null, providers: {json.dumps(PROVIDERS)}, onSaved: function () {{}}, onClose: function () {{}} }})")
+    assert prop(ctx, "mp-single-description", "value") == "mid-sentence"

@@ -79,45 +79,34 @@ def test_modal_has_no_verb_chip() -> None:
     assert "verb-chip" not in modal and "verb:" not in modal
 
 
-def test_modal_provider_column_is_a_row_picker() -> None:
+def test_modal_provider_is_a_select_of_the_llm_providers() -> None:
+    """Platform revamp Plan 03, Task 3: the two-column row picker is a PK_Field select. The options are the LLM providers by id and type (MP_providerOptions), and a
+    provider that is not listed stays an option, so an edit never changes it by showing something else."""
     modal = _modal_src()
-    assert 'data-testid="profile-provider-picker"' in modal
-    assert 'data-testid={`profile-provider-row-${p.id}`}' in modal
-    assert 'data-selected={p.id === providerId ? "true" : "false"}' in modal
+    assert 'data-testid="mp-single-provider"' in modal
+    assert "MP_providerOptions(" in modal
+    assert "profile-provider-picker" not in modal and "profile-provider-row-" not in modal
 
 
-def test_modal_model_column_gates_on_discoverable() -> None:
-    """Same /_types discoverable gate P1a's provider cards use - not a
-    new rule invented for this modal."""
+# RETIRED (Plan 03, Task 3): test_modal_model_column_gates_on_discoverable, test_modal_model_picker_probes_discovered_models_live and
+# test_modal_model_degrades_to_free_text_when_not_discoverable. Creating profiles from a provider's discovered models moved to the Register overlay's import (design 7.1
+# and 13.3); the single-profile overlay edits the model name as text, and what that edit sends is pinned by test_a_single_edit_keeps_every_field_the_form_does_not_show
+# (tests/ui/test_llm_profile_overlays.py).
+
+
+def test_the_overlay_offers_no_reasoning_control_the_server_ignores() -> None:
+    """Replaces test_modal_reasoning_is_a_segmented_control_not_a_select. A profile's ``config.reasoning`` is stored and served but no model call reads it yet (the agent loop
+    and compaction pass no ``extended``; plan 03, conflict C1), so a control for it would be one the server ignores. The value still round-trips: the overlay sends ``config`` back
+    whole (MP_editBody). The control returns with the wiring (Plan 03, Task 7)."""
     modal = _modal_src()
-    assert "types.data[selectedProvider.provider].discoverable" in modal
-    assert "discoverable ?" in modal
-
-
-def test_modal_model_picker_probes_discovered_models_live() -> None:
-    modal = _modal_src()
-    assert "/llm_providers/${encodeURIComponent(providerId)}/discovered_models" in modal
-    assert "probed live" in modal
-
-
-def test_modal_model_degrades_to_free_text_when_not_discoverable() -> None:
-    """Non-discoverable providers get a free-text model field instead of
-    a dead/empty live picker."""
-    modal = _modal_src()
-    assert 'data-testid="profile-model-freetext"' in modal
-
-
-def test_modal_reasoning_is_a_segmented_control_not_a_select() -> None:
-    modal = _modal_src()
-    assert 'data-testid="profile-reasoning-segment"' in modal
-    assert "MP_REASONING_LEVELS.map((lvl) =>" in modal
-    assert '<span key={lvl} className={"chip"' in modal
+    assert "profile-reasoning-segment" not in modal
+    assert "MP_REASONING_LEVELS.map(" not in modal
 
 
 def test_modal_footnote_is_present() -> None:
     modal = _modal_src()
     assert 'data-testid="profile-modal-footnote"' in modal
-    assert "Deleting is blocked while anything" in modal
+    assert "Deleting is refused while anything uses it." in modal
 
 
 # ---- Item 3: honest 409 delete-guard surfacing -----------------------------

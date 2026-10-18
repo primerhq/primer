@@ -6,6 +6,8 @@
 * ``ROWS``: what ``GET /v1/model_profiles`` lists for the member picker: three single profiles and one aggregate (never a member candidate).
 * ``FULL_AGG``: an aggregate with every field set, including the ones the aggregated overlay does not draw (``config``) and the ones the list route
   adds (``agent_count``, ``graph_node_count``) or the page annotates (``_window``): none of them may reach a PUT body.
+* ``FULL_SINGLE``: the same for a single profile, whose ``config`` (``reasoning``, ``extended``) the single overlay does not draw and must send back whole.
+* ``PROVIDERS``: the LLM providers the single overlay offers (``GET /v1/llm_providers`` items: the id and the provider type).
 * ``router_envelopes(storage_provider)``: the bodies the REAL profile router answers for the refusals the overlays draw, so a test feeds the overlay
   what the wire carries instead of a shape somebody remembered.
 """
@@ -29,6 +31,15 @@ FULL_AGG: dict[str, Any] = {
     "provider_id": None, "model_name": None, "context_length": None,
     "agent_count": 3, "graph_node_count": 1, "_window": 8192,
 }
+
+FULL_SINGLE: dict[str, Any] = {
+    "id": "p-a", "description": "old", "kind": "single", "provider_id": "lp", "model_name": "qwen",
+    "context_length": 32768, "config": {"reasoning": "high", "extended": {"top_k": 20}}, "harness_id": None,
+    "members": None, "strategy": "sequential", "failover_point": "before_first_token",
+    "failover_on": "transient_and_config", "agent_count": 2, "graph_node_count": 0,
+}
+
+PROVIDERS: list[dict[str, Any]] = [{"id": "lp", "provider": "openchat"}, {"id": "other", "provider": "anthropic"}]
 
 
 def router_envelopes(storage_provider: Any) -> dict[str, dict[str, Any]]:
