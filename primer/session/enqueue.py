@@ -212,6 +212,11 @@ async def wake_session(
     cancel/pause/resume via the session lifecycle lock so the ``turn_status``
     flip + status transition never interleave with a racing cancel's ENDED
     write.
+
+    The pause hold below stores a held message through ``store_pending_steer``,
+    which refuses a message from another session when the queue is full: that
+    raises ``PendingQueueFull`` (a ConflictError) out of this function, before
+    anything is written, and the pause stays as it was.
     """
     sessions = deps.storage_provider.get_storage(WorkspaceSession)
     async with session_lifecycle_lock().acquire(session_id):

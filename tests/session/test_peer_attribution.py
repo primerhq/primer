@@ -23,8 +23,9 @@ from primer.model.workspace_session import (
     SessionStatus,
     WorkspaceSession,
 )
+from primer.session import steer_delivery
 from primer.session.enqueue import wake_session
-from primer.session.pending_messages import realize_next_pending, store_pending_steer
+from primer.session.pending_messages import _MAX_PENDING_PER_SESSION, realize_next_pending, store_pending_steer
 from primer.session.steer_delivery import (
     DELIVERED_MISSING,
     DELIVERED_QUEUED,
@@ -587,6 +588,50 @@ async def test_a_binding_switch_queued_on_the_parked_session_waits_for_the_turn_
     switched = await world.sessions.get("ses-b")
     assert switched.pending_binding_switch is None
     assert (switched.binding.agent_id, switched.binding_epoch) == ("builder", 1)
+
+
+# ---- a full queue refuses a peer message, whichever way it would be queued (lead ruling R1 on #788) -----------------------------------
+
+
+def _dropped(world) -> list[dict]:
+    return [r["payload"] for r in records(world, "ses-b") if r["kind"] == "pause_superseded" and r["payload"]["action"] == "dropped"]
+
+
+@pytest.mark.parametrize(
+    "seed",
+    [
+        pytest.param({"status": SessionStatus.RUNNING, "turn_status": "running"}, id="behind a turn: deliver_steer stores it"),
+        pytest.param({"status": SessionStatus.PAUSED}, id="behind a pause: wake_session holds it"),
+    ],
+)
+async def test_a_peer_message_to_a_full_queue_is_reported_queue_full_with_nothing_stored(seed):
+    world = make_world(with_bus=True)
+    row = await seed_session(world, sid="ses-b", turn_no=1, **seed)
+    for i in range(_MAX_PENDING_PER_SESSION):
+        await store_pending_steer(storage_provider=world.sp, session=row, text=f"steer {i}", workspace_registry=world.registry)
+    queued = sorted(p.id for p in await _pending(world))
+    before = (await world.sessions.get("ses-b")).model_dump(mode="json")
+
+    out = await _send(world, "ses-b")
+
+    assert (out.outcome, out.session_id) == (steer_delivery.DELIVERED_QUEUE_FULL, "ses-b")
+    assert sorted(p.id for p in await _pending(world)) == queued
+    assert (await world.sessions.get("ses-b")).model_dump(mode="json") == before
+    assert records(world, "ses-b") == [] and world.scheduler.enqueued == [] and world.engine.upserts == []
+
+
+async def test_a_message_that_is_not_a_peers_is_queued_at_a_full_queue_and_the_cap_drops_the_oldest_row_as_before():
+    world = make_world(with_bus=True)
+    row = await seed_session(world, sid="ses-b", status=SessionStatus.RUNNING, turn_status="running", turn_no=1)
+    for i in range(_MAX_PENDING_PER_SESSION):
+        await store_pending_steer(storage_provider=world.sp, session=row, text=f"steer {i}", workspace_registry=world.registry)
+
+    out = await _send(world, "ses-b", peer=None, text="a trigger fired")
+
+    assert out.outcome == DELIVERED_QUEUED
+    assert len(await _pending(world)) == _MAX_PENDING_PER_SESSION
+    assert "a trigger fired" in {p.parts[0]["text"] for p in await _pending(world)}
+    assert len(_dropped(world)) == 1
 
 
 # ---- a delivery that finds the session unable to take the message says why ---------------------------------------------------------

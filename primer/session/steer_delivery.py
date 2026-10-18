@@ -16,7 +16,7 @@ from typing import Any
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.workspace_session import PeerAttribution, WorkspaceSession
 from primer.session.enqueue import SessionWakeDeps, wake_session
-from primer.session.pending_messages import store_pending_steer
+from primer.session.pending_messages import PendingQueueFull, store_pending_steer
 from primer.session.steer_routing import ROUTE_PENDING, route_steer
 
 logger = logging.getLogger(__name__)
@@ -25,6 +25,7 @@ DELIVERED_WOKEN = "woken"
 DELIVERED_QUEUED = "queued"
 DELIVERED_SKIPPED_BUSY = "skipped_busy"
 DELIVERED_MISSING = "missing"
+DELIVERED_QUEUE_FULL = "queue_full"
 
 
 @dataclass
@@ -89,6 +90,14 @@ async def deliver_steer(
     A row that is absent OR cannot take a message (a non-restartable ENDED
     session) reports ``DELIVERED_MISSING``, so the channel router remaps the
     thread to a fresh session instead of dropping the message.
+
+    A peer message (``peer`` given) to a session whose queue already holds
+    the cap's worth of messages reports ``DELIVERED_QUEUE_FULL`` with nothing
+    stored: it never takes room from a person (see
+    :func:`~primer.session.pending_messages.store_pending_steer`). That holds
+    both ways a message is queued here, behind a turn or a park (stored by
+    this function) and behind a pause (held by :func:`wake_session`). Only a
+    peer message can get this outcome; every other caller takes the room.
     """
     sessions = storage_provider.get_storage(WorkspaceSession)
     row = await sessions.get(session_id)
@@ -99,14 +108,17 @@ async def deliver_steer(
             return SteerDelivery(
                 outcome=DELIVERED_SKIPPED_BUSY, session_id=session_id,
             )
-        await store_pending_steer(
-            storage_provider=storage_provider,
-            session=row,
-            text=text,
-            workspace_registry=workspace_registry,
-            event_bus=event_bus,
-            attribution=peer.as_attribution() if peer is not None else None,
-        )
+        try:
+            await store_pending_steer(
+                storage_provider=storage_provider,
+                session=row,
+                text=text,
+                workspace_registry=workspace_registry,
+                event_bus=event_bus,
+                attribution=peer.as_attribution() if peer is not None else None,
+            )
+        except PendingQueueFull:
+            return SteerDelivery(outcome=DELIVERED_QUEUE_FULL, session_id=session_id)
         return SteerDelivery(outcome=DELIVERED_QUEUED, session_id=session_id)
     try:
         woken = await wake_session(
@@ -123,6 +135,9 @@ async def deliver_steer(
             ),
             peer=peer,
         )
+    except PendingQueueFull:
+        # The pause hold stored nothing: the queue it would have joined is full and the message is a peer's.
+        return SteerDelivery(outcome=DELIVERED_QUEUE_FULL, session_id=session_id)
     except (NotFoundError, ConflictError) as exc:
         # Raced deletion, or an ENDED session whose ended_reason forbids a
         # restart. Either way this target cannot receive the message: report
@@ -145,6 +160,7 @@ async def deliver_steer(
 __all__ = [
     "DELIVERED_MISSING",
     "DELIVERED_QUEUED",
+    "DELIVERED_QUEUE_FULL",
     "DELIVERED_SKIPPED_BUSY",
     "DELIVERED_WOKEN",
     "SteerDelivery",

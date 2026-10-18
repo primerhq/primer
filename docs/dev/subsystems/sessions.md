@@ -163,7 +163,16 @@ Four rules make that safe:
 - **One run per session.** A steer arriving while a turn is open becomes a
   seq-less `PendingSessionMessage`, realized at the checkpoint. Allocating
   a seq at receipt is what collided with in-flight token seqs on the older
-  surface.
+  surface. The queue holds at most 50 messages per session. A message from
+  another session (`attribution["peer"]`) is refused when 50 already wait
+  (`PendingQueueFull`: `deliver_steer` reports `queue_full`, the peer-message
+  service answers `conflict`, the target is busy) and nothing is written, both
+  when the message would be stored behind a turn or a park and when
+  `wake_session` would hold it behind a pause. A steer that takes the queue
+  past 50 drops the oldest queued peer message first, and the oldest row only
+  when there is none, each drop announced by a `PAUSE_SUPERSEDED` `dropped`
+  record: a peer never pushes a person's steer out, even when two senders pass
+  the check together.
 
 The message log stays append-only under all of this. Compaction appends a
 `compaction_marker` carrying its summary, the span it replaced and the tail it kept verbatim (`kept_tail_messages`, read back by `reconstruct_compacted_history` right after the summary) its verdict (`outcome`, `unreducible`, `trigger_tokens`, `fixed_overhead_tokens`) and where the summary sits among the kept messages (`summary_after`, absent or 0 meaning in front); a compaction that could not reduce the prompt, or deliberately skipped, and wrote no marker leaves a `compaction_note` record instead (display and derivation only, never history; a verdict that repeats (skipped or unreducible) is noted once per run, and the reader that tells the executor so, `last_compaction_state`, reports the newest note's outcome and reason since the newest marker, and also the newest marker's `tokens_after`, which the strategy uses to avoid summarising a summary it just wrote); rewind

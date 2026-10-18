@@ -23,6 +23,7 @@ from primer.model.storage import OffsetPage
 from primer.model.workspace_session import (
     AgentSessionBinding,
     GraphSessionBinding,
+    PeerAttribution,
     PeerMessage,
     PendingSessionMessage,
     SessionStatus,
@@ -50,7 +51,7 @@ from primer.session.peer_messages import (
     PeerSendResult,
     send_peer_message,
 )
-from primer.session.pending_messages import realize_next_pending
+from primer.session.pending_messages import _MAX_PENDING_PER_SESSION, realize_next_pending, store_pending_steer
 from primer.session.steer_delivery import DELIVERED_SKIPPED_BUSY, SteerDelivery
 from tests.session._peer_fakes import World, make_world, records, seed_session, slot
 
@@ -87,14 +88,30 @@ async def _ledger(world: World) -> list[PeerMessage]:
     return list((await world.sp.get_storage(PeerMessage).find(None, OffsetPage(offset=0, length=200))).items)
 
 
+async def _fill_queue(world: World, count: int, *, target: str = "ses-b", attribution: dict | None = None) -> list[str]:
+    """Queue ``count`` messages on ``target`` the way a steer does (``store_pending_steer``), and return their ids."""
+    row = await world.sessions.get(target)
+    ids = []
+    for i in range(count):
+        queued = await store_pending_steer(
+            storage_provider=world.sp, session=row, text=f"steer {i}", workspace_registry=world.registry, event_bus=world.bus,
+            attribution=attribution,
+        )
+        ids.append(queued.id)
+    return ids
+
+
 def _kinds(world: World, sid: str, *, workspace_id: str = "ws-1") -> list[str]:
     return [r["kind"] for r in records(world, sid, workspace_id=workspace_id)]
 
 
-async def _assert_nothing_stored(world: World, *, target: str = "ses-b", workspace_id: str = "ws-1") -> None:
-    """A refusal writes nothing: no ledger row, no queued message, no record in either session, no event, no pulse on the scheduler or the claim."""
+async def _assert_nothing_stored(
+    world: World, *, target: str = "ses-b", workspace_id: str = "ws-1", queued: list[str] | None = None,
+) -> None:
+    """A refusal writes nothing: no ledger row, no queued message (``queued`` names the ids that were already waiting, and they must be all that is
+    there), no record in either session, no event, no pulse on the scheduler or the claim."""
     assert await _ledger(world) == []
-    assert await _pending(world) == []
+    assert sorted(p.id for p in await _pending(world)) == sorted(queued or [])
     assert await _events(world, "session.") == []
     assert records(world, target, workspace_id=workspace_id) == [] and records(world, "ses-a") == []
     assert world.scheduler.enqueued == [] and world.engine.upserts == []
@@ -139,8 +156,10 @@ def test_the_copy_is_the_plans_character_for_character():
 
 
 def test_the_copy_the_service_adds_beyond_the_plan():
-    """Three refusals the plan does not quote, for input the tool's argument model rejects first or a principal that cannot be ranked."""
+    """Four refusals the plan does not quote: input the tool's argument model rejects first, a principal that cannot be ranked, and a queue that is
+    full (lead ruling R1, review of #788)."""
     assert peer_messages.REFUSE_NO_PRINCIPAL == "this session's run has no recorded principal, so it cannot message another session"
+    assert peer_messages.REFUSE_QUEUE_FULL == "session {session_id!r} is busy and its queue of waiting messages is full; nothing was sent, retry later"
     assert peer_messages.REFUSE_TEXT == "a message is 1 to {limit} characters; write larger outputs to a file and send its path"
     assert peer_messages.REFUSE_MODE == "mode is auto or if_idle, not {mode!r}"
 
@@ -910,6 +929,104 @@ async def test_a_session_deleted_between_the_read_and_the_delivery_is_not_found(
         await _send(world, "ses-b")
     _expect_refusal(info, "not-found", REFUSE_NOT_FOUND.format(session_id="ses-b"))
     await _assert_nothing_stored(world)
+
+
+# ---- a full queue: a peer message never evicts a person's steer (lead ruling R1 on #788) -----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "seed",
+    [
+        pytest.param({"status": SessionStatus.RUNNING, "turn_status": "running", "turn_no": 1}, id="a turn is running"),
+        pytest.param({"status": SessionStatus.RUNNING, "turn_status": "claimable", "turn_no": 1}, id="a turn is armed"),
+        pytest.param(
+            {"parked_status": "parked", "parked_event_key": "ask_user:ses-b:call_q", "parked_at": NOW, "turn_no": 1}, id="parked on ask_user",
+        ),
+        pytest.param({"status": SessionStatus.PAUSED, "turn_no": 1}, id="paused while idle: the wake holds it"),
+        pytest.param(
+            {"status": SessionStatus.RUNNING, "turn_status": "running", "pause_requested": True, "turn_no": 1}, id="paused while running",
+        ),
+    ],
+)
+async def test_a_peer_message_to_a_session_with_a_full_queue_is_refused_and_nothing_is_written(seed):
+    """Both ways a message is queued: behind a turn or a park (``deliver_steer`` stores it) and behind a pause (``wake_session`` holds it). Fifty persons'
+    steers wait; the peer message is refused as busy, and neither the queue, the session row, the ledger nor the sender's allowance moves."""
+    world = await _world()
+    await seed_session(world, sid="ses-b", **seed)
+    queued = await _fill_queue(world, _MAX_PENDING_PER_SESSION)
+    before = (await world.sessions.get("ses-b")).model_dump()
+    with pytest.raises(PeerMessageRefused) as info:
+        await _send(world, "ses-b")
+    _expect_refusal(info, "conflict", peer_messages.REFUSE_QUEUE_FULL.format(session_id="ses-b"))
+    assert (await world.sessions.get("ses-b")).model_dump() == before
+    await _assert_nothing_stored(world, queued=queued)
+    texts = {p.parts[0]["text"] for p in await _pending(world)}
+    assert texts == {f"steer {i}" for i in range(_MAX_PENDING_PER_SESSION)}, "a person's steer was evicted"
+
+
+async def test_a_queue_full_of_peer_messages_refuses_one_more_too():
+    """The refusal counts the queue, not who filled it."""
+    world = await _world()
+    await seed_session(world, sid="ses-b", status=SessionStatus.RUNNING, turn_status="running", turn_no=1)
+    other = PeerAttribution(from_session_id="ses-c", from_workspace_id="ws-1", from_agent_id="other", hops=1)
+    queued = await _fill_queue(world, _MAX_PENDING_PER_SESSION, attribution=other.as_attribution())
+    with pytest.raises(PeerMessageRefused) as info:
+        await _send(world, "ses-b")
+    _expect_refusal(info, "conflict", peer_messages.REFUSE_QUEUE_FULL.format(session_id="ses-b"))
+    await _assert_nothing_stored(world, queued=queued)
+
+
+async def test_a_queue_one_short_of_full_takes_a_peer_message_and_evicts_nothing():
+    world = await _world()
+    await seed_session(world, sid="ses-b", status=SessionStatus.RUNNING, turn_status="running", turn_no=1)
+    queued = await _fill_queue(world, _MAX_PENDING_PER_SESSION - 1)
+    result = await _send(world, "ses-b")
+    assert result.delivery == "queued"
+    assert set(queued) < {p.id for p in await _pending(world)} and len(await _pending(world)) == _MAX_PENDING_PER_SESSION
+    assert [r for r in records(world, "ses-b") if r["kind"] == "pause_superseded"] == [], "nothing was dropped"
+
+
+async def test_a_refused_peer_message_does_not_spend_the_senders_allowance():
+    world = await _world()
+    await seed_session(world, sid="ses-b", status=SessionStatus.RUNNING, turn_status="running", turn_no=1)
+    await seed_session(world, sid="ses-c", turn_no=1)
+    await _fill_queue(world, _MAX_PENDING_PER_SESSION)
+    for _ in range(PEER_RATE_LIMIT + 3):
+        with pytest.raises(PeerMessageRefused) as info:
+            await _send(world, "ses-b")
+        assert info.value.error_type == "conflict", "a refusal for a full queue must never become a rate limit"
+    assert await _ledger(world) == []
+    for _ in range(PEER_RATE_LIMIT):
+        await _send(world, "ses-c")
+    assert len(await _ledger(world)) == PEER_RATE_LIMIT
+
+
+async def test_two_senders_that_pass_the_check_together_never_evict_a_persons_steer(monkeypatch):
+    """The check and the store are not one step across senders (the lock is per sender), so two senders can both see room for one. The queue then
+    holds one more than the cap, and what the cap drops is a peer message: the one that arrived first, which is on the record. Every person's steer stays."""
+    world = await _world()
+    await seed_session(world, sid="ses-b", status=SessionStatus.RUNNING, turn_status="running", turn_no=1)
+    await seed_session(world, sid="ses-c", binding=AgentSessionBinding(agent_id="other"), initiated_by=USER, turn_no=1)
+    persons = await _fill_queue(world, _MAX_PENDING_PER_SESSION - 1)
+    pending = world.sp.get_storage(PendingSessionMessage)
+    real_find = pending.find
+
+    async def find(*args, **kwargs):
+        out = await real_find(*args, **kwargs)
+        await asyncio.sleep(0)                         # a database read gives up control: the other sender reads the queue before this one stores
+        return out
+
+    monkeypatch.setattr(pending, "find", find)
+    outcomes = await asyncio.gather(
+        _send(world, "ses-b", sender="ses-a", text="from a"), _send(world, "ses-b", sender="ses-c", text="from c"), return_exceptions=True,
+    )
+    assert [type(o) for o in outcomes] == [PeerSendResult, PeerSendResult], outcomes   # both passed the check: this is the race
+    after = await _pending(world)
+    assert set(persons) <= {p.id for p in after}, "a peer message evicted a person's queued steer"
+    assert len(after) == _MAX_PENDING_PER_SESSION
+    [dropped] = [r["payload"] for r in records(world, "ses-b") if r["kind"] == "pause_superseded"]
+    assert dropped["action"] == "dropped" and dropped["text"].startswith("[from session ses-"), "the dropped message is a peer's, on the record"
+    assert dropped["text"] not in {p.parts[0]["text"] for p in after}
 
 
 # ---- the text ---------------------------------------------------------------------------------------------------------------------
