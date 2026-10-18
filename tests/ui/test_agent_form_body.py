@@ -4,8 +4,12 @@ A characterization test. Each expected body is derived from the submit code of `
 rebuild (plan 05, Task 4) must keep every one of them green UNCHANGED. The form runs in V8 (``tests/ui/_agent_form_harness.py``) with the real
 ``useMutation``, and the body is read from the recorded ``apiFetch`` call.
 
-Two lossy saves the plan found (its open point 1) are fixed on the lead's call, and the last two sections pin them: a stored unbounded
+Two lossy saves the plan found (its open point 1) are fixed on the lead's call, and the two sections after the first tests pin them: a stored unbounded
 ``max_tool_turns`` (null) was saved back as 50, and a stored multi-part ``compaction_prompt`` was saved back joined into one part.
+
+The overlay rebuild (Task 4) keeps every test above the "rebuilt overlay" section UNCHANGED and adds the sections below it: a body built through the new
+controls, a typed 0 or negative turn cap (still 50, never null), a number the browser cannot read (an error, nothing sent) and a system prompt whose
+untouched parts go back exactly as stored.
 """
 
 from __future__ import annotations
@@ -14,7 +18,7 @@ import json
 
 import pytest
 
-from tests.ui._agent_form_harness import DEFAULTS, FULL, agent_form, body, calls, click, mount, type_into
+from tests.ui._agent_form_harness import DEFAULTS, FULL, agent_form, body, calls, click, mount, prop, type_into
 
 
 @pytest.fixture
@@ -166,3 +170,143 @@ def test_a_cleared_compaction_prompt_is_saved_empty(ctx):
     type_into(ctx, "agent-compaction-prompt", "")
     click(ctx, "agent-form-submit")
     assert body(ctx)["compaction_prompt"] == []
+
+
+# ---- the rebuilt overlay (plan 05, Task 4) -------------------------------------------------------------------------------------------------------------
+
+
+def test_a_new_agent_with_every_field_set_through_the_new_controls_posts_this_body(ctx):
+    mount(ctx)
+    type_into(ctx, "agent-id", "refund-triage")
+    type_into(ctx, "agent-description", "Triages refunds")
+    type_into(ctx, "agent-model-profile", "slow")
+    type_into(ctx, "agent-temperature", "0.7")
+    type_into(ctx, "agent-max-tool-turns", "25")
+    type_into(ctx, "agent-max-output-tokens", "4096")
+    type_into(ctx, "agent-system-prompt-editor", "You triage refunds.")
+    click(ctx, "agent-system-prompt-add")
+    type_into(ctx, "agent-system-prompt-editor", "Be brief.")
+    click(ctx, "agent-system-prompt-add")  # a third part, left blank
+    type_into(ctx, "agent-compaction-prompt", "Keep the cited sources.")
+    click(ctx, "tool-picker-stub")
+    click(ctx, "na-compaction-tool-access")
+    click(ctx, "na-allow-external-tools")
+    type_into(ctx, "agent-response-format", '{"type": "object"}')
+    type_into(ctx, "agent-tts-voice", "alloy")
+    click(ctx, "agent-form-submit")
+    assert body(ctx) == {
+        "id": "refund-triage", "description": "Triages refunds", "model": {"profile_id": "slow"},
+        "tools": ["system__list_files", "web__search"], "system_prompt": ["You triage refunds.", "Be brief."],
+        "compaction_prompt": ["Keep the cited sources."], "compaction_tool_access": True, "allow_external_tools": True,
+        "tts_voice": "alloy", "temperature": 0.7, "max_tool_turns": 25, "max_output_tokens": 4096,
+        "response_format": {"type": "object"},
+    }
+
+
+# ---- a typed 0 or negative turn cap (lead notes on #755, review item a) ------------------------------------------------------------------------------
+# An EMPTY field is no limit. A number that is not positive cannot be a cap: it falls back to the server default, 50, and never to null (no limit).
+
+
+@pytest.mark.parametrize("typed", ["0", "-1", "-25"])
+def test_a_typed_zero_or_negative_turn_cap_saves_the_default_not_no_limit(ctx, typed):
+    mount(ctx, existing=FULL)
+    type_into(ctx, "agent-max-tool-turns", typed)
+    click(ctx, "agent-form-submit")
+    assert body(ctx)["max_tool_turns"] == 50
+
+
+# ---- a number the browser cannot read (lead notes on #755, review item c) ----------------------------------------------------------------------------
+# A number input reports "" for text it cannot read (validity.badInput), and "" means no limit: the field used to save that. It is an error now, under the
+# field, and nothing is sent until the operator fixes or clears it. The same holds for Max output tokens (empty is no limit) and Temperature (empty is the
+# model's default), which would otherwise lose a value the same way.
+
+NOT_A_NUMBER = {
+    "agent-max-tool-turns": ("Max tool turns", "Enter a whole number, or leave it empty for no limit."),
+    "agent-max-output-tokens": ("Max output tokens", "Enter a whole number, or leave it empty for no limit."),
+    "agent-temperature": ("Temperature", "Enter a number, or leave it empty for the model default."),
+}
+
+
+@pytest.mark.parametrize("testid", list(NOT_A_NUMBER))
+def test_a_number_the_browser_cannot_read_is_an_error_and_sends_nothing(ctx, testid):
+    label, message = NOT_A_NUMBER[testid]
+    mount(ctx, existing=FULL)
+    type_into(ctx, testid, "", bad_input=True)
+    assert prop(ctx, f"field:{label}", "data-error") == message
+    click(ctx, "agent-form-submit")
+    assert calls(ctx) == []
+
+
+@pytest.mark.parametrize("testid", list(NOT_A_NUMBER))
+def test_the_error_goes_when_the_number_can_be_read_again(ctx, testid):
+    label, _message = NOT_A_NUMBER[testid]
+    mount(ctx, existing=FULL)
+    type_into(ctx, testid, "", bad_input=True)
+    type_into(ctx, testid, "30")
+    assert prop(ctx, f"field:{label}", "data-error") == ""
+    click(ctx, "agent-form-submit")
+    assert len(calls(ctx)) == 1
+
+
+def test_a_cleared_number_field_is_still_no_limit_not_an_error(ctx):
+    """Cleared by hand the value is "" and badInput is false: that is the empty field, which means no limit."""
+    mount(ctx, existing=FULL)
+    type_into(ctx, "agent-max-output-tokens", "")
+    click(ctx, "agent-form-submit")
+    assert body(ctx)["max_output_tokens"] is None
+
+
+# ---- system prompt parts nobody touched (lead notes on #755, review item d) ---------------------------------------------------------------------------
+# Every save trimmed the parts and dropped the blank ones, so a stored part with spaces around it, or an empty one, was rewritten by a save that was about
+# something else. A part the operator did not touch goes back exactly as it was stored; a part they typed is trimmed, and one left blank is dropped.
+
+SPACED = ["  Keep the leading spaces.  ", "", "Be brief.\n"]
+
+
+def test_system_prompt_parts_nobody_touched_are_saved_back_exactly(ctx):
+    mount(ctx, existing={**FULL, "system_prompt": SPACED})
+    type_into(ctx, "agent-description", "Triages refund requests")
+    click(ctx, "agent-form-submit")
+    assert body(ctx)["system_prompt"] == SPACED
+
+
+def test_an_edited_part_is_trimmed_and_the_parts_nobody_touched_stay_as_stored(ctx):
+    mount(ctx, existing={**FULL, "system_prompt": ["  Keep the leading spaces.  ", "Be brief."]})
+    click(ctx, "agent-system-prompt-tab-1")
+    type_into(ctx, "agent-system-prompt-editor", "  Be brief, and cite sources.  ")
+    click(ctx, "agent-form-submit")
+    assert body(ctx)["system_prompt"] == ["  Keep the leading spaces.  ", "Be brief, and cite sources."]
+
+
+def test_removing_a_part_keeps_the_others_as_stored(ctx):
+    mount(ctx, existing={**FULL, "system_prompt": [" A ", " B ", " C "]})
+    click(ctx, "agent-system-prompt-tab-1")
+    click(ctx, "agent-system-prompt-remove")
+    click(ctx, "agent-form-submit")
+    assert body(ctx)["system_prompt"] == [" A ", " C "]
+
+
+def test_a_part_added_and_left_blank_is_dropped_so_the_array_has_no_hole(ctx):
+    mount(ctx, existing={**FULL, "system_prompt": [" A "]})
+    click(ctx, "agent-system-prompt-add")
+    type_into(ctx, "agent-system-prompt-editor", "   ")
+    click(ctx, "agent-form-submit")
+    assert body(ctx)["system_prompt"] == [" A "]
+
+
+def test_a_part_typed_on_a_new_agent_is_trimmed(ctx):
+    mount(ctx)
+    type_into(ctx, "agent-id", "refund-triage")
+    type_into(ctx, "agent-description", "Triages refunds")
+    type_into(ctx, "agent-system-prompt-editor", "  You triage refunds.\n\n")
+    click(ctx, "agent-form-submit")
+    assert body(ctx)["system_prompt"] == ["You triage refunds."]
+
+
+def test_a_stored_part_typed_twice_excuses_only_the_first(ctx):
+    """A stored part is excused once: a second copy the operator typed is theirs, so it is trimmed."""
+    mount(ctx, existing={**FULL, "system_prompt": [" A "]})
+    click(ctx, "agent-system-prompt-add")
+    type_into(ctx, "agent-system-prompt-editor", " A ")
+    click(ctx, "agent-form-submit")
+    assert body(ctx)["system_prompt"] == [" A ", "A"]

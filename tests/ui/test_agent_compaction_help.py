@@ -9,9 +9,9 @@ JSX = Path(__file__).resolve().parents[2] / "ui" / "components" / "agents.jsx"
 
 
 def test_help_text_present() -> None:
+    """Platform revamp design 9 fixes the helper under the big compaction box; the two older help texts went."""
     src = JSX.read_text(encoding="utf-8")
-    assert "Leave blank to use the default prompt" in src
-    assert "preserve system context" in src
+    assert "Leave empty to use the default compaction prompt." in src
 
 
 def test_compaction_tool_access_toggle_present() -> None:
