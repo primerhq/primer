@@ -158,3 +158,32 @@ async def test_capabilities_reports_both_families(client, api_prefix, stub_provi
     r = await client.get(f"{api_prefix}/capabilities")
     assert r.status_code == 200, r.text
     assert set(r.json()["speech"]) == {"stt_configured", "tts_configured"}
+
+
+@pytest.mark.asyncio
+async def test_a_partial_draft_is_tested_from_its_connection_fields(
+    client, api_prefix, stub_provider
+) -> None:
+    """What the Register overlay's "Next" posts: the endpoint and nothing else.
+
+    No id, no default model or voice, no limits. The real routers probe the
+    stub over a real socket and list what it serves (platform revamp plan 02,
+    task 5). Nothing is stored by testing.
+    """
+    asr = await client.post(
+        f"{api_prefix}/stt_providers/_test", json={"config": {"url": stub_provider}},
+    )
+    assert asr.status_code == 200, asr.text
+    assert asr.json() == {"ok": True, "models": ["stub-asr", "stub-tts"]}
+
+    tts = await client.post(
+        f"{api_prefix}/tts_providers/_test", json={"config": {"url": stub_provider}},
+    )
+    assert tts.status_code == 200, tts.text
+    assert tts.json() == {"ok": True, "voices": ["stub_voice"]}
+
+    # No endpoint yet: the answer names the one missing field and nothing is probed.
+    bare = await client.post(f"{api_prefix}/stt_providers/_test", json={"config": {}})
+    assert bare.status_code == 200, bare.text
+    assert bare.json()["ok"] is False
+    assert "invalid draft" in bare.json()["error"] and "url" in bare.json()["error"]
