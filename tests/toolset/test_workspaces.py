@@ -10,6 +10,7 @@ the internal collections subsystem activates.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -446,14 +447,16 @@ class TestCatalog:
         # restart_workspace_session (Task 8) = 28, plus interrupt_workspace_session
         # (task 01a10871, Stop as a system tool) = 29, plus
         # read_workspace_session_messages (A-22: the supported transcript
-        # reader, since raw .state reads are admin-only) = 30.
-        assert len(names) == 30
+        # reader, since raw .state reads are admin-only) = 30, plus
+        # find_sessions (pivot P2) = 31.
+        assert len(names) == 31
         assert "read_workspace_session_messages" in names
         assert "create_workspace_session" in names
         assert "interrupt_workspace_session" in names
         assert "cancel_workspace_session" in names
         assert "workspace_tap" in names
         assert "restart_workspace_session" in names
+        assert "find_sessions" in names
         # watch_files + invoke_graph moved to workspace_ext.
         assert "watch_files" not in names
         assert "invoke_graph" not in names
@@ -550,9 +553,11 @@ class TestBootstrapIngestsWorkspacesTools:
         # 28 minus watch_files + invoke_graph (moved to workspace_ext) = 26,
         # plus workspace_tap = 27, plus restart_workspace_session (Task 8)
         # = 28, plus interrupt_workspace_session (task 01a10871) = 29,
-        # plus read_workspace_session_messages (A-22) = 30.
-        assert len(ws_ingested) == 30
+        # plus read_workspace_session_messages (A-22) = 30, plus
+        # find_sessions (pivot P2) = 31.
+        assert len(ws_ingested) == 31
         assert "workspaces::read_workspace_session_messages" in ws_ingested
+        assert "workspaces::find_sessions" in ws_ingested
         for expected in (
             "workspaces::list_workspace_providers",
             "workspaces::create_workspace_template",
@@ -1738,3 +1743,78 @@ class TestReconcileSessionInfo:
         assert not got.is_error and not listed.is_error, (got.output, listed.output)
         assert json.loads(got.output)["status"] == "running"
         assert json.loads(listed.output)["items"][0]["status"] == "running"
+
+
+# ===========================================================================
+# find_sessions tool (pivot P2: sessions across every workspace)
+# ===========================================================================
+
+
+@pytest.fixture
+async def rows(sp) -> None:
+    """Rows written straight to the session storage the toolset reads.
+
+    s1 (ws-a, agent builder, running, initiated_by u-1), s2 (ws-b, agent
+    builder, ended), s3 (ws-b, agent planner, waiting, u-2). Inserted
+    newest first: the in-memory store applies the predicate but not the
+    order_by, so the insertion order is the created_at desc order the
+    tool asks the store for.
+    """
+    from primer.model.principal import PrincipalRef
+    from primer.model.workspace_session import (
+        AgentSessionBinding,
+        SessionStatus,
+        WorkspaceSession,
+    )
+
+    store = sp.get_storage(WorkspaceSession)
+    base = datetime(2026, 10, 18, 12, 0, 0, tzinfo=timezone.utc)
+
+    def row(sid, ws, agent, status, turn_status, created, initiated):
+        return WorkspaceSession(
+            id=sid,
+            workspace_id=ws,
+            binding=AgentSessionBinding(agent_id=agent),
+            status=status,
+            created_at=created,
+            turn_status=turn_status,
+            initiated_by=(
+                PrincipalRef(type="user", id=initiated, display=initiated, source="local")
+                if initiated
+                else None
+            ),
+        )
+
+    # s3 newest, then s2, then s1 (the created_at desc order).
+    await store.create(row("s3", "ws-b", "planner", SessionStatus.WAITING, "idle", base, "u-2"))
+    await store.create(row("s2", "ws-b", "builder", SessionStatus.ENDED, "idle", base - timedelta(minutes=1), None))
+    await store.create(row("s1", "ws-a", "builder", SessionStatus.WAITING, "running", base - timedelta(minutes=2), "u-1"))
+
+
+async def _find(toolset, arguments):
+    result = await toolset.call(tool_name="find_sessions", arguments=arguments)
+    assert not result.is_error, result.output
+    return json.loads(result.output)["items"]
+
+
+def _ids(items):
+    return [item["id"] for item in items]
+
+
+class TestFindSessions:
+    @pytest.mark.asyncio
+    async def test_each_filter_narrows(self, toolset, rows):
+        assert _ids(await _find(toolset, {"workspace_id": "ws-b"})) == ["s3", "s2"]
+        assert _ids(await _find(toolset, {"agent_id": "builder"})) == ["s2", "s1"]
+        assert _ids(await _find(toolset, {"state": "ended"})) == ["s2"]
+        assert _ids(await _find(toolset, {"initiated_by": "u-2"})) == ["s3"]
+        assert _ids(await _find(toolset, {"workspace_id": "ws-b", "agent_id": "builder"})) == ["s2"]
+
+    @pytest.mark.asyncio
+    async def test_no_filter_lists_newest_first_and_limit_caps(self, toolset, rows):
+        assert _ids(await _find(toolset, {"limit": 2})) == ["s3", "s2"]
+
+    @pytest.mark.asyncio
+    async def test_a_bad_state_is_a_validation_error(self, toolset):
+        result = await toolset.call(tool_name="find_sessions", arguments={"state": "sleeping"})
+        assert result.is_error and "validation" in result.output

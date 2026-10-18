@@ -25,7 +25,8 @@ Sessions:
     interrupt_workspace_session,
     list_workspace_sessions, get_workspace_session,
     pause_workspace_session, resume_workspace_session,
-    steer_workspace_session, restart_workspace_session
+    steer_workspace_session, restart_workspace_session,
+    find_sessions
 
 Files:
     list_workspace_files, get_workspace_file_info,
@@ -63,7 +64,15 @@ from primer.model.except_ import (
     NotFoundError,
 )
 from primer.model.except_ import ValidationError as PrimerValidationError
-from primer.model.storage import CursorPage, OffsetPage, OrderBy
+from primer.model.storage import (
+    CursorPage,
+    FieldRef,
+    OffsetPage,
+    Op,
+    OrderBy,
+    Predicate,
+    Value,
+)
 from primer.storage.secret_fields import refuse_secret_fields
 from primer.model.workspace import (
     WORKSPACE_ID_PATTERN,
@@ -72,7 +81,13 @@ from primer.model.workspace import (
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
-from primer.model.workspace_session import SessionBinding, SessionStatus, WorkspaceSession
+from primer.model.workspace_session import (
+    SessionBinding,
+    SessionState,
+    SessionStatus,
+    WorkspaceSession,
+    session_state_predicate,
+)
 from primer.model.yield_ import ToolContext, Yielded
 from primer.tap.cursor import TapCursor
 from primer.tap.reader import read_batch
@@ -338,6 +353,18 @@ class _WorkspaceListSessionsArgs(BaseModel):
     workspace_id: str = Field(..., min_length=1)
     limit: int = Field(default=20, ge=1, le=200)
     offset: int = Field(default=0, ge=0)
+
+
+class _FindSessionsArgs(BaseModel):
+    workspace_id: str | None = Field(None, min_length=1)
+    agent_id: str | None = Field(None, min_length=1)
+    state: SessionState | None = None
+    initiated_by: str | None = Field(
+        None,
+        min_length=1,
+        description="The initiating principal's id (PrincipalRef.id)",
+    )
+    limit: int = Field(20, ge=1, le=200)
 
 
 class _WorkspacePathArgs(BaseModel):
@@ -1638,6 +1665,71 @@ def build_workspaces_toolset(
                 returns="page of SessionInfo objects",
             ),
             ToolExample(args={"workspace_id": "ws-1", "limit": 10, "offset": 0}),
+        ],
+        required_role="user",
+    )
+    registry[name] = entry
+
+    async def _find_sessions(arguments: dict[str, Any]) -> ToolCallResult:
+        try:
+            args = _FindSessionsArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        filters: list[Predicate] = []
+        if args.workspace_id is not None:
+            filters.append(
+                Predicate(
+                    left=FieldRef(name="workspace_id"),
+                    op=Op.EQ,
+                    right=Value(value=args.workspace_id),
+                )
+            )
+        if args.agent_id is not None:
+            filters.append(
+                Predicate(
+                    left=FieldRef(name="binding.agent_id"),
+                    op=Op.EQ,
+                    right=Value(value=args.agent_id),
+                )
+            )
+        if args.state is not None:
+            filters.append(session_state_predicate(args.state))
+        if args.initiated_by is not None:
+            filters.append(
+                Predicate(
+                    left=FieldRef(name="initiated_by.id"),
+                    op=Op.EQ,
+                    right=Value(value=args.initiated_by),
+                )
+            )
+        predicate = None
+        for part in filters:
+            predicate = part if predicate is None else Predicate(
+                left=predicate, op=Op.AND, right=part
+            )
+        page = await _session_row_storage().find(
+            predicate,
+            OffsetPage(offset=0, length=args.limit),
+            order_by=[OrderBy(field="created_at", direction="desc")],
+        )
+        return _ok(page)
+
+    name, entry = _tool(
+        "find_sessions",
+        (
+            "Find sessions across every workspace by workspace, agent, "
+            "state or initiator, newest first."
+        ),
+        (
+            "Use when you manage sessions in OTHER workspaces, as the "
+            "operator in prime does; not for listing one workspace's "
+            "sessions (use ``list_workspace_sessions``)."
+        ),
+        _FindSessionsArgs,
+        _find_sessions,
+        examples=[
+            ToolExample(args={"workspace_id": "ws-1", "state": "running"}),
+            ToolExample(args={"agent_id": "builder", "limit": 5}),
         ],
         required_role="user",
     )
