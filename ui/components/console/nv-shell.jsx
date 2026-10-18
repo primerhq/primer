@@ -227,6 +227,14 @@ function NV_Shell() {
     },
     { pollMs: 0 }
   );
+  // The theme verbs (registered once, in the core-verb effect below) run long after the render that registered them, and act on the shell as it is
+  // then: the signed-in username (the key of the user's stored choice) and the shell's re-render, which redraws the profile menu's pressed button.
+  // Refreshed on every render, like pushToastRef above.
+  var themeEnvRef = React.useRef(null);
+  themeEnvRef.current = {
+    username: (status.data && status.data.username) || "anon",
+    bump: function () { setTick(function (v) { return v + 1; }); },
+  };
   // Capability probe: speech config gates the voice affordances.
   var caps = window.primerApi.useCapabilities();
   var voiceRef = React.useRef(null);
@@ -466,6 +474,24 @@ function NV_Shell() {
       id: "view.system", label: "Open System Settings",
       surfaces: ["topbar", "palette"],
       run: function () { goView("system"); },
+    });
+    // D3 (platform revamp): your own profile page, for every role, and the three theme choices. The pointer affordances are the profile menu's
+    // "Your profile" row and its Theme buttons (nv-chrome.jsx), and the phone's More tab carries the same three buttons (nv-mobile-shell.jsx).
+    reg({
+      id: "view.profile", label: "Open Profile", surfaces: ["topbar", "palette"],
+      run: function () { goView("system", "profile"); },
+    });
+    reg({
+      id: "theme.light", label: "Switch To Light Theme", surfaces: ["topbar", "palette"],
+      run: function () { window.NV_applyThemeChoice(themeEnvRef.current, "light"); },
+    });
+    reg({
+      id: "theme.dark", label: "Switch To Dark Theme", surfaces: ["topbar", "palette"],
+      run: function () { window.NV_applyThemeChoice(themeEnvRef.current, "dark"); },
+    });
+    reg({
+      id: "theme.system", label: "Switch To System Theme", surfaces: ["topbar", "palette"],
+      run: function () { window.NV_applyThemeChoice(themeEnvRef.current, "system"); },
     });
     reg({
       id: "workspace.switch", label: "Switch Workspace",

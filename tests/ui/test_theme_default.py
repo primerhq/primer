@@ -2,8 +2,10 @@
 
 No hard-coded dark default: index.html resolves persisted choice, then
 system preference, before first paint. The tweaks default is null so an
-operator with no saved choice follows the OS. A Toggle Theme verb makes
-the choice reachable from the palette (and, later, the user menu).
+operator with no saved choice follows the OS. The profile menu's Theme row
+offers Light, Dark and System, and the verbs theme.light, theme.dark and
+theme.system make the same three choices reachable from the palette
+(D3, 2026-10-18; tests/ui/test_profile_menu_theme.py runs them).
 """
 
 from __future__ import annotations
@@ -38,8 +40,9 @@ def test_tweaks_default_follows_system():
 
 
 def test_theme_control_reachable():
-    # The profile menu's Dark/Light segment persists the choice and
-    # stamps the root attribute (nv chrome, flag day).
+    # D3: the profile menu's Theme row offers Light, Dark and System; each button runs through a palette verb id.
     assert 'data-testid="nv-theme-seg"' in CHROME
+    for value in ("light", "dark", "system"):
+        assert f'data-testid="nv-theme:{value}"' in CHROME and f'data-verb="theme.{value}"' in CHROME
     assert 'setTweak("theme"' in CHROME
     assert 'setAttribute("data-theme"' in CHROME
