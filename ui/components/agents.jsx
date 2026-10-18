@@ -567,9 +567,9 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
 
   // Initial values come from the existing agent in edit mode, else
   // blanks. compaction_prompt is stored as an array server-side but the
-  // form only handles a single line there (unchanged this wave), so it
-  // still collapses ["a", "b"] → "a\n\nb" on read and emits one entry on
-  // save.
+  // form edits it as one text: ["a", "b"] shows as "a\n\nb", the blank-line
+  // join the runtime uses (primer/agent/compaction.py). Saved with that same
+  // text, the stored parts go back unchanged; an edited text is one part.
   const _joinPrompt = (p) => Array.isArray(p) ? p.join("\n\n") : (p || "");
   const _initialTools = () => {
     const t = existing?.tools;
@@ -704,7 +704,11 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
       // Empty parts dropped on save - an add-then-leave-blank part must
       // not send a hole in the array.
       system_prompt: systemPromptParts.map((p) => p.trim()).filter(Boolean),
-      compaction_prompt: compactionPrompt ? [compactionPrompt] : [],
+      // The stored parts when the text is the one the form showed (see
+      // _joinPrompt above), so a save does not rewrite a multi-part prompt.
+      compaction_prompt: Array.isArray(existing?.compaction_prompt) && compactionPrompt === _joinPrompt(existing.compaction_prompt)
+        ? existing.compaction_prompt
+        : (compactionPrompt ? [compactionPrompt] : []),
       compaction_tool_access: compactionToolAccess,
       allow_external_tools: allowExternalTools,
       tts_voice: ttsVoice,
@@ -932,6 +936,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
             </label>
             <textarea
               id="na-compaction-prompt"
+              data-testid="agent-compaction-prompt"
               className="textarea"
               value={compactionPrompt}
               onChange={(e) => setCompactionPrompt(e.target.value)}
