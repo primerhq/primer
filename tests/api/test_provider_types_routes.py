@@ -154,6 +154,23 @@ async def test_embedding_types_require_at_least_one_model(client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_embedding_discoverable_flags(client) -> None:
+    """The embedding twin of ``test_discoverable_flag_matches_the_probe_helper``.
+
+    ``discover_embedding_models`` lists the models of an OpenAI-compatible
+    server (``/models``) and of Gemini (the ``embedContent`` models of
+    ListModels). Hugging Face has no inventory to list, because the operator
+    names its models, so its flag stays False.
+    """
+    body = (await client.get("/v1/embedding_providers/_types")).json()
+    assert {kind: meta["discoverable"] for kind, meta in body.items()} == {
+        EmbeddingProviderType.OPENAI.value: True,
+        EmbeddingProviderType.GEMINI.value: True,
+        EmbeddingProviderType.HUGGINGFACE.value: False,
+    }
+
+
+@pytest.mark.asyncio
 async def test_cross_encoder_token_is_optional(client) -> None:
     """Public reranker repos need no token, so a required box would be a
     lie that blocks the common case."""

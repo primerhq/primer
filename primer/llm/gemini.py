@@ -84,14 +84,21 @@ GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
 async def _discover_gemini_models(
     draft_config: GoogleConfig,
+    *,
+    method: str = "generateContent",
 ) -> list[dict[str, Any]]:
     """Probe Gemini's ``GET /v1beta/models`` with the draft credentials.
 
-    Used by the discovery REST route powering the UI's *Fetch models*
+    Used by the discovery REST routes powering the UI's *Fetch models*
     button: the operator types an API key into the new-provider form,
     the route calls this helper, and the response populates the model
     picker. Unlike the configured ModelProfile rows (which are the
     stored row's static list), this is a live probe.
+
+    ``method`` is the ``supportedGenerationMethods`` entry a model must
+    carry to be kept: ``generateContent`` (the default) for the LLM
+    provider form, ``embedContent`` for the embedding provider form. The
+    two forms read the same catalogue.
 
     Returns a list of dicts (one per upstream model) with:
 
@@ -102,9 +109,10 @@ async def _discover_gemini_models(
     - ``context_length``: the model's ``inputTokenLimit`` when upstream
       reports one; omitted otherwise so the route can seed a default.
 
-    Only models whose ``supportedGenerationMethods`` includes
-    ``generateContent`` are kept; this drops embedders and
-    token-counter-only models that cannot back a chat provider.
+    Only models whose ``supportedGenerationMethods`` includes ``method``
+    are kept. With the default that drops embedders and
+    token-counter-only models, which cannot back a chat provider; with
+    ``embedContent`` it keeps the embedders and nothing else.
 
     Gemini's ListModels paginates via ``nextPageToken`` (passed back as
     ``pageToken``); this helper follows the cursor until the catalogue
@@ -138,7 +146,7 @@ async def _discover_gemini_models(
                 if not isinstance(entry, dict):
                     continue
                 methods = entry.get("supportedGenerationMethods") or []
-                if "generateContent" not in methods:
+                if method not in methods:
                     continue
                 raw_name = entry.get("name")
                 if not raw_name:
