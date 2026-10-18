@@ -239,9 +239,13 @@ it's called from a context with no implicit session.
 - Some template fields are admin-only: container `extra_mounts`,
   Kubernetes `extra_volumes`, `extra_volume_mounts`, `pod_overrides`,
   `container_security_context_overrides`, `service_account_name` and
-  `tolerations`, and any file whose `source.kind` is `secret`. The other
-  Kubernetes placement fields, `node_selector`, `gpu` and
-  `image_pull_policy`, are not admin-only. A call that sets one of the
+  `tolerations`, a `gpu.resource_name` other than the default
+  `nvidia.com/gpu` (reported as `backend.gpu.resource_name`), and any
+  file whose `source.kind` is `secret`. The other Kubernetes placement
+  fields, `node_selector`, the `gpu` count with the default resource
+  name, and `image_pull_policy`, are not admin-only. A GPU resource name
+  under `kubernetes.io/` or starting with `requests.` is refused for
+  everyone (`type=validation-error`). A call that sets one of the
   admin-only fields, or changes it from the stored value, answers
   `type=forbidden` unless the run was started by an admin (over MCP:
   unless the caller is an admin).

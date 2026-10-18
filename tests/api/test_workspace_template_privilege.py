@@ -75,6 +75,8 @@ _GATED_BODIES = {
     "pod_overrides": _k8s(pod_overrides={"dnsPolicy": "ClusterFirst"}),
     "service_account_name": _k8s(service_account_name="runner"),
     "tolerations": _k8s(tolerations=[{"key": "gpu", "operator": "Exists", "effect": "NoSchedule"}]),
+    # Lead ruling 15: only the default GPU resource name (nvidia.com/gpu) is user-tier.
+    "gpu.resource_name": _k8s(gpu={"count": 1, "resource_name": "amd.com/gpu"}),
     "files.secret": {"id": "tpl-s", "provider_id": "p-1", "description": "d", "files": [_SECRET_FILE]},
 }
 # The k8s allowlist refuses every non-empty container_security_context_overrides (the backend never applied it), so an
@@ -173,6 +175,48 @@ async def test_a_user_may_set_node_selector_gpu_and_pull_policy(app, user) -> No
     stored = await app.state.storage_provider.get_storage(WorkspaceTemplate).get("tpl-k")
     assert stored.backend.node_selector == {"gpu": "true"}
     assert stored.backend.gpu.count == 1 and stored.backend.image_pull_policy == "Always"
+
+
+@pytest.mark.asyncio
+async def test_a_user_may_name_the_default_gpu_resource_explicitly(app, user) -> None:  # noqa: F811
+    """Lead ruling 15: the default (nvidia.com/gpu) is the user-tier GPU, written or left out."""
+    r = await user.post("/v1/workspace_templates", json=_k8s(gpu={"count": 2, "resource_name": "nvidia.com/gpu"}))
+
+    assert r.status_code == 201, r.text
+    assert (await app.state.storage_provider.get_storage(WorkspaceTemplate).get("tpl-k")).backend.gpu.count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resource", ["devices.kubevirt.io/kvm", "squat.ai/fuse", "amd.com/gpu"])
+async def test_a_user_cannot_request_another_device_plugin_resource(app, user, resource) -> None:  # noqa: F811
+    """A user could ask the cluster for any device-plugin resource through the GPU's resource name; now only an admin may."""
+    r = await user.post("/v1/workspace_templates", json=_k8s(gpu={"count": 1, "resource_name": resource}))
+
+    _assert_forbidden_role(r, "backend.gpu.resource_name")
+    assert await app.state.storage_provider.get_storage(WorkspaceTemplate).get("tpl-k") is None
+
+
+@pytest.mark.asyncio
+async def test_a_user_cannot_change_the_gpu_resource_name_an_admin_set(app, admin, user) -> None:  # noqa: F811
+    assert (await admin.post("/v1/workspace_templates", json=_GATED_BODIES["gpu.resource_name"])).status_code == 201
+
+    back_to_default = _k8s(gpu={"count": 1})
+    r = await user.put("/v1/workspace_templates/tpl-k", json=back_to_default)
+
+    _assert_forbidden_role(r, "backend.gpu.resource_name")
+    stored = await app.state.storage_provider.get_storage(WorkspaceTemplate).get("tpl-k")
+    assert stored.backend.gpu.resource_name == "amd.com/gpu"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resource", ["kubernetes.io/gpu", "requests.nvidia.com/gpu"])
+async def test_an_admin_cannot_use_a_resource_name_the_api_server_rejects(app, admin, resource) -> None:  # noqa: F811
+    """Not a privilege question: no cluster takes these, so the write is a 422 for everyone and nothing is stored."""
+    r = await admin.post("/v1/workspace_templates", json=_k8s(gpu={"count": 1, "resource_name": resource}))
+
+    assert r.status_code == 422, r.text
+    assert any(e["loc"][-1] == "resource_name" for e in r.json()["extensions"]["errors"]), r.text
+    assert await app.state.storage_provider.get_storage(WorkspaceTemplate).get("tpl-k") is None
 
 
 @pytest.mark.asyncio
