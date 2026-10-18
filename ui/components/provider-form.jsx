@@ -463,9 +463,23 @@ function PC_typesKey(plural, typesPath) {
   return `provider-types:${typesPath || `/${plural}/_types`}`;
 }
 
+// The limits the schema form shows inside the Register overlay's frame: the three it has always shown, cut to the ones the class's adapters read
+// (PC_limitFieldsFor, register-common.jsx). A wizard class's own pages show its full set.
+const PC_FORM_LIMIT_FIELDS = ["max_concurrency", "request_timeout_seconds", "connect_timeout_seconds"];
+
+const PC_SECRET_KEPT_HELP = "Stored secrets are shown masked; leave it as is to keep it.";
+
+// Two layouts, one form. Without `frame` the form lays itself out (fields, the probe panel, its own footer row): the legacy catalog's modal mounts it so.
+// With `frame` (the Register provider overlay, plan 02 Task 10) it hands its parts to the frame and returns what the frame returns:
+// frame({ body, footerLeft, footerRight, error }), with Cancel on the left, Test (only when `canTest`: a class with a draft _test route) and the submit
+// (`submitLabel`) on the right, and the save refusal as `error`. Inside the frame the fields are kit fields (the label alone on its line, the help under
+// the control), `kindSelect` adds a Type select of the kinds the server serves minus the built-in ones and `excludeKinds` (locked when editing; a change
+// writes `provider` and clears `config`), the limits are PC_LimitsSection's, and `readOnly` (a built-in row with nothing to configure) says so and offers
+// no submit. `classKey` is the PC_CLASSES key the frame registers. The kit is used only in the framed branch.
 function PC_ProviderForm({
   plural, typesPath, value, onChange, onSubmit, onTest, onCancel, editing,
   existingId, canInvalidate,
+  frame, classKey, kindSelect, excludeKinds, canTest, submitLabel, readOnly,
 }) {
   const { useResource, apiFetch, useCapabilities, capabilityHint,
     EXTRA_FOR_PROVIDER_TYPE } = window.primerApi;
@@ -520,7 +534,11 @@ function PC_ProviderForm({
   // _types answers a MAP keyed by provider-type value.
   const typeMap = types.data || {};
   const typeKeys = Object.keys(typeMap);
-  const selectedType = draft.provider || typeKeys[0] || "";
+  // The framed Type select offers the served kinds minus the built-in ones, so its default is the first of THOSE: the map's first key can be a built-in
+  // kind (web search lists duckduckgo first), which is never a type to create.
+  const servedKinds = frame && kindSelect && classKey && types.data
+    ? window.PC_servedKinds(classKey, typeMap, excludeKinds) : null;
+  const selectedType = draft.provider || (servedKinds ? servedKinds[0] : typeKeys[0]) || "";
   const shape = typeMap[selectedType] || {};
   // The fields of the kind come from _types. Until that has answered AND names this kind, `shape` is {}: no config fields (so no API key box), no Limits, nothing required, and a Save that sends a
   // request without what the server requires of the kind (an LLM provider without `limits` is a 422). The form does not offer Save or Test until the shape is known.
@@ -596,13 +614,15 @@ function PC_ProviderForm({
     if (first) first.focus();
   }, [typesFailed]);
 
+  // The _test routes read the wire names: the web classes' draft is {id, provider_type, config: {type, ...}} (routers/web_search.py _ProviderDraft), so the
+  // form's body goes through PC_wireBody as a save does (it passed every other class through unchanged; without it a web Test answered 422).
   const runTest = async () => {
     setBusy(true);
     try {
       const out = typeof onTest === "function"
         ? await onTest(PC_submittable(draft, shape, selectedType))
         : await apiFetch("POST", `/${plural}/_test`,
-                         PC_submittable(draft, shape, selectedType));
+                         PC_wireBody(plural, PC_submittable(draft, shape, selectedType)));
       setTestResult(out);
     } catch (err) {
       setTestResult({ ok: false, error: err?.detail || err?.message || String(err) });
@@ -610,6 +630,162 @@ function PC_ProviderForm({
       setBusy(false);
     }
   };
+
+  // ---- the framed layout (the Register provider overlay) ----------------------------------------------------------------------------------------------
+  if (typeof frame === "function") {
+    const PK_Grid = window.PK_Grid;
+    const PK_Field = window.PK_Field;
+    const PK_RowTable = window.PK_RowTable;
+    const kindLocked = !!editing;
+    // A locked select names the row's own kind, even a built-in one that is never offered to create.
+    const kindOptions = kindLocked ? (selectedType ? [selectedType] : []) : (servedKinds || []);
+    // The id rule holds for a NEW id; an existing row's id is not the form's to judge.
+    const idProblem = editing ? null : window.PC_idProblem(draft.id);
+    const idTyped = draft.id != null && String(draft.id) !== "";
+    const limitFields = classKey
+      ? window.PC_limitFieldsFor(classKey, selectedType).filter((f) => PC_FORM_LIMIT_FIELDS.indexOf(f) >= 0)
+      : PC_FORM_LIMIT_FIELDS;
+    const limitsValue = draft.limits || window.PC_initialLimits(limitFields);
+    const limitProblems = shape.limits ? window.PC_limitsProblems(limitFields, limitsValue) : {};
+    // Whether the submit can be pressed at all; the request in flight is said on the button itself (busy), never folded in here.
+    const formReady = shapeReady && !readOnly && !idProblem && !missingRequired()
+      && !modelRowsIncomplete(shape.row_fields) && Object.keys(limitProblems).length === 0;
+
+    const fieldOf = (scope, f) => {
+      const holder = scope === "config" ? (draft.config || {}) : draft;
+      const v = holder[f.key];
+      const testid = "pc-field:" + f.key;
+      const set = (next) => setField(scope, f.key, next);
+      if (f.type === "model_list") {
+        return (
+          <PK_RowTable key={scope + ":" + f.key} title={String(f.label || f.key).toUpperCase()} addLabel="+ Add" testid={testid}
+            columns={[{ key: "name", label: "Model", input: "text" }]} rows={Array.isArray(v) ? v : []} onChange={set} />
+        );
+      }
+      let control;
+      if (f.type === "enum") {
+        // An optional choice the draft has not made reads "Not set": showing the first option while sending nothing would show a value it never sends.
+        control = (
+          <select data-testid={testid} value={v == null ? "" : String(v)} aria-required={f.required ? "true" : undefined}
+            onChange={(e) => set(e.target.value)}>
+            {f.required ? null : <option value="">Not set</option>}
+            {(f.options || []).map((opt) => (
+              <option key={opt} value={opt}>{(f.key === "flavor" && window.PC_FLAVOR_LABELS[opt]) || opt}</option>
+            ))}
+          </select>
+        );
+      } else {
+        control = (
+          <input type={f.type === "password" || f.type === "number" || f.type === "url" ? f.type : "text"} data-testid={testid}
+            value={v == null ? "" : String(v)} placeholder={f.placeholder || undefined} aria-required={f.required ? "true" : undefined}
+            autoComplete={f.type === "password" ? "off" : undefined} onChange={(e) => set(e.target.value)} />
+        );
+      }
+      // An edit serves a stored secret masked; left as it is, the server keeps the secret (preserve_masked_secrets, primer/model/common.py).
+      const help = f.type === "password" && editing ? [f.help, PC_SECRET_KEPT_HELP].filter(Boolean).join(" ") : f.help;
+      return (
+        <PK_Field key={scope + ":" + f.key} label={f.label} help={help || undefined} required={f.required}
+          span={f.type === "url" ? "full" : undefined}>
+          {control}
+        </PK_Field>
+      );
+    };
+
+    const rowFields = (shape.row_fields || []).map(PC_normalizeField);
+    const configFields = (shape.config_fields || []).map(PC_normalizeField);
+    const listed = testResult && testResult.ok
+      ? (testResult.models || testResult.voices || []).map((m) => (typeof m === "string" ? m : m && m.name)).filter(Boolean)
+      : [];
+    const framedBody = (
+      <div className="col" style={{ gap: 16, minWidth: 0 }} ref={rootRef} data-testid={`provider-form-${plural}`}>
+        {missingExtra ? (
+          <Banner kind="info" title="Optional dependency required">
+            {capabilityHint(extra)}
+          </Banner>
+        ) : null}
+        <PK_Grid cols={2}>
+          <window.PC_IdField value={draft.id} locked={kindLocked} testid="pc-field:id" problem={idTyped ? idProblem : null}
+            onChange={(next) => setField("row", "id", next)} />
+          {kindSelect ? (
+            <PK_Field label="Type">
+              <select data-testid="pc-field:type" value={selectedType} disabled={kindLocked || !kindOptions.length}
+                onChange={(e) => onChange({ ...draft, provider: e.target.value, config: {} })}>
+                {kindOptions.map((k) => (
+                  <option key={k} value={k}>{window.PC_kindLabel(classKey, k, typeMap[k])}</option>
+                ))}
+              </select>
+            </PK_Field>
+          ) : null}
+        </PK_Grid>
+        {loadingShape ? (
+          <div className="muted text-sm" role="status" data-testid="provider-form-loading">
+            Loading the fields for this kind…
+          </div>
+        ) : null}
+        {typesFailed ? (
+          <div className="nv-form-error" role="alert" data-testid="provider-form-types-error">
+            Could not load the fields for this kind: {window.primerApi.readRefusal(types.error, String(types.error)).message}
+          </div>
+        ) : null}
+        {typesFailed ? (
+          <div>
+            <Btn kind="ghost" data-testid="provider-form-types-retry" onClick={retryTypes} busy={!!types.loading}>
+              {types.loading ? "Trying again…" : "Try again"}
+            </Btn>
+          </div>
+        ) : null}
+        {kindNotServed ? (
+          <div className="nv-form-error" role="alert" data-testid="provider-form-kind-missing">
+            {selectedType
+              ? `This install does not serve the kind "${selectedType}", so the form cannot show its fields.`
+              : "This install serves no kind for this class, so the form cannot show its fields."}
+          </div>
+        ) : null}
+        {readOnly ? (
+          <div className="muted" data-testid="provider-form-readonly">Built in; nothing to configure.</div>
+        ) : (
+          <React.Fragment>
+            {rowFields.length || configFields.length ? (
+              <PK_Grid cols={2}>
+                {rowFields.map((f) => fieldOf("row", f))}
+                {configFields.map((f) => fieldOf("config", f))}
+              </PK_Grid>
+            ) : null}
+            {shape.limits && limitFields.length ? (
+              <window.PC_LimitsSection fields={limitFields} value={limitsValue} problems={limitProblems} testid="pc-limits"
+                classKey={classKey} onChange={(next) => setField("row", "limits", next)} />
+            ) : null}
+          </React.Fragment>
+        )}
+        {testResult ? (
+          <div className={testResult.ok ? "field-help" : "nv-form-error"} role={testResult.ok ? "status" : "alert"}
+            data-testid="provider-form-test-result">
+            {testResult.ok
+              ? "Reachable" + (listed.length ? ": " + listed.join(", ") : "")
+              : "Test failed: " + String(testResult.error || "no reason given")}
+          </div>
+        ) : null}
+      </div>
+    );
+    const footerLeft = typeof onCancel === "function" ? (
+      <Btn kind="ghost" data-testid="provider-form-cancel" onClick={onCancel}>Cancel</Btn>
+    ) : null;
+    const footerRight = (
+      <React.Fragment>
+        {canTest ? (
+          <Btn kind="ghost" data-testid="provider-form-test" onClick={runTest} busy={busy} blocked={saving} disabled={!shapeReady}>
+            Test
+          </Btn>
+        ) : null}
+        {readOnly ? null : (
+          <Btn kind="primary" data-testid="provider-form-save" onClick={submit} busy={saving} blocked={busy} disabled={!formReady}>
+            {submitLabel || "Save"}
+          </Btn>
+        )}
+      </React.Fragment>
+    );
+    return frame({ body: framedBody, footerLeft, footerRight, error: saveError });
+  }
 
   // Platform wave P1a item 4: the rich "Live model probe" panel is
   // ADDITIONAL, not a replacement for the generic Test button below -
@@ -806,4 +982,6 @@ window.PC_submittable = PC_submittable;
 window.PC_draftFromRow = PC_draftFromRow;
 window.PC_wireBody = PC_wireBody;
 window.PC_typesKey = PC_typesKey;
+// The Register overlay shows it under an edit of a class whose registry caches adapters (plan 02 Task 11).
+window.PC_InvalidateAction = PC_InvalidateAction;
 window.PC_ProviderForm = PC_ProviderForm;
