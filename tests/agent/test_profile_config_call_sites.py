@@ -3,10 +3,11 @@
 A model profile carries ``config: {reasoning, extended}``. Nothing used to
 apply it: ``run_agent_turn`` and both compaction summarisers called
 ``llm.stream`` with no ``extended`` (conflict C1). Each call now sends the
-resolved profile's config, translated for the adapter's wire
-(:func:`primer.llm._reasoning.profile_stream_kwargs`), and a call with no
-config (``None``) or an empty one is made exactly as before: no ``extended``
-keyword at all.
+resolved profile's config, translated for the adapter's wire and the call's
+model (:func:`primer.llm._reasoning.profile_extended`, sent through
+:func:`primer.llm._reasoning.profile_stream`), and a call with no config
+(``None``) or an empty one is made exactly as before: no ``extended`` keyword
+at all.
 
 The fake adapter below translates with Ollama's mapping, so "translated" is
 observable: the profile says ``reasoning: off`` and the call carries
@@ -60,8 +61,12 @@ class RecordingLLM(LLM):
         self._rounds = list(rounds)
         self._translate = translate
         self.calls: list[dict[str, Any]] = []
+        self.translated_for: list[str | None] = []
 
-    def profile_extended(self, config: ModelProfileConfig) -> dict[str, Any]:
+    def profile_extended(
+        self, config: ModelProfileConfig, *, model: str | None = None,
+    ) -> dict[str, Any]:
+        self.translated_for.append(model)
         return self._translate(config)
 
     def stream(self, *, model, messages, **kwargs):  # type: ignore[override]
@@ -103,6 +108,8 @@ class TestAgentTurn:
         await _turn(llm, CONFIG)
         assert len(llm.calls) == 2
         assert [c["extended"] for c in llm.calls] == [TRANSLATED, TRANSLATED]
+        # Translated once per turn, for the model the calls name.
+        assert llm.translated_for == ["m"]
 
     @pytest.mark.parametrize("config", [None, ModelProfileConfig()])
     async def test_no_config_makes_the_call_exactly_as_before(self, config) -> None:
@@ -135,6 +142,7 @@ class TestCompaction:
         await _compact(llm, CONFIG, tools=False)
         assert len(llm.calls) == 1
         assert llm.calls[0]["extended"] == TRANSLATED
+        assert llm.translated_for == ["m"]
         # The summariser's own settings are untouched by the profile's.
         assert llm.calls[0]["temperature"] == 0.0
 

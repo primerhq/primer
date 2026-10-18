@@ -913,7 +913,9 @@ class GeminiLLM(LLM):
             self._client.close()
             self._client = None
 
-    def profile_extended(self, config: ModelProfileConfig) -> dict[str, Any]:
+    def profile_extended(
+        self, config: ModelProfileConfig, *, model: str | None = None,
+    ) -> dict[str, Any]:
         """A thinking-token budget (0 asks for no thinking)."""
         return gemini_extended(config)
 

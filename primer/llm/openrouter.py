@@ -186,7 +186,9 @@ class OpenRouterLLM(LLM):
 
         return await count_openai_family(model=model, messages=messages, tools=tools)
 
-    def profile_extended(self, config: ModelProfileConfig) -> dict[str, Any]:
+    def profile_extended(
+        self, config: ModelProfileConfig, *, model: str | None = None,
+    ) -> dict[str, Any]:
         """OpenRouter's ``reasoning`` object, sent in the request body."""
         return openrouter_extended(config)
 

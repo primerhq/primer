@@ -121,16 +121,18 @@ class LLM(ABC):
                 )
         return _extract_json_object("".join(chunks))
 
-    def profile_extended(self, config: "ModelProfileConfig") -> dict[str, Any]:
-        """Translate a model profile's ``config`` into this adapter's ``extended`` knobs.
+    def profile_extended(
+        self, config: "ModelProfileConfig", *, model: str | None = None,
+    ) -> dict[str, Any]:
+        """Translate a model profile's ``config`` into this adapter's ``extended`` knobs for ``model``.
 
         Every call made under a profile sends the result as
-        ``stream(extended=...)`` (see
-        :func:`primer.llm._reasoning.profile_stream_kwargs`). Each concrete
-        adapter overrides this with its own mapping from
-        :mod:`primer.llm._reasoning`, which knows its wire and flavor. This
-        default, for an adapter with no mapping, forwards ``config.extended``
-        and logs a reasoning level once at DEBUG as not applied.
+        ``stream(extended=...)`` (see :func:`primer.llm._reasoning.profile_stream`).
+        Each concrete adapter overrides this with its own mapping from
+        :mod:`primer.llm._reasoning`, which knows its wire, its flavor and,
+        where the shape depends on it, the model. This default, for an adapter
+        with no mapping, forwards ``config.extended`` and logs a reasoning
+        level once at DEBUG as not applied.
         """
         # Deferred: primer.llm's package init imports every adapter, and each
         # adapter imports this module.

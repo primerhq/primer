@@ -49,7 +49,7 @@ from primer.agent.summary_input import (
 from primer.agent.tail import CompactionSplit, split_for_compaction
 from primer.common.context_overflow import is_context_overflow
 from primer.common.log import redact_credentials
-from primer.llm._reasoning import profile_stream_kwargs
+from primer.llm._reasoning import profile_extended, profile_stream
 from primer.llm._tokenizer.char_fallback import count_tokens_char_fallback
 from primer.model.chat import (
     CompactionSummary,
@@ -977,12 +977,13 @@ class CompactionStrategy:
     ) -> str:
         """Plain, tool-free summarisation; like every model call it carries the profile's config."""
         text_buffers: list[str] = []
-        async for event in llm.stream(
+        async for event in profile_stream(
+            llm,
+            profile_extended(llm, getattr(model, "config", None), model=model.model_name),
             model=model.model_name,
             messages=summary_request,
             temperature=0.0,
             max_output_tokens=self.summary_max_tokens,
-            **profile_stream_kwargs(llm, getattr(model, "config", None)),
         ):
             if isinstance(event, TextDelta):
                 text_buffers.append(event.text)
@@ -1029,7 +1030,9 @@ class CompactionStrategy:
             else DEFAULT_COMPACTION_TOOL_TURNS
         )
         tools = await tool_manager.list_tools(principal=principal)
-        profile_kwargs = profile_stream_kwargs(llm, getattr(model, "config", None))
+        profile_knobs = profile_extended(
+            llm, getattr(model, "config", None), model=model.model_name,
+        )
         messages = list(summary_request)
         summary_text = ""
         tool_round = 0
@@ -1037,14 +1040,15 @@ class CompactionStrategy:
         while True:
             buffered: list[StreamEvent] = []
             try:
-                async for event in llm.stream(
+                async for event in profile_stream(
+                    llm,
+                    profile_knobs,
                     model=model.model_name,
                     messages=messages,
                     temperature=0.0,
                     max_output_tokens=self.summary_max_tokens,
                     tools=tools,
                     tool_choice="auto",
-                    **profile_kwargs,
                 ):
                     buffered.append(event)
                     if isinstance(event, (ToolCallStart, ToolCallEnd)):

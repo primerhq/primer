@@ -765,7 +765,9 @@ class AnthropicLLM(LLM):
             await self._client.close()
             self._client = None
 
-    def profile_extended(self, config: ModelProfileConfig) -> dict[str, Any]:
+    def profile_extended(
+        self, config: ModelProfileConfig, *, model: str | None = None,
+    ) -> dict[str, Any]:
         """A ``thinking`` block with a token budget, or thinking disabled; see
         :func:`_fit_thinking` for what a request gives up to carry one."""
         return anthropic_extended(config)

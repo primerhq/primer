@@ -246,10 +246,13 @@ profile sends it: each call of an agent turn (`primer/agent/loop.py`, which
 sessions, subagents and graph agent nodes all run) and
 each call of both compaction summarisers (`primer/agent/compaction.py`).
 The call site hands the resolved profile's config (`ResolvedModel.config`)
-to `profile_stream_kwargs(llm, config)` in `primer/llm/_reasoning.py`, which
-asks the adapter to translate it (`LLM.profile_extended(config)`: each
-adapter calls its own mapping in `_reasoning.py`, passing its flavor where
-the flavor decides the wire) and sends the result as `stream(extended=...)`.
+and the call's model to `profile_extended(llm, config, model=...)` in
+`primer/llm/_reasoning.py`, which asks the adapter to translate it
+(`LLM.profile_extended(config, model=...)`: each adapter calls its own
+mapping in `_reasoning.py`, passing its flavor where the flavor decides the
+wire), and sends the result as `stream(extended=...)` through
+`profile_stream`, which makes the call once more without the settings when
+the provider refuses them at stream open.
 A call with no config, or a config that asks for nothing, sends no
 `extended` at all, exactly as before. The adapter's whitelist then projects
 `extended` onto the SDK request and DEBUG-logs any key it does not know. On

@@ -43,11 +43,13 @@ class RetryingLLM(LLM):
         """The wrapped adapter. Tests and the registry reach through this."""
         return self._inner
 
-    def profile_extended(self, config: ModelProfileConfig) -> dict[str, Any]:
+    def profile_extended(
+        self, config: ModelProfileConfig, *, model: str | None = None,
+    ) -> dict[str, Any]:
         # Forwarded explicitly: the ABC default is found on this class before
         # ``__getattr__`` is consulted, and it would drop the wrapped
         # adapter's own reasoning mapping.
-        return self._inner.profile_extended(config)
+        return self._inner.profile_extended(config, model=model)
 
     def stream(  # type: ignore[override]
         self,

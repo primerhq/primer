@@ -365,7 +365,7 @@ class TestAggregatedMembersApplyTheirOwnConfig:
     async def test_the_member_that_serves_brings_its_own_config(
         self, sp: StorageProvider,
     ) -> None:
-        from primer.llm._reasoning import anthropic_extended, profile_stream_kwargs
+        from primer.llm._reasoning import anthropic_extended, profile_extended, profile_stream
         from primer.model.chat import Message, TextPart
         from primer.model.except_ import RateLimitError
         from tests.llm.test_profile_config_wiring import Member
@@ -396,10 +396,11 @@ class TestAggregatedMembersApplyTheirOwnConfig:
                 return adapters[provider_id]
 
         llm, resolved = await resolve_llm(sp, _Registry(sp), default_profile_id="agg-cfg")
-        async for _ in llm.stream(
+        async for _ in profile_stream(
+            llm,
+            profile_extended(llm, resolved.config, model=resolved.model_name),
             model="ignored",
             messages=[Message(role="user", parts=[TextPart(text="hi")])],
-            **profile_stream_kwargs(llm, resolved.config),
         ):
             pass
         assert adapters["prov-a"].calls[0]["extended"] == {"seed": 1, "think": True}

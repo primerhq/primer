@@ -11,18 +11,27 @@ silently accepting a knob that does nothing is how an operator ends up
 believing they disabled reasoning when they did not.
 
 Every model call made under a profile (an agent turn, a compaction, a graph
-agent node) applies the profile's config through :func:`profile_stream_kwargs`:
-the adapter translates it for its own wire
+agent node) applies the profile's config in two steps. :func:`profile_extended`
+asks the adapter to translate it for its own wire AND the model the call names
 (:meth:`primer.int.llm.LLM.profile_extended`, which calls the mapping for its
-kind here) and the result is sent as ``stream(extended=...)``. A call with no
-config, or a config that asks for nothing, is made exactly as before.
+kind here): the right shape is a property of the model, not only of the
+provider. :func:`profile_stream` then sends the result as
+``stream(extended=...)``, and a provider that refuses those settings at stream
+open gets the call once more without them. A profile setting must never turn a
+call that works into one that fails. A call with no config, or a config that
+asks for nothing, is made exactly as before.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import re
+from collections.abc import AsyncIterator
 from typing import Any
 
+from primer.model.chat import Error as ChatError
+from primer.model.except_ import BadRequestError
 from primer.model.model_profile import ModelProfileConfig, ReasoningLevel
 
 logger = logging.getLogger(__name__)
@@ -208,10 +217,12 @@ def passthrough_extended(config: ModelProfileConfig, *, adapter: str) -> dict[st
     return dict(config.extended or {})
 
 
-def profile_extended(llm: Any, config: ModelProfileConfig | None) -> dict[str, Any]:
-    """The ``extended`` knobs a call under a profile's ``config`` sends through ``llm``.
+def profile_extended(
+    llm: Any, config: ModelProfileConfig | None, *, model: str | None = None,
+) -> dict[str, Any]:
+    """The ``extended`` knobs a call to ``model`` under a profile's ``config`` sends through ``llm``.
 
-    The adapter translates for its own wire
+    The adapter translates for its own wire and for ``model``
     (:meth:`primer.int.llm.LLM.profile_extended`); an object without that
     method (a duck-typed test double) gets the passthrough. ``None``, anything
     that is not a :class:`ModelProfileConfig`, or a config that asks for
@@ -224,18 +235,132 @@ def profile_extended(llm: Any, config: ModelProfileConfig | None) -> dict[str, A
     translate = getattr(llm, "profile_extended", None)
     if translate is None:
         return passthrough_extended(config, adapter=type(llm).__name__)
-    return translate(config)
+    return translate(config, model=model)
 
 
-def profile_stream_kwargs(llm: Any, config: ModelProfileConfig | None) -> dict[str, Any]:
-    """The keyword arguments a call under ``config`` adds to ``llm.stream(...)``.
+# Stems a provider's refusal of a reasoning setting carries, matched without
+# case. The wire names differ (OpenAI "reasoning_effort" or "reasoning.effort",
+# Anthropic "thinking" and "output_config.effort", Gemini "thinking_budget",
+# "thinking_level" or "thinking mode", Ollama "does not support thinking",
+# OpenRouter "reasoning"), so a refusal is recognised by these, or by the name
+# of a key the profile sent.
+_REFUSAL_STEMS: tuple[str, ...] = (
+    "reason", "think", "effort", "budget", "chat_template_kwargs", "output_config",
+)
 
-    ``{"extended": {...}}`` with the profile's settings translated for
-    ``llm``'s wire, or ``{}`` when there is nothing to send, so a call with no
-    config (or an empty one) is made exactly as before.
+# Codes that say a call failed for a reason other than what it asked for.
+_NOT_A_REFUSAL: frozenset[str] = frozenset({
+    "rate_limit", "server_error", "network_error", "auth_error",
+    "stream_timeout", "generation_timeout", "connect_timeout",
+})
+
+# (adapter instance, model, settings) a provider refused at stream open, where
+# the call then worked without them: later calls skip the settings, so a
+# refused setting costs one failed request per process, not one per call.
+_REFUSED: set[tuple[int, str, str]] = set()
+
+
+def _names_a_setting(message: str | None, knobs: dict[str, Any]) -> bool:
+    text = (message or "").lower()
+    if any(stem in text for stem in _REFUSAL_STEMS):
+        return True
+    return any(
+        re.search(rf"(?<![a-z0-9_]){re.escape(str(key).lower())}(?![a-z0-9_])", text)
+        for key in knobs
+    )
+
+
+async def _aclose(agen: Any) -> None:
+    aclose = getattr(agen, "aclose", None)
+    if aclose is None:
+        return
+    try:
+        await aclose()
+    except Exception:  # noqa: BLE001 -- best-effort cleanup of an abandoned stream
+        pass
+
+
+def profile_stream(llm: Any, knobs: dict[str, Any], **kwargs: Any) -> AsyncIterator[Any]:
+    """``llm.stream(**kwargs)`` carrying a profile's translated ``knobs`` in ``extended``.
+
+    A profile setting must never turn a call that works into one that fails.
+    When the provider refuses the call at stream open (a ``BadRequestError``
+    raised before the first event, or a fatal first event, which is how the
+    lazily-opened Ollama and Gemini adapters report a 400) and its message
+    names one of the settings, the call is made once more exactly as it would
+    be without the profile's settings, and the refusal is logged once at DEBUG.
+    When that call works, the model is called without those settings for the
+    rest of the process. A failure after the first event is never retried:
+    output has already reached the consumer.
+
+    ``kwargs`` may carry the caller's own ``extended`` (an aggregated member's
+    call does): it rides on top of the profile's settings and stays on the
+    retry. No knobs: ``llm.stream(**kwargs)``, exactly as before.
     """
-    extended = profile_extended(llm, config)
-    return {"extended": extended} if extended else {}
+    passed = "extended" in kwargs
+    caller = kwargs.pop("extended", None)
+    plain = dict(kwargs)
+    if passed:
+        plain["extended"] = caller
+    if not knobs:
+        return llm.stream(**plain)
+    key = (id(llm), str(kwargs.get("model")), json.dumps(knobs, sort_keys=True, default=str))
+    if key in _REFUSED:
+        return llm.stream(**plain)
+    first = {**kwargs, "extended": {**knobs, **(caller or {})}}
+    return _stream_with_fallback(llm, knobs, key, first, plain)
+
+
+async def _stream_with_fallback(
+    llm: Any,
+    knobs: dict[str, Any],
+    key: tuple[int, str, str],
+    first_kwargs: dict[str, Any],
+    plain_kwargs: dict[str, Any],
+) -> AsyncIterator[Any]:
+    agen = llm.stream(**first_kwargs)
+    refusal = ""
+    try:
+        try:
+            first = await agen.__anext__()
+        except StopAsyncIteration:
+            return
+        except BadRequestError as exc:
+            refusal = getattr(exc, "message", None) or str(exc)
+            if not _names_a_setting(refusal, knobs):
+                raise
+        else:
+            if not (
+                isinstance(first, ChatError)
+                and first.fatal
+                and first.code not in _NOT_A_REFUSAL
+                and _names_a_setting(first.message, knobs)
+            ):
+                yield first
+                async for event in agen:
+                    yield event
+                return
+            refusal = first.message
+    finally:
+        await _aclose(agen)
+    debug_once(
+        ("profile-settings-refused", type(llm).__name__, key[1], key[2]),
+        "%s refused a profile's model settings for model %s (%s); the call was "
+        "made again without them: %s",
+        type(llm).__name__, key[1], ", ".join(sorted(map(str, knobs))),
+        refusal[:300],
+    )
+    retry = llm.stream(**plain_kwargs)
+    try:
+        worked = False
+        async for event in retry:
+            if not worked:
+                worked = not (isinstance(event, ChatError) and event.fatal)
+                if worked:
+                    _REFUSED.add(key)
+            yield event
+    finally:
+        await _aclose(retry)
 
 
 __all__ = [
@@ -248,5 +373,5 @@ __all__ = [
     "openrouter_extended",
     "passthrough_extended",
     "profile_extended",
-    "profile_stream_kwargs",
+    "profile_stream",
 ]
