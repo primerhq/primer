@@ -15,7 +15,8 @@ them all, a text that is empty or longer than ``PEER_MESSAGE_MAX_CHARS`` and a `
 3. the target is within reach: it is in the sender's workspace, or the sender is in the default workspace. Out of reach is ``not-found`` in the same
    words as a session that does not exist, so a session id seen in a shared file or a log does not confirm that the session exists;
 4. the sender ranks at least as high as the target's creator (``forbidden``): the target runs at its creator's rank, so a message drives a run at
-   that rank. The rule is :func:`primer.authz.principal_rank`, the one a trigger's steer uses;
+   that rank. The rule is :func:`primer.authz.principal_rank`, the one a trigger's steer uses. A sender with no principal cannot be ranked and is
+   refused in its own words;
 5. the chain of peer messages is shorter than ``MAX_PEER_HOPS`` (``hop-limit``);
 6. the sender has sent fewer than ``PEER_RATE_LIMIT`` messages in the last ``PEER_RATE_WINDOW`` (``rate-limited``);
 7. with ``mode="if_idle"``, the target would start a turn now (``conflict``);
@@ -99,6 +100,8 @@ REFUSE_RANK = (
     "session {session_id!r} runs at a higher rank ({target_rank}) than this session ({sender_rank}); "
     "a session may message only sessions at or below its own rank"
 )  # forbidden
+# Not in the plan: a sender with no principal cannot be ranked at all, and REFUSE_RANK would call it "lower" than a target it was never compared with.
+REFUSE_NO_PRINCIPAL = "this session's run has no recorded principal, so it cannot message another session"  # forbidden
 REFUSE_BUSY = "session {session_id!r} is {reason}; nothing was sent (mode if_idle)"  # conflict
 REFUSE_ENDED = "session {session_id!r} has ended ({ended_reason}) and cannot take a message"  # conflict
 # The tool's argument model rejects these first; they keep the service safe for any other caller (an empty text would re-arm a session with nothing).
@@ -344,11 +347,14 @@ async def send_peer_message(
     when the target would start a turn now.
 
     The rate check, the delivery and the ledger write are one step under the sender's lock, so concurrent sends of one sender cannot all pass at
-    the limit. The state the guards and the result describe (is a turn open, what the session waits on, is it paused) is read once, just before the
-    delivery; the delivery reads the row again and is what decides, so a session that changed in between is delivered to by its new state and
-    the result says what happened (``delivery``). For ``mode="if_idle"`` that means: a turn that opens in between is caught by the delivery
-    (``skip``, refused, nothing stored), but a pause that lands in between holds the message like any other non-human wake, and the result says
-    ``queued``.
+    the limit. The state the guards and the result describe (is a turn open, what the session waits on, is it paused) is read under the lock,
+    just before the delivery; the delivery reads the row once more and is what decides, so a session that changed in that instant is delivered
+    to by its new state and the result says what happened (``delivery``). For ``mode="if_idle"`` that means: a turn that opens in that instant is
+    caught by the delivery (``skip``, refused, nothing stored), but a pause that lands in it holds the message like any other non-human wake, and
+    the result says ``queued``.
+
+    Once the message is delivered the call succeeds: a ledger row that cannot be written is logged, not raised (the sender would send the message
+    again), at the price of one delivered message the rate limit does not count.
 
     Two events follow a delivery: ``session.messaged`` always (it carries the attribution, never the text, so a session waiting on it for
     ``wait_for_event`` is woken as by a doorbell while the message itself stays queued for the turn boundary), and ``session.steered`` too when the
@@ -370,6 +376,8 @@ async def send_peer_message(
         # A session of another workspace is answered exactly as a session that does not exist: an id seen in a shared file or a log must not confirm
         # that the session is there. This comes before the rank check for the same reason.
         raise PeerMessageRefused("not-found", REFUSE_NOT_FOUND.format(session_id=target_session_id))
+    if sender_principal is None:
+        raise PeerMessageRefused("forbidden", REFUSE_NO_PRINCIPAL)
     if not sender_may_message(sender_principal, target.initiated_by):
         raise PeerMessageRefused(
             "forbidden",
@@ -382,6 +390,12 @@ async def send_peer_message(
 
     async with _sender_lock(sender.id):
         await check_peer_rate(storage_provider, sender.id, now=sent_at)
+        # Reach and rank were decided from the first read (its workspace and its creator never change). What STATE the target is in is read again
+        # here, after the lock wait and the rate check, so the if_idle guard, the result, the note and the events describe the row the delivery is
+        # about to look at, not one from before another sender's message woke it.
+        target = await sessions.get(target.id)
+        if target is None:
+            raise PeerMessageRefused("not-found", REFUSE_NOT_FOUND.format(session_id=target_session_id))
         if mode == "if_idle":
             busy = _busy_reason(target)
             if busy is not None:
@@ -431,7 +445,15 @@ async def send_peer_message(
         if delivery.outcome == DELIVERED_MISSING:
             raise await _refusal_for_missing(sessions, target.id, delivery)
         how: Literal["woken", "queued"] = "queued" if delivery.outcome == DELIVERED_QUEUED else "woken"
-        await record_peer_message(storage_provider, message.model_copy(update={"delivery": how}))
+        try:
+            await record_peer_message(storage_provider, message.model_copy(update={"delivery": how}))
+        except Exception:  # noqa: BLE001 -- the message is delivered; see below
+            # The message HAS been delivered. Failing the call now would make the sender send it again and the target read it twice; the price of
+            # answering is one delivered message the rate limit does not count. Loud, not silent.
+            logger.exception(
+                "peer ledger: message %s from session %s to session %s was delivered but its ledger row was not written",
+                message.id, sender.id, target.id,
+            )
 
     recorder = recorder_for(storage_provider, event_bus)
     actor = actor_of(sender_principal)
@@ -522,6 +544,7 @@ __all__ = [
     "REFUSE_MODE",
     "REFUSE_NOT_FOUND",
     "REFUSE_NO_CALLER",
+    "REFUSE_NO_PRINCIPAL",
     "REFUSE_RANK",
     "REFUSE_RATE",
     "REFUSE_SELF",

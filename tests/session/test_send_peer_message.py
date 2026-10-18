@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import json
+import logging
 from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
@@ -41,6 +42,7 @@ from primer.session.peer_messages import (
     REFUSE_BUSY,
     REFUSE_ENDED,
     REFUSE_NO_CALLER,
+    REFUSE_NO_PRINCIPAL,
     REFUSE_NOT_FOUND,
     REFUSE_RANK,
     REFUSE_SELF,
@@ -134,6 +136,13 @@ def test_the_copy_is_the_plans_character_for_character():
     )
     assert peer_messages.PEER_PREFIX_AGENT == "[from session {session_id} (agent {agent_id})]"
     assert peer_messages.PEER_PREFIX_GRAPH == "[from session {session_id} (graph {graph_id})]"
+
+
+def test_the_copy_the_service_adds_beyond_the_plan():
+    """Three refusals the plan does not quote, for input the tool's argument model rejects first or a principal that cannot be ranked."""
+    assert peer_messages.REFUSE_NO_PRINCIPAL == "this session's run has no recorded principal, so it cannot message another session"
+    assert peer_messages.REFUSE_TEXT == "a message is 1 to {limit} characters; write larger outputs to a file and send its path"
+    assert peer_messages.REFUSE_MODE == "mode is auto or if_idle, not {mode!r}"
 
 
 # ---- the delivery table: every state a target can be in ---------------------------------------------------------------------------
@@ -245,23 +254,24 @@ async def test_a_session_waiting_on_session_messaged_is_woken_and_the_message_st
     assert "user_input" not in _kinds(world, "ses-b")
 
 
-async def test_a_wait_for_another_session_is_not_woken_by_this_message():
+async def test_a_message_wakes_only_the_wait_on_its_own_target():
+    """Two sessions each wait for a message to themselves; a message to one rings that doorbell and not the other."""
     world = await _world()
-    key = "evwait:ses-b:call_w"
-    await seed_session(world, sid="ses-b", turn_no=1, parked_status="parked", parked_event_key=key, parked_at=NOW)
-    sub = EventSubscription(
-        id="evsub-1",
-        filter=EventFilter(event_types=["session.messaged"], fields=[FieldMatcher(path="session_id", op="eq", value="ses-b")]),
-        sink=SessionWakeSink(event_key=key, session_id="ses-b"),
-    )
-    await world.sp.get_storage(EventSubscription).create(sub)
+    keys = {"ses-b": "evwait:ses-b:call_w", "ses-c": "evwait:ses-c:call_w"}
     store = world.sp.get_event_store()
-    await store.set_cursor(sub.id, await store.max_id())
-    await seed_session(world, sid="ses-c", turn_no=1)
+    for sid, key in keys.items():
+        await seed_session(world, sid=sid, turn_no=1, parked_status="parked", parked_event_key=key, parked_at=NOW)
+        sub = EventSubscription(
+            id=f"evsub-{sid}",
+            filter=EventFilter(event_types=["session.messaged"], fields=[FieldMatcher(path="session_id", op="eq", value=sid)]),
+            sink=SessionWakeSink(event_key=key, session_id=sid),
+        )
+        await world.sp.get_storage(EventSubscription).create(sub)
+        await store.set_cursor(sub.id, await store.max_id())
 
     await _send(world, "ses-c")
-    assert await EventDispatcher(storage_provider=world.sp, event_bus=world.bus).drain_once() == 0
-    assert not [k for k, _ in world.bus.published if k == key]
+    assert await EventDispatcher(storage_provider=world.sp, event_bus=world.bus).drain_once() == 1
+    assert [k for k, _ in world.bus.published if k in keys.values()] == [keys["ses-c"]]
 
 
 async def test_a_paused_session_stays_paused_and_queues_the_message():
@@ -462,7 +472,8 @@ async def test_a_sender_with_no_principal_is_forbidden():
     await seed_session(world, sid="ses-b", turn_no=1)
     with pytest.raises(PeerMessageRefused) as info:
         await _send(world, "ses-b", principal=None)
-    _expect_refusal(info, "forbidden")
+    _expect_refusal(info, "forbidden", REFUSE_NO_PRINCIPAL)
+    assert "higher rank" not in info.value.message, "an unrankable sender was never compared with the target, so it was not found lower"
     await _assert_nothing_stored(world)
 
 
@@ -558,9 +569,22 @@ async def test_a_refusal_for_the_rate_names_when_to_retry():
     assert info.value.message.endswith("retry in 30 seconds")
 
 
-async def test_concurrent_sends_of_one_sender_cannot_both_pass_the_limit():
-    """The check and the record are one critical section per sender. Without it every send reads the ledger before any of them has written."""
+def _slow_ledger_write(monkeypatch) -> None:
+    """Make the ledger write give up control before it writes, as a database call does. In-memory storage never suspends, so a write that had been
+    moved out of the sender's lock would otherwise still finish before the next send looked."""
+    real = peer_messages.record_peer_message
+
+    async def record(*args, **kwargs):
+        await asyncio.sleep(0)
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(peer_messages, "record_peer_message", record)
+
+
+async def test_concurrent_sends_of_one_sender_cannot_both_pass_the_limit(monkeypatch):
+    """The check, the delivery and the record are one critical section per sender. Without it every send reads the ledger before any of them has written."""
     world = await _world()
+    _slow_ledger_write(monkeypatch)
     await seed_session(world, sid="ses-b", turn_no=1)
     target_slot = slot(world, "ses-b")
 
@@ -601,6 +625,7 @@ async def test_the_rate_check_and_the_ledger_write_of_one_sender_never_overlap(m
     async def record(*args, **kwargs):
         nonlocal open_sections
         try:
+            await asyncio.sleep(0)                     # the write gives up control first, as a database call does: outside the lock another send would run now
             return await real_record(*args, **kwargs)
         finally:
             open_sections -= 1
@@ -636,6 +661,113 @@ async def test_two_senders_do_not_wait_for_each_other(monkeypatch):
     assert other.delivery == "woken" and not first.done()
     release.set()
     assert (await first).delivery == "woken"
+
+
+# ---- the row the delivery is about to look at -------------------------------------------------------------------------------------
+
+
+def _between_the_check_and_the_delivery(monkeypatch, action) -> None:
+    """Run the async ``action`` where another sender's message or a worker's write can land: after this send holds its lock and passed its rate check,
+    before the delivery. The guards' first read of the target is already behind it."""
+    real = peer_messages.check_peer_rate
+
+    async def check(*args, **kwargs):
+        out = await real(*args, **kwargs)
+        await action()
+        return out
+
+    monkeypatch.setattr(peer_messages, "check_peer_rate", check)
+
+
+async def test_a_target_that_got_a_turn_while_the_send_waited_is_queued_and_steered(monkeypatch):
+    """Another sender's message started the target's turn after this send first read it: this one is queued behind the turn, and the result, the note
+    and the events say so (read from the first copy they would call the target idle and emit no ``session.steered``)."""
+    world = await _world()
+    await seed_session(world, sid="ses-b", turn_no=1)
+
+    async def another_sender_woke_it():
+        row = await world.sessions.get("ses-b")
+        row.status, row.turn_status = SessionStatus.RUNNING, "running"
+        await world.sessions.update(row)
+
+    _between_the_check_and_the_delivery(monkeypatch, another_sender_woke_it)
+    result = await _send(world, "ses-b")
+    assert (result.delivery, result.note, result.target_state) == ("queued", NOTE_QUEUED_BUSY, "running")
+    assert len(await _pending(world)) == 1 and world.scheduler.enqueued == []
+    [steered] = await _events(world, "session.steered")
+    assert steered.payload["delivery"] == "queued"
+
+
+async def test_a_target_deleted_while_the_send_waited_is_not_found(monkeypatch):
+    world = await _world()
+    await seed_session(world, sid="ses-b", turn_no=1)
+
+    async def deleted():
+        await world.sessions.delete("ses-b")
+
+    _between_the_check_and_the_delivery(monkeypatch, deleted)
+    with pytest.raises(PeerMessageRefused) as info:
+        await _send(world, "ses-b")
+    _expect_refusal(info, "not-found", REFUSE_NOT_FOUND.format(session_id="ses-b"))
+    await _assert_nothing_stored(world)
+
+
+async def test_an_if_idle_message_sees_a_pause_that_landed_while_it_waited(monkeypatch):
+    world = await _world()
+    await seed_session(world, sid="ses-b", turn_no=1)
+
+    async def paused():
+        row = await world.sessions.get("ses-b")
+        row.status = SessionStatus.PAUSED
+        await world.sessions.update(row)
+
+    _between_the_check_and_the_delivery(monkeypatch, paused)
+    with pytest.raises(PeerMessageRefused) as info:
+        await _send(world, "ses-b", mode="if_idle")
+    _expect_refusal(info, "conflict", REFUSE_BUSY.format(session_id="ses-b", reason="paused"))
+    await _assert_nothing_stored(world)
+
+
+# ---- a delivery is not undone by a ledger that cannot be written ------------------------------------------------------------------
+
+
+async def test_a_ledger_row_that_cannot_be_written_after_the_delivery_does_not_fail_the_send(monkeypatch, caplog):
+    """The message is delivered. Failing the call would make the sender send it again and the target read it twice."""
+    world = await _world()
+    await seed_session(world, sid="ses-b", turn_no=1)
+
+    async def broken(storage_provider, message):
+        raise RuntimeError("the database went away")
+
+    monkeypatch.setattr(peer_messages, "record_peer_message", broken)
+    with caplog.at_level(logging.ERROR, logger="primer.session.peer_messages"):
+        result = await _send(world, "ses-b")
+    assert result.delivery == "woken" and slot(world, "ses-b").appended == [PREFIXED]
+    assert await _ledger(world) == []
+    assert len(await _events(world, "session.messaged")) == 1
+    assert "was delivered but its ledger row was not written" in caplog.text and result.message_id in caplog.text
+
+
+async def test_a_failed_trim_after_the_ledger_write_does_not_fail_the_send(monkeypatch):
+    world = await _world()
+    await seed_session(world, sid="ses-b", turn_no=1)
+    for i in range(PEER_RATE_LIMIT):                   # outside the window, so the send is allowed, and the new row leaves one beyond the newest twenty
+        await peer_messages.record_peer_message(
+            world.sp,
+            PeerMessage(
+                from_session_id="ses-a", from_workspace_id="ws-1", to_session_id="ses-z", to_workspace_id="ws-1", hops=1, delivery="woken",
+                sent_at=NOW - timedelta(minutes=11, seconds=i),
+            ),
+        )
+    ledger = world.sp.get_storage(PeerMessage)
+
+    async def broken_delete(id, *, conn=None):
+        raise RuntimeError("the database went away")
+
+    monkeypatch.setattr(ledger, "delete", broken_delete)
+    result = await _send(world, "ses-b")
+    assert result.delivery == "woken"
+    assert len(await _ledger(world)) == PEER_RATE_LIMIT + 1, "the new row was written; only the trim failed"
 
 
 async def test_the_ledger_is_written_in_utc_whatever_zone_the_clock_was_given_in():
