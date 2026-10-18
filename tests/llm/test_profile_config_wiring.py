@@ -551,6 +551,32 @@ class TestEveryKindAcceptsItsTranslation:
         assert calls[1].kwargs["config"].thinking_config is None
         assert any("thinking mode" in r.getMessage() for r in caplog.records)
 
+    async def test_ollama_retries_once_without_think_on_a_model_that_cannot_think(
+        self, monkeypatch, caplog,
+    ) -> None:
+        """Ollama answers ``think`` on a model without the capability with a
+        400, which the lazily-opened adapter reports as its first event."""
+        from tests.llm.test_ollama import _aiter as _oaiter
+        from tests.llm.test_ollama import _make_response_error
+        from tests.llm.test_ollama import _ok_chunks as _ollama_chunks
+        from tests.llm.test_ollama import _patched_client as _ollama_client
+
+        caplog.set_level(logging.DEBUG, logger="primer.llm._reasoning")
+        client = _ollama_client(monkeypatch)
+
+        async def _refusing():
+            raise _make_response_error(400, '"llama3.2" does not support thinking')
+            yield  # pragma: no cover - makes this an async generator
+
+        client.chat.side_effect = lambda **kw: _refusing() if "think" in kw else _oaiter(_ollama_chunks())
+        llm = OllamaLLM(_ollama())
+        for _ in range(2):
+            knobs = llm.profile_extended(_cfg(ReasoningLevel.HIGH), model="llama3.2")
+            events = [ev async for ev in profile_stream(llm, knobs, model="llama3.2", messages=_HI)]
+            assert any(type(e).__name__ == "TextDelta" for e in events)
+        assert [("think" in c.kwargs) for c in client.chat.call_args_list] == [True, False, False]
+        assert len([r for r in caplog.records if "does not support thinking" in r.getMessage()]) == 1
+
     def test_ollama_sends_think_at_the_top_level(self) -> None:
         from primer.llm.ollama import _build_options_and_kwargs
 
