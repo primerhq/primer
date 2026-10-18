@@ -5504,15 +5504,34 @@ button.nv-trace-line { cursor: pointer; }
   position: absolute;
   top: 0;
   bottom: 0;
-  right: 12px;
-  margin: 0;
+  right: 10px;
+  margin: auto 0;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-6);
+  background: none;
+  color: var(--text-3);
+  cursor: pointer;
 }
+.pk-overlay .modal-h .close:hover,
+.pk-overlay .sheet-h .close:hover { background: var(--bg-hover); color: var(--text); }
+/* the phone's close button is a 44px touch target: the header holds it */
+.pk-overlay .sheet-h { min-height: 52px; }
+.pk-overlay .sheet-h .close { right: 4px; width: var(--tap-min); height: var(--tap-min); }
 .pk-overlay .modal-b,
 .pk-overlay .sheet-b {
   display: flex;
   flex-direction: column;
   gap: 16px;
 }
+/* the body scrolls: its blocks keep their own height instead of shrinking
+   to fit (a table with overflow: hidden would shrink to nothing) */
+.pk-overlay .modal-b > *,
+.pk-overlay .sheet-b > * { flex-shrink: 0; }
 .pk-overlay .modal-b { padding: 18px 20px; }
 .pk-foot {
   display: flex;
@@ -5670,6 +5689,8 @@ button.nv-trace-line { cursor: pointer; }
 .pk-fold-body { margin-top: 10px; }
 .pk-seg {
   display: inline-flex;
+  width: max-content;
+  max-width: 100%;
   gap: 2px;
   padding: 2px;
   border: 1px solid var(--border);

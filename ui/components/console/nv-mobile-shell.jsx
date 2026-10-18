@@ -1138,8 +1138,9 @@ function NV_MobileProfileTheme() {
 // Generic across every entity kind (13+ Platform navs) - rather than a
 // bespoke sheet per kind, this reads the SAME card view model
 // {id, name, sub, badge, status, facts} nv-platform.jsx's own
-// page.card(row, con) already produces for its desktop cards (seam I-8).
-// A status with an onClick is a button: it closes the sheet, then runs. Triggers keep a real action (the fire_now endpoint
+// page.card(row, con) already produces for its desktop cards (seam I-8);
+// a status with an onClick is a button that closes the sheet, then runs.
+// Triggers keep a real action (the fire_now endpoint
 // this phase ports to the console - see sh-api.jsx); everything else's
 // footer is a plain "Edit on desktop" note - no create/edit/delete here.
 function NV_MobileFactSheet(props) {
