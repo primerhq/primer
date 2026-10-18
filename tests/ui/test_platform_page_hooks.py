@@ -142,11 +142,12 @@ def test_a_section_switch_resets_the_filter_the_page_and_the_form_by_remounting_
 
 def test_the_polling_interval_the_leak_journey_waits_out_is_the_one_the_page_uses() -> None:
     """The journey measures one poll interval (``POLL_SECONDS``) and passes only if no further fetch happens inside it. If the page's interval changed and the constant did not, the journey
-    could pass without testing anything."""
+    could pass without testing anything. The page's interval is ``NV_PLAT_POLL_MS`` (a page whose entry says ``poll: false``, the Tools page, has none: Platform revamp Plan 01 Task 11)."""
     journey = (ROOT / "tests" / "ui_e2e" / "test_platform_nav_switch_journey.py").read_text(encoding="utf-8")
     seconds = re.search(r"^POLL_SECONDS = (\d+)$", journey, re.M)
     assert seconds, "the journey's constant is gone"
 
-    poll = re.search(r"pollMs: (\d+), deps: \[nav\]", _body("NV_PlatListPage"))
-    assert poll, "the list page's useResource options changed shape"
-    assert int(poll.group(1)) == int(seconds.group(1)) * 1000
+    interval = re.search(r"^var NV_PLAT_POLL_MS = (\d+);$", PLAT, re.M)
+    assert interval, "the page's poll interval constant is gone"
+    assert "{ pollMs: page.poll === false ? 0 : NV_PLAT_POLL_MS, deps: [nav] }" in _body("NV_PlatListPage"), "the list page's useResource options changed shape"
+    assert int(interval.group(1)) == int(seconds.group(1)) * 1000
