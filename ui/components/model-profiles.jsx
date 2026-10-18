@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Modal, StatusPill */
+/* global React, Icon, Btn, Modal, StatusPill, Banner, PK_FormOverlay, PK_Field, PK_Grid, PK_Fold, PK_Segmented, PK_CheckTable */
 // Model profiles: one (provider, model) pair plus its API-level config --
 // OR (01a067c4) an ORDERED pool of other "single" profiles with a routing/
 // failover policy, kind="aggregated". The two kinds share this module and
@@ -13,35 +13,208 @@
 // variant of the same model, say. That is why the list groups by provider
 // and shows model_name as a secondary column rather than as the identity:
 // two rows sharing a model_name is the normal case here, not a duplicate.
+//
+// Platform revamp Plan 03: the profile forms are overlays on the platform kit
+// (ui/components/shared/platform-kit.jsx). MP_ProfileModal, which the Platform
+// page's NV_ProfileModalHost mounts, is a dispatcher with no state: a new
+// profile or an aggregated one is MP_AggregateOverlay, any other is
+// MP_SingleProfileOverlay. Everything that is not drawing (the order of the
+// members, the smallest window, the bodies that go on the wire, which field a
+// refusal belongs under) is a plain function in the helper block below, which
+// tests/ui/test_llm_profiles_helpers.py evaluates as written.
 
 const MP_REASONING_LEVELS = ["off", "minimal", "low", "medium", "high"];
 
-// Relocated from provider-aggregated-editor.jsx (deleted, 01a067c4): the
-// aggregated concept moved off LLMProvider onto ModelProfile, so the
-// routing/failover switches it owned move here with it. Renamed PC_ -> MP_
-// for the same reason -- it was never used anywhere else (confirmed via
-// grep before the move), so there is no second caller to keep the old name
-// for.
-function MP_Toggle({ checked, onChange, label, help, disabled, testid }) {
-  return (
-    <label style={{ display: "flex", alignItems: "flex-start", gap: 10,
-      cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.5 : 1 }}>
-      <button type="button" role="switch" aria-checked={checked} disabled={disabled}
-        data-testid={testid} onClick={() => !disabled && onChange(!checked)}
-        style={{ flex: "0 0 auto", width: 34, height: 20, borderRadius: 999,
-          border: "1px solid var(--border)", padding: 0, marginTop: 1,
-          background: checked ? "var(--accent)" : "var(--bg-2)", position: "relative",
-          cursor: disabled ? "default" : "pointer", transition: "background 0.12s ease" }}>
-        <span style={{ position: "absolute", top: 1, left: checked ? 15 : 1, width: 16,
-          height: 16, borderRadius: "50%", background: checked ? "var(--accent-fg)" : "var(--text-3)",
-          transition: "left 0.12s ease" }} />
-      </button>
-      <span style={{ fontSize: 12.5, lineHeight: 1.4 }}>
-        {label}{help && <span className="muted"> - {help}</span>}
-      </span>
-    </label>
-  );
+// ---- MP helpers: plain JS, no JSX (tests/ui/test_llm_profiles_helpers.py evaluates this block) ----
+// Everything the profile forms decide that is not drawing: plain functions of their arguments, `function` declarations and `var` constants, so each is a global in the
+// console bundle and in the bare V8 context where the tests evaluate this block as written. No JSX and no hook in it.
+
+// The routing choices of an aggregated profile. The values are the model's enum values and the defaults are the model's own (primer/model/model_profile.py): failover_on
+// defaults to the WIDER class, transient_and_config. The labels and the helper texts are design 7.2's.
+var MP_AGGREGATE_DEFAULTS = { strategy: "sequential", failover_point: "before_first_token", failover_on: "transient_and_config" };
+var MP_ROUTING_OPTIONS = [
+  { value: "sequential", label: "Sequential fallback" },
+  { value: "round_robin", label: "Round robin" },
+];
+var MP_ROUTING_HELP = {
+  sequential: "Always try profile 1 first; if it answers 429, a 5xx or times out, move to the next.",
+  round_robin: "Rotate which profile goes first on each call.",
+};
+var MP_FAILOVER_POINT_OPTIONS = [
+  { value: "before_first_token", label: "Before the first token" },
+  { value: "mid_stream", label: "Also mid-stream" },
+];
+var MP_FAILOVER_POINT_HELP = "Failing over mid-stream can repeat text the user has already seen.";
+var MP_FAILOVER_ON_OPTIONS = [
+  { value: "transient", label: "Transient errors" },
+  { value: "transient_and_config", label: "Also auth and config errors" },
+];
+var MP_FAILOVER_ON_HELP = "Transient errors are 429, 5xx, timeouts and network failures.";
+
+// "262,144". The grouping is a pattern, never the locale's, so the console says the same thing on every machine. "" unless n is a positive integer.
+function MP_fmtTokens(n) {
+  if (typeof n !== "number" || !(n > 0) || n % 1 !== 0 || n > 9007199254740991) return "";
+  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
+
+function MP_isSingle(row) {
+  return !(row && row.kind === "aggregated");
+}
+
+// A row a harness owns: the server refuses its PUT and DELETE (409), so the console offers neither.
+function MP_isManaged(row) {
+  return !!(row && row.harness_id);
+}
+
+// The context window of a listed profile, or null when it has none a person can read (an aggregated row stores none).
+function MP_windowOf(row) {
+  var n = row ? row.context_length : null;
+  return typeof n === "number" && n > 0 && n % 1 === 0 ? n : null;
+}
+
+// The rows by id. No prototype: a profile may be called "constructor".
+function MP_byId(rows) {
+  var map = Object.create(null);
+  (rows || []).forEach(function (row) {
+    if (row && row.id != null) map[row.id] = row;
+  });
+  return map;
+}
+
+// The rows of the members table. The ticked ones come first, in MEMBER ORDER, because that order is the failover chain and the number beside each is its place in it. The rest
+// follow by id. Only single profiles are candidates (nesting is refused), and the aggregate being edited is not its own. A member the list does not hold (the list is capped at
+// 200 profiles) stays a ticked row with no window, so a save never drops it.
+function MP_memberRows(rows, members, selfId) {
+  var byId = MP_byId(rows);
+  var seen = Object.create(null);
+  var ticked = [];
+  (members || []).forEach(function (id) {
+    if (seen[id]) return;
+    seen[id] = true;
+    ticked.push({ id: id, checked: true, order: ticked.length + 1, window: MP_windowOf(byId[id]) });
+  });
+  var rest = [];
+  (rows || []).forEach(function (row) {
+    if (!row || row.id == null || seen[row.id] || row.id === selfId || !MP_isSingle(row)) return;
+    seen[row.id] = true;
+    rest.push({ id: row.id, checked: false, order: null, window: MP_windowOf(row) });
+  });
+  rest.sort(function (a, b) {
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+  return ticked.concat(rest);
+}
+
+// Ticking appends and unticking removes; the others keep their places. None of the three below changes its input.
+function MP_toggleMember(members, id) {
+  var list = (members || []).slice();
+  var at = list.indexOf(id);
+  if (at >= 0) list.splice(at, 1);
+  else list.push(id);
+  return list;
+}
+
+// Select all appends every candidate that is not ticked yet, in the order the table lists them; clearing it unticks every row.
+function MP_toggleAllMembers(members, rows, selfId, checked) {
+  if (!checked) return [];
+  var list = (members || []).slice();
+  MP_memberRows(rows, list, selfId).forEach(function (row) {
+    if (!row.checked) list.push(row.id);
+  });
+  return list;
+}
+
+// Swap a member with its neighbour (delta -1 up, 1 down); at an end, or for an id that is not a member, nothing moves.
+function MP_moveMember(members, id, delta) {
+  var list = (members || []).slice();
+  var from = list.indexOf(id);
+  var to = from + delta;
+  if (from < 0 || to < 0 || to >= list.length) return list;
+  var held = list[from];
+  list[from] = list[to];
+  list[to] = held;
+  return list;
+}
+
+// The aggregate's context window is the smallest of its members' windows. The server computes the same minimum when it resolves the profile and serves it on no route, so the
+// console computes it from the list it holds. null when there is no member or when one has no window the list shows: never a guess.
+function MP_aggregateWindow(members, rows) {
+  var list = members || [];
+  if (!list.length) return null;
+  var byId = MP_byId(rows);
+  var smallest = null;
+  for (var i = 0; i < list.length; i++) {
+    var size = MP_windowOf(byId[list[i]]);
+    if (size === null) return null;
+    if (smallest === null || size < smallest) smallest = size;
+  }
+  return smallest;
+}
+
+function MP_windowText(members, rows) {
+  if (!(members || []).length) return "Pick the profiles first.";
+  var size = MP_aggregateWindow(members, rows);
+  if (size === null) return "Unknown: a picked profile is not loaded.";
+  return MP_fmtTokens(size) + " (the smallest of the picked profiles)";
+}
+
+// The server has no id pattern, but an id with a "/" or a space cannot be addressed (GET and DELETE answer 404). The character set is the one the console builds profile
+// ids from (PC_profileIdFor in the Register overlay): a letter or digit first, then letters, digits, dots, dashes and underscores.
+var MP_NAME_RULE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+function MP_nameError(name) {
+  var text = String(name == null ? "" : name).trim();
+  if (!text) return "Enter a name.";
+  if (!MP_NAME_RULE.test(text)) return "Use letters, digits, dots, dashes and underscores, and start with a letter or a digit.";
+  return null;
+}
+
+// The body of a create. The model requires a description and the design (7.2) has no such field, so the console writes one from the members.
+function MP_aggregateBody(draft) {
+  var members = (draft.members || []).slice();
+  return {
+    id: String(draft.name == null ? "" : draft.name).trim(),
+    description: "Aggregate of " + members.join(", "),
+    kind: "aggregated",
+    members: members,
+    strategy: draft.strategy,
+    failover_point: draft.failover_point,
+    failover_on: draft.failover_on,
+  };
+}
+
+// The body of an edit: the stored row with the form's fields laid over it. PUT is a full replace that ignores unknown keys, so a body built from only what a form draws resets
+// every field it leaves out (a profile's `config`, an aggregate's description). The list route adds agent_count and graph_node_count, and the page may annotate a row with a
+// key that starts with "_": none of those is the profile's, so none is sent. `existing` is not changed.
+function MP_editBody(existing, edits) {
+  var body = {};
+  Object.keys(existing || {}).forEach(function (key) {
+    if (key === "agent_count" || key === "graph_node_count" || key.charAt(0) === "_") return;
+    body[key] = existing[key];
+  });
+  Object.keys(edits || {}).forEach(function (key) {
+    body[key] = edits[key];
+  });
+  return body;
+}
+
+// Where a refused save is told. `fieldMap` maps a server field to the form's own field name. A refusal about a mapped field goes under it, in the server's own words. A 409
+// goes under the name when the form has one (`id` is in the map only on a create: a 409 on an edit is about the row, not the name). Anything else is a line above the footer.
+function MP_refusalErrors(err, fieldMap) {
+  var map = fieldMap || {};
+  var has = Object.prototype.hasOwnProperty;
+  var refusal = window.primerApi.readRefusal(err);
+  var fields = {};
+  if (refusal.field && has.call(map, refusal.field)) {
+    fields[map[refusal.field]] = refusal.sentence || refusal.message;
+    return { fields: fields, form: null };
+  }
+  if (err && err.status === 409 && has.call(map, "id")) {
+    fields[map.id] = refusal.message;
+    return { fields: fields, form: null };
+  }
+  return { fields: fields, form: refusal.message };
+}
+// ---- end MP helpers ----
 
 function MP_ReasoningChip({ level }) {
   if (!level) {
@@ -256,54 +429,52 @@ function MP_ProfilesGrid({ profiles, onOpen, onDeleted, providerDown }) {
   );
 }
 
-// Create/edit modal. Doubles as the edit form per the console convention:
-// a non-null `existing` locks the id and switches POST to PUT-replace.
-//
-// 01a067c4: gained a Single/Aggregated kind toggle -- but only when
-// `allProfiles` is supplied. The per-provider PC_ProfilesPanel (provider-
-// catalog.jsx) mounts this same component WITHOUT that prop, exactly as it
-// always has (its own call site is untouched by this change, per the
-// approved IA ruling: that scoped panel "stays exactly as-is"), so it
-// degrades to its old single-kind-only behaviour automatically -- no
-// separate code path needed. Only MP_AllProfilesPanel (below) passes
-// allProfiles, which is where an aggregated profile can actually be
-// created or edited.
-function MP_ProfileModal({ open, onClose, onSaved, existing, providers, prefill, allProfiles }) {
+// Create/edit modal. MP_ProfileModal is the component the Platform page's NV_ProfileModalHost mounts, and it is a dispatcher with no state and no hook: it decides which
+// overlay a profile belongs to and mounts that one. Nothing to draw (open is false) draws nothing. A new profile with no prefill, and an aggregated one, is the aggregated
+// overlay (create / edit): "+ Aggregate" is the page's one create (design 7.1), and a single profile comes from the Register provider overlay's import. Every other profile
+// (a single one to view or edit, or the legacy single create the Providers page still reaches with a prefill) is the single-profile overlay. The overlay is keyed on the
+// profile's id, so a different profile mounted in its place starts from its own fields and never inherits the first one's draft. `allProfiles` is ignored: the aggregated
+// overlay fetches the list it needs itself.
+function MP_ProfileModal(props) {
+  if (!props.open) return null;
+  const existing = props.existing || null;
+  const single = existing ? MP_isSingle(existing) : !!props.prefill;
+  const key = existing ? existing.id : "new";
+  if (single) {
+    return (
+      <MP_SingleProfileOverlay key={key} existing={existing} providers={props.providers || []}
+        prefill={props.prefill || null} onClose={props.onClose} onSaved={props.onSaved} />
+    );
+  }
+  return <MP_AggregateOverlay key={key} existing={existing} onClose={props.onClose} onSaved={props.onSaved} />;
+}
+
+// The single profile's overlay (view, edit, and the legacy create the Providers page still opens with a prefill). Doubles as the edit form per the console convention: a
+// non-null `existing` locks the id and switches POST to PUT-replace.
+function MP_SingleProfileOverlay({ onClose, onSaved, existing, providers, prefill }) {
   const { useMutation, useResource, apiFetch } = window.primerApi;
   const isEdit = existing != null;
-  const supportsAggregated = Array.isArray(allProfiles);
-  const [kind, setKind] = React.useState("single");
   const [id, setId] = React.useState("");
   const [description, setDescription] = React.useState("");
   const [providerId, setProviderId] = React.useState("");
   const [modelName, setModelName] = React.useState("");
   const [contextLength, setContextLength] = React.useState("");
   const [reasoning, setReasoning] = React.useState("");
-  const [members, setMembers] = React.useState([]);
-  const [strategy, setStrategy] = React.useState("sequential");
-  const [failoverPoint, setFailoverPoint] = React.useState("before_first_token");
-  const [failoverOn, setFailoverOn] = React.useState("transient_and_config");
   const [fieldErrors, setFieldErrors] = React.useState({});
 
   React.useEffect(() => {
-    if (!open) return;
     setFieldErrors({});
     // `prefill` seeds a CREATE (from a discovery row on the provider page);
     // `existing` is an EDIT and locks the id. Neither is the other: a
     // prefilled form is still a new row the operator may rename.
     const seed = existing || prefill || null;
-    setKind((seed && seed.kind) || "single");
     setId(seed?.id || "");
     setDescription(seed?.description || "");
     setProviderId(seed?.provider_id || (providers[0]?.id || ""));
     setModelName(seed?.model_name || "");
     setContextLength(String(seed?.context_length || 128000));
     setReasoning(seed?.config?.reasoning || "");
-    setMembers((seed && seed.members) || []);
-    setStrategy((seed && seed.strategy) || "sequential");
-    setFailoverPoint((seed && seed.failover_point) || "before_first_token");
-    setFailoverOn((seed && seed.failover_on) || "transient_and_config");
-  }, [open, existing, prefill, providers]);
+  }, [existing, prefill, providers]);
 
   // Item 2: the two-column picker's right side needs to know whether the
   // SELECTED provider's kind is discoverable - same /_types source and
@@ -327,24 +498,6 @@ function MP_ProfileModal({ open, onClose, onSaved, existing, providers, prefill,
   );
   const discoveredModels = (discoverable && discovered.data && discovered.data.models) || [];
 
-  // Candidate members: SINGLE-kind profiles only (CRUD-time validation on
-  // the router rejects a non-single member; offering only valid choices
-  // here is a UX nicety, not the enforcement point), excluding the row
-  // being edited (no self-reference) and whichever are already picked
-  // (order is the failover chain -- a duplicate would be meaningless, and
-  // the backend rejects it outright rather than deduping).
-  const memberCandidates = (allProfiles || []).filter((p) =>
-    p.kind !== "aggregated" && p.id !== id && !members.includes(p.id));
-  const addMember = (pid) => { if (pid) setMembers([...members, pid]); };
-  const moveMember = (i, d) => {
-    const j = i + d;
-    if (j < 0 || j >= members.length) return;
-    const next = members.slice();
-    [next[i], next[j]] = [next[j], next[i]];
-    setMembers(next);
-  };
-  const removeMember = (i) => setMembers(members.filter((_, j) => j !== i));
-
   const save = useMutation(
     (body) => (isEdit
       ? apiFetch("PUT", `/model_profiles/${encodeURIComponent(existing.id)}`, body)
@@ -354,24 +507,14 @@ function MP_ProfileModal({ open, onClose, onSaved, existing, providers, prefill,
 
   const submit = async () => {
     setFieldErrors({});
-    const body = kind === "aggregated"
-      ? {
-          id: id.trim(),
-          description: description.trim(),
-          kind: "aggregated",
-          members,
-          strategy,
-          failover_point: failoverPoint,
-          failover_on: failoverOn,
-        }
-      : {
-          id: id.trim(),
-          description: description.trim(),
-          provider_id: providerId,
-          model_name: modelName.trim(),
-          context_length: Number(contextLength) || 0,
-          config: reasoning ? { reasoning } : {},
-        };
+    const body = {
+      id: id.trim(),
+      description: description.trim(),
+      provider_id: providerId,
+      model_name: modelName.trim(),
+      context_length: Number(contextLength) || 0,
+      config: reasoning ? { reasoning } : {},
+    };
     try {
       await save.mutate(body);
       onSaved && onSaved();
@@ -381,11 +524,9 @@ function MP_ProfileModal({ open, onClose, onSaved, existing, providers, prefill,
       (err.fieldErrors || []).forEach((fieldErr) => {
         fe[(fieldErr.loc || []).join(".")] = fieldErr.msg;
       });
-      // The provider-exists / aggregation-validity guards return a 422
-      // with a `field` key rather than a pydantic loc list, so surface it
-      // on the right control (single: provider_id/model_name; aggregated:
-      // members - model_profiles.py's _aggregation_error always names
-      // "members" as the field, whichever of the five checks fired).
+      // The provider-exists guard returns a 422 with a `field` key rather
+      // than a pydantic loc list, so surface it on the right control
+      // (provider_id / model_name).
       const refused = window.primerApi.readRefusal(err);
       if (refused.field && refused.sentence) {
         fe[`body.${refused.field}`] = refused.sentence;
@@ -395,11 +536,8 @@ function MP_ProfileModal({ open, onClose, onSaved, existing, providers, prefill,
     }
   };
 
-  if (!open) return null;
   const errFor = (name) => fieldErrors[`body.${name}`];
-  const canSave = kind === "aggregated"
-    ? (id.trim() && members.length >= 2)
-    : (id.trim() && providerId && modelName.trim());
+  const canSave = id.trim() && providerId && modelName.trim();
   return (
     <Modal
       onClose={onClose}
@@ -437,80 +575,6 @@ function MP_ProfileModal({ open, onClose, onSaved, existing, providers, prefill,
         )}
       </div>
 
-      {supportsAggregated && (
-        <div className="field">
-          <label>Kind</label>
-          {/* Segmented control, same .chip-group pattern the reasoning
-              picker below already uses -- not a third control shape.
-              Locked on edit: converting an existing row's kind in place
-              is a real, distinct action (a single becoming an aggregate
-              member pool, or vice versa) that this modal does not model
-              as an edit -- delete and recreate under the intended kind. */}
-          <div className="chip-group" data-testid="profile-kind-segment">
-            <span className={"chip" + (kind === "single" ? " active" : "")}
-              data-testid="profile-kind-single"
-              onClick={() => !isEdit && setKind("single")}>Single</span>
-            <span className={"chip" + (kind === "aggregated" ? " active" : "")}
-              data-testid="profile-kind-aggregated"
-              onClick={() => !isEdit && setKind("aggregated")}>Aggregated</span>
-          </div>
-        </div>
-      )}
-
-      {kind === "aggregated" ? (
-        <div className="field" data-testid="profile-aggregated-fields">
-          <label className="field-label">
-            Members (ordered; failover walks top to bottom)
-          </label>
-          {members.map((mid, i) => (
-            <div key={mid} style={{ display: "flex", gap: 6, marginTop: 4, alignItems: "center" }}>
-              <span className="mono muted">#{i + 1}</span>
-              <span className="mono text-sm" style={{ flex: 1 }}>{mid}</span>
-              <Btn size="sm" kind="ghost" onClick={() => moveMember(i, -1)} title="Up">Up</Btn>
-              <Btn size="sm" kind="ghost" onClick={() => moveMember(i, 1)} title="Down">Down</Btn>
-              <Btn size="sm" kind="ghost" data-testid={`profile-member-remove-${i}`}
-                onClick={() => removeMember(i)} title="Remove">Remove</Btn>
-            </div>
-          ))}
-          <div style={{ marginTop: 6, display: "flex", gap: 6 }}>
-            <select className="select" data-testid="profile-member-add-select"
-              value="" onChange={(e) => addMember(e.target.value)}>
-              <option value="">add a member profile...</option>
-              {memberCandidates.map((p) => (
-                <option key={p.id} value={p.id}>{p.id}</option>
-              ))}
-            </select>
-          </div>
-          {errFor("members") && (
-            <div className="field-help warn">{errFor("members")}</div>
-          )}
-          {members.length < 2 && (
-            <div className="field-help">
-              An aggregation needs at least two members.
-            </div>
-          )}
-
-          <div style={{ marginTop: 14, display: "grid", gap: 8 }}>
-            <MP_Toggle checked={strategy === "round_robin"}
-              testid="profile-strategy-toggle"
-              onChange={(on) => setStrategy(on ? "round_robin" : "sequential")}
-              label="Round-robin" help="rotate the starting member per call (off = sequential)" />
-            <MP_Toggle checked={failoverPoint === "mid_stream"}
-              testid="profile-failover-point-toggle"
-              onChange={(on) => setFailoverPoint(on ? "mid_stream" : "before_first_token")}
-              label="Mid-stream failover" help="may duplicate already-shown tokens (off = before first token)" />
-            <div className="field">
-              <label className="field-label">Failover on</label>
-              <select className="select" data-testid="profile-failover-on-select"
-                value={failoverOn} onChange={(e) => setFailoverOn(e.target.value)}
-                style={{ width: "100%" }}>
-                <option value="transient">transient</option>
-                <option value="transient_and_config">transient_and_config</option>
-              </select>
-            </div>
-          </div>
-        </div>
-      ) : (
         <>
           {/* Item 2: two-column picker - left Provider (rows, selected
               state), right Model ("probed live" when the selected provider's
@@ -609,7 +673,6 @@ function MP_ProfileModal({ open, onClose, onSaved, existing, providers, prefill,
             </div>
           </div>
         </>
-      )}
       {/* Item 2: footnote verbatim from the vision doc. */}
       <div className="field-help" data-testid="profile-modal-footnote">
         The unit agents bind to — overridable at session create, binding
@@ -617,6 +680,199 @@ function MP_ProfileModal({ open, onClose, onSaved, existing, providers, prefill,
         references it.
       </div>
     </Modal>
+  );
+}
+
+// A harness-managed aggregate is shown, not edited: its fields sit in a disabled fieldset, so every native control under it (the kit's checkboxes and segmented buttons too) is
+// read-only without the kit growing a prop for it. The fieldset takes over the column layout of the overlay body it sits in.
+const MP_READONLY_FIELDSET = { display: "flex", flexDirection: "column", gap: 16, minWidth: 0, margin: 0, padding: 0, border: "none" };
+
+// The aggregated profile's overlay (design 7.2): create with no `existing`, view and edit with one. Name, the members table with the order (the failover chain), the routing
+// switch, the folded Advanced choices and the smallest context window of the picked members. The model requires a description the design has no field for: a create writes
+// "Aggregate of <ids>", an edit shows the stored one. `existing` is the row the page listed; an edit sends it back whole with the form's fields laid over it (MP_editBody),
+// because PUT is a full replace and the row holds fields this form does not draw (`config`).
+function MP_AggregateOverlay({ existing, onClose, onSaved }) {
+  const isEdit = existing != null;
+  const managed = MP_isManaged(existing);
+  const selfId = isEdit ? existing.id : null;
+  const [name, setName] = React.useState("");
+  const [description, setDescription] = React.useState(() => (isEdit ? existing.description || "" : ""));
+  const [members, setMembers] = React.useState(() => (isEdit ? (existing.members || []).slice() : []));
+  const [strategy, setStrategy] = React.useState(() => (isEdit && existing.strategy) || MP_AGGREGATE_DEFAULTS.strategy);
+  const [failoverPoint, setFailoverPoint] = React.useState(() => (isEdit && existing.failover_point) || MP_AGGREGATE_DEFAULTS.failover_point);
+  const [failoverOn, setFailoverOn] = React.useState(() => (isEdit && existing.failover_on) || MP_AGGREGATE_DEFAULTS.failover_on);
+  const [saving, setSaving] = React.useState(false);
+  const [refused, setRefused] = React.useState({ fields: {}, form: null });
+  const list = window.primerApi.useResource(
+    "mp-aggregate:profiles",
+    (signal) => window.primerApi.apiFetch("GET", "/model_profiles?limit=200", null, { signal }),
+    { pollMs: null },
+  );
+
+  const rows = (list.data && list.data.items) || [];
+  const loaded = !!list.data;
+  const loading = !loaded && !list.error;
+  const loadError = !loaded && list.error ? window.primerApi.readRefusal(list.error).message : null;
+  const tooFew = loaded && rows.filter(MP_isSingle).length < 2;
+
+  const shownName = isEdit ? existing.id : name;
+  const nameError = !isEdit && name.trim() ? MP_nameError(name) : null;
+  const membersRule = members.length === 1 ? "Pick at least two profiles." : null;
+  const formReady = !managed && (isEdit ? description.trim() !== "" : MP_nameError(name) === null) && members.length >= 2;
+
+  // A complaint about a field is about what was in it: editing the field takes the complaint away.
+  const forget = (field) => setRefused((r) => {
+    if (!r.fields[field]) return r;
+    const fields = Object.assign({}, r.fields);
+    delete fields[field];
+    return { fields, form: r.form };
+  });
+  const changeMembers = (next) => { setMembers(next); forget("members"); };
+  const memberRows = MP_memberRows(rows, members, selfId);
+
+  const submit = async () => {
+    if (saving || !formReady) return;
+    setSaving(true);
+    setRefused({ fields: {}, form: null });
+    const api = window.primerApi;
+    const routing = { strategy, failover_point: failoverPoint, failover_on: failoverOn };
+    let row;
+    try {
+      row = isEdit
+        ? await api.apiFetch("PUT", "/model_profiles/" + encodeURIComponent(existing.id), MP_editBody(existing, Object.assign({ description, members }, routing)))
+        : await api.apiFetch("POST", "/model_profiles", MP_aggregateBody(Object.assign({ name, members }, routing)));
+    } catch (err) {
+      setRefused(MP_refusalErrors(err, isEdit ? { members: "members", description: "description" } : { id: "name", members: "members" }));
+      setSaving(false);
+      return;
+    }
+    setSaving(false);
+    const id = isEdit ? existing.id : name.trim();
+    api.toastPush({ kind: "success", text: isEdit ? "Saved " + id : "Created aggregated profile " + id });
+    if (onSaved) onSaved(row);
+    onClose();
+  };
+
+  const fields = (
+    <>
+      <PK_Field label="Name" error={nameError || refused.fields.name || undefined}>
+        <input value={shownName} readOnly={isEdit} autoFocus={!isEdit} autoComplete="off" spellCheck={false}
+          data-testid="mp-aggregate-name"
+          onChange={(e) => { setName(e.target.value); forget("name"); }} />
+      </PK_Field>
+      {isEdit ? (
+        <PK_Field label="Description" error={description.trim() ? refused.fields.description || undefined : "Enter a description."}>
+          <input value={description} readOnly={managed} data-testid="mp-aggregate-description"
+            onChange={(e) => { setDescription(e.target.value); forget("description"); }} />
+        </PK_Field>
+      ) : null}
+      <PK_Field label="Members" help="Tick two or more. The order is the fallback order, or the rotation order for Round robin."
+        error={membersRule || refused.fields.members || undefined}>
+        <PK_CheckTable testid="mp-aggregate-members" extraLabel="Context window and order"
+          rows={memberRows.map((r) => ({
+            key: r.id,
+            label: r.id,
+            checked: r.checked,
+            disabled: managed,
+            extra: (
+              <MP_MemberExtra id={r.id} tokens={r.window} order={r.order} movable={!managed}
+                onUp={r.order > 1 ? () => changeMembers(MP_moveMember(members, r.id, -1)) : null}
+                onDown={r.order && r.order < members.length ? () => changeMembers(MP_moveMember(members, r.id, 1)) : null} />
+            ),
+          }))}
+          onToggle={(key) => changeMembers(MP_toggleMember(members, key))}
+          onToggleAll={(checked) => changeMembers(MP_toggleAllMembers(members, rows, selfId, checked))} />
+        {loading ? <div className="field-help" data-testid="mp-aggregate-loading">Loading the profiles</div> : null}
+        {loadError ? (
+          <div className="field-help" role="alert" data-testid="mp-aggregate-load-error" style={{ color: "var(--red)" }}>
+            {loadError}{" "}
+            <Btn kind="ghost" size="sm" data-testid="mp-aggregate-load-retry" onClick={() => list.refetch()}>Try again</Btn>
+          </div>
+        ) : null}
+        {tooFew ? (
+          <div className="field-help" data-testid="mp-aggregate-too-few">
+            Aggregating needs at least two LLM profiles. Register an LLM provider and import its models first.
+          </div>
+        ) : null}
+      </PK_Field>
+      <PK_Field label="Routing" help={MP_ROUTING_HELP[strategy]}>
+        <PK_Segmented testid="mp-aggregate-routing" ariaLabel="Routing" options={MP_ROUTING_OPTIONS} value={strategy}
+          onChange={(v) => setStrategy(v)} />
+      </PK_Field>
+      <PK_Fold label="Advanced" testid="mp-aggregate-advanced" open={managed}>
+        <PK_Grid cols={1}>
+          <PK_Field label="Fail over" help={MP_FAILOVER_POINT_HELP}>
+            <PK_Segmented testid="mp-aggregate-failover-point" ariaLabel="Fail over" options={MP_FAILOVER_POINT_OPTIONS}
+              value={failoverPoint} onChange={(v) => setFailoverPoint(v)} />
+          </PK_Field>
+          <PK_Field label="Fail over on" help={MP_FAILOVER_ON_HELP}>
+            <PK_Segmented testid="mp-aggregate-failover-on" ariaLabel="Fail over on" options={MP_FAILOVER_ON_OPTIONS}
+              value={failoverOn} onChange={(v) => setFailoverOn(v)} />
+          </PK_Field>
+        </PK_Grid>
+      </PK_Fold>
+      <PK_Field label="Context window">
+        <div data-testid="mp-aggregate-window" style={{ minHeight: 34, display: "flex", alignItems: "center", fontSize: 12.5 }}>
+          {MP_windowText(members, rows)}
+        </div>
+      </PK_Field>
+    </>
+  );
+
+  return (
+    <PK_FormOverlay
+      title={managed ? "Aggregated profile" : isEdit ? "Edit aggregated profile" : "New aggregated profile"}
+      testid="mp-aggregate"
+      onClose={onClose}
+      footer={{
+        left: <Btn data-testid="mp-aggregate-cancel" onClick={onClose}>{managed ? "Close" : "Cancel"}</Btn>,
+        right: managed ? null : (
+          <Btn kind="primary" data-testid="mp-aggregate-submit" disabled={!formReady} busy={saving} onClick={submit}>
+            {isEdit ? "Save" : "Create"}
+          </Btn>
+        ),
+      }}
+    >
+      {managed ? (
+        <div data-testid="mp-aggregate-managed">
+          <Banner kind="info" title={"Managed by harness " + existing.harness_id + ". Re-run the harness to change it."} />
+        </div>
+      ) : null}
+      {managed ? <fieldset disabled style={MP_READONLY_FIELDSET}>{fields}</fieldset> : fields}
+      {refused.form ? (
+        <div className="field-help" role="alert" data-testid="mp-aggregate-error" style={{ color: "var(--red)" }}>{refused.form}</div>
+      ) : null}
+    </PK_FormOverlay>
+  );
+}
+
+// The "extra" cell of a row of the members table. PK_CheckTable has ONE extra column and design 7.2 wants two (the context window, the order), so the cell holds both: the
+// profile's window and, for a ticked row, its place in the failover chain with the two buttons that move it. The button that cannot move a row at an end of the chain says
+// aria-disabled and keeps its tab stop (never `disabled`). `tokens` is the window, a number or null; it is not called `window`, which would hide the global in this function.
+// `movable` is false on a row nobody may change (a harness-managed aggregate): the order is told, the buttons are not drawn.
+function MP_MemberExtra({ id, tokens, order, onUp, onDown, movable }) {
+  const arrow = { minWidth: 24, padding: "2px 6px", lineHeight: 1.2 };
+  return (
+    <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+      <span data-testid={"mp-member-window:" + id} style={{ color: "var(--text-3)", fontVariantNumeric: "tabular-nums" }}>
+        {tokens ? MP_fmtTokens(tokens) : "unknown"}
+      </span>
+      {order ? (
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+          <span data-testid={"mp-member-order:" + id} style={{ minWidth: 14, textAlign: "right", fontWeight: 600 }}>{order}</span>
+          {movable ? (
+            <>
+              <button type="button" className="btn btn-ghost btn-sm" style={arrow} data-testid={"mp-member-up:" + id}
+                aria-label={"Move " + id + " up"} aria-disabled={onUp ? undefined : "true"}
+                onClick={() => { if (onUp) onUp(); }}>↑</button>
+              <button type="button" className="btn btn-ghost btn-sm" style={arrow} data-testid={"mp-member-down:" + id}
+                aria-label={"Move " + id + " down"} aria-disabled={onDown ? undefined : "true"}
+                onClick={() => { if (onDown) onDown(); }}>↓</button>
+            </>
+          ) : null}
+        </span>
+      ) : null}
+    </span>
   );
 }
 
@@ -659,7 +915,7 @@ function MP_AllProfilesPanel({ pushToast }) {
         onOpen={(row) => setEditing(row)}
         onDeleted={() => rows.refetch()}
       />
-      <Btn icon="plus" kind="ghost" onClick={() => setOpen(true)}>New profile</Btn>
+      <Btn kind="ghost" onClick={() => setOpen(true)}>+ Aggregate</Btn>
       {(open || editing) && (
         <MP_ProfileModal
           open
@@ -675,6 +931,7 @@ function MP_AllProfilesPanel({ pushToast }) {
 }
 
 window.MP_ProfileModal = MP_ProfileModal;
+window.MP_AggregateOverlay = MP_AggregateOverlay;
 window.MP_ProfileCard = MP_ProfileCard;
 window.MP_ProfilesGrid = MP_ProfilesGrid;
 window.MP_AllProfilesPanel = MP_AllProfilesPanel;

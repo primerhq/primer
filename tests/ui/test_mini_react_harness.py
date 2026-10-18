@@ -311,3 +311,37 @@ def test_the_real_form_field_runs_on_the_bare_harness(field) -> None:
 def test_the_real_form_field_still_throws_for_an_object_child(field) -> None:
     with pytest.raises(Exception, match="Objects are not valid as a React child"):
         field.eval('MR.mount(Host, { object: true, field: { label: "x" } });')
+
+
+# ---------------------------------------------------------------------------
+# MR.findProp
+# ---------------------------------------------------------------------------
+
+_PROP_CODE = r"""
+var h = React.createElement;
+function Table(props) { return h("div", { "data-testid": props.testid }, "table"); }
+function Page() { return h("section", null, h(Table, { testid: "t1", rows: [1] }), h(Table, { testid: "t2", rows: [2, 3] }), h("em", { title: "t1" })); }
+"""
+
+
+@pytest.fixture
+def props():
+    c = mini_react_context(_PROP_CODE)
+    try:
+        c.eval("MR.mount(Page, {})")
+        yield c
+    finally:
+        c.close()
+
+
+def test_find_prop_reaches_the_component_that_was_handed_the_prop(props) -> None:
+    """A kit component takes its test id as the ``testid`` prop, so ``find`` (which reads ``data-testid``) lands on the host it draws; ``findProp`` lands on the component and its other props."""
+    assert _json(props, 'MR.findProp("testid", "t2").props.rows') == [2, 3]
+    assert props.eval('MR.findProp("testid", "t2").type === Table')
+    assert props.eval('MR.find("t2").type') == "div", "find reaches the host the component drew"
+
+
+def test_find_prop_answers_the_first_match_in_render_order_and_null_for_none(props) -> None:
+    assert _json(props, 'MR.findProp("title", "t1").type') == "em"
+    assert props.eval('MR.findProp("testid", "nope") === null')
+    assert props.eval('MR.findProp("rows", [1]) === null'), "a prop matches by ===, never by structure"

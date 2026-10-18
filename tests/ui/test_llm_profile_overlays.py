@@ -1,0 +1,655 @@
+"""The LLM profile overlays, rendered (Platform revamp Plan 03, Tasks 2 and 3).
+
+``MP_ProfileModal`` is a hook-free dispatcher that ``NV_ProfileModalHost`` mounts; it hands the profile to ``MP_AggregateOverlay`` (create, or edit of a
+``kind: "aggregated"`` row) or to ``MP_SingleProfileOverlay`` (anything else). Both are built from the platform kit, and both are driven here through the
+kit's own contract: the REAL ``shared.jsx`` (``Modal``, ``Btn``), ``shared/form-field.jsx``, ``shared/platform-kit.jsx``, ``foundation/api.js`` and
+``model-profiles.jsx``, transpiled the way the server bundles them, on the hook runtime of ``tests/ui/_mini_react.py``. The prelude stubs only what the
+console around an overlay provides (the Escape stack, the focus trap, ``useResource``, ``apiFetch`` once ``api.js`` has loaded, ``toastPush``); no ``PK_``
+component is replaced, so a kit component reached with ``MR.findProp("testid", id)`` is the real one and its callbacks are the ones the overlay handed it.
+
+The refusals the overlays are fed are the bodies the real router answers (``tests/ui/_llm_profile_fixtures.py``), not shapes anybody remembered.
+
+The harness has no scheduler: a handler that awaits ``apiFetch`` finishes at the end of the ``eval`` that started it, and the tree is drawn again by the
+next ``MR.rerender()`` (``settle``). It also keeps an instance's state while the same component sits at the same position, so ``mount`` starts every
+scenario from an empty tree.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from tests.ui._llm_profile_fixtures import FULL_AGG, ROWS, router_envelopes
+from tests.ui._mini_react import ROOT, mini_react_context, transpile
+
+UI = ROOT / "ui"
+SOURCE = (UI / "components" / "model-profiles.jsx").read_text(encoding="utf-8")
+
+RULE = "Use letters, digits, dots, dashes and underscores, and start with a letter or a digit."
+HARNESS_NOTE = "Managed by harness h1. Re-run the harness to change it."
+TAKEN = "ModelProfile with id 'p-a' already exists"
+GONE = "member profile 'p-gone' does not exist"
+SINGLE = {"id": "s", "kind": "single", "provider_id": "lp", "model_name": "m", "context_length": 5, "description": "d"}
+
+PRELUDE = r"""
+var CALLS = [], TOASTS = [], SAVED = [], CLOSED = [], RETRIES = [], PENDING = [], ASKED = [];
+var LIST = { data: { items: [] }, error: null, loading: false };   // what window.primerApi.useResource answers
+var ANSWER = null;                                                  // when set, apiFetch resolves with whatever it returns
+var document = { addEventListener: function () {}, removeEventListener: function () {}, body: { style: {} } };
+window.primerApi = {
+  useEscape: function () {},
+  useFocusTrap: function () {},
+  useResource: function (key, fetcher, opts) {
+    ASKED.push({ key: key, fetcher: fetcher, opts: opts || null });
+    return { data: LIST.data, error: LIST.error, loading: LIST.loading, degraded: false, refetch: function () { RETRIES.push(1); } };
+  },
+  toastPush: function (t) { TOASTS.push(t); },
+  useMutation: function (fn) { return { mutate: fn, loading: false }; },
+};
+"""
+
+# after api.js has loaded: it sets the real apiFetch, ApiError and readRefusal on window.primerApi, and only apiFetch is replaced
+AFTER = r"""
+window.primerApi.apiFetch = function (method, path, body) {
+  CALLS.push([method, path, body === undefined ? null : JSON.parse(JSON.stringify(body))]);
+  return ANSWER ? ANSWER() : Promise.resolve(body);
+};
+function mount(props) {
+  MR.mount(MP_ProfileModal, Object.assign({
+    open: true, existing: null, prefill: null, providers: [],
+    onSaved: function (row) { SAVED.push(row); }, onClose: function () { CLOSED.push(1); },
+  }, props || {}));
+}
+function typeInto(testid, value) {
+  var el = MR.find(testid);
+  if (!el) throw new Error("no element with data-testid " + testid);
+  el.props.onChange({ target: { value: value } });
+  MR.rerender();
+}
+function viaProp(testid, name, arg) {
+  var el = MR.findProp("testid", testid);
+  if (!el) throw new Error("no component with testid " + testid);
+  el.props[name](arg);
+  MR.rerender();
+}
+function allUnder(testid) {
+  var out = [];
+  (function walk(n) {
+    if (n == null || typeof n !== "object") return;
+    if (Array.isArray(n)) { n.forEach(walk); return; }
+    if (!n.__el) return;
+    out.push(n);
+    if (typeof n.type === "function" && n.type !== React.Fragment) walk(n.out); else walk(n.children);
+  })(MR.find(testid));
+  return out;
+}
+function textOf(node) {
+  var out = [];
+  (function collect(n) {
+    if (n == null || typeof n === "boolean") return;
+    if (typeof n === "string" || typeof n === "number") { out.push(String(n)); return; }
+    if (Array.isArray(n)) { n.forEach(collect); return; }
+    if (n.__el) collect(typeof n.type === "function" && n.type !== React.Fragment ? n.out : n.children);
+  })(node);
+  return out.join("");
+}
+function textAt(testid) { var el = MR.find(testid); return el ? textOf(el) : null; }
+function unlabelled(testid) {
+  var nodes = allUnder(testid);
+  var labelled = {};
+  nodes.forEach(function (n) { if (n.type === "label" && n.props.htmlFor) labelled[n.props.htmlFor] = true; });
+  return nodes.filter(function (n) {
+    return (n.type === "input" || n.type === "select" || n.type === "textarea") && !(n.props.id && labelled[n.props.id]);
+  }).map(function (n) { return n.props["data-testid"] || n.type; });
+}
+function fieldError(label) { var f = MR.findProp("label", label); return f ? (f.props.error || null) : "no such field"; }
+"""
+
+FILES = (UI / "components" / "shared.jsx", UI / "components" / "shared" / "form-field.jsx", UI / "components" / "shared" / "platform-kit.jsx")
+
+
+def js(ctx, expr: str):
+    """The value of a JS expression as Python data; ``undefined`` (a prop that was not set) is ``None``, as ``null`` is."""
+    return json.loads(ctx.eval(f"(function () {{ var v = ({expr}); return JSON.stringify(v === undefined ? null : v); }})()"))
+
+
+@pytest.fixture(scope="module")
+def code() -> str:
+    parts = [transpile(p) for p in FILES]
+    parts.append((UI / "foundation" / "api.js").read_text(encoding="utf-8"))
+    parts.append(transpile(UI / "components" / "model-profiles.jsx"))
+    return "\n;\n".join(parts)
+
+
+@pytest.fixture
+def ctx(code):
+    c = mini_react_context(code, PRELUDE)
+    c.eval(AFTER)
+    try:
+        yield c
+    finally:
+        c.close()
+
+
+@pytest.fixture
+def envelopes(fake_storage_provider) -> dict:
+    return router_envelopes(fake_storage_provider)
+
+
+# ---- drivers ------------------------------------------------------------------------------------------------------------------------------------------
+
+
+def set_rows(ctx, rows) -> None:
+    ctx.eval(f"LIST = {{ data: {{ items: {json.dumps(rows)} }}, error: null, loading: false }};")
+
+
+def mount(ctx, props: dict | None = None, rows=ROWS) -> None:
+    """Mount ``MP_ProfileModal`` open, from an empty tree."""
+    set_rows(ctx, rows)
+    ctx.eval(f"MR.mount(function Nothing() {{ return null; }}, {{}}); mount({json.dumps(props or {})})")
+
+
+def type_(ctx, testid: str, value: str) -> None:
+    ctx.eval(f"typeInto({json.dumps(testid)}, {json.dumps(value)})")
+
+
+def click(ctx, testid: str) -> None:
+    ctx.eval(f"MR.click({json.dumps(testid)})")
+
+
+def toggle(ctx, key: str) -> None:
+    ctx.eval(f'viaProp("mp-aggregate-members", "onToggle", {json.dumps(key)})')
+
+
+def segment(ctx, testid: str, value: str) -> None:
+    ctx.eval(f"viaProp({json.dumps(testid)}, 'onChange', {json.dumps(value)})")
+
+
+def settle(ctx) -> None:
+    ctx.eval("MR.rerender()")
+
+
+def table_keys(ctx) -> list[str]:
+    return js(ctx, 'MR.findProp("testid", "mp-aggregate-members").props.rows.map(function (r) { return r.key; })')
+
+
+def ticked(ctx) -> list[str]:
+    return js(ctx, 'MR.findProp("testid", "mp-aggregate-members").props.rows.filter(function (r) { return r.checked; }).map(function (r) { return r.key; })')
+
+
+def calls(ctx) -> list:
+    return js(ctx, "CALLS")
+
+
+def toasts(ctx) -> list:
+    return js(ctx, "TOASTS")
+
+
+def saved_count(ctx) -> int:
+    return len(js(ctx, "SAVED"))
+
+
+def closed_count(ctx) -> int:
+    return len(js(ctx, "CLOSED"))
+
+
+def text_at(ctx, testid: str):
+    return js(ctx, f"textAt({json.dumps(testid)})")
+
+
+def present(ctx, testid: str) -> bool:
+    return bool(js(ctx, f"MR.find({json.dumps(testid)}) !== null"))
+
+
+def prop(ctx, testid: str, name: str):
+    return js(ctx, f"MR.find({json.dumps(testid)}).props[{json.dumps(name)}]")
+
+
+def field_error(ctx, label: str):
+    return js(ctx, f"fieldError({json.dumps(label)})")
+
+
+def title(ctx) -> str:
+    return prop(ctx, "mp-aggregate", "aria-label")
+
+
+def reject_with(ctx, envelope: dict) -> None:
+    ctx.eval(f"ANSWER = function () {{ return Promise.reject(new window.primerApi.ApiError({json.dumps(envelope)})); }};")
+
+
+def pick_two(ctx) -> None:
+    toggle(ctx, "p-a")
+    toggle(ctx, "p-b")
+
+
+def submit_and_settle(ctx) -> None:
+    click(ctx, "mp-aggregate-submit")
+    settle(ctx)
+
+
+# ---- create --------------------------------------------------------------------------------------------------------------------------------------------
+
+
+def test_create_posts_the_members_in_the_order_shown(ctx) -> None:
+    mount(ctx)
+    type_(ctx, "mp-aggregate-name", "fast-with-fallback")
+    toggle(ctx, "p-b")
+    toggle(ctx, "p-a")
+    click(ctx, "mp-member-up:p-a")
+    segment(ctx, "mp-aggregate-routing", "round_robin")
+    assert table_keys(ctx)[:2] == ["p-a", "p-b"] and "agg-x" not in table_keys(ctx)
+    click(ctx, "mp-aggregate-submit")
+    assert calls(ctx) == [[
+        "POST", "/model_profiles", {
+            "id": "fast-with-fallback", "description": "Aggregate of p-a, p-b", "kind": "aggregated",
+            "members": ["p-a", "p-b"], "strategy": "round_robin",
+            "failover_point": "before_first_token", "failover_on": "transient_and_config",
+        },
+    ]]
+    assert toasts(ctx) == [{"kind": "success", "text": "Created aggregated profile fast-with-fallback"}]
+    assert saved_count(ctx) == 1 and closed_count(ctx) == 1
+
+
+def test_the_row_the_server_answers_is_what_onsaved_gets(ctx) -> None:
+    mount(ctx)
+    type_(ctx, "mp-aggregate-name", "x")
+    pick_two(ctx)
+    ctx.eval('ANSWER = function () { return Promise.resolve({ id: "x", from: "server" }); };')
+    click(ctx, "mp-aggregate-submit")
+    assert js(ctx, "SAVED") == [{"id": "x", "from": "server"}]
+
+
+def test_create_stays_off_until_a_valid_name_and_two_members(ctx) -> None:
+    mount(ctx)
+    submit = 'MR.find("mp-aggregate-submit").props'
+    assert js(ctx, f"{submit}.disabled") is True, "nothing typed, nothing picked"
+    type_(ctx, "mp-aggregate-name", "a/b")
+    pick_two(ctx)
+    assert js(ctx, f"{submit}.disabled") is True
+    assert RULE in js(ctx, "MR.texts()"), "the rule is on screen"
+    type_(ctx, "mp-aggregate-name", "ok")
+    toggle(ctx, "p-b")
+    assert js(ctx, f"{submit}.disabled") is True, "one member is not enough"
+    assert "Pick at least two profiles." in js(ctx, "MR.texts()")
+    toggle(ctx, "p-b")
+    assert js(ctx, f"{submit}.disabled") is False
+    assert "Pick at least two profiles." not in js(ctx, "MR.texts()")
+    assert js(ctx, f'{submit}["aria-busy"]') is None, "it is not busy before the press"
+    assert js(ctx, f"{submit}.busy") is False
+
+
+def test_a_blank_name_is_not_an_error_until_something_is_typed(ctx) -> None:
+    mount(ctx)
+    assert field_error(ctx, "Name") is None
+    type_(ctx, "mp-aggregate-name", "bad name")
+    assert field_error(ctx, "Name") == RULE
+    type_(ctx, "mp-aggregate-name", "")
+    assert field_error(ctx, "Name") is None, "a cleared field is the empty form again, not a mistake"
+
+
+def test_zero_members_say_nothing_and_one_says_pick_two(ctx) -> None:
+    mount(ctx)
+    assert field_error(ctx, "Members") is None
+    toggle(ctx, "p-a")
+    assert field_error(ctx, "Members") == "Pick at least two profiles."
+    assert js(ctx, 'MR.findProp("label", "Members").props.help') == "Tick two or more. The order is the fallback order, or the rotation order for Round robin."
+
+
+def test_the_window_line_follows_the_picks(ctx) -> None:
+    mount(ctx)
+    assert text_at(ctx, "mp-aggregate-window") == "Pick the profiles first."
+    pick_two(ctx)
+    assert text_at(ctx, "mp-aggregate-window") == "8,192 (the smallest of the picked profiles)"
+
+
+def test_select_all_ticks_every_single_profile_after_the_ones_already_ticked(ctx) -> None:
+    mount(ctx)
+    toggle(ctx, "p-b")
+    ctx.eval('viaProp("mp-aggregate-members", "onToggleAll", true)')
+    assert ticked(ctx) == ["p-b", "p-a", "p-c"]
+    assert table_keys(ctx) == ["p-b", "p-a", "p-c"]
+    ctx.eval('viaProp("mp-aggregate-members", "onToggleAll", false)')
+    assert ticked(ctx) == []
+
+
+def test_up_and_down_reorder_and_the_ends_say_aria_disabled_never_disabled(ctx) -> None:
+    mount(ctx)
+    for key in ("p-a", "p-b", "p-c"):
+        toggle(ctx, key)
+    up_first, down_last = 'MR.find("mp-member-up:p-a").props', 'MR.find("mp-member-down:p-c").props'
+    assert js(ctx, f'{up_first}["aria-disabled"]') == "true" and js(ctx, f'{down_last}["aria-disabled"]') == "true"
+    assert js(ctx, f"{up_first}.disabled") is None and js(ctx, f"{down_last}.disabled") is None
+    assert js(ctx, 'MR.find("mp-member-up:p-b").props["aria-disabled"]') is None
+    assert js(ctx, f'{up_first}["aria-label"]') == "Move p-a up" and js(ctx, f'{down_last}["aria-label"]') == "Move p-c down"
+    click(ctx, "mp-member-up:p-a")
+    click(ctx, "mp-member-down:p-c")
+    assert ticked(ctx) == ["p-a", "p-b", "p-c"], "a press at an end moves nothing"
+    click(ctx, "mp-member-down:p-a")
+    assert ticked(ctx) == ["p-b", "p-a", "p-c"]
+    assert [text_at(ctx, f"mp-member-order:{k}") for k in ("p-b", "p-a", "p-c")] == ["1", "2", "3"]
+    click(ctx, "mp-member-up:p-c")
+    assert ticked(ctx) == ["p-b", "p-c", "p-a"]
+
+
+def test_every_row_shows_its_window_and_only_a_ticked_row_shows_an_order(ctx) -> None:
+    mount(ctx)
+    toggle(ctx, "p-b")
+    assert text_at(ctx, "mp-member-window:p-a") == "32,768"
+    assert text_at(ctx, "mp-member-window:p-b") == "8,192"
+    assert text_at(ctx, "mp-member-window:p-c") == "131,072"
+    assert present(ctx, "mp-member-order:p-b") and not present(ctx, "mp-member-order:p-a")
+    assert not present(ctx, "mp-member-up:p-a") and present(ctx, "mp-member-up:p-b")
+    assert js(ctx, 'MR.findProp("testid", "mp-aggregate-members").props.extraLabel') == "Context window and order"
+
+
+def test_routing_help_follows_the_choice_and_the_advanced_fold_holds_the_failover_choices(ctx) -> None:
+    mount(ctx)
+    assert js(ctx, 'MR.findProp("label", "Routing").props.help') == "Always try profile 1 first; if it answers 429, a 5xx or times out, move to the next."
+    segment(ctx, "mp-aggregate-routing", "round_robin")
+    assert js(ctx, 'MR.findProp("label", "Routing").props.help') == "Rotate which profile goes first on each call."
+    assert js(ctx, 'MR.findProp("testid", "mp-aggregate-routing").props.ariaLabel') == "Routing"
+    assert not present(ctx, "mp-aggregate-failover-point"), "the Advanced fold starts folded and mounts nothing"
+    click(ctx, "mp-aggregate-advanced:toggle")
+    assert js(ctx, 'MR.findProp("testid", "mp-aggregate-failover-point").props.value') == "before_first_token"
+    assert js(ctx, 'MR.findProp("testid", "mp-aggregate-failover-on").props.value') == "transient_and_config", "the model's default, not the stricter one"
+    assert js(ctx, 'MR.findProp("label", "Fail over").props.help') == "Failing over mid-stream can repeat text the user has already seen."
+    assert js(ctx, 'MR.findProp("label", "Fail over on").props.help') == "Transient errors are 429, 5xx, timeouts and network failures."
+    assert js(ctx, 'MR.findProp("testid", "mp-aggregate-failover-point").props.ariaLabel') == "Fail over"
+    assert js(ctx, 'MR.findProp("testid", "mp-aggregate-failover-on").props.ariaLabel') == "Fail over on"
+    segment(ctx, "mp-aggregate-failover-point", "mid_stream")
+    segment(ctx, "mp-aggregate-failover-on", "transient")
+    click(ctx, "mp-aggregate-advanced:toggle")
+    click(ctx, "mp-aggregate-advanced:toggle")
+    assert js(ctx, 'MR.findProp("testid", "mp-aggregate-failover-point").props.value') == "mid_stream", "folding it away does not forget the choice"
+    type_(ctx, "mp-aggregate-name", "adv")
+    pick_two(ctx)
+    click(ctx, "mp-aggregate-submit")
+    body = calls(ctx)[0][2]
+    assert (body["strategy"], body["failover_point"], body["failover_on"]) == ("round_robin", "mid_stream", "transient")
+
+
+def test_the_overlay_is_the_kit_form_overlay_720_wide_with_a_title_and_the_buttons_of_its_mode(ctx) -> None:
+    mount(ctx)
+    assert prop(ctx, "mp-aggregate", "role") == "dialog" and prop(ctx, "mp-aggregate", "className") == "modal pk-overlay"
+    assert prop(ctx, "mp-aggregate", "style") == {"width": 720}
+    assert title(ctx) == "New aggregated profile" and "New aggregated profile" in js(ctx, "MR.texts()")
+    assert text_at(ctx, "mp-aggregate-submit") == "Create" and text_at(ctx, "mp-aggregate-cancel") == "Cancel"
+    mount(ctx, {"existing": FULL_AGG})
+    assert title(ctx) == "Edit aggregated profile"
+    assert text_at(ctx, "mp-aggregate-submit") == "Save" and text_at(ctx, "mp-aggregate-cancel") == "Cancel"
+
+
+def test_cancel_closes_without_a_request(ctx) -> None:
+    mount(ctx)
+    type_(ctx, "mp-aggregate-name", "draft")
+    click(ctx, "mp-aggregate-cancel")
+    assert closed_count(ctx) == 1 and saved_count(ctx) == 0 and calls(ctx) == []
+
+
+# ---- a refused save ------------------------------------------------------------------------------------------------------------------------------------
+
+
+def test_a_refused_create_keeps_the_draft_and_names_the_field(ctx, envelopes) -> None:
+    mount(ctx)
+    type_(ctx, "mp-aggregate-name", "fast-with-fallback")
+    pick_two(ctx)
+
+    reject_with(ctx, envelopes["conflict"])
+    submit_and_settle(ctx)
+    assert field_error(ctx, "Name") == TAKEN and field_error(ctx, "Members") is None
+    assert toasts(ctx) == [] and closed_count(ctx) == 0 and saved_count(ctx) == 0, "a refusal is drawn in the overlay, never toasted"
+    assert prop(ctx, "mp-aggregate-name", "value") == "fast-with-fallback" and ticked(ctx) == ["p-a", "p-b"]
+    assert js(ctx, 'MR.find("mp-aggregate-submit").props.busy') is False, "the button is usable again"
+
+    reject_with(ctx, envelopes["member_not_found"])
+    submit_and_settle(ctx)
+    assert field_error(ctx, "Members") == GONE and field_error(ctx, "Name") is None, "a new press starts from a clean form"
+    assert toasts(ctx) == [] and closed_count(ctx) == 0 and saved_count(ctx) == 0
+    assert prop(ctx, "mp-aggregate-name", "value") == "fast-with-fallback" and ticked(ctx) == ["p-a", "p-b"]
+
+
+def test_a_refusal_the_form_has_no_field_for_is_drawn_above_the_footer(ctx, envelopes) -> None:
+    mount(ctx)
+    type_(ctx, "mp-aggregate-name", "x")
+    pick_two(ctx)
+    reject_with(ctx, envelopes["provider_not_found"])
+    submit_and_settle(ctx)
+    assert prop(ctx, "mp-aggregate-error", "role") == "alert"
+    assert "no-such-provider" in text_at(ctx, "mp-aggregate-error")
+    assert field_error(ctx, "Name") is None and field_error(ctx, "Members") is None
+    assert closed_count(ctx) == 0
+    body = js(ctx, 'allUnder("mp-aggregate").map(function (n) { return n.props["data-testid"] || n.props.className || null; }).filter(Boolean)')
+    assert body.index("mp-aggregate-error") < body.index("modal-f"), "the line sits in the body, above the footer"
+
+
+def test_a_server_error_under_a_field_goes_when_that_field_is_edited(ctx, envelopes) -> None:
+    mount(ctx)
+    type_(ctx, "mp-aggregate-name", "p-a")
+    pick_two(ctx)
+    reject_with(ctx, envelopes["conflict"])
+    submit_and_settle(ctx)
+    assert field_error(ctx, "Name") == TAKEN
+    toggle(ctx, "p-c")
+    assert field_error(ctx, "Name") == TAKEN, "picking a member does not answer a complaint about the name"
+    type_(ctx, "mp-aggregate-name", "p-a2")
+    assert field_error(ctx, "Name") is None, "the refusal was about the old name"
+
+
+def test_a_members_refusal_goes_when_the_members_change(ctx, envelopes) -> None:
+    mount(ctx)
+    type_(ctx, "mp-aggregate-name", "x")
+    pick_two(ctx)
+    reject_with(ctx, envelopes["member_not_found"])
+    submit_and_settle(ctx)
+    assert field_error(ctx, "Members") == GONE
+    toggle(ctx, "p-b")
+    assert field_error(ctx, "Members") == "Pick at least two profiles.", "the live rule speaks again"
+    toggle(ctx, "p-c")
+    assert field_error(ctx, "Members") is None
+
+
+def test_the_press_is_busy_while_the_request_is_out_and_a_second_press_sends_nothing(ctx) -> None:
+    mount(ctx)
+    type_(ctx, "mp-aggregate-name", "slow")
+    pick_two(ctx)
+    ctx.eval("ANSWER = function () { return new Promise(function (resolve) { PENDING.push(resolve); }); };")
+    click(ctx, "mp-aggregate-submit")
+    assert js(ctx, 'MR.find("mp-aggregate-submit").props.busy') is True
+    assert js(ctx, 'MR.find("mp-aggregate-submit").props.disabled') is False, "the request is not folded into disabled"
+    click(ctx, "mp-aggregate-submit")
+    assert len(calls(ctx)) == 1
+    ctx.eval("PENDING[0]({ id: 'slow' })")
+    settle(ctx)
+    assert saved_count(ctx) == 1 and closed_count(ctx) == 1
+
+
+def test_a_press_while_the_form_is_not_ready_sends_nothing(ctx) -> None:
+    mount(ctx)
+    click(ctx, "mp-aggregate-submit")
+    assert calls(ctx) == [] and toasts(ctx) == []
+
+
+# ---- edit ----------------------------------------------------------------------------------------------------------------------------------------------
+
+
+def test_an_aggregate_edit_keeps_every_field_the_form_does_not_show(ctx) -> None:
+    mount(ctx, {"existing": FULL_AGG})
+    assert title(ctx) == "Edit aggregated profile"
+    assert prop(ctx, "mp-aggregate-name", "readOnly") is True and prop(ctx, "mp-aggregate-name", "value") == "agg-1"
+    assert prop(ctx, "mp-aggregate-description", "value") == "my words"
+    segment(ctx, "mp-aggregate-routing", "round_robin")
+    click(ctx, "mp-aggregate-submit")
+    sent = {k: v for k, v in FULL_AGG.items() if k not in ("agent_count", "graph_node_count", "_window")}
+    assert calls(ctx) == [["PUT", "/model_profiles/agg-1", {**sent, "strategy": "round_robin"}]]
+    assert toasts(ctx) == [{"kind": "success", "text": "Saved agg-1"}]
+    assert saved_count(ctx) == 1 and closed_count(ctx) == 1
+
+
+def test_an_edit_sends_the_typed_description(ctx) -> None:
+    mount(ctx, {"existing": FULL_AGG})
+    type_(ctx, "mp-aggregate-description", "new words")
+    click(ctx, "mp-aggregate-submit")
+    assert calls(ctx)[0][2]["description"] == "new words"
+
+
+def test_a_cleared_description_is_an_error_and_blocks_save(ctx) -> None:
+    mount(ctx, {"existing": FULL_AGG})
+    type_(ctx, "mp-aggregate-description", "  ")
+    assert field_error(ctx, "Description") == "Enter a description."
+    assert js(ctx, 'MR.find("mp-aggregate-submit").props.disabled') is True
+
+
+def test_the_id_in_the_path_is_encoded(ctx) -> None:
+    mount(ctx, {"existing": {**FULL_AGG, "id": "a b/c"}})
+    click(ctx, "mp-aggregate-submit")
+    assert calls(ctx)[0][1] == "/model_profiles/a%20b%2Fc"
+
+
+def test_a_member_missing_from_the_list_survives_a_save(ctx) -> None:
+    mount(ctx, {"existing": {**FULL_AGG, "members": ["p-a", "p-gone"]}})
+    assert text_at(ctx, "mp-member-window:p-gone") == "unknown"
+    assert text_at(ctx, "mp-aggregate-window") == "Unknown: a picked profile is not loaded."
+    assert ticked(ctx) == ["p-a", "p-gone"]
+    click(ctx, "mp-aggregate-submit")
+    assert calls(ctx)[0][2]["members"] == ["p-a", "p-gone"]
+
+
+def test_the_edited_aggregate_is_not_offered_as_its_own_member(ctx) -> None:
+    mount(ctx, {"existing": FULL_AGG}, rows=[*ROWS, {"id": "agg-1", "kind": "single", "context_length": 99}])
+    assert "agg-1" not in table_keys(ctx)
+
+
+def test_a_conflict_on_an_edit_is_a_form_level_error(ctx, envelopes) -> None:
+    mount(ctx, {"existing": FULL_AGG})
+    reject_with(ctx, envelopes["conflict"])
+    submit_and_settle(ctx)
+    assert field_error(ctx, "Name") is None
+    assert "p-a" in text_at(ctx, "mp-aggregate-error")
+    assert closed_count(ctx) == 0
+
+
+def test_an_edit_that_is_refused_under_members_names_the_field(ctx, envelopes) -> None:
+    mount(ctx, {"existing": {**FULL_AGG, "members": ["p-a", "p-gone"]}})
+    reject_with(ctx, envelopes["member_not_found"])
+    submit_and_settle(ctx)
+    assert field_error(ctx, "Members") == GONE
+
+
+def test_a_harness_managed_aggregate_is_view_only(ctx) -> None:
+    mount(ctx, {"existing": {**FULL_AGG, "harness_id": "h1"}})
+    assert title(ctx) == "Aggregated profile"
+    assert not present(ctx, "mp-aggregate-submit")
+    assert text_at(ctx, "mp-aggregate-managed") == HARNESS_NOTE
+    assert text_at(ctx, "mp-aggregate-cancel") == "Close"
+    assert js(ctx, 'MR.findProp("testid", "mp-aggregate-members").props.rows.every(function (r) { return r.disabled === true; })') is True
+    assert not present(ctx, "mp-member-up:p-a") and not present(ctx, "mp-member-down:p-b"), "no reorder buttons on a row that cannot change"
+    assert present(ctx, "mp-member-order:p-a"), "the order is still told"
+    assert prop(ctx, "mp-aggregate-description", "readOnly") is True
+
+
+def test_a_managed_aggregate_is_wrapped_in_a_disabled_fieldset_and_shows_its_advanced_choices(ctx) -> None:
+    fieldsets = 'allUnder("mp-aggregate").filter(function (n) { return n.type === "fieldset"; })'
+    mount(ctx, {"existing": {**FULL_AGG, "harness_id": "h1"}})
+    assert js(ctx, f"{fieldsets}.map(function (n) {{ return n.props.disabled; }})") == [True], "every native control under it, the kit's segmented buttons included, is read-only"
+    assert js(ctx, 'MR.findProp("testid", "mp-aggregate-failover-point").props.value') == "mid_stream", "the folded choices are shown: a disabled fold cannot be opened"
+    mount(ctx, {"existing": FULL_AGG})
+    assert js(ctx, f"{fieldsets}.length") == 0, "an editable aggregate has no wrapper"
+
+
+# ---- the list ------------------------------------------------------------------------------------------------------------------------------------------
+
+
+def test_too_few_single_profiles_says_how_to_get_more(ctx) -> None:
+    mount(ctx, rows=[{"id": "p-a", "kind": "single", "context_length": 1}, {"id": "agg-x", "kind": "aggregated"}])
+    assert text_at(ctx, "mp-aggregate-too-few") == "Aggregating needs at least two LLM profiles. Register an LLM provider and import its models first."
+    mount(ctx)
+    assert not present(ctx, "mp-aggregate-too-few")
+
+
+def test_loading_and_load_error_states(ctx) -> None:
+    ctx.eval("LIST = { data: undefined, error: null, loading: true };")
+    ctx.eval("mount({})")
+    assert text_at(ctx, "mp-aggregate-loading") == "Loading the profiles"
+    assert not present(ctx, "mp-aggregate-too-few") and not present(ctx, "mp-aggregate-load-error")
+    envelope = {"type": "/errors/internal", "title": "Server error", "status": 500, "detail": "the list is down"}
+    ctx.eval(f"LIST = {{ data: undefined, error: new window.primerApi.ApiError({json.dumps(envelope)}), loading: false }}; MR.rerender();")
+    assert not present(ctx, "mp-aggregate-loading") and not present(ctx, "mp-aggregate-too-few")
+    assert prop(ctx, "mp-aggregate-load-error", "role") == "alert"
+    assert "the list is down" in text_at(ctx, "mp-aggregate-load-error")
+    click(ctx, "mp-aggregate-load-retry")
+    assert len(js(ctx, "RETRIES")) == 1
+
+
+def test_a_list_that_failed_after_it_had_loaded_keeps_showing_the_loaded_rows(ctx) -> None:
+    """``useResource`` keeps the data when a later poll fails (stale-while-error): the table stays, there is no error line."""
+    mount(ctx)
+    envelope = {"type": "/errors/internal", "title": "Server error", "status": 500, "detail": "later"}
+    ctx.eval(f"LIST = {{ data: {{ items: {json.dumps(ROWS)} }}, error: new window.primerApi.ApiError({json.dumps(envelope)}), loading: false }}; MR.rerender();")
+    assert not present(ctx, "mp-aggregate-load-error") and table_keys(ctx) == ["p-a", "p-b", "p-c"]
+
+
+def test_the_overlay_asks_for_the_list_itself_once_and_does_not_poll(ctx) -> None:
+    mount(ctx)
+    asked = js(ctx, "ASKED.filter(function (a) { return a.key === 'mp-aggregate:profiles'; }).map(function (a) { return a.opts; })")
+    assert asked and all(opts == {"pollMs": None} for opts in asked), "a dialog does not poll"
+    ctx.eval("CALLS.length = 0; ASKED.filter(function (a) { return a.key === 'mp-aggregate:profiles'; })[0].fetcher('the-signal');")
+    assert calls(ctx) == [["GET", "/model_profiles?limit=200", None]]
+
+
+# ---- the dispatcher ------------------------------------------------------------------------------------------------------------------------------------
+
+
+def test_the_dispatcher_routes_by_kind_and_open(ctx) -> None:
+    mount(ctx, {"open": False})
+    assert js(ctx, "MR.texts()") == [] and not present(ctx, "mp-aggregate"), "closed draws nothing"
+    mount(ctx)
+    assert present(ctx, "mp-aggregate"), "no profile and no prefill: the create form is the aggregate's"
+    mount(ctx, {"existing": FULL_AGG})
+    assert present(ctx, "mp-aggregate")
+    mount(ctx, {"existing": SINGLE})
+    assert not present(ctx, "mp-aggregate"), "a single profile is the single overlay's"
+    mount(ctx, {"prefill": {"provider_id": "lp"}})
+    assert not present(ctx, "mp-aggregate"), "the legacy single create (a prefill) is the single overlay's"
+
+
+def test_a_different_profile_in_the_same_place_is_a_fresh_overlay(ctx) -> None:
+    """The dispatcher keys the overlay on the profile's id: one mounted over another never inherits the first one's draft."""
+    mount(ctx)
+    type_(ctx, "mp-aggregate-name", "draft")
+    ctx.eval(f"MR.rerender(Object.assign({{}}, {{ open: true, existing: {json.dumps(FULL_AGG)}, prefill: null, providers: [], onSaved: function () {{}}, onClose: function () {{}} }}))")
+    assert prop(ctx, "mp-aggregate-name", "value") == "agg-1"
+    assert title(ctx) == "Edit aggregated profile"
+
+
+# ---- names ---------------------------------------------------------------------------------------------------------------------------------------------
+
+
+def test_every_input_is_named_by_its_label(ctx) -> None:
+    mount(ctx, {"existing": FULL_AGG})
+    click(ctx, "mp-aggregate-advanced:toggle")
+    assert js(ctx, 'unlabelled("mp-aggregate")') == []
+    mount(ctx)
+    assert js(ctx, 'unlabelled("mp-aggregate")') == []
+    assert js(ctx, 'allUnder("mp-aggregate").filter(function (n) { return n.type === "input"; }).length') >= 5, "the name, select-all and the three rows: the walk did reach them"
+
+
+def test_every_button_that_is_only_an_arrow_has_a_name(ctx) -> None:
+    mount(ctx)
+    pick_two(ctx)
+    arrows = js(ctx, 'allUnder("mp-aggregate").filter(function (n) { return n.type === "button" && /^[\\u2191\\u2193]$/.test(textOf(n)); }).map(function (n) { return n.props["aria-label"]; })')
+    assert arrows == ["Move p-a up", "Move p-a down", "Move p-b up", "Move p-b down"]
+
+
+# ---- the source ----------------------------------------------------------------------------------------------------------------------------------------
+
+
+def test_the_file_exports_the_dispatcher_and_the_aggregate_overlay() -> None:
+    for line in ("window.MP_ProfileModal = MP_ProfileModal;", "window.MP_AggregateOverlay = MP_AggregateOverlay;"):
+        assert line in SOURCE
+
+
+def test_the_aggregate_overlay_uses_kit_rows_and_btn_kind() -> None:
+    body = SOURCE[SOURCE.index("function MP_AggregateOverlay("):SOURCE.index("function MP_AllProfilesPanel(")]
+    assert "field-label" not in body, "every form row is a PK_Field"
+    assert "variant=" not in body, "Btn takes kind, not variant"

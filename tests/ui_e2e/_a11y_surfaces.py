@@ -77,7 +77,7 @@ LEGACY_FORMS: dict[str, list[Form]] = {
     "providers/web_search": [_register(KIND_MENU_ITEM)],
     "providers/web_fetch": [_register(KIND_MENU_ITEM)],
     "providers/artifact_storage": [_register(KIND_MENU_ITEM)],   # db, filesystem and s3 since the class serves its kinds (GET /_types); the first, db, is the one that is built
-    "providers/model_profile": [Form("New profile", MODAL)],
+    "providers/model_profile": [Form("+ Aggregate", MODAL)],
     "ssp": [_register(KIND_MENU_ITEM)],                 # the semantic-search stores: the same register menu, and a modal of their own
 }
 
@@ -120,7 +120,7 @@ PENDING_CUSTOM_PAGES: set[str] = {"web", "templates"}
 # the Platform VIEW (view=platform:<id>: what every Platform nav row opens), one entry per id of the shell's grammar (ui/foundation/shell-url.js SH_VIEWS.platform) that is not a pending custom page
 PLATFORM_FORMS: dict[str, list[Form]] = {
     "providers": [_register(TYPE_MENU_ITEM)],
-    "profiles": [],
+    "profiles": [Form("+ Aggregate", MODAL)],
     "toolsets": [Form("New toolset", MODAL)],
     "tools": [],
     "collections": [Form("New collection", MODAL)],
@@ -147,7 +147,6 @@ NO_FORM: dict[str, str] = {
     "overlay-page workers": "a list of workers with Drain; nothing is created from it",
     "overlay-page health": "the health of the workers, read only; nothing is created from it",
     "platform-view tools": "the tool catalogue is read-only",
-    "platform-view profiles": "single profiles come from the Register provider overlay's import; Plan 03 adds + Aggregate",
     "system-view dashboard": "the dashboard shows the install's state; nothing is created from it",
     "system-view apikeys": "the admin view of every user's tokens only lists and revokes; a token is created from Profile",
     "system-view mcp": "the MCP page lists the install's MCP servers and their tools; nothing is created from it",
@@ -278,12 +277,13 @@ FLOORS: dict[str, int] = {
     "overlay-page providers/artifact_storage": 3,
     "overlay-page providers/artifact_storage / Register provider": 2,
     "overlay-page providers/model_profile": 3,
-    "overlay-page providers/model_profile / New profile": 2,
+    "overlay-page providers/model_profile / + Aggregate": 2,
     "overlay-page ssp": 1,
     "overlay-page ssp / Register provider": 4,
     "platform-view providers": 6,
     "platform-view providers / Register provider": 5,
     "platform-view profiles": 1,                        # on a fresh install, the empty state's "Open Providers › LLM"
+    "platform-view profiles / + Aggregate": 2,
     "platform-view toolsets": 1,
     "platform-view toolsets / New toolset": 2,
     "platform-view tools": 1,

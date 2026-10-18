@@ -310,10 +310,15 @@ function NV_providersNavigate(con, ref) {
 var NV_PLAT_PAGES = {
   profiles: {
     title: "LLM Profiles", noun: ["model profile", "model profiles"],
-    // No single-profile create (design 7.1): a single profile comes from the
-    // Register provider overlay's import, so an empty page points there.
-    // Plan 03 adds "+ Aggregate".
-    createLabel: null,
+    // The one action is "+ Aggregate" (design 7.1). There is no single-profile
+    // create: a single profile comes from the Register provider overlay's
+    // import, so an empty page points there. "+ Aggregate" hosts the profile
+    // overlay with no profile, which MP_ProfileModal draws as the aggregated
+    // profile's create form (model-profiles.jsx).
+    createLabel: "+ Aggregate",
+    create: function (con, setModal) {
+      setModal({ kind: "profile", row: null });
+    },
     emptyText: "No LLM profiles yet. Register an LLM provider to import its models.",
     emptyAction: {
       label: "Open Providers › LLM",

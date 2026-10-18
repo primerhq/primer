@@ -56,6 +56,13 @@ def test_no_component_of_the_platform_file_returns_before_one_of_its_hooks() -> 
     assert _returns_before_a_hook(PLAT) == []
 
 
+def test_no_component_of_the_model_profiles_file_returns_before_one_of_its_hooks() -> None:
+    """The profile overlays are hook components too (Platform revamp Plan 03): ``MP_ProfileModal`` is a dispatcher with no hook at all, so its ``if (!open) return null`` is safe, and
+    the two overlays it mounts call every hook before any early return. The scanner is the one above, kept beside the platform-file test so it is not imported across test modules."""
+    source = (ROOT / "ui" / "components" / "model-profiles.jsx").read_text(encoding="utf-8")
+    assert _returns_before_a_hook(source) == []
+
+
 def _body(name: str) -> str:
     start = PLAT.index(f"function {name}(")
     return PLAT[start:PLAT.index("\n}\n", start) + 3]

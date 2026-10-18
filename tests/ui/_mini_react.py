@@ -29,7 +29,9 @@ Where it differs from React, so a green test here is not read as more than it is
   stubbing it in the test (a stub that does something else, or nothing, tests the stub).
 
 Driver API, inside the context (``MR``): ``MR.mount(Component, props)``, ``MR.rerender(props?)``, ``MR.find(testid)`` (the element
-or null), ``MR.findAll(prefix)``, ``MR.click(testid)``, ``MR.texts()``, ``MR.subtree(testid)`` (every element at or under the one with that
+or null), ``MR.findAll(prefix)``, ``MR.findProp(name, value)`` (the first element, a component's or a host's, whose prop ``name`` is
+exactly ``value``, else null: how a test reaches a component by the ``testid`` prop it was handed, and calls its ``onToggle`` or ``onChange``),
+``MR.click(testid)``, ``MR.texts()``, ``MR.subtree(testid)`` (every element at or under the one with that
 test id, as ``{type, className, role, ariaLive, testid}``; null when there is none). The caller owns ``ctx.close()``.
 """
 
@@ -280,6 +282,15 @@ var window = globalThis;
     });
     return found;
   }
+  // The first element (a component's or a host's, in render order) whose prop `name` is exactly `value`. A kit component takes its test id as the `testid` prop and
+  // draws it as `data-testid` on its own host element, so `find` reaches the host; `findProp("testid", id)` reaches the component and its callbacks.
+  function findProp(name, value) {
+    var found = null;
+    walk(root.tree, function (el) {
+      if (!found && el.props && el.props[name] === value) found = el;
+    });
+    return found;
+  }
   function texts() {
     var out = [];
     (function collect(n) {
@@ -298,7 +309,7 @@ var window = globalThis;
   g.MR = {
     mount: function (type, props) { root = { type: type, props: props || {}, tree: null }; flush(); },
     rerender: function (props) { if (props) root.props = props; flush(); },
-    find: find, findAll: findAll, texts: texts,
+    find: find, findAll: findAll, findProp: findProp, texts: texts,
     subtree: function (testid) {
       var start = find(testid);
       if (!start) return null;
