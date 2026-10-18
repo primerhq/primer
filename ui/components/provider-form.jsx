@@ -471,7 +471,7 @@ const PC_SECRET_KEPT_HELP = "Stored secrets are shown masked; leave it as is to 
 
 // Two layouts, one form. Without `frame` the form lays itself out (fields, the probe panel, its own footer row): the legacy catalog's modal mounts it so.
 // With `frame` (the Register provider overlay, plan 02 Task 10) it hands its parts to the frame and returns what the frame returns:
-// frame({ body, footerLeft, footerRight, error }), with Cancel on the left, Test (only when `canTest`: a class with a draft _test route) and the submit
+// frame({ body, footerLeft, footerRight, error, busy }), with Cancel on the left, Test (only when `canTest`: a class with a draft _test route) and the submit
 // (`submitLabel`) on the right, and the save refusal as `error`. Inside the frame the fields are kit fields (the label alone on its line, the help under
 // the control), `kindSelect` adds a Type select of the kinds the server serves minus the built-in ones and `excludeKinds` (locked when editing; a change
 // writes `provider` and clears `config`), the limits are PC_LimitsSection's, and `readOnly` (a built-in row with nothing to configure) says so and offers
@@ -784,7 +784,8 @@ function PC_ProviderForm({
         )}
       </React.Fragment>
     );
-    return frame({ body: framedBody, footerLeft, footerRight, error: saveError });
+    // `busy`: a request of the form's own is out (a save or a test), so the frame can keep the page from being switched away under it.
+    return frame({ body: framedBody, footerLeft, footerRight, error: saveError, busy: saving || busy });
   }
 
   // Platform wave P1a item 4: the rich "Live model probe" panel is

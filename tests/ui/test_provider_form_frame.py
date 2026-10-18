@@ -1,7 +1,8 @@
 """The schema-driven provider form inside the Register overlay's frame (plan 02, Task 10; design 6.2 and 6.7).
 
-``PC_ProviderForm`` with a ``frame`` prop hands its parts to the frame instead of laying itself out: ``frame({ body, footerLeft, footerRight, error })``,
-with Cancel on the left, Test (only where a draft test route exists) and the submit on the right, and the save refusal as ``error``. Inside the frame the
+``PC_ProviderForm`` with a ``frame`` prop hands its parts to the frame instead of laying itself out: ``frame({ body, footerLeft, footerRight, error, busy })``,
+with Cancel on the left, Test (only where a draft test route exists) and the submit on the right, the save refusal as ``error`` and ``busy``
+while a save or a test is out. Inside the frame the
 fields are kit fields (the label alone on its line, the help under the control), the kind is a Type select of the kinds the server serves minus the
 built-in ones, and an edit sends back every field it did not show. Without ``frame`` the form is the layout it always was (its pins live in
 ``test_provider_form*.py`` and stay as they are).
@@ -160,6 +161,26 @@ def test_test_is_offered_only_when_can_test(ctx, can_test: bool) -> None:
     _mount(ctx, plural="artifact_storage_providers", classKey="artifact_storage", kindSelect=True, canTest=can_test)
     _serve(ctx, "artifact_storage_providers")
     assert (ctx.eval("MR.find('provider-form-test') !== null") is True) is can_test
+
+
+def test_the_frame_is_told_when_a_request_is_out(ctx) -> None:
+    """``busy`` is the frame's cue that a save or a test of the page's is out (the overlay shuts its type selector until it is answered)."""
+    _mount(ctx, plural="web_search_providers", classKey="web_search", kindSelect=True, canTest=True, submitLabel="Register")
+    _serve(ctx, "web_search_providers")
+    ctx.eval("setValue('pc-field:id', 'tav'); setValue('pc-field:api_key', 'k');")
+    assert ctx.eval("FRAMES[FRAMES.length - 1].busy") is False
+    ctx.eval("var RELEASE = null; ON_SUBMIT = function () { return new Promise(function (r) { RELEASE = r; }); };")
+    ctx.eval("press('provider-form-save')")
+    assert ctx.eval("FRAMES[FRAMES.length - 1].busy") is True, "a save is out"
+    ctx.eval("RELEASE(); void 0;")
+    settle(ctx)
+    assert ctx.eval("FRAMES[FRAMES.length - 1].busy") is False
+    ctx.eval("var RELEASE_TEST = null; HANDLER = function () { return new Promise(function (r) { RELEASE_TEST = r; }); };")
+    ctx.eval("press('provider-form-test')")
+    assert ctx.eval("FRAMES[FRAMES.length - 1].busy") is True, "a test is out"
+    ctx.eval("RELEASE_TEST({ ok: true }); void 0;")
+    settle(ctx)
+    assert ctx.eval("FRAMES[FRAMES.length - 1].busy") is False
 
 
 def test_test_posts_the_wire_body(ctx) -> None:
