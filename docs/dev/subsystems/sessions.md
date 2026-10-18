@@ -57,7 +57,12 @@ Four rules make that safe:
   as busy, so a steer sent to it is queued, and without this it waited behind
   the ended session for some later message (then ran after it) or forever. The
   realized steer reopens the ended session through `wake_session` and arms a
-  turn; the pool re-arms the claim after the release.
+  turn; the pool re-arms the claim after the release. A message that lands
+  between `_end_session`'s ENDED write and the switch application reopens the
+  session itself, so the applier's `{"status": ["ended"]}` guard no longer holds
+  and the switch stays queued: it applies at the checkpoint after the turn that
+  answers that message and the realized one, which therefore runs under the
+  OUTGOING binding (`tests/session/test_peer_attribution.py` pins it).
 - **The switch itself is ONE protocol for every caller of
   `apply_binding_switch`, under the session's lifecycle lock (held by the
   caller; the function never takes it): reserve, append, fence.** (1) RESERVE

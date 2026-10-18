@@ -6,6 +6,8 @@ Spec: docs/superpowers/ux-revamp/02-s1-design.md section 4 (M5 rule).
 import json
 from datetime import UTC, datetime
 
+import pytest
+
 from primer.model.workspace_session import (
     AgentSessionBinding,
     SessionStatus,
@@ -60,6 +62,13 @@ class TestRouteSteer:
     def test_raw_lines_is_optional(self):
         """The hot API path routes on the row alone."""
         assert route_steer(_row(turn_status="idle")) == ROUTE_WAKE
+
+    @pytest.mark.parametrize("turn_status", ["running", "claimable", "idle"])
+    def test_an_ended_row_wakes_whatever_its_turn_status_says(self, turn_status):
+        """Pinned choice (lead note on #761): an ENDED row has no turn to wait behind, so a stale ``running`` or ``claimable`` flag does not make a steer
+        queue. It is woken, which reopens the session and resets the flag; queued, it would wait for a turn that is never going to end."""
+        row = _row(status=SessionStatus.ENDED, ended_reason="cancelled", turn_status=turn_status)
+        assert route_steer(row, raw_lines=[]) == ROUTE_WAKE
 
     def test_cursor_excludes_already_drained_turns(self):
         """Records before the checkpoint belong to finished turns."""

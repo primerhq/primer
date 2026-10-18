@@ -31,15 +31,23 @@ def route_steer(
     turns, so treating it as busy would defer steers that should have run
     immediately. The one status that matters is ENDED, and it decides the
     other way: an ended session has no turn to wait behind, whatever its
-    park columns say, so it is always woken, which reopens it or refuses
-    it with a conflict. Two real writers end a session and leave the park
+    park columns say and whatever its turn_status reads (a row ended while
+    its flag still says ``running`` or ``claimable`` is woken too: the
+    turn is over, the flag is stale, and the reopen resets it), so it is
+    always woken, which reopens it or refuses it with a conflict. Two
+    real writers end a session and leave the park
     set (Cancel of a paused or waiting row, which deletes the lease so no
     release ever clears it, and the workspace_lost reconcile, which does
     not touch the park), and a steer queued behind that park would never be
     delivered. (The pool's ``_end_session`` also writes ENDED while the row
     still carries its park until the release; a steer that lands in that
     window reopens the session itself, and the one queued steer
-    ``_end_session`` realizes right after is written behind it.)
+    ``_end_session`` realizes right after is written behind it. A binding
+    switch queued on that parked session is not applied by ``_end_session``
+    either: the reopened row no longer passes the applier's
+    ``{"status": ["ended"]}`` guard, so the switch stays queued and applies
+    at the checkpoint after the turn that answers both messages, which
+    therefore runs under the OUTGOING binding.)
 
     ``raw_lines`` is an optional slow path for callers that already
     hold the log, such as the drain. It closes the small window where

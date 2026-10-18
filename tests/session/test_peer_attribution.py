@@ -533,6 +533,62 @@ async def test_a_steer_in_the_window_where_end_session_has_written_ended_but_not
     assert (after.status, after.turn_status, after.parked_status) == (SessionStatus.RUNNING, "claimable", None)
 
 
+@pytest.mark.parametrize("turn_status", ["running", "claimable"])
+async def test_an_ended_target_whose_turn_status_still_reads_open_is_reopened_not_queued(turn_status):
+    """Pinned choice (lead note on #761): the pool ends a session before the release clears its flags, so an ENDED row can still read ``running``. A steer
+    reopens it (which resets the flag) instead of queueing behind a turn that is over: queued, it would never be delivered."""
+    world = make_world()
+    await seed_session(
+        world, sid="ses-b", status=SessionStatus.ENDED, ended_reason="cancelled", turn_no=2, turn_status=turn_status, metadata={"invocation": 1},
+    )
+    out = await _send(world, "ses-b")
+    assert out.outcome == DELIVERED_WOKEN
+    row = await world.sessions.get("ses-b")
+    assert (row.status, row.ended_reason, row.turn_status, row.peer_hops) == (SessionStatus.RUNNING, None, "claimable", 3)
+    assert [r["kind"] for r in records(world, "ses-b")] == ["invocation_divider", "user_input"]
+    assert slot(world, "ses-b").reopened is True and await _pending(world) == []
+
+
+async def test_a_binding_switch_queued_on_the_parked_session_waits_for_the_turn_that_answers_both_messages():
+    """The ``_end_session`` window again, with a switch queued on the parked session (lead note on #761, documented here and in ``route_steer``).
+
+    ``_end_session`` applies the queued switch with the guard that the row is still ENDED, then realizes one queued steer. A steer that lands between
+    the ENDED write and that guard reopens the session itself, so the guard no longer holds: the switch is not applied and stays queued. The turn that
+    answers the steer and the queued message therefore runs under the OUTGOING binding, and the switch applies at the checkpoint after it. Applying it
+    before the reopen would need a variant of the applier that does not take the lifecycle lock the wake already holds.
+    """
+    from primer.session.dispatch import apply_queued_binding_switch, realize_queued_steer
+
+    world = make_world(with_bus=True)
+    request = {"kind": "agent", "agent_id": "builder", "profile_id": None, "actor": "user:u1"}
+    row = await seed_session(
+        world, sid="ses-b", status=SessionStatus.ENDED, ended_reason="cancelled", turn_no=2, pending_binding_switch=request, **_STALE_PARKS["parked"],
+    )
+    await store_pending_steer(
+        storage_provider=world.sp, session=row, text="queued while it was parked", workspace_registry=world.registry,
+    )
+    out = await _send(world, "ses-b", peer=None, text="arrives in the window")
+    assert out.outcome == DELIVERED_WOKEN
+
+    # What _end_session does next: apply the switch with its own guard, then realize ONE queued steer.
+    io = world.registry.workspace("ws-1")
+    await apply_queued_binding_switch(storage_provider=world.sp, workspace_io=io, session_id="ses-b", guard={"status": ["ended"]})
+    await realize_queued_steer(
+        storage_provider=world.sp, workspace_id="ws-1", session_id="ses-b", scheduler=world.scheduler,
+        claim_engine=world.engine, workspace_registry=world.registry, event_bus=world.bus,
+    )
+    answering = await world.sessions.get("ses-b")
+    assert answering.pending_binding_switch == request, "the guard (the row is ENDED) no longer held, so the switch stays queued"
+    assert (answering.binding.agent_id, answering.binding_epoch) == ("agent-ses-b", 0), "the turn that answers both messages runs under the outgoing binding"
+    assert {r["payload"]["text"] for r in _user_inputs(world, "ses-b")} == {"arrives in the window", "queued while it was parked"}
+
+    # The checkpoint after that turn applies it: the turn ran, so the session has no park.
+    await apply_queued_binding_switch(storage_provider=world.sp, workspace_io=io, session_id="ses-b")
+    switched = await world.sessions.get("ses-b")
+    assert switched.pending_binding_switch is None
+    assert (switched.binding.agent_id, switched.binding_epoch) == ("builder", 1)
+
+
 # ---- a delivery that finds the session unable to take the message says why ---------------------------------------------------------
 
 
