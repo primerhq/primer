@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import sys
 import threading
 import time
+import uuid
 from collections.abc import AsyncIterator, Iterator
 
 import pytest
@@ -36,8 +38,9 @@ from primer.int.toolset import ToolsetProvider
 from primer.model.chat import Done, Message, TextPart, Tool, ToolCallPart, ToolCallResult
 from primer.model.except_ import AuthRequiredError, ConfigError, NetworkError, ProviderError
 from primer.model.principal import PrincipalRef
-from primer.model.provider import HttpConfig, McpConfig, TransportType
+from primer.model.provider import HttpConfig, McpConfig, StdioConfig, TransportType
 from primer.toolset.mcp import McpToolsetProvider
+from tests.agent import test_subagent_stop as subagent_stop
 from tests.agent.test_run_agent_turn_seam import AGENT, MODEL, _Manager, _RoundsLLM
 
 _SCHEMA = {"type": "object", "properties": {}, "additionalProperties": False}
@@ -74,20 +77,33 @@ class _Local:
 
 
 class _Remote(_Local):
-    """A provider that lists over the network: it raises, or hangs, or answers; it records that its listing was cancelled."""
+    """A provider that lists over the network: it raises, or hangs, or answers; it records that its listing began and was cancelled.
+
+    ``teardown`` makes a cancelled listing slow to die: it holds the CancelledError until the event is set."""
 
     lists_remotely = True
 
-    def __init__(self, tools: list[Tool] | None = None, *, raises: BaseException | None = None, hang: bool = False) -> None:
+    def __init__(
+        self,
+        tools: list[Tool] | None = None,
+        *,
+        raises: BaseException | None = None,
+        hang: bool = False,
+        teardown: asyncio.Event | None = None,
+    ) -> None:
         super().__init__(tools, raises=None)
         self.remote_raises = raises
         self.hang = hang
+        self.teardown = teardown
         self.listing_cancelled = False
+        self.entered = asyncio.Event()  # the listing has begun
+        self.cancel_seen = asyncio.Event()  # the listing has been cancelled
         self.started_at: float | None = None
 
     async def list_tools(self, *, principal: str | None = None) -> AsyncIterator[Tool]:
         self.listings += 1
         self.started_at = asyncio.get_running_loop().time()
+        self.entered.set()
         try:
             if self.hang:
                 await asyncio.Event().wait()
@@ -97,7 +113,23 @@ class _Remote(_Local):
                 yield tool
         except asyncio.CancelledError:
             self.listing_cancelled = True
+            self.cancel_seen.set()
+            if self.teardown is not None:
+                await self.teardown.wait()
             raise
+
+
+async def _listing_started(*remotes: _Remote) -> None:
+    """Wait until every one of the remotes' listings is running (so a cancel lands on a listing, not before it)."""
+    await asyncio.wait_for(asyncio.gather(*(remote.entered.wait() for remote in remotes)), 5)
+
+
+async def _no_tasks_beyond(before: set[asyncio.Task], within: float = 3.0) -> None:
+    """Wait until nothing that was not running before is still running; fails after ``within`` seconds."""
+    deadline = time.monotonic() + within
+    while asyncio.all_tasks() - before:
+        assert time.monotonic() < deadline, f"still running: {asyncio.all_tasks() - before}"
+        await asyncio.sleep(0.01)
 
 
 def _manager(**toolsets) -> ToolExecutionManager:
@@ -263,12 +295,12 @@ async def test_a_real_cancellation_is_not_swallowed():
     remote = _Remote(hang=True)
     mgr = _manager(misc=_Local([TOOL_A]), kb=remote)
     task = asyncio.create_task(mgr.list_tools())
-    await asyncio.sleep(0.05)
+    await _listing_started(remote)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
     assert task.cancelled()
-    assert remote.listing_cancelled
+    assert remote.listing_cancelled, "the listing was cancelled and had finished before the cancel reached the caller"
     assert mgr.unavailable_toolsets() == {}, "a cancelled listing leaves nothing behind"
     assert asyncio.all_tasks() - before == set(), "no listing task outlives the cancelled wait"
 
@@ -277,7 +309,7 @@ async def test_a_cancellation_reaches_every_listing_that_is_waiting():
     one, two = _Remote(hang=True), _Remote(hang=True)
     mgr = _manager(one=one, two=two)
     task = asyncio.create_task(mgr.list_tools())
-    await asyncio.sleep(0.05)
+    await _listing_started(one, two)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -289,7 +321,7 @@ async def test_a_cancelled_listing_does_not_poison_the_next_try():
     remote = _Remote([TOOL_SEARCH], hang=True)
     mgr = _manager(kb=remote)
     task = asyncio.create_task(mgr.list_tools())
-    await asyncio.sleep(0.05)
+    await _listing_started(remote)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -304,12 +336,18 @@ async def test_a_stop_scope_around_the_wait_ends_it_at_once():
     stop = asyncio.Event()
     remote = _Remote(hang=True)
     mgr = _manager(kb=remote)
-    asyncio.get_running_loop().call_later(0.05, stop.set)
+
+    async def stop_once_listing() -> None:
+        await _listing_started(remote)
+        stop.set()
+
+    stopper = asyncio.create_task(stop_once_listing())
     started = time.monotonic()
     with pytest.raises(Interrupted):
         async with asyncio.timeout(2):  # the test's own net: a swallowed Stop ends here as a TimeoutError instead
             async with interruptible(stop):
                 await mgr.list_tools()
+    await stopper
     assert time.monotonic() - started < 1
     assert remote.listing_cancelled
     task = asyncio.current_task()
@@ -319,31 +357,19 @@ async def test_a_stop_scope_around_the_wait_ends_it_at_once():
 async def test_a_second_cancel_while_the_listing_is_tearing_down_still_propagates():
     """A listing that is slow to die must not make the wait hold the caller: a cancel that arrives while it unwinds is the caller's too."""
     release = asyncio.Event()
-
-    class _SlowToDie(_Remote):
-        async def list_tools(self, *, principal=None):
-            try:
-                await asyncio.Event().wait()
-            except asyncio.CancelledError:
-                self.listing_cancelled = True
-                await release.wait()  # teardown that takes a while
-                raise
-            yield  # pragma: no cover - makes this an async generator
-
     before = asyncio.all_tasks()
-    remote = _SlowToDie()
+    remote = _Remote(hang=True, teardown=release)
     mgr = _manager(kb=remote)
     task = asyncio.create_task(mgr.list_tools())
-    await asyncio.sleep(0.05)
+    await _listing_started(remote)
     task.cancel()
-    await asyncio.sleep(0.05)
-    assert remote.listing_cancelled and not task.done(), "the wait lets the listing finish tearing down"
+    await asyncio.wait_for(remote.cancel_seen.wait(), 5)
+    assert not task.done(), "the wait lets the listing finish tearing down before the cancel goes on"
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, 1)
-    release.set()
-    await asyncio.sleep(0.05)  # the abandoned listing finishes by itself
-    assert asyncio.all_tasks() - before == set()
+    release.set()  # the abandoned listing now finishes by itself
+    await _no_tasks_beyond(before)
 
 
 async def test_a_listing_that_cancels_itself_is_a_failed_listing_not_a_cancelled_turn():
@@ -662,3 +688,67 @@ async def test_a_cancel_while_the_real_server_hangs_is_not_swallowed(silent_serv
         await asyncio.wait_for(task, 15)
     assert task.cancelled()
     assert asyncio.all_tasks() - before == set()
+
+
+async def test_a_stop_during_a_subagents_turn_start_listing_ends_it_before_the_model(monkeypatch):
+    """End to end through the REAL stdio provider, the incident class of stop slice B1 (tests/agent/test_subagent_stop.py).
+
+    The MCP stdio handshake answers a cancel by clearing every pending cancel on its task and raising ConfigError, so a
+    listing run in the turn's own task would take the operator's Stop for a toolset that failed to list and carry on to
+    the model. Here the server is a process that never answers ``initialize``, so it is the LISTING that hangs, at the
+    start of a subagent's turn; the Stop reaches it the way it does in production, as the cancel ``run_stoppable`` sends the
+    call's task. The subagent must end without a model call (and without running anything), and the launched server must
+    go down with the listing."""
+    import primer.agent.invoke as invoke
+    from primer.agent.invoke import run_subagent
+    from primer.agent.stoppable_call import run_stoppable
+
+    marker = f"primer-listing-{uuid.uuid4().hex}"
+    llm = subagent_stop._ScriptedLlm([None])  # would answer at once, if the subagent ever reached it
+    recorder = subagent_stop._Recorder()
+    provider = McpToolsetProvider(
+        toolset_id="ext",
+        config=McpConfig(
+            transport=TransportType.STDIO,
+            # Not an MCP server: it starts, reads nothing and never answers ``initialize``.
+            config=StdioConfig(command=[sys.executable, "-c", f"import time; time.sleep(120)  # {marker}"]),
+        ),
+    )
+    manager = ToolExecutionManager(
+        toolset_providers={"ext": provider, "rec": recorder},  # type: ignore[arg-type]
+        initiated_by=PrincipalRef(type="user", id="u1", display="u1", role="user", source="local"),
+    )
+
+    async def resolve(agent_id, *, storage_provider, provider_registry):
+        return subagent_stop.AGENT, llm, subagent_stop.MODEL
+
+    async def build(context, *, storage_provider=None, provider_registry=None, approval_resolver=None):
+        return manager
+
+    monkeypatch.setattr(invoke, "_resolve_agent_runtime", resolve)
+    monkeypatch.setattr(invoke, "build_subagent_toolmanager", build)
+    stop = asyncio.Event()
+    call = asyncio.create_task(
+        run_stoppable(
+            lambda: run_subagent(agent_id="sub", prompt="go", storage_provider=None, provider_registry=None),
+            interrupt=stop, interruptible=lambda: True, name="invoke_agent",
+        )
+    )
+    try:
+        await subagent_stop._until(lambda: subagent_stop._marked_pids(marker) or call.done())  # the handshake is in flight
+        assert not call.done(), f"the subagent ended before it reached the listing: {call.exception()!r}"
+        assert llm.requests == 0, "the subagent was not inside the listing: not the situation"
+
+        stop.set()
+        result = await asyncio.wait_for(call, timeout=30.0)
+
+        # None is "the Stop fired and the call has no usable result": the parent answers it ``interrupted: stopped by user``.
+        assert result is None, f"the parent was handed {result!r} as the call's result"
+        assert llm.requests == 0, "the subagent went on to the model after the Stop"
+        assert recorder.executed == []
+        await subagent_stop._until(lambda: not subagent_stop._marked_pids(marker))  # the server went down with the listing
+    finally:
+        stop.set()
+        call.cancel()
+        await asyncio.gather(call, return_exceptions=True)
+        subagent_stop._kill_marked(marker)
