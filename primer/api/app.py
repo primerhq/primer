@@ -318,12 +318,17 @@ def create_test_app(
     )
     # Always-on collections toolset (document-tree navigation): the test
     # ssp registry's stub factory degrades indexing, like the web
-    # toolset's stub above.
-    collections_toolset = build_collections_toolset(
-        storage_provider=storage_provider,
-        provider_registry=provider_registry,
-        semantic_search_registry=_test_ssp_registry,
-    )
+    # toolset's stub above. Guarded because build_collections_toolset
+    # calls get_content_store() at build time, which the _SP stubs passed
+    # into create_test_app lack; left unregistered, the seed helper
+    # (builtin_toolset_providers) logs and skips the id.
+    if hasattr(storage_provider, "get_content_store"):
+        collections_toolset = build_collections_toolset(
+            storage_provider=storage_provider,
+            provider_registry=provider_registry,
+            semantic_search_registry=_test_ssp_registry,
+        )
+        provider_registry._collections_toolset_provider = collections_toolset  # noqa: SLF001
     # Always-on harness and trigger toolsets. No event bus or claim
     # engine in the test app; both tolerate that (the lifespan builds
     # them after the bus exists, so their session tools capture it).
@@ -336,7 +341,6 @@ def create_test_app(
     provider_registry._system_toolset_provider = system_toolset  # noqa: SLF001
     provider_registry._workspaces_toolset_provider = workspaces_toolset  # noqa: SLF001
     provider_registry._misc_toolset_provider = misc_toolset  # noqa: SLF001
-    provider_registry._collections_toolset_provider = collections_toolset  # noqa: SLF001
     provider_registry._web_toolset_provider = web_toolset  # noqa: SLF001
     provider_registry._harness_toolset_provider = harness_toolset  # noqa: SLF001
     provider_registry._trigger_toolset_provider = trigger_toolset  # noqa: SLF001
