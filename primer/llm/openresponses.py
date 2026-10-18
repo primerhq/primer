@@ -797,7 +797,8 @@ _POLICY_BY_FLAVOR: dict[OpenResponsesFlavor, _FlavorPolicy] = {
     # extra_body.chat_template_kwargs, a top-level enable_thinking, and a
     # native reasoning.effort -- and IGNORES all four, emitting reasoning
     # regardless. There is therefore no reasoning mapping for this flavor;
-    # see _reasoning_extended, which warns rather than pretending.
+    # see primer.llm._reasoning.openresponses_extended, which warns rather
+    # than pretending.
     OpenResponsesFlavor.VLLM: _FlavorPolicy(
         require_api_key=False,
         drop_encrypted_reasoning=False,
