@@ -49,8 +49,29 @@ async def test_the_served_row_carries_the_addressing_style(client):
     assert served["config"]["access_key"] == "**********", "the keys are still served masked"
 
 
+async def test_an_edit_of_one_field_round_trips_every_other_field(client, app):
+    """Master Review Focus 1 for this class: a row with every field set, one field edited through the console, and every other field unchanged."""
+    every_field = {
+        "bucket": "media", "prefix": "files/", "endpoint_url": "https://minio.example.com", "region": "us-east-1",
+        "addressing_style": "virtual",
+    }
+    assert (await client.post(COLLECTION, json=_body("s3-all", **every_field))).status_code == 201
+    served = (await client.get(f"{COLLECTION}/s3-all")).json()
+    assert {k: served["config"][k] for k in every_field} == every_field
+    served["config"]["prefix"] = "other/"                  # the one field the operator edits
+
+    r = await client.put(f"{COLLECTION}/s3-all", json=served)
+
+    assert r.status_code == 200, r.text
+    stored = (await _stored(app, "s3-all")).config
+    assert (stored.bucket, stored.prefix, stored.endpoint_url, stored.region, stored.addressing_style) == (
+        "media", "other/", "https://minio.example.com", "us-east-1", "virtual",
+    )
+    assert stored.access_key.get_secret_value() == "AKIAEXAMPLEKEY1"
+    assert stored.secret_key.get_secret_value() == "secret-example-1"
+
+
 async def test_an_edit_that_sets_the_addressing_style_keeps_the_keys(client, app):
-    """Review Focus 1 for this class: a field the edit does not touch round-trips unchanged, the new option included."""
     assert (await client.post(COLLECTION, json=_body("s3-path", endpoint_url="https://minio.example.com", region="us-east-1"))).status_code == 201
     served = (await client.get(f"{COLLECTION}/s3-path")).json()
     served["config"]["addressing_style"] = "path"
@@ -58,11 +79,11 @@ async def test_an_edit_that_sets_the_addressing_style_keeps_the_keys(client, app
     r = await client.put(f"{COLLECTION}/s3-path", json=served)
 
     assert r.status_code == 200, r.text
-    stored = await _stored(app, "s3-path")
-    assert stored.config.addressing_style == "path"
-    assert (stored.config.endpoint_url, stored.config.region, stored.config.bucket) == ("https://minio.example.com", "us-east-1", "media")
-    assert stored.config.access_key.get_secret_value() == "AKIAEXAMPLEKEY1"
-    assert stored.config.secret_key.get_secret_value() == "secret-example-1"
+    stored = (await _stored(app, "s3-path")).config
+    assert stored.addressing_style == "path"
+    assert (stored.endpoint_url, stored.region, stored.bucket) == ("https://minio.example.com", "us-east-1", "media")
+    assert stored.access_key.get_secret_value() == "AKIAEXAMPLEKEY1"
+    assert stored.secret_key.get_secret_value() == "secret-example-1"
 
 
 async def test_pointing_the_endpoint_elsewhere_still_refuses_the_served_masks(client):
