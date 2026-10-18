@@ -20,14 +20,19 @@ def _now() -> datetime:
 
 class _FakeWorkspace:
     state_path = ".state"
+    id = "ws-1"
 
     def __init__(self) -> None:
         self._files: dict[str, bytes] = {}
+        # Paths whose read raises this instead of answering (a directory, a read error).
+        self.unreadable: dict[str, Exception] = {}
 
     def write(self, path: str, content: str) -> None:
         self._files[path] = content.encode("utf-8")
 
     async def read_file(self, path: str) -> bytes:
+        if path in self.unreadable:
+            raise self.unreadable[path]
         if path not in self._files:
             from primer.model.except_ import NotFoundError
 
@@ -167,8 +172,13 @@ class _StubLLM:
         return None
 
 
-async def _journey(app, fake_storage_provider, monkeypatch, *, lines=None, llm=None, system_prompt=None):
-    """A session with ``lines`` as its log, an agent, and a stub LLM behind the provider registry."""
+async def _journey(
+    app, fake_storage_provider, monkeypatch, *, lines=None, llm=None, system_prompt=None, agents_md=None,
+    agents_md_name="agents.md",
+):
+    """A session with ``lines`` as its log, an agent, and a stub LLM behind the provider registry.
+
+    ``agents_md`` is the text of the workspace's instructions file, written under ``agents_md_name``."""
     from primer.model.agent import Agent, AgentModel
     from primer.model_profile.resolver import ResolvedModel
 
@@ -188,6 +198,8 @@ async def _journey(app, fake_storage_provider, monkeypatch, *, lines=None, llm=N
     )
     ws = _FakeWorkspace()
     ws.write(f".state/sessions/{sid}/messages.jsonl", "\n".join(lines) + "\n")
+    if agents_md is not None:
+        ws.write(agents_md_name, agents_md)
     _wire(app, ws)
     llm = llm or _StubLLM()
 
@@ -264,16 +276,22 @@ async def test_nothing_to_summarise_is_a_422_that_names_the_reason(client, app, 
 
 
 @pytest.mark.asyncio
-def _expected_fixed(system_prompt: str | None) -> int:
-    """What the executor renders as the system prompt (the agent's own plus the workspace fragment), sized by the
-    strategy's own estimate. The tool schemas are not part of it: the route has no executor to ask."""
+def _expected_fixed(system_prompt: str | None, agents_md: str | None = None) -> int:
+    """What the executor renders as the system prompt (the agent's own, the workspace fragment, and the workspace's
+    agents.md part when the file exists), sized by the strategy's own estimate. The tool schemas are not part of it:
+    the route has no executor to ask."""
     from primer.agent.compaction import CompactionStrategy
     from primer.agent.prompt_render import render_system_prompt_or_raw
     from primer.model.chat import Message, TextPart
     from primer.model.graph import build_execution_context
+    from primer.workspace.instructions import workspace_instructions_part
     from primer.workspace.session import workspace_system_prompt_fragment
 
-    parts = [*([system_prompt] if system_prompt else []), workspace_system_prompt_fragment("j-1")]
+    parts = [
+        *([system_prompt] if system_prompt else []),
+        workspace_system_prompt_fragment("j-1"),
+        *([workspace_instructions_part(agents_md)] if agents_md else []),
+    ]
     text = render_system_prompt_or_raw(parts, build_execution_context())
     return CompactionStrategy.estimate_fixed_overhead([Message(role="system", parts=[TextPart(text=text)])], [])
 
@@ -310,6 +328,56 @@ async def test_an_agent_without_a_system_prompt_still_has_the_workspace_fragment
     fixed = marker["payload"]["fixed_overhead_tokens"]
     assert fixed == _expected_fixed(None) and 0 < fixed < 1_000, "the fragment every workspace executor appends"
     assert marker["payload"]["tokens_before"] > fixed
+
+
+AGENTS_MD = "Keep it short. " * 200  # 2,800 characters: about 700 tokens
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["agents.md", "AGENTS.md"])
+async def test_the_fixed_part_counts_the_workspace_instructions(client, app, fake_storage_provider, monkeypatch, name):
+    """The executor puts the workspace's agents.md in the system prompt, so the figures the route reports count it:
+    a session whose workspace has a long instructions file is bigger than the route used to say."""
+    ws, _ = await _journey(
+        app, fake_storage_provider, monkeypatch, system_prompt=SYSTEM_PROMPT, agents_md=AGENTS_MD, agents_md_name=name,
+    )
+    r = await client.post("/v1/workspaces/ws-1/sessions/j-1/compact")
+    assert r.status_code == 200, r.text
+    (marker,) = _marker(ws)
+    fixed = marker["payload"]["fixed_overhead_tokens"]
+    assert fixed == _expected_fixed(SYSTEM_PROMPT, AGENTS_MD), "the agent's prompt, the fragment and the file"
+    assert fixed - _expected_fixed(SYSTEM_PROMPT) > 500, "the file's own size is in it"
+
+
+@pytest.mark.asyncio
+async def test_a_workspace_without_the_file_is_sized_as_before(client, app, fake_storage_provider, monkeypatch):
+    ws, _ = await _journey(app, fake_storage_provider, monkeypatch, system_prompt=SYSTEM_PROMPT)
+    r = await client.post("/v1/workspaces/ws-1/sessions/j-1/compact")
+    assert r.status_code == 200, r.text
+    (marker,) = _marker(ws)
+    assert marker["payload"]["fixed_overhead_tokens"] == _expected_fixed(SYSTEM_PROMPT)
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_instructions_file_does_not_stop_a_compaction(
+    client, app, fake_storage_provider, monkeypatch, caplog,
+):
+    """A file that is a directory (or any read error) is logged and skipped, here as in a turn."""
+    import logging
+
+    from primer.model.except_ import BadRequestError
+
+    ws, _ = await _journey(app, fake_storage_provider, monkeypatch, system_prompt=SYSTEM_PROMPT)
+    ws.unreadable["agents.md"] = BadRequestError("'agents.md' is not a file")
+    r = await client.post("/v1/workspaces/ws-1/sessions/j-1/compact")
+    assert r.status_code == 200, r.text
+    (marker,) = _marker(ws)
+    assert marker["payload"]["fixed_overhead_tokens"] == _expected_fixed(SYSTEM_PROMPT)
+    unreadable = [
+        rec for rec in caplog.records
+        if rec.levelno == logging.WARNING and rec.getMessage().startswith("workspace instructions: agents.md in ws-1")
+    ]
+    assert len(unreadable) == 1
 
 
 @pytest.mark.asyncio

@@ -105,6 +105,22 @@ Structured output is configured on a **graph node** (its
 `output_schema`), not on the agent; the agent itself has no
 `response_format` field.
 
+In a workspace, an agent's prompt is more than its `system_prompt`.
+Each turn the runtime appends to it, in this order, a section that
+describes the workspace and the session (the workspace tools, the
+`.state/` layout) and then the workspace's own instructions: the
+contents of `agents.md` (or `AGENTS.md`) at the workspace root, under
+the heading "Workspace instructions (agents.md)". Every agent that runs
+in the workspace gets it: the agent a session is bound to, the agents
+of a graph's nodes, and a subagent started with `system::invoke_agent`.
+The file is read again for every turn, so an edit applies from the next
+turn; the model sees it as written (braces are not template syntax); it
+is cut at 32 KiB with a note saying so; and a file that cannot be read
+is skipped with a log warning. Per-workspace rules belong in that file,
+not in an agent's `system_prompt`. Treat it as instructions from
+whoever can write to the workspace: any session there can change it.
+See [workspaces](workspaces.md).
+
 The executor responsibilities, per turn:
 
 1. Reconstruct the message history from `.state` git commits,
@@ -198,6 +214,9 @@ What's worth knowing:
   agent's prompt or toolset list mid-session; next turn sees the
   edit. This is sometimes the feature (hot-config) and sometimes
   the bug (tool disappeared).
+- The workspace's `agents.md` is **re-read on every turn** too: an
+  edit to the file reaches the agents running in that workspace from
+  their next turn.
 - Structured output is a graph-node feature: a graph node with an
   `output_schema` populates `NodeOutput.parsed`; a session returns
   only the text.

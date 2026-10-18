@@ -212,6 +212,7 @@ async def run_subagent(
     invoke_tool_call_id: str | None = None,
     identity: "PrincipalRef | None" = None,
     turn_no: int | None = None,
+    workspace_instructions: str | None = None,
 ) -> str:
     """Run agent ``agent_id`` once on ``prompt`` (stateless: system prompt +
     prompt, no shared history) and return the final assistant text.
@@ -229,6 +230,12 @@ async def run_subagent(
     and passed through unchanged - a nested subagent call belongs to the
     outer turn, not a freshly-minted one, so it is threaded through
     verbatim rather than re-derived here.
+
+    ``workspace_instructions`` is the text of the agents.md of the workspace the
+    call is made in (the caller reads it; ``None`` outside a workspace or when it
+    has none). The subagent runs in that workspace like any agent there, so the
+    file follows its own system prompt, rendered literally (see
+    :mod:`primer.workspace.instructions`).
     """
     from primer.agent.loop import run_agent_turn
     from primer.model.yield_ import YieldToWorker
@@ -279,6 +286,7 @@ async def run_subagent(
 
     from primer.model.graph import build_execution_context
     from primer.agent.prompt_render import render_system_prompt_or_raw
+    from primer.workspace.instructions import workspace_instructions_parts
 
     surface = "workspace" if workspace_id else ("chat" if chat_id else "memory")
     _sub_ctx = build_execution_context(
@@ -287,9 +295,13 @@ async def run_subagent(
         session_id=session_id,
         identity=identity,
     )
+    system_prompt = [
+        *agent.system_prompt,
+        *workspace_instructions_parts(agent, workspace_instructions),
+    ]
     sys_text = (
-        render_system_prompt_or_raw(agent.system_prompt, _sub_ctx)
-        if agent.system_prompt else ""
+        render_system_prompt_or_raw(system_prompt, _sub_ctx)
+        if system_prompt else ""
     )
     prompt_msgs: list[Message] = []
     if sys_text:

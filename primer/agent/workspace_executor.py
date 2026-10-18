@@ -5,7 +5,8 @@ State persists through :meth:`AgentSession.commit_state` (one git
 commit per turn). The agent's tool list is composed from
 :attr:`Agent.tools` PLUS :attr:`AgentSession.workspace_tools`, and
 the agent's system prompt is extended with
-:attr:`AgentSession.system_prompt_fragment`.
+:attr:`AgentSession.system_prompt_fragment` and then with the
+workspace's ``agents.md`` (see :mod:`primer.workspace.instructions`).
 
 Drives :class:`SessionStatus` transitions between turns and at
 terminal events (RUNNING <-> WAITING <-> ENDED) based on the LLM's
@@ -34,6 +35,7 @@ from primer.model.workspace_session import (
     _UserInputWaiting,
 )
 from primer.model.yield_ import ToolWaitPark, YieldToWorker
+from primer.workspace.instructions import workspace_instructions_parts
 
 
 class _EventLog(Protocol):
@@ -77,10 +79,13 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         artifact_storage: "ArtifactStorage | None" = None,
         turn_no: int | None = None,
         tool_calls_as_claims_enabled: bool = False,
+        workspace_instructions: str | None = None,
     ) -> None:
         # Extend the agent's system prompt with the workspace fragment
         # so the LLM sees workspace-tool documentation in its system
-        # context. This produces a *new* Agent instance with the
+        # context, then with the workspace's agents.md (the text the
+        # worker read for THIS turn's build; ``None`` when the workspace
+        # has none). This produces a *new* Agent instance with the
         # combined prompt; the original agent definition is unchanged.
         #
         # Copy the agent and replace ONLY the system prompt. This used to rebuild
@@ -88,8 +93,10 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         # an operator-set ``max_tool_turns`` became 50 and ``compaction_tool_access``
         # became False in every workspace session, silently. ``deep=True`` keeps the
         # copy from sharing its lists with the registry entity it came from.
-        composite_system_prompt = list(agent.system_prompt) + [
-            session.system_prompt_fragment
+        composite_system_prompt = [
+            *agent.system_prompt,
+            session.system_prompt_fragment,
+            *workspace_instructions_parts(agent, workspace_instructions),
         ]
         composite_agent = agent.model_copy(
             update={"system_prompt": composite_system_prompt}, deep=True,

@@ -178,6 +178,7 @@ def build_graph_invocation_services(
     from primer.model.agent import Agent
     from primer.model.except_ import NotFoundError
     from primer.model.graph import Graph
+    from primer.workspace.instructions import load_workspace_instructions
 
     state_repo = getattr(workspace, "state_repo", None)
     if state_repo is None or workspace_session is None:
@@ -219,6 +220,8 @@ def build_graph_invocation_services(
     router_registry = getattr(pool, "_router_registry", None)
 
     async def build_child_executor(*, graph, gsid: str):
+        # One read per graph run, not one per turn: the file is what it is when this graph starts.
+        workspace_instructions = await load_workspace_instructions(workspace)
         return WorkspaceGraphExecutor(
             graph=graph,
             agent_resolver=agent_resolver,
@@ -227,6 +230,7 @@ def build_graph_invocation_services(
             state_repo=state_repo,
             graph_session_id=gsid,
             workspace_session=workspace_session,
+            workspace_instructions=workspace_instructions,
             graph_resolver=graph_resolver,
             router_registry=router_registry,
             principal=None,
@@ -265,6 +269,7 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
     from primer.model.agent import Agent
     from primer.model.except_ import NotFoundError
     from primer.worker.pool import _TurnDriver
+    from primer.workspace.instructions import load_workspace_instructions
 
     binding = session.binding  # AgentSessionBinding
     # Resolve the Agent: prefer the snapshot if the API froze one
@@ -369,6 +374,11 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
         artifact_registry=pool._artifact_storage_registry,
     ))
 
+    # The workspace's agents.md, read now: one executor is built per turn, so an
+    # edit to the file reaches the next turn. A missing file is None; an
+    # unreadable one is logged and None (it never fails the build).
+    workspace_instructions = await load_workspace_instructions(workspace)
+
     executor = WorkspaceAgentExecutor(
         agent=agent,
         llm=llm,
@@ -379,6 +389,7 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
         artifact_storage=await _resolve_default_artifact_storage(pool),
         turn_no=session.turn_no,
         tool_calls_as_claims_enabled=pool.config.tool_calls_as_claims_enabled,
+        workspace_instructions=workspace_instructions,
     )
     return _TurnDriver(executor)
 
@@ -417,6 +428,7 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
     from primer.model.except_ import ConfigError, NotFoundError
     from primer.model.graph import Graph
     from primer.worker.pool import _GraphTurnDriver
+    from primer.workspace.instructions import load_workspace_instructions
 
     binding = session.binding  # GraphSessionBinding
 
@@ -559,6 +571,10 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
     async def toolset_resolver(toolset_id: str):
         return await pool._provider_registry.get_toolset(toolset_id)
 
+    # The workspace's agents.md, read now: every node agent of this graph run
+    # follows it (see build_agent_executor for the missing / unreadable cases).
+    workspace_instructions = await load_workspace_instructions(workspace)
+
     executor = WorkspaceGraphExecutor(
         graph=graph,
         agent_resolver=agent_resolver,
@@ -567,6 +583,7 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
         state_repo=state_repo,
         graph_session_id=session.id,
         workspace_session=workspace_session,
+        workspace_instructions=workspace_instructions,
         graph_resolver=graph_resolver,
         router_registry=router_registry,
         graph_input=graph_input,
