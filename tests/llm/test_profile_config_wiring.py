@@ -358,6 +358,43 @@ class TestTheKnobsReachTheWire:
         await _call_under(OpenRouterLLM(_openrouter()), _cfg(ReasoningLevel.OFF))
         assert _body(wire)["reasoning"] == {"effort": "none"}
 
+    async def test_openrouter_off_on_a_mandatory_reasoning_model_retries_without_it(
+        self, monkeypatch, caplog,
+    ) -> None:
+        """OpenRouter refuses ``effort: "none"`` for a model whose reasoning
+        is mandatory: the call is made once more without the reasoning
+        object, logged once, and that model is not asked again."""
+        caplog.set_level(logging.DEBUG, logger="primer.llm._reasoning")
+        http = _sdk_http_module()
+        bodies: list[dict] = []
+
+        def _handle(request):
+            body = json.loads(request.content)
+            bodies.append(body)
+            if body.get("reasoning") == {"effort": "none"}:
+                return http.Response(400, json={"error": {
+                    "message": "Reasoning is mandatory for this endpoint and cannot be disabled.",
+                    "code": 400,
+                }})
+            return http.Response(200, content=_SSE, headers={"content-type": "text/event-stream"})
+
+        real = AsyncOpenAI
+        monkeypatch.setattr(
+            "primer.llm.openrouter.AsyncOpenAI",
+            lambda **kw: real(**kw, http_client=http.AsyncClient(transport=http.MockTransport(_handle))),
+        )
+        llm = OpenRouterLLM(_openrouter())  # the registry hands out one cached adapter
+        try:
+            for _ in range(2):
+                knobs = profile_extended(llm, _cfg(ReasoningLevel.OFF), model="openai/o3")
+                async for _ev in profile_stream(llm, knobs, model="openai/o3", messages=_HI):
+                    pass
+        finally:
+            await llm.aclose()
+        assert [("reasoning" in b) for b in bodies] == [True, False, False]
+        hits = [r for r in caplog.records if "mandatory" in r.getMessage()]
+        assert len(hits) == 1
+
     @pytest.mark.parametrize("module, make", [
         ("openchat", lambda: OpenChatLLM(_openchat(OpenChatFlavor.VLLM))),
         ("openrouter", lambda: OpenRouterLLM(_openrouter())),

@@ -381,7 +381,11 @@ def openrouter_extended(config: ModelProfileConfig) -> dict[str, Any]:
     OpenRouter routes one request to many upstreams and translates
     ``reasoning.effort`` for each; ``"none"`` turns reasoning off. The object
     is not a parameter of the openai SDK, so the adapter sends it in the
-    request body.
+    request body. Which upstream models make reasoning mandatory is
+    OpenRouter's to say, not a list primer can keep: such a model refuses
+    ``"none"`` with a 400 naming reasoning, and :func:`profile_stream` makes
+    the call once more without the object, logs it once, and calls that
+    model without it for the rest of the process.
     """
     level = config.reasoning
     if level is None:
