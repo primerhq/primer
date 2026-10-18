@@ -79,6 +79,15 @@ DOCKER_RUNTIME_IMAGE = "primer/workspace-runtime:1.1"
 # FUSE device, say), which only an admin may do (lead ruling 15 of plan 08; ``primer.workspace.template_privilege``).
 DEFAULT_GPU_RESOURCE_NAME = "nvidia.com/gpu"
 
+# The most one workspace may ask for (lead ruling 17 of plan 08, from the review of #782). 1e308 cores, 10**30 bytes and 10**30
+# GPUs were accepted by the models and came back as a generic 500 after the create had been rolled back, when the cluster refused
+# the manifest; they are a 422 with the field in ``loc`` now. The numbers are sane maxima, not what any cluster has: a node
+# cannot schedule 64 TiB, but a deployment with a bigger machine than these would say so by raising them here.
+MAX_WORKSPACE_CPU_CORES = 1024
+MAX_WORKSPACE_MEMORY_BYTES = 64 * 2**40    # 64 TiB
+MAX_WORKSPACE_DISK_BYTES = 64 * 2**40      # 64 TiB
+MAX_GPU_COUNT = 64
+
 # Kubernetes name rules for the template fields that become pod labels, selectors, tolerations, an extended resource name and
 # a service account. The patterns are the structure only; a label key and a resource name carry a prefix that is ALSO capped
 # at 253 characters, which a regular expression cannot say, so the validators below check it too.
@@ -553,7 +562,9 @@ class K8sGpu(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid")
-    count: int = Field(..., ge=1, description="How many GPUs to request (at least 1).")
+    count: int = Field(
+        ..., ge=1, le=MAX_GPU_COUNT, description=f"How many GPUs to request (at least 1, at most {MAX_GPU_COUNT}).",
+    )
     resource_name: str = Field(
         default=DEFAULT_GPU_RESOURCE_NAME,
         pattern=K8S_RESOURCE_NAME_PATTERN,
@@ -883,28 +894,34 @@ class WorkspaceTemplate(Describeable):
 class WorkspaceResourceOverrides(BaseModel):
     """A per-workspace size, chosen at create (platform revamp 2026-10, design 14.3).
 
-    Every field is a positive number or ``None`` ("the template's value"); there is no provider cap, a size a cluster
-    cannot schedule fails at the pod wait as a template's would. The names are the ones the backends read: Kubernetes
-    ``resources.cpu_cores`` / ``resources.memory_bytes`` (requests = limits) and the PVC request, Docker
-    ``backend.cpu_cores`` / ``backend.memory_bytes``.
+    Every field is a positive number or ``None`` ("the template's value"), and at most a sane maximum
+    (:data:`MAX_WORKSPACE_CPU_CORES`, :data:`MAX_WORKSPACE_MEMORY_BYTES`, :data:`MAX_WORKSPACE_DISK_BYTES`; lead ruling 17).
+    There is no provider cap below that: a size a cluster cannot schedule fails at the pod wait as a template's would. The
+    names are the ones the backends read: Kubernetes ``resources.cpu_cores`` / ``resources.memory_bytes`` (requests = limits)
+    and the PVC request, Docker ``backend.cpu_cores`` / ``backend.memory_bytes``.
     """
 
     model_config = ConfigDict(extra="forbid")
     cpu_cores: float | None = Field(
         default=None,
         gt=0,
+        le=MAX_WORKSPACE_CPU_CORES,
         allow_inf_nan=False,
-        description="CPU cores for this workspace. null = the template's value.",
+        description=f"CPU cores for this workspace, at most {MAX_WORKSPACE_CPU_CORES}. null = the template's value.",
     )
     memory_bytes: int | None = Field(
         default=None,
         gt=0,
-        description="Memory in bytes for this workspace. null = the template's value.",
+        le=MAX_WORKSPACE_MEMORY_BYTES,
+        description="Memory in bytes for this workspace, at most 64 TiB. null = the template's value.",
     )
     disk_bytes: int | None = Field(
         default=None,
         gt=0,
-        description="Disk (the Kubernetes PVC request) in bytes for this workspace. null = the template's value.",
+        le=MAX_WORKSPACE_DISK_BYTES,
+        description=(
+            "Disk (the Kubernetes PVC request) in bytes for this workspace, at most 64 TiB. null = the template's value."
+        ),
     )
 
 
@@ -1639,6 +1656,10 @@ __all__ = [
     "KubernetesWorkspaceConfig",
     "LocalTemplateConfig",
     "LocalWorkspaceConfig",
+    "MAX_GPU_COUNT",
+    "MAX_WORKSPACE_CPU_CORES",
+    "MAX_WORKSPACE_DISK_BYTES",
+    "MAX_WORKSPACE_MEMORY_BYTES",
     "Op",
     "PodmanRuntimeConfig",
     "ResourceLimits",

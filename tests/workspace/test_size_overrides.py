@@ -11,11 +11,23 @@ from __future__ import annotations
 import pytest
 
 from primer.model.except_ import ValidationError
-from primer.model.workspace import WorkspaceProviderType, WorkspaceResourceOverrides, WorkspaceTemplateOverrides
+from primer.model.workspace import (
+    ContainerTemplateConfig,
+    KubernetesTemplateConfig,
+    ResourceLimits,
+    WorkspaceProviderType,
+    WorkspaceResourceOverrides,
+    WorkspaceTemplate,
+    WorkspaceTemplateOverrides,
+)
 from primer.workspace import size_overrides
 from primer.workspace.size_overrides import (
+    MAX_WORKSPACE_CPU_CORES,
+    MAX_WORKSPACE_MEMORY_BYTES,
     UNSUPPORTED_RESOURCE_OVERRIDES,
     ResourceOverrideRefused,
+    TemplateSizeRefused,
+    refuse_oversized_template_sizes,
     refuse_unsupported_resource_overrides,
 )
 
@@ -105,3 +117,83 @@ def test_a_provider_kind_with_no_rule_fails_loudly_instead_of_ignoring_the_size(
     with pytest.raises(ConfigError, match="mystery"):
         refuse_unsupported_resource_overrides("mystery", _o(cpu_cores=1))
     refuse_unsupported_resource_overrides("mystery", None)   # nothing asked for, nothing to refuse
+
+
+# ---- lead ruling 17 of plan 08 (from the review of #782): an absurd size the TEMPLATE sets ---------------------------------
+#
+# The override fields carry their caps in the model (a 422 with the field in ``loc``). A template's own CPU and memory are older
+# fields, so a cap cannot go on the model without making a stored row fail to load; instead the size the workspace will really
+# get (the override's, else the template's) is checked at create time, before any backend runs. A template that sets 1e308
+# cores came back as a generic 500 after a rolled-back create.
+
+
+def _k8s(cpu=None, memory=None) -> WorkspaceTemplate:
+    return WorkspaceTemplate(
+        id="big", provider_id="k3s", description="d", backend=KubernetesTemplateConfig(image="rt:1"),
+        resources=ResourceLimits(cpu_cores=cpu, memory_bytes=memory),
+    )
+
+
+def _docker(cpu=None, memory=None) -> WorkspaceTemplate:
+    return WorkspaceTemplate(
+        id="dock", provider_id="dock", description="d", backend=ContainerTemplateConfig(cpu_cores=cpu, memory_bytes=memory),
+    )
+
+
+def test_the_caps_are_re_exported_from_the_size_module():
+    assert (MAX_WORKSPACE_CPU_CORES, MAX_WORKSPACE_MEMORY_BYTES) == (1024, 64 * 2**40)
+
+
+def test_a_template_within_the_caps_is_never_refused():
+    refuse_oversized_template_sizes(_k8s(), None)
+    refuse_oversized_template_sizes(_k8s(cpu=1024, memory=64 * 2**40), None)             # the caps themselves are allowed
+    refuse_oversized_template_sizes(_docker(cpu=0.5, memory=2**30), WorkspaceTemplateOverrides())
+    refuse_oversized_template_sizes(WorkspaceTemplate(id="loc", provider_id="loc", description="d"), None)
+
+
+@pytest.mark.parametrize("cpu", [1024.5, 1e308, float("inf"), float("nan")])
+def test_a_kubernetes_template_with_an_absurd_cpu_is_refused_naming_the_field(cpu):
+    with pytest.raises(TemplateSizeRefused) as exc:
+        refuse_oversized_template_sizes(_k8s(cpu=cpu), None)
+    assert isinstance(exc.value, ValidationError)
+    assert exc.value.fields == ["resources.cpu_cores"] and exc.value.template_id == "big"
+    assert "template 'big'" in exc.value.message and "resources.cpu_cores" in exc.value.message
+    assert "1024 CPU cores" in exc.value.message and "Edit the template" in exc.value.message
+    assert exc.value.problem_extensions == {}      # the value is in the template, not in the request: no `loc` to give
+
+
+@pytest.mark.parametrize("memory", [64 * 2**40 + 1, 10**30])
+def test_a_kubernetes_template_with_an_absurd_memory_is_refused(memory):
+    with pytest.raises(TemplateSizeRefused) as exc:
+        refuse_oversized_template_sizes(_k8s(memory=memory), None)
+    assert exc.value.fields == ["resources.memory_bytes"]
+    assert "64 TiB" in exc.value.message
+
+
+def test_a_docker_template_names_the_backend_fields():
+    with pytest.raises(TemplateSizeRefused) as exc:
+        refuse_oversized_template_sizes(_docker(cpu=1e308, memory=10**30), None)
+    assert exc.value.fields == ["backend.cpu_cores", "backend.memory_bytes"]
+    assert "backend.cpu_cores" in exc.value.message and "backend.memory_bytes" in exc.value.message
+
+
+def test_an_override_that_replaces_the_absurd_field_makes_it_irrelevant():
+    """The workspace gets the override's size, so what the template says in that field is not what runs."""
+    over = WorkspaceTemplateOverrides(resources=WorkspaceResourceOverrides(cpu_cores=2))
+
+    refuse_oversized_template_sizes(_k8s(cpu=1e308), over)
+    with pytest.raises(TemplateSizeRefused) as exc:
+        refuse_oversized_template_sizes(_k8s(cpu=1e308, memory=10**30), over)      # memory is still the template's
+    assert exc.value.fields == ["resources.memory_bytes"]
+
+
+def test_a_local_template_is_not_checked_because_local_ignores_its_size():
+    local = WorkspaceTemplate(id="loc", provider_id="loc", description="d", resources=ResourceLimits(cpu_cores=1e308))
+
+    refuse_oversized_template_sizes(local, None)
+
+
+def test_a_template_size_the_caps_leave_alone_but_the_backend_may_not_like_is_not_this_checks_business():
+    """Only the upper bound is the ruling's; zero and negative numbers keep whatever the backend made of them before."""
+    refuse_oversized_template_sizes(_k8s(cpu=-1, memory=0), None)
+    refuse_oversized_template_sizes(_docker(cpu=0), None)

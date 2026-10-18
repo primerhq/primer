@@ -105,9 +105,8 @@ async def test_registry_materialise_forwards_workspace_id(monkeypatch) -> None:
 
     monkeypatch.setattr(reg, "get_backend", _fake_get_backend)
 
-    class _Tpl:
-        provider_id = "prov1"
-
-    result = await reg.materialise(template=_Tpl(), workspace_id="psx-financials")
+    # A real template: materialise reads its env and sizes before it asks the backend for anything.
+    tpl = WorkspaceTemplate(id="t", provider_id="prov1", description="d")
+    result = await reg.materialise(template=tpl, workspace_id="psx-financials")
     assert result == "workspace-handle"
     assert rec.received_workspace_id == "psx-financials"

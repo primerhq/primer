@@ -33,6 +33,7 @@ from primer.model.workspace import (
     KubernetesTemplateConfig,
 )
 from primer.workspace.base_backend import BaseWorkspaceBackend, close_shielded, end_sessions_shielded, roll_back_shielded
+from primer.workspace.env_names import RUNTIME_TOKEN_ENV_NAMES
 from primer.workspace.files import FileResolvers
 from primer.workspace.k8s.httproute import build_httproute_manifest
 from primer.workspace.k8s.naming import k8s_object_name
@@ -180,8 +181,10 @@ def _validate_template_overrides(template: WorkspaceTemplate) -> None:
 
 # The two keys of the per-workspace Secret (see ``_create_secret``). The container ``envFrom``s that Secret, and an explicit ``env``
 # entry beats ``envFrom`` in Kubernetes, so a template or override that set either name would replace the token the platform
-# dials the runtime with. The token comes only from the Secret: neither source is taken for these names.
-_RUNTIME_TOKEN_ENV_NAMES: frozenset[str] = frozenset({"PRIMER_RUNTIME_TOKEN", "RUNTIME_TOKEN"})
+# dials the runtime with. The token comes only from the Secret: neither source is taken for these names. ``WorkspaceRegistry
+# .materialise`` refuses such a name with a 422 that names it (``primer.workspace.env_names``, lead ruling 17), so this drop is
+# the safety net for a caller that reaches the backend another way.
+_RUNTIME_TOKEN_ENV_NAMES: frozenset[str] = RUNTIME_TOKEN_ENV_NAMES
 
 _GIB = 2**30
 _MIB = 2**20

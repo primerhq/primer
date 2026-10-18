@@ -12,10 +12,13 @@ import json
 import pytest
 
 from primer.api.registries import WorkspaceRegistry
+from pydantic import SecretStr
+
 from primer.model.workspace import (
     ContainerTemplateConfig,
     KubernetesTemplateConfig,
     LocalWorkspaceConfig,
+    ResourceLimits,
     ContainerConnectionSocket,
     ContainerReachabilityHostPort,
     ContainerWorkspaceConfig,
@@ -122,3 +125,65 @@ def _page():
     from primer.model.storage import OffsetPage
 
     return OffsetPage(offset=0, length=10)
+
+
+# ---- lead ruling 17 of plan 08 (from the review of #782) ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("field, absurd", [("cpu_cores", 1e308), ("memory_bytes", 10**30), ("disk_bytes", 10**30)])
+async def test_an_absurd_size_override_answers_validation_error_naming_the_field(toolset, calls, field, absurd):
+    result = await _create(toolset, "tpl-k3s", {field: absurd})
+
+    assert result.is_error and json.loads(result.output)["type"] == "validation-error", result.output
+    assert field in json.loads(result.output)["message"]
+    assert calls == []
+
+
+async def test_a_gpu_count_above_the_cap_is_a_validation_error_on_the_template_write(toolset, sp):
+    body = {"id": "tpl-gpu", "provider_id": "k3s", "description": "d", "backend": {"kind": "kubernetes", "image": "rt:1", "gpu": {"count": 65}}}
+
+    result = await toolset.call(tool_name="create_workspace_template", arguments={"entity": body}, ctx=caller("user"))
+
+    assert result.is_error and json.loads(result.output)["type"] == "validation-error", result.output
+    assert "count" in json.loads(result.output)["message"]
+    assert await sp.get_storage(WorkspaceTemplate).get("tpl-gpu") is None
+
+
+async def test_a_template_with_an_absurd_memory_answers_validation_error_naming_the_template(toolset, sp, calls):
+    await sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate(
+        id="tpl-big", provider_id="k3s", description="d", backend=KubernetesTemplateConfig(image="rt:1"),
+        resources=ResourceLimits(memory_bytes=10**30),
+    ))
+
+    result = await toolset.call(tool_name="create_workspace", arguments={"template_id": "tpl-big"}, ctx=caller("user"))
+
+    assert result.is_error and json.loads(result.output)["type"] == "validation-error", result.output
+    message = json.loads(result.output)["message"]
+    assert "template 'tpl-big'" in message and "resources.memory_bytes" in message
+    assert calls == []
+
+
+@pytest.mark.parametrize("name", ["1BAD", "a b", "RUNTIME_TOKEN"])
+async def test_a_bad_env_name_in_the_overrides_answers_validation_error_naming_it(toolset, calls, name):
+    result = await toolset.call(
+        tool_name="create_workspace",
+        arguments={"template_id": "tpl-k3s", "overrides": {"env": {name: "the-secret-value"}}},
+        ctx=caller("user"),
+    )
+
+    assert result.is_error and json.loads(result.output)["type"] == "validation-error", result.output
+    assert f"overrides.env.{name}" in json.loads(result.output)["message"]
+    assert "the-secret-value" not in result.output
+    assert calls == []
+
+
+async def test_a_template_env_the_cluster_would_refuse_answers_validation_error(toolset, sp, calls):
+    await sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate(
+        id="tpl-env", provider_id="k3s", description="d", backend=KubernetesTemplateConfig(image="rt:1"),
+        env={"1BAD": SecretStr("v")},
+    ))
+
+    result = await toolset.call(tool_name="create_workspace", arguments={"template_id": "tpl-env"}, ctx=caller("user"))
+
+    assert result.is_error and "template 'tpl-env' sets env.1BAD" in json.loads(result.output)["message"], result.output
+    assert calls == []

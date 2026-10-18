@@ -2,6 +2,10 @@ import pytest
 from pydantic import SecretStr
 
 from primer.api.registries.workspace_registry import WorkspaceRegistry
+from primer.model.workspace import WorkspaceTemplate
+
+# A real template: materialise reads its env and sizes before it asks the backend for anything.
+_TEMPLATE = WorkspaceTemplate(id="t", provider_id="prov1", description="d")
 
 
 class _StubSecretProvider:
@@ -33,10 +37,7 @@ async def test_materialise_passes_resolvers(monkeypatch):
 
     monkeypatch.setattr(reg, "get_backend", _fake_get_backend)
 
-    class _Tpl:
-        provider_id = "prov1"
-
-    result = await reg.materialise(template=_Tpl())
+    result = await reg.materialise(template=_TEMPLATE)
     assert result == "workspace-handle"
     assert backend.received_resolvers is not None
     assert backend.received_resolvers.document_resolver is not None
@@ -53,10 +54,7 @@ async def test_materialise_without_secret_provider_omits_secret_resolver(monkeyp
 
     monkeypatch.setattr(reg, "get_backend", _fake_get_backend)
 
-    class _Tpl:
-        provider_id = "prov1"
-
-    await reg.materialise(template=_Tpl())
+    await reg.materialise(template=_TEMPLATE)
     assert backend.received_resolvers is not None
     assert backend.received_resolvers.document_resolver is not None
     assert backend.received_resolvers.secret_resolver is None

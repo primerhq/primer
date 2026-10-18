@@ -16,6 +16,10 @@ from primer.model import workspace as workspace_models
 from primer.model.workspace import (
     DEFAULT_GPU_RESOURCE_NAME,
     DOCKER_RUNTIME_IMAGE,
+    MAX_GPU_COUNT,
+    MAX_WORKSPACE_CPU_CORES,
+    MAX_WORKSPACE_DISK_BYTES,
+    MAX_WORKSPACE_MEMORY_BYTES,
     K8S_LABEL_KEY_PATTERN,
     K8S_LABEL_VALUE_PATTERN,
     K8S_RESOURCE_NAME_PATTERN,
@@ -172,6 +176,55 @@ def test_gpu_defaults_and_bounds():
             K8sGpu(**bad)
 
 
+# ---- lead ruling 17 of plan 08 (from the review of #782): sane maxima on a size ----------------------------------------------
+#
+# 1e308 cores, 10**30 bytes and 10**30 GPUs were accepted and came back as a generic 500 after the create had been rolled back
+# (the cluster refused the manifest). The fields born with the revamp now carry the cap, so the request is a 422 with the field
+# in ``loc`` before anything is built. (The older template fields cannot take a cap here without making a stored row fail to
+# load; ``refuse_oversized_template_sizes`` in ``primer.workspace.size_overrides`` covers them at create time.)
+
+
+def test_the_size_caps_are_the_rulings_numbers():
+    assert MAX_WORKSPACE_CPU_CORES == 1024
+    assert MAX_WORKSPACE_MEMORY_BYTES == 64 * 2**40
+    assert MAX_WORKSPACE_DISK_BYTES == 64 * 2**40
+    assert MAX_GPU_COUNT == 64
+
+
+@pytest.mark.parametrize("field, cap", [
+    ("cpu_cores", MAX_WORKSPACE_CPU_CORES), ("memory_bytes", MAX_WORKSPACE_MEMORY_BYTES), ("disk_bytes", MAX_WORKSPACE_DISK_BYTES),
+])
+def test_a_size_override_may_be_the_cap_but_not_more(field, cap):
+    assert getattr(WorkspaceResourceOverrides(**{field: cap}), field) == cap
+    with pytest.raises(ValidationError) as caught:
+        WorkspaceResourceOverrides(**{field: cap + 1})
+    (error,) = caught.value.errors()
+    assert error["loc"] == (field,) and error["type"] == "less_than_equal"
+
+
+@pytest.mark.parametrize("field, absurd", [("cpu_cores", 1e308), ("memory_bytes", 10**30), ("disk_bytes", 10**30)])
+def test_an_absurd_size_override_is_refused_with_the_field_in_loc(field, absurd):
+    with pytest.raises(ValidationError) as caught:
+        WorkspaceTemplateOverrides.model_validate({"resources": {field: absurd}})
+    (error,) = caught.value.errors()
+    assert error["loc"] == ("resources", field)
+
+
+def test_a_gpu_count_may_be_the_cap_but_not_more():
+    assert K8sGpu(count=MAX_GPU_COUNT).count == 64
+    for absurd in (MAX_GPU_COUNT + 1, 10**30):
+        with pytest.raises(ValidationError) as caught:
+            KubernetesTemplateConfig(image="rt", gpu={"count": absurd})
+        (error,) = caught.value.errors()
+        assert error["loc"] == ("gpu", "count")
+
+
+def test_the_size_fields_say_their_cap():
+    for name, cap in (("cpu_cores", "1024"), ("memory_bytes", "64 TiB"), ("disk_bytes", "64 TiB")):
+        assert f"at most {cap}" in WorkspaceResourceOverrides.model_fields[name].description, name
+    assert "at most 64" in K8sGpu.model_fields["count"].description
+
+
 def test_the_default_gpu_resource_name_is_one_constant():
     assert DEFAULT_GPU_RESOURCE_NAME == "nvidia.com/gpu"
     assert K8sGpu.model_fields["resource_name"].default == DEFAULT_GPU_RESOURCE_NAME
@@ -308,6 +361,8 @@ def test_the_patterns_match_what_kubernetes_accepts():
 
 
 def test_the_new_names_are_exported():
+    for name in ("MAX_GPU_COUNT", "MAX_WORKSPACE_CPU_CORES", "MAX_WORKSPACE_DISK_BYTES", "MAX_WORKSPACE_MEMORY_BYTES"):
+        assert name in workspace_models.__all__, name
     for name in ("DEFAULT_GPU_RESOURCE_NAME", "DOCKER_RUNTIME_IMAGE", "K8S_LABEL_KEY_PATTERN", "K8S_LABEL_VALUE_PATTERN", "K8S_RESOURCE_NAME_PATTERN",
                  "K8S_SERVICE_ACCOUNT_PATTERN", "K8sToleration", "K8sGpu", "WorkspaceResourceOverrides"):
         assert name in workspace_models.__all__, name
