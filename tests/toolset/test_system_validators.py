@@ -30,7 +30,7 @@ REGO_OK = 'package primer.tool_approval\ndefault required := false\nrequired if 
 REGO_BROKEN = "this is not valid rego"
 
 
-def _policy(policy_id: str = "tap-1", *, toolset_id: str = "ts-1", tool_name: str = "t1", approval=None, enabled: bool = True):
+def _policy(policy_id: str = "tap-1", *, toolset_id: str = "misc", tool_name: str = "t1", approval=None, enabled: bool = True):
     return ToolApprovalPolicy(
         id=policy_id, toolset_id=toolset_id, tool_name=tool_name, enabled=enabled,
         approval=approval if approval is not None else RequiredApprovalConfig(),
@@ -63,7 +63,9 @@ class TestToolApprovalPolicy:
         assert (await sp.get_storage(ToolApprovalPolicy).get("tap-2")).tool_name == "t2"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(("first", "second"), [("system", "_system"), ("_system", "system"), ("_misc", "misc"), ("workspaces", "_workspaces"), ("_search", "search")])
+    # No ``("_search", "search")`` case: the search toolset was deleted, so both of its spellings are refused by the write-time
+    # toolset-id check and there is no live toolset the two spellings could collide on.
+    @pytest.mark.parametrize(("first", "second"), [("system", "_system"), ("_system", "system"), ("_misc", "misc"), ("workspaces", "_workspaces")])
     async def test_a_second_policy_under_another_spelling_of_the_toolset_is_refused(self, world, first, second) -> None:
         """``_system`` is the retired id of ``system`` and the registry runs the same provider for both: a policy for each would be two policies for one tool, which
         is exactly what the uniqueness rule exists to prevent (the resolver would have to settle them as duplicates)."""
@@ -189,6 +191,42 @@ class TestToolApprovalPolicy:
 
         assert not is_error
         assert await sp.get_storage(ToolApprovalPolicy).get("tap-llm") is not None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("toolset_id", ["System", " system", "no-such-toolset"])
+    async def test_a_policy_for_a_toolset_the_platform_does_not_run_is_refused_on_create(self, world, toolset_id):
+        """The id is judged exactly, as the registry and the gate judge it (no case folding, no trimming): a policy that names no toolset would be stored and gate nothing, so it is refused at write time."""
+        sp, toolset, _ = world
+
+        is_error, answer = await _call(toolset, "create_tool_approval_policy", entity=_policy("tap-ts", toolset_id=toolset_id))
+
+        assert is_error and answer["type"] == "validation-error", answer
+        assert "toolset_id" in answer["message"] and toolset_id in answer["message"]
+        assert await sp.get_storage(ToolApprovalPolicy).get("tap-ts") is None, "a policy for a nonexistent toolset was stored"
+
+    @pytest.mark.asyncio
+    async def test_an_update_to_a_toolset_the_platform_does_not_run_is_refused_and_the_row_is_unchanged(self, world) -> None:
+        sp, toolset, _ = world
+        await _call(toolset, "create_tool_approval_policy", entity=_policy("tap-1"))
+
+        is_error, answer = await _call(
+            toolset, "update_tool_approval_policy", id="tap-1",
+            entity=_policy("tap-1", toolset_id="System"),
+        )
+
+        assert is_error and answer["type"] == "validation-error" and "toolset_id" in answer["message"], answer
+        assert (await sp.get_storage(ToolApprovalPolicy).get("tap-1")).toolset_id == "misc"
+
+    @pytest.mark.asyncio
+    async def test_a_policy_for_a_stored_custom_toolset_is_created_as_before(self, world) -> None:
+        """The write-time id check knows the stored toolsets, not only the reserved ones: a policy for an operator toolset stays writable."""
+        sp, toolset, _ = world
+        await sp.get_storage(Toolset).create(Toolset.model_validate(_python_toolset("ts-1")))
+
+        is_error, _ = await _call(toolset, "create_tool_approval_policy", entity=_policy("tap-ts1", toolset_id="ts-1"))
+
+        assert not is_error
+        assert await sp.get_storage(ToolApprovalPolicy).get("tap-ts1") is not None
 
 
 PY_V1 = '''

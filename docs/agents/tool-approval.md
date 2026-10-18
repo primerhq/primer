@@ -30,10 +30,13 @@ descriptor) so flipping a policy on takes effect for the next call
 without restart.
 
 A toolset has one id as far as a policy is concerned, however a call
-spells it. Four built-in toolsets lost an underscore prefix (`_system`
-is now `system`, `_workspaces` is `workspaces`, `_misc` is `misc`,
-`_search` is `search`) and the platform still runs the same toolset for
-either spelling. So a policy on `system::create_agent` gates a
+spells it. Three built-in toolsets lost an underscore prefix
+(`_system` is now `system`, `_workspaces` is `workspaces`, `_misc` is
+`misc`) and the platform still runs the same toolset for either
+spelling. A fourth, `_search`, was renamed before the search toolset
+was deleted: `search` no longer resolves, so a policy that names it or
+its retired spelling is refused at write time, like any id that names
+no toolset. So a policy on `system::create_agent` gates a
 `call_tool` made with `toolset_id: "_system"`, and gates an agent or a
 graph node that names `_system__create_agent` exactly as it gates one
 that names `system__create_agent`; and a policy written for the old id

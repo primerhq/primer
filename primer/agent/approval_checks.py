@@ -6,7 +6,7 @@ Moved out of ``primer/api/routers/tool_approval.py``, where they were bound to a
 exceptions they always raised (``ConflictError`` for a clash, a ``RequestValidationError`` with a ``body.*`` loc for a bad config),
 the system ``create_`` / ``update_tool_approval_policy`` tools answer ``conflict`` / ``validation-error``.
 
-The order is the router's: uniqueness first, then the approval config.
+The order is the router's: the toolset id, then uniqueness, then the approval config.
 """
 
 from __future__ import annotations
@@ -16,9 +16,10 @@ from typing import TYPE_CHECKING, Any
 
 from primer.common.entity_checks import EntityCheckError
 from primer.common.preview_paths import missing_paths
-from primer.common.toolset_ids import toolset_id_spellings
+from primer.common.toolset_ids import canonical_toolset_id, toolset_id_spellings
 from primer.model.model_profile import ModelProfile
 from primer.model.provider import LLMProvider
+from primer.model.providers.toolset import Toolset
 from primer.model.storage import OffsetPage
 from primer.model.tool_approval import LlmApprovalConfig, PolicyApprovalConfig, ToolApprovalPolicy
 from primer.storage.q import Q
@@ -28,6 +29,28 @@ if TYPE_CHECKING:
 
 # ``(toolset_id, tool_name) -> the tool's args_schema``, or None when the tool cannot be found (primer/agent/tool_schemas.py ``find_tool_schema``).
 ToolSchemaOf = Callable[[str, str], Awaitable["dict[str, Any] | None"]]
+
+
+async def check_toolset_id(
+    entity: ToolApprovalPolicy,
+    *,
+    storage_provider: "StorageProvider",
+    reserved_toolset_ids: frozenset[str],
+) -> None:
+    """``toolset_id`` must name a toolset the platform runs: a reserved id (a built-in provider or a tool-manager scope), one of its retired spellings, or a stored Toolset row's id.
+
+    The spelling is judged exactly, as the registry and the gate judge it (no case folding, no trimming): ``"System"`` and ``" system"`` resolve to no toolset at all -- they would be stored and gate nothing -- so they are refused at write time instead of surfacing later as a policy that never fires. ``reserved_toolset_ids`` is the set the caller holds (``RESERVED_TOOLSET_ROW_IDS``): the ids the platform runs that never exist as stored Toolset rows.
+    """
+    resolved = canonical_toolset_id(entity.toolset_id)
+    if resolved in reserved_toolset_ids:
+        return
+    if await storage_provider.get_storage(Toolset).get(resolved) is not None:
+        return
+    raise EntityCheckError(
+        "validation",
+        f"toolset_id {entity.toolset_id!r} names no toolset the platform runs: it must be a reserved toolset id, a retired spelling of one, or a stored Toolset row's id, spelled exactly",
+        field="toolset_id",
+    )
 
 
 async def check_policy_unique(
@@ -137,13 +160,19 @@ async def check_preview_args(entity: ToolApprovalPolicy, *, tool_schema_of: "Too
 
 
 async def check_policy(
-    entity: ToolApprovalPolicy, *, storage_provider: "StorageProvider", skip_id: str | None = None, tool_schema_of: "ToolSchemaOf | None" = None,
+    entity: ToolApprovalPolicy,
+    *,
+    storage_provider: "StorageProvider",
+    reserved_toolset_ids: frozenset[str],
+    skip_id: str | None = None,
+    tool_schema_of: "ToolSchemaOf | None" = None,
 ) -> None:
-    """Every pre-write check for a policy, in the router's order (``skip_id`` is the row being updated). ``tool_schema_of`` finds the gated tool's schema for the
+    """Every pre-write check for a policy, in the router's order: the toolset id, then uniqueness, then the approval config, then the preview args (``skip_id`` is the row being updated). ``reserved_toolset_ids`` is the set of ids the platform runs that never exist as stored Toolset rows; ``tool_schema_of`` finds the gated tool's schema for the
     ``preview_args`` check; a caller whose policies name no path may omit it."""
+    await check_toolset_id(entity, storage_provider=storage_provider, reserved_toolset_ids=reserved_toolset_ids)
     await check_policy_unique(entity, storage_provider=storage_provider, skip_id=skip_id)
     await check_approval_config(entity, storage_provider=storage_provider)
     await check_preview_args(entity, tool_schema_of=tool_schema_of)
 
 
-__all__ = ["ToolSchemaOf", "check_approval_config", "check_policy", "check_policy_unique", "check_preview_args", "published_model_names"]
+__all__ = ["ToolSchemaOf", "check_approval_config", "check_policy", "check_policy_unique", "check_preview_args", "check_toolset_id", "published_model_names"]

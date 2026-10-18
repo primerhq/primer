@@ -101,24 +101,36 @@ async def test_a_caller_with_paths_to_check_and_no_way_to_find_the_tool_is_an_er
 # ---- check_policy runs it last, after the router's own two ---------------------------------------------------------------------------------------------------
 
 
-class _EmptyStorage:
+class _ToolsetRow:
+    id = "ts"
+
+
+class _Storage:
+    """The policy rows the checks read (none) and the stored toolset named ``ts`` the write-time id check needs (the tests' policies name it)."""
+
     async def find(self, predicate, page):
         class _Page:
             items = []
 
         return _Page()
 
+    async def get(self, row_id):
+        return _ToolsetRow() if row_id == "ts" else None
+
 
 class _StorageProvider:
     def get_storage(self, model):
-        return _EmptyStorage()
+        return _Storage()
 
 
 @pytest.mark.asyncio
 async def test_check_policy_runs_the_preview_check_after_uniqueness_and_the_config() -> None:
     with pytest.raises(EntityCheckError) as raised:
         await check_policy(
-            _policy(preview_args=["nope"]), storage_provider=_StorageProvider(), tool_schema_of=_Calls({("ts", "t"): SCHEMA}),  # type: ignore[arg-type]
+            _policy(preview_args=["nope"]),
+            storage_provider=_StorageProvider(),
+            reserved_toolset_ids=frozenset(),
+            tool_schema_of=_Calls({("ts", "t"): SCHEMA}),  # type: ignore[arg-type]
         )
 
     assert raised.value.field == "preview_args"
@@ -126,7 +138,7 @@ async def test_check_policy_runs_the_preview_check_after_uniqueness_and_the_conf
 
 @pytest.mark.asyncio
 async def test_check_policy_without_preview_args_needs_no_resolver() -> None:
-    await check_policy(_policy(), storage_provider=_StorageProvider())  # type: ignore[arg-type]
+    await check_policy(_policy(), storage_provider=_StorageProvider(), reserved_toolset_ids=frozenset())  # type: ignore[arg-type]
 
 
 # ---- how a schema is found --------------------------------------------------------------------------------------------------------------------------------

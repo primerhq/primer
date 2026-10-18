@@ -293,6 +293,7 @@ def build_system_toolset(
         RESERVED_EMBEDDER_IDS,
         RESERVED_LLM_IDS,
         RESERVED_SSP_IDS,
+        RESERVED_TOOLSET_ROW_IDS,
     )
 
     guards_by_label: dict[str, CrudGuards] = {
@@ -339,10 +340,21 @@ def build_system_toolset(
         return await find_tool_schema(provider_registry, toolset_id, tool_name)
 
     async def _policy_pre_create(entity: ToolApprovalPolicy) -> None:
-        await check_policy(entity, storage_provider=storage_provider, tool_schema_of=_tool_schema_of)
+        await check_policy(
+            entity,
+            storage_provider=storage_provider,
+            reserved_toolset_ids=RESERVED_TOOLSET_ROW_IDS,
+            tool_schema_of=_tool_schema_of,
+        )
 
     async def _policy_pre_update(entity: ToolApprovalPolicy, existing: ToolApprovalPolicy) -> None:
-        await check_policy(entity, storage_provider=storage_provider, skip_id=existing.id, tool_schema_of=_tool_schema_of)
+        await check_policy(
+            entity,
+            storage_provider=storage_provider,
+            skip_id=existing.id,
+            reserved_toolset_ids=RESERVED_TOOLSET_ROW_IDS,
+            tool_schema_of=_tool_schema_of,
+        )
 
     async def _toolset_pre_create(entity: Toolset) -> None:
         # Not the router's reachability probe (an 8 s outbound call for http / sse MCP toolsets): a tool runs inside an agent turn.
