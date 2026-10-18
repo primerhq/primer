@@ -26,6 +26,7 @@ from primer.agent.approval import (
     resolve_preview,
     evaluate_approval_gate,
 )
+from primer.agent.inner_dispatch import dispatch_inner_tool, inner_role_refusal
 from primer.authz import _role_allows
 from primer.common.entity_checks import EntityCheckError
 from primer.agent.tool_schemas import find_tool
@@ -823,17 +824,13 @@ def _fetch_models_tool(
 # ===========================================================================
 
 
+# Neither tool takes a ``principal`` argument (pivot P1). The principal is the key of an MCP toolset's per-user OAuth token cache, and both
+# tools used to forward a MODEL-chosen one into it, so a run could list or call a toolset as somebody else. The provider is handed the
+# principal the dispatch layer put on the run's context (``ToolContext.principal``) and nothing else; an extra ``principal`` key in the
+# arguments is ignored, as any unknown key is.
 class _ToolsetIdArgs(BaseModel):
     toolset_id: str = Field(
         ..., min_length=1, description="Id of the toolset to query."
-    )
-    principal: str | None = Field(
-        default=None,
-        description=(
-            "Optional end-user identity passed through to the toolset. "
-            "Required for OAuth-protected MCP toolsets if the cached "
-            "token is bound to a specific user."
-        ),
     )
 
 
@@ -843,19 +840,14 @@ class _CallToolArgs(BaseModel):
     arguments: dict[str, Any] = Field(
         default_factory=dict, description="Argument object for the call."
     )
-    principal: str | None = Field(
-        default=None,
-        description=(
-            "Optional end-user identity. Required for OAuth-protected "
-            "MCP toolsets if per-user token caching is in effect."
-        ),
-    )
 
 
 def _list_toolset_tools_tool(
     registry: "ProviderRegistry",
 ) -> tuple[str, tuple[Tool, ToolHandler]]:
-    async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _handler(
+        arguments: dict[str, Any], *, ctx: ToolContext | None = None,
+    ) -> ToolCallResult:
         try:
             args = _ToolsetIdArgs.model_validate(arguments)
         except ValidationError as exc:
@@ -867,7 +859,8 @@ def _list_toolset_tools_tool(
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="provider-error")
         tools_out: list[dict[str, Any]] = []
-        async for tool in provider.list_tools(principal=args.principal):
+        # The run's own principal, as call_tool hands its inner provider (never one from the arguments).
+        async for tool in provider.list_tools(principal=ctx.principal if ctx is not None else None):
             tools_out.append(tool.model_dump(mode="json"))
         return _ok({"tools": tools_out})
 
@@ -909,6 +902,23 @@ def _call_tool_tool(
             args = _CallToolArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+
+        try:
+            provider = await registry.get_toolset(args.toolset_id)
+        except NotFoundError as exc:
+            return _err_from_primer(exc, error_type="not-found")
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="provider-error")
+
+        # The INNER tool's role, against the run's principal (pivot P1). This tool is role user, and the tool manager's RBAC floor only
+        # ever sees it, never the tool it runs: without this check a user-role run reaches every admin tool through it. It runs BEFORE
+        # the approval gate, so a call the run may not make never draws an approval card an admin could approve on its behalf. A call
+        # with no context (or a context that names no initiator) ranks as an ordinary user (``run_principal``).
+        refusal = inner_role_refusal(
+            provider, toolset_id=args.toolset_id, tool_name=args.tool_name, ctx=ctx,
+        )
+        if refusal is not None:
+            return refusal
 
         # Approval gate - enforced BEFORE dispatch so a gated tool invoked
         # through this meta-dispatch path cannot bypass the operator's
@@ -1005,9 +1015,11 @@ def _call_tool_tool(
                                 # Inner call re-dispatched via the owning
                                 # toolset provider on approve (not the agent
                                 # tool surface, which may not list this tool).
+                                # No principal: the re-run takes the run's own,
+                                # never one stored with the park.
                                 via_call_tool={
                                     "toolset_id": args.toolset_id,
-                                    "principal": args.principal,
+                                    "tool_name": args.tool_name,
                                 },
                                 # The card filters the INNER call's arguments by the INNER tool's allowlist (design 01a11cd3-66b0). The
                                 # descriptor is looked up through the registry (under a clock); an inner tool that cannot be found has no
@@ -1018,17 +1030,15 @@ def _call_tool_tool(
                         tool_call_id=ctx.tool_call_id,
                     )
 
+        # The caller's own context goes to the inner tool, unchanged: a pausing tool parks under THIS call's id, an owner-dependent tool
+        # sees the run's identity, and the provider's principal is the context's (never one a model chose). A pause propagates.
         try:
-            provider = await registry.get_toolset(args.toolset_id)
-        except NotFoundError as exc:
-            return _err_from_primer(exc, error_type="not-found")
-        except PrimerError as exc:
-            return _err_from_primer(exc, error_type="provider-error")
-        try:
-            result = await provider.call(
+            result = await dispatch_inner_tool(
+                provider=provider,
+                toolset_id=args.toolset_id,
                 tool_name=args.tool_name,
                 arguments=args.arguments,
-                principal=args.principal,
+                ctx=ctx,
             )
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="tool-call-error")
@@ -1048,13 +1058,17 @@ def _call_tool_tool(
                 "``list_toolset_tools`` and want to execute it without "
                 "going through the dedicated agent toolset wiring. The "
                 "dispatched tool's own ``output`` and ``is_error`` are "
-                "passed through unchanged so you can act on them. If the "
-                "dispatched tool has an approval policy, this call parks "
-                "for approval just like a normal agent tool call."
+                "passed through unchanged so you can act on them. The "
+                "tool runs as this run: one whose required role is above "
+                "this run's principal is refused with ``type=forbidden``. "
+                "If the dispatched tool has an approval policy, this call "
+                "parks for approval just like a normal agent tool call. "
+                "The session file tools (``workspace__*``) and the client "
+                "tools are not reachable through it; call them directly."
             ),
             args_schema=_CallToolArgs.model_json_schema(),
             # An approval card for a gate on call_tool itself shows which tool it runs; the inner arguments are shown by the INNER tool's
-            # paths (ToolExecutionManager adds them as arguments.<path>) and the principal is never shown.
+            # paths (ToolExecutionManager adds them as arguments.<path>).
             preview_args=("toolset_id", "tool_name"),
             examples=[
                 ToolExample(
@@ -1066,7 +1080,11 @@ def _call_tool_tool(
                     returns="the dispatched tool's output and is_error",
                 )
             ],
+            # Still yielding (it parks for approval, and a pausing inner tool pauses through it), so it is never exposable over MCP
+            # (tests/mcp/test_required_role_completeness.py pins that).
             yields=True,
+            # The door to every tool for a user-role run: the handler checks the INNER tool's role against the run's principal.
+            required_role="user",
         ),
         _handler,
     )

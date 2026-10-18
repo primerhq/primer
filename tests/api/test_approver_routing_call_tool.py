@@ -15,6 +15,7 @@ from primer.model.tool_approval import ApproverSpec, RequiredApprovalConfig, Too
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
 from primer.model.yield_ import ToolContext, YieldToWorker
 from primer.toolset.system import SYSTEM_TOOLSET_ID
+from tests._support.caller import ADMIN_CALLER
 from tests.api.conftest import raw_client as client, app, fake_provider_registry  # noqa: F401
 from tests.api.test_approver_routing import _login_user, _register_admin
 
@@ -26,7 +27,8 @@ async def _call_tool_park(app, *, approvers: ApproverSpec | None) -> dict:
         approval=RequiredApprovalConfig(), approvers=approvers,
     ))
     app.state.approval_resolver.invalidate()
-    ctx = ToolContext(tool_call_id="tc-ct", session_id="ct-1", workspace_id="ws", chat_id=None)
+    # An admin's run: call_tool checks the inner tool's role against the run's principal (pivot P1), and list_llm_providers is admin-only.
+    ctx = ToolContext(tool_call_id="tc-ct", session_id="ct-1", workspace_id="ws", chat_id=None, initiated_by=ADMIN_CALLER.initiated_by)
     with pytest.raises(YieldToWorker) as parked:
         await app.state.system_toolset.call(
             tool_name="call_tool",

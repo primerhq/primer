@@ -125,30 +125,26 @@ async def test_call_tool_meta_dispatcher_never_exposable(
 ) -> None:
     """Regression pin: ``system__call_tool`` must never pass ``is_exposable``.
 
-    WHY THIS MATTERS (read before "fixing" this test): ``call_tool``'s
-    handler (``primer.toolset._system_crud._call_tool_tool``) invokes
-    ``provider.call(...)`` DIRECTLY. It does NOT go through
-    ``primer.mcp.dispatch``'s ``invoke_exposed`` path, which is where the
-    RBAC gate lives (comparing the caller's role against each tool's
-    declared ``required_role``). So ``call_tool`` bypasses RBAC entirely
-    for whatever inner tool it dispatches to.
+    WHY THIS MATTERS (read before "fixing" this test): ``call_tool`` is
+    role ``user`` (pivot P1), and its handler
+    (``primer.toolset._system_crud._call_tool_tool``) dispatches the inner
+    tool itself, NOT through ``primer.mcp.dispatch``'s ``invoke_exposed``
+    path, which is where the MCP RBAC gate lives. The handler checks the
+    INNER tool's ``required_role`` against the RUN's principal
+    (``primer.agent.inner_dispatch``), read off the ``ToolContext``. The
+    MCP endpoint hands handlers no context, so over MCP that check would
+    rank every caller as an unattributed user rather than as the
+    authenticated actor, and the approval gate and every pausing inner
+    tool would have no session to park on.
 
-    That is safe TODAY only because ``call_tool`` is declared
-    ``yields=True`` (it can park mid-dispatch for tool-approval), which
-    makes ``is_exposable`` reject it via the "yielding_unsupported" branch
-    before RBAC would ever matter — a non-admin MCP caller can never reach
-    the meta-dispatcher at all. That safety is COINCIDENTAL — a side
-    effect of ``yields=True`` — not an explicit guard.
-
-    If a future change ever drops ``yields=True`` from ``call_tool`` (say,
-    to make its non-approval-gated path exposable), this test starts
-    failing. That failure is the signal that a user-role MCP caller could
-    now reach ``call_tool`` and use its direct ``provider.call(...)`` to
-    invoke ANY tool from ANY toolset with no RBAC check — silent full-admin
-    privilege escalation. Do not just delete/relax this test to make it
-    pass; either keep ``call_tool`` yielding, or first route it through
-    ``invoke_exposed`` (or add back an explicit hard-deny) so RBAC is
-    re-checked on the inner dispatch.
+    ``call_tool`` stays off MCP because it is declared ``yields=True`` (it
+    parks for tool-approval, and a pausing inner tool pauses through it),
+    which makes ``is_exposable`` reject it via the "yielding_unsupported"
+    branch. If a future change drops ``yields=True`` (say, to make its
+    non-approval-gated path exposable), this test starts failing. Do not
+    just delete/relax this test to make it pass: first decide how an MCP
+    call's actor reaches the inner role check and what a gated or pausing
+    inner tool does with no park surface.
     """
     provider = await reserved_provider_registry.get_toolset("system")
     call_tool = None
@@ -161,8 +157,8 @@ async def test_call_tool_meta_dispatcher_never_exposable(
     ok, reason = is_exposable(call_tool, provider=provider)
 
     assert ok is False, (
-        "system__call_tool became exposable over MCP — its handler "
-        "bypasses the invoke_exposed RBAC gate via a direct "
-        "provider.call(...); see this test's docstring before relaxing it"
+        "system__call_tool became exposable over MCP: its handler checks "
+        "the inner tool's role against the run's context, which an MCP "
+        "call does not carry; see this test's docstring before relaxing it"
     )
     assert reason == "yielding_unsupported"

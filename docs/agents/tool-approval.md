@@ -112,7 +112,11 @@ without anyone asking, so it draws only what is declared safe to draw:
   a key does not show under the path `entity.id`, it is withheld. The walk is bounded: every position it visits is charged to the preview's budget, a container is cut
   at 50 members, and what is not walked is withheld and counted (`entity.nodes <30 more>` in `hidden_keys`).
 - **`call_tool`.** A policy on the tool `call_tool` runs is filtered by THAT tool's list; a policy on `call_tool` itself shows `toolset_id` and `tool_name` and the inner tool's
-  paths, and withholds the arguments of an inner tool it cannot find.
+  paths, and withholds the arguments of an inner tool it cannot find. `call_tool` is open to every user, and it checks the role of the tool it runs against the
+  role of whoever started the run BEFORE that tool's gate: a user-role run that asks it for an admin tool gets `type=forbidden` and no card is drawn, so there is
+  nothing for an admin to approve on that run's behalf. A call with no session behind it is ranked as an ordinary user. `call_tool` takes no `principal`
+  argument (nor does `list_toolset_tools`): an MCP toolset signed in per user always sees the run's own identity, never one the agent names. An unknown
+  toolset is `type=not-found` before any gate. The park of a gated inner tool records the inner toolset and tool (`via_call_tool`).
 - **On the phone.** The Inbox card names what it withheld ("Hidden on this card: note, content"). A card that hides ANYTHING is blind, whoever declared the list (the tool's author, the operator, the `default` rule or a park without a stamp): the declared list decides what is drawn, never whether a hidden argument is safe to approve unread (the python source of `update_python_toolset_source`, an agent's system prompt), so Approve is not offered until Show all has put the whole call on the screen for THIS park. Who declared the list only changes the note's words. A value withheld whole (a bare string or list as the arguments) is blind too, and so is a `hidden_keys` the card cannot read. Deny is always offered. Open the session to review the call in full.
 - **On a channel.** The approval prompt a channel posts (Slack, Telegram, Discord) draws the SAME allowlist as the card: `scrub_args_for_display` in
   `primer.common.preview_allowlist` is the single place both ask "what may this prompt show?" (ticket 01a125ed-9ef6: the channel used to post the raw

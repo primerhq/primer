@@ -1281,6 +1281,8 @@ def build_system_toolset(
                 ),
             ],
             yields=True,
+            # Declared, not the fail-closed admin default: the tool manager's RBAC floor refused it to every user-role run (pivot P1).
+            required_role="user",
         ),
         _ask_user_handler,
     )
@@ -1323,6 +1325,9 @@ def build_system_toolset(
             ],
             yields=True,
             requires_workspace=True,
+            # Declared, not the fail-closed admin default (pivot P1). The event log is on the user tier over REST (GET /v1/events), and the
+            # entity kinds that emit CRUD events (agent, graph, collection, document, toolset) are user-tier rows, masked the same way.
+            required_role="user",
         ),
         make_wait_for_event_handler(storage_provider),
     )
