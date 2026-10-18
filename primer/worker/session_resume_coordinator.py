@@ -23,6 +23,7 @@ surface (the worker pool imported these dependencies inside the methods).
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -624,20 +625,34 @@ def build_invocation_services(pool: "WorkerPool", session, workspace, executor, 
     :class:`GraphInvocationServices` (off the tool_manager) for the
     graph-frame callables.
     The walk only ever calls these as ``services.<name>(...)``.
+
+    A subagent resumed here runs as its PARENT session: both subagent callables
+    get the frame's context with ``initiated_by`` replaced by the session's run
+    principal (``session_run_principal``, the rule the session's own turn is built
+    with), never the principal stored in the park.
     """
     from primer.agent.invoke import (
         build_subagent_toolmanager as _build_subagent_toolmanager,
         resume_subagent as _resume_subagent,
     )
     from primer.worker.continuation import InvocationServices
+    from primer.worker.executor_builders import session_run_principal
 
     storage_provider = pool._storage
     provider_registry = pool._provider_registry
     approval_resolver = pool._approval_resolver
+    # The park is the one place that could name another principal: a frame written
+    # before ``AgentResumeContext.initiated_by`` existed names none (which the
+    # builder once ranked as the system principal), and one written before security
+    # review A-20 stored the system principal for a session that names no initiator.
+    run_principal = session_run_principal(session)
+
+    def as_session_run(context):
+        return dataclasses.replace(context, initiated_by=run_principal)
 
     async def build_subagent_toolmanager(context):
         return await _build_subagent_toolmanager(
-            context,
+            as_session_run(context),
             storage_provider=storage_provider,
             provider_registry=provider_registry,
             approval_resolver=approval_resolver,
@@ -649,7 +664,7 @@ def build_invocation_services(pool: "WorkerPool", session, workspace, executor, 
     ):
         return await _resume_subagent(
             agent_id=agent_id,
-            context=context,
+            context=as_session_run(context),
             llm_messages=llm_messages,
             child_result=child_result,
             depth=depth,

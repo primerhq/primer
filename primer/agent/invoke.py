@@ -112,6 +112,8 @@ async def build_subagent_toolmanager(
 
     ``context`` is an :class:`~primer.worker.frames.AgentResumeContext`
     (``session_id``, ``workspace_id``, ``chat_id``, ``principal``, ``tools``).
+    The manager runs as ``context.initiated_by``, else as an unattributed user,
+    never as the system principal.
     ``storage_provider`` wires the platform event recorder so nested
     subagent tool calls land ``tool.called`` / ``llm.called`` like
     top-level ones (None keeps the manager recorder-less).
@@ -140,12 +142,14 @@ async def build_subagent_toolmanager(
         if session_id is not None
         else None
     )
-    # A subagent runs as the SAME invoker as its parent turn: the parent's
-    # ``initiated_by`` rides on the ``AgentResumeContext`` (persisted across
-    # park/resume) so the child manager's RBAC tool floor is authorised
-    # identically. System fallback keeps a None invoker from failing closed
-    # and denying every toolset call the subagent makes.
-    initiated_by = getattr(context, "initiated_by", None) or PrincipalRef.system()
+    # A subagent runs as its PARENT run, whose principal rides on the context:
+    # ``run_subagent`` stamps the calling run's ``initiated_by`` (``invoke_agent``
+    # passes an unattributed user when its caller has none), and a resume puts the
+    # resumed session's run principal in its place (``build_invocation_services``).
+    # A context that names no initiator is an unattributed (ordinary) user: the
+    # role floor neither denies every call (``None``) nor clears every floor (the
+    # system principal) for it (pivot P1, security review A-20).
+    initiated_by = getattr(context, "initiated_by", None) or PrincipalRef.unattributed()
     # 01a0518b: mirrors initiated_by's propagation immediately above - the
     # parent turn's own turn_no rides on the AgentResumeContext (persisted
     # across park/resume) so a nested subagent's tool dispatch stamps the

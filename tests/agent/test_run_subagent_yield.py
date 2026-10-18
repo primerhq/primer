@@ -35,6 +35,7 @@ from primer.model.chat import (
     ToolCallResult,
     ToolCallStart,
 )
+from primer.model.principal import PrincipalRef
 from primer.model.tool_approval import (
     RequiredApprovalConfig,
     ToolApprovalPolicy,
@@ -59,6 +60,11 @@ class _FakeLLM:
                 yield ev
 
         return _gen()
+
+
+#: The calling run's principal ``invoke_agent`` hands ``run_subagent`` (an admin's: the fake tools below are admin-only). A run that names no
+#: initiator is an unattributed user, which the admin-only tools refuse (``tests/agent/test_subagent_identity_fallback.py``).
+_ADMIN = PrincipalRef(type="user", id="u-admin", display="admin", role="admin", source="local")
 
 
 class _GatedToolsetProvider:
@@ -350,6 +356,7 @@ async def test_run_subagent_threads_turn_no_into_nested_tool_context():
         workspace_id="ws-parent",
         invoke_tool_call_id="parent-tcid",
         turn_no=7,
+        identity=_ADMIN,
     )
 
     assert toolset.last_ctx is not None, "do_it was never dispatched"
@@ -376,6 +383,7 @@ async def test_run_subagent_keeps_yielding_tools_in_surface():
             session_id="sess-parent",
             workspace_id="ws-parent",
             invoke_tool_call_id="parent-tcid",
+            identity=_ADMIN,
         )
 
     yld = ei.value

@@ -39,6 +39,7 @@ from primer.model.chat import (
     ToolCallStart,
     ToolResultPart,
 )
+from primer.model.principal import PrincipalRef
 from primer.model.yield_ import Yielded, YieldToWorker
 from primer.worker.frames import AgentResumeContext
 
@@ -199,12 +200,15 @@ def _provider_row() -> _ProviderRow:
 
 
 def _context(*, tools: list[str]) -> AgentResumeContext:
+    """The context ``run_subagent`` writes: it carries the calling run's principal, here an admin's (the fake tools are admin-only). A context
+    that names no initiator is an unattributed user, never the system principal (``tests/agent/test_subagent_identity_fallback.py``)."""
     return AgentResumeContext(
         session_id="sess-parent",
         workspace_id="ws-parent",
         chat_id=None,
         principal="user-1",
         tools=tools,
+        initiated_by=PrincipalRef(type="user", id="u-admin", display="admin", role="admin", source="local"),
     )
 
 

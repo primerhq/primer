@@ -94,7 +94,9 @@ class _DelegatingToolset:
         return False
 
     def required_role(self, tool_name: str) -> str:
-        return "admin"
+        # The floor ``system__invoke_agent`` declares. These runs name no initiator, so they run as an unattributed user (an admin-only
+        # tool here only ran through the system principal the subagent builder used to fall back to).
+        return "user"
 
     async def call(self, *, tool_name, arguments, principal=None, ctx=None) -> ToolCallResult:  # noqa: ANN001
         with invocation_depth_guard():

@@ -73,11 +73,14 @@ class AgentResumeContext:
     tools
         The agent's registered tool ids (e.g. ``"system__ask_user"``).
     initiated_by
-        The run's persisted invoker (:class:`PrincipalRef`), threaded so a
-        resumed subagent turn re-runs under the SAME identity that started
-        it and its RBAC tool floor stays authorised across the park/resume
-        boundary. ``None`` on frames parked before this field existed ->
-        the manager builder falls back to the system principal.
+        The invoker of the run that started this subagent (:class:`PrincipalRef`),
+        stamped by ``run_subagent`` from the calling run's context; the subagent's
+        first run is ranked by it. A RESUME does not rank by it: the worker hands
+        the resumed subagent the principal its parent session runs as
+        (``build_invocation_services``), so a stale or missing value in a park
+        cannot change who the run is. ``None`` on frames parked before this field
+        existed; a context that names no initiator is an unattributed user, never
+        the system principal.
     turn_no
         The enclosing session turn's own turn number (01a0518b), threaded
         so a resumed subagent turn's tool dispatch stamps the SAME turn_no
