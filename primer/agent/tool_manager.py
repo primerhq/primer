@@ -541,9 +541,9 @@ class ToolExecutionManager:
     ) -> dict[str, tool_listing.ToolListing]:
         """List every remote toolset at once, each bounded; toolset id -> what it answered.
 
-        A provider is remote when it says so (``lists_remotely``). It is read with ``is True`` as well as ``getattr``:
-        a duck-typed fake or a mock that has no such flag lists as it always has, and so must any other provider.
-        The ``workspace_ext`` toolset is not asked on a chat, as in the walk. The bound is read from the module at the
+        A provider is remote when it says so (``lists_remotely``). The flag is read with ``getattr(..., False) is True``
+        so that a duck-typed fake, or a mock whose every attribute is truthy, is listed inline as it always was. The
+        ``workspace_ext`` toolset is not asked on a chat, as in the walk. The bound is read from the module at the
         moment of listing, so a test can lower it.
         """
         remote = {

@@ -480,6 +480,17 @@ Read the description + system_prompt to confirm fit.
   LLM sees the error and (usually) recovers. This is the
   recovery loop you may have seen as "invalid arguments for X" in
   session logs.
+- **A toolset that cannot list its tools is left out of the turn.** An
+  MCP toolset whose server is down, needs a sign-in or does not answer
+  within 60 seconds no longer ends the turn: the turn starts without that
+  toolset's tools, and the system message the model is sent ends with
+  "Toolsets unavailable this turn, so their tools are not offered:" and one
+  line per toolset with the reason. A call that names one of its tools
+  anyway comes back as a tool error ("toolset <id> is unavailable this turn:
+  <reason>"). The notice is not stored in the session's history, and the
+  next turn lists the toolset again, so it is back as soon as its server is.
+  A toolset that lists in-process is not covered: if one of those fails to
+  list, the turn still fails.
 - **Auto-compaction triggers between turns at 90% context, counting
   the system prompt and tool schemas.** Don't assume the LLM's history
   input is a contiguous slice of stored rows - it can have a compaction
