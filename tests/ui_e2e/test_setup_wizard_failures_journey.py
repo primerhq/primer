@@ -1,12 +1,13 @@
-"""System > Setup > Configure provider: step 1 names what failed, at the field it failed on (ADM-02, ADM-03 and ADM-05 of the 2026-10-08 admin review).
+"""First-run gate, step 1: names what failed, at the field it failed on (ADM-02, ADM-03 and ADM-05 of the 2026-10-08 admin review).
 
 The wizard is the first thing a new operator sees, and it answered every failure with "Could not reach that provider", printed pydantic's dump for a mistyped address, hinted
 Ollama's address for every provider type and disabled "Connect and list models" without saying why. This journey drives the real step 1 against the REAL
 ``POST /v1/llm_providers/_discover_models``, so the wording the classifier reads is the backend's own.
 
-The instance's own setup state is not what is under test (a shared server may already have a provider, which hides the "Configure provider" button), so three READS are
-stubbed: ``GET /v1/setup/state`` (a missing provider, so the button is there) and the two list reads the wizard resumes from (empty, so it opens at step 1). Every probe is a
-real request, none of them can succeed, and so nothing is ever saved.
+The journey reaches step 1 through the first-run gate (the console root while the install is not set up), not through System > Setup: that page leaves the System view (Platform revamp, design 16
+D6) and ``view=system:setup`` now opens the Dashboard. The instance's own setup state is not what is under test (a shared server may already be set up, which would hide the gate), so the gate's
+reads are stubbed: ``GET /v1/auth/status`` says the install is not set up, ``GET /v1/setup/state`` says there is no provider, and the two list reads the wizard resumes from are empty, so it opens at
+step 1. Every probe is a real request, none of them can succeed, and so nothing is ever saved.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ import threading
 from playwright.sync_api import Page, expect
 
 from tests._support.smk import smk
-from tests.ui_e2e._shell_helpers import open_view
+from tests.ui_e2e._shell_helpers import open_setup_wizard
 
 pytestmark = smk("SMK-UI-03", status="partial")
 
@@ -28,8 +29,21 @@ _STATE = {
     "predicates": [{"key": "llm_provider", "ok": False, "label": "An LLM provider", "detail": "No provider is configured yet."}],
 }
 
+_AUTH = {
+    "has_user": True,
+    "authenticated": True,
+    "username": "e2e",
+    "role": "admin",
+    "must_change_password": False,
+    "setup_complete": False,
+    "setup_missing": ["llm_provider"],
+}
 
-def _stub_reads(page: Page) -> None:
+
+def _stub_gate(page: Page) -> None:
+    def auth_status(route):
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(_AUTH))
+
     def setup_state(route):
         route.fulfill(status=200, content_type="application/json", body=json.dumps(_STATE))
 
@@ -39,24 +53,14 @@ def _stub_reads(page: Page) -> None:
             return
         route.fulfill(status=200, content_type="application/json", body=json.dumps({"items": [], "total": 0}))
 
+    page.route(re.compile(r".*/v1/auth/status$"), auth_status)
     page.route(re.compile(r".*/v1/setup/state$"), setup_state)
     page.route(re.compile(r".*/v1/(llm_providers|model_profiles)\?limit=200$"), empty_list)
 
 
 def _open_step_one(page: Page, console_url: str) -> None:
-    """The shell must be mounted before the view hash is assigned (a hash set while it mounts can be replaced by the shell's own normalisation), so wait for it and
-    navigate once more if the Setup page is not there after a short wait."""
-    expect(page.get_by_test_id("nv-root")).to_be_visible(timeout=20_000)
-    marker = page.get_by_test_id("nv-sys-setup-page")
-    for attempt in (1, 2):
-        open_view(page, console_url, "primer", "system:setup")
-        try:
-            expect(marker).to_be_visible(timeout=10_000 if attempt == 1 else 20_000)
-            break
-        except AssertionError:
-            if attempt == 2:
-                raise
-    page.get_by_test_id("nv-sys-setup-fix:llm_provider").click()
+    """The gate renders INSTEAD of the shell, so there is no shell to wait for: load the console root and wait for the wizard's first step."""
+    open_setup_wizard(page, console_url)
     expect(page.locator("#setup-type")).to_be_visible(timeout=15_000)
 
 
@@ -69,7 +73,7 @@ def _title(page: Page):
 
 
 def test_step_one_names_what_failed_at_the_field_it_failed_on(page: Page, console_url: str) -> None:
-    _stub_reads(page)
+    _stub_gate(page)
     probes: list[str] = []
     page.on("request", lambda r: probes.append(r.url) if r.method == "POST" and r.url.endswith("/_discover_models") else None)
     _open_step_one(page, console_url)
@@ -133,7 +137,7 @@ def test_a_server_that_needs_a_key_and_a_base_url_with_credentials(page: Page, c
     threading.Thread(target=server.serve_forever, daemon=True).start()
     port = server.server_address[1]
     try:
-        _stub_reads(page)
+        _stub_gate(page)
         _open_step_one(page, console_url)
         url = page.locator("#setup-url")
         key = page.locator("#setup-key")
