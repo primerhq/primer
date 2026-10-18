@@ -967,6 +967,8 @@ class TestWorkspaceRouter:
 
         assert r.status_code == 403, r.text
         assert r.headers["content-type"].startswith("application/problem+json")
+        assert r.json()["type"] == "/errors/forbidden"
+        assert r.json()["status"] == 403
         ext = r.json()["extensions"]
         assert ext["error"] == "reserved_workspace"
         assert ext["kind"] == "workspace"
@@ -1103,6 +1105,47 @@ class TestWorkspaceRouter:
         assert body.pop("is_default") is True
         assert body == json.loads(stored.model_dump_json())
         assert "tok-ws-prime" not in json.dumps(body), "the runtime token must stay masked"
+
+    @pytest.mark.asyncio
+    async def test_is_default_wrapping_keeps_override_secrets_masked(
+        self, client, sp
+    ) -> None:
+        """The row is re-wrapped to carry ``is_default`` on both the list and the single read. A secret in the stored overrides must come
+        out exactly as it did before (masked), never in the clear and never altered."""
+        import json
+
+        from primer.model.workspace import WorkspaceTemplateOverrides
+
+        await self._make_workspaces(client, "ws-prime")
+        await sp.set_default_workspace_id("ws-prime")
+        store = sp.get_storage(Workspace)
+        stored = await store.get("ws-prime")
+        await store.update(
+            stored.model_copy(
+                update={
+                    "overrides": WorkspaceTemplateOverrides(
+                        env={"API_TOKEN": "s3cret-value-not-for-the-wire"},
+                        init_commands=["echo ready"],
+                    )
+                }
+            )
+        )
+        stored = await store.get("ws-prime")
+
+        one = await client.get("/v1/workspaces/ws-prime")
+        listed = await client.get("/v1/workspaces")
+
+        assert one.status_code == 200 and listed.status_code == 200
+        assert "s3cret-value-not-for-the-wire" not in one.text
+        assert "s3cret-value-not-for-the-wire" not in listed.text
+        body = one.json()
+        assert body["overrides"]["env"] == {"API_TOKEN": "**********"}
+        assert body["overrides"]["init_commands"] == ["echo ready"]
+        body.pop("is_default")
+        assert body == json.loads(stored.model_dump_json())
+        row = next(r for r in listed.json()["items"] if r["id"] == "ws-prime")
+        assert row["overrides"]["env"] == {"API_TOKEN": "**********"}
+        assert row["is_default"] is True
 
     @pytest.mark.asyncio
     async def test_the_registry_says_a_workspace_is_being_destroyed_from_the_first_step_to_the_row_delete(
