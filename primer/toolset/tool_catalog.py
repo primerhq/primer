@@ -16,10 +16,10 @@ call this tool" follows from that split (:attr:`ToolEntry.via_call_tool`).
 needs a workspace, and the approval gate that SHIPS on it. The shipped gate is :func:`default_gate`: a tool's LIVE gate is a row an operator edits, so a
 versioned page cannot state it and ``system__describe_tool`` asks the ``ApprovalResolver`` instead.
 
-Two readers build on it. :func:`collect_tool_entries` lists a set of providers (the wiki build over the built-in toolsets, boot time, in-process, never
-blocks). :func:`find_tool_entry` and :func:`list_toolset_entries` look one tool or one toolset up through the registry, for a run in flight: a user-made
-toolset can sit behind an unreachable MCP server, so that listing is bounded, and an OAuth consent request is the caller's to handle, not an answer of
-"not found".
+Two kinds of reader build on it. :func:`collect_tool_entries` lists a set of providers in one go (meant for the built-in toolsets, which are in-process and
+never block, so it sets no clock of its own). :func:`find_tool_entry` and :func:`list_toolset_entries` look one tool or one toolset up through the
+registry, for a run in flight (``system__describe_tool``): a user-made toolset can sit behind an unreachable MCP server, so that listing is bounded, and an OAuth
+consent request is the caller's to handle, not an answer of "not found".
 
 Imports are light on purpose (``primer.toolset.crud`` is imported inside :func:`default_gate`): ``primer.toolset._system_crud`` builds ``describe_tool`` on
 this module, and ``crud`` imports ``_system_crud``.
