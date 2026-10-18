@@ -77,6 +77,27 @@ def _required(fields) -> set[str]:
     }
 
 
+# The two draft ``_test`` routes and the probe each one calls (the names are looked up in the router module, which is where a test replaces them).
+_PROBES = [
+    pytest.param("stt_providers", "list_models", id="stt"),
+    pytest.param("tts_providers", "list_voices", id="tts"),
+]
+
+
+def _patch_probe(monkeypatch, attr: str, *, answer=None, error: Exception | None = None) -> list[dict]:
+    """Stand in for ``primer.api.routers.speech.<attr>``: it records what it was asked to probe, then answers ``answer`` or raises ``error``."""
+    calls: list[dict] = []
+
+    async def _probe(*, url, api_key, timeout=10.0):
+        calls.append({"url": url, "api_key": api_key})
+        if error is not None:
+            raise error
+        return answer
+
+    monkeypatch.setattr(f"primer.api.routers.speech.{attr}", _probe)
+    return calls
+
+
 class TestHelperRoutesBeatTheIdPattern:
     @pytest.mark.asyncio
     async def test_stt_types_is_not_captured_as_an_id(self, client) -> None:
@@ -145,6 +166,116 @@ class TestHelperRoutesBeatTheIdPattern:
         assert r.status_code == 200, r.text
         assert r.json()["ok"] is False
         assert "invalid draft" in r.json()["error"]
+
+    # ---- a partial draft: the Register overlay's "Next" has only the connection fields (platform revamp, plan 02 task 5) ----
+
+    @pytest.mark.asyncio
+    async def test_stt_test_needs_only_the_connection_fields(self, client, monkeypatch) -> None:
+        """Page 1 of the overlay has the endpoint and maybe a key: no default model, no limits, no id."""
+        calls = _patch_probe(monkeypatch, "list_models", answer=["whisper-1"])
+
+        r = await client.post(
+            "/v1/stt_providers/_test", json={"config": {"url": "http://asr.local:8006/v1"}},
+        )
+
+        assert r.status_code == 200, r.text
+        assert r.json() == {"ok": True, "models": ["whisper-1"]}
+        assert calls == [{"url": "http://asr.local:8006/v1", "api_key": None}]
+
+    @pytest.mark.asyncio
+    async def test_tts_test_needs_only_the_connection_fields(self, client, monkeypatch) -> None:
+        calls = _patch_probe(monkeypatch, "list_voices", answer=["af_heart", "am_adam"])
+
+        r = await client.post(
+            "/v1/tts_providers/_test", json={"config": {"url": "http://tts.local:8004/v1"}},
+        )
+
+        assert r.status_code == 200, r.text
+        assert r.json() == {"ok": True, "voices": ["af_heart", "am_adam"]}
+        assert calls == [{"url": "http://tts.local:8004/v1", "api_key": None}]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("route", "attr"), _PROBES)
+    async def test_the_key_of_a_partial_draft_reaches_the_probe(self, client, monkeypatch, route, attr) -> None:
+        """The key is the one secret on page 1: the probe is given it in clear. Naming the kind (``provider: openai``) or leaving it out is the same draft."""
+        calls = _patch_probe(monkeypatch, attr, answer=["x"])
+
+        for body in (
+            {"config": {"url": "http://svc.local/v1", "api_key": "sk-conn-KEY-1234"}},
+            {"provider": "openai", "config": {"url": "http://svc.local/v1", "api_key": "sk-conn-KEY-1234"}},
+        ):
+            r = await client.post(f"/v1/{route}/_test", json=body)
+            assert r.status_code == 200 and r.json()["ok"] is True, r.text
+
+        assert calls == [{"url": "http://svc.local/v1", "api_key": "sk-conn-KEY-1234"}] * 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("route", "attr"), _PROBES)
+    async def test_a_draft_is_probed_whatever_its_row_fields_say(self, client, monkeypatch, route, attr) -> None:
+        """``id``, ``default_model``, ``default_voice`` and ``limits`` are not the connection: they are not validated by ``_test``, even when the row would refuse them (Save says so)."""
+        calls = _patch_probe(monkeypatch, attr, answer=["x"])
+
+        r = await client.post(f"/v1/{route}/_test", json={
+            "id": "", "provider": "openai", "default_model": "", "default_voice": "",
+            "limits": {"max_concurrency": 0}, "config": {"url": "http://svc.local/v1"},
+        })
+
+        assert r.status_code == 200 and r.json()["ok"] is True, r.text
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("route", "attr"), _PROBES)
+    @pytest.mark.parametrize("body", [
+        pytest.param({"config": {}}, id="empty-config"),
+        pytest.param({}, id="no-config"),
+        pytest.param({"config": {"api_key": "sk-only-a-key-1234"}}, id="a-key-and-no-url"),
+    ])
+    async def test_a_partial_draft_without_a_url_names_the_url(self, client, monkeypatch, route, attr, body) -> None:
+        calls = _patch_probe(monkeypatch, attr, answer=["x"])
+
+        r = await client.post(f"/v1/{route}/_test", json=body)
+
+        assert r.status_code == 200, r.text
+        out = r.json()
+        assert out["ok"] is False and out["error"].startswith("invalid draft"), out
+        assert "url" in out["error"], out
+        # Only the url is missing as far as this probe goes: the fields it never reads (the person has not got to them yet) are not reported.
+        for unread in ("default_model", "default_voice", "limits", "provider"):
+            assert unread not in out["error"], out
+        assert calls == [], "a draft with no url must not be probed"
+        assert "sk-only-a-key-1234" not in r.text
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("route", "attr"), _PROBES)
+    async def test_an_unknown_speech_provider_is_an_invalid_draft(self, client, monkeypatch, route, attr) -> None:
+        calls = _patch_probe(monkeypatch, attr, answer=["x"])
+
+        r = await client.post(f"/v1/{route}/_test", json={"provider": "deepgram", "config": {"url": "http://x"}})
+
+        assert r.status_code == 200, r.text
+        out = r.json()
+        assert out["ok"] is False and out["error"].startswith("invalid draft"), out
+        assert "provider" in out["error"] and "openai" in out["error"], f"name the field and what is supported: {out}"
+        assert "deepgram" not in out["error"], f"what was typed is not printed back (draft_error's rule): {out}"
+        for unread in ("default_model", "default_voice", "limits"):
+            assert unread not in out["error"], out
+        assert calls == [], "a draft of a kind we do not serve must not be probed"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("route", "attr"), _PROBES)
+    async def test_a_partial_draft_failure_never_echoes_the_key(self, client, monkeypatch, route, attr) -> None:
+        _patch_probe(monkeypatch, attr, error=RuntimeError("401 for sk-speech-SECRET-77"))
+
+        r = await client.post(f"/v1/{route}/_test", json={
+            "config": {"url": "http://svc.local/v1", "api_key": "sk-speech-SECRET-77"},
+        })
+
+        assert r.status_code == 200, r.text
+        error = r.json()["error"]
+        # The probe ran and failed (a draft that was refused as invalid would not echo the key either, and would prove nothing).
+        assert r.json()["ok"] is False and error.startswith("RuntimeError: 401 for "), error
+        assert "sk-speech-SECRET-77" not in r.text
+        assert "[REDACTED]" in error, "the key is masked, not dropped silently"
 
 
 class TestCascadeBlockOnDelete:
