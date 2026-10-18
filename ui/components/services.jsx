@@ -341,6 +341,10 @@ function SV_ServiceDetail({ serviceId }) {
   const doDelete = async () => {
     try {
       await apiFetch("DELETE", "/services/" + encodeURIComponent(serviceId));
+      // Said before the page leaves: the detail closes onto the Services page (design 10, D1).
+      if (window.primerApi.toastPush) {
+        window.primerApi.toastPush({ kind: "warning", title: "Service deleted", detail: (svc && svc.name) || serviceId });
+      }
       navigate("/services");
     } catch (err) {
       setError(SV_extractError(err));

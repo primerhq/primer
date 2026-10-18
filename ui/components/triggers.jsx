@@ -1432,6 +1432,13 @@ function TR_TriggerDetail({ id }) {
     setDeleteError(null);
     try {
       await apiFetch("DELETE", "/triggers/" + encodeURIComponent(id));
+      // Said before the page leaves: the detail closes onto the Triggers page, which has no record of what just happened (design 10, D1).
+      if (window.primerApi.toastPush) {
+        window.primerApi.toastPush({
+          kind: "warning", title: "Trigger deleted",
+          detail: (detail.data && (detail.data.name || detail.data.slug)) || id,
+        });
+      }
       navigate("/triggers");
     } catch (err) {
       setDeleteError(err);

@@ -402,7 +402,18 @@ function HarnessDetail({ id }) {
       "/harnesses/" + encodeURIComponent(id) + (cascadeDelete ? "?cascade=true" : "")
     ),
     {
-      onSuccess: () => navigate("/harnesses"),
+      onSuccess: () => {
+        // Said before the page leaves (design 10, D1); the button says Delete for an outbound harness and Uninstall for an inbound one, and so does the toast.
+        const h = detail.data;
+        if (window.primerApi.toastPush) {
+          window.primerApi.toastPush({
+            kind: "warning",
+            title: h && h.direction === "outbound" ? "Harness deleted" : "Harness uninstalled",
+            detail: (h && (h.name || h.slug)) || id,
+          });
+        }
+        navigate("/harnesses");
+      },
       onError: () => detail.refetch(),
     }
   );

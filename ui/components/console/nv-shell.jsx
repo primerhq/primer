@@ -459,6 +459,32 @@ function NV_Shell() {
     setOpenMenu(null);
   }, [setView, setOpenMenu, markPush]);
 
+  // Closes the open overlay and lands on a view as ONE navigation: one markPush, so one history entry (revamp design 10, D1). A detail overlay's
+  // Delete and Back mean "leave this record", and where that lands is the entity's Platform page (target: { name, nav?, sub? }, the shim's
+  // SH_SHIM_LIST_TARGETS), not the page the overlay was opened over (a pasted link opens it over the studio). `sub` is the provider type of the
+  // Providers page; a console whose view has no such slot ignores it.
+  var closeOverlayTo = React.useCallback(function (target) {
+    markPush();
+    setOverlay(null);
+    setView({ name: target.name, nav: target.nav || null, sub: target.sub || null });
+  }, [markPush, setOverlay, setView]);
+
+  // Opens a session in the studio from wherever it was asked for: Chat on an agent's detail, a session row on a toolset's or a workspace's. The session
+  // is a studio document, so the overlay closes, the studio is selected and the session opens as a promoted tab, in ONE history entry (the palette does the
+  // same in three calls). The files sidebar, the terminal and the rail follow the session's workspace when the rail's own cache knows it; a session created a
+  // moment ago is not in it yet, and then the workspace stays as it is: tabs are global, so the session shows all the same.
+  var openSessionInStudio = React.useCallback(function (sid) {
+    if (!sid) return;
+    var meta = resolveSessionMeta(sid);
+    markPush();
+    if (meta && meta.wid) setWid(meta.wid);
+    setOverlay(null);
+    setView({ name: "studio", nav: null, sub: null });
+    setTgModel(function (m) {
+      return window.TG_openTab(m, { kind: "session", ref: sid }, { promote: true });
+    });
+  }, [resolveSessionMeta, markPush, setWid, setOverlay, setView, setTgModel]);
+
   // --- Core verbs (chrome-level; view bodies add their own) --------------
   React.useEffect(function () {
     function reg(v) { if (!registry.get(v.id)) registry.register(v); }
@@ -574,6 +600,8 @@ function NV_Shell() {
       paletteRef: paletteRef,
       goView: goView,
       clearView: clearView,
+      closeOverlayTo: closeOverlayTo,
+      openSessionInStudio: openSessionInStudio,
       tgModel: tgModel,
       resolveSessionMeta: resolveSessionMeta,
       stampSessionMeta: stampSessionMeta,
@@ -661,6 +689,7 @@ function NV_Shell() {
     };
   }, [wid, view, doc, overlay, anchor, panels, openMenu, registry,
     frecency, wsItems, status, caps, voiceRef, paletteRef, goView, clearView,
+    closeOverlayTo, openSessionInStudio,
     tgModel, setTgModel, resolveSessionMeta, stampSessionMeta, setOpenMenu,
     setOverlay, setTick, markPush, setWid]);
 
