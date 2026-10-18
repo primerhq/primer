@@ -571,6 +571,14 @@ class WorkspaceSession(Identifiable):
         ),
     )
     last_worker_id: str | None = Field(default=None)
+    peer_hops: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Hop count of the peer message (message_session) that started the current turn; 0 when a person, a trigger or a channel started it. "
+            "Written by wake_session whenever a wake lands an instruction. Additive/optional, no migration: a row without it reads 0."
+        ),
+    )
 
     # Cancel/pause request flags (set by API, read by worker)
     pause_requested: bool = Field(default=False)
@@ -1169,6 +1177,41 @@ class PendingSessionMessage(Identifiable):
     created_at: datetime = Field(...)
 
 
+PEER_PAYLOAD_KEY = "peer"
+"""The key a peer attribution lives under: in a USER_INPUT record's ``payload`` and in ``PendingSessionMessage.attribution``."""
+
+
+class PeerAttribution(BaseModel):
+    """Who sent a message that came from another session (``message_session``), and how far it is from a person.
+
+    Rides the delivery of the message: into the USER_INPUT record's ``payload`` (``payload["peer"]``) when it starts a turn, and into
+    ``PendingSessionMessage.attribution`` (``{"peer": ...}``) when it is queued, from where the drain carries it back into the wake that
+    realizes it, so the hop count survives the queue. ``hops`` is the hop count OF THIS MESSAGE: 1 when the sender's turn was started by a
+    person, a trigger or a channel, and one more than the sender's own count otherwise (``WorkspaceSession.peer_hops``).
+    """
+
+    from_session_id: str = Field(..., min_length=1)
+    from_workspace_id: str = Field(..., min_length=1)
+    from_agent_id: str | None = None
+    from_graph_id: str | None = None
+    hops: int = Field(..., ge=1)
+    message_id: str | None = None
+
+    def as_attribution(self) -> dict[str, Any]:
+        """The dict ``store_pending_steer`` stores as ``PendingSessionMessage.attribution``."""
+        return {PEER_PAYLOAD_KEY: self.model_dump(mode="json")}
+
+    @classmethod
+    def from_attribution(cls, attribution: dict[str, Any] | None) -> "PeerAttribution | None":
+        """The peer a queued message carries, or ``None`` when it carries none.
+
+        Raises :class:`pydantic.ValidationError` when the ``peer`` value is there but malformed; the caller decides what a malformed one means.
+        """
+        if not isinstance(attribution, dict) or PEER_PAYLOAD_KEY not in attribution:
+            return None
+        return cls.model_validate(attribution[PEER_PAYLOAD_KEY])
+
+
 # ===========================================================================
 # Forward-reference resolution
 # ===========================================================================
@@ -1212,6 +1255,8 @@ __all__ = [
     "Instruction",
     "NON_ENDED_STATUSES",
     "NON_ENDED_STATUSES_NOT_PAUSED",
+    "PEER_PAYLOAD_KEY",
+    "PeerAttribution",
     "SessionMessageKind",
     "SessionMessageRecord",
     "WorkspaceSession",

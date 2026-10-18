@@ -33,6 +33,8 @@ from typing import Any
 from primer.int.claim import ClaimKind
 from primer.model.except_ import NotFoundError
 from primer.model.workspace_session import (
+    PEER_PAYLOAD_KEY,
+    PeerAttribution,
     SessionMessageKind,
     SessionMessageRecord,
     SessionStatus,
@@ -94,6 +96,7 @@ async def wake_session(
     external_tools: "list | None" = None,
     extra_parts: "list | None" = None,
     extra_payload: "dict | None" = None,
+    peer: PeerAttribution | None = None,
 ) -> WorkspaceSession:
     """Append ``instruction`` (if any) and re-arm the session's claim.
 
@@ -106,6 +109,15 @@ async def wake_session(
     paths) so the transcript surface can show what was attached without
     reconstructing it from the full Message. Both ``None`` (every
     existing caller) is unchanged behaviour.
+
+    ``peer`` (pivot P3) says the instruction was sent by another session
+    (``message_session``). It is recorded on the USER_INPUT record
+    (``payload["peer"]``), sets ``WorkspaceSession.peer_hops`` to the
+    message's hop count in the same row write (every other wake that lands
+    an instruction resets it to 0, since a person, a trigger or a channel
+    starts a fresh chain), and rides into the queued message when the pause
+    hold below stores one. A wake that lands no instruction leaves the hop
+    count alone.
 
     ``human_intent`` (01a08c08, REQUIRED, no default on purpose): does a
     live human's decision to re-engage stand behind THIS wake? True for
@@ -200,6 +212,9 @@ async def wake_session(
                     text=instruction,
                     workspace_registry=deps.workspace_registry,
                     event_bus=deps.event_bus,
+                    # The sender and hop count ride the queue (pivot P3): realize_next_pending hands them back to the wake that
+                    # delivers this message, or a reply chain would restart at hop 1 each time a pause held it.
+                    attribution=peer.as_attribution() if peer is not None else None,
                 )
                 pending_id = pending.id
             await _record_pause_superseded(
@@ -245,7 +260,11 @@ async def wake_session(
                 user_input_seq = await writer.append(SessionMessageRecord(
                     seq=1,  # overwritten by the writer's monotonic counter
                     kind=SessionMessageKind.USER_INPUT,
-                    payload={"text": instruction, **(extra_payload or {})},
+                    payload={
+                        "text": instruction,
+                        **(extra_payload or {}),
+                        **({PEER_PAYLOAD_KEY: peer.model_dump(mode="json")} if peer is not None else {}),
+                    },
                     created_at=datetime.now(timezone.utc),
                 ))
                 await writer.flush()
@@ -286,6 +305,10 @@ async def wake_session(
         row.turn_status = "claimable"
         row.pause_requested = False
         row.pause_requested_at = None
+        if instruction:
+            # The hop count of the message that starts this turn: a peer's, else 0. A person, a trigger and a channel start a fresh chain, so
+            # the count never carries from one chain into the next. It rides this write, which is the one that arms the turn.
+            row.peer_hops = peer.hops if peer is not None else 0
         if user_input_seq is not None:
             row.last_seq = user_input_seq
         # Name the session from its opening instruction, once. Sessions
