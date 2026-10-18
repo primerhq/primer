@@ -50,6 +50,9 @@ from primer.storage.migrations.m007_aggregated_model_profiles import (
 from primer.storage.migrations.m008_embedding_provider_repair import (
     M008EmbeddingProviderRepair,
 )
+from primer.storage.migrations.m009_docker_template_runtime_image import (
+    M009DockerTemplateRuntimeImage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +79,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     M006UnifiedSearchGrants(),
     M007AggregatedModelProfiles(),
     M008EmbeddingProviderRepair(),
+    M009DockerTemplateRuntimeImage(),
 )
 
 #: Highest version this build knows how to apply.
