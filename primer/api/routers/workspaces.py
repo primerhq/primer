@@ -83,6 +83,7 @@ from primer.common.preview_allowlist import (
 from primer.model.common import preserve_masked_secrets, refuse_served_masks
 from primer.api.routers._references import ReferenceCheck
 from primer.bootstrap.defaults import RESERVED_WORKSPACE_TEMPLATES
+from primer.bootstrap.prime import resolve_default_workspace_id
 from primer.model.except_ import (
     ConfigError,
     BadRequestError,
@@ -121,6 +122,7 @@ from primer.workspace.diagnostic import (
     parse_diagnostic_command,
 )
 from primer.model.user import User
+from primer.model.workspace_refusal import ReservedWorkspaceError
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
 from primer.workspace.template_privilege import (
     admin_only_override_fields,
@@ -705,8 +707,25 @@ _PageResp = OffsetPageResponse[Any] | CursorPageResponse[Any]
 _SESSION_COUNT_PAGE_SIZE = 200
 
 
-class WorkspaceRowWithUsage(WorkspaceRow):
-    """Response-only shape: a Workspace plus its live session count.
+class WorkspaceRowOut(WorkspaceRow):
+    """Response-only shape: a Workspace plus whether it is the default workspace (prime).
+
+    Never persisted: ``is_default`` is computed on every response from the system state (see
+    :func:`~primer.bootstrap.prime.resolve_default_workspace_id`), so it is not a field of the stored row and cannot disagree with
+    it. The console reads it to hide the delete actions, and ``DELETE`` refuses the default workspace whatever a client believes.
+    """
+
+    is_default: bool = Field(
+        default=False,
+        description=(
+            "True for the default workspace (prime), which cannot be deleted. "
+            "Response-only; never stored."
+        ),
+    )
+
+
+class WorkspaceRowWithUsage(WorkspaceRowOut):
+    """Response-only shape: a Workspace plus its live session count (and ``is_default``, from :class:`WorkspaceRowOut`).
 
     Never persisted -- session_count is computed fresh on every
     GET /v1/workspaces (bounded scan over Session storage, tallied by
@@ -731,7 +750,7 @@ class WorkspaceRowWithUsage(WorkspaceRow):
 async def _enrich_with_session_counts(
     resp: OffsetPageResponse | CursorPageResponse, request: Request,
 ) -> OffsetPageResponse | CursorPageResponse:
-    """Attach a live session count to one page of workspaces."""
+    """Attach a live session count, and the ``is_default`` flag, to one page of workspaces."""
     session_storage = get_storage_provider(request).get_storage(WorkspaceSession)
 
     counts: Counter[str] = Counter()
@@ -746,9 +765,12 @@ async def _enrich_with_session_counts(
             break
         offset += _SESSION_COUNT_PAGE_SIZE
 
+    default_id = await resolve_default_workspace_id(get_storage_provider(request))
     enriched = [
         WorkspaceRowWithUsage(
-            **item.model_dump(), session_count=counts.get(item.id, 0),
+            **item.model_dump(),
+            session_count=counts.get(item.id, 0),
+            is_default=item.id == default_id,
         )
         for item in resp.items
     ]
@@ -786,18 +808,20 @@ async def find_workspaces(
 
 @workspace_router.get(
     "/workspaces/{workspace_id}",
-    response_model=WorkspaceRow,
+    response_model=WorkspaceRowOut,
     summary="Get Workspace by id",
     responses=common_responses(404, 500),
 )
 async def get_workspace(
     workspace_id: str = Path(..., description="Workspace id"),
     storage=Depends(get_workspace_storage),
-) -> WorkspaceRow:
+    storage_provider=Depends(get_storage_provider),
+) -> WorkspaceRowOut:
     row = await storage.get(workspace_id)
     if row is None:
         raise NotFoundError(f"Workspace {workspace_id!r} does not exist")
-    return row
+    default_id = await resolve_default_workspace_id(storage_provider)
+    return WorkspaceRowOut(**row.model_dump(), is_default=row.id == default_id)
 
 
 @workspace_router.put(
@@ -1174,13 +1198,27 @@ async def clear_workspace_reply_binding(
     "/workspaces/{workspace_id}",
     status_code=204,
     summary="Destroy Workspace",
-    responses=common_responses(404, 500),
+    responses=common_responses(403, 404, 500),
 )
 async def delete_workspace(
     workspace_id: str = Path(..., description="Workspace id"),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
 ) -> None:
-    await registry.destroy(workspace_id)
+    """Destroy the workspace and everything in it. The default workspace (prime) is refused: 403 ``reserved_workspace``."""
+    try:
+        await registry.destroy(workspace_id)
+    except ReservedWorkspaceError as exc:
+        # The convention of the reserved-id guards above: a bare HTTPException whose detail mapping becomes the envelope's
+        # extensions, so a client reads ``extensions.error`` the same way for every "this is protected" refusal.
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "reserved_workspace",
+                "kind": "workspace",
+                "workspace_id": workspace_id,
+                "message": exc.message,
+            },
+        ) from exc
 
 
 @workspace_router.post(

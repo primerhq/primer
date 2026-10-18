@@ -110,10 +110,14 @@ class _SP:
     async def get_system_state(self):
         from primer.model.system_state import SystemState
 
-        return SystemState()
+        return SystemState(default_workspace_id=self._default_workspace_id)
+
+    async def set_default_workspace_id(self, workspace_id):
+        self._default_workspace_id = workspace_id
 
     def __init__(self) -> None:
         self._stores: dict[type, _Storage] = {}
+        self._default_workspace_id: str | None = None
 
     def get_storage(self, cls):
         return self._stores.setdefault(cls, _Storage())
@@ -864,6 +868,62 @@ class TestSubResourceHandlers:
         # Subsequent get returns not-found
         get = await toolset.call(tool_name="get_workspace", arguments={"id": seeded})
         assert get.is_error
+
+    @pytest.mark.asyncio
+    async def test_delete_workspace_refuses_the_default(self, toolset, seeded, sp) -> None:
+        """The default workspace (prime) cannot be deleted by a tool call either: ``forbidden``, and the workspace is still there."""
+        await sp.set_default_workspace_id(seeded)
+
+        result = await toolset.call(tool_name="delete_workspace", arguments={"id": seeded})
+
+        assert result.is_error
+        assert json.loads(result.output)["type"] == "forbidden"
+        assert "default workspace" in json.loads(result.output)["message"]
+        got = await toolset.call(tool_name="get_workspace", arguments={"id": seeded})
+        assert not got.is_error
+
+    @pytest.mark.asyncio
+    async def test_delete_workspace_refuses_a_legacy_default_before_the_id_is_recorded(
+        self, toolset, seeded, sp, workspace_registry
+    ) -> None:
+        """No id recorded yet: the legacy ``primer`` workspace is the default, and is refused the same way."""
+        await toolset.call(
+            tool_name="create_workspace",
+            arguments={"id": "primer", "template_id": "tpl-1"},
+        )
+        assert (await sp.get_system_state()).default_workspace_id is None
+
+        result = await toolset.call(tool_name="delete_workspace", arguments={"id": "primer"})
+
+        assert result.is_error
+        assert json.loads(result.output)["type"] == "forbidden"
+        backend = await workspace_registry.get_backend("local-1")
+        assert "primer" in await backend.list(), "a refused delete must not tear the live instance down"
+
+    @pytest.mark.asyncio
+    async def test_delete_workspace_of_another_workspace_works_while_a_default_exists(
+        self, toolset, seeded, sp
+    ) -> None:
+        await toolset.call(
+            tool_name="create_workspace",
+            arguments={"id": "ws-other", "template_id": "tpl-1"},
+        )
+        await sp.set_default_workspace_id(seeded)
+
+        result = await toolset.call(tool_name="delete_workspace", arguments={"id": "ws-other"})
+
+        assert not result.is_error, result.output
+        gone = await toolset.call(tool_name="get_workspace", arguments={"id": "ws-other"})
+        assert gone.is_error
+        kept = await toolset.call(tool_name="get_workspace", arguments={"id": seeded})
+        assert not kept.is_error
+
+    @pytest.mark.asyncio
+    async def test_delete_workspace_description_names_the_forbidden_refusal(self, toolset) -> None:
+        tools = {t.id: t async for t in toolset.list_tools()}
+        description = tools["delete_workspace"].description
+        assert "type=forbidden" in description
+        assert "default workspace (prime)" in description
 
 
 # ===========================================================================

@@ -130,10 +130,14 @@ class _SP:
     async def get_system_state(self):
         from primer.model.system_state import SystemState
 
-        return SystemState()
+        return SystemState(default_workspace_id=self._default_workspace_id)
+
+    async def set_default_workspace_id(self, workspace_id):
+        self._default_workspace_id = workspace_id
 
     def __init__(self) -> None:
         self._stores: dict[type, _Storage] = {}
+        self._default_workspace_id: str | None = None
 
     def get_storage(self, cls):
         return self._stores.setdefault(cls, _Storage())
@@ -934,6 +938,171 @@ class TestWorkspaceRouter:
         assert got_waiting.status == SessionStatus.ENDED
         assert got_waiting.ended_reason == "workspace_lost"
         assert got_ended.ended_reason == "completed"
+
+    # ---- the default workspace (prime): never deletable, and flagged on its rows (pivot P2 Task 2) ----
+
+    @staticmethod
+    async def _make_workspaces(client, *ids: str) -> None:
+        """Register the provider and template, then create one workspace per id."""
+        await client.post(
+            "/v1/workspace_providers", json=_provider().model_dump(mode="json")
+        )
+        await client.post(
+            "/v1/workspace_templates", json=_template().model_dump(mode="json")
+        )
+        for wid in ids:
+            post = await client.post(
+                "/v1/workspaces", json={"template_id": "tpl-1", "id": wid}
+            )
+            assert post.status_code == 201, post.text
+
+    @pytest.mark.asyncio
+    async def test_deleting_the_default_workspace_is_403_reserved_workspace(
+        self, client, sp, wsr
+    ) -> None:
+        await self._make_workspaces(client, "ws-prime", "ws-other")
+        await sp.set_default_workspace_id("ws-prime")
+
+        r = await client.delete("/v1/workspaces/ws-prime")
+
+        assert r.status_code == 403, r.text
+        assert r.headers["content-type"].startswith("application/problem+json")
+        ext = r.json()["extensions"]
+        assert ext["error"] == "reserved_workspace"
+        assert ext["kind"] == "workspace"
+        assert ext["workspace_id"] == "ws-prime"
+        assert "default workspace" in r.json()["detail"]
+        # Nothing was torn down: the row is there and the backend still holds the live instance.
+        assert (await client.get("/v1/workspaces/ws-prime")).status_code == 200
+        backend = await wsr.get_backend("local-1")
+        assert "ws-prime" in await backend.list()
+
+    @pytest.mark.asyncio
+    async def test_the_refused_delete_leaves_the_default_workspaces_sessions_open(
+        self, client, sp
+    ) -> None:
+        from primer.model.workspace_session import (
+            AgentSessionBinding,
+            WorkspaceSession,
+        )
+
+        await self._make_workspaces(client, "ws-prime")
+        await sp.set_default_workspace_id("ws-prime")
+        sess_storage = sp.get_storage(WorkspaceSession)
+        await sess_storage.create(
+            WorkspaceSession(
+                id="sess-main",
+                workspace_id="ws-prime",
+                binding=AgentSessionBinding(agent_id="agt-1"),
+                status=SessionStatus.RUNNING,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+
+        r = await client.delete("/v1/workspaces/ws-prime")
+
+        assert r.status_code == 403, r.text
+        kept = await sess_storage.get("sess-main")
+        assert kept.status == SessionStatus.RUNNING and kept.ended_reason is None
+
+    @pytest.mark.asyncio
+    async def test_deleting_a_legacy_default_is_403_before_the_id_is_recorded(
+        self, client
+    ) -> None:
+        """An install that predates the system-state column has no recorded id; its ``primer`` workspace is protected all the same."""
+        await self._make_workspaces(client, "primer")
+
+        r = await client.delete("/v1/workspaces/primer")
+
+        assert r.status_code == 403, r.text
+        assert r.json()["extensions"]["error"] == "reserved_workspace"
+        assert (await client.get("/v1/workspaces/primer")).status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_deleting_another_workspace_still_answers_204_while_a_default_exists(
+        self, client, sp
+    ) -> None:
+        await self._make_workspaces(client, "ws-prime", "ws-other")
+        await sp.set_default_workspace_id("ws-prime")
+
+        r = await client.delete("/v1/workspaces/ws-other")
+
+        assert r.status_code == 204, r.text
+        assert (await client.get("/v1/workspaces/ws-other")).status_code == 404
+        assert (await client.get("/v1/workspaces/ws-prime")).status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_deleting_an_unknown_workspace_is_still_404(self, client, sp) -> None:
+        await sp.set_default_workspace_id("ws-prime")
+
+        r = await client.delete("/v1/workspaces/no-such")
+
+        assert r.status_code == 404, r.text
+
+    @pytest.mark.asyncio
+    async def test_workspace_rows_carry_is_default(self, client, sp) -> None:
+        await self._make_workspaces(client, "ws-prime", "ws-other")
+        await sp.set_default_workspace_id("ws-prime")
+
+        rows = (await client.get("/v1/workspaces")).json()["items"]
+        assert {r["id"]: r["is_default"] for r in rows} == {
+            "ws-prime": True,
+            "ws-other": False,
+        }
+        one = await client.get("/v1/workspaces/ws-prime")
+        assert one.status_code == 200, one.text
+        assert one.json()["is_default"] is True
+        assert (await client.get("/v1/workspaces/ws-other")).json()["is_default"] is False
+
+    @pytest.mark.asyncio
+    async def test_is_default_follows_the_legacy_row_while_the_id_is_unrecorded(
+        self, client
+    ) -> None:
+        await self._make_workspaces(client, "primer", "ws-other")
+
+        rows = (await client.get("/v1/workspaces")).json()["items"]
+        assert {r["id"]: r["is_default"] for r in rows} == {
+            "primer": True,
+            "ws-other": False,
+        }
+
+    @pytest.mark.asyncio
+    async def test_no_row_is_default_when_there_is_no_default(self, client) -> None:
+        await self._make_workspaces(client, "ws-1", "ws-2")
+
+        rows = (await client.get("/v1/workspaces")).json()["items"]
+        assert {r["id"]: r["is_default"] for r in rows} == {"ws-1": False, "ws-2": False}
+        assert (await client.get("/v1/workspaces/ws-1")).json()["is_default"] is False
+
+    @pytest.mark.asyncio
+    async def test_is_default_is_response_only_and_never_stored(self, client, sp) -> None:
+        """The flag is computed per response from the system state; it is not a column of the row, so a stored row can never disagree with it."""
+        await self._make_workspaces(client, "ws-prime")
+        await sp.set_default_workspace_id("ws-prime")
+        await client.get("/v1/workspaces")
+        await client.get("/v1/workspaces/ws-prime")
+
+        assert "is_default" not in Workspace.model_fields
+        stored = await sp.get_storage(Workspace).get("ws-prime")
+        assert type(stored) is Workspace
+        assert "is_default" not in stored.model_dump()
+
+    @pytest.mark.asyncio
+    async def test_get_workspace_body_is_unchanged_apart_from_is_default(
+        self, client, sp
+    ) -> None:
+        """Wrapping the row for the response must not drop, rename or unmask a field: the body equals the stored row's own JSON plus ``is_default``."""
+        import json
+
+        await self._make_workspaces(client, "ws-prime")
+        await sp.set_default_workspace_id("ws-prime")
+        stored = await sp.get_storage(Workspace).get("ws-prime")
+
+        body = (await client.get("/v1/workspaces/ws-prime")).json()
+
+        assert body.pop("is_default") is True
+        assert body == json.loads(stored.model_dump_json())
+        assert "tok-ws-prime" not in json.dumps(body), "the runtime token must stay masked"
 
     @pytest.mark.asyncio
     async def test_the_registry_says_a_workspace_is_being_destroyed_from_the_first_step_to_the_row_delete(

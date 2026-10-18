@@ -19,6 +19,7 @@ from primer.api.config import AppConfig
 from primer.api.registries.workspace_registry import WorkspaceRegistry
 from primer.model.except_ import ConfigError, ConflictError
 from primer.model.scheduler import RuntimeMode, SchedulerProviderType
+from primer.model.system_state import SystemState
 from primer.model.workspace import Workspace as WorkspaceRow
 from primer.model.workspace import (
     ContainerConnectionSocket,
@@ -153,6 +154,10 @@ class _SP:
 
     def get_storage(self, model: type) -> _Storage:
         return self._by_model.setdefault(model.__name__, _Storage())
+
+    async def get_system_state(self) -> SystemState:
+        """``WorkspaceRegistry.destroy`` asks which workspace is the default before it tears anything down (pivot P2): none is recorded here."""
+        return SystemState()
 
 
 class _Backend:

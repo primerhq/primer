@@ -54,7 +54,7 @@ flowchart TD
 
 ## 5. Data model
 
-The seeded-world reserved ids live in `primer/bootstrap/defaults.py` as `RESERVED_OPERATOR_AGENT`, `RESERVED_BUILDER_AGENT` and `RESERVED_DEFAULT_WORKSPACE`. They are deliberately NOT in `ALL_RESERVED_IDS`: that frozenset is consumed by the provider router guards, and these are not provider rows. They stay user-editable and deletable.
+The seeded-world reserved ids live in `primer/bootstrap/defaults.py` as `RESERVED_OPERATOR_AGENT`, `RESERVED_BUILDER_AGENT` and `RESERVED_DEFAULT_WORKSPACE`. They are deliberately NOT in `ALL_RESERVED_IDS`: that frozenset is consumed by the provider router guards, and these are not provider rows. The seeded agents stay user-editable and deletable. The default workspace stays editable (it can be renamed) but is no longer deletable: `WorkspaceRegistry.destroy` refuses it with 403 `reserved_workspace` on REST and `type=forbidden` from the `delete_workspace` tool, and its `GET /v1/workspaces` rows carry a response-only `is_default` (see [workspaces](workspaces.md)).
 
 `SystemState.default_agent_id` is a real column on the `system_state` singleton (both the sqlite and postgres DDLs carry it, with an ALTER guard). The ensure pass stamps it at `operator`; a binding-less session create resolves it.
 

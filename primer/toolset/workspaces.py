@@ -81,6 +81,7 @@ from primer.model.workspace import (
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
+from primer.model.workspace_refusal import ReservedWorkspaceError
 from primer.model.workspace_session import (
     SessionBinding,
     SessionState,
@@ -1379,6 +1380,10 @@ def build_workspaces_toolset(
         try:
             # Carried to its end if this call is cancelled: destroy() is the instance, its sessions, then the row.
             await _carry_on(workspace_registry.destroy(args.id), what=f"delete_workspace {args.id}")
+        except ReservedWorkspaceError as exc:
+            # The default workspace (prime) is never deleted; destroy() refuses it before touching anything. Before the generic
+            # PrimerError branch below, which would call a refusal a backend failure.
+            return _err_from_primer(exc, error_type="forbidden")
         except NotFoundError as exc:
             return _err_from_primer(exc, error_type="not-found")
         except PrimerError as exc:
@@ -1394,7 +1399,9 @@ def build_workspaces_toolset(
         (
             "Use when tearing down a live workspace; not for retiring "
             "its template (use ``delete_workspace_template``). "
-            "``type=not-found`` when the id is unknown."
+            "``type=not-found`` when the id is unknown; "
+            "``type=forbidden`` for the default workspace (prime), "
+            "which cannot be deleted."
         ),
         _IdArgs,
         _delete_workspace,
