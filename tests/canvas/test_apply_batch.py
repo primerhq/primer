@@ -337,6 +337,23 @@ def test_select_value_must_be_an_option():
     assert run('g.value = "j"', pairs).state.values == {"g": "j"}
 
 
+def test_a_message_echoes_a_few_characters_of_what_the_agent_sent_not_all_of_it():
+    # an agent's own text goes back into its context in the error: a few characters tell it which, a page would drown it
+    word = "z" * 500
+    clipped = "z" * 32 + "..."
+    text_props = "Text(text, style?); every element also takes hidden, disabled"
+    assert errs(f'root = Column([t])\nt = Text("x", {word}=1)') == [f"line 2: Text has no property '{clipped}' ({text_props})"]
+    assert errs(f'root = Column([t])\nt = Text("x")\nt.{word} = 1') == [f"line 3: Text has no property '{clipped}' ({text_props})"]
+    assert errs(f'root = Column([t])\nt = Q{word}("x")') == [f"line 2: unknown element type 'Q{'z' * 31}...' ({TYPES})"]
+    s = run('root = Column([g])\ng = Select("Genre", ["Jazz", "Lo-fi"], "Jazz")').state
+    assert errs(f'g.value = "{word}"', s) == [f"line 1: '{clipped}' is not one of the options of 'g'"]
+    assert errs(f'root = Column([g])\ng = Select("Genre", ["Jazz"], "{word}")') == [f"line 2: '{clipped}' is not one of the options of 'g'"]
+    multi = run('root = Column([g])\ng = Select("Genre", ["Jazz", "Lo-fi"], multiple=true)').state
+    assert errs(f'g.value = ["Jazz", "{word}"]', multi) == [f"line 1: '{clipped}' is not one of the options of 'g'"]
+    assert errs("g.value = [a]", multi) == ["line 1: 'a' is not one of the options of 'g'"]          # a reference is its id, not Ref(id='a')
+    assert errs("g.value = 5", s) == ["line 1: '5' is not one of the options of 'g'"]
+
+
 def test_unknown_property_names_the_common_props():
     expected = "Button(label, style?, disabled?, wake?); every element also takes hidden, disabled"
     assert errs('root = Column([b])\nb = Button("Go", colour="red")') == [f"line 2: Button has no property 'colour' ({expected})"]

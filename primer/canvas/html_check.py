@@ -23,9 +23,21 @@ has a running loop the engine is made and used on a worker thread instead. Whate
 wrong with the engine, that or anything else, is a problem in the result ("could not be
 checked"), never an exception: the check fails closed.
 
-Known limit: ``new Function`` accepts a top-level ``return`` that a classic script
+Known limits. ``new Function`` accepts a top-level ``return`` that a classic script
 rejects. Module scripts and data blocks (``type=module``, ``application/json``,
-``importmap`` ...) are not compiled. Pure: no I/O besides the throwaway engine.
+``importmap`` ...) are not compiled. The scripts are found with ``html.parser``, not a
+browser's tree builder, and the check does not look at anything that is not a ``<script>``,
+so it cannot see:
+
+* a script after ``<!-->``, ``<!--->`` or ``<![CDATA[ x >``: a browser ends the comment or
+  the section there, ``html.parser`` reads on to a later ``-->`` or ``]]>``;
+* event-handler attributes (``onerror="..."``);
+* ``javascript:`` URLs;
+* ``import`` and ``import()`` in an inline module (or, for ``import()``, a classic script);
+* a script inside a nested ``<iframe srcdoc>``.
+
+The frame's CSP blocks every one of these in the browser: this check is the first gate, not
+the only one. Pure: no I/O besides the throwaway engine.
 """
 
 from __future__ import annotations
@@ -41,7 +53,7 @@ SCRIPT_HOSTS: tuple[str, ...] = ("cdnjs.cloudflare.com", "cdn.jsdelivr.net", "un
 
 _ALLOWED_TEXT = f"{', '.join(SCRIPT_HOSTS[:-1])} and {SCRIPT_HOSTS[-1]}"
 _MAX_MESSAGE = 200
-_ENGINE_TIMEOUT_MS = 1000
+_ENGINE_TIMEOUT_SEC = 1.0
 _ENGINE_MEMORY_BYTES = 128 * 1024 * 1024
 _PROBE = "(function (s) { try { new Function(s); return null; } catch (e) { return String(e.message); } })("
 
@@ -97,7 +109,8 @@ class _Scripts(HTMLParser):
 
     def close(self) -> None:
         super().close()
-        self._finish()  # a script that is never closed runs to the end of the document
+        # A script that is never closed is still checked. A browser does not run it, so this is only stricter.
+        self._finish()
 
     def _finish(self) -> None:
         if self._attrs is not None:
@@ -141,7 +154,7 @@ class _Compiler:
             raise
 
     def problem(self, source: str) -> str | None:
-        message = self._ctx.eval(_PROBE + json.dumps(source) + ")", timeout=_ENGINE_TIMEOUT_MS)
+        message = self._ctx.eval(_PROBE + json.dumps(source) + ")", timeout_sec=_ENGINE_TIMEOUT_SEC)
         if message is None:
             return None
         message = str(message)

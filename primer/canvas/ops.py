@@ -15,7 +15,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from primer.canvas.catalog import CATALOG
-from primer.canvas.lang import KEEP, Append, Assign, Clear, Delete, Ref, SetProp, Statement
+from primer.canvas.lang import KEEP, Append, Assign, Clear, Delete, Ref, SetProp, Statement, clip
 from primer.canvas.state import normalize_assign
 
 
@@ -122,15 +122,17 @@ def statements_to_ops(statements: Sequence[Statement]) -> list[dict[str, Any]]:
     A ``set`` carries the element as the canvas keeps it: its props with the
     defaults left out and, for a container, its children. An argument given as
     ``...`` is left out (it changed nothing), and so is a ``prop`` op whose value
-    is ``...``. Raises ValueError for a statement that cannot be named (an unknown
-    type, property or too many arguments); such a batch would not have applied.
+    is ``...``: a recorded ``set`` for ``Html(..., 80)`` carries no html and cannot be
+    replayed, and replaying history is out of scope (design 8.7). Raises ValueError for
+    a statement that cannot be named (an unknown type, property or too many
+    arguments); such a batch would not have applied.
     """
     ops: list[dict[str, Any]] = []
     for st in statements:
         if isinstance(st, Assign):
             spec = CATALOG.get(st.type)
             if spec is None:
-                raise ValueError(f"unknown element type '{st.type}'")
+                raise ValueError(f"unknown element type '{clip(st.type)}'")
             props, children = normalize_assign(spec, st.args, st.kwargs)
             op: dict[str, Any] = {"op": "set", "id": st.id, "type": st.type, "props": props}
             if spec.container and children is not None:
