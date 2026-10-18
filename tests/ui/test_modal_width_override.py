@@ -24,7 +24,9 @@ def test_modal_applies_width_to_modal_element() -> None:
     # CSS `width: 420px` cap can be widened by callers. (Format-robust: the
     # .modal div gained aria-modal/tabIndex for the focus-trap, so the attrs
     # are no longer on one line — assert the width-style expression itself.)
-    assert 'className="modal"' in SHARED
+    # The platform revamp kit (PK_FormOverlay) hands Modal an optional class,
+    # appended to "modal"; the width override below is unchanged by it.
+    assert 'className={"modal" + (className ? " " + className : "")}' in SHARED
     assert "style={width ? { width } : undefined}" in SHARED
 
 
