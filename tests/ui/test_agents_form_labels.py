@@ -35,8 +35,8 @@ def test_the_three_custom_widget_rows_are_form_fields() -> None:
 
 
 def test_each_system_prompt_part_is_named() -> None:
-    block = SRC[SRC.index("systemPromptParts.map("):SRC.index('data-testid="agent-system-prompt-add"')]
-    assert re.search(r"<textarea[^>]*aria-label=\{`System prompt part \$\{i \+ 1\}`\}", block, re.S), block[:600]
+    """The parts are tabs over one editor now (``AG_PromptTabs``): the editor is named after the part it shows."""
+    assert "aria-label={`System prompt part ${current + 1}`}" in _function("AG_PromptTabs")
 
 
 def test_the_form_declares_the_row_it_uses() -> None:

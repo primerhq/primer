@@ -532,6 +532,92 @@ function AG_ManagedSummary({ existing }) {
   );
 }
 
+// The system prompt as tabs over ONE editor (platform revamp design 9): a tab per part ("Part 1", "Part 2"), "+ Part" and "Remove part" beside them,
+// and a Full screen toggle that lifts the box over the window. `parts` is the agent's list of prompt strings (the runtime joins them with a blank
+// line) and always holds at least one; `onChange(next)` hands the parent the new list. The tab that is shown is a position, kept in range when the
+// list shrinks: removing the selected part selects the next one (or the one before, at the end), so the next keystroke never goes to a part that is
+// gone. Full screen is a layer of the Escape stack (foundation/escape-stack.js): Escape leaves it first and only the next Escape closes the overlay
+// behind it, so the draft is not lost. The editor takes the focus when full screen opens.
+function AG_PromptTabs({ parts, onChange }) {
+  const [active, setActive] = React.useState(0);
+  const [fullScreen, setFullScreen] = React.useState(false);
+  const [focused, setFocused] = React.useState(false);
+  const uid = React.useId();
+  const editorRef = React.useRef(null);
+  const current = Math.max(0, Math.min(active, parts.length - 1));
+  const panelId = uid + "panel";
+  const tabId = (i) => uid + "tab" + i;
+  window.primerApi.useEscape(() => setFullScreen(false), fullScreen);
+  React.useEffect(() => {
+    const node = editorRef.current;
+    if (fullScreen && node && typeof node.focus === "function") node.focus();
+  }, [fullScreen]);
+  const barButton = (color) => ({
+    padding: "4px 10px", border: "none", borderRadius: "var(--r-6)", background: "transparent",
+    color, fontSize: 12, whiteSpace: "nowrap", cursor: "pointer", flexShrink: 0,
+  });
+  const box = fullScreen
+    ? { position: "fixed", inset: 0, zIndex: 1, background: "var(--bg-1)", display: "flex", flexDirection: "column" }
+    : {
+      border: "1px solid " + (focused ? "var(--accent)" : "var(--border)"), borderRadius: "var(--r-8)", overflow: "hidden",
+      background: "var(--bg)", display: "flex", flexDirection: "column", boxShadow: focused ? "0 0 0 3px var(--accent-dim)" : "none",
+    };
+  return (
+    <div data-testid="agent-system-prompt" data-fullscreen={fullScreen ? "true" : "false"} style={box}>
+      <div style={{
+        display: "flex", alignItems: "center", gap: 4, padding: "4px 6px", flexShrink: 0,
+        background: "var(--bg-2)", borderBottom: "1px solid var(--border)",
+      }}>
+        <div role="tablist" aria-label="System prompt parts" data-testid="agent-system-prompt-tabs"
+          style={{ display: "flex", gap: 2, overflowX: "auto", minWidth: 0 }}>
+          {parts.map((_part, i) => (
+            <button key={i} type="button" role="tab" id={tabId(i)} aria-selected={i === current} aria-controls={panelId}
+              data-testid={`agent-system-prompt-tab-${i}`} onClick={() => setActive(i)}
+              style={{
+                ...barButton(i === current ? "var(--text)" : "var(--text-3)"),
+                background: i === current ? "var(--bg)" : "transparent", fontWeight: i === current ? 600 : 400,
+              }}>
+              Part {i + 1}
+            </button>
+          ))}
+        </div>
+        <button type="button" data-testid="agent-system-prompt-add" style={barButton("var(--accent)")}
+          onClick={() => { onChange(parts.concat([""])); setActive(parts.length); }}>+ Part</button>
+        <span style={{ flex: 1 }} />
+        <button type="button" data-testid="agent-system-prompt-remove" disabled={parts.length === 1}
+          title={parts.length === 1 ? "At least one part stays" : "Remove the part that is shown"}
+          style={{ ...barButton("var(--text-3)"), opacity: parts.length === 1 ? 0.5 : 1, cursor: parts.length === 1 ? "default" : "pointer" }}
+          onClick={() => {
+            const next = parts.filter((_p, j) => j !== current);
+            onChange(next);
+            setActive(Math.min(current, next.length - 1));
+          }}>Remove part</button>
+        <button type="button" data-testid="agent-system-prompt-fullscreen" aria-pressed={fullScreen}
+          style={barButton("var(--text-3)")} onClick={() => setFullScreen(!fullScreen)}>
+          {fullScreen ? "Exit full screen" : "Full screen"}
+        </button>
+      </div>
+      <div role="tabpanel" id={panelId} aria-labelledby={tabId(current)}
+        style={{ display: "flex", flexDirection: "column", flex: fullScreen ? 1 : undefined, minHeight: 0 }}>
+        <textarea ref={editorRef} className="textarea mono" data-testid="agent-system-prompt-editor"
+          aria-label={`System prompt part ${current + 1}`} rows={12}
+          value={parts[current] == null ? "" : parts[current]}
+          onChange={(e) => {
+            const next = parts.slice();
+            next[current] = e.target.value;
+            onChange(next);
+          }}
+          onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
+          style={{
+            display: "block", boxSizing: "border-box", width: "100%", flex: fullScreen ? 1 : undefined, minHeight: 0,
+            border: "none", borderRadius: 0, boxShadow: "none", background: "var(--bg)",
+            fontFamily: "var(--font-mono)", fontSize: 12, resize: fullScreen ? "none" : "vertical",
+          }} />
+      </div>
+    </div>
+  );
+}
+
 function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDelete, onChat, chatLoading }) {
   // Same modal serves both create (existing == null) and edit
   // (existing == agent row). In edit mode the id field is locked,
