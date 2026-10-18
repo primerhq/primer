@@ -490,7 +490,12 @@ Read the description + system_prompt to confirm fit.
   <reason>"). The notice is not stored in the session's history, and the
   next turn lists the toolset again, so it is back as soon as its server is.
   A toolset that lists in-process is not covered: if one of those fails to
-  list, the turn still fails.
+  list, the turn still fails. A server that never answers holds the start of
+  the turn for up to 60 seconds plus up to 5 more while the abandoned
+  connection closes (a stdio server that hangs adds the 2 seconds the MCP SDK
+  waits for its process to exit before it terminates it). A Stop pressed
+  during that wait ends the turn without waiting for the 60 seconds, before
+  any model call.
 - **Auto-compaction triggers between turns at 90% context, counting
   the system prompt and tool schemas.** Don't assume the LLM's history
   input is a contiguous slice of stored rows - it can have a compaction
