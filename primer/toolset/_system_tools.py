@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from primer.agent.inner_dispatch import run_principal
+from primer.authz import _role_allows
 from primer.model.chat import ToolCallResult
 from primer.model.except_ import (
     BadRequestError,
@@ -94,6 +96,55 @@ class _AskUserArgs(BaseModel):
     )
 
 
+# The JSON Schema keywords whose values jsonschema runs as Python ``re`` patterns when an answer is validated.
+_REGEX_KEYWORDS = ("pattern", "patternProperties")
+
+
+def _regex_keyword_paths(schema: Any) -> list[str]:
+    """The paths (``#/properties/name/pattern``) of every ``pattern`` (a string) and ``patternProperties`` (an object) in ``schema``.
+
+    Every object of the document is searched, under ANY key, not only under the keywords that apply subschemas (``properties``, ``items``,
+    ``allOf`` ...): a ``$ref`` can point at any location (``{"$ref": "#/x", "x": {"pattern": ...}}`` validates against ``x``, and so does a
+    ``$ref`` into a value such as a ``default``). The walk is iterative, so a deeply nested document cannot exhaust the stack. A property
+    that happens to be NAMED ``patternProperties`` is reported too; one named ``pattern`` is not (its value is a schema, not a string).
+    """
+    found: list[str] = []
+    stack: list[tuple[Any, str]] = [(schema, "#")]
+    while stack:
+        node, path = stack.pop()
+        if isinstance(node, dict):
+            for key, value in node.items():
+                child = f"{path}/{str(key).replace('~', '~0').replace('/', '~1')}"
+                if (key == "pattern" and isinstance(value, str)) or (key == "patternProperties" and isinstance(value, dict)):
+                    found.append(child)
+                stack.append((value, child))
+        elif isinstance(node, list):
+            stack.extend((item, f"{path}/{index}") for index, item in enumerate(node))
+    return sorted(found)
+
+
+def _non_admin_schema_refusal(ctx: ToolContext, schema: dict[str, Any] | None) -> str | None:
+    """Why this run may not ask with this ``response_schema`` (the ``forbidden`` message), or ``None``: always ``None`` for an admin.
+
+    ``ask_user`` is role user (pivot P1), and its ``response_schema`` is the AGENT's: ``POST /v1/sessions/{id}/ask_user/respond`` validates
+    the answer against it with jsonschema, synchronously in the API process's event loop, and ``pattern`` / ``patternProperties`` run as
+    Python ``re``. A run whose principal is not an admin (``run_principal`` under the role floor's own predicate: a context with no initiator
+    is not an admin, the system principal is) could otherwise park a catastrophic pattern (``(a+)+$``) and stall that loop for every user
+    with one answer. So such a run may not use either keyword anywhere in the schema; every other keyword stays open.
+    """
+    if schema is None or _role_allows(run_principal(ctx), "admin"):
+        return None
+    paths = _regex_keyword_paths(schema)
+    if not paths:
+        return None
+    return (
+        "this run's principal is not an admin, so its response_schema may not use "
+        + " or ".join(_REGEX_KEYWORDS)
+        + " (the server runs those regular expressions on the answer); refused at: "
+        + ", ".join(repr(path) for path in paths)
+    )
+
+
 def ask_user_resume(
     yield_metadata: dict[str, Any],
     event_payload: Any,
@@ -163,6 +214,10 @@ async def _ask_user_handler(
             "pass the live session or chat id when invoking yielding tools",
             error_type="bad-request",
         )
+    # Before parking: a refused question leaves no schema for the respond route to run.
+    refusal = _non_admin_schema_refusal(ctx, args.response_schema)
+    if refusal is not None:
+        return _err(refusal, error_type="forbidden")
 
     # Inside a graph node the ambient fan-out-instance id is folded into the key, as the approval gate's key is (primer.agent.tool_manager): two concurrent
     # siblings that share a raw provider tool_call_id would otherwise wait on ONE key, and an answer to either could not say which it was for (C-033 round 2).

@@ -440,7 +440,8 @@ POST /v1/sessions/{session_id}/yields/{tool_call_id}/cancel
 prompt, minted when it was asked; `null` for a prompt parked before gates had
 ids), the `prompt`, and the optional `response_schema` (404 when the session is
 not parked on an `ask_user`); `ask_user/respond` validates the `response` against that
-schema and resumes the session. Send the `gate_id` back
+schema and resumes the session (a schema whose `$ref` points at nothing, or at another
+document, which is never fetched, is a `422` naming the ref). Send the `gate_id` back
 (`{"tool_call_id": ..., "gate_id": ..., "response": ...}`): the provider repeats its
 `tool_call_id` across rounds, so an answer meant for an earlier question could
 otherwise answer a later one under the same id. A `gate_id` that is no longer the

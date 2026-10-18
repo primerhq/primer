@@ -278,6 +278,14 @@ session.
   (a rego module), and its `fields` matchers may use only the `eq` and
   `prefix` ops (`regex` is refused): filter with those instead. An
   admin's run may wait on any kind, with `expr` and `regex`.
+- **A run that is not an admin may not put a regular expression in
+  `ask_user`'s `response_schema`.** The server validates the answer
+  against your schema, so `pattern` and `patternProperties` anywhere
+  in it (under `properties`, `items`, `allOf`, `$defs` or any other
+  key a `$ref` can reach) are refused with `type=forbidden` and
+  nothing parks. Every other keyword works: constrain the answer with
+  `enum`, `const`, `minLength` / `maxLength` or `type` instead. An
+  admin's run may use both keywords.
 - **`wait_for_event` returns the event with stored secrets masked.**
   A CRUD event's payload is the entity's stored row; before it reaches
   your transcript every secret-bearing field (MCP `headers` and `env`

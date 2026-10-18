@@ -120,6 +120,15 @@ async def test_ask_user_and_wait_for_event_are_role_user(system_toolset):
     assert {(await _tool(system_toolset, n)).required_role for n in ("ask_user", "wait_for_event")} == {"user"}
 
 
+async def test_a_user_run_cannot_park_a_regex_schema_through_call_tool(system_toolset):
+    """``ask_user`` is role user, so ``call_tool`` runs it for a user-role run, and a regex keyword in its ``response_schema`` is still refused
+    before it parks (tests/toolset/test_ask_user_response_schema_regex.py): no YieldToWorker, a ``forbidden`` result."""
+    r = await system_toolset.call(tool_name="call_tool", ctx=_ctx(USER), arguments={
+        "toolset_id": "system", "tool_name": "ask_user",
+        "arguments": {"prompt": "Name?", "response_schema": {"properties": {"name": {"type": "string", "pattern": "(a+)+$"}}}}})
+    assert r.is_error and json.loads(r.output)["type"] == "forbidden"
+
+
 @pytest.mark.parametrize("wait", [
     {"event_types": ["agent.*"]},
     {"event_types": ["session.ended"], "expr": "package primer.event_filter\nmatch := true\n"},

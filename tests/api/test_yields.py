@@ -635,6 +635,28 @@ class TestAskUserRespond:
         assert row is not None
         assert row.parked_status == "parked"
 
+    @pytest.mark.parametrize("ref", ["#/$defs/missing", "https://example.invalid/schema.json"], ids=["dangling-pointer", "remote"])
+    async def test_respond_422_when_response_schema_has_an_unresolvable_ref(
+        self, app, client, ref,
+    ):
+        """A $ref that names nothing in the schema, or another document (never fetched), is a bad schema: a 422 naming the ref, not a 500,
+        and the park stays."""
+        sess = _make_parked_session(
+            session_id="sess-ref",
+            tool_call_id="tc-ref",
+            response_schema={"type": "object", "properties": {"name": {"$ref": ref}}},
+        )
+        await _seed_session(app, sess)
+        resp = await client.post(
+            "/v1/sessions/sess-ref/ask_user/respond",
+            json={"tool_call_id": "tc-ref", "response": {"name": "Alice"}},
+        )
+        assert resp.status_code == 422, resp.text
+        assert repr(ref.removeprefix("#")) in resp.text or repr(ref) in resp.text, resp.text
+        storage = app.state.storage_provider.get_storage(WorkspaceSession)
+        row = await storage.get("sess-ref")
+        assert row is not None and row.parked_status == "parked"
+
     async def test_respond_succeeds_when_response_satisfies_schema(
         self, app, client,
     ):

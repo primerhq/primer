@@ -396,6 +396,7 @@ def _validate_response_against_schema(
     # directly in pyproject for clarity.
     import jsonschema  # local import keeps the router import cheap
     from jsonschema import exceptions as jse
+    from referencing.exceptions import Unresolvable
 
     try:
         jsonschema.validate(instance=response, schema=schema)
@@ -408,6 +409,13 @@ def _validate_response_against_schema(
         # a 422 so the UI can show a sensible message rather than 500.
         raise ValidationError(
             f"response_schema is invalid: {exc.message}"
+        ) from exc
+    except Unresolvable as exc:
+        # A $ref that names nothing in the schema, or another document (never fetched), is a bad schema too: a 422, not a 500. The message
+        # names the ref only; the exception's own text embeds the whole schema.
+        raise ValidationError(
+            f"response_schema is invalid: its $ref {getattr(exc, 'ref', None)!r} does not resolve "
+            "(a $ref must point inside the schema; other documents are not fetched)"
         ) from exc
 
 
