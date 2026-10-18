@@ -455,6 +455,14 @@ class ToolExecutionManager:
                         "ToolExecutionManager: toolset left out of the turn; it cannot list its tools",
                         extra={"toolset": toolset_id, "reason": listing.reason},
                     )
+                    if listing.error is not None:
+                        # The one line above is what the usual log level and the model see. A bug inside the provider is not a
+                        # server that is down, so its traceback is kept where a developer turns it on.
+                        logger.debug(
+                            "ToolExecutionManager: why the toolset could not list its tools",
+                            extra={"toolset": toolset_id},
+                            exc_info=listing.error,
+                        )
                     continue
                 async for t in (
                     provider.list_tools(principal=principal)

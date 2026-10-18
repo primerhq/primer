@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import shutil
 import socket
 import sys
@@ -972,3 +973,32 @@ async def test_a_stop_event_already_set_never_starts_the_loops_own_listing():
     assert remote.listings == 0, "a listing was started for a turn that was already stopped"
     assert interrupted == [True] and events == [] and llm.sent == []
 
+
+# ---- A listing failure leaves its traceback at DEBUG --------------------------------------------------------------
+
+
+async def test_a_failed_listing_leaves_its_traceback_at_debug_and_one_line_at_warning(caplog):
+    """The model and the log at the usual level see one line, the reason. A bug inside the provider is not a server that is
+    down, so the traceback is kept where a developer turns it on."""
+    mgr = _manager(kb=_Remote(raises=ValueError("a bug in the provider")))
+    with caplog.at_level(logging.DEBUG, logger="primer.agent.tool_manager"):
+        await mgr.list_tools()
+
+    warnings = [r for r in caplog.records if r.name == "primer.agent.tool_manager" and r.levelno == logging.WARNING]
+    assert len(warnings) == 1 and warnings[0].exc_info is None
+    assert warnings[0].toolset == "kb" and warnings[0].reason == mgr.unavailable_toolsets()["kb"]
+    traced = [r for r in caplog.records if r.name == "primer.agent.tool_manager" and r.levelno == logging.DEBUG and r.exc_info]
+    assert len(traced) == 1
+    assert isinstance(traced[0].exc_info[1], ValueError) and traced[0].exc_info[1].args == ("a bug in the provider",)
+    assert traced[0].exc_info[2] is not None, "the traceback is the point"
+
+
+async def test_a_listing_that_timed_out_has_no_traceback_to_log(monkeypatch, caplog):
+    """A timeout is not an exception: the WARNING line says all there is, and there is no DEBUG line without a traceback."""
+    monkeypatch.setattr(tool_listing, "TURN_TOOLSET_LIST_TIMEOUT_S", 0.05)
+    mgr = _manager(kb=_Remote(hang=True))
+    with caplog.at_level(logging.DEBUG, logger="primer.agent.tool_manager"):
+        await mgr.list_tools()
+
+    assert mgr.unavailable_toolsets() == {"kb": "did not list its tools within 0.05s"}
+    assert [r for r in caplog.records if r.name == "primer.agent.tool_manager" and r.levelno == logging.DEBUG] == []

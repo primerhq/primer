@@ -30,7 +30,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from primer.common.log import redact_credentials
 from primer.int.toolset import ToolsetProvider
@@ -60,10 +60,15 @@ _RUNNING: set[asyncio.Task[list[Tool]]] = set()
 
 @dataclass(frozen=True)
 class ToolListing:
-    """What one remote toolset answered: its tools, or why it could not list them (``reason`` set, ``tools`` empty)."""
+    """What one remote toolset answered: its tools, or why it could not list them (``reason`` set, ``tools`` empty).
+
+    ``error`` is the exception the listing failed with (``None`` for a listing that answered, timed out or was torn down). It
+    is for the DEBUG log only (the traceback of a bug inside the provider), never shown to the model, and not compared.
+    """
 
     tools: list[Tool]
     reason: str | None
+    error: BaseException | None = field(default=None, compare=False, repr=False)
 
 
 def _retire(task: asyncio.Task[list[Tool]]) -> None:
@@ -137,7 +142,7 @@ async def list_remote_toolset(provider: ToolsetProvider, *, principal: str | Non
         return ToolListing(tools=task.result(), reason=None)
     if isinstance(failure, (KeyboardInterrupt, SystemExit)):
         raise failure
-    return ToolListing(tools=[], reason=_reason_for(failure))
+    return ToolListing(tools=[], reason=_reason_for(failure), error=failure)
 
 
 def unavailable_toolsets_notice(unavailable: Mapping[str, str]) -> str | None:
