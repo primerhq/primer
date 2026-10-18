@@ -432,3 +432,51 @@ def test_workspace_settings_and_old_provider_class_overlays_still_parse() -> Non
     assert json.loads(ctx.eval("JSON.stringify(SH_parseUrl('#/?overlay=workspaces::ws-1').overlay)")) == {"name": "workspaces", "section": None, "id": "ws-1"}
     assert json.loads(ctx.eval("JSON.stringify(SH_parseUrl('#/?overlay=providers:tts').overlay)"))["section"] == "tts"
     assert json.loads(ctx.eval("JSON.stringify(SH_parseUrl('#/?overlay=providers:ssp:store-1').overlay)")) == {"name": "providers", "section": "ssp", "id": "store-1"}
+
+
+# ---------------------------------------------------------------------------
+# A view name is an OWN key of the grammar: what a plain object inherits is not a view (review of #775).
+# ---------------------------------------------------------------------------
+
+# Names every plain object answers to (``"constructor" in {}`` is true), and the tables of the grammar are plain objects.
+INHERITED_NAMES = ["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf"]
+
+
+@pytest.mark.parametrize("raw", [
+    "constructor:x", "__proto__:x", "hasOwnProperty:x", "toString:providers:tts", "valueOf:platform",
+    "constructor", "__proto__", "toString", "hasOwnProperty", "valueOf",
+])
+def test_a_view_named_like_an_inherited_property_is_the_default_view_and_does_not_throw(raw: str) -> None:
+    """``name in SH_VIEWS`` is also true for the names a plain object inherits. ``#/?view=constructor:x`` read ``SH_VIEWS.constructor.indexOf`` (not a function) and threw while the console loaded,
+    and ``view=toString`` was taken for a view of that name. Both are the studio, like any other name the grammar does not list (``view=garage``)."""
+    view = json.loads(_ctx().eval(f"JSON.stringify(SH_parseUrl({json.dumps('#/?view=' + raw)}).view)"))
+    assert view == {"name": "studio", "nav": None, "sub": None}
+
+
+def test_a_link_to_such_a_view_is_rewritten_without_it_and_keeps_the_rest_of_the_address() -> None:
+    ctx = _ctx()
+    assert ctx.eval("SH_buildUrl(SH_parseUrl('#/w/ws-1?view=constructor:x&doc=session:s1&overlay=agents#turn-3'))") == "#/w/ws-1?doc=session:s1&overlay=agents#turn-3"
+    assert ctx.eval("SH_buildUrl(SH_parseUrl('#/?view=__proto__:x'))") == "#/"
+
+
+@pytest.mark.parametrize("name", INHERITED_NAMES)
+def test_the_builder_never_writes_a_view_named_like_an_inherited_property(name: str) -> None:
+    """Build is the parser's inverse: a name the parser refuses is not written either, and asking is not an error (it threw at the nav, and wrote ``view=toString`` with none)."""
+    ctx = _ctx()
+    quoted = json.dumps(name)
+    assert ctx.eval(f"SH_buildUrl({{ wid: 'ws-1', view: {{ name: {quoted}, nav: 'x' }} }})") == "#/w/ws-1"
+    assert ctx.eval(f"SH_buildUrl({{ wid: 'ws-1', view: {{ name: {quoted} }} }})") == "#/w/ws-1"
+    assert ctx.eval(f"SH_buildUrl({{ wid: 'ws-1', view: {{ name: {quoted}, nav: 'providers', sub: 'tts' }} }})") == "#/w/ws-1"
+
+
+@pytest.mark.parametrize("raw,view", [
+    ("platform:constructor", {"name": "platform", "nav": None, "sub": None}),
+    ("platform:__proto__", {"name": "platform", "nav": None, "sub": None}),
+    ("system:toString", {"name": "system", "nav": None, "sub": None}),
+    ("platform:providers:constructor", {"name": "platform", "nav": "providers", "sub": None}),
+    ("platform:providers:__proto__", {"name": "platform", "nav": "providers", "sub": None}),
+    ("platform:agents:toString", {"name": "platform", "nav": "agents", "sub": None}),
+])
+def test_a_nav_or_a_type_named_like_an_inherited_property_is_dropped(raw: str, view: dict) -> None:
+    """These held already (a nav and a type are looked up in lists, and the redirect and type tables by ``<view>:<nav>``, a key no object inherits); pinned so a change of representation keeps them."""
+    assert json.loads(_ctx().eval(f"JSON.stringify(SH_parseUrl({json.dumps('#/?view=' + raw)}).view)")) == view
