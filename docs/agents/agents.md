@@ -291,8 +291,10 @@ of an agent's turns and compactions, and of a graph agent node that runs on
 it. `config.reasoning` is `off`, `minimal`, `low`, `medium` or `high` (null
 keeps the vendor default) and is mapped onto the setting each model takes:
 on Claude, a thinking budget up to Claude 4.5 and adaptive thinking with an
-effort level from Claude 4.6; on Gemini, a thinking budget on 2.5 and a
-thinking level from Gemini 3; `reasoning_effort` on OpenAI's reasoning
+effort level from Claude 4.6; on Gemini, a thinking budget on 2.5 and,
+from Gemini 3, a thinking level from the set that model documents (a level
+it lacks becomes the nearest one it has: Gemini 3 Pro has only low and
+high, so `medium` sends high); `reasoning_effort` on OpenAI's reasoning
 models, with the values each takes; Ollama's `think`;
 `chat_template_kwargs.enable_thinking` on a self-hosted OpenAI-compatible
 server; `reasoning.effort` on OpenRouter. Where a model has no true off, the

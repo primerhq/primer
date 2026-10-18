@@ -292,7 +292,7 @@ setting is used:
 | `anthropic`, Claude Opus 5.5, Fable, Mythos | adaptive and `output_config.effort` | no `thinking`, and `output_config.effort: low` (thinking cannot be turned off) |
 | `anthropic`, Claude 3.5 and earlier, or a model not in the table | nothing | nothing |
 | `gemini`, 2.5 | `thinking_config.thinking_budget` within the model's range (Pro 128 to 32768, Flash up to 24576, Flash-Lite 512 to 24576) | `0`; on 2.5 Pro, which cannot turn thinking off, its lowest budget `128` |
-| `gemini`, 3 and later | `thinking_config.thinking_level` (never a budget, never both) | the model's lowest level: `minimal` on Flash, `low` on Pro |
+| `gemini`, 3 and later | `thinking_config.thinking_level` (never a budget, never both), clamped to the levels the model documents: a level it lacks becomes the nearest it has, a tie going to the higher (3 Pro has only `low` and `high`, so MEDIUM sends `high`; 3.7 and 3.8 Flash and 4 Argon have no `minimal`; the 3.1 Flash-Lite image model has `minimal` and `high`, a Pro image model only `high`); a model not in the table is taken to have `low`, `medium` and `high`; each clamp is logged once at DEBUG | the model's lowest level: `minimal` where it has one (3 Flash, 3.5 Flash-Lite, 3.6 Flash), otherwise `low` (3 Pro, 3.1 Pro, 3.7 and 3.8 Flash, 4 Argon), `high` on a Pro image model |
 | `gemini`, 2.0 and earlier, or a model not in the table | nothing | nothing |
 | `openresponses`, `openchat` (openai): o-series and codex models | `reasoning_effort` (`reasoning.effort` on Responses), from `low` | `low` |
 | same, gpt-5 | from `minimal` | `minimal` |

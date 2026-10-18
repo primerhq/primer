@@ -133,16 +133,36 @@ _GEMINI_25_RANGE: dict[str, tuple[int, int, bool]] = {
     "flash-lite": (512, 24576, True),
 }
 
-# Gemini 3 and later take a thinking level instead of a budget; OFF and
-# MINIMAL ask for the lowest level the model has (Flash has "minimal", Pro
-# starts at "low").
-_GEMINI_LEVEL: dict[ReasoningLevel, str] = {
+# Gemini 3 and later take a thinking level instead of a budget, from a set
+# each model documents: a level the model lacks is clamped to the nearest one
+# it has (a tie goes to the higher), so OFF and MINIMAL get its lowest.
+_GEMINI_LEVELS: tuple[str, ...] = ("minimal", "low", "medium", "high")
+_GEMINI_WANTED: dict[ReasoningLevel, str] = {
+    ReasoningLevel.OFF: "minimal",
+    ReasoningLevel.MINIMAL: "minimal",
     ReasoningLevel.LOW: "low",
     ReasoningLevel.MEDIUM: "medium",
     ReasoningLevel.HIGH: "high",
 }
+_ALL_LEVELS = frozenset(_GEMINI_LEVELS)
+_NO_MINIMAL = frozenset({"low", "medium", "high"})
 
-_GEMINI_ID = re.compile(r"gemini-(\d+)(?:\.(\d+))?-(flash-lite|flash|pro)")
+# Each model's documented levels (Gemini API thinking docs), by id prefix;
+# the longest matching prefix wins.
+_GEMINI_LEVEL_SETS: dict[str, frozenset[str]] = {
+    "gemini-4-argon": _NO_MINIMAL,
+    "gemini-3.8-flash": _NO_MINIMAL,
+    "gemini-3.7-flash": _NO_MINIMAL,
+    "gemini-3.6-flash": _ALL_LEVELS,
+    "gemini-3.5-flash-lite": _ALL_LEVELS,
+    "gemini-3.1-pro": _NO_MINIMAL,
+    "gemini-3.1-flash-lite-image": frozenset({"minimal", "high"}),
+    "gemini-3-flash": _ALL_LEVELS,
+    "gemini-3-pro-image": frozenset({"high"}),
+    "gemini-3-pro": frozenset({"low", "high"}),
+}
+
+_GEMINI_ID = re.compile(r"gemini-(\d+)(?:\.(\d+))?-([a-z0-9][a-z0-9.-]*)")
 
 # Anthropic, Claude 4.5 and earlier: a thinking block with a token budget.
 _ANTHROPIC_BUDGET: dict[ReasoningLevel, int | None] = {
@@ -397,16 +417,23 @@ def gemini_extended(
     Gemini 2.5 takes a thinking budget, kept within the model's range: 2.5
     Pro cannot turn thinking off (a zero budget is a 400), so OFF sends its
     lowest budget, 128, logged once at DEBUG. Gemini 3 and later take
-    ``thinking_level`` instead, never a budget and never both; OFF asks for
-    the model's lowest level. A model with no thinking control (2.0 and
-    earlier) or one the table does not know gets no reasoning parameter,
-    logged once; the stream-open guard covers anything else a model refuses.
+    ``thinking_level`` instead, never a budget and never both, clamped to
+    the levels the model documents (:data:`_GEMINI_LEVEL_SETS`): a level it
+    lacks becomes the nearest one it has, a tie going to the higher, so OFF
+    and MINIMAL ask for its lowest; each clamp is logged once. A Gemini 3+
+    model not in the table gets low, medium or high (an image model minimal
+    or high on Flash, high on Pro). A model with no thinking control (2.0
+    and earlier) or an id the adapter cannot read gets no reasoning
+    parameter, logged once; the stream-open guard covers anything else a
+    model refuses.
     """
     level = config.reasoning
     out = dict(config.extended or {})
     if level is None:
         return out
-    match = _GEMINI_ID.search((model or "").lower())
+    name = (model or "").lower()
+    name = name[name.find("gemini-"):] if "gemini-" in name else name
+    match = _GEMINI_ID.match(name)
     version = (int(match.group(1)), int(match.group(2) or 0)) if match else None
     if version is None or version < (2, 5):
         debug_once(
@@ -419,13 +446,19 @@ def gemini_extended(
     variant = match.group(3)
     if version >= (3, 0):
         out.pop("thinking_budget", None)
-        if level in (ReasoningLevel.OFF, ReasoningLevel.MINIMAL):
-            out["thinking_level"] = "minimal" if variant.startswith("flash") else "low"
-        else:
-            out["thinking_level"] = _GEMINI_LEVEL[level]
+        out["thinking_level"] = _gemini_level(level, name, variant, model)
         return out
     out.pop("thinking_level", None)
-    lowest, highest, can_turn_off = _GEMINI_25_RANGE[variant]
+    family = next((v for v in ("flash-lite", "flash", "pro") if variant.startswith(v)), None)
+    if family is None:
+        debug_once(
+            ("gemini-no-reasoning", str(model)),
+            "Gemini model %s has no thinking control the adapter knows; the "
+            "profile's reasoning level (%s) is not sent",
+            model, level.value,
+        )
+        return out
+    lowest, highest, can_turn_off = _GEMINI_25_RANGE[family]
     budget = _GEMINI_BUDGET[level]
     if budget == 0 and not can_turn_off:
         debug_once(
@@ -439,6 +472,38 @@ def gemini_extended(
         budget = min(max(budget, lowest), highest)
     out["thinking_budget"] = budget
     return out
+
+
+def _gemini_level(level: ReasoningLevel, name: str, variant: str, model: str | None) -> str:
+    """The thinking level a Gemini 3+ model gets for ``level``, clamped to its set."""
+    prefix = max((p for p in _GEMINI_LEVEL_SETS if name.startswith(p)), key=len, default=None)
+    if prefix is not None:
+        levels = _GEMINI_LEVEL_SETS[prefix]
+    else:
+        if "image" in variant:
+            levels = frozenset({"minimal", "high"}) if "flash" in variant else frozenset({"high"})
+        else:
+            levels = _NO_MINIMAL
+        debug_once(
+            ("gemini-level-table", str(model)),
+            "Gemini model %s is not in the thinking-level table; its levels "
+            "are taken to be %s",
+            model, ", ".join(lv for lv in _GEMINI_LEVELS if lv in levels),
+        )
+    wanted = _GEMINI_WANTED[level]
+    want = _GEMINI_LEVELS.index(wanted)
+    chosen = min(
+        levels,
+        key=lambda lv: (abs(_GEMINI_LEVELS.index(lv) - want), -_GEMINI_LEVELS.index(lv)),
+    )
+    if chosen != wanted:
+        debug_once(
+            ("gemini-level-clamp", str(model), level.value),
+            "Gemini model %s has no thinking level %r; the profile's reasoning "
+            "level (%s) sends %r",
+            model, wanted, level.value, chosen,
+        )
+    return chosen
 
 
 def ollama_extended(config: ModelProfileConfig) -> dict[str, Any]:
