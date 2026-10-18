@@ -37,6 +37,7 @@ ACTION_EVENT_TYPES: frozenset[str] = frozenset({
     "workspace.exec_started",
     "workspace.exec_exited",
     "canvas.updated",
+    "canvas.event",
 })
 
 _CRUD_VERBS = ("created", "updated", "deleted")

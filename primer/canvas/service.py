@@ -20,22 +20,33 @@ import asyncio
 import copy
 import json
 import logging
+import math
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from pydantic_core import to_jsonable_python
 
+from primer.canvas.catalog import EVENT_KINDS
 from primer.canvas.decompile import event_line
 from primer.canvas.html_check import check_html_scripts
-from primer.canvas.lang import Clear, LangError, Statement
+from primer.canvas.lang import Clear, LangError, Statement, clip
 from primer.canvas.ops import statements_to_ops
 from primer.canvas.records import append_canvas_record
 from primer.canvas.settings import read_canvas_settings
-from primer.canvas.state import CanvasState, Changed, Limits, apply_batch
+from primer.canvas.state import (
+    CanvasState,
+    Changed,
+    Limits,
+    apply_batch,
+    check_json_value,
+    check_select_value,
+    json_equal,
+)
 from primer.events.recorder import recorder_for
-from primer.model.canvas import SessionCanvas
+from primer.model.canvas import MAX_EMIT_DATA_BYTES, MAX_EVENT_VALUE_CHARS, CanvasEvent, CanvasSettings, SessionCanvas
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.workspace_session import SessionMessageKind
 from primer.storage.cas import patch_if_checked
@@ -52,6 +63,14 @@ _MAX_OPS_RECORD_BYTES = 16384
 
 #: The event kinds that set the value of their element (and so move ``rev``).
 _VALUE_CHANGING = ("change", "set_value")
+_AUDIO_KINDS = ("play", "pause", "ended")
+
+_WAKE_WINDOW = timedelta(seconds=60)
+_EMIT_NAME = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
+_MAX_POSITION_SECONDS = 86400
+
+#: The prop an event's ``label`` is read from, per element type.
+_LABEL_PROP = {"Button": "label", "Select": "label", "Link": "label", "Audio": "title"}
 
 
 @dataclass(frozen=True)
@@ -86,9 +105,149 @@ class CanvasRevConflict(Exception):
         super().__init__(f"the canvas is at rev {rev}, not {base_rev}; nothing was applied")
 
 
+class CanvasEventRefused(Exception):
+    """The event was refused, so nothing was recorded. ``code`` is what a caller maps to a status; ``message`` is for a person."""
+
+    def __init__(
+        self,
+        code: Literal["unknown_element", "kind_not_allowed", "invalid_value", "element_disabled", "rate_limited"],
+        message: str,
+    ) -> None:
+        self.code = code
+        self.message = message
+        super().__init__(message)
+
+
 def _json_time(moment: datetime) -> str:
     """A moment as the stored document spells it, so a patch needs no canonicalizing rewrite."""
     return to_jsonable_python(moment)
+
+
+def _json_length(value: Any) -> int:
+    """Characters of the compact JSON of ``value`` (which has passed ``check_json_value``, so this cannot raise)."""
+    return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False))
+
+
+def _option_order(props: dict[str, Any], chosen: list[str]) -> list[str]:
+    """``chosen`` in the order of the Select's options (a choice is a set; the stored form must not depend on the click order)."""
+    picked = set(chosen)
+    return [value for value in (o if isinstance(o, str) else o[0] for o in props["options"]) if value in picked]
+
+
+def _is_unavailable(row: SessionCanvas, element: str) -> bool:
+    """Whether the user cannot act on ``element``: it is hidden or disabled, or a container above it is hidden."""
+    if row.elements[element]["props"].get("hidden") or row.elements[element]["props"].get("disabled"):
+        return True
+    parent_of = {child: parent for parent, el in row.elements.items() for child in el.get("children", ())}
+    seen: set[str] = set()
+    current = element
+    while current in parent_of and current not in seen:
+        seen.add(current)
+        current = parent_of[current]
+        if row.elements.get(current, {}).get("props", {}).get("hidden"):
+            return True
+    return False
+
+
+@dataclass(frozen=True)
+class _Accepted:
+    """An event the checks passed: what the stored event is made of."""
+
+    etype: str
+    source: str
+    wake: bool
+    label: str | None
+    value: Any
+    name: str | None
+    data: Any
+    position: float | None
+
+
+def _check_event(
+    row: SessionCanvas,
+    settings: CanvasSettings,
+    now: datetime,
+    *,
+    element: str,
+    kind: str,
+    value: Any,
+    name: Any,
+    data: Any,
+    position: Any,
+) -> _Accepted:
+    """Judge an event against the canvas as it is now; raise ``CanvasEventRefused`` (the first problem found) or return it."""
+    found = row.elements.get(element) if isinstance(element, str) else None
+    if found is None:
+        raise CanvasEventRefused("unknown_element", f"'{clip(str(element))}' is not on the canvas any more")
+    etype = found["type"]
+    allowed = EVENT_KINDS.get(etype, {})
+    if not isinstance(kind, str) or kind not in allowed:
+        raise CanvasEventRefused("kind_not_allowed", f"{etype} elements do not send {clip(str(kind))} events")
+    if _is_unavailable(row, element):
+        raise CanvasEventRefused("element_disabled", f"'{element}' is disabled or hidden")
+    props = found["props"]
+    kept_value: Any = None
+    kept_name: str | None = None
+    kept_data: Any = None
+    kept_position: float | None = None
+    if kind == "change":
+        problem = check_select_value(element, props, value)
+        if problem:
+            raise CanvasEventRefused("invalid_value", problem)
+        kept_value = _option_order(props, value) if props.get("multiple") else value
+        if _json_length(kept_value) > MAX_EVENT_VALUE_CHARS:
+            raise CanvasEventRefused("invalid_value", f"a value is at most {MAX_EVENT_VALUE_CHARS} characters")
+    elif kind == "set_value":
+        if value is not None:
+            problem = check_json_value(value)
+            if problem:
+                raise CanvasEventRefused("invalid_value", problem)
+            if _json_length(value) > MAX_EVENT_VALUE_CHARS:
+                raise CanvasEventRefused("invalid_value", f"a value is at most {MAX_EVENT_VALUE_CHARS} characters")
+            kept_value = copy.deepcopy(value)
+    elif kind == "emit":
+        if not isinstance(name, str) or _EMIT_NAME.fullmatch(name) is None:
+            raise CanvasEventRefused(
+                "invalid_value", "an emit name is 1 to 64 letters, digits, _ . : or -, and does not start with /",
+            )
+        kept_name = name
+        if data is not None:
+            problem = check_json_value(data)
+            if problem:
+                raise CanvasEventRefused("invalid_value", problem)
+            if len(json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) > MAX_EMIT_DATA_BYTES:
+                raise CanvasEventRefused("invalid_value", f"emit data is at most {MAX_EMIT_DATA_BYTES} bytes of JSON")
+            kept_data = copy.deepcopy(data)
+    elif kind in _AUDIO_KINDS and position is not None:
+        # Compared before it is converted: an int too big for a float must be refused, not raise.
+        if (
+            isinstance(position, bool)
+            or not isinstance(position, (int, float))
+            or (isinstance(position, float) and not math.isfinite(position))
+            or not 0 <= position <= _MAX_POSITION_SECONDS
+        ):
+            raise CanvasEventRefused("invalid_value", f"a position is 0 to {_MAX_POSITION_SECONDS} seconds")
+        kept_position = float(position)
+    wake = bool(props["wake"]) if "wake" in props else allowed[kind]
+    if wake:
+        recent = [t for t in row.wake_times if (t if t.tzinfo else t.replace(tzinfo=UTC)) > now - _WAKE_WINDOW]
+        if len(recent) >= settings.max_waking_events_per_minute:
+            raise CanvasEventRefused(
+                "rate_limited",
+                f"The agent takes at most {settings.max_waking_events_per_minute} canvas wakes a minute. "
+                "Wait a moment, then try again.",
+            )
+    label_prop = _LABEL_PROP.get(etype)
+    return _Accepted(
+        etype=etype,
+        source=f"html:{element}" if etype == "Html" else "control",
+        wake=wake,
+        label=props.get(label_prop) if label_prop else None,
+        value=kept_value,
+        name=kept_name,
+        data=kept_data,
+        position=kept_position,
+    )
 
 
 class CanvasService:
@@ -132,6 +291,31 @@ class CanvasService:
     def state_of(row: SessionCanvas) -> CanvasState:
         """The canvas of ``row`` as a pure ``CanvasState``: copies, so what a caller does to it never reaches the row."""
         return CanvasState(row.rev, copy.deepcopy(row.elements), copy.deepcopy(row.values), dict(row.value_set_by))
+
+    async def unseen_events(self, session_id: str) -> list[CanvasEvent]:
+        """The events the agent has not read yet: those after ``seen_event_seq``, oldest first."""
+        row = await self._store().get(session_id)
+        if row is None:
+            return []
+        return [event for event in row.events if event.seq > row.seen_event_seq]
+
+    async def mark_seen(self, session_id: str, through_seq: int) -> None:
+        """Raise ``seen_event_seq`` to ``through_seq`` (never lower it, never past the last event). One fenced patch of that field."""
+        store = self._store()
+        for _ in range(_ATTEMPTS):
+            row = await store.get(session_id)
+            target = min(through_seq, row.event_seq) if row is not None else 0
+            if row is None or target <= row.seen_event_seq:
+                return
+            try:
+                written = await patch_if_checked(
+                    store, session_id, {"seen_event_seq": target}, where={"seen_event_seq": [row.seen_event_seq]},
+                )
+            except NotFoundError:
+                return                       # the session's canvas was deleted: nothing is left to mark
+            if written is not None:
+                return
+        logger.warning("canvas %s: seen_event_seq stayed behind %d after %d rejected fences", session_id, through_seq, _ATTEMPTS)
 
     # ---- batches ---------------------------------------------------------------------------------------------------------------
 
@@ -278,10 +462,127 @@ class CanvasService:
             return
         await publish_canvas_frame(self._bus.publish, session_id=session_id, rev=written.rev, event_seq=written.event_seq)
 
+    # ---- interactions ----------------------------------------------------------------------------------------------------------
+
+    async def record_event(
+        self,
+        *,
+        session_id: str,
+        workspace_id: str,
+        element: str,
+        kind: str,
+        by: str,
+        value: Any = None,
+        name: str | None = None,
+        data: Any = None,
+        position: float | None = None,
+        client_event_id: str | None = None,
+    ) -> CanvasEvent:
+        """Validate a user's interaction, write it to the canvas and announce it.
+
+        The server decides everything that matters: the element must exist and be available, the kind must be one it sends, the
+        value must fit, a waking event must be within the per-minute limit, and the label comes from the element, never from the
+        caller. Raises ``CanvasEventRefused`` (nothing is written) or ``ConflictError`` (other writers kept getting in first). A
+        ``client_event_id`` already in the ring returns that event unchanged: a retried POST records once.
+
+        A ``change`` or ``set_value`` that sets a different value moves ``rev``; a click, an emit, an audio event or a link open
+        moves only ``event_seq``. The fields a kind does not use (a ``value`` sent with a click) are dropped, not stored.
+        """
+        store = self._store()
+        for _ in range(_ATTEMPTS):
+            row = await store.get(session_id)
+            if row is None:
+                raise CanvasEventRefused("unknown_element", f"'{clip(str(element))}' is not on the canvas any more")
+            if client_event_id is not None:
+                repeat = next((event for event in row.events if event.client_event_id == client_event_id), None)
+                if repeat is not None:
+                    return repeat
+            settings = await read_canvas_settings(self._sp)
+            now = self._now()
+            accepted = _check_event(
+                row, settings, now, element=element, kind=kind, value=value, name=name, data=data, position=position,
+            )
+            values, set_by, bumped = self._values_after(row, element, kind, accepted)
+            seq = row.event_seq + 1
+            rev = row.rev + (1 if bumped else 0)
+            event = CanvasEvent(
+                id=f"e{seq}", seq=seq, rev=rev, element=element, type=accepted.etype, kind=kind, source=accepted.source, by=by,
+                wake=accepted.wake, at=now, value=accepted.value, name=accepted.name, data=accepted.data,
+                position=accepted.position, label=accepted.label, client_event_id=client_event_id,
+            )
+            patch: dict[str, Any] = {
+                "events": to_jsonable_python([*row.events, event][-settings.max_events:]),
+                "event_seq": seq,
+                "updated_at": _json_time(now),
+            }
+            if values is not row.values:
+                patch["values"], patch["value_set_by"] = values, set_by
+            if bumped:
+                patch["rev"] = rev
+            if accepted.wake:
+                patch["wake_times"] = to_jsonable_python([*row.wake_times, now][-settings.max_waking_events_per_minute:])
+            try:
+                written = await patch_if_checked(store, session_id, patch, where={"rev": [row.rev], "event_seq": [row.event_seq]})
+            except NotFoundError:
+                raise CanvasEventRefused("unknown_element", f"'{element}' is not on the canvas any more") from None
+            if written is None:
+                continue                     # another writer got in first: read the fresh row and judge the event again
+            await self._announce_event(written, event, session_id=session_id, workspace_id=workspace_id)
+            return event
+        raise ConflictError(_CONFLICT)
+
+    @staticmethod
+    def _values_after(
+        row: SessionCanvas, element: str, kind: str, accepted: _Accepted,
+    ) -> tuple[dict[str, Any], dict[str, str], bool]:
+        """The ``values`` and ``value_set_by`` the event leaves, and whether they changed what the canvas shows (a rev bump).
+
+        Returns ``row.values`` itself (the same object) when the event sets nothing.
+        """
+        values, set_by = row.values, row.value_set_by
+        if kind in _VALUE_CHANGING:
+            current = row.values[element] if element in row.values else row.elements[element]["props"].get("value")
+            if accepted.value is None:                       # set_value(null): the Html element lets go of its value
+                if element not in row.values:
+                    return values, set_by, False
+                return (
+                    {k: v for k, v in row.values.items() if k != element},
+                    {k: v for k, v in row.value_set_by.items() if k != element},
+                    True,
+                )
+            if json_equal(accepted.value, current):         # the same value again: nothing changes, not even who set it
+                return values, set_by, False
+            return (
+                {**row.values, element: copy.deepcopy(accepted.value)},
+                {**row.value_set_by, element: "user"},
+                True,
+            )
+        if kind in _AUDIO_KINDS:
+            state: dict[str, Any] = {"playing": kind == "play", "position": accepted.position or 0.0}
+            if kind == "ended":
+                state["ended"] = True
+            return {**row.values, element: state}, {**row.value_set_by, element: "user"}, False
+        return values, set_by, False
+
+    async def _announce_event(self, written: SessionCanvas, event: CanvasEvent, *, session_id: str, workspace_id: str) -> None:
+        """The platform event and the tap frame of an interaction that has been written. Best effort, each alone."""
+        try:
+            await recorder_for(self._sp, self._bus).emit(
+                "canvas.event",
+                workspace_id=workspace_id,
+                session_id=session_id,
+                actor=event.by,
+                payload=event.public(),
+            )
+        except Exception:  # noqa: BLE001 - the event is written; its announcement is advisory
+            logger.warning("canvas %s: canvas.event could not be recorded", session_id, exc_info=True)
+        await self._publish_frame(session_id, written)
+
 
 __all__ = [
     "ApplyOutcome",
     "CanvasApplyRefused",
+    "CanvasEventRefused",
     "CanvasRevConflict",
     "CanvasService",
 ]
