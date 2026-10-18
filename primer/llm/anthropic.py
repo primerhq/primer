@@ -410,6 +410,13 @@ def _fit_sampling(request: dict[str, Any], *, model: str, provider_id: str) -> N
     traits = claude_traits(model)
     if traits is not None and not traits.sampling:
         dropped.extend(key for key in ("temperature", "top_p", "top_k") if key in request)
+    elif traits is None and any(key in request for key in ("temperature", "top_p", "top_k")):
+        debug_once(
+            ("anthropic-sampling-unknown", provider_id, str(model)),
+            "Anthropic provider %s: model %s is not in the model table; its "
+            "sampling knobs are sent as given (a newer model may refuse them)",
+            provider_id, model, log=logger,
+        )
     thinking = request.get("thinking")
     if isinstance(thinking, dict) and thinking.get("type") in _THINKING_ON:
         temperature = request.get("temperature")
