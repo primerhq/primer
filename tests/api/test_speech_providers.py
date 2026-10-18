@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import httpx
 import pytest
 
 
@@ -208,6 +209,32 @@ class TestHelperRoutesBeatTheIdPattern:
             assert r.status_code == 200 and r.json()["ok"] is True, r.text
 
         assert calls == [{"url": "http://svc.local/v1", "api_key": "sk-conn-KEY-1234"}] * 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("route", "path", "answer"), [
+        pytest.param("stt_providers", "/v1/models", {"ok": True, "models": ["whisper-1"]}, id="stt"),
+        pytest.param("tts_providers", "/v1/audio/voices", {"ok": True, "voices": ["af_heart"]}, id="tts"),
+    ])
+    async def test_a_partial_draft_probes_the_endpoint_it_names(self, client, monkeypatch, route, path, answer) -> None:
+        """Through the real probe (``primer.speech.discovery``, on its mock transport) rather than a stand-in: the one request a partial draft turns into."""
+        seen: list[httpx.Request] = []
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            if request.url.path.endswith("/audio/voices"):
+                return httpx.Response(200, json={"voices": ["af_heart"]})
+            return httpx.Response(200, json={"data": [{"id": "whisper-1"}]})
+
+        monkeypatch.setattr("primer.speech.discovery._transport_for_tests", httpx.MockTransport(_handler))
+
+        r = await client.post(f"/v1/{route}/_test", json={
+            "config": {"url": "http://svc.local:8006/v1", "api_key": "sk-wire-KEY-4321"},
+        })
+
+        assert r.status_code == 200, r.text
+        assert r.json() == answer
+        assert [str(request.url) for request in seen] == [f"http://svc.local:8006{path}"]
+        assert seen[0].headers["authorization"] == "Bearer sk-wire-KEY-4321"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(("route", "attr"), _PROBES)
