@@ -396,25 +396,29 @@ def _fit_thinking(
 def _fit_sampling(request: dict[str, Any], *, model: str, provider_id: str) -> None:
     """Drop, in place, the sampling knobs the model or its thinking refuses.
 
+    A model that takes no sampling knobs at all (Claude Opus 4.7 and later,
+    Sonnet 5 and later, Haiku 5.5, Fable, Mythos: see
+    :class:`primer.llm._reasoning.ClaudeTraits`) loses ``temperature``,
+    ``top_p`` and ``top_k`` on every call, whoever set them: compaction asks
+    for temperature 0, an agent may set its own, a profile's ``extended``
+    may pass ``top_k`` through. Every such call would otherwise be a 400.
     While thinking is on (manual or adaptive), ``temperature`` other than 1,
-    ``top_k`` and ``top_p`` below 0.95 are dropped. A model that takes no
-    sampling knobs at all (see :class:`primer.llm._reasoning.ClaudeTraits`)
-    also loses the ``top_k`` a profile's ``extended`` passes through. Each
-    kind of drop is logged once at DEBUG.
+    ``top_k`` and ``top_p`` below 0.95 are dropped too. Each kind of drop is
+    logged once at DEBUG.
     """
     dropped: list[str] = []
     traits = claude_traits(model)
-    if traits is not None and not traits.sampling and "top_k" in request:
-        dropped.append("top_k")
+    if traits is not None and not traits.sampling:
+        dropped.extend(key for key in ("temperature", "top_p", "top_k") if key in request)
     thinking = request.get("thinking")
     if isinstance(thinking, dict) and thinking.get("type") in _THINKING_ON:
         temperature = request.get("temperature")
-        if temperature is not None and temperature != 1:
+        if temperature is not None and temperature != 1 and "temperature" not in dropped:
             dropped.append("temperature")
         if "top_k" in request and "top_k" not in dropped:
             dropped.append("top_k")
         top_p = request.get("top_p")
-        if top_p is not None and top_p < _MIN_THINKING_TOP_P:
+        if top_p is not None and top_p < _MIN_THINKING_TOP_P and "top_p" not in dropped:
             dropped.append("top_p")
     for key in dropped:
         del request[key]
