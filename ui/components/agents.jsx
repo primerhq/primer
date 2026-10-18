@@ -617,9 +617,11 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
   // initializing from it rather than leaving the field blank means a
   // save that never touches this field still round-trips the agent's
   // real value instead of PUT-replacing it back down to the schema
-  // default.
+  // default. A stored null is "no limit" (primer/model/agent.py): it
+  // starts as an empty field that says so, and an empty field saves
+  // null (it used to show and save 50, capping the agent on any edit).
   const [maxToolTurns, setMaxToolTurns] = React.useState(
-    String(existing?.max_tool_turns ?? 50)
+    existing && existing.max_tool_turns === null ? "" : String(existing?.max_tool_turns ?? 50)
   );
   const [maxOutputTokens, setMaxOutputTokens] = React.useState(
     existing?.max_output_tokens != null ? String(existing.max_output_tokens) : ""
@@ -713,10 +715,10 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
     // uiv2 Wave 2 (a-11): always sent, never conditionally dropped - see
     // the maxToolTurns state comment above for why (real non-null server
     // default means omitting it on a PUT-replace save would silently
-    // reset a customized value).
+    // reset a customized value). An empty field is null, no limit.
     const parsedMaxToolTurns = Number(maxToolTurns);
-    body.max_tool_turns = Number.isFinite(parsedMaxToolTurns) && parsedMaxToolTurns > 0
-      ? Math.floor(parsedMaxToolTurns) : 50;
+    body.max_tool_turns = maxToolTurns.trim() === "" ? null
+      : Number.isFinite(parsedMaxToolTurns) && parsedMaxToolTurns > 0 ? Math.floor(parsedMaxToolTurns) : 50;
     // max_output_tokens defaults to null (unbounded) - same
     // always-on-edit/conditional-on-create pattern as response_format.
     let maxOutputTokensValue = null;
@@ -868,7 +870,8 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
             </div>
             <div className="field" style={{ flex: 1 }}>
               <label className="field-label" htmlFor="na-max-tool-turns">Max tool turns</label>
-              <input id="na-max-tool-turns" className="input" type="number" step="1" min="1"
+              <input id="na-max-tool-turns" data-testid="agent-max-tool-turns" className="input" type="number" step="1" min="1"
+                placeholder="No limit"
                 value={maxToolTurns} onChange={(e) => setMaxToolTurns(e.target.value)} style={{ width: "100%" }} />
             </div>
             <div className="field" style={{ flex: 1 }}>
