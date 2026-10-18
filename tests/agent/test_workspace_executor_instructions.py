@@ -77,19 +77,27 @@ async def test_the_registry_agent_is_not_changed(tmp_path: Path) -> None:
         await backend.aclose()
 
 
+# Valid Jinja on purpose: left unescaped it renders without an error, to ``2 y`` and no comment. A text that raised
+# (an unknown tag, an undefined name) would send the renderer to its raw-join fallback, which returns the file text
+# byte for byte, so a test on such a text could not tell an escaped file from an unescaped one.
+_RAW = "{{ 1 + 1 }} {# note #} {% if true %}y{% endif %} {"
+
+
 async def test_the_model_is_sent_the_file_as_written(tmp_path: Path) -> None:
-    """The prompt is Jinja-rendered at every call; the file's own braces and tags must come through untouched."""
+    """The prompt is Jinja-rendered at every call. The agent's own prompt must render (it holds an expression, so a
+    render that failed and fell back to the raw join shows), and the file text must come through untouched."""
     backend, _ws, session = await _build_session(tmp_path)
     try:
-        raw = "Use {{ braces }} and {% tags %} and {# notes #} freely.\nSecond line {"
         llm = _FakeLLM(scripts=[[TextDelta(text="ok", index=0), Done(stop_reason="stop", raw_reason="stop")]])
-        ex = _executor(session, workspace_instructions=raw, llm=llm)
+        ex = _executor(
+            session, system_prompt=["base {{ ctx.workspace_id }}"], workspace_instructions=_RAW, llm=llm,
+        )
         await _drain(ex.invoke([Message(role="user", parts=[TextPart(text="hi")])]))
         sys_msg = llm.calls[0]["messages"][0]
         assert sys_msg.role == "system"
         text = sys_msg.parts[0].text
-        assert text.startswith("base\n\n"), "the agent's own prompt comes first"
-        assert text.endswith("## Workspace instructions (agents.md)\n\n" + raw), "the file text reaches the model as written"
+        assert text.startswith(f"base {session.workspace_id}\n\n"), f"the agent's prompt is rendered, first: {text[:80]!r}"
+        assert text.endswith("## Workspace instructions (agents.md)\n\n" + _RAW), f"the file is not: {text[-120:]!r}"
         assert text.index(session.session_id) < text.index("## Workspace instructions"), "after the workspace fragment"
     finally:
         await session.aclose()

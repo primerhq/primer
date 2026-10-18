@@ -175,9 +175,18 @@ class _FakeWorkspaceSession:
         self.workspace_tools: list = []
 
 
+# The node agents' own prompt holds a Jinja expression, so a render that failed (and fell back to the raw join) shows.
+_NODE_PROMPT = "Base {{ ctx.workspace_id }}."
+
+# Valid Jinja on purpose: left unescaped it renders without an error, to ``2 y`` and no comment. A text that raised (an
+# unknown tag, an undefined name) would send the renderer to its raw-join fallback, which returns the file text byte for
+# byte, so a test on such a text could not tell an escaped file from an unescaped one.
+_RAW = "{{ 1 + 1 }} {# note #} {% if true %}y{% endif %} {"
+
+
 def _executor(graph: Graph, repo, llm: _FakeLLM, *, instructions: str | None, gsid: str) -> WorkspaceGraphExecutor:
     async def agent_resolver(agent_id: str) -> Agent:
-        return Agent(id="x", description="x", model=AgentModel(profile_id="p--m"), system_prompt=["Base."])
+        return Agent(id="x", description="x", model=AgentModel(profile_id="p--m"), system_prompt=[_NODE_PROMPT])
 
     async def llm_resolver(_a: Agent):
         return (llm, ResolvedModel(
@@ -198,16 +207,16 @@ def _executor(graph: Graph, repo, llm: _FakeLLM, *, instructions: str | None, gs
 
 
 async def test_a_node_agent_sends_the_file_to_the_model_as_written(tmp_path: Path) -> None:
-    raw = "Use {{ nodes.A.text }} and {% tags %} as plain text."
+    """The agent's own prompt is rendered (its expression becomes the workspace id) and the file text is not."""
     repo = await _make_state_repo(tmp_path, workspace_id="ws-test")
     llm = _FakeLLM(scripts=[[TextDelta(text="ok", index=0), Done(stop_reason="stop", raw_reason="stop")]])
 
-    executor = _executor(_one_agent_graph("g-instr"), repo, llm, instructions=raw, gsid="gsid-instr")
+    executor = _executor(_one_agent_graph("g-instr"), repo, llm, instructions=_RAW, gsid="gsid-instr")
     async for _ in executor.invoke([]):
         pass
 
     system_texts = [m.parts[0].text for call in llm.calls for m in call["messages"] if m.role == "system"]
-    assert system_texts == ["Base.\n\n<<FRAGMENT>>\n\n## Workspace instructions (agents.md)\n\n" + raw]
+    assert system_texts == ["Base ws-test.\n\n<<FRAGMENT>>\n\n## Workspace instructions (agents.md)\n\n" + _RAW]
 
 
 async def test_a_subgraph_child_inherits_the_instructions(tmp_path: Path) -> None:
@@ -226,4 +235,4 @@ async def test_a_subgraph_child_inherits_the_instructions(tmp_path: Path) -> Non
     child = await parent._build_sub_executor(sub_node, _one_agent_graph("g-inner-instr"))
 
     seen = await child._agent_resolver("x")
-    assert seen.system_prompt == ["Base.", "<<FRAGMENT>>", workspace_instructions_part("rules")]
+    assert seen.system_prompt == [_NODE_PROMPT, "<<FRAGMENT>>", workspace_instructions_part("rules")]
