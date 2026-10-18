@@ -5574,6 +5574,9 @@ button.nv-trace-line { cursor: pointer; }
 }
 .pk-foot-left,
 .pk-foot-right { display: flex; align-items: center; gap: 8px; }
+/* the left group is one flex item as wide as its buttons (Cancel, Delete and "Import more models" make 347px), and a group that does not wrap cannot be narrower than all of them:
+   on a 320px or 360px sheet the footer's own wrap has nothing to move and Delete leaves the sheet. Wrapping lets the group shrink to its widest button and flow onto a second line. */
+.pk-foot-left { flex-wrap: wrap; }
 /* on a sheet too narrow for both sides (320px), the action's side wraps to a line of its own and stays on the right */
 .pk-foot-right { margin-left: auto; }
 .pk-selector {
