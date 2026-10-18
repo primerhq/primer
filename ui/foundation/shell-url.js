@@ -123,7 +123,9 @@ var SH_VIEWS = {
 // Old links (seam I-7). A retired nav is answered by a view that exists, applied by SH_parseView BEFORE it validates the nav, so the address bar is then
 // rewritten to the target's canonical form (a link is never replayed as written, and never lands on a blank page):
 //   view=platform:workspaces  -> the studio (the Workspaces page left the Platform view; the studio rail's workspace menu has New session, Settings and Delete)
-//   view=system:setup         -> the System dashboard (the Setup page left the System view; its checks live on the dashboard's Setup card)
+//   view=system:setup         -> the System dashboard (the grammar has no setup nav)
+// The Setup page itself leaves the System view with Plan 10 Task 8, which moves its checks to a Dashboard card. Until then the System sidebar still draws a Setup row that opens the page in
+// the session (its address reads view=system, so a reload lands on the Dashboard), and this redirect is what a pasted link to it gets.
 // "platform:templates" needs none: it is the new Workspace templates page. Keyed "<name>:<nav>", like SH_VIEW_SUBS; a sub on a redirected link is dropped.
 var SH_VIEW_REDIRECTS = {
   "platform:workspaces": { name: "studio", nav: null },
