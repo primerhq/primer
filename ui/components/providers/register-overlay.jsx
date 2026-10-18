@@ -108,7 +108,20 @@ function PC_useRegisterRequest(handler) {
 //
 // The page comes BEFORE the shell in the overlay's markup, so on any render of both the publisher writes before the slots read and they show the page's parts in the same
 // pass. A page that re-renders ALONE (its own state changed) is not rendered with the shell: its layout effect then refreshes the store, and a slot that is showing something
-// older renders again, before the browser paints.
+// older renders again, before the browser paints. The publisher writes the store while it RENDERS, which is sound only while a render is never abandoned between the write and the
+// commit: ui/ uses no startTransition, useTransition, useDeferredValue or Suspense, and tests/ui/test_ui_uses_no_transitions_or_suspense.py keeps it so.
+//
+// What follows for a page (the rules Tasks 12 to 19 build on):
+// - A page's effects run BEFORE its new body is in the DOM whenever the page re-renders on its own (the usual case: its own state changed, a request was answered). The slots then draw
+//   the body in a nested update that follows the page's commit, so when a page effect runs the DOM still holds the page's PREVIOUS body. A page effect that reads or focuses body DOM
+//   (the focus, a field, a measurement) must wait a task or, better, live inside the body: a small component in the body, whose effect runs once the body it is in has been drawn
+//   (PC_FocusAfterRetry in provider-form.jsx; the page effect it replaced saw the old Try again button still focused, did nothing, and the focus fell to <body>: review of #773,
+//   tests/ui_e2e/test_register_overlay_focus_journey.py).
+// - React context that a page provides does not reach its body. The body is drawn by the slots, in the shell beside the page and not under it, so a Provider in the page's markup wraps
+//   nothing the operator sees. The body is built in the page's render and closes over the page's state; hand it anything else in props. (Context from ABOVE the overlay reaches both.)
+// - A page must keep returning frame(...). The publisher it returns is the page's only way into the dialog: whatever else a page returns is drawn beside the dialog, not in it, and a
+//   page that returns something else in some state (null, say) shows an empty body and no footer in that state, because the publisher takes back what it published when it unmounts
+//   (a handler of a page that has stopped asking to be drawn must never be pressable). A page never draws a dialog of its own.
 function PC_makeFrameStore() {
   const store = { parts: null, slots: [] };
   store.attach = (slot) => {
