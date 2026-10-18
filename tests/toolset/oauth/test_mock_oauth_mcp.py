@@ -144,12 +144,12 @@ def test_an_expired_access_token_is_challenged_but_its_refresh_token_still_works
 
 
 def test_an_access_token_really_ends_at_its_lifetime(mock_oauth_mcp):
-    assert _mcp(mock_oauth_mcp, _client_credentials_token(mock_oauth_mcp)).status_code == 200      # warm the MCP transport up: the one-second token below must not spend its life on a cold start
-    mock_oauth_mcp.state.access_token_ttl_s = 1
+    assert _mcp(mock_oauth_mcp, _client_credentials_token(mock_oauth_mcp)).status_code == 200      # warm the MCP transport up: the short-lived token below must not spend its life on a cold start
+    mock_oauth_mcp.state.access_token_ttl_s = 3                  # long enough that a slow CI worker still gets its first call in
     answer = _sign_in(mock_oauth_mcp)
-    assert answer["expires_in"] == 1
+    assert answer["expires_in"] == 3
     assert _mcp(mock_oauth_mcp, answer["access_token"]).status_code == 200
-    time.sleep(1.2)
+    time.sleep(3.2)
     assert _mcp(mock_oauth_mcp, answer["access_token"]).status_code == 401
 
 
@@ -421,7 +421,7 @@ def test_a_token_delay_holds_the_answer(mock_oauth_mcp):
     mock_oauth_mcp.state.token_delay_s = 0.3
     started = time.monotonic()
     _token(mock_oauth_mcp, CC, grant_type="client_credentials")
-    assert time.monotonic() - started >= 0.3
+    assert time.monotonic() - started >= 0.25          # the event loop's timer may fire a hair early; a missing delay would be milliseconds
 
 
 def test_revoke_all_drops_every_access_and_refresh_token(mock_oauth_mcp):
