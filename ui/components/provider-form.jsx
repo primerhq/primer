@@ -469,6 +469,25 @@ const PC_FORM_LIMIT_FIELDS = ["max_concurrency", "request_timeout_seconds", "con
 
 const PC_SECRET_KEPT_HELP = "Stored secrets are shown masked; leave it as is to keep it.";
 
+// Where the focus goes after a Try again that worked. The button the operator pressed is gone once the fields arrive, and a focus on a removed element falls to <body>, outside the dialog: it goes
+// to the form's first field instead, unless the operator has already put it somewhere else. This is a component INSIDE the body, not an effect of the form, on purpose: inside the Register
+// overlay the body is drawn by the shell's slots, in an update that runs AFTER the form's own effects (register-overlay.jsx, "the shell's slots"). At the form's effect time the OLD body (the
+// Try again button and the alert) is still in the DOM and still focused, so an effect there saw a focus on a live button, did nothing, and the focus fell to <body> one task later. An effect of
+// this component runs once the body it is in has been drawn, which is the first moment the focus can be read. `retried` is the form's ref (set by the press), `failed` its `typesFailed`, and
+// `rootRef` the body's root element.
+function PC_FocusAfterRetry({ retried, failed, rootRef }) {
+  React.useEffect(() => {
+    if (failed || !retried.current) return;
+    retried.current = false;
+    const root = rootRef.current;
+    const held = document.activeElement;
+    if (!root || (held && held !== document.body)) return;
+    const first = root.querySelector("input:not([disabled]), select:not([disabled]), textarea:not([disabled])");
+    if (first) first.focus();
+  }, [failed]);
+  return null;
+}
+
 // Two layouts, one form. Without `frame` the form lays itself out (fields, the probe panel, its own footer row): the legacy catalog's modal mounts it so.
 // With `frame` (the Register provider overlay, plan 02 Task 10) it hands its parts to the frame and returns what the frame returns:
 // frame({ body, footerLeft, footerRight, error, busy }), with Cancel on the left, Test (only when `canTest`: a class with a draft _test route; never to an edit) and the submit
@@ -598,21 +617,12 @@ function PC_ProviderForm({
 
   // Try again repeats the request for the kind's fields. useResource keeps `error` until the answer, so the retry in flight is `types.loading` with the alert still up: the button says it is trying
   // and stays focusable (aria-disabled, same reason as Save). When the answer arrives the button is gone, whatever the answer says (the fields, or a map that does not name the kind), and the focus it
-  // had is lost to <body>: it goes to the form's first field, unless the operator has already moved it somewhere else.
+  // had is lost to <body>: PC_FocusAfterRetry, rendered in the body, hands it to the form's first field (an effect of this form could not: see there).
   const retryTypes = () => {
     if (types.loading || typeof types.refetch !== "function") return;
     retried.current = true;
     types.refetch();
   };
-  React.useEffect(() => {
-    if (typesFailed || !retried.current) return;
-    retried.current = false;
-    const root = rootRef.current;
-    const held = document.activeElement;
-    if (!root || (held && held !== document.body)) return;
-    const first = root.querySelector("input:not([disabled]), select:not([disabled]), textarea:not([disabled])");
-    if (first) first.focus();
-  }, [typesFailed]);
 
   // The _test routes read the wire names: the web classes' draft is {id, provider_type, config: {type, ...}} (routers/web_search.py _ProviderDraft), so the
   // form's body goes through PC_wireBody as a save does (it passed every other class through unchanged; without it a web Test answered 422).
@@ -698,6 +708,7 @@ function PC_ProviderForm({
       : [];
     const framedBody = (
       <div className="col" style={{ gap: 16, minWidth: 0 }} ref={rootRef} data-testid={`provider-form-${plural}`}>
+        <PC_FocusAfterRetry retried={retried} failed={typesFailed} rootRef={rootRef} />
         {missingExtra ? (
           <Banner kind="info" title="Optional dependency required">
             {capabilityHint(extra)}
@@ -908,6 +919,7 @@ function PC_ProviderForm({
   return (
     <div className="col" style={{ gap: 12 }} ref={rootRef}
       data-testid={`provider-form-${plural}`}>
+      <PC_FocusAfterRetry retried={retried} failed={typesFailed} rootRef={rootRef} />
       {/* 01a04d6a: was a flex row (fields flex:1 vs. the probe panel's
           fixed 240px) inside the default 420px Modal - the fields
           column computed to a sliver once the probe panel's width and

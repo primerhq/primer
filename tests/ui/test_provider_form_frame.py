@@ -321,6 +321,69 @@ def test_the_framed_save_stays_focusable_while_its_request_is_out(ctx) -> None:
     assert ctx.eval(f"{save}['aria-busy'] === undefined") is True
 
 
+HAND_OFF = r"""
+var FOCUSED = [], QUERIES = [], RETRIED = { current: false };
+var FIRST_FIELD = { focus: function () { FOCUSED.push("first field"); } };
+var ROOT_REF = { current: { querySelector: function (selector) { QUERIES.push(selector); return FIRST_FIELD; } } };
+function handOff(failed) { MR.rerender({ retried: RETRIED, failed: failed, rootRef: ROOT_REF }); }
+function startHandOff(failed) { MR.mount(PC_FocusAfterRetry, { retried: RETRIED, failed: failed, rootRef: ROOT_REF }); }
+"""
+
+
+def _hand_off(ctx, *, armed: bool, focus: str) -> None:
+    """The hand-off as it runs in the dialog: mounted with the Try again still failing (``failed``), the operator having pressed it (``armed``) and the focus
+    somewhere (``body``, or an element that is not ``<body>``), then re-rendered when the fields have come (``failed`` false)."""
+    held = "document.body" if focus == "body" else f"{{ id: {json.dumps(focus)} }}"
+    ctx.eval(HAND_OFF)
+    ctx.eval(f"RETRIED.current = {json.dumps(armed)}; document.activeElement = {held}; startHandOff(true);")
+
+
+def test_a_try_again_that_worked_hands_the_focus_to_the_first_field_once(ctx) -> None:
+    """Review of #773: the button the operator pressed is gone once the fields arrive, and a focus on a removed element falls to ``<body>``, outside the dialog. It goes
+    to the form's first field instead (the unit harness has no focus: the real thing is pinned in ``tests/ui_e2e/test_register_overlay_focus_journey.py``)."""
+    _hand_off(ctx, armed=True, focus="body")
+    assert js(ctx, "FOCUSED") == [], "the types are still failing: nothing to hand over yet"
+    assert ctx.eval("RETRIED.current") is True, "and the press is remembered"
+    ctx.eval("handOff(false);")
+    assert js(ctx, "FOCUSED") == ["first field"]
+    assert js(ctx, "QUERIES") == ["input:not([disabled]), select:not([disabled]), textarea:not([disabled])"], "the first field that can take the focus"
+    assert ctx.eval("RETRIED.current") is False, "the press is spent"
+    ctx.eval("handOff(false); handOff(false);")
+    assert js(ctx, "FOCUSED") == ["first field"], "once"
+
+
+def test_a_focus_the_operator_moved_is_left_alone(ctx) -> None:
+    """The retry takes a moment. An operator who has put the focus somewhere else meanwhile (the Name field, Cancel) keeps it."""
+    _hand_off(ctx, armed=True, focus="the Cancel button")
+    ctx.eval("handOff(false);")
+    assert js(ctx, "FOCUSED") == []
+    assert ctx.eval("RETRIED.current") is False, "and the press is spent all the same, so a later render does not take the focus from where the operator put it"
+    ctx.eval("document.activeElement = document.body; handOff(false);")
+    assert js(ctx, "FOCUSED") == []
+
+
+def test_a_form_nobody_retried_does_not_take_the_focus(ctx) -> None:
+    """A form that failed to load and was refetched by something else (the Register menu's request, the form's own ask when it opens on a failed entry) has no
+    Try again press to answer: its first field is not entitled to the focus."""
+    _hand_off(ctx, armed=False, focus="body")
+    ctx.eval("handOff(false);")
+    assert js(ctx, "FOCUSED") == []
+
+
+def test_the_hand_off_is_rendered_inside_the_body_the_form_hands_to_the_frame(ctx) -> None:
+    """Re-review of #773: inside the Register overlay the body is drawn by the shell's slots, in an update that runs AFTER the page's own effects. A page effect that
+    looked at the focus saw the OLD body (the Try again button and the alert, still in the DOM and still focused), did nothing, and one task later the button was
+    gone and the focus fell to ``<body>``. The hand-off is therefore a component in the body, whose effect runs when the new body has been drawn, in the framed layout
+    and in the unframed one."""
+    _mount(ctx, plural="web_search_providers", classKey="web_search", kindSelect=True, canTest=True, submitLabel="Register")
+    _serve(ctx, "web_search_providers")
+    assert ctx.eval("ALL('frame-body').some(function (n) { return n.type === PC_FocusAfterRetry; })") is True
+    ctx.eval("MR.mount(PC_ProviderForm, { plural: 'web_search_providers', value: { id: 'x', provider: 'tavily' }, onChange: function () {},"
+             " onSubmit: function () { return Promise.resolve(); }, onCancel: function () {} })")
+    _serve(ctx, "web_search_providers")
+    assert ctx.eval("ALL('provider-form-web_search_providers').some(function (n) { return n.type === PC_FocusAfterRetry; })") is True
+
+
 def test_the_framed_limits_show_only_what_the_class_reads(ctx) -> None:
     """A wizard class whose own pages are not loaded falls back to this form: its limits box is today's three fields, cut to what the class's adapters read
     (the Hugging Face embedder reads max_concurrency only)."""
