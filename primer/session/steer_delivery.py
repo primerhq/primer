@@ -29,10 +29,17 @@ DELIVERED_MISSING = "missing"
 
 @dataclass
 class SteerDelivery:
-    """What happened to one delivery attempt."""
+    """What happened to one delivery attempt.
+
+    ``detail`` and ``conflict`` say why a ``DELIVERED_MISSING`` attempt found the session unable to take the message: the text of the NotFoundError
+    or ConflictError :func:`wake_session` raised (the workspace was removed under the write, the session cannot be reopened), and whether it was the
+    conflict. Both stay at their defaults for a session that was absent from the start, and for every other outcome.
+    """
 
     outcome: str
     session_id: str | None = None
+    detail: str | None = None
+    conflict: bool = False
 
 
 async def deliver_steer(
@@ -66,6 +73,11 @@ async def deliver_steer(
     ``turn_status`` not claimable). A wake that lands arms the turn
     (``claimable``) and reports ``DELIVERED_WOKEN``; so does a wake that
     returns nothing, which is what the test doubles do.
+
+    An ENDED target is never queued, whatever its park columns say
+    (:func:`~primer.session.steer_routing.route_steer`): it is woken, which
+    reopens it, or it cannot be reopened and the outcome is
+    ``DELIVERED_MISSING`` with nothing stored.
 
     ``human_intent`` (01a08c08, required, no default): forwarded verbatim
     to :func:`wake_session` -- True for a channel thread reply, False for
@@ -111,15 +123,20 @@ async def deliver_steer(
             ),
             peer=peer,
         )
-    except (NotFoundError, ConflictError):
+    except (NotFoundError, ConflictError) as exc:
         # Raced deletion, or an ENDED session whose ended_reason forbids a
         # restart. Either way this target cannot receive the message: report
-        # it missing so the caller can create a fresh one.
+        # it missing so the caller can create a fresh one. The reason travels
+        # with it, for a caller that tells its own caller why.
         logger.info(
             "steer delivery: session %s cannot accept a message", session_id,
             exc_info=True,
         )
-        return SteerDelivery(outcome=DELIVERED_MISSING)
+        return SteerDelivery(
+            outcome=DELIVERED_MISSING,
+            detail=getattr(exc, "message", None) or str(exc),
+            conflict=isinstance(exc, ConflictError),
+        )
     if woken is not None and woken.turn_status != "claimable":
         return SteerDelivery(outcome=DELIVERED_QUEUED, session_id=session_id)
     return SteerDelivery(outcome=DELIVERED_WOKEN, session_id=session_id)

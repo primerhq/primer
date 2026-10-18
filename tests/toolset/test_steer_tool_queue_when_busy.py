@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 import pytest
 
 from primer.events.recorder import EVENTS_APPENDED_KEY
+from primer.model.except_ import ConflictError
 from primer.model.principal import Principal, PrincipalRef
 from primer.model.storage import OffsetPage
 from primer.model.workspace_session import GraphSessionBinding, PendingSessionMessage, SessionStatus
@@ -222,6 +223,99 @@ async def test_steering_an_ended_session_that_cannot_reopen_is_a_conflict_and_st
     assert await _pending(world) == [] and records(world, "ses-b") == []
     assert world.scheduler.enqueued == [] and await _steered_events(world) == []
     assert (await world.sessions.get("ses-b")).status == SessionStatus.ENDED
+
+
+# ---- an ended session that still carries its park ------------------------------------------------------------------------------------
+# Cancel of a paused or waiting row and the workspace_lost reconcile end a session and leave its park columns set. A steer must never be queued behind
+# that park (nothing would ever deliver it, and the session would stay ended): the old tool called wake_session, which reopens such a session or refuses it.
+
+_STALE_PARKS = {
+    "parked": {"parked_status": "parked", "parked_event_key": "ask_user:ses-b:call_q", "parked_at": NOW},
+    "resumable": {"parked_status": "resumable", "parked_event_key": "tool_approval:ses-b:call_t", "parked_at": NOW},
+}
+
+
+@pytest.mark.parametrize("park", sorted(_STALE_PARKS))
+@pytest.mark.parametrize(
+    ("ended_reason", "phase", "reopens"),
+    [
+        pytest.param("cancelled", "ready", True, id="cancelled"),
+        pytest.param("workspace_lost", "running", True, id="workspace lost, the workspace is back"),
+        pytest.param("workspace_lost", "ready", False, id="workspace lost, the workspace is down"),
+    ],
+)
+async def test_steering_an_ended_session_with_its_park_still_set_reopens_it_or_refuses_it_and_never_queues(park, ended_reason, phase, reopens):
+    world = make_world(with_bus=True)
+    world.registry.phase = phase
+    await seed_session(world, sid="ses-b", status=SessionStatus.ENDED, ended_reason=ended_reason, turn_no=2, **_STALE_PARKS[park])
+    result, body = await _steer(world, "ses-b")
+    row = await world.sessions.get("ses-b")
+    assert await _pending(world) == [], "an ended session has no turn to queue behind"
+    assert [key for key in _woken_keys(world) if key == _STALE_PARKS[park]["parked_event_key"]] == [], "a gate was answered"
+    if reopens:
+        assert not result.is_error, result.output
+        assert (body["status"], body["turn_status"], body["delivery"]) == ("running", "claimable", "woken")
+        assert (row.parked_status, row.parked_event_key, row.parked_at) == (None, None, None), "the reopen did not clear the park"
+        assert slot(world, "ses-b").appended == [INSTRUCTION] and slot(world, "ses-b").reopened is True
+        assert [(e.session_id, e.payload["delivery"]) for e in await _steered_events(world)] == [("ses-b", "woken")]
+    else:
+        assert result.is_error
+        assert body == {"type": "conflict", "message": "Session 'ses-b' has ended (workspace_lost) and cannot take a message"}
+        assert row.status == SessionStatus.ENDED and records(world, "ses-b") == []
+        assert world.scheduler.enqueued == [] and await _steered_events(world) == []
+
+
+async def test_the_real_cancel_of_a_paused_parked_session_then_a_steer_reopens_it():
+    from primer.workspace.session_factory import SessionCancelDeps, cancel_session
+
+    class _Engine:
+        async def delete_lease(self, kind, session_id):
+            return None
+
+    world = make_world(with_bus=True)
+    await seed_session(world, sid="ses-b", status=SessionStatus.PAUSED, pause_requested=True, turn_no=2, **_STALE_PARKS["resumable"])
+    await cancel_session(
+        workspace_id="ws-1", session_id="ses-b",
+        deps=SessionCancelDeps(storage_provider=world.sp, scheduler=world.scheduler, claim_engine=_Engine(), event_bus=None),
+    )
+    assert (await world.sessions.get("ses-b")).parked_status == "resumable", "the premise: Cancel keeps the park"
+    result, body = await _steer(world, "ses-b")
+    assert not result.is_error, result.output
+    assert (body["status"], body["delivery"], body["parked_status"]) == ("running", "woken", None)
+    assert await _pending(world) == []
+
+
+@pytest.mark.parametrize(("phase", "reopens"), [("running", True), ("ready", False)])
+async def test_the_real_workspace_lost_reconcile_of_a_parked_session_then_a_steer_follows_the_workspace(phase, reopens):
+    from primer.workspace.session_reconcile import reconcile_sessions_to_workspace_lost
+
+    world = make_world(with_bus=True)
+    await seed_session(world, sid="ses-b", status=SessionStatus.RUNNING, turn_no=2, **_STALE_PARKS["parked"])
+    assert await reconcile_sessions_to_workspace_lost(world.sp, "ws-1") == 1
+    assert (await world.sessions.get("ses-b")).parked_status == "parked", "the premise: the reconcile keeps the park"
+    world.registry.phase = phase
+    result, body = await _steer(world, "ses-b")
+    assert await _pending(world) == []
+    if reopens:
+        assert not result.is_error, result.output
+        assert (body["status"], body["delivery"]) == ("running", "woken")
+    else:
+        assert result.is_error and body["type"] == "conflict"
+
+
+async def test_a_conflict_from_the_slot_of_a_live_session_is_answered_as_a_conflict_in_the_slots_words():
+    """The slot says ENDED while the row does not (the workspace ended its sessions): the refusal is a conflict, and it is not dressed up as the row ending."""
+    world = make_world(with_bus=True)
+    await seed_session(world, sid="ses-b", turn_no=1)
+
+    async def refuse(content, *, extra_parts=None):
+        raise ConflictError("cannot append instruction to ENDED session 'ses-b'")
+
+    slot(world, "ses-b").append_instruction = refuse
+    result, body = await _steer(world, "ses-b")
+    assert result.is_error
+    assert body == {"type": "conflict", "message": "cannot append instruction to ENDED session 'ses-b'"}
+    assert await _pending(world) == [] and await _steered_events(world) == []
 
 
 # ---- a created or graph-bound session, and the answer ------------------------------------------------------------------------------

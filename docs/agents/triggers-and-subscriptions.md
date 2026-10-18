@@ -105,7 +105,10 @@ A `Subscription` row:
   `parallelism` whatever fired it. With `skip`, a steer that arrives
   while the target session is mid-turn is dropped; with `queue` it is
   stored and delivered at the session's next checkpoint, so use
-  `queue` there if every message must reach the session.
+  `queue` there if every message must reach the session. A paused
+  target is not mid-turn: it keeps the message (stored, whatever
+  `parallelism` says) until the session is resumed, and `skip` does
+  not skip it.
 - `enabled` - bool.
 
 ### The `channel` trigger kind
@@ -437,7 +440,9 @@ To rotate the token: `POST /v1/triggers/{id}/rotate_token` (the old URL stops wo
   because a skip there would silently drop the first message of a new
   thread. And a `session_append` subscription honours `skip` even for
   channel events: a steer that lands while its target is mid-turn is
-  dropped, so give it `queue` if no message may be lost.
+  dropped, so give it `queue` if no message may be lost. A paused
+  target is not mid-turn, so it keeps the message until it is resumed,
+  `skip` or not.
 - **`parked_session` subscriptions are dynamic and one-shot.** They
   exist only between the moment a `subscribe_to_trigger` yields
   and the moment the trigger fires (or the timeout sweeper times
