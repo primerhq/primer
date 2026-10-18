@@ -11,6 +11,9 @@ import pytest
 
 from primer.canvas.lang import (
     KEEP,
+    MAX_DEPTH,
+    MAX_INT,
+    MAX_INT_DIGITS,
     Append,
     Assign,
     CanvasLangError,
@@ -22,6 +25,7 @@ from primer.canvas.lang import (
     format_value,
     parse_program,
 )
+from tests.canvas._program_gen import nested
 
 GOLDEN = Path(__file__).parent / "golden"
 
@@ -278,7 +282,8 @@ def test_comment_characters_inside_strings_are_text():
 # numbers
 
 
-@pytest.mark.parametrize("text, value", [("0", 0), ("60", 60), ("-5", -5), ("1.5", 1.5), ("-0.25", -0.25), ("1e3", 1000.0), ("2.5E-2", 0.025)])
+@pytest.mark.parametrize("text, value", [("0", 0), ("60", 60), ("-5", -5), ("1.5", 1.5), ("-0.25", -0.25), ("1e3", 1000.0), ("2.5E-2", 0.025),
+                                        ("999999999999999", 999999999999999), ("-999999999999999", -999999999999999)])
 def test_numbers(text, value):
     got = parse_program(f"a.x = {text}")[0].value
     assert got == value and type(got) is type(value)
@@ -307,6 +312,13 @@ def test_nesting_is_bounded():
     assert parse_program(f"a.x = {ok}")[0].value
     assert _errors("a.x = " + "[" * 33 + "]" * 33) == ["line 1: lists and objects are nested more than 32 levels deep"]
     assert _errors("a.x = " + "[" * 100000) == ["line 1: lists and objects are nested more than 32 levels deep"]
+
+
+def test_the_limits_the_batch_shares_with_the_parser():
+    assert (MAX_INT_DIGITS, MAX_INT, MAX_DEPTH) == (15, 10**15 - 1, 32)
+    assert parse_program(f"a.x = {MAX_INT}")[0].value == MAX_INT
+    assert parse_program(f"a.x = -{MAX_INT}")[0].value == -MAX_INT
+    assert _errors(f"a.x = {MAX_INT + 1}") == _errors(f"a.x = -{MAX_INT + 1}") == ["line 1: number is out of range"]
 
 
 def test_objects_are_json_style():
@@ -369,6 +381,16 @@ def test_the_error_joins_every_render_with_a_semicolon_and_pickles():
 def test_format_value_round_trips_through_the_parser(value):
     parsed = parse_program(f"a.x = {format_value(value)}")[0].value
     assert parsed == value and type(parsed) is type(value)
+
+
+@pytest.mark.parametrize("kinds", ["l", "o", "lo", "ol"])
+def test_format_value_nests_exactly_as_deep_as_the_parser_reads(kinds):
+    for levels in (1, 2, MAX_DEPTH - 1, MAX_DEPTH):
+        value = nested(levels, kinds)
+        assert parse_program(f"a.x = {format_value(value)}")[0].value == value
+    for levels in (MAX_DEPTH + 1, MAX_DEPTH + 2, 100):          # the empty innermost list is a level too
+        with pytest.raises(ValueError, match="nested more than 32 levels"):
+            format_value(nested(levels, kinds))
 
 
 def test_format_value_never_uses_single_quotes_and_refuses_what_it_cannot_write():

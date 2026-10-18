@@ -34,7 +34,10 @@ from primer.canvas.lang import (
     KEEP,
     MAX_DEPTH,
     MAX_ERRORS,
+    MAX_INT,
     MSG_BARE_ID,
+    MSG_NUMBER_RANGE,
+    MSG_TOO_DEEP,
     ROOT_ID,
     Append,
     Assign,
@@ -331,33 +334,55 @@ def normalize_assign(
     return props, children
 
 
-def _json_problem(value: Any, depth: int = 0) -> str | None:
-    """Why ``value`` cannot be stored as an Html value, or None."""
-    if depth == 0 and has_unstorable_char(value):
-        return "value contains a character that cannot be stored (a NUL or a lone surrogate)"
-    if depth > MAX_DEPTH:
-        return f"value is nested more than {MAX_DEPTH} levels deep"
-    if value is None or isinstance(value, (bool, str, int)):
+def _json_shape(value: Any, depth: int) -> str | None:
+    """The first way ``value`` is not JSON that the language can write and read back, or None.
+
+    ``depth`` counts the lists and objects around ``value``. The limits are the parser's own
+    (``MAX_INT`` and ``MAX_DEPTH``): a value past one of them could be stored, but the program
+    ``canvas_get`` printed for it would not parse.
+    """
+    if value is None or isinstance(value, (bool, str)):
         return None
+    if isinstance(value, int):
+        # Compared, never converted: str() and float() both raise for an integer that is long enough.
+        return None if -MAX_INT <= value <= MAX_INT else MSG_NUMBER_RANGE
     if isinstance(value, float):
         return None if math.isfinite(value) else "value must be JSON: no NaN or infinity"
     if isinstance(value, Ref):
         return MSG_BARE_ID
     if isinstance(value, (list, tuple)):
+        if depth >= MAX_DEPTH:
+            return MSG_TOO_DEEP
         for item in value:
-            problem = _json_problem(item, depth + 1)
+            problem = _json_shape(item, depth + 1)
             if problem:
                 return problem
         return None
     if isinstance(value, dict):
+        if depth >= MAX_DEPTH:
+            return MSG_TOO_DEEP
         for key, item in value.items():
             if not isinstance(key, str):
                 return "value must be JSON: object keys are strings"
-            problem = _json_problem(item, depth + 1)
+            problem = _json_shape(item, depth + 1)
             if problem:
                 return problem
         return None
     return "value must be JSON (text, numbers, true, false, null, lists and objects)"
+
+
+def check_json_value(value: Any) -> str | None:
+    """Why ``value`` cannot be an Html element's value, or None when it can.
+
+    Public because the service judges a user's value the same way. A value that passes is JSON
+    that can be stored (no NUL or lone surrogate), written by ``format_value`` and read back by
+    ``parse_program``: integers of at most ``MAX_INT_DIGITS`` digits, finite floats, lists and
+    objects nested at most ``MAX_DEPTH`` deep, no bare id. ``json.dumps`` can measure it too.
+    """
+    problem = _json_shape(value, 0)
+    if problem is None and has_unstorable_char(value):
+        return "value contains a character that cannot be stored (a NUL or a lone surrogate)"
+    return problem
 
 
 def _surviving_value(old: Mapping[str, Any], new: Mapping[str, Any], value: Any) -> Any:
@@ -583,11 +608,15 @@ class _Batch:
                 if element["props"].get("multiple"):
                     value = _in_option_order(element["props"], value)
             else:
-                message = _json_problem(value)
+                message = check_json_value(value)
                 if message is not None:
                     self.err(line, message)
                     return
-                size = len(json.dumps(value, separators=(",", ":"), ensure_ascii=False))
+                try:
+                    size = len(json.dumps(value, separators=(",", ":"), ensure_ascii=False))
+                except ValueError:  # check_json_value bounded what json.dumps can meet; never a crash if it is wrong
+                    self.err(line, "value must be JSON (text, numbers, true, false, null, lists and objects)")
+                    return
                 if size > HTML_VALUE_MAX_CHARS:
                     self.err(line, f"Html value is {size} characters of JSON; the limit is {HTML_VALUE_MAX_CHARS}")
                     return
@@ -824,6 +853,7 @@ __all__ = [
     "Problem",
     "apply_batch",
     "bind_element",
+    "check_json_value",
     "check_select_value",
     "json_equal",
     "name_arguments",

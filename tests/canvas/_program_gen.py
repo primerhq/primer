@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import random
+from typing import Any
 
 from primer.canvas.catalog import CONTAINER_TYPES
 from primer.canvas.state import CanvasState
@@ -28,10 +29,27 @@ GARBAGE = [
     "n6 = Column([n6])",
 ]
 UNPARSEABLE = "x y z"
+#: Html values at the edge of what the language reads: its widest integers, its deepest nesting, extreme floats.
+EDGE_VALUES = [
+    "999999999999999", "-999999999999999", "[" * 32 + "]" * 32, "1e300", "-0.0", "5e-324",
+    '{"a": {"b": [1e300, -0.0, 5e-324]}}',
+]
 
 
 def q(text: str) -> str:
     return json.dumps(text, ensure_ascii=False)
+
+
+def nested(levels: int, kinds: str = "l") -> Any:
+    """A value nested ``levels`` deep around an empty list or object.
+
+    ``kinds`` says, from the inside out, whether each level is a list ("l") or an object ("o"), and repeats:
+    ``nested(2)`` is ``[[]]``, ``nested(2, "o")`` is ``{"k": {}}``, ``nested(2, "lo")`` is ``{"k": []}``.
+    """
+    value: Any = [] if kinds[0] == "l" else {}
+    for level in range(1, levels):
+        value = [value] if kinds[level % len(kinds)] == "l" else {"k": value}
+    return value
 
 
 def leaf_call(r: random.Random, kind: str) -> str:
@@ -117,7 +135,7 @@ def program(r: random.Random, state: CanvasState, *, garbage: float = 0.08) -> s
             if kind == "Select":
                 lines.append(f"{eid}.value = {q(r.choice(OPTIONS))}" if r.random() < 0.7 else f"{eid}.value = [{q(r.choice(OPTIONS))}]")
             elif kind == "Html":
-                lines.append(f"{eid}.value = " + r.choice(["1", q("s"), "[1, 2]", '{"k": 1}', "null"]))
+                lines.append(f"{eid}.value = " + r.choice(["1", q("s"), "[1, 2]", '{"k": 1}', "null", *EDGE_VALUES]))
         elif action == "del":
             victims = [eid for eid in state.elements if eid != "root"]
             if victims:
