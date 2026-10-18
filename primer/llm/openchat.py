@@ -214,7 +214,7 @@ class OpenChatLLM(LLM):
     ) -> dict[str, Any]:
         """The flavor picks the wire: ``reasoning_effort`` for OpenAI, the chat
         template's ``enable_thinking`` switch for the self-hosted servers."""
-        return openchat_extended(config, flavor=self._config.flavor.value)
+        return openchat_extended(config, flavor=self._config.flavor.value, model=model)
 
     async def stream(  # type: ignore[override]
         self,
