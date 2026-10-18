@@ -1008,7 +1008,7 @@ function NV_OverlayHost() {
       function (n, s, i) { conRef.current.openOverlay(n, s, i); },
       // A bare list path (a detail's Delete and Back) closes the overlay onto the entity's Platform page, never onto a list inside an overlay.
       function (v) { conRef.current.closeOverlayTo(v); },
-      // "/sessions/<id>" (Chat on an agent, a session row) is a studio document, not an overlay.
+      // "/sessions/<id>" (a session row on an agent's, a toolset's or a workspace's detail) is a studio document, not an overlay.
       function (sid) { conRef.current.openSessionInStudio(sid); }
     );
   }

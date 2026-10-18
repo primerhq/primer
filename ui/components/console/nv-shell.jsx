@@ -469,7 +469,7 @@ function NV_Shell() {
     setView({ name: target.name, nav: target.nav || null, sub: target.sub || null });
   }, [markPush, setOverlay, setView]);
 
-  // Opens a session in the studio from wherever it was asked for: Chat on an agent's detail, a session row on a toolset's or a workspace's. The session
+  // Opens a session in the studio from wherever it was asked for: a session row on an agent's, a toolset's or a workspace's detail. The session
   // is a studio document, so the overlay closes, the studio is selected and the session opens as a promoted tab, in ONE history entry (the palette does the
   // same in three calls). The files sidebar, the terminal and the rail follow the session's workspace when the rail's own cache knows it; a session created a
   // moment ago is not in it yet, and then the workspace stays as it is: tabs are global, so the session shows all the same.

@@ -108,7 +108,7 @@ function SH_shimListTarget(path, opts) {
   return { name: target.name, nav: target.nav || null, sub: target.sub || null };
 }
 
-// "/sessions/<id>" is a studio document, not an overlay: Chat on an agent, a session row on a toolset or a workspace. Read as an overlay path it
+// "/sessions/<id>" is a studio document, not an overlay: a session row on an agent's, a toolset's or a workspace's detail. Read as an overlay path it
 // reopened the CURRENT overlay with the session id in its tab slot. Returns the id, or null.
 function SH_shimSessionId(path) {
   var clean = SH_shimSegments(path);
