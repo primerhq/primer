@@ -11,7 +11,7 @@ import httpx
 import pytest
 from playwright.sync_api import Page, expect
 
-from tests.ui_e2e._shell_helpers import open_view
+from tests.ui_e2e._shell_helpers import default_wid, open_view
 
 _WHERE = """() => {
   const m = document.querySelector('.modal'), a = document.activeElement;
@@ -34,7 +34,7 @@ def test_the_focused_create_button_keeps_the_focus_while_the_post_is_out(page: P
     page.route("**/v1/services", lambda route: held.append(route) if route.request.method == "POST" else route.continue_())
     try:
         expect(page.get_by_test_id("nv-root")).to_be_visible(timeout=20_000)
-        open_view(page, console_url, "primer", "platform:services")
+        open_view(page, console_url, default_wid(console_url), "platform:services")
         expect(page.get_by_test_id("nv-plat-page:services")).to_be_visible(timeout=20_000)
         page.get_by_test_id("nv-plat-create").click()
         expect(page.locator(".modal-overlay")).to_contain_text("New service", timeout=10_000)

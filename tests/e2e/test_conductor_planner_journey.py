@@ -21,6 +21,7 @@ import json
 import httpx
 import pytest
 
+from tests._support.default_workspace import default_workspace_id
 from tests._support.mock_llm import Rule
 from tests._support.model_profiles import profile_id_for
 
@@ -148,6 +149,8 @@ async def test_operator_plans_then_executes_the_plan(
     # ----- Seed the roster, then repoint it at the script -------------
     seeded = await client.post("/v1/setup/seed")
     assert seeded.status_code == 200, seeded.text
+    # The default workspace is "primer" on an install that predates default_workspace_id and "prime" on a fresh one: ask, never name it.
+    wid = await default_workspace_id(client)
 
     originals: dict[str, dict] = {}
     try:
@@ -164,13 +167,13 @@ async def test_operator_plans_then_executes_the_plan(
 
         # ----- Drive the loop -----------------------------------------
         sess = await client.post(
-            "/v1/workspaces/primer/sessions",
+            f"/v1/workspaces/{wid}/sessions",
             json={"binding": {"kind": "agent", "agent_id": "operator"}},
         )
         assert sess.status_code in (200, 201), sess.text
         session_id = sess.json()["id"]
         steer = await client.post(
-            f"/v1/workspaces/primer/sessions/{session_id}/steer",
+            f"/v1/workspaces/{wid}/sessions/{session_id}/steer",
             json={"instruction": "I need a digest of this install's agents"},
         )
         assert steer.status_code in (200, 201, 202), steer.text

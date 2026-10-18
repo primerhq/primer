@@ -15,6 +15,7 @@ import json
 import httpx
 import pytest
 
+from tests._support.default_workspace import default_workspace_id
 from tests._support.mock_llm import Rule
 from tests._support.model_profiles import profile_id_for
 
@@ -117,15 +118,18 @@ async def test_agent_wakes_on_document_push(
     assert coll.status_code in (200, 201), coll.text
 
     try:
+        # The default workspace is "primer" on an install that predates default_workspace_id and "prime" on a fresh one: ask, never name it.
+        wid = await default_workspace_id(client)
+
         # ----- Park the session on the filter -------------------------
         sess = await client.post(
-            "/v1/workspaces/primer/sessions",
+            f"/v1/workspaces/{wid}/sessions",
             json={"binding": {"kind": "agent", "agent_id": agent_id}},
         )
         assert sess.status_code in (200, 201), sess.text
         session_id = sess.json()["id"]
         steer = await client.post(
-            f"/v1/workspaces/primer/sessions/{session_id}/steer",
+            f"/v1/workspaces/{wid}/sessions/{session_id}/steer",
             json={"instruction":
                   f"Tell me when a document lands in {collection_id}"},
         )

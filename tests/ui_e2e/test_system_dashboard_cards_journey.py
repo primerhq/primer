@@ -15,7 +15,7 @@ from playwright.sync_api import Page, expect
 from tests._support.smk import smk
 from tests._support.yield_journeys import drive_park_on_tool
 from tests.ui_e2e._delegation_seed import _run_to_completion
-from tests.ui_e2e._shell_helpers import open_view
+from tests.ui_e2e._shell_helpers import default_wid, open_view
 
 pytestmark = smk("SMK-UI-06", status="partial")
 
@@ -26,7 +26,7 @@ def test_the_dashboard_cards_show_the_schedulers_detail_and_the_turns_in_flight(
         scheduler = c.get("/v1/health").json()["scheduler"]
         running = c.get("/v1/sessions", params={"session_state": "running", "limit": 1}).json()["total"]
     assert scheduler["alive"] and not scheduler["degraded"], "this journey reads a healthy install"
-    open_view(page, console_url, "primer", "system:dashboard")
+    open_view(page, console_url, default_wid(console_url), "system:dashboard")
     cards = page.get_by_test_id("nv-sys-health")
     expect(cards).to_be_visible(timeout=20_000)
 
@@ -73,7 +73,7 @@ def test_a_session_parked_on_a_tool_is_not_counted_as_running(page: Page, base_u
     sid, _scenario, _parked = _run_to_completion(park())
     try:
         assert _total(base_url, status="running") > _total(base_url, session_state="running"), "precondition: the parked session is in the status count and not in the state count"
-        open_view(page, console_url, "primer", "system:dashboard")
+        open_view(page, console_url, default_wid(console_url), "system:dashboard")
         cards = page.get_by_test_id("nv-sys-health")
         expect(cards).to_be_visible(timeout=20_000)
         sessions_card = cards.locator(".nv-health-card").filter(has=page.locator(".nv-health-k", has_text="sessions active"))

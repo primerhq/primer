@@ -21,6 +21,8 @@ import re
 
 from playwright.sync_api import Page, expect
 
+from tests._support.default_workspace import default_workspace_id_sync
+
 SHELL_CONSOLE_IGNORES = [
     r"net::ERR_ABORTED",
     r"favicon",
@@ -53,6 +55,15 @@ def shell_state(page) -> str:
     except Exception:  # noqa: BLE001 - see above
         url = "<unreadable>"
     return f"url={url} hash={hash_now} " + " ".join(f"{k}={v}" for k, v in counts.items())
+
+
+def default_wid(console_url: str) -> str:
+    """The id of the default workspace, asked of the server behind ``console_url`` (cached per server).
+
+    A journey that opens "the" workspace uses this instead of naming it: the default is ``primer`` on an install that predates
+    ``default_workspace_id`` and ``prime`` on a fresh one. ``console_url`` is the ``console_url`` fixture (``<base>/console/``).
+    """
+    return default_workspace_id_sync(console_url.removesuffix("/").removesuffix("/console"))
 
 
 def shell_url(console_url: str, wid: str) -> str:

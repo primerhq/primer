@@ -11,7 +11,7 @@ import re
 from playwright.sync_api import Page, expect
 
 from tests._support.smk import smk
-from tests.ui_e2e._shell_helpers import open_view
+from tests.ui_e2e._shell_helpers import default_wid, open_view
 
 pytestmark = smk("SMK-UI-03", status="partial")
 
@@ -25,7 +25,7 @@ def _open_activity(page: Page, console_url: str) -> None:
     expect(page.get_by_test_id("nv-root")).to_be_visible(timeout=20_000)
     marker = page.get_by_test_id("shell-activity")
     for attempt in (1, 2):
-        open_view(page, console_url, "primer", "system:activity")
+        open_view(page, console_url, default_wid(console_url), "system:activity")
         try:
             expect(marker).to_be_visible(timeout=10_000 if attempt == 1 else 20_000)
             return
