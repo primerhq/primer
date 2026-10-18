@@ -23,6 +23,7 @@ from primer.api.routers import (
     yields as yields_router,
 )
 from primer.api.routers.auth import auth_router
+from primer.api.routers.hf_hub import hf_hub_router
 from primer.api.routers.semantic_search import (
     semantic_search_provider_helpers_router,
     semantic_search_router,
@@ -142,6 +143,8 @@ def _mount_routers(
     app.include_router(providers.llm_provider_types_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(providers.embedding_provider_types_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(providers.cross_encoder_provider_types_router, prefix=prefix, dependencies=admin_dep)
+    # The Hugging Face Hub model check the Register overlay and the system tool ask before a Hugging Face provider is created (spends the network: admin).
+    app.include_router(hf_hub_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(providers.llm_provider_router, prefix=prefix, dependencies=admin_dep)
 
     # First-run setup: explicit seeding + the operator/builder reset.
