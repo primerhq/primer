@@ -143,6 +143,18 @@ class TestLlmDiscovery:
         assert "LocalProtocolError" in r.json()["detail"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("padding", PADDING, ids=["newline", "space", "tab", "crlf"])
+    async def test_the_gemini_embedding_probe_does_not_echo_the_key(self, client, padding) -> None:
+        """The embedding form lists Gemini's ``embedContent`` models through the same probe as the LLM form (``_probe_gemini_models``), and masks the key itself."""
+        r = await client.post("/v1/embedding_providers/_discover_models", json={"provider": "gemini", "config": {"api_key": KEY + padding}})
+
+        assert r.status_code == 400, r.text
+        _assert_clean(r.text)
+        detail = r.json()["detail"]
+        assert "LocalProtocolError" in detail and "Illegal header value" in detail, f"what failed must still be said: {detail!r}"
+        assert "[REDACTED]" in detail
+
+    @pytest.mark.asyncio
     async def test_an_error_that_carries_no_credential_is_reported_as_it_was(self, client) -> None:
         """Nothing listens on port 9: a refused connection says so, and the clean words are not touched."""
         r = await client.post("/v1/llm_providers/_discover_models", json={
