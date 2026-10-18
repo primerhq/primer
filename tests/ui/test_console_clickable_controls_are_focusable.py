@@ -1,8 +1,8 @@
 """The console's click-drawn controls are real, focusable, named controls (console review C-003, the keyboard pass).
 
-The Approvals page drew its only create affordance, "Add or edit one", as an ``<a>`` with an ``onClick`` and no ``href``: a link that is not a link, and no keyboard path to it either. Every Platform card (``nv-pcard``) carried its open action on the whole div: an ``onClick`` with no role or tabindex, so a keyboard user could not open a card (only its Delete button was reachable). The Platform and System nav rows, and the new-workspace overlay's template pick rows, are the same shape: click-only divs.
+The Approvals page drew its only create affordance, "Add or edit one", as an ``<a>`` with an ``onClick`` and no ``href``: a link that is not a link, and no keyboard path to it either. Every Platform card carried its open action on the whole div: an ``onClick`` with no role or tabindex, so a keyboard user could not open a card (only its Delete button was reachable). The Platform and System nav rows, and the new-workspace overlay's template pick rows, are the same shape: click-only divs.
 
-Each is a ``<button type="button">`` now: the approvals affordance (``approvals-config-link``), the Platform nav rows (``nv-plat-row``, ``aria-current="page"`` on the active one) and the System nav rows one file over (``nv-sys-row``, the same class), the template pick rows (``nv-pick-row``), and the card's open action, which moved from the card div to the ``Open`` button inside it (``nv-pcard-open:<name>``, named ``Open <name>``); a click anywhere on the card still opens it, because the button is stretched over the whole card (``.nv-pcard`` is ``position: relative`` and ``.nv-pcard-open::after`` is ``position: absolute; inset: 0``), with the Delete button above it (``z-index: 1``), and the Open label is fully opaque at rest (no opacity rule at all).
+Each is a ``<button type="button">`` now: the approvals affordance (``approvals-config-link``), the Platform nav rows (``nv-plat-row``, ``aria-current="page"`` on the active one) and the System nav rows one file over (``nv-sys-row``, the same class), the template pick rows (``nv-pick-row``), and the card's open action, which moved from the card div to the ``Open`` button inside it (``pk-card-open:<id>``, named ``Open <title>``); a click anywhere on the card still opens it, because the button is stretched over the whole card (``.pk-card`` is ``position: relative`` and ``.pk-card-open::after`` is ``position: absolute; inset: 0``), with the card's "⋯" menu button and an actionable status above it (``z-index: 1``), and the Open label is fully opaque at rest (no opacity rule at all). The card is the platform kit's ``PK_Card`` since Platform revamp Plan 01 Task 10; its Delete moved from a link in the card into the "⋯" menu.
 
 Static pins on each site, in the slicing style of the rest of ``tests/ui``: a native button, ``type="button"``, no ``tabIndex`` (a button with ``tabIndex={-1}`` is unreachable by Tab, which is how a keyboard regression would land), the Open button's ``onClick`` and its name, the stretched CSS rules, the phone's content-sized System chips, and no ``opacity`` in the Open's rule. The browser half is ``tests/ui_e2e/test_platform_overlay_close_refetch_journey.py`` (opens a card from a click on its name) and ``tests/ui_e2e/test_platform_filters_and_inputs_named_journey.py`` (sweeps the Platform view for unnamed controls).
 """
@@ -113,31 +113,34 @@ def test_the_approvals_create_affordance_is_a_named_button() -> None:
 
 
 def test_the_platform_card_opens_from_a_button_inside_the_card() -> None:
-    src = _src("console/nv-platform.jsx")
-    start, tag = _tag(src, "nv-pcard-open")
+    """The card is the platform kit's (Platform revamp Plan 01 Task 10): the Open button is ``pk-card-open:<id>`` in ``PK_Card``."""
+    src = _src("shared/platform-kit.jsx")
+    start, tag = _tag(src, 'data-testid={"pk-card-open:" + id}')
     assert tag.startswith("<button"), f"the card's open action is not a native button:\n{tag}"
     assert 'type="button"' in tag, tag
     assert "tabIndex" not in tag, f"the Open button is out of the tab order:\n{tag}"
-    assert "onClick={props.onOpen}" in tag, f"the Open button does not open the card:\n{tag}"
-    assert 'aria-label={"Open " + c.name}' in tag, f"the Open button is not named after the card:\n{tag}"
+    assert "onClick={function () { props.onOpen(); }}" in tag, f"the Open button does not open the card:\n{tag}"
+    assert 'aria-label={"Open " + props.title}' in tag, f"the Open button is not named after the card:\n{tag}"
+    assert "title={props.title}" in tag, f"the stretched Open covers the title, so the full name rides on the button:\n{tag}"
     assert "Open" in _inner_text(src, start), "the button has no words a screen reader could read"
 
 
 def test_the_platform_card_still_opens_from_anywhere_on_it_via_the_stretched_button() -> None:
-    """The card div carries no click of its own: the Open button's ::after is stretched over the whole card, so a click anywhere on it lands on the button, and the Delete button sits above that stretch."""
-    _, card = _tag(_src("console/nv-platform.jsx"), 'className="nv-pcard"')
+    """The card div carries no click of its own: the Open button's ::after is stretched over the whole card, so a click anywhere on it lands on the button, and the card's menu button and an actionable status sit above that stretch."""
+    _, card = _tag(_src("shared/platform-kit.jsx"), 'className="pk-card"')
     assert "onClick" not in card, f"the whole card is still the click target:\n{card}"
-    pcard = _css(".nv-pcard")
+    pcard = _css(".pk-card")
     assert "position: relative" in pcard, f"the stretch has no containing block:\n{pcard}"
-    after = _css(".nv-pcard-open::after")
+    after = _css(".pk-card-open::after")
     for decl in ('content: ""', "position: absolute"):
-        assert decl in after, f".nv-pcard-open::after does not stretch the Open over the card (missing {decl!r}):\n{after}"
+        assert decl in after, f".pk-card-open::after does not stretch the Open over the card (missing {decl!r}):\n{after}"
     assert re.search(r"\binset:\s*0\s*;", after), f"the stretch does not cover the whole card:\n{after}"
     assert "pointer-events" not in after, f"a dropped click on the stretch leaves the card unopenable:\n{after}"
-    assert "pointer-events" not in _css(".nv-pcard-open"), "the ::after inherits pointer-events from the Open button"
-    dele = _css(".nv-pcard-del")
-    assert "position: relative" in dele and "z-index: 1" in dele, f"the Delete button is not above the stretched Open:\n{dele}"
-    assert "pointer-events" not in dele, f"a dropped click on Delete lands on the stretched Open and opens the card:\n{dele}"
+    assert "pointer-events" not in _css(".pk-card-open"), "the ::after inherits pointer-events from the Open button"
+    for above in (".pk-card-menu-btn", ".pk-card-status-btn"):
+        rule = _css(above)
+        assert "position: relative" in rule and "z-index: 1" in rule, f"{above} is not above the stretched Open:\n{rule}"
+        assert "pointer-events" not in rule, f"a dropped click on {above} lands on the stretched Open and opens the card:\n{rule}"
 
 
 def test_the_platform_nav_rows_are_focusable_buttons() -> None:
@@ -201,4 +204,4 @@ def test_the_system_nav_chips_are_content_sized_on_the_phone() -> None:
 
 def test_the_open_label_is_fully_opaque_at_rest() -> None:
     """At rest it was 0.55 (2.21:1); --accent on --bg-1 is pinned in test_token_contrast.py."""
-    assert "opacity" not in _css(".nv-pcard-open")
+    assert "opacity" not in _css(".pk-card-open")

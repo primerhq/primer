@@ -17,7 +17,7 @@ pytestmark = smk("SMK-UI-03", status="partial")
 
 
 def _open_filtered(page, console_url: str, nav: str, query: str) -> None:
-    """The Platform list pages at six cards, so filter first: the card under test is then always on page one. The shell must be mounted before the
+    """The Platform list pages at twelve cards, so filter first: the card under test is then always on page one. The shell must be mounted before the
     view hash is assigned (see test_platform_agent_delete_confirm_journey.py), so wait for it and navigate once more if the page is not the Platform one."""
     expect(page.get_by_test_id("nv-root")).to_be_visible(timeout=20_000)
     box = page.get_by_test_id("nv-plat-filter")
@@ -39,8 +39,11 @@ def test_a_collection_card_says_its_documents_and_index_go_with_it_and_confirmin
         assert r.status_code == 201, r.text
     try:
         _open_filtered(page, console_url, "collections", collection_id)
-        delete = page.get_by_test_id(f"nv-pcard-del:{collection_id}")
-        expect(delete).to_be_visible(timeout=15_000)
+        menu = page.get_by_test_id(f"pk-card-menu:{collection_id}")
+        expect(menu).to_be_visible(timeout=15_000)
+        menu.click()
+        delete = page.get_by_test_id(f"nv-plat-delete:{collection_id}")
+        expect(delete).to_be_visible()
         delete.click()
 
         dialog = page.locator(".modal-overlay")
@@ -51,7 +54,7 @@ def test_a_collection_card_says_its_documents_and_index_go_with_it_and_confirmin
         expect(dialog).not_to_contain_text("Referenced entities refuse deletion")
 
         dialog.get_by_role("button", name="Confirm").click()
-        expect(page.get_by_test_id(f"nv-pcard-del:{collection_id}")).to_have_count(0, timeout=15_000)
+        expect(page.get_by_test_id(f"pk-card:{collection_id}")).to_have_count(0, timeout=15_000)
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
             assert c.get(f"/v1/collections/{collection_id}").status_code == 404
     finally:
@@ -70,8 +73,11 @@ def test_a_service_card_names_the_service_and_its_url_not_its_generated_id(page,
         service_id = r.json()["id"]
     try:
         _open_filtered(page, console_url, "services", f"journey {unique_suffix}")
-        delete = page.get_by_test_id(f"nv-pcard-del:{service_id}")
-        expect(delete).to_be_visible(timeout=15_000)
+        menu = page.get_by_test_id(f"pk-card-menu:{service_id}")
+        expect(menu).to_be_visible(timeout=15_000)
+        menu.click()
+        delete = page.get_by_test_id(f"nv-plat-delete:{service_id}")
+        expect(delete).to_be_visible()
         delete.click()
 
         dialog = page.locator(".modal-overlay")
@@ -81,7 +87,7 @@ def test_a_service_card_names_the_service_and_its_url_not_its_generated_id(page,
         expect(dialog).not_to_contain_text(service_id)
 
         dialog.get_by_role("button", name="Confirm").click()
-        expect(page.get_by_test_id(f"nv-pcard-del:{service_id}")).to_have_count(0, timeout=15_000)
+        expect(page.get_by_test_id(f"pk-card:{service_id}")).to_have_count(0, timeout=15_000)
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
             assert c.get(f"/v1/services/{service_id}").status_code == 404
     finally:

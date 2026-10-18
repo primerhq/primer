@@ -1,17 +1,20 @@
-/* global React, SH_api, NV_useConsole, NV_identity, NV_GRAPH_GLYPH */
+/* global React, SH_api, NV_useConsole, NV_identity, NV_GRAPH_GLYPH, PK_PageHeader, PK_CardGrid, PK_Card, PK_usePagedFilter */
 // The Platform view (wiring plan P4 T10): grouped left nav + one
 // config-driven card page per entity, ported from the prototype's
-// PLATFORM region. Cards open the SHARED overlays (the same component
-// whether reached from a card, the palette, or a pasted link), create
-// buttons open the entity's own form, hosted on this page
-// (tests/ui/test_platform_create_opens_the_form.py tabulates which), delete is
-// inline with confirm - a referenced entity's 409/422 surfaces as the refusal
-// toast. Two nav ids are custom pages (seam I-2): "web" and "templates" mount
-// a component another file exports on window, and their sidebar row exists
-// only while that component is loaded.
+// PLATFORM region. Every generic page is drawn by the platform kit
+// (shared/platform-kit.jsx, Platform revamp Plan 01 Task 10): a header with
+// the title, the filter, the pager and the page's one compact action, and
+// a full-width grid of cards (twelve to a page, no pager below). Cards open
+// the SHARED overlays (the same component whether reached from a card, the
+// palette, or a pasted link), create buttons open the entity's own form,
+// hosted on this page (tests/ui/test_platform_create_opens_the_form.py
+// tabulates which), and Delete lives in the card's "⋯" menu, with confirm - a
+// referenced entity's 409/422 surfaces as the refusal toast. Two nav ids are
+// custom pages (seam I-2): "web" and "templates" mount a component another
+// file exports on window, and their sidebar row exists only while that
+// component is loaded.
 //
-// Providers get the family pills over the REAL per-class plurals (the
-// S4 catalog's registry) and open the catalog overlay at that class;
+// Providers mount the catalogue inline at the open provider type;
 // approvals get the decisions audit table under the policy cards.
 
 var NV_PLAT_ICONS = {
@@ -319,6 +322,23 @@ function NV_platVerbSpecs() {
   return specs;
 }
 
+// The props PK_Card takes for one card, read off the entry's card view model (seam I-8): the record id, the name as the title, the type line as the
+// subtitle, the badge, the status (an onClick and a testid ride along, so an actionable status stays a button), the facts and the icon. A card with
+// no icon of its own draws its page's (NV_PLAT_ICONS, read when called). Pure, and kept in this JSX-free stretch of the file because
+// tests/ui/test_platform_list_page.py runs it on its own.
+function NV_platCardProps(nav, vm) {
+  return {
+    id: vm.id, title: vm.name, subtitle: vm.sub, badge: vm.badge, status: vm.status, facts: vm.facts,
+    icon: vm.icon || { path: NV_PLAT_ICONS[nav] },
+  };
+}
+
+// What the page's filter matches a card against: its name, its type line and its id. The id is what lets a tool be found by its toolset ("web" finds
+// web__search): a tool card is named by its bare name and its id is the scoped one.
+function NV_platFilterText(vm) {
+  return [vm.name, vm.sub, vm.id].filter(Boolean).join(" ");
+}
+
 // Per-entity page config. list() returns a promise of {items}; card(row, con)
 // maps a row to the ONE card view model of every Platform page (seam I-8):
 //   { id, name, sub, badge?, icon?: { path, tone? }, status?: { label, tone:
@@ -330,13 +350,15 @@ function NV_platVerbSpecs() {
 // onClick can open a dialog or an overlay, and is drawn as a button. open()
 // addresses the shared overlays; create() either hosts the entity's form on
 // this page (setModal) or opens a management overlay (tests/ui/
-// test_platform_create_opens_the_form.py tabulates which); delPath() names
-// the DELETE route (null = no delete from the card, e.g. providers where
-// the catalog owns lifecycle). tests/ui/test_platform_card_view_model.py
-// holds every entry to the card shape. An entry may also set emptyText and
-// emptyAction: { label, run(con) } (seam I-9): a page with no rows says its
-// own words and offers that way out instead of the generic sentence and its
-// create button (tests/ui/test_platform_empty_states.py).
+// test_platform_create_opens_the_form.py tabulates which); createLabel is the
+// header action's full text, the "+" included ("+ Agent": a short label, design
+// 5.1); delPath() names the DELETE route (null = no Delete in the card's "⋯"
+// menu, e.g. a built-in toolset or providers where the catalog owns lifecycle).
+// tests/ui/test_platform_card_view_model.py holds every entry to the card
+// shape. An entry may also set emptyText and emptyAction: { label, run(con) }
+// (seam I-9): a page with no rows says its own words and offers that way out
+// instead of the generic sentence and its create button
+// (tests/ui/test_platform_empty_states.py).
 var NV_PLAT_PAGES = {
   profiles: {
     title: "LLM Profiles", noun: ["model profile", "model profiles"],
@@ -401,7 +423,7 @@ var NV_PLAT_PAGES = {
     delPath: function (row) { return "/agents/" + encodeURIComponent(row.id); },
   },
   graphs: {
-    title: "Graphs", noun: ["graph", "graphs"], createLabel: "New graph",
+    title: "Graphs", noun: ["graph", "graphs"], createLabel: "+ Graph",
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/graphs?limit=200", null, { signal: signal });
     },
@@ -420,7 +442,7 @@ var NV_PLAT_PAGES = {
     delPath: function (row) { return "/graphs/" + encodeURIComponent(row.id); },
   },
   toolsets: {
-    title: "Toolsets", noun: ["toolset", "toolsets"], createLabel: "New toolset",
+    title: "Toolsets", noun: ["toolset", "toolsets"], createLabel: "+ Toolset",
     // GET /tools is the CATALOGUE: built-ins (system, workspaces, web,
     // ...) and registered rows alike. Listing only the DB table hid
     // every internal toolset from the cards (live finding 2026-08-26).
@@ -478,7 +500,7 @@ var NV_PLAT_PAGES = {
     },
   },
   collections: {
-    title: "Collections", noun: ["collection", "collections"], createLabel: "New collection",
+    title: "Collections", noun: ["collection", "collections"], createLabel: "+ Collection",
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/collections?limit=200", null, { signal: signal });
     },
@@ -501,7 +523,7 @@ var NV_PLAT_PAGES = {
     },
   },
   triggers: {
-    title: "Triggers", noun: ["trigger", "triggers"], createLabel: "New trigger",
+    title: "Triggers", noun: ["trigger", "triggers"], createLabel: "+ Trigger",
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/triggers?limit=200", null, { signal: signal });
     },
@@ -521,7 +543,7 @@ var NV_PLAT_PAGES = {
     delPath: function (row) { return "/triggers/" + encodeURIComponent(row.id); },
   },
   channels: {
-    title: "Channels", createLabel: "New channel",
+    title: "Channels", createLabel: "+ Channel",
     noun: ["channel", "channels"],
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/channels?limit=200", null, { signal: signal });
@@ -544,7 +566,7 @@ var NV_PLAT_PAGES = {
     extraNav: { label: "Rules", run: function (con) { con.openOverlay("channels", "rules", null); } },
   },
   harnesses: {
-    title: "Harnesses", noun: ["harness", "harnesses"], createLabel: "New harness",
+    title: "Harnesses", noun: ["harness", "harnesses"], createLabel: "+ Harness",
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/harnesses?limit=200", null, { signal: signal });
     },
@@ -568,7 +590,7 @@ var NV_PLAT_PAGES = {
     },
   },
   services: {
-    title: "Services", noun: ["service", "services"], createLabel: "New service",
+    title: "Services", noun: ["service", "services"], createLabel: "+ Service",
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/services?limit=200", null, { signal: signal });
     },
@@ -589,7 +611,7 @@ var NV_PLAT_PAGES = {
     delPath: function (row) { return "/services/" + encodeURIComponent(row.id); },
   },
   approvals: {
-    title: "Approval policies", noun: ["approval policy", "approval policies"], createLabel: "New policy",
+    title: "Approval policies", noun: ["approval policy", "approval policies"], createLabel: "+ Policy",
     list: function (apiFetch, signal) {
       return apiFetch("GET", "/tool_approval_policies?limit=200", null,
         { signal: signal });
@@ -766,8 +788,9 @@ function NV_approvalAt(iso) {
   return `${months[d.getMonth()]} ${d.getDate()} · ${hh}:${mm}`;
 }
 
-// notes 3.1: "pager (range + prev/next appears past 6 entities)".
-var NV_PLAT_PAGE_SIZE = 6;
+// Twelve cards a page (design 13.5): the full-width grid is two to six cards across, and twelve is whole rows at two, three, four and six. The pager
+// is the kit header's, next to the filter (design 5.1); there is no second pager below the grid.
+var NV_PLAT_PAGE_SIZE = 12;
 
 function NV_PlatNav() {
   var con = NV_useConsole();
@@ -822,81 +845,6 @@ function NV_PlatNav() {
           </div>
         );
       })}
-    </div>
-  );
-}
-
-// One card of the page, drawn from the card view model (seam I-8): the
-// type icon in its tone, the name, the badge and the status; a status
-// with an onClick is a button above the stretched Open (a click on it
-// runs the action and never opens the card); at most three facts, each a
-// string (one line) or a [key, value] pair.
-function NV_PlatCard(props) {
-  var c = props.card;
-  var facts = (c.facts || []).filter(Boolean).slice(0, 3);
-  var icon = c.icon || null;
-  var status = c.status || null;
-  return (
-    <div className="nv-pcard" data-testid={"nv-pcard:" + c.name}>
-      <div className="nv-pcard-head">
-        {icon && icon.path ? (
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"
-            stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"
-            aria-hidden="true"
-            style={{ flexShrink: 0, color: icon.tone || "var(--text-4)" }}>
-            <path d={icon.path} />
-          </svg>
-        ) : null}
-        <span className="nv-pcard-name">{c.name}</span>
-        <span style={{ flex: 1 }} />
-        {c.badge ? <span className="nv-pcard-badge">{c.badge}</span> : null}
-        {status && typeof status.onClick === "function" ? (
-          <button type="button" className="nv-pcard-status nv-pcard-status-btn"
-            data-tone={status.tone} data-testid={status.testid}
-            onClick={function (ev) {
-              if (ev && ev.stopPropagation) ev.stopPropagation();
-              status.onClick();
-            }}>{status.label}</button>
-        ) : status ? (
-          <span className="nv-pcard-status" data-tone={status.tone}>
-            {status.label}
-          </span>
-        ) : null}
-      </div>
-      {c.sub ? <div className="nv-pcard-sub">{c.sub}</div> : null}
-      {facts.length ? (
-        <div className="nv-pcard-facts">
-          {facts.map(function (f, i) {
-            if (!Array.isArray(f)) {
-              return (
-                <div key={"s" + i} className="nv-fact-row">
-                  <span className="nv-fact-v">{f}</span>
-                </div>
-              );
-            }
-            return (
-              <div key={f[0]} className="nv-fact-row">
-                <span className="nv-fact-k">{f[0]}</span>
-                <span className="nv-fact-v">{f[1]}</span>
-              </div>
-            );
-          })}
-        </div>
-      ) : null}
-      <div className="nv-pcard-foot">
-        <button type="button" className="nv-pcard-open"
-          data-testid={"nv-pcard-open:" + c.name}
-          aria-label={"Open " + c.name}
-          onClick={props.onOpen}>Open</button>
-        <span style={{ flex: 1 }} />
-        {props.onDelete ? (
-          <button type="button" className="nv-pcard-del"
-            data-testid={"nv-pcard-del:" + c.name}
-            onClick={props.onDelete}>
-            Delete
-          </button>
-        ) : null}
-      </div>
     </div>
   );
 }
@@ -1342,12 +1290,6 @@ function NV_PlatListPage(props) {
   var con = NV_useConsole();
   var nav = props.nav;
   var apiFetch = window.primerApi.apiFetch;
-  var qState = React.useState("");
-  var q = qState[0];
-  var setQ = qState[1];
-  var pageState = React.useState(0);
-  var pageNo = pageState[0];
-  var setPageNo = pageState[1];
   // Inline create/edit modal for entities whose form is a component of
   // its own (model profiles, the create dialogs hosted below): {kind, row}.
   var modalState = React.useState(null);
@@ -1355,13 +1297,6 @@ function NV_PlatListPage(props) {
   var setModal = modalState[1];
   // No reset-on-nav effect: NV_PlatPage keys this component on the nav, so a section switch is a fresh instance and the filter, the page number and
   // the open form start empty by construction (and so does the scroll position). tests/ui_e2e/test_platform_nav_switch_journey.py holds that by behaviour.
-  // R4 review finding 3: typing a search query narrowed the result set
-  // but never reset pageNo, so `p = Math.min(pageNo, pages - 1)` below
-  // clamped toward the END of the shrunk range rather than the start -
-  // a search while on a later page could land on the LAST page of
-  // matches instead of the first. Mirrors toolsets.jsx:1259's
-  // equivalent reset-on-filter-change effect.
-  React.useEffect(function () { setPageNo(0); }, [q]);
 
   var page = NV_PLAT_PAGES[nav] || null;
   var listKey = "nv-plat:" + nav;
@@ -1384,16 +1319,10 @@ function NV_PlatListPage(props) {
   var cards = items.map(function (row) {
     return page.card(row, con);
   }).map(function (c, i) { c._row = items[i]; return c; });
-  var total = cards.length;
-  var ql = q.trim().toLowerCase();
-  if (ql) {
-    cards = cards.filter(function (c) {
-      return (c.name + " " + (c.sub || "")).toLowerCase().indexOf(ql) >= 0;
-    });
-  }
-  var pages = Math.max(1, Math.ceil(cards.length / NV_PLAT_PAGE_SIZE));
-  var p = Math.min(pageNo, pages - 1);
-  var visible = cards.slice(p * NV_PLAT_PAGE_SIZE, (p + 1) * NV_PLAT_PAGE_SIZE);
+  // One filter and one pager over the cards, the kit's: typing a filter sends the page back to the first, and a list that shrinks under the open
+  // page (rows deleted elsewhere) lands on its last, never on an empty page or a "25-24 of 13" range.
+  var paged = PK_usePagedFilter(cards, { pageSize: NV_PLAT_PAGE_SIZE, text: NV_platFilterText });
+  var loadState = window.primerApi.resourceState(res);
 
   function openRow(row) {
     page.open(con, row, setModal);
@@ -1412,56 +1341,52 @@ function NV_PlatListPage(props) {
     }, nav, row, path);
   }
 
-  var title = page.title;
   var createLabel = page.createLabel;
+  // The header's secondary controls, left of the filter.
+  var extraControls = [];
+  if (page.extraNav) {
+    extraControls.push(
+      <button key="extra" type="button" className="pk-extra" data-testid="nv-plat-extra"
+        onClick={function () { page.extraNav.run(con, setModal); }}>
+        {page.extraNav.label}
+      </button>
+    );
+  }
   return (
     <div className="nv-plat-main">
       <div className="nv-plat-wrap" data-testid={"nv-plat-page:" + nav}>
-        <div className="nv-plat-head">
-          <div className="nv-plat-title">{title}</div>
-          <span className="nv-plat-count" data-testid="nv-plat-count">
-            {NV_countText(page.noun, cards.length, total)}
-          </span>
-          <span style={{ flex: 1 }} />
-          {page && page.extraNav ? (
-            <button type="button" className="nv-btn-secondary"
-              data-testid="nv-plat-extra"
-              onClick={function () { page.extraNav.run(con, setModal); }}>
-              {page.extraNav.label}
-            </button>
-          ) : null}
-          <div className="nv-plat-filter">
-            <svg width="11" height="11" viewBox="0 0 12 12" fill="none"
-              stroke="currentColor" strokeWidth="1.4">
-              <circle cx="5.2" cy="5.2" r="3.6" />
-              <path d="M8 8 11 11" />
-            </svg>
-            <input value={q} placeholder="Filter…"
-              aria-label={"Filter " + (page.title || "list").toLowerCase()}
-              data-testid="nv-plat-filter"
-              onChange={function (ev) { setQ(ev.target.value); setPageNo(0); }} />
-          </div>
-          {createLabel ? (
-            <button type="button" className="nv-btn-primary"
-              data-testid="nv-plat-create"
-              onClick={runCreate}>{createLabel}</button>
-          ) : null}
-        </div>
+        <PK_PageHeader
+          title={page.title}
+          count={NV_countText(page.noun, paged.total, cards.length)}
+          extra={extraControls.length ? extraControls : undefined}
+          filter={{
+            value: paged.q, onChange: paged.setQ,
+            label: "Filter " + (page.title || "list").toLowerCase(), testid: "nv-plat-filter",
+          }}
+          pager={{
+            page: paged.page, pages: paged.pages, from: paged.from, to: paged.to, total: paged.total,
+            onPage: paged.setPage,
+          }}
+          action={createLabel
+            ? { label: createLabel, onClick: runCreate, testid: "nv-plat-create" } : undefined} />
+        {loadState === "loading" && !res.error ? (
+          <div className="nv-plat-state" role="status" data-testid="nv-plat-loading">Loading…</div>
+        ) : null}
         {res.error ? (
-          <div className="nv-form-error">
+          <div className="nv-form-error" data-testid="nv-plat-error">
             {res.error.detail || res.error.message}
           </div>
         ) : null}
-        {!visible.length && !res.loading && !res.error ? (
+        {!paged.visible.length && !res.loading && !res.error ? (
           <div className="nv-plat-empty" data-testid="nv-plat-empty">
             <div>
-              {total === 0 && page.emptyText
-                ? page.emptyText : NV_emptyText(page.noun, q, total)}
+              {cards.length === 0 && page.emptyText
+                ? page.emptyText : NV_emptyText(page.noun, paged.q, cards.length)}
             </div>
-            {ql && total > 0 ? (
+            {paged.q.trim() && cards.length > 0 ? (
               <button type="button" className="nv-btn-secondary"
                 data-testid="nv-plat-clear-filter"
-                onClick={function () { setQ(""); setPageNo(0); }}>
+                onClick={function () { paged.setQ(""); }}>
                 Clear filter
               </button>
             ) : page.emptyAction ? (
@@ -1476,17 +1401,19 @@ function NV_PlatListPage(props) {
             ) : null}
           </div>
         ) : null}
-        <div className="nv-pcard-grid">
-          {visible.map(function (c) {
+        <PK_CardGrid testid="nv-plat-grid">
+          {paged.visible.map(function (c) {
             var deletable = page.delPath && page.delPath(c._row);
             return (
-              <NV_PlatCard key={c.id} card={c}
+              <PK_Card key={c.id} {...NV_platCardProps(nav, c)}
                 onOpen={function () { openRow(c._row); }}
-                onDelete={deletable
-                  ? function () { del(c._row); } : null} />
+                menu={deletable ? [{
+                  label: "Delete", danger: true, testid: "nv-plat-delete:" + c.id,
+                  onClick: function () { del(c._row); },
+                }] : undefined} />
             );
           })}
-        </div>
+        </PK_CardGrid>
         {modal && modal.kind === "profile" ? (
           <NV_ProfileModalHost row={modal.row}
             onClose={function () { setModal(null); }}
@@ -1564,20 +1491,6 @@ function NV_PlatListPage(props) {
         {modal && modal.kind === "policy" ? (
           <NV_PolicyCreateHost
             onClose={function () { setModal(null); res.refetch(); }} />
-        ) : null}
-        {cards.length > NV_PLAT_PAGE_SIZE ? (
-          <div className="nv-pager">
-            <span className="nv-pager-range">
-              {p * NV_PLAT_PAGE_SIZE + 1}–
-              {Math.min((p + 1) * NV_PLAT_PAGE_SIZE, cards.length)} of {cards.length}
-            </span>
-            <span style={{ flex: 1 }} />
-            <button type="button" className="nv-pager-btn" disabled={p === 0}
-              onClick={function () { setPageNo(Math.max(0, p - 1)); }}>‹</button>
-            <button type="button" className="nv-pager-btn"
-              disabled={p >= pages - 1}
-              onClick={function () { setPageNo(p + 1); }}>›</button>
-          </div>
         ) : null}
         {nav === "approvals" ? <NV_ApprovalsAudit /> : null}
       </div>

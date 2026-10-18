@@ -116,5 +116,5 @@ def test_the_profiles_page_draws_aggregate_and_its_empty_state_points_to_provide
     assert page_ctx.eval('MR.find("mp-modal") === null')
     page_ctx.eval('MR.click("nv-plat-create")')
     assert page_ctx.eval('MR.find("mp-modal") !== null && MR.find("mp-modal").props["data-existing"] === null'), "+ Aggregate hosts the profile overlay with no profile"
-    page_ctx.eval('MR.click("nv-pcard-open:p1")')
+    page_ctx.eval('MR.click("pk-card-open:p1")')
     assert page_ctx.eval('MR.find("mp-modal").props["data-existing"]') == "p1", "Open still hosts the profile's own form (NV_ProfileModalHost)"

@@ -23,7 +23,7 @@ _FAKE_DISCORD_TOKEN = "x" * 60
 
 
 def _open_filtered(page, console_url: str, nav: str, query: str) -> None:
-    """The Platform list pages at six cards, so filter first. The shell must be mounted before the view hash is assigned (a hash set while it mounts can be
+    """The Platform list pages at twelve cards, so filter first. The shell must be mounted before the view hash is assigned (a hash set while it mounts can be
     replaced by the shell's own normalisation to the Studio view), so wait for it and navigate once more if the page is not the Platform one."""
     expect(page.get_by_test_id("nv-root")).to_be_visible(timeout=20_000)
     box = page.get_by_test_id("nv-plat-filter")
@@ -55,8 +55,11 @@ def test_deleting_a_model_profile_an_agent_uses_is_refused_in_words_and_deletes_
         assert r.status_code == 201, r.text
     try:
         _open_filtered(page, console_url, "profiles", profile_id)
-        delete = page.get_by_test_id(f"nv-pcard-del:{profile_id}")
-        expect(delete).to_be_visible(timeout=15_000)
+        menu = page.get_by_test_id(f"pk-card-menu:{profile_id}")
+        expect(menu).to_be_visible(timeout=15_000)
+        menu.click()
+        delete = page.get_by_test_id(f"nv-plat-delete:{profile_id}")
+        expect(delete).to_be_visible()
         delete.click()
         page.locator(".modal-overlay").get_by_role("button", name="Confirm").click()
 
@@ -66,7 +69,7 @@ def test_deleting_a_model_profile_an_agent_uses_is_refused_in_words_and_deletes_
         expect(toast).not_to_contain_text("in_use_by")
         expect(toast).not_to_contain_text("agent(s)")
         # The refusal protected the row: it is still there, and so is the card.
-        expect(page.get_by_test_id(f"nv-pcard-del:{profile_id}")).to_be_visible()
+        expect(page.get_by_test_id(f"pk-card:{profile_id}")).to_be_visible()
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
             assert c.get(f"/v1/model_profiles/{profile_id}").status_code == 200
     finally:

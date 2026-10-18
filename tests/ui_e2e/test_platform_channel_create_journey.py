@@ -90,7 +90,7 @@ def test_new_channel_with_a_provider_opens_the_dialog_on_the_page_and_a_created_
         # The channels overlay has no per-channel detail, so nothing opens; the card is in the grid behind.
         expect(page.get_by_test_id("nv-overlay-body")).to_have_count(0)
         page.get_by_test_id("nv-plat-filter").fill(channel_id)
-        expect(page.get_by_test_id(f"nv-pcard-del:{channel_id}")).to_be_attached(timeout=15_000)
+        expect(page.get_by_test_id(f"pk-card:{channel_id}")).to_be_attached(timeout=15_000)
     finally:
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
             c.delete(f"/v1/channels/{channel_id}")

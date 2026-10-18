@@ -127,14 +127,17 @@ def test_the_handler_stripper_removes_a_click_handler_and_keeps_an_effect_and_th
 
 
 def test_a_section_switch_resets_the_filter_the_page_and_the_form_by_remounting_not_by_an_effect() -> None:
-    """``key={nav}`` makes every section a fresh instance, so the effect that used to reset ``q``, ``pageNo`` and ``modal`` when ``nav`` changed can never see a change: it is dead
+    """``key={nav}`` makes every section a fresh instance, so the effect that used to reset the filter, the page number and ``modal`` when ``nav`` changed can never see a change: it is dead
     code that also hides whether the key still works (the lead's review of #547). The behaviour is pinned by ``test_a_filter_typed_on_one_section_is_empty_on_the_next`` in the nav-switch
-    journey, which is only meaningful with the effect gone."""
+    journey, which is only meaningful with the effect gone. Since Platform revamp Plan 01 Task 10 the filter and the page number are the kit's ``PK_usePagedFilter``, so the page has neither."""
     list_page = _body("NV_PlatListPage")
 
     assert not re.search(r'React\.useEffect\(function \(\) \{\s*setQ\(""\);\s*setPageNo\(0\);\s*setModal\(null\);\s*\}, \[nav\]\);', list_page), "the reset effect is dead behind key={nav}"
-    assert 'setQ("")' not in _without_user_handlers(list_page), "nothing resets the filter AUTOMATICALLY either: a fresh instance starts empty (a user's Clear filter click may)"
-    assert re.search(r"React\.useEffect\(function \(\) \{ setPageNo\(0\); \}, \[q\]\);", list_page), "typing a filter still sends the page back to the first one"
+    assert 'setQ("")' not in _without_user_handlers(list_page), "nothing resets the filter AUTOMATICALLY either: a fresh instance starts empty (a user's Clear filter click may: paged.setQ(\"\"))"
+    # The filter and the page number are the kit's now (Platform revamp Plan 01 Task 10): PK_usePagedFilter sets the query and page 0 in one call, so there is no effect
+    # for the page to run and no page number of its own to reset.
+    assert "PK_usePagedFilter(cards," in list_page and "setPageNo" not in list_page, "the list page pages through the kit, whose setQ sends the page back to the first"
+    assert re.search(r'paged\.setQ\(""\)', list_page) and 'paged.setQ("")' not in _without_user_handlers(list_page), "the Clear filter click is the one place the page empties the filter"
 
 
 def test_the_polling_interval_the_leak_journey_waits_out_is_the_one_the_page_uses() -> None:
