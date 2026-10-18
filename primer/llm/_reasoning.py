@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import weakref
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
@@ -604,10 +605,28 @@ _NOT_A_REFUSAL: frozenset[str] = frozenset({
     "stream_timeout", "generation_timeout", "connect_timeout",
 })
 
-# (adapter instance, model, settings) a provider refused at stream open, where
-# the call then worked without them: later calls skip the settings, so a
-# refused setting costs one failed request per process, not one per call.
-_REFUSED: set[tuple[int, str, str]] = set()
+# Per adapter instance, the (model, settings) a provider refused at stream
+# open where the call then worked without them: later calls skip the
+# settings, so a refused setting costs one failed request per process, not
+# one per call. Keyed weakly on the instance itself, never on its id(): an id
+# is reused once its object is collected, and a new adapter (a provider edit
+# builds one) must not inherit another's refusals.
+_REFUSED: "weakref.WeakKeyDictionary[Any, set[tuple[str, str]]]" = weakref.WeakKeyDictionary()
+
+
+def _refused_by(llm: Any) -> set[tuple[str, str]]:
+    """What ``llm`` has refused so far (empty for an object that cannot be weakly referenced)."""
+    try:
+        return _REFUSED.get(llm) or set()
+    except TypeError:
+        return set()
+
+
+def _remember_refusal(llm: Any, key: tuple[str, str]) -> None:
+    try:
+        _REFUSED.setdefault(llm, set()).add(key)
+    except TypeError:  # not weakly referenceable: nothing is remembered
+        pass
 
 
 def _names_a_setting(message: str | None, knobs: dict[str, Any]) -> bool:
@@ -657,8 +676,8 @@ def profile_stream(llm: Any, knobs: dict[str, Any], **kwargs: Any) -> AsyncItera
         plain["extended"] = caller
     if not knobs:
         return llm.stream(**plain)
-    key = (id(llm), str(kwargs.get("model")), json.dumps(knobs, sort_keys=True, default=str))
-    if key in _REFUSED:
+    key = (str(kwargs.get("model")), json.dumps(knobs, sort_keys=True, default=str))
+    if key in _refused_by(llm):
         return llm.stream(**plain)
     first = {**kwargs, "extended": {**knobs, **(caller or {})}}
     return _stream_with_fallback(llm, knobs, key, first, plain)
@@ -667,7 +686,7 @@ def profile_stream(llm: Any, knobs: dict[str, Any], **kwargs: Any) -> AsyncItera
 async def _stream_with_fallback(
     llm: Any,
     knobs: dict[str, Any],
-    key: tuple[int, str, str],
+    key: tuple[str, str],
     first_kwargs: dict[str, Any],
     plain_kwargs: dict[str, Any],
 ) -> AsyncIterator[Any]:
@@ -697,10 +716,10 @@ async def _stream_with_fallback(
     finally:
         await _aclose(agen)
     debug_once(
-        ("profile-settings-refused", type(llm).__name__, key[1], key[2]),
+        ("profile-settings-refused", type(llm).__name__, key[0], key[1]),
         "%s refused a profile's model settings for model %s (%s); the call was "
         "made again without them: %s",
-        type(llm).__name__, key[1], ", ".join(sorted(map(str, knobs))),
+        type(llm).__name__, key[0], ", ".join(sorted(map(str, knobs))),
         refusal[:300],
     )
     retry = llm.stream(**plain_kwargs)
@@ -710,7 +729,7 @@ async def _stream_with_fallback(
             if not worked:
                 worked = not (isinstance(event, ChatError) and event.fatal)
                 if worked:
-                    _REFUSED.add(key)
+                    _remember_refusal(llm, key)
             yield event
     finally:
         await _aclose(retry)

@@ -359,6 +359,54 @@ class TestProfileStream:
         assert len(llm.calls) == 4  # one refusal, then three plain calls
         assert all("extended" not in c for c in llm.calls[1:])
 
+    async def test_the_memo_belongs_to_the_adapter_instance_not_its_id(self) -> None:
+        """An id() is reused once its object is collected; a new adapter (a
+        provider edit builds one) must try the setting itself."""
+        import gc
+
+        a = _Provider(_refuses_knobs)
+        await _drain(profile_stream(a, {"reasoning_effort": "low"}, model="m", messages=[]))
+        b = _Provider(_refuses_knobs)
+        await _drain(profile_stream(b, {"reasoning_effort": "low"}, model="m", messages=[]))
+        assert b.calls[0]["extended"] == {"reasoning_effort": "low"}
+        assert len(_reasoning._REFUSED) == 2
+        del a, b
+        gc.collect()
+        assert len(_reasoning._REFUSED) == 0
+        c = _Provider(_refuses_knobs)  # may well reuse a collected adapter's id
+        await _drain(profile_stream(c, {"reasoning_effort": "low"}, model="m", messages=[]))
+        assert c.calls[0]["extended"] == {"reasoning_effort": "low"}
+
+    async def test_an_adapter_that_cannot_be_weakly_referenced_still_falls_back(self) -> None:
+        import weakref
+
+        class _Slotted:
+            __slots__ = ("calls",)
+
+            def __init__(self) -> None:
+                self.calls: list[dict] = []
+
+            def stream(self, **kwargs):
+                self.calls.append(kwargs)
+                refuse = "extended" in kwargs
+
+                async def _gen():
+                    if refuse:
+                        raise BadRequestError("Unsupported parameter: 'reasoning_effort'", status_code=400)
+                    for ev in _OK:
+                        yield ev
+
+                return _gen()
+
+        llm = _Slotted()
+        with pytest.raises(TypeError):
+            weakref.ref(llm)
+        for _ in range(2):
+            events = await _drain(profile_stream(llm, {"reasoning_effort": "low"}, model="m", messages=[]))
+            assert [type(e).__name__ for e in events] == ["TextDelta", "Done"]
+        # Nothing can be remembered for it, so each call tries the setting once.
+        assert [("extended" in c) for c in llm.calls] == [True, False, True, False]
+
     async def test_another_model_or_setting_is_tried_afresh(self) -> None:
         llm = _Provider(_refuses_knobs)
         await _drain(profile_stream(llm, {"reasoning_effort": "low"}, model="m", messages=[]))
