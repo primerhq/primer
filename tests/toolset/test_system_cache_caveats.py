@@ -1,15 +1,18 @@
 """The tool descriptors of the entities whose warm adapters a tool edit does NOT refresh say so (task 01a111d1, D5 phase 2c, option 3).
 
-An edit through the REST route drops the warm adapter cached for an artifact-storage provider, a channel provider or a channel
-(``ArtifactStorageRegistry.invalidate`` / ``ChannelRegistry.invalidate``), and re-warms a newly chat-enabled channel. The system tools
-cannot do the same: those registries invalidate only the cache of the PROCESS they live in, the warm inbound adapters live in the API
-process, and a tool runs in whichever process executes the session (in the k3s split, a worker). Mirroring the REST hooks in the tools
-would look like parity and do nothing where it matters, so the lead ruled to document the gap instead (and to ticket the bus binding,
-01a11358). An agent reading a descriptor must therefore learn that its edit takes effect after the next restart or after the row is
-edited through the REST route, and why.
+An edit through the REST route drops the warm adapter cached for a channel provider or a channel (``ChannelRegistry.invalidate``), and
+re-warms a newly chat-enabled channel. The system tools cannot do the same: that registry invalidates only the cache of the PROCESS it
+lives in, the warm inbound adapters live in the API process, and a tool runs in whichever process executes the session (in the k3s split,
+a worker). Mirroring the REST hooks in the tools would look like parity and do nothing where it matters, so the lead ruled to document the
+gap instead (and to ticket the bus binding, 01a11358). An agent reading a descriptor must therefore learn that its edit takes effect after
+the next restart or after the row is edited through the REST route, and why.
 
-Negative controls: the entities whose invalidation IS cluster-wide (the provider registry publishes on the invalidation bus), and an
-entity with no cache at all, must not carry the caveat.
+The artifact-storage half of 01a11358 is done (plan 09, Task 3): ``ArtifactStorageRegistry`` publishes on the ``artifact_storage_provider``
+topic and every process evicts its own copy, so the artifact-storage tools no longer carry the caveat and are listed among the negative
+controls below. The channel half stays open.
+
+Negative controls: the entities whose invalidation IS cluster-wide (the provider registry and the artifact-storage registry publish on the
+invalidation bus), and an entity with no cache at all, must not carry the caveat.
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ import pytest
 
 from tests.toolset.test_system_crud_guards import world  # noqa: F401  (world is a fixture)
 
-AFFECTED = ["artifact_storage_provider", "channel_provider", "channel"]
+AFFECTED = ["channel_provider", "channel"]
 
 
 async def _description(toolset, tool_id: str) -> str:
@@ -41,7 +44,10 @@ async def test_a_tool_edit_says_it_does_not_refresh_the_warm_adapter(world, enti
 
 @pytest.mark.parametrize(
     "tool_id",
-    ["update_llm_provider", "delete_llm_provider", "update_toolset", "update_embedding_provider", "update_agent", "delete_agent"],
+    [
+        "update_llm_provider", "delete_llm_provider", "update_toolset", "update_embedding_provider", "update_agent", "delete_agent",
+        "update_artifact_storage_provider", "delete_artifact_storage_provider",
+    ],
 )
 @pytest.mark.asyncio
 async def test_other_tools_carry_no_such_caveat(world, tool_id) -> None:

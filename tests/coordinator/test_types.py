@@ -31,6 +31,7 @@ def test_invalidation_topic_members():
     assert InvalidationTopic.CHANNEL_PROVIDER.value == "channel_provider"
     assert InvalidationTopic.WORKSPACE_PROVIDER.value == "workspace_provider"
     assert InvalidationTopic.HARNESS.value == "harness"
+    assert InvalidationTopic.ARTIFACT_STORAGE_PROVIDER.value == "artifact_storage_provider"
 
 
 def test_role_constants_distinct():

@@ -198,6 +198,15 @@ def create_test_app(
         storage=storage_provider.get_storage(_TAP),
     )
     app.state.approval_resolver = _test_approval_resolver
+    # Artifact storage registry (parity with the lifespan, which builds it before the system toolset too): the toolset takes it so a tool edit of an
+    # artifact-storage provider evicts the cached store. The reserved default is seeded below.
+    from primer.api.registries.artifact_storage_registry import (
+        DEFAULT_ARTIFACT_PROVIDER_ID as _ART_DEFAULT,
+        ArtifactStorageRegistry as _ArtReg,
+    )
+    from primer.model.provider import ArtifactStorageProvider as _ASP
+    _art_storage = storage_provider.get_storage(_ASP)
+    _test_artifact_registry = _ArtReg(storage=_art_storage, storage_provider=storage_provider)
     if system_toolset is None:
         system_toolset = build_system_toolset(
             storage_provider=storage_provider,
@@ -206,6 +215,7 @@ def create_test_app(
             workspace_registry=workspace_registry,
             # Same sharing invariant as the real lifespan (01a06610).
             approval_resolver=_test_approval_resolver,
+            artifact_storage_registry=_test_artifact_registry,
         )
     if workspaces_toolset is None:
         # The test factory builds its scheduler/event_bus/claim_engine
@@ -321,16 +331,8 @@ def create_test_app(
     app.state.workspace_ext_toolset = workspace_ext_toolset
     app.state.crud_toolset = crud_toolset
     app.state.semantic_search_registry = _test_ssp_registry
-    # Artifact storage registry + reserved default (parity with the lifespan).
-    from primer.api.registries.artifact_storage_registry import (
-        DEFAULT_ARTIFACT_PROVIDER_ID as _ART_DEFAULT,
-        ArtifactStorageRegistry as _ArtReg,
-    )
-    from primer.model.provider import ArtifactStorageProvider as _ASP
-    _art_storage = storage_provider.get_storage(_ASP)
-    app.state.artifact_storage_registry = _ArtReg(
-        storage=_art_storage, storage_provider=storage_provider,
-    )
+    # Artifact storage registry + reserved default (parity with the lifespan); the registry was built above, before the system toolset.
+    app.state.artifact_storage_registry = _test_artifact_registry
 
     async def _seed_artifact_default() -> None:
         try:
