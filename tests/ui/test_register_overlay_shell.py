@@ -309,6 +309,49 @@ def test_delete_is_held_off_while_the_page_has_a_request_out(ctx) -> None:
     assert ctx.eval(f"{button}['aria-disabled']") == "true" and ctx.eval(f"{button}['aria-busy'] === undefined") is True, "held off, and not the button whose request is out"
 
 
+def test_the_page_is_told_when_a_delete_is_out(ctx) -> None:
+    """Re-review of #773: the overlay holds its Delete off while the page has a request out; the page is told the other way round (``blocked``, the word ``Btn``
+    uses for a sibling held off), so it can hold its own actions off while the Delete is out. A wizard page and a panel form are handed it alike."""
+    for class_key, props in (("llm", "PAGE_PROPS[PAGE_PROPS.length - 1]"), ("channel", "PANEL_PROPS[PANEL_PROPS.length - 1]")):
+        _mount(ctx, initialClass=class_key, editRow={"id": "x-1", "provider": "x"})
+        assert ctx.eval(f"{props}.blocked") is False, class_key
+        ctx.eval("var RELEASE = null; HANDLER = function () { return new Promise(function (r) { RELEASE = r; }); };")
+        ctx.eval("press('pc-register-delete')")
+        settle(ctx)
+        assert ctx.eval(f"{props}.blocked") is True, f"{class_key}: the Delete is out"
+        ctx.eval("RELEASE({}); void 0;")
+        settle(ctx)
+    _mount(ctx, initialClass="llm")
+    assert ctx.eval("PAGE_PROPS[PAGE_PROPS.length - 1].blocked") is False, "a create has no Delete to wait for"
+
+
+def test_save_is_held_off_while_a_delete_is_out(ctx) -> None:
+    """Re-review of #773: Delete was held off while a Save was out, but a Save could be pressed while the Delete was out, so the two requests could run beside each
+    other on one row. The real form, in edit mode: Save says ``aria-disabled`` (held off, not busy: it keeps its tab stop and no ``aria-busy``, the Delete's request
+    is the one out), a press sends nothing, and when the Delete is refused Save works again."""
+    delete_403 = _delete_403()
+    row = {"id": "tav", "provider_type": "tavily", "config": {"type": "tavily", "api_key": "**********"}}
+    _mount(ctx, initialClass="web_search", editRow=row)
+    _serve(ctx, "web_search_providers")
+    save = "nativeButton('provider-form-save').props"
+    assert ctx.eval(f"{save}['aria-disabled'] === undefined") is True
+    ctx.eval("var RELEASE = null, FAIL = null; HANDLER = function (m) { return m === 'DELETE' ? new Promise(function (ok, no) { RELEASE = ok; FAIL = no; }) : Promise.resolve({}); };")
+    ctx.eval("press('pc-register-delete')")
+    settle(ctx)
+    assert ctx.eval(f"{save}['aria-disabled']") == "true", "the Delete is out: Save is held off"
+    assert ctx.eval(f"{save}['aria-busy'] === undefined && !{save}.disabled") is True, "held off, not busy, and still a tab stop"
+    assert ctx.eval("nativeButton('pc-register-delete').props['aria-busy']") == "true", "the busy button is the Delete"
+    ctx.eval(f"{save}.onClick({{ preventDefault: function () {{}}, stopPropagation: function () {{}} }}); void 0;")
+    settle(ctx)
+    assert [(c["method"], c["path"]) for c in js(ctx, "CALLS")] == [("DELETE", "/web_search_providers/tav")], "a held-off Save sent nothing"
+    ctx.eval(f"FAIL(new window.primerApi.ApiError({json.dumps(delete_403)})); void 0;")
+    settle(ctx)
+    assert ctx.eval(f"{save}['aria-disabled'] === undefined") is True, "the Delete was refused: Save works again"
+    ctx.eval("press('provider-form-save')")
+    assert settle(ctx) == "fulfilled"
+    assert [(c["method"], c["path"]) for c in js(ctx, "CALLS")] == [("DELETE", "/web_search_providers/tav"), ("PUT", "/web_search_providers/tav")]
+
+
 SLOT_HOST = r"""
 var STORE = PC_makeFrameStore();
 var PUBLISH = null;

@@ -321,6 +321,29 @@ def test_the_framed_save_stays_focusable_while_its_request_is_out(ctx) -> None:
     assert ctx.eval(f"{save}['aria-busy'] === undefined") is True
 
 
+def test_save_and_test_are_held_off_while_the_overlays_delete_is_out(ctx) -> None:
+    """Re-review of #773: the overlay holds its Delete off while the page has a request out; the other way round, the page is told when the Delete is out
+    (``blocked``) and holds its actions off, so a Save or a Test cannot run beside a Delete of the same row. Held off, not busy: the buttons keep their tab stop and say
+    ``aria-disabled`` (a focused button that turns ``disabled`` drops the focus out of the dialog), their click is refused, and ``aria-busy`` stays with the button whose
+    own request is the one out."""
+    props = {"plural": "web_search_providers", "classKey": "web_search", "kindSelect": True, "canTest": True, "submitLabel": "Register", "blocked": True}
+    _mount(ctx, **props)
+    _serve(ctx, "web_search_providers")
+    ctx.eval("setValue('pc-field:id', 'tav'); setValue('pc-field:api_key', 'k');")
+    for testid in ("provider-form-save", "provider-form-test"):
+        button = f"nativeButton('{testid}').props"
+        assert ctx.eval(f"{button}['aria-disabled']") == "true", testid
+        assert ctx.eval(f"{button}['aria-busy'] === undefined && !{button}.disabled") is True, f"{testid}: held off, not busy, and still a tab stop"
+        ctx.eval(f"{button}.onClick({{ preventDefault: function () {{}}, stopPropagation: function () {{}} }}); void 0;")
+    settle(ctx)
+    assert ctx.eval("SUBMITTED.length") == 0 and js(ctx, "CALLS") == [], "a held-off Save and Test send nothing"
+    ctx.eval(f"MR.rerender({json.dumps({**props, 'blocked': False})});")
+    for testid in ("provider-form-save", "provider-form-test"):
+        assert ctx.eval(f"nativeButton('{testid}').props['aria-disabled'] === undefined") is True, f"{testid}: the Delete is answered, the button works again"
+    ctx.eval("press('provider-form-save')")
+    assert settle(ctx) == "fulfilled" and ctx.eval("SUBMITTED.length") == 1
+
+
 HAND_OFF = r"""
 var FOCUSED = [], QUERIES = [], RETRIED = { current: false };
 var FIRST_FIELD = { focus: function () { FOCUSED.push("first field"); } };
