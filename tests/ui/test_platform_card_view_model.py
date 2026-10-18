@@ -125,7 +125,7 @@ def test_the_list_page_hands_the_console_to_card(page_ctx) -> None:
                   ' open: rec("open") };'
                   ' ITEMS = [{ id: "p1" }]; MR.mount(NV_PlatListPage, { nav: "probe" });')
     assert page_ctx.eval("SEEN.length > 0 && SEEN.every(function (c) { return c === CON; })"), "card(row, con) gets the console"
-    assert page_ctx.eval('!!MR.find("nv-pcard:p1")')
+    assert page_ctx.eval('!!MR.find("pk-card:p1")')
 
 
 def test_an_actionable_status_on_a_platform_card_runs_its_action_and_does_not_open_it(page_ctx) -> None:
@@ -137,10 +137,10 @@ def test_an_actionable_status_on_a_platform_card_runs_its_action_and_does_not_op
     chip = 'MR.find("probe-chip")'
     assert page_ctx.eval(f"{chip}.type") == "button" and page_ctx.eval(f"{chip}.props.type") == "button"
     assert page_ctx.eval(f"{chip}.props.children") == "Internal search: off", "named by its label"
-    assert page_ctx.eval(f"{chip}.props.className").split() == ["nv-pcard-status", "nv-pcard-status-btn"]
+    assert page_ctx.eval(f"{chip}.props.className").split() == ["pk-card-status", "pk-card-status-btn"]
     page_ctx.eval('MR.click("probe-chip")')
     assert [c[0] for c in js(page_ctx, "CALLS")] == ["chip"], "the status ran once and the card did not open"
-    page_ctx.eval('MR.click("nv-pcard-open:p1")')
+    page_ctx.eval('MR.click("pk-card-open:p1")')
     assert [c[0] for c in js(page_ctx, "CALLS")] == ["chip", "open"]
 
 
@@ -153,12 +153,12 @@ def test_a_desktop_card_draws_the_badge_the_status_and_string_or_pair_facts(page
     texts = js(page_ctx, "MR.texts()")
     assert {"Probe one", "a probe", "built in", "available", "vLLM · 1 model", "context", "8192", "x"} <= set(texts)
     assert "y" not in texts, "at most three facts"
-    tree = js(page_ctx, 'MR.subtree("nv-pcard:Probe one")')
-    assert [e["className"] for e in tree if e["className"] in ("nv-pcard-badge", "nv-pcard-status")] == ["nv-pcard-badge", "nv-pcard-status"]
+    tree = js(page_ctx, 'MR.subtree("pk-card:p1")')
+    assert [e["className"] for e in tree if e["className"] in ("pk-card-badge", "pk-card-status")] == ["pk-card-badge", "pk-card-status"]
 
 
 def test_the_status_button_sits_above_the_stretched_open() -> None:
-    d = declarations(css_body(".nv-pcard-status-btn"))
+    d = declarations(css_body(".pk-card-status-btn"))
     assert d.get("position") == "relative" and d.get("z-index") == "1"
 
 

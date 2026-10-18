@@ -129,39 +129,50 @@ function PK_cardFacts(facts) {
 
 // The card's "⋯" menu (design 20 Q1): a button that opens a list of actions, Delete among them. The list is a layer of the Escape stack only
 // while it is open (Escape closes it and nothing under it), it closes on a click outside it and when the focus leaves it, and a pick closes it
-// before it runs the item. Every click it handles stops where it lands, so none reaches the stretched Open under it.
+// before it runs the item. Every click it handles stops where it lands, so none reaches the stretched Open under it. The open list is ONE Tab
+// stop (the WAI-ARIA roving tabindex): the item that has the focus carries tabindex 0 and the others -1, the arrow keys move the focus between
+// them (PK_menuKeys), and Tab leaves the list instead of walking through its items.
 function PK_CardMenu(props) {
   var openState = React.useState(false);
   var open = openState[0];
   var setOpen = openState[1];
+  // the item that is the list's Tab stop: the first one when the list opens, then whichever item last took the focus
+  var activeState = React.useState(0);
+  var active = activeState[0];
+  var setActive = activeState[1];
   var boxRef = React.useRef(null);
   var triggerRef = React.useRef(null);
   var listRef = React.useRef(null);
+  function close() {
+    setOpen(false);
+    setActive(0);
+  }
   window.primerApi.useEscape(function (ev) {
     if (ev && typeof ev.preventDefault === "function") ev.preventDefault();
-    setOpen(false);
+    close();
     PK_focus(triggerRef);
   }, open);
-  PK_useOutsideClick(open, boxRef, function () { setOpen(false); });
+  PK_useOutsideClick(open, boxRef, close);
   React.useEffect(function () {
     if (open) PK_focusFirstItem(listRef);
   }, [open]);
   return (
     <div className="pk-card-menu" ref={boxRef}
-      onBlur={function (ev) { if (open && PK_focusLeft(ev)) setOpen(false); }}>
+      onBlur={function (ev) { if (open && PK_focusLeft(ev)) close(); }}>
       <button type="button" ref={triggerRef} className="pk-card-menu-btn" data-testid={"pk-card-menu:" + props.id}
         aria-label={"More actions for " + props.title} aria-haspopup="menu" aria-expanded={open ? "true" : "false"}
-        onClick={function (ev) { PK_stop(ev); setOpen(!open); }}>⋯</button>
+        onClick={function (ev) { PK_stop(ev); if (open) close(); else setOpen(true); }}>⋯</button>
       {open ? (
         <div className="pk-card-menu-list" role="menu" ref={listRef} aria-label={"Actions for " + props.title}
           data-testid={"pk-card-menu-list:" + props.id} onClick={PK_stop} onKeyDown={PK_menuKeys}>
-          {props.items.map(function (item) {
+          {props.items.map(function (item, i) {
             return (
               <button type="button" key={item.testid || item.label} role="menuitem" className="pk-card-menu-item"
+                tabIndex={i === active ? 0 : -1} onFocus={function () { setActive(i); }}
                 data-testid={item.testid} data-danger={item.danger ? "true" : undefined}
                 onClick={function (ev) {
                   PK_stop(ev);
-                  setOpen(false);
+                  close();
                   PK_focus(triggerRef);
                   item.onClick();
                 }}>{item.label}</button>
@@ -177,7 +188,8 @@ function PK_CardMenu(props) {
 // then the title, the type line and one to three facts, left-aligned; Open at the bottom. The card div has no click of its own: the Open button
 // is stretched over the whole card (.pk-card-open::after), so a click anywhere on it opens it and a keyboard user reaches it by Tab, and the
 // menu and an actionable status sit above the stretch. A status with onClick is a button named by its label (seam I-8); without one it is text.
-// A fact is a string (one line) or a [key, value] pair.
+// A fact is a string (one line) or a [key, value] pair. The title is cut with an ellipsis when it is long, and the stretched Open covers it, so
+// the card's full name rides on the Open button as its `title` (a tooltip over the whole card).
 function PK_Card(props) {
   var id = props.id;
   var icon = props.icon || null;
@@ -222,7 +234,7 @@ function PK_Card(props) {
       ) : null}
       <div className="pk-card-foot">
         <button type="button" className="pk-card-open" data-testid={"pk-card-open:" + id} aria-label={"Open " + props.title}
-          onClick={function () { props.onOpen(); }}>Open</button>
+          title={props.title} onClick={function () { props.onOpen(); }}>Open</button>
       </div>
     </div>
   );

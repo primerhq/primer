@@ -52,7 +52,7 @@ def test_new_collection_opens_the_dialog_with_no_list_behind_it_and_lands_on_the
         expect(page.get_by_test_id("nv-overlay-body")).to_contain_text(collection_id)
         assert f"overlay=collections::{collection_id}" in page.url.replace("%3A", ":"), page.url
         page.get_by_test_id("nv-plat-filter").fill(collection_id)
-        expect(page.get_by_test_id(f"nv-pcard-del:{collection_id}")).to_be_attached(timeout=15_000)
+        expect(page.get_by_test_id(f"pk-card:{collection_id}")).to_be_attached(timeout=15_000)
     finally:
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
             c.delete(f"/v1/collections/{collection_id}")

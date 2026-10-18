@@ -3461,7 +3461,7 @@ input, textarea, select { font: inherit; color: inherit; }
   /* US-011b touch-target guard: was a raw 24px, under the floor. The
      30px section-head row leaves no room for a full var(--hit), so
      this uses the same reduced-but-token-driven idiom already shipped
-     for other dense rows (.nv-plat-row/.nv-seg-btn/.nv-fam-pill). */
+     for other dense rows (.nv-plat-row/.nv-seg-btn/.nv-plat-sub). */
   width: calc(var(--hit) - 8px);
   height: calc(var(--hit) - 8px);
   display: grid;
@@ -3812,7 +3812,7 @@ input, textarea, select { font: inherit; color: inherit; }
   /* US-011b touch-target guard: was a raw 16px, well under the floor.
      Full var(--hit) (36px/32px) would overflow the 34px tab bar, so
      this uses the same reduced-but-token-driven idiom already shipped
-     for other dense rows (.nv-plat-row/.nv-seg-btn/.nv-fam-pill). */
+     for other dense rows (.nv-plat-row/.nv-seg-btn/.nv-plat-sub). */
   width: calc(var(--hit) - 8px);
   height: calc(var(--hit) - 8px);
   display: grid;
@@ -4967,7 +4967,7 @@ button.nv-trace-line { cursor: pointer; }
 .nv-plat-row-icon { flex-shrink: 0; color: var(--text-4); }
 .nv-plat-row[data-active="true"] .nv-plat-row-icon { color: var(--accent); }
 /* The Providers row's sub-entries, one per provider type (seam I-1): always visible, indented under the row with a guide line at the row icon's
-   centre. Dense rows like the ones above, so the same reduced token-driven height (see .nv-fam-pill). */
+   centre. Dense rows like the ones above, so the same reduced token-driven height (see .nv-plat-row). */
 .nv-plat-subs {
   display: flex;
   flex-direction: column;
@@ -4998,64 +4998,14 @@ button.nv-trace-line { cursor: pointer; }
   color: var(--text);
 }
 .nv-plat-main { flex: 1; min-width: 0; overflow-y: auto; }
-.nv-plat-wrap { max-width: 1020px; margin: 0 auto; padding: 20px 24px 50px; }
-.nv-plat-head {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 14px;
-  flex-wrap: wrap;
-}
+/* A Platform page has no width cap: it is as wide as its pane (design 5.3 and 13.5) and its cards fill it (.pk-grid). Only the padding stays. The System
+   pages share this frame, so they fill their pane too. */
+.nv-plat-wrap { padding: 20px 24px 50px; }
+/* the Platform pages' title is the kit header's (.pk-title); the System pages draw theirs with this class */
 .nv-plat-title { font-size: 17px; font-weight: 600; }
-.nv-plat-count {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  color: var(--text-4);
-}
-.nv-plat-filter {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-6);
-  background: var(--bg-1);
-  padding: 5px 10px;
-  color: var(--text-4);
-  min-height: calc(var(--hit) - 8px);
-}
-.nv-plat-filter input {
-  border: none;
-  background: transparent;
-  outline: none;
-  font-size: 12px;
-  color: var(--text);
-  width: 130px;
-}
-.nv-fam-pills {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  margin-bottom: 16px;
-}
-.nv-fam-pill {
-  padding: 3px 11px;
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--text-3);
-  border-radius: 999px;
-  font-size: 11.5px;
-  cursor: pointer;
-  min-height: calc(var(--hit) - 12px);
-}
-.nv-fam-pill:hover { border-color: var(--border-strong); }
-.nv-fam-pill[data-active="true"] {
-  border-color: var(--accent-border);
-  background: var(--bg-hover);
-  color: var(--accent);
-}
 .nv-plat-empty {
   border: 1px dashed var(--border-strong);
-  border-radius: var(--r-8);
+  border-radius: var(--r-12);
   padding: 44px 20px;
   text-align: center;
   color: var(--text-3);
@@ -5065,135 +5015,13 @@ button.nv-trace-line { cursor: pointer; }
   align-items: center;
   gap: 10px;
 }
-.nv-pcard-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-  gap: 12px;
-}
-.nv-pcard {
-  border: 1px solid var(--border);
-  border-radius: var(--r-8);
-  position: relative;
-  background: var(--bg-1);
-  padding: 14px 16px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-  min-height: 118px;
-  transition: border-color 0.12s ease, background 0.12s ease,
-    transform 0.12s ease;
-}
-.nv-pcard:hover {
-  border-color: var(--accent-border);
-  background: var(--bg-hover);
-  transform: translateY(-1px);
-}
-.nv-pcard-status {
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  white-space: nowrap;
-  padding: 1px 7px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-}
-.nv-pcard-status[data-tone="ok"] { color: var(--green); }
-.nv-pcard-status[data-tone="warn"] { color: var(--attention); }
-.nv-pcard-status[data-tone="error"] { color: var(--red); }
-.nv-pcard-status[data-tone="muted"] { color: var(--text-4); }
-/* an actionable status (seam I-8) is a button above the stretched Open */
-.nv-pcard-status-btn {
-  position: relative;
-  z-index: 1;
-  background: transparent;
-  cursor: pointer;
-}
-.nv-pcard-status-btn:hover { border-color: currentColor; }
-.nv-pcard-badge {
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  white-space: nowrap;
-  padding: 1px 7px;
-  border-radius: 999px;
-  background: var(--bg-2);
-  color: var(--text-3);
-}
-.nv-pcard-head { display: flex; align-items: center; gap: 8px; }
-.nv-pcard-name {
-  font-weight: 600;
-  font-size: 13.5px;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.nv-pcard-chip {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  white-space: nowrap;
-}
-.nv-pcard-sub {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  line-height: 1.45;
-  color: var(--text-3);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  min-height: 2.6em;
-}
-.nv-pcard-facts { display: flex; flex-direction: column; gap: 3px; }
-.nv-fact-row { display: flex; gap: 10px; font-size: 11.5px; }
-.nv-fact-k { color: var(--text-4); width: 88px; flex-shrink: 0; }
-.nv-fact-v {
-  color: var(--text-2);
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.nv-pcard-foot {
-  display: flex; gap: 6px; align-items: center;
-  margin-top: auto; padding-top: 6px;
-  border-top: 1px solid var(--border);
-}
-.nv-pcard-open { border: none; background: transparent; padding: 0; font-size: 11px; color: var(--accent); cursor: pointer; }
-.nv-pcard-open::after { content: ""; position: absolute; inset: 0; }
-.nv-pcard-del {
-  position: relative;
-  z-index: 1;
-  border: none;
-  background: transparent;
-  font-size: 11px;
+/* the line a list page draws while its first load is in flight (nv-plat-loading) */
+.nv-plat-state {
+  padding: 28px 0;
+  text-align: center;
   color: var(--text-4);
-  cursor: pointer;
-  padding: 0;
+  font-size: 13px;
 }
-.nv-pcard-del:hover { color: var(--red); }
-.nv-pager {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 10px;
-}
-.nv-pager-range {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--text-4);
-}
-.nv-pager-btn {
-  width: 24px;
-  height: 24px;
-  display: grid;
-  place-items: center;
-  border: 1px solid var(--border);
-  background: var(--bg-1);
-  border-radius: var(--r-4);
-  color: var(--text-3);
-  cursor: pointer;
-}
-.nv-pager-btn:hover { border-color: var(--border-strong); }
-.nv-pager-btn:disabled { opacity: 0.35; cursor: default; }
 .nv-audit { margin-top: 22px; }
 /* uiv2 Wave 3 (a-14 fold): sort controls sit beside the title now that
    the records-sheet's own header row retired along with it. */
@@ -5848,10 +5676,18 @@ button.nv-trace-line { cursor: pointer; }
   .pk-pager-btn,
   .pk-card-open,
   .pk-card-menu-btn,
-  .pk-card-menu-item { min-height: var(--tap-min); }
+  .pk-card-menu-item,
+  .pk-card-status-btn { min-height: var(--tap-min); }
   .pk-pager-btn,
   .pk-card-menu-btn { min-width: var(--tap-min); }
   .pk-filter { flex: 1 1 100%; width: auto; min-height: var(--tap-min); }
+  /* iOS zooms the page when a field with text under 16px takes the focus. The global phone rule (input, textarea, select) cannot win against the
+     kit's own 12px and 12.5px, which are more specific, so the kit's text inputs say 16px here, with the specificity they have above. */
+  .pk-filter input,
+  .pk-field > input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
+  .pk-field > select,
+  .pk-field > textarea,
+  .pk-rowtable-input { font-size: 16px; }
   .pk-selector-item,
   .pk-fold-toggle,
   .pk-seg-btn,

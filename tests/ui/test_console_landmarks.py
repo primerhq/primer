@@ -16,6 +16,7 @@ STUDIO = (CONSOLE / "nv-studio.jsx").read_text(encoding="utf-8")
 FILES = (CONSOLE / "nv-files-sidebar.jsx").read_text(encoding="utf-8")
 DOC = (CONSOLE / "nv-session-doc.jsx").read_text(encoding="utf-8")
 PLATFORM = (CONSOLE / "nv-platform.jsx").read_text(encoding="utf-8")
+KIT = (ROOT / "ui" / "components" / "shared" / "platform-kit.jsx").read_text(encoding="utf-8")
 MOBILE = (CONSOLE / "nv-mobile-shell.jsx").read_text(encoding="utf-8")
 STYLES = (ROOT / "ui" / "styles.css").read_text(encoding="utf-8")
 
@@ -76,7 +77,9 @@ def test_the_composer_is_named_by_what_it_currently_does() -> None:
 
 
 def test_the_platform_filters_have_names() -> None:
-    assert 'aria-label={"Filter " + (page.title || "list").toLowerCase()}' in PLATFORM
+    # the page names its filter and the kit's header draws the name on the input (Platform revamp Plan 01 Task 10)
+    assert 'label: "Filter " + (page.title || "list").toLowerCase()' in PLATFORM
+    assert "aria-label={filter.label}" in KIT
     assert 'aria-label={"Filter " + page.title.toLowerCase()}' in MOBILE
 
 

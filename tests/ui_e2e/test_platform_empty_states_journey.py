@@ -41,16 +41,16 @@ def test_an_empty_list_says_it_is_empty_with_or_without_a_filter(page, base_url:
         pytest.skip("this instance already has triggers, so the list is not empty")
     _open_platform_page(page, console_url, "triggers")
 
-    expect(page.get_by_test_id("nv-plat-count")).to_have_text("0 triggers", timeout=15_000)
+    expect(page.get_by_test_id("pk-count")).to_have_text("0 triggers", timeout=15_000)
     expect(page.get_by_test_id("nv-plat-empty")).to_contain_text("No triggers yet.")
-    expect(page.get_by_test_id("nv-plat-empty").get_by_role("button", name="New trigger")).to_be_visible()
+    expect(page.get_by_test_id("nv-plat-empty").get_by_role("button", name="+ Trigger")).to_be_visible()
 
     # Nothing to match against: a filter must not turn "empty" into "no match".
     page.get_by_test_id("nv-plat-filter").fill("zzz")
     expect(page.get_by_test_id("nv-plat-empty")).to_contain_text("No triggers yet.")
     expect(page.get_by_test_id("nv-plat-empty")).not_to_contain_text("match")
     # ... and there is still nothing to clear: the way out is to create one, not a "Clear filter" for rows that do not exist.
-    expect(page.get_by_test_id("nv-plat-empty").get_by_role("button", name="New trigger")).to_be_visible()
+    expect(page.get_by_test_id("nv-plat-empty").get_by_role("button", name="+ Trigger")).to_be_visible()
     expect(page.get_by_test_id("nv-plat-empty").get_by_role("button", name="Clear filter")).to_have_count(0)
 
 
@@ -62,21 +62,21 @@ def test_a_filter_that_hides_every_card_says_nothing_matches_and_clears(page, ba
             assert c.post("/v1/toolsets", json=body).status_code == 201
         _open_platform_page(page, console_url, "toolsets")
         page.get_by_test_id("nv-plat-filter").fill(toolset_id)
-        expect(page.get_by_test_id("nv-pcard-del:" + toolset_id)).to_be_attached(timeout=15_000)
+        expect(page.get_by_test_id("pk-card:" + toolset_id)).to_be_attached(timeout=15_000)
 
         page.get_by_test_id("nv-plat-filter").fill("zzz-no-such-toolset")
 
         empty = page.get_by_test_id("nv-plat-empty")
         expect(empty).to_contain_text('No toolsets match "zzz-no-such-toolset".', timeout=10_000)
         expect(empty).not_to_contain_text("yet")
-        expect(empty.get_by_role("button", name="New toolset")).to_have_count(0)
-        expect(page.get_by_test_id("nv-plat-count")).to_contain_text(" of ")  # "0 of N toolsets": it says how many a filter hides
+        expect(empty.get_by_role("button", name="+ Toolset")).to_have_count(0)
+        expect(page.get_by_test_id("pk-count")).to_contain_text(" of ")  # "0 of N toolsets": it says how many a filter hides
 
         page.get_by_test_id("nv-plat-clear-filter").click()
 
         expect(page.get_by_test_id("nv-plat-empty")).to_have_count(0)
         expect(page.get_by_test_id("nv-plat-filter")).to_have_value("")
-        expect(page.get_by_test_id("nv-plat-count")).not_to_contain_text(" of ")
+        expect(page.get_by_test_id("pk-count")).not_to_contain_text(" of ")
     finally:
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
             c.delete(f"/v1/toolsets/{toolset_id}")
@@ -127,13 +127,13 @@ def test_the_tools_page_renders_with_a_count_and_says_nothing_matches_a_filter(p
     count and empty text for EVERY page, so a page without a noun threw on render and blanked the whole console (no error boundary)."""
     _open_platform_page(page, console_url, "tools")
 
-    expect(page.get_by_test_id("nv-plat-count")).to_contain_text("tool", timeout=15_000)
-    expect(page.get_by_test_id("nv-plat-count")).not_to_contain_text("entit")
+    expect(page.get_by_test_id("pk-count")).to_contain_text("tool", timeout=15_000)
+    expect(page.get_by_test_id("pk-count")).not_to_contain_text("entit")
 
     page.get_by_test_id("nv-plat-filter").fill("zzz-no-such-tool")
 
     expect(page.get_by_test_id("nv-plat-empty")).to_contain_text('No tools match "zzz-no-such-tool".', timeout=10_000)
-    expect(page.get_by_test_id("nv-plat-count")).to_contain_text(" of ")
+    expect(page.get_by_test_id("pk-count")).to_contain_text(" of ")
 
 
 def test_the_phone_tools_list_says_nothing_matches_a_filter_instead_of_crashing(page, console_url: str) -> None:

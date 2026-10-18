@@ -201,9 +201,29 @@ def test_the_header_controls_share_one_height_and_the_action_is_filled() -> None
 
 def test_on_a_phone_the_header_controls_are_tap_sized_and_the_filter_takes_a_row() -> None:
     phone = "@media (max-width: 639px)"
-    for selector in (".pk-action", ".pk-extra", ".pk-pager-btn", ".pk-card-open", ".pk-card-menu-btn", ".pk-card-menu-item"):
+    # the actionable status of a card (seam I-8) is a button too (the lead's note on the kit review, #763)
+    for selector in (".pk-action", ".pk-extra", ".pk-pager-btn", ".pk-card-open", ".pk-card-menu-btn", ".pk-card-menu-item", ".pk-card-status-btn"):
         assert declarations(css_body(selector, phone)).get("min-height") == "var(--tap-min)", selector
     assert declarations(css_body(".pk-filter", phone)).get("flex") == "1 1 100%"
+
+
+PHONE_INPUTS = (
+    ".pk-filter input",
+    '.pk-field > input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"])',
+    ".pk-field > select",
+    ".pk-field > textarea",
+    ".pk-rowtable-input",
+)
+
+
+def test_on_a_phone_the_kits_text_inputs_say_16px_so_ios_does_not_zoom_on_focus() -> None:
+    """iOS zooms the page when a field whose text is under 16px takes the focus. The global phone rule (``input, textarea, select``) is less specific than the kit's own
+    ``.pk-filter input`` and ``.pk-field > input...``, which say 12px and 12.5px, so the kit says 16px for itself, at the specificity it has above (the lead's note on #763)."""
+    phone = "@media (max-width: 639px)"
+    for selector in PHONE_INPUTS:
+        assert declarations(css_body(selector, phone)).get("font-size") == "16px", selector
+        base = declarations(css_body(selector)).get("font-size", "")
+        assert base.endswith("px") and float(base[:-2]) < 16, f"{selector}: the desktop size ({base!r}) is what the phone rule overrides"
 
 
 # ---- the paged filter -------------------------------------------------------------------------------------------------------------------------------
@@ -292,6 +312,14 @@ def test_card_open_is_a_named_button_and_the_card_has_no_click(kit) -> None:
     assert names(kit) == ["open"]
 
 
+def test_the_open_button_carries_the_cards_full_name_as_its_title(kit) -> None:
+    """The card's title is cut with an ellipsis when it is long, and the stretched Open covers it (so the title's own tooltip never shows): the full name rides on the Open
+    button, whose own name stays "Open <title>" (the lead's note on #763)."""
+    kit.eval('MR.mount(PK_Card, { id: "p1", icon: { path: "M0 0h4" }, title: "a-profile-whose-name-is-far-too-long-for-the-card", onOpen: rec("open") })')
+    assert kit.eval('MR.find("pk-card-open:p1").props.title') == "a-profile-whose-name-is-far-too-long-for-the-card"
+    assert kit.eval('MR.find("pk-card-open:p1").props["aria-label"]') == "Open a-profile-whose-name-is-far-too-long-for-the-card"
+
+
 def test_an_actionable_status_is_a_button_named_by_its_label_and_never_opens_the_card(kit) -> None:      # seam I-8
     kit.eval('MR.mount(PK_Card, { id: "p1", icon: { path: "M0 0h4" }, title: "search", onOpen: rec("open"),'
              ' status: { label: "Internal search: off", tone: "warn", onClick: rec("status"), testid: "ts-internal-search" } })')
@@ -363,6 +391,72 @@ def test_the_menu_closes_on_an_outside_click(kit) -> None:
     kit.eval("DOC.click({}); MR.rerender();")
     assert kit.eval("MR.find('pk-card-menu-list:p1') === null")
     assert kit.eval("typeof DOC.click") == "undefined", "the listener goes with the menu"
+    assert names(kit) == []
+
+
+MENU = ('MR.mount(PK_Card, { id: "p1", icon: { path: "M0 0h4" }, title: "t", onOpen: rec("open"),'
+        ' menu: [{ label: "Edit", onClick: rec("edit"), testid: "e:p1" }, { label: "Copy", onClick: rec("copy"), testid: "c:p1" },'
+        ' { label: "Delete", danger: true, onClick: rec("delete"), testid: "d:p1" }] });')
+
+# a stand-in for the list's DOM: the items the arrow keys walk, each a focus() that does what a browser does (the document's active element moves and the item's onFocus runs)
+LIST_DOM = r"""
+var DOM = ['e:p1', 'c:p1', 'd:p1'].map(function (id) {
+  return { id: id, focus: function () { document.activeElement = this; MR.find(id).props.onFocus(); MR.rerender(); } };
+});
+var PREVENTED = 0;
+function key(k) {
+  MR.find('pk-card-menu-list:p1').props.onKeyDown({ key: k, currentTarget: { querySelectorAll: function () { return DOM; } }, preventDefault: function () { PREVENTED++; } });
+}
+function stops() { return ['e:p1', 'c:p1', 'd:p1'].map(function (id) { return MR.find(id).props.tabIndex; }); }
+"""
+
+
+def test_the_open_menu_is_one_tab_stop(kit) -> None:
+    """The WAI-ARIA roving tabindex (the lead's note on #763): the list is ONE Tab stop, the item that has the focus, instead of every item being one."""
+    kit.eval(MENU + "MR.click('pk-card-menu:p1');")
+    assert js(kit, "['e:p1', 'c:p1', 'd:p1'].map(function (id) { return MR.find(id).props.tabIndex; })") == [0, -1, -1]
+    assert kit.eval("MR.find('pk-card-menu:p1').props.tabIndex === undefined"), "the trigger is a stop of its own, in the page's tab order"
+
+
+def test_the_arrow_keys_move_the_focus_and_the_focused_item_becomes_the_tab_stop(kit) -> None:
+    kit.eval(MENU + "MR.click('pk-card-menu:p1');" + LIST_DOM + "document.activeElement = DOM[0];")
+    kit.eval("key('ArrowDown');")
+    assert js(kit, "stops()") == [-1, 0, -1] and kit.eval("document.activeElement === DOM[1]")
+    kit.eval("key('ArrowDown'); key('ArrowDown');")
+    assert js(kit, "stops()") == [0, -1, -1], "it wraps from the last item to the first"
+    kit.eval("key('ArrowUp');")
+    assert js(kit, "stops()") == [-1, -1, 0], "and from the first to the last"
+    kit.eval("key('Home');")
+    assert js(kit, "stops()") == [0, -1, -1]
+    kit.eval("key('End');")
+    assert js(kit, "stops()") == [-1, -1, 0]
+    assert kit.eval("PREVENTED") == 6, "a key the menu uses does not also scroll the page"
+    kit.eval("key('a'); key('Tab');")
+    assert js(kit, "stops()") == [-1, -1, 0] and kit.eval("PREVENTED") == 6, "any other key is left alone, Tab included: it leaves the list"
+
+
+def test_an_item_the_focus_reaches_by_any_other_way_becomes_the_tab_stop(kit) -> None:
+    kit.eval(MENU + "MR.click('pk-card-menu:p1'); MR.find('c:p1').props.onFocus(); MR.rerender();")
+    assert js(kit, "['e:p1', 'c:p1', 'd:p1'].map(function (id) { return MR.find(id).props.tabIndex; })") == [-1, 0, -1]
+
+
+def test_closing_the_menu_gives_the_first_item_the_tab_stop_back(kit) -> None:
+    kit.eval(MENU + "MR.click('pk-card-menu:p1'); MR.find('d:p1').props.onFocus(); MR.rerender();")
+    kit.eval("__layers[__layers.length - 1].handler({ preventDefault: function () {} }); MR.rerender();")
+    assert kit.eval("MR.find('pk-card-menu-list:p1') === null")
+    kit.eval("MR.click('pk-card-menu:p1');")
+    assert js(kit, "['e:p1', 'c:p1', 'd:p1'].map(function (id) { return MR.find(id).props.tabIndex; })") == [0, -1, -1]
+
+
+def test_the_menu_closes_when_the_focus_leaves_it_and_not_when_it_moves_inside_it(kit) -> None:
+    kit.eval(MENU + "MR.click('pk-card-menu:p1');")
+    box = 'MR.findProp("className", "pk-card-menu")'
+    kit.eval(f"{box}.props.onBlur({{ relatedTarget: {{}}, currentTarget: {{ contains: function () {{ return true; }} }} }}); MR.rerender();")
+    assert kit.eval("!!MR.find('pk-card-menu-list:p1')"), "focus that moved to another item of the menu keeps it open"
+    kit.eval(f"{box}.props.onBlur({{ relatedTarget: null, currentTarget: {{ contains: function () {{ return false; }} }} }}); MR.rerender();")
+    assert kit.eval("!!MR.find('pk-card-menu-list:p1')"), "a blur to nothing is the outside-click listener's business"
+    kit.eval(f"{box}.props.onBlur({{ relatedTarget: {{}}, currentTarget: {{ contains: function () {{ return false; }} }} }}); MR.rerender();")
+    assert kit.eval("MR.find('pk-card-menu-list:p1') === null"), "a Tab out of the list closes it"
     assert names(kit) == []
 
 

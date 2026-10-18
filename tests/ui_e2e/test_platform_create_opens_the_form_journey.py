@@ -55,9 +55,9 @@ def test_new_toolset_opens_the_create_form_with_no_list_behind_it(page, base_url
         expect(page.get_by_test_id("nv-overlay-body")).to_be_visible(timeout=15_000)
         expect(page.get_by_test_id("nv-overlay-body")).to_contain_text(toolset_id)
         assert f"overlay=toolsets::{toolset_id}" in page.url.replace("%3A", ":"), page.url
-        # The grid pages at six cards, so filter to the new id before looking for its card.
+        # The grid pages at twelve cards, so filter to the new id before looking for its card.
         page.get_by_test_id("nv-plat-filter").fill(toolset_id)
-        expect(page.get_by_test_id(f"nv-pcard-del:{toolset_id}")).to_be_attached(timeout=15_000)
+        expect(page.get_by_test_id(f"pk-card:{toolset_id}")).to_be_attached(timeout=15_000)
     finally:
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
             c.delete(f"/v1/toolsets/{toolset_id}")
@@ -121,7 +121,7 @@ def test_new_service_opens_the_create_form_with_no_list_behind_it_and_lands_on_t
         expect(page.get_by_test_id("nv-overlay-body")).to_contain_text(name)
         assert "overlay=services::" in page.url.replace("%3A", ":"), page.url
         page.get_by_test_id("nv-plat-filter").fill(description)
-        expect(page.locator("[data-testid^='nv-pcard-del:']")).to_have_count(1, timeout=15_000)
+        expect(page.locator("[data-testid^='pk-card:']")).to_have_count(1, timeout=15_000)
     finally:
         _delete_services_named(base_url, name)
 

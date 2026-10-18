@@ -22,7 +22,7 @@ pytestmark = smk("SMK-UI-03", status="partial")
 
 
 def _open_agents_filtered(page, console_url: str, query: str) -> None:
-    """The Platform list pages at six cards, so filter first: the card under test is then always on page one.
+    """The Platform list pages at twelve cards, so filter first: the card under test is then always on page one.
 
     The shell must be mounted before the view hash is assigned: a hash set while it is still mounting can be replaced
     by the shell's own normalisation to ``#/w/<ws>`` (the Studio view), which left one run in four looking at Studio
@@ -45,8 +45,11 @@ def test_the_operator_card_names_the_consequence_and_cancel_deletes_nothing(
     page, base_url: str, console_url: str,
 ) -> None:
     _open_agents_filtered(page, console_url, "operator")
-    delete = page.get_by_test_id("nv-pcard-del:operator")
-    expect(delete).to_be_visible(timeout=15_000)
+    menu = page.get_by_test_id("pk-card-menu:operator")
+    expect(menu).to_be_visible(timeout=15_000)
+    menu.click()
+    delete = page.get_by_test_id("nv-plat-delete:operator")
+    expect(delete).to_be_visible()
     delete.click()
 
     dialog = page.locator(".modal-overlay")
@@ -86,8 +89,11 @@ def test_a_user_agent_keeps_the_plain_prompt_and_confirming_deletes_it_and_refre
         assert r.status_code == 201, f"seed agent failed: {r.text}"
     try:
         _open_agents_filtered(page, console_url, agent_id)
-        delete = page.get_by_test_id(f"nv-pcard-del:{agent_id}")
-        expect(delete).to_be_visible(timeout=15_000)
+        menu = page.get_by_test_id(f"pk-card-menu:{agent_id}")
+        expect(menu).to_be_visible(timeout=15_000)
+        menu.click()
+        delete = page.get_by_test_id(f"nv-plat-delete:{agent_id}")
+        expect(delete).to_be_visible()
         delete.click()
 
         dialog = page.locator(".modal-overlay")
@@ -95,7 +101,7 @@ def test_a_user_agent_keeps_the_plain_prompt_and_confirming_deletes_it_and_refre
         expect(dialog).not_to_contain_text("not set up")
 
         dialog.get_by_role("button", name="Confirm").click()
-        expect(page.get_by_test_id(f"nv-pcard-del:{agent_id}")).to_have_count(0, timeout=15_000)
+        expect(page.get_by_test_id(f"pk-card:{agent_id}")).to_have_count(0, timeout=15_000)
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
             assert c.get(f"/v1/agents/{agent_id}").status_code == 404
     finally:

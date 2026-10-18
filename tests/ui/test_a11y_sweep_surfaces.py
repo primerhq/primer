@@ -17,6 +17,7 @@ from tests.ui_e2e._shell_helpers import overlay_target
 ROOT = Path(__file__).resolve().parents[2]
 SHELL_URL = (ROOT / "ui" / "foundation" / "shell-url.js").read_text(encoding="utf-8")
 PLATFORM_JSX = (ROOT / "ui" / "components" / "console" / "nv-platform.jsx").read_text(encoding="utf-8")
+KIT_JSX = (ROOT / "ui" / "components" / "shared" / "platform-kit.jsx").read_text(encoding="utf-8")
 SYSTEM_JSX = (ROOT / "ui" / "components" / "console" / "nv-system.jsx").read_text(encoding="utf-8")
 OVERLAYS_JSX = (ROOT / "ui" / "components" / "console" / "nv-overlays.jsx").read_text(encoding="utf-8")
 MOBILE_JSX = (ROOT / "ui" / "components" / "console" / "nv-mobile-shell.jsx").read_text(encoding="utf-8")
@@ -187,13 +188,14 @@ def test_every_provider_route_waits_for_the_body_of_its_own_class() -> None:
 
 def test_a_platform_view_waits_for_its_own_page_and_for_its_list_to_load() -> None:
     assert '"nv-plat-page:" + nav' in PLATFORM_JSX and 'data-testid="nv-plat-page:providers"' in PLATFORM_JSX
-    assert 'data-testid="nv-plat-empty"' in PLATFORM_JSX and 'data-testid={"nv-pcard:" + c.name}' in PLATFORM_JSX
+    # a card is the platform kit's since Platform revamp Plan 01 Task 10: pk-card:<id>
+    assert 'data-testid="nv-plat-empty"' in PLATFORM_JSX and 'data-testid={"pk-card:" + id}' in KIT_JSX
     for nav in surfaces.PLATFORM_FORMS:
         markers = surfaces.ready_selectors("platform-view", nav)
         assert markers[0] == f'[data-testid="nv-plat-page:{nav}"]', nav
         assert len(markers) == (3 if nav == "providers" else 2), f"{nav}: the page, and the proof that its list or body has loaded"
     assert surfaces.ready_selectors("platform-view", "providers")[1:] == ['[data-testid="provider-body-all"]', '[data-testid="provider-empty-all"], [data-testid="provider-body-all"] .pc-card']
-    assert surfaces.ready_selectors("platform-view", "agents")[1] == '[data-testid="nv-plat-empty"], [data-testid^="nv-pcard:"]'
+    assert surfaces.ready_selectors("platform-view", "agents")[1] == '[data-testid="nv-plat-empty"], [data-testid^="pk-card:"]'
 
 
 def test_a_provider_route_waits_for_its_class_to_have_loaded_its_instances_or_said_it_has_none() -> None:
@@ -247,8 +249,9 @@ def test_every_surface_has_a_floor_on_its_body_and_none_that_is_not_visited() ->
         assert isinstance(floor, int) and floor >= 0, (name, floor)
     for modal in (n for n in surfaces.FLOORS if " / " in n and n.split(" ")[0] in {"overlay-page", "platform-view", "system-view"}):
         assert surfaces.FLOORS[modal] >= 1, f"{modal}: a form with no control in its body is the form that failed to draw"
-    for bar in ('.modal-h', '.modal-f', '.nv-overlay-head', '.nv-plat-head', '[role="tablist"]', '[data-testid="gb-topbar"]'):
+    for bar in ('.modal-h', '.modal-f', '.nv-overlay-head', '.pk-header', '[role="tablist"]', '[data-testid="gb-topbar"]'):
         assert bar in surfaces.CHROME, bar
+    assert '.nv-plat-head' not in surfaces.CHROME, "the Platform page's header is the kit's (.pk-header)"
 
 
 def test_the_phone_has_its_four_tabs() -> None:

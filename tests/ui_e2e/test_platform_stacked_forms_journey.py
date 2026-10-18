@@ -93,7 +93,7 @@ def test_new_agent_opens_the_form_with_no_list_behind_it_and_a_created_agent_lan
             expect(page.get_by_test_id("nv-overlay-body")).to_be_visible(timeout=15_000)
             assert f"overlay=agents::{agent_id}" in _plain_url(page), page.url
             page.get_by_test_id("nv-plat-filter").fill(agent_id)
-            expect(page.get_by_test_id(f"nv-pcard-del:{agent_id}")).to_be_attached(timeout=15_000)
+            expect(page.get_by_test_id(f"pk-card:{agent_id}")).to_be_attached(timeout=15_000)
         finally:
             _delete(base_url, f"/v1/agents/{agent_id}")
 
@@ -144,7 +144,7 @@ def test_new_graph_opens_the_dialog_with_no_list_behind_it_and_a_created_graph_l
             expect(page.get_by_test_id("nv-overlay-body")).to_be_visible(timeout=15_000)
             assert f"overlay=graphs::{graph_id}" in _plain_url(page), page.url
             page.get_by_test_id("nv-plat-filter").fill(graph_id)
-            expect(page.get_by_test_id(f"nv-pcard-del:{graph_id}")).to_be_attached(timeout=15_000)
+            expect(page.get_by_test_id(f"pk-card:{graph_id}")).to_be_attached(timeout=15_000)
         finally:
             _delete(base_url, f"/v1/graphs/{graph_id}")
             _delete(base_url, f"/v1/agents/{agent_id}")

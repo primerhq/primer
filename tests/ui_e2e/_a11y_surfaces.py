@@ -34,9 +34,9 @@ FORM_ROOTS = {MODAL, NEW_WORKSPACE_OVERLAY}
 KIND_MENU_ITEM = '[data-testid^="provider-register-kind-"]'    # PC_RegisterDropdown: a menu of the kinds of one class
 TYPE_MENU_ITEM = '[data-testid^="provider-register-type-"]'    # PC_RegisterAll: a menu of the classes, on the Platform page that shows them all
 
-# the fixed furniture of a surface, whose controls are examined for names and not counted toward its floor: a modal's title and footer, an overlay's head and foot, the Platform page's header, the
+# the fixed furniture of a surface, whose controls are examined for names and not counted toward its floor: a modal's title and footer, an overlay's head and foot, the Platform page's kit header, the
 # phone's tab bar, the graph builder's top bar
-CHROME = '.modal-h, .modal-f, .sheet-h, .sheet-f, .nv-overlay-head, .nv-overlay-foot, .nv-plat-head, [role="tablist"], [data-testid="gb-topbar"]'
+CHROME = '.modal-h, .modal-f, .sheet-h, .sheet-f, .nv-overlay-head, .nv-overlay-foot, .pk-header, [role="tablist"], [data-testid="gb-topbar"]'
 
 
 class Form(NamedTuple):
@@ -117,16 +117,16 @@ PENDING_CUSTOM_PAGES: set[str] = {"web", "templates"}
 PLATFORM_FORMS: dict[str, list[Form]] = {
     "providers": [_register(TYPE_MENU_ITEM)],
     "profiles": [Form("+ Aggregate", MODAL)],
-    "toolsets": [Form("New toolset", MODAL)],
+    "toolsets": [Form("+ Toolset", MODAL)],
     "tools": [],
-    "collections": [Form("New collection", MODAL)],
+    "collections": [Form("+ Collection", MODAL)],
     "agents": [Form("+ Agent", MODAL)],
-    "graphs": [Form("New graph", MODAL)],
-    "triggers": [Form("New trigger", MODAL)],
-    "channels": [Form("New channel", MODAL)],
-    "harnesses": [Form("New harness", MODAL), Form("Build outbound", MODAL)],
-    "services": [Form("New service", MODAL)],
-    "approvals": [Form("New policy", MODAL)],
+    "graphs": [Form("+ Graph", MODAL)],
+    "triggers": [Form("+ Trigger", MODAL)],
+    "channels": [Form("+ Channel", MODAL)],
+    "harnesses": [Form("+ Harness", MODAL), Form("Build outbound", MODAL)],
+    "services": [Form("+ Service", MODAL)],
+    "approvals": [Form("+ Policy", MODAL)],
 }
 
 # the System VIEWS (view=system:<id>), one entry per id of ui/foundation/shell-url.js SH_VIEWS.system, and the create forms three of them open from their own page
@@ -139,7 +139,7 @@ SYSTEM_FORMS: dict[str, list[Form]] = {
 }
 
 NO_FORM: dict[str, str] = {
-    "overlay-page approvals": "its policies are created on the Platform view (platform-view approvals, New policy)",
+    "overlay-page approvals": "its policies are created on the Platform view (platform-view approvals, + Policy)",
     "platform-view tools": "the tool catalogue is read-only",
     "system-view dashboard": "the dashboard shows the install's state; nothing is created from it",
     "system-view apikeys": "the admin view of every user's tokens only lists and revokes; a token is created from Profile",
@@ -168,7 +168,7 @@ def ready_selectors(kind: str, name: str) -> list[str]:
         page = f'[data-testid="nv-plat-page:{name}"]'
         if name == "providers":
             return [page, '[data-testid="provider-body-all"]', _providers_loaded("all")]
-        return [page, '[data-testid="nv-plat-empty"], [data-testid^="nv-pcard:"]']
+        return [page, '[data-testid="nv-plat-empty"], [data-testid^="pk-card:"]']
     if kind == "system-view":
         return [f'[data-testid="nv-sys-page:{name}"]']
     if kind == "overlay-page":
@@ -277,25 +277,25 @@ FLOORS: dict[str, int] = {
     "platform-view profiles": 1,                        # on a fresh install, the empty state's "Open Providers › LLM"
     "platform-view profiles / + Aggregate": 2,
     "platform-view toolsets": 1,
-    "platform-view toolsets / New toolset": 2,
+    "platform-view toolsets / + Toolset": 2,
     "platform-view tools": 1,
     "platform-view collections": 0,                     # likewise: the empty state of an install with no collection has no control; the page and its list having loaded is the check
-    "platform-view collections / New collection": 2,
+    "platform-view collections / + Collection": 2,
     "platform-view agents": 3,
     "platform-view agents / + Agent": 14,
     "platform-view graphs": 1,
-    "platform-view graphs / New graph": 2,
+    "platform-view graphs / + Graph": 2,
     "platform-view triggers": 1,
-    "platform-view triggers / New trigger": 1,
+    "platform-view triggers / + Trigger": 1,
     "platform-view channels": 1,
-    "platform-view channels / New channel": 2,
+    "platform-view channels / + Channel": 2,
     "platform-view harnesses": 1,
-    "platform-view harnesses / New harness": 3,
+    "platform-view harnesses / + Harness": 3,
     "platform-view harnesses / Build outbound": 3,
     "platform-view services": 1,
-    "platform-view services / New service": 1,
+    "platform-view services / + Service": 1,
     "platform-view approvals": 5,
-    "platform-view approvals / New policy": 8,
+    "platform-view approvals / + Policy": 8,
     "system-view dashboard": 1,
     "system-view users": 1,
     "system-view users / Create user": 3,

@@ -247,7 +247,7 @@ def test_u0107_graph_builder_persistence_journey(
         )
         page.get_by_test_id("nv-plat-filter").fill(graph_id)
         expect(
-            page.get_by_test_id(f"nv-pcard-del:{graph_id}")
+            page.get_by_test_id(f"pk-card:{graph_id}")
         ).to_be_attached(timeout=15_000)
 
         # ----- 8. Reopen the graph → /graphs/{gid} -----------------

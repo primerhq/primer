@@ -102,13 +102,16 @@ def test_delete_is_confirm_guarded():
 
 
 def test_search_query_resets_the_page():
-    # R4 review finding 3: without this, Math.min(pageNo, pages - 1)
-    # clamps toward the END of a search-narrowed range, so typing a
-    # query while on a later page could land on the LAST page of
-    # matches instead of the first. Mirrors toolsets.jsx:1259's
-    # equivalent pattern for its own text/policy filters.
-    m = re.search(r"React\.useEffect\(function \(\) \{ setPageNo\(0\); \}, \[q\]\);", PLAT)
-    assert m, "pageNo must reset when the search query q changes"
+    # R4 review finding 3: without a reset, a clamp toward the END of a
+    # search-narrowed range meant typing a query while on a later page
+    # could land on the LAST page of matches instead of the first. The
+    # page now pages through the kit's PK_usePagedFilter (Platform revamp
+    # Plan 01 Task 10, design 5.1), whose setQ sets the query AND page 0
+    # in one call (tests/ui/test_platform_kit_page.py runs that); this pin
+    # keeps the page on it, with no page number of its own to forget.
+    assert "PK_usePagedFilter(cards, { pageSize: NV_PLAT_PAGE_SIZE, text: NV_platFilterText })" in PLAT
+    assert "onChange: paged.setQ" in PLAT, "the filter box reports through the kit's setQ"
+    assert "setPageNo" not in PLAT and "pageNo" not in PLAT, "the page keeps no page number of its own"
 
 
 def test_providers_ride_the_real_plurals():
@@ -139,6 +142,8 @@ def test_manifest_views_match_the_grammar():
 
 def test_script_and_css_landed():
     assert "components/console/nv-platform.jsx" in HTML
-    for cls in (".nv-plat-nav", ".nv-pcard-grid", ".nv-fam-pill",
+    # The generic pages draw through the kit (Platform revamp Plan 01 Task 10): its grid and card replace .nv-pcard-grid, and the family pills went with
+    # the providers UI this page used to draw itself.
+    for cls in (".nv-plat-nav", ".pk-grid", ".pk-card",
                 ".nv-audit-table", ".nv-plat-empty"):
         assert cls in CSS, cls

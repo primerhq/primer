@@ -3,7 +3,7 @@
 A filter box with only a placeholder, and a filter ``<select>`` whose only text is its first option, are unnamed edit fields and combo boxes to a screen reader. This opens, in one browser and one
 after the other, each Platform list page that has a filter, the create forms whose inputs had a placeholder and nothing else (workspaces, collections, the agent form's tool picker), the speech
 settings, the New workspace overlay and the Activity overlay, and the Platform view (its nav rows and the service card grid, filtered to one seeded service by the id the services card shows as its name, so the assert
-is not a race with the 6-card page size), and fails on any visible input, select, textarea or button without a name (``tests/ui_e2e/_a11y.py``). The create forms are swept
+is not a race with the 12-card page size), and fails on any visible input, select, textarea or button without a name (``tests/ui_e2e/_a11y.py``). The create forms are swept
 below their header, so the dialog's close button (its own PR) is not this journey's.
 """
 
@@ -73,7 +73,7 @@ def test_the_platform_list_filters_and_plain_create_inputs_have_names(base_url: 
     # The Platform view: its nav rows and the card grid's buttons are swept for names too. One
     # seeded service, filtered to its id (the services card shows the id as its name; the
     # name field the operator typed is not drawn on the card), so the assert is not a race
-    # with the 6-card page size; the journey removes it in the finally.
+    # with the 12-card page size; the journey removes it in the finally.
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
         r = c.post("/v1/services", json={"name": f"named-sweep-{unique_suffix}", "description": f"sweep-{unique_suffix}", "viewer_auth": "console"})
         assert r.status_code == 201, r.text
@@ -81,7 +81,7 @@ def test_the_platform_list_filters_and_plain_create_inputs_have_names(base_url: 
     try:
         open_view(page, console_url, wid, "platform:services")
         page.get_by_test_id("nv-plat-filter").fill(service_id)
-        expect(page.get_by_test_id(f"nv-pcard:{service_id}")).to_be_visible(timeout=15_000)
+        expect(page.get_by_test_id(f"pk-card:{service_id}")).to_be_visible(timeout=15_000)
         check("platform view", '[data-testid="nv-platform"]')
     finally:
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
