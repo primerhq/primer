@@ -250,9 +250,11 @@ class WorkspaceRegistry:
         raised BEFORE :meth:`get_backend`, so a refused create builds nothing
         and leaves nothing behind. The same door refuses the other inputs a
         cluster would reject late and as a 500 (lead ruling 17 of plan 08): an
-        environment variable name that is not a POSIX name or is one the
-        platform sets itself (:mod:`primer.workspace.env_names`), and a
-        template CPU or memory above the sane maxima.
+        environment variable name that Kubernetes would refuse (not its
+        ``^[-._a-zA-Z][-._a-zA-Z0-9]*$`` pattern, or over 256 characters; so
+        ``my-var`` and ``a.b`` pass) or that is one the platform sets itself
+        (:mod:`primer.workspace.env_names`), and a template CPU or memory
+        above the sane maxima.
         """
         if workspace_id is not None and re.fullmatch(
             WORKSPACE_ID_PATTERN, workspace_id

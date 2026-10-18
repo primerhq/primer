@@ -163,7 +163,15 @@ async def test_a_template_with_an_absurd_memory_answers_validation_error_naming_
     assert calls == []
 
 
-@pytest.mark.parametrize("name", ["1BAD", "a b", "RUNTIME_TOKEN"])
+#: What an ``invalid_env_name`` refusal says (lead ruling 17 of plan 08, FINAL from the review of #789).
+_INVALID_ENV_NAME = "An environment variable name is 1 to 256 characters of ASCII letters, digits, '_', '-' and '.', and does not start with a digit. Rename or remove it."
+
+#: Names Kubernetes accepts that the first (POSIX-only) version of the rule refused, one that starts with an underscore, and the
+#: longest allowed.
+_KUBERNETES_NAMES = ["my-var", "a.b", "_x", "a" * 256]
+
+
+@pytest.mark.parametrize("name", ["1BAD", "a b", "A=B", "", "café", "RUNTIME_TOKEN", "PRIMER_RUNTIME_TOKEN"])
 async def test_a_bad_env_name_in_the_overrides_answers_validation_error_naming_it(toolset, calls, name):
     result = await toolset.call(
         tool_name="create_workspace",
@@ -172,18 +180,89 @@ async def test_a_bad_env_name_in_the_overrides_answers_validation_error_naming_i
     )
 
     assert result.is_error and json.loads(result.output)["type"] == "validation-error", result.output
-    assert f"overrides.env.{name}" in json.loads(result.output)["message"]
+    assert f"overrides.env.{ascii(name)}: " in json.loads(result.output)["message"]
     assert "the-secret-value" not in result.output
     assert calls == []
 
 
-async def test_a_template_env_the_cluster_would_refuse_answers_validation_error(toolset, sp, calls):
+async def test_an_invalid_env_name_is_refused_with_the_kubernetes_rule_in_the_message(toolset, calls):
+    result = await toolset.call(
+        tool_name="create_workspace",
+        arguments={"template_id": "tpl-k3s", "overrides": {"env": {"1BAD": "v"}}},
+        ctx=caller("user"),
+    )
+
+    assert result.is_error and json.loads(result.output)["message"] == f"overrides.env.'1BAD': {_INVALID_ENV_NAME}", result.output
+    assert calls == []
+
+
+async def test_a_257_character_env_name_answers_validation_error_and_the_message_cuts_it(toolset, calls):
+    name = "a" * 257
+
+    result = await toolset.call(
+        tool_name="create_workspace",
+        arguments={"template_id": "tpl-k3s", "overrides": {"env": {name: "v"}}},
+        ctx=caller("user"),
+    )
+
+    assert result.is_error and json.loads(result.output)["type"] == "validation-error", result.output
+    message = json.loads(result.output)["message"]
+    assert message.startswith("overrides.env.") and name not in message and "..." in message
+    assert calls == []
+
+
+async def test_a_name_with_a_newline_is_shown_escaped_in_the_message(toolset, calls):
+    result = await toolset.call(
+        tool_name="create_workspace",
+        arguments={"template_id": "tpl-k3s", "overrides": {"env": {"a\nb": "v"}}},
+        ctx=caller("user"),
+    )
+
+    assert result.is_error and json.loads(result.output)["type"] == "validation-error", result.output
+    message = json.loads(result.output)["message"]
+    assert "\n" not in message and "'a\\nb'" in message, message
+    assert calls == []
+
+
+@pytest.mark.parametrize("name", ["1BAD", "has space", "a" * 257, "PRIMER_RUNTIME_TOKEN", "RUNTIME_TOKEN"])
+async def test_a_template_env_the_cluster_would_refuse_answers_validation_error(toolset, sp, calls, name):
     await sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate(
         id="tpl-env", provider_id="k3s", description="d", backend=KubernetesTemplateConfig(image="rt:1"),
-        env={"1BAD": SecretStr("v")},
+        env={name: SecretStr("the-secret-value")},
     ))
 
     result = await toolset.call(tool_name="create_workspace", arguments={"template_id": "tpl-env"}, ctx=caller("user"))
 
-    assert result.is_error and "template 'tpl-env' sets env.1BAD" in json.loads(result.output)["message"], result.output
+    assert result.is_error and json.loads(result.output)["type"] == "validation-error", result.output
+    message = json.loads(result.output)["message"]
+    assert message.startswith("template 'tpl-env' sets env.")
+    if len(ascii(name)) <= 80:
+        assert f"env.{ascii(name)}: " in message
+    assert "the-secret-value" not in result.output
     assert calls == []
+
+
+@pytest.mark.parametrize("name", _KUBERNETES_NAMES)
+async def test_a_kubernetes_env_name_in_the_overrides_creates_the_workspace(toolset, calls, name):
+    result = await toolset.call(
+        tool_name="create_workspace",
+        arguments={"template_id": "tpl-k3s", "overrides": {"env": {name: "v"}}},
+        ctx=caller("user"),
+    )
+
+    assert not result.is_error, result.output
+    assert len(calls) == 1 and list(calls[0].env) == [name]
+
+
+@pytest.mark.parametrize("name", _KUBERNETES_NAMES)
+async def test_a_stored_template_with_a_kubernetes_env_name_still_creates_workspaces(toolset, sp, calls, name):
+    """The first (POSIX-only) version of the rule turned such a template into a refusal on every create."""
+    await sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate(
+        id="tpl-env", provider_id="k3s", description="d", backend=KubernetesTemplateConfig(image="rt:1"),
+        env={name: SecretStr("v")},
+    ))
+
+    result = await toolset.call(tool_name="create_workspace", arguments={"template_id": "tpl-env"}, ctx=caller("user"))
+
+    assert not result.is_error, result.output
+    assert len(calls) == 1

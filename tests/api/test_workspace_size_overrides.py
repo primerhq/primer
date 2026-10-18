@@ -257,7 +257,15 @@ async def test_a_template_with_an_absurd_cpu_is_a_422_that_names_the_template_an
     assert ok.status_code == 201, ok.text     # the override replaces the absurd field
 
 
-@pytest.mark.parametrize("name", ["1BAD", "a b", "A=B", "a-b"])
+#: What an ``invalid_env_name`` refusal says (lead ruling 17 of plan 08, FINAL from the review of #789).
+_INVALID_ENV_NAME = "An environment variable name is 1 to 256 characters of ASCII letters, digits, '_', '-' and '.', and does not start with a digit. Rename or remove it."
+
+#: Names Kubernetes accepts that the first (POSIX-only) version of the rule refused, one that starts with an underscore, and the
+#: longest allowed.
+_KUBERNETES_NAMES = ["my-var", "a.b", "_x", "a" * 256]
+
+
+@pytest.mark.parametrize("name", ["1BAD", "a b", "A=B", "", "café", "9"])
 async def test_an_invalid_env_name_in_the_overrides_is_a_422_naming_it(client, backend_calls, sp, name):
     r = await client.post("/v1/workspaces", json={"template_id": "tpl-loc", "overrides": {"env": {name: "v"}}})
 
@@ -265,12 +273,35 @@ async def test_an_invalid_env_name_in_the_overrides_is_a_422_naming_it(client, b
     body = r.json()
     assert body["type"] == "/errors/validation-error"
     assert body["extensions"]["errors"] == [{
-        "loc": ["body", "overrides", "env", name],
-        "msg": "An environment variable name may use letters, digits and underscores and must not start with a digit. Rename or remove it.",
-        "type": "invalid_env_name",
+        "loc": ["body", "overrides", "env", name], "msg": _INVALID_ENV_NAME, "type": "invalid_env_name",
     }]
-    assert body["detail"].startswith(f"overrides.env.{name}:")
+    assert body["detail"] == f"overrides.env.{ascii(name)}: {_INVALID_ENV_NAME}"
     assert backend_calls == [] and await _workspace_rows(sp) == []
+
+
+async def test_a_257_character_env_name_is_a_422_and_the_message_cuts_it(client, backend_calls, sp):
+    name = "a" * 257
+
+    r = await client.post("/v1/workspaces", json={"template_id": "tpl-k3s", "overrides": {"env": {name: "v"}}})
+
+    assert r.status_code == 422, r.text
+    body = r.json()
+    assert body["extensions"]["errors"] == [{
+        "loc": ["body", "overrides", "env", name], "msg": _INVALID_ENV_NAME, "type": "invalid_env_name",
+    }]
+    assert name not in body["detail"] and "..." in body["detail"]
+    assert backend_calls == [] and await _workspace_rows(sp) == []
+
+
+async def test_a_name_with_a_newline_is_shown_escaped_in_the_message(client, backend_calls):
+    """The message is logged; the name is the caller's own input, so it goes through ``ascii()`` (review of #789, nit 2)."""
+    r = await client.post("/v1/workspaces", json={"template_id": "tpl-loc", "overrides": {"env": {"a\nb": "v"}}})
+
+    assert r.status_code == 422, r.text
+    body = r.json()
+    assert "\n" not in body["detail"] and "'a\\nb'" in body["detail"], body["detail"]
+    assert body["extensions"]["errors"][0]["loc"] == ["body", "overrides", "env", "a\nb"]
+    assert backend_calls == []
 
 
 @pytest.mark.parametrize("template_id", ["tpl-loc", "tpl-dock", "tpl-k3s"])
@@ -286,19 +317,53 @@ async def test_a_runtime_token_name_is_a_422_that_names_it_and_never_shows_the_v
     assert backend_calls == []
 
 
-async def test_a_template_env_the_cluster_would_refuse_is_a_422_at_create(client, backend_calls, sp):
+@pytest.mark.parametrize("name, kind", [
+    ("has space", "invalid_env_name"), ("1BAD", "invalid_env_name"), ("A=B", "invalid_env_name"), ("a" * 257, "invalid_env_name"),
+    ("PRIMER_RUNTIME_TOKEN", "reserved_env_name"), ("RUNTIME_TOKEN", "reserved_env_name"),
+])
+async def test_a_template_env_the_cluster_would_refuse_is_a_422_at_create(client, backend_calls, sp, name, kind):
     await sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate(
         id="tpl-env", provider_id="k3s", description="d", backend=KubernetesTemplateConfig(image="rt:1"),
-        env={"has space": SecretStr("v"), "RUNTIME_TOKEN": SecretStr("v")},
+        env={name: SecretStr("the-secret-value")},
     ))
 
     r = await client.post("/v1/workspaces", json={"template_id": "tpl-env"})
 
     assert r.status_code == 422, r.text
     body = r.json()
-    assert "template 'tpl-env' sets env.has space" in body["detail"] and "env.RUNTIME_TOKEN" in body["detail"]
-    assert "errors" not in body["extensions"]
+    assert body["type"] == "/errors/validation-error"
+    assert body["detail"].startswith("template 'tpl-env' sets env.") and body["detail"].endswith(
+        _INVALID_ENV_NAME if kind == "invalid_env_name" else "This name is reserved for the workspace runtime's token and cannot be set. Remove it."
+    )
+    if len(ascii(name)) <= 80:
+        assert f"env.{ascii(name)}:" in body["detail"]
+    assert "errors" not in body["extensions"]      # the name is stored in the template, not sent in this request: no `loc`
+    assert "the-secret-value" not in r.text
     assert backend_calls == [] and await _workspace_rows(sp) == []
+
+
+@pytest.mark.parametrize("template_id", ["tpl-loc", "tpl-dock", "tpl-k3s"])
+@pytest.mark.parametrize("name", _KUBERNETES_NAMES)
+async def test_a_kubernetes_env_name_in_the_overrides_creates_the_workspace(client, backend_calls, template_id, name):
+    r = await client.post("/v1/workspaces", json={"template_id": template_id, "overrides": {"env": {name: "v"}}})
+
+    assert r.status_code == 201, r.text
+    assert len(backend_calls) == 1 and list(backend_calls[0]["overrides"].env) == [name]
+
+
+@pytest.mark.parametrize("name", _KUBERNETES_NAMES)
+async def test_a_stored_template_with_a_kubernetes_env_name_still_creates_workspaces(client, backend_calls, sp, name):
+    """The first (POSIX-only) version of the rule turned such a template into a 422 on every create, the boot's default workspace
+    included (its 422 is swallowed by the ensure pass, so that workspace was never made)."""
+    await sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate(
+        id="tpl-env", provider_id="k3s", description="d", backend=KubernetesTemplateConfig(image="rt:1"),
+        env={name: SecretStr("v")},
+    ))
+
+    r = await client.post("/v1/workspaces", json={"template_id": "tpl-env"})
+
+    assert r.status_code == 201, r.text
+    assert len(backend_calls) == 1 and backend_calls[0]["template"] == "tpl-env"
 
 
 async def test_good_env_names_still_create_the_workspace(client, backend_calls):
