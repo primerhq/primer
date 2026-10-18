@@ -85,7 +85,7 @@ An `Agent` row carries:
   they are composed onto the agent automatically when it attaches to
   a workspace.) Every toolset a tool id names must resolve: it is a built-in
   toolset (`system`, `workspaces`, `workspace_ext`, `misc`, `web`,
-  `harness`, `trigger`, `collections`, `crud`) or a stored `Toolset` row
+  `harness`, `trigger`, `collections`, `crud`, `canvas`) or a stored `Toolset` row
   (`search` is a stored row). A tool id with no `__` is checked as its own
   toolset at create and in `/status`, but the runtime skips such an id when it
   resolves an agent's toolsets, so it never provides a tool: always write

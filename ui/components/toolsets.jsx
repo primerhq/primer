@@ -16,7 +16,7 @@
 // The built-in toolset ids, in catalogue order: a copy of
 // primer/api/routers/providers.py _BUILTIN_TOOLSETS that
 // tests/ui/test_toolset_builtin_ids.py pins to it. The New toolset hint names them.
-const TS_BUILTIN_RESERVED_IDS = ["system", "workspaces", "collections", "misc", "web", "harness", "trigger", "workspace_ext", "crud"];
+const TS_BUILTIN_RESERVED_IDS = ["system", "workspaces", "collections", "misc", "web", "harness", "trigger", "workspace_ext", "crud", "canvas"];
 
 // Internal-search status + dialog helpers for the Collections toolset card
 // (Revamp 06 Task 5; Task 6 wires them into the page). Plain JS, no JSX:

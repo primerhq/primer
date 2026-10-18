@@ -7,8 +7,8 @@ import pytest
 from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
 from primer.api.routers import providers
 
-# The built-in toolsets an agent can bind, in catalogue order (platform revamp, design section 11).
-BUILTIN_IDS = ["system", "workspaces", "collections", "misc", "web", "harness", "trigger", "workspace_ext", "crud"]
+# The built-in toolsets an agent can bind, in catalogue order (platform revamp, design section 11; pivot P5 adds the reserved canvas toolset, design 8.3).
+BUILTIN_IDS = ["system", "workspaces", "collections", "misc", "web", "harness", "trigger", "workspace_ext", "crud", "canvas"]
 
 
 @pytest.mark.asyncio
@@ -120,7 +120,7 @@ async def test_builtin_toolsets_lists_every_toolset_an_agent_can_bind(client):
 
 def test_the_catalogue_is_exactly_the_reserved_toolset_ids():
     ids = [spec["id"] for spec in providers._BUILTIN_TOOLSETS]
-    assert len(ids) == len(set(ids)) == 9
+    assert len(ids) == len(set(ids)) == 10
     assert set(ids) == RESERVED_TOOLSET_IDS
 
 

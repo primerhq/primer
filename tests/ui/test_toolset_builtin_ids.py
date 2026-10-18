@@ -93,6 +93,6 @@ def test_the_console_names_no_search_toolset() -> None:
 
 def test_the_new_toolset_hint_names_every_built_in_toolset() -> None:
     text = _hint_text()
-    assert text == ("Internal toolsets (system, workspaces, collections, misc, web, harness, trigger, workspace_ext, crud) "
+    assert text == ("Internal toolsets (system, workspaces, collections, misc, web, harness, trigger, workspace_ext, crud, canvas) "
                     "are runtime built-ins: they cannot be created via this form.")
     assert "\u2014" not in text

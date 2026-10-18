@@ -47,6 +47,7 @@ from primer.toolset.misc import build_misc_toolset
 from primer.toolset.system import build_system_toolset
 from primer.toolset.trigger import build_trigger_toolset_provider
 from primer.toolset.web import build_web_toolset
+from primer.toolset.canvas import build_canvas_toolset
 from primer.toolset.crud import build_crud_toolset
 from primer.toolset.workspace_ext import build_workspace_ext_toolset
 from primer.toolset.workspaces import build_workspaces_toolset
@@ -854,6 +855,16 @@ def _make_lifespan(config: AppConfig):
         provider_registry._crud_toolset_provider = crud_toolset  # noqa: SLF001
         app.state.crud_toolset = crud_toolset
 
+        # Build the always-on ``canvas`` toolset (pivot P5): the agent's door to the session canvas. The bus publishes the canvas frame
+        # and the record ticks, the workspace registry lets an operator's batch write its record; both tolerate being absent.
+        canvas_toolset = build_canvas_toolset(
+            storage_provider=storage_provider,
+            event_bus=event_bus,
+            workspace_registry=workspace_registry,
+        )
+        provider_registry._canvas_toolset_provider = canvas_toolset  # noqa: SLF001
+        app.state.canvas_toolset = canvas_toolset
+
         from primer.bootstrap.seed import builtin_toolset_providers, run_ensure_pass
         from primer.workspace.local_policy import validate_default_template
 
@@ -939,6 +950,7 @@ def _make_lifespan(config: AppConfig):
                     "trigger": trigger_toolset,
                     "workspace_ext": workspace_ext_toolset,
                     "collections": collections_toolset,
+                    "canvas": canvas_toolset,
                 },
             )
             app.state.internal_collections = ic_subsystem

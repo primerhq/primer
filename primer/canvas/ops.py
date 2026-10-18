@@ -9,14 +9,22 @@ the other way and gives the normalized ops a ``canvas_op`` record stores. Pure.
 from __future__ import annotations
 
 import copy
+import json
 from collections.abc import Sequence
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic_core import PydanticCustomError
 
 from primer.canvas.catalog import CATALOG
-from primer.canvas.lang import KEEP, Append, Assign, Clear, Delete, Ref, SetProp, Statement, clip
+from primer.canvas.lang import KEEP, MAX_ERRORS, Append, Assign, Clear, Delete, LangError, Ref, SetProp, Statement, clip
 from primer.canvas.state import normalize_assign
+
+#: The most characters of Canvas Lang source one batch may hold.
+MAX_SOURCE_CHARS = 600_000
+#: The most characters of compact JSON the ops of one batch may hold: the same bound as the source, so the two inputs of a batch are
+#: capped alike (a canvas holds at most 512 KiB, and the batch validator judges what is left after this).
+MAX_OPS_CHARS = 600_000
 
 
 class _Op(BaseModel):
@@ -64,6 +72,76 @@ class ClearOp(_Op):
 
 
 CanvasOp = Annotated[SetOp | PropOp | AppendOp | DeleteOp | ClearOp, Field(discriminator="op")]
+
+#: What each op looks like, as the "expected" of an op that is not one (the twin of ``catalog.signature`` for a Canvas Lang line).
+OP_SHAPES = (
+    '{"op":"set","id","type","props"?,"children"?}',
+    '{"op":"prop","id","prop","value"}',
+    '{"op":"append","id","children"}',
+    '{"op":"delete","ids"}',
+    '{"op":"clear"}',
+)
+_OP_NAMES = "set, prop, append, delete or clear"
+_MAX_PROBLEMS_PER_OP = 3
+
+
+def ensure_ops_fit(raw: Any) -> Any:
+    """A ``mode="before"`` validator for a field of ops: refuse a list that holds more than ``MAX_OPS_CHARS`` characters of compact JSON.
+
+    It runs on the raw value, before pydantic builds a model for each op, so an oversized batch costs one serialisation and nothing more.
+    ``source`` is capped the same way (``MAX_SOURCE_CHARS``, a ``max_length``). ``None`` passes: the field is optional.
+    """
+    if raw is None:
+        return raw
+    try:
+        size = len(json.dumps(raw, separators=(",", ":"), ensure_ascii=False))
+    except (TypeError, ValueError, RecursionError):
+        raise PydanticCustomError("ops_not_json", "ops must be a list of JSON objects") from None
+    if size > MAX_OPS_CHARS:
+        raise PydanticCustomError(
+            "ops_too_large", "ops hold {size} characters of JSON; the limit is {limit}", {"size": size, "limit": MAX_OPS_CHARS},
+        )
+    return raw
+
+
+def _op_problem(error: Any) -> str:
+    """One pydantic error of an op, in words that echo none of the input but the (clipped) name of the field."""
+    loc = error["loc"]
+    if error["type"] in ("union_tag_invalid", "union_tag_not_found"):
+        return f"op must be one of {_OP_NAMES}"
+    path = ".".join(clip(str(part)) for part in loc[3:])
+    return f"{path}: {error['msg']}" if path else str(error["msg"])
+
+
+def ops_errors(exc: ValidationError) -> list[LangError] | None:
+    """The malformed ops behind ``exc`` as one error each (``unit="op"``, op numbers from 1), or ``None`` when some error is not about one op.
+
+    ``exc`` comes from validating a model with ``ops: list[CanvasOp]``. Each error names its op, says what is wrong with it (the first
+    three problems) and carries ``OP_SHAPES`` as the expected form, like a Canvas Lang line that names its signature. At most
+    ``MAX_ERRORS`` ops are listed, then the rest are counted. The messages echo no input: pydantic's own text is replaced where it would.
+    """
+    problems: dict[int, list[str]] = {}
+    for error in exc.errors():
+        loc = error["loc"]
+        if len(loc) < 2 or loc[0] != "ops" or not isinstance(loc[1], int):
+            return None
+        problems.setdefault(loc[1] + 1, []).append(_op_problem(error))
+    expected = " | ".join(OP_SHAPES)
+    errors: list[LangError] = []
+    dropped = 0
+    dropped_op = 0
+    for number, found in sorted(problems.items()):
+        if len(errors) >= MAX_ERRORS:
+            dropped_op = dropped_op or number
+            dropped += 1
+            continue
+        shown = "; ".join(found[:_MAX_PROBLEMS_PER_OP])
+        if len(found) > _MAX_PROBLEMS_PER_OP:
+            shown += f"; and {len(found) - _MAX_PROBLEMS_PER_OP} more problems"
+        errors.append(LangError(number, shown, expected, "op"))
+    if dropped:
+        errors.append(LangError(dropped_op, f"{dropped} more malformed ops are not shown", None, "op"))
+    return errors
 
 
 def _refs_if_ids(value: Any) -> Any:
@@ -154,12 +232,17 @@ def statements_to_ops(statements: Sequence[Statement]) -> list[dict[str, Any]]:
 
 
 __all__ = [
+    "MAX_OPS_CHARS",
+    "MAX_SOURCE_CHARS",
+    "OP_SHAPES",
     "AppendOp",
     "CanvasOp",
     "ClearOp",
     "DeleteOp",
     "PropOp",
     "SetOp",
+    "ensure_ops_fit",
+    "ops_errors",
     "ops_to_statements",
     "statements_to_ops",
 ]

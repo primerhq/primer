@@ -56,6 +56,7 @@ for _channel_factory_mod in (
 from primer.model.scheduler import RuntimeMode
 from primer.toolset.misc import build_misc_toolset
 from primer.toolset.system import build_system_toolset
+from primer.toolset.canvas import build_canvas_toolset
 from primer.toolset.crud import build_crud_toolset
 from primer.toolset.workspace_ext import build_workspace_ext_toolset
 from primer.toolset.web import build_web_toolset
@@ -316,6 +317,13 @@ def create_test_app(
         event_bus=None,
         provider_registry=provider_registry,
     )
+    # Always-on canvas toolset (pivot P5): the agent's door to the session canvas. No event bus in the test app (the canvas frame and the
+    # record ticks are skipped; the canvas itself, its events and its records work the same).
+    canvas_toolset = build_canvas_toolset(
+        storage_provider=storage_provider,
+        event_bus=None,
+        workspace_registry=workspace_registry,
+    )
     # Always-on collections toolset (document-tree navigation): the test
     # ssp registry's stub factory degrades indexing, like the web
     # toolset's stub above. Guarded because build_collections_toolset
@@ -348,6 +356,7 @@ def create_test_app(
         workspace_ext_toolset
     )
     provider_registry._crud_toolset_provider = crud_toolset  # noqa: SLF001
+    provider_registry._canvas_toolset_provider = canvas_toolset  # noqa: SLF001
     app.state.storage_provider = storage_provider
     app.state.provider_registry = provider_registry
     app.state.workspace_registry = workspace_registry
@@ -357,6 +366,7 @@ def create_test_app(
     app.state.web_toolset = web_toolset
     app.state.workspace_ext_toolset = workspace_ext_toolset
     app.state.crud_toolset = crud_toolset
+    app.state.canvas_toolset = canvas_toolset
     app.state.semantic_search_registry = _test_ssp_registry
     # Artifact storage registry + reserved default (parity with the lifespan); the registry was built above, before the system toolset.
     app.state.artifact_storage_registry = _test_artifact_registry

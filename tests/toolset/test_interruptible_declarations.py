@@ -54,6 +54,12 @@ The third review (task 01a111d1, D1) added:
   not re-created by a cancel). The first review examined ``harness__install`` as one row write and left it interruptible;
   that was true only while the toolset did not upsert the lease.
 
+Pivot P5 (the session canvas, design 8.3) added the ``canvas`` toolset, read as follows: ``canvas_apply`` writes the canvas snapshot row (one fenced
+``patch_if``) and THEN appends the ``canvas_op`` record to the session log and emits ``canvas.updated``, three writes on three stores with no
+transaction, so a cancel between leaves a canvas the transcript and the event feed do not show: not interruptible. ``canvas_get`` reads the canvas and
+marks the events it showed as seen (one fenced patch of one field): interruptible, a cancel loses the mark at worst and the events are shown again.
+``canvas_wait`` creates a one-shot subscription and pins its cursor, as ``wait_for_event`` does, and parks: interruptible.
+
 Examined later and left interruptible (task 01a10871, Stop as a system tool): ``workspaces`` interrupt_workspace_session is ONE
 guarded row write (the Stop flag, ``interrupt_requested`` and ``cancel_requested_at``) followed by a best-effort bus publish. The flag
 is the durable record and the worker polls it, so a cancel between the write and the publish loses only the fast path, never the Stop;
@@ -86,6 +92,7 @@ import pytest
 from primer.api.registries import ProviderRegistry
 from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
 from primer.toolset._system_common import SYSTEM_TOOLSET_ID
+from primer.toolset.canvas import CANVAS_TOOLSET_ID
 from primer.toolset.collections import COLLECTIONS_TOOLSET_ID
 from primer.toolset.crud import CRUD_TOOLSET_ID
 from primer.toolset.harness import HARNESS_TOOLSET_ID
@@ -139,6 +146,9 @@ CONFIRMED_NOT_INTERRUPTIBLE = {
     (HARNESS_TOOLSET_ID, "harness__install"),
     (HARNESS_TOOLSET_ID, "harness__sync"),
     (HARNESS_TOOLSET_ID, "harness__uninstall"),
+    # pivot P5 (design 8.3): the canvas snapshot row, then the canvas_op record and canvas.updated on other stores; a cancel between
+    # leaves a canvas the transcript and the event feed do not show
+    (CANVAS_TOOLSET_ID, "canvas_apply"),
 }
 
 EXAMINED_AND_INTERRUPTIBLE = {
@@ -161,6 +171,9 @@ EXAMINED_AND_INTERRUPTIBLE = {
     (WORKSPACES_TOOLSET_ID, "pause_workspace_session"),
     # task 01a10871: one guarded row write, then a best-effort publish (the flag is durable and polled)
     (WORKSPACES_TOOLSET_ID, "interrupt_workspace_session"),
+    # pivot P5: a read, and a mark of the events it showed as seen (one fenced patch of one field); a cancel loses at worst the mark,
+    # and the events are shown again
+    (CANVAS_TOOLSET_ID, "canvas_get"),
 }
 
 
