@@ -24,6 +24,7 @@ from pydantic import BaseModel as PydanticBaseModel
 from primer.common.anthropic_errors import classify_anthropic_exception
 from primer.int.llm import LLM
 from primer.llm._failure import describe_failure
+from primer.llm._reasoning import anthropic_extended
 from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout, _open_with_connect_timeout
 from primer.llm._tokenizer.anthropic import count_tokens_anthropic_detailed
 from primer.model.chat import (
@@ -59,6 +60,7 @@ from primer.model.except_ import (
     UnsupportedContentError,
 )
 from primer.int.coordinator import RateLimiter
+from primer.model.model_profile import ModelProfileConfig
 from primer.model.provider import (
     AnthropicConfig,
     LLMProvider,
@@ -668,6 +670,10 @@ class AnthropicLLM(LLM):
         if self._client is not None:
             await self._client.close()
             self._client = None
+
+    def profile_extended(self, config: ModelProfileConfig) -> dict[str, Any]:
+        """A ``thinking`` block with a token budget, or thinking disabled."""
+        return anthropic_extended(config)
 
     async def stream(  # type: ignore[override]
         self,

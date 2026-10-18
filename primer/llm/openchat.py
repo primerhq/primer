@@ -28,6 +28,7 @@ from primer.common.openai_errors import classify_openai_exception
 from primer.int.coordinator import RateLimiter
 from primer.int.llm import LLM
 from primer.llm._failure import describe_failure
+from primer.llm._reasoning import openchat_extended
 from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout
 from primer.llm._openai_compat import (
     _build_sampling_params,
@@ -50,6 +51,7 @@ from primer.model.chat import (
     ToolChoice,
 )
 from primer.model.except_ import ConfigError
+from primer.model.model_profile import ModelProfileConfig
 from primer.model.provider import (
     LLMProvider,
     LLMProviderType,
@@ -190,6 +192,11 @@ class OpenChatLLM(LLM):
         if self._client is not None:
             await self._client.close()
             self._client = None
+
+    def profile_extended(self, config: ModelProfileConfig) -> dict[str, Any]:
+        """The flavor picks the wire: ``reasoning_effort`` for OpenAI, the chat
+        template's ``enable_thinking`` switch for the self-hosted servers."""
+        return openchat_extended(config, flavor=self._config.flavor.value)
 
     async def stream(  # type: ignore[override]
         self,

@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from primer.int.llm import LLM
 from primer.llm._retry import stream_with_retry
 from primer.model.chat import Message, StreamEvent, Tool, ToolChoice
+from primer.model.model_profile import ModelProfileConfig
 from primer.model.provider import LLMProvider
 from primer.model.token_count import TokenCount
 
@@ -41,6 +42,12 @@ class RetryingLLM(LLM):
     def inner(self) -> LLM:
         """The wrapped adapter. Tests and the registry reach through this."""
         return self._inner
+
+    def profile_extended(self, config: ModelProfileConfig) -> dict[str, Any]:
+        # Forwarded explicitly: the ABC default is found on this class before
+        # ``__getattr__`` is consulted, and it would drop the wrapped
+        # adapter's own reasoning mapping.
+        return self._inner.profile_extended(config)
 
     def stream(  # type: ignore[override]
         self,

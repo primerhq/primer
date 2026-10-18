@@ -28,6 +28,7 @@ from pydantic import BaseModel
 from primer.common.google_errors import classify_google_exception
 from primer.int.llm import LLM
 from primer.llm._failure import describe_failure
+from primer.llm._reasoning import gemini_extended
 from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout, _open_with_connect_timeout
 from primer.llm._tokenizer.gemini import count_tokens_gemini_detailed
 from primer.model.except_ import (
@@ -69,6 +70,7 @@ from primer.model.chat import (
     VideoPart,
 )
 from primer.int.coordinator import RateLimiter
+from primer.model.model_profile import ModelProfileConfig
 from primer.model.provider import (
     GoogleConfig,
     LLMProvider,
@@ -910,6 +912,10 @@ class GeminiLLM(LLM):
         if self._client is not None:
             self._client.close()
             self._client = None
+
+    def profile_extended(self, config: ModelProfileConfig) -> dict[str, Any]:
+        """A thinking-token budget (0 asks for no thinking)."""
+        return gemini_extended(config)
 
     async def stream(  # type: ignore[override]
         self,
