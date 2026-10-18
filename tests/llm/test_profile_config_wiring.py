@@ -125,6 +125,13 @@ class TestEachAdapterTranslatesForItsOwnWire:
         ("gpt-5.1", ReasoningLevel.MINIMAL, {"reasoning_effort": "low"}),
         ("gpt-5.1-codex", ReasoningLevel.OFF, {"reasoning_effort": "low"}),
         ("gpt-5-pro", ReasoningLevel.LOW, {"reasoning_effort": "high"}),
+        ("gpt-5.2", ReasoningLevel.OFF, {"reasoning_effort": "none"}),
+        # GPT-6: gpt-6-astra has no "none", gpt-6.1-sol neither "none" nor "minimal".
+        ("gpt-6-astra", ReasoningLevel.OFF, {"reasoning_effort": "low"}),
+        ("gpt-6-astra", ReasoningLevel.MINIMAL, {"reasoning_effort": "low"}),
+        ("gpt-6.1-sol", ReasoningLevel.OFF, {"reasoning_effort": "low"}),
+        ("gpt-6.1-sol", ReasoningLevel.MINIMAL, {"reasoning_effort": "low"}),
+        ("gpt-6.1-sol", ReasoningLevel.HIGH, {"reasoning_effort": "high"}),
         # Not in the table: the generic value; the stream-open guard covers a refusal.
         ("my-deployment", ReasoningLevel.OFF, {"reasoning_effort": "minimal"}),
     ])
@@ -136,6 +143,7 @@ class TestEachAdapterTranslatesForItsOwnWire:
         ("gpt-4o-mini", ReasoningLevel.HIGH, {}),
         ("o3-mini", ReasoningLevel.OFF, {"reasoning_effort": "low"}),
         ("gpt-5.2", ReasoningLevel.OFF, {"reasoning_effort": "none"}),
+        ("gpt-6.1-sol", ReasoningLevel.OFF, {"reasoning_effort": "low"}),
     ])
     def test_openresponses_effort_is_the_models(self, model, level, expected) -> None:
         llm = OpenResponsesLLM(_openresponses(OpenResponsesFlavor.OPENAI))

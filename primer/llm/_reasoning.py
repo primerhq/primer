@@ -49,8 +49,10 @@ _OPENAI_EFFORT: dict[ReasoningLevel, str] = {
 }
 
 # OpenAI effort values are the model's: o-series and the codex models start
-# at "low", gpt-5 at "minimal", gpt-5.1 and later have a true "none" (and no
-# "minimal"), gpt-5-pro takes only "high".
+# at "low", gpt-5 at "minimal", gpt-5.1 to 5.x have a true "none" (and no
+# "minimal"), GPT-6 and later start at "low" again (gpt-6-astra has no
+# "none", gpt-6.1-sol neither "none" nor "minimal"), gpt-5-pro takes only
+# "high".
 _LOW_FLOOR = {
     ReasoningLevel.OFF: "low", ReasoningLevel.MINIMAL: "low",
     ReasoningLevel.LOW: "low", ReasoningLevel.MEDIUM: "medium",
@@ -61,6 +63,7 @@ _OPENAI_EFFORT_BY_FAMILY: dict[str, dict[ReasoningLevel, str]] = {
     "codex": _LOW_FLOOR,
     "gpt-5": _OPENAI_EFFORT,
     "gpt-5.1+": {**_LOW_FLOOR, ReasoningLevel.OFF: "none"},
+    "gpt-6+": _LOW_FLOOR,
     "pro": dict.fromkeys(ReasoningLevel, "high"),
 }
 
@@ -87,6 +90,8 @@ def openai_family(model: str | None) -> str | None:
             return "pro"
         if "codex" in name:
             return "codex"
+        if int(match.group(1)) >= 6:
+            return "gpt-6+"
         if (int(match.group(1)), int(match.group(2) or 0)) == (5, 0):
             return "gpt-5"
         return "gpt-5.1+"
