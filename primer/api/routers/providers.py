@@ -1648,58 +1648,22 @@ async def mcp_oauth_callback_post(
 
 # ---------- Built-in toolsets registry --------------------------------------
 #
-# The five reserved built-in toolset ids live in
-# primer/api/registries/provider_registry.py. Their operator-facing
-# metadata (tagline, icon hint, availability semantics) lives here so
-# the UI can render the built-in cards dynamically from one source of
-# truth instead of hard-coding the list.
+# Every reserved built-in toolset id (provider_registry.RESERVED_TOOLSET_IDS),
+# in catalogue order, with its operator-facing metadata.
+# tests/api/test_builtin_toolsets_endpoint.py pins this list to
+# RESERVED_TOOLSET_IDS and to ProviderRegistry.get_toolset: a listed id
+# that no provider answers is a card that opens a 404.
 
 _BUILTIN_TOOLSETS: list[dict] = [
-    {
-        "id": "system",
-        "tagline": "Operator + diagnostic tools",
-        "icon": "settings",
-        "always_on": True,
-    },
-    {
-        "id": "workspaces",
-        "tagline": "File ops + exec inside the bound workspace",
-        "icon": "box",
-        "always_on": True,
-    },
-    {
-        "id": "search",
-        "tagline": (
-            "Semantic search over indexed entities — available once "
-            "Internal Collections is bootstrapped"
-        ),
-        "icon": "search",
-        "always_on": False,  # gated on IC subsystem
-    },
-    {
-        "id": "misc",
-        "tagline": "Datetime, sleep, UUID, hashing, arithmetic utilities",
-        "icon": "wrench",
-        "always_on": True,
-    },
-    {
-        "id": "web",
-        "tagline": "DuckDuckGo search + page-fetch primitives",
-        "icon": "external",
-        "always_on": True,
-    },
-    {
-        "id": "harness",
-        "tagline": "Harness lifecycle: register, fetch, install, sync, uninstall",
-        "icon": "package",
-        "always_on": True,
-    },
-    {
-        "id": "trigger",
-        "tagline": "Trigger + subscription CRUD and the subscribe_to_trigger yield",
-        "icon": "clock",
-        "always_on": True,
-    },
+    {"id": "system", "tagline": "Operator + diagnostic tools", "icon": "settings", "always_on": True},
+    {"id": "workspaces", "tagline": "File ops + exec inside the bound workspace", "icon": "box", "always_on": True},
+    {"id": "collections", "tagline": "Browse, read, search and edit collection documents", "icon": "collection", "always_on": True},
+    {"id": "misc", "tagline": "Datetime, UUID, hashing, arithmetic and inform_user", "icon": "wrench", "always_on": True},
+    {"id": "web", "tagline": "Web search, page fetch, HTTP requests and downloads", "icon": "external", "always_on": True},
+    {"id": "harness", "tagline": "Harness lifecycle: register, fetch, install, sync, uninstall", "icon": "package", "always_on": True},
+    {"id": "trigger", "tagline": "Trigger + subscription CRUD and fire_now", "icon": "clock", "always_on": True},
+    {"id": "workspace_ext", "tagline": "Workspace-session waits: sleep, watch_files, invoke_graph, subscribe_to_trigger, subscribe_to_channel_event", "icon": "zap", "always_on": True},
+    {"id": "crud", "tagline": "Create and update agents, graphs, triggers and Python toolsets, behind approval policies", "icon": "edit", "always_on": True},
 ]
 
 # A dedicated router registered BEFORE toolset_router in app.py so that
@@ -1710,43 +1674,12 @@ builtin_toolsets_router = APIRouter()
 
 @builtin_toolsets_router.get(
     "/toolsets/builtin",
-    summary="List the five built-in toolsets and their availability",
+    summary="List the built-in toolsets an agent can bind",
 )
-async def list_builtin_toolsets(
-    storage_provider=Depends(get_storage_provider),
-) -> dict:
-    """Operator-facing catalogue of the always-available built-ins.
-
-    The UI uses this in place of a hard-coded list so adding a new
-    built-in toolset to the runtime doesn't require a UI change.
-    ``available`` is True for always-on built-ins; for the IC-gated
-    ``search`` toolset, it's True iff an InternalCollectionsConfig
-    row exists in storage (mirrors the topbar IC-config probe).
-    """
-    from primer.model.internal import InternalCollectionsConfig
-
-    # Probe IC config to decide search-toolset availability.
-    ic_storage = storage_provider.get_storage(InternalCollectionsConfig)
-    ic_active = False
-    try:
-        page = await ic_storage.find(
-            None, OffsetPage(offset=0, length=1),
-        )
-        ic_active = len(page.items) > 0
-    except Exception:
-        # Storage layer failure: treat as IC-off rather than 500.
-        ic_active = False
-
-    items = []
-    for spec in _BUILTIN_TOOLSETS:
-        available = spec["always_on"] or (
-            spec["id"] == "search" and ic_active
-        )
-        items.append({
-            **spec,
-            "available": available,
-        })
-    return {"items": items}
+async def list_builtin_toolsets() -> dict:
+    """Every listed id is answered by ``ProviderRegistry.get_toolset``
+    without storage, so every card opens its detail."""
+    return {"items": [{**spec, "available": True} for spec in _BUILTIN_TOOLSETS]}
 
 
 @builtin_toolsets_router.get(
@@ -1829,42 +1762,21 @@ async def list_all_tools(
     rest of the picker so one broken MCP server doesn't block the
     operator from configuring an agent.
     """
-    from primer.model.internal import InternalCollectionsConfig
     from primer.model.provider import Toolset
 
     out: list[dict] = []
 
-    # 1. Built-in toolsets (system / workspaces / search / misc / web).
-    # ``search`` is gated by the InternalCollectionsConfig probe — same
-    # logic as list_builtin_toolsets() above.
-    ic_storage = storage_provider.get_storage(InternalCollectionsConfig)
-    ic_active = False
-    try:
-        page = await ic_storage.find(
-            None, OffsetPage(offset=0, length=1),
-        )
-        ic_active = len(page.items) > 0
-    except Exception:
-        ic_active = False
-
+    # 1. Built-in toolsets (every id in _BUILTIN_TOOLSETS).
     for spec in _BUILTIN_TOOLSETS:
         tid = spec["id"]
-        available = spec["always_on"] or (tid == "search" and ic_active)
         entry: dict = {
             "id": tid,
             "builtin": True,
             "label": spec.get("label", tid),
             "tagline": spec.get("tagline", ""),
-            "available": available,
+            "available": True,
             "tools": [],
         }
-        if not available:
-            entry["unavailable_reason"] = (
-                "internal collections not bootstrapped"
-                if tid == "search" else "subsystem disabled"
-            )
-            out.append(entry)
-            continue
         tools, reason = await _catalogue_tools(registry, tid, principal)
         if reason is None:
             entry["tools"] = tools

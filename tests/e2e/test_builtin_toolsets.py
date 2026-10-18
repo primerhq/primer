@@ -432,15 +432,7 @@ async def test_t0246_delete_builtin_workspaces_toolset_clean_envelope(
 async def test_t0247_delete_search_toolset_before_activation_clean(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0247 — `search` is the third built-in toolset, but it's only
-    materialized once the internal-collections subsystem is active
-    (per spec §8). Before activation, attempting to DELETE it must
-    produce a clean envelope (no /errors/internal); subsequent
-    activation of the subsystem must still succeed.
-
-    The bringup never activates the subsystem at start-time, so this
-    test runs on the inactive state by default.
-    """
+    """T0247 - ``search`` is not a toolset: no provider registers one, and the built-in catalogue stopped listing it in the platform revamp (it used to, gated on internal collections, and its card answered 404). DELETE of that id must produce a clean envelope (no /errors/internal); a later activation of the internal collections subsystem must still succeed."""
     resp = await client.delete("/v1/toolsets/search")
     assert resp.status_code < 500, resp.text
     if resp.status_code >= 400:
@@ -563,3 +555,15 @@ async def test_t0711_mcp_http_transport_tools_unreachable_url_clean(
             assert envelope.get("type") == "/errors/internal", envelope
     finally:
         await client.delete(f"{base}/{entity_id}")
+
+
+@pytest.mark.asyncio
+async def test_the_builtin_catalogue_lists_every_wired_toolset_with_its_tools(client: httpx.AsyncClient) -> None:
+    """The live server wires all nine built-in toolsets (the unit test app wires six): each catalogue id lists tools and opens its detail."""
+    ids = [it["id"] for it in (await client.get("/v1/toolsets/builtin")).json()["items"]]
+    assert ids == ["system", "workspaces", "collections", "misc", "web", "harness", "trigger", "workspace_ext", "crud"]
+    grouped = {it["id"]: it for it in (await client.get("/v1/tools")).json()["items"]}
+    for tid in ids:
+        assert grouped[tid]["available"] is True, grouped[tid]
+        assert grouped[tid]["tools"], f"{tid} listed no tools"
+        assert (await client.get(f"/v1/toolsets/{tid}")).status_code == 200, tid
