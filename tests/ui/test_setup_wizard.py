@@ -51,6 +51,16 @@ def test_step_two_reuses_the_probe_result_and_creates_a_profile() -> None:
     assert "context_length" in src
 
 
+def test_step_two_builds_the_profile_id_with_the_shared_helper() -> None:
+    """The profile id goes through PC_profileIdFor (register-common.jsx):
+    the raw concatenation built ids with "/" and ":" in them (a model
+    name's characters), which the id rule ^[A-Za-z0-9][A-Za-z0-9._-]*$
+    rejects and the console's URL paths cannot address."""
+    src = _src()
+    assert "window.PC_profileIdFor(providerId, model.name)" in src
+    assert 'providerId + "--"' not in src
+
+
 def test_provider_is_created_before_the_profile() -> None:
     src = _src()
     assert src.index('"/llm_providers"') < src.index('"/model_profiles"')

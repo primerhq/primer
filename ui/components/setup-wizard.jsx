@@ -379,13 +379,20 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
     setBusy(true);
     try {
       const model = discovered.find((m) => m.name === picked) || { name: picked };
-      await SW_saveProfile(window.primerApi.apiFetch, {
-        id: providerId + "--" + model.name,
+      // The id is the provider id and the model name through the shared
+      // helper (register-common.jsx): a model name carries "/" and ":"
+      // (OpenRouter-style), which the id rule rejects, so the raw
+      // concatenation built ids the server could not address. An empty
+      // result omits the key, and the server makes one.
+      const id = window.PC_profileIdFor(providerId, model.name);
+      const profileBody = {
         description: "Default profile created by first-run setup.",
         provider_id: providerId,
         model_name: model.name,
         context_length: model.context_length || 32000,
-      });
+      };
+      if (id) profileBody.id = id;
+      await SW_saveProfile(window.primerApi.apiFetch, profileBody);
       await onComplete();
     } catch (e2) {
       setErr({ title: "Could not register that model", detail: SW_tidy(e2 && (e2.detail || e2.message)) });
