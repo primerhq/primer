@@ -72,7 +72,7 @@ from primer.model.workspace import (
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
-from primer.model.workspace_session import SessionBinding, WorkspaceSession
+from primer.model.workspace_session import SessionBinding, SessionStatus, WorkspaceSession
 from primer.model.yield_ import ToolContext, Yielded
 from primer.tap.cursor import TapCursor
 from primer.tap.reader import read_batch
@@ -146,6 +146,22 @@ def _caller_is_admin(ctx: ToolContext | None) -> bool:
         from primer.mcp.server import current_actor
         actor = current_actor.get()
     return _role_allows(actor, "admin")
+
+
+def _caller_actor(ctx: ToolContext | None) -> str:
+    """The actor an event raised by this tool call is attributed to: the run's initiator, or, on the MCP endpoint (no ToolContext), the
+    request's actor; ``system`` when neither is known. The same two sources, with the same split, as :func:`_caller_is_admin`."""
+    from primer.events.recorder import actor_of
+
+    if ctx is not None:
+        return actor_of(ctx.initiated_by)
+    from primer.mcp.server import current_actor
+
+    return actor_of(current_actor.get())
+
+
+def _session_not_on_workspace(args: "_WorkspaceSessionArgs") -> str:
+    return f"Session {args.session_id!r} does not exist on workspace {args.workspace_id!r}"
 
 
 def _refuse_reserved_read(
@@ -1817,7 +1833,7 @@ def build_workspaces_toolset(
     )
     registry[name] = entry
 
-    async def _steer_session(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _steer_session(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         if scheduler is None or claim_engine is None:
             return _err(
                 "session tools unavailable: scheduler/claim_engine not wired",
@@ -1827,43 +1843,68 @@ def build_workspaces_toolset(
             args = _SteerArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        from primer.session.enqueue import SessionWakeDeps, wake_session
+        from primer.events.recorder import recorder_for
+        from primer.session.steer_delivery import DELIVERED_MISSING, DELIVERED_QUEUED, deliver_steer
 
-        deps = SessionWakeDeps(
+        sessions = storage_provider.get_storage(WorkspaceSession)
+        row = await sessions.get(args.session_id)
+        if row is None or row.workspace_id != args.workspace_id:
+            return _err(_session_not_on_workspace(args), error_type="not-found")
+        # The same delivery path as the REST steer route and every other machine entrypoint (triggers, channel replies): a session with a
+        # turn open (armed, running, or parked on any gate) QUEUES the instruction for its next turn boundary instead of writing a second
+        # user message, a parked gate is never answered by it, and an idle or ended session starts its next turn with it.
+        delivery = await deliver_steer(
+            session_id=args.session_id,
+            text=args.instruction,
+            parallelism="queue",
+            # 01a08c08: this is an agent's tool call steering ANOTHER
+            # session -- no human is behind it. Must not silently
+            # clear an operator's pause on the target session.
+            human_intent=False,
             storage_provider=storage_provider,
             scheduler=scheduler,
             claim_engine=claim_engine,
             workspace_registry=workspace_registry,
             event_bus=event_bus,
         )
-        try:
-            row = await wake_session(
-                workspace_id=args.workspace_id,
-                session_id=args.session_id,
-                instruction=args.instruction,
-                # 01a08c08: this is an agent's tool call steering ANOTHER
-                # session -- no human is behind it. Must not silently
-                # clear an operator's pause on the target session.
-                human_intent=False,
-                deps=deps,
+        if delivery.outcome == DELIVERED_MISSING:
+            # deliver_steer reports a session that cannot take a message as missing: a non-restartable ended session, or a row that went away
+            # (or whose workspace did) between the read above and the delivery.
+            current = await sessions.get(args.session_id)
+            if current is None or current.status != SessionStatus.ENDED:
+                return _err(_session_not_on_workspace(args), error_type="not-found")
+            return _err(
+                f"Session {args.session_id!r} has ended ({current.ended_reason}) and cannot take a message",
+                error_type="conflict",
             )
-        except NotFoundError as exc:
-            return _err_from_primer(exc, error_type="not-found")
-        except ConflictError as exc:
-            return _err_from_primer(exc, error_type="conflict")
-        return _ok(row.model_dump(mode="json"))
+        how = "queued" if delivery.outcome == DELIVERED_QUEUED else "woken"
+        await recorder_for(storage_provider, event_bus).emit(
+            "session.steered",
+            actor=_caller_actor(ctx),
+            workspace_id=row.workspace_id,
+            session_id=row.id,
+            payload={
+                "has_instruction": True,
+                "has_tool_results": False,
+                "has_attachments": False,
+                "delivery": how,
+            },
+        )
+        after = await sessions.get(args.session_id) or row
+        return _ok({**after.model_dump(mode="json"), "delivery": how})
 
     name, entry = _tool(
         "steer_workspace_session",
         (
-            "Append a steering user instruction to a running session. "
-            "The agent will see it on its next turn. Returns the "
-            "appended Instruction object on success."
+            "Send a user instruction to a session in any workspace: an idle or "
+            "ended session starts its next turn with it, a busy, parked or "
+            "paused one reads it at its next turn boundary."
         ),
         (
-            "Use when you want to nudge a live agent mid-run; not to "
-            "pause or resume it (use ``pause_workspace_session`` / "
-            "``resume_workspace_session``)."
+            "Use when you want to redirect a session; not to pause or resume "
+            "it (use pause_workspace_session / resume_workspace_session) and "
+            "not to answer its ask_user (a queued instruction is never an "
+            "answer). Returns the session row plus delivery: woken or queued."
         ),
         _SteerArgs,
         _steer_session,
@@ -1874,7 +1915,7 @@ def build_workspaces_toolset(
                     "session_id": "sess-1",
                     "instruction": "Focus on the failing test first.",
                 },
-                returns="the appended Instruction object",
+                returns='the session row plus {delivery: "woken"}',
             ),
         ],
         required_role="user",

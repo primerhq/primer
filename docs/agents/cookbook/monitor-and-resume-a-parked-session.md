@@ -47,9 +47,9 @@ Inspect `waiting.kind` and its fields to decide what the session needs. An `ask_
 ```
 Response:
 ```json
-{ "id": "ins-1", "instruction": "Review the main branch; skip generated files." }
+{ "id": "ses-1", "status": "running", "turn_status": "claimable", "delivery": "woken" }
 ```
-Steering appends a user instruction; use it to answer an `ask_user` park or redirect the run.
+An idle session starts its next turn with the instruction; a parked or busy one queues it (`delivery: queued`) for after the park and the turn. A steer never answers an `ask_user`: answer it with `POST /v1/sessions/{id}/ask_user/respond`.
 
 ### 4. Resume a paused session
 `workspaces::resume_workspace_session`
@@ -74,13 +74,14 @@ Response:
 Cancel is terminal.
 
 ## Verify
-After steering or resuming, re-poll `workspaces::get_workspace_session`; the session has transitioned out of `waiting`/`paused` to `running` (or onward to `ended`). After cancel, `status` is `ended` with `ended_reason: "cancelled"`.
+After resuming, re-poll `workspaces::get_workspace_session`; the session has transitioned out of `paused` to `running` (or onward to `ended`). After steering, read `delivery`: `woken` means the session is `running` with `turn_status: "claimable"`; `queued` means the instruction waits and the session keeps its status until its turn, its park or its pause ends. After cancel, `status` is `ended` with `ended_reason: "cancelled"`.
 
 ## Gotchas
 - `waiting` is not `paused`. `waiting` means the agent yielded inside its turn (see `yielding`); `paused` is an external halt you applied.
 - Pause vs cancel: pause is resumable, cancel is terminal (`ended_reason: "cancelled"`). Do not cancel a session you intend to continue.
 - A parked session has no turn to stop, so `workspaces::interrupt_workspace_session` is refused with `type=conflict` and records nothing. Resume or steer it, or cancel it.
-- Steering a session that has already `ended` has no effect; check `status` first.
+- Steering a session that has `ended` reopens it and starts a new turn with the instruction. It answers `type=conflict` only when the session cannot reopen (`ended_reason` `force_deleted`, or `workspace_lost` while the workspace is down).
+- A paused session stays paused: the instruction is queued (`delivery: queued`) and the session reads it after you resume it.
 
 ## Related
 - `yielding`, `sessions`

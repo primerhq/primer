@@ -207,9 +207,9 @@ can run an agent or graph headlessly end to end.
 - `workspaces::list_workspace_sessions` - list sessions on a
   workspace.
 - `workspaces::pause_workspace_session` /
-  `workspaces::resume_workspace_session` /
-  `workspaces::steer_workspace_session` - control a running session
-  (pause at the next turn boundary, resume, or inject steering input).
+  `workspaces::resume_workspace_session` - pause a running session at
+  the next turn boundary, or resume it.
+- `workspaces::steer_workspace_session` - send a user instruction (an idle or ended session starts its next turn with it; a busy, parked or paused one reads it at its next turn boundary; it never answers an `ask_user`).
 - `workspaces::interrupt_workspace_session` - Stop the turn a session is
   running without ending the session. Args: `workspace_id`, `session_id`.
   Returns the session row, and **a success answer alone is not a Stop**:
