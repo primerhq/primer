@@ -505,6 +505,14 @@ function MP_SingleProfileOverlay({ existing, providers, prefill, onClose, onSave
   const [saving, setSaving] = React.useState(false);
   const [refused, setRefused] = React.useState({ fields: {}, form: null });
 
+  // Whether the overlay is still on screen. A save that is still out when it is dismissed (Cancel, Escape, the scrim, the host taking it away) answers into a screen that has
+  // moved on, and onSaved and onClose are the HOST's: NV_ProfileModalHost clears its one modal, which by then may be a different one. A save that lands late closes nothing.
+  const mountedRef = React.useRef(true);
+  React.useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
   // Until a provider is chosen the select shows the first one, so that is the value (the list may arrive after the overlay opens).
   const provider = providerId || (providers && providers[0] ? providers[0].id : "");
   const idError = !isEdit && id.trim() ? MP_nameError(id) : null;
@@ -547,6 +555,8 @@ function MP_SingleProfileOverlay({ existing, providers, prefill, onClose, onSave
     setSaving(false);
     const name = isEdit ? existing.id : id.trim();
     api.toastPush({ kind: "success", text: (isEdit ? "Saved " : "Created ") + name });
+    // The row is saved, so the toast says so. A save that lands after the overlay was dismissed has nobody to report to, and onClose would close whatever the host shows by now.
+    if (!mountedRef.current) return;
     if (onSaved) onSaved(row);
     onClose();
   };
@@ -624,6 +634,12 @@ function MP_AggregateOverlay({ existing, onClose, onSaved }) {
   const [failoverOn, setFailoverOn] = React.useState(() => (isEdit && existing.failover_on) || MP_AGGREGATE_DEFAULTS.failover_on);
   const [saving, setSaving] = React.useState(false);
   const [refused, setRefused] = React.useState({ fields: {}, form: null });
+  // Whether the overlay is still on screen (see MP_SingleProfileOverlay): a save that lands after it was dismissed closes nothing.
+  const mountedRef = React.useRef(true);
+  React.useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   const list = window.primerApi.useResource(
     "mp-aggregate:profiles",
     (signal) => window.primerApi.apiFetch("GET", "/model_profiles?limit=200", null, { signal }),
@@ -670,6 +686,8 @@ function MP_AggregateOverlay({ existing, onClose, onSaved }) {
     setSaving(false);
     const id = isEdit ? existing.id : name.trim();
     api.toastPush({ kind: "success", text: isEdit ? "Saved " + id : "Created aggregated profile " + id });
+    // The row is saved, so the toast says so. A save that lands after the overlay was dismissed has nobody to report to, and onClose would close whatever the host shows by now.
+    if (!mountedRef.current) return;
     if (onSaved) onSaved(row);
     onClose();
   };
@@ -707,7 +725,11 @@ function MP_AggregateOverlay({ existing, onClose, onSaved }) {
         {loadError ? (
           <div className="field-help" role="alert" data-testid="mp-aggregate-load-error" style={{ color: "var(--red)" }}>
             {loadError}{" "}
-            <Btn kind="ghost" size="sm" data-testid="mp-aggregate-load-retry" onClick={() => list.refetch()}>Try again</Btn>
+            {/* useResource keeps `error` until the answer and turns `loading` on for the retry, so the alert is still up while the request is out: the button says so (busy: aria-busy,
+                aria-disabled, the click refused, the focus kept). */}
+            <Btn kind="ghost" size="sm" data-testid="mp-aggregate-load-retry" busy={list.loading} onClick={() => list.refetch()}>
+              {list.loading ? "Trying again…" : "Try again"}
+            </Btn>
           </div>
         ) : null}
         {tooFew ? (
