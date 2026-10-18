@@ -19,6 +19,7 @@ import json
 import pytest
 
 from tests.ui._register_harness import UI, base_code, context, js, settle, types_of
+from tests.ui.test_platform_kit_page import css_body, declarations
 
 STUBS = r"""
 var PAGE_PROPS = [], PANEL_PROPS = [], SAVED = [], DELETED = [], CLOSED = 0;
@@ -660,6 +661,27 @@ def test_index_loads_the_overlay_after_register_common() -> None:
     assert html.index(tag) > html.index('src="components/providers/register-common.jsx"')
     assert html.index(tag) > html.index('src="components/shared/platform-kit.jsx"')
     assert html.index(tag) < html.index('src="components/provider-catalog.jsx"')
+
+
+# ---- the kit's CSS the overlay leans on --------------------------------------------------------------------------------------------------------------
+
+
+def test_the_selector_menu_holds_all_ten_types_and_keeps_its_scroll() -> None:
+    """Review of #773: ``max-height: 340px`` clipped the tenth entry (ASR provider) behind the menu's scroll. Measured in Chromium, the ten rows and the menu's padding
+    are 356px on a desktop (34.8px a row) and 448px on a phone, where the rows are 44px touch targets; the menu's border adds 2px: so the cap is 460px. On a short screen
+    it is 70% of the viewport and the menu scrolls, as it always did."""
+    menu = declarations(css_body(".pk-selector-menu"))
+    assert menu["max-height"] == "min(70vh, 460px)"
+    assert menu["overflow-y"] == "auto"
+
+
+def test_the_overlay_footer_wraps_on_a_narrow_sheet_and_the_action_stays_right() -> None:
+    """Review of #773: at 320px an edit footer (Cancel, Delete and the actions) did not wrap, so Save was pushed past the sheet's edge. A footer that fits is laid out as it
+    was (the kit pins Cancel left and the action right); one that does not wraps its action side onto a line of its own, still on the right."""
+    foot = declarations(css_body(".pk-foot"))
+    assert foot["flex-wrap"] == "wrap" and foot["gap"] == "8px"
+    assert (foot["display"], foot["width"], foot["justify-content"]) == ("flex", "100%", "space-between")
+    assert declarations(css_body(".pk-foot-right"))["margin-left"] == "auto"
 
 
 def test_the_overlay_is_a_sheet_on_a_phone(ctx) -> None:
