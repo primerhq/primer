@@ -951,9 +951,20 @@ function NV_LegacyOverlay(props) {
   // every button/input inside unclickable. No dead-click-zone risk
   // either way: Modal's own `.modal-overlay` backdrop is `position:
   // fixed; inset: 0` too, so it exactly coincides with this box.
+  //
+  // And the wrappers sit on the OVERLAY LAYER, z-index 80, the layer
+  // `.nv-scrim` uses. A `position: fixed` element is its own stacking
+  // context, and with no z-index it painted at level 0, UNDER the
+  // topbar (`.nv-topbar`, 60): the Modal's z-index 85 is only a rank
+  // inside that context, so at a short viewport the topbar sat over the
+  // editor's header and the Close button could not be clicked (a real
+  // user's, and CI's, 1366x768). 80 is above the topbar and below the
+  // shared Modals a page opens from inside (`.modal-overlay`, 85, the
+  // ConfirmHost's dialogs) and the toasts (100).
+  // tests/ui/test_overlay_navigation.py pins the number against styles.css.
   var bypassChrome = (name === "agents" || name === "collections") && !!overlay.id;
   if (bypassChrome) {
-    var bypassStyle = { position: "fixed", inset: 0 };
+    var bypassStyle = { position: "fixed", inset: 0, zIndex: 80 };
     return (
       <div data-testid="nv-overlay-body" style={bypassStyle}>
         <div data-testid={"nv-overlay:" + name} style={bypassStyle}>
