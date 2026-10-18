@@ -10,7 +10,7 @@ from typing import Any
 
 from primer.canvas.catalog import CATALOG, HTML_VALUE_MAX_CHARS, has_unstorable_char, param_for
 from primer.canvas.decompile import decompile
-from primer.canvas.lang import CanvasLangError, SetProp, format_value, parse_program
+from primer.canvas.lang import MAX_FLOAT, CanvasLangError, SetProp, format_value, parse_program
 from primer.canvas.state import CanvasState, Changed, Limits, apply_batch, json_equal
 from tests.canvas._program_gen import UNPARSEABLE, nested, program
 
@@ -141,8 +141,11 @@ VALUE_POOL = [
     ("10**15", 10**15, False), ("-(10**15)", -(10**15), False), ("10**16", 10**16, False), ("10**30", 10**30, False),
     ("10**308", 10**308, False), ("10**309", 10**309, False), ("10**400", 10**400, False),
     ("10**5000", 10**5000, False), ("-(10**5000)", -(10**5000), False),
-    ("0.0", 0.0, True), ("-0.0", -0.0, True), ("1.5", 1.5, True), ("1e-7", 1e-7, True), ("1e16", 1e16, True),
-    ("1e300", 1e300, True), ("5e-324", 5e-324, True), ("the largest float", 1.7976931348623157e308, True),
+    # A float stops where the integers do: Postgres JSONB reads a float of 1e16 or more back as an int, so 1e15 and up are refused (#790 review).
+    ("0.0", 0.0, True), ("-0.0", -0.0, True), ("1.5", 1.5, True), ("1e-7", 1e-7, True), ("1e16", 1e16, False),
+    ("1e300", 1e300, False), ("5e-324", 5e-324, True), ("the largest float", 1.7976931348623157e308, False),
+    ("1e15", 1e15, False), ("-1e15", -1e15, False), ("just under 1e15", 999999999999999.9, True),
+    ("just over -1e15", -999999999999999.9, True), ("list of 1e15", [1e15], False), ("object of 1e16", {"k": [1e16]}, False),
     ("nan", float("nan"), False), ("inf", float("inf"), False), ("-inf", -float("inf"), False),
     ("empty text", "", True), ("text", "x", True), ("unicode", "caf\u00e9 \U0001F600", True), ("quotes", 'say "hi"', True),
     ("backslash", "back\\slash", True), ("controls", "a\nb\tc\r", True), ("hash", "# not a comment", True),
@@ -172,7 +175,7 @@ def test_the_value_pool_is_accepted_or_refused_where_the_parser_would_read_it_ba
 
 _SCALARS = [
     True, False, 0, 1, -1, 10**14, 10**15 - 1, -(10**15 - 1), 10**15, -(10**15), 10**16, 10**30, 10**308, 10**309, 10**400,
-    0.0, -0.0, 0.5, -2.25, 1e-7, 1e16, 1e22, 1e300, 5e-324, float("nan"), float("inf"),
+    0.0, -0.0, 0.5, -2.25, 1e-7, 1e15, 1e16, 1e22, 1e300, 999999999999999.9, 5e-324, float("nan"), float("inf"),
     "", "x", "caf\u00e9 \U0001F600", 'say "hi"', "back\\slash", "a\nb", "# hash", "it's", '"""', "\u2028", "\x00", "\ud800",
     "x" * 990, "x" * 998, "x" * 999,
 ]
@@ -186,8 +189,23 @@ def _random_value(r: random.Random) -> Any:
     return value
 
 
+def _has_a_float_past_the_limit(value: Any) -> bool:
+    """A float of magnitude 1e15 or more anywhere in ``value``: the one refusal the parser has no part in (a database that keeps numbers as
+    numerics gives a float of 1e16 or more back as an int, #790 review), so it is stated here and not worked out from the parser."""
+    if isinstance(value, float):
+        return abs(value) >= MAX_FLOAT
+    if isinstance(value, (list, tuple)):
+        return any(_has_a_float_past_the_limit(v) for v in value)
+    if isinstance(value, dict):
+        return any(_has_a_float_past_the_limit(v) for v in value.values())
+    return False
+
+
 def _the_parser_reads_it_back(value: Any) -> bool:
-    """What the batch must say about an Html value, worked out from the parser itself and not from the batch's own rules."""
+    """What the batch must say about an Html value, worked out from the parser itself and not from the batch's own rules.
+
+    The parser reads a float of any size, and the batch takes one only below 1e15 (the integers' limit; see ``_has_a_float_past_the_limit``).
+    """
     try:
         [statement] = parse_program(f"a.x = {format_value(value)}")
     except (ValueError, CanvasLangError):
@@ -195,6 +213,7 @@ def _the_parser_reads_it_back(value: Any) -> bool:
     return (
         json_equal(statement.value, value)
         and not has_unstorable_char(value)
+        and not _has_a_float_past_the_limit(value)
         and len(json.dumps(value, separators=(",", ":"), ensure_ascii=False)) <= HTML_VALUE_MAX_CHARS
     )
 

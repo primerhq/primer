@@ -143,6 +143,10 @@ class SessionCanvas(Identifiable):
     wake_times: list[datetime] = Field(default_factory=list)
     updated_at: datetime | None = None
 
+    def unseen_events(self) -> list[CanvasEvent]:
+        """The events after ``seen_event_seq``, oldest first: what the agent has not read yet."""
+        return [event for event in self.events if event.seq > self.seen_event_seq]
+
 
 __all__ = [
     "CANVAS_EVENT_KINDS",

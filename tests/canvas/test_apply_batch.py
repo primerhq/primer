@@ -571,6 +571,23 @@ def test_check_json_value_is_the_one_judge_of_a_value():
     assert check_json_value("a\x00b") == check_json_value(["ok", {"k": "\ud800"}]) == cannot
 
 
+def test_a_float_of_magnitude_1e15_or_more_is_refused_like_the_int_limit():
+    """Postgres JSONB turns a float of magnitude 1e16 or more back into an int, so such a stored value would not round-trip
+    (#790 review). The ints stop at 15 digits (``MAX_INT``); the floats stop at the same magnitude: 1e15 and up are refused."""
+    for value in (1e15, -1e15, 1e16, -1e16, 1e300, -1e300, float(10**15), 123456789012345678.0):
+        assert check_json_value(value) == "number is out of range", value
+        assert check_json_value([value]) == check_json_value({"k": [[value]]}) == "number is out of range", value
+    for value in (999999999999999.0, -999999999999999.0, 999999999999999.9, 1e14, 0.1, -0.0, 5e-324, 1.5e10, 2.5):
+        assert check_json_value(value) is None, value
+
+    s = run(G("playlist_create.cl")).state
+    assert errs("viz.value = 1e15", s) == ["line 1: number is out of range"]
+    assert errs('viz.value = {"a": [1, -1.5e300]}', s) == ["line 1: number is out of range"]
+    assert run("viz.value = 999999999999999.5", s).state.values == {"viz": 999999999999999.5}
+    refused = apply_batch(s, [SetProp(1, "viz", "value", [1.0, 2e16])], limits=L)
+    assert refused.state is None and [e.render() for e in refused.errors] == ["line 1: number is out of range"], "a JSON op meets the same limit"
+
+
 def test_clearing_a_select_value_goes_back_to_its_initial_value():
     r = run("genre.value = null", _built())
     assert r.state.values == {} and r.state.value_set_by == {}

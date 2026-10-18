@@ -34,6 +34,7 @@ from primer.canvas.lang import (
     KEEP,
     MAX_DEPTH,
     MAX_ERRORS,
+    MAX_FLOAT,
     MAX_INT,
     MSG_BARE_ID,
     MSG_NUMBER_RANGE,
@@ -343,7 +344,9 @@ def _json_shape(value: Any, depth: int) -> str | None:
 
     ``depth`` counts the lists and objects around ``value``. The limits are the parser's own
     (``MAX_INT`` and ``MAX_DEPTH``): a value past one of them could be stored, but the program
-    ``canvas_get`` printed for it would not parse.
+    ``canvas_get`` printed for it would not parse. A float stops at the integers' magnitude
+    (``MAX_FLOAT``), because a database that keeps numbers as numerics gives a float of 1e16 or more
+    back as an int.
     """
     if value is None or isinstance(value, (bool, str)):
         return None
@@ -351,7 +354,11 @@ def _json_shape(value: Any, depth: int) -> str | None:
         # Compared, never converted: str() and float() both raise for an integer that is long enough.
         return None if -MAX_INT <= value <= MAX_INT else MSG_NUMBER_RANGE
     if isinstance(value, float):
-        return None if math.isfinite(value) else "value must be JSON: no NaN or infinity"
+        if not math.isfinite(value):
+            return "value must be JSON: no NaN or infinity"
+        # The int limit's twin: Postgres JSONB reads a float of magnitude 1e16 or more back as an int, so the round trip of a stored value
+        # would not be total. 1e15 is refused with it, mirroring the integer limit (MAX_INT is one short of 10**15).
+        return None if abs(value) < MAX_FLOAT else MSG_NUMBER_RANGE
     if isinstance(value, Ref):
         return MSG_BARE_ID
     if isinstance(value, (list, tuple)):
@@ -380,8 +387,9 @@ def check_json_value(value: Any) -> str | None:
 
     Public because the service judges a user's value the same way. A value that passes is JSON
     that can be stored (no NUL or lone surrogate), written by ``format_value`` and read back by
-    ``parse_program``: integers of at most ``MAX_INT_DIGITS`` digits, finite floats, lists and
-    objects nested at most ``MAX_DEPTH`` deep, no bare id. ``json.dumps`` can measure it too.
+    ``parse_program``: integers of at most ``MAX_INT_DIGITS`` digits, finite floats of magnitude below
+    ``MAX_FLOAT`` (1e15), lists and objects nested at most ``MAX_DEPTH`` deep, no bare id.
+    ``json.dumps`` can measure it too.
     """
     problem = _json_shape(value, 0)
     if problem is None and has_unstorable_char(value):
