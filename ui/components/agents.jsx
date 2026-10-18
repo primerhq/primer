@@ -783,6 +783,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
           <Btn
             kind="primary"
             icon={isEdit ? "check" : "plus"}
+            data-testid="agent-form-submit"
             onClick={submit}
             disabled={!profileId || create.loading}
           >
@@ -807,6 +808,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
             </label>
             <input
               id="na-id"
+              data-testid="agent-id"
               className="input"
               value={id}
               onChange={(e) => { setId(e.target.value); setFieldErrors((m) => ({ ...m, "body.id": undefined })); }}
@@ -823,6 +825,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
             <label className="field-label" htmlFor="na-description">Description</label>
             <input
               id="na-description"
+              data-testid="agent-description"
               className="input"
               value={description}
               onChange={(e) => { setDescription(e.target.value); setFieldErrors((m) => ({ ...m, "body.description": undefined })); }}
