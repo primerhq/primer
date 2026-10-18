@@ -7,8 +7,8 @@ turn with it, a session with a turn open reads it at its next turn boundary, and
 
 What a sender may do is decided here, before anything is written. The guards run in this order, and the first one that fails refuses the send with a
 :class:`PeerMessageRefused` that carries the tool's error ``type`` and writes nothing (no ledger row, no queued message, no record, no event). Before
-them all, a text that is empty or longer than ``PEER_MESSAGE_MAX_CHARS`` is refused (``bad-request``): the tool's argument model rejects it first, and
-this keeps the service safe for any other caller.
+them all, a text that is empty or longer than ``PEER_MESSAGE_MAX_CHARS`` and a ``mode`` that is neither ``auto`` nor ``if_idle`` are refused
+(``bad-request``): the tool's argument model rejects them first, and this keeps the service safe for any other caller.
 
 1. the target is not the sender (``bad-request``);
 2. the sender is a session (``unsupported-surface``);
@@ -101,8 +101,9 @@ REFUSE_RANK = (
 )  # forbidden
 REFUSE_BUSY = "session {session_id!r} is {reason}; nothing was sent (mode if_idle)"  # conflict
 REFUSE_ENDED = "session {session_id!r} has ended ({ended_reason}) and cannot take a message"  # conflict
-# The tool's argument model rejects both first; this keeps the service safe for any other caller (an empty text would re-arm a session with nothing).
+# The tool's argument model rejects these first; they keep the service safe for any other caller (an empty text would re-arm a session with nothing).
 REFUSE_TEXT = "a message is 1 to {limit} characters; write larger outputs to a file and send its path"  # bad-request
+REFUSE_MODE = "mode is auto or if_idle, not {mode!r}"  # bad-request
 
 # What the sending agent reads when a send was delivered, by what became of the message.
 NOTE_WOKEN = "Delivered: the session starts its next turn with your message."
@@ -348,6 +349,8 @@ async def send_peer_message(
     """
     if not text or len(text) > PEER_MESSAGE_MAX_CHARS:
         raise PeerMessageRefused("bad-request", REFUSE_TEXT.format(limit=PEER_MESSAGE_MAX_CHARS))
+    if mode not in ("auto", "if_idle"):
+        raise PeerMessageRefused("bad-request", REFUSE_MODE.format(mode=mode))
     if target_session_id == sender_session_id:
         raise PeerMessageRefused("bad-request", REFUSE_SELF)
     sessions = storage_provider.get_storage(WorkspaceSession)
@@ -509,6 +512,7 @@ __all__ = [
     "REFUSE_BUSY",
     "REFUSE_ENDED",
     "REFUSE_HOPS",
+    "REFUSE_MODE",
     "REFUSE_NOT_FOUND",
     "REFUSE_NO_CALLER",
     "REFUSE_RANK",

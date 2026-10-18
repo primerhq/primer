@@ -750,6 +750,15 @@ async def test_a_text_the_tool_would_have_rejected_is_refused_here_too(text):
     await _assert_nothing_stored(world)
 
 
+async def test_a_mode_the_tool_would_have_rejected_is_refused_here_too():
+    world = await _world()
+    await seed_session(world, sid="ses-b", turn_no=1)
+    with pytest.raises(PeerMessageRefused) as info:
+        await _send(world, "ses-b", mode="always")
+    _expect_refusal(info, "bad-request", "mode is auto or if_idle, not 'always'")
+    await _assert_nothing_stored(world)
+
+
 async def test_a_text_at_the_cap_is_delivered_whole():
     world = await _world()
     await seed_session(world, sid="ses-b", turn_no=1)
