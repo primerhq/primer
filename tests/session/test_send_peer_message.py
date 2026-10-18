@@ -1095,6 +1095,31 @@ async def test_a_session_cancelled_after_every_check_of_the_send_is_not_reopened
     await _assert_nothing_stored(world)
 
 
+# ---- the ledger time -----------------------------------------------------------------------------------------------------------
+
+
+async def test_the_ledger_time_is_taken_after_the_wait_for_the_senders_lock(monkeypatch):
+    """A send that waited behind another send of the same sender is recorded when it was sent, not when it began to wait: the rate window counts from
+    the time on the row."""
+    world = await _world()
+    await seed_session(world, sid="ses-b", turn_no=1)
+    clock = {"now": NOW}
+
+    class _Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock["now"]
+
+    monkeypatch.setattr(peer_messages, "datetime", _Clock)
+    async with peer_messages._sender_lock("ses-a"):
+        waiting = asyncio.create_task(_send(world, "ses-b", now=None))
+        await asyncio.sleep(0)                          # the send runs up to the lock and waits there
+        clock["now"] = NOW + timedelta(minutes=5)
+    await waiting
+    [row] = await _ledger(world)
+    assert row.sent_at == NOW + timedelta(minutes=5)
+
+
 # ---- the text ---------------------------------------------------------------------------------------------------------------------
 
 

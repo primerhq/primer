@@ -398,9 +398,11 @@ async def send_peer_message(
             ),
         )
     hops = next_peer_hops(sender)
-    sent_at = _as_utc(now) if now is not None else datetime.now(UTC)
 
     async with _sender_lock(sender.id):
+        # Taken here, not before the wait for the lock: a send that waited behind another send of the same sender is recorded when it was sent, and the
+        # rate window counts from the time on the row.
+        sent_at = _as_utc(now) if now is not None else datetime.now(UTC)
         await check_peer_rate(storage_provider, sender.id, now=sent_at)
         # Reach and rank were decided from the first read (its workspace and its creator never change). What STATE the target is in is read again
         # here, after the lock wait and the rate check, so the if_idle guard, the result, the note and the events describe the row the delivery is
