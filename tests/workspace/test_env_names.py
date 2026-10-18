@@ -1,9 +1,11 @@
 """Which environment variable names a workspace create accepts (lead ruling 17 of plan 08, FINAL from the review of #789).
 
-A name is accepted when it matches Kubernetes' own environment variable name pattern, ``^[-._a-zA-Z][-._a-zA-Z0-9]*$``, and is at
-most 256 characters. That is wider than a POSIX name on purpose: ``my-var`` and ``a.b`` are valid on Kubernetes (and on Docker and
-the local backend), and a stored template that has one must keep creating workspaces, the boot's default workspace included. The
-first version of the rule was POSIX-only and turned such a template into a 422 on every create; those tests are flipped here.
+A name is accepted when Kubernetes accepts it, which is ``IsEnvVarName`` in ``k8s.io/apimachinery/pkg/util/validation`` exactly: it
+matches ``^[-._a-zA-Z][-._a-zA-Z0-9]*$`` and it is not ``.``, not ``..`` and does not start with ``..`` (``hasChDirPrefix``). On top
+of that it is at most 256 characters. That is wider than a POSIX name on purpose: ``my-var`` and ``a.b`` are valid on Kubernetes
+(and on Docker and the local backend), and a stored template that has one must keep creating workspaces, the boot's default
+workspace included. The first version of the rule was POSIX-only and turned such a template into a 422 on every create; those
+tests are flipped here.
 
 ``1BAD``, ``a b``, ``A=B``, an empty name, ``café`` and a name over 256 characters were accepted and came back as a generic 500 after
 the create had been rolled back, when the cluster refused the manifest. The two names the platform sets itself,
@@ -29,17 +31,21 @@ from primer.workspace.env_names import (
     refuse_bad_env_names,
 )
 
-_INVALID = "An environment variable name is 1 to 256 characters of ASCII letters, digits, '_', '-' and '.', and does not start with a digit. Rename or remove it."
+_INVALID = "An environment variable name is 1 to 256 characters of ASCII letters, digits, '_', '-' and '.'. It does not start with a digit or with '..', and it is not '.'. Rename or remove it."
 _RESERVED = "This name is reserved for the workspace runtime's token and cannot be set. Remove it."
 
-#: Names Kubernetes accepts: the plain ones, the ones the first (POSIX-only) version of the rule refused, and the longest allowed.
-_ACCEPTED = ["A", "a", "_", "_x", "_A1", "PATH", "my_var_2", "my-var", "a.b", "x-y.z", "MY_VAR", "a1", "a" * 256, "a-" * 128]
+#: Names Kubernetes accepts: the plain ones, the ones the first (POSIX-only) version of the rule refused, a dot anywhere but at the
+#: ``.`` / ``..`` / ``..x`` start, and the longest allowed.
+_ACCEPTED = [
+    "A", "a", "_", "_x", "_A1", "PATH", "my_var_2", "my-var", "a.b", "x-y.z", "MY_VAR", "a1", ".x", "x..", "a..b", "x.", ".a.b",
+    "a" * 256, "a-" * 128,
+]
 
-#: Names Kubernetes refuses (or that are over the length limit): a digit first, a character outside the set, nothing at all, a
-#: name too long, and a name of the right length that is not ASCII.
+#: Names Kubernetes refuses (or that are over the length limit): a digit first, a character outside the set, nothing at all, ``.``,
+#: ``..`` and a name that starts with ``..``, a name too long, and a name of the right length that is not ASCII.
 _REFUSED = [
     "", "1BAD", "9", "1-a", "a b", "A=B", "a\nb", "a\x00b", " A", "A ", "café", "A\n", "a/b", "a:b", "a$b", "日本語",
-    "a" * 257, "é" * 256,
+    ".", "..", "..x", "...", "..-", "..a.b", "a" * 257, "é" * 256,
 ]
 
 
@@ -87,6 +93,27 @@ def test_a_name_kubernetes_would_refuse_is_refused_in_a_stored_template(name):
     assert exc.value.message.startswith("template 'big' sets env.") and exc.value.message.endswith(f": {_INVALID}")
     assert exc.value.template_items == [(name, "invalid_env_name")]
     assert exc.value.problem_extensions == {}      # the name is stored in the template, not sent in this request: no `loc`
+
+
+@pytest.mark.parametrize("name", [".", "..", "..x", "...", "..-", "..a.b"])
+def test_the_chdir_names_match_the_pattern_and_are_refused_all_the_same(name):
+    """``IsEnvVarName`` is the pattern plus ``hasChDirPrefix``: ``.``, ``..`` and a name that starts with ``..`` match the pattern, so
+    only the second check refuses them."""
+    assert re.fullmatch(ENV_NAME_PATTERN, name)
+    with pytest.raises(EnvNameRefused) as exc:
+        refuse_bad_env_names(_t(), _o({name: "v"}))
+    assert exc.value.problem_extensions["errors"] == [{
+        "loc": ["body", "overrides", "env", name], "msg": _INVALID, "type": "invalid_env_name",
+    }]
+    with pytest.raises(EnvNameRefused) as stored:
+        refuse_bad_env_names(_t({name: "v"}, template_id="big"), None)
+    assert stored.value.message == f"template 'big' sets env.'{name}': {_INVALID}"
+
+
+@pytest.mark.parametrize("name", [".x", "x..", "a.b", "a..b", "x.", ".a.b", ".-", "-.."])
+def test_a_dot_is_fine_anywhere_but_at_the_chdir_prefix(name):
+    assert re.fullmatch(ENV_NAME_PATTERN, name)
+    refuse_bad_env_names(_t({name: "v"}), _o({name: "v"}))
 
 
 def test_the_length_limit_is_256_characters_not_255_and_not_257():

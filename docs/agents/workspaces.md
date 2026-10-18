@@ -213,8 +213,9 @@ it's called from a context with no implicit session.
   most 1024 CPU cores, 64 TiB of memory and 64 TiB of disk; a GPU count
   is at most 64. An `overrides.env` name follows Kubernetes' own rule:
   1 to 256 characters of ASCII letters, digits, `_`, `-` and `.`, not
-  starting with a digit (`my-var` and `a.b` are fine; `1BAD`, `a b`,
-  `A=B`, an empty name and a name with an accented letter are not).
+  starting with a digit, and not `.`, `..` or a name that starts with
+  `..` (`my-var`, `a.b` and `.x` are fine; `1BAD`, `a b`, `A=B`, `..x`,
+  an empty name and a name with an accented letter are not).
   `PRIMER_RUNTIME_TOKEN` and `RUNTIME_TOKEN` are reserved for the
   runtime's own token. Either mistake answers
   `type=validation-error` naming the variable (never its value), as

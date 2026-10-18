@@ -290,14 +290,14 @@ async def test_a_template_with_an_absurd_cpu_is_a_422_that_names_the_template_an
 
 
 #: What an ``invalid_env_name`` refusal says (lead ruling 17 of plan 08, FINAL from the review of #789).
-_INVALID_ENV_NAME = "An environment variable name is 1 to 256 characters of ASCII letters, digits, '_', '-' and '.', and does not start with a digit. Rename or remove it."
+_INVALID_ENV_NAME = "An environment variable name is 1 to 256 characters of ASCII letters, digits, '_', '-' and '.'. It does not start with a digit or with '..', and it is not '.'. Rename or remove it."
 
-#: Names Kubernetes accepts that the first (POSIX-only) version of the rule refused, one that starts with an underscore, and the
-#: longest allowed.
-_KUBERNETES_NAMES = ["my-var", "a.b", "_x", "a" * 256]
+#: Names Kubernetes accepts that the first (POSIX-only) version of the rule refused, one that starts with an underscore, dots that
+#: are not the ``.`` / ``..`` / ``..x`` start, and the longest allowed.
+_KUBERNETES_NAMES = ["my-var", "a.b", "_x", ".x", "x..", "a" * 256]
 
 
-@pytest.mark.parametrize("name", ["1BAD", "a b", "A=B", "", "café", "9"])
+@pytest.mark.parametrize("name", ["1BAD", "a b", "A=B", "", "café", "9", ".", "..", "..x"])
 async def test_an_invalid_env_name_in_the_overrides_is_a_422_naming_it(client, backend_calls, sp, name):
     r = await client.post("/v1/workspaces", json={"template_id": "tpl-loc", "overrides": {"env": {name: "v"}}})
 
@@ -353,6 +353,7 @@ async def test_a_runtime_token_name_is_a_422_that_names_it_and_never_shows_the_v
 
 @pytest.mark.parametrize("name, kind", [
     ("has space", "invalid_env_name"), ("1BAD", "invalid_env_name"), ("A=B", "invalid_env_name"), ("a" * 257, "invalid_env_name"),
+    (".", "invalid_env_name"), ("..", "invalid_env_name"), ("..x", "invalid_env_name"),
     ("PRIMER_RUNTIME_TOKEN", "reserved_env_name"), ("RUNTIME_TOKEN", "reserved_env_name"),
 ])
 async def test_a_template_env_the_cluster_would_refuse_is_a_422_at_create(client, backend_calls, sp, name, kind):
