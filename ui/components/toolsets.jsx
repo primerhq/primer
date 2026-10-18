@@ -13,9 +13,10 @@
 // with agents.jsx (AG_TABS), providers.jsx (PROVIDER_FIELDS), and
 // workspaces.jsx (WS_TERMINAL).
 
-// Kept as a hardcoded fallback for filtering user toolsets out of the user
-// list; the Built-in cards now fetch /v1/toolsets/builtin dynamically.
-const TS_BUILTIN_RESERVED_IDS = ["system", "workspaces", "search", "misc", "web"];
+// The built-in toolset ids, in catalogue order: a copy of
+// primer/api/routers/providers.py _BUILTIN_TOOLSETS that
+// tests/ui/test_toolset_builtin_ids.py pins to it. The New toolset hint names them.
+const TS_BUILTIN_RESERVED_IDS = ["system", "workspaces", "collections", "misc", "web", "harness", "trigger", "workspace_ext", "crud"];
 
 const TS_TABS = [
   { id: "config", label: "Config", icon: "settings" },
@@ -617,8 +618,10 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
           <option value="mcp">MCP server</option>
           <option value="python">Python functions</option>
         </select>
-        <div className="field-help">
-          Internal toolsets (<span className="mono">system</span>, <span className="mono">workspaces</span>, <span className="mono">misc</span>, <span className="mono">search</span>, <span className="mono">web</span>) are runtime built-ins — they cannot be created via this form.
+        <div className="field-help" data-testid="toolset-builtin-hint">
+          Internal toolsets ({TS_BUILTIN_RESERVED_IDS.map((tid, i) => (
+            <React.Fragment key={tid}>{i ? ", " : ""}<span className="mono">{tid}</span></React.Fragment>
+          ))}) are runtime built-ins: they cannot be created via this form.
         </div>
         {provider === "python" && (
           <div className="field-help warn" data-testid="toolset-python-admin-only">
@@ -1205,3 +1208,4 @@ window.ToolsetsPage = ToolsetsPage;
 window.ToolsetDetail = ToolsetDetail;
 // The create dialog is also hosted by the Platform page (nv-platform.jsx): "New toolset" there opens this form directly.
 window.TS_NewToolsetModal = TS_NewToolsetModal;
+window.TS_BUILTIN_RESERVED_IDS = TS_BUILTIN_RESERVED_IDS;
