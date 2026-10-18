@@ -237,10 +237,32 @@ class TestEachAdapterTranslatesForItsOwnWire:
         ("gemini-3-flash-preview", ReasoningLevel.OFF, {"thinking_level": "minimal"}),
         ("gemini-3-flash-preview", ReasoningLevel.MEDIUM, {"thinking_level": "medium"}),
         ("models/gemini-3.1-pro-preview", ReasoningLevel.MINIMAL, {"thinking_level": "low"}),
+        # Clamped to the levels each model documents (nearest, ties go higher).
+        ("gemini-3.8-flash", ReasoningLevel.OFF, {"thinking_level": "low"}),  # no minimal
+        ("gemini-3.7-flash", ReasoningLevel.MINIMAL, {"thinking_level": "low"}),
+        ("gemini-3.6-flash", ReasoningLevel.OFF, {"thinking_level": "minimal"}),
+        ("gemini-3-pro-preview", ReasoningLevel.MEDIUM, {"thinking_level": "high"}),  # low/high only
+        ("gemini-3.1-pro-preview", ReasoningLevel.MEDIUM, {"thinking_level": "medium"}),
+        ("gemini-3.1-flash-lite-image", ReasoningLevel.OFF, {"thinking_level": "minimal"}),
+        ("gemini-3.1-flash-lite-image", ReasoningLevel.LOW, {"thinking_level": "minimal"}),
+        ("gemini-3.1-flash-lite-image", ReasoningLevel.MEDIUM, {"thinking_level": "high"}),
+        ("gemini-3-pro-image-preview", ReasoningLevel.OFF, {"thinking_level": "high"}),  # high only
+        ("gemini-4-argon", ReasoningLevel.OFF, {"thinking_level": "low"}),
+        ("gemini-4-argon", ReasoningLevel.MEDIUM, {"thinking_level": "medium"}),
+        ("gemini-9-zeta", ReasoningLevel.OFF, {"thinking_level": "low"}),  # not in the table
     ])
     def test_gemini_takes_the_shape_of_the_model(self, model, level, expected) -> None:
         llm = GeminiLLM(_gemini())
         assert llm.profile_extended(_cfg(level), model=model) == expected
+
+    def test_a_gemini_level_clamp_is_logged_once(self, caplog) -> None:
+        caplog.set_level(logging.DEBUG, logger="primer.llm._reasoning")
+        llm = GeminiLLM(_gemini())
+        for _ in range(3):
+            llm.profile_extended(_cfg(ReasoningLevel.MEDIUM), model="gemini-3-pro-preview")
+        hits = [r for r in caplog.records if "has no thinking level 'medium'" in r.getMessage()]
+        assert len(hits) == 1
+        assert "'high'" in hits[0].getMessage()
 
     def test_gemini_2_5_pro_off_is_logged_once(self, caplog) -> None:
         caplog.set_level(logging.DEBUG, logger="primer.llm._reasoning")
