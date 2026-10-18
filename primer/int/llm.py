@@ -22,12 +22,15 @@ cleanly.
 import json
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
 from primer.model.chat import Message, StreamEvent, Tool, ToolChoice
 from primer.model.token_count import TokenCount
+
+if TYPE_CHECKING:
+    from primer.model.model_profile import ModelProfileConfig
 
 
 
@@ -118,6 +121,22 @@ class LLM(ABC):
                 )
         return _extract_json_object("".join(chunks))
 
+    def profile_extended(self, config: "ModelProfileConfig") -> dict[str, Any]:
+        """Translate a model profile's ``config`` into this adapter's ``extended`` knobs.
+
+        Every call made under a profile sends the result as
+        ``stream(extended=...)`` (see
+        :func:`primer.llm._reasoning.profile_stream_kwargs`). Each concrete
+        adapter overrides this with its own mapping from
+        :mod:`primer.llm._reasoning`, which knows its wire and flavor. This
+        default, for an adapter with no mapping, forwards ``config.extended``
+        and logs a reasoning level once at DEBUG as not applied.
+        """
+        # Deferred: primer.llm's package init imports every adapter, and each
+        # adapter imports this module.
+        from primer.llm._reasoning import passthrough_extended
+
+        return passthrough_extended(config, adapter=type(self).__name__)
 
     @abstractmethod
     def stream(

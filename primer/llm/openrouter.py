@@ -38,6 +38,7 @@ from primer.common.openai_errors import classify_openai_exception
 from primer.int.coordinator import RateLimiter
 from primer.int.llm import LLM
 from primer.llm._failure import describe_failure
+from primer.llm._reasoning import openrouter_extended
 from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout
 from primer.llm._openai_compat import (
     _build_sampling_params,
@@ -57,6 +58,7 @@ from primer.model.chat import (
     ToolChoice,
 )
 from primer.model.except_ import ConfigError
+from primer.model.model_profile import ModelProfileConfig
 from primer.model.provider import (
     LLMProvider,
     LLMProviderType,
@@ -170,6 +172,10 @@ class OpenRouterLLM(LLM):
         from primer.llm._tokenizer.openai import count_openai_family
 
         return await count_openai_family(model=model, messages=messages, tools=tools)
+
+    def profile_extended(self, config: ModelProfileConfig) -> dict[str, Any]:
+        """OpenRouter's ``reasoning`` object, sent in the request body."""
+        return openrouter_extended(config)
 
     async def stream(  # type: ignore[override]
         self,

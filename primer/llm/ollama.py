@@ -26,6 +26,7 @@ from pydantic import BaseModel as PydanticBaseModel
 
 from primer.int.llm import LLM
 from primer.llm._failure import describe_failure
+from primer.llm._reasoning import ollama_extended
 from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout, _open_with_connect_timeout
 from primer.llm._tokenizer._executor import run_counter
 from primer.llm._tokenizer.hf import count_tokens_hf_detailed
@@ -65,6 +66,7 @@ from primer.model.except_ import (
     UnsupportedContentError,
 )
 from primer.int.coordinator import RateLimiter
+from primer.model.model_profile import ModelProfileConfig
 from primer.model.provider import (
     LLMProvider,
     LLMProviderType,
@@ -501,6 +503,10 @@ class OllamaLLM(LLM):
         if self._client is not None:
             await self._client.close()
             self._client = None
+
+    def profile_extended(self, config: ModelProfileConfig) -> dict[str, Any]:
+        """Ollama's plain ``think`` flag."""
+        return ollama_extended(config)
 
     async def stream(  # type: ignore[override]
         self,

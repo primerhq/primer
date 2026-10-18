@@ -28,6 +28,7 @@ from pydantic import BaseModel
 from primer.common.openai_errors import classify_openai_exception
 from primer.int.llm import LLM
 from primer.llm._failure import describe_failure, scrubbed_event_text
+from primer.llm._reasoning import openresponses_extended
 from primer.llm._openai_common import build_sampling_params as _build_sampling_params_impl
 from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout
 from primer.model.except_ import (
@@ -68,6 +69,7 @@ from primer.model.chat import (
     VideoPart,
 )
 from primer.int.coordinator import RateLimiter
+from primer.model.model_profile import ModelProfileConfig
 from primer.model.provider import (
     LLMProvider,
     LLMProviderType,
@@ -940,6 +942,11 @@ class OpenResponsesLLM(LLM):
         if self._client is not None:
             await self._client.close()
             self._client = None
+
+    def profile_extended(self, config: ModelProfileConfig) -> dict[str, Any]:
+        """``reasoning_effort`` (sent as ``reasoning.effort``); vLLM's Responses
+        endpoint honours no reasoning knob, so that flavor maps none."""
+        return openresponses_extended(config, flavor=self._config.flavor.value)
 
     async def stream(  # type: ignore[override]
         self,
