@@ -58,6 +58,8 @@ The seeded-world reserved ids live in `primer/bootstrap/defaults.py` as `RESERVE
 
 `SystemState.default_agent_id` is a real column on the `system_state` singleton (both the sqlite and postgres DDLs carry it, with an ALTER guard). The ensure pass stamps it at `operator`; a binding-less session create resolves it.
 
+`SystemState.default_workspace_id` is the second such column (same DDLs, same ALTER guard on sqlite and `ADD COLUMN IF NOT EXISTS` on postgres): it names the default workspace (prime), the one the console opens on first login and the one that cannot be deleted. It is `None` until the ensure pass records it. Code never compares against a literal id: it calls `primer.bootstrap.prime.resolve_default_workspace_id`, which returns the recorded id, else the legacy `primer` id when that workspace row exists (every install created before the column kept its default workspace under that id), else `None`. The constants `LEGACY_DEFAULT_WORKSPACE_ID`, `PRIME_WORKSPACE_ID` and `PRIME_WORKSPACE_NAME` live in `primer/bootstrap/defaults.py`.
+
 The crud approval policies are ordinary `ToolApprovalPolicy` rows with the deterministic id `tool-approval-policy-crud-<tool_name>`, `enabled=True` and `approval={"type": "required"}`. One per crud tool.
 
 The two seeded agents are ordinary `Agent` rows. Their `model.profile_id` is resolved from the default model profile at creation and PRESERVED thereafter.

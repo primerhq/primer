@@ -330,7 +330,8 @@ class PostgresStorageProvider(StorageProvider):
                 f'  session_secret         TEXT,'
                 f'  sso_jit_enabled        BOOLEAN NOT NULL DEFAULT false,'
                 f'  sso_default_access     TEXT,'
-                f'  default_agent_id       TEXT'
+                f'  default_agent_id       TEXT,'
+                f'  default_workspace_id   TEXT'
                 f')',
             )
             # Schema-evolution: add session_secret column on pre-existing
@@ -351,6 +352,10 @@ class PostgresStorageProvider(StorageProvider):
             await conn.execute(
                 f'ALTER TABLE "{self._schema}"."system_state" '
                 f'ADD COLUMN IF NOT EXISTS default_agent_id TEXT'
+            )
+            await conn.execute(
+                f'ALTER TABLE "{self._schema}"."system_state" '
+                f'ADD COLUMN IF NOT EXISTS default_workspace_id TEXT'
             )
             await conn.execute(
                 f'INSERT INTO "{self._schema}"."system_state" (id) '
@@ -397,7 +402,8 @@ class PostgresStorageProvider(StorageProvider):
         sql = (
             f'SELECT id, bootstrap_completed_at, schema_version, '
             f'       last_migration_at, session_secret, '
-            f'       sso_jit_enabled, sso_default_access, default_agent_id '
+            f'       sso_jit_enabled, sso_default_access, default_agent_id, '
+            f'       default_workspace_id '
             f'FROM {self.system_state_table} WHERE id = $1'
         )
         async with self.pool.acquire() as conn:
@@ -414,6 +420,7 @@ class PostgresStorageProvider(StorageProvider):
             sso_jit_enabled=row["sso_jit_enabled"],
             sso_default_access=row["sso_default_access"],
             default_agent_id=row["default_agent_id"],
+            default_workspace_id=row["default_workspace_id"],
         )
 
     async def set_bootstrap_completed(self, ts: datetime) -> None:
@@ -463,6 +470,15 @@ class PostgresStorageProvider(StorageProvider):
         )
         async with self.pool.acquire() as conn:
             await conn.execute(sql, agent_id, "singleton")
+
+    async def set_default_workspace_id(self, workspace_id: str | None) -> None:
+        """Set (or clear, with None) the id of the default workspace (prime)."""
+        sql = (
+            f'UPDATE {self.system_state_table} '
+            f'SET default_workspace_id = $1 WHERE id = $2'
+        )
+        async with self.pool.acquire() as conn:
+            await conn.execute(sql, workspace_id, "singleton")
 
     async def set_sso_default_access(self, access: str | None) -> None:
         """Persist the default access level granted to JIT-provisioned users."""

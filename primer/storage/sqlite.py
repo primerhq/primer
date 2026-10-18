@@ -458,7 +458,8 @@ class SqliteStorageProvider(StorageProvider):
                 "  session_secret         TEXT,"
                 "  sso_jit_enabled        INTEGER NOT NULL DEFAULT 0,"
                 "  sso_default_access     TEXT,"
-                "  default_agent_id       TEXT"
+                "  default_agent_id       TEXT,"
+                "  default_workspace_id   TEXT"
                 ")"
             )
             # Schema-evolution shim: for installs created before
@@ -482,6 +483,10 @@ class SqliteStorageProvider(StorageProvider):
             if "default_agent_id" not in cols:
                 await self._conn.execute(
                     "ALTER TABLE system_state ADD COLUMN default_agent_id TEXT"
+                )
+            if "default_workspace_id" not in cols:
+                await self._conn.execute(
+                    "ALTER TABLE system_state ADD COLUMN default_workspace_id TEXT"
                 )
             await self._conn.execute(
                 "INSERT INTO system_state (id) VALUES ('singleton') "
@@ -533,7 +538,8 @@ class SqliteStorageProvider(StorageProvider):
         sql = (
             "SELECT id, bootstrap_completed_at, schema_version, "
             "       last_migration_at, session_secret, "
-            "       sso_jit_enabled, sso_default_access, default_agent_id "
+            "       sso_jit_enabled, sso_default_access, default_agent_id, "
+            "       default_workspace_id "
             "FROM system_state WHERE id = ?"
         )
         cur = await self.connection.execute(sql, ("singleton",))
@@ -549,6 +555,7 @@ class SqliteStorageProvider(StorageProvider):
             sso_jit_enabled,
             sso_default_access,
             default_agent_id,
+            default_workspace_id,
         ) = row
 
         def _parse_ts(s: str | None) -> datetime | None:
@@ -569,6 +576,7 @@ class SqliteStorageProvider(StorageProvider):
             sso_jit_enabled=bool(sso_jit_enabled),
             sso_default_access=sso_default_access,
             default_agent_id=default_agent_id,
+            default_workspace_id=default_workspace_id,
         )
 
     async def set_default_agent_id(self, agent_id: str | None) -> None:
@@ -577,6 +585,16 @@ class SqliteStorageProvider(StorageProvider):
             await self.connection.execute(
                 "UPDATE system_state SET default_agent_id = ? WHERE id = ?",
                 (agent_id, "singleton"),
+            )
+            if should_commit:
+                await self.connection.commit()
+
+    async def set_default_workspace_id(self, workspace_id: str | None) -> None:
+        """Set (or clear, with None) the id of the default workspace (prime)."""
+        async with self._write_guard() as should_commit:
+            await self.connection.execute(
+                "UPDATE system_state SET default_workspace_id = ? WHERE id = ?",
+                (workspace_id, "singleton"),
             )
             if should_commit:
                 await self.connection.commit()

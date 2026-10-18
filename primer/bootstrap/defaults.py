@@ -48,6 +48,15 @@ RESERVED_EXPLORER_AGENT: str = "explorer"
 RESERVED_TOOL_RUNNER_AGENT: str = "tool-runner"
 RESERVED_DEFAULT_WORKSPACE: str = "primer"
 
+# The default workspace ("prime") is named by ``SystemState.default_workspace_id``, never by one of these constants:
+# code reads it through ``primer.bootstrap.prime.resolve_default_workspace_id``. The two ids and the display name
+# live here only so the ensure pass, the adoption of an existing install and that resolver agree on them.
+# ``LEGACY_DEFAULT_WORKSPACE_ID`` is what every install created before the field existed calls its default workspace
+# (it is kept, only renamed for display); ``PRIME_WORKSPACE_ID`` is what a fresh install creates.
+LEGACY_DEFAULT_WORKSPACE_ID: str = "primer"
+PRIME_WORKSPACE_ID: str = "prime"
+PRIME_WORKSPACE_NAME: str = "prime"
+
 # Convenience set of all reserved ids — for quick membership tests in
 # router guards (Task 3) and BootstrapRunner (Task 4).
 ALL_RESERVED_IDS: frozenset[str] = frozenset({
@@ -177,6 +186,9 @@ __all__ = [
     "RESERVED_EXPLORER_AGENT",
     "RESERVED_TOOL_RUNNER_AGENT",
     "RESERVED_DEFAULT_WORKSPACE",
+    "LEGACY_DEFAULT_WORKSPACE_ID",
+    "PRIME_WORKSPACE_ID",
+    "PRIME_WORKSPACE_NAME",
     "ALL_RESERVED_IDS",
     "RESERVED_CROSS_ENCODERS",
     "RESERVED_EMBEDDERS",

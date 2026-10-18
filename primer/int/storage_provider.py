@@ -125,6 +125,17 @@ class StorageProvider(ABC):
         """
 
     @abstractmethod
+    async def set_default_workspace_id(self, workspace_id: str | None) -> None:
+        """Record the id of the default workspace (prime).
+
+        The default workspace opens on first login and cannot be deleted;
+        every reader goes through ``primer.bootstrap.prime.
+        resolve_default_workspace_id`` rather than reading this column, so
+        an install that predates the column still resolves. ``None`` clears
+        the record, which returns the reader to its legacy fallback.
+        """
+
+    @abstractmethod
     async def set_bootstrap_completed(self, ts: datetime) -> None:
         """Stamp ``bootstrap_completed_at`` on the singleton row.
 

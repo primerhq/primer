@@ -35,5 +35,12 @@ class SystemState(BaseModel):
             "binding-less create is rejected rather than guessing."
         ),
     )
+    default_workspace_id: str | None = Field(
+        default=None,
+        description=(
+            "Id of the default workspace (prime): opened on first login and "
+            "never deletable. None until the ensure pass records it."
+        ),
+    )
     sso_jit_enabled: bool = False
     sso_default_access: str | None = None
