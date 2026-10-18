@@ -4,19 +4,24 @@
 // One overlay registers and edits a provider of every class. It is the kit's PK_FormOverlay: the title ("Register provider", or "Edit <id>"), the type
 // selector at the centre top ("Register a [icon] <Type> provider", the classes in the sidebar order; Web Fetch only when a caller allows it), the page of
 // the chosen class below it, and the page's footer: Cancel on the left, the action on the right. A page renders INTO the overlay: it is handed a `frame`
-// function and returns frame({ body, footerLeft, footerRight, error }), so each page owns its own state and footer while the overlay owns the shell, the
-// error line, Invalidate and Delete. Changing the type remounts the page (`key`), so values typed for the previous type are dropped (design 6.1).
+// function and returns frame({ body, footerLeft, footerRight, error, busy }), so each page owns its own state and footer while the overlay owns the shell, the
+// error line, Invalidate and Delete. Changing the type remounts the PAGE (`key`), so values typed for the previous type are dropped (design 6.1); the SHELL is
+// not the page's, so the dialog, its scrim, its focus trap and the selector stay mounted (see "The shell's slots" below).
 //
 // Which page a class gets:
 // - a page registered in window.PC_REGISTER_PAGES (the wizard classes: LLM in Task 12, Embedding and Cross Encoding in Task 14, TTS and ASR in Task 15);
 // - otherwise a panel class gets its own create form (PC_PANEL_FORMS), handed { existing, frame, onSaved, onClose, pushToast };
 // - otherwise the schema-driven PC_ProviderForm in its framed layout (the form classes, and a wizard class whose own page is not loaded).
 //
+// The parts a page hands to frame: `body` (the page's content), `footerLeft` (Cancel) and `footerRight` (the action; Test and the submit) for the two sides of
+// the footer, `error` (a refusal, shown as the body's last line) and `busy` (true while a request of the page's own, a save or a test, is out: the overlay keeps
+// the type selector shut, and holds Delete off, until it is answered, because a switch then would unmount the page and swallow the answer).
+//
 // Seam I-3: PC_RegisterOverlay({ initialClass, allowedClasses?, excludeKinds?, editRow?, onClose(), onSaved(row), onDeleted?(id) }). `excludeKinds` is
 // added to the built-in kinds the Type select leaves out; without `onDeleted` the overlay closes itself after a delete.
 
 // The wizard classes' pages, merged in by the files that define them (each does Object.assign(window.PC_REGISTER_PAGES || {}, { <key>: Page })). A page
-// takes { klass, editRow, excludeKinds, frame, onSaved(row), onClose() } and returns frame({ body, footerLeft?, footerRight, error? }).
+// takes { klass, editRow, excludeKinds, frame, onSaved(row), onClose() } and returns frame({ body, footerLeft?, footerRight, error?, busy? }).
 window.PC_REGISTER_PAGES = Object.assign(window.PC_REGISTER_PAGES || {}, {});
 
 // The panel classes' own create forms, read when they are needed (their files load after this one). Each takes { existing, frame, onSaved, onClose,
@@ -85,6 +90,66 @@ function PC_useRegisterRequest(handler) {
   }, []);
 }
 
+// ---- the shell's slots --------------------------------------------------------------------------------------------------------------------------------
+//
+// The overlay owns ONE shell, the PK_FormOverlay (a Modal), for as long as it is open. A page is rendered BESIDE it, not inside it. The page is keyed by its class, so that a
+// pick drops its state (design 6.1); a shell that sat in the page's markup would be dropped with it: a new dialog and scrim node, the open animation played again (fadeIn, and
+// sheet-slide-up on a phone), the focus on Close instead of the selector, and a new focus trap that takes the selector it has just destroyed as the element to return focus to,
+// so that Cancel and Escape left the focus on <body> (review of #773, measured in Chromium). It would also drop the page's state when a phone is turned across the 640px band
+// and the Modal swaps between its dialog and sheet trees.
+//
+// What a page draws reaches the dialog through slots. frame(parts) returns a PC_FramePublisher, which writes the parts into a small store; the three PC_FrameSlot components in
+// the shell (the body, the left and the right of the footer) draw them, so the markup inside the dialog is what it always was. A slot draws only the parts of ITS class: for
+// the length of a pick the store still holds the old page's parts, and a page that never publishes must leave the shell empty, not showing a page that is gone. Each slot keys
+// what it draws by the class, so the page's components (and their own state) are replaced with the page.
+//
+// The page comes BEFORE the shell in the overlay's markup, so on any render of both the publisher writes before the slots read and they show the page's parts in the same
+// pass. A page that re-renders ALONE (its own state changed) is not rendered with the shell: its layout effect then refreshes the store, and a slot that is showing something
+// older renders again, before the browser paints.
+function PC_makeFrameStore() {
+  const store = { parts: null, slots: [] };
+  store.attach = (slot) => {
+    store.slots.push(slot);
+    return () => {
+      const at = store.slots.indexOf(slot);
+      if (at >= 0) store.slots.splice(at, 1);
+    };
+  };
+  store.refresh = () => {
+    store.slots.slice().forEach((slot) => slot.refresh());
+  };
+  return store;
+}
+
+function PC_FrameSlot({ store, part, classKey }) {
+  const [, again] = React.useReducer((n) => n + 1, 0);
+  const shown = React.useRef(null);
+  const parts = store.parts;
+  shown.current = parts;
+  React.useLayoutEffect(() => {
+    const slot = { refresh: () => { if (shown.current !== store.parts) again(); } };
+    const detach = store.attach(slot);
+    slot.refresh();
+    return detach;
+  }, [store]);
+  if (!parts || parts.classKey !== classKey) return null;
+  return [<React.Fragment key={parts.classKey}>{parts[part]}</React.Fragment>];
+}
+
+// What frame() returns: it draws nothing itself. `onBusy(busy)` tells the overlay whether the page has a request out. The parts it already holds are kept while nothing it
+// was handed has changed, so a slot that shows them is not asked to render again.
+function PC_FramePublisher({ store, classKey, body, left, right, busy, onBusy }) {
+  const held = store.parts;
+  if (!held || held.classKey !== classKey || held.body !== body || held.left !== left || held.right !== right) {
+    store.parts = { classKey, body, left, right };
+  }
+  React.useLayoutEffect(() => {
+    store.refresh();
+    onBusy(busy);
+  });
+  return null;
+}
+
 // The page of a form class (and of a wizard class whose own page is not loaded): the schema-driven form in its framed layout. An edit starts from the full
 // served row (PC_draftFromRow), so every field the form does not show is sent back unchanged; the body goes out with the wire names (PC_wireBody). A
 // built-in row whose kind has nothing to configure is shown read-only.
@@ -110,6 +175,14 @@ function PC_RegisterFormPage({ klass, editRow, excludeKinds, frame, onSaved, onC
   );
 }
 
+// A class whose page cannot be shown (a class this console does not know, a panel form that is not loaded): the shell with a line saying so and Cancel.
+function PC_RegisterNotice({ frame, onClose, children }) {
+  return frame({
+    body: <div className="nv-form-error" role="alert">{children}</div>,
+    footerLeft: <Btn kind="ghost" data-testid="pc-register-cancel" onClick={onClose}>Cancel</Btn>,
+  });
+}
+
 function PC_RegisterOverlay({ initialClass, allowedClasses, excludeKinds, editRow, onClose, onSaved, onDeleted }) {
   const api = window.primerApi;
   const PK_FormOverlay = window.PK_FormOverlay;
@@ -117,6 +190,11 @@ function PC_RegisterOverlay({ initialClass, allowedClasses, excludeKinds, editRo
   const [classKey, setClassKey] = React.useState(() => PC_startClass(initialClass, allowedClasses, editRow));
   const [deleting, setDeleting] = React.useState(false);
   const [deleteError, setDeleteError] = React.useState(null);
+  const [pageBusy, setPageBusy] = React.useState(false);
+  const wasBusy = React.useRef(false);
+  const storeRef = React.useRef(null);
+  if (!storeRef.current) storeRef.current = PC_makeFrameStore();
+  const store = storeRef.current;
   const live = React.useRef(true);
   React.useEffect(() => {
     live.current = true;
@@ -131,6 +209,14 @@ function PC_RegisterOverlay({ initialClass, allowedClasses, excludeKinds, editRo
     if (typeof api.toastPush === "function") api.toastPush(t);
   };
 
+  // The page says, on every render, whether a request of its own (a save, a test) is out. A request STARTING clears a refused Delete's message: the line would
+  // otherwise keep it over the answer to the request that follows.
+  const pageBusyChanged = (next) => {
+    if (next && !wasBusy.current) setDeleteError(null);
+    wasBusy.current = next;
+    setPageBusy(next);
+  };
+
   // An edit opens on its row's class, which is the one option shown (a hidden class such as Web Fetch is named too); a create offers the classes.
   const options = editing ? (klass ? [PC_selectorOption(klass)] : []) : PC_selectorOptions(allowedClasses);
   const selector = {
@@ -141,7 +227,8 @@ function PC_RegisterOverlay({ initialClass, allowedClasses, excludeKinds, editRo
       setDeleteError(null);
       setClassKey(next);
     },
-    locked: editing || options.length <= 1,
+    // A switch while a request is out would unmount the page that is waiting for the answer, and the failure the answer carries would never be seen.
+    locked: editing || options.length <= 1 || pageBusy || deleting,
     testid: "pc-register-type",
   };
   const title = editing ? `Edit ${editRow.id}` : "Register provider";
@@ -182,8 +269,9 @@ function PC_RegisterOverlay({ initialClass, allowedClasses, excludeKinds, editRo
     else close();
   };
 
+  // Held off (not busy: its own request is not the one out) while the page has a request out, so that a refusal of this one cannot land on the line in the middle of the other.
   const deleteButton = editing && klass && !window.PC_isBuiltin(classKey, editRow.id) ? (
-    <Btn kind="danger" data-testid="pc-register-delete" busy={deleting} onClick={remove}>Delete provider</Btn>
+    <Btn kind="danger" data-testid="pc-register-delete" busy={deleting} blocked={pageBusy} onClick={remove}>Delete provider</Btn>
   ) : null;
   const invalidate = editing && klass && klass.invalidate ? (
     <div data-testid="pc-register-invalidate">
@@ -191,43 +279,58 @@ function PC_RegisterOverlay({ initialClass, allowedClasses, excludeKinds, editRo
     </div>
   ) : null;
 
+  // What a page calls: the overlay adds what it owns (Invalidate and the error line under the body, Delete after the page's own left footer) and hands the whole to the
+  // shell's slots. A refused Delete's message is the newer word until a request of the page's starts (pageBusyChanged), so it takes the line while it stands.
   const frame = (parts) => {
     const p = parts || {};
     const error = deleteError || p.error || null;
     return (
-      <PK_FormOverlay title={title} selector={selector} onClose={close} testid="pc-register"
-        footer={{
-          left: (p.footerLeft || deleteButton) ? <React.Fragment>{p.footerLeft || null}{deleteButton}</React.Fragment> : null,
-          right: p.footerRight || null,
-        }}>
-        {p.body || null}
-        {invalidate}
-        {error ? <div className="nv-form-error" role="alert" data-testid="pc-register-error">{error}</div> : null}
-      </PK_FormOverlay>
+      <PC_FramePublisher store={store} classKey={classKey} busy={!!p.busy} onBusy={pageBusyChanged}
+        body={(
+          <React.Fragment>
+            {p.body || null}
+            {invalidate}
+            {error ? <div className="nv-form-error" role="alert" data-testid="pc-register-error">{error}</div> : null}
+          </React.Fragment>
+        )}
+        left={(p.footerLeft || deleteButton) ? <React.Fragment>{p.footerLeft || null}{deleteButton}</React.Fragment> : null}
+        right={p.footerRight || null} />
     );
   };
 
+  let page;
   if (!klass) {
-    return frame({
-      body: <div className="nv-form-error" role="alert">This console has no provider class "{String(classKey)}".</div>,
-      footerLeft: <Btn kind="ghost" data-testid="pc-register-cancel" onClick={close}>Cancel</Btn>,
-    });
-  }
-  const pageProps = { klass, editRow: editRow || null, excludeKinds, frame, onSaved: saved, onClose: close };
-  const Page = (window.PC_REGISTER_PAGES || {})[classKey];
-  if (Page) return <Page key={classKey} {...pageProps} />;
-  if (klass.form === "panel") {
-    const panelOf = PC_PANEL_FORMS[classKey];
-    const Panel = panelOf ? panelOf() : null;
-    if (Panel) {
-      return <Panel key={classKey} existing={editRow || null} frame={frame} onSaved={saved} onClose={close} pushToast={api.toastPush} />;
+    page = <PC_RegisterNotice key={String(classKey)} frame={frame} onClose={close}>This console has no provider class "{String(classKey)}".</PC_RegisterNotice>;
+  } else {
+    const pageProps = { klass, editRow: editRow || null, excludeKinds, frame, onSaved: saved, onClose: close };
+    const Page = (window.PC_REGISTER_PAGES || {})[classKey];
+    if (Page) {
+      page = <Page key={classKey} {...pageProps} />;
+    } else if (klass.form === "panel") {
+      const panelOf = PC_PANEL_FORMS[classKey];
+      const Panel = panelOf ? panelOf() : null;
+      page = Panel ? (
+        <Panel key={classKey} existing={editRow || null} frame={frame} onSaved={saved} onClose={close} pushToast={api.toastPush} />
+      ) : (
+        <PC_RegisterNotice key={classKey} frame={frame} onClose={close}>The {klass.noun} provider form is not loaded in this console.</PC_RegisterNotice>
+      );
+    } else {
+      page = <PC_RegisterFormPage key={classKey} {...pageProps} />;
     }
-    return frame({
-      body: <div className="nv-form-error" role="alert">The {klass.noun} provider form is not loaded in this console.</div>,
-      footerLeft: <Btn kind="ghost" data-testid="pc-register-cancel" onClick={close}>Cancel</Btn>,
-    });
   }
-  return <PC_RegisterFormPage key={classKey} {...pageProps} />;
+
+  return (
+    <React.Fragment>
+      {page}
+      <PK_FormOverlay title={title} selector={selector} onClose={close} testid="pc-register"
+        footer={{
+          left: <PC_FrameSlot store={store} part="left" classKey={classKey} />,
+          right: <PC_FrameSlot store={store} part="right" classKey={classKey} />,
+        }}>
+        <PC_FrameSlot store={store} part="body" classKey={classKey} />
+      </PK_FormOverlay>
+    </React.Fragment>
+  );
 }
 
 Object.assign(window, {
