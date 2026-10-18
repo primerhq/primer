@@ -352,11 +352,8 @@ var NV_PLAT_PAGES = {
       return {
         id: row.id, name: row.id, sub: row.description || "",
         icon: { path: NV_PLAT_ICONS.agents, tone: ident.color },
-        status: row.status ? {
-          label: row.status, tone: row.status === "ok" ? "ok" : "warn",
-        } : undefined,
         facts: [
-          NV_fact("profile", row.model_profile_id),
+          NV_fact("profile", row.model && row.model.profile_id),
           NV_fact("tools", NV_countOf(row.tools)),
         ],
       };
