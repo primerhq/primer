@@ -18,6 +18,9 @@ Per-entity CRUD set (10 entities × 6 tools = 60 tools) for:
 Plus entity-specific operations:
 * ``fetch_llm_provider_models``, ``fetch_embedding_provider_models``,
   ``fetch_cross_encoder_provider_models`` — live model lists.
+* ``check_huggingface_models`` - look Hugging Face Hub models up with a token
+  before a Hugging Face embedding or cross-encoder provider is registered
+  (stores nothing; :mod:`primer.common.hf_hub`).
 * ``list_toolset_tools`` — enumerate the tools a toolset exposes.
 * ``call_tool`` — meta-dispatch: invoke any tool from any toolset.
 * Graph threads CRUD — ``list/get/create/update/delete_graph_thread``.
@@ -59,6 +62,8 @@ This module is a thin facade over the decomposed implementation:
   tool (model, resume hook, handler).
 * :mod:`primer.toolset._system_web` - the four web search / web fetch
   active-config tools (they run the PUT routes' check and write).
+* :mod:`primer.toolset._system_probes` - the tools that probe a provider
+  before it is registered and store nothing (the Hugging Face Hub check).
 
 ``build_system_toolset`` (below) wires those into one provider and adds
 the bespoke tools that close over its per-build dependencies
@@ -177,6 +182,9 @@ from primer.toolset._system_crud import (
     _ToolsetIdArgs,
     _update_schema,
 )
+
+# Provider probes (the Hugging Face Hub check).
+from primer.toolset._system_probes import probe_tools
 
 # Re-exported hand-written tools.
 from primer.toolset._system_tools import (
@@ -899,6 +907,10 @@ def build_system_toolset(
             label=label, pretty=pretty, registry=provider_registry, fetch_method=method
         )
         registry[name] = entry
+
+    # ---- Provider probes: check a provider's models before it exists ---
+    # They read no storage and no registry (nothing is stored), so they carry no per-build dependency.
+    registry.update(probe_tools())
 
     # ---- Toolset extras ---------------------------------------------
     # call_tool's meta-dispatch path enforces the same approval gate the

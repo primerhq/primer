@@ -13,7 +13,9 @@ from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
+import respx
 from pydantic import SecretStr
 
 from primer.api.registries import ProviderRegistry
@@ -632,6 +634,110 @@ class TestFetchModels:
         )
         assert result.is_error
         assert json.loads(result.output)["type"] == "not-found"
+
+
+# ===========================================================================
+# Provider extras: the Hugging Face Hub model check (primer/common/hf_hub.py)
+# ===========================================================================
+
+
+class TestHuggingFaceCheck:
+    """``check_huggingface_models`` answers like ``POST /v1/huggingface/_check_models`` and stores nothing.
+
+    The Hub is mocked with ``respx`` at ``HF_ENDPOINT``: no test here reaches the real Hugging Face Hub.
+    """
+
+    HUB = "https://hub.test"
+
+    @pytest.fixture(autouse=True)
+    def _hub(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("HF_ENDPOINT", self.HUB)
+
+    @pytest.mark.asyncio
+    async def test_the_tool_is_listed_and_admin_only(self, system_toolset) -> None:
+        tools = {t.id: t async for t in system_toolset.list_tools()}
+
+        assert tools["check_huggingface_models"].required_role == "admin"
+        assert system_toolset.required_role("check_huggingface_models") == "admin"
+        assert tools["check_huggingface_models"].yields is False
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_the_tool_answers_like_the_route(self, system_toolset) -> None:
+        respx.get(f"{self.HUB}/api/models/BAAI/bge-small-en-v1.5/auth-check").mock(
+            return_value=httpx.Response(200)
+        )
+
+        result = await system_toolset.call(
+            tool_name="check_huggingface_models",
+            arguments={"models": ["BAAI/bge-small-en-v1.5"]},
+        )
+
+        assert not result.is_error, result.output
+        assert json.loads(result.output) == {
+            "models": [
+                {
+                    "name": "BAAI/bge-small-en-v1.5",
+                    "ok": True,
+                    "status": "ok",
+                    "detail": "Can be pulled",
+                }
+            ]
+        }
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_a_model_the_hub_refuses_is_a_result_not_a_tool_error(
+        self, system_toolset
+    ) -> None:
+        respx.get(f"{self.HUB}/api/models/org/gated/auth-check").mock(
+            return_value=httpx.Response(403, headers={"X-Error-Code": "GatedRepo"})
+        )
+
+        result = await system_toolset.call(
+            tool_name="check_huggingface_models",
+            arguments={"models": ["org/gated"], "token": "hf_secret_1234"},
+        )
+
+        assert not result.is_error
+        [check] = json.loads(result.output)["models"]
+        assert (check["ok"], check["status"]) == (False, "gated")
+        assert (
+            respx.calls.last.request.headers["authorization"]
+            == "Bearer hf_secret_1234"
+        )
+        assert "hf_secret_1234" not in result.output
+
+    @pytest.mark.asyncio
+    async def test_an_empty_model_list_is_an_error_result(self, system_toolset) -> None:
+        result = await system_toolset.call(
+            tool_name="check_huggingface_models", arguments={"models": []}
+        )
+
+        assert result.is_error
+        assert json.loads(result.output)["type"] == "validation-error"
+
+    @pytest.mark.asyncio
+    async def test_more_than_fifty_models_is_an_error_result(
+        self, system_toolset
+    ) -> None:
+        result = await system_toolset.call(
+            tool_name="check_huggingface_models",
+            arguments={"models": [f"org/m{i}" for i in range(51)]},
+        )
+
+        assert result.is_error
+        assert json.loads(result.output)["type"] == "validation-error"
+
+    @pytest.mark.asyncio
+    async def test_a_bad_argument_does_not_echo_the_token(self, system_toolset) -> None:
+        result = await system_toolset.call(
+            tool_name="check_huggingface_models",
+            arguments={"models": [], "token": "hf_secret_1234"},
+        )
+
+        assert result.is_error
+        assert "hf_secret_1234" not in result.output
 
 
 # ===========================================================================
