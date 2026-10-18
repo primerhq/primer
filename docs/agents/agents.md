@@ -116,10 +116,13 @@ of a graph's nodes, and a subagent started with `system::invoke_agent`.
 The file is read again for every turn, so an edit applies from the next
 turn; the model sees it as written (braces are not template syntax); it
 is cut at 32 KiB with a note saying so; and a file that cannot be read
-is skipped with a log warning. Per-workspace rules belong in that file,
-not in an agent's `system_prompt`. Treat it as instructions from
-whoever can write to the workspace: any session there can change it.
-See [workspaces](workspaces.md).
+(or is over 1 MiB, or takes longer than 5 seconds to read) is skipped
+with a log warning. It does not matter how the file got to the root: a
+template's file mount, a cloned repository's `AGENTS.md` and a session's
+write are all loaded. Per-workspace rules belong in that file, not in an
+agent's `system_prompt`. Treat it as instructions from whoever can write
+to the workspace or fills it: any session there can change it. See
+[workspaces](workspaces.md).
 
 The executor responsibilities, per turn:
 

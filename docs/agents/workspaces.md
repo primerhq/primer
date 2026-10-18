@@ -129,14 +129,21 @@ started with `system::invoke_agent`.
   file is cut there and followed by a line that says so
   (`[truncated: agents.md is N bytes; only the first 32768 bytes are
   included]`). It is sent with every model call of every turn, so keep
-  it short.
+  it short. A file over 1 MiB is not read at all.
 - **No file is normal.** A workspace without one has no workspace
   instructions, and a file with nothing in it adds nothing. A file that
-  cannot be read (`agents.md` is a directory, or the read fails) is
-  skipped with a warning in the server log, and the turn runs without
-  it.
+  cannot be read (`agents.md` is a directory, the file is over 1 MiB,
+  the read fails, or it takes longer than 5 seconds) is skipped with a
+  warning in the server log, and the turn runs without it.
 - **One file, at the root.** There is no per-user file and no file in a
   sub-folder.
+- **However it got there.** Primer does not care who put the file at the
+  root. A template that mounts a file at `AGENTS.md` (an inline, url,
+  document or secret source), a `git clone` or other command in the
+  template's `init_commands` that leaves an `AGENTS.md` at the root, and
+  a session that writes it are all loaded the same way. A repository
+  cloned into a sub-folder keeps its own `AGENTS.md` there, and it is not
+  read.
 
 Put in it what every agent in this workspace should know or follow:
 conventions, commands to run, what not to touch. It is a prompt, not a
@@ -147,7 +154,10 @@ permission: it adds text for the model to read and grants no tool.
 workspace is told from the next turn on, including agents started by
 someone with more rights than the writer. A workspace is a trust
 boundary: sessions and users that must not steer each other's agents
-belong in different workspaces.
+belong in different workspaces. The same goes for whatever fills the
+file: a template file source or a cloned repository decides what the
+agents are told just as a hand-written file does, so do not put a
+repository you do not trust at the workspace root.
 
 ## Lifecycle and states
 

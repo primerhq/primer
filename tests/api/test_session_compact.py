@@ -30,6 +30,20 @@ class _FakeWorkspace:
     def write(self, path: str, content: str) -> None:
         self._files[path] = content.encode("utf-8")
 
+    async def file_info(self, path: str):
+        """The size check the instructions loader makes before it reads (an ``unreadable`` path passes it, as a
+        directory does, and fails at the read)."""
+        from primer.model.except_ import NotFoundError
+        from primer.model.workspace import FileEntry
+
+        if path in self.unreadable:
+            size = 0
+        elif path in self._files:
+            size = len(self._files[path])
+        else:
+            raise NotFoundError(f"{path!r} not found")
+        return FileEntry(path=path, kind="file", size_bytes=size, modified_at=_now())
+
     async def read_file(self, path: str) -> bytes:
         if path in self.unreadable:
             raise self.unreadable[path]

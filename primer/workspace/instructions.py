@@ -10,9 +10,13 @@ Three properties matter more than the plumbing:
 * **Literal.** An agent's system prompt is a Jinja template (:mod:`primer.agent.prompt_render`), so a user's
   ``{{ x }}`` in the file would be evaluated, or fail the render. :func:`jinja_literal` escapes every ``{``, so
   the text reaches the model as written.
-* **Bounded.** The file counts at most :data:`AGENTS_MD_MAX_BYTES` bytes; a longer one is cut and says so.
-* **Never fatal.** A missing file is normal (``None``, no log); an unreadable one (a directory, a read error)
-  logs one warning and is skipped. A turn must run whatever the file is.
+* **Bounded.** The file counts at most :data:`AGENTS_MD_MAX_BYTES` bytes; a longer one is cut and says so. The
+  read itself is bounded too: a file over :data:`AGENTS_MD_READ_LIMIT_BYTES` is not read at all, and a read that
+  takes longer than :data:`AGENTS_MD_READ_TIMEOUT_S` is given up on, because the file is the workspace's and
+  anything that can write there can put a FIFO (the container runtime's ``open()`` blocks on it for good) or a
+  huge file at that name.
+* **Never fatal.** A missing file is normal (``None``, no log); an unreadable one (a directory, a read error, a
+  file too large or too slow to read) logs one warning and is skipped. A turn must run whatever the file is.
 
 Security: any session in a workspace can write ``agents.md`` and so change the instructions of every agent
 running there. A workspace is a trust boundary, and the docs say so.
@@ -20,6 +24,7 @@ running there. A workspace is a trust boundary, and the docs say so.
 
 from __future__ import annotations
 
+import asyncio
 import codecs
 import logging
 from typing import TYPE_CHECKING, Any
@@ -40,6 +45,14 @@ AGENTS_MD_NAMES: tuple[str, str] = ("agents.md", "AGENTS.md")
 #: How many raw bytes of the file reach the prompt.
 AGENTS_MD_MAX_BYTES: int = 32768
 
+#: A file larger than this is not read at all (``Workspace.read_file`` has no ranged read, so the cap above bounds the
+#: prompt, not the read). Between the two limits the file is read whole and then cut at the cap.
+AGENTS_MD_READ_LIMIT_BYTES: int = 1024 * 1024
+
+#: How long, in seconds, checking and reading one name may take before the file is given up on. Read when the load
+#: runs, so a test can shorten it.
+AGENTS_MD_READ_TIMEOUT_S: float = 5.0
+
 #: The heading of the prompt part.
 WORKSPACE_INSTRUCTIONS_TITLE: str = "Workspace instructions (agents.md)"
 
@@ -47,10 +60,12 @@ WORKSPACE_INSTRUCTIONS_TITLE: str = "Workspace instructions (agents.md)"
 async def load_workspace_instructions(workspace: Any) -> str | None:
     """The text of the workspace's ``agents.md`` (or ``AGENTS.md``), ready for the prompt, or ``None``.
 
-    The first name whose read does not raise :class:`NotFoundError` wins; when both are absent the answer is
-    ``None`` and nothing is logged. Any other failure (a directory, a read error) logs one warning and returns
-    ``None`` without trying the other name: a file that is there but unreadable must not be shadowed by a
-    different one. Cancellation is not a failure and is never swallowed.
+    The first name that is not missing (``Workspace.file_info`` or ``read_file`` raising :class:`NotFoundError`)
+    wins; when both are absent the answer is ``None`` and nothing is logged. Any other failure (a directory, a
+    read error, a file over :data:`AGENTS_MD_READ_LIMIT_BYTES`, a check or read that outlasts
+    :data:`AGENTS_MD_READ_TIMEOUT_S`) logs one warning and returns ``None`` without trying the other name: a file
+    that is there but unreadable must not be shadowed by a different one. Cancellation is not a failure and is
+    never swallowed.
 
     The bytes decode as UTF-8 with replacement characters. Past :data:`AGENTS_MD_MAX_BYTES` only the first
     that-many bytes are kept (a character cut in half by the limit is dropped) and a note names the file and its
@@ -58,17 +73,33 @@ async def load_workspace_instructions(workspace: Any) -> str | None:
     """
     for name in AGENTS_MD_NAMES:
         try:
-            raw = await workspace.read_file(name)
+            raw = await asyncio.wait_for(_read(workspace, name), timeout=AGENTS_MD_READ_TIMEOUT_S)
         except NotFoundError:
             continue
+        except TimeoutError as exc:
+            # A FIFO makes a container runtime's read block in open() for good, and that thread cannot be cancelled:
+            # stop waiting for it. (A TimeoutError the backend raised itself keeps its own words.)
+            _skip(workspace, name, str(exc) or f"the read did not finish within {AGENTS_MD_READ_TIMEOUT_S:g} seconds")
+            return None
         except Exception as exc:  # noqa: BLE001 - an unreadable file must never fail the turn
-            logger.warning(
-                "workspace instructions: %s in %s is unreadable; skipped: %s",
-                name, getattr(workspace, "id", None), exc,
-            )
+            _skip(workspace, name, exc)
             return None
         return _decode(name, raw)
     return None
+
+
+async def _read(workspace: Any, name: str) -> bytes:
+    """``name``'s bytes, after checking its size: a file over the read limit is refused before it is read."""
+    size = (await workspace.file_info(name)).size_bytes
+    if size > AGENTS_MD_READ_LIMIT_BYTES:
+        raise ValueError(f"{size} bytes is over the {AGENTS_MD_READ_LIMIT_BYTES}-byte read limit")
+    return await workspace.read_file(name)
+
+
+def _skip(workspace: Any, name: str, reason: object) -> None:
+    logger.warning(
+        "workspace instructions: %s in %s is unreadable; skipped: %s", name, getattr(workspace, "id", None), reason,
+    )
 
 
 def _decode(name: str, raw: bytes) -> str:

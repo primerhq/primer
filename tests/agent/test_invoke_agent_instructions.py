@@ -11,6 +11,7 @@ workspace carries apply to it as to any agent running there. Two layers:
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
 import pytest
 
@@ -20,6 +21,7 @@ from primer.api.registries import ProviderRegistry
 from primer.model.agent import Agent, AgentModel
 from primer.model.except_ import NotFoundError
 from primer.model.principal import PrincipalRef
+from primer.model.workspace import FileEntry
 from primer.model.yield_ import ToolContext
 from primer.toolset.system import build_system_toolset
 from primer.workspace.instructions import workspace_instructions_part
@@ -120,6 +122,11 @@ class _Workspace:
 
     def __init__(self, files: dict[str, bytes]) -> None:
         self._files = files
+
+    async def file_info(self, path: str) -> FileEntry:
+        if path not in self._files:
+            raise NotFoundError(f"{path!r} not found")
+        return FileEntry(path=path, kind="file", size_bytes=len(self._files[path]), modified_at=datetime.now(UTC))
 
     async def read_file(self, path: str) -> bytes:
         if path not in self._files:

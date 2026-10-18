@@ -3,22 +3,33 @@
 The part comes after the workspace fragment, reaches the model literally, and is re-read every turn (the worker
 builds one executor per turn and loads the file for each; ``tests/worker/test_executor_builders_instructions.py``
 covers the builders). The loader is also run against the real backends here, because the whole feature rests on
-what ``Workspace.read_file`` raises for a missing file and for a directory.
+what ``Workspace.file_info`` and ``Workspace.read_file`` raise for a missing file and for a directory, and on a file
+that blocks (a FIFO) not blocking a turn's build.
 """
 
 from __future__ import annotations
 
+import asyncio
+import errno
 import logging
+import os
 import shutil
+import time
 from pathlib import Path
 
 import pytest
 
+import primer.workspace.instructions as instructions_module
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.agent.workspace_executor import WorkspaceAgentExecutor
 from primer.model.chat import Done, Message, TextDelta, TextPart
 from primer.model.workspace import ContainerTemplateConfig, WorkspaceRuntimeMeta, WorkspaceTemplate
-from primer.workspace.instructions import load_workspace_instructions, workspace_instructions_part
+from primer.workspace.instructions import (
+    AGENTS_MD_MAX_BYTES,
+    AGENTS_MD_READ_LIMIT_BYTES,
+    load_workspace_instructions,
+    workspace_instructions_part,
+)
 from primer.workspace.local.workspace import LocalWorkspace
 from primer.workspace.sandbox.fake import FakeSandbox
 from primer.workspace.sandbox.workspace import SandboxWorkspace
@@ -210,3 +221,78 @@ async def test_a_real_local_workspace_refuses_a_symlink_out_of_the_workspace(tmp
     assert await load_workspace_instructions(_local(root)) is None
     assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
     assert "do not leak" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# The read is bounded, against the real backends
+# ---------------------------------------------------------------------------
+
+
+async def test_a_real_workspace_skips_a_file_over_the_read_limit_with_one_warning(backend_ws, caplog) -> None:
+    ws, root = backend_ws
+    (root / "agents.md").write_bytes(b"x" * (AGENTS_MD_READ_LIMIT_BYTES + 1))
+    assert await load_workspace_instructions(ws) is None
+    (record,) = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert "read limit" in record.getMessage()
+
+
+async def test_a_real_workspace_reads_a_file_between_the_cap_and_the_limit_and_cuts_it(backend_ws) -> None:
+    ws, root = backend_ws
+    (root / "agents.md").write_bytes(b"x" * (AGENTS_MD_MAX_BYTES * 3))
+    text = await load_workspace_instructions(ws)
+    assert text == "x" * AGENTS_MD_MAX_BYTES + (
+        f"\n\n[truncated: agents.md is {AGENTS_MD_MAX_BYTES * 3} bytes; only the first {AGENTS_MD_MAX_BYTES} bytes are included]"
+    )
+
+
+needs_fifo = pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
+
+
+def _release_fifo_readers(path: Path) -> None:
+    """Let a thread that is blocked in ``open(path)`` for reading (a FIFO with no writer) go: open and close the write end.
+
+    The sandbox test leaves exactly that thread behind (the loader gave up on it, it cannot be cancelled), and the event
+    loop waits for its threads when it closes."""
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError as exc:
+            if exc.errno != errno.ENXIO:  # ENXIO: no reader is blocked in open() (yet)
+                raise
+            time.sleep(0.02)
+            continue
+        os.close(fd)
+        return
+
+
+@needs_fifo
+async def test_a_fifo_named_agents_md_in_a_local_workspace_is_skipped_without_blocking(tmp_path: Path, caplog) -> None:
+    root = tmp_path / "ws"
+    root.mkdir()
+    os.mkfifo(root / "agents.md")
+    assert await asyncio.wait_for(load_workspace_instructions(_local(root)), 5) is None
+    assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
+
+
+@needs_fifo
+async def test_a_fifo_named_agents_md_in_a_container_workspace_does_not_hang_the_build(
+    tmp_path: Path, monkeypatch, caplog,
+) -> None:
+    """The container runtime reports a FIFO as an ordinary file and then blocks in open() for good. The loader gives up
+    after its time limit, logs once, and the build goes on without the file."""
+    root = tmp_path / "ws"
+    root.mkdir()
+    fifo = root / "agents.md"
+    os.mkfifo(fifo)
+    monkeypatch.setattr(instructions_module, "AGENTS_MD_READ_TIMEOUT_S", 0.3)
+    try:
+        started = time.monotonic()
+        text = await asyncio.wait_for(load_workspace_instructions(_sandbox(root)), 5)
+        elapsed = time.monotonic() - started
+    finally:
+        _release_fifo_readers(fifo)
+    assert text is None
+    assert elapsed < 3, f"the build waited {elapsed:.1f}s on the file"
+    (record,) = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert record.getMessage().startswith("workspace instructions: agents.md in w is unreadable; skipped: ")
