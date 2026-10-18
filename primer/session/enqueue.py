@@ -230,14 +230,24 @@ async def wake_session(
             # raises ConflictError for non-restartable ended_reasons. After
             # this, row is CREATED and the normal wake flow below appends the
             # USER_INPUT (after the divider) and runs the turn.
-            async with _workspace_write(deps, workspace_id=workspace_id, what=f"reopening session {session_id!r}"):
-                row, _invocation = await _reopen_ended_locked(
-                    row=row,
-                    workspace_id=workspace_id,
-                    session_id=session_id,
-                    sessions=sessions,
-                    workspace_registry=deps.workspace_registry,
-                )
+            #
+            # The guard that reports a failed write as "the workspace was
+            # removed" wraps only the writes INTO the workspace (the slot reopen
+            # and the divider), which the helper takes as a factory. It must not
+            # wrap the helper whole: that also calls the database (the
+            # workspace_lost recheck, the workspace lookup, the row update), and
+            # a refused pool connection is an OSError, so it was reported as the
+            # removal of a workspace nobody had touched.
+            row, _invocation = await _reopen_ended_locked(
+                row=row,
+                workspace_id=workspace_id,
+                session_id=session_id,
+                sessions=sessions,
+                workspace_registry=deps.workspace_registry,
+                workspace_write=lambda: _workspace_write(
+                    deps, workspace_id=workspace_id, what=f"reopening session {session_id!r}",
+                ),
+            )
             # Surface the invocation divider live before the USER_INPUT tick
             # below (mirrors reset_session's divider tick). Advisory.
             if deps.event_bus is not None:

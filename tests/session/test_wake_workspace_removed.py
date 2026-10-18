@@ -187,3 +187,86 @@ async def test_the_reopen_of_an_ended_session_is_covered_too(failure):
     row = await world.sessions.get("ses-b")
     assert row.status == SessionStatus.ENDED, "a reopen that failed must leave the session ended"
     assert world.scheduler.enqueued == []
+
+
+# ---- the database failing under a wake is not the workspace going away -------------------------------------------------------------
+#
+# The guard that reports an OSError of a write as "the workspace was removed" covers the writes INTO the workspace. The reopen of an ended session
+# also reads the workspace row, resolves the workspace and updates the session row, which are calls to the database; a refused pool connection
+# raises ConnectionRefusedError, an OSError, and under the guard it became a false 404 about a workspace nobody touched (lead note on #761).
+
+
+def _refused() -> ConnectionRefusedError:
+    """What a pool that cannot reach the database raises (an OSError). A new one per raise: a shared instance would carry every earlier traceback."""
+    return ConnectionRefusedError(111, "Connect call failed ('10.0.0.5', 5432)")
+
+
+async def _seed_ended(world, *, ended_reason: str = "completed") -> None:
+    await seed_session(world, sid="ses-b", status=SessionStatus.ENDED, ended_reason=ended_reason, turn_no=2, metadata={"invocation": 1})
+
+
+async def _assert_still_ended(world) -> None:
+    row = await world.sessions.get("ses-b")
+    assert row.status == SessionStatus.ENDED, "a reopen that failed must leave the session ended"
+    assert world.scheduler.enqueued == [] and world.engine.upserts == []
+
+
+async def test_a_refused_database_connection_on_the_session_row_update_is_not_a_removal():
+    world = make_world()
+    await _seed_ended(world)
+
+    async def refused(entity, *, conn=None):
+        raise _refused()
+
+    world.sessions.update = refused
+    with pytest.raises(ConnectionRefusedError):
+        await _wake(world)
+    await _assert_still_ended(world)
+
+
+async def test_a_refused_database_connection_on_the_workspace_lost_recheck_is_not_a_removal():
+    """A ``workspace_lost`` session reopens only if the workspace row says it is running again, and that read is the database's."""
+    world = make_world()
+    await _seed_ended(world, ended_reason="workspace_lost")
+
+    async def refused(workspace_id):
+        raise _refused()
+
+    world.registry.get_workspace_row = refused
+    with pytest.raises(ConnectionRefusedError):
+        await _wake(world)
+    await _assert_still_ended(world)
+
+
+@pytest.mark.parametrize("ended", [True, False], ids=["an ended session", "a session that rests"])
+async def test_a_refused_database_connection_on_the_workspace_lookup_is_not_a_removal(ended):
+    """Resolving the workspace reads its row and its template. A rested session already surfaced this error as it was; the reopen path agrees."""
+    world = make_world()
+    if ended:
+        await _seed_ended(world)
+    else:
+        await seed_session(world, sid="ses-b", turn_no=1)
+
+    async def refused(workspace_id):
+        raise _refused()
+
+    world.registry.get_workspace = refused
+    with pytest.raises(ConnectionRefusedError):
+        await _wake(world)
+    assert world.scheduler.enqueued == [] and world.engine.upserts == []
+
+
+async def test_a_failure_of_the_divider_write_while_reopening_is_still_not_found():
+    """The other half of the boundary: the invocation divider is written INTO the workspace, so an OSError there is still the removal it was."""
+    world = make_world()
+    await _seed_ended(world)
+
+    async def append_message_line(session_id, line):
+        world.registry.destroying.add("ws-1")
+        raise OSError(5, "Input/output error")
+
+    world.registry.workspace("ws-1").append_message_line = append_message_line
+    with pytest.raises(NotFoundError, match="was removed while reopening") as info:
+        await _wake(world)
+    assert isinstance(info.value.__cause__, OSError)
+    await _assert_still_ended(world)
