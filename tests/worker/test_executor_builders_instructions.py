@@ -19,6 +19,7 @@ from primer.model.except_ import NotFoundError
 from primer.model.graph import Graph, _AgentNodeRef, _BeginNode, _EndNode, _StaticEdge
 from primer.model.model_profile import ModelProfileConfig
 from primer.model.scheduler import WorkerConfig
+from primer.model.workspace import FileEntry
 from primer.model.workspace_session import (
     AgentSessionBinding,
     GraphSessionBinding,
@@ -73,6 +74,13 @@ class _Workspace:
 
     async def get_session(self, session_id):
         return self._session if self._holder and session_id == self._session.session_id else None
+
+    async def file_info(self, path: str) -> FileEntry:
+        if self.error is not None:
+            raise self.error
+        if path not in self.files:
+            raise NotFoundError(f"{path!r} not found")
+        return FileEntry(path=path, kind="file", size_bytes=len(self.files[path]), modified_at=datetime.now(timezone.utc))
 
     async def read_file(self, path: str) -> bytes:
         if self.error is not None:
