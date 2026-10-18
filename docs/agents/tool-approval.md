@@ -255,6 +255,11 @@ What an agent *does* see:
 - A tool call can return a `tool_rejected` result when an approval
   was set up while the agent was running. The output contains the
   reason string ("rejected by operator: <message>").
+- A call whose resume FAILED (the approved tool could not be run
+  again, or a subagent's run could not be resumed) returns an error
+  result `{"is_error": true, "reason": "... resume failed: ...",
+  "tool_name": ...}`. It is never labelled `rejected`: that label means
+  an operator's decision (a rejection, a timeout or a cancel).
 
 ## Workflows
 
