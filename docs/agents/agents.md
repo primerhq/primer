@@ -258,11 +258,27 @@ An agent runs under a **ModelProfile**, not under a provider and a model
 name: the profile is the registry of what a provider can serve. A single
 profile carries `provider_id` (a stored LLM provider), `model_name` (the
 provider-side wire name), `context_length` and an optional `config`
-(for example `reasoning`; stored, but not applied to model calls yet); an
+(`reasoning` and `extended`, below); an
 aggregated profile (`kind: "aggregated"`) lists two or more other profiles
 in `members` to fail over across. The ids in this documentation follow the
 convention `<provider id>--<model name>` (for
 example `anthropic-1--claude-sonnet-4-6`); primer does not enforce it.
+
+A profile's `config` is applied to every model call made under it: each call
+of an agent's turns and compactions, and of a graph agent node that runs on
+it. `config.reasoning` is `off`, `minimal`, `low`, `medium` or `high` (null
+keeps the vendor default) and is mapped onto each vendor's own setting:
+`reasoning_effort` on OpenAI, a thinking budget on Anthropic and Gemini,
+Ollama's `think`, `chat_template_kwargs.enable_thinking` on a self-hosted
+OpenAI-compatible server, `reasoning.effort` on OpenRouter. Some vendors
+have no true off, and a model that cannot do what the level asks may refuse
+the call, so set `reasoning` only on a profile whose model supports it.
+`config.extended` holds provider-specific knobs passed to the provider
+as-is (for example `{"top_k": 20}`); a key the provider adapter does not
+know is ignored. Two profiles on one model with different `config` are how
+the same model is offered with reasoning on and off. In an aggregated
+profile, each member's own `config` applies to the calls that member
+serves; the aggregate's own `config` is not applied.
 
 - `system::create_model_profile`, `system::get_model_profile`,
   `system::list_model_profiles`, `system::find_model_profiles`,
@@ -283,6 +299,24 @@ Create the profile before the agent that names it:
       "provider_id": "lp-claude",
       "model_name": "claude-sonnet-4-6",
       "context_length": 200000
+    }
+  }
+}
+```
+
+A profile with extended thinking turned on:
+
+```json
+{
+  "tool": "system::create_model_profile",
+  "arguments": {
+    "entity": {
+      "id": "lp-claude--claude-sonnet-4-5-think",
+      "description": "Claude Sonnet 4.5 with extended thinking",
+      "provider_id": "lp-claude",
+      "model_name": "claude-sonnet-4-5",
+      "context_length": 200000,
+      "config": {"reasoning": "medium"}
     }
   }
 }

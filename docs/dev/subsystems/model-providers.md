@@ -236,23 +236,82 @@ point, and it is what lets one model be registered twice with different
 reasoning settings. An Agent references a profile id, and session
 create may override it per run.
 
+**Every call made under a profile applies its config.** A profile's
+`config` carries `reasoning` (a vendor-neutral level) and `extended`
+(provider-specific knobs, passed through). Every model call made under a
+profile sends it: each call of an agent turn (`primer/agent/loop.py`, which
+sessions, subagents and graph agent nodes all run) and
+each call of both compaction summarisers (`primer/agent/compaction.py`).
+The call site hands the resolved profile's config (`ResolvedModel.config`)
+to `profile_stream_kwargs(llm, config)` in `primer/llm/_reasoning.py`, which
+asks the adapter to translate it (`LLM.profile_extended(config)`: each
+adapter calls its own mapping in `_reasoning.py`, passing its flavor where
+the flavor decides the wire) and sends the result as `stream(extended=...)`.
+A call with no config, or a config that asks for nothing, sends no
+`extended` at all, exactly as before. The adapter's whitelist then projects
+`extended` onto the SDK request and DEBUG-logs any key it does not know. On
+a key collision the typed `reasoning` level wins over the same key in
+`extended`. `RetryingLLM` forwards the translation to the adapter it wraps;
+an adapter with no mapping forwards `extended` and logs the level once at
+DEBUG as not applied. The approval gate's LLM judge is not a profile call
+(its policy names a provider and a model), so no profile config applies to
+it.
+
 `ModelProfileConfig.reasoning` is a vendor-neutral level mapped per adapter
 in `primer/llm/_reasoning.py`, the same normalisation the adapters already
-do for stop reasons. The mapping is not applied to calls yet: the agent
-loop (`primer/agent/loop.py`) and compaction (`primer/agent/compaction.py`)
-call `llm.stream` without `extended`, and nothing outside the tests imports
-`primer/llm/_reasoning.py`, so a profile's `config.reasoning` and
-`config.extended` are stored and served but change no call. Where a vendor
-has no true off, the closest setting is used:
+do for stop reasons. Where a vendor has no true off, the closest setting is
+used:
 
 | Adapter | Wire shape | OFF maps to |
 | --- | --- | --- |
 | `openresponses` | `reasoning.effort` | `minimal` (no true off) |
 | `openchat` (openai) | `reasoning_effort` | `minimal` |
-| `openchat` (vllm/ollama/lmstudio) | `chat_template_kwargs.enable_thinking` | `false` |
+| `openchat` (vllm/ollama/lmstudio/other) | `chat_template_kwargs.enable_thinking` (request body) | `false` |
 | `anthropic` | `thinking.type` + `budget_tokens` | `disabled` |
 | `gemini` | `thinking_config.thinking_budget` | `0` |
 | `ollama` | `think` | `false` |
+| `openrouter` | `reasoning.effort` (request body) | `none` |
+
+**Onto the wire.** The openai SDK refuses a keyword it does not know, so a
+knob that is not one of its parameters travels in `extra_body`: `openchat`
+sends `reasoning_effort` as the SDK parameter and `chat_template_kwargs` in
+the request body, and `openrouter` sends its `reasoning` object in the body.
+`openresponses` turns `reasoning_effort` into `reasoning.effort`, `gemini`
+folds `thinking_budget` into `thinking_config`, `ollama` sends `think` at
+the top level and `anthropic` sends the `thinking` block.
+
+**Anthropic thinking has rules of its own.** Manual thinking
+(`thinking.type: "enabled"`) needs a budget of at least 1024 tokens that
+stays below `max_tokens`, no `temperature` other than 1, no `top_k`, a
+`top_p` of at least 0.95, no forced tool, and a final assistant turn that
+starts with a thinking block. The calls a profile applies to were not set
+up with those in mind (compaction samples at temperature 0; the adapter's
+default `max_tokens` is 4096, which is the LOW budget), so `_fit_thinking`
+in `primer/llm/anthropic.py` makes such a request valid instead of letting
+it fail: a budget that is not below `max_tokens` is lowered to half of it
+(not under 1024), the sampling knobs thinking refuses are dropped, and a
+call that continues a tool round (its last message is a tool result),
+forces a tool, or has no room for the minimum budget runs without thinking.
+primer does not send thinking blocks back in the history, so in a turn that
+uses tools only the first call thinks. Each adjustment is logged once at
+DEBUG. Claude 4.7 and later models refuse `thinking.type: "enabled"` with a
+400; leave `reasoning` unset on their profiles and pass
+`{"thinking": {"type": "adaptive"}}` through `extended` instead.
+
+**Aggregated profiles.** Each member's call carries that member's own
+profile config, translated for the member's own adapter, so a pool keeps
+every member's settings through a failover. The aggregated profile's own
+`config` is not applied (its members can be different kinds of provider,
+so there is no one wire to translate it for); a non-empty one is logged
+once at DEBUG. A per-call `extended` from the caller (no call site passes
+one today) wins over a member's on a key collision.
+
+**OFF and the levels are requests.** A model that cannot turn reasoning off
+may refuse OFF (an always-thinking Gemini model and a zero budget,
+OpenRouter's mandatory-reasoning models and `effort: "none"`), and a model
+that does not reason may refuse a level (`reasoning_effort` on a
+non-reasoning OpenAI model). Set `reasoning` only on a profile whose model
+supports it; the refusal reaches the turn as the provider's error.
 
 **vLLM is asymmetric and this was verified against a live server, not
 assumed.** On Chat Completions, `chat_template_kwargs.enable_thinking:
