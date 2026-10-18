@@ -1,7 +1,8 @@
 """The agent form (``AG_NewAgentModal``, ``ui/components/agents.jsx``) mounted in V8, for tests that drive it and read what it sends.
 
 ``agent_form()`` opens a MiniRacer context with the hook runtime of ``tests/ui/_mini_react.py``, the stubs below, and then the real
-``ui/foundation/use-mutation.js``, ``ui/components/shared/form-field.jsx`` and ``ui/components/agents.jsx`` as the server's bundler emits them.
+``ui/foundation/escape-stack.js``, ``ui/foundation/use-mutation.js``, ``ui/components/shared/form-field.jsx`` and ``ui/components/agents.jsx`` as the
+server's bundler emits them.
 It closes the context on exit: an isolate that is never closed stays in memory for the rest of the run.
 
 The stubs stand in for what the console around the form provides:
@@ -14,9 +15,12 @@ The stubs stand in for what the console around the form provides:
 * ``useCapabilities`` reports text to speech as set up or not (``agent_form(tts_configured=...)``), and ``useRouter`` navigates nowhere.
 * ``apiFetch`` records each call and resolves with the body plus an id. The body is recorded as JSON, which is what the wire carries.
   ``useMutation`` is the real one.
-* ``window.addEventListener`` and ``window.removeEventListener`` add to and remove from ``__listeners``.
+* ``window.addEventListener`` and ``window.removeEventListener`` add to and remove from ``__listeners``; the real Escape stack registers its one
+  ``keydown`` listener there, and ``press_escape`` answers it.
 
-A test mounts the form (``mount``), drives it (``type_into``, ``click``) and reads what it sent (``calls``, ``body``).
+A test mounts the form (``mount``), drives it (``type_into``, ``click``) and reads what it sent (``calls``, ``body``). It reads what the form drew
+with ``prop``, ``text_of`` and ``testids_under``. ``prop`` reads the element a ``Btn`` RENDERS (a ``data-busy`` is on the ``<button>``, not on the ``Btn``
+element ``MR.find`` answers first). ``mount_prompt_tabs`` mounts the system prompt editor alone, under a host that keeps its parts and closes on Escape.
 """
 
 from __future__ import annotations
@@ -51,7 +55,7 @@ DEFAULTS = {
 # A row a harness manages: the form shows a locked summary instead of inputs.
 MANAGED = {**FULL, "harness_id": "h1"}
 
-_FILES = ("foundation/use-mutation.js", "components/shared/form-field.jsx", "components/agents.jsx")
+_FILES = ("foundation/escape-stack.js", "foundation/use-mutation.js", "components/shared/form-field.jsx", "components/agents.jsx")
 
 _STUBS = r"""
 var __calls = [];
@@ -114,6 +118,60 @@ function __typeInto(testid, value) {
   el.props.onChange({ target: { value: value } });
   MR.rerender();
 }
+// Every element with exactly this test id, in tree order. A component that takes a data-testid prop (Btn) is found before the element it renders.
+function __withTestid(testid) {
+  var all = MR.findAll(testid).filter(function (el) { return el.props["data-testid"] === testid; });
+  if (!all.length) throw new Error("no element with data-testid " + testid);
+  return all;
+}
+// The element that DRAWS the test id: the host element (a <button>) before the component (Btn) that rendered it. A prop is read from the first of them
+// that carries it, so a data-busy (only on the <button>) and an aria-pressed a Btn forwards (only on the Btn element, in this harness) are both found.
+function __prop(testid, name) {
+  var all = __withTestid(testid);
+  var hosts = all.filter(function (el) { return typeof el.type === "string"; });
+  var comps = all.filter(function (el) { return typeof el.type !== "string"; });
+  var order = hosts.concat(comps);
+  for (var i = 0; i < order.length; i++) {
+    if (Object.prototype.hasOwnProperty.call(order[i].props, name)) return order[i].props[name];
+  }
+  return undefined;
+}
+function __textOf(testid) {
+  var all = __withTestid(testid);
+  var el = all.filter(function (e) { return typeof e.type === "string"; })[0] || all[0];
+  var out = [];
+  (function collect(n) {
+    if (n == null || typeof n === "boolean") return;
+    if (typeof n === "string" || typeof n === "number") { out.push(String(n)); return; }
+    if (Array.isArray(n)) { n.forEach(collect); return; }
+    if (n.__el) collect(typeof n.type === "function" && n.type !== React.Fragment ? n.out : n.children);
+  })(el);
+  return out.join("");
+}
+function __pressEscape() {
+  __listeners.filter(function (l) { return l.type === "keydown"; }).forEach(function (l) {
+    l.fn({ key: "Escape", defaultPrevented: false, isComposing: false, keyCode: 27 });
+  });
+  MR.rerender();
+}
+// The system prompt editor alone, under a host that keeps its parts in state (the overlay does) and registers a close on Escape BEFORE it renders
+// the editor, as the overlay's Modal does: the editor's own Escape layer sits above it.
+var __hostParts = [], __hostSetParts = null, __initialParts = [""];
+function __PromptHost() {
+  var st = React.useState(__initialParts);
+  __hostParts = st[0];
+  __hostSetParts = st[1];
+  window.primerApi.useEscape(function () { __recorded.closes++; });
+  return React.createElement(AG_PromptTabs, { parts: st[0], onChange: st[1] });
+}
+function __mountPromptTabs(parts) {
+  __initialParts = parts;
+  MR.mount(__PromptHost, {});
+}
+function __setParts(parts) {
+  __hostSetParts(parts);
+  MR.rerender();
+}
 """
 
 
@@ -165,3 +223,54 @@ def body(ctx: Any) -> dict:
     made = calls(ctx)
     assert len(made) == 1, f"expected exactly one apiFetch call, got {made}"
     return made[0]["body"]
+
+
+def prop(ctx: Any, testid: str, name: str) -> Any:
+    """One prop of the element that draws ``testid``, JSON-decoded (None when it has no such prop). Throws when there is no such element.
+
+    A ``Btn`` is a component that renders a ``<button>``: ``MR.find`` answers the ``Btn`` element first, and its props are not the button's
+    (``busy`` there, ``data-busy`` on the button). This reads the rendered ``<button>`` first, then the ``Btn`` element for a prop only it has.
+    """
+    return json.loads(ctx.eval(f"JSON.stringify({{v: __prop({json.dumps(testid)}, {json.dumps(name)})}})")).get("v")
+
+
+def text_of(ctx: Any, testid: str) -> str:
+    """The text under the element that draws ``testid``, joined with no separator."""
+    return ctx.eval(f"__textOf({json.dumps(testid)})")
+
+
+def testids_under(ctx: Any, testid: str) -> list[str]:
+    """The test ids of the elements under the one with ``testid`` (not itself), in tree order. A component that carries a ``data-testid`` (``Btn``)
+    and the element it renders are one, not two."""
+    tree = json.loads(ctx.eval(f"JSON.stringify(MR.subtree({json.dumps(testid)}))"))
+    assert tree is not None, f"no element with data-testid {testid}"
+    ids = [e["testid"] for e in tree if e["type"] != "component" and isinstance(e.get("testid"), str)]
+    return ids[1:] if ids and ids[0] == testid else ids
+
+
+testids_under.__test__ = False  # a test module imports it, and pytest collects every name that starts with "test"
+
+
+def press_escape(ctx: Any) -> None:
+    """Answer Escape as the window does: call every ``keydown`` listener registered through ``window.addEventListener``, then re-render."""
+    ctx.eval("__pressEscape()")
+
+
+def mount_prompt_tabs(ctx: Any, parts: list[str]) -> None:
+    """Mount ``AG_PromptTabs`` alone under a host that keeps ``parts`` and counts how often Escape closed it (``closes``)."""
+    ctx.eval(f"__mountPromptTabs({json.dumps(parts)})")
+
+
+def parts(ctx: Any) -> list[str]:
+    """The parts the host holds now (what the editor last reported)."""
+    return json.loads(ctx.eval("JSON.stringify(__hostParts)"))
+
+
+def set_parts(ctx: Any, new_parts: list[str]) -> None:
+    """Replace the host's parts from outside the editor, then re-render."""
+    ctx.eval(f"__setParts({json.dumps(new_parts)})")
+
+
+def closes(ctx: Any) -> int:
+    """How many times Escape reached the host's close handler (the overlay's Modal, in the real form)."""
+    return int(ctx.eval("__recorded.closes"))
