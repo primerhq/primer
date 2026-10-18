@@ -264,16 +264,25 @@ to it.
 
 **A setting never fails a call.** A model table can be wrong or behind, and
 a level can be set on a model that cannot honour it, so `profile_stream`
-guards stream open. When the provider refuses the call before its first
-event (a `BadRequestError` from an eager adapter, or a fatal first event,
-which is how the lazily-opened Ollama and Gemini adapters report a 400) and
-the message names one of the settings (a reasoning word, or the name of a
-key the profile sent), the call is made once more exactly as it would be
-without the profile's settings, and the refusal is logged once at DEBUG.
-When that retry works, the adapter instance calls that model without those
-settings for the rest of the process, so a refused setting costs one failed
-request, not one per call; when the retry fails too, nothing is remembered
-and the failure is the call's own. A failure after the first event is never
+guards stream open. A refusal is a `BadRequestError` raised before the first
+event by an eager adapter, or a fatal first event, which is how the
+lazily-opened Ollama and Gemini adapters report a 400; an OpenAI-compatible
+server's 422 (vLLM rejecting a body field) counts like a 400, because
+`classify_openai_exception` maps it to `BadRequestError` too. A refusal
+counts only when its message names a setting that call actually sent: the
+setting's key, its wire alias, or that setting's own refusal wording, as
+listed in `_SETTING_WORDS` (for example `reasoning.effort` for
+`reasoning_effort`, `budget_tokens` for `thinking`, "does not support
+thinking" for Ollama's `think`). So a 400 about something else (OpenAI's
+moderation text, which links to its reasoning guide) is never retried, and
+neither is a profile that sent only a `seed` on a 400 that mentions
+thinking. When a refusal counts, the call is made once more exactly as it
+would be without the profile's settings, and the refusal is logged once at
+DEBUG. When that retry works, the adapter instance (a weak key, never its
+`id()`) calls that model without those settings for the rest of the
+process, so a refused setting costs one failed request, not one per call;
+when the retry fails too, nothing is remembered and the failure is the
+call's own. A failure after the first event is never
 retried, because output has already reached the consumer. Where a model has
 no control for a level at all, the mapping sends nothing and logs that once
 at DEBUG.
