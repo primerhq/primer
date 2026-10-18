@@ -71,7 +71,7 @@ def test_the_helper_block_holds_no_hook_and_no_react() -> None:
 
 def test_every_helper_is_a_global_of_the_bundle(ctx) -> None:
     for name in ("MP_fmtTokens", "MP_isSingle", "MP_isManaged", "MP_memberRows", "MP_toggleMember", "MP_toggleAllMembers", "MP_moveMember",
-                 "MP_aggregateWindow", "MP_windowText", "MP_nameError", "MP_aggregateBody", "MP_editBody", "MP_refusalErrors",
+                 "MP_aggregateWindow", "MP_windowText", "MP_advancedIsSet", "MP_nameError", "MP_aggregateBody", "MP_editBody", "MP_refusalErrors",
                  "MP_contextError", "MP_providerOptions"):
         assert ctx.eval(f"typeof {name}") == "function", name
     for name in ("MP_AGGREGATE_DEFAULTS", "MP_ROUTING_OPTIONS", "MP_ROUTING_HELP", "MP_FAILOVER_POINT_OPTIONS", "MP_FAILOVER_POINT_HELP",
@@ -104,6 +104,35 @@ def test_option_values_are_the_backend_enum_values_and_labels_are_the_designs(ct
     }
     assert js(ctx, "MP_FAILOVER_POINT_HELP") == "Failing over mid-stream can repeat text the user has already seen."
     assert js(ctx, "MP_FAILOVER_ON_HELP") == "Transient errors are 429, 5xx, timeouts and network failures."
+
+
+# ---- the Advanced fold -------------------------------------------------------------------------------------------------------------------------------
+
+
+def test_advanced_is_set_by_a_failover_choice_that_is_not_the_default(ctx) -> None:
+    """The overlay starts the fold open when this is true (the lead's ruling for #774): on an edit whose ``failover_point`` or ``failover_on`` differs from the model's default.
+    The defaults and the other values are read from the model, so a value added to either enum is tried too."""
+    from primer.model.model_profile import FailoverClasses, FailoverPoint, ModelProfile
+
+    default = {k: ModelProfile.model_fields[k].default.value for k in ("failover_point", "failover_on")}
+    assert js(ctx, f"MP_advancedIsSet({json.dumps(default)})") is False
+    assert js(ctx, "MP_advancedIsSet(MP_AGGREGATE_DEFAULTS)") is False
+    for field, enum in (("failover_point", FailoverPoint), ("failover_on", FailoverClasses)):
+        others = [e.value for e in enum if e.value != default[field]]
+        assert others, f"{field} has a value other than its default to try"
+        for value in others:
+            assert js(ctx, f"MP_advancedIsSet({json.dumps({**default, field: value})})") is True, (field, value)
+
+
+def test_advanced_is_not_set_by_a_row_that_is_missing_or_has_no_failover_fields(ctx) -> None:
+    """A create has no row; a row that carries neither field reads as the defaults, as the overlay's own state does."""
+    for row in ("null", "undefined", "{}", '{ "id": "a" }', '{ "failover_point": null, "failover_on": null }', '{ "failover_point": "", "failover_on": "" }'):
+        assert js(ctx, f"MP_advancedIsSet({row})") is False, row
+
+
+def test_advanced_ignores_what_sits_outside_the_fold(ctx) -> None:
+    """The routing switch (``strategy``) is outside the fold, and so is every other field of the row."""
+    assert js(ctx, 'MP_advancedIsSet({ strategy: "round_robin", config: { reasoning: "high" }, members: ["a", "b"] })') is False
 
 
 # ---- numbers ----------------------------------------------------------------------------------------------------------------------------------------
