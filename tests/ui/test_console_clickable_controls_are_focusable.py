@@ -149,6 +149,22 @@ def test_the_platform_nav_rows_are_focusable_buttons() -> None:
     assert 'aria-current={id === active ? "page" : undefined}' in tag, f"the active nav row is not marked for assistive tech:\n{tag}"
 
 
+def test_the_provider_type_sub_entries_are_focusable_buttons() -> None:
+    """The Providers row's sub-entries (Platform revamp Plan 01 Task 6, seam I-1) are the same shape as the rows above them: native buttons, in the tab order, the open type marked."""
+    src = _src("console/nv-platform.jsx")
+    start, tag = _tag(src, 'data-testid={"nv-plat-sub:" + t}')
+    assert tag.startswith("<button"), f"the provider type entry is not a native button:\n{tag}"
+    assert 'type="button"' in tag, tag
+    assert "tabIndex" not in tag, f"the type entry is out of the tab order:\n{tag}"
+    assert 'aria-current={"providers:" + t === active ? "page" : undefined}' in tag, f"the open type is not marked for assistive tech:\n{tag}"
+    assert "NV_PROVIDER_TYPE_LABELS[t]" in _inner_text_or_expr(src, start), "the entry has no words a screen reader could read"
+
+
+def _inner_text_or_expr(src: str, tag_start: int) -> str:
+    """The source between the opening tag at ``tag_start`` and the next ``</button>``, expressions included (a label drawn from a table is an expression, not text)."""
+    return src[tag_start:src.index("</button>", tag_start)]
+
+
 def test_the_system_nav_rows_are_focusable_buttons() -> None:
     """The System view draws the same click-only rows one file over, on the same nv-plat-row class."""
     src = _src("console/nv-system.jsx")
@@ -174,6 +190,8 @@ def test_the_nav_rows_keep_their_borderless_button_reset() -> None:
     assert "border: none" in plat_row, plat_row
     assert "width: 100%" in plat_row, f"the row must fill its column like the div it replaced:\n{plat_row}"
     assert "background: transparent" in plat_row, plat_row
+    sub = _css(".nv-plat-sub")
+    assert "border: none" in sub and "width: 100%" in sub and "background: transparent" in sub, f"the type entries are buttons too:\n{sub}"
 
 
 def test_the_system_nav_chips_are_content_sized_on_the_phone() -> None:

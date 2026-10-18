@@ -11,12 +11,14 @@ Pure string logic, so it is EXECUTED here rather than substring-matched.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 MODULE = ROOT / "ui" / "foundation" / "shell-url.js"
 INDEX = ROOT / "ui" / "index.html"
 MANIFEST = ROOT / "ui" / "fixtures" / "shell" / "manifest.json"
+CATALOG = ROOT / "ui" / "components" / "provider-catalog.jsx"
 
 
 def _ctx():
@@ -145,7 +147,7 @@ def test_bare_workspace_url_round_trips() -> None:
     out = json.loads(ctx.eval('JSON.stringify(SH_parseUrl("#/w/ws-1"))'))
     assert out == {
         "wid": "ws-1",
-        "view": {"name": "studio", "nav": None},
+        "view": {"name": "studio", "nav": None, "sub": None},
         "doc": None,
         "overlay": None,
         "anchor": None,
@@ -271,7 +273,7 @@ def test_view_round_trips_and_studio_stays_unwritten() -> None:
     # Old-form URL: no view param, parses as studio, rebuilds identically.
     out = json.loads(ctx.eval(
         "JSON.stringify(SH_parseUrl('#/w/ws-1?doc=session:s-1'))"))
-    assert out["view"] == {"name": "studio", "nav": None}
+    assert out["view"] == {"name": "studio", "nav": None, "sub": None}
     rebuilt = ctx.eval(
         "SH_buildUrl(SH_parseUrl('#/w/ws-1?doc=session:s-1'))")
     assert rebuilt == "#/w/ws-1?doc=session:s-1"
@@ -280,11 +282,77 @@ def test_view_round_trips_and_studio_stays_unwritten() -> None:
         "SH_buildUrl({wid:'ws-1', view:{name:'platform', nav:'agents'}})")
     assert url == "#/w/ws-1?view=platform:agents"
     back = json.loads(ctx.eval(f"JSON.stringify(SH_parseUrl({json.dumps(url)}))"))
-    assert back["view"] == {"name": "platform", "nav": "agents"}
+    assert back["view"] == {"name": "platform", "nav": "agents", "sub": None}
     # Unknown nav degrades to the view root, unknown view to studio.
     bad_nav = json.loads(ctx.eval(
         "JSON.stringify(SH_parseUrl('#/?view=system:nope'))"))
-    assert bad_nav["view"] == {"name": "system", "nav": None}
+    assert bad_nav["view"] == {"name": "system", "nav": None, "sub": None}
     bad_view = json.loads(ctx.eval(
         "JSON.stringify(SH_parseUrl('#/?view=garage'))"))
-    assert bad_view["view"] == {"name": "studio", "nav": None}
+    assert bad_view["view"] == {"name": "studio", "nav": None, "sub": None}
+
+
+# ---------------------------------------------------------------------------
+# Provider types: the third segment of view=platform:providers:<type> (Platform revamp Plan 01, Task 6; seam I-1).
+# ---------------------------------------------------------------------------
+
+SIDEBAR_TYPES = ["llm", "embedding", "ssp", "cross_encoder", "workspace", "web_search", "channel", "artifact_storage", "tts", "stt"]
+
+
+def test_a_provider_type_round_trips() -> None:
+    ctx = _ctx()
+    url = ctx.eval("SH_buildUrl({ wid: 'ws-1', view: { name: 'platform', nav: 'providers', sub: 'tts' } })")
+    assert url == "#/w/ws-1?view=platform:providers:tts"
+    back = json.loads(ctx.eval(f"JSON.stringify(SH_parseUrl({json.dumps(url)}).view)"))
+    assert back == {"name": "platform", "nav": "providers", "sub": "tts"}
+
+
+def test_an_unknown_provider_type_is_dropped_and_the_url_rebuilt_without_it() -> None:
+    ctx = _ctx()
+    parsed = json.loads(ctx.eval("JSON.stringify(SH_parseUrl('#/?view=platform:providers:bogus').view)"))
+    assert parsed == {"name": "platform", "nav": "providers", "sub": None}
+    assert ctx.eval("SH_buildUrl(SH_parseUrl('#/?view=platform:providers:bogus'))") == "#/?view=platform:providers"
+
+
+def test_a_state_holding_an_unknown_type_is_written_without_it() -> None:
+    """The builder checks the type too, so a caller that hands the shell a type the grammar does not list never writes it into the address bar."""
+    ctx = _ctx()
+    assert ctx.eval("SH_buildUrl({ view: { name: 'platform', nav: 'providers', sub: 'bogus' } })") == "#/?view=platform:providers"
+
+
+def test_a_sub_is_only_read_on_a_nav_that_has_subs() -> None:
+    ctx = _ctx()
+    assert json.loads(ctx.eval("JSON.stringify(SH_parseUrl('#/?view=platform:agents:llm').view)"))["sub"] is None
+    assert ctx.eval("SH_buildUrl({ view: { name: 'platform', nav: 'agents', sub: 'llm' } })") == "#/?view=platform:agents"
+    assert ctx.eval("SH_buildUrl({ view: { name: 'platform', sub: 'llm' } })") == "#/?view=platform"
+    assert json.loads(ctx.eval("JSON.stringify(SH_parseUrl('#/?view=system:profile:llm').view)"))["sub"] is None
+
+
+def test_a_type_with_a_trailing_empty_segment_or_extra_segments_is_still_a_valid_view() -> None:
+    ctx = _ctx()
+    assert json.loads(ctx.eval("JSON.stringify(SH_parseUrl('#/?view=platform:providers:').view)")) == {"name": "platform", "nav": "providers", "sub": None}
+    assert json.loads(ctx.eval("JSON.stringify(SH_parseUrl('#/?view=platform:providers:tts:more').view)")) == {"name": "platform", "nav": "providers", "sub": "tts"}
+
+
+def test_the_types_are_provider_classes_in_sidebar_order() -> None:
+    ctx = _ctx()
+    types = json.loads(ctx.eval("JSON.stringify(SH_VIEW_SUBS['platform:providers'])"))
+    assert types == SIDEBAR_TYPES, "the sidebar order: TTS and ASR last"
+    catalog = CATALOG.read_text(encoding="utf-8")
+    classes = re.findall(r'\{ key: "(\w+)", label: ', catalog[catalog.index("const PROVIDER_CLASSES"):catalog.index("const PC_ALL_TYPE_CHIPS")])
+    assert set(types) <= set(classes), "a type that is not a provider class would open the catalog on nothing"
+    assert types[-2:] == ["tts", "stt"]
+
+
+def test_view_subs_match_the_manifest() -> None:
+    ctx = _ctx()
+    man = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    assert json.loads(ctx.eval("JSON.stringify(SH_VIEW_SUBS)")) == man["view_subs"]
+
+
+def test_every_sub_list_belongs_to_a_nav_of_the_grammar() -> None:
+    ctx = _ctx()
+    views = json.loads(ctx.eval("JSON.stringify(SH_VIEWS)"))
+    for key in json.loads(ctx.eval("JSON.stringify(SH_VIEW_SUBS)")):
+        name, _, nav = key.partition(":")
+        assert nav in views[name], f"{key}: a sub list for a nav the grammar does not admit can never be reached"

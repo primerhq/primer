@@ -69,6 +69,16 @@ Examples: `#/w/ws-3f8a?doc=session:sess-4f1a#turn-42`,
 `#/w/ws-3f8a?doc=file:src/api.ts#L10-L30`,
 `#/w/ws-3f8a?overlay=providers:tts:pv-1`.
 
+The view is one more query key, `view=<name>[:<nav>[:<sub>]]`, for example
+`#/w/ws-3f8a?view=platform:providers:tts`. `<name>` is one of the three views
+(`views` in the manifest holds the navs of `platform` and `system`; an absent
+`view` is the studio). A nav that has sub-entries takes a third segment, the
+`<sub>`; `view_subs` in the manifest holds the list for each `<name>:<nav>`.
+Today that is one list: the provider types of Platform > Providers, in the
+order the sidebar lists them (`llm`, `embedding`, `ssp`, `cross_encoder`,
+`workspace`, `web_search`, `channel`, `artifact_storage`, `tts`, `stt`). A sub
+that is not on the list is dropped, and the address bar is rewritten without it.
+
 Verb navigation writes history. Transient UI (palette open, toasts) stays
 out of the URL. Refresh and pasted links restore exactly.
 

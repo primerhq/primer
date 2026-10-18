@@ -209,10 +209,49 @@ function NV_channelCreateState(res) {
 
 // The way out of "New channel" with no channel provider: the Platform page's
 // own Providers catalogue (it is mounted inline, not as an overlay, since the
-// IA restructure; it opens on every family and the Channels chip is one click
-// away, because the address has no slot for a family on an inline page).
+// IA restructure), opened on the Channels type: view=platform:providers:channel.
 function NV_addChannelProvider(con) {
-  con.goView("platform", "providers");
+  con.goView("platform", "providers", "channel");
+}
+
+// Provider types (seam I-1). Platform > Providers has a sub-entry per type in the sidebar, and the type is the third segment of the view
+// (view=platform:providers:<type>, ui/foundation/shell-url.js). NV_platProviderTypes() is that grammar's own list, in the sidebar's order, and
+// NV_PROVIDER_TYPE_LABELS names each one; a type the grammar adds without a label here is drawn under its key. Plain JS on purpose (see the
+// note at NV_fact): tests/ui/test_platform_nav.py runs these.
+var NV_PROVIDER_TYPE_LABELS = {
+  llm: "LLM", embedding: "Embedding", ssp: "Semantic Search Storage",
+  cross_encoder: "Cross Encoding", workspace: "Workspace",
+  web_search: "Web Search", channel: "Channels",
+  artifact_storage: "Artifact Store", tts: "TTS", stt: "ASR",
+};
+
+function NV_platProviderTypes() {
+  var subs = window.SH_VIEW_SUBS && window.SH_VIEW_SUBS["platform:providers"];
+  return Array.isArray(subs) ? subs.slice() : [];
+}
+
+// Which sidebar entry the open view marks as current: a nav id, or "providers:<type>" for an open provider type. The Providers row itself is
+// current only on All (no type), so the row and the type entries never both claim the page.
+function NV_platNavCurrent(view) {
+  var nav = (view && view.nav) || "providers";
+  if (nav === "providers" && view && view.sub
+      && NV_platProviderTypes().indexOf(view.sub) >= 0) {
+    return "providers:" + view.sub;
+  }
+  return nav;
+}
+
+// What the catalogue's own navigation does on the Platform page. The catalogue reports a chip click (or a register that lands on a class) as a
+// {kind: "provider-class", classKey} ref; a class that is a sidebar type moves the address to that type, unless the address is already on it (no
+// history entry for a move that goes nowhere). Any other class (web_fetch and model_profile have their own pages) and every provider-instance ref
+// stay in the catalogue's own state and do not touch the address. Answers whether it moved the address.
+function NV_providersNavigate(con, ref) {
+  if (!ref || ref.kind !== "provider-class") return false;
+  if (NV_platProviderTypes().indexOf(ref.classKey) < 0) return false;
+  var view = con.view;
+  if (view && view.nav === "providers" && view.sub === ref.classKey) return false;
+  con.goView("platform", "providers", ref.classKey);
+  return true;
 }
 
 // Per-entity page config. list() returns a promise of {items}; card(row, con)
@@ -712,7 +751,8 @@ var NV_PLAT_PAGE_SIZE = 6;
 
 function NV_PlatNav() {
   var con = NV_useConsole();
-  var active = con.view.nav || "providers";
+  var active = NV_platNavCurrent(con.view);
+  var types = NV_platProviderTypes();
   return (
     <div className="nv-plat-nav" data-testid="nv-plat-nav">
       {NV_PLAT_GROUPS.map(function (group) {
@@ -724,18 +764,36 @@ function NV_PlatNav() {
               var label = id === "providers" ? "Providers"
                 : (page ? page.title : id);
               return (
-                <button type="button" key={id} className="nv-plat-row"
-                  data-active={id === active ? "true" : "false"}
-                  data-testid={"nv-plat-row:" + id}
-                  aria-current={id === active ? "page" : undefined}
-                  onClick={function () { con.goView("platform", id); }}>
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none"
-                    stroke="currentColor" strokeWidth="1.2"
-                    strokeLinejoin="round" className="nv-plat-row-icon">
-                    <path d={NV_PLAT_ICONS[id]} />
-                  </svg>
-                  <span>{label}</span>
-                </button>
+                <React.Fragment key={id}>
+                  <button type="button" className="nv-plat-row"
+                    data-active={id === active ? "true" : "false"}
+                    data-testid={"nv-plat-row:" + id}
+                    aria-current={id === active ? "page" : undefined}
+                    onClick={function () { con.goView("platform", id); }}>
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"
+                      stroke="currentColor" strokeWidth="1.2"
+                      strokeLinejoin="round" className="nv-plat-row-icon">
+                      <path d={NV_PLAT_ICONS[id]} />
+                    </svg>
+                    <span>{label}</span>
+                  </button>
+                  {id === "providers" && types.length ? (
+                    <div className="nv-plat-subs" role="group"
+                      aria-label="Provider types" data-testid="nv-plat-subs">
+                      {types.map(function (t) {
+                        return (
+                          <button type="button" key={t} className="nv-plat-sub"
+                            data-active={"providers:" + t === active ? "true" : "false"}
+                            data-testid={"nv-plat-sub:" + t}
+                            aria-current={"providers:" + t === active ? "page" : undefined}
+                            onClick={function () { con.goView("platform", "providers", t); }}>
+                            {NV_PROVIDER_TYPE_LABELS[t] || t}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </React.Fragment>
               );
             })}
           </div>
@@ -1302,20 +1360,36 @@ function NV_ApprovalsAudit() {
 // -> catalog overlay -> form overlay) this used to be. See provider-
 // catalog.jsx's own header comment for the full architecture (All
 // default view, type filter, Register-by-type, edit-in-place).
-// initialClass/initialInstanceId are only ever the SEED: ProviderCatalog
-// owns classKey/instanceId itself once mounted, so a static "all" here
-// is enough. onNavigate is a no-op - the overlay's URL-synced deep-link
-// granularity (a specific class/instance in the address bar) does not
-// carry over to an inline page; a scope reduction that comes with
-// killing the overlay, not a bug.
-function NV_ProvidersPlatPage() {
+// initialClass is the view's provider type, "all" or a type key (seam I-1:
+// view=platform:providers:<type>). The catalog owns its class and its open
+// instance in state of its own and only SEEDS them from its props, so a move
+// it did not make itself (a click in the sidebar, Back, a pasted link) starts
+// it over: a new key remounts it at the type the address names, with no
+// instance open, instead of leaving the previous type's instance selected
+// under the new type (a vector store's detail page asked for an LLM provider's
+// id). A move it made itself is reported through onNavigate
+// (NV_providersNavigate answers whether it moved the address) and must keep it
+// mounted: a card click on All selects its class AND opens the edit form in the
+// same call. The catalog's own type chips stay until Plan 02 (the Register
+// overlay) replaces its body; the sidebar's sub-entries are the navigation the
+// user asked for.
+function NV_ProvidersPlatPage(props) {
+  var con = NV_useConsole();
+  var track = React.useRef({ view: con.view, epoch: 0, own: false });
+  if (track.current.view !== con.view) {
+    if (!track.current.own) track.current.epoch += 1;
+    track.current.own = false;
+    track.current.view = con.view;
+  }
   return (
     <div className="nv-plat-main">
       <div className="nv-plat-wrap" data-testid="nv-plat-page:providers">
-        <window.ProviderCatalog
-          initialClass="all"
+        <window.ProviderCatalog key={track.current.epoch}
+          initialClass={props.type}
           initialInstanceId={null}
-          onNavigate={function () {}}
+          onNavigate={function (ref) {
+            if (NV_providersNavigate(con, ref)) track.current.own = true;
+          }}
         />
       </div>
     </div>
@@ -1329,7 +1403,7 @@ function NV_ProvidersPlatPage() {
 function NV_PlatPage() {
   var con = NV_useConsole();
   var nav = con.view.nav || "providers";
-  if (nav === "providers") return <NV_ProvidersPlatPage />;
+  if (nav === "providers") return <NV_ProvidersPlatPage type={con.view.sub || "all"} />;
   return <NV_PlatListPage key={nav} nav={nav} />;
 }
 
@@ -1595,6 +1669,10 @@ function NV_Platform() {
 }
 
 window.NV_PLAT_PAGES = NV_PLAT_PAGES;
+window.NV_PROVIDER_TYPE_LABELS = NV_PROVIDER_TYPE_LABELS;
+window.NV_platProviderTypes = NV_platProviderTypes;
+window.NV_platNavCurrent = NV_platNavCurrent;
+window.NV_providersNavigate = NV_providersNavigate;
 window.NV_emptyText = NV_emptyText;
 window.NV_countText = NV_countText;
 window.NV_Platform = NV_Platform;
