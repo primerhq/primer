@@ -24,6 +24,7 @@ from tests.ui._agent_form_harness import (
     click,
     mount,
     options,
+    press_escape,
     prop,
     recorded,
     reject_next,
@@ -222,6 +223,21 @@ def test_a_toggle_flips_and_says_so(ctx):
     assert prop(ctx, "na-allow-external-tools", "aria-checked") is False
     click(ctx, "na-allow-external-tools")
     assert prop(ctx, "na-allow-external-tools", "aria-checked") is True
+
+
+def test_escape_leaves_full_screen_before_it_closes_the_form(ctx):  # Review Focus 4, through the whole form
+    mount(ctx, existing=FULL)
+    click(ctx, "agent-system-prompt-fullscreen")
+    press_escape(ctx)
+    assert prop(ctx, "agent-system-prompt", "data-fullscreen") == "false" and recorded(ctx)["closes"] == 0
+    press_escape(ctx)
+    assert recorded(ctx)["closes"] == 1
+
+
+def test_the_overlay_passes_help_and_error_to_the_kit_and_never_the_inline_hint():
+    """Design 6.2: help and errors go UNDER their control. FormField's `hint` is inline label text, and a kit field never takes it."""
+    assert "hint=" not in function_source("AG_NewAgentModal")
+    assert "FormField" not in function_source("AG_NewAgentModal")
 
 
 def test_the_rebuilt_overlay_has_no_em_dash():
