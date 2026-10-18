@@ -1300,6 +1300,10 @@ def build_workspaces_toolset(
                 overrides=args.overrides,
                 workspace_id=args.id,
             )
+        except PrimerValidationError as exc:
+            # A refusal of the request itself (a size the provider cannot honour, master Review Focus 5): the message
+            # names overrides.resources.<field>, and nothing was built.
+            return _err(exc.message, error_type="validation-error")
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="backend-error")
         # materialise() created a live instance and the durable row is written LAST, so a failure or a cancel before
