@@ -18,6 +18,7 @@ import time
 
 import httpx
 import pytest
+from playwright.sync_api import expect
 
 from tests.ui_e2e._studio_helpers import open_session_in_studio
 
@@ -150,10 +151,8 @@ def test_u0018_deep_link_reload_preserves_agent_detail_tools(
     try:
         open_legacy_route(page, console_url, f"agents/{agent_id}")
 
-        # Wait for the agent detail page to render.
-        page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
-            state="visible", timeout=10_000,
-        )
+        # Wait for the agent detail page to render: its locked Id holds the id.
+        expect(page.locator("#na-id")).to_have_value(agent_id, timeout=10_000)
 
         selected_chip = page.get_by_test_id("tool-picker-filter-selected")
         selected_chip.wait_for(state="visible", timeout=10_000)
@@ -163,9 +162,7 @@ def test_u0018_deep_link_reload_preserves_agent_detail_tools(
         )
 
         page.reload(wait_until="domcontentloaded")
-        page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
-            state="visible", timeout=10_000,
-        )
+        expect(page.locator("#na-id")).to_have_value(agent_id, timeout=10_000)
 
         # After reload, the ToolPicker must still be populated with the
         # SAME agent's real tools, not reset to empty or stuck loading.
@@ -390,9 +387,7 @@ def test_u0009_agent_tools_picker_isolates_one_unavailable_toolset(
         # Navigate directly to the agent detail overlay - no more
         # tab= deep-link, the Tools picker lives on the one form.
         open_legacy_route(page, console_url, f"agents/{agent_id}")
-        page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
-            state="visible", timeout=10_000,
-        )
+        expect(page.locator("#na-id")).to_have_value(agent_id, timeout=10_000)
 
         # Bad toolset is called out via the picker's unavailable-
         # toolset summary - a dashed pill naming the toolset id next
@@ -422,16 +417,16 @@ def test_u0009_agent_tools_picker_isolates_one_unavailable_toolset(
             state="visible", timeout=10_000,
         )
 
-        # Defence: the page-title is still rendered (no blank crash).
-        # The agent detail h1 carries the agent id - if a render error
-        # blew up the whole ToolPicker, the title would still be
-        # visible via the page chrome, but the picker wouldn't be. The
-        # asserts above already prove the picker rendered through for
-        # both toolsets; this is a final structural sanity check.
-        assert page.locator("h1.page-title").first.is_visible(), (
-            "agent detail title disappeared after the tools picker "
-            "rendered - page may have blanked out instead of isolating "
-            "the failure to the one toolset"
+        # Defence: the agent form is still rendered (no blank crash).
+        # The form's locked Id field holds the agent id - if a render
+        # error blew up the whole ToolPicker, the form around it would
+        # still be there, but the picker wouldn't be. The asserts above
+        # already prove the picker rendered through for both toolsets;
+        # this is a final structural sanity check.
+        assert page.locator("#na-id").is_visible(), (
+            "the agent form disappeared after the tools picker rendered "
+            "- the page may have blanked out instead of isolating the "
+            "failure to the one toolset"
         )
 
         # Defence 2: the good toolset's tools are still selectable

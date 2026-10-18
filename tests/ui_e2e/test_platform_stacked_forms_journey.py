@@ -86,7 +86,7 @@ def test_new_agent_opens_the_form_with_no_list_behind_it_and_a_created_agent_lan
 
             modal.locator("#na-id").fill(agent_id)
             modal.locator("#na-description").fill("adm06 journey")
-            modal.get_by_test_id(f"agent-profile-row-{profile_id_for(provider_id, 'fake-model')}").click()
+            modal.locator("#na-model-profile").select_option(value=profile_id_for(provider_id, "fake-model"))
             modal.get_by_role("button", name="Create").click()
 
             # The created agent lands on its own detail overlay, and its card is in the grid behind it.

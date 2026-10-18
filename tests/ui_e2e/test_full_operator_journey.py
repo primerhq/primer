@@ -23,6 +23,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from playwright.sync_api import expect
 
 
 # ---------------------------------------------------------------------------
@@ -223,9 +224,7 @@ def test_multi_page_operator_journey_no_llm(
         # ----- 5. Agent detail
         page.locator(f"tr:has-text('{ids['agent']}')").first.click()
         wait_for_overlay_url(page, f"agents/{ids['agent']}", timeout=10_000)
-        page.get_by_text(ids["agent"], exact=False).first.wait_for(
-            state="visible", timeout=10_000,
-        )
+        expect(page.locator("#na-id")).to_have_value(ids["agent"], timeout=10_000)
 
         # ----- 6. Graphs list
         open_legacy_route(page, console_url, "graphs")

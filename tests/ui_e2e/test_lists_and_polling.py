@@ -99,16 +99,10 @@ def test_u0034_agent_metadata_deep_link_lands_on_edit_view(
 
     try:
         open_legacy_route(page, console_url, f"agents/{agent_id}", tab="metadata")
-        page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
-            state="visible", timeout=10_000,
-        )
-        expect(page.locator("#na-id")).to_have_value(agent_id)
+        expect(page.locator("#na-id")).to_have_value(agent_id, timeout=10_000)
 
         page.reload(wait_until="domcontentloaded")
-        page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
-            state="visible", timeout=10_000,
-        )
-        expect(page.locator("#na-id")).to_have_value(agent_id)
+        expect(page.locator("#na-id")).to_have_value(agent_id, timeout=10_000)
 
         # Defence: the URL still carries the legacy tab in the overlay
         # target's section slot (the one grammar the URL has now) -
