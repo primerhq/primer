@@ -4,13 +4,15 @@ The standing sweep (``tests/ui_e2e/test_console_controls_have_names_sweep.py``) 
 view and every create form. Run on the Platform views and the forms it newly opens, it found 13 controls whose only text was a placeholder or a visible label that points at nothing:
 
 * the Configure form of the internal collections: the Semantic Search provider, the embedding provider and the embedding model selects (and the reranker model select beside them);
-* the New profile form: the id, the description and the context length inputs;
 * the New policy form: the id and the timeout inputs;
 * the MCP page: the endpoint URL box and the tool search box;
 * the profile page: the current and the new password inputs;
 * the entity picker's results list (``role="listbox"``), which the graph builder's agent pickers draw.
 
 This is the static half: each control's tag carries the name (``aria-label``, or an ``id`` that its visible ``<label htmlFor>`` points at). The browser half is the sweep itself.
+
+The New profile form's three inputs (the id, the description and the context length) were named here too, until the profile forms were rebuilt on the platform kit (Platform revamp Plan 03): every row of an
+overlay is a ``PK_Field`` now, which ties the label to its control, and ``tests/ui/test_llm_profile_overlays.py::test_every_input_is_named_by_its_label`` walks the rendered overlays for an input no label names.
 """
 
 from __future__ import annotations
@@ -57,9 +59,6 @@ CONTROLS = [
     ("internal-collections.jsx", "onChange={(e) => setProviderId(e.target.value)}", ("label", "ic-embedding-provider")),
     ("internal-collections.jsx", "onChange={(e) => setModel(e.target.value)}", ("label", "ic-embedding-model")),
     ("internal-collections.jsx", "onChange={(e) => setRerankerModel(e.target.value)}", ("label", "ic-reranker-model")),
-    ("model-profiles.jsx", "onChange={(e) => setId(e.target.value)}\n          placeholder=\"gx10--qwen-fast\"", ("label", "mp-id")),
-    ("model-profiles.jsx", "onChange={(e) => setDescription(e.target.value)}", ("label", "mp-description")),
-    ("model-profiles.jsx", "onChange={(e) => setContextLength(e.target.value)}", ("label", "mp-context-length")),
     ("approvals.jsx", 'data-testid="approval-policy-id"', ("label", "approval-policy-id-input")),
     ("approvals.jsx", 'data-testid="approval-policy-timeout"', ("label", "approval-policy-timeout-input")),
     ("mcp.jsx", 'data-testid="mcp-endpoint-url"', ("label", "mcp-endpoint-url-input")),

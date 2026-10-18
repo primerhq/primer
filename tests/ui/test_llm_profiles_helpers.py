@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.ui._llm_profile_fixtures import FULL_AGG, ROWS, router_envelopes
+from tests.ui._llm_profile_fixtures import FULL_AGG, PROVIDERS, ROWS, router_envelopes
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "ui" / "components" / "model-profiles.jsx"
@@ -32,6 +32,7 @@ END = "// ---- end MP helpers ----"
 
 R = json.dumps(ROWS)
 RULE = "Use letters, digits, dots, dashes and underscores, and start with a letter or a digit."
+WHOLE = "Enter a whole number of tokens, 1 or more."
 
 
 def helper_block() -> str:
@@ -69,7 +70,8 @@ def test_the_helper_block_holds_no_hook_and_no_react() -> None:
 
 def test_every_helper_is_a_global_of_the_bundle(ctx) -> None:
     for name in ("MP_fmtTokens", "MP_isSingle", "MP_isManaged", "MP_memberRows", "MP_toggleMember", "MP_toggleAllMembers", "MP_moveMember",
-                 "MP_aggregateWindow", "MP_windowText", "MP_nameError", "MP_aggregateBody", "MP_editBody", "MP_refusalErrors"):
+                 "MP_aggregateWindow", "MP_windowText", "MP_nameError", "MP_aggregateBody", "MP_editBody", "MP_refusalErrors",
+                 "MP_contextError", "MP_providerOptions"):
         assert ctx.eval(f"typeof {name}") == "function", name
     for name in ("MP_AGGREGATE_DEFAULTS", "MP_ROUTING_OPTIONS", "MP_ROUTING_HELP", "MP_FAILOVER_POINT_OPTIONS", "MP_FAILOVER_POINT_HELP",
                  "MP_FAILOVER_ON_OPTIONS", "MP_FAILOVER_ON_HELP"):
@@ -281,3 +283,37 @@ def test_a_refusal_that_is_not_an_api_error_is_a_form_error(ctx) -> None:
 def test_a_field_named_like_an_object_property_is_not_mistaken_for_a_mapped_one(ctx) -> None:
     envelope = {"type": "/errors/validation-error", "title": "Validation Error", "status": 422, "detail": "no", "extensions": {"error": "x_y", "field": "constructor", "message": "no"}}
     assert _refusal(ctx, envelope, {"members": "members"}) == {"fields": {}, "form": "no"}
+
+
+# ---- the single profile's fields (Task 3) -----------------------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "error"),
+    [("", "Enter the context window."), ("0", WHOLE), ("-1", WHOLE), ("12.5", WHOLE), ("abc", WHOLE), ("1e3", WHOLE), (" 8192", WHOLE), ("08192", WHOLE), ("1", None), ("128000", None)],
+)
+def test_the_context_window_rule(ctx, text, error) -> None:
+    assert js(ctx, f"MP_contextError({json.dumps(text)})") == error
+
+
+def test_a_context_window_that_is_not_text_is_the_blank_case(ctx) -> None:
+    assert js(ctx, "MP_contextError(null)") == "Enter the context window."
+    assert js(ctx, "MP_contextError(undefined)") == "Enter the context window."
+    assert js(ctx, "MP_contextError(8192)") is None, "a number is its own text"
+
+
+def test_provider_options_keep_a_provider_that_is_not_listed(ctx) -> None:
+    assert js(ctx, f'MP_providerOptions({json.dumps(PROVIDERS)}, "gone")') == [
+        {"value": "lp", "label": "lp (openchat)"},
+        {"value": "other", "label": "other (anthropic)"},
+        {"value": "gone", "label": "gone (not found)"},
+    ]
+    assert len(js(ctx, f'MP_providerOptions({json.dumps(PROVIDERS)}, "lp")')) == 2
+
+
+def test_provider_options_with_no_current_provider_or_no_providers(ctx) -> None:
+    assert len(js(ctx, f'MP_providerOptions({json.dumps(PROVIDERS)}, "")')) == 2, "no current provider: nothing to keep"
+    assert len(js(ctx, f"MP_providerOptions({json.dumps(PROVIDERS)}, null)")) == 2
+    assert js(ctx, 'MP_providerOptions([], "gone")') == [{"value": "gone", "label": "gone (not found)"}]
+    assert js(ctx, 'MP_providerOptions(null, "")') == []
+    assert js(ctx, 'MP_providerOptions([{ id: "bare" }], "bare")') == [{"value": "bare", "label": "bare"}], "a provider with no type is just its id"
