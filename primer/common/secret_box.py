@@ -16,16 +16,28 @@ foreign value fails the tag check instead of decrypting to garbage.
 from __future__ import annotations
 
 import base64
+import re
 
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-__all__ = ["SecretBox", "SecretBoxError"]
+__all__ = ["SecretBox", "SecretBoxError", "is_sealed"]
 
 _SALT = b"primer-secret-box-v1"
 _INFO = b"primer/mcp-oauth"
 _PREFIX = "v1."
+# A Fernet token is url-safe base64 of: version byte 0x80 (so it always starts "gAAAA"), an 8-byte timestamp, a 16-byte IV, at least one AES block and a 32-byte tag (73 bytes, about 100 characters, at least).
+_SEALED_SHAPE = re.compile(r"v1\.gAAAA[A-Za-z0-9_-]{90,}={0,2}")
+
+
+def is_sealed(value: str) -> bool:
+    """True when ``value`` has the SHAPE :meth:`SecretBox.encrypt` gives: the ``v1.`` prefix and a Fernet token. It opens nothing and says nothing about the key.
+
+    A tripwire for a place that must only ever hold ciphertext (a stored token): plaintext handed to it is caught before it is written, instead of being stored and
+    found later. It is not a proof: only :meth:`SecretBox.decrypt` shows that a value really opens.
+    """
+    return isinstance(value, str) and _SEALED_SHAPE.fullmatch(value) is not None
 
 
 class SecretBoxError(Exception):
