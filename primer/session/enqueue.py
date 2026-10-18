@@ -14,7 +14,9 @@ Behaviour by status (studio-agents-interact §4.2 / §5.1):
   * PAUSED, human_intent=True  -> resume (clear pause; transition to RUNNING)
   * PAUSED, human_intent=False -> hold   (queue the message; pause untouched
                                           -- 01a08c08, see ``human_intent``)
-  * ENDED             -> restart (reopen + invocation divider, then invoke)
+  * ENDED             -> restart (reopen + invocation divider, then invoke);
+                         a message from another session does not restart a
+                         CANCELLED session (PeerCannotReopen)
 
 Uniform "send a message" semantics: every clean agent turn ends the session,
 and sending a NEW message to an ENDED session reopens it (reopen the on-disk
@@ -33,7 +35,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from primer.int.claim import ClaimKind
-from primer.model.except_ import NotFoundError, PrimerError
+from primer.model.except_ import ConflictError, NotFoundError, PrimerError
 from primer.model.workspace_session import (
     PEER_PAYLOAD_KEY,
     PeerAttribution,
@@ -55,6 +57,15 @@ _RESUMABLE = {
     SessionStatus.PAUSED,
     SessionStatus.WAITING,
 }
+
+
+class PeerCannotReopen(ConflictError):
+    """A message from another session (``peer``) was refused because the session ended as ``cancelled``.
+
+    An operator's Cancel sticks (pivot P3, lead ruling R4): only a person's steer or resume reopens the session. ``cancelled`` is a restartable ended
+    reason, so without this a peer message, a queued one realized by the cancelled exit's own drain checkpoint included, would reopen the session the
+    operator had just cancelled. It is raised under the session's lifecycle lock, on the row read there, before anything is written.
+    """
 
 
 @dataclass
@@ -208,7 +219,10 @@ async def wake_session(
     reopened in place (reopen slot + invocation divider + ENDED->CREATED)
     before the normal invoke flow, so a new message restarts it; a
     non-restartable ``ended_reason`` (``workspace_lost``/``force_deleted``)
-    still raises ConflictError. Serialised against concurrent
+    still raises ConflictError. A message from another session (``peer``) does
+    not restart a session that ended as ``cancelled``: only a person's message
+    does, so that one raises :class:`PeerCannotReopen` (a ConflictError) before
+    anything is written. Serialised against concurrent
     cancel/pause/resume via the session lifecycle lock so the ``turn_status``
     flip + status transition never interleave with a racing cancel's ENDED
     write.
@@ -227,6 +241,12 @@ async def wake_session(
                 f"{workspace_id!r}"
             )
         if row.status == SessionStatus.ENDED:
+            if peer is not None and row.ended_reason == "cancelled":
+                # An operator's Cancel sticks (lead ruling R4): a message from another session does not undo it. Decided here, under the lifecycle
+                # lock and on the row just read, so a Cancel that landed after any earlier look is seen; a person's message (no peer) still reopens.
+                raise PeerCannotReopen(
+                    f"Session {session_id!r} was cancelled and a message from another session does not reopen it; only a person can"
+                )
             # Reopen the ended session in place so a NEW message restarts it
             # (reopen slot + invocation divider + ENDED->CREATED). We hold the
             # non-reentrant session_lifecycle_lock, and reset_session acquires
@@ -504,4 +524,4 @@ async def _record_pause_superseded(
             )
 
 
-__all__ = ["SessionWakeDeps", "wake_session"]
+__all__ = ["PeerCannotReopen", "SessionWakeDeps", "wake_session"]

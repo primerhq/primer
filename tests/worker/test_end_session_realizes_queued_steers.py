@@ -15,10 +15,13 @@ world; only the model is scripted).
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from primer.int.claim import ClaimKind
 from primer.model.workspace_session import (
+    PeerAttribution,
     PendingSessionMessage,
     SessionMessageKind,
     SessionStatus,
@@ -30,6 +33,7 @@ from primer.session.pending_messages import store_pending_steer
 from tests.worker.test_completed_turn_reclaim import KEY, SID, _World, world  # noqa: F401
 
 STEER = "a steer queued on the parked session"
+PEER_STEER = "[from session ses-a (agent planner)]\na message from another session"
 
 
 async def _queue(world: _World, text: str = STEER) -> None:
@@ -144,3 +148,67 @@ async def test_a_failed_resume_answers_the_message_queued_on_the_parked_session(
     assert await world.claim_and_run(pool) == 1  # the re-armed claim runs the turn for the realized message
     assert world.llm_calls == [STEER], f"the queued message never got its turn: {world.llm_calls}"
     assert await _pending(world) == []
+
+
+# ---- a peer message does not reopen a session an operator cancelled (lead ruling R4 on #788) ------------------------------------------------
+
+
+async def _queue_peer(world: _World, text: str = PEER_STEER) -> None:
+    row = await world.row()
+    peer = PeerAttribution(from_session_id="ses-a", from_workspace_id=row.workspace_id, from_agent_id="planner", hops=1)
+    await store_pending_steer(
+        storage_provider=world.storage, session=row, text=text, workspace_registry=world.registry, event_bus=world.bus,
+        attribution=peer.as_attribution(),
+    )
+
+
+def _dropped(world: _World) -> list[dict]:
+    return [
+        r["payload"] for r in world.ws.records()
+        if r.get("kind") == SessionMessageKind.PAUSE_SUPERSEDED.value and r["payload"]["action"] == "dropped"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ending_a_session_as_cancelled_does_not_realize_a_queued_peer_message(world):
+    """The pool's ``_end_session`` is a cancelled exit with no turn behind it. The peer message queued on the session is dropped on the record, and the
+    session the operator cancelled stays ended: no divider, no user message, no lease."""
+    await world.create_session()
+    await _queue_peer(world)
+
+    await world.pool("wrk-a")._end_session(await world.row(), reason="cancelled")
+
+    row = await world.row()
+    assert (row.status, row.ended_reason) == (SessionStatus.ENDED, "cancelled")
+    assert await _pending(world) == [] and _user_inputs(world) == []
+    [dropped] = _dropped(world)
+    assert dropped["text"] == PEER_STEER and "cancelled" in dropped["reason"]
+    assert not await world.engine.has_lease(*KEY), "a peer message re-armed the session the operator cancelled"
+
+
+@pytest.mark.asyncio
+async def test_ending_a_session_as_cancelled_still_realizes_a_persons_steer_queued_behind_a_peer_message(world):
+    await world.create_session()
+    await _queue_peer(world)
+    await asyncio.sleep(0.002)                  # the queue is ordered by time: the person's steer is the later of the two, whatever the clock's resolution
+    await _queue(world, STEER)
+
+    await world.pool("wrk-a")._end_session(await world.row(), reason="cancelled")
+
+    assert _user_inputs(world) == [STEER], "the person's steer was held up by the peer message in front of it"
+    row = await world.row()
+    assert row.status is not SessionStatus.ENDED and row.turn_status == "claimable"
+    assert [d["text"] for d in _dropped(world)] == [PEER_STEER]
+    assert await _pending(world) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["failed", "completed"])
+async def test_ending_a_session_for_another_reason_still_realizes_a_queued_peer_message(world, reason):
+    await world.create_session()
+    await _queue_peer(world)
+
+    await world.pool("wrk-a")._end_session(await world.row(), reason=reason)
+
+    assert _user_inputs(world) == [PEER_STEER] and _dropped(world) == []
+    assert (await world.row()).status is not SessionStatus.ENDED

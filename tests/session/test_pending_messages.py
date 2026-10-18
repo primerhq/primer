@@ -461,11 +461,48 @@ async def test_a_peer_message_is_stored_when_the_queue_is_one_short_of_the_cap()
     assert "person-0" in _queued_texts(sp) and _dropped(ws) == []
 
 
-# ---- a queued peer message that the pause cannot hold again is dropped, never lost silently --------------------------------------------
+# ---- a queued peer message that the session refuses is dropped, never lost silently, and never blocks the rows behind it ----------------
 
 
 def _wake_deps(ws):
     return SimpleNamespace(workspace_registry=_FakeRegistry(ws), event_bus=None)
+
+
+async def test_a_peer_row_the_wake_refuses_as_cancelled_is_dropped_with_a_record_and_the_next_row_is_realized(monkeypatch):
+    from primer.session.enqueue import PeerCannotReopen
+
+    sp, ws = _SP(), _FakeWorkspace()
+    await _session_with(sp, [(_peer_text("p1"), _peer()), ("q", None), (_peer_text("p2"), _peer())])
+    woken = []
+
+    async def _wake(**kw):
+        if kw["peer"] is not None:
+            raise PeerCannotReopen("cancelled")
+        woken.append(kw["instruction"])
+
+    monkeypatch.setattr("primer.session.pending_messages.wake_session", _wake)
+    did = await realize_next_pending(storage_provider=sp, workspace_id="ws-1", session_id="s", wake_deps=_wake_deps(ws))
+
+    assert did is True and woken == ["q"], "the person's steer behind the dropped peer message was blocked"
+    assert _queued_texts(sp) == [_peer_text("p2")], "one row is realized per checkpoint: what follows it waits"
+    [dropped] = _dropped(ws)
+    assert dropped["text"] == _peer_text("p1") and "cancelled" in dropped["reason"]
+
+
+async def test_when_the_wake_refuses_every_queued_peer_row_nothing_is_realized_and_each_drop_is_recorded(monkeypatch):
+    from primer.session.enqueue import PeerCannotReopen
+
+    sp, ws = _SP(), _FakeWorkspace()
+    await _session_with(sp, [(_peer_text("p1"), _peer()), (_peer_text("p2"), _peer())])
+
+    async def _wake(**kw):
+        raise PeerCannotReopen("cancelled")
+
+    monkeypatch.setattr("primer.session.pending_messages.wake_session", _wake)
+    did = await realize_next_pending(storage_provider=sp, workspace_id="ws-1", session_id="s", wake_deps=_wake_deps(ws))
+
+    assert did is False and sp.pending.rows == {}
+    assert [d["text"] for d in _dropped(ws)] == [_peer_text("p1"), _peer_text("p2")]
 
 
 async def test_a_peer_row_the_pause_hold_cannot_requeue_because_the_queue_filled_up_is_dropped_with_a_record(monkeypatch):

@@ -57,7 +57,14 @@ Four rules make that safe:
   as busy, so a steer sent to it is queued, and without this it waited behind
   the ended session for some later message (then ran after it) or forever. The
   realized steer reopens the ended session through `wake_session` and arms a
-  turn; the pool re-arms the claim after the release. A message that lands
+  turn; the pool re-arms the claim after the release. A queued message from
+  another session (a peer message) does not reopen a session that ended as
+  `cancelled`: an operator's Cancel sticks, and only a person's steer or resume
+  reopens it. `wake_session` refuses it under the lifecycle lock
+  (`PeerCannotReopen`), and `realize_next_pending` drops it with a
+  `PAUSE_SUPERSEDED` `dropped` record that says the session was cancelled and
+  goes on to the next row, so a person's steer queued behind it is still
+  realized. A message that lands
   between `_end_session`'s ENDED write and the switch application reopens the
   session itself, so the applier's `{"status": ["ended"]}` guard no longer holds
   and the switch stays queued: it applies at the checkpoint after the turn that

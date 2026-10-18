@@ -21,7 +21,8 @@ them all, a text that is empty or longer than ``PEER_MESSAGE_MAX_CHARS`` and a `
 6. the sender has sent fewer than ``PEER_RATE_LIMIT`` messages in the last ``PEER_RATE_WINDOW`` (``rate-limited``);
 7. with ``mode="if_idle"``, the target would start a turn now (``conflict``);
 8. the target can take a message at all (``conflict``), which the delivery decides itself: an ended session that cannot be reopened refuses, and so
-   does a target whose queue already holds the cap's worth of waiting messages (a peer message never takes a person's place in it: lead ruling R1).
+   does one an operator cancelled (only a person reopens it: lead ruling R4), and so does a target whose queue already holds the cap's worth of
+   waiting messages (a peer message never takes a person's place in it: lead ruling R1).
 """
 
 from __future__ import annotations
@@ -315,8 +316,9 @@ def _busy_reason(row: WorkspaceSession) -> str | None:
 async def _refusal_for_missing(sessions: Any, target_session_id: str, delivery: SteerDelivery) -> PeerMessageRefused:
     """The refusal for a delivery that reported the session missing, in the words of the wake that said why.
 
-    ``delivery.conflict`` is an ENDED session that cannot be reopened (``force_deleted``, a lost workspace that is not back); otherwise the row went
-    away between the guards' read and the delivery, or the workspace was removed under the write (``delivery.detail`` says which).
+    ``delivery.conflict`` is an ENDED session that cannot take the message: one that cannot be reopened (``force_deleted``, a lost workspace that is
+    not back), or one an operator cancelled (a peer message does not reopen it); otherwise the row went away between the guards' read and the delivery,
+    or the workspace was removed under the write (``delivery.detail`` says which).
     """
     if delivery.conflict:
         current = await sessions.get(target_session_id)
@@ -357,9 +359,11 @@ async def send_peer_message(
     caught by the delivery (``skip``, refused, nothing stored), but a pause that lands in it holds the message like any other non-human wake, and
     the result says ``queued``.
 
-    The delivery also refuses, with nothing written (``conflict``), a target whose queue of waiting messages is full. That is decided by the queue when
-    it stores the message, for both ways a message is queued (behind a turn or a park, and behind a pause), and is the busy answer: the sender may retry.
-    Two senders can still pass that check together; the queue's cap then drops the oldest PEER message, never a person's steer.
+    The delivery also refuses, with nothing written (``conflict``), a target an operator cancelled and a target whose queue of waiting messages is full.
+    The first is decided by the wake under the session's lifecycle lock, on the row read there, so a Cancel that lands after the guards above is seen
+    (only a person reopens a cancelled session). The second is decided by the queue when it stores the message, for both ways a message is queued (behind
+    a turn or a park, and behind a pause), and is the busy answer: the sender may retry. Two senders can still pass that check together; the queue's cap
+    then drops the oldest PEER message, never a person's steer.
 
     Once the message is delivered the call succeeds: a ledger row that cannot be written is logged, not raised (the sender would send the message
     again), at the price of one delivered message the rate limit does not count.

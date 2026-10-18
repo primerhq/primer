@@ -36,7 +36,7 @@ from primer.model.workspace_session import (
     SessionMessageRecord,
     WorkspaceSession,
 )
-from primer.session.enqueue import wake_session
+from primer.session.enqueue import PeerCannotReopen, wake_session
 from primer.session.persistence import WorkspaceMessageWriter
 from primer.session.seq_reservation import reserve_next_seq
 
@@ -53,6 +53,7 @@ _MAX_PENDING_PER_SESSION = 50
 
 # Why a message was dropped, as the PAUSE_SUPERSEDED record says it (the console shows "queued message dropped (<reason>): <text>").
 _REASON_CAP = f"pending queue exceeded {_MAX_PENDING_PER_SESSION}"
+_REASON_CANCELLED = "the session was cancelled, and a message from another session does not reopen it"
 _REASON_QUEUE_FULL = (
     f"the pending queue is full ({_MAX_PENDING_PER_SESSION}), and a message from another session does not evict a person's"
 )
@@ -289,10 +290,11 @@ async def realize_next_pending(
     malformed attribution is logged and the message is realized as a plain
     one: it must not be lost, and it must not wedge the queue.
 
-    A message from another session that the pause now holding it cannot queue again, because the queue filled up meanwhile (a peer message never
-    evicts a person's steer: :class:`PendingQueueFull`, lead ruling R1), is dropped, on the record, and the drain goes on to the next row. The drop is
-    announced like a cap drop, and it does not use up the checkpoint. Nothing else is skipped: the rows behind a realized one wait for the next
-    checkpoint, as ever.
+    A message from another session that the session then refuses is dropped, on the record, and the drain goes on to the next row (lead rulings R4
+    and R1): the session was cancelled, and only a person reopens a cancelled session (:class:`PeerCannotReopen`), or the pause that now holds the
+    message found the queue full again and a peer does not evict a person's steer (:class:`PendingQueueFull`). The drop is announced like a cap drop,
+    and it does not use up the checkpoint: the person's steer queued behind it is still realized now, because no later checkpoint will come for a
+    session that stays ended. Nothing else is skipped: the rows behind a realized one wait for the next checkpoint, as ever.
     """
     while True:
         realized = await _realize_oldest(
@@ -341,8 +343,8 @@ async def _realize_oldest(
             peer=peer,
             deps=wake_deps,
         )
-    except PendingQueueFull:
-        logger.info("realize: dropped a queued message from another session on %s (queue full)", session_id)
+    except (PeerCannotReopen, PendingQueueFull) as refusal:
+        logger.info("realize: dropped a queued message from another session on %s (%s)", session_id, type(refusal).__name__)
         await _record_dropped_pending(
             workspace_registry=wake_deps.workspace_registry,
             event_bus=wake_deps.event_bus,
@@ -351,7 +353,7 @@ async def _realize_oldest(
             session_id=session_id,
             dropped_text=text,
             enqueued_at=row.enqueued_at,
-            reason=_REASON_QUEUE_FULL,
+            reason=_REASON_CANCELLED if isinstance(refusal, PeerCannotReopen) else _REASON_QUEUE_FULL,
         )
         return None
     return True
