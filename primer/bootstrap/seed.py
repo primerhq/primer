@@ -12,6 +12,7 @@ repaired on the next boot.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import logging
 
@@ -21,6 +22,9 @@ from primer.model.tool_approval import (
     ToolApprovalPolicy,
 )
 from primer.toolset.crud import CRUD_TOOL_NAMES, CRUD_TOOLSET_ID
+
+if TYPE_CHECKING:
+    from primer.int.toolset import ToolsetProvider
 
 
 logger = logging.getLogger(__name__)
@@ -385,7 +389,29 @@ async def run_ensure_pass(
     return result
 
 
+async def builtin_toolset_providers(provider_registry) -> dict[str, ToolsetProvider]:
+    """The toolset providers of every built-in toolset, from the live registry.
+
+    The S5 world is regenerated in two places - the boot ensure pass and the
+    setup seed route - and both must cover every built-in toolset, so the map
+    is built here, once, instead of each caller carrying its own copy. A
+    toolset the registry cannot build raises a PrimerError; it is logged with
+    its id and skipped so one missing toolset does not drop the rest.
+    """
+    from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
+    from primer.model.except_ import PrimerError
+
+    providers: dict[str, ToolsetProvider] = {}
+    for tid in sorted(RESERVED_TOOLSET_IDS):
+        try:
+            providers[tid] = await provider_registry.get_toolset(tid)
+        except PrimerError as err:
+            logger.warning("seed: skipping built-in toolset %r: %s", tid, err)
+    return providers
+
+
 __all__ = [
+    "builtin_toolset_providers",
     "crud_policy_id",
     "ensure_crud_approval_policies",
     "ensure_default_workspace",
