@@ -36,12 +36,15 @@ small dedicated read-only NV_MobileFileView instead.
 
 More (M5) is profile+theme (nv-chrome.jsx's own setTheme persistence,
 not forked) + system health cards (NV_HealthCards, nv-system.jsx,
-reused directly rather than re-fetched) + Platform sections as
-read-only lists: NV_PLAT_GROUPS' own navs (nv-platform.jsx) minus
-"providers" (no generic {list, card} entry to reuse), each nav's
-entities via NV_PLAT_PAGES[nav].list/.card - the SAME "nv-plat:" + nav
-cache key and {name, sub, badge, status, facts} view-model the desktop cards
-use - opening ONE generic fact-sheet BottomSheet rather than 13 bespoke
+reused directly rather than re-fetched) + Platform sections: the
+available navs of NV_PLAT_GROUPS (nv-platform.jsx), the sidebar's own
+entries. Providers opens a second-level list of its types (All providers,
+then one per type) and a pick shows the catalogue at that type; a custom
+page (Web, Workspace templates) mounts its component while it is loaded;
+every other nav is a read-only list of its entities via
+NV_PLAT_PAGES[nav].list/.card - the SAME "nv-plat:" + nav cache key and
+{name, sub, badge, status, facts} view-model the desktop cards use -
+opening ONE generic fact-sheet BottomSheet rather than 13 bespoke
 ones. Triggers get a real Fire-now (fire_now, newly ported to sh-api.jsx
 - the classic ui/components/triggers.jsx already had it); every other
 kind's sheet just says "Edit on desktop" - no create/edit/delete on
@@ -677,17 +680,40 @@ def test_platform_sections_reuse_the_desktop_nav_groups_and_cache_key() -> None:
     assert "page.list(apiFetch, signal)" in body
 
 
-def test_platform_sections_skip_providers_no_generic_page_entry() -> None:
-    """NV_PLAT_GROUPS' "Intelligence" group lists "providers" (nv-platform.
-    jsx), but NV_PLAT_PAGES has no "providers" key - that nav is a
-    class-catalog page (ProviderCatalog), not the generic {list, card}
-    shape every other nav uses. Confirm the filter is real (matches
-    nv-platform.jsx's own key set) rather than an assumption."""
-    assert "providers" not in re.findall(r"^  (\w+): \{", PLATFORM, re.M)
+def test_platform_sections_are_the_available_navs() -> None:
+    """Design 4.3 and seam I-2 on phones: the phone offers the entries the
+    sidebar offers. This pinned the OLD design, a filter on the page table
+    (window.NV_PLAT_PAGES[id]), which left Providers (no table entry: its
+    page is the catalogue, not a generic {list, card}) and the custom pages
+    (Web, Workspace templates: components another file exports) off the
+    phone. The sections are now every id of NV_PLAT_GROUPS for which
+    NV_platNavAvailable is true, labelled by NV_platNavLabel -
+    tests/ui/test_mobile_more_reachability.py renders them."""
+    assert "providers" not in re.findall(r"^  (\w+): \{", PLATFORM, re.M), (
+        "Providers still has no page-table entry, so the table cannot be the filter"
+    )
     m = re.search(r"function NV_MobilePlatform\(props\)[\s\S]*?\n\}\n", MOBILE)
     assert m
-    assert "g.ids.filter(function (id) { return window.NV_PLAT_PAGES[id]; })" \
-        in m.group(0)
+    body = m.group(0)
+    assert "g.ids.filter(function (id) { return window.NV_platNavAvailable(id); })" in body
+    assert "window.NV_PLAT_PAGES[id]" not in body
+    assert "window.NV_platNavLabel(id)" in body
+
+
+def test_the_providers_section_is_a_list_of_types_then_the_catalog() -> None:
+    """Seam I-2 on phones, provider types on phones (design 4.3): Providers has no page-table entry, so it is not a generic list. It is a second-level
+    list of the grammar's types (All providers first) whose pick mounts window.ProviderCatalog at that type with no instance open; a custom page mounts
+    its component with no props. Both are the desktop pages hosted as they are, in a box that scrolls sideways on its own instead of the tab or the
+    document. tests/ui/test_mobile_more_reachability.py renders all of it."""
+    m = re.search(r"function NV_MobilePlatform\(props\)[\s\S]*?\n\}\n", MOBILE)
+    assert m
+    body = m.group(0)
+    assert 'data-testid={"nv-mob-plat-sub:" + t}' in body and '["all"].concat(types)' in body
+    assert "<window.ProviderCatalog" in body and "initialInstanceId={null}" in body and "initialClass={sub}" in body
+    assert "<Custom />" in body
+    rule = re.search(r"\.nv-mob-plat-body\s*\{([^}]*)\}", CSS)
+    assert rule, "the hosted page's box has a rule"
+    assert "overflow-x: auto" in rule.group(1) and "min-width: 0" in rule.group(1)
 
 
 def test_platform_row_opens_the_generic_fact_sheet() -> None:
