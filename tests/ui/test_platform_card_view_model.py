@@ -79,8 +79,11 @@ def test_old_chips_become_badges_or_status(page_ctx) -> None:
 
 
 @pytest.mark.parametrize(("nav", "row", "expected"), [
-    ("agents", '{ id: "a", status: "ok" }', {"label": "ok", "tone": "ok"}),
-    ("agents", '{ id: "a", status: "degraded" }', {"label": "degraded", "tone": "warn"}),
+    # agents: the card drops its status chip (open point 2 of Plan 05) -
+    # the list rows carry no status, so even a row arriving with one
+    # renders no chip (a per-card status fetch is out of scope).
+    ("agents", '{ id: "a", status: "ok" }', None),
+    ("agents", '{ id: "a", status: "degraded" }', None),
     ("agents", '{ id: "a" }', None),
     ("channels", '{ id: "c", status: "ok" }', {"label": "ok", "tone": "ok"}),
     ("channels", '{ id: "c", status: "error" }', {"label": "error", "tone": "warn"}),
@@ -157,3 +160,13 @@ def test_a_desktop_card_draws_the_badge_the_status_and_string_or_pair_facts(page
 def test_the_status_button_sits_above_the_stretched_open() -> None:
     d = declarations(css_body(".nv-pcard-status-btn"))
     assert d.get("position") == "relative" and d.get("z-index") == "1"
+
+
+def test_the_agents_card_reads_the_model_profile_and_drops_the_status_chip(page_ctx) -> None:
+    """The Agent row's profile lives at model.profile_id (the card's old
+    row.model_profile_id never matched) and the list rows carry no
+    status, so the chip is dropped instead of fetching one per card
+    (lead ruling, open point 2 of Plan 05)."""
+    vm = card(page_ctx, "agents", '{ id: "a", name: "builder", model: { profile_id: "p1" } }')
+    assert ["profile", "p1"] in [f for f in vm["facts"] if f is not None], "the profile fact reads model.profile_id"
+    assert vm.get("status") is None, "no status chip: the list rows carry no status"
