@@ -8,8 +8,8 @@ Every test that leaves a detail ends with ``_assert_on_the_platform_page``: no `
 and the page's ``nv-plat-page:<nav>`` visible. A record is opened by setting the hash to the address a card click writes (``#/w/primer?view=platform:<nav>&overlay=<nav>::<id>``),
 so the journeys do not depend on the card's test ids (the card is being rebuilt by the kit).
 
-"Chat" on an agent is the other half: it navigated to ``/sessions/<id>``, which the shim read as an overlay path and answered by reopening the agent editor. It opens the
-session in the studio now.
+A session row on a detail page is the other half: it navigated to ``/sessions/<id>``, which the shim read as an overlay path and answered by reopening the current overlay with the
+session id in its tab slot. It opens the session in the studio now.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from playwright.sync_api import Page, expect
 
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
 from tests._support.smk import smk
+from tests.ui_e2e._session_seed import delete_seeded, seed_session
 from tests.ui_e2e._shell_helpers import open_view
 
 pytestmark = smk("SMK-UI-03", status="partial")
@@ -220,32 +221,28 @@ def test_closing_an_agent_ends_on_the_agents_page(page: Page, base_url: str, con
             _delete(base_url, f"/v1/agents/{agent_id}")
 
 
-def test_chat_on_an_agent_opens_the_session_in_the_studio(page: Page, base_url: str, console_url: str, unique_suffix: str) -> None:
-    """``Chat`` created the session and navigated to ``/sessions/<id>``, which the shim answered by reopening the agent editor: the user never saw the session."""
-    agent_id = f"ag-ovnav-chat-{unique_suffix}"
-    session_id: str | None = None
-    with _seeded_llm_provider(base_url, unique_suffix) as provider_id:
-        _seed_agent(base_url, agent_id, provider_id)
-        try:
-            _open_platform_page(page, console_url, "agents")
-            _open_record(page, console_url, "agents", agent_id)
-            expect(page.locator("#na-id")).to_have_value(agent_id, timeout=15_000)
+def test_a_session_row_in_an_agents_panel_opens_the_session_in_the_studio(page: Page, base_url: str, console_url: str, unique_suffix: str, tmp_path) -> None:
+    """The agent form lists the agent's sessions; a row navigated to ``/sessions/<id>``, which the shim answered by reopening the agent editor: the user never saw the session."""
+    seeded = seed_session(base_url, tmp_path, unique_suffix, description="overlay navigation journey")
+    agent_path = next(path for path in seeded.delete_paths if path.startswith("/v1/agents/"))
+    agent_id = agent_path.rsplit("/", 1)[1]
+    try:
+        _open_platform_page(page, console_url, "agents")
+        _open_record(page, console_url, "agents", agent_id)
+        expect(page.locator("#na-id")).to_have_value(agent_id, timeout=15_000)
 
-            page.locator(".modal").first.get_by_role("button", name="Chat", exact=True).click()
+        panel = page.get_by_test_id("agent-sessions-panel")
+        panel.get_by_role("button", name=re.compile(r"^Sessions")).click()
+        panel.get_by_text(seeded.sid, exact=True).click()
 
-            expect(page).to_have_url(re.compile(r"doc=session(:|%3A)[\w-]+"), timeout=20_000)
-            found = re.search(r"doc=session:([\w-]+)", _plain_url(page))
-            assert found, page.url
-            session_id = found.group(1)
-            # The studio, with the session open as a tab: no overlay, and no Platform view left in the address.
-            expect(page.get_by_test_id(f"nv-tg-tab:session:{session_id}")).to_be_visible(timeout=20_000)
-            expect(page.locator(OVERLAY_ANYWHERE)).to_have_count(0)
-            assert "overlay=" not in _plain_url(page) and "view=" not in _plain_url(page), page.url
-            expect(page.get_by_test_id("nv-studio")).to_be_visible(timeout=10_000)
-        finally:
-            if session_id:
-                _delete(base_url, f"/v1/sessions/{session_id}")
-            _delete(base_url, f"/v1/agents/{agent_id}")
+        # The studio, with the session open as a tab: no overlay, and no Platform view left in the address.
+        expect(page).to_have_url(re.compile(rf"doc=session(:|%3A){seeded.sid}"), timeout=20_000)
+        expect(page.get_by_test_id(f"nv-tg-tab:session:{seeded.sid}")).to_be_visible(timeout=20_000)
+        expect(page.locator(OVERLAY_ANYWHERE)).to_have_count(0)
+        assert "overlay=" not in _plain_url(page) and "view=" not in _plain_url(page), page.url
+        expect(page.get_by_test_id("nv-studio")).to_be_visible(timeout=10_000)
+    finally:
+        delete_seeded(base_url, seeded)
 
 
 # ---------------------------------------------------------------------------
