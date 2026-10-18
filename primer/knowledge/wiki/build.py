@@ -1,10 +1,10 @@
 """Assemble the platform wiki from its sources.
 
-``build_wiki`` is a pure function of three inputs: the hand-written pages under
-``docs/wiki/``, the tool entries the reference pages are generated from, and the legacy
-pages that stay until their replacements are written. It returns every page the wiki
-holds outside ``this-install/`` (the live install map is written by the regeneration
-pass, not built here) and one content hash over all of them.
+``build_wiki`` reads the hand-written pages under ``docs/wiki/``, takes the tool entries
+the reference pages are generated from and the legacy pages that stay until their
+replacements are written, and writes nothing. It returns every page the wiki holds outside
+``this-install/`` (the live install map is written by the regeneration pass, not built
+here) and one content hash over all of them.
 
 What the build adds to the hand-written pages:
 
@@ -78,7 +78,9 @@ class WikiBuild:
 
 _FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
 _CODE_SPAN_RE = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)")
-_LINK_RE = re.compile(r"\[(?:\\.|[^\]\\\n])*\]\(\s*([^)\s]+)(?:\s+(?:\"[^\"]*\"|'[^']*'))?\s*\)")
+# A link label may hold escaped characters and balanced brackets (one level, as in "[Create [admin]](x)").
+_LABEL = r"(?:\\.|[^\[\]\\\n]|\[(?:\\.|[^\[\]\\\n])*\])*"
+_LINK_RE = re.compile(rf"\[{_LABEL}\]\(\s*([^)\s]+)(?:\s+(?:\"[^\"]*\"|'[^']*'))?\s*\)")
 _EXTERNAL_PREFIXES = ("http://", "https://", "mailto:")
 
 
@@ -87,7 +89,8 @@ def wiki_links(body: str) -> list[str]:
 
     A target loses its ``#anchor``. ``http://``, ``https://`` and ``mailto:`` links and bare
     ``#anchor`` links are not wiki links; neither is anything inside a fenced code block or an
-    inline code span, which is where a page shows what a link looks like.
+    inline code span, which is where a page shows what a link looks like. An image's target counts
+    like a link's: the wiki holds no files, so a relative image path can never resolve.
     """
     targets: list[str] = []
     fence: tuple[str, int] | None = None
@@ -114,7 +117,8 @@ def wiki_links(body: str) -> list[str]:
 def unresolved_links(pages: Mapping[str, WikiPage]) -> list[tuple[str, str]]:
     """``(page path, target)`` for every link of a non-legacy page that goes to no page.
 
-    The ``related`` list of a page's frontmatter counts as links. The live roots
+    The ``related`` list of a page's frontmatter counts as links (a ``#anchor`` is ignored there
+    too). The live roots
     (:data:`LIVE_LINK_ROOTS`) resolve although the build holds no page there. Pages come back
     in path order, each page's targets in reading order, a target once per page.
     """
@@ -125,7 +129,8 @@ def unresolved_links(pages: Mapping[str, WikiPage]) -> list[tuple[str, str]]:
         if page.kind == "legacy":
             continue
         seen: set[str] = set()
-        for target in [*wiki_links(page.body), *page.meta.get("related", [])]:
+        related = [entry.split("#", 1)[0] or entry for entry in page.meta.get("related", [])]
+        for target in [*wiki_links(page.body), *related]:
             if target not in known and target not in seen:
                 seen.add(target)
                 found.append((path, target))
@@ -224,8 +229,19 @@ def build_wiki(
 
     ``legacy_pages`` are kept verbatim, listed in the table of contents under their roots (the
     pages whose path has no ``/``) and left out of the link check.
+
+    A missing or empty source folder is not an error here (the build then holds the table of
+    contents, the reference and the legacy pages only) but it is logged, and the caller must not
+    let such a build replace a stored wiki that has hand-written pages: they are the pages the
+    build would not contain, so writing it would delete them.
     """
     source = load_source_pages(source_root)
+    if not source:
+        logger.warning(
+            "wiki: no hand-written pages under %s (the folder is missing or empty); "
+            "this build holds only the generated and legacy pages",
+            source_root,
+        )
     _refuse_reserved_paths(source)
     generated = reference_pages(entries, used_in=_used_in(source))
 

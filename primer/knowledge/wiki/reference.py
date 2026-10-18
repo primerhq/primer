@@ -19,7 +19,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
 from primer.knowledge.wiki.pages import SUMMARY_MAX, WikiPage, page_line, sibling_key
-from primer.model.chat import Tool
+from primer.model.chat import Tool, ToolExample
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +81,7 @@ def call_example(entry: ToolEntryView) -> dict[str, Any]:
     return {"name": entry.scoped_id, "arguments": arguments}
 
 
-_SENTENCE_RE = re.compile(rf"(.{{20,{SUMMARY_MAX}}}?[.!?])(?:\s|$)")
+_SENTENCE_RE = re.compile(rf"(.{{20,{SUMMARY_MAX - 1}}}?[.!?])(?:\s|$)")
 
 
 def _summary_of(description: str) -> str:
@@ -100,16 +100,32 @@ def _summary_of(description: str) -> str:
     return line[: SUMMARY_MAX - 3].rsplit(" ", 1)[0].rstrip(" ,;:-") + "..."
 
 
+def _rendered_example(example: ToolExample) -> str:
+    """The line ``render_description`` (``primer/toolset/_describe.py``) writes into a description for one example.
+
+    ``tests/knowledge/wiki/test_reference.py`` fails when the two drift apart: the examples would then
+    show twice on a page, which costs tokens but is not wrong.
+    """
+    line = f"Example: {_compact(example.args)}"
+    if example.returns:
+        line += f" -> {example.returns}"
+    if example.note:
+        line += f"  ({example.note})"
+    return line
+
+
 def _prose(tool: Tool) -> str:
     """The description without the ``Example:`` lines ``make_tool`` rendered into it.
 
-    They are listed under ``## Examples``, so showing them twice would only cost tokens.
+    They are listed under ``## Examples``, so showing them twice would only cost tokens. Only the
+    exact rendering of the tool's own examples, at the very end, is removed.
     """
-    lines = tool.description.rstrip().split("\n")
-    count = len(tool.examples)
-    if count and len(lines) >= count and all(line.startswith("Example: ") for line in lines[-count:]):
-        lines = lines[:-count]
-    return "\n".join(lines).rstrip() or "_(no description)_"
+    description = tool.description
+    if tool.examples:
+        rendered = "\n" + "\n".join(_rendered_example(example) for example in tool.examples)
+        if description.endswith(rendered):
+            description = description[: -len(rendered)]
+    return description.strip() or "_(no description)_"
 
 
 def _compact(value: Any) -> str:
