@@ -50,11 +50,13 @@ Covers backlog item T0862.
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
 import pytest
 
+from tests._support.runs import wait_completed
 from tests._support.smk import smk
 from tests._support.yield_journeys import drive_park_on_tool, wait_for_resume
 
@@ -135,3 +137,82 @@ async def test_t0862_ask_user_park_respond_resume_clears_park_and_advances_turn(
 
     # No /errors/internal envelope leak.
     assert "/errors/internal" not in json.dumps(body), body
+
+
+# ===========================================================================
+# Pivot P1 -- the same cycle, with the model reaching ask_user through call_tool
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_ask_user_through_call_tool_park_respond_resume_answers_the_call_tool_call(
+    client: httpx.AsyncClient, mock_llm, unique_suffix: str, tmp_path,
+) -> None:
+    """Pivot P1 -- a tool that pauses the turn works through ``system__call_tool``: the session parks on the INNER tool,
+    ``/ask_user/respond`` resumes it through ask_user's resume hook, and the model is handed the answer as the result of its
+    ``system__call_tool`` call (the id it is waiting on), not of some other call.
+
+    Same cycle as T0862, with the scripted model asking ``call_tool`` for ``ask_user``. Before the pivot ``call_tool`` handed the
+    inner tool no context, so a pausing inner tool could not run at all. The agent's only tool is ``system__call_tool``, so
+    ``ask_user`` is reachable only through it.
+
+    Pinned invariants:
+      * the engine parks the session (park columns written) and ``/ask_user/pending`` reports the question the inner tool asked;
+      * ``/ask_user/respond`` resumes the park by the inner tool's name (``ask_user_resume``), the park clears, the turn advances;
+      * the continuation turn's model request carries a tool result for the ``call_tool`` call's own id, holding ``{"response": ...}``.
+    """
+    registry, base_url = mock_llm
+    prompt = "Which deploy window do you want?"
+
+    # ----- 1. Drive a real turn: the model calls call_tool(ask_user) ---
+    sid, scenario, parked = await drive_park_on_tool(
+        client, registry, base_url,
+        suffix=unique_suffix,
+        tool="system__call_tool",
+        tool_args={"toolset_id": "system", "tool_name": "ask_user", "arguments": {"prompt": prompt}},
+        root=tmp_path,
+    )
+    initial_turn_no = parked["turn_no"]
+
+    # ----- 2. The question the inner tool asked is pending ------------
+    r = await client.get(f"/v1/sessions/{sid}/ask_user/pending")
+    assert r.status_code == 200, r.text
+    pending = r.json()
+    assert prompt in pending["prompt"], pending
+
+    # ----- 3. The operator answers ------------------------------------
+    operator_answer = "Thursday night"
+    r = await client.post(
+        f"/v1/sessions/{sid}/ask_user/respond",
+        json={"tool_call_id": pending["tool_call_id"], "response": operator_answer},
+    )
+    assert r.status_code == 202, r.text
+
+    # ----- 4. The park clears, the turn advances, the continuation turn runs
+    body = await wait_for_resume(client, sid, min_turn_no=initial_turn_no + 1)
+    assert body["parked_status"] is None, body
+    assert "/errors/internal" not in json.dumps(body), body
+    await wait_completed(client, sid)
+
+    # ----- 5. The model was handed the answer, as the result of ITS call_tool call
+    # (the continuation turn's request may land just after the park clears, so wait for it)
+    deadline = asyncio.get_event_loop().time() + 30.0
+    while True:
+        messages = [m for req in registry.requests if req.get("model") == scenario for m in req.get("messages") or []]
+        tool_results = [m for m in messages if m.get("role") == "tool"]
+        if tool_results or asyncio.get_event_loop().time() > deadline:
+            break
+        await asyncio.sleep(0.5)
+    assert tool_results, "the model was never handed the call_tool result"
+    assert json.loads(tool_results[-1]["content"]) == {"response": operator_answer}, tool_results[-1]
+    # The id the MODEL gave its call_tool call (read off its own assistant message), not the id the park reports: those would agree even for a park under
+    # the wrong id.
+    asked = {
+        call["id"] for m in messages if m.get("role") == "assistant" for call in m.get("tool_calls") or []
+        if call["function"]["name"] == "system__call_tool"
+    }
+    assert asked, "the model's call_tool call is not in the recorded requests"
+    assert tool_results[-1].get("tool_call_id") in asked, (
+        "the answer was delivered to another call than the call_tool call that asked", tool_results[-1], asked,
+    )
+    assert pending["tool_call_id"] in asked, ("the park is under another id than the call_tool call", pending, asked)
