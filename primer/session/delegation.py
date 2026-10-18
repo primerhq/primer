@@ -25,9 +25,11 @@ from __future__ import annotations
 
 import contextvars
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 from primer.agent.call_scope import current_call_scope
+from primer.model.workspace_session import SessionMessageKind, SessionMessageRecord
 from primer.session.persistence import _CoalesceState, flush_partial_output, translate_stream_event
 
 logger = logging.getLogger(__name__)
@@ -75,6 +77,39 @@ class DelegationRecorder:
         self._session_id = session_id
         self._turn_no = turn_no
         self._states: dict[str, _CoalesceState] = {}
+
+    @property
+    def session_id(self) -> str:
+        """The session whose turn this recorder writes for."""
+        return self._session_id
+
+    async def append_turn_record(self, kind: SessionMessageKind, payload: dict[str, Any]) -> int | None:
+        """Append one record of the session's own to the turn's log, through the turn's writer, and return its seq.
+
+        For something the TURN does that is not a stream event: an agent applying a canvas batch from a tool call (pivot P5). The
+        record takes the next seq of the turn's counter, so it lands in order with the turn's other records, and a tick is
+        published for it. Unlike a delegated record it carries no delegation stamp (it is the turn's, not a subagent's), only the
+        graph node the turn is running (``node_id``) when it runs inside one. ``None`` when the call this runs inside was abandoned
+        by a Stop: nothing may be appended after the call's "interrupted" answer.
+        """
+        if _abandoned():
+            return None
+        # Deferred, as every other reader of this id does it: importing the primer.graph package loads the whole graph runtime, which reaches back into the session layer.
+        from primer.graph._node_identity import current_graph_node_id
+
+        seq = await self._writer.append(SessionMessageRecord(
+            seq=1,  # overwritten by the writer's monotonic counter
+            kind=kind,
+            payload=payload,
+            created_at=datetime.now(UTC),
+            node_id=current_graph_node_id(),
+        ))
+        if self._bus is not None:
+            try:
+                await self._bus.publish(f"session:{self._session_id}:tick", {"seq": seq})
+            except Exception:  # noqa: BLE001 - advisory: the record is appended; a console catches up on its next read
+                logger.warning("session %s: the tick for record %d could not be published", self._session_id, seq, exc_info=True)
+        return seq
 
     @staticmethod
     def _run_key(delegate_tool_call_id: str | None, delegate_run_id: str | None) -> str:
