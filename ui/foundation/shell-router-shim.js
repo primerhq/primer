@@ -79,9 +79,14 @@ function SH_shimSegments(path) {
 // which the Platform view no longer has, means the studio.
 //
 // The key is the cleaned path joined by "/". Two rows are the workspace-shaped sections, whose lists are two segments: a template's Delete lands on
-// the templates page, a workspace provider's on the Providers page at its type (the `sub` slot of the view, "workspace"). They are exact paths: a
-// path with a record after them ("workspaces/templates/<id>") is a record, as before. The cost is that navigate("/workspaces/templates") can never
-// mean a workspace whose id is "templates" (nothing navigates to a workspace by such an id; the address bar form overlay=workspaces::templates still does).
+// the templates page, a workspace provider's on the Providers page. The provider row also names the provider type in the view's `sub` slot
+// ("workspace"); the address carries a type only once the provider-type grammar lands (Plan 01 Task 6), and until then the user lands on the Providers
+// page itself. The rows are exact paths: a path with a record after them ("workspaces/templates/<id>") is a record, as before.
+//
+// The cost: navigate("/workspaces/templates") and ("/workspaces/providers") can no longer open a workspace whose id is exactly "templates" or
+// "providers". templates.jsx navigates to /workspaces/<id> for every workspace it lists, so such a workspace would land on the templates page from
+// there. Ids the console creates are allocated (ws-<hex>); the API accepts a chosen DNS-1123 id, so it takes a hand-chosen one. The address form
+// overlay=workspaces::templates still opens it.
 //
 // A surface that has its own Platform page adds its row here: the Providers catalogue (Plan 02) is not in the table yet, so navigate("/providers")
 // still opens the catalogue overlay.
@@ -115,8 +120,14 @@ function SH_shimSessionId(path) {
   return clean.length === 2 && clean[0] === "sessions" ? clean[1] : null;
 }
 
-// closeTo(view) and openSession(sid) are the shell's two navigations that leave the overlay (con.closeOverlayTo, con.openSessionInStudio). A host
-// that passes neither keeps the old behaviour for those paths.
+// The session's own workspace, when the caller has it: navigate("/sessions/<id>", { workspace_id: row.workspace_id }). A path cannot carry it, and a
+// session row does; without it the shell falls back to the workspace its rail cache knows, then to the one already selected.
+function SH_shimSessionWorkspace(opts) {
+  return opts && opts.workspace_id ? String(opts.workspace_id) : null;
+}
+
+// closeTo(view) and openSession(sid, workspaceId) are the shell's two navigations that leave the overlay (con.closeOverlayTo,
+// con.openSessionInStudio). A host that passes neither keeps the old behaviour for those paths.
 function SH_shimNavigate(overlay, openOverlay, path, opts, closeTo, openSession) {
   var clean = SH_shimSegments(path);
   if (!clean.length) return;
@@ -130,7 +141,7 @@ function SH_shimNavigate(overlay, openOverlay, path, opts, closeTo, openSession)
   if (typeof openSession === "function") {
     var sid = SH_shimSessionId(path);
     if (sid) {
-      openSession(sid);
+      openSession(sid, SH_shimSessionWorkspace(opts));
       return;
     }
   }
@@ -190,4 +201,5 @@ window.SH_shimQuery = SH_shimQuery;
 window.SH_SHIM_LIST_TARGETS = SH_SHIM_LIST_TARGETS;
 window.SH_shimListTarget = SH_shimListTarget;
 window.SH_shimSessionId = SH_shimSessionId;
+window.SH_shimSessionWorkspace = SH_shimSessionWorkspace;
 window.SH_installRouterShim = SH_installRouterShim;

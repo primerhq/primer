@@ -1324,7 +1324,7 @@ function WS_SessionsTab({ wid, onOpen }) {
 
   const openRow = (sid) => {
     if (typeof onOpen === "function") onOpen(sid);
-    else navigate("/sessions/" + sid);
+    else navigate("/sessions/" + sid, { workspace_id: wid });
   };
 
   return (

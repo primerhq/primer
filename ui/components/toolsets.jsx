@@ -1176,7 +1176,7 @@ function TS_SessionsTab({ id }) {
             </thead>
             <tbody>
               {matched.map((s) => (
-                <tr key={s.id} onClick={() => navigate("/sessions/" + s.id)} style={{ cursor: "pointer" }}>
+                <tr key={s.id} onClick={() => navigate("/sessions/" + s.id, { workspace_id: s.workspace_id })} style={{ cursor: "pointer" }}>
                   <td><span className={`pill pill-${_tsPillCls(s.status)}`}><span className="dot"></span>{s.status}</span></td>
                   <td className="mono">{s.id}</td>
                   <td className="mono">{s.binding?.agent_id || "—"}</td>

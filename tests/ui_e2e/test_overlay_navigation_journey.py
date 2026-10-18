@@ -222,7 +222,8 @@ def test_closing_an_agent_ends_on_the_agents_page(page: Page, base_url: str, con
 
 
 def test_a_session_row_in_an_agents_panel_opens_the_session_in_the_studio(page: Page, base_url: str, console_url: str, unique_suffix: str, tmp_path) -> None:
-    """The agent form lists the agent's sessions; a row navigated to ``/sessions/<id>``, which the shim answered by reopening the agent editor: the user never saw the session."""
+    """The agent form lists the agent's sessions; a row navigated to ``/sessions/<id>``, which the shim answered by reopening the agent editor: the user never saw the session.
+    The row carries the session's own workspace_id, and the console opens the session in THAT workspace (the seeded one, not the one the page was on) without waiting for its rail to learn it."""
     seeded = seed_session(base_url, tmp_path, unique_suffix, description="overlay navigation journey")
     agent_path = next(path for path in seeded.delete_paths if path.startswith("/v1/agents/"))
     agent_id = agent_path.rsplit("/", 1)[1]
@@ -237,6 +238,7 @@ def test_a_session_row_in_an_agents_panel_opens_the_session_in_the_studio(page: 
 
         # The studio, with the session open as a tab: no overlay, and no Platform view left in the address.
         expect(page).to_have_url(re.compile(rf"doc=session(:|%3A){seeded.sid}"), timeout=20_000)
+        expect(page).to_have_url(re.compile(rf"#/w/{re.escape(seeded.wid)}(\?|$)"), timeout=10_000)
         expect(page.get_by_test_id(f"nv-tg-tab:session:{seeded.sid}")).to_be_visible(timeout=20_000)
         expect(page.locator(OVERLAY_ANYWHERE)).to_have_count(0)
         assert "overlay=" not in _plain_url(page) and "view=" not in _plain_url(page), page.url
