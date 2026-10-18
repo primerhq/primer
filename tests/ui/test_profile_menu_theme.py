@@ -429,3 +429,14 @@ def test_the_theme_row_restores_the_full_width_the_later_nv_seg_rule_takes_away(
     assert rule, "the Theme row restores the width with a descendant selector"
     assert re.search(r"display:\s*flex\b", rule.group(1)) and re.search(r"width:\s*100%", rule.group(1))
     assert re.search(r"\.nv-theme-label\s*\{", CSS)
+
+
+def test_the_gap_after_a_glyph_is_its_own_margin_not_a_space_character():
+    """The phone's buttons are ``.touch-target``, i.e. ``display: inline-flex``, and a flex container drops the whitespace at the start of a text run: a space
+    between the glyph and the label showed as "Light" with the glyph touching it on the phone (a real browser, not V8, shows it)."""
+    rule = re.search(r"\.nv-theme-glyph\s*\{([^}]*)\}", CSS)
+    assert rule and re.search(r"margin-right:\s*\d+px", rule.group(1))
+    chrome = CHROME_PATH.read_text(encoding="utf-8")
+    label = chrome[chrome.index("function NV_ThemeChoiceLabel"):]
+    label = label[:label.index("\n}\n")]
+    assert 'className="nv-theme-glyph"' in label and '{" "}' not in label

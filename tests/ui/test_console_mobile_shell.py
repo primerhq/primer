@@ -629,29 +629,33 @@ def test_more_tab_composes_profile_health_and_platform() -> None:
     assert "<NV_MobilePlatform" in body
 
 
-def test_theme_setter_reuses_nv_chromes_own_persistence_key() -> None:
-    """nv-chrome.jsx's own NV_ProfileMenu.setTheme is a closure, not
-    exported - this is a second call site for the SAME 4 steps
-    (setTweak, the data-theme attribute, localStorage, con.bump()), not a
-    forked scheme. NV_themeStorageKey (the actual storage key) is the one
-    piece that MUST be the literal shared function, or the two surfaces
-    would silently disagree on where the preference lives."""
-    m = re.search(r"function NV_mobileSetTheme\(con, next\)[\s\S]{0,500}", MOBILE)
-    assert m
-    body = m.group(0)
-    assert 'window.primerApi.setTweak("theme", next)' in body
-    assert 'document.documentElement.setAttribute("data-theme", next)' in body
-    assert "NV_themeStorageKey(con.username)" in body
-    assert "con.bump()" in body
+def test_the_phone_uses_the_shared_theme_helpers() -> None:
+    """D3: the phone offers the same three choices through nv-chrome.jsx's NV_applyThemeChoice and restores the user's choice; it has no setter of its own.
+
+    It used to carry a second copy of the four persistence steps (NV_mobileSetTheme) beside nv-chrome.jsx's own closure; two copies of the steps that decide
+    where the preference lives, and now what the word System stores, can only drift. tests/ui/test_mobile_more_reachability.py runs the buttons."""
+    assert "function NV_mobileSetTheme" not in MOBILE
+    for value in ("light", "dark", "system"):
+        assert f'NV_applyThemeChoice(con, "{value}")' in MOBILE
+    assert "NV_themeChoice(con.username)" in MOBILE
+    shell = re.search(r"function NV_MobileShell\(\)[\s\S]*?\n\}\n", MOBILE).group(0)
+    assert "NV_useThemeRestore(con)" in shell
 
 
-def test_theme_segment_renders_dark_and_light() -> None:
+def test_theme_segment_offers_light_dark_and_system() -> None:
     assert 'data-testid="nv-mob-theme-seg"' in MOBILE
-    m = re.search(r'data-testid="nv-mob-theme-seg"[\s\S]{0,400}', MOBILE)
-    assert m
-    body = m.group(0)
-    assert 'NV_mobileSetTheme(con, "dark")' in body
-    assert 'NV_mobileSetTheme(con, "light")' in body
+    for value in ("light", "dark", "system"):
+        assert f'data-testid="nv-mob-theme:{value}"' in MOBILE
+        assert f'data-verb="theme.{value}"' in MOBILE
+
+
+def test_the_phones_theme_control_is_full_width_like_the_desktop_menus() -> None:
+    """The later .nv-seg rule (the new-session overlay's) is display: inline-flex, which shrink-wraps a control to its text; the profile card needs the width."""
+    rule = re.search(r"\.nv-mob-profile \.nv-seg\s*\{([^}]*)\}", CSS)
+    assert rule, "the phone's profile card restores the width with a descendant selector"
+    assert re.search(r"display:\s*flex\b", rule.group(1)) and re.search(r"width:\s*100%", rule.group(1))
+    # a 100% wide box that kept the generic rule's 6px side margin would overhang the card by 6px and scroll the tab sideways
+    assert re.search(r"margin:\s*0\b", rule.group(1))
 
 
 def test_health_cards_reused_directly_not_refetched() -> None:

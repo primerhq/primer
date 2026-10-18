@@ -1,5 +1,6 @@
 /* global React, SH_api, NV_useConsole, NV_identity, NV_errText,
-   NV_renderStudioDoc, NV_themeStorageKey, NV_HealthCards, NV_PLAT_GROUPS, SH_pendingId */
+   NV_renderStudioDoc, NV_themeChoice, NV_applyThemeChoice, NV_useThemeRestore, NV_ThemeChoiceLabel,
+   NV_HealthCards, NV_PLAT_GROUPS, SH_pendingId */
 // The mobile shell (US-014 mobile support): entry + skeleton (M1), the
 // Inbox tab's real cards (M2), the mobile chat screen (M3), and the
 // Spaces + Files tabs (M4).
@@ -1076,33 +1077,21 @@ function NV_MobileFiles() {
 // sections as read-only lists with a generic fact-sheet BottomSheet.
 // ---------------------------------------------------------------------------
 
-// The SAME 4-step persistence nv-chrome.jsx's own NV_ProfileMenu setTheme
-// uses (setTweak, the data-theme attribute, localStorage keyed by
-// NV_themeStorageKey, con.bump()) - not a forked scheme. That setter is a
-// closure local to NV_ProfileMenu (not exported), so this is a second call
-// site rather than a shared function reference; NV_themeStorageKey itself
-// (the actual persistence key, a plain pure function) IS shared bare, so
-// the stored key is identical either way.
-function NV_mobileSetTheme(con, next) {
-  window.primerApi.setTweak("theme", next);
-  document.documentElement.setAttribute("data-theme", next);
-  try {
-    localStorage.setItem(NV_themeStorageKey(con.username), next);
-  } catch (_e) { /* private mode, quota, etc. - non-fatal */ }
-  con.bump();
-}
-
 // The rows of the More tab's Settings group (review ADM-29): what the desktop profile menu and Platform nav reach and a phone could not.
-// System settings stays hidden from a restricted user, as in the desktop menu.
+// Your profile is for every role, as in the desktop menu (D3); System settings stays hidden from a restricted user, as there.
 function NV_mobileSettingsRows(role) {
-  var rows = [{ id: "providers", label: "Providers" }];
+  var rows = [{ id: "providers", label: "Providers" }, { id: "profile", label: "Your profile" }];
   if (role !== "restricted") rows.push({ id: "system", label: "System settings" });
   return rows;
 }
 
+// The profile card. Its Theme row is the desktop menu's (D3): the same three choices through the same helpers in nv-chrome.jsx (NV_themeChoice,
+// NV_applyThemeChoice), so the preference lives in one place and System means the same thing on both. The phone used to carry a setter of its own,
+// a second copy of the steps that decide where the preference is stored. The buttons are written out, each with a literal data-verb, because the
+// dual-render guard reads literals; they are the phone's pointer affordances of the theme.* palette verbs.
 function NV_MobileProfileTheme() {
   var con = NV_useConsole();
-  var theme = document.documentElement.getAttribute("data-theme") || "dark";
+  var choice = NV_themeChoice(con.username);
   var initials = String(con.username || "?").slice(0, 2).toLowerCase();
   return (
     <div className="nv-mob-profile" data-testid="nv-mob-profile">
@@ -1113,13 +1102,26 @@ function NV_MobileProfileTheme() {
           <div className="nv-profile-role">{con.role}</div>
         </div>
       </div>
-      <div className="nv-seg" data-testid="nv-mob-theme-seg">
-        <button type="button" className="touch-target"
-          data-active={theme === "dark" ? "true" : "false"}
-          onClick={function () { NV_mobileSetTheme(con, "dark"); }}>Dark</button>
-        <button type="button" className="touch-target"
-          data-active={theme === "light" ? "true" : "false"}
-          onClick={function () { NV_mobileSetTheme(con, "light"); }}>Light</button>
+      <div className="nv-theme-label" id="nv-mob-theme-label">Theme</div>
+      <div className="nv-seg" data-testid="nv-mob-theme-seg" role="group" aria-labelledby="nv-mob-theme-label">
+        <button type="button" className="touch-target" data-testid="nv-mob-theme:light" data-verb="theme.light"
+          data-active={choice === "light" ? "true" : "false"}
+          aria-pressed={choice === "light" ? "true" : "false"}
+          onClick={function () { NV_applyThemeChoice(con, "light"); }}>
+          <NV_ThemeChoiceLabel value="light" />
+        </button>
+        <button type="button" className="touch-target" data-testid="nv-mob-theme:dark" data-verb="theme.dark"
+          data-active={choice === "dark" ? "true" : "false"}
+          aria-pressed={choice === "dark" ? "true" : "false"}
+          onClick={function () { NV_applyThemeChoice(con, "dark"); }}>
+          <NV_ThemeChoiceLabel value="dark" />
+        </button>
+        <button type="button" className="touch-target" data-testid="nv-mob-theme:system" data-verb="theme.system"
+          data-active={choice === "system" ? "true" : "false"}
+          aria-pressed={choice === "system" ? "true" : "false"}
+          onClick={function () { NV_applyThemeChoice(con, "system"); }}>
+          <NV_ThemeChoiceLabel value="system" />
+        </button>
       </div>
       <button type="button" className="nv-btn-secondary nv-mob-logout touch-target"
         data-testid="nv-mob-logout"
@@ -1385,6 +1387,7 @@ function NV_MobileMore(props) {
                   data-testid={"nv-mob-setting:" + row.id}
                   onClick={function () {
                     if (row.id === "providers") con.openOverlay("providers");
+                    else if (row.id === "profile") con.goView("system", "profile");
                     else con.goView("system");
                   }}>
                   <div className="card-title">{row.label}</div>
@@ -1406,6 +1409,8 @@ function NV_MobileMore(props) {
 
 function NV_MobileShell() {
   var con = NV_useConsole();
+  // The desktop restores the user's stored theme from NV_ActivityBar, which a phone never mounts, so a phone kept the last account's colour (D3).
+  NV_useThemeRestore(con);
   var tabState = React.useState("inbox");
   var activeTab = tabState[0];
   var setActiveTab = tabState[1];

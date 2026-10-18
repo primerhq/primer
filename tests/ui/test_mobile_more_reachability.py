@@ -21,13 +21,15 @@ from tests.ui._mini_react import mini_react_context, transpile
 
 ROOT = Path(__file__).resolve().parents[2]
 SHELL = ROOT / "ui" / "components" / "console" / "nv-mobile-shell.jsx"
+# The theme helpers the phone shares with the desktop menu (NV_themeChoice, NV_applyThemeChoice, NV_useThemeRestore) live in the chrome.
+CHROME = ROOT / "ui" / "components" / "console" / "nv-chrome.jsx"
 PLATFORM = ROOT / "ui" / "components" / "console" / "nv-platform.jsx"
 # SH_pendingId, which keys the Inbox cards by their gate (C-033): a global of the shell bundle the real component reads.
 ATTENTION = (ROOT / "ui" / "foundation" / "shell-attention.js").read_text(encoding="utf-8")
 
 # What the file's globals need to exist; each is the smallest stand-in that lets the real component render.
 _PRELUDE = r"""
-var LOG = { fetches: [], reloads: 0, overlays: [], views: [], closedOverlays: 0, navReports: [], consumed: 0, tabs: [], cleared: 0 };
+var LOG = { fetches: [], reloads: 0, overlays: [], views: [], closedOverlays: 0, navReports: [], consumed: 0, tabs: [], cleared: 0, tweaks: [] };
 var ITEMS = [];
 var LOADING = false;
 var __con = {
@@ -60,6 +62,8 @@ window.primerApi = {
     return { data: { items: ITEMS }, loading: LOADING, error: null, degraded: false, refetch: function () {} };
   },
 };
+// The tweaks store's setter, recorded: the theme helpers persist through it (ui/foundation/tweaks.js has its own tests).
+window.primerApi.setTweak = function (k, v) { LOG.tweaks.push([k, v]); };
 window.useWorkspaceTapListener = function () {};
 var SH_api = { pendingAttention: function () { return Promise.resolve({ items: [] }); } };
 window.BottomSheet = function (props) {
@@ -72,7 +76,18 @@ window.MobileTabs = function (props) {
   return React.createElement("div", { "data-testid": "tabs:" + props.active }, tab.content);
 };
 window.location = { reload: function () { LOG.reloads += 1; } };
-var document = { documentElement: { getAttribute: function () { return "dark"; }, setAttribute: function () {} } };
+var STORE = {};
+var localStorage = {
+  getItem: function (k) { return Object.prototype.hasOwnProperty.call(STORE, k) ? STORE[k] : null; },
+  setItem: function (k, v) { STORE[k] = String(v); },
+  removeItem: function (k) { delete STORE[k]; },
+};
+window.matchMedia = function (q) { return { matches: q.indexOf("dark") >= 0, addEventListener: function () {} }; };
+var ATTR = { "data-theme": "dark" };
+var document = { documentElement: {
+  getAttribute: function (k) { return ATTR[k] || null; },
+  setAttribute: function (k, v) { ATTR[k] = String(v); },
+} };
 window.fetch = function (url, opts) {
   LOG.fetches.push({ url: url, method: opts && opts.method });
   return Promise.resolve({});
@@ -104,7 +119,7 @@ def _platform_helpers() -> str:
 
 @pytest.fixture(scope="module")
 def code() -> str:
-    return transpile(SHELL)
+    return transpile(CHROME) + "\n" + transpile(SHELL)
 
 
 @pytest.fixture
@@ -130,6 +145,9 @@ def app(code):
 
         def attr(self, testid: str, name: str):
             return ctx.eval("MR.find(" + json.dumps(testid) + ").props[" + json.dumps(name) + "]")
+
+        def texts(self) -> list[str]:
+            return json.loads(ctx.eval("JSON.stringify(MR.texts())"))
 
         def navigate(self, name: str, nav: str | None = None) -> None:
             """A goView call: the URL names the view, and the shell hands over a new view object."""
@@ -157,12 +175,67 @@ def _rows(app, role):
 
 
 def test_the_settings_rows_follow_the_roles_the_desktop_menu_uses(app) -> None:
-    assert [r["id"] for r in _rows(app, "admin")] == ["providers", "system"]
-    assert [r["id"] for r in _rows(app, None)] == ["providers", "system"], "an install without roles is not restricted"
-    assert [r["id"] for r in _rows(app, "restricted")] == ["providers"], (
-        "System settings stays hidden from a restricted user, as on desktop"
+    assert [r["id"] for r in _rows(app, "admin")] == ["providers", "profile", "system"]
+    assert [r["id"] for r in _rows(app, None)] == ["providers", "profile", "system"], "an install without roles is not restricted"
+    assert [r["id"] for r in _rows(app, "restricted")] == ["providers", "profile"], (
+        "Your profile is for every role; System settings stays hidden from a restricted user, as on desktop"
     )
-    assert [r["label"] for r in _rows(app, "admin")] == ["Providers", "System settings"]
+    assert [r["label"] for r in _rows(app, "admin")] == ["Providers", "Your profile", "System settings"]
+
+
+def test_your_profile_opens_system_profile(app) -> None:
+    app.mount("NV_MobileMore", "{ pending: null, onPendingConsumed: function () {} }")
+    app.click("nv-mob-setting:profile")
+    assert app.data("LOG.views") == [["system", "profile"]]
+
+
+# --- the Theme row (D3) ------------------------------------------------------------------------------------------------------
+
+
+def test_the_phone_offers_light_dark_and_system_through_the_shared_helper(app) -> None:
+    app.mount("NV_MobileProfileTheme")
+    assert all(app.has(f"nv-mob-theme:{v}") for v in ("light", "dark", "system"))
+    app.click("nv-mob-theme:system")
+    assert app.data("LOG.tweaks")[-1] == ["theme", None]
+    assert app.data('STORE["primer.theme.ana"]') == "system"
+    assert app.attr("nv-mob-theme:system", "aria-pressed") == "true"
+
+
+def test_the_phone_theme_row_is_labelled_and_each_choice_is_a_tap_sized_verb_button(app) -> None:
+    app.mount("NV_MobileProfileTheme")
+    assert "Theme" in app.texts()
+    assert app.attr("nv-mob-theme-seg", "aria-labelledby") == "nv-mob-theme-label"
+    for value in ("light", "dark", "system"):
+        assert "touch-target" in app.attr(f"nv-mob-theme:{value}", "className").split()
+        assert app.attr(f"nv-mob-theme:{value}", "data-verb") == f"theme.{value}"
+
+
+def test_the_phone_presses_the_stored_choice_and_system_when_nothing_is_stored(app) -> None:
+    app.mount("NV_MobileProfileTheme")
+    assert [app.attr(f"nv-mob-theme:{v}", "aria-pressed") for v in ("light", "dark", "system")] == ["false", "false", "true"]
+    app.js('STORE["primer.theme.ana"] = "dark"; MR.rerender();')
+    assert [app.attr(f"nv-mob-theme:{v}", "aria-pressed") for v in ("light", "dark", "system")] == ["false", "true", "false"]
+
+
+@pytest.mark.parametrize("os_theme", ["light", "dark"])
+def test_choosing_system_on_the_phone_paints_the_os_theme_never_the_word_system(app, os_theme) -> None:
+    app.js(f'window.matchMedia = function (q) {{ return {{ matches: q.indexOf("{os_theme}") >= 0, addEventListener: function () {{}} }}; }};')
+    app.mount("NV_MobileProfileTheme")
+    app.click("nv-mob-theme:system")
+    assert app.data('ATTR["data-theme"]') == os_theme
+
+
+def test_the_phone_restores_the_users_stored_theme(app) -> None:
+    """The restore effect used to live in the desktop-only ``NV_ActivityBar``, so a phone never applied the theme the user had chosen on this browser."""
+    app.js('STORE["primer.theme.ana"] = "light"; ATTR["data-theme"] = "dark";')
+    app.mount("NV_MobileShell")
+    assert app.data('ATTR["data-theme"]') == "light"
+    assert app.data("LOG.tweaks")[-1] == ["theme", "light"]
+
+
+def test_the_phone_leaves_the_theme_alone_for_a_user_who_never_chose(app) -> None:
+    app.mount("NV_MobileShell")
+    assert app.data("LOG.tweaks") == [] and app.data('ATTR["data-theme"]') == "dark"
 
 
 # --- log out -----------------------------------------------------------------------------------------------------------------
