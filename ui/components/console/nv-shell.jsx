@@ -579,6 +579,17 @@ function NV_Shell() {
         });
       },
     });
+    // Every Platform page and every provider type is a palette verb too ("Open Providers", "Open Providers: TTS", "Open LLM Profiles" ...) on the platform-nav
+    // surface: the rows of the Platform sidebar are their pointer affordance (the data-verb of NV_PlatNav, nv-platform.jsx). NV_platVerbSpecs lists them in the
+    // sidebar's order and leaves the custom pages out: a custom page registers its own verb with one reg() call right after this loop (id platform.open.web,
+    // label "Open Web", surfaces palette and platform-nav, run goView("platform", "web"); platform.open.templates is "Open Workspace Templates"), in the plan
+    // that ships the page. Registered last on purpose: the palette lists the first eight verbs of an empty query in registration order.
+    window.NV_platVerbSpecs().forEach(function (s) {
+      reg({
+        id: s.id, label: s.label, surfaces: ["palette", "platform-nav"],
+        run: function () { goView("platform", s.nav, s.sub); },
+      });
+    });
   }, [registry]);
 
   var ctx = React.useMemo(function () {
