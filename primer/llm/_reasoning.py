@@ -5,10 +5,11 @@ universal level and translation happens here, at the SDK boundary. This is
 the same shape the codebase already uses for stop reasons.
 
 Where a vendor has no true "off", the closest available setting is used and
-the approximation is stated rather than hidden. Where a vendor has NO
-working control at all, the mapping returns nothing and the caller warns:
-silently accepting a knob that does nothing is how an operator ends up
-believing they disabled reasoning when they did not.
+the approximation is stated rather than hidden. Where a vendor or model has
+NO working control at all, the mapping returns nothing and says so, once per
+process at DEBUG: the call goes ahead without the setting rather than
+failing, and the record is there for an operator who wonders why the
+setting did nothing.
 
 Every model call made under a profile (an agent turn, a compaction, a graph
 agent node) applies the profile's config in two steps. :func:`profile_extended`
@@ -285,19 +286,21 @@ def openresponses_extended(
     ACCEPTS ``reasoning.effort``, ``chat_template_kwargs``,
     ``extra_body.chat_template_kwargs`` and a top-level ``enable_thinking``,
     and honours none of them (verified against a live server). There is no
-    knob to map, so this warns instead of emitting one that does nothing.
-    An operator who needs reasoning control against vLLM must use the
+    knob to map, so this emits none and says so once per process at DEBUG,
+    rather than a knob that does nothing (or a warning on every call). An
+    operator who needs reasoning control against vLLM must use the
     ``openchat`` provider type, where ``chat_template_kwargs`` does work.
     """
     level = config.reasoning
     if level is None:
         return dict(config.extended or {})
     if flavor == "vllm":
-        logger.warning(
-            "reasoning control is not supported on vLLM's Responses API; "
-            "this profile's reasoning setting will have no effect. Use the "
+        debug_once(
+            ("vllm-responses-reasoning",),
+            "reasoning control is not supported on vLLM's Responses API; a "
+            "profile's reasoning setting (%s) has no effect there. Use the "
             "'openchat' provider type for a vLLM server if you need it.",
-            extra={"reasoning": level.value, "flavor": flavor},
+            level.value,
         )
         return dict(config.extended or {})
     return _openai_effort(config, model)

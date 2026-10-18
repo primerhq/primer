@@ -68,13 +68,19 @@ class TestOpenResponses:
     def test_maps_to_reasoning_effort(self, level, effort) -> None:
         assert openresponses_extended(_cfg(level)) == {"reasoning_effort": effort}
 
-    def test_vllm_warns_and_emits_nothing(self, caplog) -> None:
+    def test_vllm_emits_nothing_and_says_so_once_at_debug(self, caplog) -> None:
         """VERIFIED against a live vLLM server: its Responses endpoint
-        accepts every reasoning knob and honours none of them."""
-        with caplog.at_level(logging.WARNING):
+        accepts every reasoning knob and honours none of them. The notice is
+        logged once per process at DEBUG; it used to be a WARNING on every
+        call, which the review of #756 asked to stop."""
+        caplog.set_level(logging.DEBUG, logger="primer.llm._reasoning")
+        for _ in range(3):
             out = openresponses_extended(_cfg(ReasoningLevel.OFF), flavor="vllm")
-        assert out == {}, "must not emit a knob the server ignores"
-        assert any("not supported on vLLM" in r.getMessage() for r in caplog.records)
+            assert out == {}, "must not emit a knob the server ignores"
+        notices = [r for r in caplog.records if "not supported on vLLM" in r.getMessage()]
+        assert len(notices) == 1
+        assert notices[0].levelno == logging.DEBUG
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
     def test_vllm_still_forwards_the_passthrough(self, caplog) -> None:
         with caplog.at_level(logging.WARNING):
