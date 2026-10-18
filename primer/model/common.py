@@ -172,7 +172,7 @@ def _matches_served_mask(incoming_plain: str, existing_plain: str) -> bool:
 
 
 # The fields that name WHERE the credentials kept in the same model are sent. A secret restored from the stored row goes to the origin it was stored for and to no other (ticket 01a1212a).
-_ORIGIN_URL_FIELDS = ("url", "base_url", "endpoint_url", "apiserver_url", "discovery_url", "git_url", "resource_uri")
+_ORIGIN_URL_FIELDS = ("url", "base_url", "endpoint_url", "apiserver_url", "discovery_url", "git_url", "resource_uri", "token_endpoint")
 
 REENTER_KEY = "re-enter the secret: the stored one is kept only for the same origin (scheme, host and port)"
 _NOT_A_SECRET = "this is the mask a GET serves, not a secret: re-enter the secret"
@@ -231,7 +231,7 @@ def preserve_masked_secrets(entity: Any, existing: Any) -> None:
 
     A restored secret goes only where it was stored for: when the model, or a model it sits in,
     names another origin than the stored one (the scheme, host or port of its ``url`` /
-    ``endpoint_url`` / ``apiserver_url`` / ``discovery_url`` / ``git_url`` / ``resource_uri``, or its
+    ``endpoint_url`` / ``apiserver_url`` / ``discovery_url`` / ``git_url`` / ``resource_uri`` / ``token_endpoint``, or its
     ``hostname`` and ``port``; see :func:`_origin_of_model`), a served mask is REFUSED with a
     :class:`~primer.model.except_.ValidationError` (a 422, ``re-enter the secret``) instead of being
     restored: otherwise an update that points the base URL at a host the caller controls and leaves

@@ -10,8 +10,9 @@ from __future__ import annotations
 
 from enum import Enum
 from typing import ClassVar, Literal
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr, field_validator, model_validator
 
 from primer.model.common import Identifiable
 from primer.model.masked_url import MaskedUserinfoStr
@@ -37,21 +38,29 @@ class OAuthClientCredentials(BaseModel):
 
 
 class OAuthConfig(BaseModel):
-    """OAuth settings for an HTTP MCP server.
+    """How an HTTP MCP server signs in with OAuth.
 
-    Attached to :class:`HttpConfig` via the optional ``oauth`` field.
-    When present, :class:`primer.toolset.mcp.McpToolsetProvider`
-    performs Authorization Code + PKCE on a 401 from the MCP endpoint
-    instead of immediately failing.
+    Attached to :class:`HttpConfig` via the optional ``oauth`` field. The block DESCRIBES the sign-in and performs none: nothing happens on a 401 by
+    itself. A toolset is connected in a separate, explicit step, and the sign-in belongs to the toolset: one per toolset, shared by every agent that
+    uses it, never one per user.
+
+    ``grant`` picks the sign-in. ``authorization_code`` is a person approving access at the provider's consent page (PKCE, no secret needed unless the
+    provider pre-registered a confidential client). ``client_credentials`` is the primer server exchanging a client id and secret for a token at the
+    token endpoint, with nobody present; it needs both, and may name the token endpoint instead of discovering it.
     """
 
-    redirect_uri: HttpUrl = Field(
-        ...,
+    grant: Literal["authorization_code", "client_credentials"] = Field(
+        default="authorization_code",
         description=(
-            "The OAuth callback URL the application exposes. The auth "
-            "server will redirect the user here with ?code=...&state=...; "
-            "the application's handler then calls "
-            "McpToolsetProvider.complete_oauth(code=..., state=...)."
+            "How the toolset signs in. 'authorization_code': a person approves access in a browser. 'client_credentials': the server "
+            "exchanges static_client's id and secret for a token itself (both are required)."
+        ),
+    )
+    redirect_uri: HttpUrl | None = Field(
+        default=None,
+        description=(
+            "Legacy. The redirect URI of a browser sign-in is derived from the deployment's public URL and the toolset id, so this value is not "
+            "needed; it is accepted so that rows written before the revamp still load."
         ),
     )
     scopes: list[str] = Field(
@@ -61,10 +70,8 @@ class OAuthConfig(BaseModel):
     resource_uri: str | None = Field(
         default=None,
         description=(
-            "RFC 8707 resource indicator. Set on token requests when "
-            "the negotiated spec version is 2025-06-18 or 2025-11-25. "
-            "If None, defaults to the MCP server's URL (the spec's "
-            "recommended canonical resource identifier)."
+            "RFC 8707 resource indicator, sent with the sign-in and token requests when the server publishes protected-resource metadata. "
+            "If None, defaults to the MCP server's full URL (the spec's canonical resource identifier)."
         ),
     )
     static_client: OAuthClientCredentials | None = Field(
@@ -72,7 +79,8 @@ class OAuthConfig(BaseModel):
         description=(
             "If set, skip Dynamic Client Registration and use these "
             "credentials. Required when the auth server does not "
-            "support DCR; optional otherwise."
+            "support DCR; optional otherwise. With grant='client_credentials' "
+            "the client_secret is required too."
         ),
     )
     spec_version: Literal["2025-03-26", "2025-06-18", "2025-11-25"] | None = Field(
@@ -83,10 +91,42 @@ class OAuthConfig(BaseModel):
             "version the server supports."
         ),
     )
+    token_endpoint: str | None = Field(
+        default=None,
+        description=(
+            "Client credentials only: the URL the client id and secret are sent to. If None, it is discovered from the MCP server's "
+            "authorization server. An http(s) URL with a host and no credentials in it. The stored client secret is kept only for the "
+            "origin (scheme, host and port) of this URL."
+        ),
+    )
     client_name: str = Field(
         default="primer",
         description="client_name passed during DCR; appears in consent UIs.",
     )
+
+    @field_validator("token_endpoint")
+    @classmethod
+    def _token_endpoint_is_an_http_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parts = urlsplit(value)
+        if parts.scheme.lower() not in ("http", "https") or not parts.hostname or any(ch.isspace() or ord(ch) < 32 for ch in value):
+            raise ValueError("token_endpoint must be an http or https URL with a host")
+        if parts.username is not None or parts.password is not None:
+            raise ValueError("token_endpoint must not carry credentials in the URL: the client id and secret are sent separately")
+        return value
+
+    @model_validator(mode="after")
+    def _grant_has_what_it_needs(self) -> "OAuthConfig":
+        if self.grant == "client_credentials":
+            if self.static_client is None:
+                raise ValueError("grant='client_credentials' requires static_client (the client id and secret to exchange)")
+            secret = self.static_client.client_secret
+            if secret is None or not secret.get_secret_value():
+                raise ValueError("grant='client_credentials' requires static_client.client_secret")
+        elif self.token_endpoint is not None:
+            raise ValueError("token_endpoint applies to client credentials only")
+        return self
 
 
 class ToolsetProviderType(str, Enum):
@@ -155,9 +195,7 @@ class HttpConfig(BaseModel):
     oauth: OAuthConfig | None = Field(
         default=None,
         description=(
-            "If set, the adapter performs OAuth 2.1 (PKCE) on 401 "
-            "responses. Any Authorization header in `headers` is "
-            "overridden by the OAuth flow's bearer token once obtained."
+            "If set, the server signs in with OAuth (see OAuthConfig). The block only describes the sign-in: nothing happens on a 401 by itself."
         ),
     )
 

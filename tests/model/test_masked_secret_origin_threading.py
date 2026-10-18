@@ -152,6 +152,59 @@ def test_moving_only_the_oauth_redirect_uri_is_not_a_move_of_where_the_secret_is
     assert sent.oauth.static_client.client_secret.get_secret_value() == STORED
 
 
+def _client_credentials(token_endpoint: str | None, secret: str, url: str = "https://home.example/mcp") -> HttpConfig:
+    oauth: dict = {"grant": "client_credentials", "static_client": {"client_id": "c", "client_secret": secret}}
+    if token_endpoint is not None:
+        oauth["token_endpoint"] = token_endpoint
+    return HttpConfig.model_validate({"url": url, "oauth": oauth})
+
+
+def test_moving_only_the_token_endpoint_refuses_the_client_secret_mask() -> None:
+    """The client secret is sent to the token endpoint, so the endpoint is an origin the secret is bound to: the URL stays put and only the endpoint moves."""
+    stored = _client_credentials("https://home.example/token", STORED)
+    incoming = _client_credentials("https://attacker.example/token", BARE)
+
+    with pytest.raises(PrimerValidationError, match="re-enter the secret"):
+        preserve_masked_secrets(incoming, stored)
+
+    assert incoming.oauth.static_client.client_secret.get_secret_value() == BARE, "the stored secret was not put into the update"
+
+
+def test_a_token_endpoint_on_the_same_origin_keeps_the_client_secret_mask() -> None:
+    stored = _client_credentials("https://home.example/token", STORED)
+    kept = _client_credentials("https://HOME.example:443/oauth2/token", BARE)
+
+    preserve_masked_secrets(kept, stored)
+
+    assert kept.oauth.static_client.client_secret.get_secret_value() == STORED
+
+
+def test_a_token_endpoint_that_appears_where_there_was_none_refuses_the_client_secret_mask() -> None:
+    """Stored: the endpoint is discovered from the server. An explicit endpoint on another host is another place for the secret to go."""
+    stored = _client_credentials(None, STORED)
+    incoming = _client_credentials("https://attacker.example/token", BARE)
+
+    with pytest.raises(PrimerValidationError, match="re-enter the secret"):
+        preserve_masked_secrets(incoming, stored)
+
+
+def test_a_token_endpoint_that_goes_away_refuses_the_client_secret_mask() -> None:
+    stored = _client_credentials("https://home.example/token", STORED)
+    incoming = _client_credentials(None, BARE)
+
+    with pytest.raises(PrimerValidationError, match="re-enter the secret"):
+        preserve_masked_secrets(incoming, stored)
+
+
+def test_a_client_secret_the_person_typed_is_stored_for_another_token_endpoint() -> None:
+    stored = _client_credentials("https://home.example/token", STORED)
+    incoming = _client_credentials("https://other.example/token", NEW)
+
+    preserve_masked_secrets(incoming, stored)
+
+    assert incoming.oauth.static_client.client_secret.get_secret_value() == NEW
+
+
 # ---- refuse_served_masks -----------------------------------------------------------------------------------------------------------------------------------------------------
 
 
