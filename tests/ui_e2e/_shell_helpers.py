@@ -142,6 +142,23 @@ def open_view(page: Page, console_url: str, wid: str, view: str,
         page.goto(f"{console_url}{fragment}")
 
 
+# What Plan 08's Workspace templates page will be: a function on ``window`` that draws something. The Platform view mounts a custom page (seam I-2) only while its component is
+# loaded, so a journey that needs ``view=platform:templates`` to land on the page's frame (``nv-plat-page:templates``) installs this before the bundle runs. The real bundle assigns
+# ``window.WT_TemplatesPage`` after it, so the real page replaces the stand-in the day it ships and no journey needs an edit. React is global by the time the function is called (the
+# bundle has loaded), not when this script runs. A journey asserts the FRAME and the current sidebar row, never the stand-in's own test id.
+TEMPLATES_PAGE_STAND_IN = """
+window.WT_TemplatesPage = function () {
+  return window.React.createElement("div", { "data-testid": "wt-stand-in" }, "Workspace templates");
+};
+"""
+
+
+def install_templates_page_stand_in(page: Page) -> None:
+    """Make ``window.WT_TemplatesPage`` a function on every load of this page from now on, and reload so the document that is open has it too."""
+    page.add_init_script(TEMPLATES_PAGE_STAND_IN)
+    page.reload()
+
+
 def open_root(page: Page, console_url: str) -> None:
     """Navigate back to the bare console root (no workspace/overlay/view).
 
