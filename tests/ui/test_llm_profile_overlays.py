@@ -248,22 +248,32 @@ def aggregate_row(ctx, **routing) -> dict:
     return {**FULL_AGG, "failover_point": defaults["failover_point"], "failover_on": defaults["failover_on"], **routing}
 
 
+def assert_not_alphabetical(order: list[str]) -> None:
+    """A scenario whose expected order is alphabetical, either way, cannot tell a payload that keeps the order on screen from one that sorts its members. Refuse to run on one."""
+    assert order != sorted(order) and order != sorted(order, reverse=True), f"{order} is an alphabetical order"
+
+
 # ---- create --------------------------------------------------------------------------------------------------------------------------------------------
 
 
 def test_create_posts_the_members_in_the_order_shown(ctx) -> None:
+    """The order IS the failover chain, so the body carries the order on screen. p-b, p-a and p-c are ticked in that order and p-c is moved up once: [p-b, p-c, p-a]. That is neither
+    alphabetical order nor the order they were ticked in, so a payload that sorts its members, or sends them as ticked, is not the one on screen."""
     mount(ctx)
     type_(ctx, "mp-aggregate-name", "fast-with-fallback")
     toggle(ctx, "p-b")
     toggle(ctx, "p-a")
-    click(ctx, "mp-member-up:p-a")
+    toggle(ctx, "p-c")
+    click(ctx, "mp-member-up:p-c")
     segment(ctx, "mp-aggregate-routing", "round_robin")
-    assert table_keys(ctx)[:2] == ["p-a", "p-b"] and "agg-x" not in table_keys(ctx)
+    shown = ["p-b", "p-c", "p-a"]
+    assert_not_alphabetical(shown)
+    assert table_keys(ctx) == shown, "the picks in the order put in, and the aggregate in the list (agg-x) is not a candidate"
     click(ctx, "mp-aggregate-submit")
     assert calls(ctx) == [[
         "POST", "/model_profiles", {
-            "id": "fast-with-fallback", "description": "Aggregate of p-a, p-b", "kind": "aggregated",
-            "members": ["p-a", "p-b"], "strategy": "round_robin",
+            "id": "fast-with-fallback", "description": "Aggregate of p-b, p-c, p-a", "kind": "aggregated",
+            "members": shown, "strategy": "round_robin",
             "failover_point": "before_first_token", "failover_on": "transient_and_config",
         },
     ]]
@@ -547,6 +557,24 @@ def test_an_aggregate_edit_keeps_every_field_the_form_does_not_show(ctx) -> None
     assert calls(ctx) == [["PUT", "/model_profiles/agg-1", {**sent, "strategy": "round_robin"}]]
     assert toasts(ctx) == [{"kind": "success", "text": "Saved agg-1"}]
     assert saved_count(ctx) == 1 and closed_count(ctx) == 1
+
+
+def test_an_edit_sends_the_members_in_the_order_shown_and_keeps_every_other_stored_field(ctx) -> None:
+    """The edit's counterpart of the create test: the PUT carries the order on screen. p-c is ticked and moved to the front of [p-a, p-b], which makes [p-c, p-a, p-b]: not alphabetical
+    either way, and not the stored order with p-c on the end. One failover choice changes as well, and every other field of the stored row (config, harness_id, the null provider
+    fields, the description, the other failover choice) goes back as stored."""
+    mount(ctx, {"existing": FULL_AGG})
+    toggle(ctx, "p-c")
+    click(ctx, "mp-member-up:p-c")
+    click(ctx, "mp-member-up:p-c")
+    shown = ["p-c", "p-a", "p-b"]
+    assert_not_alphabetical(shown)
+    assert ticked(ctx) == shown
+    open_advanced(ctx)
+    segment(ctx, "mp-aggregate-failover-on", "transient_and_config")
+    click(ctx, "mp-aggregate-submit")
+    stored = {k: v for k, v in FULL_AGG.items() if k not in ("agent_count", "graph_node_count", "_window")}
+    assert calls(ctx) == [["PUT", "/model_profiles/agg-1", {**stored, "members": shown, "failover_on": "transient_and_config"}]]
 
 
 def test_an_edit_sends_the_typed_description(ctx) -> None:
