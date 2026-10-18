@@ -180,3 +180,236 @@ class TestAnAdapterWithoutAMapping:
         caplog.set_level(logging.DEBUG, logger="primer.llm._reasoning")
         assert _Unmapped().profile_extended(_cfg(None, seed=1)) == {"seed": 1}
         assert not [r for r in caplog.records if "_Unmapped" in r.getMessage()]
+
+
+# --------------------------------------------------------------------------- #
+# The translated knobs reach the wire                                         #
+# --------------------------------------------------------------------------- #
+
+import json  # noqa: E402
+
+from openai import AsyncOpenAI  # noqa: E402
+
+from primer.llm._reasoning import profile_stream_kwargs  # noqa: E402
+from primer.model.chat import Message, TextPart, ToolCallPart, ToolResultPart  # noqa: E402
+from tests.llm.test_anthropic import _aiter, _ok_events, _patched_client  # noqa: E402
+from tests.llm.test_openrouter import _sdk_http_module, _Wire  # noqa: E402
+
+_SSE = (
+    b'data: {"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}\n\n'
+    b'data: {"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n'
+    b"data: [DONE]\n\n"
+)
+
+_HI = [Message(role="user", parts=[TextPart(text="hi")])]
+
+
+def _wire_for(module: str, monkeypatch: pytest.MonkeyPatch) -> _Wire:
+    """Route ``primer.llm.<module>``'s openai client through an in-process
+    transport, so the test reads the JSON body the adapter really sends."""
+    http = _sdk_http_module()
+    wire = _Wire(http)
+    real = AsyncOpenAI
+
+    def _factory(**kwargs):
+        return real(
+            **kwargs,
+            http_client=http.AsyncClient(transport=http.MockTransport(wire.handle)),
+        )
+
+    monkeypatch.setattr(f"primer.llm.{module}.AsyncOpenAI", _factory)
+    wire.respond(200, content=_SSE, headers={"content-type": "text/event-stream"})
+    return wire
+
+
+async def _call_under(llm, cfg: ModelProfileConfig | None) -> None:
+    try:
+        async for _ in llm.stream(model="m", messages=_HI, **profile_stream_kwargs(llm, cfg)):
+            pass
+    finally:
+        await llm.aclose()
+
+
+def _body(wire: _Wire) -> dict:
+    return json.loads(wire.last.content)
+
+
+class TestTheKnobsReachTheWire:
+    """The openai SDK refuses a keyword it does not know, so a knob that is
+    not one of its parameters must travel in ``extra_body``; these read the
+    request body the adapter actually sends."""
+
+    async def test_openchat_openai_sends_reasoning_effort(self, monkeypatch) -> None:
+        wire = _wire_for("openchat", monkeypatch)
+        await _call_under(OpenChatLLM(_openchat(OpenChatFlavor.OPENAI)), _cfg(ReasoningLevel.LOW, seed=7))
+        body = _body(wire)
+        assert body["reasoning_effort"] == "low"
+        assert body["seed"] == 7
+
+    async def test_openchat_vllm_sends_the_template_switch_in_the_body(self, monkeypatch) -> None:
+        wire = _wire_for("openchat", monkeypatch)
+        await _call_under(OpenChatLLM(_openchat(OpenChatFlavor.VLLM)), _cfg(ReasoningLevel.OFF))
+        body = _body(wire)
+        assert body["chat_template_kwargs"] == {"enable_thinking": False}
+        assert "reasoning_effort" not in body
+
+    async def test_openrouter_sends_its_reasoning_object_in_the_body(self, monkeypatch) -> None:
+        wire = _wire_for("openrouter", monkeypatch)
+        await _call_under(OpenRouterLLM(_openrouter()), _cfg(ReasoningLevel.OFF))
+        assert _body(wire)["reasoning"] == {"effort": "none"}
+
+    @pytest.mark.parametrize("module, make", [
+        ("openchat", lambda: OpenChatLLM(_openchat(OpenChatFlavor.VLLM))),
+        ("openrouter", lambda: OpenRouterLLM(_openrouter())),
+    ])
+    async def test_no_config_sends_none_of_it(self, monkeypatch, module, make) -> None:
+        wire = _wire_for(module, monkeypatch)
+        await _call_under(make(), None)
+        body = _body(wire)
+        for key in ("reasoning_effort", "chat_template_kwargs", "reasoning", "extra_body"):
+            assert key not in body
+
+
+class TestEveryKindAcceptsItsTranslation:
+    """The translation lands in each adapter's request, not in its drop list."""
+
+    def test_openresponses_sends_reasoning_effort_as_reasoning(self) -> None:
+        from primer.llm.openresponses import _extract_extended_kwargs
+
+        llm = OpenResponsesLLM(_openresponses(OpenResponsesFlavor.OPENAI))
+        assert _extract_extended_kwargs(llm.profile_extended(_cfg(ReasoningLevel.HIGH))) == {
+            "reasoning": {"effort": "high"},
+        }
+
+    def test_anthropic_sends_the_thinking_block(self) -> None:
+        from primer.llm.anthropic import _extract_extended_kwargs
+
+        llm = AnthropicLLM(_anthropic())
+        assert _extract_extended_kwargs(llm.profile_extended(_cfg(ReasoningLevel.LOW))) == {
+            "thinking": {"type": "enabled", "budget_tokens": 4096},
+        }
+
+    def test_gemini_folds_the_budget_into_thinking_config(self) -> None:
+        from primer.llm.gemini import _extract_extended_kwargs
+
+        llm = GeminiLLM(_gemini())
+        out = _extract_extended_kwargs(llm.profile_extended(_cfg(ReasoningLevel.OFF)))
+        assert out["thinking_config"].thinking_budget == 0
+
+    def test_ollama_sends_think_at_the_top_level(self) -> None:
+        from primer.llm.ollama import _build_options_and_kwargs
+
+        llm = OllamaLLM(_ollama())
+        _options, top_level = _build_options_and_kwargs(
+            temperature=None, top_p=None, max_output_tokens=None, stop=None,
+            extended=llm.profile_extended(_cfg(ReasoningLevel.OFF)),
+        )
+        assert top_level == {"think": False}
+
+
+# --------------------------------------------------------------------------- #
+# Anthropic: a thinking request the Messages API accepts                      #
+# --------------------------------------------------------------------------- #
+
+from primer.llm.anthropic import _fit_thinking  # noqa: E402
+
+_TOOL_ROUND = [
+    Message(role="user", parts=[TextPart(text="go")]),
+    Message(role="assistant", parts=[ToolCallPart(id="t1", name="x", arguments={})]),
+    Message(role="tool", parts=[ToolResultPart(id="t1", output="done")]),
+]
+
+
+def _enabled(budget: int) -> dict:
+    return {"type": "enabled", "budget_tokens": budget}
+
+
+class TestAnthropicThinkingFitsTheRequest:
+    """Manual thinking needs a budget of at least 1024 below max_tokens, no
+    temperature other than 1, no top_k, top_p of at least 0.95, no forced
+    tool, and a final assistant turn that starts with a thinking block. A
+    profile's level must not turn an otherwise valid call into a 400."""
+
+    def test_a_budget_that_fits_is_left_alone(self) -> None:
+        req = {"max_tokens": 8192, "thinking": _enabled(4096)}
+        _fit_thinking(req, messages=_HI, provider_id="a")
+        assert req == {"max_tokens": 8192, "thinking": _enabled(4096)}
+
+    def test_a_budget_not_below_max_tokens_is_lowered_to_half(self) -> None:
+        req = {"max_tokens": 4096, "thinking": _enabled(4096)}
+        _fit_thinking(req, messages=_HI, provider_id="a")
+        assert req["thinking"] == _enabled(2048)
+
+    def test_a_small_cap_keeps_the_minimum_budget(self) -> None:
+        req = {"max_tokens": 1500, "thinking": _enabled(4096)}
+        _fit_thinking(req, messages=_HI, provider_id="a")
+        assert req["thinking"] == _enabled(1024)
+
+    def test_no_room_for_the_minimum_budget_turns_thinking_off(self) -> None:
+        req = {"max_tokens": 1024, "thinking": _enabled(1024), "temperature": 0.0}
+        _fit_thinking(req, messages=_HI, provider_id="a")
+        assert req == {"max_tokens": 1024, "temperature": 0.0}
+
+    def test_the_sampling_knobs_thinking_refuses_are_dropped(self) -> None:
+        req = {
+            "max_tokens": 8192, "thinking": _enabled(1024),
+            "temperature": 0.0, "top_k": 20, "top_p": 0.5,
+        }
+        _fit_thinking(req, messages=_HI, provider_id="a")
+        assert req == {"max_tokens": 8192, "thinking": _enabled(1024)}
+
+    def test_the_sampling_values_thinking_allows_are_kept(self) -> None:
+        req = {"max_tokens": 8192, "thinking": _enabled(1024), "temperature": 1, "top_p": 0.97}
+        _fit_thinking(req, messages=_HI, provider_id="a")
+        assert req["temperature"] == 1 and req["top_p"] == 0.97
+
+    @pytest.mark.parametrize("choice", [
+        {"type": "any"}, {"type": "tool", "name": "structured_output"},
+    ])
+    def test_a_forced_tool_runs_without_thinking(self, choice) -> None:
+        req = {"max_tokens": 8192, "thinking": _enabled(1024), "tool_choice": choice, "temperature": 0.0}
+        _fit_thinking(req, messages=_HI, provider_id="a")
+        assert "thinking" not in req
+        assert req["temperature"] == 0.0
+
+    def test_a_tool_round_continuation_runs_without_thinking(self) -> None:
+        """primer does not send thinking blocks back in the history, so the
+        final assistant turn of a continuation cannot start with one."""
+        req = {"max_tokens": 8192, "thinking": _enabled(1024), "tool_choice": {"type": "auto"}}
+        _fit_thinking(req, messages=_TOOL_ROUND, provider_id="a")
+        assert "thinking" not in req
+
+    @pytest.mark.parametrize("thinking", [None, {"type": "disabled"}])
+    def test_no_thinking_and_disabled_thinking_are_left_alone(self, thinking) -> None:
+        req = {"max_tokens": 1024, "temperature": 0.0, "top_k": 5}
+        if thinking is not None:
+            req["thinking"] = thinking
+        before = dict(req)
+        _fit_thinking(req, messages=_TOOL_ROUND, provider_id="a")
+        assert req == before
+
+    def test_each_adjustment_is_logged_once(self, caplog) -> None:
+        caplog.set_level(logging.DEBUG, logger="primer.llm.anthropic")
+        for _ in range(3):
+            _fit_thinking(
+                {"max_tokens": 4096, "thinking": _enabled(4096), "temperature": 0.0},
+                messages=_HI, provider_id="ant-x",
+            )
+        hits = [r for r in caplog.records if "ant-x" in r.getMessage()]
+        assert len(hits) == 2  # the budget, the sampling knobs: once each
+
+    async def test_stream_applies_the_fit_to_the_profile_thinking(self, monkeypatch) -> None:
+        """End to end through the adapter: the agent's default cap (4096) and
+        compaction's temperature 0 with a LOW (4096-token) budget."""
+        client = _patched_client(monkeypatch)
+        client.messages.create.return_value = _aiter(_ok_events())
+        llm = AnthropicLLM(_anthropic())
+        async for _ in llm.stream(
+            model="claude-sonnet-4-5", messages=_HI, temperature=0.0,
+            **profile_stream_kwargs(llm, _cfg(ReasoningLevel.LOW)),
+        ):
+            pass
+        kwargs = client.messages.create.call_args.kwargs
+        assert kwargs["thinking"] == _enabled(2048)
+        assert kwargs["max_tokens"] == 4096
+        assert "temperature" not in kwargs

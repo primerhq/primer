@@ -42,7 +42,7 @@ from primer.llm._reasoning import openrouter_extended
 from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout
 from primer.llm._openai_compat import (
     _build_sampling_params,
-    _extract_extended_kwargs,
+    _extract_extended_kwargs as _extract_compat_kwargs,
     _messages_to_chat,
     _response_format_to_param,
     _StreamState,
@@ -71,6 +71,19 @@ from primer.observability import tracing as _tracing
 logger = logging.getLogger(__name__)
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+
+# What primer.llm._reasoning.openrouter_extended emits: OpenRouter's
+# ``reasoning`` object, which is not a parameter of the openai SDK's chat
+# ``create()``, so it travels in the request body.
+_REASONING_BODY_KEYS: frozenset[str] = frozenset({"reasoning"})
+
+
+def _extract_extended_kwargs(extended: dict[str, Any] | None) -> dict[str, Any]:
+    """The shared Chat Completions whitelist plus OpenRouter's reasoning object."""
+    return _extract_compat_kwargs(
+        extended, body_keys=_REASONING_BODY_KEYS, adapter="OpenRouter",
+    )
 
 
 def _attribution_headers(config: OpenRouterConfig) -> dict[str, str]:

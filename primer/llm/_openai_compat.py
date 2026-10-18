@@ -85,30 +85,44 @@ _RECOGNISED_EXTENDED_PASSTHROUGH: frozenset[str] = frozenset({
 })
 
 
-def _extract_extended_kwargs(extended: dict[str, Any] | None) -> dict[str, Any]:
+def _extract_extended_kwargs(
+    extended: dict[str, Any] | None,
+    *,
+    sdk_keys: frozenset[str] = frozenset(),
+    body_keys: frozenset[str] = frozenset(),
+    adapter: str = "OpenChat",
+) -> dict[str, Any]:
     """Project the universal ``extended`` dict onto Chat Completions kwargs.
 
     Recognised keys are forwarded; unknown keys are dropped with a
-    single DEBUG log line listing them. Chat Completions has no
-    reasoning channel, so ``reasoning_effort`` and
-    ``reasoning_summary`` are treated as unknown and dropped.
+    single DEBUG log line listing them. The shared whitelist carries no
+    reasoning key: each adapter names the ones its own wire takes.
+    ``sdk_keys`` are parameters of the openai SDK's ``create()`` and are
+    forwarded as such. ``body_keys`` are not (the SDK refuses a keyword it
+    does not know), so they travel in the request body through
+    ``extra_body``.
     """
     if not extended:
         return {}
 
     out: dict[str, Any] = {}
+    body: dict[str, Any] = {}
     dropped: list[str] = []
 
     for key, value in extended.items():
-        if key in _RECOGNISED_EXTENDED_PASSTHROUGH:
+        if key in _RECOGNISED_EXTENDED_PASSTHROUGH or key in sdk_keys:
             out[key] = value
+        elif key in body_keys:
+            body[key] = value
         else:
             dropped.append(key)
 
+    if body:
+        out["extra_body"] = body
     if dropped:
         logger.debug(
-            "OpenChat adapter dropped unknown extended kwargs: %s",
-            ", ".join(sorted(dropped)),
+            "%s adapter dropped unknown extended kwargs: %s",
+            adapter, ", ".join(sorted(dropped)),
         )
     return out
 

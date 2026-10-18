@@ -485,11 +485,20 @@ class TestExtendedKwargs:
             for r in debug_records
         )
 
-    def test_reasoning_effort_dropped_as_unknown(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        caplog.set_level(logging.DEBUG, logger="primer.llm._openai_compat")
-        assert _extract_extended_kwargs({"reasoning_effort": "high"}) == {}
+    def test_the_reasoning_knobs_this_wire_takes_are_forwarded(self) -> None:
+        """A profile's reasoning level reaches this wire as
+        ``reasoning_effort`` (OpenAI) or ``chat_template_kwargs`` (the
+        self-hosted flavors' chat template). The second is not a parameter of
+        the openai SDK's ``create()``, so it travels in ``extra_body``. This
+        test used to pin that ``reasoning_effort`` was dropped, which is why no
+        profile reasoning setting ever took effect on this provider type."""
+        assert _extract_extended_kwargs({
+            "reasoning_effort": "high",
+            "chat_template_kwargs": {"enable_thinking": False},
+        }) == {
+            "reasoning_effort": "high",
+            "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+        }
 
     def test_none_returns_empty(self) -> None:
         assert _extract_extended_kwargs(None) == {}

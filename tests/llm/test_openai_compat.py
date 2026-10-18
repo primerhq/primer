@@ -572,8 +572,10 @@ class TestExtractExtendedKwargs:
         assert _extract_extended_kwargs({"frobnicate": True, "foobar": 1}) == {}
 
     def test_reasoning_keys_dropped_on_chat_completions(self) -> None:
-        # Chat Completions has no reasoning channel; both reasoning_*
-        # keys are unknown and dropped.
+        # The shared whitelist carries no reasoning key: each adapter adds
+        # the ones its own wire takes (primer.llm.openchat forwards
+        # reasoning_effort and chat_template_kwargs, primer.llm.openrouter
+        # its reasoning object).
         assert _extract_extended_kwargs(
             {"reasoning_effort": "high", "reasoning_summary": "concise"}
         ) == {}
