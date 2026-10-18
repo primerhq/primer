@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator
-from typing import Any
 
 import pytest
 
@@ -24,13 +23,11 @@ from primer.agent.tool_schemas import WORKSPACE_TOOL_ARGS
 from primer.api.registries import ProviderRegistry
 from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
 from primer.bootstrap.seed import ensure_crud_approval_policies
-from primer.int.toolset import ToolsetProvider
-from primer.model.chat import Tool, ToolCallResult
+from primer.model.chat import Tool
 from primer.model.except_ import AuthRequiredError, NotFoundError, ProviderError
 from primer.model.storage import OffsetPage
 from primer.model.tool_approval import ToolApprovalPolicy
 from primer.toolset import tool_catalog
-from primer.toolset._describe import make_tool
 from primer.toolset.crud import CRUD_TOOL_NAMES, build_crud_toolset
 from primer.toolset.misc import build_misc_toolset
 from primer.toolset.tool_catalog import (
@@ -45,63 +42,7 @@ from primer.toolset.tool_catalog import (
 )
 from primer.workspace.local import tools as local_tools
 from tests.docs._live_toolsets import built_in_providers
-
-SCHEMA = {"type": "object", "properties": {"path": {"type": "string"}}}
-
-
-def _tool(tool_id: str, toolset_id: str = "rec", **declared: Any) -> Tool:
-    return make_tool(id=tool_id, toolset_id=toolset_id, purpose="Do it.", when="Use when testing.", args_schema=SCHEMA, examples=[], **declared)
-
-
-class _Scripted(ToolsetProvider):
-    """A provider over a fixed tool list that records the principal each listing was asked for.
-
-    ``roles`` answers ``required_role`` (else ``"admin"``, the fail-closed default), ``yielding`` ``is_yielding``. ``fail_after`` makes the listing
-    raise after that many tools, ``block`` makes it wait forever, ``auth`` makes it ask for OAuth consent.
-    """
-
-    def __init__(self, tools: list[Tool], *, roles: dict[str, str] | None = None, yielding: frozenset[str] = frozenset(),
-                 fail_after: int | None = None, block: bool = False, auth: bool = False) -> None:
-        self._tools = tools
-        self._roles = roles or {}
-        self._yielding = yielding
-        self._fail_after = fail_after
-        self._block = block
-        self._auth = auth
-        self.listed_as: list[str | None] = []
-
-    async def list_tools(self, *, principal: str | None = None) -> AsyncIterator[Tool]:
-        self.listed_as.append(principal)
-        if self._block:
-            await asyncio.Event().wait()
-        if self._auth:
-            raise AuthRequiredError("consent needed", auth_url="https://auth.example/consent", state="state-1")
-        for index, tool in enumerate(self._tools):
-            if self._fail_after is not None and index >= self._fail_after:
-                raise RuntimeError("the listing broke halfway")
-            yield tool
-
-    def required_role(self, tool_name: str) -> str:
-        return self._roles.get(tool_name, "admin")
-
-    def is_yielding(self, tool_name: str) -> bool:
-        return tool_name in self._yielding
-
-    async def call(self, *, tool_name: str, arguments: dict[str, Any], principal: str | None = None, ctx: Any = None) -> ToolCallResult:
-        return ToolCallResult(output="ran", is_error=False)
-
-
-class _Registry:
-    """The registry ``find_tool_entry`` resolves toolsets through: test providers under their ids, the real not-found error for any other."""
-
-    def __init__(self, providers: dict[str, ToolsetProvider]) -> None:
-        self._providers = providers
-
-    async def get_toolset(self, toolset_id: str) -> ToolsetProvider:
-        if toolset_id not in self._providers:
-            raise NotFoundError(f"Toolset {toolset_id!r} does not exist")
-        return self._providers[toolset_id]
-
+from tests.toolset._scripted_toolset import Registry, Scripted, scripted_tool
 
 @pytest.fixture
 def registry(fake_storage_provider) -> ProviderRegistry:
@@ -199,7 +140,7 @@ async def test_an_entry_carries_its_providers_declarations():
 
 
 async def test_a_toolset_that_fails_to_list_is_skipped(caplog):
-    class _Raising(_Scripted):
+    class _Raising(Scripted):
         async def list_tools(self, *, principal: str | None = None) -> AsyncIterator[Tool]:
             raise RuntimeError("cannot list")
             yield  # pragma: no cover - makes this an async generator
@@ -212,7 +153,7 @@ async def test_a_toolset_that_fails_to_list_is_skipped(caplog):
 
 
 async def test_a_toolset_that_fails_halfway_contributes_nothing(caplog):
-    broken = _Scripted([_tool("a"), _tool("b")], fail_after=1)
+    broken = Scripted([scripted_tool("a"), scripted_tool("b")], fail_after=1)
     with caplog.at_level(logging.WARNING, logger=tool_catalog.logger.name):
         entries = await collect_tool_entries({"rec": broken, "misc": build_misc_toolset()})
     assert "rec" not in {e.toolset_id for e in entries}, "half a toolset would document tools the next build then drops"
@@ -220,7 +161,7 @@ async def test_a_toolset_that_fails_halfway_contributes_nothing(caplog):
 
 
 async def test_the_roles_and_pauses_come_from_the_provider_and_the_descriptor():
-    provider = _Scripted([_tool("plain"), _tool("waits"), _tool("flagged", yields=True)], roles={"plain": "user"}, yielding=frozenset({"waits"}))
+    provider = Scripted([scripted_tool("plain"), scripted_tool("waits"), scripted_tool("flagged", yields=True)], roles={"plain": "user"}, yielding=frozenset({"waits"}))
     by_id = {e.tool.id: e for e in await collect_tool_entries({"rec": provider})}
     assert by_id["plain"].required_role == "user" and by_id["waits"].required_role == "admin", "an undeclared tool fails closed, as call_tool ranks it"
     assert (by_id["plain"].pauses_turn, by_id["waits"].pauses_turn, by_id["flagged"].pauses_turn) == (False, True, True)
@@ -238,31 +179,31 @@ async def test_find_tool_entry_reaches_every_scope(registry):
 
 async def test_find_tool_entry_knows_the_direct_scopes_without_a_registry():
     """``workspace`` and ``client`` are no registry's: a registry that knows nothing of them still answers."""
-    read = await find_tool_entry(_Registry({}), "workspace", "read")
+    read = await find_tool_entry(Registry({}), "workspace", "read")
     assert read is not None and (read.scoped_id, read.via_call_tool, read.needs_workspace) == ("workspace__read", False, True)
-    opened = await find_tool_entry(_Registry({}), "client", "open_file")
+    opened = await find_tool_entry(Registry({}), "client", "open_file")
     assert opened is not None and (opened.scoped_id, opened.via_call_tool, opened.pauses_turn) == ("client__open_file", False, False)
-    assert await find_tool_entry(_Registry({}), "workspace", "nope") is None
+    assert await find_tool_entry(Registry({}), "workspace", "nope") is None
 
 
 async def test_find_tool_entry_ranks_a_tool_by_its_providers_role_and_pause():
-    provider = _Scripted([_tool("go"), _tool("wait")], roles={"go": "user"}, yielding=frozenset({"wait"}))
-    go = await find_tool_entry(_Registry({"rec": provider}), "rec", "go")
-    wait = await find_tool_entry(_Registry({"rec": provider}), "rec", "wait")
+    provider = Scripted([scripted_tool("go"), scripted_tool("wait")], roles={"go": "user"}, yielding=frozenset({"wait"}))
+    go = await find_tool_entry(Registry({"rec": provider}), "rec", "go")
+    wait = await find_tool_entry(Registry({"rec": provider}), "rec", "wait")
     assert (go.scoped_id, go.required_role, go.pauses_turn, go.via_call_tool) == ("rec__go", "user", False, True)
     assert (wait.required_role, wait.pauses_turn) == ("admin", True)
 
 
 async def test_find_tool_entry_forwards_the_principal_to_the_listing():
-    provider = _Scripted([_tool("go")])
-    await find_tool_entry(_Registry({"rec": provider}), "rec", "go", principal="alice")
-    await find_tool_entry(_Registry({"rec": provider}), "rec", "go")
+    provider = Scripted([scripted_tool("go")])
+    await find_tool_entry(Registry({"rec": provider}), "rec", "go", principal="alice")
+    await find_tool_entry(Registry({"rec": provider}), "rec", "go")
     assert provider.listed_as == ["alice", None]
 
 
 async def test_find_tool_entry_gives_none_for_a_toolset_that_will_not_list(caplog):
     with caplog.at_level(logging.WARNING, logger=tool_catalog.logger.name):
-        entry = await find_tool_entry(_Registry({"rec": _Scripted([_tool("go")], fail_after=0)}), "rec", "go")
+        entry = await find_tool_entry(Registry({"rec": Scripted([scripted_tool("go")], fail_after=0)}), "rec", "go")
     assert entry is None
     assert any("rec" in r.getMessage() for r in caplog.records if r.levelno == logging.WARNING)
 
@@ -270,12 +211,12 @@ async def test_find_tool_entry_gives_none_for_a_toolset_that_will_not_list(caplo
 async def test_find_tool_entry_lets_an_oauth_consent_request_through():
     """``AuthRequiredError`` is for the caller to handle (the consent URL must reach the person), so it is not folded into "not found"."""
     with pytest.raises(AuthRequiredError):
-        await find_tool_entry(_Registry({"rec": _Scripted([_tool("go")], auth=True)}), "rec", "go")
+        await find_tool_entry(Registry({"rec": Scripted([scripted_tool("go")], auth=True)}), "rec", "go")
 
 
 async def test_find_tool_entry_does_not_wait_forever_for_a_toolset(monkeypatch):
     monkeypatch.setattr(tool_catalog, "LIST_TIMEOUT_S", 0.05)
-    assert await asyncio.wait_for(find_tool_entry(_Registry({"rec": _Scripted([_tool("go")], block=True)}), "rec", "go"), timeout=5) is None
+    assert await asyncio.wait_for(find_tool_entry(Registry({"rec": Scripted([scripted_tool("go")], block=True)}), "rec", "go"), timeout=5) is None
 
 
 # ---- one toolset's entries -----------------------------------------------------------------------------------------------------------------------------
@@ -290,14 +231,22 @@ async def test_list_toolset_entries_gives_every_tool_of_one_toolset(registry):
 
 async def test_list_toolset_entries_says_why_it_cannot():
     with pytest.raises(NotFoundError):
-        await list_toolset_entries(_Registry({}), "nope")
+        await list_toolset_entries(Registry({}), "nope")
     with pytest.raises(ProviderError, match="rec"):
-        await list_toolset_entries(_Registry({"rec": _Scripted([_tool("go")], fail_after=0)}), "rec")
+        await list_toolset_entries(Registry({"rec": Scripted([scripted_tool("go")], fail_after=0)}), "rec")
     with pytest.raises(AuthRequiredError):
-        await list_toolset_entries(_Registry({"rec": _Scripted([_tool("go")], auth=True)}), "rec")
+        await list_toolset_entries(Registry({"rec": Scripted([scripted_tool("go")], auth=True)}), "rec")
+
+
+async def test_a_not_found_from_the_listing_is_not_an_unknown_toolset():
+    """``NotFoundError`` means "no such toolset" to the callers, so the one a toolset's own listing raises must not look like it."""
+    gone = Scripted([scripted_tool("go")], raises=NotFoundError("the upstream server has no such resource"))
+    with pytest.raises(ProviderError, match="upstream server"):
+        await list_toolset_entries(Registry({"rec": gone}), "rec")
+    assert await find_tool_entry(Registry({"rec": gone}), "rec", "go") is None
 
 
 async def test_list_toolset_entries_times_out_as_a_provider_error(monkeypatch):
     monkeypatch.setattr(tool_catalog, "LIST_TIMEOUT_S", 0.05)
     with pytest.raises(ProviderError, match="rec"):
-        await asyncio.wait_for(list_toolset_entries(_Registry({"rec": _Scripted([_tool("go")], block=True)}), "rec"), timeout=5)
+        await asyncio.wait_for(list_toolset_entries(Registry({"rec": Scripted([scripted_tool("go")], block=True)}), "rec"), timeout=5)
