@@ -15,6 +15,7 @@ from primer.events.registry import known_event_kinds
 ACTION_EVENT_TYPES: frozenset[str] = frozenset({
     "session.invoked",
     "session.steered",
+    "session.messaged",
     "session.replied",
     "session.parked",
     "session.resumed",

@@ -133,6 +133,15 @@ def test_a_turn_started_by_a_message_at_the_hop_limit_cannot_send():
     assert info.value.message == REFUSE_HOPS.format(hops=MAX_PEER_HOPS, limit=MAX_PEER_HOPS)
 
 
+@pytest.mark.skipif(MAX_PEER_HOPS != 8, reason="the plan's copy at the default limit of 8 (PRIMER_MAX_INVOCATION_DEPTH is set)")
+def test_a_turn_started_by_a_hop_eight_message_cannot_send():
+    assert next_peer_hops(_session(peer_hops=7)) == 8
+    with pytest.raises(PeerMessageRefused) as info:
+        next_peer_hops(_session(peer_hops=8))
+    assert info.value.error_type == "hop-limit"
+    assert "8 hops" in info.value.message and "limit is 8" in info.value.message
+
+
 def test_a_count_past_the_limit_is_refused_and_reported_as_it_is():
     """A limit lowered since a long chain began: the session reads 12 hops and the limit is 8."""
     with pytest.raises(PeerMessageRefused) as info:
@@ -211,6 +220,14 @@ async def test_a_stored_time_without_a_zone_is_read_as_utc():
         await record_peer_message(world.sp, _ledger("ses-a", (NOW - timedelta(seconds=i)).replace(tzinfo=None)))
     with pytest.raises(PeerMessageRefused):
         await check_peer_rate(world.sp, "ses-a", now=NOW)
+
+
+async def test_a_time_without_a_zone_is_read_as_utc_on_both_sides():
+    world = make_world()
+    for i in range(20):
+        await record_peer_message(world.sp, _ledger("ses-a", NOW - timedelta(seconds=i)))
+    with pytest.raises(PeerMessageRefused):
+        await check_peer_rate(world.sp, "ses-a", now=NOW.replace(tzinfo=None))
 
 
 async def test_the_ledger_keeps_only_the_newest_twenty_per_sender():
