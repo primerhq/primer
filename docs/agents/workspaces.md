@@ -211,12 +211,15 @@ it's called from a context with no implicit session.
   `type=validation-error` (REST: 422) naming
   `overrides.resources.<field>`, and nothing is created. A size is at
   most 1024 CPU cores, 64 TiB of memory and 64 TiB of disk; a GPU count
-  is at most 64. An `overrides.env` name must be a letter or underscore
-  followed by letters, digits and underscores, and `PRIMER_RUNTIME_TOKEN`
-  and `RUNTIME_TOKEN` are reserved for the runtime's own token: either
-  answers `type=validation-error` naming the variable (never its
-  value), as does a template whose own `env` or CPU or memory breaks
-  the same rules. Returns the stored row (the REST route answers 201).
+  is at most 64. An `overrides.env` name follows Kubernetes' own rule:
+  1 to 256 characters of ASCII letters, digits, `_`, `-` and `.`, not
+  starting with a digit (`my-var` and `a.b` are fine; `1BAD`, `a b`,
+  `A=B`, an empty name and a name with an accented letter are not).
+  `PRIMER_RUNTIME_TOKEN` and `RUNTIME_TOKEN` are reserved for the
+  runtime's own token. Either mistake answers
+  `type=validation-error` naming the variable (never its value), as
+  does a template whose own `env` or CPU or memory breaks the same
+  rules. Returns the stored row (the REST route answers 201).
 - `workspaces::get_workspace` - fetch by id.
 - `workspaces::list_workspaces` - paginated.
 - `workspaces::delete_workspace` - destroys the workspace: its
