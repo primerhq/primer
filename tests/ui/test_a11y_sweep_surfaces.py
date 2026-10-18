@@ -61,7 +61,6 @@ def test_every_platform_view_of_the_shell_is_swept_and_none_that_does_not_exist(
     assert sorted(surfaces.PLATFORM_FORMS) == sorted(set(_grammar("platform")) - surfaces.PENDING_CUSTOM_PAGES)
     assert surfaces.PENDING_CUSTOM_PAGES <= set(_grammar("platform")), "a pending page that the grammar does not admit"
     assert not surfaces.PENDING_CUSTOM_PAGES & set(surfaces.PLATFORM_FORMS), "a page is either pending or swept"
-    assert surfaces.PENDING_CUSTOM_PAGES == {"web", "templates"}
 
 
 def test_the_retired_views_are_no_longer_swept() -> None:

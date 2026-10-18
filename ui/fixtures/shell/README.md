@@ -44,7 +44,10 @@ addressable in the URL. Names are the registry keys:
 Since the three-view flag day the overlays render as centered panels
 over whichever view is open, still addressed by `overlay=<name>`, and
 the old `admin` overlay is gone - its sections are the System view's
-navs (users, SSO, API keys, MCP, setup).
+navs (users, SSO, API keys, MCP). Setup is not a nav the URL can name:
+`view=system:setup` redirects to the Dashboard. The Setup page itself leaves
+the System view with Plan 10 Task 8, which moves its checks to a Dashboard
+card; until then its sidebar row still opens it in the session.
 
 `internal-collections` is the SUBSYSTEM: its config, its bootstrap
 control and the off-state that says why search is unavailable. It is not
@@ -81,11 +84,14 @@ that is not on the list is dropped, and the address bar is rewritten without it.
 
 Two navs are retired and answered by a redirect, so an old link still lands on a
 page: `view=platform:workspaces` opens the studio (the Workspaces page left the
-Platform view) and `view=system:setup` opens the System dashboard (the Setup
-page left the System view). `view=platform:templates` needs none: it is the
-Workspace templates page. `web` and `templates` are custom pages whose sidebar
-row exists only while the component that draws them is loaded; the grammar
-admits both ids, and a link to one that is not loaded opens Providers.
+Platform view) and `view=system:setup` opens the System dashboard (the grammar
+has no setup nav; the Setup page itself leaves the System view with Plan 10
+Task 8, which moves its checks to a Dashboard card, and until then its sidebar
+row opens it in the session and cannot be addressed). `view=platform:templates`
+needs none: it is the Workspace templates page. `web` and `templates` are
+custom pages whose sidebar row exists only while the component that draws them
+is loaded; the grammar admits both ids, and a link to one that is not loaded
+opens Providers.
 
 Verb navigation writes history. Transient UI (palette open, toasts) stays
 out of the URL. Refresh and pasted links restore exactly.
