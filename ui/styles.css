@@ -76,6 +76,8 @@
   --scrim: oklch(0 0 0 / 0.55);
   --shadow: 0 1px 0 oklch(0 0 0 / 0.35), 0 14px 40px -12px oklch(0 0 0 / 0.6);
   --shadow-sm: 0 1px 0 oklch(0 0 0 / 0.3);
+  /* the platform kit's card (.pk-card): a soft drop, lighter than --shadow */
+  --pk-card-shadow: 0 6px 18px -8px oklch(0 0 0 / 0.45);
   color-scheme: dark;
 }
 
@@ -115,6 +117,7 @@
   --scrim: oklch(0.25 0.01 150 / 0.4);
   --shadow: 0 1px 0 oklch(0.2 0.02 150 / 0.05), 0 14px 40px -14px oklch(0.2 0.02 150 / 0.25);
   --shadow-sm: 0 1px 0 oklch(0.2 0.02 150 / 0.05);
+  --pk-card-shadow: 0 4px 14px -6px oklch(0.2 0.02 150 / 0.18);
   color-scheme: light;
 }
 
@@ -5189,6 +5192,289 @@ button.nv-trace-line { cursor: pointer; }
 }
 .nv-audit-mono { font-family: var(--font-mono); font-size: 11px; }
 .nv-audit-empty { color: var(--text-4); }
+
+/* =========================================================================
+   platform kit (pk-, ui/components/shared/platform-kit.jsx): the header,
+   card grid, card and form primitives every revamped Platform page and
+   overlay shares. The header controls are one height, calc(var(--hit) -
+   4px) (32px at the default density); cards have a 12px radius and a soft
+   shadow; the grid fills the page (auto-fill, minmax(240px, 1fr)) with no
+   width cap. No kit rule uses a transform: a transformed box is the
+   containing block of every position: fixed element inside it.
+   ========================================================================= */
+.pk-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.pk-title { margin: 0; font-size: 17px; font-weight: 600; color: var(--text); }
+.pk-count {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-4);
+}
+.pk-spacer { flex: 1; }
+.pk-filter {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 200px;
+  height: calc(var(--hit) - 4px);
+  box-sizing: border-box;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-8);
+  background: var(--bg-1);
+  color: var(--text-4);
+}
+.pk-filter:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
+.pk-filter input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: 12px;
+  color: var(--text);
+}
+.pk-filter input::placeholder { color: var(--text-4); }
+.pk-pager { display: flex; align-items: center; gap: 4px; }
+.pk-pager-range {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-4);
+  white-space: nowrap;
+  padding: 0 4px;
+}
+.pk-pager-btn {
+  height: calc(var(--hit) - 4px);
+  min-width: calc(var(--hit) - 4px);
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-8);
+  background: var(--bg-1);
+  color: var(--text-2);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.pk-pager-btn:hover:not(:disabled) { border-color: var(--border-strong); color: var(--text); }
+.pk-pager-btn:disabled { opacity: 0.4; cursor: default; }
+.pk-action {
+  height: calc(var(--hit) - 4px);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 12px;
+  border: 1px solid var(--accent);
+  border-radius: var(--r-8);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.pk-action:hover { background: var(--accent-2); border-color: var(--accent-2); }
+.pk-extra {
+  height: calc(var(--hit) - 4px);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-8);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.pk-extra:hover { background: var(--bg-hover); border-color: var(--border-strong); color: var(--text); }
+.pk-extra[aria-disabled="true"] { opacity: 0.6; cursor: default; }
+.pk-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 14px;
+  align-items: stretch;
+}
+.pk-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-12);
+  background: var(--bg-1);
+  box-shadow: var(--pk-card-shadow);
+  transition: border-color 0.12s ease;
+}
+.pk-card:hover,
+.pk-card:focus-within { border-color: var(--accent-border); }
+.pk-card-top { display: flex; align-items: center; gap: 6px; min-height: 32px; margin-bottom: 2px; }
+.pk-card-icon {
+  position: relative;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-9);
+  color: var(--accent);
+}
+/* the tile is the card's tone at low strength; the icon on it is the full tone */
+.pk-card-icon::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: currentColor;
+  opacity: 0.14;
+}
+.pk-card-icon svg { position: relative; }
+.pk-card-gap { flex: 1; }
+.pk-card-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  white-space: nowrap;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--text-3);
+}
+.pk-card-status {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.4;
+  white-space: nowrap;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-3);
+}
+.pk-card-status[data-tone="ok"] { color: var(--green); }
+.pk-card-status[data-tone="warn"] { color: var(--attention); }
+.pk-card-status[data-tone="error"] { color: var(--red); }
+.pk-card-status[data-tone="muted"] { color: var(--text-4); }
+/* an actionable status (seam I-8) is a button above the stretched Open */
+.pk-card-status-btn {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  cursor: pointer;
+}
+.pk-card-status-btn:hover { border-color: currentColor; }
+.pk-card-menu { position: relative; flex-shrink: 0; }
+.pk-card-menu-btn {
+  position: relative;
+  z-index: 1;
+  height: calc(var(--hit) - 4px);
+  min-width: calc(var(--hit) - 4px);
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-8);
+  background: transparent;
+  color: var(--text-3);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.pk-card-menu-btn:hover,
+.pk-card-menu-btn[aria-expanded="true"] { background: var(--bg-hover); border-color: var(--border); color: var(--text); }
+.pk-card-menu-list {
+  position: absolute;
+  z-index: 3;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-8);
+  box-shadow: var(--shadow);
+}
+.pk-card-menu-item {
+  display: flex;
+  align-items: center;
+  padding: 7px 10px;
+  border: none;
+  border-radius: var(--r-6);
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.pk-card-menu-item:hover,
+.pk-card-menu-item:focus-visible { background: var(--bg-hover); }
+.pk-card-menu-item[data-danger="true"] { color: var(--red); }
+.pk-card-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pk-card-sub {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-3);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.pk-card-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+.pk-fact { display: flex; gap: 8px; min-width: 0; }
+.pk-fact-k { flex-shrink: 0; color: var(--text-4); }
+.pk-fact-v { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pk-fact-line { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pk-card-foot { margin-top: auto; padding-top: 8px; }
+.pk-card-open {
+  width: 100%;
+  height: calc(var(--hit) - 4px);
+  border: 1px solid var(--border);
+  border-radius: var(--r-8);
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.pk-card-open:hover { background: var(--bg-hover); border-color: var(--accent-border); }
+/* the Open button stretched over the whole card: a click anywhere on the card opens it */
+.pk-card-open::after { content: ""; position: absolute; inset: 0; }
+@media (max-width: 639px) {
+  .pk-action,
+  .pk-extra,
+  .pk-pager-btn,
+  .pk-card-open,
+  .pk-card-menu-btn,
+  .pk-card-menu-item { min-height: var(--tap-min); }
+  .pk-pager-btn,
+  .pk-card-menu-btn { min-width: var(--tap-min); }
+  .pk-filter { flex: 1 1 100%; width: auto; min-height: var(--tap-min); }
+}
 
 /* =========================================================================
    nv- SYSTEM (wiring plan P5 T11): dashboard health cards, worker fleet,

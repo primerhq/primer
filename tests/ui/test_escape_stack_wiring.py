@@ -36,8 +36,15 @@ def test_the_stack_is_loaded_before_every_component_that_uses_it() -> None:
     assert 'src="foundation/escape-stack.js"' in INDEX
     at = INDEX.index('src="foundation/escape-stack.js"')
     for user in ("components/shared.jsx", "components/shared/bottom-sheet.jsx", "components/console/nv-overlays.jsx", "components/console/nv-palette.jsx",
-                 "components/console/nv-chrome.jsx", "components/console/nv-session-doc.jsx"):
+                 "components/console/nv-chrome.jsx", "components/console/nv-session-doc.jsx", "components/shared/platform-kit.jsx"):
         assert at < INDEX.index(f'src="{user}"'), user
+
+
+def test_the_platform_kits_card_menu_is_a_layer_only_while_it_is_open() -> None:
+    """The card's "⋯" menu (platform revamp kit) sits over a page or an overlay: Escape closes the menu alone, and only while it is open."""
+    menu = _function(_src("components/shared/platform-kit.jsx"), "function PK_CardMenu(")
+    assert re.search(r"window\.primerApi\.useEscape\([\s\S]*,\s*open\)", menu), "the card menu answers Escape only while it is open"
+    assert "preventDefault()" in menu, "the menu says it handled the key"
 
 
 def test_the_modal_the_overlay_panel_the_sheet_the_palette_the_lightbox_and_the_menus_register_with_the_stack() -> None:
