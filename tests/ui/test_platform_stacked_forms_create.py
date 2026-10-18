@@ -145,3 +145,7 @@ def test_a_created_row_of_each_kind_refreshes_the_cards_and_opens_its_detail() -
 
     assert _js(ctx, "refetched") == 2
     assert _js(ctx, "overlays") == [["agents", None, "a-1"], ["graphs", None, "g-1"]]
+
+
+def test_the_agents_page_action_is_the_compact_plus_agent() -> None:
+    assert _js(_ctx(), "NV_PLAT_PAGES.agents.createLabel") == "+ Agent"

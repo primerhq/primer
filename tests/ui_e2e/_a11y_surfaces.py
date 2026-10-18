@@ -124,7 +124,7 @@ PLATFORM_FORMS: dict[str, list[Form]] = {
     "toolsets": [Form("New toolset", MODAL)],
     "tools": [],
     "collections": [Form("New collection", MODAL)],
-    "agents": [Form("New agent", MODAL)],
+    "agents": [Form("+ Agent", MODAL)],
     "graphs": [Form("New graph", MODAL)],
     "triggers": [Form("New trigger", MODAL)],
     "channels": [Form("New channel", MODAL)],
@@ -290,7 +290,7 @@ FLOORS: dict[str, int] = {
     "platform-view collections": 0,                     # likewise: the empty state of an install with no collection has no control; the page and its list having loaded is the check
     "platform-view collections / New collection": 2,
     "platform-view agents": 3,
-    "platform-view agents / New agent": 14,
+    "platform-view agents / + Agent": 14,
     "platform-view graphs": 1,
     "platform-view graphs / New graph": 2,
     "platform-view triggers": 1,
