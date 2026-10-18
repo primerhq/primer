@@ -10,6 +10,8 @@ Two shapes of documented call are read:
 * a JSON block with ``{"tool": "<toolset>::<tool>", "arguments": {...}}`` (``channels.md`` and others);
 * the cookbook shape, an inline-code line ``<toolset>::<tool>`` followed immediately by a JSON block, which is the arguments.
 
+Every fenced block is paired with its own closing fence whatever its language, so a ``text`` or ``bash`` block cannot hide the calls after it.
+
 Only calls to a built-in toolset's existing tool are validated (a missing tool is the other test's finding). A string that is a placeholder
 (``<id>``, ``...``) is accepted wherever it stands, since a doc may write ``<n>`` for a number. What this does NOT check: the values (a profile
 id that exists, a trigger id that was returned by an earlier call); the Response blocks; calls to toolsets that are not built here.
@@ -31,7 +33,10 @@ from tests.docs._live_toolsets import built_in_tools
 REPO = Path(__file__).resolve().parents[2]
 AGENT_DOCS = sorted(p for p in (REPO / "docs" / "agents").rglob("*.md") if not p.name.startswith("_"))
 
-_FENCE = re.compile(r"```(?:json)?[ \t]*\n(.*?)```", re.DOTALL)
+# Every fenced block, whatever its info string (``json``, ``text``, ``bash``, none): a fence must be paired with its own closing fence, or a
+# ```text block shifts every later pair by one and the calls after it go unread. Only the ``json`` and unlabelled blocks are parsed.
+_FENCE = re.compile(r"```(?P<info>[^\n`]*)\n(?P<body>.*?)```", re.DOTALL)
+_JSON_INFO = ("", "json")
 _PROSE_CALL = re.compile(r"`(?P<toolset>[a-z_]+)::(?P<tool>[a-z0-9_]+)`[ \t]*\n```json[ \t]*\n(?P<body>.*?)```", re.DOTALL)
 _PLACEHOLDER = re.compile(r"^(<[^<>]*>|\.\.\.)$")
 
@@ -64,9 +69,11 @@ def calls_in(text: str) -> list[Call]:
             found.append(Call(match["toolset"], match["tool"], json.loads(match["body"])))
         except ValueError:
             continue  # not JSON (an ellipsis, a comment)
-    for body in _FENCE.findall(text):
+    for fence in _FENCE.finditer(text):
+        if fence["info"].strip() not in _JSON_INFO:
+            continue  # a text / shell / python block: not a call
         try:
-            block = json.loads(body)
+            block = json.loads(fence["body"])
         except ValueError:
             continue
         for obj in _objects(block):
@@ -128,6 +135,19 @@ def test_both_shapes_of_a_documented_call_are_read() -> None:
     )
 
     assert [(c.toolset, c.tool) for c in calls_in(text)] == [("system", "create_channel"), ("system", "delete_agent")]
+
+
+def test_a_fence_in_another_language_does_not_hide_the_calls_after_it() -> None:
+    """A ```text (or ```bash) block before a call must still be read as one fenced block. Paired as anything else, its CLOSING fence
+    opens a "block" that ends at the next call's opening fence, every later fence is read off by one, and no call after it is checked."""
+    text = (
+        "```text\nhttp-request refused: ...\n```\n\nThen:\n\n"
+        '```json\n{"tool": "system::delete_agent", "arguments": {"id": "a"}}\n```\n\n'
+        '```json\n{"ok": true}\n```\n\n'
+        '```json\n{"tool": "system::get_agent", "arguments": {"id": "a"}}\n```\n'
+    )
+
+    assert [(c.toolset, c.tool) for c in calls_in(text)] == [("system", "delete_agent"), ("system", "get_agent")]
 
 
 def test_a_string_where_the_schema_wants_a_list_is_refused() -> None:
