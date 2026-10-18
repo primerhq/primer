@@ -247,6 +247,24 @@ async def test_refusals(world_with_playlist, element, kind, kwargs, code, messag
     assert len(w.bus.published) == published and len(await w.events("canvas.event")) == logged
 
 
+async def test_a_list_longer_than_the_options_is_refused_without_being_read():
+    """A multiple Select's value is checked against every option, so a body full of choices must not be walked at all."""
+    class Walked(list):
+        def __iter__(self):
+            raise AssertionError("the list was read")
+
+    w = make_world()
+    await seed_session(w)
+    await _apply(w, 'root = Column([tags])\ntags = Select("Tags", ["a", "b", "c", "d"], multiple=true)')
+    with pytest.raises(CanvasEventRefused) as exc:
+        await _event(w, "tags", "change", value=Walked(["a"] * 5))
+    assert (exc.value.code, exc.value.message) == ("invalid_value", "'tags' has 4 options; the value lists 5")
+    with pytest.raises(CanvasEventRefused) as exc:
+        await _event(w, "tags", "change", value=["a", "a"])
+    assert exc.value.message == "'tags' lists an option twice", "a list that is not too long is still judged by the options"
+    assert (await w.canvas("s1")).events == []
+
+
 async def test_an_event_on_a_session_without_a_canvas_is_unknown():
     w = make_world()
     await seed_session(w)
@@ -554,3 +572,18 @@ async def test_marking_while_a_click_lands_loses_neither(world_with_playlist):
     await w.service.mark_seen("s1", 1)
     row = await w.canvas("s1")
     assert (row.seen_event_seq, row.event_seq) == (1, 2), "the click wrote other fields; the mark is not fenced on them"
+
+
+async def test_a_canvas_deleted_under_an_event_refuses_it(world_with_playlist):
+    """The row vanishes between the read and the patch (its session was deleted): the click has nothing to land on."""
+    w = world_with_playlist
+    spy = StoreSpy(w)
+
+    async def vanishing(id, patch=None, *, where, set_paths=None, conn=None):  # noqa: A002
+        await spy.store.delete(id)
+        return await spy.real_patch_if(id, patch, where=where, set_paths=set_paths, conn=conn)
+
+    spy.store.patch_if = vanishing
+    with pytest.raises(CanvasEventRefused) as exc:
+        await _event(w, "play", "click")
+    assert exc.value.code == "unknown_element" and await w.events("canvas.event") == []

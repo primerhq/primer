@@ -191,6 +191,12 @@ def _check_event(
     kept_data: Any = None
     kept_position: float | None = None
     if kind == "change":
+        if props.get("multiple") and isinstance(value, (list, tuple)) and len(value) > len(props["options"]):
+            # check_select_value walks the list once per option, so a request body full of choices would hold the loop; a list longer
+            # than the options can only repeat one or invent one, and is refused without being read.
+            raise CanvasEventRefused(
+                "invalid_value", f"'{element}' has {len(props['options'])} options; the value lists {len(value)}",
+            )
         problem = check_select_value(element, props, value)
         if problem:
             raise CanvasEventRefused("invalid_value", problem)
