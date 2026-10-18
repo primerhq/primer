@@ -12,12 +12,11 @@ from primer.model.provider import (
     ArtifactStorageProviderType,
 )
 
-
-#: Reserved id of the auto-seeded default provider (the DB backend), so chat media works with zero operator configuration. It is defined
-#: here because this module imports nothing from ``primer.api``: ``primer/artifact/checks.py`` reads it, ``primer.toolset.system`` imports
-#: that check, and ``primer.api`` imports ``primer.toolset.system``, so reading it from the registry was an import cycle.
-#: ``primer.api.registries.artifact_storage_registry`` re-exports it.
-DEFAULT_ARTIFACT_PROVIDER_ID = "artifact-storage-default"
+#: Reserved id of the auto-seeded default provider (the DB backend), so chat media works with zero operator configuration. It is defined in
+#: ``primer.model.providers.artifact`` (a leaf module that imports nothing from ``primer.api``) because ``primer/artifact/checks.py`` reads it,
+#: ``primer.toolset.system`` imports that check, and ``primer.api`` imports ``primer.toolset.system``, so reading it from the registry was an import
+#: cycle. This module and ``primer.api.registries.artifact_storage_registry`` re-export the same object.
+from primer.model.providers.artifact import DEFAULT_ARTIFACT_PROVIDER_ID
 
 
 def _build_db(row: ArtifactStorageProvider, storage_provider: StorageProvider) -> ArtifactStorage:

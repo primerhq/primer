@@ -112,6 +112,7 @@ async def list_artifact_storage_types() -> dict[str, dict[str, Any]]:
                 _form_field("prefix", "Key prefix", "text", help_="Prefix of the stored objects' keys; blank for the bucket root."),
                 _form_field("endpoint_url", "Endpoint URL", "url", help_="Override endpoint, for an S3-compatible store; blank for AWS.", placeholder="https://s3.example.com"),
                 _form_field("region", "Region", "text", help_="Bucket region."),
+                _form_field("addressing_style", "Addressing style", "enum", options=["auto", "path", "virtual"], help_="auto: path-style when an endpoint URL is set (MinIO and most S3-compatible servers), virtual-hosted on AWS."),
                 _form_field("access_key", "Access key id", "password"),
                 _form_field("secret_key", "Secret access key", "password"),
             ],

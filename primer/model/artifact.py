@@ -7,6 +7,10 @@ in the ``ChatMessage`` row; the bytes are rehydrated at turn time and at
 outbound-relay time. The default :class:`primer.artifact.db.DbArtifactStorage`
 persists these rows through the platform StorageProvider; alternate
 ``ArtifactStorage`` backends (filesystem/S3) need not use this model.
+
+:class:`ArtifactLocation` records which provider holds the bytes of an artifact
+that is NOT in the database, so a read or a delete finds it after the active
+store changes.
 """
 
 from __future__ import annotations
@@ -46,4 +50,19 @@ class Artifact(Identifiable):
     )
 
 
-__all__ = ["Artifact"]
+class ArtifactLocation(Identifiable):
+    """Which artifact-storage provider holds the bytes of one artifact.
+
+    The row id IS the artifact id, so there is exactly one record per artifact and a lookup is a primary-key read. It is written only for
+    backends whose ids the database cannot serve (filesystem, S3; ``ArtifactStorage.needs_location_record``). An artifact id with no record
+    is read from the database. There is no id prefix: the id is the artifact's, never minted here.
+    """
+
+    provider_id: str = Field(
+        ...,
+        min_length=1,
+        description="Id of the ArtifactStorageProvider row that holds this artifact's bytes.",
+    )
+
+
+__all__ = ["Artifact", "ArtifactLocation"]
