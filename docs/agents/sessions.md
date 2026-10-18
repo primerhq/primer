@@ -8,6 +8,7 @@ mcp_tools:
   - workspaces::get_workspace_session
   - workspaces::read_workspace_session_messages
   - workspaces::list_workspace_sessions
+  - workspaces::find_sessions
   - workspaces::pause_workspace_session
   - workspaces::resume_workspace_session
   - workspaces::steer_workspace_session
@@ -206,6 +207,11 @@ can run an agent or graph headlessly end to end.
   `workspace_id`, `session_id`.
 - `workspaces::list_workspace_sessions` - list sessions on a
   workspace.
+- `workspaces::find_sessions` - find sessions across every
+  workspace by workspace, agent, state or initiator, newest first.
+  Args: optional `workspace_id`, `agent_id`, `state`, `initiated_by`,
+  `limit` (1..200, default 20). Returns the page of session rows,
+  like `POST /v1/sessions/find`.
 - `workspaces::pause_workspace_session` /
   `workspaces::resume_workspace_session` - pause a running session at
   the next turn boundary, or resume it.
@@ -471,6 +477,28 @@ endpoints answer a graph session parked mid-run on an `ask_user` node (see
 [graphs](graphs.md)). Tool-approval parks have their own pair
 (`tool_approval/pending` + `tool_approval/respond`); see
 [tool-approval](tool-approval.md).
+
+## Find sessions across workspaces
+
+`workspaces::find_sessions` is the cross-workspace finder. The
+operator in prime manages sessions in OTHER workspaces, so this is
+the tool it uses; the top-level `POST /v1/sessions/find` route is
+the same storage query over HTTP. All four filters are optional and
+AND together; with no filter it lists every session, newest first,
+capped by `limit` (1..200, default 20, no offset). The `state`
+filter takes the derived state every row serves (`waiting`,
+`running`, `parked`, `ended`); `initiated_by` is the initiating
+principal's id (`PrincipalRef.id`), not its display name.
+
+```json
+{
+  "tool": "workspaces::find_sessions",
+  "arguments": {
+    "workspace_id": "ws-analysis-01",
+    "state": "running"
+  }
+}
+```
 
 ## Gotchas
 
