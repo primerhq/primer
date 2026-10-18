@@ -22,6 +22,8 @@ empty row instead.
 from __future__ import annotations
 
 import logging
+from enum import Enum
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -30,7 +32,14 @@ from pydantic import BaseModel, ValidationError
 from primer.api.errors import common_responses
 from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
 from primer.api.routers._probe_text import draft_error
-from primer.model.provider import SpeechToTextProvider, TextToSpeechProvider
+from primer.model.provider import (
+    SpeechToTextConfig,
+    SpeechToTextProvider,
+    SpeechToTextProviderType,
+    TextToSpeechConfig,
+    TextToSpeechProvider,
+    TextToSpeechProviderType,
+)
 from primer.model.speech import ACTIVE_SPEECH_CONFIG_ID, ActiveSpeechConfig
 from primer.llm._failure import scrubbed_event_text
 from primer.speech.discovery import list_models, list_voices
@@ -110,9 +119,16 @@ class _SttDraft(BaseModel):
     """A half-filled form, deliberately all-optional.
 
     The point of ``_test`` is to answer a draft the console has not
-    finished typing. Requiring the fields here would make FastAPI reject
-    it with a 422 before the handler could report WHICH field is missing,
-    so validation happens inside against the real row model.
+    finished typing: the Register overlay's "Next" posts what page 1 has
+    when it is pressed, which is the endpoint and maybe a key, before
+    there is any model, voice or limit. So ``_test`` probes the
+    CONNECTION and reads only ``provider`` (``openai`` when left out) and
+    ``config`` (``url``, optional ``api_key``). ``id``, ``default_model``
+    and ``limits`` are accepted so a whole row can be posted as it stands,
+    and are neither read nor validated (Save reports them). Requiring any
+    field here would make FastAPI reject the draft with a 422 before the
+    handler could report WHICH field is missing, so validation happens
+    inside, against the connection's own config class.
     """
 
     id: str | None = None
@@ -124,7 +140,8 @@ class _SttDraft(BaseModel):
 
 class _TtsDraft(BaseModel):
     """See :class:`_SttDraft`: all-optional so a partial draft is
-    reported rather than rejected."""
+    reported rather than rejected, and only ``provider`` and ``config``
+    are read (``default_model`` and ``default_voice`` are not)."""
 
     id: str | None = None
     provider: str | None = None
@@ -139,6 +156,32 @@ def _api_key_of(config) -> str | None:
     return secret.get_secret_value() if secret is not None else None
 
 
+def _draft_connection(
+    draft: _SttDraft | _TtsDraft,
+    *,
+    kinds: type[Enum],
+    config_cls: type[BaseModel],
+    noun: str,
+) -> Any:
+    """The connection a speech ``_test`` probes, from a draft that may hold nothing else.
+
+    ``provider`` is checked only when the draft names one (``openai`` is
+    the one kind there is, so a draft that leaves it out is that kind).
+    ``config`` is validated by the kind's own config class, the class
+    ``SpeechToTextProvider`` / ``TextToSpeechProvider`` hand it to when
+    the row is saved, so a ``url`` the row would refuse is refused here.
+    Raises for the route to report as an invalid draft, with the text
+    cleaned by ``draft_error``. The ``provider`` message does not print
+    the value it was given, the rule ``draft_error`` already follows for
+    pydantic's input: what was typed adds nothing the person needs.
+    """
+    provider = draft.provider
+    if provider is not None and provider not in {kind.value for kind in kinds}:
+        supported = ", ".join(kind.value for kind in kinds)
+        raise ValueError(f"provider: unknown {noun} provider (supported: {supported})")
+    return config_cls.model_validate({} if draft.config is None else draft.config)
+
+
 stt_providers_helpers_router = APIRouter(tags=["speech"])
 tts_providers_helpers_router = APIRouter(tags=["speech"])
 
@@ -150,18 +193,35 @@ tts_providers_helpers_router = APIRouter(tags=["speech"])
         "Test a draft speech-to-text config with a live GET /models round "
         "trip. Returns {ok, models} or {ok=false, error}."
     ),
+    description=(
+        "The draft needs only `config` (`url`, and an optional `api_key`) and "
+        "may name `provider` (`openai`, the default). The row's other fields "
+        "(`id`, `default_model`, `limits`) are not read, so a half-filled form "
+        "can be tested. A draft without a usable `url` answers "
+        "`{ok: false, error: \"invalid draft: ...\"}`."
+    ),
 )
 async def test_stt_provider(body: _SttDraft) -> dict[str, Any]:
     try:
-        draft = SpeechToTextProvider.model_validate(body.model_dump())
+        config = _draft_connection(
+            body,
+            kinds=SpeechToTextProviderType,
+            config_cls=SpeechToTextConfig,
+            noun="speech-to-text",
+        )
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"invalid draft: {draft_error(exc)}"}
     try:
         models = await list_models(
-            url=str(draft.config.url), api_key=_api_key_of(draft.config),
+            url=str(config.url), api_key=_api_key_of(config),
         )
     except Exception as exc:  # noqa: BLE001 -- diagnostic-only path
-        return {"ok": False, "error": scrubbed_event_text(f"{type(exc).__name__}: {exc}", draft)}
+        return {
+            "ok": False,
+            "error": scrubbed_event_text(
+                f"{type(exc).__name__}: {exc}", SimpleNamespace(config=config),
+            ),
+        }
     return {"ok": True, "models": models}
 
 
@@ -208,18 +268,35 @@ async def list_stt_types() -> dict[str, dict[str, Any]]:
         "round trip (falling back to GET /models). Returns {ok, voices} or "
         "{ok=false, error}."
     ),
+    description=(
+        "The draft needs only `config` (`url`, and an optional `api_key`) and "
+        "may name `provider` (`openai`, the default). The row's other fields "
+        "(`id`, `default_model`, `default_voice`, `limits`) are not read, so a "
+        "half-filled form can be tested. A draft without a usable `url` "
+        "answers `{ok: false, error: \"invalid draft: ...\"}`."
+    ),
 )
 async def test_tts_provider(body: _TtsDraft) -> dict[str, Any]:
     try:
-        draft = TextToSpeechProvider.model_validate(body.model_dump())
+        config = _draft_connection(
+            body,
+            kinds=TextToSpeechProviderType,
+            config_cls=TextToSpeechConfig,
+            noun="text-to-speech",
+        )
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"invalid draft: {draft_error(exc)}"}
     try:
         voices = await list_voices(
-            url=str(draft.config.url), api_key=_api_key_of(draft.config),
+            url=str(config.url), api_key=_api_key_of(config),
         )
     except Exception as exc:  # noqa: BLE001 -- diagnostic-only path
-        return {"ok": False, "error": scrubbed_event_text(f"{type(exc).__name__}: {exc}", draft)}
+        return {
+            "ok": False,
+            "error": scrubbed_event_text(
+                f"{type(exc).__name__}: {exc}", SimpleNamespace(config=config),
+            ),
+        }
     return {"ok": True, "voices": voices}
 
 

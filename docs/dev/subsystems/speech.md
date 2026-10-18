@@ -44,7 +44,7 @@ Enumeration over hardcoding: model and voice lists come off the configured endpo
 | `primer/speech/discovery.py` | Live model and voice enumeration. |
 | `primer/speech/resolution.py` | Which voice a synthesis call should use. |
 | `primer/api/registries/speech_registry.py` | Per-row adapter caches. |
-| `primer/api/routers/speech.py` | Provider CRUD, `_test` / `_types`, active config. |
+| `primer/api/routers/speech.py` | Provider CRUD, `_test` (probes a draft's connection) / `_types`, active config. |
 | `primer/api/routers/audio.py` | The browser-facing proxy and enumeration passthroughs. |
 
 ## 5. Data model
@@ -71,7 +71,7 @@ Provider rows and the active-config singleton go through the normal `Storage` in
 
 | Surface | Purpose |
 | --- | --- |
-| `/v1/stt_providers`, `/v1/tts_providers` | Provider CRUD, plus `_test` and `_types`. |
+| `/v1/stt_providers`, `/v1/tts_providers` | Provider CRUD, plus `_test` and `_types`. `_test` needs only `config` (`url`, optional `api_key`): see section 9. |
 | `/v1/speech_active_config` | Read and replace the install-wide defaults. |
 | `POST /v1/audio/transcriptions` | Browser-facing transcription proxy. |
 | `POST /v1/audio/speech` | Browser-facing streaming synthesis proxy. |
@@ -89,6 +89,8 @@ Timeouts are a connect/read pair, never a scalar: a scalar kills a slow transcri
 Voice resolution is agent, then install default, then the provider row's own default.
 
 `speech.stt_configured` and `speech.tts_configured` come from provider storage, not from importability: speech needs no optional extra.
+
+`POST /v1/stt_providers/_test` and `POST /v1/tts_providers/_test` probe a draft's connection, not a row. They read only `config` (`url`, optional `api_key`), validated by `SpeechToTextConfig` / `TextToSpeechConfig`, and `provider`, which must be `openai` when it is named and is `openai` when it is left out. The Register overlay's "Next" posts what page 1 holds, which is the endpoint and maybe a key, before there is a model, a voice or a limit. So `id`, `default_model`, `default_voice` and `limits` are accepted and neither read nor validated: Save reports them. The answers are unchanged and always HTTP 200: `{ok, models}` for ASR, `{ok, voices}` for TTS (falling back to the model list), and `{ok: false, error}` otherwise. A draft with no usable `url`, or with a `provider` this install does not serve, answers `invalid draft: ...` in pydantic's layout without the typed input, and nothing is probed. The text of a probe failure has the draft's key and URL credentials masked (`scrubbed_event_text`).
 
 ## 10. Testing patterns
 
