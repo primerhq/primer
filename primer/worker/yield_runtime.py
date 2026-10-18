@@ -727,6 +727,13 @@ async def _resume_tool_approval(
     the node's own manager): one rule for what an approval runs and what a refusal
     tells the model, wherever the gate sat.
 
+    A ``call_tool`` park's inner tool is re-run by
+    :func:`_resume_call_tool_dispatch`; a pause of it inside a nested agent
+    or graph run is refused here, for the graph node as for the session,
+    because the session's re-park (the coordinator's flat one) keeps no
+    frames. The nested walk (``primer.worker.frames.apply_leaf``) keeps every
+    frame and does not come through here.
+
     Parameters
     ----------
     blob
@@ -777,12 +784,36 @@ async def _resume_tool_approval(
         # a principal, which is never read.
         via = metadata.get("via_call_tool")
         if via is not None:
-            return await _resume_call_tool_dispatch(
-                via=via,
-                original_call=original_call,
-                tool_manager=tool_manager,
-                principal=principal,
-            )
+            try:
+                return await _resume_call_tool_dispatch(
+                    via=via,
+                    original_call=original_call,
+                    tool_manager=tool_manager,
+                    principal=principal,
+                )
+            except YieldToWorker as paused:
+                if not getattr(paused, "frames", None):
+                    raise
+                # A pause inside a NESTED agent or graph run: ``invoke_agent`` and
+                # ``invoke_graph`` leave the child's frames on it. This path's
+                # re-park (the coordinator's flat one) keeps no frames, so the
+                # child's answer would be delivered to the child's call and this
+                # call would never be answered: it is refused, as every pause was
+                # before the re-run let one through. (The nested walk,
+                # ``primer.worker.frames.apply_leaf``, keeps every frame and parks
+                # such a pause again.)
+                return ToolResultPart(
+                    id=original_call.id,
+                    output=json.dumps({
+                        "is_error": True,
+                        "reason": (
+                            "call_tool resume: the approved tool paused inside a nested agent or graph run, "
+                            "which an approval re-run cannot park again"
+                        ),
+                        "tool_name": original_call.name,
+                    }),
+                    error=True,
+                )
         # ``principal`` only when the run has one: a manager stand-in written before it existed takes no such argument.
         return await tool_manager.execute(
             original_call, bypass_approval=True, **({"principal": principal} if principal is not None else {}),
@@ -823,10 +854,10 @@ async def _resume_call_tool_dispatch(
     * ``via`` names the toolset (``toolset_id``); a park written before pivot P1 also carries a ``principal`` a model chose, which is never
       read (the provider's principal is the context's);
     * a pause of the inner tool (:class:`~primer.model.yield_.YieldToWorker`: ``ask_user``, ``wait_for_event``, ``sleep``) is not an error, so it
-      propagates. The caller (the session resume coordinator) re-parks the session on the tool's own event, and the answer is delivered to this
-      call's id. One pause is not re-parked: a nested one (the yield carries ``frames``, as ``invoke_agent`` and ``invoke_graph`` leave it when their
-      child run pauses). The coordinator's flat re-park keeps no frames, so the answer would be delivered to the nested run's call and not to this one;
-      it is refused with an error result instead, as every pause was before this path let one through.
+      propagates, nested or not (a nested one carries ``frames``, as ``invoke_agent`` and ``invoke_graph`` leave it when their child run pauses), and
+      the caller parks it again, the answer delivered to this call's id. Two callers: the session path (:func:`_resume_tool_approval`), whose flat
+      re-park keeps no frames and so refuses a nested pause, and the nested walk (``primer.worker.frames.apply_leaf``, a gate raised inside a
+      subagent), whose re-park keeps every frame.
 
     Anything else that goes wrong (no registry, no such toolset, the call raising) fails closed to an error ToolResultPart.
     """
@@ -860,20 +891,8 @@ async def _resume_call_tool_dispatch(
                 else context_for(original_call.id)
             ),
         )
-    except YieldToWorker as paused:
-        if getattr(paused, "frames", None):
-            return ToolResultPart(
-                id=original_call.id,
-                output=json.dumps({
-                    "is_error": True,
-                    "reason": (
-                        "call_tool resume: the approved tool paused inside a nested agent or graph run, "
-                        "which an approval re-run cannot park again"
-                    ),
-                    "tool_name": original_call.name,
-                }),
-                error=True,
-            )
+    except YieldToWorker:
+        # A pause, not a failure: the caller parks it again (see above).
         raise
     except Exception as exc:  # noqa: BLE001 - fail-closed synthesis
         return ToolResultPart(

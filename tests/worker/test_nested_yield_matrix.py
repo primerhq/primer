@@ -72,7 +72,9 @@ from primer.model.workspace_session import (
     SessionStatus,
     WorkspaceSession,
 )
-from primer.model.yield_ import Yielded, YieldToWorker
+from primer.model.except_ import NotFoundError
+from primer.model.yield_ import ToolContext, Yielded, YieldToWorker
+from primer.toolset.system import build_system_toolset
 from primer.worker.frames import AgentFrame, AgentResumeContext
 from primer.worker.pool import WorkerPool
 from primer.worker.yield_runtime import ParkedState
@@ -108,6 +110,18 @@ class _ScriptedLLM:
                 yield ev
 
         return _gen()
+
+
+class _RecordingScriptedLLM(_ScriptedLLM):
+    """``_ScriptedLLM`` that also keeps the messages of every request."""
+
+    def __init__(self, *, scripts: list[list]) -> None:
+        super().__init__(scripts=scripts)
+        self.requests: list[list] = []
+
+    def stream(self, *, model, messages, **kwargs):  # noqa: ANN001
+        self.requests.append(list(messages))
+        return super().stream(model=model, messages=messages, **kwargs)
 
 
 class _PlainToolset:
@@ -267,6 +281,23 @@ class _ProviderRegistry:
 
     async def get_toolset(self, _toolset_id: str) -> Any:
         return self._toolset
+
+
+class _MappedRegistry:
+    """The provider registry when the toolsets differ by id: the scripted LLM, and each toolset under its own id (any other id is not found)."""
+
+    def __init__(self, *, llm: Any, toolsets: dict[str, Any]) -> None:
+        self._llm = llm
+        self.toolsets = dict(toolsets)
+
+    async def get_llm(self, _provider_id: str) -> Any:
+        return self._llm
+
+    async def get_toolset(self, toolset_id: str) -> Any:
+        try:
+            return self.toolsets[toolset_id]
+        except KeyError:
+            raise NotFoundError(f"toolset {toolset_id!r} not found") from None
 
 
 class _PoliciesOnlyResolver(ApprovalResolver):
@@ -1065,3 +1096,93 @@ async def test_a_frame_that_names_no_initiator_resumes_as_its_session_not_as_the
     assert part.error is False and json.loads(part.output) == {"output": "done"}
     assert toolset.ran == ["user_x"], "the resumed subagent ran an admin-only tool in a user's session"
     assert llm._scripts == [], "the subagent's turn went on past the refused call"
+
+
+# ===========================================================================
+# Scenario 7: a call_tool gate inside a subagent (pivot P2's agent kit)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool, parked_for, ran",
+    [("user_x", _USER, ["user_x"]), ("admin_x", _ADMIN, [])],
+    ids=["the-approved-inner-tool-runs", "a-park-written-for-an-admin-is-refused-in-a-users-session"],
+)
+async def test_subagent_call_tool_gate_approve_reruns_the_inner_tool_and_delivers(monkeypatch, tool, parked_for, ran):
+    """FULL session loop, in the shape pivot P2's agents take (the ``call_tool``
+    kit). A user's session called invoke_agent; the subagent asked
+    ``system__call_tool`` for the gated ``rec.<tool>``; the real handler parked
+    it, so the session PARKED with ``frames=[AgentFrame]`` on the handler's
+    ``_approval`` leaf (``via_call_tool``). Deliver APPROVE: ``apply_leaf`` runs
+    the inner tool through the re-run the session path uses, as the subagent
+    of this user's session, so the role is checked again (a park written for an
+    admin's run does not run an admin-only tool here); the subagent's turn goes
+    on with the result as its call_tool call's; and the session's invoke_agent
+    call gets the subagent's answer. Before the fix ``apply_leaf`` sent the bare
+    inner name to the subagent's manager, which could not route it: nothing ran
+    and the whole delegation failed."""
+    sid = f"sess-sub-call-tool-{tool}"
+    invoke_tcid = "invoke-tc-ct"
+    call_tool_id = "call-tool-ct"
+    arguments = {"toolset_id": "rec", "tool_name": tool, "arguments": {"a": 1}}
+
+    rec = _RoleRecordingToolset()
+    llm = _RecordingScriptedLLM(scripts=[_final_text_script("used it")])
+    registry = _MappedRegistry(llm=llm, toolsets={"rec": rec})
+    base = _FakeStorageProvider()
+    system_toolset = build_system_toolset(storage_provider=base, provider_registry=registry)  # type: ignore[arg-type]
+    registry.toolsets["system"] = system_toolset
+    await base.get_storage(ToolApprovalPolicy).create(
+        ToolApprovalPolicy(id="p-ct", toolset_id="rec", tool_name=tool, approval=RequiredApprovalConfig()),
+    )
+    agent_storage = _AgentStorageProvider(
+        base=base, agent=_agent(tools=["system__call_tool"]), provider_row=_provider_row()
+    )
+    pool, engine = _build_pool(
+        base_storage=base, agent_storage=agent_storage, registry=registry, resolver=_PoliciesOnlyResolver([]),
+    )
+
+    # The park the subagent's live turn made: the real handler gates the inner tool, for the run it was made for, and parks.
+    ctx = ToolContext(tool_call_id=call_tool_id, session_id=sid, workspace_id=f"ws-{sid}", initiated_by=parked_for)
+    with pytest.raises(YieldToWorker) as gate:
+        await system_toolset.call(tool_name="call_tool", ctx=ctx, arguments=arguments)
+    assert gate.value.yielded.resume_metadata["via_call_tool"] == {"toolset_id": "rec", "tool_name": tool}
+    asked = Message(
+        role="assistant",
+        parts=[ToolCallPart(id=call_tool_id, name="system__call_tool", arguments=arguments)],
+    )
+    frame = _agent_frame(
+        sid=sid,
+        invoke_tcid=invoke_tcid,
+        sub_history=[asked.model_dump(mode="json")],
+        tools=["system__call_tool"],
+        initiated_by=parked_for,
+    )
+    sess = _make_session(
+        sid,
+        leaf=gate.value.yielded,
+        leaf_tcid=call_tool_id,
+        invoke_tcid=invoke_tcid,
+        frames=[frame],
+        resume_event_payload={"decision": "approved"},
+        initiated_by=_USER,
+    )
+    await base.get_storage(WorkspaceSession).create(sess)
+
+    executor = _wire_session_executor(pool, monkeypatch)
+    await pool._run_engine_session(await _claim(engine, sid))
+
+    part = _injected_tool_result(executor, invoke_tcid)
+    assert part.error is False and json.loads(part.output) == {"output": "used it"}, "the delegation finished"
+    assert rec.ran == ran
+    # The subagent's resumed turn got the re-run's result as the result of its own call_tool call.
+    (request,) = llm.requests
+    result = [p for m in request if m.role == "tool" for p in m.parts][-1]
+    assert result.id == call_tool_id
+    if ran:
+        assert (result.error, json.loads(result.output)) == (False, {"ran": tool})
+        (seen,) = rec.contexts
+        assert (seen.tool_call_id, seen.session_id, seen.initiated_by) == (call_tool_id, sid, _USER)
+    else:
+        assert result.error is True and json.loads(result.output)["type"] == "forbidden", result.output
