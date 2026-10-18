@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 from primer.agent.rego import RegoCompileError, RegoEvaluator
 from primer.common.preview_paths import closed_set_names
+from primer.common.toolset_ids import canonical_toolset_id, toolset_id_spellings
 from primer.int.storage import Storage
 from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
 from primer.model.yield_ import GATE_ID_KEY, new_gate_id
@@ -125,7 +126,8 @@ def _choose_policy(rows: Sequence[ToolApprovalPolicy], *, toolset_id: str, tool_
     """The policy that gates ``(toolset_id, tool_name)`` among its ENABLED rows, by the set and never by the order they came in.
 
     Uniqueness per tool is refused at write time (REST and the system tools share ``check_policy_unique``) but is not a storage
-    constraint, so a raced pair of creates or a row from before the check can leave two. The old pick, the first row of an unordered
+    constraint, so a raced pair of creates or a row from before the check can leave two (one under ``_system`` and one under ``system``
+    is such a pair: they are the same tool). The old pick, the first row of an unordered
     ``find``, depended on the backend's row order: a weaker duplicate could shadow a strict one and the winner could change with no edit.
 
     The rule is MOST RESTRICTIVE WINS, on both axes a policy controls (newest cannot be told: a policy carries no timestamp):
@@ -229,13 +231,46 @@ def approval_resume_metadata(
     return metadata
 
 
+def _policy_predicate(toolset_id: str, tool_name: str) -> Predicate:
+    """The lookup of the ENABLED policies of one ``(toolset_id, tool_name)``, spelled exactly as stored.
+
+    ``(toolset_id == X AND tool_name == Y) AND enabled == True``. The outer shape lets callers (including test fakes) navigate:
+    ``predicate.left.left.right.value`` is the toolset_id value and ``predicate.left.right.right.value`` the tool_name value.
+    """
+    toolset_pred = Predicate(
+        left=FieldRef(name="toolset_id"),
+        op=Op.EQ,
+        right=Value(value=toolset_id),
+    )
+    tool_pred = Predicate(
+        left=FieldRef(name="tool_name"),
+        op=Op.EQ,
+        right=Value(value=tool_name),
+    )
+    key_pred = Predicate(
+        left=toolset_pred,
+        op=Op.AND,
+        right=tool_pred,
+    )
+    enabled_pred = Predicate(
+        left=FieldRef(name="enabled"),
+        op=Op.EQ,
+        right=Value(value=True),
+    )
+    return Predicate(
+        left=key_pred,
+        op=Op.AND,
+        right=enabled_pred,
+    )
+
+
 class ApprovalResolver:
     """Per-app-instance lookup + cache for ToolApprovalPolicy rows.
 
-    Lookup key is ``(toolset_id, tool_name)``. Uniqueness is refused at
-    write time, not by storage, so more than one enabled row can exist
-    (see :func:`_choose_policy` for what the lookup then does). Entries are
-    cached in-process for ``cache_ttl_seconds`` (default 30 s) so
+    Lookup key is ``(toolset_id, tool_name)``, with the toolset read as the PLATFORM knows it: the registry runs one provider for a retired id and its
+    current one (``_system`` is ``system``), so they are one toolset here too (:mod:`primer.common.toolset_ids`). A lookup under either spelling finds a
+    policy stored under either, and the two share a cache entry. Uniqueness is refused at write time, not by storage, so more than one enabled row can
+    exist (see :func:`_choose_policy` for what the lookup then does). Entries are cached in-process for ``cache_ttl_seconds`` (default 30 s) so
     operator edits propagate without a restart.
     """
 
@@ -257,6 +292,10 @@ class ApprovalResolver:
         toolset_id: str,
         tool_name: str,
     ) -> ToolApprovalPolicy | None:
+        # A policy is for a TOOLSET, not for a spelling of its id. The registry runs the same provider for ``_system`` and ``system``, so a call spelled either
+        # way runs the same tool and must meet the same gate: look up under the current id (a policy on ``system::x`` gates ``_system::x``; keyed on the id as the
+        # caller wrote it, it did not) and read the rows stored under every spelling (a policy written for ``_system`` gates ``system::x``).
+        toolset_id = canonical_toolset_id(toolset_id)
         key = (toolset_id, tool_name)
         now = time.monotonic()
         cached = self._cache.get(key)
@@ -266,41 +305,15 @@ class ApprovalResolver:
             cached = self._cache.get(key)
             if cached is not None and cached[0] > now:
                 return cached[1]
-            # Build a compound predicate:
-            #   (toolset_id == X AND tool_name == Y) AND enabled == True
-            #
-            # The outer shape lets callers (including test fakes) navigate:
-            #   predicate.left.left.right.value  -> toolset_id value
-            #   predicate.left.right.right.value -> tool_name value
-            toolset_pred = Predicate(
-                left=FieldRef(name="toolset_id"),
-                op=Op.EQ,
-                right=Value(value=toolset_id),
-            )
-            tool_pred = Predicate(
-                left=FieldRef(name="tool_name"),
-                op=Op.EQ,
-                right=Value(value=tool_name),
-            )
-            key_pred = Predicate(
-                left=toolset_pred,
-                op=Op.AND,
-                right=tool_pred,
-            )
-            enabled_pred = Predicate(
-                left=FieldRef(name="enabled"),
-                op=Op.EQ,
-                right=Value(value=True),
-            )
-            predicate = Predicate(
-                left=key_pred,
-                op=Op.AND,
-                right=enabled_pred,
-            )
-            page = await self._storage.find(
-                predicate, OffsetPage(offset=0, length=_CANDIDATES),
-            )
-            policy = _choose_policy(page.items, toolset_id=toolset_id, tool_name=tool_name)
+            # One read per spelling (one, for a toolset with no retired id), each the same lookup as always, so a backend needs no new operator. Keyed by id: a row is
+            # one policy however many of the reads returned it (a storage that ignores the predicate returns it every time).
+            candidates: dict[str, ToolApprovalPolicy] = {}
+            for spelling in toolset_id_spellings(toolset_id):
+                page = await self._storage.find(
+                    _policy_predicate(spelling, tool_name), OffsetPage(offset=0, length=_CANDIDATES),
+                )
+                candidates.update((row.id, row) for row in page.items)
+            policy = _choose_policy(list(candidates.values()), toolset_id=toolset_id, tool_name=tool_name)
             self._cache[key] = (now + self._ttl, policy)
             return policy
 

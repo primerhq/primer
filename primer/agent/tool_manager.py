@@ -43,6 +43,7 @@ from primer.agent.approval import (
 from primer.authz import _role_allows
 from primer.common.log import redact_credentials
 from primer.common.preview_paths import closed_set_names
+from primer.common.toolset_ids import canonical_toolset_id
 from primer.int.toolset import ToolsetProvider
 from primer.model.chat import Tool, ToolCallPart, ToolCallResult, ToolResultPart, NOTIFYING_TOOL_RESULT
 from primer.model.except_ import (
@@ -673,8 +674,12 @@ class ToolExecutionManager:
             and self._approval_resolver is not None
             and toolset_id != _EXTERNAL_TOOLSET_ID
         ):
+            # The gate is keyed on the toolset as the platform knows it. An agent's ``tools`` entry or a graph node's ``tool_id`` may carry a retired prefix
+            # (``_system__x``): the registry resolves it to the very provider ``system__x`` runs, so it meets the same policy, and a Rego or LLM gate reads the
+            # current id on its context. ``toolset_id`` itself stays as written: it is the key of the routing table the call is dispatched through.
+            gate_toolset_id = canonical_toolset_id(toolset_id)
             policy = await self._approval_resolver.find(
-                toolset_id=toolset_id, tool_name=bare_name,
+                toolset_id=gate_toolset_id, tool_name=bare_name,
             )
             if policy is not None and policy.enabled:
                 # Derive identity from the bound workspace session so the
@@ -687,7 +692,7 @@ class ToolExecutionManager:
                 sess = self._workspace_session
                 ctx = ApprovalContext(
                     tool_name=bare_name,
-                    toolset_id=toolset_id,
+                    toolset_id=gate_toolset_id,
                     arguments=call.arguments or {},
                     agent_id=getattr(sess, "agent_id", None),
                     session_id=getattr(sess, "session_id", None),
@@ -757,7 +762,7 @@ class ToolExecutionManager:
                                 },
                                 # Which arguments the Inbox card may show, resolved here where the descriptor and the policy
                                 # are both in hand: the route that draws the card reads only this blob.
-                                preview=self._preview_for(policy, call, toolset_id=toolset_id, bare_name=bare_name),
+                                preview=self._preview_for(policy, call, toolset_id=gate_toolset_id, bare_name=bare_name),
                             ),
                         ),
                         tool_call_id=call.id,

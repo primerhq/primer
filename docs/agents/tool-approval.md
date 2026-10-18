@@ -29,6 +29,23 @@ policy lookup runs on every call (it's not cached on the tool's
 descriptor) so flipping a policy on takes effect for the next call
 without restart.
 
+A toolset has one id as far as a policy is concerned, however a call
+spells it. Four built-in toolsets lost an underscore prefix (`_system`
+is now `system`, `_workspaces` is `workspaces`, `_misc` is `misc`,
+`_search` is `search`) and the platform still runs the same toolset for
+either spelling. So a policy on `system::create_agent` gates a
+`call_tool` made with `toolset_id: "_system"`, and gates an agent or a
+graph node that names `_system__create_agent` exactly as it gates one
+that names `system__create_agent`; and a policy written for the old id
+gates the tool under the current one (rows written earlier keep
+working). Write new policies with the current id. A second policy for
+the same tool under the other spelling is refused as a duplicate; if
+two such rows already exist they are settled as duplicates are: the
+tool is gated unconditionally and, unless the rows agree on who may
+decide, only an admin may. The approval card and the audit record name
+the current id, and a Rego or LLM gate reads it as `input.toolset_id`,
+whichever spelling the call used.
+
 The thing that catches everyone is the interaction with MCP. The MCP
 exposure layer treats "this tool has a `required`-type policy" as
 "this tool cannot be exposed to MCP clients at all" - because MCP

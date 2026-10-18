@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 import pytest
 
 from primer.agent.approval import ApprovalContext, ApprovalResolver, effective_approvers, evaluate_approval_gate
+from primer.common.toolset_ids import TOOLSET_ID_ALIASES
 from primer.model.tool_approval import (
     ApprovalType,
     ApproverSpec,
@@ -55,28 +56,29 @@ async def test_resolver_returns_match():
 
 @pytest.mark.asyncio
 async def test_resolver_caches_within_ttl():
+    # A toolset with no retired spelling: one uncached lookup is one storage read (an aliased one reads each spelling, see below).
     policy = ToolApprovalPolicy(
-        id="p", toolset_id="system", tool_name="shell_exec",
+        id="p", toolset_id="mcp-1", tool_name="shell_exec",
         approval=RequiredApprovalConfig(),
     )
     storage = _FakeStorage([policy])
     r = ApprovalResolver(storage=storage, cache_ttl_seconds=60.0)
-    await r.find(toolset_id="system", tool_name="shell_exec")
-    await r.find(toolset_id="system", tool_name="shell_exec")
+    await r.find(toolset_id="mcp-1", tool_name="shell_exec")
+    await r.find(toolset_id="mcp-1", tool_name="shell_exec")
     assert storage.find_calls == 1
 
 
 @pytest.mark.asyncio
 async def test_resolver_invalidate_clears_cache():
     policy = ToolApprovalPolicy(
-        id="p", toolset_id="system", tool_name="shell_exec",
+        id="p", toolset_id="mcp-1", tool_name="shell_exec",
         approval=RequiredApprovalConfig(),
     )
     storage = _FakeStorage([policy])
     r = ApprovalResolver(storage=storage, cache_ttl_seconds=60.0)
-    await r.find(toolset_id="system", tool_name="shell_exec")
+    await r.find(toolset_id="mcp-1", tool_name="shell_exec")
     r.invalidate()
-    await r.find(toolset_id="system", tool_name="shell_exec")
+    await r.find(toolset_id="mcp-1", tool_name="shell_exec")
     assert storage.find_calls == 2
 
 
@@ -304,3 +306,137 @@ async def test_the_gate_reason_names_the_duplicate_fallback():
     assert verdict.required and verdict.reason, "the fallback gate carries no reason"
     assert "duplicate" in verdict.reason and "p-a" in verdict.reason and "p-b" in verdict.reason, verdict.reason
     assert "admin" in verdict.reason, "it should say who may decide it"
+
+
+# ---- one toolset, several spellings (security: the approval-gate bypass through a toolset-id alias) ---------------------------------
+#
+# The registry runs the SAME provider for ``_system`` and ``system``, so a policy has to gate a call whichever way either is spelled. The lookup keyed on the id as
+# written: a policy on ``system::list_llm_providers`` did not gate ``_system::list_llm_providers`` (a bypass), and a policy written for ``_system`` (the model
+# accepts any string, and its field description names the underscore ids) did not gate ``system`` (the same bypass the other way). The resolver now reads every spelling
+# of the toolset it is asked for and keys its cache on the current id.
+
+ALIASES = sorted(TOOLSET_ID_ALIASES.items())
+
+
+def _on(toolset_id: str, pid: str = "p", approval=None, **fields) -> ToolApprovalPolicy:
+    return ToolApprovalPolicy(
+        id=pid, toolset_id=toolset_id, tool_name="shell_exec", approval=approval if approval is not None else RequiredApprovalConfig(), **fields,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("alias", "current"), ALIASES)
+@pytest.mark.parametrize("stored", ["current", "alias"])
+@pytest.mark.parametrize("asked", ["current", "alias"])
+async def test_a_policy_is_found_under_every_spelling_of_its_toolset(alias, current, stored, asked):
+    spelled = {"current": current, "alias": alias}
+    resolver = ApprovalResolver(storage=_FakeStorage([_on(spelled[stored])]))
+
+    hit = await resolver.find(toolset_id=spelled[asked], tool_name="shell_exec")
+
+    assert hit is not None and hit.id == "p", f"the policy stored under {spelled[stored]!r} did not gate a lookup for {spelled[asked]!r}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("alias", "current"), ALIASES)
+async def test_another_toolsets_policy_for_a_tool_of_the_same_name_gates_neither_spelling(alias, current):
+    resolver = ApprovalResolver(storage=_FakeStorage([_on("crud")]))
+
+    assert await resolver.find(toolset_id=alias, tool_name="shell_exec") is None
+    assert await resolver.find(toolset_id=current, tool_name="shell_exec") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("alias", "current"), ALIASES)
+async def test_the_spellings_share_one_cache_entry(alias, current):
+    """Both spellings are read once on a miss; after that a lookup under EITHER is a hit, and ``invalidate`` drops it for both."""
+    storage = _FakeStorage([_on(current)])
+    resolver = ApprovalResolver(storage=storage, cache_ttl_seconds=60.0)
+
+    await resolver.find(toolset_id=alias, tool_name="shell_exec")
+    assert storage.find_calls == 2, "one read for each spelling of the toolset"
+    await resolver.find(toolset_id=current, tool_name="shell_exec")
+    await resolver.find(toolset_id=alias, tool_name="shell_exec")
+    assert storage.find_calls == 2, "a lookup under either spelling is answered from the one cache entry"
+
+    resolver.invalidate()
+    await resolver.find(toolset_id=current, tool_name="shell_exec")
+    assert storage.find_calls == 4
+
+
+@pytest.mark.asyncio
+async def test_a_toolset_with_no_retired_spelling_is_still_read_once():
+    storage = _FakeStorage([_on("crud")])
+
+    assert (await ApprovalResolver(storage=storage).find(toolset_id="crud", tool_name="shell_exec")).id == "p"
+
+    assert storage.find_calls == 1
+
+
+class _IgnoresThePredicate:
+    """A storage whose ``find`` returns every row whatever it was asked (as the system toolset's test storage does)."""
+
+    def __init__(self, rows: list[ToolApprovalPolicy]) -> None:
+        self._rows = rows
+
+    async def find(self, predicate, page, *, order_by=None):
+        class _Resp:
+            items = list(self._rows)
+
+        return _Resp()
+
+
+@pytest.mark.asyncio
+async def test_a_row_read_for_both_spellings_is_one_policy_not_a_duplicate_of_itself():
+    only = _on("system", pid="p-only")
+
+    chosen = await ApprovalResolver(storage=_IgnoresThePredicate([only])).find(toolset_id="_system", tool_name="shell_exec")
+
+    assert chosen is only, "the same stored row, read twice, was treated as two policies"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reverse", [False, True], ids=["alias-first", "current-first"])
+async def test_policies_under_both_spellings_are_duplicates_and_fail_closed(reverse, caplog):
+    """Uniqueness is refused per toolset at write time, but a row written before it (or by a race) can leave one policy for each spelling. They are the SAME tool's
+    policies, so the choice is the duplicates' (an unconditional gate wins, an admin alone decides), in either order, and the log names both rows."""
+    weak, strict = _on("_system", pid="p-a-weak", approval=_rego()), _on("system", pid="p-b-strict")
+    rows = [strict, weak] if reverse else [weak, strict]
+
+    with caplog.at_level(logging.WARNING, logger="primer.agent.approval"):
+        chosen = await ApprovalResolver(storage=_FakeStorage(rows)).find(toolset_id="system", tool_name="shell_exec")
+
+    assert chosen is not None and chosen.approval.type is ApprovalType.REQUIRED, "the weaker policy of the other spelling shadowed the unconditional gate"
+    assert not await _may_decide(chosen, "bob", "user") and await _may_decide(chosen, "root", "admin")
+    text = " ".join(r.getMessage() for r in caplog.records)
+    assert "p-a-weak" in text and "p-b-strict" in text and "'system'" in text, text
+
+
+@pytest.mark.asyncio
+async def test_on_real_storage_a_policy_under_either_spelling_gates_both_and_a_disabled_one_gates_neither(tmp_path):
+    """Through the real predicate (``enabled`` and the tool name included): the alias row and the current row are each found from the other's id."""
+    from primer.model.provider import SqliteConfig
+    from primer.storage.sqlite import SqliteStorageProvider
+
+    sp = SqliteStorageProvider(SqliteConfig(path=tmp_path / "t.sqlite"))
+    await sp.initialize()
+    try:
+        storage = sp.get_storage(ToolApprovalPolicy)
+        await storage.create(ToolApprovalPolicy(
+            id="p-alias", toolset_id="_misc", tool_name="get_datetime", approval=RequiredApprovalConfig(),
+        ))
+        await storage.create(ToolApprovalPolicy(
+            id="p-off", toolset_id="system", tool_name="get_datetime", approval=RequiredApprovalConfig(), enabled=False,
+        ))
+        await storage.create(ToolApprovalPolicy(
+            id="p-other-tool", toolset_id="misc", tool_name="uuid_v4", approval=RequiredApprovalConfig(),
+        ))
+        resolver = ApprovalResolver(storage=storage)
+
+        for asked in ("misc", "_misc"):
+            hit = await resolver.find(toolset_id=asked, tool_name="get_datetime")
+            assert hit is not None and hit.id == "p-alias", asked
+        for asked in ("system", "_system"):
+            assert await resolver.find(toolset_id=asked, tool_name="get_datetime") is None, f"a disabled policy gated {asked!r}"
+    finally:
+        await sp.aclose()

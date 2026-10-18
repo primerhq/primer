@@ -63,6 +63,53 @@ class TestToolApprovalPolicy:
         assert (await sp.get_storage(ToolApprovalPolicy).get("tap-2")).tool_name == "t2"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("first", "second"), [("system", "_system"), ("_system", "system"), ("_misc", "misc"), ("workspaces", "_workspaces"), ("_search", "search")])
+    async def test_a_second_policy_under_another_spelling_of_the_toolset_is_refused(self, world, first, second) -> None:
+        """``_system`` is the retired id of ``system`` and the registry runs the same provider for both: a policy for each would be two policies for one tool, which
+        is exactly what the uniqueness rule exists to prevent (the resolver would have to settle them as duplicates)."""
+        sp, toolset, _ = world
+        await _call(toolset, "create_tool_approval_policy", entity=_policy("tap-1", toolset_id=first))
+
+        is_error, answer = await _call(toolset, "create_tool_approval_policy", entity=_policy("tap-2", toolset_id=second))
+
+        assert is_error and answer["type"] == "conflict", answer
+        assert "already exists" in answer["message"] and "tap-1" in answer["message"]
+        assert await sp.get_storage(ToolApprovalPolicy).get("tap-2") is None, "a duplicate policy was stored"
+
+    @pytest.mark.asyncio
+    async def test_an_update_onto_another_spelling_of_a_taken_toolset_is_refused(self, world) -> None:
+        sp, toolset, _ = world
+        await _call(toolset, "create_tool_approval_policy", entity=_policy("tap-1", toolset_id="_system", tool_name="t1"))
+        await _call(toolset, "create_tool_approval_policy", entity=_policy("tap-2", toolset_id="system", tool_name="t2"))
+
+        is_error, answer = await _call(
+            toolset, "update_tool_approval_policy", id="tap-2", entity=_policy("tap-2", toolset_id="system", tool_name="t1"),
+        )
+
+        assert is_error and answer["type"] == "conflict" and "tap-1" in answer["message"], answer
+        assert (await sp.get_storage(ToolApprovalPolicy).get("tap-2")).tool_name == "t2"
+
+    @pytest.mark.asyncio
+    async def test_a_policy_may_be_respelled_in_place(self, world) -> None:
+        """The row being updated is the one policy of its tool, whichever spelling it is stored under: moving it from ``_system`` to ``system`` is not a clash with itself."""
+        sp, toolset, _ = world
+        await _call(toolset, "create_tool_approval_policy", entity=_policy("tap-1", toolset_id="_system"))
+
+        is_error, answer = await _call(toolset, "update_tool_approval_policy", id="tap-1", entity=_policy("tap-1", toolset_id="system"))
+
+        assert not is_error, answer
+        assert (await sp.get_storage(ToolApprovalPolicy).get("tap-1")).toolset_id == "system"
+
+    @pytest.mark.asyncio
+    async def test_two_toolsets_with_no_shared_spelling_may_each_have_a_policy_for_a_tool_of_the_same_name(self, world) -> None:
+        sp, toolset, _ = world
+        await _call(toolset, "create_tool_approval_policy", entity=_policy("tap-1", toolset_id="system", tool_name="t1"))
+
+        is_error, answer = await _call(toolset, "create_tool_approval_policy", entity=_policy("tap-2", toolset_id="crud", tool_name="t1"))
+
+        assert not is_error, answer
+
+    @pytest.mark.asyncio
     async def test_a_policy_can_be_updated_in_place(self, world) -> None:
         sp, toolset, _ = world
         await _call(toolset, "create_tool_approval_policy", entity=_policy("tap-1"))
