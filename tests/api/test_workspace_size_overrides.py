@@ -15,6 +15,8 @@ from httpx import ASGITransport
 from primer.api.app import create_test_app
 from primer.api.registries import ProviderRegistry, WorkspaceRegistry
 from primer.model.storage import OffsetPage
+from pydantic import SecretStr
+
 from primer.model.workspace import (
     ContainerConnectionSocket,
     ContainerReachabilityHostPort,
@@ -25,6 +27,7 @@ from primer.model.workspace import (
     KubernetesTemplateConfig,
     KubernetesWorkspaceConfig,
     LocalWorkspaceConfig,
+    ResourceLimits,
     Workspace,
     WorkspaceProvider,
     WorkspaceProviderType,
@@ -202,3 +205,104 @@ def test_the_422_is_documented_on_the_create_route(app):
 def test_the_fake_workspace_the_tests_build_is_the_one_the_other_api_tests_use():
     """Guards the import above: these tests lean on ``tests.api.test_workspaces``'s fakes for the 201 path."""
     assert _FakeWorkspace("ws-x").id == "ws-x"
+
+
+# ---- lead ruling 17 of plan 08 (from the review of #782): absurd sizes and bad env names are a 422, not a 500 after a rollback ----
+
+
+@pytest.mark.parametrize("field, absurd", [("cpu_cores", 1e308), ("memory_bytes", 10**30), ("disk_bytes", 10**30)])
+async def test_an_absurd_size_override_is_a_422_with_the_field_in_loc(client, backend_calls, sp, field, absurd):
+    r = await _create(client, "tpl-k3s", {field: absurd})
+
+    assert r.status_code == 422, r.text
+    errors = r.json()["extensions"]["errors"]
+    assert [e["loc"] for e in errors] == [["body", "overrides", "resources", field]], errors
+    assert backend_calls == [] and await _workspace_rows(sp) == []
+
+
+async def test_the_caps_themselves_are_accepted(client, backend_calls):
+    r = await _create(client, "tpl-k3s", {"cpu_cores": 1024, "memory_bytes": 64 * 2**40, "disk_bytes": 64 * 2**40})
+
+    assert r.status_code == 201, r.text
+    assert len(backend_calls) == 1
+
+
+async def test_a_gpu_count_above_the_cap_is_a_422_on_the_template_write(client, sp):
+    body = {"id": "tpl-gpu", "provider_id": "k3s", "description": "d", "backend": {"kind": "kubernetes", "image": "rt:1", "gpu": {"count": 65}}}
+
+    r = await client.post("/v1/workspace_templates", json=body)
+
+    assert r.status_code == 422, r.text
+    assert any(e["loc"][-2:] == ["gpu", "count"] for e in r.json()["extensions"]["errors"]), r.text
+    assert await sp.get_storage(WorkspaceTemplate).get("tpl-gpu") is None
+
+
+async def test_a_template_with_an_absurd_cpu_is_a_422_that_names_the_template_and_the_field(client, backend_calls, sp):
+    """Seeded through storage, as a row written before the cap existed: the template cannot be refused at load, only at create."""
+    await sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate(
+        id="tpl-big", provider_id="k3s", description="d", backend=KubernetesTemplateConfig(image="rt:1"),
+        resources=ResourceLimits(cpu_cores=1e308),
+    ))
+
+    r = await client.post("/v1/workspaces", json={"template_id": "tpl-big"})
+
+    assert r.status_code == 422, r.text
+    body = r.json()
+    assert body["type"] == "/errors/validation-error"
+    assert "template 'tpl-big'" in body["detail"] and "resources.cpu_cores" in body["detail"], body
+    assert "errors" not in body["extensions"], body
+    assert backend_calls == [] and await _workspace_rows(sp) == []
+
+    ok = await client.post("/v1/workspaces", json={"template_id": "tpl-big", "overrides": {"resources": {"cpu_cores": 2}}})
+    assert ok.status_code == 201, ok.text     # the override replaces the absurd field
+
+
+@pytest.mark.parametrize("name", ["1BAD", "a b", "A=B", "a-b"])
+async def test_an_invalid_env_name_in_the_overrides_is_a_422_naming_it(client, backend_calls, sp, name):
+    r = await client.post("/v1/workspaces", json={"template_id": "tpl-loc", "overrides": {"env": {name: "v"}}})
+
+    assert r.status_code == 422, r.text
+    body = r.json()
+    assert body["type"] == "/errors/validation-error"
+    assert body["extensions"]["errors"] == [{
+        "loc": ["body", "overrides", "env", name],
+        "msg": "An environment variable name may use letters, digits and underscores and must not start with a digit. Rename or remove it.",
+        "type": "invalid_env_name",
+    }]
+    assert body["detail"].startswith(f"overrides.env.{name}:")
+    assert backend_calls == [] and await _workspace_rows(sp) == []
+
+
+@pytest.mark.parametrize("template_id", ["tpl-loc", "tpl-dock", "tpl-k3s"])
+@pytest.mark.parametrize("name", ["PRIMER_RUNTIME_TOKEN", "RUNTIME_TOKEN"])
+async def test_a_runtime_token_name_is_a_422_that_names_it_and_never_shows_the_value(client, backend_calls, template_id, name):
+    r = await client.post("/v1/workspaces", json={"template_id": template_id, "overrides": {"env": {name: "hunter2-the-value"}}})
+
+    assert r.status_code == 422, r.text
+    body = r.json()
+    assert body["extensions"]["errors"][0]["loc"] == ["body", "overrides", "env", name]
+    assert body["extensions"]["errors"][0]["type"] == "reserved_env_name"
+    assert name in body["detail"] and "hunter2" not in r.text
+    assert backend_calls == []
+
+
+async def test_a_template_env_the_cluster_would_refuse_is_a_422_at_create(client, backend_calls, sp):
+    await sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate(
+        id="tpl-env", provider_id="k3s", description="d", backend=KubernetesTemplateConfig(image="rt:1"),
+        env={"has space": SecretStr("v"), "RUNTIME_TOKEN": SecretStr("v")},
+    ))
+
+    r = await client.post("/v1/workspaces", json={"template_id": "tpl-env"})
+
+    assert r.status_code == 422, r.text
+    body = r.json()
+    assert "template 'tpl-env' sets env.has space" in body["detail"] and "env.RUNTIME_TOKEN" in body["detail"]
+    assert "errors" not in body["extensions"]
+    assert backend_calls == [] and await _workspace_rows(sp) == []
+
+
+async def test_good_env_names_still_create_the_workspace(client, backend_calls):
+    r = await client.post("/v1/workspaces", json={"template_id": "tpl-k3s", "overrides": {"env": {"_OK1": "v", "PATH_EXTRA": "x"}}})
+
+    assert r.status_code == 201, r.text
+    assert len(backend_calls) == 1

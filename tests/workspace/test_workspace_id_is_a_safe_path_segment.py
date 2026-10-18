@@ -389,8 +389,8 @@ class _RecordingBackend:
         return "workspace-handle"
 
 
-class _Tpl:
-    provider_id = "prov1"
+# A real template: materialise reads its env and sizes before it asks the backend for anything.
+_TPL = WorkspaceTemplate(id="t", provider_id="prov1", description="d")
 
 
 @pytest.mark.parametrize("wid", ["../escape", "/abs", ".", "..", "a/b", "abc\n", "new\nline", "a\x00b"])
@@ -405,7 +405,7 @@ async def test_the_registry_refuses_an_id_that_fails_the_rule_before_any_backend
 
     monkeypatch.setattr(reg, "get_backend", _fake_get_backend)
     with pytest.raises(ValidationError):
-        await reg.materialise(template=_Tpl(), workspace_id=wid)
+        await reg.materialise(template=_TPL, workspace_id=wid)
     assert rec.created is False
 
 
@@ -419,6 +419,6 @@ async def test_the_registry_still_forwards_an_id_that_passes_the_rule(
         return rec
 
     monkeypatch.setattr(reg, "get_backend", _fake_get_backend)
-    result = await reg.materialise(template=_Tpl(), workspace_id="psx-financials")
+    result = await reg.materialise(template=_TPL, workspace_id="psx-financials")
     assert result == "workspace-handle"
     assert rec.created is True

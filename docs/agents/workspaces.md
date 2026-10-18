@@ -209,8 +209,14 @@ it's called from a context with no implicit session.
   takes `cpu_cores` and `memory_bytes` only (it has no disk quota), and a
   Local workspace takes none. A size the provider cannot honour answers
   `type=validation-error` (REST: 422) naming
-  `overrides.resources.<field>`, and nothing is created. Returns the
-  stored row (the REST route answers 201).
+  `overrides.resources.<field>`, and nothing is created. A size is at
+  most 1024 CPU cores, 64 TiB of memory and 64 TiB of disk; a GPU count
+  is at most 64. An `overrides.env` name must be a letter or underscore
+  followed by letters, digits and underscores, and `PRIMER_RUNTIME_TOKEN`
+  and `RUNTIME_TOKEN` are reserved for the runtime's own token: either
+  answers `type=validation-error` naming the variable (never its
+  value), as does a template whose own `env` or CPU or memory breaks
+  the same rules. Returns the stored row (the REST route answers 201).
 - `workspaces::get_workspace` - fetch by id.
 - `workspaces::list_workspaces` - paginated.
 - `workspaces::delete_workspace` - destroys the workspace: its

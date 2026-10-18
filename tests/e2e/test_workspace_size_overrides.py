@@ -225,3 +225,57 @@ async def test_a_docker_disk_override_is_refused(authed_client, unique_suffix):
         assert errors[0]["msg"] == "Docker cannot limit a workspace's disk. Remove this override.", errors
     finally:
         await _drop(authed_client, wp=wp, tpl=tpl)
+
+
+# ---- sane maxima and bad env names are a 422, never a 500 after a rollback (lead ruling 17 of plan 08) ---------------------
+
+
+async def test_an_absurd_size_override_is_a_422_not_a_500(authed_client, unique_suffix):
+    """1e308 cores used to reach the cluster and come back as a generic 500 after a rolled-back create. Only the provider and
+    template ROWS exist (no cluster is needed: the model refuses the number before any backend runs)."""
+    wp, tpl = f"wpk-{unique_suffix}", f"tplk-{unique_suffix}"
+    await _provider_and_template(
+        authed_client, wp=wp, tpl=tpl,
+        provider={
+            "provider": "kubernetes",
+            "config": {
+                "kind": "kubernetes", "connection": {"kind": "in_cluster"}, "namespace": "primer-workspaces",
+                "reachability": {"kind": "in_cluster"},
+            },
+        },
+        backend={"kind": "kubernetes", "image": "primer/workspace-runtime:1.1"},
+    )
+    try:
+        for field, absurd in (("cpu_cores", 1e308), ("memory_bytes", 10**30), ("disk_bytes", 10**30)):
+            r = await authed_client.post(
+                "/v1/workspaces", json={"template_id": tpl, "overrides": {"resources": {field: absurd}}},
+            )
+            assert r.status_code == 422, (field, r.text)
+            errors = r.json()["extensions"]["errors"]
+            assert [e["loc"] for e in errors] == [["body", "overrides", "resources", field]], (field, errors)
+    finally:
+        await _drop(authed_client, wp=wp, tpl=tpl)
+
+
+async def test_a_bad_environment_variable_name_is_a_422_that_names_it(authed_client, unique_suffix, tmp_path):
+    """A name the cluster would refuse, and the two names the platform sets itself, are refused before anything is built; the
+    value (a secret, perhaps) is never in the answer."""
+    wp, tpl = f"wpe-{unique_suffix}", f"tple-{unique_suffix}"
+    await _provider_and_template(
+        authed_client, wp=wp, tpl=tpl,
+        provider={"provider": "local", "config": {"kind": "local", "root_path": str(tmp_path)}},
+        backend={"kind": "local"},
+    )
+    try:
+        for name, kind in (("1BAD", "invalid_env_name"), ("a b", "invalid_env_name"), ("RUNTIME_TOKEN", "reserved_env_name")):
+            r = await authed_client.post(
+                "/v1/workspaces", json={"template_id": tpl, "overrides": {"env": {name: "plan08-secret-value"}}},
+            )
+            assert r.status_code == 422, (name, r.text)
+            error = r.json()["extensions"]["errors"][0]
+            assert error["loc"] == ["body", "overrides", "env", name] and error["type"] == kind, (name, error)
+            assert "plan08-secret-value" not in r.text, name
+        listing = await authed_client.get("/v1/workspaces")
+        assert not [w for w in listing.json()["items"] if w.get("template_id") == tpl], listing.text
+    finally:
+        await _drop(authed_client, wp=wp, tpl=tpl)

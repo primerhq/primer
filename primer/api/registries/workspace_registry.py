@@ -31,6 +31,7 @@ from primer.model.workspace import (
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
+from primer.workspace.env_names import refuse_bad_env_names
 from primer.workspace.files import FileResolvers
 from primer.workspace.local_policy import LocalWorkspacePolicy
 from primer.workspace.resolvers import (
@@ -38,7 +39,11 @@ from primer.workspace.resolvers import (
     make_secret_resolver,
 )
 from primer.workspace.session_reconcile import reconcile_sessions_to_workspace_lost
-from primer.workspace.size_overrides import asks_for_a_size, refuse_unsupported_resource_overrides
+from primer.workspace.size_overrides import (
+    asks_for_a_size,
+    refuse_oversized_template_sizes,
+    refuse_unsupported_resource_overrides,
+)
 
 
 if TYPE_CHECKING:
@@ -243,7 +248,11 @@ class WorkspaceRegistry:
         none, Docker has no disk quota) is a 422 naming
         ``overrides.resources.<field>`` (:mod:`primer.workspace.size_overrides`),
         raised BEFORE :meth:`get_backend`, so a refused create builds nothing
-        and leaves nothing behind.
+        and leaves nothing behind. The same door refuses the other inputs a
+        cluster would reject late and as a 500 (lead ruling 17 of plan 08): an
+        environment variable name that is not a POSIX name or is one the
+        platform sets itself (:mod:`primer.workspace.env_names`), and a
+        template CPU or memory above the sane maxima.
         """
         if workspace_id is not None and re.fullmatch(
             WORKSPACE_ID_PATTERN, workspace_id
@@ -254,6 +263,11 @@ class WorkspaceRegistry:
                 f"'-', at most 63 characters) matching {WORKSPACE_ID_PATTERN} "
                 "(it names a directory under the workspace root)"
             )
+        # The request's own inputs, all before any backend runs (lead ruling 17): an environment variable name the cluster would
+        # refuse or the platform sets itself, and a size from the template above the sane maxima. The override sizes carry their
+        # maxima in the model.
+        refuse_bad_env_names(template, overrides)
+        refuse_oversized_template_sizes(template, overrides)
         if asks_for_a_size(overrides):
             # Read only when a size is asked for: the common create pays no extra lookup. A provider that does not exist
             # is get_backend's 404, not this check's.
