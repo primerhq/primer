@@ -736,7 +736,7 @@ var NV_OVERLAY_MOUNTS = {
           <window.AP_PolicyDetail
             policyId={state.id}
             pushToast={window.primerApi.toastPush}
-            onClose={function () { shell.openOverlay("approvals", null, null); }}
+            onClose={function () { shell.closeOverlayTo({ name: "platform", nav: "approvals" }); }}
           />
         );
       }
@@ -894,6 +894,8 @@ function NV_LegacyOverlay(props) {
     registry: con.registry,
     openOverlay: function (n, s, i) { con.openOverlay(n, s, i); },
     closeOverlay: con.closeOverlay,
+    // Leave the overlay for a view in one navigation (a mount whose Close or Back means "back to its Platform page").
+    closeOverlayTo: function (v) { con.closeOverlayTo(v); },
     openDoc: function (d) {
       con.closeOverlay();
       con.setDoc({ kind: d.kind, ref: d.ref });
@@ -967,7 +969,16 @@ function NV_LegacyOverlay(props) {
         && NV_overlayTitle(overlay) !== (NV_OVERLAY_TITLES[name] || name) ? (
           <div className="nv-overlay-crumb">
             <a data-testid="nv-overlay-crumb"
-              onClick={function () { con.openOverlay(name, null, null); }}>
+              onClick={function () {
+                // A record's crumb leaves the overlay for the entity's Platform page; opening the bare overlay rendered the LIST inside the
+                // overlay (design 10). A section may be the page ("workspaces:templates:<id>" is a template, so its crumb is the templates page) or a
+                // tab ("toolsets:tools:<id>", which is not a page), so the section's own row is tried first and the overlay's name second. An
+                // overlay with no Platform page of its own yet (providers) keeps opening its root.
+                var target = (overlay.section && window.SH_shimListTarget("/" + name + "/" + overlay.section))
+                  || window.SH_shimListTarget("/" + name);
+                if (target) con.closeOverlayTo(target);
+                else con.openOverlay(name, null, null);
+              }}>
               {NV_OVERLAY_TITLES[name] || name}
             </a>
             <span className="nv-crumb-sep">/</span>
@@ -994,7 +1005,11 @@ function NV_OverlayHost() {
     installedRef.current = true;
     window.SH_installRouterShim(
       function () { return conRef.current.overlay; },
-      function (n, s, i) { conRef.current.openOverlay(n, s, i); }
+      function (n, s, i) { conRef.current.openOverlay(n, s, i); },
+      // A bare list path (a detail's Delete and Back) closes the overlay onto the entity's Platform page, never onto a list inside an overlay.
+      function (v) { conRef.current.closeOverlayTo(v); },
+      // "/sessions/<id>" (Chat on an agent, a session row) is a studio document, not an overlay.
+      function (sid) { conRef.current.openSessionInStudio(sid); }
     );
   }
   var overlay = con.overlay;
