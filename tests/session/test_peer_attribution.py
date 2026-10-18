@@ -408,3 +408,157 @@ async def test_a_malformed_attribution_is_realized_as_a_plain_message(caplog):
     assert (await world.sessions.get("ses-b")).peer_hops == 0
     assert "peer" not in _user_inputs(world, "ses-b")[-1]["payload"]
     assert "attribution" in caplog.text
+
+
+# ---- an ended target that still carries its park -----------------------------------------------------------------------------------
+# Two real writers end a session and leave its park columns set: Cancel of a paused or waiting row (an inline write that then deletes the lease, so no release
+# ever clears them) and the workspace_lost reconcile (a patch that does not touch them). Park alone made route_steer say "a turn is open", so a steer to
+# such a session was queued behind a park nobody will ever resolve: stored, never delivered, the session still ended. An ENDED session has no turn to
+# queue behind: it is woken, which reopens it (clearing the park) or refuses it with a conflict that stores nothing.
+
+_STALE_PARKS = {
+    "parked": {"parked_status": "parked", "parked_event_key": "ask_user:ses-b:call_q", "parked_at": NOW},
+    "resumable": {"parked_status": "resumable", "parked_event_key": "tool_approval:ses-b:call_t", "parked_at": NOW},
+}
+
+
+@pytest.mark.parametrize("park", sorted(_STALE_PARKS))
+@pytest.mark.parametrize(
+    ("ended_reason", "phase", "outcome"),
+    [
+        pytest.param("cancelled", "ready", DELIVERED_WOKEN, id="cancelled"),
+        pytest.param("workspace_lost", "running", DELIVERED_WOKEN, id="workspace lost, the workspace is back"),
+        pytest.param("workspace_lost", "ready", DELIVERED_MISSING, id="workspace lost, the workspace is down"),
+    ],
+)
+async def test_a_target_that_ended_with_its_park_still_set_is_reopened_or_refused_never_queued(park, ended_reason, phase, outcome):
+    world = make_world(with_bus=True)
+    world.registry.phase = phase
+    await seed_session(world, sid="ses-b", status=SessionStatus.ENDED, ended_reason=ended_reason, turn_no=2, peer_hops=2, **_STALE_PARKS[park])
+    out = await _send(world, "ses-b")
+    assert out.outcome == outcome
+    row = await world.sessions.get("ses-b")
+    if outcome == DELIVERED_WOKEN:
+        assert (row.status, row.ended_reason, row.turn_status, row.peer_hops) == (SessionStatus.RUNNING, None, "claimable", 3)
+        assert (row.parked_status, row.parked_event_key, row.parked_at) == (None, None, None), "the reopen did not clear the park"
+        assert [r["payload"]["peer"]["from_session_id"] for r in _user_inputs(world, "ses-b")] == ["ses-a"]
+        assert slot(world, "ses-b").reopened is True and slot(world, "ses-b").appended == [TEXT]
+        assert world.scheduler.enqueued == ["ses-b"]
+    else:
+        assert (row.status, row.ended_reason, row.peer_hops) == (SessionStatus.ENDED, ended_reason, 2)
+        assert row.parked_status == _STALE_PARKS[park]["parked_status"], "a refused steer must not touch the row"
+        assert records(world, "ses-b") == [] and world.scheduler.enqueued == [] and world.engine.upserts == []
+    assert await _pending(world) == [], "an ended session has no turn to queue behind, so nothing may be stored"
+    assert not [key for key, _ in world.bus.published if key == _STALE_PARKS[park]["parked_event_key"]], "a gate was answered"
+
+
+@pytest.mark.parametrize("peer", [PEER, None], ids=["a peer message", "a trigger or channel message"])
+async def test_skip_parallelism_does_not_skip_an_ended_target_it_reopens_it(peer):
+    """``skip`` drops a steer for a target with a turn in flight; an ended session has none."""
+    world = make_world()
+    await seed_session(world, sid="ses-b", status=SessionStatus.ENDED, ended_reason="cancelled", turn_no=2, **_STALE_PARKS["resumable"])
+    out = await _send(world, "ses-b", peer=peer, parallelism="skip")
+    assert out.outcome == DELIVERED_WOKEN
+    assert (await world.sessions.get("ses-b")).status == SessionStatus.RUNNING and await _pending(world) == []
+
+
+async def test_the_real_cancel_of_a_paused_parked_session_leaves_it_ended_with_its_park_and_a_steer_reopens_it():
+    from primer.workspace.session_factory import SessionCancelDeps, cancel_session
+
+    class _Engine:
+        async def delete_lease(self, kind, session_id):
+            return None
+
+    world = make_world()
+    await seed_session(world, sid="ses-b", status=SessionStatus.PAUSED, pause_requested=True, turn_no=2, **_STALE_PARKS["resumable"])
+    await cancel_session(
+        workspace_id="ws-1", session_id="ses-b",
+        deps=SessionCancelDeps(storage_provider=world.sp, scheduler=world.scheduler, claim_engine=_Engine(), event_bus=None),
+    )
+    ended = await world.sessions.get("ses-b")
+    assert (ended.status, ended.ended_reason, ended.parked_status) == (SessionStatus.ENDED, "cancelled", "resumable"), "the premise: Cancel keeps the park"
+
+    out = await _send(world, "ses-b")
+    assert out.outcome == DELIVERED_WOKEN
+    row = await world.sessions.get("ses-b")
+    assert (row.status, row.parked_status, row.turn_status) == (SessionStatus.RUNNING, None, "claimable")
+    assert await _pending(world) == []
+
+
+@pytest.mark.parametrize(("phase", "outcome"), [("running", DELIVERED_WOKEN), ("ready", DELIVERED_MISSING)])
+async def test_the_real_workspace_lost_reconcile_of_a_parked_session_leaves_it_ended_with_its_park_and_a_steer_follows_the_workspace(phase, outcome):
+    from primer.workspace.session_reconcile import reconcile_sessions_to_workspace_lost
+
+    world = make_world()
+    await seed_session(world, sid="ses-b", status=SessionStatus.RUNNING, turn_no=2, **_STALE_PARKS["parked"])
+    assert await reconcile_sessions_to_workspace_lost(world.sp, "ws-1") == 1
+    ended = await world.sessions.get("ses-b")
+    assert (ended.status, ended.ended_reason, ended.parked_status) == (SessionStatus.ENDED, "workspace_lost", "parked"), "the premise: the reconcile keeps the park"
+
+    world.registry.phase = phase
+    out = await _send(world, "ses-b")
+    assert out.outcome == outcome
+    assert await _pending(world) == []
+    assert (await world.sessions.get("ses-b")).status == (SessionStatus.RUNNING if outcome == DELIVERED_WOKEN else SessionStatus.ENDED)
+
+
+async def test_a_steer_in_the_window_where_end_session_has_written_ended_but_not_released_loses_no_message():
+    """``WorkerPool._end_session`` writes ENDED while the row still carries its park (the release clears it later), then realizes ONE queued steer through
+    ``wake_session``. A steer that lands in that window finds an ENDED row: it reopens the session itself, and the steer ``_end_session`` realizes right
+    after is written behind it. Both reach the session, the park is gone, nothing stays queued, and the claim is armed once for the pool to re-arm."""
+    from primer.session.dispatch import realize_queued_steer
+
+    world = make_world(with_bus=True)
+    row = await seed_session(world, sid="ses-b", status=SessionStatus.ENDED, ended_reason="cancelled", turn_no=2, **_STALE_PARKS["parked"])
+    queued_earlier = PEER.model_copy(update={"hops": 2})
+    await store_pending_steer(
+        storage_provider=world.sp, session=row, text="queued while it was parked", workspace_registry=world.registry,
+        attribution=queued_earlier.as_attribution(),
+    )
+
+    out = await _send(world, "ses-b", peer=None, text="arrives in the window")
+    assert out.outcome == DELIVERED_WOKEN
+    assert (await world.sessions.get("ses-b")).parked_status is None
+
+    await realize_queued_steer(
+        storage_provider=world.sp, workspace_id="ws-1", session_id="ses-b", scheduler=world.scheduler,
+        claim_engine=world.engine, workspace_registry=world.registry, event_bus=world.bus,
+    )
+
+    assert await _pending(world) == []
+    delivered = {r["payload"]["text"]: r["payload"].get("peer") for r in _user_inputs(world, "ses-b")}
+    assert set(delivered) == {"arrives in the window", "queued while it was parked"}
+    assert delivered["queued while it was parked"]["hops"] == 2, "the queued message lost its attribution"
+    after = await world.sessions.get("ses-b")
+    assert (after.status, after.turn_status, after.parked_status) == (SessionStatus.RUNNING, "claimable", None)
+
+
+# ---- a delivery that finds the session unable to take the message says why ---------------------------------------------------------
+
+
+async def test_a_session_that_does_not_exist_is_missing_with_no_reason():
+    out = await _send(make_world(), "nope")
+    assert (out.outcome, out.session_id, out.detail, out.conflict) == (DELIVERED_MISSING, None, None, False)
+
+
+async def test_a_session_that_cannot_be_reopened_is_missing_as_a_conflict_with_wake_sessions_words():
+    world = make_world()
+    await seed_session(world, sid="ses-b", status=SessionStatus.ENDED, ended_reason="force_deleted", turn_no=2)
+    out = await _send(world, "ses-b")
+    assert (out.outcome, out.conflict) == (DELIVERED_MISSING, True)
+    assert out.detail == "Session 'ses-b' ended as 'force_deleted' and cannot be re-opened."
+
+
+async def test_a_workspace_removed_under_the_write_is_missing_as_a_not_found_with_wake_sessions_words():
+    world = make_world()
+    await seed_session(world, sid="ses-b", turn_no=1)
+
+    async def vanish(content, *, extra_parts=None):
+        world.registry.remove("ws-1")
+        raise FileNotFoundError(2, "No such file or directory")
+
+    slot(world, "ses-b").append_instruction = vanish
+    out = await _send(world, "ses-b")
+    assert (out.outcome, out.conflict) == (DELIVERED_MISSING, False)
+    assert out.detail == "workspace 'ws-1' was removed while writing session 'ses-b''s instruction"
+    assert await _pending(world) == [] and (await world.sessions.get("ses-b")).turn_status == "idle"

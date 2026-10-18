@@ -9,7 +9,7 @@ identically.
 
 from __future__ import annotations
 
-from primer.model.workspace_session import WorkspaceSession
+from primer.model.workspace_session import SessionStatus, WorkspaceSession
 from primer.session.turns import has_open_turn
 
 ROUTE_PENDING = "pending"
@@ -26,15 +26,28 @@ def route_steer(
     A parked session counts as busy too, since it waits on a human
     rather than being finished.
 
-    Session status is deliberately NOT consulted. It is coarser: a
-    RUNNING session commonly sits idle between turns, so treating it as
-    busy would defer steers that should have run immediately.
+    Session status is deliberately NOT consulted to find a turn that is
+    open: it is coarser, and a RUNNING session commonly sits idle between
+    turns, so treating it as busy would defer steers that should have run
+    immediately. The one status that matters is ENDED, and it decides the
+    other way: an ended session has no turn to wait behind, whatever its
+    park columns say, so it is always woken, which reopens it or refuses
+    it with a conflict. Two real writers end a session and leave the park
+    set (Cancel of a paused or waiting row, which deletes the lease so no
+    release ever clears it, and the workspace_lost reconcile, which does
+    not touch the park), and a steer queued behind that park would never be
+    delivered. (The pool's ``_end_session`` also writes ENDED while the row
+    still carries its park until the release; a steer that lands in that
+    window reopens the session itself, and the one queued steer
+    ``_end_session`` realizes right after is written behind it.)
 
     ``raw_lines`` is an optional slow path for callers that already
     hold the log, such as the drain. It closes the small window where
     turn_status has gone idle but the terminal record has not landed.
     Omitting it only forgoes that extra check.
     """
+    if row.status == SessionStatus.ENDED:
+        return ROUTE_WAKE
     if row.turn_status in ("claimable", "running"):
         return ROUTE_PENDING
     if row.parked_status is not None:

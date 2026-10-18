@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
+from primer.model.except_ import NotFoundError
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
 from primer.session.enqueue import SessionWakeDeps
 from tests.conftest import _FakeStorageProvider
@@ -58,19 +59,34 @@ class FakeWorkspace:
 
 class FakeRegistry:
     """One :class:`FakeWorkspace` per workspace id. ``phase`` is what every workspace row reports (a ``workspace_lost`` session reopens
-    only when it reads ``running``)."""
+    only when it reads ``running``).
+
+    A workspace is removed the way a delete removes it: ``remove(id)`` takes the row (and so the instance) away, and ``destroying`` holds the ids a
+    destroy is running for, where the runtime is already gone and the row is still there (``is_being_destroyed``, as on the real registry)."""
 
     def __init__(self, *, phase: str = "ready") -> None:
         self.workspaces: dict[str, FakeWorkspace] = {}
         self.phase = phase
+        self.removed: set[str] = set()
+        self.destroying: set[str] = set()
 
     def workspace(self, workspace_id: str) -> FakeWorkspace:
         return self.workspaces.setdefault(workspace_id, FakeWorkspace())
 
+    def remove(self, workspace_id: str) -> None:
+        self.removed.add(workspace_id)
+
+    def is_being_destroyed(self, workspace_id: str) -> bool:
+        return workspace_id in self.destroying
+
     async def get_workspace(self, workspace_id: str) -> FakeWorkspace:
+        if workspace_id in self.removed:
+            raise NotFoundError(f"Workspace {workspace_id!r} does not exist")
         return self.workspace(workspace_id)
 
     async def get_workspace_row(self, workspace_id: str) -> SimpleNamespace:
+        if workspace_id in self.removed:
+            raise NotFoundError(f"Workspace {workspace_id!r} does not exist")
         return SimpleNamespace(phase=self.phase)
 
 

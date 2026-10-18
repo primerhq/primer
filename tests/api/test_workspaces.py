@@ -177,6 +177,10 @@ class _FakeAgentSession:
     async def request_resume(self) -> None:
         self._status = SessionStatus.RUNNING
 
+    async def reopen(self) -> None:
+        # the sanctioned way out of ENDED (AgentSession.reopen): reset and a message to an ended session use it
+        self._status = SessionStatus.RUNNING
+
     async def append_instruction(self, content: str, *, extra_parts=None):
         self.appended.append(content)
         self.appended_extra_parts = extra_parts
@@ -1448,6 +1452,29 @@ class TestSessionsSubResource:
         body = resp.json()
         assert body["status"] == "running"
         assert body["turn_status"] == "claimable"
+
+    @pytest.mark.asyncio
+    async def test_steer_reopens_a_session_cancelled_while_parked_instead_of_queueing_behind_its_park(self, client, wsr, sp) -> None:
+        """Cancel of a paused or waiting session ends the row inline and leaves its park columns set. A park alone used to read as "a turn is open", so a
+        person's steer to such a session was queued behind a park nobody will resolve: stored, never delivered, the session still ended."""
+        from primer.model.workspace_session import (
+            AgentSessionBinding,
+            PendingSessionMessage,
+            WorkspaceSession,
+        )
+
+        wid = await self._setup(client, wsr)
+        await sp.get_storage(WorkspaceSession).create(WorkspaceSession(
+            id="sess-1", workspace_id=wid, binding=AgentSessionBinding(agent_id="agt-1"), status=SessionStatus.ENDED,
+            ended_reason="cancelled", ended_at=datetime.now(timezone.utc), created_at=datetime.now(timezone.utc), turn_no=2,
+            parked_status="resumable", parked_event_key="ask_user:sess-1:call_1", parked_at=datetime.now(timezone.utc),
+        ))
+        resp = await client.post(f"/v1/workspaces/{wid}/sessions/sess-1/steer", json={"instruction": "start over"})
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert (body["status"], body["turn_status"], body["parked_status"]) == ("running", "claimable", None)
+        pending = await sp.get_storage(PendingSessionMessage).find(None, OffsetPage(offset=0, length=10))
+        assert list(pending.items) == [], "the instruction was queued behind a park instead of delivered"
 
 
 # ===========================================================================

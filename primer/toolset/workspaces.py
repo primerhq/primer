@@ -1868,15 +1868,17 @@ def build_workspaces_toolset(
             event_bus=event_bus,
         )
         if delivery.outcome == DELIVERED_MISSING:
-            # deliver_steer reports a session that cannot take a message as missing: a non-restartable ended session, or a row that went away
-            # (or whose workspace did) between the read above and the delivery.
-            current = await sessions.get(args.session_id)
-            if current is None or current.status != SessionStatus.ENDED:
-                return _err(_session_not_on_workspace(args), error_type="not-found")
-            return _err(
-                f"Session {args.session_id!r} has ended ({current.ended_reason}) and cannot take a message",
-                error_type="conflict",
-            )
+            # deliver_steer reports a session that cannot take a message as missing, and says why: an ended session that cannot be reopened (a
+            # conflict), or a row that went away or a workspace that was removed between the read above and the delivery (not found, in the words
+            # wake_session used, "workspace ... was removed while writing ...", which say what happened better than "does not exist").
+            if delivery.conflict:
+                current = await sessions.get(args.session_id)
+                if current is not None and current.status == SessionStatus.ENDED:
+                    message = f"Session {args.session_id!r} has ended ({current.ended_reason}) and cannot take a message"
+                else:
+                    message = delivery.detail or f"Session {args.session_id!r} cannot take a message"
+                return _err(message, error_type="conflict")
+            return _err(delivery.detail or _session_not_on_workspace(args), error_type="not-found")
         how = "queued" if delivery.outcome == DELIVERED_QUEUED else "woken"
         await recorder_for(storage_provider, event_bus).emit(
             "session.steered",
