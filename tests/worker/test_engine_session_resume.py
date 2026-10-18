@@ -536,3 +536,52 @@ async def test_resume_engine_session_tripwire_on_tool_wait_park() -> None:
         await session_resume_coordinator.resume_engine_session(
             None, None, sess,
         )
+
+
+_RAISING_HOOK_TOOL = "_test_engine_resume_hook_raises"
+
+
+def _raising_hook(yield_metadata, event_payload, ctx):
+    raise RuntimeError("the hook broke")
+
+
+@pytest.mark.asyncio
+async def test_a_resume_that_fails_answers_the_call_with_an_error_not_a_rejection(monkeypatch):
+    """A failure while resuming (here the parked tool's resume hook raises) is
+    reported as a failure. It used to be labelled ``"rejected": true``, which a
+    model reads as an operator refusing a call that nobody refused."""
+    from primer.worker.yield_resume_registry import register_resume_hook
+
+    register_resume_hook(_RAISING_HOOK_TOOL, _raising_hook)
+    sid = "sess-engine-resume-hook-raises"
+    tool_call_id = "tc-hook-raises"
+    assistant_msg = Message(
+        role="assistant",
+        parts=[ToolCallPart(id=tool_call_id, name="t__wait", arguments={})],
+    )
+
+    storage_provider = _FakeStorageProvider()
+    session_storage = storage_provider.get_storage(WorkspaceSession)
+    engine = _build_engine(session_storage)
+    pool = _build_pool(storage_provider, engine)
+    await session_storage.create(_make_resumable_session(
+        sid,
+        tool_name=_RAISING_HOOK_TOOL,
+        tool_call_id=tool_call_id,
+        resume_event_payload={"response": "x"},
+        llm_messages=[assistant_msg.model_dump(mode="json")],
+    ))
+    fake_executor = _RecordingExecutor()
+    monkeypatch.setattr(pool, "_load_workspace_for_persist", lambda _ws_id: _async_return(_NoopPersist()))
+    monkeypatch.setattr(pool, "_build_agent_executor", lambda _s, _w: _async_return(fake_executor))
+
+    await pool._run_engine_session(await _claim_session(engine, sid))
+
+    (injected,) = fake_executor.injected
+    tool_part = next(p for p in injected[-1].parts if isinstance(p, ToolResultPart))
+    assert tool_part.id == tool_call_id and tool_part.error is True
+    assert json.loads(tool_part.output) == {
+        "is_error": True,
+        "reason": "resume failed: RuntimeError: the hook broke",
+        "tool_name": _RAISING_HOOK_TOOL,
+    }

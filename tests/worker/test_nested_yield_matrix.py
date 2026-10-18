@@ -1186,3 +1186,51 @@ async def test_subagent_call_tool_gate_approve_reruns_the_inner_tool_and_deliver
         assert (seen.tool_call_id, seen.session_id, seen.initiated_by) == (call_tool_id, sid, _USER)
     else:
         assert result.error is True and json.loads(result.output)["type"] == "forbidden", result.output
+
+
+# ===========================================================================
+# Scenario 8: a continuation that fails
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_a_failed_continuation_answers_the_sessions_call_with_an_error_not_a_rejection(monkeypatch):
+    """FULL session loop. The subagent's gated tool is approved, but its toolset
+    is gone from the registry, so rebuilding the subagent fails and the walk
+    raises. The session's invoke_agent call is answered with an error that says
+    the resume failed. It used to be labelled ``"rejected": true``, which a model
+    reads as the operator's refusal, and it was keyed by the subagent's own call
+    (the park's ``tool_call_id``), which the session's transcript does not have."""
+    sid = "sess-sub-gone"
+    invoke_tcid = "invoke-tc-gone"
+    gated_call_id = "gated-call-gone"
+
+    registry = _MappedRegistry(llm=_ScriptedLLM(scripts=[]), toolsets={})
+    base = _FakeStorageProvider()
+    agent_storage = _AgentStorageProvider(
+        base=base, agent=_agent(tools=["gone__x"]), provider_row=_provider_row()
+    )
+    pool, engine = _build_pool(
+        base_storage=base, agent_storage=agent_storage, registry=registry, resolver=None,
+    )
+    frame = _agent_frame(
+        sid=sid, invoke_tcid=invoke_tcid, sub_history=_sub_history("gone__x", gated_call_id), tools=["gone__x"],
+    )
+    sess = _make_session(
+        sid,
+        leaf=_approval_leaf(sid=sid, gated_call_id=gated_call_id, gated_name="gone__x"),
+        leaf_tcid=gated_call_id,
+        invoke_tcid=invoke_tcid,
+        frames=[frame],
+        resume_event_payload={"decision": "approved"},
+    )
+    await base.get_storage(WorkspaceSession).create(sess)
+
+    executor = _wire_session_executor(pool, monkeypatch)
+    await pool._run_engine_session(await _claim(engine, sid))
+
+    part = _injected_tool_result(executor, invoke_tcid)
+    body = json.loads(part.output)
+    assert part.error is True
+    assert "rejected" not in body, f"a failure is not the operator's refusal: {body}"
+    assert body["is_error"] is True and body["reason"].startswith("continuation resume failed: NotFoundError"), body

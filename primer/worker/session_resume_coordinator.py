@@ -345,10 +345,16 @@ async def resume_engine_session(pool: "WorkerPool", engine_lease, session):
                 "resume: continuation walk for session %s raised;"
                 " synthesising error tool_result", sid,
             )
+            # A failure, not a decision: ``rejected`` is the label of an
+            # operator's refusal (``apply_leaf``), and a model reads it as one.
+            # It answers the session's OWN pending call, the one a finished walk
+            # answers (the outermost frame's ``tool_call_id``): the park's
+            # ``tool_call_id`` is the leaf's call inside the nested run, which
+            # this session's transcript does not have.
             tool_result_part = ToolResultPart(
-                id=parked.tool_call_id or "unknown",
+                id=parked.frames[0].tool_call_id or parked.tool_call_id or "unknown",
                 output=json.dumps({
-                    "rejected": True,
+                    "is_error": True,
                     "reason": (
                         f"continuation resume failed: "
                         f"{type(exc).__name__}: {exc}"
@@ -420,10 +426,11 @@ async def resume_engine_session(pool: "WorkerPool", engine_lease, session):
             "resume: hook for tool %r on session %s raised; synthesising"
             " error tool_result", tool_name, sid,
         )
+        # A failure, not an operator's refusal: not labelled ``rejected``.
         tool_result_part = ToolResultPart(
             id=parked.tool_call_id or "unknown",
             output=json.dumps({
-                "rejected": True,
+                "is_error": True,
                 "reason": f"resume failed: {type(exc).__name__}: {exc}",
                 "tool_name": tool_name,
             }),

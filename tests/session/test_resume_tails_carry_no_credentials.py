@@ -154,7 +154,7 @@ def test_a_failed_mcp_task_resume_hook_output_carries_no_credential() -> None:
 
 @pytest.mark.parametrize("synth", ["resume failed", "continuation resume failed"])
 def test_the_resume_failed_syntheses_carry_no_credential(synth) -> None:
-    output = json.dumps({"rejected": True, "reason": f"{synth}: ConnectError: refused for url '{LEAKY_URL}'", "tool_name": "http_request"})
+    output = json.dumps({"is_error": True, "reason": f"{synth}: ConnectError: refused for url '{LEAKY_URL}'", "tool_name": "http_request"})
 
     part = ToolResultPart(id="c1", output=output, error=True)
 
