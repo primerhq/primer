@@ -316,6 +316,118 @@ async def test_paused_session_non_human_wake_queues_and_holds_pause():
     assert superseded[0]["payload"]["pending_id"] == "pending-1"
 
 
+def _queueing_store(queued: list[dict]):
+    """A stand-in for ``store_pending_steer`` that records the call (the real one needs a pending-row storage the
+    single-row fake provider of this module does not have)."""
+
+    async def _fake_store_pending_steer(**kw):
+        from primer.model.workspace_session import PendingSessionMessage
+
+        queued.append(kw)
+        return PendingSessionMessage(
+            id="pending-1", session_id=kw["session"].id,
+            parts=[{"type": "text", "text": kw["text"]}],
+            enqueued_at=datetime.now(timezone.utc),
+            created_at=datetime.now(timezone.utc),
+        )
+
+    return _fake_store_pending_steer
+
+
+@pytest.mark.asyncio
+async def test_a_session_paused_while_idle_holds_a_non_human_wake():
+    """The pause route moves an idle session straight to PAUSED without pause_requested
+    (primer/api/routers/sessions.py, pause_session). A trigger, an agent or a peer must still not resume it."""
+    row = _row(SessionStatus.PAUSED)  # pause_requested stays False
+    assert row.pause_requested is False
+    deps, slot, sched, eng = _deps(row)
+    ws = deps.workspace_registry._ws
+    queued: list[dict] = []
+
+    import primer.session.pending_messages as pm
+    import unittest.mock
+
+    with unittest.mock.patch.object(pm, "store_pending_steer", _queueing_store(queued)):
+        out = await wake_session(
+            workspace_id="ws-1", session_id="sess-1", instruction="peer note",
+            human_intent=False, deps=deps,
+        )
+
+    assert out.status == SessionStatus.PAUSED
+    assert out.pause_requested is False
+    assert out.turn_status != "claimable"
+    assert slot.appended == []
+    assert sched.enqueued == [] and eng.upserts == []
+    assert [q["text"] for q in queued] == ["peer note"]
+    records = _decode_records(ws)
+    assert [r["payload"]["action"] for r in records if r["kind"] == "pause_superseded"] == ["queued"]
+    assert not [r for r in records if r["kind"] == "user_input"], "a held message is queued, never written as a user message"
+
+
+@pytest.mark.asyncio
+async def test_a_human_message_resumes_a_session_paused_while_idle():
+    row = _row(SessionStatus.PAUSED)
+    deps, slot, sched, eng = _deps(row)
+    out = await wake_session(
+        workspace_id="ws-1", session_id="sess-1", instruction="carry on",
+        human_intent=True, deps=deps,
+    )
+    assert out.status == SessionStatus.RUNNING
+    assert out.turn_status == "claimable"
+    assert slot.appended == ["carry on"]
+    assert sched.enqueued == ["sess-1"]
+    assert (ClaimKind.SESSION, "sess-1") in eng.upserts
+
+
+@pytest.mark.asyncio
+async def test_a_human_message_resumes_a_session_paused_while_it_ran():
+    """The other kind of pause (pause_requested set, the worker then wrote PAUSED): a person still resumes it."""
+    row = _row(SessionStatus.PAUSED)
+    row.pause_requested = True
+    deps, slot, sched, eng = _deps(row)
+    out = await wake_session(
+        workspace_id="ws-1", session_id="sess-1", instruction="carry on",
+        human_intent=True, deps=deps,
+    )
+    assert out.status == SessionStatus.RUNNING
+    assert out.pause_requested is False
+    assert out.turn_status == "claimable"
+    assert slot.appended == ["carry on"]
+    assert sched.enqueued == ["sess-1"]
+
+
+@pytest.mark.asyncio
+async def test_a_non_human_wake_with_no_message_leaves_a_session_paused_while_idle_paused():
+    """A wake that carries nothing to queue still must not resume the session: it is held, and the hold is announced."""
+    row = _row(SessionStatus.PAUSED)
+    deps, slot, sched, eng = _deps(row)
+    ws = deps.workspace_registry._ws
+    out = await wake_session(
+        workspace_id="ws-1", session_id="sess-1", instruction=None,
+        human_intent=False, deps=deps,
+    )
+    assert out.status == SessionStatus.PAUSED
+    assert out.turn_status != "claimable"
+    assert sched.enqueued == [] and eng.upserts == []
+    superseded = [r for r in _decode_records(ws) if r["kind"] == "pause_superseded"]
+    assert [(r["payload"]["action"], r["payload"]["pending_id"]) for r in superseded] == [("queued", None)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [SessionStatus.CREATED, SessionStatus.WAITING, SessionStatus.RUNNING])
+async def test_a_non_human_wake_of_a_session_that_is_not_paused_is_not_held(status):
+    row = _row(status)
+    deps, slot, sched, eng = _deps(row)
+    out = await wake_session(
+        workspace_id="ws-1", session_id="sess-1", instruction="go",
+        human_intent=False, deps=deps,
+    )
+    assert out.status == SessionStatus.RUNNING
+    assert out.turn_status == "claimable"
+    assert slot.appended == ["go"]
+    assert sched.enqueued == ["sess-1"]
+
+
 @pytest.mark.asyncio
 async def test_non_human_wake_of_an_unpaused_session_is_unaffected():
     """human_intent=False only changes behaviour when pause_requested is
