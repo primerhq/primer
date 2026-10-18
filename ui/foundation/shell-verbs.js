@@ -9,9 +9,11 @@
 //
 // Pure logic: no React, no DOM, no fetch. Hosts adapt it.
 
+// "platform-nav" is the Platform sidebar (NV_PlatNav in nv-platform.jsx): its rows and provider-type entries are the pointer affordance of the verbs that open
+// each Platform page and each provider type.
 var SH_SURFACES = [
   "palette", "rail", "tab-menu", "overlay-button", "attention-item",
-  "composer-slash", "topbar", "studio-nav",
+  "composer-slash", "topbar", "studio-nav", "platform-nav",
 ];
 
 // Only these open a label. An allowlist is the one lint that actually

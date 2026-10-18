@@ -289,6 +289,35 @@ function NV_providersNavigate(con, ref) {
   return true;
 }
 
+// The Platform's palette verbs (the command-palette track): one per nav and one per provider type, on the "platform-nav" surface, whose pointer affordance is
+// the sidebar row that opens the same view (the data-verb of NV_PlatNav). NV_platVerbSpecs lists them in the sidebar's order, Providers then its types then every
+// other nav, and leaves the custom pages out: a custom page registers its own verb in the plan that ships the page (nv-shell.jsx says where), and its row already
+// carries the data-verb. A label must be verb-noun Title Case or the registry throws, inside the shell's registration effect, so a page title ("Approval policies")
+// and a type with no label are capitalised word by word here, and no title a page is free to write can take the console down.
+function NV_platTitleCase(text) {
+  return String(text).replace(/(^|\s)([a-z])/g, function (all, space, letter) { return space + letter.toUpperCase(); });
+}
+
+function NV_platVerbSpecs() {
+  var specs = [];
+  var types = NV_platProviderTypes();
+  NV_PLAT_GROUPS.forEach(function (group) {
+    group.ids.forEach(function (id) {
+      if (NV_platHas(NV_PLAT_CUSTOM_PAGES, id)) return;
+      specs.push({ id: "platform.open." + id, label: "Open " + NV_platTitleCase(NV_platNavLabel(id)), nav: id, sub: null });
+      if (id !== "providers") return;
+      types.forEach(function (t) {
+        specs.push({
+          id: "platform.open.providers." + t,
+          label: "Open Providers: " + NV_platTitleCase(NV_PROVIDER_TYPE_LABELS[t] || t),
+          nav: "providers", sub: t,
+        });
+      });
+    });
+  });
+  return specs;
+}
+
 // Per-entity page config. list() returns a promise of {items}; card(row, con)
 // maps a row to the ONE card view model of every Platform page (seam I-8):
 //   { id, name, sub, badge?, icon?: { path, tone? }, status?: { label, tone:
@@ -759,6 +788,7 @@ function NV_PlatNav() {
                   <button type="button" className="nv-plat-row"
                     data-active={id === active ? "true" : "false"}
                     data-testid={"nv-plat-row:" + id}
+                    data-verb={"platform.open." + id}
                     aria-current={id === active ? "page" : undefined}
                     onClick={function () { con.goView("platform", id); }}>
                     <svg width="14" height="14" viewBox="0 0 14 14" fill="none"
@@ -776,6 +806,7 @@ function NV_PlatNav() {
                           <button type="button" key={t} className="nv-plat-sub"
                             data-active={"providers:" + t === active ? "true" : "false"}
                             data-testid={"nv-plat-sub:" + t}
+                            data-verb={"platform.open.providers." + t}
                             aria-current={"providers:" + t === active ? "page" : undefined}
                             onClick={function () { con.goView("platform", "providers", t); }}>
                             {NV_PROVIDER_TYPE_LABELS[t] || t}
@@ -1572,6 +1603,7 @@ window.NV_PLAT_CUSTOM_LABELS = NV_PLAT_CUSTOM_LABELS;
 window.NV_platNavAvailable = NV_platNavAvailable;
 window.NV_platResolveNav = NV_platResolveNav;
 window.NV_platNavLabel = NV_platNavLabel;
+window.NV_platVerbSpecs = NV_platVerbSpecs;
 window.NV_emptyText = NV_emptyText;
 window.NV_countText = NV_countText;
 window.NV_Platform = NV_Platform;

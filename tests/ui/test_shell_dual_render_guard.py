@@ -86,27 +86,40 @@ def test_every_registered_verb_declares_a_pointer_surface() -> None:
     assert not offenders, f"palette-only verbs: {offenders}"
 
 
-def test_every_registered_verb_has_a_pointer_affordance() -> None:
-    """A declared pointer surface must actually render: every verb with
-    a non-palette surface carries a data-verb affordance somewhere, or
-    is one of the chrome verbs whose affordance IS the chrome control
-    (topbar toggles, the search field, the workspace selector)."""
-    text = _all_console_text()
-    rendered = set(re.findall(r'data-verb="([\w.]+)"', text))
-    # Chrome-owned verbs: the control is the affordance; the testid
-    # pins below keep them honest.
-    chrome_owned = {
-        "palette.open": 'data-testid="nv-search"',
-        "terminal.toggle": 'data-testid="nv-toggle-terminal"',
-        # workspace.switch/create moved OFF chrome onto the rail's own
-        # data-verb attributes (US-012b), so the primary rendered-check
-        # covers them and they need no chrome witness here anymore.
-        "view.studio": 'data-testid="nv-go-studio"',
-        "view.platform": 'data-testid="nv-go-platform"',
-        "view.system": "nv-menu-row",
-    }
+# The Platform sidebar's rows carry their verb as a COMPUTED data-verb: one expression for every nav (data-verb={"platform.open." + id}) and one for every provider type
+# (data-verb={"platform.open.providers." + t}), so the literal-attribute scan cannot read them (Platform revamp 01, Task 9). They count as rendered exactly while BOTH expressions
+# are in nv-platform.jsx, and the verbs are derived from the grammar the rows are drawn from: platform.open.<nav> for every nav of SH_VIEWS.platform and
+# platform.open.providers.<type> for every type of SH_VIEW_SUBS. A custom page's plan registers its own literal verb (platform.open.web, platform.open.templates) and relies on this.
+NAV_ROW_ATTRIBUTES = ('data-verb={"platform.open." + id}', 'data-verb={"platform.open.providers." + t}')
+
+
+def _nav_row_verbs(platform_source: str) -> set[str]:
+    if not all(attribute in platform_source for attribute in NAV_ROW_ATTRIBUTES):
+        return set()
+    navs = _mini_racer_value(FOUNDATION / "shell-url.js", "SH_VIEWS.platform")
+    types = _mini_racer_value(FOUNDATION / "shell-url.js", 'SH_VIEW_SUBS["platform:providers"]')
+    return {f"platform.open.{nav}" for nav in navs} | {f"platform.open.providers.{kind}" for kind in types}
+
+
+# Chrome-owned verbs: the control is the affordance; the testid
+# pins below keep them honest.
+CHROME_OWNED = {
+    "palette.open": 'data-testid="nv-search"',
+    "terminal.toggle": 'data-testid="nv-toggle-terminal"',
+    # workspace.switch/create moved OFF chrome onto the rail's own
+    # data-verb attributes (US-012b), so the primary rendered-check
+    # covers them and they need no chrome witness here anymore.
+    "view.studio": 'data-testid="nv-go-studio"',
+    "view.platform": 'data-testid="nv-go-platform"',
+    "view.system": "nv-menu-row",
+}
+
+
+def _verbs_without_a_pointer_affordance(registrations: list[dict[str, str]], text: str, platform_source: str) -> list[str]:
+    """The ids of the registrations that declare a pointer surface and render none: no data-verb of their own, no sidebar row (the nav-row verbs), no chrome control."""
+    rendered = set(re.findall(r'data-verb="([\w.]+)"', text)) | _nav_row_verbs(platform_source)
     missing = []
-    for entry in _registrations():
+    for entry in registrations:
         vid = entry.get("id")
         if not vid:
             continue
@@ -115,11 +128,64 @@ def test_every_registered_verb_has_a_pointer_affordance() -> None:
             continue
         if vid in rendered:
             continue
-        witness = chrome_owned.get(vid)
+        witness = CHROME_OWNED.get(vid)
         if witness and witness in text:
             continue
         missing.append(vid)
+    return missing
+
+
+def test_every_registered_verb_has_a_pointer_affordance() -> None:
+    """A declared pointer surface must actually render: every verb with
+    a non-palette surface carries a data-verb affordance somewhere, or
+    is one of the chrome verbs whose affordance IS the chrome control
+    (topbar toggles, the search field, the workspace selector)."""
+    missing = _verbs_without_a_pointer_affordance(_registrations(), _all_console_text(), _console_sources()["nv-platform.jsx"])
     assert not missing, f"verbs with no pointer affordance: {sorted(missing)}"
+
+
+def test_platform_nav_is_a_pointer_surface() -> None:
+    """The Platform sidebar is a surface of its own: the verbs for its rows declare it, and it counts as a pointer (the registry refuses a verb whose only surface is the palette)."""
+    shell_verbs = FOUNDATION / "shell-verbs.js"
+    assert _mini_racer_value(shell_verbs, "SH_SURFACES").count("platform-nav") == 1
+    register = (
+        "(function (surfaces) { try { SH_createVerbRegistry().register({ id: 'x.y', label: 'Open Thing', surfaces: surfaces, run: function () {} }); return 'ok'; }"
+        " catch (e) { return String(e.message || e); } })"
+    )
+    assert _mini_racer_value(shell_verbs, register + "(['platform-nav'])") == "ok", "a verb whose pointer surface is the sidebar registers on its own"
+    assert "declares no pointer surface" in _mini_racer_value(shell_verbs, register + "(['palette'])"), "while the palette alone is still refused"
+
+
+def test_the_nav_row_verbs_are_every_nav_and_every_provider_type() -> None:
+    platform = _console_sources()["nv-platform.jsx"]
+    verbs = _nav_row_verbs(platform)
+    navs = _mini_racer_value(FOUNDATION / "shell-url.js", "SH_VIEWS.platform")
+    types = _mini_racer_value(FOUNDATION / "shell-url.js", 'SH_VIEW_SUBS["platform:providers"]')
+    assert verbs == {f"platform.open.{n}" for n in navs} | {f"platform.open.providers.{t}" for t in types}
+    assert {"platform.open.web", "platform.open.templates", "platform.open.providers.tts"} <= verbs, "custom pages and the last types are covered"
+
+
+def test_the_nav_row_verbs_count_only_while_both_row_attributes_are_in_the_source() -> None:
+    """The extension is gated on the literal attributes: remove either one from nv-platform.jsx and a verb that only the sidebar row renders is palette-only again."""
+    platform = _console_sources()["nv-platform.jsx"]
+    assert _nav_row_verbs(platform), "the real source carries both"
+    for attribute in NAV_ROW_ATTRIBUTES:
+        assert attribute in platform, attribute
+        assert _nav_row_verbs(platform.replace(attribute, "")) == set(), f"without {attribute} the nav rows render no verb"
+
+
+def test_a_custom_pages_literal_verb_is_rendered_by_its_row_and_an_unknown_one_is_not() -> None:
+    """What Plans 04 and 08 rely on: ``reg({ id: "platform.open.web", ..., surfaces: ["palette", "platform-nav"] })`` needs no affordance of its own."""
+    platform = _console_sources()["nv-platform.jsx"]
+    web = {"id": "platform.open.web", "surfaces": '"palette", "platform-nav"'}
+    templates = {"id": "platform.open.templates", "surfaces": '"palette", "platform-nav"'}
+    typo = {"id": "platform.open.webb", "surfaces": '"palette", "platform-nav"'}
+    palette_only_type = {"id": "platform.open.providers.nope", "surfaces": '"palette", "platform-nav"'}
+    assert _verbs_without_a_pointer_affordance([web, templates], _all_console_text(), platform) == []
+    assert _verbs_without_a_pointer_affordance([web, typo, palette_only_type], _all_console_text(), platform) == ["platform.open.webb", "platform.open.providers.nope"]
+    assert _verbs_without_a_pointer_affordance([web], _all_console_text(), platform.replace(NAV_ROW_ATTRIBUTES[0], "")) == ["platform.open.web"], (
+        "with the row attribute gone, the custom page's verb has no pointer affordance"
+    )
 
 
 def test_every_overlay_is_reachable_from_the_registry() -> None:
