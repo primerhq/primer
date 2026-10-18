@@ -84,3 +84,39 @@ async def test_the_old_body_was_refused(client) -> None:
         json={"id": "tav", "provider": "tavily", "config": {"api_key": "k"}},
     )
     assert answer.status_code == 422, answer.text
+
+
+async def test_a_served_web_row_puts_back_through_the_helpers(
+    client, fake_storage_provider, wire_ctx: MiniRacer,
+) -> None:
+    """The edit path end to end (the #762 review): a served web search row
+    (its key masked, ``provider_type`` and ``config.type`` set) goes
+    through the console's edit helpers, ``PC_draftFromRow``, then
+    ``PC_submittable`` with the class's served ``_types`` shape, then
+    ``PC_wireBody``, and PUTs back: 200, the row as it was served, and
+    the stored key is still the real one (the server restored the
+    secret it served masked, rather than storing the mask)."""
+    from primer.model.web_search import WebSearchProvider
+
+    created = await client.post(_WS_PATH, json={
+        "id": "tav", "provider_type": "tavily",
+        "config": {"type": "tavily", "api_key": "tvly-real-1234"},
+    })
+    assert created.status_code == 201, created.text
+    served = (await client.get(f"{_WS_PATH}/tav")).json()
+    assert served["config"]["api_key"] != "tvly-real-1234", "the key is served masked"
+    shape = (await client.get(f"{_WS_PATH}/_types")).json()["tavily"]
+
+    draft = wire_ctx.call("PC_draftFromRow", "web_search_providers", served)
+    body = wire_ctx.call(
+        "PC_wireBody", "web_search_providers",
+        wire_ctx.call("PC_submittable", draft, shape, "tavily"),
+    )
+    assert "provider" not in body, body
+    answer = await client.put(f"{_WS_PATH}/tav", json=body)
+    assert answer.status_code == 200, answer.text
+    row = answer.json()
+    assert row["provider_type"] == "tavily"
+    assert row["config"] == served["config"]
+    stored = await fake_storage_provider.get_storage(WebSearchProvider).get("tav")
+    assert stored.config.api_key.get_secret_value() == "tvly-real-1234"

@@ -125,6 +125,16 @@ function fieldRow(rootTestid, testid) {
   });
   return hit;
 }
+// The native <button> a Btn draws (the Btn element and its button share the test id; aria-busy and aria-disabled are only on the button).
+function nativeButton(testid) {
+  return ALL(testid).filter(function (n) { return n.type === "button" && n.props["data-testid"] === testid; })[0] || null;
+}
+// The test ids at or under one element, each once, in render order.
+function testids(root) {
+  var seen = [];
+  ALL(root).forEach(function (n) { var t = n.props && n.props["data-testid"]; if (t && seen.indexOf(t) < 0) seen.push(t); });
+  return seen;
+}
 function setValue(testid, value) {
   var node = MR.find(testid);
   if (!node) throw new Error("no element with data-testid " + testid);
