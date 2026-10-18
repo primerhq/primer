@@ -228,6 +228,26 @@ def submit_and_settle(ctx) -> None:
     settle(ctx)
 
 
+def advanced_open(ctx) -> bool:
+    """Whether the Advanced fold is open: its toggle says so, and only an open fold mounts its two choices."""
+    expanded = js(ctx, 'MR.find("mp-aggregate-advanced:toggle").props["aria-expanded"]') == "true"
+    assert expanded == present(ctx, "mp-aggregate-failover-point") == present(ctx, "mp-aggregate-failover-on"), "an open fold shows both choices and a shut one neither"
+    return expanded
+
+
+def open_advanced(ctx) -> None:
+    """Open the fold if it is shut. Whether it starts open depends on the row (an edit that holds a non-default choice opens it), and a press on an open one would shut it."""
+    if not advanced_open(ctx):
+        click(ctx, "mp-aggregate-advanced:toggle")
+    assert advanced_open(ctx)
+
+
+def aggregate_row(ctx, **routing) -> dict:
+    """``FULL_AGG`` with its two failover choices at the model's defaults, unless a keyword says otherwise."""
+    defaults = js(ctx, "MP_AGGREGATE_DEFAULTS")
+    return {**FULL_AGG, "failover_point": defaults["failover_point"], "failover_on": defaults["failover_on"], **routing}
+
+
 # ---- create --------------------------------------------------------------------------------------------------------------------------------------------
 
 
@@ -367,6 +387,49 @@ def test_routing_help_follows_the_choice_and_the_advanced_fold_holds_the_failove
     click(ctx, "mp-aggregate-submit")
     body = calls(ctx)[0][2]
     assert (body["strategy"], body["failover_point"], body["failover_on"]) == ("round_robin", "mid_stream", "transient")
+
+
+# The lead's ruling for the Advanced fold: folded on a create; on an edit it starts open when a choice inside it is not the model's default, so a person sees what is set; a harness-managed row
+# keeps it open. `open` is the kit's initial-state-only prop, so each case below is a fresh mount.
+
+
+def test_the_advanced_fold_is_folded_on_a_create(ctx) -> None:
+    mount(ctx)
+    assert advanced_open(ctx) is False
+
+
+def test_the_advanced_fold_is_folded_on_an_edit_that_holds_the_defaults(ctx) -> None:
+    mount(ctx, {"existing": aggregate_row(ctx)})
+    assert advanced_open(ctx) is False
+
+
+def test_the_advanced_fold_opens_on_an_edit_with_a_non_default_failover_point(ctx) -> None:
+    mount(ctx, {"existing": aggregate_row(ctx, failover_point="mid_stream")})
+    assert advanced_open(ctx) is True
+    assert js(ctx, 'MR.findProp("testid", "mp-aggregate-failover-point").props.value') == "mid_stream"
+    assert js(ctx, 'MR.findProp("testid", "mp-aggregate-failover-on").props.value') == "transient_and_config"
+
+
+def test_the_advanced_fold_opens_on_an_edit_with_a_non_default_failover_on(ctx) -> None:
+    mount(ctx, {"existing": aggregate_row(ctx, failover_on="transient")})
+    assert advanced_open(ctx) is True
+    assert js(ctx, 'MR.findProp("testid", "mp-aggregate-failover-point").props.value') == "before_first_token"
+    assert js(ctx, 'MR.findProp("testid", "mp-aggregate-failover-on").props.value') == "transient"
+
+
+def test_the_advanced_fold_is_folded_on_a_row_with_no_failover_fields(ctx) -> None:
+    bare = {k: v for k, v in FULL_AGG.items() if k not in ("failover_point", "failover_on")}
+    mount(ctx, {"existing": bare})
+    assert advanced_open(ctx) is False
+    open_advanced(ctx)
+    assert js(ctx, 'MR.findProp("testid", "mp-aggregate-failover-point").props.value') == "before_first_token", "an absent field reads as the model's default"
+    assert js(ctx, 'MR.findProp("testid", "mp-aggregate-failover-on").props.value') == "transient_and_config"
+
+
+def test_a_managed_aggregate_keeps_its_fold_open_even_when_it_holds_the_defaults(ctx) -> None:
+    """Its toggle is disabled with the rest of the form, so a shut fold could not be read."""
+    mount(ctx, {"existing": aggregate_row(ctx, harness_id="h1")})
+    assert advanced_open(ctx) is True
 
 
 def test_the_overlay_is_the_kit_form_overlay_720_wide_with_a_title_and_the_buttons_of_its_mode(ctx) -> None:
@@ -627,7 +690,7 @@ def test_a_different_profile_in_the_same_place_is_a_fresh_overlay(ctx) -> None:
 
 def test_every_input_is_named_by_its_label(ctx) -> None:
     mount(ctx, {"existing": FULL_AGG})
-    click(ctx, "mp-aggregate-advanced:toggle")
+    open_advanced(ctx)
     assert js(ctx, 'unlabelled("mp-aggregate")') == []
     mount(ctx)
     assert js(ctx, 'unlabelled("mp-aggregate")') == []

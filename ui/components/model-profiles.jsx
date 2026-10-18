@@ -158,6 +158,17 @@ function MP_windowText(members, rows) {
   return MP_fmtTokens(size) + " (the smallest of the picked profiles)";
 }
 
+// Whether the Advanced fold holds a choice that is not the model's default. The fold is folded on a create and on an edit that left both choices alone; an edit whose failover_point
+// or failover_on differs from MP_AGGREGATE_DEFAULTS starts it open, so a person sees what is set without asking. A field the row does not carry reads as its default, the way the
+// overlay's own state reads it. `row` is the stored profile, or null on a create. A harness-managed row is a different reason to start open (its toggle is disabled with the rest of
+// the form), and the overlay adds it: this answers only "is something in there set".
+function MP_advancedIsSet(row) {
+  if (!row) return false;
+  var point = row.failover_point || MP_AGGREGATE_DEFAULTS.failover_point;
+  var classes = row.failover_on || MP_AGGREGATE_DEFAULTS.failover_on;
+  return point !== MP_AGGREGATE_DEFAULTS.failover_point || classes !== MP_AGGREGATE_DEFAULTS.failover_on;
+}
+
 // The server has no id pattern, but an id with a "/" or a space cannot be addressed (GET and DELETE answer 404). The character set is the one the console builds profile
 // ids from (PC_profileIdFor in the Register overlay): a letter or digit first, then letters, digits, dots, dashes and underscores.
 var MP_NAME_RULE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -597,7 +608,8 @@ function MP_SingleProfileOverlay({ existing, providers, prefill, onClose, onSave
 }
 
 // The aggregated profile's overlay (design 7.2): create with no `existing`, view and edit with one. Name, the members table with the order (the failover chain), the routing
-// switch, the folded Advanced choices and the smallest context window of the picked members. The model requires a description the design has no field for: a create writes
+// switch, the Advanced choices and the smallest context window of the picked members. The Advanced fold is folded on a create and starts open on an edit that holds a choice
+// that is not the model's default (MP_advancedIsSet) or on a harness-managed row. The model requires a description the design has no field for: a create writes
 // "Aggregate of <ids>", an edit shows the stored one. `existing` is the row the page listed; an edit sends it back whole with the form's fields laid over it (MP_editBody),
 // because PUT is a full replace and the row holds fields this form does not draw (`config`).
 function MP_AggregateOverlay({ existing, onClose, onSaved }) {
@@ -708,7 +720,7 @@ function MP_AggregateOverlay({ existing, onClose, onSaved }) {
         <PK_Segmented testid="mp-aggregate-routing" ariaLabel="Routing" options={MP_ROUTING_OPTIONS} value={strategy}
           onChange={(v) => setStrategy(v)} />
       </PK_Field>
-      <PK_Fold label="Advanced" testid="mp-aggregate-advanced" open={managed}>
+      <PK_Fold label="Advanced" testid="mp-aggregate-advanced" open={managed || MP_advancedIsSet(existing)}>
         <PK_Grid cols={1}>
           <PK_Field label="Fail over" help={MP_FAILOVER_POINT_HELP}>
             <PK_Segmented testid="mp-aggregate-failover-point" ariaLabel="Fail over" options={MP_FAILOVER_POINT_OPTIONS}
