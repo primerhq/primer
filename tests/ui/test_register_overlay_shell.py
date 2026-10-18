@@ -768,6 +768,17 @@ def test_the_overlay_footer_wraps_on_a_narrow_sheet_and_the_action_stays_right()
     assert declarations(css_body(".pk-foot-right"))["margin-left"] == "auto"
 
 
+def test_the_footers_left_group_wraps_too_so_three_buttons_fit_a_narrow_sheet() -> None:
+    """Re-review of #773: ``.pk-foot`` wraps, but its left group is ONE flex item, and a flex container that does not wrap is as narrow as the sum of its buttons at
+    the least. A left group of three buttons (Cancel, Delete, and the "Import more models" that Task 13 adds) was 347px wide, so at 320px and 360px the footer's
+    own wrap had nothing to move and Delete ended past the sheet's edge (measured in Chromium; the sheet's footer is 290px and 330px wide there). The left group wraps
+    its own buttons; the action's side still goes to a line of its own and stays on the right."""
+    assert declarations(css_body(".pk-foot-left"))["flex-wrap"] == "wrap"
+    shared = declarations(css_body(".pk-foot-left"))
+    assert (shared["display"], shared["align-items"], shared["gap"]) == ("flex", "center", "8px"), "its buttons keep their row and their gap"
+    assert declarations(css_body(".pk-foot-right"))["margin-left"] == "auto"
+
+
 def test_the_overlay_is_a_sheet_on_a_phone(ctx) -> None:
     ctx.eval("MOBILE = true;")
     _mount(ctx, initialClass="llm")
