@@ -329,10 +329,12 @@ def validate_arg(type_name: str, param: Param, value: Any, *, max_html_bytes: in
             return f"{name} is {len(value)} characters; the limit is {_num(param.hi)}"
         return None
     if kind == "number":
+        # Only a float can be NaN or infinite, and math.isfinite() raises OverflowError for an int too big for a
+        # float. An int goes straight to the bounds, which compare exactly whatever its size.
         if (
             isinstance(value, bool)
             or not isinstance(value, (int, float))
-            or not math.isfinite(value)
+            or (isinstance(value, float) and not math.isfinite(value))
             or (param.lo is not None and value < param.lo)
             or (param.hi is not None and value > param.hi)
         ):

@@ -108,6 +108,16 @@ def test_event_lines():
     assert event_line({"id": "e9", "element": "more", "kind": "open"}) == "e9 more open"
 
 
+@pytest.mark.parametrize("position", [
+    pytest.param(10**400, id="huge"), pytest.param(-(10**400), id="huge-negative"), pytest.param(10**5000, id="beyond-the-str-limit"),
+    float("nan"), float("inf"), -float("inf"), True, "7",
+])
+def test_a_position_that_is_no_readable_number_prints_as_zero_and_never_crashes(position):
+    # an integer beyond the range of a float used to raise OverflowError out of event_line
+    assert event_line({"id": "e1", "element": "p", "kind": "play", "position": position}) == "e1 p play position=0"
+    assert event_line({"id": "e2", "element": "p", "kind": "ended", "position": position, "by": "al"}) == 'e2 p ended position=0 by="al"'
+
+
 def test_the_age_of_an_event():
     def ago(seconds: float, at: str | datetime = AT) -> str:
         return event_line({"id": "e", "element": "x", "kind": "click", "at": at}, now=datetime(2026, 10, 18, 12, 0, 0, tzinfo=timezone.utc) + timedelta(seconds=seconds))
@@ -259,6 +269,8 @@ def test_no_value_line_when_the_value_is_the_props_own():
     ({"playing": True}, "  # user: playing at 0:00"),
     ({"playing": True, "position": float("nan")}, "  # user: playing at 0:00"),
     ({"playing": True, "position": -4}, "  # user: playing at 0:00"),
+    pytest.param({"playing": True, "position": 10**400}, "  # user: playing at 0:00", id="huge"),
+    pytest.param({"playing": False, "position": -(10**400)}, "  # user: paused at 0:00", id="huge-negative"),
     ({"playing": False, "position": 190.0, "ended": True}, "  # user: ended"),
     ({"ended": True}, "  # user: ended"),
     ({}, ""),
