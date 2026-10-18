@@ -16,7 +16,7 @@ from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-from primer.common.secret_box import SecretBox, SecretBoxError
+from primer.common.secret_box import SecretBox, SecretBoxError, is_sealed
 
 KEY = "k" * 32
 
@@ -102,3 +102,19 @@ def test_the_key_is_hkdf_sha256_of_the_material_with_the_pinned_salt_and_info():
 
 def test_a_value_sealed_by_an_earlier_build_still_opens():
     assert SecretBox.from_key_material(KEY).decrypt(KNOWN_ANSWER) == KNOWN_PLAINTEXT
+
+
+@pytest.mark.parametrize("plaintext", ["", "x", "a long token " * 50, "\u4e2d\u6587"])
+def test_what_the_box_seals_has_the_sealed_shape(plaintext):
+    assert is_sealed(SecretBox.from_key_material(KEY).encrypt(plaintext))
+    assert is_sealed(KNOWN_ANSWER)
+
+
+@pytest.mark.parametrize(
+    "not_sealed",
+    ["", "tok", "v1.", "v1.abc", "v1.gAAAA", "gAAAAAB" + "A" * 100, "v2.gAAAA" + "A" * 100, "Bearer " + "A" * 120, "v1.gAAAA" + "A" * 100 + "\n", None, 7],
+)
+def test_plaintext_and_junk_do_not_have_the_sealed_shape(not_sealed):
+    """The shape check is a tripwire for plaintext in a column that wants ciphertext; it must not wave through the things a token looks like."""
+    assert not is_sealed(not_sealed)
+
