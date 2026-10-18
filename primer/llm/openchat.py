@@ -33,7 +33,7 @@ from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout
 from primer.llm._openai_compat import (
     _build_sampling_params,
     _build_usage,
-    _extract_extended_kwargs,
+    _extract_extended_kwargs as _extract_compat_kwargs,
     _map_finish_reason,
     _messages_to_chat,
     _part_to_content,
@@ -63,6 +63,22 @@ from primer.observability import tracing as _tracing
 
 
 logger = logging.getLogger(__name__)
+
+
+# What primer.llm._reasoning.openchat_extended emits. ``reasoning_effort``
+# (OpenAI's reasoning models) is a parameter of the openai SDK's
+# ``create()``; ``chat_template_kwargs`` is not (vLLM and the other
+# self-hosted servers read ``enable_thinking`` from it in the chat
+# template), so it travels in the request body.
+_REASONING_SDK_KEYS: frozenset[str] = frozenset({"reasoning_effort"})
+_REASONING_BODY_KEYS: frozenset[str] = frozenset({"chat_template_kwargs"})
+
+
+def _extract_extended_kwargs(extended: dict[str, Any] | None) -> dict[str, Any]:
+    """The shared Chat Completions whitelist plus the reasoning knobs this wire takes."""
+    return _extract_compat_kwargs(
+        extended, sdk_keys=_REASONING_SDK_KEYS, body_keys=_REASONING_BODY_KEYS,
+    )
 
 
 @dataclass(frozen=True)
