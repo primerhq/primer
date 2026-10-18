@@ -1666,6 +1666,26 @@ _BUILTIN_TOOLSETS: list[dict] = [
     {"id": "crud", "tagline": "Create and update agents, graphs, triggers and Python toolsets, behind approval policies", "icon": "edit", "always_on": True},
 ]
 
+async def _internal_search_on(storage_provider) -> bool | None:
+    """Whether the internal collections subsystem has a config row.
+
+    True when an ``InternalCollectionsConfig`` row exists, False when
+    none does, None when the storage read raises. The ``collections``
+    catalogue row serves this tri-state to the console, because
+    GET /v1/tools is open to every user while
+    GET /v1/internal_collections/config is admin-only.
+    """
+    from primer.model.internal import InternalCollectionsConfig
+
+    try:
+        page = await storage_provider.get_storage(InternalCollectionsConfig).find(
+            None, OffsetPage(offset=0, length=1),
+        )
+        return len(page.items) > 0
+    except Exception:
+        return None
+
+
 # A dedicated router registered BEFORE toolset_router in app.py so that
 # GET /toolsets/builtin is matched by this literal route rather than
 # being captured as toolset_id="builtin" by the CRUD GET-by-id.
@@ -1676,10 +1696,21 @@ builtin_toolsets_router = APIRouter()
     "/toolsets/builtin",
     summary="List the built-in toolsets an agent can bind",
 )
-async def list_builtin_toolsets() -> dict:
+async def list_builtin_toolsets(
+    storage_provider=Depends(get_storage_provider),
+) -> dict:
     """Every listed id is answered by ``ProviderRegistry.get_toolset``
-    without storage, so every card opens its detail."""
-    return {"items": [{**spec, "available": True} for spec in _BUILTIN_TOOLSETS]}
+    without storage, so every card opens its detail. The ``collections``
+    item also carries ``internal_search`` (tri-state, see
+    :func:`_internal_search_on`)."""
+    ic = await _internal_search_on(storage_provider)
+    items = []
+    for spec in _BUILTIN_TOOLSETS:
+        entry = {**spec, "available": True}
+        if spec["id"] == "collections":
+            entry["internal_search"] = ic
+        items.append(entry)
+    return {"items": items}
 
 
 @builtin_toolsets_router.get(
@@ -1767,6 +1798,7 @@ async def list_all_tools(
     out: list[dict] = []
 
     # 1. Built-in toolsets (every id in _BUILTIN_TOOLSETS).
+    ic = await _internal_search_on(storage_provider)
     for spec in _BUILTIN_TOOLSETS:
         tid = spec["id"]
         entry: dict = {
@@ -1777,6 +1809,8 @@ async def list_all_tools(
             "available": True,
             "tools": [],
         }
+        if tid == "collections":
+            entry["internal_search"] = ic
         tools, reason = await _catalogue_tools(registry, tid, principal)
         if reason is None:
             entry["tools"] = tools
