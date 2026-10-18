@@ -88,8 +88,9 @@ async def deliver_steer(
     trigger fire is not, and must not silently clear an operator's pause.
 
     A row that is absent OR cannot take a message (a non-restartable ENDED
-    session) reports ``DELIVERED_MISSING``, so the channel router remaps the
-    thread to a fresh session instead of dropping the message.
+    session, or a CANCELLED one when the message is a peer's: an operator's
+    Cancel sticks) reports ``DELIVERED_MISSING``, so the channel router
+    remaps the thread to a fresh session instead of dropping the message.
 
     A peer message (``peer`` given) to a session whose queue already holds
     the cap's worth of messages reports ``DELIVERED_QUEUE_FULL`` with nothing
@@ -140,7 +141,8 @@ async def deliver_steer(
         return SteerDelivery(outcome=DELIVERED_QUEUE_FULL, session_id=session_id)
     except (NotFoundError, ConflictError) as exc:
         # Raced deletion, or an ENDED session whose ended_reason forbids a
-        # restart. Either way this target cannot receive the message: report
+        # restart (or, for a peer message, a session an operator cancelled).
+        # Either way this target cannot receive the message: report
         # it missing so the caller can create a fresh one. The reason travels
         # with it, for a caller that tells its own caller why.
         logger.info(

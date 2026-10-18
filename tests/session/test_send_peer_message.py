@@ -28,7 +28,7 @@ from primer.model.workspace_session import (
     PendingSessionMessage,
     SessionStatus,
 )
-from primer.session import peer_messages
+from primer.session import peer_messages, steer_delivery
 from primer.session.peer_messages import (
     MAX_PEER_HOPS,
     NOTE_GRAPH,
@@ -331,10 +331,13 @@ async def test_an_ended_session_reopens_with_the_message():
 
 
 async def test_an_ended_session_that_still_carries_its_park_is_reopened_not_queued_and_waits_for_nothing():
-    """Cancel keeps the park columns on the row it ends; the session is ended, so there is no turn to queue behind and nothing it waits on."""
+    """The workspace-lost reconcile keeps the park columns on the row it ends (so does Cancel, which a peer message no longer reopens: see
+    ``test_a_peer_message_never_reopens_a_session_an_operator_cancelled``); the session is ended, so there is no turn to queue behind and nothing it
+    waits on. This test used to end the session as ``cancelled``; a peer message is refused there now, and the point it pins is the park, not the reason."""
     world = await _world()
+    world.registry.phase = "running"                  # the workspace is back, so a workspace_lost session reopens
     await seed_session(
-        world, sid="ses-b", status=SessionStatus.ENDED, ended_reason="cancelled", turn_no=2, metadata={"invocation": 1},
+        world, sid="ses-b", status=SessionStatus.ENDED, ended_reason="workspace_lost", turn_no=2, metadata={"invocation": 1},
         parked_status="parked", parked_event_key="ask_user:ses-b:call_q", parked_at=NOW,
     )
     result = await _send(world, "ses-b")
@@ -345,10 +348,11 @@ async def test_an_ended_session_that_still_carries_its_park_is_reopened_not_queu
 
 async def test_an_ended_session_whose_turn_status_still_reads_running_reopens_with_the_message():
     """Pinned choice (lead note on #761): an ENDED row can still carry ``turn_status="running"`` (the pool ends a session before the release clears the flag).
-    The session is ended, so the message reopens it; it is not queued behind a turn that is over."""
+    The session is ended, so the message reopens it; it is not queued behind a turn that is over. The reason is ``failed`` (one of the pool's reasons for
+    this window): a peer message does not reopen a ``cancelled`` session, whatever its flags read, and this test used to end it as ``cancelled``."""
     world = await _world()
     await seed_session(
-        world, sid="ses-b", status=SessionStatus.ENDED, ended_reason="cancelled", turn_status="running", turn_no=2, metadata={"invocation": 1},
+        world, sid="ses-b", status=SessionStatus.ENDED, ended_reason="failed", turn_status="running", turn_no=2, metadata={"invocation": 1},
     )
     result = await _send(world, "ses-b")
     assert (result.delivery, result.note, result.target_state) == ("woken", NOTE_REOPENED, "ended")
@@ -1027,6 +1031,68 @@ async def test_two_senders_that_pass_the_check_together_never_evict_a_persons_st
     [dropped] = [r["payload"] for r in records(world, "ses-b") if r["kind"] == "pause_superseded"]
     assert dropped["action"] == "dropped" and dropped["text"].startswith("[from session ses-"), "the dropped message is a peer's, on the record"
     assert dropped["text"] not in {p.parts[0]["text"] for p in after}
+
+
+# ---- a cancelled session stays cancelled (lead ruling R4 on #788) ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize("mode", ["auto", "if_idle"])
+@pytest.mark.parametrize(
+    "extra",
+    [
+        pytest.param({}, id="a plain cancelled row"),
+        pytest.param({"parked_status": "parked", "parked_event_key": "ask_user:ses-b:call_q", "parked_at": NOW}, id="carrying the park Cancel leaves"),
+        pytest.param({"turn_status": "running"}, id="its turn_status still reads running"),
+    ],
+)
+async def test_a_peer_message_never_reopens_a_session_an_operator_cancelled(mode, extra):
+    """Only a person's steer or resume reopens it. The refusal is a conflict, in both modes, and nothing is written: not a record, a divider, a ledger
+    row, an event or a pulse, and the session is as it was."""
+    world = await _world()
+    await seed_session(
+        world, sid="ses-b", status=SessionStatus.ENDED, ended_reason="cancelled", turn_no=2, peer_hops=2, metadata={"invocation": 1}, **extra,
+    )
+    before = (await world.sessions.get("ses-b")).model_dump()
+    with pytest.raises(PeerMessageRefused) as info:
+        await _send(world, "ses-b", mode=mode)
+    _expect_refusal(info, "conflict", REFUSE_ENDED.format(session_id="ses-b", ended_reason="cancelled"))
+    assert (await world.sessions.get("ses-b")).model_dump() == before
+    assert slot(world, "ses-b").reopened is False and slot(world, "ses-b").appended == []
+    await _assert_nothing_stored(world)
+
+
+async def test_a_cancelled_target_is_refused_after_reach_and_rank_so_it_leaks_nothing():
+    """The cancelled-session refusal comes after the guards that hide a session (out of reach: not-found) and that compare ranks (forbidden)."""
+    world = await _world()
+    await seed_session(world, sid="ses-x", workspace_id="ws-2", status=SessionStatus.ENDED, ended_reason="cancelled", turn_no=2)
+    with pytest.raises(PeerMessageRefused) as hidden:
+        await _send(world, "ses-x")
+    _expect_refusal(hidden, "not-found")
+    await seed_session(world, sid="ses-b", status=SessionStatus.ENDED, ended_reason="cancelled", turn_no=2, initiated_by=ADMIN)
+    with pytest.raises(PeerMessageRefused) as higher:
+        await _send(world, "ses-b")
+    _expect_refusal(higher, "forbidden")
+
+
+async def test_a_session_cancelled_after_every_check_of_the_send_is_not_reopened(monkeypatch):
+    """The operator's Cancel lands in the last window there is: after the send read the target as idle and after ``deliver_steer`` did too, just before
+    the wake takes the session's lock. Only the wake sees the row as it is by then, so it is the wake that must refuse."""
+    world = await _world()
+    await seed_session(world, sid="ses-b", turn_no=1)
+    real_wake = steer_delivery.wake_session
+
+    async def cancel_then_wake(**kwargs):
+        row = await world.sessions.get("ses-b")
+        row.status, row.ended_reason = SessionStatus.ENDED, "cancelled"
+        await world.sessions.update(row)
+        return await real_wake(**kwargs)
+
+    monkeypatch.setattr(steer_delivery, "wake_session", cancel_then_wake)
+    with pytest.raises(PeerMessageRefused) as info:
+        await _send(world, "ses-b")
+    _expect_refusal(info, "conflict", REFUSE_ENDED.format(session_id="ses-b", ended_reason="cancelled"))
+    assert (await world.sessions.get("ses-b")).status == SessionStatus.ENDED
+    await _assert_nothing_stored(world)
 
 
 # ---- the text ---------------------------------------------------------------------------------------------------------------------
