@@ -5,6 +5,9 @@ an agent run a user started) could write a template with host mounts, a Kubernet
 REST now refuses. The tools take the caller from the tool context (an agent run's ``initiated_by``) or, over MCP, from
 the request's actor; with neither, they fail closed. ``create_workspace`` refuses a secret file source in the overrides
 the same way.
+
+Platform revamp 2026-10 (design 14.2): the Kubernetes ``service_account_name`` and ``tolerations`` are admin-only through the
+same tools; ``node_selector``, ``gpu`` and ``image_pull_policy`` are not.
 """
 
 from __future__ import annotations
@@ -61,6 +64,15 @@ _PRIVILEGED = {
         "id": "tpl-k", "provider_id": "p-1", "description": "d",
         "backend": {"kind": "kubernetes", "image": "alpine:3", "pod_overrides": {"dnsPolicy": "ClusterFirst"}},
     },
+    "service_account_name": {
+        "id": "tpl-k", "provider_id": "p-1", "description": "d",
+        "backend": {"kind": "kubernetes", "image": "alpine:3", "service_account_name": "runner"},
+    },
+    "tolerations": {
+        "id": "tpl-k", "provider_id": "p-1", "description": "d",
+        "backend": {"kind": "kubernetes", "image": "alpine:3",
+                    "tolerations": [{"key": "gpu", "operator": "Exists", "effect": "NoSchedule"}]},
+    },
     "files.secret": {
         "id": "tpl-s", "provider_id": "p-1", "description": "d",
         "files": [{"path": "creds", "source": {"kind": "secret", "name": "OPENAI_API_KEY"}}],
@@ -91,6 +103,36 @@ async def test_an_admin_run_can_create_a_template_with_an_admin_only_field(world
 
     assert not is_error, answer
     assert await sp.get_storage(WorkspaceTemplate).get(body["id"]) is not None
+
+
+@pytest.mark.asyncio
+async def test_a_user_run_may_set_the_user_tier_placement_fields(world) -> None:
+    sp, toolset = world
+    body = {"id": "tpl-k", "provider_id": "p-1", "description": "d", "backend": {
+        "kind": "kubernetes", "image": "alpine:3", "node_selector": {"gpu": "true"}, "gpu": {"count": 1},
+        "image_pull_policy": "Always"}}
+
+    is_error, answer = await _call(toolset, "create_workspace_template", ctx=_ctx("user"), entity=body)
+
+    assert not is_error, answer
+    stored = await sp.get_storage(WorkspaceTemplate).get("tpl-k")
+    assert stored.backend.node_selector == {"gpu": "true"} and stored.backend.gpu.count == 1
+    assert stored.backend.image_pull_policy == "Always"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["service_account_name", "tolerations"])
+async def test_a_user_run_cannot_update_or_delete_a_template_that_holds_a_placement_field(world, field) -> None:
+    sp, toolset = world
+    body = _PRIVILEGED[field]
+    assert not (await _call(toolset, "create_workspace_template", ctx=_ctx("admin"), entity=body))[0]
+
+    edited = {**body, "description": "edited by a user"}
+    is_error, answer = await _call(toolset, "update_workspace_template", ctx=_ctx("user"), id="tpl-k", entity=edited)
+    assert is_error and answer["type"] == "forbidden" and "admin-only settings" in answer["message"], answer
+    is_error, answer = await _call(toolset, "delete_workspace_template", ctx=_ctx("user"), id="tpl-k")
+    assert is_error and answer["type"] == "forbidden" and "admin-only settings" in answer["message"], answer
+    assert (await sp.get_storage(WorkspaceTemplate).get("tpl-k")).description == "d"
 
 
 @pytest.mark.asyncio
