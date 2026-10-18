@@ -3,8 +3,8 @@
 Split out of :mod:`primer.toolset.system` (a god-module decomposition). This
 module holds the *generative* surface - the per-entity CRUD factory
 (``_crud_tools_for``), its example-body hint table, and the entity-specific
-extra builders (provider ``fetch_models``, toolset ``list``/``call_tool``,
-collection search/list, document content/path tools). ``build_system_toolset``
+extra builders (provider ``fetch_models``, toolset ``list``/``call_tool``/
+``describe_tool``, collection search/list, document content/path tools). ``build_system_toolset``
 in ``system.py`` wires these into one provider; the generated tool ids (all
 f-string-built) are unchanged by the move.
 """
@@ -35,6 +35,7 @@ from primer.toolset._helpers import ok as _ok
 from primer.model.collection import Collection, Document
 from primer.model.common import Identifiable, preserve_masked_secrets, refuse_served_masks
 from primer.model.except_ import (
+    AuthRequiredError,
     BadRequestError,
     ConflictError,
     PrimerError,
@@ -68,6 +69,7 @@ from primer.toolset._system_guards import (
     refuse_update,
 )
 from primer.toolset.internal import ToolHandler
+from primer.toolset.tool_catalog import ToolEntry, list_toolset_entries
 
 
 if TYPE_CHECKING:
@@ -1065,6 +1067,126 @@ def _call_tool_tool(
                 )
             ],
             yields=True,
+        ),
+        _handler,
+    )
+
+
+class _DescribeToolArgs(BaseModel):
+    toolset_id: str = Field(
+        ...,
+        min_length=1,
+        description="Id of the toolset the tool is in. ``workspace`` names the session file tools and ``client`` the client tool.",
+    )
+    tool_name: str = Field(
+        ...,
+        min_length=1,
+        description="The tool's wire id inside its toolset, as ``list_toolset_tools`` shows it (``create_agent``, not ``crud__create_agent``).",
+    )
+
+
+# How many of a toolset's tool names an unknown-tool answer lists.
+_DESCRIBE_TOOL_NAMES_LISTED = 30
+
+
+async def _live_approval_gate(approval_resolver: "ApprovalResolver | None", entry: ToolEntry) -> dict[str, Any]:
+    """The approval gate on the tool NOW, as ``describe_tool`` reports it.
+
+    The answer is the ``ApprovalResolver``'s for ``(toolset_id, tool_name)``: the lookup the agent loop and ``call_tool`` gate with, so an operator's edit (a policy
+    added, retuned, disabled) shows here exactly when it starts to bind (within the resolver's cache TTL, or at once after the operator's ``/invalidate``). Not the
+    shipped default (``tool_catalog.default_gate``): that is what a fresh install does. With no resolver wired nothing is gated, as in ``call_tool``.
+    """
+    if approval_resolver is None:
+        return {"gated": False}
+    policy = await approval_resolver.find(toolset_id=entry.toolset_id, tool_name=entry.tool.id)
+    if policy is None or not policy.enabled:
+        return {"gated": False}
+    return {"gated": True, "type": policy.approval.type.value, "policy_id": policy.id}
+
+
+def _description_document(entry: ToolEntry, approval: dict[str, Any]) -> dict[str, Any]:
+    """The ``describe_tool`` document of one catalog entry (the keys are a contract: the wiki's reference pages and the agents read them)."""
+    tool = entry.tool
+    arguments = tool.examples[0].args if tool.examples else {}
+    if entry.via_call_tool:
+        call: dict[str, Any] = {
+            "via": "call_tool",
+            "example": {"toolset_id": entry.toolset_id, "tool_name": tool.id, "arguments": arguments},
+        }
+    else:
+        # The session file tools and the client tool are no registry's, so ``call_tool`` cannot reach them: the model calls them by their scoped id.
+        call = {"via": "direct", "example": {"name": entry.scoped_id, "arguments": arguments}}
+    return {
+        "scoped_id": entry.scoped_id,
+        "toolset_id": entry.toolset_id,
+        "tool_name": tool.id,
+        "description": tool.description,
+        "args_schema": tool.args_schema,
+        "examples": [{"args": example.args, "returns": example.returns, "note": example.note} for example in tool.examples],
+        "required_role": entry.required_role,
+        "pauses_turn": entry.pauses_turn,
+        "needs_workspace": entry.needs_workspace,
+        "call": call,
+        "approval": approval,
+        "reference": f"reference/tools/{entry.toolset_id}/{tool.id}",
+    }
+
+
+def _describe_tool_tool(
+    registry: "ProviderRegistry",
+    approval_resolver: "ApprovalResolver | None" = None,
+) -> tuple[str, tuple[Tool, ToolHandler]]:
+    async def _handler(
+        arguments: dict[str, Any], *, ctx: ToolContext | None = None,
+    ) -> ToolCallResult:
+        try:
+            args = _DescribeToolArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        try:
+            # One listing answers all three outcomes (found, no such tool with the toolset's names to offer, no such toolset). It is made as the run's own
+            # principal, as ``list_toolset_tools`` and ``call_tool`` hand their inner provider, so a toolset with per-user OAuth state answers for the person
+            # the run is for. ``ToolContext.principal`` comes with the call_tool role change (pivot P1 slice 1); a context without it lists anonymously.
+            entries = await list_toolset_entries(registry, args.toolset_id, principal=getattr(ctx, "principal", None))
+        except NotFoundError:
+            return _err(f"no toolset {args.toolset_id!r}", error_type="not-found")
+        except AuthRequiredError:
+            raise  # the consent URL is for the person: the run parks for it, exactly as for list_toolset_tools
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="provider-error")
+        entry = next((e for e in entries if e.tool.id == args.tool_name), None)
+        if entry is None:
+            names = ", ".join(sorted(e.tool.id for e in entries)[:_DESCRIBE_TOOL_NAMES_LISTED])
+            return _err(f"no tool {args.tool_name!r} in toolset {args.toolset_id!r}; its tools: {names}", error_type="not-found")
+        return _ok(_description_document(entry, await _live_approval_gate(approval_resolver, entry)))
+
+    return "describe_tool", (
+        make_tool(
+            id="describe_tool",
+            toolset_id=SYSTEM_TOOLSET_ID,
+            purpose=(
+                "Describe one tool: its argument schema, the role that may run it, whether it pauses the turn, its current approval gate and a "
+                "ready-to-send call."
+            ),
+            when=(
+                "Use when you know which tool you want and need its exact arguments before calling it; it is far smaller than "
+                "``list_toolset_tools``, which returns a whole toolset. ``call.example`` is the call to make: ``call_tool`` arguments for a "
+                "toolset's tool, or a direct call by scoped id for the session file tools (toolset ``workspace``) and the client tool "
+                "(toolset ``client``), which ``call_tool`` cannot reach. ``approval`` is the gate on the tool now, and ``reference`` the path "
+                "of its page in the platform wiki. An unknown toolset or tool returns ``type=not-found``, naming the toolset's tools."
+            ),
+            args_schema=_DescribeToolArgs.model_json_schema(),
+            examples=[
+                ToolExample(
+                    args={"toolset_id": "crud", "tool_name": "create_agent"},
+                    returns="its schema, role, current approval gate and the ``call_tool`` arguments to send",
+                ),
+                ToolExample(
+                    args={"toolset_id": "workspace", "tool_name": "read"},
+                    returns="the same, with a direct call: the session file tools are not reachable through ``call_tool``",
+                ),
+            ],
+            required_role="user",
         ),
         _handler,
     )

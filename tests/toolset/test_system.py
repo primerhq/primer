@@ -364,6 +364,7 @@ class TestCatalog:
         assert "fetch_cross_encoder_provider_models" in names
         assert "list_toolset_tools" in names
         assert "call_tool" in names
+        assert "describe_tool" in names
         assert "list_collection_documents" in names
         assert "find_collection_documents_by_meta" in names
         assert "search_collection" in names

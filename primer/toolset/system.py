@@ -26,6 +26,7 @@ Plus entity-specific operations:
   or the Hub check of a Hugging Face one); they store nothing.
 * ``list_toolset_tools`` — enumerate the tools a toolset exposes.
 * ``call_tool`` — meta-dispatch: invoke any tool from any toolset.
+* ``describe_tool`` - one tool's schema, role, live approval gate and a call example.
 * Graph threads CRUD — ``list/get/create/update/delete_graph_thread``.
 * Collection extras — ``list_collection_documents``,
   ``find_collection_documents_by_meta``, ``search_collection``,
@@ -180,6 +181,7 @@ from primer.toolset._system_crud import (
     _ListDocumentsArgs,
     _list_toolset_tools_tool,
     _call_tool_tool,
+    _describe_tool_tool,
     _collection_extras,
     _MoveDocumentArgs,
     _ProviderIdArgs,
@@ -932,6 +934,9 @@ def build_system_toolset(
     name, entry = _list_toolset_tools_tool(provider_registry)
     registry[name] = entry
     name, entry = _call_tool_tool(provider_registry, approval_resolver)
+    registry[name] = entry
+    # describe_tool reports the LIVE gate, so it reads the same resolver the meta-dispatch gate does (one cache, one /invalidate).
+    name, entry = _describe_tool_tool(provider_registry, approval_resolver)
     registry[name] = entry
 
     # ---- Collection / Document extras --------------------------------
