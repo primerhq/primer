@@ -30,9 +30,23 @@ MAX_EVENT_LINES = 20
 _VALUE_ELEMENTS = ("Select", "Html")
 
 
+def _readable(value: Any) -> bool:
+    """Whether ``value`` is a number a playback position can be: not a boolean, NaN or infinite.
+
+    math.isfinite() raises OverflowError for an int too big for a float, and no position is that long, so
+    such an int is as unreadable as NaN.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def _seconds(value: Any) -> str:
-    """Seconds as the event lines print them: whole numbers bare, else one decimal."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    """Seconds as the event lines print them: whole numbers bare, else one decimal; anything unreadable is 0."""
+    if not _readable(value):
         return "0"
     text = f"{round(float(value), 1):.1f}"
     return text[:-2] if text.endswith(".0") else text
@@ -40,10 +54,7 @@ def _seconds(value: Any) -> str:
 
 def _clock(value: Any) -> str:
     """``m:ss`` for a playback position; anything unreadable is 0:00."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
-        total = 0
-    else:
-        total = int(value)
+    total = int(value) if _readable(value) and value >= 0 else 0
     return f"{total // 60}:{total % 60:02d}"
 
 

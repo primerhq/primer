@@ -97,6 +97,16 @@ def test_ops_are_judged_by_the_same_rules_as_a_program():
         assert [e.render() for e in r.errors] == [message], raw
 
 
+@pytest.mark.parametrize("sign", ["", "-"])
+@pytest.mark.parametrize("digits", [30, 400])
+def test_an_integer_beyond_the_range_of_a_float_is_a_line_error_not_a_crash(digits, sign):
+    # JSON allows an integer of any length, and 400 digits is more than a float holds: apply_batch must answer it, not raise
+    raw = '[{"op":"set","id":"root","type":"Column","props":{"gap":' + sign + "9" * digits + '},"children":[]}]'
+    r = apply_batch(S, ops_to_statements(OPS.validate_json(raw)), limits=L, unit="op")
+    assert r.state is None
+    assert [e.render() for e in r.errors] == ["op 1: gap must be a number from 0 to 64 (Column(children, gap?, align?))"]
+
+
 def test_a_json_null_removes_a_property_and_children_can_be_replaced():
     built = apply_batch(S, ops_to_statements(_ops(CREATE_OPS)), limits=L, unit="op").state
     off = apply_batch(built, ops_to_statements(_ops([{"op": "prop", "id": "play", "prop": "disabled", "value": True}])), limits=L, unit="op").state

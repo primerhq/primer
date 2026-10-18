@@ -123,6 +123,12 @@ def test_text_may_be_empty_and_has_a_ceiling():
     ("Column", "gap", -1, False), ("Column", "gap", True, False), ("Column", "gap", "8", False), ("Column", "gap", float("nan"), False),
     ("Column", "gap", float("inf"), False), ("Image", "height", 15, False), ("Image", "height", 16, True), ("Html", "height", 19, False),
     ("Html", "height", 2000, True), ("Html", "height", 2001, False),
+    # an integer beyond the range of a float is out of range like any other, never an OverflowError
+    pytest.param("Column", "gap", 10**400, False, id="gap-huge"),
+    pytest.param("Column", "gap", -(10**400), False, id="gap-huge-negative"),
+    pytest.param("Image", "height", 10**400, False, id="image-height-huge"),
+    pytest.param("Html", "height", 10**400, False, id="html-height-huge"),
+    pytest.param("Html", "height", -(10**400), False, id="html-height-huge-negative"),
 ])
 def test_numbers_are_ranged_and_never_booleans(type_name, name, value, ok):
     got = _check(type_name, name, value)
@@ -134,6 +140,8 @@ def test_numbers_are_ranged_and_never_booleans(type_name, name, value, ok):
 def test_number_messages_print_whole_bounds_without_a_decimal():
     assert _check("Column", "gap", 99) == "gap must be a number from 0 to 64"
     assert _check("Html", "height", 1) == "height must be a number from 20 to 2000"
+    assert _check("Column", "gap", 10**400) == "gap must be a number from 0 to 64"
+    assert _check("Image", "height", -(10**400)) == "height must be a number from 16 to 2000"
 
 
 def test_booleans_and_enums():
