@@ -761,6 +761,31 @@ function TS_KvEditor({ label, hint, pairs, onChange, keyPlaceholder, valuePlaceh
 // Toolset detail (tabbed: Config / Tools / Sessions)
 // ============================================================================
 
+// The reason a 404 toolset detail says it is not found. The retired ids
+// search and _search name where search went; every other id says the
+// plain thing.
+function TS_notFoundReason(id) {
+  if (id === "search" || id === "_search") {
+    return "There is no search toolset. Agents search this install's agents, graphs, collections and tools with the Collections toolset's search tool, by meaning once internal search is on in System \u203a Internal collections.";
+  }
+  return "There is no toolset named " + id + ". It may have been deleted, or the link is out of date.";
+}
+
+// The 404 state of the toolset detail: the console's own words, with the
+// reason, and the same Back navigation as the rest of the detail.
+function TS_ToolsetNotFound({ id, onBack }) {
+  return (
+    <div data-testid="toolset-not-found">
+      <Banner
+        kind="warning"
+        title="Toolset not found"
+        detail={<span data-testid="toolset-not-found-reason">{TS_notFoundReason(id)}</span>}
+        actions={<Btn size="sm" icon="chevron-left" data-testid="toolset-not-found-back" onClick={onBack}>Back to Toolsets</Btn>}
+      />
+    </div>
+  );
+}
+
 function ToolsetDetail({ toolsetId, pushToast }) {
   const { useResource, useMutation, useRouter, apiFetch } = window.primerApi;
   const { params, query, navigate } = useRouter();
@@ -830,12 +855,16 @@ function ToolsetDetail({ toolsetId, pushToast }) {
     return (
       <div className="col" style={{ gap: 14 }}>
         <TS_DetailActions onInvalidate={null} onDelete={null} onBack={() => navigate("/toolsets")} />
-        <Banner
-          kind="error"
-          title={detail.error.title || "Couldn't load toolset"}
-          detail={detail.error.detail || detail.error.message}
-          actions={<Btn size="sm" icon="chevron-left" onClick={() => navigate("/toolsets")}>Back to list</Btn>}
-        />
+        {detail.error.status === 404 ? (
+          <TS_ToolsetNotFound id={id} onBack={() => navigate("/toolsets")} />
+        ) : (
+          <Banner
+            kind="error"
+            title={detail.error.title || "Couldn't load toolset"}
+            detail={detail.error.detail || detail.error.message}
+            actions={<Btn size="sm" icon="chevron-left" onClick={() => navigate("/toolsets")}>Back to list</Btn>}
+          />
+        )}
       </div>
     );
   }
