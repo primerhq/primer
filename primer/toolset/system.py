@@ -1283,6 +1283,7 @@ def build_system_toolset(
     )
 
     # ---- wait_for_event (yielding; parks on the platform event log) --
+    from primer.events.visibility import user_safe_kinds
     from primer.toolset.events_wait import (
         _WaitForEventArgs,
         make_wait_for_event_handler,
@@ -1302,7 +1303,13 @@ def build_system_toolset(
                 "the platform - a document pushed to a collection, an "
                 "agent created, a session ending - instead of polling. "
                 "Pass event-type globs plus optional field matchers / "
-                "rego expr; workspace sessions only."
+                "rego expr; workspace sessions only. A run whose "
+                "principal is not an admin may wait only on the kinds "
+                "the event feed shows a non-admin ("
+                # Generated from the feed's own rule (primer.events.visibility), so this cannot drift from it.
+                + ", ".join(f"``{kind}``" for kind in user_safe_kinds())
+                + "); any other kind, or a glob that could match one, "
+                "is refused with ``type=forbidden``."
             ),
             args_schema=_WaitForEventArgs.model_json_schema(),
             examples=[
@@ -1320,8 +1327,8 @@ def build_system_toolset(
             ],
             yields=True,
             requires_workspace=True,
-            # Declared, not the fail-closed admin default (pivot P1). The event log is on the user tier over REST (GET /v1/events), and the
-            # entity kinds that emit CRUD events (agent, graph, collection, document, toolset) are user-tier rows, masked the same way.
+            # Declared, not the fail-closed admin default (pivot P1). A run whose principal is not an admin waits only on the kinds
+            # GET /v1/events shows a non-admin: the handler applies the feed's own rule (primer.events.visibility).
             required_role="user",
         ),
         make_wait_for_event_handler(storage_provider),

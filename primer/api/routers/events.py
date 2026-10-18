@@ -25,6 +25,7 @@ from primer.api.deps import (
 from primer.api.routers._crud import make_crud_router
 from primer.api.errors import common_responses
 from primer.events.redaction import redact_event
+from primer.events.visibility import user_safe
 from primer.model.event import Event, EventSubscription
 from primer.model.except_ import (
     NotFoundError,
@@ -33,20 +34,10 @@ from primer.model.except_ import (
 
 events_router = APIRouter(tags=["events"])
 
-# What a non-admin may see of the log: their workspace's operational
-# lifecycle, never entity CRUD (whose payloads mirror stored rows).
-# Prefixes and exact names, checked against the redacted stream - the
-# allowlist bounds the SHAPE of what leaks, redaction bounds the values.
-_USER_SAFE_PREFIXES = ("session.", "workspace.")
-_USER_SAFE_TYPES = frozenset(
-    {"tool.called", "turn.started", "trigger.fired", "llm.called"}
-)
-
-
-def _user_safe(event_type: str) -> bool:
-    return event_type in _USER_SAFE_TYPES or any(
-        event_type.startswith(p) for p in _USER_SAFE_PREFIXES
-    )
+# What a non-admin may see of the log (their workspace's operational
+# lifecycle, never entity CRUD) is ``user_safe``, checked against the
+# redacted stream. It lives in ``primer.events.visibility`` because the
+# ``wait_for_event`` tool applies the same rule to a non-admin run.
 
 
 class EventListResponse(BaseModel):
@@ -101,7 +92,7 @@ async def list_events(
     if event_type:
         items = [e for e in items if fnmatchcase(e.event_type, event_type)]
     if not is_admin:
-        items = [e for e in items if _user_safe(e.event_type)]
+        items = [e for e in items if user_safe(e.event_type)]
     # EVERY read is redacted, the admin's included: the gate is access
     # control, not an excuse to ship stored secrets to a browser.
     items = [redact_event(e) for e in items]

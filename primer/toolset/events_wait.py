@@ -25,7 +25,10 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from primer.agent.inner_dispatch import run_principal
+from primer.authz import _role_allows
 from primer.events.redaction import redact_payload
+from primer.events.visibility import user_safe_glob, user_safe_kinds
 from primer.model.event import (
     EventFilter,
     EventSubscription,
@@ -77,6 +80,19 @@ class _WaitForEventArgs(BaseModel):
     )
 
 
+def _kinds_refused_to(ctx: ToolContext, event_types: list[str]) -> list[str]:
+    """The globs of ``event_types`` the run may not wait on: none for an admin, else every glob that could match a kind the REST event
+    feed hides from a non-admin (``primer.events.visibility``, the feed's own rule).
+
+    The tool is role user, and the event that wakes it becomes the run's tool result, so a non-admin run may wait only on what
+    ``GET /v1/events`` would show it. The run's principal is the context's (``run_principal``: no initiator ranks as an ordinary user),
+    under the role floor's own predicate, so the system principal and an admin wait on any kind.
+    """
+    if _role_allows(run_principal(ctx), "admin"):
+        return []
+    return [glob for glob in event_types if not user_safe_glob(glob)]
+
+
 def make_wait_for_event_handler(storage_provider: "StorageProvider"):
     async def _wait_for_event_handler(
         arguments: dict[str, Any],
@@ -92,6 +108,16 @@ def make_wait_for_event_handler(storage_provider: "StorageProvider"):
                 "wait_for_event needs a workspace session to park; it is "
                 "not available on this surface",
                 error_type="unsupported-surface",
+            )
+        refused = _kinds_refused_to(ctx, args.event_types)
+        if refused:
+            return _err(
+                "this run's principal is not an admin, so it may wait only "
+                "on the event kinds the event feed shows a non-admin ("
+                + ", ".join(user_safe_kinds())
+                + "); refused: "
+                + ", ".join(repr(glob) for glob in refused),
+                error_type="forbidden",
             )
         for matcher in args.fields or []:
             if matcher.op == "regex":

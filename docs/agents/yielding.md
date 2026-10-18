@@ -265,6 +265,16 @@ session.
   only sets a flag that is read at that timeout wake, so it does not
   take effect sooner. If you meet one, report it to the operator
   instead of waiting on it.
+- **A run that is not an admin waits only on lifecycle events.**
+  `wait_for_event` is open to every user, but the event that wakes it
+  becomes your tool result, so a run started by a non-admin may wait
+  only on the kinds `GET /v1/events` shows a non-admin: `session.*`,
+  `workspace.*`, `tool.called`, `turn.started`, `trigger.fired` and
+  `llm.called`. Any other kind (an entity's `created` / `updated` /
+  `deleted` events, `collection.document_pushed`, `approval.*`, the
+  graph node events), and any glob that could match one (`*`,
+  `agent.*`, `turn.*`), is refused with `type=forbidden` and nothing
+  waits: name the kinds you need. An admin's run may wait on any kind.
 - **`wait_for_event` returns the event with stored secrets masked.**
   A CRUD event's payload is the entity's stored row; before it reaches
   your transcript every secret-bearing field (MCP `headers` and `env`
