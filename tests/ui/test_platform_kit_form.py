@@ -407,6 +407,29 @@ def test_the_form_kit_css() -> None:
     assert declarations(css_body(".pk-checktable-body"))["max-height"] == "320px"
 
 
+def test_the_overlay_body_scrolls_instead_of_shrinking_its_blocks() -> None:
+    """The overlay body is a flex column that scrolls. Found in a browser render: without this, its blocks shrank to fit the dialog, and a row
+    table or check table (overflow: hidden, so no minimum height) collapsed to a line."""
+    for selector in (".pk-overlay .modal-b > *", ".pk-overlay .sheet-b > *"):
+        assert declarations(css_body(selector)).get("flex-shrink") == "0", selector
+    body = declarations(css_body(".pk-overlay .modal-b"))
+    assert body.get("display") == "flex" and body.get("flex-direction") == "column"
+
+
+def test_the_segmented_control_is_as_wide_as_its_choices() -> None:
+    """A flex column or a grid cell stretches an auto-width box: the segmented control drew as a full-width bar with its choices on the left."""
+    seg = declarations(css_body(".pk-seg"))
+    assert seg.get("width") == "max-content" and seg.get("max-width") == "100%"
+
+
+def test_the_kit_overlays_close_button_is_centred_and_tap_sized_on_a_phone() -> None:
+    close = declarations(css_body(".pk-overlay .sheet-h .close"))
+    assert close.get("width") == "var(--tap-min)" and close.get("height") == "var(--tap-min)"
+    shared = declarations(css_body(".pk-overlay .modal-h .close"))
+    assert (shared.get("top"), shared.get("bottom"), shared.get("margin")) == ("0", "0", "auto 0"), "centred without a transform"
+    assert int(declarations(css_body(".pk-overlay .sheet-h"))["min-height"].rstrip("px")) >= 44 + 8, "the header holds the 44px button"
+
+
 def test_every_form_export_is_on_window(form) -> None:
     for name in ("PK_FormOverlay", "PK_Grid", "PK_Field", "PK_Section", "PK_Fold", "PK_Segmented", "PK_RowTable", "PK_CheckTable",
                  "PK_PageHeader", "PK_CardGrid", "PK_Card", "PK_usePagedFilter"):
