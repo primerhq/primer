@@ -13,6 +13,11 @@ When an approval gate sits on a yielding tool the park is two-phase:
 A REJECT still short-circuits to a clean error tool_result (the tool
 never runs) - the existing fail-closed behaviour.
 
+The same two phases hold when the gate was raised by ``system__call_tool`` on
+the tool it was asked to run (pivot P1): the approved re-run runs that tool as
+the resumed run, and a tool that pauses (``ask_user``) re-parks the session
+under the ``call_tool`` call's id, so the answer lands on that call.
+
 Driven end-to-end through ``WorkerPool._run_engine_session`` with a real
 InMemoryClaimEngine + SessionClaimAdapter so the on_release park-column
 book-keeping is exercised, mirroring tests/worker/test_engine_session_resume.py.
@@ -25,21 +30,27 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from primer.agent.tool_manager import ToolExecutionManager
+from primer.api.registries import ProviderRegistry
 from primer.claim.adapters.sessions import SessionClaimAdapter
 from primer.claim.in_memory import InMemoryClaimEngine
 from primer.int.claim import ClaimKind
 from primer.model.chat import Message, ToolCallPart, ToolResultPart
 from primer.model.scheduler import WorkerConfig
+from primer.model.tool_approval import ToolApprovalPolicy
 from primer.model.workspace_session import (
     AgentSessionBinding,
     SessionStatus,
     WorkspaceSession,
 )
-from primer.model.yield_ import Yielded, YieldToWorker
+from primer.model.yield_ import ToolContext, Yielded, YieldToWorker
+from primer.toolset.system import build_system_toolset
 from primer.worker.pool import WorkerPool
 from primer.worker.yield_runtime import ParkedState
 
+from tests.agent.test_inner_dispatch import USER, _Session
 from tests.conftest import _FakeStorageProvider
+from tests.toolset.test_system import _required_policy
 
 
 async def _async_return(value):
@@ -104,24 +115,27 @@ def _make_approval_parked_session(
     resume_event_payload: dict,
     llm_messages: list,
     scoped_tool_call_id: str | None = None,
+    yielded: Yielded | None = None,
 ) -> WorkspaceSession:
     """A session parked (phase 1) on an approval gate guarding a yielding
     tool. resume_metadata carries the original_call so the approved resume
-    re-dispatches the real tool."""
+    re-dispatches the real tool. ``yielded`` is the real park of a caller that
+    made one (``system__call_tool``'s gate); omitted, a bare gate is built."""
     parked_at = datetime.now(timezone.utc) - timedelta(seconds=5)
-    yielded = Yielded(
-        tool_name="_approval",
-        event_key=f"tool_approval:{sid}:{tool_call_id}",
-        timeout=600.0,
-        resume_metadata={
-            "parked_at_iso": parked_at.isoformat(),
-            "original_call": {
-                "id": tool_call_id,
-                "name": real_tool_name,
-                "arguments": real_arguments,
+    if yielded is None:
+        yielded = Yielded(
+            tool_name="_approval",
+            event_key=f"tool_approval:{sid}:{tool_call_id}",
+            timeout=600.0,
+            resume_metadata={
+                "parked_at_iso": parked_at.isoformat(),
+                "original_call": {
+                    "id": tool_call_id,
+                    "name": real_tool_name,
+                    "arguments": real_arguments,
+                },
             },
-        },
-    )
+        )
     parked_state = ParkedState(
         yielded=yielded,
         llm_messages=llm_messages,
@@ -139,7 +153,7 @@ def _make_approval_parked_session(
         created_at=datetime.now(timezone.utc),
         turn_no=0,
         parked_status="resumable",
-        parked_event_key=f"tool_approval:{sid}:{tool_call_id}",
+        parked_event_key=yielded.event_key,
         parked_until=parked_at + timedelta(seconds=600),
         parked_at=parked_at,
         parked_state=parked_state.to_jsonable(),
@@ -411,3 +425,78 @@ async def test_rejected_yielding_tool_short_circuits_clean_error(monkeypatch):
     # NOT re-parked - the continuation turn runs (park cleared).
     assert row.parked_status is None
     assert row.status != SessionStatus.ENDED
+
+
+@pytest.mark.asyncio
+async def test_a_gated_ask_user_through_call_tool_reparks_and_the_answer_lands_on_the_call_tool_call(monkeypatch):
+    """The whole round trip, through the real pieces: a USER-role run asks ``system__call_tool`` for the gated ``ask_user``; the gate parks (phase 1, written by the real handler); the
+    approval runs the inner tool as the resumed run, which pauses the turn for the user's answer, and the session re-parks on that question (phase 2, under the ``call_tool`` call's
+    id, naming ``ask_user``); the answer is then delivered to the ``call_tool`` call. Before pivot P1 the approved re-run had no context, so ``ask_user`` could not even start."""
+    sid = "sess-call-tool-ask"
+    tool_call_id = "tc-call-tool"              # the id of the model's system__call_tool call
+    arguments = {"toolset_id": "system", "tool_name": "ask_user", "arguments": {"prompt": "Proceed?"}}
+
+    storage_provider = _FakeStorageProvider()
+    registry = ProviderRegistry(
+        storage_provider,  # type: ignore[arg-type]
+        llm_factory=lambda p: object(),  # type: ignore[arg-type,return-value]
+        embedder_factory=lambda p: object(),  # type: ignore[arg-type,return-value]
+        cross_encoder_factory=lambda p: object(),  # type: ignore[arg-type,return-value]
+        toolset_factory=lambda p: object(),  # type: ignore[arg-type,return-value]
+    )
+    system_toolset = build_system_toolset(storage_provider=storage_provider, provider_registry=registry)  # type: ignore[arg-type]
+    registry._system_toolset_provider = system_toolset  # type: ignore[attr-defined]
+    await storage_provider.get_storage(ToolApprovalPolicy).create(_required_policy("system", "ask_user"))
+
+    # Phase 1: the park the real call_tool handler writes for the gated inner tool.
+    ctx = ToolContext(tool_call_id=tool_call_id, session_id=sid, workspace_id=f"ws-{sid}", initiated_by=USER)
+    with pytest.raises(YieldToWorker) as gate:
+        await system_toolset.call(tool_name="call_tool", ctx=ctx, arguments=arguments)
+    assert gate.value.yielded.tool_name == "_approval" and gate.value.tool_call_id == tool_call_id
+
+    session_storage = storage_provider.get_storage(WorkspaceSession)
+    engine = _build_engine(session_storage)
+    pool = _build_pool(storage_provider, engine)
+    manager = ToolExecutionManager.for_workspace(
+        toolset_providers={"system": system_toolset}, session=_Session(sid, f"ws-{sid}"), initiated_by=USER, provider_registry=registry,
+    )
+    outer_call = Message(role="assistant", parts=[ToolCallPart(id=tool_call_id, name="system__call_tool", arguments=arguments)])
+    await session_storage.create(_make_approval_parked_session(
+        sid,
+        tool_call_id=tool_call_id,
+        real_tool_name="ask_user",
+        real_arguments=arguments["arguments"],
+        resume_event_payload={"decision": "approved"},
+        llm_messages=[outer_call.model_dump(mode="json")],
+        yielded=gate.value.yielded,
+    ))
+    fake_executor = _RecordingExecutor(tool_manager=manager)
+    monkeypatch.setattr(pool, "_load_workspace_for_persist", lambda _ws_id: _async_return(_NoopPersist()))
+    monkeypatch.setattr(pool, "_build_agent_executor", lambda _s, _w: _async_return(fake_executor))
+
+    await pool._run_engine_session(await _claim_session(engine, sid))
+
+    # Phase 2: the approved ask_user paused the turn. No error result was injected; the session waits for the answer under the call_tool call's id.
+    assert fake_executor.injected == [], "the pause was swallowed into an error result instead of parking the session again"
+    row = await session_storage.get(sid)
+    assert row is not None and row.status != SessionStatus.ENDED
+    assert row.parked_status == "parked"
+    assert row.parked_event_key == f"ask_user:{sid}:{tool_call_id}"
+    assert row.parked_state["yielded"]["tool_name"] == "ask_user", "the answer will be routed to ask_user's resume hook"
+    assert row.parked_state["tool_call_id"] == tool_call_id
+    assert row.parked_state["yielded"]["resume_metadata"]["prompt"] == "Proceed?"
+
+    # The user answers: the hook found by the parked tool name turns it into the result of the call_tool call.
+    answered = row.model_copy(update={"parked_status": "resumable", "parked_state": {**row.parked_state, "resume_event_payload": {"response": "yes"}}})
+    await session_storage.update(answered)
+    fake_executor2 = _RecordingExecutor(tool_manager=manager)
+    monkeypatch.setattr(pool, "_build_agent_executor", lambda _s, _w: _async_return(fake_executor2))
+    await pool._run_engine_session(await _claim_session(engine, sid))
+
+    (injected,) = fake_executor2.injected
+    assert injected[0].parts[0].id == tool_call_id and injected[0].parts[0].name == "system__call_tool", "the turn continues from the call_tool call"
+    result = next(p for p in injected[-1].parts if isinstance(p, ToolResultPart))
+    assert result.id == tool_call_id and result.error is False
+    assert json.loads(result.output) == {"response": "yes"}
+    done = await session_storage.get(sid)
+    assert done is not None and done.parked_status is None and done.status != SessionStatus.ENDED

@@ -44,6 +44,7 @@ from primer.model.yield_ import (
     YieldCancelled,
     YieldTimeout,
     Yielded,
+    YieldToWorker,
     gate_id_of,
 )
 
@@ -758,8 +759,10 @@ async def _resume_tool_approval(
         # was asked to meta-dispatch, which is not necessarily part of the
         # agent's registered tool surface - so it cannot be re-routed
         # through ``tool_manager.execute``. Re-dispatch it directly via the
-        # owning toolset provider, mirroring how the call_tool handler does
-        # it. ``via_call_tool`` carries the inner toolset id + principal.
+        # owning toolset provider, as the call_tool handler does (the same
+        # ``dispatch_inner_tool``). ``via_call_tool`` carries the inner
+        # toolset id (and tool name); a park from before pivot P1 also carries
+        # a principal, which is never read.
         via = metadata.get("via_call_tool")
         if via is not None:
             return await _resume_call_tool_dispatch(
@@ -787,15 +790,31 @@ async def _resume_call_tool_dispatch(
     original_call: ToolCallPart,
     tool_manager: Any,
 ) -> ToolResultPart:
-    """Dispatch an approved ``call_tool`` inner tool via its toolset provider.
+    """Dispatch an approved ``call_tool`` inner tool via its toolset provider, as the resumed run.
 
-    The inner tool was gated through ``system__call_tool``; on approval we
-    invoke it the same way the call_tool handler would (resolve the owning
-    toolset provider from the registry, then ``provider.call(...)``) rather
-    than routing it through the agent's tool surface (which may not list it).
-    Fails closed to an error ToolResultPart if the registry/provider is
-    unavailable.
+    The inner tool was gated through ``system__call_tool``; on approval it is run by the same helper the ``call_tool`` handler uses
+    (:func:`primer.agent.inner_dispatch.dispatch_inner_tool`), with the owning provider taken from the registry rather than the agent's
+    tool surface (which may not list it):
+
+    * the provider gets the context of the RESUMED run, ``tool_manager.context_for(original_call.id)``: the session, identity and turn of
+      the manager that is resuming the park, never a value stored with it. A manager that has no ``context_for`` (or no session to build one
+      from) gives ``None``, and the run is ranked as an unattributed user;
+    * the inner tool's ``required_role`` is checked against that context's principal again (``forbidden``), because the approval decided about
+      this call and not about who may make it: a stale or forged park cannot run an admin tool for a run that is not an admin;
+    * ``via`` names the toolset (``toolset_id``); a park written before pivot P1 also carries a ``principal`` a model chose, which is never
+      read (the provider's principal is the context's);
+    * a pause of the inner tool (:class:`~primer.model.yield_.YieldToWorker`: ``ask_user``, ``wait_for_event``, ``sleep``) is not an error, so it
+      propagates. The caller (the session resume coordinator) re-parks the session on the tool's own event, and the answer is delivered to this
+      call's id. One pause is not re-parked: a nested one (the yield carries ``frames``, as ``invoke_agent`` and ``invoke_graph`` leave it when their
+      child run pauses). The coordinator's flat re-park keeps no frames, so the answer would be delivered to the nested run's call and not to this one;
+      it is refused with an error result instead, as every pause was before this path let one through.
+
+    Anything else that goes wrong (no registry, no such toolset, the call raising) fails closed to an error ToolResultPart.
     """
+    # Function-local: primer.agent imports the executors and their transitive graph, and this module is imported by light ones (the timeout
+    # sweeper's tasks, the yields router), which must not pull it in.
+    from primer.agent.inner_dispatch import dispatch_inner_tool
+
     registry = getattr(tool_manager, "_provider_registry", None)
     toolset_id = via.get("toolset_id")
     if registry is None or not toolset_id:
@@ -808,13 +827,31 @@ async def _resume_call_tool_dispatch(
             }),
             error=True,
         )
+    context_for = getattr(tool_manager, "context_for", None)
     try:
         provider = await registry.get_toolset(toolset_id)
-        result = await provider.call(
+        result = await dispatch_inner_tool(
+            provider=provider,
+            toolset_id=toolset_id,
             tool_name=original_call.name,
             arguments=original_call.arguments,
-            principal=via.get("principal"),
+            ctx=context_for(original_call.id) if context_for is not None else None,
         )
+    except YieldToWorker as paused:
+        if getattr(paused, "frames", None):
+            return ToolResultPart(
+                id=original_call.id,
+                output=json.dumps({
+                    "is_error": True,
+                    "reason": (
+                        "call_tool resume: the approved tool paused inside a nested agent or graph run, "
+                        "which an approval re-run cannot park again"
+                    ),
+                    "tool_name": original_call.name,
+                }),
+                error=True,
+            )
+        raise
     except Exception as exc:  # noqa: BLE001 - fail-closed synthesis
         return ToolResultPart(
             id=original_call.id,
