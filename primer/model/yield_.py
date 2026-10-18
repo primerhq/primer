@@ -347,6 +347,16 @@ class ToolContext:
         scoped ids from the record they need to pair against. ``None``
         outside a dispatch that resolved one (e.g. chat-only invocations,
         or before the caller opted into tool_calls_as_claims).
+    principal
+        The principal STRING the outer dispatch received
+        (``ToolExecutionManager.execute(call, principal=...)``), the
+        end-user identity a provider keys per-user state on (an MCP
+        toolset's OAuth token cache). Set by
+        :meth:`ToolExecutionManager.context_for`; worker turns pass
+        ``None``. A tool that runs another tool for this run
+        (``system__call_tool``, through
+        :func:`primer.agent.inner_dispatch.dispatch_inner_tool`) hands
+        THIS value to the inner provider, never one a model chose.
     """
 
     tool_call_id: str
@@ -358,6 +368,7 @@ class ToolContext:
     graph_services: Any | None = None
     initiated_by: PrincipalRef | None = None
     turn_no: int | None = None
+    principal: str | None = None
 
 
 # ===========================================================================

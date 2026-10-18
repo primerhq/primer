@@ -528,6 +528,43 @@ class ToolExecutionManager:
             name, arguments = wrapped
         return name != _CALL_TOOL_ID and self.is_interruptible(name)
 
+    def context_for(self, call_id: str, *, principal: str | None = None) -> ToolContext | None:
+        """The :class:`ToolContext` a toolset call ``call_id`` of this run is dispatched with, or ``None`` with no session and no chat.
+
+        Yielding tools (ask_user, sleep, watch_files, ...) declare a ``ctx: ToolContext`` parameter so they can form session-scoped event
+        keys and raise YieldToWorker; owner-dependent tools read the run's ``initiated_by`` off it. Built from the bound workspace session,
+        else the chat; non-yielding handlers ignore it (the provider only injects ctx when the handler's signature declares it). Without it
+        the generic toolset path crashes with a missing-argument TypeError before the session can ever park. ``principal`` is the string
+        the outer dispatch received (:attr:`ToolContext.principal`): a tool that runs another tool for this run (``system__call_tool``)
+        passes this same context on, so the inner tool sees the run's session, identity, turn and principal, never ones a model chose.
+        A bare manager (no session, no chat: ``invoke_agent`` over MCP) has no context to give, and the inner role check ranks such a
+        call as an ordinary user (:func:`primer.agent.inner_dispatch.run_principal`).
+        """
+        sess = self._workspace_session
+        if sess is not None:
+            return ToolContext(
+                tool_call_id=call_id,
+                session_id=sess.session_id,
+                workspace_id=sess.workspace_id,
+                inform=self._inform_sink,
+                graph_services=self._graph_services,
+                initiated_by=self._initiated_by,
+                turn_no=self._turn_no,
+                principal=principal,
+            )
+        if self._chat_id is not None:
+            return ToolContext(
+                tool_call_id=call_id,
+                session_id=None,
+                workspace_id=None,
+                chat_id=self._chat_id,
+                inform=self._inform_sink,
+                initiated_by=self._initiated_by,
+                turn_no=self._turn_no,
+                principal=principal,
+            )
+        return None
+
     async def execute(
         self,
         call: ToolCallPart,
@@ -817,35 +854,8 @@ class ToolExecutionManager:
                 ),
                 error=True,
             )
-        # Yielding tools (ask_user, sleep, watch_files, ...) declare a
-        # ``ctx: ToolContext`` parameter so they can form session-scoped
-        # event keys and raise YieldToWorker. Build that context from the
-        # bound workspace session; non-yielding handlers ignore it (the
-        # provider only injects ctx when the handler's signature declares
-        # it). Without this the generic toolset path crashes with a
-        # missing-argument TypeError before the session can ever park.
-        sess = self._workspace_session
-        ctx: ToolContext | None = None
-        if sess is not None:
-            ctx = ToolContext(
-                tool_call_id=call.id,
-                session_id=sess.session_id,
-                workspace_id=sess.workspace_id,
-                inform=self._inform_sink,
-                graph_services=self._graph_services,
-                initiated_by=self._initiated_by,
-                turn_no=self._turn_no,
-            )
-        elif self._chat_id is not None:
-            ctx = ToolContext(
-                tool_call_id=call.id,
-                session_id=None,
-                workspace_id=None,
-                chat_id=self._chat_id,
-                inform=self._inform_sink,
-                initiated_by=self._initiated_by,
-                turn_no=self._turn_no,
-            )
+        # The run's context (session or chat, identity, turn, principal) for a handler that declares ``ctx``: see ``context_for``.
+        ctx = self.context_for(call.id, principal=principal)
         try:
             result = await provider.call(
                 tool_name=bare_name,
