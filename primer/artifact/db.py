@@ -8,13 +8,23 @@ for a filesystem/S3 backend later.
 
 from __future__ import annotations
 
+import contextlib
+from typing import ClassVar
+
 from primer.int.artifact_storage import ArtifactBlob, ArtifactStorage
 from primer.int.storage_provider import StorageProvider
 from primer.model.artifact import Artifact
+from primer.model.except_ import NotFoundError
 
 
 class DbArtifactStorage(ArtifactStorage):
-    """Stores artifacts as ``Artifact`` rows in the platform storage."""
+    """Stores artifacts as ``Artifact`` rows in the platform storage.
+
+    Every database-kind provider stores in the same ``Artifact`` table, so the routing store reads any of their ids with a direct instance of this
+    class and no location record is written for them.
+    """
+
+    needs_location_record: ClassVar[bool] = False
 
     def __init__(self, storage_provider: StorageProvider) -> None:
         self._sp = storage_provider
@@ -42,7 +52,9 @@ class DbArtifactStorage(ArtifactStorage):
         )
 
     async def delete(self, artifact_id: str) -> None:
-        await self._sp.get_storage(Artifact).delete(artifact_id)
+        # The interface says a delete of an unknown id does nothing; ``Storage.delete`` raises ``NotFoundError`` for one.
+        with contextlib.suppress(NotFoundError):
+            await self._sp.get_storage(Artifact).delete(artifact_id)
 
     async def aclose(self) -> None:
         return None

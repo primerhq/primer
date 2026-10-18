@@ -33,8 +33,8 @@ _BUILDERS: dict[ArtifactStorageProviderType, Callable[[ArtifactStorageProvider, 
 }
 
 #: The kinds ``build_artifact_storage`` can construct: the keys of ``_BUILDERS``, so a kind is in this set exactly when it has a builder.
-#: The reserved default provider must name one of them: everything that stores or serves chat media resolves it
-#: (``primer/artifact/checks.py`` refuses a write that would break that).
+#: The reserved default provider must name one of them: it is the store new artifacts go to until another is selected, and the routing store
+#: (``primer/artifact/routing.py``) reads its artifacts without resolving the row (``primer/artifact/checks.py`` refuses a write that would break that).
 BUILDABLE_KINDS: frozenset[ArtifactStorageProviderType] = frozenset(_BUILDERS)
 
 

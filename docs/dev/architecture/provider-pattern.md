@@ -139,8 +139,8 @@ The classes that serve it are llm, embedding, cross_encoder, stt, tts, web_searc
 ssp (`ssp/_types`); `channel_providers` and `workspace_providers` have panels of their own and serve none. The
 artifact-storage entry (`primer/api/routers/artifact_storage.py`, `artifact_storage_helpers_router`, mounted before
 the CRUD router) lists `db`, `filesystem` and `s3`, and its labels say what is true: only `db` is built
-(`build_artifact_storage`), and every consumer reads only the reserved `artifact-storage-default` row, so a
-`filesystem` or `s3` row can be stored and is never used (the label says "not implemented yet: stored, never used")
+(`build_artifact_storage`), and every consumer goes through the routing store (`ArtifactStorageRegistry.get_default()`), which writes to the active provider (the reserved `artifact-storage-default`
+database until another is selected), so a `filesystem` or `s3` row can be stored and is never used (the label says "not implemented yet: stored, never used")
 and a `db` row registered from the menu is not the default. `tests/api/test_artifact_storage_types.py` holds the
 served fields to the config models in `primer/model/providers/artifact.py`, builds a row of each kind through the
 factory to keep the labels true, and builds a row from what the form is told to ask for.

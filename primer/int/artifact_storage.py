@@ -10,12 +10,21 @@ The default backend (``DB``) persists an :class:`primer.model.artifact.Artifact`
 row through the platform StorageProvider, keeping media bytes out of the
 ``ChatMessage`` row. Alternate backends (filesystem, S3) implement the same
 contract so callers never depend on where the bytes live.
+
+Callers do not hold a backend directly. They call
+``ArtifactStorageRegistry.get_default()``, which returns a routing store
+(:class:`primer.artifact.routing.RoutingArtifactStorage`): it writes to the
+active provider and finds an artifact again through the
+:class:`primer.model.artifact.ArtifactLocation` record written for it. A
+backend only has to say, with :attr:`ArtifactStorage.needs_location_record`,
+whether the router must write that record.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import ClassVar
 
 
 @dataclass(frozen=True)
@@ -29,6 +38,11 @@ class ArtifactBlob:
 
 class ArtifactStorage(ABC):
     """Provider-agnostic put/get/delete for opaque media bytes."""
+
+    #: True when an id this backend mints cannot be found again by the database fallback, so the routing store writes an
+    #: :class:`~primer.model.artifact.ArtifactLocation` for it. The default is True, the safe side: a backend that forgets to say so gets records
+    #: it may not need, never artifacts it cannot find. Only a backend that stores in the ``Artifact`` table (the database) sets it False.
+    needs_location_record: ClassVar[bool] = True
 
     @abstractmethod
     async def initialize(self) -> None:

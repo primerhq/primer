@@ -45,6 +45,18 @@ async def test_get_unknown_returns_none(sp: SqliteStorageProvider):
 
 
 @pytest.mark.asyncio
+async def test_delete_of_a_missing_id_is_a_no_op(sp: SqliteStorageProvider):
+    """The interface says a delete of an unknown id does nothing; ``Storage.delete`` raises ``NotFoundError`` for one, so the backend must absorb it
+    (the routing store sends every unrecorded id here, and a second delete of the same artifact must not fail)."""
+    store = DbArtifactStorage(sp)
+    await store.delete("artifact-nope")
+    aid = await store.put(data=b"x", mime_type="text/plain", filename=None)
+    await store.delete(aid)
+    await store.delete(aid)
+    assert await store.get(aid) is None
+
+
+@pytest.mark.asyncio
 async def test_factory_db_backend(sp: SqliteStorageProvider):
     row = ArtifactStorageProvider(id="asp-1", provider="db")
     store = build_artifact_storage(row, storage_provider=sp)
