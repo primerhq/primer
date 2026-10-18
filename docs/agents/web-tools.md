@@ -1,13 +1,17 @@
 ---
 slug: web-tools
 title: Web tools - search, fetch, raw HTTP and download
-summary: The built-in web toolset (web_search, web_fetch, http_request, download), which tool to pick, and the outbound guard that refuses internal addresses.
+summary: The built-in web toolset (web_search, web_fetch, http_request, download), which tool to pick, the outbound guard that refuses internal addresses, and the admin tools that choose which providers answer web searches and page fetches.
 related: [workspaces, tool-approval, mcp-exposure]
 mcp_tools:
   - web::web_search
   - web::web_fetch
   - web::http_request
   - web::download
+  - system::get_web_search_active_config
+  - system::set_web_search_active_config
+  - system::get_web_fetch_active_config
+  - system::set_web_fetch_active_config
 ---
 
 # Web tools
@@ -54,6 +58,29 @@ An operator can allow specific internal targets with the
 `PRIMER_EGRESS_ALLOW` setting (a list of CIDRs, IPs or exact host
 names). It is empty by default. You cannot change it from a tool call.
 
+**Which provider answers.** `web_search` and `web_fetch` do not pick a
+provider themselves: the deployment's active config does, one for search
+and one for fetch. It has two modes:
+
+- `single`: every call goes to one provider;
+- `aggregated`: an ordered list. The first provider is tried, and the
+  next one is used when it fails (for `web_fetch`, also when it returns
+  too little text, such as a page that needs JavaScript).
+
+Out of the box both are `single`: the built-in `DuckDuckGo` for search and
+the built-in `local` fetcher for fetch. The choice is per deployment, not
+per agent or session. An admin agent reads it with
+`system::get_web_search_active_config` and
+`system::get_web_fetch_active_config` (both also list the provider ids
+that may be named) and changes it with
+`system::set_web_search_active_config` and
+`system::set_web_fetch_active_config`. Over REST it is
+`GET` and `PUT /v1/web_search_active_config`, and
+`GET` and `PUT /v1/web_fetch_active_config`. The providers themselves
+(with their API keys) are registered by an operator, in the console or
+with `POST /v1/web_search_providers` and `POST /v1/web_fetch_providers`;
+no tool creates them.
+
 ## MCP tools
 
 | Tool | Use it for |
@@ -62,6 +89,10 @@ names). It is empty by default. You cannot change it from a tool call.
 | `web::web_fetch` | Reading a human web page or document as markdown. |
 | `web::http_request` | JSON APIs, webhooks, raw status and headers. |
 | `web::download` | Saving a file into the workspace. |
+| `system::get_web_search_active_config` | Reading where web searches go, and the provider ids a set may name (admin). |
+| `system::set_web_search_active_config` | Choosing one search provider, or an ordered list (admin). |
+| `system::get_web_fetch_active_config` | Reading where page fetches go, and the fetcher ids a set may name (admin). |
+| `system::set_web_fetch_active_config` | Choosing one fetcher, or an ordered list (admin). |
 
 ## Workflows
 
@@ -91,6 +122,38 @@ The result has `is_error: true`. `download` answers the same way
 `web-fetch not available: refused: ...` (or, with an aggregated fetch
 config, falls back to a remote provider, which fetches from its own
 network).
+
+Point page fetches at an ordered list (admin). Read the current choice
+and the fetchers that exist:
+
+```json
+{"tool": "system::get_web_fetch_active_config", "arguments": {}}
+```
+
+```json
+{"config": {"mode": "single", "provider_id": "local"}, "providers": [{"id": "jina-1", "provider_type": "jina"}, {"id": "local", "provider_type": "local"}]}
+```
+
+Then set the list, first choice first:
+
+```json
+{"tool": "system::set_web_fetch_active_config", "arguments": {"config": {"mode": "aggregated", "provider_ids": ["jina-1", "local"]}}}
+```
+
+```json
+{"config": {"mode": "aggregated", "provider_ids": ["jina-1", "local"]}}
+```
+
+Page fetches now try `jina-1` first and fall back to `local`. An id that
+is not a provider is refused, and nothing is stored:
+
+```json
+{"tool": "system::set_web_fetch_active_config", "arguments": {"config": {"mode": "single", "provider_id": "jina-2"}}}
+```
+
+```json
+{"type": "validation-error", "message": "active config references unknown provider id(s): ['jina-2']"}
+```
 
 ## Gotchas
 
@@ -129,6 +192,16 @@ network).
   wire than its cap allows, is a failed request, never a partial result.
 - `download`'s `max_bytes` can only LOWER the platform's fixed 100 MB cap;
   a larger value is ignored and the 100 MB cap applies.
+- The four `system::*_active_config` tools need the admin role. A run
+  started by anyone else gets `access denied` and nothing changes.
+- A new web search or web fetch choice takes effect within 5 seconds, not
+  at once: every server process caches the setting for up to 5 seconds,
+  and the set tools do not clear that cache. A search or fetch made in
+  those seconds may still go to the old provider.
+- A set refuses, with `type=validation-error`, an id that is not a
+  provider (a typo, or one deleted since you listed them) and an
+  aggregated list with no ids; nothing is stored then. A repeated id is
+  stored once. Read the ids with the matching `get_` tool first.
 
 ## Related
 

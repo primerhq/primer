@@ -27,6 +27,8 @@ Plus entity-specific operations:
 * Document extras - ``get_document_content``, ``put_document``,
   ``list_documents``, ``move_document`` (all path-addressed; bodies live
   in the content store).
+* ``get_/set_web_search_active_config``, ``get_/set_web_fetch_active_config`` -
+  the deployment's web search and web fetch choice.
 
 Total: ~75 tools. ``search_collection`` runs real semantic search over
 a collection's indexed document contents (same embedder + vector-store
@@ -55,6 +57,8 @@ This module is a thin facade over the decomposed implementation:
   collection, document).
 * :mod:`primer.toolset._system_tools` - the hand-written ``ask_user``
   tool (model, resume hook, handler).
+* :mod:`primer.toolset._system_web` - the four web search / web fetch
+  active-config tools (they run the PUT routes' check and write).
 
 ``build_system_toolset`` (below) wires those into one provider and adds
 the bespoke tools that close over its per-build dependencies
@@ -182,6 +186,7 @@ from primer.toolset._system_tools import (
     ask_user_resume,
     make_read_doc_content_handler,
 )
+from primer.toolset._system_web import web_active_config_tools
 
 
 # Told to the agent in the create / update descriptors of the entities in ``admin_writes_by_label`` (and used as the refusal message).
@@ -937,6 +942,9 @@ def build_system_toolset(
             ),
         )
     )
+    # The deployment's web search and web fetch choice: the tool twins of GET / PUT /v1/web_search_active_config and
+    # /v1/web_fetch_active_config. A set runs the PUT route's check and write; it leaves the services' cache to its 5 s TTL.
+    registry.update(web_active_config_tools(storage_provider=storage_provider))
 
     # ---- Dynamic invocation: invoke_agent ----------------------------
     class _InvokeAgentArgs(BaseModel):
