@@ -1123,9 +1123,12 @@ async def test_deleting_the_default_workspace_is_a_clean_403_and_changes_nothing
     keys sit under ``extensions``), the workspace is still there, and its row says ``is_default``. Which workspace is the default is read from
     the server (``primer`` on an install that predates the column, ``prime`` on a fresh one).
 
-    The shared server must survive a regression of this rule: if the delete is ever let through, the ``finally`` runs the ensure pass, which
+    The ensure pass runs first (idempotent, answers 200 whatever it created), so the default workspace exists whatever ran before this test. The
+    shared server must survive a regression of this rule: if the delete is ever let through, the ``finally`` runs the ensure pass again, which
     re-creates a missing default workspace, so later journeys still have one.
     """
+    seeded = await client.post("/v1/setup/seed")
+    assert seeded.status_code == 200, seeded.text
     wid = await default_workspace_id(client)
     try:
         resp = await client.delete(f"/v1/workspaces/{wid}")
