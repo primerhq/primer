@@ -177,3 +177,49 @@ class TestDiscoverGeminiModels:
             )
 
         assert exc_info.value.response.status_code == 401
+
+    @respx.mock
+    async def test_embed_content_method_keeps_only_embedding_models(self) -> None:
+        """``method`` picks the ``supportedGenerationMethods`` entry a model must carry.
+
+        The embedding provider form lists ``embedContent`` models; the LLM form
+        keeps ``generateContent`` ones. One catalogue answers both, so the same
+        mock is read twice and each caller sees only its own kind of model.
+        """
+        route = respx.get(f"{GEMINI_BASE_URL}/models").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "models": [
+                        {
+                            "name": "models/gemini-2.5-flash",
+                            "supportedGenerationMethods": ["generateContent"],
+                            "inputTokenLimit": 1048576,
+                        },
+                        {
+                            "name": "models/gemini-embedding-001",
+                            "displayName": "Gemini Embedding 001",
+                            "supportedGenerationMethods": [
+                                "embedContent",
+                                "countTextTokens",
+                            ],
+                            "inputTokenLimit": 2048,
+                        },
+                    ],
+                },
+            ),
+        )
+        config = GoogleConfig(api_key=SecretStr("k"))
+
+        embedding = await _discover_gemini_models(config, method="embedContent")
+        chat = await _discover_gemini_models(config)
+
+        assert embedding == [
+            {
+                "name": "gemini-embedding-001",
+                "display_name": "Gemini Embedding 001",
+                "context_length": 2048,
+            },
+        ]
+        assert [m["name"] for m in chat] == ["gemini-2.5-flash"]
+        assert len(route.calls) == 2

@@ -506,7 +506,7 @@ async def list_embedding_provider_types() -> dict[str, dict[str, Any]]:
             "label": "Google Gemini",
             "config_fields": [_vendor_api_key_field("Gemini")],
             "row_fields": [_models_row_field("gemini-embedding-001")],
-            "discoverable": False,
+            "discoverable": True,
         },
     })
 
@@ -788,32 +788,7 @@ async def _dispatch_llm_probe(provider: str, config: dict[str, Any]) -> dict:
             ) from exc
         result = {"models": catalogue}
     elif provider == "gemini":
-        try:
-            gem_draft = GoogleConfig.model_validate(config)
-        except ValidationError as exc:
-            raise _probe_failure(
-                f"invalid Gemini config: {_validation_detail(exc)}",
-            ) from exc
-        try:
-            catalogue = await _discover_gemini_models(gem_draft)
-        except httpx.HTTPStatusError as exc:
-            status = exc.response.status_code
-            if status in (401, 403):
-                raise BadRequestError(
-                    "Gemini API key invalid or unauthorized (HTTP "
-                    f"{status}); check the key from Google AI Studio.",
-                ) from exc
-            raise _probe_failure(
-                f"Gemini discover failed: HTTP {status} "
-                f"{exc.response.text}",
-            ) from exc
-        except httpx.RequestError as exc:
-            # Connect / timeout / read errors that are not HTTP responses.
-            raise _probe_failure(
-                f"Gemini discover network error: {type(exc).__name__}: "
-                f"{exc}",
-            ) from exc
-        result = {"models": catalogue}
+        result = await _probe_gemini_models(config, method="generateContent")
     else:
         # 01a06918: unreachable today. _build_stub_provider above already
         # validated `provider` against LLMProvider's own LLMProviderType
@@ -905,10 +880,12 @@ async def discover_embedding_models(
 ) -> dict:
     """Mirror of ``discover_llm_models`` for embedding providers.
 
-    Only ``openai`` (OpenAI-compatible HTTP) is live-discoverable.
-    ``huggingface`` (local sentence-transformers) and ``gemini`` have
-    no usable list endpoint — the frontend falls back to curated
-    suggestions.
+    ``openai`` (OpenAI-compatible HTTP) lists whatever the server's
+    ``/models`` answers, chat models included, and ``gemini`` lists the
+    models of Google's ListModels that support ``embedContent``.
+    ``huggingface`` (local sentence-transformers) has no inventory to
+    list, because the operator names its models, so it answers 400 here
+    and the frontend falls back to curated suggestions.
     """
     stub = _build_stub_provider(
         EmbeddingProvider,
@@ -921,6 +898,11 @@ async def discover_embedding_models(
             return await _probe_openai_compatible_models(body.config)
         except BadRequestError as exc:
             _reraise_masked(exc, stub)
+    if body.provider == "gemini":
+        try:
+            return await _probe_gemini_models(body.config, method="embedContent")
+        except BadRequestError as exc:
+            _reraise_masked(exc, stub)
     raise BadRequestError(
         f"live model discovery is not supported for embedding "
         f"provider {body.provider!r}; populate the models list "
@@ -929,6 +911,41 @@ async def discover_embedding_models(
 
 
 # ---- Discovery probes ------------------------------------------------------
+
+
+async def _probe_gemini_models(config: dict[str, Any], *, method: str) -> dict:
+    """List the models Gemini serves for ``method``: ``generateContent`` for the LLM form, ``embedContent`` for the embedding form.
+
+    Both forms read the same ListModels catalogue with the same draft (a ``GoogleConfig``: one API key), so they share this body and its failure texts.
+    A refused key (HTTP 401 or 403) is a 400 in words of ours; any other status and any transport error is a 400 built by :func:`_probe_failure`, which
+    masks URL-borne credentials. The caller masks the configured key (:func:`_reraise_masked`), as it does for every other probe.
+    """
+    try:
+        gem_draft = GoogleConfig.model_validate(config)
+    except ValidationError as exc:
+        raise _probe_failure(
+            f"invalid Gemini config: {_validation_detail(exc)}",
+        ) from exc
+    try:
+        catalogue = await _discover_gemini_models(gem_draft, method=method)
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        if status in (401, 403):
+            raise BadRequestError(
+                "Gemini API key invalid or unauthorized (HTTP "
+                f"{status}); check the key from Google AI Studio.",
+            ) from exc
+        raise _probe_failure(
+            f"Gemini discover failed: HTTP {status} "
+            f"{exc.response.text}",
+        ) from exc
+    except httpx.RequestError as exc:
+        # Connect / timeout / read errors that are not HTTP responses.
+        raise _probe_failure(
+            f"Gemini discover network error: {type(exc).__name__}: "
+            f"{exc}",
+        ) from exc
+    return {"models": catalogue}
 
 
 async def _probe_ollama_models(config: dict[str, Any]) -> dict:
