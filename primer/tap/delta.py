@@ -100,6 +100,10 @@ class DeltaClass(StrEnum):
     # above - a phase belongs to the turn, not a part - so it rides its
     # own PhaseFrame rather than DeltaFrame (part_id has no meaning here).
     PHASE = "phase"
+    # The canvas of the session changed (pivot P5). Like a phase it belongs to the
+    # session, not to a part, so it rides its own CanvasFrame: a console that sees
+    # it refetches the canvas snapshot from REST; the frame carries no content.
+    CANVAS = "canvas"
 
 
 # kind -> the delta class for a *_delta frame.
@@ -171,6 +175,38 @@ async def publish_phase_frame(
         )
     except Exception:  # noqa: BLE001 - bus is best-effort; degrade silently
         logger.debug("phase frame: publish failed", exc_info=True)
+
+
+class CanvasFrame(BaseModel):
+    """One ephemeral canvas-changed frame (pivot P5, design 8.5).
+
+    Rides the same ``session:{sid}:delta`` channel as the other frames (an old console keying off ``class`` ignores a value it does not
+    know). It says WHICH state the canvas is in, ``rev`` (content) and ``event_seq`` (interactions), and nothing else: the panel
+    refetches the snapshot, so a lost or repeated frame costs nothing, and a panel that is already at this ``rev`` and ``event_seq``
+    ignores it.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    class_: Literal[DeltaClass.CANVAS] = Field(default=DeltaClass.CANVAS, alias="class")
+    session_id: str
+    rev: int
+    event_seq: int
+
+
+async def publish_canvas_frame(
+    publish: DeltaPublish, *, session_id: str, rev: int, event_seq: int,
+) -> None:
+    """Publish one :class:`CanvasFrame`. Best-effort like :func:`publish_phase_frame`: the canvas row is the source of truth and a
+    console that missed the frame reads it on its next refresh, so a degraded bus must never fail the write that preceded it."""
+    frame = CanvasFrame(session_id=session_id, rev=rev, event_seq=event_seq)
+    try:
+        await publish(
+            f"{DELTA_EVENT_PREFIX}{session_id}{DELTA_EVENT_SUFFIX}",
+            frame.model_dump(by_alias=True, mode="json"),
+        )
+    except Exception:  # noqa: BLE001 - bus is best-effort; degrade silently
+        logger.debug("canvas frame: publish failed", exc_info=True)
 
 
 def part_id(node_id: str | None, kind: str, turn_no: int) -> str:
@@ -403,6 +439,7 @@ class DeltaBuffer:
 __all__ = [
     "DELTA_EVENT_PREFIX",
     "DELTA_EVENT_SUFFIX",
+    "CanvasFrame",
     "DeltaBuffer",
     "DeltaClass",
     "DeltaFrame",
@@ -412,6 +449,7 @@ __all__ = [
     "KIND_TOOL",
     "PhaseFrame",
     "part_id",
+    "publish_canvas_frame",
     "publish_phase_frame",
     "scoped_tool_call_id",
 ]
