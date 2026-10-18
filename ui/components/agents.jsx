@@ -1105,6 +1105,25 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing, status, onDe
 // Agent detail page
 // ============================================================================
 
+// The default workspace: the ONE row GET /workspaces flags is_default (a response-only flag; the server refuses to delete that row). The list is paged, and an
+// install with more workspaces than one page may hold the flagged row beyond the first, so the pages are read (limit and offset, as the pager does) until the
+// flagged row is found or the list ends: a page shorter than the limit, or the offset reaching `total` (a server that cannot count sends none, and then only a
+// short page ends it). The first request is `?limit=200` with no offset. Resolves to the row, or null when no row on any page is flagged: there is no fallback.
+const AG_WORKSPACE_PAGE = 200;
+
+async function AG_findDefaultWorkspace(apiFetch) {
+  let offset = 0;
+  for (;;) {
+    const list = await apiFetch("GET", "/workspaces?limit=" + AG_WORKSPACE_PAGE + (offset ? "&offset=" + offset : ""));
+    const rows = (list && list.items) || [];
+    const flagged = rows.find((w) => w.is_default === true);
+    if (flagged) return flagged;
+    offset += rows.length;
+    const total = list && list.total;
+    if (rows.length < AG_WORKSPACE_PAGE || (typeof total === "number" && offset >= total)) return null;
+  }
+}
+
 function AgentDetail({ agentId, pushToast }) {
   const { useResource, useMutation, useRouter, apiFetch } = window.primerApi;
   const { params, navigate } = useRouter();
@@ -1153,17 +1172,18 @@ function AgentDetail({ agentId, pushToast }) {
   // the same way the old chat detail page did. A session lives in a
   // workspace and the only create route is POST /workspaces/{wid}/sessions
   // (there is no POST /sessions), so it is made in the DEFAULT workspace:
-  // the row GET /workspaces flags is_default, else the first one. The router
-  // is told the session's workspace, so the studio opens it there.
+  // the one row GET /workspaces flags is_default (AG_findDefaultWorkspace).
+  // With no row flagged it says so and creates nothing: the first workspace
+  // is not the default, and a chat in some other workspace is not what the
+  // button promises. The router is told the session's workspace, so the
+  // studio opens it there.
   const startChatMut = useMutation(
     async () => {
-      const list = await apiFetch("GET", "/workspaces?limit=200");
-      const rows = (list && list.items) || [];
-      const target = rows.find((w) => w.is_default === true) || rows[0];
+      const target = await AG_findDefaultWorkspace(apiFetch);
       if (!target) {
-        const none = new Error("A chat runs in a workspace, and there is none yet. Create a workspace, then open the chat again.");
-        none.title = "No workspace to chat in";
-        none.detail = "Create a workspace first, then open the chat again.";
+        const none = new Error("A chat runs in the default workspace, and none of the workspaces the server lists is marked as the default. Nothing was created.");
+        none.title = "No default workspace found";
+        none.detail = "A chat runs in the default workspace, and none of the workspaces the server lists is marked as the default. Nothing was created.";
         throw none;
       }
       const row = await apiFetch("POST", `/workspaces/${encodeURIComponent(target.id)}/sessions`, {

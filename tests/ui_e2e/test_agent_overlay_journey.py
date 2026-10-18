@@ -7,6 +7,8 @@
 * A response format that does not parse reopens the folded Advanced section and sends nothing (Review Focus 5).
 * The Chat button makes its session in the default workspace and opens it in the studio. It used to post a session route that does not exist. Opening the
   session in the studio goes through the router shim's session route (platform revamp plan 01, task 13), so that half needs that change in the build under test.
+  The default workspace is the ONE row ``GET /v1/workspaces`` flags ``is_default`` (lead ruling, review of #779: no fallback to the first workspace), so this
+  journey needs #770, which adds that response-only flag, on main: without it no row is flagged and the journey FAILS (it does not skip), as the button would.
 
 Each test seeds its own provider and agent, with a fake ``ollama`` provider, and removes them in ``finally``.
 """
@@ -49,6 +51,21 @@ def _remove(base_url: str, *paths: str) -> None:
                 c.delete(path)
             except Exception:  # noqa: BLE001 - best-effort cleanup
                 pass
+
+
+def _default_workspace_id(c: httpx.Client) -> str:
+    """The id of the ONE workspace ``GET /v1/workspaces`` flags ``is_default``, reading the list a page at a time as the button does (the shared e2e database can
+    hold more workspaces than one page). FAILS when no row, or more than one, is flagged: that is #770 missing from the build under test, and the journey must not
+    pick the first workspace instead, as the old button did."""
+    page_size, rows = 200, []
+    while True:
+        body = c.get("/v1/workspaces", params={"limit": page_size, "offset": len(rows)}).json()
+        rows.extend(body["items"])
+        if len(body["items"]) < page_size or (body.get("total") is not None and len(rows) >= body["total"]):
+            break
+    flagged = [w["id"] for w in rows if w.get("is_default") is True]
+    assert len(flagged) == 1, f"{len(flagged)} workspaces are flagged is_default ({flagged}) among {[w['id'] for w in rows]}: this journey needs #770 on main"
+    return flagged[0]
 
 
 def _get_agent(base_url: str, agent_id: str) -> dict | None:
@@ -173,12 +190,10 @@ def test_chat_makes_a_session_in_the_default_workspace_and_opens_it_in_the_studi
             "id": agent_id, "description": "chat journey", "model": agent_model(provider_id, "fake-model"), "tools": [], "system_prompt": ["test"],
         })
         assert r.status_code == 201, r.text
-        workspaces = c.get("/v1/workspaces", params={"limit": 200}).json()["items"]
-    assert workspaces, "the instance has no workspace to chat in"
-    # The row GET /v1/workspaces flags is_default, else the first: the rule the button follows.
-    expected = next((w for w in workspaces if w.get("is_default") is True), workspaces[0])["id"]
     made: list[dict] = []
     try:
+        with httpx.Client(base_url=base_url, timeout=30.0) as c:
+            expected = _default_workspace_id(c)  # inside the try: a build without #770 fails here, and the seeded rows are still removed
         open_legacy_route(page, console_url, f"agents/{agent_id}")
         expect(page.locator("#na-id")).to_have_value(agent_id, timeout=15_000)
         page.get_by_test_id("agent-form-chat").click()

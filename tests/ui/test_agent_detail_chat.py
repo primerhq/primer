@@ -2,8 +2,10 @@
 
 The button used to POST ``/v1/sessions``, which has no POST route: the only create route is ``POST /v1/workspaces/{wid}/sessions`` (found by Plan 01's
 slice S6, PR #760). It answered with an error toast and never opened anything. A session lives in a workspace, so Chat now creates it in the DEFAULT workspace
-(the row ``GET /v1/workspaces`` flags ``is_default``; pivot P2), falls back to the first workspace while no row is flagged, and then asks the router to open the
-session in the studio, naming its workspace (``navigate("/sessions/<id>", { workspace_id })``, which Plan 01's router shim turns into the studio tab).
+(the ONE row ``GET /v1/workspaces`` flags ``is_default``; pivot P2) and then asks the router to open the session in the studio, naming its workspace
+(``navigate("/sessions/<id>", { workspace_id })``, which Plan 01's router shim turns into the studio tab). There is no fallback (lead ruling, review of #779):
+with no row flagged on any page of the list, Chat shows the error toast "No default workspace found" and sends nothing else, and it never picks the first
+workspace. The list is paged (``limit=200``, then ``offset``) until the flagged row is found or the list ends, so a default beyond the first page is found.
 
 ``AgentDetail`` (``ui/components/agents.jsx``) runs in V8 on the harness of ``tests/ui/_agent_form_harness.py``, with its real ``useMutation``.
 """
@@ -15,7 +17,16 @@ import pytest
 from tests.ui._agent_form_harness import FULL, agent_form, calls, click, mount_detail, navigations, prop, recorded, set_api, text_of
 
 LIST = "/workspaces?limit=200"
+PAGE_2 = "/workspaces?limit=200&offset=200"
+PAGE_3 = "/workspaces?limit=200&offset=400"
 OPENED = {"id": "sess-9", "workspace_id": "prime", "status": "created"}
+NO_DEFAULT = "No default workspace found"
+
+
+def page(first: int, count: int, *, total: int | None, flagged: str | None = None) -> dict:
+    """One page of the workspace list: ``count`` rows ``ws-<first>`` ..., none flagged unless ``flagged`` names one; ``total`` None leaves the count out."""
+    items = [{"id": f"ws-{n}", "is_default": f"ws-{n}" == flagged} for n in range(first, first + count)]
+    return {"items": items, **({} if total is None else {"total": total})}
 
 
 @pytest.fixture
@@ -44,13 +55,26 @@ def test_chat_never_posts_the_session_route_that_does_not_exist(ctx):
     assert "/sessions" not in [c["path"] for c in calls(ctx)]
 
 
-def test_chat_falls_back_to_the_first_workspace_while_none_is_flagged_as_the_default(ctx):
-    set_api(ctx, "GET", LIST, {"items": [{"id": "ws-1"}, {"id": "ws-2"}], "total": 2})
-    set_api(ctx, "POST", "/workspaces/ws-1/sessions", {"id": "sess-1"})
+def test_with_no_workspace_flagged_as_the_default_chat_says_so_and_creates_nothing(ctx):  # lead ruling: no first-workspace fallback
+    set_api(ctx, "GET", LIST, {"items": [{"id": "ws-1"}, {"id": "ws-2", "is_default": False}], "total": 2})
+    set_api(ctx, "POST", "/workspaces/ws-1/sessions", {"id": "sess-1"})  # answered, so a pick of the first workspace would show as a POST
     mount_detail(ctx, FULL)
     click(ctx, "agent-form-chat")
-    assert [c["path"] for c in calls(ctx)] == [LIST, "/workspaces/ws-1/sessions"]
-    assert navigations(ctx) == [{"path": "/sessions/sess-1", "opts": {"workspace_id": "ws-1"}}]
+    assert [(c["method"], c["path"]) for c in calls(ctx)] == [("GET", LIST)]  # one GET, no POST
+    assert navigations(ctx) == []
+    [toast] = recorded(ctx)["toasts"]
+    assert toast["kind"] == "error" and toast["title"] == NO_DEFAULT
+    assert "none of the workspaces" in toast["detail"] and "Nothing was created" in toast["detail"]
+
+
+@pytest.mark.parametrize("flag", ["true", 1, "yes", None])
+def test_only_a_boolean_true_flags_the_default(ctx, flag):
+    """``is_default`` is a response-only boolean: a truthy string or number is not the flag."""
+    set_api(ctx, "GET", LIST, {"items": [{"id": "ws-1", "is_default": flag}], "total": 1})
+    mount_detail(ctx, FULL)
+    click(ctx, "agent-form-chat")
+    assert [c["method"] for c in calls(ctx)] == ["GET"] and navigations(ctx) == []
+    assert recorded(ctx)["toasts"][0]["title"] == NO_DEFAULT
 
 
 def test_a_workspace_id_is_escaped_in_the_path(ctx):
@@ -70,15 +94,87 @@ def test_the_session_row_may_name_its_id_session_id(ctx):
     assert navigations(ctx) == [{"path": "/sessions/sess-7", "opts": {"workspace_id": "prime"}}]
 
 
-def test_with_no_workspace_chat_says_so_and_creates_nothing(ctx):
+def test_with_no_workspace_at_all_chat_says_so_and_creates_nothing(ctx):
     set_api(ctx, "GET", LIST, {"items": [], "total": 0})
     mount_detail(ctx, FULL)
     click(ctx, "agent-form-chat")
-    assert [(c["method"], c["path"]) for c in calls(ctx)] == [("GET", LIST)]
+    assert [(c["method"], c["path"]) for c in calls(ctx)] == [("GET", LIST)]  # one GET, no POST
     assert navigations(ctx) == []
     [toast] = recorded(ctx)["toasts"]
-    assert toast["kind"] == "error" and toast["title"] == "No workspace to chat in"
-    assert "Create a workspace" in toast["detail"]
+    assert toast["kind"] == "error" and toast["title"] == NO_DEFAULT
+    assert "none of the workspaces" in toast["detail"]
+
+
+# ---- the list is paged: the flagged row may be beyond the first page (as the test helpers of #770 read it) ------------------------------------------------
+
+
+def test_a_default_workspace_beyond_the_first_page_is_found(ctx):
+    set_api(ctx, "GET", LIST, page(0, 200, total=450))
+    set_api(ctx, "GET", PAGE_2, page(200, 200, total=450))
+    set_api(ctx, "GET", PAGE_3, page(400, 50, total=450, flagged="ws-430"))
+    set_api(ctx, "POST", "/workspaces/ws-430/sessions", {"id": "sess-1"})
+    mount_detail(ctx, FULL)
+    click(ctx, "agent-form-chat")
+    assert [(c["method"], c["path"]) for c in calls(ctx)] == [("GET", LIST), ("GET", PAGE_2), ("GET", PAGE_3), ("POST", "/workspaces/ws-430/sessions")]
+    assert navigations(ctx) == [{"path": "/sessions/sess-1", "opts": {"workspace_id": "ws-430"}}]
+    assert recorded(ctx)["toasts"] == []
+
+
+def test_the_pages_are_read_only_until_the_flagged_row_is_found(ctx):
+    set_api(ctx, "GET", LIST, page(0, 200, total=450, flagged="ws-3"))
+    set_api(ctx, "POST", "/workspaces/ws-3/sessions", {"id": "sess-1"})
+    mount_detail(ctx, FULL)
+    click(ctx, "agent-form-chat")
+    assert [c["path"] for c in calls(ctx)] == [LIST, "/workspaces/ws-3/sessions"]
+
+
+def test_with_no_flag_on_any_page_every_page_is_read_and_nothing_is_created(ctx):
+    set_api(ctx, "GET", LIST, page(0, 200, total=250))
+    set_api(ctx, "GET", PAGE_2, page(200, 50, total=250))
+    set_api(ctx, "POST", "/workspaces/ws-0/sessions", {"id": "sess-1"})
+    mount_detail(ctx, FULL)
+    click(ctx, "agent-form-chat")
+    assert [(c["method"], c["path"]) for c in calls(ctx)] == [("GET", LIST), ("GET", PAGE_2)]
+    assert navigations(ctx) == []
+    [toast] = recorded(ctx)["toasts"]
+    assert (toast["kind"], toast["title"]) == ("error", NO_DEFAULT)
+
+
+def test_a_last_page_that_is_exactly_full_ends_at_the_total(ctx):
+    """The offset reaching ``total`` ends the list: no empty extra page is asked for."""
+    set_api(ctx, "GET", LIST, page(0, 200, total=200))
+    mount_detail(ctx, FULL)
+    click(ctx, "agent-form-chat")
+    assert [c["path"] for c in calls(ctx)] == [LIST]
+    assert recorded(ctx)["toasts"][0]["title"] == NO_DEFAULT
+
+
+def test_a_list_without_a_total_goes_on_while_pages_are_full_and_finds_the_flag(ctx):
+    set_api(ctx, "GET", LIST, page(0, 200, total=None))
+    set_api(ctx, "GET", PAGE_2, page(200, 3, total=None, flagged="ws-201"))
+    set_api(ctx, "POST", "/workspaces/ws-201/sessions", {"id": "sess-1"})
+    mount_detail(ctx, FULL)
+    click(ctx, "agent-form-chat")
+    assert [c["path"] for c in calls(ctx)] == [LIST, PAGE_2, "/workspaces/ws-201/sessions"]
+
+
+def test_a_list_without_a_total_ends_at_the_first_short_page(ctx):
+    set_api(ctx, "GET", LIST, page(0, 200, total=None))
+    set_api(ctx, "GET", PAGE_2, page(200, 3, total=None))
+    mount_detail(ctx, FULL)
+    click(ctx, "agent-form-chat")
+    assert [c["path"] for c in calls(ctx)] == [LIST, PAGE_2]  # the short page 2 is the end: no page 3 is asked for
+    assert recorded(ctx)["toasts"][0]["title"] == NO_DEFAULT
+
+
+def test_a_page_that_fails_is_the_error_toast_and_creates_nothing(ctx):
+    set_api(ctx, "GET", LIST, page(0, 200, total=300))
+    set_api(ctx, "GET", PAGE_2, {"__reject": {"status": 500, "title": "Internal Server Error", "detail": "boom"}})
+    mount_detail(ctx, FULL)
+    click(ctx, "agent-form-chat")
+    assert [(c["method"], c["path"]) for c in calls(ctx)] == [("GET", LIST), ("GET", PAGE_2)]
+    assert navigations(ctx) == []
+    assert recorded(ctx)["toasts"][0]["detail"] == "boom"
 
 
 def test_a_refused_session_is_the_error_toast_and_opens_nothing(ctx):
