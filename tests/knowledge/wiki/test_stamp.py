@@ -279,6 +279,18 @@ async def test_a_claim_whose_guard_lost_writes_nothing(sp):
     assert (stamp.content_hash, stamp.superseded) == ("b", ["a"])            # nothing of c's landed
 
 
+async def test_a_slow_pod_of_an_older_build_cannot_overwrite_a_version_only_update(sp):
+    # A newer release of the same content changes only app_version; a guard on the hash alone cannot see it,
+    # and an older build would then replace a newer stamp.
+    assert await claim(sp, app_version="0.6.0", content_hash="a")
+    stale = await read_stamp(sp)                                              # a slow 0.6.0 pod read this ...
+    assert await claim(sp, app_version="0.7.0", content_hash="a")            # ... then a 0.7.0 pod of the same content claimed
+    won = await claim(_Scripted(sp, reads=[stale]), app_version="0.6.0", content_hash="b")
+    assert won is False
+    stamp = await read_stamp(sp)
+    assert (stamp.app_version, stamp.content_hash, stamp.superseded) == ("0.7.0", "a", [])
+
+
 async def test_a_claim_retries_when_the_row_vanished_after_it_was_read(sp):
     vanished = S("0.6.0", "a")                                                # read, then the row was deleted
     assert await claim(_Scripted(sp, reads=[vanished]), app_version="0.6.0", content_hash="b") is True

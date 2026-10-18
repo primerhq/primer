@@ -248,6 +248,26 @@ def test_the_description_is_shown_without_its_rendered_example_lines():
     assert page.body.count("`{\"tz\":\"UTC\"}`") == 1        # the example is listed once, under Examples
 
 
+@pytest.mark.parametrize(
+    "examples",
+    [
+        [ToolExample(args={})],
+        [ToolExample(args={}, returns="done"), ToolExample(args={"tz": "UTC"}, note="a note")],
+        [ToolExample(args={"tz": "UTC"}, returns="done", note="both")],
+        [ToolExample(args={}, returns="line one\nline two")],
+        [ToolExample(args={}, note="a note\nover two lines"), ToolExample(args={"tz": "UTC"}, returns="ok")],
+    ],
+    ids=["bare", "returns-and-note", "both-on-one", "multi-line-returns", "multi-line-note"],
+)
+def test_every_shape_of_rendered_example_comes_out_of_the_prose_and_is_listed_once(examples):
+    entry = make_entry("misc", "t", purpose="Do it.", when="Use when it is needed.", examples=examples)
+    page = reference_pages([entry], used_in={})["reference/tools/misc/t"]
+    what = page.body.split("## What it does\n", 1)[1].split("\n## Call it", 1)[0]
+    assert what.strip() == "Do it.\n\nUse when it is needed."
+    listed = page.body.split("## Examples\n", 1)[1].split("\n## Used in", 1)[0].strip().splitlines()
+    assert len(listed) == len(examples) and all(line.startswith("- `") for line in listed)
+
+
 def test_a_description_that_is_not_made_by_make_tool_is_kept_whole():
     entry = _bare_entry("Plain text.\nExample: this line is part of the prose.")
     page = reference_pages([entry], used_in={})["reference/tools/misc/t"]
@@ -341,6 +361,15 @@ def test_a_too_long_first_line_is_cut_to_its_first_sentence():
     first = "Materialise a new Workspace from a template."
     assert _summary(f"{first} Looks up the template, asks the matching backend to create the live instance, "
                     "then persists a Workspace row with the assigned id, and returns the stored row.") == first
+
+
+def test_a_first_sentence_that_fills_the_limit_is_kept_and_one_character_more_is_not():
+    fits = "x" * (SUMMARY_MAX - 1) + "."
+    assert len(fits) == SUMMARY_MAX
+    assert _summary(f"{fits} And then more words that push the line past the limit.") == fits
+    too_long = "x" * SUMMARY_MAX + "."
+    got = _summary(f"{too_long} And then more words that push the line past the limit.")
+    assert len(got) <= SUMMARY_MAX and got.endswith("...") and got != too_long
 
 
 def test_a_too_long_first_line_without_a_short_sentence_is_cut_at_a_word_with_dots():

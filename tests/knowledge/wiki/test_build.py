@@ -87,6 +87,10 @@ def _wp(path: str, body: str = "", kind: str = "guide", **meta: object) -> WikiP
         ("[a \\[b\\]](agents/x)", ["agents/x"]),
         ("[a]\n(not/a/link)", []),
         ("[a] (not/a/link) and [b]()", []),
+        # a label may hold balanced brackets (one level), as CommonMark allows
+        ("[see [x] here](agents/x)", ["agents/x"]),
+        ("[Create an agent [admin]](agents/create-and-edit#tool-calls)", ["agents/create-and-edit"]),
+        ("[a [b](agents/x)", ["agents/x"]),
         ("[a](/agents/x) [b](agents/x.md)", ["/agents/x", "agents/x.md"]),
     ],
 )
@@ -341,6 +345,15 @@ def test_related_entries_must_resolve_too(tmp_path):
     assert unresolved_links(build.pages) == [("a", "missing")]
 
 
+def test_a_related_entry_may_carry_an_anchor_like_a_body_link(tmp_path):
+    _tree(tmp_path, {
+        "index.md": _page("Wiki", "S."),
+        "a.md": _page("A", "S.", related="[b#roles, missing#roles]"),
+        "b.md": _page("B", "S."),
+    })
+    assert unresolved_links(build_wiki(tmp_path, []).pages) == [("a", "missing")]
+
+
 def test_a_legacy_pages_links_are_not_checked():
     pages = {
         "legacy": _wp("legacy", "[old](/tools) [older](no/such)", kind="legacy"),
@@ -366,6 +379,32 @@ def test_the_build_logs_each_unresolved_link_and_does_not_raise(tmp_path, caplog
     assert "start-here/calling-tools" in warnings[0].getMessage()
     assert "reference/tools/misc/get_datetime" in warnings[0].getMessage()
     assert isinstance(build, WikiBuild)
+
+
+# ---- a build without hand-written pages -------------------------------------------------------------
+
+
+def test_a_missing_source_folder_is_logged_and_the_build_holds_only_what_is_generated(tmp_path, caplog):
+    with caplog.at_level(logging.WARNING, logger="primer.knowledge.wiki.build"):
+        build = build_wiki(tmp_path / "absent", [DATETIME], legacy_pages={"docs": _legacy("docs", "Docs", "Old.")})
+    assert sorted(build.pages) == [
+        "docs", "index", "reference", "reference/tools", "reference/tools/misc", "reference/tools/misc/get_datetime",
+    ]
+    assert not [p for p in build.pages.values() if p.kind in ("guide", "section")]
+    warnings = [r for r in caplog.records if r.name == "primer.knowledge.wiki.build" and r.levelno == logging.WARNING]
+    assert len(warnings) == 1 and str(tmp_path / "absent") in warnings[0].getMessage()
+
+
+def test_an_empty_source_folder_is_logged_too(tmp_path, caplog):
+    with caplog.at_level(logging.WARNING, logger="primer.knowledge.wiki.build"):
+        build_wiki(tmp_path, [])
+    assert [r.name for r in caplog.records if r.levelno == logging.WARNING] == ["primer.knowledge.wiki.build"]
+
+
+def test_a_source_folder_with_pages_is_not_logged(tmp_path, caplog):
+    with caplog.at_level(logging.WARNING, logger="primer.knowledge.wiki.build"):
+        build_wiki(_wiki(tmp_path), [DATETIME])
+    assert [r for r in caplog.records if r.levelno == logging.WARNING] == []
 
 
 # ---- the hash ---------------------------------------------------------------------------------

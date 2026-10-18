@@ -15,6 +15,14 @@ hand and every k3s deploy carries the same version, and a content hash has no or
 Known limit: rolling back to an earlier build of the same app version keeps the later wiki until
 a new build ships.
 
+``same`` means this build already holds the stamp, not that the pages are complete: a pod that
+claimed and then died part way leaves a half-written wiki, and every later pod of that build decides
+``same``. A caller that writes pages should therefore still converge them on ``same`` (writing only
+the pages that differ, behind :func:`still_mine`); only ``older`` and ``superseded`` mean "leave the
+wiki alone". And a build must not claim when it knows its own input is degraded (no hand-written
+pages, a toolset missing from the catalog): the claim moves the good build's hash into
+``superseded``, and its healthy pods would then never repair the wiki.
+
 :func:`claim` is the write that makes a build the stored one, a compare-and-set on the hash it
 read, so of any number of pods racing to claim exactly one wins each step. :func:`still_mine`
 lets the winner check, between page writes, that no newer claim replaced it.
@@ -87,8 +95,10 @@ async def claim(storage_provider, *, app_version: str, content_hash: str) -> boo
 
     No stamp yet: ``create`` it; a ``ConflictError`` means a peer created it first, so the stamp
     is read again and the decision made once more. A stamp: one ``patch_if`` of the four fields,
-    guarded on the hash that was read, so a peer that replaced the stamp in between makes this
-    write a no-op (False). The hash it replaces goes to the front of ``superseded``.
+    guarded on the hash AND the app version that were read, so a peer that replaced the stamp in
+    between makes this write a no-op (False). The version belongs in the guard because a newer
+    release of the same content changes only the version, and a build that read the stamp before
+    that must not write over it. The hash it replaces goes to the front of ``superseded``.
     """
     stamps = storage_provider.get_storage(WikiStamp)
     for _ in range(_CLAIM_ATTEMPTS):
@@ -111,7 +121,10 @@ async def claim(storage_provider, *, app_version: str, content_hash: str) -> boo
             return True
         patch = new.model_dump(mode="json", include={"app_version", "content_hash", "superseded", "written_at"})
         try:
-            written = await stamps.patch_if(WIKI_STAMP_ID, patch, where={"content_hash": [stored.content_hash]})
+            written = await stamps.patch_if(
+                WIKI_STAMP_ID, patch,
+                where={"content_hash": [stored.content_hash], "app_version": [stored.app_version]},
+            )
         except NotFoundError:
             continue
         return written is not None
