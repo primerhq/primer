@@ -520,10 +520,14 @@ class _FakeStorageProvider:
             sso_jit_enabled=getattr(self, "_sso_jit_enabled", False),
             sso_default_access=getattr(self, "_sso_default_access", None),
             default_agent_id=getattr(self, "_default_agent_id", None),
+            default_workspace_id=getattr(self, "_default_workspace_id", None),
         )
 
     async def set_default_agent_id(self, agent_id: str | None) -> None:
         self._default_agent_id = agent_id
+
+    async def set_default_workspace_id(self, workspace_id: str | None) -> None:
+        self._default_workspace_id = workspace_id
 
     async def set_bootstrap_completed(self, ts: datetime) -> None:
         self._bootstrap_completed_at = ts

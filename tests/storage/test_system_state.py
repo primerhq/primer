@@ -167,3 +167,16 @@ async def test_set_bootstrap_completed_idempotent(storage_provider: StorageProvi
     await storage_provider.set_bootstrap_completed(ts2)
     state = await storage_provider.get_system_state()
     assert state.bootstrap_completed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_default_workspace_id_starts_unset_and_round_trips(
+    storage_provider: StorageProvider,
+):
+    """The default workspace id is a real column: unset on a fresh database,
+    stored by its setter, cleared again by ``None``. Both backends."""
+    assert (await storage_provider.get_system_state()).default_workspace_id is None
+    await storage_provider.set_default_workspace_id("prime")
+    assert (await storage_provider.get_system_state()).default_workspace_id == "prime"
+    await storage_provider.set_default_workspace_id(None)
+    assert (await storage_provider.get_system_state()).default_workspace_id is None
