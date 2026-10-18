@@ -38,6 +38,16 @@ HIT_SIZED: list[str] = [
     # This guard therefore only pins that their sizing stays token-driven.
     "nv-tg-tab-close",
     "nv-rail-iconbtn",
+    # Platform revamp kit (ui/components/shared/platform-kit.jsx): the page
+    # header's action, secondary control and pager buttons are one height,
+    # calc(var(--hit) - 4px) (32px at the default density), and so are the
+    # card's Open and its "⋯" menu button. The phone rule lifts them to
+    # --tap-min.
+    "pk-action",
+    "pk-extra",
+    "pk-pager-btn",
+    "pk-card-open",
+    "pk-card-menu-btn",
 ]
 
 
