@@ -2563,7 +2563,8 @@ def _failure_code(exc: BaseException) -> str:
     that RAISED before a stream opened (the adapter's classified error, e.g. an upstream 500 after the retries) carries it on the exception
     (``ServerError.code == "server_error"``); one that names no code is classified by its CLASS (rate limit, server, network, timeout). Anything
     else, or a generic ``PrimerError`` with no code, is ``turn_failed``: a turn that raised something that is not known to be a model error (an
-    MCP toolset's ``NetworkError`` escaping ``list_tools`` is reported the same way as the model's). The code of a raised error is not written as ``ended_detail`` (it never was): it is the row's
+    MCP toolset that cannot list its tools does not fail the turn any more, it is left out of it with a notice to the model, ``primer.agent.tool_listing``;
+    what escapes ``list_tools`` is an in-process provider's failure or a ``ConfigError``). The code of a raised error is not written as ``ended_detail`` (it never was): it is the row's
     ``last_turn_error``, the event, and the rule for whether an interactive session rests.
     """
     if isinstance(exc, _NamesWhyItEndedTheTurn):

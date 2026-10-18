@@ -245,9 +245,11 @@ The session lands in `waiting` with its history intact, so the next
 message continues it:
 
 - It takes effect at the next wait for the model: before the first token
-  as well as between chunks. If the model had just asked for tool calls
-  when you pressed Stop, none of them run: each is answered "not run:
-  stopped by user".
+  as well as between chunks. A turn that is still listing its tools (an MCP
+  server that does not answer holds that for up to a minute) ends without
+  waiting for the server, before any model call. If the model had just
+  asked for tool calls when you pressed Stop, none of them run: each is
+  answered "not run: stopped by user".
 - A tool call that is already running when you press Stop is stopped too.
   The call is cancelled and given up to 3 seconds to unwind (so whatever
   cleanup the tool does when it is cancelled has run before the turn moves
