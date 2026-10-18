@@ -36,10 +36,12 @@ The second review (task 01a10e2f; the lead decided the list) added:
   lock, session row, enqueue, claim lease) with no transaction; a cancel can leave a RUNNING session with no lease (the
   sweeper ends it only after 600 s), a ``last_seq`` behind the log, or a second divider with the same seq.
 * ``system`` update_ / delete_ of llm_provider, embedding_provider, cross_encoder_provider, toolset,
-  semantic_search_provider and model_profile (the six entities that carry an invalidation hook; model_profile joined them with
-  task 01a111d1 D5, when its aggregated-LLM invalidation was wired as the REST router has it): the row is written and THEN the
-  registry cache is evicted, with no transaction between; a cancel between leaves a deleted provider still serving, or a rotated
-  key not picked up, until a restart. (A cache eviction is not a durable write; this is the "when unsure" side of the rule.)
+  semantic_search_provider, model_profile and artifact_storage_provider (the seven entities that carry an invalidation hook;
+  model_profile joined them with task 01a111d1 D5, when its aggregated-LLM invalidation was wired as the REST router has it, and
+  artifact_storage_provider with plan 09 Task 3, when the artifact-storage registry was bound to the invalidation bus): the row is
+  written and THEN the registry cache is evicted, with no transaction between; a cancel between leaves a deleted provider still
+  serving, or a rotated key not picked up, until a restart. (A cache eviction is not a durable write; this is the "when unsure"
+  side of the rule.)
 * ``crud`` update_python_toolset_source (task 01a111d1 D5 2a, when it gained the registry eviction the toolset router has on
   update): the toolset row is written and THEN the registry's cached adapter is evicted, the same shape as the six entities
   above; a cancel between leaves the old source serving until a restart.
@@ -120,14 +122,14 @@ CONFIRMED_NOT_INTERRUPTIBLE = {
     (WORKSPACES_TOOLSET_ID, "cancel_workspace_session"),
     (WORKSPACES_TOOLSET_ID, "steer_workspace_session"),
     (WORKSPACES_TOOLSET_ID, "restart_workspace_session"),
-    # task 01a10e2f (+ model_profile, task 01a111d1 D5): a row write THEN a registry cache eviction (the entities that carry an
-    # invalidation hook)
+    # task 01a10e2f (+ model_profile, task 01a111d1 D5; + artifact_storage_provider, plan 09 Task 3): a row write THEN a registry cache
+    # eviction (the entities that carry an invalidation hook)
     *{
         (SYSTEM_TOOLSET_ID, f"{verb}_{entity}")
         for verb in ("update", "delete")
         for entity in (
             "llm_provider", "embedding_provider", "cross_encoder_provider", "toolset", "semantic_search_provider",
-            "model_profile",
+            "model_profile", "artifact_storage_provider",
         )
     },
     # task 01a111d1 (D5 2a): the toolset row, then the registry's cached adapter evicted

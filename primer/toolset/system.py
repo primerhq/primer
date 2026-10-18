@@ -219,6 +219,7 @@ _ADMIN_WRITE_NOTES: dict[str, str] = {
 
 if TYPE_CHECKING:
     from primer.api.registries import ProviderRegistry
+    from primer.api.registries.artifact_storage_registry import ArtifactStorageRegistry
     from primer.api.registries.semantic_search_registry import SemanticSearchRegistry
     from primer.api.registries.workspace_registry import WorkspaceRegistry
     from primer.int.storage_provider import StorageProvider
@@ -237,6 +238,7 @@ def build_system_toolset(
     workspace_registry: "WorkspaceRegistry | None" = None,
     toolset_id: str = SYSTEM_TOOLSET_ID,
     approval_resolver: "ApprovalResolver | None" = None,
+    artifact_storage_registry: "ArtifactStorageRegistry | None" = None,
 ) -> InternalToolsetProvider:
     """Construct the immutable ``_system`` toolset.
 
@@ -249,6 +251,10 @@ def build_system_toolset(
     the caller has one (the API lifespan does); the meta-dispatch gate
     shares its cache so an operator ``/invalidate`` takes effect here
     too. ``None`` builds a private resolver (standalone/test builders).
+
+    ``artifact_storage_registry`` is the process's :class:`ArtifactStorageRegistry`. An update or a delete of an artifact-storage provider calls
+    its ``invalidate``, which publishes on the invalidation bus the lifespan bound it to, so the cached store is dropped in every process (a tool runs
+    in whichever process executes the session). ``None`` (standalone/test builders) leaves the cache alone.
     """
     registry: dict[str, tuple[Tool, ToolHandler]] = {}
 
@@ -268,6 +274,11 @@ def build_system_toolset(
     async def _inv_ssp(eid: str) -> None:
         if semantic_search_registry is not None:
             await semantic_search_registry.invalidate(eid)
+
+    async def _inv_asp(eid: str) -> None:
+        # The registry publishes on the invalidation bus once the lifespan bound it, so this reaches every process; unbound it evicts here.
+        if artifact_storage_registry is not None:
+            await artifact_storage_registry.invalidate(eid)
 
     async def _inv_mp(eid: str) -> None:
         # The ModelProfile REST router drops the profile's cached AggregatedLLM on every update and delete (a no-op when
@@ -404,22 +415,19 @@ def build_system_toolset(
         ("document", "documents", Document, None, None, None, "user"),
         ("graph_thread", "graph_threads", GraphThread, None, None, None, "user"),
         ("semantic_search_provider", "semantic_search_providers", SemanticSearchProvider, None, _inv_ssp, _inv_ssp, "admin"),
-        ("artifact_storage_provider", "artifact_storage_providers", ArtifactStorageProvider, None, None, None, "admin"),
+        ("artifact_storage_provider", "artifact_storage_providers", ArtifactStorageProvider, None, _inv_asp, _inv_asp, "admin"),
         ("tool_approval_policy", "tool_approval_policies", ToolApprovalPolicy, None, None, None, "admin"),
         ("channel_provider", "channel_providers", ChannelProvider, None, None, None, "admin"),
         ("channel", "channels", Channel, None, None, None, "user"),
     ]
     # The entities whose warm adapter an edit through the REST route refreshes but an edit through a TOOL does not (task 01a111d1, D5
-    # phase 2c, the lead's ruling: document it, do not mirror the hook). ArtifactStorageRegistry and ChannelRegistry invalidate only the
-    # cache of their own process, the warm inbound adapters live in the API process, and a tool runs in whichever process executes the
-    # session (a worker in the k3s split), so a local-only mirror would look like parity and do nothing where it matters. Binding the
-    # registries to the invalidation bus is the design ticket 01a11358. The note reaches the agent through the update / delete descriptors.
+    # phase 2c, the lead's ruling: document it, do not mirror the hook). ChannelRegistry invalidates only the cache of its own process,
+    # the warm inbound adapters live in the API process, and a tool runs in whichever process executes the session (a worker in the k3s
+    # split), so a local-only mirror would look like parity and do nothing where it matters. Binding the registry to the invalidation bus
+    # is the channel half of the design ticket 01a11358; the artifact-storage half is done (ArtifactStorageRegistry publishes on the
+    # ``artifact_storage_provider`` topic, so ``_inv_asp`` above reaches every process and that entity carries no note). The note reaches
+    # the agent through the update / delete descriptors.
     cache_notes_by_label: dict[str, str] = {
-        "artifact_storage_provider": (
-            "Unlike the other provider rows, this tool does NOT drop the cached artifact-storage instance: the registry's cache is "
-            "local to one process, and a tool may run in a different process than the one that serves the API. The change takes "
-            "effect after the next restart, or after the row is edited through the REST route (which refreshes the API process)."
-        ),
         "channel_provider": (
             "Unlike the other provider rows, this tool does NOT flush the warm channel adapters (the Telegram / Slack / Discord "
             "gateways live in the API process, and the registry's invalidation is local to one process, while a tool may run in "

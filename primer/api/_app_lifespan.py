@@ -239,6 +239,10 @@ def _make_lifespan(config: AppConfig):
             # instance, and call_tool's meta-dispatch gate must see that
             # immediately rather than serving stale verdicts until TTL.
             approval_resolver=approval_resolver,
+            # An update or a delete of an artifact-storage provider through a
+            # tool evicts the cached store in every process: the registry
+            # publishes on the invalidation bus bound below (01a11358).
+            artifact_storage_registry=artifact_storage_registry,
         )
         provider_registry._system_toolset_provider = system_toolset  # noqa: SLF001
         # NOTE: the always-on _workspaces toolset is built later in this
@@ -485,6 +489,9 @@ def _make_lifespan(config: AppConfig):
             )
             logger.info("lifespan: claim engine constructed (%s)", type(claim_engine).__name__)
             await provider_registry.bind_invalidation_bus(coordinator.invalidation_bus)
+            # The artifact-storage registry is a second cache on the same bus: an edit of a provider row in ANY process (a REST edit on the API, a tool
+            # in a worker) drops this process's cached store too.
+            await artifact_storage_registry.bind_invalidation_bus(coordinator.invalidation_bus)
             await provider_registry.bind_rate_limiter(coordinator.rate_limiter)
             # Re-bind the channel inbox now that the event bus exists.
             # ChannelInbox was constructed earlier (lines 102-104) with
