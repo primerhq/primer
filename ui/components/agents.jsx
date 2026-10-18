@@ -496,18 +496,24 @@ function AG_otherFieldErrors(fieldErrors, paths) {
 // line) and always holds at least one; `onChange(next)` hands the parent the new list. The tab that is shown is a position, kept in range when the
 // list shrinks: removing the selected part selects the next one (or the one before, at the end), so the next keystroke never goes to a part that is
 // gone. Full screen is a layer of the Escape stack (foundation/escape-stack.js): Escape leaves it first and only the next Escape closes the overlay
-// behind it, so the draft is not lost. The editor takes the focus when full screen opens. Its z-index is above the layers inside the dialog (the tool
+// behind it, so the draft is not lost. It is also a FOCUS TRAP (foundation/focus-trap.js): every layer that holds focus above a dialog is one, and without
+// it Tab walked from the editor on to the controls the layer covers (23 Tabs reached the covered Cancel, and the Enter that followed closed the overlay and lost
+// the draft). Tab and Shift+Tab now cycle through the layer's own controls, and leaving full screen gives the focus back to the toggle. The editor takes the
+// focus when full screen opens (the toggle is inside the box, so the trap finds focus already in the layer and leaves it there; the effect below moves it to the
+// editor, and `initial` names the editor for a layer that opens with the focus elsewhere). Its z-index is above the layers inside the dialog (the tool
 // picker's sticky group headers are 1, the kit's selector menu 3): at 1 a toolset header showed on top of the full-screen editor.
 function AG_PromptTabs({ parts, onChange }) {
   const [active, setActive] = React.useState(0);
   const [fullScreen, setFullScreen] = React.useState(false);
   const [focused, setFocused] = React.useState(false);
   const uid = React.useId();
+  const boxRef = React.useRef(null);
   const editorRef = React.useRef(null);
   const current = Math.max(0, Math.min(active, parts.length - 1));
   const panelId = uid + "panel";
   const tabId = (i) => uid + "tab" + i;
   window.primerApi.useEscape(() => setFullScreen(false), fullScreen);
+  window.primerApi.useFocusTrap(boxRef, fullScreen, { initial: () => editorRef.current });
   React.useEffect(() => {
     const node = editorRef.current;
     if (fullScreen && node && typeof node.focus === "function") node.focus();
@@ -523,7 +529,7 @@ function AG_PromptTabs({ parts, onChange }) {
       background: "var(--bg)", display: "flex", flexDirection: "column", boxShadow: focused ? "0 0 0 3px var(--accent-dim)" : "none",
     };
   return (
-    <div data-testid="agent-system-prompt" data-fullscreen={fullScreen ? "true" : "false"} style={box}>
+    <div ref={boxRef} data-testid="agent-system-prompt" data-fullscreen={fullScreen ? "true" : "false"} style={box}>
       <div style={{
         display: "flex", alignItems: "center", gap: 4, padding: "4px 6px", flexShrink: 0,
         background: "var(--bg-2)", borderBottom: "1px solid var(--border)",

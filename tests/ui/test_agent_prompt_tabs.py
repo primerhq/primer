@@ -5,7 +5,10 @@ be dragged taller, "Remove part" (never the last part), and a Full screen toggle
 that keeps the parts and closes on Escape the way the overlay's Modal does, on the real Escape stack (``ui/foundation/escape-stack.js``).
 
 Review focus 3: removing the selected part must not send the next keystrokes into a part that is no longer there. Review focus 4: Escape in full screen
-leaves full screen first, so the draft in the overlay behind it is not lost.
+leaves full screen first, so the draft in the overlay behind it is not lost. Full screen is also a focus trap (review of #779, required fix 2): Tab must not
+walk from the full-screen editor on to the controls it covers, where the Enter on the covered Cancel closed the overlay and lost the draft. The trap itself
+needs a DOM, so here the harness records the call to ``useFocusTrap`` and these tests pin its arguments; the Tab keys are pressed in a real browser by
+``tests/ui_e2e/test_agent_overlay_journey.py``.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from tests.ui._agent_form_harness import (
     set_parts,
     testids_under,
     text_of,
+    trap_report,
     type_into,
 )
 
@@ -130,3 +134,43 @@ def test_full_screen_is_above_every_layer_inside_the_dialog(ctx):
     click(ctx, "agent-system-prompt-fullscreen")
     style = prop(ctx, "agent-system-prompt", "style")
     assert style["position"] == "fixed" and style["zIndex"] > max(picker + [3])
+
+
+# ---- full screen is a focus trap (review of #779, required fix 2) ------------------------------------------------------------------------------------------
+
+
+def test_full_screen_is_a_focus_trap_on_its_own_box_that_opens_on_the_editor(ctx):
+    """``useFocusTrap(boxRef, fullScreen, { initial: () => editorRef.current })``: off while the box sits in the form, on while it covers the window, attached to
+    the box (the ref it is given is the box's own, so its Tab handler sees the box's keys) and opening on the editor."""
+    mount_prompt_tabs(ctx, ["A"])
+    idle = trap_report(ctx)
+    assert idle["active"] is False and idle["onBox"] is True and idle["initialIsEditor"] is True
+    click(ctx, "agent-system-prompt-fullscreen")
+    assert prop(ctx, "agent-system-prompt", "data-fullscreen") == "true"
+    on = trap_report(ctx)
+    assert on["active"] is True and on["onBox"] is True and on["initialIsEditor"] is True
+    assert on["calls"] > idle["calls"]
+
+
+def test_the_trap_goes_off_when_full_screen_is_left_by_the_toggle_or_by_escape(ctx):
+    mount_prompt_tabs(ctx, ["A"])
+    click(ctx, "agent-system-prompt-fullscreen")
+    assert trap_report(ctx)["active"] is True
+    click(ctx, "agent-system-prompt-fullscreen")
+    assert prop(ctx, "agent-system-prompt", "data-fullscreen") == "false" and trap_report(ctx)["active"] is False
+    click(ctx, "agent-system-prompt-fullscreen")
+    assert trap_report(ctx)["active"] is True
+    press_escape(ctx)
+    assert prop(ctx, "agent-system-prompt", "data-fullscreen") == "false" and trap_report(ctx)["active"] is False
+
+
+def test_the_trap_follows_full_screen_on_every_render_even_after_the_parts_change(ctx):
+    """The hook is called on EVERY render with the current state, so a part added or removed in full screen does not drop the trap."""
+    mount_prompt_tabs(ctx, ["A", "B"])
+    click(ctx, "agent-system-prompt-fullscreen")
+    click(ctx, "agent-system-prompt-add")
+    click(ctx, "agent-system-prompt-tab-0")
+    click(ctx, "agent-system-prompt-remove")
+    assert prop(ctx, "agent-system-prompt", "data-fullscreen") == "true"
+    report = trap_report(ctx)
+    assert report["active"] is True and report["onBox"] is True and report["initialIsEditor"] is True

@@ -3,7 +3,8 @@
 * Editing one field of an agent that has every field set changes that field and nothing else (master Review Focus 1). The overlay hides two sections (Voice,
   Advanced) and never mounts the controls of a closed one, so this is the proof that what it does not show it still sends back.
 * The system prompt parts are tabs over one editor: "+ Part" selects the part it adds, a tab shows its part, Full screen covers the window, and Escape leaves it
-  before it closes the overlay (Review Focus 4). A two-part prompt is saved as two parts.
+  before it closes the overlay (Review Focus 4). Full screen is a focus trap: Tab and Shift+Tab stay inside it however often they are pressed (review of #779).
+  A two-part prompt is saved as two parts.
 * A response format that does not parse reopens the folded Advanced section and sends nothing (Review Focus 5).
 * The Chat button makes its session in the default workspace and opens it in the studio. It used to post a session route that does not exist. Opening the
   session in the studio goes through the router shim's session route (platform revamp plan 01, task 13), so that half needs that change in the build under test.
@@ -137,6 +138,30 @@ def test_the_prompt_tabs_full_screen_and_a_two_part_save(page: Page, base_url: s
         # The full-screen editor covers the window. A smaller box means an ancestor of the editor has a transform, which turns position: fixed into
         # "fixed inside that ancestor": report it, never loosen this.
         assert box["width"] >= viewport["width"] - 2 and box["height"] >= viewport["height"] - 2, (box, viewport)
+
+        # The layer is a focus trap (review of #779, required fix 2). Tab used to walk from the editor on to the controls the layer covers: 23 presses reached the
+        # covered Cancel button, and the Enter that followed closed the overlay and lost the draft. Press Tab, then Shift+Tab, more times than the layer has stops
+        # (two tabs, "+ Part", "Remove part", the toggle and the editor): focus must be inside the layer after EVERY press, and the walk must have reached all six.
+        layer_stops = {
+            "agent-system-prompt-tab-0", "agent-system-prompt-tab-1", "agent-system-prompt-add", "agent-system-prompt-remove",
+            "agent-system-prompt-fullscreen", "agent-system-prompt-editor",
+        }
+        for key in ("Tab", "Shift+Tab"):
+            visited: set[str | None] = set()
+            for _ in range(2 * len(layer_stops) + 2):
+                page.keyboard.press(key)
+                held = page.evaluate(
+                    """() => {
+                        const el = document.activeElement;
+                        const layer = document.querySelector('[data-testid="agent-system-prompt"]');
+                        return { testid: el ? el.getAttribute('data-testid') : null, inside: !!(el && layer && layer.contains(el)) };
+                    }"""
+                )
+                assert held["inside"], f"{key} left the full-screen layer: the focus is on {held['testid']!r}"
+                visited.add(held["testid"])
+            assert visited == layer_stops, f"{key} did not walk the whole layer: {sorted(visited, key=str)}"
+        expect(modal).to_be_visible()
+
         page.keyboard.press("Escape")
         expect(modal.get_by_test_id("agent-system-prompt")).to_have_attribute("data-fullscreen", "false")
         expect(modal).to_be_visible()  # the first Escape left full screen and did not close the overlay with the draft in it
