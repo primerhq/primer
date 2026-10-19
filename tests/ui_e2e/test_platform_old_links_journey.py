@@ -18,7 +18,7 @@ import pytest
 from playwright.sync_api import Page, expect
 
 from tests._support.smk import smk
-from tests.ui_e2e._shell_helpers import install_templates_page_stand_in, open_legacy_route, open_view
+from tests.ui_e2e._shell_helpers import default_wid, install_templates_page_stand_in, open_legacy_route, open_view
 
 pytestmark = smk("SMK-UI-03", status="partial")
 
@@ -29,7 +29,7 @@ def _open(page: Page, console_url: str, view: str, marker: str) -> None:
     expect(page.get_by_test_id("nv-root")).to_be_visible(timeout=20_000)
     target = page.get_by_test_id(marker)
     for attempt in (1, 2):
-        open_view(page, console_url, "primer", view)
+        open_view(page, console_url, default_wid(console_url), view)
         try:
             expect(target).to_be_visible(timeout=10_000 if attempt == 1 else 20_000)
             return
@@ -50,7 +50,7 @@ def _first_workspace(base_url: str) -> str:
 def test_an_old_workspaces_link_opens_the_studio(page: Page, console_url: str) -> None:
     _open(page, console_url, "platform:providers", "nv-plat-page:providers")      # a view that is not the studio, so the redirect has something to change
 
-    open_view(page, console_url, "primer", "platform:workspaces")
+    open_view(page, console_url, default_wid(console_url), "platform:workspaces")
 
     expect(page.get_by_test_id("nv-view:studio")).to_be_visible(timeout=20_000)
     expect(page.get_by_test_id("nv-platform")).to_have_count(0)
@@ -75,7 +75,7 @@ def test_an_old_templates_link_opens_the_templates_page(page: Page, console_url:
 def test_an_old_setup_link_opens_the_system_dashboard(page: Page, console_url: str) -> None:
     _open(page, console_url, "platform:providers", "nv-plat-page:providers")
 
-    open_view(page, console_url, "primer", "system:setup")
+    open_view(page, console_url, default_wid(console_url), "system:setup")
 
     expect(page.get_by_test_id("nv-sys-page:dashboard")).to_be_visible(timeout=20_000)
     expect(page).to_have_url(re.compile(r"[?&]view=system:dashboard(&.*)?$"))
@@ -107,7 +107,7 @@ def test_a_custom_page_link_with_no_component_opens_providers(page: Page, consol
     if page.evaluate("typeof window.WEB_SettingsPage === 'function' || typeof window.WT_TemplatesPage === 'function'"):
         pytest.skip("a custom page has shipped; its own journey covers its link")
 
-    open_view(page, console_url, "primer", view)
+    open_view(page, console_url, default_wid(console_url), view)
 
     expect(page.get_by_test_id("nv-plat-page:providers")).to_be_visible(timeout=20_000)
     expect(page.get_by_test_id("nv-plat-row:providers")).to_have_attribute("aria-current", "page")
