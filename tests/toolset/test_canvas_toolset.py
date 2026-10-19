@@ -23,6 +23,7 @@ from primer.model.canvas import CANVAS_SETTINGS_ID, CanvasSettings
 from primer.model.except_ import ConflictError
 from primer.model.yield_ import ToolContext
 from primer.toolset.canvas import CANVAS_TOOLSET_ID, ID_PATTERN, CanvasToolsetProvider, build_canvas_toolset
+from primer.toolset.tool_catalog import collect_tool_entries
 from tests.api.conftest import app, client, fake_provider_registry  # noqa: F401  (fixtures)
 from tests.canvas._fakes import World, make_world, seed_session
 from tests.docs._live_toolsets import built_in_providers, built_in_tools
@@ -564,7 +565,6 @@ def test_the_catalogue_reserved_ids_and_the_docs_registry_agree():      # pivot 
 
 
 async def test_the_tool_catalog_lists_the_canvas_tools():               # the wiki's reference pages are built from it
-    collect_tool_entries = pytest.importorskip("primer.toolset.tool_catalog").collect_tool_entries   # P1 Task 5
     entries = await collect_tool_entries(built_in_providers())
     canvas = {e.scoped_id: e for e in entries if e.toolset_id == "canvas"}
     assert set(canvas) == {"canvas__canvas_get", "canvas__canvas_apply", "canvas__canvas_wait"}
