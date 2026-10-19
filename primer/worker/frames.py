@@ -56,9 +56,9 @@ class AgentResumeContext:
     """Ambient ids + tool surface needed to rebuild a parked subagent turn.
 
     Carried inside an :class:`AgentFrame` so that, on resume, the worker can
-    reconstruct the agent runtime exactly as it stood when the nested yield
-    was raised - same session/workspace/chat binding, same principal, same
-    registered tools.
+    reconstruct the agent runtime as it stood when the nested yield was raised
+    - same session/workspace/chat binding, same registered tools - but NOT with
+    an identity read from it: see ``principal`` and ``initiated_by``.
 
     Attributes
     ----------
@@ -69,7 +69,13 @@ class AgentResumeContext:
     chat_id
         The chat the turn belongs to, or ``None`` for a pure session turn.
     principal
-        The acting principal (used for tool authorisation on resume).
+        The principal STRING the run was started with (``run_subagent``'s
+        ``principal``; ``invoke_agent`` hands none, so ``None``). It is never read
+        on a resume: the worker hands the resumed subagent a context with it
+        cleared (``build_invocation_services``). It is what every tool call of a
+        run is handed as ``provider.call(principal=...)`` and ``ctx.principal``
+        (an MCP toolset picks a user's OAuth credentials by it), and a park can
+        store any string.
     tools
         The agent's registered tool ids (e.g. ``"system__ask_user"``).
     initiated_by
@@ -103,7 +109,7 @@ class AgentResumeContext:
     session_id: str
     workspace_id: str
     chat_id: str | None
-    principal: str
+    principal: str | None
     tools: list[str]
     initiated_by: "PrincipalRef | None" = None
     turn_no: int | None = None

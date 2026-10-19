@@ -462,7 +462,11 @@ async def resume_subagent(
     ``child_result`` is the resolved tool result for the call that parked,
     ``depth`` is the nesting depth this frame was parked at, and ``context``
     is the :class:`~primer.worker.frames.AgentResumeContext` carrying the
-    inherited ids + tool surface.
+    inherited ids + tool surface. The turn runs as ``context`` says, so the
+    caller decides who that is: the worker's services hand a context whose
+    ``initiated_by`` is the resumed session's run principal and whose
+    ``principal`` string is ``None`` (``build_invocation_services``), never what
+    the park stored.
 
     The run is pinned to ``depth`` (via ``_depth_set``) so nested re-entry
     keeps counting from where it parked. If the continuation yields again, a
@@ -506,6 +510,9 @@ async def resume_subagent(
             _sink = current_delegation_sink()
             # No artifact_storage -- see the invoke_agent call site above;
             # same scope-cut applies to this resume path.
+            # ``principal`` is what every call of this turn is handed (``provider.call``
+            # and ``ctx.principal``): None for a resume the worker drives, which clears the
+            # string a park stored (``build_invocation_services``).
             async for _ev in run_agent_turn(
                 agent=agent, llm=llm, llm_model=llm_model,
                 tool_manager=tool_manager, prompt=resume_prompt,

@@ -194,13 +194,17 @@ class _GatedYieldingToolset:
 
 
 class _RoleRecordingToolset:
-    """Toolset 'rec': ``user_x`` (any user may run it) and the admin-only ``admin_x``. Records the name of every call that ran."""
+    """Toolset 'rec': ``user_x`` (any user may run it) and the admin-only ``admin_x``. Records the name of every call that ran, the principal string
+    each call and each listing was handed (what an MCP toolset picks a user's OAuth credentials by), and the context of each call."""
 
     def __init__(self) -> None:
         self.ran: list[str] = []
+        self.principals: list[str | None] = []
+        self.listed_for: list[str | None] = []
         self.contexts: list[Any] = []
 
     async def list_tools(self, *, principal: str | None = None) -> AsyncIterator[Tool]:
+        self.listed_for.append(principal)
         for name in ("user_x", "admin_x"):
             yield Tool(
                 id=name,
@@ -216,6 +220,7 @@ class _RoleRecordingToolset:
         self, *, tool_name, arguments, principal=None, ctx=None
     ) -> ToolCallResult:  # noqa: ANN001
         self.ran.append(tool_name)
+        self.principals.append(principal)
         self.contexts.append(ctx)
         return ToolCallResult(output=json.dumps({"ran": tool_name}), is_error=False)
 
@@ -387,15 +392,16 @@ _USER = PrincipalRef(type="user", id="u-1", display="user", role="user", source=
 
 
 def _context(
-    *, tools: list[str], sid: str, initiated_by: PrincipalRef | None = _ADMIN,
+    *, tools: list[str], sid: str, initiated_by: PrincipalRef | None = _ADMIN, principal: str | None = "user-1",
 ) -> AgentResumeContext:
     """A frame's context as ``run_subagent`` writes it: it carries the calling run's principal (``None`` is a frame
-    written before the field existed)."""
+    written before the field existed) and the principal string it was started with (``invoke_agent`` hands none, but a
+    park can store any: a resume never reads it)."""
     return AgentResumeContext(
         session_id=sid,
         workspace_id=f"ws-{sid}",
         chat_id=None,
-        principal="user-1",
+        principal=principal,
         tools=tools,
         initiated_by=initiated_by,
     )
@@ -409,13 +415,14 @@ def _agent_frame(
     tools: list[str],
     depth: int = 0,
     initiated_by: PrincipalRef | None = _ADMIN,
+    principal: str | None = "user-1",
 ) -> AgentFrame:
     return AgentFrame(
         agent_id="agent-sub",
         llm_messages=sub_history,
         tool_call_id=invoke_tcid,
         depth=depth,
-        context=_context(tools=tools, sid=sid, initiated_by=initiated_by),
+        context=_context(tools=tools, sid=sid, initiated_by=initiated_by, principal=principal),
     )
 
 
@@ -1096,6 +1103,60 @@ async def test_a_frame_that_names_no_initiator_resumes_as_its_session_not_as_the
     assert part.error is False and json.loads(part.output) == {"output": "done"}
     assert toolset.ran == ["user_x"], "the resumed subagent ran an admin-only tool in a user's session"
     assert llm._scripts == [], "the subagent's turn went on past the refused call"
+
+
+@pytest.mark.asyncio
+async def test_a_principal_string_stored_in_a_park_is_never_what_a_resumed_subagent_calls_its_tools_with(monkeypatch):
+    """FULL session loop. The park's frame stores a principal STRING (``mallory``): ``run_subagent`` records the one it was started with, and a
+    park can hold any. A tool provider is handed that string with every call (``provider.call(principal=...)`` and ``ctx.principal``) and with every
+    listing, and an MCP toolset picks a user's OAuth credentials by it. An admin's session approves the gated ``rec__user_x``; the resumed subagent's
+    turn goes on with a call to ``rec__admin_x``. Both subagent callables of the worker's services are on the path: the approved re-run goes through
+    the manager ``build_subagent_toolmanager`` rebuilds, and the rest of the turn through ``resume_subagent``. Neither passes a principal string: the
+    session's own turn and every first run use none, and nothing in a park chooses an identity on resume."""
+    sid = "sess-sub-stored-principal"
+    invoke_tcid = "invoke-tc-stored-principal"
+    gated_call_id = "gated-call-stored-principal"
+    tools = ["rec__user_x", "rec__admin_x"]
+
+    toolset = _RoleRecordingToolset()
+    llm = _ScriptedLLM(scripts=[_tool_call_script("rec__admin_x", "next-call"), _final_text_script("done")])
+    registry = _ProviderRegistry(llm=llm, toolset=toolset)
+    resolver = _PoliciesOnlyResolver(
+        [ToolApprovalPolicy(id="p", toolset_id="rec", tool_name="user_x", approval=RequiredApprovalConfig())]
+    )
+    base = _FakeStorageProvider()
+    agent_storage = _AgentStorageProvider(base=base, agent=_agent(tools=tools), provider_row=_provider_row())
+    pool, engine = _build_pool(base_storage=base, agent_storage=agent_storage, registry=registry, resolver=resolver)
+
+    frame = _agent_frame(
+        sid=sid,
+        invoke_tcid=invoke_tcid,
+        sub_history=_sub_history("rec__user_x", gated_call_id),
+        tools=tools,
+        initiated_by=_ADMIN,
+        principal="mallory",
+    )
+    sess = _make_session(
+        sid,
+        leaf=_approval_leaf(sid=sid, gated_call_id=gated_call_id, gated_name="rec__user_x"),
+        leaf_tcid=gated_call_id,
+        invoke_tcid=invoke_tcid,
+        frames=[frame],
+        resume_event_payload={"decision": "approved"},
+        initiated_by=_ADMIN,
+    )
+    await base.get_storage(WorkspaceSession).create(sess)
+    assert ParkedState.from_jsonable(sess.parked_state).frames[0].context.principal == "mallory"
+
+    executor = _wire_session_executor(pool, monkeypatch)
+    await pool._run_engine_session(await _claim(engine, sid))
+
+    part = _injected_tool_result(executor, invoke_tcid)
+    assert part.error is False and json.loads(part.output) == {"output": "done"}
+    assert toolset.ran == ["user_x", "admin_x"], "the approved re-run, then the resumed turn's next call"
+    assert toolset.principals == [None, None], "a provider was handed the principal string the park stored"
+    assert [ctx.principal for ctx in toolset.contexts] == [None, None]
+    assert toolset.listed_for and all(principal is None for principal in toolset.listed_for), toolset.listed_for
 
 
 # ===========================================================================
