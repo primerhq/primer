@@ -15,6 +15,7 @@ one saw nothing. All of them are a 422 now that names the variable, raised befor
 
 from __future__ import annotations
 
+import json
 import re
 
 import pytest
@@ -194,7 +195,25 @@ def test_a_refused_name_is_shown_escaped_so_it_cannot_split_a_log_line(name):
     message = exc.value.message
     assert message.isascii() and message.isprintable(), message
     assert message.count("overrides.env.") == 1 and message.count("sets env.") == 1
-    assert exc.value.problem_extensions["errors"][0]["loc"][-1] == name       # the loc keeps the name as it was sent
+    # The loc keeps the name as it was sent, a lone surrogate as its JSON escape (it has no UTF-8 encoding, ticket 01a1506c)
+    assert exc.value.problem_extensions["errors"][0]["loc"][-1] == re.sub(
+        r"[\ud800-\udfff]", lambda m: f"\\u{ord(m.group(0)):04x}", name
+    )
+
+
+def test_a_lone_surrogate_name_escapes_in_the_loc_so_the_422_encodes():
+    """A lone surrogate has no UTF-8 encoding and the problem body is written UTF-8 (the JSON does not escape it): the raw
+    ``\\ud800`` in the ``loc`` made the 422 itself a 500 (ticket 01a1506c). The ``loc`` shows the name as its JSON escape, and
+    the field path keeps its shape."""
+    for name in ("\ud800", "a\ud800b", "\ud800" * 3):
+        with pytest.raises(EnvNameRefused) as exc:
+            refuse_bad_env_names(_t(), _o({name: "v"}))
+        error = exc.value.problem_extensions["errors"][0]
+        assert error["loc"][:3] == ["body", "overrides", "env"]
+        assert error["loc"][-1] == name.encode("ascii", "backslashreplace").decode("ascii")
+        assert error["type"] == "invalid_env_name"
+        # The whole envelope renders to UTF-8 the way the response does
+        json.dumps({"detail": exc.value.message, **exc.value.problem_extensions}, ensure_ascii=False).encode("utf-8")
 
 
 def test_a_flood_of_bad_names_lists_the_first_few_and_counts_the_rest():
