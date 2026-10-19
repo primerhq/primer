@@ -246,6 +246,29 @@ async def test_bad_arguments_are_refused_and_store_nothing(provider, ctx, world,
     assert await _subscriptions(world) == []
 
 
+async def test_a_wait_on_an_id_the_canvas_does_not_hold_is_refused_and_parks_nothing(provider, ctx, world):
+    """A typo'd id would match no event, so the wait would sit for up to ``timeout_s``: it is refused at once, as ``canvas_get`` does."""
+    result = await provider.call(tool_name="canvas_wait", arguments={"ids": ["ok", "okk"]}, ctx=ctx)
+    assert result.is_error and json.loads(result.output) == {"type": "validation-error", "message": "no element named 'okk'"}
+    assert await _subscriptions(world) == []
+    assert await world.sp.get_event_store().active_cursor_floor() is None, "the cursor the wait pinned is gone too"
+
+
+async def test_a_refused_wait_names_every_unknown_id_once(provider, ctx):
+    result = await provider.call(tool_name="canvas_wait", arguments={"ids": ["nope", "ok", "nada", "nope"]}, ctx=ctx)
+    assert result.is_error and json.loads(result.output) == {"type": "validation-error", "message": "no elements named 'nope', 'nada'"}
+
+
+async def test_a_refused_wait_reads_nothing(provider, ctx, world):
+    """The ids are judged before an unread event is taken: the click is still unread after a wait that named a wrong id."""
+    await _event(world, "ok", "click")
+    result = await provider.call(tool_name="canvas_wait", arguments={"ids": ["ok", "typo"]}, ctx=ctx)
+    assert result.is_error and json.loads(result.output)["message"] == "no element named 'typo'"
+    assert (await world.canvas("s1")).seen_event_seq == 0
+    body = json.loads((await provider.call(tool_name="canvas_wait", arguments={"ids": ["ok"]}, ctx=ctx)).output)
+    assert [e["id"] for e in body["events"]] == ["e1"], "the same click ends a wait that names the right id"
+
+
 async def test_without_a_session_the_wait_refuses(provider):
     unsupported = {"type": "unsupported-surface", "message": "the canvas belongs to a workspace session; this call has none"}
     for ctx in (None, ToolContext(tool_call_id="c", session_id=None, workspace_id=None, chat_id="chat-1")):
