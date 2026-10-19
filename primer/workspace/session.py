@@ -87,7 +87,11 @@ git repo at `.state/`. You can inspect your own history with:
 
 Other sessions may be running concurrently on the same workspace --
 you share the filesystem and shell with them. Use `.state/shared/` to
-coordinate if you need to.
+coordinate if you need to. You can see other sessions in this workspace
+with list_my_sessions and message one with message_session. Use files
+for large outputs, messages for coordination. A user message that starts
+with [from session <id> (agent <agent_id>)] was sent by the agent in that
+session, not by the user.
 
 Large tool outputs are automatically saved to `.tmp/{session_id}/tool_<id>.txt`
 and the tool result will give you the path. Use read with offset/limit
