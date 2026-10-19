@@ -129,7 +129,7 @@ def test_the_artifact_storage_page_is_swept_through_its_register_menu_and_no_pag
     assert surfaces.LEGACY_FORMS["providers/artifact_storage"] == [surfaces.Form("Register provider", surfaces.MODAL, surfaces.KIND_MENU_ITEM)]
     assert "overlay-page providers/artifact_storage" not in surfaces.NO_FORM
     assert "overlay-page providers/artifact_storage / Register provider" in surfaces.expected_surfaces(7)
-    assert len(surfaces.expected_surfaces(7)) == 103   # the Platform profiles page has one form again: + Aggregate (Platform revamp, design 7.1), not New profile; Workspaces, Workspace templates and Setup left the swept views (Task 7); the workers and health overlay pages left with the workers overlay (Revamp 10 Task 5, D4)
+    assert len(surfaces.expected_surfaces(7)) == 101   # the Platform profiles page has one form again: + Aggregate (Platform revamp, design 7.1), not New profile; Workspaces, Workspace templates and Setup left the swept views (Task 7); the workers and health overlay pages left with the workers overlay (Revamp 10 Task 5, D4); the model-profiles overlay page left with the catalog's profiles panel (Revamp 02 Task 8; design 7 and B5, profiles live on the LLM Profiles page)
 
 
 def test_every_platform_create_button_the_console_draws_has_a_form_entry() -> None:
@@ -157,13 +157,13 @@ def test_the_legacy_routes_are_the_ones_the_shell_helper_opens() -> None:
 
 
 def test_the_overlay_grammar_is_swept_section_by_section() -> None:
-    """N5: the semantic-search provider (its own create modal) and the model profiles are overlay sections too; every provider class is a route."""
+    """N5: the semantic-search provider (its own create modal) is an overlay section too; every provider class is a route."""
     classes = re.findall(r'\{ key: "(\w+)", label: ', CATALOG_JSX[CATALOG_JSX.index("const PROVIDER_CLASSES"):CATALOG_JSX.index("const PC_ALL_TYPE_CHIPS")])
-    assert len(classes) == 12, classes
+    assert len(classes) == 11, classes
     swept = {overlay_target(route) for route in surfaces.LEGACY_FORMS}
     for key in classes:
         assert f"providers:{key}" in swept, f"the provider class {key!r} is not swept"
-    assert {"providers:ssp", "providers:model_profile"} <= swept
+    assert {"providers:ssp"} <= swept
 
 
 def test_every_legacy_page_names_the_title_the_console_gives_its_overlay() -> None:
@@ -202,7 +202,7 @@ def test_a_provider_route_waits_for_its_class_to_have_loaded_its_instances_or_sa
     """B2'': ``provider-body-<class>`` is drawn unconditionally (with "No providers match" while the list loads); a loaded crud class shows a card or its empty state. A panel class mounts its own page."""
     assert 'data-testid={`provider-empty-${klass.key}`}' in CATALOG_JSX and 'className="pc-card"' in CATALOG_JSX
     panel = {key for key in re.findall(r'\{ key: "(\w+)", label: [^}]*form: "panel"', CATALOG_JSX[CATALOG_JSX.index("const PROVIDER_CLASSES"):CATALOG_JSX.index("const PC_ALL_TYPE_CHIPS")])}
-    assert panel == {"model_profile", "ssp", "workspace", "channel"}
+    assert panel == {"ssp", "workspace", "channel"}
     assert surfaces.PANEL_CLASSES == panel
     for route in surfaces.LEGACY_FORMS:
         if surfaces.LEGACY_TITLES[route] != "Providers":

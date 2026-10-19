@@ -138,11 +138,6 @@ class TestAllProfilesPanel:
         src = _src()
         assert "allProfiles={allProfiles}" in src
 
-    def test_registered_as_a_provider_catalog_class(self) -> None:
-        catalog = (ROOT / "ui" / "components" / "provider-catalog.jsx").read_text(encoding="utf-8")
-        assert 'key: "model_profile"' in catalog
-        assert "panel: () => window.MP_AllProfilesPanel" in catalog
-
     def test_the_new_class_key_is_not_the_banned_nav_id(self) -> None:
         """TestFoldedIn's ban greps for the literal `id: "model-profiles"`
         (hyphenated, a nav-entry id shape). This class uses a distinct

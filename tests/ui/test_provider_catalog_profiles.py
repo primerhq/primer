@@ -1,9 +1,11 @@
-"""Profiles nest under LLM instances ONLY (amendment M11 profiles note).
+"""Profiles left the provider catalog for the LLM Profiles page (design 7, B5; plan 02 task 8).
 
 ModelProfile is LLM-only by design: the profiles router hardcodes an
 LLMProvider existence check. Embedding, cross-encoder and speech classes
-carry provider + model inline instead, so a profiles panel under any of
-them would be an unbacked surface.
+carry provider + model inline instead, so a profiles surface under any of
+them would be an unbacked surface. The catalog keeps only the LLM class's
+profiles flag (the per-card count badge); the browse/create/edit panel is
+pinned where it lives now (plan 03).
 """
 
 from __future__ import annotations
@@ -24,23 +26,20 @@ def test_only_the_llm_class_is_marked_as_carrying_profiles() -> None:
     assert marked == ["llm"], f"profiles wired to non-LLM classes: {marked}"
 
 
-def test_the_profiles_panel_is_gated_on_that_flag() -> None:
+def test_the_catalog_has_no_profiles_panel() -> None:
+    """The panel left the catalog for the LLM Profiles page (design 7, B5; plan 02 task 8): no panel component, no
+    "New profile" create affordance, and no card grid or modal of the profiles module mounted here (plan 03 pins the
+    panel where it lives now)."""
     src = _read("components/provider-catalog.jsx")
-    assert "klass.profiles" in src
-    assert "PC_ProfilesPanel" in src
+    for name in ("PC_ProfilesPanel", "New profile", "MP_ProfilesGrid", "MP_ProfileModal"):
+        assert name not in src, f"{name} is still in the catalog"
 
 
-def test_the_panel_reuses_the_existing_profile_modal() -> None:
-    """The standalone page folds in, but the editor is reused, not
-    reimplemented."""
+def test_model_profile_is_not_a_provider_type() -> None:
+    """The model_profile class chip left PROVIDER_CLASSES with the panel: profiles are browsed and created on the LLM
+    Profiles page (design 7, B5), not under a provider class."""
     src = _read("components/provider-catalog.jsx")
-    assert "window.MP_ProfileModal" in src
-
-
-def test_profiles_are_read_per_selected_llm_instance() -> None:
-    src = _read("components/provider-catalog.jsx")
-    assert "/models" in src
-    assert "discovered_models" in src or "_discover_models" in src
+    assert 'key: "model_profile"' not in src
 
 
 def test_no_speech_class_offers_a_profile_affordance() -> None:
@@ -48,23 +47,6 @@ def test_no_speech_class_offers_a_profile_affordance() -> None:
     for key in ('key: "stt"', 'key: "tts"', 'key: "embedding"', 'key: "cross_encoder"'):
         entry = src[src.index(key): src.index(key) + 200]
         assert "profiles" not in entry, f"{key} must not carry a profiles flag"
-
-
-def test_the_panel_lists_profile_rows_not_just_model_names() -> None:
-    """A profile is the deletable entity; a bare model-name list gives an
-    operator nothing to act on.
-
-    RETARGET (platform wave P4): the panel used to render a bare <ul> of
-    rows itself; it now delegates rendering to MP_ProfileCard/
-    MP_ProfilesGrid (model-profiles.jsx), so model_name lives there, not
-    in the panel's own source. The panel's own responsibility - fetching
-    /model_profiles and filtering to this provider - is unchanged.
-    """
-    panel_src = _read("components/provider-catalog.jsx")
-    assert "/model_profiles" in panel_src
-    assert "r.provider_id === providerId" in panel_src or "provider_id ===" in panel_src
-    card_src = _read("components/model-profiles.jsx")
-    assert "model_name" in card_src
 
 
 def test_profiles_can_be_deleted_from_the_panel() -> None:
