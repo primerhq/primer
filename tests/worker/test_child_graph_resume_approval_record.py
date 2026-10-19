@@ -122,7 +122,7 @@ def _session(frames: list, *, tool_name: str = "_approval") -> WorkspaceSession:
 
 @pytest.fixture
 def pool(monkeypatch) -> _Pool:
-    async def deliver(frames, leaf, payload, services):
+    async def deliver(frames, leaf, payload, services, **kwargs):
         return continuation.Deliver(tool_result=ToolResultPart(id="agent-tc", output="ok"))
 
     monkeypatch.setattr(continuation, "resume_continuation", deliver)

@@ -583,7 +583,14 @@ async def resume_graph_continuation(
     )
     frames = frames_from_jsonable(list(ay.get("frames") or []))
     leaf = Yielded.from_jsonable(ay["leaf"])
-    outcome = await resume_continuation(frames, leaf, payload, services, **({"gate_id": gate_id} if gate_id is not None else {}))
+    outcome = await resume_continuation(
+        frames,
+        leaf,
+        payload,
+        services,
+        leaf_tool_call_id=ay.get("tool_call_id"),
+        **({"gate_id": gate_id} if gate_id is not None else {}),
+    )
     if isinstance(outcome, Repark):
         return _ContResult(
             repark_outcome=pool._repark_graph_continuation(
@@ -620,12 +627,14 @@ def repark_graph_continuation(pool: "WorkerPool", session, parked, checkpoint, a
         if e.get("node_id") == ay.get("node_id") and e.get("event_key") == ay.get("event_key"):
             e["frames"] = frames_to_jsonable(list(outcome.frames))
             e["leaf"] = leaf.to_jsonable()
-            # The node still awaits the SAME invoke_agent call, but the
-            # deeper leaf's event/metadata moved - re-point the entry's
-            # await key so the park + drain selection track the new leaf.
+            # The node still awaits the same invoke_agent result through its
+            # outer frame, while this pending entry follows the deeper leaf.
+            # Re-point its event, metadata, and leaf call id together.
             e["event_key"] = leaf.event_key
             e["tool_name"] = leaf.tool_name
             e["resume_metadata"] = dict(leaf.resume_metadata or {})
+            if outcome.tool_call_id is not None:
+                e["tool_call_id"] = outcome.tool_call_id
             break
 
     now = datetime.now(timezone.utc)
@@ -635,7 +644,7 @@ def repark_graph_continuation(pool: "WorkerPool", session, parked, checkpoint, a
         llm_messages=[],
         turn_no=session.turn_no,
         started_at=now,
-        tool_call_id=parked.tool_call_id,
+        tool_call_id=outcome.tool_call_id or parked.tool_call_id,
         graph_checkpoint=new_ck,
         # 01a0690a: the continuation walk mints no new tool-call events
         # (it operates purely on the frames/leaf stack) -- nothing to

@@ -114,11 +114,13 @@ class Repark:
     """The continuation raised a fresh yield and must be re-parked.
 
     ``frames`` is the reconstructed stack (root-first) the worker re-parks,
-    and ``leaf`` is the new innermost yield to await.
+    ``leaf`` is the new innermost yield to await, and ``tool_call_id`` is the
+    exact pending call that raised that leaf.
     """
 
     frames: list
     leaf: Any
+    tool_call_id: str | None = None
 
 
 # ===========================================================================
@@ -133,6 +135,7 @@ async def resume_continuation(
     services: InvocationServices,
     fired_key: str | None = None,
     gate_id: str | None = None,
+    leaf_tool_call_id: str | None = None,
 ) -> Deliver | Repark:
     """Resolve ``leaf`` at the innermost frame, then unwind the stack.
 
@@ -152,6 +155,10 @@ async def resume_continuation(
 
     ``gate_id`` is the gate the decision named, read from the RAW wake (the ``payload`` here is the classified one, whose ``__yield_gate_id__`` is stripped). A child graph's sibling gates can share the key and
     a gated inner call runs with the approval bypassed, so the child resumes only the entry of that gate (security review of #724, round 3, B1-r2a). It is handed on only when there is one.
+
+    ``leaf_tool_call_id`` is the exact pending call the parked leaf belongs to.
+    It differs from an :class:`~primer.worker.frames.AgentFrame`'s own
+    ``tool_call_id``, which names the parent's ``invoke_agent`` call.
     """
     assert frames, "resume_continuation requires a non-empty frame stack"
 
@@ -160,10 +167,19 @@ async def resume_continuation(
     #    a GraphFrame defers to the child graph's own resume. Either returns a
     #    Completed (the leaf answer / final value) or a Reparked.
     inner = frames[-1]
-    outcome = await inner.resume_leaf(leaf, payload, services, fired_key=fired_key, **({"gate_id": gate_id} if gate_id is not None else {}))
+    leaf_kwargs = {"fired_key": fired_key}
+    if gate_id is not None:
+        leaf_kwargs["gate_id"] = gate_id
+    if leaf_tool_call_id is not None:
+        leaf_kwargs["leaf_tool_call_id"] = leaf_tool_call_id
+    outcome = await inner.resume_leaf(leaf, payload, services, **leaf_kwargs)
     if not outcome.completed:  # Reparked
         ny = outcome.new_yield
-        return Repark(frames=list(frames[:-1]) + list(ny.frames or []), leaf=ny.yielded)
+        return Repark(
+            frames=list(frames[:-1]) + list(ny.frames or []),
+            leaf=ny.yielded,
+            tool_call_id=getattr(ny, "tool_call_id", None),
+        )
     result = outcome.value
 
     # 2. Unwind the REST: innermost-but-one -> outermost.
@@ -171,7 +187,11 @@ async def resume_continuation(
         outcome = await frames[i].resume(result, services)
         if not outcome.completed:  # Reparked
             ny = outcome.new_yield
-            return Repark(frames=list(frames[:i]) + list(ny.frames or []), leaf=ny.yielded)
+            return Repark(
+                frames=list(frames[:i]) + list(ny.frames or []),
+                leaf=ny.yielded,
+                tool_call_id=getattr(ny, "tool_call_id", None),
+            )
         result = outcome.value
 
     return Deliver(tool_result=result)
