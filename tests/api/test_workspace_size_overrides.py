@@ -8,6 +8,8 @@ nothing is created, no row and no container. Kubernetes takes all three sizes an
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 from httpx import ASGITransport
@@ -336,6 +338,44 @@ async def test_a_name_with_a_newline_is_shown_escaped_in_the_message(client, bac
     assert "\n" not in body["detail"] and "'a\\nb'" in body["detail"], body["detail"]
     assert body["extensions"]["errors"][0]["loc"] == ["body", "overrides", "env", "a\nb"]
     _assert_nothing_built(backend_calls)
+
+
+async def test_a_lone_surrogate_env_name_in_the_overrides_is_a_422_that_encodes(client, backend_calls, sp):
+    """A ``\\ud800`` in the name has no UTF-8 encoding: the 422's own ``loc`` carried the raw name and the body failed to
+    encode, so the refusal answered 500 (ticket 01a1506c). The ``loc`` shows the name as its JSON escape and the body is valid
+    JSON. The request is sent pre-encoded: the httpx ``json=`` shorthand cannot encode a lone surrogate itself."""
+    body = json.dumps({"template_id": "tpl-loc", "overrides": {"env": {"\ud800": "x"}}}).encode("utf-8")
+    r = await client.post("/v1/workspaces", content=body, headers={"Content-Type": "application/json"})
+
+    assert r.status_code == 422, r.text
+    parsed = r.json()     # the body is valid JSON (it was not a 500)
+    assert parsed["type"] == "/errors/validation-error"
+    assert parsed["extensions"]["errors"] == [{
+        "loc": ["body", "overrides", "env", "\\ud800"], "msg": _INVALID_ENV_NAME, "type": "invalid_env_name",
+    }]
+    assert parsed["detail"] == f"overrides.env.'\\ud800': {_INVALID_ENV_NAME}"
+    _assert_nothing_built(backend_calls)
+    assert await _workspace_rows(sp) == []
+
+
+async def test_a_stored_template_env_with_a_lone_surrogate_is_a_422_that_encodes(client, backend_calls, sp):
+    """The same refusal through the template's stored env (seeded like a row written before the rule): the body must encode
+    too, and the message names the template and the escaped variable, never the value."""
+    await sp.get_storage(WorkspaceTemplate).create(WorkspaceTemplate(
+        id="tpl-surrogate", provider_id="k3s", description="d", backend=KubernetesTemplateConfig(image="rt:1"),
+        env={"\ud800": SecretStr("the-secret-value")},
+    ))
+
+    r = await client.post("/v1/workspaces", json={"template_id": "tpl-surrogate"})
+
+    assert r.status_code == 422, r.text
+    body = r.json()
+    assert body["type"] == "/errors/validation-error"
+    assert body["detail"] == f"template 'tpl-surrogate' sets env.'\\ud800': {_INVALID_ENV_NAME}"
+    assert "errors" not in body["extensions"]      # the name is stored in the template, not sent in this request: no `loc`
+    assert "the-secret-value" not in r.text
+    _assert_nothing_built(backend_calls)
+    assert await _workspace_rows(sp) == []
 
 
 @pytest.mark.parametrize("template_id", ["tpl-loc", "tpl-dock", "tpl-k3s"])

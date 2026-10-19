@@ -17,10 +17,11 @@ badly:
   them, so a person who set one saw nothing happen except a line in the log. Now it is refused, and the message names it.
 
 Both are a 422 (:class:`EnvNameRefused`), raised by ``WorkspaceRegistry.materialise`` BEFORE any backend runs, so nothing is
-created. A name in the request (``overrides.env``) comes with a ``loc`` (``body.overrides.env.<name>``, the name as it was sent)
-like any validation error; a name stored in the template has no place in the request, so the message names the template and the
-variable instead. In the message a name is shown through ``ascii()``: the message is logged and the name is the caller's own input.
-Never a value: a value may be a secret.
+created. A name in the request (``overrides.env``) comes with a ``loc`` (``body.overrides.env.<name>``, the name as it was sent, a
+lone surrogate shown as its JSON escape because it has no UTF-8 encoding and the 422 body is written UTF-8) like any validation
+error; a name stored in the template has no place in the request, so the message names the template and the variable instead. In
+the message a name is shown through ``ascii()``: the message is logged and the name is the caller's own input. Never a value: a
+value may be a secret.
 """
 
 from __future__ import annotations
@@ -83,13 +84,26 @@ def _shown(name: str) -> str:
     return head if len(head) <= _SHOWN_MAX else head[: _SHOWN_MAX - 3] + "..."
 
 
+#: A lone surrogate (``\ud800``-``\udfff``) the caller sent as a name. It has no UTF-8 encoding, and the problem body is written
+#: UTF-8 (``ensure_ascii=False``, so the JSON does not escape it): the raw character in the 422's ``loc`` made the refusal itself
+#: a 500 (ticket 01a1506c).
+_SURROGATES = re.compile(r"[\ud800-\udfff]")
+
+
+def _escaped(name: str) -> str:
+    """The name as the problem envelope's ``loc`` shows it: a lone surrogate as its JSON escape (``\\ud800``), every other character
+    as it was sent. Only the surrogates are escaped - they are the only characters the response cannot encode - so a sent name
+    comes back recognisable and the field path keeps its shape (``overrides.env.<name>``)."""
+    return _SURROGATES.sub(lambda m: f"\\u{ord(m.group(0)):04x}", name)
+
+
 class EnvNameRefused(ValidationError):
     """The 422 for an environment variable name a workspace create refuses.
 
     ``request_items`` are the names in ``overrides.env`` and ``template_items`` those in the template's ``env``, each
     ``(name, error type)``. ``message`` lists the first :data:`MAX_LISTED` (the request's first, because the person can fix those
-    now) and counts the rest; ``problem_extensions`` has one ``errors`` entry per listed request name, with its ``loc``, and
-    nothing for the template's.
+    now) and counts the rest; ``problem_extensions`` has one ``errors`` entry per listed request name, with its ``loc`` (a lone
+    surrogate of the name as its JSON escape, so the 422 body always encodes), and nothing for the template's.
     """
 
     def __init__(
@@ -104,7 +118,7 @@ class EnvNameRefused(ValidationError):
         listed_request = self.request_items[:MAX_LISTED]
         listed_template = self.template_items[: MAX_LISTED - len(listed_request)]
         self._errors = [
-            {"loc": ["body", "overrides", "env", name], "msg": _SENTENCES[kind], "type": kind}
+            {"loc": ["body", "overrides", "env", _escaped(name)], "msg": _SENTENCES[kind], "type": kind}
             for name, kind in listed_request
         ]
         parts = [f"overrides.env.{_shown(name)}: {_SENTENCES[kind]}" for name, kind in listed_request]
