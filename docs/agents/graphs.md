@@ -39,9 +39,14 @@ Graphs can pause mid-run to wait for a human. A graph parks the whole
 run (not just the agent inside one node) when it hits a
 human-in-the-loop point: a `tool_call` node whose tool is the
 value-yielding `system__ask_user`, an `agent` node that calls
-`ask_user` during its turn, or a `tool_call` that trips a tool-approval
+`ask_user` during its turn, an `agent` node whose turn calls a tool a
+tool-approval policy gates, or a `tool_call` that trips a tool-approval
 gate. The park is checkpointed to storage, so the run holds no compute
-while it waits and resumes later when the human answers. Multiple nodes
+while it waits and resumes later when the human answers. (When the
+human approves the gated call of an `agent` node, the node runs that
+tool and its model reads the tool's real result; when the human rejects
+it, the model reads a rejection, an error result, never an empty
+success. See [tool-approval](tool-approval.md).) Multiple nodes
 in one superstep can park at once (multi-event park): the run collects
 every pending human-interaction node, parks on all of them, and
 re-parks until the human has answered each one, so concurrent branches
