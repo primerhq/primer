@@ -1565,8 +1565,10 @@ class Workspace(Identifiable):
         min_length=1,
         description=(
             "Id of the WorkspaceTemplate this workspace was materialised "
-            "from. Snapshot — if the template definition changes later "
-            "the workspace keeps a reference to the original id."
+            "from. The id is live, not a copy of the template: a Docker or "
+            "Kubernetes workspace reads the template again whenever it is "
+            "re-attached, so a template a workspace was made from cannot "
+            "be deleted (409 template_in_use) until the workspace is."
         ),
     )
     provider_id: str = Field(
