@@ -338,6 +338,7 @@ async def resume_engine_session(pool: "WorkerPool", engine_lease, session):
                 resume_payload.payload,
                 services,
                 fired_key=fired_key,
+                leaf_tool_call_id=parked.tool_call_id,
                 **({"gate_id": wake_gate} if wake_gate is not None else {}),
             )
         except Exception as exc:  # noqa: BLE001 - fail-closed synthesis
@@ -735,10 +736,10 @@ def repark_continuation(pool: "WorkerPool", session, parked, outcome):
     A frame's resume (or the leaf re-dispatch) raised a fresh yield
     mid-unwind: the continuation walk returns a :class:`Repark` carrying the
     reconstructed (root-first) frame stack + the new innermost leaf. Persist
-    a fresh :class:`ParkedState` whose ``frames`` is the reconstructed stack
-    and whose ``yielded`` is the new leaf, preserving the SESSION turn's
-    ``llm_messages`` + ``tool_call_id`` so the eventual completion pairs
-    correctly.
+    a fresh :class:`ParkedState` whose ``frames`` is the reconstructed stack,
+    whose ``yielded`` is the new leaf, and whose ``tool_call_id`` is that
+    leaf's exact pending call. The session turn's own pending call remains on
+    the outer frame, where final delivery reads it.
     """
     from datetime import timedelta
     from primer.int.claim import ParkRequest, ReleaseOutcome
@@ -759,7 +760,10 @@ def repark_continuation(pool: "WorkerPool", session, parked, outcome):
         llm_messages=parked.llm_messages,
         turn_no=session.turn_no,
         started_at=now,
-        tool_call_id=(inner.node_tcid or parked.tool_call_id) if child_graph else parked.tool_call_id,
+        tool_call_id=(
+            outcome.tool_call_id
+            or ((inner.node_tcid or parked.tool_call_id) if child_graph else parked.tool_call_id)
+        ),
         graph_checkpoint=inner.checkpoint if child_graph else None,
         # 01a068ea-dc95: the leaf re-yielded, but the DURABLE TOOL_CALL
         # record this eventual TOOL_RESULT answers is still the outer

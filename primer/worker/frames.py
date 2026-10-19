@@ -218,7 +218,13 @@ class AgentFrame:
         )
 
     async def resume_leaf(
-        self, leaf: Any, payload: Any, services: Any, fired_key: str | None = None, gate_id: str | None = None,
+        self,
+        leaf: Any,
+        payload: Any,
+        services: Any,
+        fired_key: str | None = None,
+        gate_id: str | None = None,
+        leaf_tool_call_id: str | None = None,
     ) -> "FrameOutcome":
         """Resolve this frame's OWN leaf when it is the innermost frame.
 
@@ -240,7 +246,17 @@ class AgentFrame:
         :class:`~primer.model.chat.ToolResultPart` for the leaf, which is
         threaded straight into :meth:`resume` to continue the subagent turn.
         """
-        leaf_result = await apply_leaf(self, leaf, payload, services)
+        leaf_result = await apply_leaf(
+            self,
+            leaf,
+            payload,
+            services,
+            **(
+                {"leaf_tool_call_id": leaf_tool_call_id}
+                if leaf_tool_call_id is not None
+                else {}
+            ),
+        )
         if isinstance(leaf_result, Reparked):
             ny = leaf_result.new_yield
             ny.frames = [self] + list(getattr(ny, "frames", None) or [])
@@ -377,7 +393,13 @@ class GraphFrame:
         return self.node_tcid, getattr(leaf, "event_key", None)
 
     async def resume_leaf(
-        self, leaf: Any, payload: Any, services: Any, fired_key: str | None = None, gate_id: str | None = None,
+        self,
+        leaf: Any,
+        payload: Any,
+        services: Any,
+        fired_key: str | None = None,
+        gate_id: str | None = None,
+        leaf_tool_call_id: str | None = None,
     ) -> "FrameOutcome":
         """Resolve this graph's OWN leaf when it is the innermost frame.
 
@@ -400,6 +422,7 @@ class GraphFrame:
         final text under an ``"output"`` key. A child that ends ``failed``
         completes with an ERROR result instead (:meth:`_failed_result`).
         """
+        del leaf_tool_call_id
         graph = await services.resolve_graph(self.graph_id)
         child = await services.build_child_graph_executor(graph, self.gsid)
         # WHICH gate of the child this reply answers: two siblings of the child's superstep can share ``node_tcid``, and a raw id alone resumed every one of
@@ -604,6 +627,8 @@ async def apply_leaf(
     leaf: Any,
     payload: Any,
     services: Any,
+    *,
+    leaf_tool_call_id: str | None = None,
 ) -> "FrameOutcome":
     """Apply a resume ``payload`` to the leaf yield inside ``inner_frame``.
 
@@ -638,7 +663,9 @@ async def apply_leaf(
     ``subscribe_to_trigger``)
         Look up the tool's resume hook by name, run it (awaiting if it returns
         a coroutine), and wrap its output in a :class:`ToolResultPart` keyed by
-        the innermost frame's pending ``tool_call_id``.
+        the leaf tool's own pending ``tool_call_id``. The frame's
+        ``tool_call_id`` belongs to its parent's ``invoke_agent`` call and is
+        only used when the completed subagent result unwinds outward.
     """
     if leaf.tool_name == "_approval":
         metadata = leaf.resume_metadata or {}
@@ -685,12 +712,13 @@ async def apply_leaf(
         )
 
     hook = get_resume_hook(leaf.tool_name)
+    pending_call_id = leaf_tool_call_id or inner_frame.tool_call_id
     hook_result = hook(
         leaf.resume_metadata,
         payload,
         ResumeContext(
             tool_name=leaf.tool_name,
-            tool_call_id=inner_frame.tool_call_id,
+            tool_call_id=pending_call_id,
             # The session being resumed and the registry's toolset resolver,
             # as the agent-session resume builds them. ``AgentFrame`` carries
             # neither, so they come from the services bundle (``None`` only
@@ -702,7 +730,7 @@ async def apply_leaf(
     if asyncio.iscoroutine(hook_result):
         hook_result = await hook_result
     return ToolResultPart(
-        id=inner_frame.tool_call_id,
+        id=pending_call_id,
         output=hook_result.output,
         error=hook_result.is_error,
     )

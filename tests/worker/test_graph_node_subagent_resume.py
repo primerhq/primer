@@ -156,11 +156,12 @@ async def test_continuation_deliver_builds_node_agent_tool_result(monkeypatch):
     delivered = ToolResultPart(id=_INVOKE_TCID, output='{"output": "blue"}',
                                error=False)
 
-    async def _fake_walk(frames, leaf, payload, services):
+    async def _fake_walk(frames, leaf, payload, services, **kwargs):
         # The walk receives the rehydrated frames + leaf from the checkpoint.
         assert len(frames) == 1 and frames[0].tool_call_id == _INVOKE_TCID
         assert isinstance(leaf, Yielded) and leaf.tool_name == "ask_user"
         assert payload == {"answer": "blue"}
+        assert kwargs["leaf_tool_call_id"] == _LEAF_TCID
         return Deliver(tool_result=delivered)
 
     monkeypatch.setattr(continuation_mod, "resume_continuation", _fake_walk)
@@ -193,8 +194,9 @@ async def test_continuation_repark_reparks_graph_session(monkeypatch):
     new_leaf = Yielded(tool_name="ask_user", event_key="ask_user:s:leaf2",
                        resume_metadata={"prompt": "again?"})
 
-    async def _fake_walk(frames, leaf, payload, services):
-        return Repark(frames=[_frame()], leaf=new_leaf)
+    async def _fake_walk(frames, leaf, payload, services, **kwargs):
+        assert kwargs["leaf_tool_call_id"] == _LEAF_TCID
+        return Repark(frames=[_frame()], leaf=new_leaf, tool_call_id="leaf2")
 
     monkeypatch.setattr(continuation_mod, "resume_continuation", _fake_walk)
 
@@ -214,8 +216,10 @@ async def test_continuation_repark_reparks_graph_session(monkeypatch):
     new_ck = outcome.park.parked_state["graph_checkpoint"]
     entry = new_ck["pending_agent_yields"][0]
     assert entry["event_key"] == "ask_user:s:leaf2"
+    assert entry["tool_call_id"] == "leaf2"
     assert entry["leaf"]["event_key"] == "ask_user:s:leaf2"
     assert len(entry["frames"]) == 1
+    assert outcome.park.parked_state["tool_call_id"] == "leaf2"
     # The session turn is preserved; the lease is dropped (parked).
     assert outcome.drop_lease is True
     assert outcome.park.parked_at is not None

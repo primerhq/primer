@@ -125,6 +125,27 @@ class _RecordingScriptedLLM(_ScriptedLLM):
         return super().stream(model=model, messages=messages, **kwargs)
 
 
+class _IdValidatingScriptedLLM(_RecordingScriptedLLM):
+    """Reject a request whose tool_result has no matching tool_use."""
+
+    def stream(self, *, model, messages, **kwargs):  # noqa: ANN001
+        tool_uses: set[str] = set()
+        for message in messages:
+            if message.role == "assistant":
+                tool_uses.update(
+                    part.id
+                    for part in message.parts
+                    if isinstance(part, ToolCallPart)
+                )
+            elif message.role == "tool":
+                for part in message.parts:
+                    if isinstance(part, ToolResultPart) and part.id not in tool_uses:
+                        raise AssertionError(
+                            f"tool_result {part.id!r} has no matching tool_use"
+                        )
+        return super().stream(model=model, messages=messages, **kwargs)
+
+
 class _PlainToolset:
     """Toolset 't1' with a non-yielding tool 'do_it'."""
 
@@ -1402,39 +1423,20 @@ async def test_subagent_call_tool_gate_whose_inner_tool_pauses_parks_the_chain_a
     assert part.error is False and json.loads(part.output) == {"output": "sub done"}, "the answer unwound to the session's own call"
 
 
-#: The reason of the strict xfails below (one defect, three shapes). The lead files the ticket from the tests' path.
-_WRONG_CALL_ID = (
-    "held (ticket: a paused tool's answer inside a subagent is keyed to the wrong call id): apply_leaf's yielding-tool branch keys the answer by "
-    "the frame's tool_call_id, the id of the call that STARTED the agent (its parent's invoke_agent call), not by the call the agent is waiting on, "
-    "so a provider that checks tool_use ids (Anthropic does) would reject the resumed request"
-)
-
-
 @pytest.mark.asyncio
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_WRONG_CALL_ID)
 @_PAUSING_INNER_TOOLS
 async def test_a_paused_tools_answer_inside_a_subagent_is_keyed_to_the_call_the_agent_waits_on(monkeypatch, inner_tool):
-    """BEHAVIOUR a fix must reach: the model request that resumes the agent answers the tool_use the agent is waiting on. Today the answer to
-    ``ask_user`` is keyed by the frame's own ``tool_call_id``, the id of the call that STARTED the agent (``invoke-tc-pause``, the session's
-    invoke_agent call, for the subagent; ``call-tool-pause``, the subagent's call_tool call, for its child), instead of the call that paused
-    (``call-tool-pause`` for the subagent, ``child-ask`` for its child). Pre-existing: it is the same for a DIRECT ask_user inside a subagent
-    (the next test), which is on main."""
+    """The resumed request answers the exact tool_use that paused."""
     run = await _call_tool_gate_whose_inner_tool_pauses(monkeypatch, inner_tool=inner_tool)
 
     assert not _wrongly_answered(run.llm), _wrongly_answered(run.llm)
 
 
-@pytest.mark.asyncio
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_WRONG_CALL_ID)
-async def test_a_direct_ask_user_answer_inside_a_subagent_is_keyed_to_the_call_the_agent_waits_on(monkeypatch):
-    """The same defect without ``call_tool``, as it is on main (Scenario 2 pins that the delegation finishes; this pins the id the answer is
-    given under): the subagent called ``ask_user`` itself, and the answer is keyed by the frame's ``tool_call_id`` (the session's invoke_agent
-    call), not by the ask_user call the subagent is waiting on."""
+async def _run_direct_ask_user_id_case(monkeypatch, llm):
     sid = "sess-sub-ask-ids"
     invoke_tcid = "invoke-tc-ids"
     ask_call_id = "ask-call-ids"
 
-    llm = _RecordingScriptedLLM(scripts=[_final_text_script("your name is Alice")])
     registry = _ProviderRegistry(llm=llm, toolset=_PlainToolset())
     base = _FakeStorageProvider()
     agent_storage = _AgentStorageProvider(base=base, agent=_agent(tools=["t1__do_it"]), provider_row=_provider_row())
@@ -1451,11 +1453,32 @@ async def test_a_direct_ask_user_answer_inside_a_subagent_is_keyed_to_the_call_t
             resume_event_payload={"response": "Alice"},
         )
     )
-    _wire_session_executor(pool, monkeypatch)
+    executor = _wire_session_executor(pool, monkeypatch)
 
     await pool._run_engine_session(await _claim(engine, sid))
+    return executor
+
+
+@pytest.mark.asyncio
+async def test_a_direct_ask_user_answer_inside_a_subagent_is_keyed_to_the_call_the_agent_waits_on(monkeypatch):
+    """A direct ask_user answer uses the subagent's pending call id."""
+    llm = _RecordingScriptedLLM(scripts=[_final_text_script("your name is Alice")])
+    await _run_direct_ask_user_id_case(monkeypatch, llm)
 
     assert not _wrongly_answered(llm), _wrongly_answered(llm)
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_subagent_request_passes_a_provider_that_validates_tool_result_ids(monkeypatch):
+    """A provider may reject a tool_result that names no prior tool_use."""
+    llm = _IdValidatingScriptedLLM(
+        scripts=[_final_text_script("your name is Alice")]
+    )
+    executor = await _run_direct_ask_user_id_case(monkeypatch, llm)
+
+    part = _injected_tool_result(executor, "invoke-tc-ids")
+    assert part.error is False
+    assert json.loads(part.output) == {"output": "your name is Alice"}
 
 
 # ===========================================================================

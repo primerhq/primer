@@ -40,7 +40,9 @@ def _nested_entry(node: str, gid: str) -> dict:
 
 def _repark(answered: dict, checkpoint: dict, new_key: str):
     new_leaf = Yielded(tool_name="_approval", event_key=new_key, resume_metadata={"gate_id": "c" * 32})
-    outcome = SimpleNamespace(frames=[], leaf=new_leaf)
+    # A real continuation outcome is a Repark (frames, leaf, tool_call_id); the
+    # stand-in carries the same three so the re-park's leaf call id reads work.
+    outcome = SimpleNamespace(frames=[], leaf=new_leaf, tool_call_id=None)
     release = repark_graph_continuation(
         None, SimpleNamespace(turn_no=1), SimpleNamespace(tool_call_id=RAW, node_tool_call_seq=None), checkpoint, answered, outcome,
     )
