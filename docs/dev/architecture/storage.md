@@ -165,7 +165,12 @@ table name is derived from `model_class.__name__.lower()`, so a class
 named `LLMProvider` declared inside the migration addresses the same
 table; `extra="allow"` then keeps every field the migration does not care
 about intact across the read-modify-write. `m002_model_profiles.py` is the
-worked example.
+worked example. `m010_default_workspace.py` is the one migration that
+delegates instead of rewriting rows itself: it calls
+`primer.bootstrap.prime.adopt_legacy_default_workspace`, the same function
+the ensure pass calls (a baselined database never runs the migration, so
+the rule lives in one function both call), and changes nothing on a fresh
+install.
 
 ### The `document_content` table
 
