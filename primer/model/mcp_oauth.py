@@ -4,7 +4,7 @@ A toolset has ONE sign-in, shared by every agent that uses it, and three kinds o
 
 * :class:`McpOAuthTokenSet`: the tokens (id = the toolset id), their status and the cross-process refresh lease;
 * :class:`McpOAuthClient`: the client a dynamic registration made at the authorization server (id = the toolset id);
-* :class:`McpOAuthPendingSignIn`: one started browser sign-in, waiting for the provider's redirect (id = the ``state`` value).
+* :class:`McpOAuthPendingSignIn`: one started browser sign-in, waiting for the provider's redirect (stored under a hash of its ``state`` value).
 
 Every secret in them is CIPHERTEXT: the ``*_enc`` fields hold what :class:`primer.common.secret_box.SecretBox` sealed, held in a ``SecretStr`` so that a
 serialisation, a log line or a ``repr`` shows a mask. Plaintext exists only in memory, between the store's ``unseal`` and the request it goes into.
@@ -93,7 +93,11 @@ class McpOAuthClient(Identifiable):
 
 
 class McpOAuthPendingSignIn(Identifiable):
-    """A browser sign-in that was started and not yet finished. The id is the `state` value: 256 random bits, single use, valid for ten minutes."""
+    """A browser sign-in that was started and not yet finished, for one ``state`` value: 256 random bits, single use, valid for ten minutes.
+
+    The row is built with the state as its id and STORED under the SHA-256 of it (:func:`primer.toolset.oauth.store.pending_key`, applied by the store),
+    so the state, a capability while the sign-in is pending, is never a row id that storage code could print.
+    """
 
     toolset_id: str = Field(..., description="The toolset the sign-in is for.")
     code_verifier_enc: SecretStr = Field(..., description="The PKCE code verifier, sealed.")
