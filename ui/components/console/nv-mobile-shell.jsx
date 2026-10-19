@@ -1245,6 +1245,13 @@ function NV_MobilePlatHead(props) {
   );
 }
 
+// The provider type a pending link opens, or null for none. A type belongs to Providers alone, and only one the grammar lists (types, from NV_platProviderTypes)
+// opens the catalogue: a link to Providers with any other type, or none, opens its list of types, and a type on any other nav means nothing. A function of its
+// own so that a test can hold the rule: the page drawn comes from the open nav, so a type wrongly kept for another nav would never show on screen.
+function NV_mobilePlatSub(link, types) {
+  return link.kind === "providers" && link.sub && types.indexOf(link.sub) >= 0 ? link.sub : null;
+}
+
 // The Platform sections (design 4.3; seam I-2 on phones): the SAME entries the
 // desktop sidebar draws, every id of NV_PLAT_GROUPS (nv-platform.jsx) for which
 // NV_platNavAvailable is true, labelled by NV_platNavLabel. Four kinds of page
@@ -1320,8 +1327,7 @@ function NV_MobilePlatform(props) {
   React.useEffect(function () {
     var want = props.pending;
     if (!want) return;
-    // A type belongs to Providers alone, and only one the grammar lists opens the catalogue; any other link to Providers opens its list of types.
-    var wantSub = want.kind === "providers" && want.sub && types.indexOf(want.sub) >= 0 ? want.sub : null;
+    var wantSub = NV_mobilePlatSub(want, types);
     if (seen.current !== want) {
       seen.current = want;
       // Every link to a type starts its catalogue over, the type it is already on included: the way back to that type's cards from one of its

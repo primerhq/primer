@@ -652,8 +652,26 @@ def test_a_pending_type_the_grammar_does_not_list_opens_the_list_of_types(app) -
 
 
 def test_a_type_belongs_to_providers_alone(app) -> None:
+    """The page that opens is drawn from the open nav, so a link to Agents that carries a type shows Agents whether or not the type is dropped: what is on screen
+    cannot tell. The rule is held where it is decided, ``NV_mobilePlatSub``: with the ``kind`` check gone, the Agents and Web rows below answer a type."""
     app.mount("PlatformHost", '{ initial: { kind: "agents", id: null, sub: "tts" } }')
     assert app.has("nv-mob-plat-page:agents") and not app.has("catalog-stand-in")
+    types = app.data("NV_platProviderTypes()")
+    assert types == TYPES
+    answers = {
+        "a listed type on Providers": ({"kind": "providers", "id": None, "sub": "tts"}, "tts"),
+        "a type the grammar does not list": ({"kind": "providers", "id": None, "sub": "bogus"}, None),
+        "Providers with no type": ({"kind": "providers", "id": None, "sub": None}, None),
+        "Providers, the type left out": ({"kind": "providers", "id": None}, None),
+        "a listed type on Agents": ({"kind": "agents", "id": None, "sub": "tts"}, None),
+        "a listed type on a row link to Agents": ({"kind": "agents", "id": "a1", "sub": "llm"}, None),
+        "a listed type on a custom page": ({"kind": "web", "id": None, "sub": "llm"}, None),
+        "a listed type on a nav with no page": ({"kind": "workspaces", "id": None, "sub": "tts"}, None),
+    }
+    for case, (link, expected) in answers.items():
+        assert app.data("NV_mobilePlatSub(" + json.dumps(link) + ", " + json.dumps(types) + ")") == expected, case
+    for t in TYPES:
+        assert app.data("NV_mobilePlatSub(" + json.dumps({"kind": "providers", "id": None, "sub": t}) + ", " + json.dumps(types) + ")") == t, t
 
 
 def test_a_link_to_another_type_replaces_the_open_catalog_and_the_same_link_starts_it_over(app) -> None:

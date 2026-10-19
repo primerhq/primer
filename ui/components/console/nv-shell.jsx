@@ -585,6 +585,13 @@ function NV_Shell() {
     // label "Open Web", surfaces palette and platform-nav, run goView("platform", "web"); platform.open.templates is "Open Workspace Templates"), in the plan
     // that ships the page. Registered last on purpose: the palette lists the first eight verbs of an empty query in registration order.
     window.NV_platVerbSpecs().forEach(function (s) {
+      // The label is built from a page title or a provider type, which is free text. The registry throws on a label its lint refuses (a word that starts with a digit
+      // or a symbol), and a throw here takes the console down, so that one verb is skipped with a warning: its page keeps its row and every other verb registers.
+      var refused = window.SH_lintVerbLabel(s.label);
+      if (refused) {
+        console.warn("platform verb " + s.id + " not registered: " + refused);
+        return;
+      }
       reg({
         id: s.id, label: s.label, surfaces: ["palette", "platform-nav"],
         run: function () { goView("platform", s.nav, s.sub); },
