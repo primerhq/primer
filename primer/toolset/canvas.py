@@ -7,7 +7,8 @@ Tool catalog (3 tools)
 * ``canvas_apply`` - one atomic batch of Canvas Lang statements (or JSON ops); every bad line is reported with its signature, and a batch
   with any error applies nothing.
 * ``canvas_wait``  - PAUSES the turn until the user acts on the canvas: a one-shot ``EventSubscription`` on ``canvas.event``, parked like
-  ``wait_for_event``; it returns at once when a matching event arrived since the agent's last read.
+  ``wait_for_event``; it returns at once when a matching event arrived since the agent's last read. An id that names no element is refused
+  first, as in ``canvas_get``, so a typo never parks.
 
 All three act on the CALLING session's canvas (``ToolContext.session_id``), so they are role ``user``, need a workspace session (they are
 dropped from chat tool contexts and are not exposable over MCP), and have no argument that names another session. ``canvas_apply`` is not
@@ -22,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
@@ -119,6 +121,19 @@ def _refused(errors: list[LangError] | tuple[LangError, ...], rev: int) -> ToolC
     )
 
 
+def _unknown_ids(ids: Sequence[str], elements: Mapping[str, Any]) -> ToolCallResult | None:
+    """The refusal for ids that name no element of the canvas, or ``None`` when every id is there (``canvas_get`` and ``canvas_wait``
+    judge their ``ids`` alike).
+
+    Every unknown id is named, once and in the order it was given, so one reply is enough to fix all the typos.
+    """
+    missing = list(dict.fromkeys(element_id for element_id in ids if element_id not in elements))
+    if not missing:
+        return None
+    noun = "element" if len(missing) == 1 else "elements"
+    return _error("validation-error", f"no {noun} named " + ", ".join(f"'{element_id}'" for element_id in missing))
+
+
 # ===========================================================================
 # Arguments
 # ===========================================================================
@@ -204,9 +219,9 @@ def _make_canvas_get(service: CanvasService):
         session_id, workspace_id = scope
         row = await service.snapshot(session_id, workspace_id=workspace_id)
         state = service.state_of(row)
-        for element_id in args.ids or []:
-            if element_id not in state.elements:
-                return _error("validation-error", f"no element named '{element_id}'")
+        refused = _unknown_ids(args.ids or [], state.elements)
+        if refused is not None:
+            return refused
         # The events are read from the same row as the canvas, so the program and its event list describe one moment. At most
         # MAX_EVENT_LINES are shown (and, in the program, the rest counted); only those are marked seen, so the others are still
         # "since your last read" the next time and no event is ever hidden from the agent for good.
@@ -347,6 +362,12 @@ def _make_canvas_wait(service: CanvasService, storage_provider: "StorageProvider
         except Exception:
             await _discard(storage_provider, created.id)
             raise
+        # An id that names no element would match no event and the wait would sit until its timeout: refuse it, as canvas_get does,
+        # before any unread event is taken. The canvas read above (after the pin) judges the ids too, so the wait still reads once.
+        refused = _unknown_ids(ids, row.elements)
+        if refused is not None:
+            await _discard(storage_provider, created.id)
+            return refused
         waiting = [event.public() for event in row.unseen_events() if canvas_wait_matches(meta, event.public())]
         if waiting:
             await _discard(storage_provider, created.id)

@@ -357,6 +357,13 @@ async def test_get_of_an_unknown_id_is_refused(provider, ctx):
     assert is_error and body == {"type": "validation-error", "message": "no element named 'nope'"}
 
 
+async def test_get_names_every_unknown_id_once(provider, ctx):
+    """``canvas_wait`` refuses unknown ids in the same words (one helper judges both)."""
+    await call(provider, "canvas_apply", {"source": G("playlist_create.cl")}, ctx)
+    is_error, body = await call(provider, "canvas_get", {"ids": ["nope", "controls", "nada", "nope"]}, ctx)
+    assert is_error and body == {"type": "validation-error", "message": "no elements named 'nope', 'nada'"}
+
+
 @pytest.mark.parametrize("ids", [["Title"], ["a b"], ["x" * 33], [""], ["ok"] * 51, "controls"])
 async def test_get_refuses_ids_that_cannot_be_element_ids(provider, ctx, ids):
     is_error, body = await call(provider, "canvas_get", {"ids": ids}, ctx)

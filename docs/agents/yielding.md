@@ -313,9 +313,10 @@ session.
   parking, and the event is marked read. A click that arrived while
   your turn was running was queued as a steer; when it ends a wait
   the queued copy is dropped, so you are told once. `ids` limits the
-  wait to some elements, `timeout_s` (1 to 86400, default 600) ends it
-  with `{timeout: true}`, and the result carries the canvas `rev` and
-  the current `values`.
+  wait to some elements (an id that is not on the canvas is refused at
+  once, as `canvas_get` refuses it, so a typo never parks), `timeout_s`
+  (1 to 86400, default 600) ends it with `{timeout: true}`, and the
+  result carries the canvas `rev` and the current `values`.
 
 ## Related
 
