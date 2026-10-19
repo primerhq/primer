@@ -337,3 +337,18 @@ async def test_a_docker_workspace_gets_its_cpu_and_memory(authed_client, unique_
             d = await authed_client.delete(f"/v1/workspaces/{wid}")
             assert d.status_code in (204, 404), d.text
         await _drop(authed_client, wp=wp, tpl=tpl)
+
+
+# ---- non-admins pick a provider by name (plan 08 task 7) -----------------------------------------------------------------
+
+
+async def test_provider_choices_list_the_local_provider(authed_client):
+    """``GET /v1/workspace_providers/_choices`` answers a signed-in user with every provider's id, kind and label and nothing of its
+    configuration. The reserved ``local`` provider is seeded on boot, so it is always there; a Local provider has no image to pre-fill."""
+    r = await authed_client.get("/v1/workspace_providers/_choices")
+
+    assert r.status_code == 200, r.text
+    items = r.json()["items"]
+    assert [i for i in items if i["id"] == "local"] == [{"id": "local", "kind": "local", "label": "Local", "default_image": None}], items
+    assert all(set(i) == {"id", "kind", "label", "default_image"} for i in items), items
+    assert [i["id"] for i in items] == sorted(i["id"] for i in items), "sorted by id"
