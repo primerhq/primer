@@ -18,6 +18,36 @@
 // tests/ui/test_toolset_builtin_ids.py pins to it. The New toolset hint names them.
 const TS_BUILTIN_RESERVED_IDS = ["system", "workspaces", "collections", "misc", "web", "harness", "trigger", "workspace_ext", "crud"];
 
+// Internal-search status + dialog helpers for the Collections toolset card
+// (Revamp 06 Task 5; Task 6 wires them into the page). Plain JS, no JSX:
+// tests/ui/test_toolsets_internal_search.py slices this block (from
+// TS_BUILTIN_RESERVED_IDS to TS_TABS) out of the file and runs it in MiniRacer.
+const TS_INTERNAL_SEARCH_DIALOG = {
+  title: "Internal search is off",
+  message: "Internal search indexes the system collection, the map of this install's agents, graphs, collections and tools, so agents can search it by meaning with the Collections toolset's search tool. While it is off, that search matches keywords only.",
+  confirmLabel: "Open Internal collections",
+  cancelLabel: "Close",
+};
+
+function TS_openInternalSearchDialog(con) {
+  return Promise.resolve(window.confirmDialog(TS_INTERNAL_SEARCH_DIALOG)).then(function (ok) {
+    if (ok) con.openOverlay("internal-collections", null, null);
+    return ok;
+  });
+}
+
+function TS_toolsetCardStatus(row, con) {
+  if (row.available === false) return { label: "unavailable", tone: "error" };
+  if (row.id === "collections" && row.internal_search === false) {
+    const status = { label: "Internal search: off", tone: "warn", testid: "ts-internal-search-chip" };
+    if (con && con.role === "admin" && typeof con.openOverlay === "function") {
+      status.onClick = function () { return TS_openInternalSearchDialog(con); };
+    }
+    return status;
+  }
+  return { label: "available", tone: "ok" };
+}
+
 const TS_TABS = [
   { id: "config", label: "Config", icon: "settings" },
   { id: "tools", label: "Tools", icon: "tools" },
@@ -1238,3 +1268,6 @@ window.ToolsetDetail = ToolsetDetail;
 // The create dialog is also hosted by the Platform page (nv-platform.jsx): "New toolset" there opens this form directly.
 window.TS_NewToolsetModal = TS_NewToolsetModal;
 window.TS_BUILTIN_RESERVED_IDS = TS_BUILTIN_RESERVED_IDS;
+window.TS_INTERNAL_SEARCH_DIALOG = TS_INTERNAL_SEARCH_DIALOG;
+window.TS_openInternalSearchDialog = TS_openInternalSearchDialog;
+window.TS_toolsetCardStatus = TS_toolsetCardStatus;
