@@ -33,7 +33,7 @@ import secrets
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Literal
+from typing import Any
 from urllib.parse import parse_qsl, quote, quote_plus, urlencode, urlsplit, urlunsplit
 
 import httpx
@@ -42,6 +42,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from primer.common.log import redact_credentials, redact_url_secrets
 from primer.common.mcp_errors import classify_mcp_exception
 from primer.model.except_ import BadRequestError, NetworkError, PrimerError, ProviderError, RateLimitError, ServerError
+from primer.model.mcp_oauth import ClientAuthMethod
 
 __all__ = [
     "ERROR_TEXT_LIMIT",
@@ -72,8 +73,6 @@ __all__ = [
 
 #: The longest error text a failed OAuth call produces.
 ERROR_TEXT_LIMIT = 200
-
-ClientAuthMethod = Literal["none", "client_secret_basic", "client_secret_post"]
 
 #: 4xx answers that say "not now" rather than "never": a refresh that meets one keeps its refresh token.
 _TEMPORARY_4XX = frozenset({408, 429})

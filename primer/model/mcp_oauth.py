@@ -27,6 +27,7 @@ from primer.model.common import Identifiable
 from primer.model.except_ import PrimerError
 
 __all__ = [
+    "ClientAuthMethod",
     "ClientSource",
     "McpOAuthClient",
     "McpOAuthPendingSignIn",
@@ -39,6 +40,13 @@ __all__ = [
 OAuthGrant = Literal["authorization_code", "client_credentials"]
 TokenState = Literal["connected", "needs_sign_in", "error"]
 ClientSource = Literal["static", "registered"]
+#: How a client authenticates at the token and revocation endpoints (RFC 8414 ``token_endpoint_auth_methods_supported`` names).
+ClientAuthMethod = Literal["none", "client_secret_basic", "client_secret_post"]
+
+_AUTH_METHOD_DESCRIPTION = (
+    "How the client authenticates at the token and revocation endpoints, as the authorization server's metadata decided when the sign-in started, so "
+    "a refresh needs no new discovery. None (a row written before this field): Basic when there is a client secret, else none."
+)
 
 
 class McpOAuthTokenSet(Identifiable):
@@ -65,6 +73,7 @@ class McpOAuthTokenSet(Identifiable):
     resource: str | None = Field(default=None, description="The RFC 8707 resource indicator the tokens were requested for, if any.")
     client_id: str = Field(..., description="The OAuth client the tokens belong to.")
     client_source: ClientSource = Field(..., description="'static': configured on the toolset. 'registered': made by dynamic registration.")
+    token_endpoint_auth_method: ClientAuthMethod | None = Field(default=None, description=_AUTH_METHOD_DESCRIPTION)
     config_fingerprint: str = Field(
         ...,
         description=(
@@ -108,6 +117,7 @@ class McpOAuthPendingSignIn(Identifiable):
     resource: str | None = Field(default=None, description="The RFC 8707 resource indicator sent with the authorize request, if any.")
     client_id: str = Field(..., description="The OAuth client the sign-in uses.")
     client_source: ClientSource = Field(..., description="'static': configured on the toolset. 'registered': made by dynamic registration.")
+    token_endpoint_auth_method: ClientAuthMethod | None = Field(default=None, description=_AUTH_METHOD_DESCRIPTION)
     config_fingerprint: str = Field(..., description="Hash of the URL and OAuth settings when the sign-in started. A toolset edited meanwhile does not take the tokens.")
     consumed: bool = Field(default=False, description="Set by the one caller that takes the row, so no second caller can.")
     started_by: str | None = Field(default=None, description="The admin who started it.")
