@@ -116,6 +116,7 @@ from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 from primer.workspace.env_names import ENV_NAME_PATTERN, MAX_ENV_NAME_LENGTH, RUNTIME_TOKEN_ENV_NAMES
 from primer.workspace.provider_choices import list_provider_choices
 from primer.workspace.reserved import reserved_tree, reserved_tree_for, reserved_trees
+from primer.workspace.template_in_use import TEMPLATE_IN_USE, workspaces_made_from
 from primer.workspace.template_privilege import (
     admin_only_override_fields,
     admin_only_settings_held,
@@ -1089,14 +1090,18 @@ def build_workspaces_toolset(
     async def _inv_provider(eid: str) -> None:
         await workspace_registry.invalidate(eid)
 
-    # What the REST workspace routers guard (task 01a111d1, D5 phase 1): the reserved bootstrap rows, and a provider a template
-    # or a workspace still references. Templates are deliberately NOT reference-guarded (a snapshot consumed at materialisation,
-    # so deleting one must not strand the live workspaces made from it; REST has no guard either, pinned by e2e T0223).
+    # What the REST workspace routers guard (task 01a111d1, D5 phase 1): the reserved bootstrap rows, a provider a template or a
+    # workspace still references, and (lead ruling 6 of plan 08, platform revamp 2026-10) a template a workspace was made from.
+    # A template is not a snapshot: the workspace names it by id and a Docker or Kubernetes workspace reads it again whenever it is
+    # re-attached, so a template deleted under a workspace broke that workspace for good. The template's block is a
+    # ``delete_blockers`` entry rather than a ``ToolReference`` because its answer names the count and the first five workspace ids;
+    # the REST route asks the same function (``primer.workspace.template_in_use``), so the two cannot disagree.
     # Imported here: the registry and the bootstrap defaults import toolsets, so module-level imports would be cycles.
     from primer.api.registries.provider_registry import RESERVED_WORKSPACE_PROVIDER_IDS
     from primer.bootstrap.defaults import RESERVED_WORKSPACE_TEMPLATES
 
     _reserved_templates = frozenset(RESERVED_WORKSPACE_TEMPLATES)
+    _reserved_template_names = ", ".join(f"``{template_id}``" for template_id in sorted(_reserved_templates))
     provider_guards = CrudGuards(
         kind="workspace_provider",
         reserved_create_ids=RESERVED_WORKSPACE_PROVIDER_IDS,
@@ -1107,11 +1112,18 @@ def build_workspaces_toolset(
             ToolReference("workspace", WorkspaceRow, "provider_id"),
         ),
     )
+
+    async def _template_in_use_blocker(sp: Any, template: WorkspaceTemplate) -> str | None:
+        """The refusal sentence while a workspace was made from ``template`` (``template_in_use: ...``), else ``None``."""
+        in_use = await workspaces_made_from(sp.get_storage(WorkspaceRow), template.id)
+        return None if in_use is None else f"{TEMPLATE_IN_USE}: {in_use.message}"
+
     template_guards = CrudGuards(
         kind="workspace_template",
         reserved_create_ids=_reserved_templates,
         reserved_update_ids=_reserved_templates,
         reserved_delete_ids=_reserved_templates,
+        delete_blockers=(_template_in_use_blocker,),
     )
 
     # ------------------- Provider CRUD (no update) ---------------------
@@ -1373,13 +1385,17 @@ def build_workspaces_toolset(
     name, entry = _tool(
         "delete_workspace_template",
         (
-            "Delete a WorkspaceTemplate. Existing Workspaces that "
-            "referenced it keep their snapshot ``template_id`` but the "
-            "row no longer resolves."
+            "Delete a WorkspaceTemplate. Refused while any workspace was made from it, on every provider kind: "
+            "the workspace names its template by id and a Docker or Kubernetes workspace reads the template "
+            "again whenever it is re-attached, so deleting it would break that workspace."
         ),
         (
             "Use when retiring a recipe; not for destroying a "
-            "materialised workspace (use ``delete_workspace``)."
+            "materialised workspace (use ``delete_workspace``). While a workspace uses the template the answer is "
+            "``type=conflict`` and the message starts ``template_in_use:``, naming how many workspaces use it and the "
+            "first 5 workspace ids: delete those workspaces first (``delete_workspace``), then delete the template. "
+            "A template that holds admin-only settings is refused to a non-admin (``type=forbidden``) before this "
+            f"check, and a built-in template ({_reserved_template_names}) is never deletable (``type=forbidden``)."
         ),
         _IdArgs,
         _make_delete_handler(

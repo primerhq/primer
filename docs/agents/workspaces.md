@@ -262,7 +262,16 @@ it's called from a context with no implicit session.
   workspace's `overrides`, and any field nesting a `SecretStr` or a
   masked URL) with `type=validation-error`; those fields cannot be a
   find predicate either, because the row stores them in clear while
-  every read masks them.
+  every read masks them. `delete_workspace_template` is refused while
+  any workspace was made from the template, on every provider kind:
+  the answer is `type=conflict` and the message starts `template_in_use:`,
+  naming how many workspaces use it and the first five workspace ids.
+  A workspace's `template_id` is live, not a snapshot: a Docker or
+  Kubernetes workspace reads the template again whenever it is
+  re-attached, so deleting the template would break that workspace.
+  Delete the workspaces first, then the template (REST answers 409
+  `/errors/conflict` with `extensions.error` `template_in_use` and the
+  same count and ids).
 - Some template fields are admin-only: container `extra_mounts`,
   Kubernetes `extra_volumes`, `extra_volume_mounts`, `pod_overrides`,
   `container_security_context_overrides`, `service_account_name` and
