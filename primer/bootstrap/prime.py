@@ -1,7 +1,8 @@
 """Prime: the default workspace.
 
 Every rule about the default workspace lives in this module (pivot plan P2): which id it has (below), adopting an existing
-install's legacy row, and, in later tasks, seeding its ``agents.md`` and the reset.
+install's legacy row, the caller's main operator session (per user, made on demand by the ensure route), and, in later
+tasks, seeding its ``agents.md`` and the reset.
 
 The default workspace is the one a person meets on first login, and it can never be deleted. Its id is not a
 constant: a fresh install creates ``prime``, while an install that predates ``SystemState.default_workspace_id``
@@ -22,6 +23,13 @@ whose migrations were baselined (``auto_bootstrap: false``) ends up where an upg
 
 There is exactly one recorded id, so there can never be two default workspaces: an install that has both a ``primer`` and
 a ``prime`` row records ``primer`` and leaves ``prime`` an ordinary workspace.
+
+The main operator session
+--------------------------
+
+The default workspace's main operator session is NOT seeded at boot: each user has their own, made on demand by
+``POST /v1/workspaces/{id}/main_session`` (:func:`ensure_main_operator_session`) and created as the caller, so it runs at
+exactly the caller's rank. The id is :func:`main_session_id`.
 """
 
 from __future__ import annotations
@@ -29,12 +37,25 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from primer.bootstrap.defaults import LEGACY_DEFAULT_WORKSPACE_ID, PRIME_WORKSPACE_NAME
+from primer.bootstrap.defaults import (
+    LEGACY_DEFAULT_WORKSPACE_ID,
+    PRIME_WORKSPACE_NAME,
+    RESERVED_OPERATOR_AGENT,
+)
 from primer.model.except_ import NotFoundError
 from primer.model.workspace import Workspace
 from primer.storage import raw_generation
 
 logger = logging.getLogger(__name__)
+
+#: The display name a created main session carries (task 14 finds it by this name).
+MAIN_SESSION_NAME: str = "main"
+
+#: The console's own session-list cap; the lookup pages at this size and stops at a short page.
+_MAIN_SESSION_PAGE: int = 200
+#: A workspace with more sessions than this is beyond anything the console lists: give up the lookup and make the main
+#: session rather than scan the whole table.
+_MAIN_SESSION_MAX_PAGES: int = 50
 
 
 async def resolve_default_workspace_id(storage_provider: Any) -> str | None:
@@ -121,8 +142,120 @@ async def adopt_legacy_default_workspace(storage_provider: Any) -> str | None:
     return LEGACY_DEFAULT_WORKSPACE_ID
 
 
+def main_session_id(workspace_id: str, n: int) -> str:
+    """The deterministic id of the n-th main operator session on the workspace.
+
+    ``sess-<workspace id>-main-<n>``: it never collides with a route-made ``sess-<12 hex>`` id, and two concurrent
+    callers pick the same id for the same slot, so at most one of them wins the create; the other's ``ConflictError`` is
+    the signal that the slot is taken.
+    """
+    return f"sess-{workspace_id}-main-{n}"
+
+
+async def ensure_main_operator_session(
+    storage_provider: Any,
+    *,
+    workspace_id: str,
+    initiated_by: "PrincipalRef",
+    session_deps: "SessionFactoryDeps | None" = None,
+) -> tuple["WorkspaceSession", bool]:
+    """The caller's own main operator session on the workspace, created as the caller when they have none.
+
+    Returns ``(row, created)``; ``created`` is True only when THIS call made the row.
+
+    * **The lookup is the caller's own.** The caller's open (status not ``ended``) sessions on the workspace bound to
+      the ``operator`` agent; when more than one is open, the most recently active wins, so a person lands in the
+      conversation they were in, never a fresh one. Another user's session, a non-operator binding and an ended session
+      never qualify.
+    * **A created session is named ``main`` and runs as the caller.** ``initiated_by`` carries the caller's role, so the
+      session clears exactly the caller's role floor (A-20): an admin's main session can call the admin tools through
+      the operator, a user's cannot. It is made exactly as the workspace-create seed makes its ``main`` (the plain
+      ``create_session`` with ``auto_start=False``; the on-disk slot arrives when the session first runs).
+    * **One main session under concurrency.** The id is :func:`main_session_id` with the smallest free ``n`` and the
+      create is the claim: a concurrent caller that picks the same id loses the insert and re-reads the row; it returns
+      the row only when it is this caller's open operator session, and takes the next free ``n`` otherwise (an ended
+      main or another user's main does not belong to this caller).
+    """
+    from primer.model.agent import Agent
+    from primer.model.except_ import ConflictError
+    from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
+    from primer.model.workspace_session import (
+        AgentSessionBinding,
+        SessionStatus,
+        WorkspaceSession,
+    )
+    from primer.workspace.session_factory import (
+        SessionFactoryDeps,
+        create_session,
+    )
+
+    def _is_callers_open_operator(row: WorkspaceSession) -> bool:
+        return (
+            row.status is not SessionStatus.ENDED
+            and row.initiated_by is not None
+            and row.initiated_by == initiated_by
+            and getattr(row.binding, "agent_id", None) == RESERVED_OPERATOR_AGENT
+        )
+
+    sessions = storage_provider.get_storage(WorkspaceSession)
+    predicate = Predicate(
+        left=FieldRef(name="workspace_id"), op=Op.EQ, right=Value(value=workspace_id),
+    )
+    candidates: list[WorkspaceSession] = []
+    offset = 0
+    for _ in range(_MAIN_SESSION_MAX_PAGES):
+        page = await sessions.find(
+            predicate, OffsetPage(offset=offset, length=_MAIN_SESSION_PAGE),
+        )
+        candidates.extend(row for row in page.items if _is_callers_open_operator(row))
+        if len(page.items) < _MAIN_SESSION_PAGE:
+            break
+        offset += _MAIN_SESSION_PAGE
+    if candidates:
+        newest = max(
+            candidates, key=lambda row: (row.last_turn_at or row.created_at, row.created_at),
+        )
+        return newest, False
+
+    if await storage_provider.get_storage(Agent).get(RESERVED_OPERATOR_AGENT) is None:
+        raise NotFoundError(f"Agent {RESERVED_OPERATOR_AGENT!r} does not exist")
+
+    deps = session_deps or SessionFactoryDeps(
+        storage_provider=storage_provider, claim_engine=None, scheduler=None, workspace_registry=None,
+    )
+    n = 1
+    while True:
+        candidate_id = main_session_id(workspace_id, n)
+        try:
+            row = await create_session(
+                workspace_id=workspace_id,
+                binding=AgentSessionBinding(agent_id=RESERVED_OPERATOR_AGENT),
+                initial_instructions=None,
+                graph_input=None,
+                auto_start=False,
+                metadata=None,
+                name=MAIN_SESSION_NAME,
+                session_id=candidate_id,
+                initiated_by=initiated_by,
+                deps=deps,
+            )
+            logger.info(
+                "prime: created the caller's main operator session",
+                extra={"session_id": candidate_id, "workspace_id": workspace_id},
+            )
+            return row, True
+        except ConflictError:
+            existing = await sessions.get(candidate_id)
+            if existing is not None and _is_callers_open_operator(existing):
+                return existing, False
+            n += 1
+
+
 __all__ = [
+    "MAIN_SESSION_NAME",
     "adopt_legacy_default_workspace",
+    "ensure_main_operator_session",
+    "main_session_id",
     "record_default_workspace_id",
     "resolve_default_workspace_id",
 ]

@@ -1377,6 +1377,53 @@ async def list_sessions(
     }
 
 
+@sessions_router.post(
+    "/workspaces/{workspace_id}/main_session",
+    status_code=200,
+    response_model=WorkspaceSession,
+    summary="Ensure the caller's main operator session on a workspace",
+    responses=common_responses(404, 500),
+)
+async def ensure_main_session(
+    request: Request,
+    response: Response,
+    workspace_id: str = Path(..., description="Workspace id"),
+    scheduler=Depends(get_scheduler),
+    workspace_registry=Depends(get_workspace_registry),
+    engine=Depends(get_claim_engine),
+    storage_provider=Depends(get_storage_provider),
+) -> WorkspaceSession:
+    """Get or create the caller's own main operator session on the workspace.
+
+    The console opens the default workspace (prime) on first login and picks this result (pivot plan P2 task 14). The
+    session runs as the caller: ``initiated_by`` carries the caller's role, so an admin's main session clears the admin
+    role floor and a user's does not (A-20). 201 when this call created the row, 200 when it returned the caller's
+    existing one.
+    """
+    await workspace_registry.get_workspace(workspace_id)
+
+    from primer.bootstrap.prime import ensure_main_operator_session
+    from primer.model.principal import PrincipalRef
+    from primer.workspace.session_factory import SessionFactoryDeps
+
+    actor = getattr(request.state, "actor", None)
+    initiated_by = (
+        PrincipalRef.from_principal(actor) if actor is not None else PrincipalRef.system()
+    )
+    row, created = await ensure_main_operator_session(
+        storage_provider,
+        workspace_id=workspace_id,
+        initiated_by=initiated_by,
+        session_deps=SessionFactoryDeps(
+            storage_provider=storage_provider, claim_engine=engine, scheduler=scheduler,
+            workspace_registry=workspace_registry,
+        ),
+    )
+    if created:
+        response.status_code = 201
+    return row
+
+
 @sessions_router.get(
     "/workspaces/{workspace_id}/sessions/{session_id}",
     summary="Get session state",
