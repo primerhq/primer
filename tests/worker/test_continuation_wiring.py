@@ -12,7 +12,8 @@ the pure continuation walk:
   drop-lease ParkRequest listening on the new leaf's event key.
 
 Both subagent callables are handed the frame's context with ``initiated_by``
-replaced by the resumed session's run principal: a resumed subagent runs as its
+replaced by the resumed session's run principal and ``principal`` (the string a
+tool provider is handed with every call) cleared: a resumed subagent runs as its
 parent session, never as a principal stored in the park.
 """
 
@@ -97,7 +98,7 @@ async def test_build_invocation_services_forwards_bound_deps(monkeypatch):
 
     out = await services.build_subagent_toolmanager(_stored_context())
     assert out == "TOOLMGR"
-    assert captured["build"]["context"] == _stored_context(initiated_by=_RUN)
+    assert captured["build"]["context"] == _as_the_session_runs(_stored_context(), _RUN)
     assert captured["build"]["storage_provider"] == "STORAGE"
     assert captured["build"]["provider_registry"] == "REGISTRY"
     assert captured["build"]["approval_resolver"] == "APPROVAL"
@@ -107,7 +108,7 @@ async def test_build_invocation_services_forwards_bound_deps(monkeypatch):
         child_result="CHILD", depth=2, invoke_tool_call_id="tc9",
     )
     assert text == "RESUMED-TEXT"
-    assert captured["resume"]["context"] == _stored_context(initiated_by=_RUN)
+    assert captured["resume"]["context"] == _as_the_session_runs(_stored_context(), _RUN)
     assert captured["resume"]["agent_id"] == "a1"
     assert captured["resume"]["child_result"] == "CHILD"
     assert captured["resume"]["depth"] == 2
@@ -157,8 +158,15 @@ class _Session:
 
 
 def _stored_context(*, initiated_by: PrincipalRef | None = None) -> AgentResumeContext:
-    """A frame's context as the park stores it (``None``: a frame written before ``initiated_by`` existed)."""
-    return AgentResumeContext("ses-1", "ws", None, "u", ["t__x"], initiated_by=initiated_by, turn_no=4)
+    """A frame's context as the park stores it (``None``: a frame written before ``initiated_by`` existed), with a principal STRING in it: a park
+    can store any."""
+    return AgentResumeContext("ses-1", "ws", None, "mallory", ["t__x"], initiated_by=initiated_by, turn_no=4)
+
+
+def _as_the_session_runs(context: AgentResumeContext, initiated_by: PrincipalRef) -> AgentResumeContext:
+    """What a resumed subagent's callables are handed for ``context``: the rest of it as stored, the session's run principal as its initiator, and no
+    principal string."""
+    return dataclasses.replace(context, initiated_by=initiated_by, principal=None)
 
 
 @pytest.mark.parametrize(
@@ -195,8 +203,39 @@ async def test_the_subagent_callables_rank_a_resumed_subagent_as_its_session(mon
         agent_id="a1", context=frame_context, llm_messages=[], child_result="CHILD", depth=1, invoke_tool_call_id="tc",
     )
 
-    assert seen == [dataclasses.replace(frame_context, initiated_by=expected)] * 2, "the rest of the frame's context is handed on as stored"
-    assert frame_context.initiated_by == stored, "the frame's own context is not changed"
+    assert seen == [_as_the_session_runs(frame_context, expected)] * 2, "the rest of the frame's context is handed on as stored"
+    assert (frame_context.initiated_by, frame_context.principal) == (stored, "mallory"), "the frame's own context is not changed"
+
+
+@pytest.mark.parametrize("callable_name", ["build_subagent_toolmanager", "resume_subagent"])
+async def test_neither_subagent_callable_is_handed_the_principal_string_the_park_stored(monkeypatch, callable_name):
+    """``AgentResumeContext.principal`` becomes the principal of the resumed turn's calls (``resume_subagent`` hands it to ``run_agent_turn``, which
+    hands it to ``provider.call(principal=...)`` and ``ctx.principal``), and an MCP toolset picks a user's OAuth credentials by it. A park can store
+    any string there, so a resume hands none on: the session's own turn and every first run use ``None``. The end-to-end half is
+    ``tests/worker/test_nested_yield_matrix.py``."""
+    seen: list = []
+
+    async def fake_build(context, **_deps):
+        seen.append(context)
+        return "TOOLMGR"
+
+    async def fake_resume(*, context, **_kw):
+        seen.append(context)
+        return "TEXT"
+
+    monkeypatch.setattr(invoke_mod, "build_subagent_toolmanager", fake_build)
+    monkeypatch.setattr(invoke_mod, "resume_subagent", fake_resume)
+    services = _bare_pool()._build_invocation_services(_Session(), "workspace", "executor", None)
+
+    if callable_name == "build_subagent_toolmanager":
+        await services.build_subagent_toolmanager(_stored_context())
+    else:
+        await services.resume_subagent(
+            agent_id="a1", context=_stored_context(), llm_messages=[], child_result="CHILD", depth=1, invoke_tool_call_id="tc",
+        )
+
+    (context,) = seen
+    assert context.principal is None
 
 
 def test_repark_continuation_builds_parked_state_and_request():

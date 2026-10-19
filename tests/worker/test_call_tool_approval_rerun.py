@@ -338,13 +338,14 @@ def _subagent_services(registry: Any, parent: PrincipalRef | None) -> Any:
 
 def _subagent_frame(initiated_by: PrincipalRef | None = USER) -> AgentFrame:
     """The subagent that called ``system__call_tool``: the session's call ``call-invoke`` started it, and its own ``call_tool`` call (``call-outer``,
-    the id the park carries) waits for the approval. ``initiated_by`` is what the frame stored."""
+    the id the park carries) waits for the approval. ``initiated_by`` is what the frame stored, and it stores a principal STRING too (``mallory``):
+    a park can hold any, and no re-run below may hand it to a provider (each asserts the provider's principal and its context's are ``None``)."""
     asked = Message(role="assistant", parts=[ToolCallPart(
         id="call-outer", name="system__call_tool", arguments={"toolset_id": "rec", "tool_name": "user_x", "arguments": {"a": 1}},
     )])
     return AgentFrame(
         agent_id="sub", llm_messages=[asked.model_dump(mode="json")], tool_call_id="call-invoke", depth=1,
-        context=AgentResumeContext("s-1", "ws-1", None, None, ["system__call_tool"], initiated_by=initiated_by, turn_no=3),
+        context=AgentResumeContext("s-1", "ws-1", None, "mallory", ["system__call_tool"], initiated_by=initiated_by, turn_no=3),
     )
 
 
@@ -369,8 +370,9 @@ async def test_an_approved_call_tool_gate_inside_a_subagent_runs_the_inner_tool_
     assert (out.id, out.error, json.loads(out.output)) == ("call-outer", False, {"ran": "user_x"}), "the result answers the subagent's call_tool call"
     ((name, arguments, principal, ctx),) = recorder.calls
     assert (name, arguments, principal) == ("user_x", {"a": 1}, None)
-    # The context of the SUBAGENT's resumed manager: its session, workspace and turn, ranked as the session it runs in.
-    assert (ctx.tool_call_id, ctx.session_id, ctx.workspace_id, ctx.turn_no, ctx.initiated_by) == ("call-outer", "s-1", "ws-1", 3, USER)
+    # The context of the SUBAGENT's resumed manager: its session, workspace and turn, ranked as the session it runs in, with no principal string (the
+    # frame stored one, ``mallory``).
+    assert (ctx.tool_call_id, ctx.session_id, ctx.workspace_id, ctx.turn_no, ctx.initiated_by, ctx.principal) == ("call-outer", "s-1", "ws-1", 3, USER, None)
 
 
 @pytest.mark.parametrize("parent, runs", [(USER, False), (ADMIN, True)], ids=["a-users-session-is-refused", "an-admins-session-runs-it"])
