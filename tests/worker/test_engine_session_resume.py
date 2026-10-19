@@ -545,14 +545,21 @@ def _raising_hook(yield_metadata, event_payload, ctx):
     raise RuntimeError("the hook broke")
 
 
+@pytest.fixture
+def raising_resume_hook(request):
+    """Register ``_raising_hook`` for the test and remove it when the test ends: the resume hook registry is process-wide, and a hook left in it
+    would stay registered for every later test in the run."""
+    from primer.worker import yield_resume_registry
+
+    yield_resume_registry.register_resume_hook(_RAISING_HOOK_TOOL, _raising_hook)
+    request.addfinalizer(lambda: yield_resume_registry._registry.pop(_RAISING_HOOK_TOOL, None))
+
+
 @pytest.mark.asyncio
-async def test_a_resume_that_fails_answers_the_call_with_an_error_not_a_rejection(monkeypatch):
+async def test_a_resume_that_fails_answers_the_call_with_an_error_not_a_rejection(monkeypatch, raising_resume_hook):
     """A failure while resuming (here the parked tool's resume hook raises) is
     reported as a failure. It used to be labelled ``"rejected": true``, which a
     model reads as an operator refusing a call that nobody refused."""
-    from primer.worker.yield_resume_registry import register_resume_hook
-
-    register_resume_hook(_RAISING_HOOK_TOOL, _raising_hook)
     sid = "sess-engine-resume-hook-raises"
     tool_call_id = "tc-hook-raises"
     assistant_msg = Message(
