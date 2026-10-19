@@ -151,6 +151,11 @@ const Modal = ({ title, onClose, children, footer, className, testid, danger, wi
   const vp = useViewport ? useViewport() : { isMobile: false };
   const isMobile = !!vp.isMobile;
   const dialogRef = React.useRef(null);
+  // Whether the last press started on the scrim itself, from the scrim's onPointerDown
+  // (a press inside the dialog bubbles up with a deeper target). The scrim closes only
+  // when the press AND the click both land on it, so a drag-select that starts inside
+  // the dialog and ends on the scrim does not close it and lose the draft (ticket 01a14f37).
+  const scrimDownRef = React.useRef(false);
 
   // Escape closes the top-most layer only (foundation/escape-stack.js): a confirm dialog over this modal, or this modal over an overlay, answers it alone.
   window.primerApi.useEscape(() => { if (onClose) onClose(); });
@@ -169,7 +174,11 @@ const Modal = ({ title, onClose, children, footer, className, testid, danger, wi
 
   if (isMobile) {
     return (
-      <div className="sheet-overlay" onClick={onClose}>
+      <div
+        className="sheet-overlay"
+        onPointerDown={(e) => { scrimDownRef.current = e.target === e.currentTarget; }}
+        onClick={(e) => { if (e.target === e.currentTarget && scrimDownRef.current && onClose) onClose(); }}
+      >
         <div
           className={"sheet" + (className ? " " + className : "")}
           role="dialog"
@@ -193,7 +202,11 @@ const Modal = ({ title, onClose, children, footer, className, testid, danger, wi
   }
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div
+      className="modal-overlay"
+      onPointerDown={(e) => { scrimDownRef.current = e.target === e.currentTarget; }}
+      onClick={(e) => { if (e.target === e.currentTarget && scrimDownRef.current && onClose) onClose(); }}
+    >
       <div
         className={"modal" + (className ? " " + className : "")}
         role="dialog"
