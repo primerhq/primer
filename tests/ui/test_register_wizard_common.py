@@ -91,8 +91,16 @@ def test_a_new_providers_draft_is_filled_in_once_and_an_edit_is_never_filled_in(
     assert kept["config"] == {"flavor": "vllm"} and kept["limits"] == {"max_concurrency": 4}, "what was typed wins over the start"
 
 
+def test_a_new_provider_sends_the_limits_its_kind_shows_and_max_concurrency(ctx) -> None:
+    got = js(ctx, "PC_shownLimits({ max_concurrency: 3, connect_timeout_seconds: 7, max_retries: 2, request_timeout_seconds: null }, ['connect_timeout_seconds'])")
+    assert got == {"max_concurrency": 3, "connect_timeout_seconds": 7}, "a limit the kind does not show (its adapters never read it) is not sent"
+    assert js(ctx, "PC_shownLimits({ max_concurrency: 1 }, [])") == {"max_concurrency": 1} and js(ctx, "PC_shownLimits(null, null)") == {}
+    assert js(ctx, "PC_shownLimits({ request_timeout_seconds: null }, ['request_timeout_seconds'])") == {"request_timeout_seconds": None}, "an emptied timeout is no limit, and is sent"
+
+
 def test_the_helpers_are_exported_on_window(ctx) -> None:
-    for name in ("PC_useWizard", "PC_PageFocus", "PC_ServedField", "PC_TypesNotice", "PC_countOf", "PC_isBlank", "PC_savedRow", "PC_PageHead", "PC_startConfig", "PC_fillDraft"):
+    for name in ("PC_useWizard", "PC_PageFocus", "PC_ServedField", "PC_TypesNotice", "PC_countOf", "PC_isBlank", "PC_savedRow", "PC_PageHead", "PC_startConfig", "PC_fillDraft",
+                 "PC_shownLimits"):
         assert ctx.eval(f"typeof window.{name}") == "function", name
 
 

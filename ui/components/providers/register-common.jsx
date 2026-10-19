@@ -486,6 +486,17 @@ function PC_fillDraft(draft, kind, configFields, limitFields) {
   };
 }
 
+// The limits a NEW provider sends: the ones its kind shows, and max_concurrency (the model requires it, and the speech adapters, which never read it, still send one). A limit
+// typed for a kind the operator has since left is not the new kind's: its adapters never read it. An edit sends the whole row's limits instead (master Review Focus 1).
+function PC_shownLimits(limits, limitFields) {
+  const shown = ["max_concurrency"].concat(limitFields || []);
+  const out = {};
+  Object.keys(limits || {}).forEach((k) => {
+    if (shown.indexOf(k) >= 0) out[k] = limits[k];
+  });
+  return out;
+}
+
 // Hands the focus to something in the body once the body has been drawn, when the focus has been lost. `n` changes when a hand-off is wanted; `to` says where: "head" is the
 // heading of the second page, anything else the first field a person can type in. A focus the operator put somewhere is left where it is. This is a component INSIDE the body, not an
 // effect of the page, on purpose: the page's effects run BEFORE its new body is in the DOM (register-overlay.jsx, "the shell's slots"), so an effect there would see the old page's
@@ -581,7 +592,7 @@ function PC_TypesNotice({ loading, failed, notServed, kind, types, onRetry }) {
 }
 
 Object.assign(window, {
-  PC_SERVED_LABELS, PC_countOf, PC_isBlank, PC_savedRow, PC_startConfig, PC_fillDraft, PC_useWizard, PC_PageFocus, PC_PageHead, PC_ServedField, PC_TypesNotice,
+  PC_SERVED_LABELS, PC_countOf, PC_isBlank, PC_savedRow, PC_startConfig, PC_fillDraft, PC_shownLimits, PC_useWizard, PC_PageFocus, PC_PageHead, PC_ServedField, PC_TypesNotice,
 });
 
 Object.assign(window, {
