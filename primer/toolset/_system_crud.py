@@ -933,7 +933,7 @@ def _call_tool_tool(
         # (toolset_id, tool_name), evaluate it, and on a "required" verdict
         # park for approval by yielding ``_approval`` exactly as the agent
         # loop does. The resume path re-dispatches the inner tool via its
-        # owning toolset provider (see _resume_call_tool_dispatch) on
+        # owning toolset provider (see resume_call_tool_dispatch) on
         # approve, or returns an error on reject/timeout/cancel.
         #
         # ``ctx`` is None only when there is no session/chat to park onto

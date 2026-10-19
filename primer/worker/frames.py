@@ -43,7 +43,7 @@ from primer.worker.yield_resume_registry import (
     ResumeContext,
     get_resume_hook,
 )
-from primer.worker.yield_runtime import _resume_call_tool_dispatch, classify_approval_payload
+from primer.worker.yield_runtime import classify_approval_payload, resume_call_tool_dispatch
 
 
 # ===========================================================================
@@ -621,7 +621,7 @@ async def apply_leaf(
         the innermost host's tool manager with ``bypass_approval=True``. A
         park ``system__call_tool`` wrote (``via_call_tool``) names the INNER
         tool instead, which that manager cannot route: it re-runs through
-        :func:`~primer.worker.yield_runtime._resume_call_tool_dispatch`, the
+        :func:`~primer.worker.yield_runtime.resume_call_tool_dispatch`, the
         session path's re-run, with that manager's context (the subagent's
         session and turn, ranked as its parent session), the inner role
         checked again. If either raises :class:`YieldToWorker` return a
@@ -657,7 +657,7 @@ async def apply_leaf(
             via = metadata.get("via_call_tool")
             try:
                 if via is not None:
-                    return await _resume_call_tool_dispatch(
+                    return await resume_call_tool_dispatch(
                         via=via,
                         original_call=original_call,
                         tool_manager=tool_manager,
