@@ -25,6 +25,8 @@ pytestmark = smk("SMK-UI-06", status="partial")
 LISTED = {"models": [{"name": "text-embedding-3-small"}, {"name": "gpt-4o"}]}
 HUB_MODEL = "BAAI/bge-small-en-v1.5"
 HUB_ANSWER = {"models": [{"name": HUB_MODEL, "ok": True, "status": "ok", "detail": "Can be pulled"}]}
+ASR_ANSWER = {"ok": True, "models": ["whisper-1", "large-v3"]}
+TTS_ANSWER = {"ok": True, "voices": ["alloy", "echo"]}
 
 VIEWPORTS = [
     pytest.param({"width": 1366, "height": 768}, id="desktop"),
@@ -209,5 +211,76 @@ def test_a_refused_register_keeps_the_focus_on_the_button_that_was_pressed(page:
         landed = page.evaluate(_FOCUS)
         assert not landed["isBody"], f"the focus fell to <body> when the provider was refused: {landed}"
         assert landed["inDialog"] and landed["testid"] == "pc-register-submit", f"the focus is not on the button that was pressed: {landed}"
+    finally:
+        _close(page, None)
+
+
+@pytest.mark.ui_e2e
+@pytest.mark.parametrize("viewport", VIEWPORTS)
+def test_asr_next_and_back_keep_the_focus_inside_the_dialog(page: Page, viewport: dict) -> None:
+    """The ASR page needs only a URL and a key to go on. Next (from the keyboard) lands on the heading of the page that picks the model; the radio list works from there; Back hands the
+    focus to the first field, which still holds what was typed, and the pick is kept for the same connection."""
+    errors: list[str] = []
+    page.on("pageerror", lambda exc: errors.append(str(exc)))
+    page.route("**/v1/stt_providers/_test", lambda route: _json(route, ASR_ANSWER))
+    try:
+        dialog = _mount(page, viewport, "stt")
+        dialog.get_by_test_id("pc-field:id").fill("asr-focus-journey")
+        dialog.get_by_test_id("pc-field:url").fill("http://asr.invalid:8006/v1")
+        expect(dialog.get_by_test_id("pc-register-next")).to_be_enabled()
+        dialog.get_by_test_id("pc-register-next").focus()
+        page.keyboard.press("Enter")
+        expect(dialog.get_by_test_id("pc-import-head")).to_be_visible(timeout=15_000)
+        expect(dialog.get_by_test_id("pc-register-next")).to_have_count(0)
+        page.evaluate(_SETTLED)
+        landed = page.evaluate(_FOCUS)
+        assert landed["sheet"] is (viewport["width"] < 640), f"the overlay is not a sheet exactly on a phone: {landed}"
+        assert not landed["isBody"], f"after Next the focus fell to <body>: {landed}"
+        assert landed["inDialog"] and landed["testid"] == "pc-import-head", f"the focus is not on the choice page's heading inside the dialog: {landed}"
+        # nothing is picked, so Register is off; picking one turns it on
+        expect(dialog.get_by_test_id("pc-pick:whisper-1")).not_to_be_checked()
+        expect(dialog.get_by_test_id("pc-register-submit")).to_have_attribute("disabled", "")
+        dialog.get_by_test_id("pc-pick:large-v3").check()
+        expect(dialog.get_by_test_id("pc-register-submit")).to_be_enabled()
+        # Back
+        dialog.get_by_test_id("pc-register-back").focus()
+        page.keyboard.press("Enter")
+        expect(dialog.get_by_test_id("pc-speech-settings")).to_be_visible(timeout=15_000)
+        expect(dialog.get_by_test_id("pc-register-back")).to_have_count(0)
+        page.evaluate(_SETTLED)
+        back = page.evaluate(_FOCUS)
+        assert not back["isBody"], f"after Back the focus fell to <body>: {back}"
+        assert back["inDialog"] and back["testid"] == "pc-field:id", f"the focus is not on the first field inside the dialog: {back}"
+        expect(dialog.get_by_test_id("pc-field:id")).to_have_value("asr-focus-journey")
+        # the same connection again: no second test, and the pick is still there
+        dialog.get_by_test_id("pc-register-next").focus()
+        page.keyboard.press("Enter")
+        expect(dialog.get_by_test_id("pc-import-head")).to_be_visible(timeout=15_000)
+        expect(dialog.get_by_test_id("pc-pick:large-v3")).to_be_checked()
+        assert errors == [], errors
+    finally:
+        _close(page, None)
+
+
+@pytest.mark.ui_e2e
+@pytest.mark.parametrize("viewport", VIEWPORTS)
+def test_tts_next_hands_the_focus_to_the_voice_page(page: Page, viewport: dict) -> None:
+    """The TTS page also asks for the default model; its Next lands on the heading of the page that picks the voice."""
+    page.route("**/v1/tts_providers/_test", lambda route: _json(route, TTS_ANSWER))
+    try:
+        dialog = _mount(page, viewport, "tts")
+        dialog.get_by_test_id("pc-field:id").fill("tts-focus-journey")
+        dialog.get_by_test_id("pc-field:url").fill("http://tts.invalid:8004/v1")
+        dialog.get_by_test_id("pc-field:default_model").fill("kokoro")
+        expect(dialog.get_by_test_id("pc-register-next")).to_be_enabled()
+        dialog.get_by_test_id("pc-register-next").focus()
+        page.keyboard.press("Enter")
+        expect(dialog.get_by_test_id("pc-import-head")).to_be_visible(timeout=15_000)
+        page.evaluate(_SETTLED)
+        landed = page.evaluate(_FOCUS)
+        assert not landed["isBody"], f"after Next the focus fell to <body>: {landed}"
+        assert landed["inDialog"] and landed["testid"] == "pc-import-head", f"the focus is not on the voice page's heading inside the dialog: {landed}"
+        expect(dialog.get_by_test_id("pc-import-head")).to_contain_text("Voices found at tts-focus-journey")
+        expect(dialog.get_by_test_id("pc-pick:alloy")).to_be_visible()
     finally:
         _close(page, None)

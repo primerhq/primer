@@ -290,14 +290,7 @@ function PC_ModelsRegister({ klass, editRow, excludeKinds, frame, blocked, onSav
   const bodyWith = (models) => {
     if (!formOk) return null;
     const body = window.PC_submittable(eff, shape, kind);
-    if (!editing && body.limits) {
-      const shown = ["max_concurrency"].concat(limitFields);
-      const limits = {};
-      Object.keys(body.limits).forEach((k) => {
-        if (shown.indexOf(k) >= 0) limits[k] = body.limits[k];
-      });
-      body.limits = limits;
-    }
+    if (!editing && body.limits) body.limits = window.PC_shownLimits(body.limits, limitFields);
     body.models = models;
     return body;
   };
