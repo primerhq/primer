@@ -15,6 +15,7 @@ The properties that matter, in the order the review reads them:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
@@ -29,7 +30,7 @@ from primer.model.mcp_oauth import McpOAuthClient, McpOAuthPendingSignIn, McpOAu
 from primer.model.provider import SqliteConfig
 from primer.storage import raw_generation
 from primer.storage.sqlite import SqliteStorageProvider
-from primer.toolset.oauth.store import McpOAuthStore
+from primer.toolset.oauth.store import McpOAuthStore, pending_key
 
 NOW = datetime(2026, 10, 18, 12, 0, 0, tzinfo=UTC)
 KEY = "store-test-key-0123456789"
@@ -129,10 +130,10 @@ async def test_the_database_holds_no_plaintext_in_any_of_the_three_tables(store,
     stored = {
         "tokens": json.dumps(dump_for_storage(await store.get_tokens("kb"))),
         "client": json.dumps(dump_for_storage(await store.get_client("kb"))),
-        "pending": json.dumps(dump_for_storage(await provider.get_storage(McpOAuthPendingSignIn).get("state-1"))),
+        "pending": json.dumps(dump_for_storage(await provider.get_storage(McpOAuthPendingSignIn).get(pending_key("state-1")))),
     }
     for name, document in stored.items():
-        for plain in ("tok-plain", "ref-plain", "client-secret-plain", "verifier-plain"):
+        for plain in ("tok-plain", "ref-plain", "client-secret-plain", "verifier-plain", "state-1"):
             assert plain not in document, f"{plain} is in the stored {name} document"
     if not isinstance(provider, SqliteStorageProvider):
         return
@@ -145,7 +146,7 @@ async def test_the_database_holds_no_plaintext_in_any_of_the_three_tables(store,
         connection.close()
     assert all(rows.values()), f"a table was empty, so its check proved nothing: {rows.keys()}"
     raw = " ".join(row for table_rows in rows.values() for row in table_rows)
-    for plain in ("tok-plain", "ref-plain", "client-secret-plain", "verifier-plain"):
+    for plain in ("tok-plain", "ref-plain", "client-secret-plain", "verifier-plain", "state-1"):
         assert plain not in raw
 
 
@@ -337,15 +338,30 @@ async def test_put_client_replaces_the_registration(store):
 async def test_take_pending_is_single_use(store):
     await store.put_pending(pending_row(store))
     taken = await store.take_pending("state-1", now=NOW)
-    assert taken is not None and taken.id == "state-1" and taken.toolset_id == "kb"
+    assert taken is not None and taken.id == pending_key("state-1") and taken.toolset_id == "kb"
     assert store.unseal(taken.code_verifier_enc) == "verifier-plain"
     assert await store.take_pending("state-1", now=NOW) is None
+
+
+async def test_a_pending_sign_in_is_stored_under_a_hash_of_its_state(store, provider):
+    """The state is a live capability for ten minutes, and storage code prints row ids (the drift tripwire of ``patch_if_checked`` logs the id it was
+    given): the row is stored under the SHA-256 of its state, never the state, and only the state itself takes it back, not the stored key."""
+    state = "st-" + "q" * 40
+    await store.put_pending(pending_row(store, state))
+    storage = provider.get_storage(McpOAuthPendingSignIn)
+    assert pending_key(state) == hashlib.sha256(state.encode("utf-8")).hexdigest()
+    assert await storage.get(state) is None
+    stored = await storage.get(pending_key(state))
+    assert stored is not None and state not in json.dumps(dump_for_storage(stored))
+    assert await store.take_pending(pending_key(state), now=NOW) is None, "the stored key is not the capability"
+    taken = await store.take_pending(state, now=NOW)
+    assert taken is not None and taken.id == pending_key(state) and taken.toolset_id == "kb"
 
 
 async def test_take_pending_removes_the_row(store, provider):
     await store.put_pending(pending_row(store))
     await store.take_pending("state-1", now=NOW)
-    assert await provider.get_storage(McpOAuthPendingSignIn).get("state-1") is None
+    assert await provider.get_storage(McpOAuthPendingSignIn).get(pending_key("state-1")) is None
 
 
 async def test_a_caller_that_read_the_row_before_a_claim_and_a_delete_gets_none(store, monkeypatch):
@@ -354,7 +370,7 @@ async def test_a_caller_that_read_the_row_before_a_claim_and_a_delete_gets_none(
     Found on a live Postgres, where the claim of a row that is gone is a NotFoundError; the fake and SQLite never interleave a read and a claim that tightly.
     """
     await store.put_pending(pending_row(store))
-    stale = await store._pending.get("state-1")
+    stale = await store._pending.get(pending_key("state-1"))
     assert await store.take_pending("state-1", now=NOW) is not None          # the winner: claims and deletes
 
     async def read_before_the_claim(id, **kwargs):  # noqa: A002
@@ -380,13 +396,13 @@ async def test_many_concurrent_takes_get_one_row(store):
     takes = [store.take_pending(f"state-{n % 5}", now=NOW) for n in range(25)]
     results = await asyncio.gather(*takes)
     taken = [r.id for r in results if r is not None]
-    assert sorted(taken) == [f"state-{n}" for n in range(5)], "every state was given out exactly once"
+    assert sorted(taken) == sorted(pending_key(f"state-{n}") for n in range(5)), "every state was given out exactly once"
 
 
 async def test_an_expired_pending_sign_in_is_refused_and_removed(store, provider):
     await store.put_pending(pending_row(store, expires_at=NOW + timedelta(minutes=10)))
     assert await store.take_pending("state-1", now=NOW + timedelta(minutes=10, seconds=1)) is None
-    assert await provider.get_storage(McpOAuthPendingSignIn).get("state-1") is None
+    assert await provider.get_storage(McpOAuthPendingSignIn).get(pending_key("state-1")) is None
 
 
 async def test_a_pending_sign_in_is_expired_at_its_expiry_instant(store):
@@ -411,9 +427,9 @@ async def test_purge_pending_drops_only_expired_rows_of_one_toolset(store, provi
     await store.put_pending(pending_row(store, "other-old", "other", expires_at=NOW - timedelta(minutes=1)))
     assert await store.purge_pending("kb", now=NOW) == 1
     storage = provider.get_storage(McpOAuthPendingSignIn)
-    assert await storage.get("kb-old") is None
-    assert await storage.get("kb-live") is not None
-    assert await storage.get("other-old") is not None
+    assert await storage.get(pending_key("kb-old")) is None
+    assert await storage.get(pending_key("kb-live")) is not None
+    assert await storage.get(pending_key("other-old")) is not None
     assert await store.purge_pending("kb", now=NOW) == 0
 
 
@@ -422,7 +438,7 @@ async def test_purge_pending_pages_through_many_rows(store, provider):
         await store.put_pending(pending_row(store, f"old-{n}", "kb", expires_at=NOW - timedelta(minutes=1)))
     await store.put_pending(pending_row(store, "live", "kb"))
     assert await store.purge_pending("kb", now=NOW) == 230
-    assert await provider.get_storage(McpOAuthPendingSignIn).get("live") is not None
+    assert await provider.get_storage(McpOAuthPendingSignIn).get(pending_key("live")) is not None
 
 
 async def test_forget_removes_tokens_client_and_pending_of_one_toolset(store, provider):
@@ -434,9 +450,9 @@ async def test_forget_removes_tokens_client_and_pending_of_one_toolset(store, pr
     await store.forget("kb")
     assert await store.get_tokens("kb") is None and await store.get_client("kb") is None
     pending = provider.get_storage(McpOAuthPendingSignIn)
-    assert await pending.get("kb-live") is None and await pending.get("kb-old") is None, "every pending row goes, live ones included"
+    assert await pending.get(pending_key("kb-live")) is None and await pending.get(pending_key("kb-old")) is None, "every pending row goes, live ones included"
     assert await store.get_tokens("other") is not None and await store.get_client("other") is not None
-    assert await pending.get("other-live") is not None and await pending.get("other-old") is not None
+    assert await pending.get(pending_key("other-live")) is not None and await pending.get(pending_key("other-old")) is not None
 
 
 async def test_forget_is_idempotent(store):

@@ -10,12 +10,16 @@ and :class:`~primer.model.mcp_oauth.McpOAuthPendingSignIn`. It owns three guaran
   twice or lose an update silently. This is what lets several processes share one refresh lease.
 * **A pending sign-in is single use.** :meth:`take_pending` claims the row with a compare-and-set on ``consumed`` before it returns it, so of any number of
   concurrent callers exactly one gets it, and an expired or already-claimed row is never given out.
+* **A pending sign-in is stored under a hash of its state.** The ``state`` is a capability while the sign-in is pending, and storage code prints row ids
+  (the drift tripwire of :func:`~primer.storage.cas.patch_if_checked` logs the id it was given), so :meth:`put_pending` stores the row under
+  :func:`pending_key` of the state and :meth:`take_pending` looks it up by the state: the state itself is never a row id.
 
 The store logs nothing that comes from a row, and no method returns or raises with a token, a secret, a verifier or a ``state`` value in its text.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
@@ -34,7 +38,7 @@ from primer.storage import raw_generation
 from primer.storage.cas import patch_if_checked
 from primer.storage.q import Q
 
-__all__ = ["McpOAuthStore"]
+__all__ = ["McpOAuthStore", "pending_key"]
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +73,11 @@ def _require_sealed(values: Mapping[str, Any]) -> None:
 
 def _require_sealed_row(row: Any) -> None:
     _require_sealed({name: getattr(row, name, None) for name in _SEALED_FIELDS})
+
+
+def pending_key(state: str) -> str:
+    """The id a pending sign-in is stored under: the SHA-256 hex of its ``state``. Knowing it does not take the row back; only the state does."""
+    return hashlib.sha256(state.encode("utf-8")).hexdigest()
 
 
 class McpOAuthStore:
@@ -169,28 +178,31 @@ class McpOAuthStore:
     # ---- pending sign-ins ---------------------------------------------------------------------------------------------------------------------------------------------
 
     async def put_pending(self, row: McpOAuthPendingSignIn) -> None:
+        """Store a started sign-in. ``row.id`` is its ``state``; the row is stored under :func:`pending_key` of it, so the state is never a row id."""
         _require_sealed_row(row)
-        await self._pending.create(row)
+        await self._pending.create(row.model_copy(update={"id": pending_key(row.id)}))
 
     async def take_pending(self, state: str, *, now: datetime) -> McpOAuthPendingSignIn | None:
         """Claim the pending sign-in for ``state``: the row, once. ``None`` when it is unknown, already claimed, or expired (an expired row is deleted).
 
         The claim is a compare-and-set of ``consumed`` from False to True, so concurrent callers (the same callback hitting two pods, a replay) get the row
-        exactly once. The row is deleted after the claim; one a crash left behind is marked consumed and cannot be claimed again.
+        exactly once. The row is deleted after the claim; one a crash left behind is marked consumed and cannot be claimed again. The row is looked up
+        under :func:`pending_key` of the state, and the row returned carries that key as its id, never the state.
         """
-        row = await self._pending.get(state)
+        key = pending_key(state)
+        row = await self._pending.get(key)
         if row is None or row.consumed:
             return None
         if row.expires_at <= now:
-            await self._drop_pending(state)
+            await self._drop_pending(key)
             return None
         try:
-            claimed = await patch_if_checked(self._pending, state, {"consumed": True}, where={"consumed": [False]})
+            claimed = await patch_if_checked(self._pending, key, {"consumed": True}, where={"consumed": [False]})
         except NotFoundError:
             return None                                 # another caller claimed it AND deleted it between our read and our claim
         if claimed is None:
             return None
-        await self._drop_pending(state)
+        await self._drop_pending(key)
         return claimed
 
     async def purge_pending(self, toolset_id: str, *, now: datetime) -> int:
@@ -222,9 +234,9 @@ class McpOAuthStore:
             if cursor is None:
                 return rows
 
-    async def _drop_pending(self, state: str) -> bool:
+    async def _drop_pending(self, key: str) -> bool:
         try:
-            await self._pending.delete(state)
+            await self._pending.delete(key)
         except NotFoundError:
             return False
         return True

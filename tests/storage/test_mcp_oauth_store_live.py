@@ -30,7 +30,7 @@ from primer.model.provider import PoolConfig, PostgresConfig
 from primer.storage import postgres as pg_backend
 from primer.storage import raw_generation
 from primer.storage.postgres import PostgresStorageProvider
-from primer.toolset.oauth.store import McpOAuthStore
+from primer.toolset.oauth.store import McpOAuthStore, pending_key
 from tests.pg_gate import explicit_port, postgres_marks, require_postgres_url
 
 _WHAT = "the MCP OAuth store race tests"
@@ -116,7 +116,7 @@ async def test_a_pending_sign_in_goes_to_exactly_one_taker_across_two_pools(stor
         takes = [(a if n % 2 else b).take_pending(state, now=NOW) for state in states for n in range(6)]
         results = await asyncio.gather(*takes)
     taken = sorted(row.id for row in results if row is not None)
-    assert taken == sorted(states), "every state was given out exactly once"
+    assert taken == sorted(pending_key(state) for state in states), "every state was given out exactly once"
 
 
 async def test_an_expired_pending_sign_in_is_not_given_to_either_pool(stores):
@@ -174,5 +174,5 @@ async def test_the_table_holds_ciphertext_only(stores, pools):
             ]
     assert all(documents), "a table was empty, so its check proved nothing"
     for document in documents:
-        for plain in ("tok-plain", "ref-plain", "client-secret-plain", "verifier-plain"):
+        for plain in ("tok-plain", "ref-plain", "client-secret-plain", "verifier-plain", "state-1"):
             assert plain not in document
