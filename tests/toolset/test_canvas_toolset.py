@@ -247,18 +247,32 @@ async def test_ops_past_the_cap_are_refused_before_they_are_read(provider, ctx, 
     assert await world.canvas("s1") is None
 
 
-async def test_ops_at_the_cap_are_read(provider, ctx):
-    """Ops of exactly the size the cap allows get through the size check and are applied like any others."""
-    clear = {"op": "clear"}
-    each = len(json.dumps(clear, separators=(",", ":")))
-    count = (MAX_OPS_CHARS - 1) // (each + 1)                 # [a,b,...]: n items of `each` characters, n - 1 commas, two brackets
-    ops = [clear] * count
-    size = len(json.dumps(ops, separators=(",", ":")))
-    assert size <= MAX_OPS_CHARS < size + each + 1, (size, MAX_OPS_CHARS)
-    is_error, body = await call(provider, "canvas_apply", {"ops": ops}, ctx)
+def _compact_size(ops: list[dict]) -> int:
+    return len(json.dumps(ops, separators=(",", ":"), ensure_ascii=False))
+
+
+def _applying_ops_of_size(n: int) -> list[dict]:
+    """A batch that APPLIES and is EXACTLY ``n`` characters of compact JSON: a Text is set, then the canvas is cleared many times.
+
+    Each ``{"op":"clear"}`` adds 15 characters (14 and a comma) and the Text's ``text`` takes the remainder, so every ``n`` from 57 up is
+    reachable. The Text is cleared away again by the batch itself, so the canvas it ends with is a valid one at any size (a padded
+    string alone could not be: a Text holds 10000 characters at most and a canvas 512 KiB).
+    """
+    head = {"op": "set", "id": "t", "type": "Text", "props": {"text": ""}}
+    clears, pad = divmod(n - _compact_size([head]), 15)
+    ops = [{**head, "props": {"text": "x" * pad}}, *[{"op": "clear"}] * clears]
+    assert _compact_size(ops) == n
+    return ops
+
+
+async def test_ops_of_exactly_the_cap_are_applied_and_one_character_more_is_refused(provider, ctx, world):
+    """600000 characters of compact JSON is the most ``ops`` may hold: that batch is read and applied; 600001 is refused before it is read."""
+    is_error, body = await call(provider, "canvas_apply", {"ops": _applying_ops_of_size(MAX_OPS_CHARS)}, ctx)
     assert not is_error and body["rev"] == 1
-    is_error, body = await call(provider, "canvas_apply", {"ops": [*ops, clear]}, ctx)
-    assert is_error and "the limit is 600000" in body["message"]
+    is_error, body = await call(provider, "canvas_apply", {"ops": _applying_ops_of_size(MAX_OPS_CHARS + 1)}, ctx)
+    assert is_error and body["type"] == "validation-error"
+    assert "ops hold 600001 characters of JSON; the limit is 600000" in body["message"], body
+    assert (await world.canvas("s1")).rev == 1, "the refused batch applied nothing"
 
 
 # ---- base_rev ------------------------------------------------------------------------------------------------------------------------
