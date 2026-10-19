@@ -204,12 +204,12 @@ def test_the_loop_is_inside_the_core_verb_effect_and_after_the_core_verbs() -> N
 
 def _run_shell_effect(ctx) -> None:
     """The shell's core verb effect, as ``nv-shell.jsx`` writes it (``reg``, every core ``reg({...})`` call, then the Platform loop), run against the real registry.
-    Only ``goView`` is a stand-in, and no ranking calls it."""
+    Only ``goView`` is a stand-in, and no ranking calls it; ``console.warn`` is recorded into ``WARNS``."""
     start = SHELL.index("// --- Core verbs (chrome-level; view bodies add their own)")
     body = SHELL.index("React.useEffect(function () {", start) + len("React.useEffect(function () {")
     effect = SHELL[body:SHELL.index("}, [registry]);", body)]
     ctx.eval(
-        "var registry = SH_createVerbRegistry();"
+        "var registry = SH_createVerbRegistry(); var WARNS = []; console.warn = function (m) { WARNS.push(String(m)); };"
         "(function (registry, goView) {" + effect + "\n})(registry, function () {});"
     )
 
@@ -219,6 +219,23 @@ def palette(ctx):
     """The palette's verbs as the shell registers them: the core verbs first, then the Platform verbs of the loop, in the real registry; ``SH_rankVerbs`` is the real ranker."""
     _run_shell_effect(ctx)
     return ctx
+
+
+def test_a_title_the_registry_refuses_costs_its_own_verb_and_nothing_else(ctx) -> None:
+    """``NV_platTitleCase`` fixes a lower-case word, but a title word that starts with a digit or a symbol is still refused by the label lint, and the registry throws.
+    Inside the shell's effect that throw takes the console down, so the loop skips that one verb and says so on the console: the page keeps its row, every other verb registers."""
+    ctx.eval('NV_PLAT_PAGES.agents.title = "2FA agents";')
+    assert js(ctx, 'SH_lintVerbLabel("Open 2FA Agents")') is not None, "the precondition: this label is one the registry refuses"
+    _run_shell_effect(ctx)
+    ids = js(ctx, "registry.ids()")
+    assert [i for i in ids if i.startswith("platform.open.")] == [i for i in IDS if i != "platform.open.agents"]
+    assert set(CORE) <= set(ids), "the core verbs registered before the loop are untouched"
+    warns = js(ctx, "WARNS")
+    assert len(warns) == 1 and "platform.open.agents" in warns[0] and "Open 2FA Agents" in warns[0], warns
+
+
+def test_a_title_the_registry_accepts_registers_without_a_warning(palette) -> None:
+    assert js(palette, "WARNS") == []
 
 
 # ---- the palette ranks a verb's full label first ---------------------------------------------------------------------------------------------

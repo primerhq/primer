@@ -293,7 +293,8 @@ function NV_providersNavigate(con, ref) {
 // the sidebar row that opens the same view (the data-verb of NV_PlatNav). NV_platVerbSpecs lists them in the sidebar's order, Providers then its types then every
 // other nav, and leaves the custom pages out: a custom page registers its own verb in the plan that ships the page (nv-shell.jsx says where), and its row already
 // carries the data-verb. A label must be verb-noun Title Case or the registry throws, inside the shell's registration effect, so a page title ("Approval policies")
-// and a type with no label are capitalised word by word here, and no title a page is free to write can take the console down.
+// and a type with no label are capitalised word by word here. That fixes a lower-case word, not one that starts with a digit or a symbol: the registry's lint still
+// refuses that label, and the shell's loop skips that one verb with a console warning instead of letting the throw take the console down (nv-shell.jsx).
 function NV_platTitleCase(text) {
   return String(text).replace(/(^|\s)([a-z])/g, function (all, space, letter) { return space + letter.toUpperCase(); });
 }
