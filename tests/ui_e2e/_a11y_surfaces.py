@@ -26,7 +26,7 @@ SYSTEM = '[data-testid="nv-view:system"]'
 NEW_WORKSPACE_OVERLAY = '[data-testid="nv-overlay:new-workspace"]'
 
 # the provider classes whose page is a panel of its own (ProviderCatalog's ``form: "panel"``): they have no card grid and no ``provider-empty-<key>``
-PANEL_CLASSES = {"model_profile", "ssp", "workspace", "channel"}
+PANEL_CLASSES = {"ssp", "workspace", "channel"}
 
 PAGE_ROOTS = {OVERLAY, PLATFORM, SYSTEM}
 FORM_ROOTS = {MODAL, NEW_WORKSPACE_OVERLAY}
@@ -75,7 +75,6 @@ LEGACY_FORMS: dict[str, list[Form]] = {
     "providers/web_search": [_register(KIND_MENU_ITEM)],
     "providers/web_fetch": [_register(KIND_MENU_ITEM)],
     "providers/artifact_storage": [_register(KIND_MENU_ITEM)],   # db, filesystem and s3 since the class serves its kinds (GET /_types); the first, db, is the one that is built
-    "providers/model_profile": [Form("+ Aggregate", MODAL)],
     "ssp": [_register(KIND_MENU_ITEM)],                 # the semantic-search stores: the same register menu, and a modal of their own
 }
 
@@ -104,7 +103,6 @@ LEGACY_TITLES: dict[str, str] = {
     "providers/web_search": "Providers",
     "providers/web_fetch": "Providers",
     "providers/artifact_storage": "Providers",
-    "providers/model_profile": "Providers",
     "ssp": "Providers",
 }
 
@@ -268,8 +266,6 @@ FLOORS: dict[str, int] = {
     "overlay-page providers/web_fetch / Register provider": 2,
     "overlay-page providers/artifact_storage": 3,
     "overlay-page providers/artifact_storage / Register provider": 2,
-    "overlay-page providers/model_profile": 3,
-    "overlay-page providers/model_profile / + Aggregate": 2,
     "overlay-page ssp": 1,
     "overlay-page ssp / Register provider": 4,
     "platform-view providers": 6,

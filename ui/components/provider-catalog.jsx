@@ -47,15 +47,6 @@
 // untouched (backend-facing, unrelated to display order/labels).
 const PROVIDER_CLASSES = [
   { key: "llm", label: "LLM", plural: "llm_providers", form: "crud", profiles: true, invalidate: true },
-  // 01a067c4 (approved IA ruling): a provider-agnostic browse/create/edit
-  // surface for EVERY model profile, single and aggregated. An aggregated
-  // profile has no provider_id of its own, so it can never appear in the
-  // "llm" class's per-provider profiles panel above -- this class chip is
-  // its only home. Same form:"panel" precedent as ssp/workspace/channel
-  // below, not a novel pattern; no `detail` -- MP_AllProfilesPanel's own
-  // modal is the only drill-down this class needs.
-  { key: "model_profile", label: "Model profiles", plural: "model_profiles", form: "panel",
-    panel: () => window.MP_AllProfilesPanel },
   { key: "embedding", label: "Embedding", plural: "embedding_providers", form: "crud", invalidate: true },
   { key: "tts", label: "TTS", plural: "tts_providers", form: "crud" },
   { key: "stt", label: "ASR", plural: "stt_providers", form: "crud" },
@@ -408,12 +399,11 @@ function PC_InstanceCard({ klass, row, onOpen, onChanged, profileCount }) {
 }
 
 // Designer reconciliation: "default for N profiles" - one combined
-// fetch grouped client-side by provider_id, same shape PC_ProfilesPanel
-// already uses below (no server-side provider_id filter is wired for
-// this list route - POST /model_profiles/find takes a Predicate and
-// COULD do this server-side, unused here only to match the existing
-// pattern). `enabled=false` (any class but LLM) skips the fetch
-// entirely rather than running it and discarding the result.
+// fetch grouped client-side by provider_id (no server-side provider_id
+// filter is wired for this list route - POST /model_profiles/find takes
+// a Predicate and COULD do this server-side, unused here only to match
+// the existing pattern). `enabled=false` (any class but LLM) skips the
+// fetch entirely rather than running it and discarding the result.
 function PC_useProfileCounts(enabled) {
   const { useResource, apiFetch } = window.primerApi;
   const profiles = useResource(
@@ -606,97 +596,6 @@ function PC_AllInstancesGrid({ onSelect, reloadKey, filterQuery, onCountChange }
   );
 }
 
-
-// ---------------------------------------------------------------------------
-// Model profiles: LLM instances only
-// ---------------------------------------------------------------------------
-
-// Platform wave P4: profile cards wired in via MP_ProfileCard/
-// MP_ProfilesGrid (model-profiles.jsx) instead of the bare <ul> this
-// used to render - reuses the exact same card anatomy platform wave
-// P1b already built (reasoning chip, bound-by/provider-down badges),
-// rather than a second hand-rolled row renderer. This is deliberately
-// still the panel embedded under a provider's own page, not a
-// standalone page - tests/ui/test_model_profiles_page.py hard-bans a
-// a standalone "Model Profiles" page component existing anywhere, since a profile is
-// LLM-only by design and belongs under its provider.
-//
-// Also fixes a live bug found while wiring this: MP_ProfileModal was
-// being mounted with a `providerId` prop it does not accept (it wants
-// `open`/`providers`/`existing`/`prefill`) and no `open` prop at all,
-// so `if (!open) return null;` inside it fired unconditionally - "New
-// profile" rendered the modal tree but it always resolved to nothing.
-function PC_ProfilesPanel({ providerId }) {
-  const { useResource, apiFetch } = window.primerApi;
-  const [open, setOpen] = React.useState(false);
-  const [editing, setEditing] = React.useState(null);
-  const models = useResource(
-    `pc:models:${providerId}`,
-    (signal) => apiFetch(
-      "GET", `/llm_providers/${encodeURIComponent(providerId)}/models`, null, { signal },
-    ),
-    { pollMs: null },
-  );
-  const discovered_models = models.data?.models ?? [];
-  const rows = useResource(
-    `catalog:profile-rows:${providerId}`,
-    (signal) => apiFetch("GET", "/model_profiles?limit=200", null, { signal }),
-    { deps: [providerId] },
-  );
-  // Needed both for MP_ProfileModal's own Provider|Model picker (it
-  // takes the full row list, same as the other working call site,
-  // NV_ProfileModalHost in console/nv-platform.jsx) and for the
-  // provider-down join below - model_profiles has no such join
-  // itself (confirmed: _enrich_with_usage only tallies agent_count/
-  // graph_node_count, it never touches LLMProvider storage), so the
-  // frontend cross-references this provider's own row.
-  const providers = useResource(
-    "pc:profiles-providers",
-    (signal) => apiFetch("GET", "/llm_providers?limit=200", null, { signal }),
-    { pollMs: null },
-  );
-  const providerRows = (providers.data && providers.data.items) || [];
-  const thisProvider = providerRows.find((p) => p.id === providerId);
-  // Same virgin-is-not-down rule PC_ReachabilityBadge uses: a
-  // never-probed provider is not "down", it is simply unprobed.
-  const providerDown = !!(thisProvider && thisProvider.last_probe_at != null
-    && !thisProvider.last_probe_ok);
-
-  const mine = ((rows.data && rows.data.items) || []).filter(
-    (r) => r.provider_id === providerId,
-  );
-
-  return (
-    <div className="col" style={{ gap: 8 }} data-testid="provider-profiles">
-      <div className="muted text-sm">
-        Model profiles bind a model on this provider to defaults an agent
-        can name. Only LLM providers carry them.
-      </div>
-      <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
-        {discovered_models.map((m) => (
-          <span key={m} className="mono text-sm chip">{m}</span>
-        ))}
-      </div>
-      <window.MP_ProfilesGrid
-        profiles={mine}
-        providerDown={providerDown}
-        onOpen={(row) => setEditing(row)}
-        onDeleted={() => rows.refetch()}
-      />
-      <Btn icon="plus" kind="ghost" onClick={() => setOpen(true)}>New profile</Btn>
-      {(open || editing) && window.MP_ProfileModal ? (
-        <window.MP_ProfileModal
-          open
-          existing={editing}
-          providers={providerRows}
-          prefill={editing ? null : { provider_id: providerId }}
-          onClose={() => { setOpen(false); setEditing(null); }}
-          onSaved={() => rows.refetch()}
-        />
-      ) : null}
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Active defaults, edited in place (amendment M11c)
@@ -950,9 +849,8 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
   // to one row - see PC_ProviderForm's `editing`/`existingRow` props for
   // how the id gets locked and secrets never round-trip the mask. Also
   // focuses the page on that row's own class/instance (whether reached
-  // from a single-class view or the merged "All" grid), so the profiles
-  // panel below (LLM only) and the breadcrumb stay consistent with what
-  // is now open.
+  // from a single-class view or the merged "All" grid), so the breadcrumb
+  // stays consistent with what is now open.
   function openEdit(k, row) {
     setFormKlass(k);
     setEditingRow(row);
@@ -1110,9 +1008,6 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
           ? <PC_ActiveSpeechPanel /> : null}
         {!isAll && klass.key === "web_search" ? <PC_ActiveWebSearchPanel /> : null}
         <div data-testid={`provider-body-${classKey}`}>{body}</div>
-        {!isAll && klass.profiles && instanceId ? (
-          <PC_ProfilesPanel providerId={instanceId} />
-        ) : null}
       </div>
       {formOpen ? (
         <Modal
