@@ -27,7 +27,8 @@ Sessions:
     list_workspace_sessions, get_workspace_session,
     pause_workspace_session, resume_workspace_session,
     steer_workspace_session, restart_workspace_session,
-    find_sessions
+    find_sessions,
+    list_my_sessions, message_session
 
 Files:
     list_workspace_files, get_workspace_file_info,
@@ -49,10 +50,11 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
+from primer.agent.inner_dispatch import run_principal
 from primer.authz import _role_allows
 from primer.common.validation_errors import without_input
 from primer.model.chat import Tool, ToolCallResult, ToolExample
@@ -97,6 +99,13 @@ from primer.model.workspace_session import (
     session_state_predicate,
 )
 from primer.model.yield_ import ToolContext, Yielded
+from primer.session.peer_messages import (
+    PEER_MESSAGE_MAX_CHARS,
+    PeerMessageRefused,
+    PeerSendResult,
+    list_workspace_session_summaries,
+    send_peer_message,
+)
 from primer.tap.cursor import TapCursor
 from primer.tap.reader import read_batch
 from primer.tap.selector import TapSelector
@@ -188,6 +197,13 @@ def _caller_actor(ctx: ToolContext | None) -> str:
 
 def _session_not_on_workspace(args: "_WorkspaceSessionArgs") -> str:
     return f"Session {args.session_id!r} does not exist on workspace {args.workspace_id!r}"
+
+
+def _outside_a_workspace_session(tool_name: str) -> ToolCallResult:
+    """The refusal of a session-scoped tool called with no calling workspace session: no tool context at all (what the MCP endpoint dispatches with),
+    or a context with no session or no workspace (a chat). ``list_my_sessions`` and ``message_session`` take WHO is calling from the context and
+    nowhere else, so without one there is nothing to list or to send from."""
+    return _err(f"{tool_name} works only inside a workspace session", error_type="unsupported-surface")
 
 
 def _refuse_reserved_read(
@@ -380,6 +396,31 @@ class _FindSessionsArgs(BaseModel):
         description="The initiating principal's id (PrincipalRef.id)",
     )
     limit: int = Field(20, ge=1, le=200)
+
+
+class _ListMySessionsArgs(BaseModel):
+    state: SessionState | None = Field(
+        default=None,
+        description="Only the sessions in this state (waiting, running, parked or ended); omit it for all of them.",
+    )
+    limit: int = Field(default=50, ge=1, le=200, description="How many sessions to return, newest first.")
+
+
+class _MessageSessionArgs(BaseModel):
+    session_id: str = Field(..., min_length=1, description="The session to message: an id from list_my_sessions.")
+    text: str = Field(
+        ...,
+        min_length=1,
+        max_length=PEER_MESSAGE_MAX_CHARS,
+        description="The message, 1 to 32,000 characters. Write larger outputs to a file and send its path.",
+    )
+    mode: Literal["auto", "if_idle"] = Field(
+        default="auto",
+        description=(
+            "auto delivers by the session's state (an idle session starts its next turn with it, a busy one reads it at its next turn boundary). "
+            "if_idle sends only when the session would start a turn now, and is refused (conflict) when it is busy, waiting or paused."
+        ),
+    )
 
 
 class _WorkspacePathArgs(BaseModel):
@@ -2109,6 +2150,26 @@ def build_workspaces_toolset(
     )
     registry[name] = entry
 
+    async def _send_from_session(
+        ctx: ToolContext, sender_session_id: str, **options: Any,
+    ) -> PeerSendResult:
+        """:func:`send_peer_message` from the session that made this tool call (``message_session``, and ``steer_workspace_session`` called by an agent).
+
+        WHO sends is the calling run's and nowhere else: the session is ``sender_session_id`` (the caller's ``ctx.session_id``, checked by the tool)
+        and the principal is ``run_principal(ctx)``, so a run whose context names no initiator sends as an ordinary user, not as an unknown sender
+        (which the service refuses). Neither is ever an argument a model chose. ``options`` are the service's own (``target_session_id``, ``text``...).
+        """
+        return await send_peer_message(
+            storage_provider=storage_provider,
+            scheduler=scheduler,
+            claim_engine=claim_engine,
+            workspace_registry=workspace_registry,
+            event_bus=event_bus,
+            sender_session_id=sender_session_id,
+            sender_principal=run_principal(ctx),
+            **options,
+        )
+
     async def _steer_session(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         if scheduler is None or claim_engine is None:
             return _err(
@@ -2126,6 +2187,26 @@ def build_workspaces_toolset(
         row = await sessions.get(args.session_id)
         if row is None or row.workspace_id != args.workspace_id:
             return _err(_session_not_on_workspace(args), error_type="not-found")
+        if ctx is not None and ctx.session_id:
+            # An AGENT in a workspace session is steering another session (pivot P3, lead ruling 3): that is a message from the calling session, so it
+            # goes through the service ``message_session`` uses and gets its guards (who sent it, the hop count, the per-sender rate limit, the rank
+            # check) and the rulings keyed on a peer message (it never evicts a person's queued steer; it never reopens a session an operator
+            # cancelled). A call with no calling session (the MCP endpoint, a chat) is a person or an API client steering, and takes the path below
+            # unchanged. The named workspace is still checked first (above) and is not narrowed to the caller's: this tool has always reached
+            # "a session in any workspace" (``reach_any_workspace``), and it announces ``session.steered`` for every delivery, as it always did.
+            try:
+                sent = await _send_from_session(
+                    ctx,
+                    ctx.session_id,
+                    target_session_id=args.session_id,
+                    text=args.instruction,
+                    reach_any_workspace=True,
+                    steered_on_every_delivery=True,
+                )
+            except PeerMessageRefused as exc:
+                return _err(exc.message, error_type=exc.error_type)
+            after = await sessions.get(args.session_id) or row
+            return _ok({**after.model_dump(mode="json"), "delivery": sent.delivery})
         # The same delivery path as the REST steer route and every other machine entrypoint (triggers, channel replies): a session with a
         # turn open (armed, running, or parked on any gate) QUEUES the instruction for its next turn boundary instead of writing a second
         # user message, a parked gate is never answered by it, and an idle or ended session starts its next turn with it.
@@ -2182,7 +2263,12 @@ def build_workspaces_toolset(
             "Use when you want to redirect a session; not to pause or resume "
             "it (use pause_workspace_session / resume_workspace_session) and "
             "not to answer its ask_user (a queued instruction is never an "
-            "answer). Returns the session row plus delivery: woken or queued."
+            "answer). Returns the session row plus delivery: woken or queued. "
+            "From inside a workspace session it is a message from that "
+            "session: the target sees a user message that starts with "
+            "[from session <your session id> (agent <your agent id>)], and "
+            "the limits of message_session apply (forbidden, hop-limit, "
+            "rate-limited, conflict)."
         ),
         _SteerArgs,
         _steer_session,
@@ -2269,6 +2355,100 @@ def build_workspaces_toolset(
             ),
         ],
         required_role="user",
+        interruptible=False,
+    )
+    registry[name] = entry
+
+    # ------------------- Messaging between sessions (pivot P3) ---------
+    async def _list_my_sessions(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
+        # WHICH workspace is the caller's, from its tool context and nowhere else: the tool has no workspace argument.
+        if ctx is None or not ctx.session_id or not ctx.workspace_id:
+            return _outside_a_workspace_session("list_my_sessions")
+        try:
+            args = _ListMySessionsArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        return _ok(
+            await list_workspace_session_summaries(
+                storage_provider,
+                workspace_id=ctx.workspace_id,
+                caller_session_id=ctx.session_id,
+                state=args.state,
+                limit=args.limit,
+            )
+        )
+
+    name, entry = _tool(
+        "list_my_sessions",
+        "List the sessions in your own workspace with their state, so you can pick one to message.",
+        (
+            "Use when you need the ids, agents and states of the other sessions in your workspace, for example before message_session; "
+            "not for another workspace (use list_workspace_sessions) and not for one session's transcript "
+            "(use read_workspace_session_messages). Each item says what a parked session waits on (parked_on) and marks your own "
+            "session with self: true."
+        ),
+        _ListMySessionsArgs,
+        _list_my_sessions,
+        examples=[
+            ToolExample(
+                args={},
+                returns=(
+                    "{workspace_id, items: [{id, title, agent_id, graph_id, status, state, turn_status, parked_on, created_by, "
+                    "parent_session_id, last_activity_at, self}], total}"
+                ),
+            ),
+            ToolExample(args={"state": "running", "limit": 10}),
+        ],
+        requires_workspace=True,
+        required_role="user",
+    )
+    registry[name] = entry
+
+    async def _message_session(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
+        if ctx is None or not ctx.session_id or not ctx.workspace_id:
+            return _outside_a_workspace_session("message_session")
+        if scheduler is None or claim_engine is None:
+            return _err(
+                "session tools unavailable: scheduler/claim_engine not wired",
+                error_type="unavailable",
+            )
+        try:
+            args = _MessageSessionArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        try:
+            result = await _send_from_session(
+                ctx, ctx.session_id, target_session_id=args.session_id, text=args.text, mode=args.mode,
+            )
+        except PeerMessageRefused as exc:
+            return _err(exc.message, error_type=exc.error_type)
+        return _ok(result.model_dump(mode="json"))
+
+    name, entry = _tool(
+        "message_session",
+        "Send a message to another session: an idle session starts its next turn with it, a busy one reads it at its next turn boundary.",
+        (
+            "Use when another session's agent should act on something or learn a result; not for large outputs "
+            "(write a file and send its path) and not to answer a session's ask_user (a message is never an answer). "
+            "The target sees a user message that starts with [from session <your session id> (agent <your agent id>)]. "
+            "Refusals: bad-request (yourself), not-found (no such session in your workspace), forbidden (it runs at a higher rank "
+            "than you), hop-limit (a chain of 8 messages), rate-limited (20 messages per 10 minutes), "
+            "conflict (mode if_idle and the session is busy, or an ended session that cannot reopen)."
+        ),
+        _MessageSessionArgs,
+        _message_session,
+        examples=[
+            ToolExample(
+                args={"session_id": "ses-2", "text": "The API spec is in docs/api.md; build the client against it."},
+                returns=(
+                    '{message_id, session_id, workspace_id, delivery: "woken", hops: 1, target_state, target_parked_on, restarts_graph, note}'
+                ),
+            ),
+            ToolExample(args={"session_id": "ses-3", "text": "Pick up the next ticket when you are free.", "mode": "if_idle"}),
+        ],
+        requires_workspace=True,
+        required_role="user",
+        # The delivery (several writes), then the ledger row, then two events, with no transaction: see tests/toolset/test_interruptible_declarations.py.
         interruptible=False,
     )
     registry[name] = entry

@@ -17,7 +17,7 @@ from primer.events.recorder import EVENTS_APPENDED_KEY
 from primer.model.except_ import ConflictError
 from primer.model.principal import Principal, PrincipalRef
 from primer.model.storage import OffsetPage
-from primer.model.workspace_session import GraphSessionBinding, PendingSessionMessage, SessionStatus
+from primer.model.workspace_session import AgentSessionBinding, GraphSessionBinding, PendingSessionMessage, SessionStatus
 from primer.model.yield_ import ToolContext
 from primer.toolset.workspaces import build_workspaces_toolset
 from tests.session._peer_fakes import make_world, records, seed_session, slot
@@ -382,7 +382,10 @@ async def test_the_answer_keeps_every_key_of_the_session_row_and_adds_delivery()
 
 
 async def test_session_steered_names_the_target_and_the_caller_and_carries_the_delivery():
+    """A steer from inside a session is a message from it (lead ruling 3, ``tests/toolset/test_steer_tool_peer_guards.py``), so the calling session
+    must exist and the event names it. This used to steer from a session id that was never seeded, as an unattributed instruction."""
     world = make_world(with_bus=True)
+    await seed_session(world, sid="ses-a", binding=AgentSessionBinding(agent_id="planner"), initiated_by=USER)
     await seed_session(world, sid="ses-b", turn_no=1)
     ctx = ToolContext(tool_call_id="call_1", session_id="ses-a", workspace_id="ws-1", initiated_by=USER)
     result, _ = await _steer(world, "ses-b", ctx=ctx)
@@ -390,7 +393,9 @@ async def test_session_steered_names_the_target_and_the_caller_and_carries_the_d
     (event,) = await _steered_events(world)
     assert event.event_type == "session.steered"
     assert (event.workspace_id, event.session_id, event.actor) == ("ws-1", "ses-b", "user:u1")
-    assert event.payload == {"has_instruction": True, "has_tool_results": False, "has_attachments": False, "delivery": "woken"}
+    assert event.payload == {
+        "has_instruction": True, "has_tool_results": False, "has_attachments": False, "from_session_id": "ses-a", "delivery": "woken",
+    }
 
 
 async def test_session_steered_is_attributed_to_system_when_no_caller_is_known():

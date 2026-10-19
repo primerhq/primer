@@ -4,6 +4,8 @@
 workspace, of any workspace). This module is the service behind it: the tool handlers are thin wrappers over :func:`send_peer_message`. A message
 travels the delivery path every machine entrypoint shares (:func:`primer.session.steer_delivery.deliver_steer`): an idle or ended session starts a
 turn with it, a session with a turn open reads it at its next turn boundary, and a gate the session waits on is never answered by it.
+``workspaces__list_my_sessions`` is the other half: the sessions of the caller's own workspace, in the shape :func:`session_summary` gives
+(:func:`list_workspace_session_summaries`), so a sender can pick a target.
 
 What a sender may do is decided here, before anything is written. The guards run in this order, and the first one that fails refuses the send with a
 :class:`PeerMessageRefused` that carries the tool's error ``type`` and writes nothing (no ledger row, no queued message, no record, no event). Before
@@ -50,6 +52,7 @@ from primer.model.workspace_session import (
     SessionState,
     SessionStatus,
     WorkspaceSession,
+    session_state_predicate,
 )
 from primer.session.steer_delivery import (
     DELIVERED_MISSING,
@@ -253,6 +256,54 @@ def peer_prefix(sender: WorkspaceSession) -> str:
     return PEER_PREFIX_AGENT.format(session_id=sender.id, agent_id=binding.agent_id)
 
 
+def session_summary(row: WorkspaceSession, *, caller_session_id: str) -> dict[str, Any]:
+    """One session as ``list_my_sessions`` shows it: who it is, what it is doing, what it waits on, and whether it is the caller.
+
+    ``state`` is the served ``session_state`` (waiting, running, parked or ended) and ``turn_status`` the scheduler's axis under it; ``parked_on``
+    names what a parked session waits for (:func:`parked_on`), so the sender can tell a session that waits for a person from one that is only resting.
+    ``agent_id`` and ``graph_id`` are exclusive (the other is None). ``created_by`` is the principal that started the session, as its type, id, display
+    name and role, and None for a row saved before attribution was recorded. ``last_activity_at`` is the time of the last turn, else the creation
+    time: the rule of ``GET /v1/sessions/recent``. ``self`` marks the caller's own session, which a sender must not message.
+    """
+    binding = row.binding
+    graph_id = binding.graph_id if isinstance(binding, GraphSessionBinding) else None
+    return {
+        "id": row.id,
+        "title": row.name,
+        "agent_id": None if graph_id is not None else binding.agent_id,
+        "graph_id": graph_id,
+        "status": row.status.value,
+        "state": row.session_state,
+        "turn_status": row.turn_status,
+        "parked_on": parked_on(row),
+        "created_by": (
+            row.initiated_by.model_dump(mode="json", include={"type", "id", "display", "role"}) if row.initiated_by is not None else None
+        ),
+        "parent_session_id": row.parent_session_id,
+        "last_activity_at": (row.last_turn_at or row.created_at).isoformat(),
+        "self": row.id == caller_session_id,
+    }
+
+
+async def list_workspace_session_summaries(
+    storage_provider: Any, *, workspace_id: str, caller_session_id: str, state: SessionState | None, limit: int,
+) -> dict[str, Any]:
+    """The newest ``limit`` sessions of ``workspace_id`` (all of them, or only those in ``state``) as ``{"workspace_id", "items", "total"}``.
+
+    The workspace is the CALLER's, taken from its tool context by the tool; it is never an argument, so a session cannot list another workspace
+    with this. Newest first by creation time, the order of ``find_sessions``. ``total`` counts every matching session, not only the page; a backend that
+    cannot count cheaply reports None and ``total`` is then the size of the page.
+    """
+    predicate = Predicate(left=FieldRef(name="workspace_id"), op=Op.EQ, right=Value(value=workspace_id))
+    if state is not None:
+        predicate = Predicate(left=predicate, op=Op.AND, right=session_state_predicate(state))
+    page = await storage_provider.get_storage(WorkspaceSession).find(
+        predicate, OffsetPage(offset=0, length=limit), order_by=[OrderBy(field="created_at", direction="desc")],
+    )
+    items = [session_summary(row, caller_session_id=caller_session_id) for row in page.items]
+    return {"workspace_id": workspace_id, "items": items, "total": page.total if page.total is not None else len(items)}
+
+
 class PeerSendResult(BaseModel):
     """What ``message_session`` answers when the message was delivered or queued."""
 
@@ -333,6 +384,8 @@ async def send_peer_message(
     text: str,
     mode: Literal["auto", "if_idle"] = "auto",
     now: datetime | None = None,
+    reach_any_workspace: bool = False,
+    steered_on_every_delivery: bool = False,
 ) -> PeerSendResult:
     """Deliver ``text`` from the session ``sender_session_id`` to the session ``target_session_id``, or raise :class:`PeerMessageRefused`.
 
@@ -361,6 +414,12 @@ async def send_peer_message(
     Two events follow a delivery: ``session.messaged`` always (it carries the attribution, never the text, so a session waiting on it for
     ``wait_for_event`` is woken as by a doorbell while the message itself stays queued for the turn boundary), and ``session.steered`` too when the
     target had a turn open.
+
+    Two switches exist for ``steer_workspace_session`` called from inside a session, which is a peer message too (lead ruling 3) and the only caller
+    that sets them. ``reach_any_workspace`` skips the reach guard: that tool names the target's workspace itself and has always reached "a session in
+    any workspace", and the ruling adds the attribution, hop, rate and rank guards, not a scope. ``steered_on_every_delivery`` emits ``session.steered``
+    for a woken target as well as a queued one, as that tool always has (the REST steer route emits it for every steer). Every other guard, the
+    ledger and the rulings R1 and R4 apply as for ``message_session``.
     """
     if not text or len(text) > PEER_MESSAGE_MAX_CHARS:
         raise PeerMessageRefused("bad-request", REFUSE_TEXT.format(limit=PEER_MESSAGE_MAX_CHARS))
@@ -376,7 +435,9 @@ async def send_peer_message(
     # The default workspace (prime) is the management plane: its sessions may message a session in ANY workspace (design 6.1). Which workspace
     # that is, is the one every module asks for (``primer.bootstrap.prime.resolve_default_workspace_id``); with none named, no session is in it.
     default_workspace_id = await resolve_default_workspace_id(storage_provider)
-    if target is None or (target.workspace_id != sender.workspace_id and sender.workspace_id != default_workspace_id):
+    if target is None or (
+        not reach_any_workspace and target.workspace_id != sender.workspace_id and sender.workspace_id != default_workspace_id
+    ):
         # A session of another workspace is answered exactly as a session that does not exist: an id seen in a shared file or a log must not confirm
         # that the session is there. This comes before the rank check for the same reason.
         raise PeerMessageRefused("not-found", REFUSE_NOT_FOUND.format(session_id=target_session_id))
@@ -486,7 +547,7 @@ async def send_peer_message(
             "delivery": how,
         },
     )
-    if is_steer:
+    if is_steer or steered_on_every_delivery:
         await recorder.emit(
             "session.steered",
             actor=actor,
@@ -563,6 +624,7 @@ __all__ = [
     "PeerMessageRefused",
     "PeerSendResult",
     "check_peer_rate",
+    "list_workspace_session_summaries",
     "next_peer_hops",
     "parked_on",
     "peer_prefix",
@@ -571,4 +633,5 @@ __all__ = [
     "resolve_default_workspace_id",
     "send_peer_message",
     "sender_may_message",
+    "session_summary",
 ]

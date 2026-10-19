@@ -453,8 +453,9 @@ class TestCatalog:
         # read_workspace_session_messages (A-22: the supported transcript
         # reader, since raw .state reads are admin-only) = 30, plus
         # find_sessions (pivot P2) = 31, plus list_workspace_provider_choices
-        # (platform revamp 2026-10, plan 08 task 7) = 32.
-        assert len(names) == 32
+        # (platform revamp 2026-10, plan 08 task 7) = 32, plus list_my_sessions
+        # and message_session (pivot P3) = 34.
+        assert len(names) == 34
         assert "read_workspace_session_messages" in names
         assert "list_workspace_provider_choices" in names
         assert "create_workspace_session" in names
@@ -463,6 +464,8 @@ class TestCatalog:
         assert "workspace_tap" in names
         assert "restart_workspace_session" in names
         assert "find_sessions" in names
+        assert "list_my_sessions" in names
+        assert "message_session" in names
         # watch_files + invoke_graph moved to workspace_ext.
         assert "watch_files" not in names
         assert "invoke_graph" not in names
@@ -561,11 +564,14 @@ class TestBootstrapIngestsWorkspacesTools:
         # = 28, plus interrupt_workspace_session (task 01a10871) = 29,
         # plus read_workspace_session_messages (A-22) = 30, plus
         # find_sessions (pivot P2) = 31, plus list_workspace_provider_choices
-        # (platform revamp 2026-10, plan 08 task 7) = 32.
-        assert len(ws_ingested) == 32
+        # (platform revamp 2026-10, plan 08 task 7) = 32, plus list_my_sessions
+        # and message_session (pivot P3) = 34.
+        assert len(ws_ingested) == 34
         assert "workspaces::read_workspace_session_messages" in ws_ingested
         assert "workspaces::find_sessions" in ws_ingested
         assert "workspaces::list_workspace_provider_choices" in ws_ingested
+        assert "workspaces::list_my_sessions" in ws_ingested
+        assert "workspaces::message_session" in ws_ingested
         for expected in (
             "workspaces::list_workspace_providers",
             "workspaces::create_workspace_template",

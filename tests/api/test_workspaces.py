@@ -2284,6 +2284,8 @@ class TestWorkspacesToolsetRegistration:
             "list_workspace_sessions",
             "steer_workspace_session",
             "interrupt_workspace_session",
+            "list_my_sessions",
+            "message_session",
             "list_workspace_files",
             "write_workspace_file",
             "get_workspace_log",
@@ -2296,8 +2298,9 @@ class TestWorkspacesToolsetRegistration:
         # (task 01a10871, Stop as a system tool) = 29, plus
         # read_workspace_session_messages (A-22) = 30, plus
         # find_sessions (P2 Task 11) = 31, plus list_workspace_provider_choices
-        # (platform revamp 2026-10, plan 08 task 7) = 32.
-        assert len(names) == 32
+        # (platform revamp 2026-10, plan 08 task 7) = 32, plus list_my_sessions
+        # and message_session (pivot P3) = 34.
+        assert len(names) == 34
         assert "create_workspace_session" in names
         assert "cancel_workspace_session" in names
         assert "workspace_tap" in names
