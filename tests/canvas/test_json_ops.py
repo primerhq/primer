@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from pydantic import BaseModel, TypeAdapter, ValidationError, field_validator
+from pydantic_core import PydanticCustomError
 
 from primer.canvas.lang import Append, Assign, Clear, Delete, Ref, SetProp, parse_program
 from primer.canvas.ops import (
@@ -243,15 +244,38 @@ def _clears(n: int) -> list[dict]:
     return [{"op": "clear"}] * n
 
 
+def _compact(ops: object) -> int:
+    return len(json.dumps(ops, separators=(",", ":"), ensure_ascii=False))
+
+
+def _ops_of_size(n: int) -> list[dict]:
+    """One ``prop`` op whose string value is padded so that the list is EXACTLY ``n`` characters of compact JSON."""
+    bare = {"op": "prop", "id": "a", "prop": "b", "value": ""}
+    ops = [{**bare, "value": "x" * (n - _compact([bare]))}]
+    assert _compact(ops) == n
+    return ops
+
+
 def test_ops_of_exactly_the_cap_fit_and_one_more_does_not():
-    each = len(json.dumps({"op": "clear"}, separators=(",", ":")))
-    fits = (MAX_OPS_CHARS - 1) // (each + 1)
-    size = len(json.dumps(_clears(fits), separators=(",", ":")))
-    assert size <= MAX_OPS_CHARS < size + each + 1
-    assert ensure_ops_fit(_clears(fits)) == _clears(fits)
-    with pytest.raises(Exception) as exc:
-        ensure_ops_fit(_clears(fits + 1))
-    assert "ops hold 600001 characters of JSON; the limit is 600000" in str(exc.value)
+    """The boundary itself: 600000 characters are accepted and 600001 are refused (a ``>=`` or an off-by-one in the check fails here)."""
+    at_the_cap = _ops_of_size(MAX_OPS_CHARS)
+    assert ensure_ops_fit(at_the_cap) is at_the_cap
+    with pytest.raises(PydanticCustomError) as exc:
+        ensure_ops_fit(_ops_of_size(MAX_OPS_CHARS + 1))
+    assert exc.value.type == "ops_too_large"
+    assert str(exc.value) == "ops hold 600001 characters of JSON; the limit is 600000"
+
+
+def test_a_list_of_many_small_ops_is_counted_whole_and_compact():
+    """40000 ``{"op":"clear"}`` are 600001 characters once the commas and brackets are counted (15 per op and one more); 39999 are 599986.
+
+    The size is that of the whole list in compact form: not of the ops alone, and not with the spaces ``json.dumps`` writes by default.
+    """
+    assert (_compact(_clears(39_999)), _compact(_clears(40_000))) == (599_986, 600_001)
+    assert ensure_ops_fit(_clears(39_999)) == _clears(39_999)
+    with pytest.raises(PydanticCustomError) as exc:
+        ensure_ops_fit(_clears(40_000))
+    assert str(exc.value) == "ops hold 600001 characters of JSON; the limit is 600000"
 
 
 def test_the_size_is_counted_in_characters_not_bytes_or_escapes():
