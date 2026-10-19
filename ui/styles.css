@@ -6570,3 +6570,12 @@ button.nv-mob-fact-status { cursor: pointer; }
 /* the way out of an empty Platform section (a page's emptyAction, seam I-9) */
 .nv-mob-plat-empty-action { margin-top: 10px; }
 .nv-mob-fact-edit-note { color: var(--text-3); font-size: 12px; padding: 6px 0; }
+
+/* =========================================================================
+   Register provider overlay, the model and speech pages (plan 02 Tasks 14 and 15): the line that says what is wrong with the MODELS table, the Hub's verdicts (long
+   sentences, so their column of the check table is wider than the kit's), the warning tone of a page heading, and the single-choice list of the ASR and TTS pages.
+   ========================================================================= */
+
+.pc-models-problem { color: var(--red); }
+.pc-import-sub[data-tone="warn"] { color: var(--amber); }
+.pc-hub-table .pk-checktable-has-extra .pk-checktable-row { grid-template-columns: 18px minmax(0, 1fr) minmax(150px, 52%); }
