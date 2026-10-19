@@ -127,7 +127,17 @@ def test_a_row_needs_its_id(make):
 
 def test_the_pending_defaults():
     row = _pending()
-    assert (row.consumed, row.started_by, row.revocation_endpoint, row.resource) == (False, None, None, None)
+    assert (row.consumed, row.started_by, row.revocation_endpoint, row.resource, row.token_endpoint_auth_method) == (False, None, None, None, None)
+
+
+def test_the_client_authentication_method_is_remembered_and_optional():
+    """A refresh authenticates the client the way the sign-in did, without a new discovery; a row from before the field loads with None."""
+    for make in (_token_set, _pending):
+        assert make().token_endpoint_auth_method is None
+        row = make(token_endpoint_auth_method="client_secret_post")
+        assert type(row).model_validate(dump_for_storage(row)).token_endpoint_auth_method == "client_secret_post"
+        with pytest.raises(ValidationError):
+            make(token_endpoint_auth_method="private_key_jwt")
 
 
 def test_the_client_defaults():
