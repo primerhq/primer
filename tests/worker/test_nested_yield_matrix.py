@@ -40,6 +40,7 @@ from primer.model.model_profile import ModelProfile, ModelProfileConfig
 import json
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -366,11 +367,11 @@ def _final_text_script(text: str) -> list:
     ]
 
 
-def _tool_call_script(scoped_name: str, call_id: str) -> list:
+def _tool_call_script(scoped_name: str, call_id: str, arguments: dict | None = None) -> list:
     return [
         StreamStart(model="m1"),
         ToolCallStart(id=call_id, name=scoped_name, index=0),
-        ToolCallEnd(id=call_id, arguments={}, index=0),
+        ToolCallEnd(id=call_id, arguments=arguments or {}, index=0),
         Done(stop_reason="tool_use", raw_reason="tool_use"),
     ]
 
@@ -565,6 +566,51 @@ def _approval_leaf(*, sid: str, gated_call_id: str, gated_name: str) -> Yielded:
             "original_call": {"id": gated_call_id, "name": gated_name, "arguments": {}},
         },
     )
+
+
+async def _answer_the_park(base, pool, engine, sid: str, payload: dict) -> None:
+    """Deliver ``payload`` to the session's current park, as the respond route does, and run the resume that follows."""
+    sessions = base.get_storage(WorkspaceSession)
+    row = await sessions.get(sid)
+    blob = dict(row.parked_state)
+    blob["resume_event_payload"] = payload
+    await sessions.update(
+        row.model_copy(
+            update={
+                "parked_status": "resumable",
+                "parked_state": blob,
+                "parked_at": datetime.now(timezone.utc) - timedelta(seconds=1),
+            }
+        )
+    )
+    await pool._run_engine_session(await _claim(engine, sid))
+
+
+def _asked_and_answered(llm: _RecordingScriptedLLM) -> list[tuple[list[str], list[str]]]:
+    """For each model request that carries an assistant turn: the ids of the tool_use parts of its LAST assistant message, and the ids of
+    the tool results that follow it. A provider that checks tool_use ids (Anthropic does) rejects a request in which the two differ."""
+    out: list[tuple[list[str], list[str]]] = []
+    for request in llm.requests:
+        asked: list[str] = []
+        answered: list[str] = []
+        for message in request:
+            if message.role == "assistant":
+                asked = [p.id for p in message.parts if isinstance(p, ToolCallPart)]
+                answered = []
+            elif message.role == "tool":
+                answered += [p.id for p in message.parts if isinstance(p, ToolResultPart)]
+        if asked:
+            out.append((asked, answered))
+    return out
+
+
+def _wrongly_answered(llm: _RecordingScriptedLLM) -> list[str]:
+    """One line for each resumed model request whose tool results do not answer exactly the tool_use calls it asked."""
+    return [
+        f"the model was waiting on {asked} and was answered under {answered}"
+        for asked, answered in _asked_and_answered(llm)
+        if sorted(asked) != sorted(answered)
+    ]
 
 
 # ===========================================================================
@@ -1247,6 +1293,169 @@ async def test_subagent_call_tool_gate_approve_reruns_the_inner_tool_and_deliver
         assert (seen.tool_call_id, seen.session_id, seen.initiated_by) == (call_tool_id, sid, _USER)
     else:
         assert result.error is True and json.loads(result.output)["type"] == "forbidden", result.output
+
+
+# ---- Scenario 7, continued: the approved inner tool PAUSES inside the subagent ----------------------------------------------------------------
+
+
+async def _call_tool_gate_whose_inner_tool_pauses(monkeypatch, *, inner_tool: str) -> SimpleNamespace:
+    """FULL session loop, in two phases. A user's session called invoke_agent; the subagent asked ``system__call_tool`` for the gated
+    ``system.<inner_tool>``, the real handler parked it, and the session PARKED with ``frames=[AgentFrame]`` on the handler's ``_approval`` leaf.
+
+    ``ask_user``: the inner tool is the real ``ask_user``. ``invoke_agent``: it is the real ``invoke_agent``, and the child agent it starts asks
+    the user, so the pause carries the child's frame. Phase 1 delivers the APPROVE and phase 2 the user's answer to the question the park then
+    waits on. Asserts nothing: it returns what each phase left (``approved``: the session row and what the session was handed after phase 1)."""
+    delegates = inner_tool == "invoke_agent"
+    sid = f"sess-sub-call-tool-pause-{inner_tool}"
+    invoke_tcid = "invoke-tc-pause"
+    call_tool_id = "call-tool-pause"
+    inner_arguments = {"agent_id": "agent-child", "prompt": "go"} if delegates else {"prompt": "colour?"}
+    arguments = {"toolset_id": "system", "tool_name": inner_tool, "arguments": inner_arguments}
+    tools = ["system__call_tool", "system__ask_user"] if delegates else ["system__call_tool"]
+    # The child asks the user on its first turn, answers when it is resumed, and the subagent then wraps up; or the subagent just wraps up.
+    scripts = (
+        [_tool_call_script("system__ask_user", "child-ask", {"prompt": "which?"}), _final_text_script("child done"), _final_text_script("sub done")]
+        if delegates else [_final_text_script("sub done")]
+    )
+
+    llm = _RecordingScriptedLLM(scripts=scripts)
+    registry = _MappedRegistry(llm=llm, toolsets={})
+    base = _FakeStorageProvider()
+    agent_storage = _AgentStorageProvider(base=base, agent=_agent(tools=tools), provider_row=_provider_row())
+    system_toolset = build_system_toolset(storage_provider=agent_storage, provider_registry=registry)  # type: ignore[arg-type]
+    registry.toolsets["system"] = system_toolset
+    await base.get_storage(ToolApprovalPolicy).create(
+        ToolApprovalPolicy(id="p-pause", toolset_id="system", tool_name=inner_tool, approval=RequiredApprovalConfig()),
+    )
+    pool, engine = _build_pool(
+        base_storage=base, agent_storage=agent_storage, registry=registry, resolver=_PoliciesOnlyResolver([]),
+    )
+
+    # The park the subagent's live turn made: the real handler gates the inner tool and parks.
+    ctx = ToolContext(tool_call_id=call_tool_id, session_id=sid, workspace_id=f"ws-{sid}", initiated_by=_USER)
+    with pytest.raises(YieldToWorker) as gate:
+        await system_toolset.call(tool_name="call_tool", ctx=ctx, arguments=arguments)
+    asked = Message(role="assistant", parts=[ToolCallPart(id=call_tool_id, name="system__call_tool", arguments=arguments)])
+    frame = _agent_frame(
+        sid=sid, invoke_tcid=invoke_tcid, sub_history=[asked.model_dump(mode="json")], tools=tools, initiated_by=_USER,
+    )
+    sess = _make_session(
+        sid,
+        leaf=gate.value.yielded,
+        leaf_tcid=call_tool_id,
+        invoke_tcid=invoke_tcid,
+        frames=[frame],
+        resume_event_payload={"decision": "approved"},
+        initiated_by=_USER,
+    )
+    await base.get_storage(WorkspaceSession).create(sess)
+    executor = _wire_session_executor(pool, monkeypatch)
+
+    # PHASE 1: the approval.
+    await pool._run_engine_session(await _claim(engine, sid))
+    row = await base.get_storage(WorkspaceSession).get(sid)
+    parked = ParkedState.from_jsonable(row.parked_state) if row.parked_state else None
+    approved = SimpleNamespace(
+        handed_to_the_session=list(executor.injected),
+        parked_status=row.parked_status,
+        event_key=row.parked_event_key,
+        leaf=(parked.yielded.tool_name, parked.yielded.event_key) if parked else None,
+        frames=[(f.agent_id, f.tool_call_id) for f in parked.frames] if parked else None,
+    )
+
+    # PHASE 2: the user's answer.
+    await _answer_the_park(base, pool, engine, sid, {"response": "that one"})
+    return SimpleNamespace(
+        sid=sid, invoke_tcid=invoke_tcid, call_tool_id=call_tool_id, llm=llm, executor=executor, approved=approved,
+    )
+
+
+_PAUSING_INNER_TOOLS = pytest.mark.parametrize(
+    "inner_tool", ["ask_user", "invoke_agent"], ids=["the-inner-tool-asks-the-user", "the-inner-tool-delegates-and-its-child-asks-the-user"],
+)
+
+#: What the park waits on after the approval, by ``inner_tool``: the id of the call that pauses (the leaf's event key is built from it), and the
+#: frames the park keeps (the agent id, and the id of the call that started that agent).
+_PARKED_AFTER_THE_APPROVAL = {
+    "ask_user": ("call-tool-pause", [("agent-sub", "invoke-tc-pause")]),
+    "invoke_agent": ("child-ask", [("agent-sub", "invoke-tc-pause"), ("agent-child", "call-tool-pause")]),
+}
+
+
+@pytest.mark.asyncio
+@_PAUSING_INNER_TOOLS
+async def test_subagent_call_tool_gate_whose_inner_tool_pauses_parks_the_chain_again_and_the_answer_unwinds(monkeypatch, inner_tool):
+    """Approving the gate runs the inner tool, which PAUSES: nothing is handed to the session, which parks again on the pause's own event with the
+    subagent's frame kept (and the child's, when the inner tool started a child run that asked). The user's answer then unwinds the chain: the child
+    (if any) finishes, the subagent's turn goes on, and the session's invoke_agent call gets the subagent's answer. (``test_call_tool_approval_rerun.py``
+    pins the same re-park at the ``apply_leaf`` level; this drives it through the full worker loop, both phases.)"""
+    run = await _call_tool_gate_whose_inner_tool_pauses(monkeypatch, inner_tool=inner_tool)
+    leaf_call_id, frames = _PARKED_AFTER_THE_APPROVAL[inner_tool]
+
+    assert run.approved.handed_to_the_session == [], "the approval is phase one: the session's call is still unanswered"
+    assert run.approved.parked_status == "parked"
+    assert run.approved.event_key == f"ask_user:{run.sid}:{leaf_call_id}", "parked again on the pause's own event"
+    assert run.approved.leaf == ("ask_user", run.approved.event_key)
+    assert run.approved.frames == frames, "every frame is kept: the walk's re-park keeps them"
+
+    part = _injected_tool_result(run.executor, run.invoke_tcid)
+    assert part.error is False and json.loads(part.output) == {"output": "sub done"}, "the answer unwound to the session's own call"
+
+
+#: The reason of the strict xfails below (one defect, three shapes). The lead files the ticket from the tests' path.
+_WRONG_CALL_ID = (
+    "held (ticket: a paused tool's answer inside a subagent is keyed to the wrong call id): apply_leaf's yielding-tool branch keys the answer by "
+    "the frame's tool_call_id, the id of the call that STARTED the agent (its parent's invoke_agent call), not by the call the agent is waiting on, "
+    "so a provider that checks tool_use ids (Anthropic does) would reject the resumed request"
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_WRONG_CALL_ID)
+@_PAUSING_INNER_TOOLS
+async def test_a_paused_tools_answer_inside_a_subagent_is_keyed_to_the_call_the_agent_waits_on(monkeypatch, inner_tool):
+    """BEHAVIOUR a fix must reach: the model request that resumes the agent answers the tool_use the agent is waiting on. Today the answer to
+    ``ask_user`` is keyed by the frame's own ``tool_call_id``, the id of the call that STARTED the agent (``invoke-tc-pause``, the session's
+    invoke_agent call, for the subagent; ``call-tool-pause``, the subagent's call_tool call, for its child), instead of the call that paused
+    (``call-tool-pause`` for the subagent, ``child-ask`` for its child). Pre-existing: it is the same for a DIRECT ask_user inside a subagent
+    (the next test), which is on main."""
+    run = await _call_tool_gate_whose_inner_tool_pauses(monkeypatch, inner_tool=inner_tool)
+
+    assert not _wrongly_answered(run.llm), _wrongly_answered(run.llm)
+
+
+@pytest.mark.asyncio
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_WRONG_CALL_ID)
+async def test_a_direct_ask_user_answer_inside_a_subagent_is_keyed_to_the_call_the_agent_waits_on(monkeypatch):
+    """The same defect without ``call_tool``, as it is on main (Scenario 2 pins that the delegation finishes; this pins the id the answer is
+    given under): the subagent called ``ask_user`` itself, and the answer is keyed by the frame's ``tool_call_id`` (the session's invoke_agent
+    call), not by the ask_user call the subagent is waiting on."""
+    sid = "sess-sub-ask-ids"
+    invoke_tcid = "invoke-tc-ids"
+    ask_call_id = "ask-call-ids"
+
+    llm = _RecordingScriptedLLM(scripts=[_final_text_script("your name is Alice")])
+    registry = _ProviderRegistry(llm=llm, toolset=_PlainToolset())
+    base = _FakeStorageProvider()
+    agent_storage = _AgentStorageProvider(base=base, agent=_agent(tools=["t1__do_it"]), provider_row=_provider_row())
+    pool, engine = _build_pool(base_storage=base, agent_storage=agent_storage, registry=registry, resolver=None)
+    leaf = Yielded(
+        tool_name="ask_user", event_key=f"ask_user:{sid}:{ask_call_id}", resume_metadata={"prompt": "what is your name?"},
+    )
+    frame = _agent_frame(
+        sid=sid, invoke_tcid=invoke_tcid, sub_history=_sub_history("t1__do_it", ask_call_id), tools=["t1__do_it"],
+    )
+    await base.get_storage(WorkspaceSession).create(
+        _make_session(
+            sid, leaf=leaf, leaf_tcid=ask_call_id, invoke_tcid=invoke_tcid, frames=[frame],
+            resume_event_payload={"response": "Alice"},
+        )
+    )
+    _wire_session_executor(pool, monkeypatch)
+
+    await pool._run_engine_session(await _claim(engine, sid))
+
+    assert not _wrongly_answered(llm), _wrongly_answered(llm)
 
 
 # ===========================================================================
