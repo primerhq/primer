@@ -445,6 +445,8 @@ async def test_another_workspace_is_out_of_reach_unless_the_sender_is_in_the_def
     assert info.value.message == REFUSE_NOT_FOUND.format(session_id="ses-x"), "out of reach reads exactly like a session that does not exist"
     await _assert_nothing_stored(world, target="ses-x", workspace_id="ws-2")
 
+    # The default workspace is the one the install records (an install that predates the record has its legacy "primer" row instead).
+    await world.sp.set_default_workspace_id("primer")
     await seed_session(world, sid="ses-p", workspace_id="primer", binding=AgentSessionBinding(agent_id="prime"), initiated_by=USER, turn_no=1)
     result = await _send(world, "ses-x", sender="ses-p")
     assert (result.delivery, result.workspace_id) == ("woken", "ws-2")
@@ -455,17 +457,14 @@ async def test_another_workspace_is_out_of_reach_unless_the_sender_is_in_the_def
     assert (event.workspace_id, event.payload["from_workspace_id"], event.payload["to_workspace_id"]) == ("ws-2", "primer", "ws-2")
 
 
-async def test_the_default_workspace_is_read_from_the_system_state_when_one_is_recorded(monkeypatch):
-    """After pivot P2 the default workspace is whatever the deployment records, not the reserved id."""
+async def test_the_default_workspace_is_read_from_the_system_state_when_one_is_recorded():
+    """After pivot P2 the default workspace is whatever the deployment records, not the legacy id."""
     world = await _world()
     await seed_session(world, sid="ses-x", workspace_id="ws-2", turn_no=1)
     await seed_session(world, sid="ses-p", workspace_id="prime", binding=AgentSessionBinding(agent_id="prime"), initiated_by=USER, turn_no=1)
     await seed_session(world, sid="ses-q", workspace_id="primer", binding=AgentSessionBinding(agent_id="q"), initiated_by=USER, turn_no=1)
 
-    async def _resolve(storage_provider):
-        return "prime"
-
-    monkeypatch.setattr(peer_messages, "resolve_default_workspace_id", _resolve)
+    await world.sp.set_default_workspace_id("prime")
     assert (await _send(world, "ses-x", sender="ses-p")).workspace_id == "ws-2"
     with pytest.raises(PeerMessageRefused) as info:
         await _send(world, "ses-x", sender="ses-q")

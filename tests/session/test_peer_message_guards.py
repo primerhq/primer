@@ -7,7 +7,6 @@ rule is the one a trigger's steer uses (``primer.authz.principal_rank``); the te
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -15,6 +14,7 @@ from pydantic import ValidationError
 from primer.agent.invoke import MAX_INVOCATION_DEPTH
 from primer.model.principal import PrincipalRef
 from primer.model.storage import OffsetPage
+from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 from primer.model.workspace_session import (
     AgentSessionBinding,
     GraphSessionBinding,
@@ -263,22 +263,39 @@ def test_a_ledger_row_gets_a_pmsg_id_and_refuses_a_bad_hop_count_or_delivery():
 # ---- the default workspace (task 5) -----------------------------------------------------------------------------------------------
 
 
-async def test_the_default_workspace_falls_back_to_the_reserved_id_until_p2_records_one():
-    assert await resolve_default_workspace_id(make_world().sp) == "primer"
+def _workspace_row(workspace_id: str) -> Workspace:
+    return Workspace(
+        id=workspace_id,
+        template_id="local-default",
+        provider_id="local",
+        created_at=NOW,
+        runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token="t"),
+    )
 
-    class _AfterP2:
-        async def get_system_state(self):
-            return SimpleNamespace(default_workspace_id="prime")
 
-    assert await resolve_default_workspace_id(_AfterP2()) == "prime"
+async def test_the_default_workspace_is_the_one_the_deployment_records():
+    """Pivot P2: the reader is ``primer.bootstrap.prime.resolve_default_workspace_id``, the one every module asks."""
+    sp = make_world().sp
+    await sp.set_default_workspace_id("prime")
+    assert await resolve_default_workspace_id(sp) == "prime"
 
 
-async def test_an_unset_default_workspace_is_the_reserved_id():
-    class _Unset:
-        async def get_system_state(self):
-            return SimpleNamespace(default_workspace_id=None)
+async def test_an_install_that_predates_the_record_has_its_legacy_workspace_as_the_default():
+    sp = make_world().sp
+    await sp.get_storage(Workspace).create(_workspace_row("primer"))
+    assert await resolve_default_workspace_id(sp) == "primer"
 
-    assert await resolve_default_workspace_id(_Unset()) == "primer"
+
+async def test_the_recorded_default_wins_over_a_legacy_workspace():
+    sp = make_world().sp
+    await sp.get_storage(Workspace).create(_workspace_row("primer"))
+    await sp.set_default_workspace_id("prime")
+    assert await resolve_default_workspace_id(sp) == "prime"
+
+
+async def test_without_a_record_or_a_legacy_workspace_there_is_no_default():
+    """No session is then "in the default workspace", so none may reach another workspace (the safe side of the rule)."""
+    assert await resolve_default_workspace_id(make_world().sp) is None
 
 
 # ---- what a parked session waits on (task 5) --------------------------------------------------------------------------------------
