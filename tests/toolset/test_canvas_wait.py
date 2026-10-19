@@ -27,6 +27,7 @@ from primer.model.storage import OffsetPage
 from primer.model.workspace_session import PendingSessionMessage, SessionStatus
 from primer.model.yield_ import ToolContext, YieldCancelled, YieldTimeout, YieldToWorker, Yielded
 from primer.toolset.canvas import build_canvas_toolset, canvas_wait_resume
+from primer.toolset.tool_catalog import collect_tool_entries
 from primer.worker.yield_resume_registry import ResumeContext, get_resume_hook
 from tests.canvas._fakes import World, make_world, seed_session
 from tests.docs._live_toolsets import built_in_providers, built_in_tools
@@ -625,7 +626,6 @@ def test_the_docs_registry_sees_all_three_canvas_tools():            # pivot P4'
 
 
 async def test_the_tool_catalog_lists_all_three_and_marks_only_the_wait_as_pausing():
-    collect_tool_entries = pytest.importorskip("primer.toolset.tool_catalog").collect_tool_entries   # P1 Task 5
     entries = {e.scoped_id: e for e in await collect_tool_entries(built_in_providers()) if e.toolset_id == "canvas"}
     assert set(entries) == {"canvas__canvas_get", "canvas__canvas_apply", "canvas__canvas_wait"}
     assert entries["canvas__canvas_wait"].pauses_turn is True and entries["canvas__canvas_get"].pauses_turn is False
