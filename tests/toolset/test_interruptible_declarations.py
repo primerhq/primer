@@ -60,6 +60,16 @@ transaction, so a cancel between leaves a canvas the transcript and the event fe
 marks the events it showed as seen (one fenced patch of one field): interruptible, a cancel loses the mark at worst and the events are shown again.
 ``canvas_wait`` creates a one-shot subscription and pins its cursor, as ``wait_for_event`` does, and parks: interruptible.
 
+Added with pivot P3 (plan task 7):
+
+* ``workspaces`` message_session: the service DELIVERS the message first (the pending row, or the USER_INPUT record, the session row and the claim:
+  several writes with no transaction), then writes the peer ledger row the rate limit counts, then emits two events (``session.messaged``, and
+  ``session.steered`` when the target had a turn open), with no transaction across them; a cancel between leaves a delivered message the rate limit
+  never counted, or a counted one whose event never fired (a session waiting on ``session.messaged`` is not woken).
+
+Examined and left interruptible (pivot P3, plan task 7): ``workspaces`` list_my_sessions is ONE read (a filtered page of session rows) and writes
+nothing, so a cancel loses nothing.
+
 Examined later and left interruptible (task 01a10871, Stop as a system tool): ``workspaces`` interrupt_workspace_session is ONE
 guarded row write (the Stop flag, ``interrupt_requested`` and ``cancel_requested_at``) followed by a best-effort bus publish. The flag
 is the durable record and the worker polls it, so a cancel between the write and the publish loses only the fast path, never the Stop;
@@ -129,6 +139,8 @@ CONFIRMED_NOT_INTERRUPTIBLE = {
     (WORKSPACES_TOOLSET_ID, "cancel_workspace_session"),
     (WORKSPACES_TOOLSET_ID, "steer_workspace_session"),
     (WORKSPACES_TOOLSET_ID, "restart_workspace_session"),
+    # pivot P3: the delivery (the pending row, or the USER_INPUT record, the row and the claim), then the ledger row, then two events, with no transaction
+    (WORKSPACES_TOOLSET_ID, "message_session"),
     # task 01a10e2f (+ model_profile, task 01a111d1 D5; + artifact_storage_provider, plan 09 Task 3): a row write THEN a registry cache
     # eviction (the entities that carry an invalidation hook)
     *{
@@ -177,6 +189,8 @@ EXAMINED_AND_INTERRUPTIBLE = {
     # pivot P5: a one-shot subscription and its pinned cursor (the shape of wait_for_event), then the park; a cancel leaves an orphan
     # subscription the dispatcher collects
     (CANVAS_TOOLSET_ID, "canvas_wait"),
+    # pivot P3: one read of the caller's workspace, nothing written
+    (WORKSPACES_TOOLSET_ID, "list_my_sessions"),
 }
 
 
