@@ -1,4 +1,4 @@
-/* global window, React */
+/* global window, React, Btn */
 // register-common.jsx - shared register pieces for the provider catalog,
 // the Register provider overlay and the setup wizard (plan 02, Tasks 6
 // and 9): the profile id helpers (seam I-5); the provider classes in the
@@ -378,6 +378,211 @@ function PC_mergeKeep(existing, built) {
   });
   return out;
 }
+
+// ---- what the wizard pages share ------------------------------------------------------------------------------------------------------------------------
+//
+// The Embedding, Cross Encoding, TTS and ASR pages (register-models.jsx, register-speech.jsx; plan 02 Tasks 14 and 15) are each two pages in one: the connection, then a list
+// to choose from. What they have in common is here, so that each file holds only what is its own: the state of the request that is out and of the step, the hand-off of the focus
+// when a page is left, one served config field as a kit field, the lines that say the fields of a kind are loading or could not be loaded, the heading of the second page, the
+// draft a new provider starts from, and the words of a count.
+
+// The console's names for the config fields the servers serve (the server says which exist; these only name them, as PC_KIND_LABELS does the kinds).
+const PC_SERVED_LABELS = { flavor: "Flavor", url: "URL", api_key: "API key", token: "API token" };
+
+// What an edit says under a secret: the box holds the MASK the server served, and a mask left as it is keeps the stored secret.
+const PC_KEPT_HELP = "Stored secrets are shown masked; leave it as is to keep it.";
+
+// "1 model", "3 models": the words of a count.
+function PC_countOf(n, one, many) {
+  return n + " " + (n === 1 ? one : many);
+}
+
+function PC_isBlank(v) {
+  return v === undefined || v === null || String(v).trim() === "";
+}
+
+// The row a page hands the overlay (and through it the caller) once it has saved: the row the server answered. The request body is never its stand-in, because it holds every
+// secret as it was typed and the caller (a list that reloads, a parent that keeps the row) has no use for a key in the clear. A server that answers no row gives the caller the
+// id, which is all it needs to look the row up.
+function PC_savedRow(answer, sent) {
+  if (answer && typeof answer === "object") return answer;
+  return sent && sent.id != null ? { id: sent.id } : {};
+}
+
+// The state every wizard page keeps: the step it shows, which request of its own is out (`out`; one at a time, and none while the overlay's own request, a Delete, is out:
+// `blocked`), the line that says what went wrong, and the hand-off the body is asked for when a page is left. `begin(what)` answers whether the request may start,
+// `end()` ends it, `say(err)` puts a refusal on the line in the one reader's words, `show(step, to)` shows the other page and asks the body to take the focus to `to` ("head": the
+// heading of the second page, "first": the first field of the first). `live` is a ref that goes false when the page leaves: a request answered after that must not touch the
+// state. The page also reads the kinds its class serves (PC_useTypes) here, with the Try again that asks once more and, when it works, asks the body to take the focus to the first
+// field (the button that was pressed is gone by then).
+function PC_useWizard(plural, blocked) {
+  const api = window.primerApi;
+  const types = window.PC_useTypes(plural);
+  const [step, setStep] = React.useState(1);
+  const [out, setOut] = React.useState(null);
+  const [error, setError] = React.useState(null);
+  const [handoff, setHandoff] = React.useState({ n: 0, to: "first" });
+  const outRef = React.useRef(null);
+  const live = React.useRef(true);
+  const rootRef = React.useRef(null);
+  const retried = React.useRef(false);
+  React.useEffect(() => {
+    live.current = true;
+    return () => { live.current = false; };
+  }, []);
+  const haveTypes = !!types.types;
+  React.useEffect(() => {
+    if (!haveTypes || !retried.current) return;
+    retried.current = false;
+    setHandoff((h) => ({ n: h.n + 1, to: "first" }));
+  }, [haveTypes]);
+  const begin = (what) => {
+    if (outRef.current || blocked) return false;
+    outRef.current = what;
+    setOut(what);
+    setError(null);
+    return true;
+  };
+  const end = () => {
+    outRef.current = null;
+    if (live.current) setOut(null);
+  };
+  const say = (err) => {
+    if (live.current) setError(api.readRefusal(err, String(err)).message);
+  };
+  const show = (next, to) => {
+    setError(null);
+    setStep(next);
+    setHandoff((h) => ({ n: h.n + 1, to }));
+  };
+  const retryTypes = () => {
+    if (types.loading) return;
+    retried.current = true;
+    types.retry();
+  };
+  return { types, step, out, outRef, error, setError, handoff, rootRef, live, begin, end, say, show, retryTypes };
+}
+
+// What a new provider of a kind starts with in `config`: the flavor the model defaults to (OTHER), so that the Flavor box shows a value and the same value is sent. A page that
+// showed the first option while sending nothing would be showing what it does not send.
+function PC_startConfig(configFields) {
+  const out = {};
+  (configFields || []).forEach((f) => {
+    if (f.key !== "flavor" || !f.options || !f.options.length) return;
+    out.flavor = f.options.indexOf("other") >= 0 ? "other" : f.options[0];
+  });
+  return out;
+}
+
+// A new provider's draft with its defaults written in: the kind (the Type select shows the first served kind until one is picked), the config the kind starts from and the limits a
+// new provider starts from. Everything the page shows, and everything it sends, is read from this, so the two cannot differ. An EDIT is never filled in: its draft is the served
+// row, and a field the page does not show is not the page's to add.
+function PC_fillDraft(draft, kind, configFields, limitFields) {
+  return {
+    ...draft,
+    provider: kind,
+    config: { ...PC_startConfig(configFields), ...(draft.config || {}) },
+    limits: draft.limits || window.PC_initialLimits(limitFields),
+  };
+}
+
+// Hands the focus to something in the body once the body has been drawn, when the focus has been lost. `n` changes when a hand-off is wanted; `to` says where: "head" is the
+// heading of the second page, anything else the first field a person can type in. A focus the operator put somewhere is left where it is. This is a component INSIDE the body, not an
+// effect of the page, on purpose: the page's effects run BEFORE its new body is in the DOM (register-overlay.jsx, "the shell's slots"), so an effect there would see the old page's
+// button still focused, do nothing, and let the focus fall to <body>, outside the dialog. The unit harness has no DOM and no focus: the rule is exercised there with a document of its
+// own, and tests/ui_e2e/test_register_models_speech_focus_journey.py drives it in a browser.
+function PC_PageFocus({ n, to, rootRef }) {
+  React.useEffect(() => {
+    if (!n) return;
+    const root = rootRef.current;
+    if (!root) return;
+    const held = document.activeElement;
+    if (held && held !== document.body) return;
+    const target = to === "head"
+      ? root.querySelector("[data-pc-focus]")
+      : root.querySelector("input:not([disabled]):not([readonly]), select:not([disabled]), textarea:not([disabled])");
+    if (target) target.focus();
+  }, [n]);
+  return null;
+}
+
+// The heading of a second page ("Models found at <id>" and one line under it), which can take the focus (PC_PageFocus "head"). `tone` ("ok" or "warn") colours the second line.
+function PC_PageHead({ title, sub, tone }) {
+  return (
+    <div className="pc-import-head" tabIndex={-1} data-pc-focus="true" data-testid="pc-import-head">
+      <div className="pc-import-title">{title}</div>
+      <div className="pc-import-sub" data-tone={tone || undefined}>{sub}</div>
+    </div>
+  );
+}
+
+// One served config field of a kind as a kit field: an enum is a select of the served options (a "Not set" only while no choice has been made: a choice is never taken back), any
+// other type an input. The label is the console's name for the field (PC_SERVED_LABELS), then the served one; `label` and `help` are the page's own words, and a `help` of null says
+// there is none. A secret in an edit says that a mask left as it is keeps the stored secret.
+function PC_ServedField({ field, value, onChange, label, help, editing, span }) {
+  const PK_Field = window.PK_Field;
+  const f = field;
+  const testid = "pc-field:" + f.key;
+  let control;
+  if (f.type === "enum") {
+    control = (
+      <select data-testid={testid} value={value == null ? "" : String(value)} aria-required={f.required ? "true" : undefined} onChange={(e) => onChange(e.target.value)}>
+        {f.required || value ? null : <option value="">Not set</option>}
+        {(f.options || []).map((opt) => (
+          <option key={opt} value={opt}>{(f.key === "flavor" && window.PC_FLAVOR_LABELS[opt]) || opt}</option>
+        ))}
+      </select>
+    );
+  } else {
+    control = (
+      <input type={f.type === "password" || f.type === "url" || f.type === "number" ? f.type : "text"} data-testid={testid} value={value == null ? "" : String(value)}
+        placeholder={f.placeholder || undefined} aria-required={f.required ? "true" : undefined} autoComplete={f.type === "password" ? "off" : undefined}
+        spellCheck={f.type === "password" || f.type === "url" ? false : undefined} onChange={(e) => onChange(e.target.value)} />
+    );
+  }
+  const own = help === undefined ? f.help : help;
+  const said = f.type === "password" && editing ? [own, PC_KEPT_HELP].filter(Boolean).join(" ") : own;
+  return (
+    <PK_Field label={label || PC_SERVED_LABELS[f.key] || f.label} help={said || undefined} required={f.required} span={span}>
+      {control}
+    </PK_Field>
+  );
+}
+
+// The lines a page draws while the fields of its kind are loading, when they could not be loaded (with a Try again that stays focusable while it is out: `busy`, not `disabled`),
+// and when the install does not serve the kind. `types` is the PC_useTypes answer; the page's own `loading`, `failed` and `notServed` say which applies.
+function PC_TypesNotice({ loading, failed, notServed, kind, types, onRetry }) {
+  return (
+    <React.Fragment>
+      {loading ? (
+        <div className="muted text-sm" role="status" data-testid="pc-register-loading">Loading the fields for this kind…</div>
+      ) : null}
+      {failed ? (
+        <div className="nv-form-error" role="alert" data-testid="pc-register-types-error">
+          {"Could not load the fields for this kind: " + window.primerApi.readRefusal(types.error, String(types.error)).message}
+        </div>
+      ) : null}
+      {failed ? (
+        <div>
+          <Btn kind="ghost" data-testid="pc-register-types-retry" onClick={onRetry} busy={!!types.loading}>
+            {types.loading ? "Trying again…" : "Try again"}
+          </Btn>
+        </div>
+      ) : null}
+      {notServed ? (
+        <div className="nv-form-error" role="alert" data-testid="pc-register-kind-missing">
+          {kind
+            ? 'This install does not serve the kind "' + kind + '", so the form cannot show its fields.'
+            : "This install serves no kind for this class, so the form cannot show its fields."}
+        </div>
+      ) : null}
+    </React.Fragment>
+  );
+}
+
+Object.assign(window, {
+  PC_SERVED_LABELS, PC_countOf, PC_isBlank, PC_savedRow, PC_startConfig, PC_fillDraft, PC_useWizard, PC_PageFocus, PC_PageHead, PC_ServedField, PC_TypesNotice,
+});
 
 Object.assign(window, {
   PC_CLASSES, PC_classByKey, PC_BUILTIN_IDS, PC_READONLY_IDS, PC_isBuiltin, PC_isReadonly, PC_BUILTIN_KINDS,
