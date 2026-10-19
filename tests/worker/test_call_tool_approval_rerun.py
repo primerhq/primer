@@ -1,7 +1,7 @@
 """The approved re-run of a ``call_tool`` inner tool runs as the resumed run, and the inner role is checked again (pivot P1, task 4).
 
 ``system__call_tool`` gates the tool it was asked to run and parks with ``via_call_tool = {toolset_id, tool_name}``. When the gate is approved,
-``primer.worker.yield_runtime._resume_call_tool_dispatch`` runs that inner tool. It goes through the helper the ``call_tool`` handler uses,
+``primer.worker.yield_runtime.resume_call_tool_dispatch`` runs that inner tool. It goes through the helper the ``call_tool`` handler uses,
 ``primer.agent.inner_dispatch.dispatch_inner_tool``, so that:
 
 * the provider gets the context of the RESUMED run (``tool_manager.context_for``: the session, identity and turn of the manager that is resuming
@@ -36,7 +36,7 @@ from primer.toolset.system import build_system_toolset
 from primer.worker.continuation import Deliver, Repark, resume_continuation
 from primer.worker.frames import AgentFrame, AgentResumeContext, Reparked, apply_leaf
 from primer.worker.session_resume_coordinator import build_invocation_services
-from primer.worker.yield_runtime import _resume_call_tool_dispatch, _resume_tool_approval
+from primer.worker.yield_runtime import _resume_tool_approval, resume_call_tool_dispatch
 from tests.agent.test_inner_dispatch import ADMIN, USER, _Failing, _Recorder, _Session, _Yielding
 from tests.toolset.test_call_tool_door import _Registry as _DoorRegistry
 
@@ -89,7 +89,7 @@ def _via(tool_name: str = "user_x") -> dict[str, str]:
 async def test_the_approved_rerun_passes_the_resumed_runs_context():
     rec = _Recorder({"user_x": "user"})
     manager = _Manager(rec, USER)
-    part = await _resume_call_tool_dispatch(via=_via(), original_call=CALL, tool_manager=manager)
+    part = await resume_call_tool_dispatch(via=_via(), original_call=CALL, tool_manager=manager)
     assert part.error is False and part.id == "call-outer" and json.loads(part.output) == {"ran": "user_x"}
     ((name, arguments, principal, ctx),) = rec.calls
     assert (name, arguments, principal) == ("user_x", {"a": 1}, None)
@@ -103,7 +103,7 @@ async def test_the_rerun_through_a_real_manager_carries_the_runs_session_identit
     manager = ToolExecutionManager.for_workspace(
         toolset_providers={}, session=_Session("s-9", "ws-9"), initiated_by=USER, provider_registry=_Registry(rec), turn_no=4,
     )
-    part = await _resume_call_tool_dispatch(via=_via(), original_call=CALL, tool_manager=manager)
+    part = await resume_call_tool_dispatch(via=_via(), original_call=CALL, tool_manager=manager)
     assert part.error is False
     ((_name, _arguments, principal, ctx),) = rec.calls
     assert principal is None
@@ -113,9 +113,9 @@ async def test_the_rerun_through_a_real_manager_carries_the_runs_session_identit
 async def test_a_manager_that_cannot_give_a_context_ranks_the_run_as_an_unattributed_user():
     """No context, no identity: the inner provider gets none, an ordinary-user tool runs, and an admin tool is refused (never ranked as the system)."""
     rec = _Recorder({"user_x": "user", "admin_x": "admin"})
-    ran = await _resume_call_tool_dispatch(via=_via(), original_call=CALL, tool_manager=_NoContextManager(rec))
+    ran = await resume_call_tool_dispatch(via=_via(), original_call=CALL, tool_manager=_NoContextManager(rec))
     assert ran.error is False and rec.calls == [("user_x", {"a": 1}, None, None)]
-    refused = await _resume_call_tool_dispatch(
+    refused = await resume_call_tool_dispatch(
         via=_via("admin_x"), original_call=ToolCallPart(id="call-outer", name="admin_x", arguments={}), tool_manager=_NoContextManager(rec),
     )
     assert refused.error is True and json.loads(refused.output)["type"] == "forbidden" and len(rec.calls) == 1
@@ -126,7 +126,7 @@ async def test_the_rerun_hands_the_resumed_runs_principal_string_to_the_context(
     provider is handed it. The agent session has none and asks as before (the cases above)."""
     rec = _Recorder({"user_x": "user"})
     manager = _Manager(rec, USER)
-    part = await _resume_call_tool_dispatch(via=_via(), original_call=CALL, tool_manager=manager, principal="alice")
+    part = await resume_call_tool_dispatch(via=_via(), original_call=CALL, tool_manager=manager, principal="alice")
     assert part.error is False
     ((_name, _arguments, principal, ctx),) = rec.calls
     assert principal == "alice" and ctx.principal == "alice"
@@ -148,7 +148,7 @@ async def test_a_legacy_park_principal_is_not_forwarded(real_manager: bool):
         )
         if real_manager else _Manager(rec, USER)
     )
-    await _resume_call_tool_dispatch(via={"toolset_id": "rec", "principal": "mallory"}, original_call=CALL, tool_manager=manager)
+    await resume_call_tool_dispatch(via={"toolset_id": "rec", "principal": "mallory"}, original_call=CALL, tool_manager=manager)
     ((_name, _arguments, principal, ctx),) = rec.calls
     assert principal is None, "the principal an MCP toolset keys its OAuth tokens on is never one stored with the park"
     assert ctx.principal is None
@@ -161,7 +161,7 @@ async def test_a_legacy_park_principal_is_not_forwarded(real_manager: bool):
 
 async def test_the_approved_rerun_rechecks_the_inner_role():
     rec = _Recorder({"user_x": "admin"})
-    part = await _resume_call_tool_dispatch(via=_via(), original_call=CALL, tool_manager=_Manager(rec, USER))
+    part = await resume_call_tool_dispatch(via=_via(), original_call=CALL, tool_manager=_Manager(rec, USER))
     assert part.error is True and part.id == "call-outer"
     assert json.loads(part.output) == {
         "type": "forbidden",
@@ -172,7 +172,7 @@ async def test_the_approved_rerun_rechecks_the_inner_role():
 
 async def test_the_approved_rerun_still_runs_an_admin_tool_for_an_admin_run():
     rec = _Recorder({"user_x": "admin"})
-    part = await _resume_call_tool_dispatch(via=_via(), original_call=CALL, tool_manager=_Manager(rec, ADMIN))
+    part = await resume_call_tool_dispatch(via=_via(), original_call=CALL, tool_manager=_Manager(rec, ADMIN))
     assert part.error is False and [c[0] for c in rec.calls] == ["user_x"]
 
 
@@ -234,7 +234,7 @@ async def test_the_rerun_hands_a_nested_pause_on_with_its_frames():
     """The refusal above belongs to the session path, whose re-park is the one that drops frames. The re-run itself hands the pause on, frames intact,
     so the nested walk (``apply_leaf``), whose re-park keeps every frame, can park the whole chain again."""
     with pytest.raises(YieldToWorker) as paused:
-        await _resume_call_tool_dispatch(
+        await resume_call_tool_dispatch(
             via={"toolset_id": "rec", "tool_name": "delegate"},
             original_call=ToolCallPart(id="call-outer", name="delegate", arguments={}),
             tool_manager=_Manager(_NestedPause(), USER),
@@ -243,7 +243,7 @@ async def test_the_rerun_hands_a_nested_pause_on_with_its_frames():
 
 
 async def test_an_inner_error_that_is_not_a_pause_is_still_an_error_result():
-    part = await _resume_call_tool_dispatch(
+    part = await resume_call_tool_dispatch(
         via={"toolset_id": "rec", "tool_name": "boom"},
         original_call=ToolCallPart(id="call-outer", name="boom", arguments={}),
         tool_manager=_Manager(_Failing(), USER),
@@ -258,7 +258,7 @@ async def test_a_rerun_with_no_registry_or_toolset_fails_closed():
         _provider_registry = None
 
     for manager, via in ((_NoRegistry(), _via()), (_Manager(_Recorder({}), USER), {"tool_name": "user_x"})):
-        part = await _resume_call_tool_dispatch(via=via, original_call=CALL, tool_manager=manager)
+        part = await resume_call_tool_dispatch(via=via, original_call=CALL, tool_manager=manager)
         assert part.error is True and "call_tool resume" in json.loads(part.output)["reason"]
 
 

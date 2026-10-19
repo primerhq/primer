@@ -25,7 +25,7 @@ from primer.session.persistence import WorkspaceMessageWriter
 from primer.toolset.mcp import mcp_task_resume
 from primer.worker.session_resume_coordinator import inject_resume_and_continue
 from primer.worker.yield_resume_registry import ResumeContext
-from primer.worker.yield_runtime import _resume_call_tool_dispatch, _resume_tool_approval
+from primer.worker.yield_runtime import _resume_tool_approval, resume_call_tool_dispatch
 from tests.agent.test_inner_dispatch import ADMIN
 
 PASSWORD = "hunter2pw"
@@ -124,7 +124,7 @@ def test_a_failed_result_that_is_json_stays_json() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider", [_Raising(), _ErrorResult()], ids=["inner-raises", "inner-is-error"])
 async def test_the_approved_call_tool_redispatch_carries_no_credential(provider) -> None:
-    part = await _resume_call_tool_dispatch(via=_VIA, original_call=_CALL, tool_manager=_Manager(provider))
+    part = await resume_call_tool_dispatch(via=_VIA, original_call=_CALL, tool_manager=_Manager(provider))
 
     assert part.error is True and _clean(part.output)
     assert "[REDACTED]" in part.output, "the provider was reached and its text masked, not refused before it ran"
@@ -230,7 +230,7 @@ async def test_the_shared_resume_tail_hands_the_model_and_the_record_a_clean_res
     # parked_at=None, as a real WorkspaceSession that was never parked has it: the resume tail reads it to stamp the resumed-park marker.
     session = types.SimpleNamespace(id="s1", workspace_id="w1", last_seq=0, parked_at=None, model_copy=lambda update: None)
     parked = types.SimpleNamespace(llm_messages=[], scoped_tool_call_id="c1#1")
-    part = await _resume_call_tool_dispatch(via=_VIA, original_call=_CALL, tool_manager=_Manager(_ErrorResult()))
+    part = await resume_call_tool_dispatch(via=_VIA, original_call=_CALL, tool_manager=_Manager(_ErrorResult()))
 
     await inject_resume_and_continue(pool, session, Executor(), parked, part)
 

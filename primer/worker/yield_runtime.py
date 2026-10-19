@@ -728,7 +728,7 @@ async def _resume_tool_approval(
     tells the model, wherever the gate sat.
 
     A ``call_tool`` park's inner tool is re-run by
-    :func:`_resume_call_tool_dispatch`; a pause of it inside a nested agent
+    :func:`resume_call_tool_dispatch`; a pause of it inside a nested agent
     or graph run is refused here, for the graph node as for the session,
     because the session's re-park (the coordinator's flat one) keeps no
     frames. The nested walk (``primer.worker.frames.apply_leaf``) keeps every
@@ -785,7 +785,7 @@ async def _resume_tool_approval(
         via = metadata.get("via_call_tool")
         if via is not None:
             try:
-                return await _resume_call_tool_dispatch(
+                return await resume_call_tool_dispatch(
                     via=via,
                     original_call=original_call,
                     tool_manager=tool_manager,
@@ -831,7 +831,7 @@ async def _resume_tool_approval(
     )
 
 
-async def _resume_call_tool_dispatch(
+async def resume_call_tool_dispatch(
     *,
     via: dict[str, Any],
     original_call: ToolCallPart,
@@ -1206,4 +1206,5 @@ __all__ = [
     "make_timeout_payload",
     "merge_pending_dispatch",
     "reply_payloads_equal",
+    "resume_call_tool_dispatch",
 ]
