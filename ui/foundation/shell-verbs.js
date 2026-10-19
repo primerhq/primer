@@ -160,6 +160,28 @@ function SH_bestFuzzy(verb, query) {
   return score;
 }
 
+function SH_matchText(text) {
+  return String(text == null ? "" : text).toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+// How exactly the query names a verb, which orders the rows before any score: 2 when it is the verb's label or one of its aliases (case-insensitive, runs of
+// spaces as one), 1 when the label or an alias starts with it, 0 for anything else the fuzzy match let through. Fuzzy scores tie whenever two labels match the
+// query with the same longest contiguous run ("Open Tools" and "Open Toolsets"; "Open Providers: TTS" and "Open Providers: Artifact Store"), and registration order
+// then put the wrong one first. An empty query names nothing: every verb is tier 0 and the order is the score's, then registration (the shell lists the first
+// eight verbs of an empty query in registration order).
+function SH_matchTier(verb, query) {
+  var q = SH_matchText(query);
+  if (!q) return 0;
+  var names = [verb.canonical].concat(verb.aliases);
+  var tier = 0;
+  for (var i = 0; i < names.length; i++) {
+    var name = SH_matchText(names[i]);
+    if (name === q) return 2;
+    if (name.indexOf(q) === 0) tier = 1;
+  }
+  return tier;
+}
+
 function SH_rankVerbs(registry, query, ctx) {
   var context = ctx || {};
   var frecency = context.frecency || null;
@@ -176,9 +198,11 @@ function SH_rankVerbs(registry, query, ctx) {
     if (verb.destructive) score *= SH_DESTRUCTIVE_DAMPENER;
     if (frecency) score *= 1 + frecency.scoreFor(verb.id);
     if (preferred && preferred === verb.id) score *= 4;
-    rows.push({ verb: verb, score: score, order: i });
+    rows.push({ verb: verb, tier: SH_matchTier(verb, query), score: score, order: i });
   }
+  // The tier first; the destructive dampener, frecency and the remembered choice only order the rows within one.
   rows.sort(function (a, b) {
+    if (b.tier !== a.tier) return b.tier - a.tier;
     if (b.score !== a.score) return b.score - a.score;
     return a.order - b.order;
   });

@@ -9,6 +9,9 @@ not know or a ``goView`` call with the wrong arguments fails here and not as an 
 
 Custom pages (``web``, ``templates``) have a row and a ``data-verb`` but NO verb in ``NV_platVerbSpecs``: a custom page registers its own, right after the loop, in the plan that ships
 the page (Plans 04 and 08). ``tests/ui/test_shell_dual_render_guard.py`` holds the other half: the nav-row verbs count as rendered there.
+
+The palette ranks a verb's whole label first (lead ruling): the shell's own core verb effect runs against the real registry and the real ``SH_rankVerbs``, so the 12 core verbs and the 22
+Platform verbs are the population, and every label (exact and in lower case), the four that used to lose to an earlier verb, a prefix and the empty query are pinned.
 """
 
 from __future__ import annotations
@@ -38,6 +41,10 @@ LABELS = [
     "Open LLM Profiles", "Open Agents", "Open Graphs", "Open Toolsets", "Open Tools", "Open Collections", "Open Triggers", "Open Channels",
     "Open Harnesses", "Open Services", "Open Approval Policies",
 ]
+CORE = (
+    "view.studio", "view.platform", "view.system", "view.profile", "theme.light", "theme.dark", "theme.system", "workspace.switch", "session.create", "workspace.create",
+    "palette.open", "terminal.toggle",
+)
 STAND_INS = "window.WEB_SettingsPage = function () { return null; }; window.WT_TemplatesPage = function () { return null; };"
 
 
@@ -193,6 +200,94 @@ def test_the_loop_is_inside_the_core_verb_effect_and_after_the_core_verbs() -> N
     assert "}, [registry]);" not in SHELL[effect:loop] and "React.useEffect(" not in SHELL[loop:end], (
         "the loop is in the effect that registers once, the one whose dependency list is [registry]"
     )
+
+
+def _run_shell_effect(ctx) -> None:
+    """The shell's core verb effect, as ``nv-shell.jsx`` writes it (``reg``, every core ``reg({...})`` call, then the Platform loop), run against the real registry.
+    Only ``goView`` is a stand-in, and no ranking calls it."""
+    start = SHELL.index("// --- Core verbs (chrome-level; view bodies add their own)")
+    body = SHELL.index("React.useEffect(function () {", start) + len("React.useEffect(function () {")
+    effect = SHELL[body:SHELL.index("}, [registry]);", body)]
+    ctx.eval(
+        "var registry = SH_createVerbRegistry();"
+        "(function (registry, goView) {" + effect + "\n})(registry, function () {});"
+    )
+
+
+@pytest.fixture
+def palette(ctx):
+    """The palette's verbs as the shell registers them: the core verbs first, then the Platform verbs of the loop, in the real registry; ``SH_rankVerbs`` is the real ranker."""
+    _run_shell_effect(ctx)
+    return ctx
+
+
+# ---- the palette ranks a verb's full label first ---------------------------------------------------------------------------------------------
+
+
+def _ranked(ctx, query: str) -> list[str]:
+    return js(ctx, "SH_rankVerbs(registry, " + json.dumps(query) + ", {}).map(function (v) { return v.id; })")
+
+
+def test_the_palette_is_the_core_verbs_then_the_platform_verbs(palette) -> None:
+    ids = js(palette, "registry.ids()")
+    assert ids[len(ids) - len(IDS):] == IDS
+    assert set(CORE) <= set(ids[:len(ids) - len(IDS)])
+
+
+def test_a_verbs_full_label_ranks_that_verb_first_exact_and_in_lower_case(palette) -> None:
+    """Without the match tier, 8 of the 68 queries (each of the 34 labels, exact and lower-case) put another verb first: a label that is the whole query ties on the
+    fuzzy score with a longer or earlier one that matches it with the same longest contiguous run, and registration order broke the tie."""
+    verbs = js(palette, "registry.all().map(function (v) { return [v.id, v.canonical]; })")
+    assert len(verbs) >= len(CORE) + len(IDS)
+    wrong = []
+    for verb_id, label in verbs:
+        for query in (label, label.lower()):
+            first = _ranked(palette, query)[0]
+            if first != verb_id:
+                wrong.append(f"{query!r} puts {first} first, not {verb_id}")
+    assert wrong == []
+
+
+@pytest.mark.parametrize(
+    ("label", "first", "used_to_win"),
+    [
+        ("Open Providers: TTS", "platform.open.providers.tts", "platform.open.providers.artifact_storage"),
+        ("Open Providers: ASR", "platform.open.providers.stt", "platform.open.providers.ssp"),
+        ("Open Tools", "platform.open.tools", "platform.open.toolsets"),
+        ("Open Channels", "platform.open.channels", "platform.open.providers.channel"),
+    ],
+)
+def test_the_labels_that_lost_to_an_earlier_verb_rank_first_and_the_old_winner_is_still_offered(palette, label, first, used_to_win) -> None:
+    for query in (label, label.lower()):
+        ranked = _ranked(palette, query)
+        assert ranked[0] == first, query
+        assert used_to_win in ranked[1:], f"{query!r}: the tier orders the matches, it does not filter them"
+
+
+def test_a_prefix_of_a_label_ranks_ahead_of_a_verb_that_only_matches_fuzzily(palette) -> None:
+    """Cross Encoding and Channels start with the query. Semantic Search Storage, Web Search, Workspace and Artifact Store only have a c after "Open Providers: "
+    (a fuzzy match, and Semantic Search Storage is registered before Cross Encoding), so they follow."""
+    query = "Open Providers: C"
+    ranked = _ranked(palette, query)
+    labels = dict(js(palette, "registry.all().map(function (v) { return [v.id, v.canonical.toLowerCase()]; })"))
+    prefix = [i for i in ranked if labels[i].startswith(query.lower())]
+    assert prefix == ["platform.open.providers.cross_encoder", "platform.open.providers.channel"], "the verbs whose label starts with the query"
+    assert ranked[:len(prefix)] == prefix, ranked
+    fuzzy_only = {"platform.open.providers.ssp", "platform.open.providers.workspace", "platform.open.providers.web_search", "platform.open.providers.artifact_storage"}
+    assert fuzzy_only <= set(ranked[len(prefix):]), "the others still match, after them"
+
+
+def test_the_whole_label_ranks_ahead_of_a_prefix_of_it(palette) -> None:
+    ranked = _ranked(palette, "Open Tools")
+    assert ranked[:2] == ["platform.open.tools", "platform.open.toolsets"], "Open Toolsets starts with the query too, and comes second"
+
+
+def test_an_empty_query_has_no_tier_and_keeps_registration_order(palette) -> None:
+    """The palette lists the first eight verbs of an empty query, and the loop-placement comment in ``nv-shell.jsx`` relies on those being the core verbs in the order they register."""
+    ids = js(palette, "registry.ids()")
+    ranked = _ranked(palette, "")
+    assert ranked == ids
+    assert not set(IDS) & set(ranked[:8]), "the Platform verbs are registered after the core verbs, so they do not push them off the list"
 
 
 # ---- the pointer affordance: the sidebar rows ----------------------------------------------------------------------------------------------

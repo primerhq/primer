@@ -150,6 +150,104 @@ def test_aliases_match_but_the_canonical_label_is_what_ranks_out() -> None:
     assert rows[0][1] == "Park Session (Pause)"
 
 
+# The match tier (lead ruling): a query that is a verb's whole label ranks it first, a prefix of the label next, anything else the fuzzy match lets
+# through after them. Fuzzy scores tie whenever two labels share their longest run of characters, so without it registration order picks the winner.
+
+_TIER_VERBS = """
+  var T = SH_createVerbRegistry();
+  function add(id, label, extra) {
+    var verb = Object.assign({ id: id, label: label, surfaces: ["rail", "palette"], run: function () {} }, extra || {});
+    T.register(verb);
+  }
+  function ids(q, c) { return SH_rankVerbs(T, q, c || {}).map(function (v) { return v.id; }); }
+"""
+
+
+def _ids(ctx, query: str, context: str = "{}") -> list[str]:
+    return json.loads(ctx.eval("JSON.stringify(ids(" + json.dumps(query) + ", " + context + "))"))
+
+
+def test_the_whole_label_ranks_first_then_a_prefix_then_the_rest_whatever_the_weights() -> None:
+    ctx = _ctx()
+    ctx.eval(
+        _TIER_VERBS
+        + """
+        add("loose", "Show Open Tools Panel", { weight: 5 });
+        add("prefix", "Open Toolsets");
+        add("exact", "Open Tools");
+        var f = SH_createFrecency(function () { return 1000; });
+        f.record("loose"); f.record("loose"); f.record("loose"); f.remember("open tools", "loose");
+        """
+    )
+    assert _ids(ctx, "open tools") == ["exact", "prefix", "loose"], "no registration order, weight or recorded choice outranks the tier"
+    assert _ids(ctx, "open tools", "{frecency: f}") == ["exact", "prefix", "loose"]
+
+
+def test_the_tier_ignores_case_and_runs_of_spaces() -> None:
+    ctx = _ctx()
+    ctx.eval(_TIER_VERBS + 'add("prefix", "Open Toolsets"); add("exact", "Open Tools");')
+    for query in ("Open Tools", "OPEN TOOLS", "open tools", "  open   tools "):
+        assert _ids(ctx, query) == ["exact", "prefix"], query
+
+
+def test_an_alias_names_a_verb_as_its_label_does() -> None:
+    ctx = _ctx()
+    ctx.eval(
+        _TIER_VERBS
+        + """
+        add("decoy", "Show Pause");
+        add("park", "Park Session", { aliases: ["Pause"] });
+        add("later", "Park Sessions Later");
+        """
+    )
+    assert _ids(ctx, "pause") == ["park", "decoy"], "an alias that is the whole query ranks its verb first, ahead of a label that ties with it on the fuzzy score"
+    assert _ids(ctx, "paus") == ["park", "decoy"], "and an alias that starts with it is a prefix"
+    assert _ids(ctx, "park session") == ["park", "later"], "the label, not the display string with its aliases"
+
+
+def test_within_a_tier_the_destructive_dampener_still_orders_the_rows() -> None:
+    ctx = _ctx()
+    ctx.eval(
+        _TIER_VERBS
+        + """
+        add("archive", "Delete Notes Archive", { destructive: true });
+        add("later", "Delete Notes Later");
+        add("whole", "Delete Notes", { destructive: true });
+        """
+    )
+    assert _ids(ctx, "delete notes") == ["whole", "later", "archive"], (
+        "the destructive verb named in full leads (the tier outranks the dampener); within the prefix tier the dampener still puts the safe verb "
+        "ahead of the destructive one registered before it"
+    )
+
+
+def test_within_a_tier_frecency_and_the_remembered_choice_still_order_the_rows() -> None:
+    ctx = _ctx()
+    ctx.eval(
+        _TIER_VERBS
+        + """
+        add("a", "Open Alpha Notes");
+        add("b", "Open Alpha Notebook");
+        add("c", "Open Alpha");
+        var f = SH_createFrecency(function () { return 1000; });
+        """
+    )
+    assert _ids(ctx, "open alpha n", "{frecency: f}") == ["a", "b"], "registration order while nothing separates them"
+    ctx.eval('f.record("b"); f.record("b");')
+    assert _ids(ctx, "open alpha n", "{frecency: f}") == ["b", "a"], "frecency promotes the verb chosen twice, within the prefix tier"
+    assert _ids(ctx, "open alpha", "{frecency: f}")[0] == "c", "but not past the verb named in full"
+    ctx.eval('f.remember("open alpha n", "a");')
+    assert _ids(ctx, "open alpha n", "{frecency: f}")[0] == "a", "and the remembered choice for the query still outweighs it within the tier"
+
+
+def test_an_empty_query_has_no_tier_and_keeps_the_scores_then_registration_order() -> None:
+    ctx = _ctx()
+    ctx.eval(_TIER_VERBS + 'add("a", "Open Alpha"); add("b", "Open Beta"); add("c", "Open Gamma", { weight: 2 }); add("d", "Open Delta");')
+    assert _ids(ctx, "") == ["c", "a", "b", "d"], "a heavier verb leads, equal scores stay in registration order"
+    ctx.eval("var f = SH_createFrecency(function () { return 1000; }); f.record('d'); f.record('d'); f.record('d');")
+    assert _ids(ctx, "", "{frecency: f}")[0] == "d", "frecency still lifts a verb when nothing is typed"
+
+
 def test_frecency_promotes_a_repeatedly_chosen_target() -> None:
     ctx = _ctx()
     out = json.loads(ctx.eval(
