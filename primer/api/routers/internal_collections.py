@@ -378,48 +378,23 @@ async def _build_subsystem_for_request(
     Shared between the bootstrap launcher and the (future) restart-time
     construction path. Returns the freshly attached subsystem.
     """
+    from primer.bootstrap.seed import builtin_toolset_providers
     from primer.internal_collections import build_subsystem
 
     provider_registry = request.app.state.provider_registry
     semantic_search_registry = request.app.state.semantic_search_registry
     storage_provider = request.app.state.storage_provider
-    # Every built-in (reserved-id) toolset must be listed here or its
-    # tools never get embedded and the ``_internal_tools`` semantic
-    # search misses them. Mirrors the lifespan path in primer/api/app.py
-    # — keep both lists in sync when adding new reserved toolsets.
-    toolsets: dict[str, Any] = {}
-    sys_ts = getattr(request.app.state, "system_toolset", None)
-    if sys_ts is not None:
-        toolsets["system"] = sys_ts
-    ws_ts = getattr(request.app.state, "workspaces_toolset", None)
-    if ws_ts is not None:
-        toolsets["workspaces"] = ws_ts
-    misc_ts = getattr(request.app.state, "misc_toolset", None)
-    if misc_ts is not None:
-        toolsets["misc"] = misc_ts
-    web_ts = getattr(request.app.state, "web_toolset", None)
-    if web_ts is not None:
-        toolsets["web"] = web_ts
-    harness_ts = getattr(request.app.state, "harness_toolset", None)
-    if harness_ts is not None:
-        toolsets["harness"] = harness_ts
-    trigger_ts = getattr(request.app.state, "trigger_toolset", None)
-    if trigger_ts is not None:
-        toolsets["trigger"] = trigger_ts
-    workspace_ext_ts = getattr(
-        request.app.state, "workspace_ext_toolset", None
-    )
-    if workspace_ext_ts is not None:
-        toolsets["workspace_ext"] = workspace_ext_ts
-    canvas_ts = getattr(request.app.state, "canvas_toolset", None)
-    if canvas_ts is not None:
-        toolsets["canvas"] = canvas_ts
     subsystem = build_subsystem(
         config=cfg,
         storage_provider=storage_provider,
         provider_registry=provider_registry,
         semantic_search_registry=semantic_search_registry,
-        toolset_providers=toolsets,
+        # Every built-in (reserved-id) toolset must be on this map or its
+        # tools never get embedded and the ``_internal_tools`` semantic
+        # search misses them. It is built from the live registry, as the
+        # lifespan builds its own (primer/api/_app_lifespan.py): a
+        # hand-written map here had already lost ``collections`` and ``crud``.
+        toolset_providers=await builtin_toolset_providers(provider_registry),
     )
     request.app.state.internal_collections = subsystem
     return subsystem
