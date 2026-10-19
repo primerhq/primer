@@ -874,13 +874,18 @@ def _make_lifespan(config: AppConfig):
             local_workspace_policy, storage_provider, config.default_workspace_template,
         )
 
+        # Every built-in toolset, from the live registry (seed.py): all the
+        # reserved providers are on it by this point (built above). A
+        # hand-written map here used to drift from the seed route's, and so did
+        # the internal-collections subsystem's (this lifespan's lacked ``crud``,
+        # the bootstrap route's also ``collections``): the ensure pass and that
+        # subsystem take this one map now.
+        builtin_providers = await builtin_toolset_providers(provider_registry)
+
         _ensure = await run_ensure_pass(
             storage_provider,
             workspace_registry=workspace_registry,
-            # Every built-in toolset, from the live registry (seed.py): all
-            # the reserved providers are on it by this point (built above).
-            # A hand-written map here used to drift from the seed route's.
-            toolset_providers=await builtin_toolset_providers(provider_registry),
+            toolset_providers=builtin_providers,
             provider_registry=provider_registry,
             semantic_search_registry=semantic_search_registry,
             default_workspace_template=config.default_workspace_template,
@@ -938,20 +943,11 @@ def _make_lifespan(config: AppConfig):
                 storage_provider=storage_provider,
                 provider_registry=provider_registry,
                 semantic_search_registry=semantic_search_registry,
-                toolset_providers={
-                    # Every built-in (reserved-id) toolset must be listed
-                    # here or its tools never get embedded and the
-                    # _internal_tools semantic search misses them.
-                    "system": system_toolset,
-                    "workspaces": ws_toolset,
-                    "misc": misc_toolset,
-                    "web": web_toolset,
-                    "harness": harness_toolset,
-                    "trigger": trigger_toolset,
-                    "workspace_ext": workspace_ext_toolset,
-                    "collections": collections_toolset,
-                    "canvas": canvas_toolset,
-                },
+                # Every built-in (reserved-id) toolset must be on this map or
+                # its tools never get embedded and the _internal_tools semantic
+                # search misses them. It is the map the ensure pass took, copied:
+                # the subsystem can register more providers on its own.
+                toolset_providers=dict(builtin_providers),
             )
             app.state.internal_collections = ic_subsystem
             # The CDC vector worker no longer starts: vectorisation is

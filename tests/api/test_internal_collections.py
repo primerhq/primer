@@ -44,6 +44,7 @@ from pydantic import SecretStr
 
 from primer.api.app import create_test_app
 from primer.api.registries import ProviderRegistry
+from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
 from primer.model.agent import Agent, AgentModel
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.provider import (
@@ -597,6 +598,21 @@ class TestBootstrap:
         assert final["state"] == "ready"
         assert final["collection_id"] == "system"
         assert final["search"]["vector_store_provider_id"] == "ssp-test"
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_builds_the_subsystem_with_every_builtin_toolset(
+        self, client, app
+    ) -> None:
+        """The subsystem embeds the tools of the toolsets it is given. The route hands it the registry's map, one provider for every id
+        in RESERVED_TOOLSET_IDS, and not a hand-written list (the old one had lost ``collections`` and ``crud``, and could lose the
+        next built-in toolset too). The lifespan's twin is tests/api/test_lifespan_internal_collections_toolsets.py."""
+        await client.put("/v1/internal_collections/config", json=_config_body())
+        resp = await client.post("/v1/internal_collections/bootstrap")
+        assert resp.status_code == 200, resp.text
+        given = app.state.internal_collections._toolset_providers
+        assert set(given) == set(RESERVED_TOOLSET_IDS)
+        for toolset_id, provider in given.items():
+            assert provider is await app.state.provider_registry.get_toolset(toolset_id), toolset_id
 
     @pytest.mark.asyncio
     async def test_bootstrap_is_idempotent(self, client) -> None:
