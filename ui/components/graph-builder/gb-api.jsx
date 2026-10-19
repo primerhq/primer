@@ -4,6 +4,25 @@
 const GB_api = (() => {
   const api = () => window.primerApi;
 
+  // The default workspace: the ONE row GET /workspaces flags is_default (a response-only flag, PR #770).
+  // The list is paged until the flagged row is found or the list ends, because an install with more
+  // workspaces than one page may hold the flagged row beyond the first. The first request is
+  // /workspaces?limit=200 with no offset. Resolves to the row, or null when no row on any page is
+  // flagged: there is no fallback to the first workspace.
+  const GB_WORKSPACE_PAGE = 200; // the server cap on ?limit (primer/api/pagination.py)
+  async function GB_findDefaultWorkspace() {
+    let offset = 0;
+    for (;;) {
+      const list = await api().apiFetch("GET", `/workspaces?limit=${GB_WORKSPACE_PAGE}${offset ? `&offset=${offset}` : ""}`, null);
+      const rows = (list && list.items) || [];
+      const flagged = rows.find((w) => w && w.is_default === true);
+      if (flagged) return flagged;
+      offset += rows.length;
+      const total = list && list.total;
+      if (rows.length < GB_WORKSPACE_PAGE || (typeof total === "number" && offset >= total)) return null;
+    }
+  }
+
   const qs = (params) => {
     const p = [];
     for (const k of Object.keys(params || {})) {
@@ -31,13 +50,26 @@ const GB_api = (() => {
     nodeTurnLog: (graphId, runId, nodeId, params, signal) =>
       api().apiFetch("GET", `/graphs/${encodeURIComponent(graphId)}/runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeId)}/turn_log${qs(params)}`, null, { signal }),
 
-    // Start a run - mirrors what new-session-form builds for a graph binding.
-    startRun: ({ graphId, graphInput, workspaceId }) => api().apiFetch("POST", "/sessions", {
-      binding: { kind: "graph", graph_id: graphId },
-      auto_start: true,
-      ...(workspaceId ? { workspace_id: workspaceId } : {}),
-      ...(graphInput === undefined ? {} : { graph_input: graphInput }),
-    }),
+    // Start a run: create the graph-bound session in the DEFAULT workspace and auto-start it.
+    // There is no top-level POST /sessions route (only POST /v1/sessions/find), so the session is
+    // created through POST /workspaces/{id}/sessions, where {id} is the default workspace. With no
+    // flagged row it throws a marked error instead of guessing another workspace: the builder then
+    // says so and creates nothing.
+    startRun: async ({ graphId, graphInput }) => {
+      const target = await GB_findDefaultWorkspace();
+      if (!target) {
+        const none = new Error("A run starts in the default workspace, and none of the workspaces the server lists is marked as the default. Nothing was created.");
+        none.title = "No default workspace found";
+        none.detail = none.message;
+        throw none;
+      }
+      const row = await api().apiFetch("POST", `/workspaces/${encodeURIComponent(target.id)}/sessions`, {
+        binding: { kind: "graph", graph_id: graphId },
+        auto_start: true,
+        ...(graphInput === undefined ? {} : { graph_input: graphInput }),
+      });
+      return { row, workspaceId: target.id };
+    },
 
     // ---- Endpoints that do not exist yet (WIRING §2.1) --------------------
     // Both degrade to a local, static-only answer so the UI ships first.

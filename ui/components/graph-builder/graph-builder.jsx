@@ -53,6 +53,7 @@ function GB_Builder(props) {
   const { graphId, loaded, onSaved, onRefresh, pushToast, runId } = props;
   const { useState, useMemo, useReducer, useRef, useEffect, useCallback } = React;
   const { useResource, useMutation } = window.primerApi;
+  const { navigate } = window.primerApi.useRouter();
 
   const readOnly = !!(loaded && loaded.harness_id);
 
@@ -510,11 +511,14 @@ function GB_Builder(props) {
             try {
               let parsed = sampleInput;
               try { parsed = JSON.parse(sampleInput); } catch (_e) { /* string */ }
-              const s = await GB_api.startRun({ graphId, graphInput: sampleInput ? parsed : undefined });
-              if (pushToast) pushToast({ title: "Run started", detail: s.id });
+              const { row, workspaceId } = await GB_api.startRun({ graphId, graphInput: sampleInput ? parsed : undefined });
+              if (pushToast) pushToast({ title: "Run started", detail: row.session_id || row.id });
+              // Open the session in the studio the way the agent Chat button does: name the
+              // session's workspace, so the router opens it there.
+              navigate("/sessions/" + (row.session_id || row.id), { workspace_id: workspaceId });
               if (onRefresh) onRefresh();
             } catch (err) {
-              if (pushToast) pushToast({ title: "Couldn't start the run", detail: err.detail || err.message, kind: "error" });
+              if (pushToast) pushToast({ kind: "error", title: (err && err.title) || "Couldn't start the run", detail: (err && (err.detail || err.message)) || String(err) });
             }
           }}
         />
