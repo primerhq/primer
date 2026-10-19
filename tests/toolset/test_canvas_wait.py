@@ -440,6 +440,28 @@ async def test_a_timeout_whose_subscription_is_already_gone_is_still_a_timeout(p
     assert json.loads(result.output)["timeout"] is True
 
 
+@pytest.mark.parametrize("how, warned", [("already gone", False), ("cannot be deleted", True)])
+async def test_the_cursor_is_removed_although_the_subscription_cannot_be(provider, ctx, world, caplog, how, warned):
+    """``_discard`` tries its two deletes apart. The dispatcher deletes a one-shot when it delivers, so the subscription may be gone
+    already (not worth a word in the log); it may also fail to delete (a warning). The cursor the wait pinned goes in both cases."""
+    y = await _wait(provider, ctx, ids=["ok"])
+    sub_id = y.resume_metadata["subscription_id"]
+    store, subscriptions = world.sp.get_event_store(), world.sp.get_storage(EventSubscription)
+    if how == "already gone":
+        await subscriptions.delete(sub_id)
+    else:
+        async def down(*args, **kwargs):
+            raise RuntimeError("storage down")
+
+        subscriptions.delete = down
+    assert await store.get_cursor(sub_id) is not None, "the case: a cursor that outlives its subscription"
+    with caplog.at_level("WARNING"):
+        result = await canvas_wait_resume(y.resume_metadata, YieldTimeout(elapsed_seconds=1.0), resume_context(provider))
+    assert json.loads(result.output)["timeout"] is True
+    assert await store.get_cursor(sub_id) is None
+    assert ("could not be removed" in caplog.text) is warned
+
+
 async def test_a_timeout_on_a_session_without_a_canvas(world):
     other = make_world()
     await seed_session(other)
