@@ -76,6 +76,12 @@ from primer.model.storage import (
 )
 from primer.storage.secret_fields import refuse_secret_fields
 from primer.model.workspace import (
+    DEFAULT_GPU_RESOURCE_NAME,
+    DOCKER_RUNTIME_IMAGE,
+    MAX_GPU_COUNT,
+    MAX_WORKSPACE_CPU_CORES,
+    MAX_WORKSPACE_DISK_BYTES,
+    MAX_WORKSPACE_MEMORY_BYTES,
     WORKSPACE_ID_PATTERN,
     Workspace as WorkspaceRow,
     WorkspaceProvider,
@@ -107,6 +113,7 @@ from primer.toolset._system_guards import (
     refuse_update,
 )
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
+from primer.workspace.env_names import ENV_NAME_PATTERN, MAX_ENV_NAME_LENGTH, RUNTIME_TOKEN_ENV_NAMES
 from primer.workspace.provider_choices import list_provider_choices
 from primer.workspace.reserved import reserved_tree, reserved_tree_for, reserved_trees
 from primer.workspace.template_privilege import (
@@ -464,6 +471,98 @@ class _WorkspaceTapArgs(BaseModel):
             "default) is non-blocking."
         ),
     )
+
+
+# ===========================================================================
+# What the workspace and template tools say about providers
+# (platform revamp 2026-10, plan 08 task 8, design 14.4)
+# ===========================================================================
+#
+# An agent that writes a template or creates a workspace reads the description and nothing else, so each description says what the server
+# does with a field per provider. The numbers and names are built from the constants the server enforces, so a limit that moves moves the
+# description with it (tests/toolset/test_workspace_tool_provider_notes.py derives its expectations from the same constants).
+
+_TIB = 2**40
+_RUNTIME_TOKEN_NAMES = " and ".join(f"``{name}``" for name in sorted(RUNTIME_TOKEN_ENV_NAMES))
+
+# Lead ruling 17 of plan 08 (final): an environment variable name is what Kubernetes accepts, at most 256 characters; the runtime token's two names are
+# the platform's own.
+_ENV_NAME_RULE = (
+    f"An environment variable name follows Kubernetes' own rule: ``{ENV_NAME_PATTERN}``, at most {MAX_ENV_NAME_LENGTH} characters, and never "
+    f"``.``, ``..`` or a name that starts with ``..``; {_RUNTIME_TOKEN_NAMES} are reserved for the runtime's own token. "
+    "A bad name is ``type=validation-error`` and the message names it (never its value)."
+)
+
+_CREATE_WORKSPACE_PURPOSE = (
+    "Materialise a new Workspace from a template. Looks up the template, asks the matching backend to create the live "
+    "instance, then persists a Workspace row with the assigned id. Optional ``overrides`` layer per-instantiation env "
+    "vars / files / init commands on top of the template. "
+    "``overrides.resources`` sizes THIS workspace instead of the template: ``cpu_cores`` and ``memory_bytes`` on Kubernetes "
+    "and Docker, ``disk_bytes`` on Kubernetes only (it is the PVC size). A Local workspace takes none of the three and "
+    "Docker refuses ``disk_bytes`` (it has no disk quota): the answer is ``type=validation-error``, the message names "
+    "``overrides.resources.<field>``, and nothing is created. "
+    f"A size is a positive number: at most {MAX_WORKSPACE_CPU_CORES} CPU cores, {MAX_WORKSPACE_MEMORY_BYTES // _TIB} TiB of memory "
+    f"and {MAX_WORKSPACE_DISK_BYTES // _TIB} TiB of disk. "
+    "On Kubernetes ``overrides.env`` reaches the pod itself, not only the start-up commands. " + _ENV_NAME_RULE
+)
+
+_CREATE_WORKSPACE_WHEN = (
+    "Use when you need a live sandbox from an existing template; not for defining the recipe (use "
+    "``create_workspace_template``). "
+    f"A Docker workspace runs the template's ``backend.image`` (``{DOCKER_RUNTIME_IMAGE}`` when the template names none); if the "
+    "runtime in the container does not answer within 30 seconds the create fails (``type=backend-error``, REST 503) with a "
+    "message that names the image, and nothing is left behind. "
+    f"A custom image must contain the primer workspace runtime: build it FROM ``{DOCKER_RUNTIME_IMAGE}``."
+)
+
+# Appended to the `when` of create_workspace_template and update_workspace_template: which backend field a provider reads, who may set it, and the limits.
+_TEMPLATE_FIELDS_BY_PROVIDER = (
+    "Which fields a template carries depends on its provider: ``backend.kind`` must match the provider's kind "
+    "(``list_workspace_provider_choices`` lists the ids and kinds you may use). "
+    "Local (``backend`` ``{\"kind\": \"local\"}``) runs on the server itself in the provider's root folder: it has no image and no size. "
+    f"Docker (``backend.kind=container``): ``backend.image`` is the image that runs (``{DOCKER_RUNTIME_IMAGE}`` when omitted), "
+    "``backend.cpu_cores`` and ``backend.memory_bytes`` size it, and there is no disk setting. "
+    f"A custom image must contain the primer workspace runtime (build it FROM ``{DOCKER_RUNTIME_IMAGE}``); if the runtime does not "
+    "answer within 30 seconds ``create_workspace`` fails (REST 503, ``type=backend-error``) with a message that names the image. "
+    "Kubernetes (``backend.kind=kubernetes``): ``backend.image`` is required, and ``backend.entrypoint`` should be "
+    '``["python", "-m", "primer_runtime.server"]``, the command that starts the runtime: with none the pod runs ``sleep infinity`` '
+    "and the runtime never starts. "
+    "``resources.cpu_cores`` and ``resources.memory_bytes`` are the pod's requests and limits (the old ``backend.cpu_request``, "
+    "``cpu_limit``, ``memory_request`` and ``memory_limit`` are ignored), ``backend.pvc_size`` is the disk (for example ``10Gi``), "
+    "and the placement fields are ``node_selector`` (label key to value), ``tolerations`` (``key``, ``operator``, ``value``, "
+    "``effect``), ``gpu`` (``{count, resource_name}``), ``service_account_name`` and ``image_pull_policy`` (``Always``, "
+    "``IfNotPresent`` or ``Never``). "
+    f"The ``gpu`` resource name is ``{DEFAULT_GPU_RESOURCE_NAME}`` unless you name another, and ``count`` is 1 to {MAX_GPU_COUNT}. "
+    "The admin-only fields (a non-admin who sets or changes one gets ``type=forbidden``, and cannot update or delete a template that "
+    "holds one) are ``tolerations``, ``service_account_name``, "
+    f"a ``gpu.resource_name`` other than ``{DEFAULT_GPU_RESOURCE_NAME}``, container ``backend.extra_mounts``, Kubernetes "
+    "``extra_volumes``, ``extra_volume_mounts`` and ``pod_overrides``, and a file whose source ``kind`` is ``secret``. "
+    "``node_selector``, a ``gpu`` count with the default resource name and ``image_pull_policy`` are open to every user. "
+    "A GPU resource name under ``kubernetes.io/`` or starting with ``requests.`` is refused for everyone "
+    "(``type=validation-error``). "
+    f"A template whose CPU or memory is above {MAX_WORKSPACE_CPU_CORES} cores or {MAX_WORKSPACE_MEMORY_BYTES // _TIB} TiB is refused "
+    "(``type=validation-error``) when a workspace is created from it. A template ``env`` name follows the same rule as "
+    "``overrides.env``. " + _ENV_NAME_RULE
+)
+
+def _k8s_template_example(*, description: str, image_pull_policy: str) -> dict[str, Any]:
+    """The Kubernetes example of both template tools: a working one (it sets the entrypoint that starts the runtime) that a role=user caller
+    may write (nothing in it is admin-only)."""
+    return {
+        "id": "k8s-gpu",
+        "description": description,
+        "provider_id": "k3s",
+        "backend": {
+            "kind": "kubernetes",
+            "image": DOCKER_RUNTIME_IMAGE,
+            "entrypoint": ["python", "-m", "primer_runtime.server"],
+            "node_selector": {"accelerator": "nvidia"},
+            "gpu": {"count": 1},
+            "image_pull_policy": image_pull_policy,
+            "pvc_size": "20Gi",
+        },
+        "resources": {"cpu_cores": 4, "memory_bytes": 17179869184},
+    }
 
 
 # ===========================================================================
@@ -1193,7 +1292,8 @@ def build_workspaces_toolset(
         ),
         (
             "Use when defining a new recipe to materialise workspaces "
-            "from; not for materialising one (use ``create_workspace``)."
+            "from; not for materialising one (use ``create_workspace``). "
+            + _TEMPLATE_FIELDS_BY_PROVIDER
         ),
         _CreateTemplateArgs,
         _make_create_handler(
@@ -1211,6 +1311,11 @@ def build_workspaces_toolset(
                     }
                 },
                 returns="201 plus the stored template row",
+            ),
+            ToolExample(
+                args={"entity": _k8s_template_example(description="GPU workspace on the gpu nodes", image_pull_policy="IfNotPresent")},
+                returns="the stored template row",
+                note="Kubernetes: node_selector, a gpu count and image_pull_policy are open to every user",
             ),
         ],
         required_role="user",
@@ -1232,7 +1337,8 @@ def build_workspaces_toolset(
             "password for the same scheme, host, port and user; any other caller "
             "keeps it only when the whole URL is unchanged. A masked URL that "
             "cannot be restored answers ``type=validation-error`` (re-enter "
-            "the password)."
+            "the password). "
+            + _TEMPLATE_FIELDS_BY_PROVIDER
         ),
         _UpdateTemplateArgs,
         _make_update_handler(
@@ -1251,6 +1357,14 @@ def build_workspaces_toolset(
                     },
                 },
                 returns="the updated template row",
+            ),
+            ToolExample(
+                args={
+                    "id": "k8s-gpu",
+                    "entity": _k8s_template_example(description="GPU workspace, always pull", image_pull_policy="Always"),
+                },
+                returns="the updated template row",
+                note="Kubernetes: the body replaces the whole row, so send every field you keep",
             ),
         ],
         required_role="user",
@@ -1382,18 +1496,8 @@ def build_workspaces_toolset(
 
     name, entry = _tool(
         "create_workspace",
-        (
-            "Materialise a new Workspace from a template. Looks up the "
-            "template, asks the matching backend to create the live "
-            "instance, then persists a Workspace row with the assigned "
-            "id. Optional ``overrides`` layer per-instantiation env "
-            "vars / files / init commands on top of the template."
-        ),
-        (
-            "Use when you need a live sandbox from an existing template; "
-            "not for defining the recipe (use "
-            "``create_workspace_template``)."
-        ),
+        _CREATE_WORKSPACE_PURPOSE,
+        _CREATE_WORKSPACE_WHEN,
         _CreateWorkspaceArgs,
         _create_workspace,
         examples=[
@@ -1408,6 +1512,14 @@ def build_workspaces_toolset(
                     "overrides": {"env": {"FOO": "bar"}},
                 },
                 note="overrides layer on top of the template",
+            ),
+            ToolExample(
+                args={
+                    "template_id": "k8s-python",
+                    "overrides": {"resources": {"cpu_cores": 4, "memory_bytes": 8589934592, "disk_bytes": 21474836480}},
+                },
+                returns="the stored Workspace row",
+                note="a Kubernetes workspace sized for this one workspace; on Docker leave out disk_bytes",
             ),
         ],
         required_role="user",

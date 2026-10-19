@@ -288,6 +288,27 @@ it's called from a context with no implicit session.
   account with real permissions in a template ordinary users may
   instantiate. `create_workspace` refuses a `secret` file in
   `overrides.files` the same way.
+- Which template fields apply to which provider (the `create_workspace_template`
+  and `update_workspace_template` descriptions say the same). `backend.kind`
+  must match the provider's kind; `list_workspace_provider_choices` shows it.
+  A Local template runs on the server itself and has no image and no size.
+  Docker (`backend.kind=container`) takes `backend.image` (default
+  `primer/workspace-runtime:1.1`), `backend.cpu_cores` and
+  `backend.memory_bytes`, and has no disk setting. Kubernetes
+  (`backend.kind=kubernetes`) takes `backend.image` (required) and
+  `backend.entrypoint`, which should be
+  `["python", "-m", "primer_runtime.server"]` (the command that starts the
+  runtime: with none, the pod runs `sleep infinity` and the runtime never
+  starts); the size in the template's `resources.cpu_cores` and
+  `resources.memory_bytes` (requests = limits; the older
+  `backend.cpu_request`, `cpu_limit`, `memory_request` and `memory_limit`
+  strings are ignored); the disk in `backend.pvc_size` (for example `10Gi`);
+  and the placement fields `node_selector`, `tolerations`, `gpu`
+  (`{count, resource_name}`, the count 1 to 64), `service_account_name` and
+  `image_pull_policy`. A template whose CPU or memory is above 1024 cores or
+  64 TiB is refused when a workspace is created from it
+  (`type=validation-error`), and a template `env` name follows the same
+  rule as `overrides.env` (see `create_workspace` above).
 - Kubernetes overlays must stay on an allowlist, whoever calls:
   volumes are `emptyDir` or `configMap` only, mounts carry `name`,
   `mountPath`, `readOnly`, `subPath`, and `pod_overrides` may set only
