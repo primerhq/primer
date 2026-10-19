@@ -1,9 +1,10 @@
-"""Journey: on a phone, a deep-linked section fills the screen, and Providers, System settings and Log out are reachable
+"""Journey: on a phone, a deep-linked section fills the screen, and System settings, Log out and Providers (a Platform section) are reachable
 (lead sweep M1, review ADM-29 and ADM-30).
 
 390x844. Before: ``#/w/<wid>?overlay=agents`` opened the More tab with the profile card, the theme toggle and four health cards
 stacked ABOVE the Agents list (about 1300px down, below the fold); there was no way to sign out, no System settings and no
-Providers entry; and ``?view=platform:agents`` left the shell on Inbox.
+Providers entry; and ``?view=platform:agents`` left the shell on Inbox. Providers was then a Settings row that opened the providers
+overlay; with the Platform section for it (revamp 01, Task 8) that row was a duplicate entry and went (lead ruling, D4/D6).
 """
 
 from __future__ import annotations
@@ -148,7 +149,11 @@ def test_system_settings_opens_full_screen_and_back_returns(page: Page, console_
 
 @pytest.mark.ui_e2e
 def test_providers_opens_from_the_more_tab(page: Page, console_url: str) -> None:
+    """Providers is the Platform section's row (``nv-mob-plat-nav:providers``), the only entry to it on the More tab: it opens the phone's list of provider types."""
     page.set_viewport_size(PHONE)
     _open_more(page, console_url)
-    page.get_by_test_id("nv-mob-setting:providers").click()
-    expect(page.get_by_test_id("nv-overlay:providers")).to_be_visible(timeout=10_000)
+    expect(page.get_by_test_id("nv-mob-setting:providers")).to_have_count(0)
+    page.get_by_test_id("nv-mob-plat-nav:providers").click()
+    expect(page.get_by_test_id("nv-mob-plat-page:providers")).to_be_visible(timeout=10_000)
+    expect(page.get_by_test_id("nv-mob-plat-sub:all")).to_be_visible()
+    expect(page.get_by_test_id("nv-overlay:providers")).to_have_count(0)

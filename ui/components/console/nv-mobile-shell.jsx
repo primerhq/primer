@@ -1077,10 +1077,11 @@ function NV_MobileFiles() {
 // sections as read-only lists with a generic fact-sheet BottomSheet.
 // ---------------------------------------------------------------------------
 
-// The rows of the More tab's Settings group (review ADM-29): what the desktop profile menu and Platform nav reach and a phone could not.
-// Your profile is for every role, as in the desktop menu (D3); System settings stays hidden from a restricted user, as there.
+// The rows of the More tab's Settings group (review ADM-29): what the desktop profile menu reaches and a phone could not. Providers is not one: it is a section
+// of the Platform list below, and a second entry for it was a duplicate (lead ruling, D4/D6). Your profile is for every role, as in the desktop menu (D3);
+// System settings stays hidden from a restricted user, as there.
 function NV_mobileSettingsRows(role) {
-  var rows = [{ id: "providers", label: "Providers" }, { id: "profile", label: "Your profile" }];
+  var rows = [{ id: "profile", label: "Your profile" }];
   if (role !== "restricted") rows.push({ id: "system", label: "System settings" });
   return rows;
 }
@@ -1522,8 +1523,7 @@ function NV_MobileMore(props) {
                 <button type="button" key={row.id} className="card card-interactive"
                   data-testid={"nv-mob-setting:" + row.id}
                   onClick={function () {
-                    if (row.id === "providers") con.openOverlay("providers");
-                    else if (row.id === "profile") con.goView("system", "profile");
+                    if (row.id === "profile") con.goView("system", "profile");
                     else con.goView("system");
                   }}>
                   <div className="card-title">{row.label}</div>

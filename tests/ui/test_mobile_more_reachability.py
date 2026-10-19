@@ -199,12 +199,19 @@ def _rows(app, role):
 
 
 def test_the_settings_rows_follow_the_roles_the_desktop_menu_uses(app) -> None:
-    assert [r["id"] for r in _rows(app, "admin")] == ["providers", "profile", "system"]
-    assert [r["id"] for r in _rows(app, None)] == ["providers", "profile", "system"], "an install without roles is not restricted"
-    assert [r["id"] for r in _rows(app, "restricted")] == ["providers", "profile"], (
+    assert [r["id"] for r in _rows(app, "admin")] == ["profile", "system"]
+    assert [r["id"] for r in _rows(app, None)] == ["profile", "system"], "an install without roles is not restricted"
+    assert [r["id"] for r in _rows(app, "restricted")] == ["profile"], (
         "Your profile is for every role; System settings stays hidden from a restricted user, as on desktop"
     )
-    assert [r["label"] for r in _rows(app, "admin")] == ["Providers", "Your profile", "System settings"]
+    assert [r["label"] for r in _rows(app, "admin")] == ["Your profile", "System settings"]
+
+
+def test_providers_is_not_a_settings_row_for_any_role(app) -> None:
+    """Lead ruling (D4, D6): Providers is a section of the Platform list, and a Settings row that opened the providers overlay beside it was a duplicate entry, which
+    the user dislikes. The overlay stays reachable by an ``overlay=providers:<class>`` link and from the desktop."""
+    for role in ("admin", None, "restricted"):
+        assert "providers" not in [r["id"] for r in _rows(app, role)], role
 
 
 def test_your_profile_opens_system_profile(app) -> None:
@@ -725,19 +732,26 @@ def test_the_dashboard_shows_until_a_section_opens_and_then_makes_room(app) -> N
     assert app.has("nv-mob-profile"), "closing the section brings the dashboard back"
 
 
-def test_more_offers_providers_system_settings_and_log_out(app) -> None:
+def test_more_offers_system_settings_and_log_out_and_reaches_providers_only_as_a_platform_section(app) -> None:
+    """Lead ruling (D4, D6): one entry to Providers on the More tab, the Platform section; the Settings row that opened the providers overlay is gone."""
+    app.js(INTELLIGENCE)
     app.mount("NV_MobileMore", "{ pending: null, onPendingConsumed: function () {} }")
-    assert app.has("nv-mob-setting:providers") and app.has("nv-mob-setting:system") and app.has("nv-mob-logout")
-    app.click("nv-mob-setting:providers")
+    assert app.has("nv-mob-setting:system") and app.has("nv-mob-logout")
+    assert not app.has("nv-mob-setting:providers")
+    assert _ids(app, "nv-mob-setting:") == ["profile", "system"]
+    to_providers = app.data('MR.findAll("nv-mob-").map(function (e) { return e.props["data-testid"]; }).filter(function (t) { return /providers/.test(t); })')
+    assert to_providers == ["nv-mob-plat-nav:providers"], "the only entry that names Providers"
     app.click("nv-mob-setting:system")
-    assert app.data("LOG.overlays") == ["providers"]
     assert app.data("LOG.views") == [["system", None]]
+    app.click("nv-mob-plat-nav:providers")
+    assert app.has("nv-mob-plat-page:providers") and app.has("nv-mob-plat-sub:all"), "it opens the phone's own list of provider types"
+    assert app.data("LOG.overlays") == [], "and no providers overlay"
 
 
 def test_a_restricted_user_is_not_offered_system_settings(app) -> None:
     app.js('__con = Object.assign({}, __con, { role: "restricted" });')
     app.mount("NV_MobileMore", "{ pending: null, onPendingConsumed: function () {} }")
-    assert app.has("nv-mob-setting:providers") and not app.has("nv-mob-setting:system")
+    assert _ids(app, "nv-mob-setting:") == ["profile"], "Your profile only: no System settings, and Providers is a Platform section"
 
 
 # --- views and overlays arriving at the shell --------------------------------------------------------------------------------
