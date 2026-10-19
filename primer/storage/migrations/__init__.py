@@ -53,6 +53,7 @@ from primer.storage.migrations.m008_embedding_provider_repair import (
 from primer.storage.migrations.m009_docker_template_runtime_image import (
     M009DockerTemplateRuntimeImage,
 )
+from primer.storage.migrations.m010_default_workspace import M010DefaultWorkspace
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     M007AggregatedModelProfiles(),
     M008EmbeddingProviderRepair(),
     M009DockerTemplateRuntimeImage(),
+    M010DefaultWorkspace(),
 )
 
 #: Highest version this build knows how to apply.
