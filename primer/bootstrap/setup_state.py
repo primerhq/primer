@@ -13,9 +13,9 @@ from dataclasses import dataclass, field
 
 from primer.bootstrap.defaults import (
     RESERVED_BUILDER_AGENT,
-    RESERVED_DEFAULT_WORKSPACE,
     RESERVED_OPERATOR_AGENT,
 )
+from primer.bootstrap.prime import resolve_default_workspace_id
 from primer.knowledge.system_collection import SYSTEM_COLLECTION_ID
 from primer.model.agent import Agent
 from primer.model.collection import Collection
@@ -56,8 +56,11 @@ async def evaluate_setup_state(storage_provider) -> SetupState:
         missing.append(MISSING_LLM_PROVIDER)
     if not await _has_any(storage_provider, ModelProfile):
         missing.append(MISSING_MODEL_PROFILE)
+    # The default workspace is whatever system state records (an install that predates the record: its legacy row). It is
+    # missing when nothing names one, or when the one named has no row (the ensure pass creates it under that id).
+    default_id = await resolve_default_workspace_id(storage_provider)
     workspaces = storage_provider.get_storage(Workspace)
-    if await workspaces.get(RESERVED_DEFAULT_WORKSPACE) is None:
+    if default_id is None or await workspaces.get(default_id) is None:
         missing.append(MISSING_DEFAULT_WORKSPACE)
     agents = storage_provider.get_storage(Agent)
     if await agents.get(RESERVED_OPERATOR_AGENT) is None:

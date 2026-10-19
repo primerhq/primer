@@ -21,6 +21,12 @@ never re-creates them; the ensure pass seeds the world an agent-first install ne
 to function at all, so it repairs on every boot. Neither reads the other's state.
 See [bootstrap-operator](../subsystems/bootstrap-operator.md) for that half.
 
+One ensure-pass rule is worth stating here, because it differs between a new and an old install. The default workspace is
+named by `SystemState.default_workspace_id`: a fresh install creates `prime` and records it (before the row exists, so a delete
+can never slip through a gap), while an existing install keeps its own workspace id (`primer`) and has it adopted, recorded
+and renamed `prime` for display, once, by migration 10 or, on a database whose migrations were baselined (`auto_bootstrap:
+false`), by the pass itself. `POST /v1/setup/seed` runs the same pass with the configured `default_workspace_template`.
+
 Two design constraints shape the whole subsystem:
 
 - It runs synchronously in the API lifespan before the server accepts connections,

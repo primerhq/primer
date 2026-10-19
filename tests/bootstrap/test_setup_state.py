@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from primer.bootstrap.defaults import (
     RESERVED_BUILDER_AGENT,
-    RESERVED_DEFAULT_WORKSPACE,
     RESERVED_OPERATOR_AGENT,
 )
 from primer.bootstrap.setup_state import (
@@ -23,9 +22,25 @@ from primer.model.provider import LLMProvider
 from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
 
 
-async def _seed_everything(sp):
+async def _seed_workspace(sp, workspace_id: str) -> None:
     from datetime import datetime, timezone
 
+    await sp.get_storage(Workspace).create(
+        Workspace(
+            id=workspace_id,
+            template_id="local-default",
+            provider_id="local",
+            created_at=datetime.now(timezone.utc),
+            # runtime_meta is REQUIRED on the row (workspace.py:1196-1199);
+            # the values are never dialled here, only stored.
+            runtime_meta=WorkspaceRuntimeMeta(
+                url="ws://127.0.0.1:5959", token="seed-token",
+            ),
+        )
+    )
+
+
+async def _seed_everything(sp):
     await sp.get_storage(LLMProvider).create(
         LLMProvider(
             id="llm-1",
@@ -43,19 +58,9 @@ async def _seed_everything(sp):
             context_length=32000,
         )
     )
-    await sp.get_storage(Workspace).create(
-        Workspace(
-            id=RESERVED_DEFAULT_WORKSPACE,
-            template_id="local-default",
-            provider_id="local",
-            created_at=datetime.now(timezone.utc),
-            # runtime_meta is REQUIRED on the row (workspace.py:1196-1199);
-            # the values are never dialled here, only stored.
-            runtime_meta=WorkspaceRuntimeMeta(
-                url="ws://127.0.0.1:5959", token="seed-token",
-            ),
-        )
-    )
+    # The default workspace is named by system state, never by a constant: a fresh install records "prime".
+    await _seed_workspace(sp, "prime")
+    await sp.set_default_workspace_id("prime")
     for agent_id in (RESERVED_OPERATOR_AGENT, RESERVED_BUILDER_AGENT):
         await sp.get_storage(Agent).create(
             Agent(
@@ -98,3 +103,35 @@ async def test_a_deleted_operator_reopens_the_gate(fake_storage_provider):
     state = await evaluate_setup_state(fake_storage_provider)
     assert state.complete is False
     assert state.missing == [MISSING_OPERATOR_AGENT]
+
+
+async def test_an_unrecorded_install_with_a_legacy_row_is_complete(fake_storage_provider):
+    """An install that predates the record (or whose migrations were baselined) keeps its ``primer`` workspace: not missing."""
+    fake_storage_provider.get_storage(ModelProfile)._data.clear()
+    await _seed_everything(fake_storage_provider)
+    await fake_storage_provider.get_storage(Workspace).delete("prime")
+    await fake_storage_provider.set_default_workspace_id(None)
+    await _seed_workspace(fake_storage_provider, "primer")
+    state = await evaluate_setup_state(fake_storage_provider)
+    assert state.complete is True
+    assert state.missing == []
+
+
+async def test_a_recorded_id_whose_row_is_gone_is_missing(fake_storage_provider):
+    fake_storage_provider.get_storage(ModelProfile)._data.clear()
+    await _seed_everything(fake_storage_provider)
+    await fake_storage_provider.get_storage(Workspace).delete("prime")
+    state = await evaluate_setup_state(fake_storage_provider)
+    assert state.complete is False
+    assert state.missing == [MISSING_DEFAULT_WORKSPACE]
+
+
+async def test_another_workspace_is_not_the_default(fake_storage_provider):
+    """Nothing is recorded and there is no legacy row: some other workspace does not make the default exist."""
+    fake_storage_provider.get_storage(ModelProfile)._data.clear()
+    await _seed_everything(fake_storage_provider)
+    await fake_storage_provider.get_storage(Workspace).delete("prime")
+    await fake_storage_provider.set_default_workspace_id(None)
+    await _seed_workspace(fake_storage_provider, "ws-1")
+    state = await evaluate_setup_state(fake_storage_provider)
+    assert state.missing == [MISSING_DEFAULT_WORKSPACE]

@@ -72,23 +72,52 @@ async def ensure_crud_approval_policies(storage_provider) -> list[str]:
 async def ensure_default_workspace(
     storage_provider, *, workspace_registry, template_id: str | None = None,
 ) -> str | None:
-    """Ensure the default ``primer`` workspace exists.
+    """Ensure the default workspace (prime) exists and is recorded in system state.
 
-    Materialises it from the reserved ``local-default`` template and writes
-    the durable row exactly as ``POST /v1/workspaces`` does (phase="running"
-    because materialise returned a live handle). The workspace's main
-    session arrives via S1's workspace-creation seeding, not here.
+    Which id it has, in order (the module docstring of :mod:`primer.bootstrap.prime` has the full rule):
+
+    1. the id already recorded in ``SystemState.default_workspace_id``;
+    2. else an existing install's ``primer`` row, which is ADOPTED (recorded and named ``prime`` for display, never
+       duplicated). This is what a database whose migrations were baselined (``auto_bootstrap: false``) needs, because
+       migration 10, which does the same for an upgraded database, never ran there;
+    3. else ``prime``, the fresh-install id.
+
+    If the row for that id exists, nothing is created: the id is recorded when it was not (a workspace a person already
+    called ``prime`` is adopted, not duplicated) and ``None`` is returned. Otherwise the workspace is materialised from the
+    deployment's template (``template_id``, else the reserved ``local-default``) and the durable row is written exactly as
+    ``POST /v1/workspaces`` does (phase="running" because materialise returned a live handle).
+
+    **The id is recorded BEFORE the backend is materialised and the row written.** The row is written last, so a record made
+    after it would leave an instant in which the row exists and :func:`~primer.bootstrap.prime.resolve_default_workspace_id`
+    still answers ``None``: ``WorkspaceRegistry.destroy("prime")`` would not be refused then (the guard names the default
+    through that resolver) and a delete landing in the gap could remove the default workspace. A pass that records and then
+    fails (the backend is down) leaves a recorded id with no row, and the next pass creates the row under the recorded id.
+    A pass that cannot create anything (no registry, template absent) records nothing: it never names a default it could not
+    make.
+
+    Returns the id only when THIS call created the row (a concurrent creator's ``ConflictError`` is not an error and returns
+    ``None``). The workspace's main operator session is not seeded here: it is per user, made on request by
+    ``POST /v1/workspaces/{id}/main_session`` (see :func:`ensure_main_operator_session`).
     """
     from datetime import datetime, timezone
 
     from primer.bootstrap.defaults import (
-        RESERVED_DEFAULT_WORKSPACE,
+        PRIME_WORKSPACE_ID,
+        PRIME_WORKSPACE_NAME,
         RESERVED_LOCAL_WORKSPACE_TEMPLATE,
     )
+    from primer.bootstrap.prime import adopt_legacy_default_workspace, record_default_workspace_id
     from primer.model.workspace import Workspace, WorkspaceTemplate
 
     workspaces = storage_provider.get_storage(Workspace)
-    if await workspaces.get(RESERVED_DEFAULT_WORKSPACE) is not None:
+    state = await storage_provider.get_system_state()
+    workspace_id = (
+        getattr(state, "default_workspace_id", None)
+        or await adopt_legacy_default_workspace(storage_provider)
+        or PRIME_WORKSPACE_ID
+    )
+    if await workspaces.get(workspace_id) is not None:
+        await record_default_workspace_id(storage_provider, workspace_id)
         return None
     if workspace_registry is None:
         logger.info("seed: no workspace registry; default workspace deferred")
@@ -106,14 +135,15 @@ async def ensure_default_workspace(
             wanted,
         )
         return None
+    await record_default_workspace_id(storage_provider, workspace_id)
     live = await workspace_registry.materialise(
-        template=template, workspace_id=RESERVED_DEFAULT_WORKSPACE,
+        template=template, workspace_id=workspace_id,
     )
     try:
         await workspaces.create(
             Workspace(
-                id=RESERVED_DEFAULT_WORKSPACE,
-                name="primer",
+                id=workspace_id,
+                name=PRIME_WORKSPACE_NAME,
                 template_id=wanted,
                 provider_id=template.provider_id,
                 created_at=datetime.now(timezone.utc),
@@ -127,8 +157,8 @@ async def ensure_default_workspace(
     except ConflictError:
         logger.debug("seed: default workspace row created concurrently")
         return None
-    logger.info("seed: created default workspace %r", RESERVED_DEFAULT_WORKSPACE)
-    return RESERVED_DEFAULT_WORKSPACE
+    logger.info("seed: created default workspace %r", workspace_id)
+    return workspace_id
 
 
 async def default_profile_id(storage_provider) -> str | None:

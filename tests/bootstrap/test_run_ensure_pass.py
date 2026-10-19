@@ -4,7 +4,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from primer.bootstrap.defaults import (
-    RESERVED_DEFAULT_WORKSPACE,
     RESERVED_LOCAL_WORKSPACE_TEMPLATE,
     RESERVED_OPERATOR_AGENT,
     RESERVED_WORKSPACE_TEMPLATES,
@@ -21,15 +20,16 @@ from primer.model.workspace import (
 
 
 class _LiveWorkspace:
-    id = RESERVED_DEFAULT_WORKSPACE
-    runtime_meta = WorkspaceRuntimeMeta(
-        url="ws://127.0.0.1:5959", token="stub-token",
-    )
+    def __init__(self, workspace_id):
+        self.id = workspace_id
+        self.runtime_meta = WorkspaceRuntimeMeta(
+            url="ws://127.0.0.1:5959", token="stub-token",
+        )
 
 
 class _Registry:
     async def materialise(self, *, template, overrides=None, workspace_id=None):
-        return _LiveWorkspace()
+        return _LiveWorkspace(workspace_id)
 
 
 async def _prepare(sp):
@@ -62,7 +62,9 @@ async def test_pass_runs_even_when_the_bootstrap_marker_is_stamped(
     )
     assert result.errors == []
     assert RESERVED_OPERATOR_AGENT in result.created
-    assert RESERVED_DEFAULT_WORKSPACE in result.created
+    # A fresh install creates "prime" and records it (the pass reports the id it created).
+    assert "prime" in result.created
+    assert (await fake_storage_provider.get_system_state()).default_workspace_id == "prime"
     assert crud_policy_id("create_agent") in result.created
 
 
@@ -89,9 +91,9 @@ async def test_a_failing_step_does_not_stop_the_others(fake_storage_provider):
     assert await fake_storage_provider.get_storage(Agent).get(
         RESERVED_OPERATOR_AGENT
     ) is not None
-    assert await fake_storage_provider.get_storage(Workspace).get(
-        RESERVED_DEFAULT_WORKSPACE
-    ) is None
+    assert await fake_storage_provider.get_storage(Workspace).get("prime") is None
+    # The id is recorded before the attempt (so the delete guard already names it); the next pass creates the row.
+    assert (await fake_storage_provider.get_system_state()).default_workspace_id == "prime"
     assert await fake_storage_provider.get_storage(ToolApprovalPolicy).get(
         crud_policy_id("create_agent")
     ) is not None

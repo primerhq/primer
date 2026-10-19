@@ -46,11 +46,12 @@ RESERVED_BUILDER_AGENT: str = "builder"
 RESERVED_PLANNER_AGENT: str = "planner"
 RESERVED_EXPLORER_AGENT: str = "explorer"
 RESERVED_TOOL_RUNNER_AGENT: str = "tool-runner"
-RESERVED_DEFAULT_WORKSPACE: str = "primer"
 
 # The default workspace ("prime") is named by ``SystemState.default_workspace_id``, never by one of these constants:
 # code reads it through ``primer.bootstrap.prime.resolve_default_workspace_id``. The two ids and the display name
-# live here only so the ensure pass, the adoption of an existing install and that resolver agree on them.
+# live here only so the ensure pass, the adoption of an existing install and that resolver agree on them, and
+# ``tests/bootstrap/test_default_workspace_not_hardcoded.py`` fails when any other module names them. (The earlier
+# constant ``RESERVED_DEFAULT_WORKSPACE`` was deleted: it let every caller assume the id was ``primer``.)
 # ``LEGACY_DEFAULT_WORKSPACE_ID`` is what every install created before the field existed calls its default workspace
 # (it is kept, only renamed for display); ``PRIME_WORKSPACE_ID`` is what a fresh install creates.
 LEGACY_DEFAULT_WORKSPACE_ID: str = "primer"
@@ -185,7 +186,6 @@ __all__ = [
     "RESERVED_PLANNER_AGENT",
     "RESERVED_EXPLORER_AGENT",
     "RESERVED_TOOL_RUNNER_AGENT",
-    "RESERVED_DEFAULT_WORKSPACE",
     "LEGACY_DEFAULT_WORKSPACE_ID",
     "PRIME_WORKSPACE_ID",
     "PRIME_WORKSPACE_NAME",

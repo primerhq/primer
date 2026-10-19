@@ -23,7 +23,6 @@ from primer.api.deps import (
 from primer.api.errors import common_responses
 from primer.bootstrap.defaults import (
     RESERVED_BUILDER_AGENT,
-    RESERVED_DEFAULT_WORKSPACE,
     RESERVED_EXPLORER_AGENT,
     RESERVED_OPERATOR_AGENT,
     RESERVED_PLANNER_AGENT,
@@ -36,6 +35,7 @@ from primer.bootstrap.operator_defaults import (
     planner_agent,
     tool_runner_agent,
 )
+from primer.bootstrap.prime import resolve_default_workspace_id
 from primer.bootstrap.seed import builtin_toolset_providers, default_profile_id, run_ensure_pass
 from primer.bootstrap.setup_state import (
     MISSING_BUILDER_AGENT,
@@ -79,6 +79,10 @@ async def seed_now(request: Request) -> dict:
         toolset_providers=await builtin_toolset_providers(provider_registry),
         provider_registry=provider_registry,
         semantic_search_registry=get_semantic_search_registry(request),
+        # The deployment's declared template, as at boot: without it the pass fell back to the reserved
+        # local-default whatever the config said, so a Kubernetes install's re-run seed (the wizard's last step)
+        # could put the default workspace on the API pod's own disk.
+        default_workspace_template=request.app.state.config.default_workspace_template,
     )
     state = await evaluate_setup_state(storage_provider)
     return {
@@ -249,10 +253,16 @@ async def _live_default_workspace_check(request: Request) -> tuple[bool, str | N
     every session start already depends on - rather than writing a new
     backend-specific stat. Any failure (missing row, dead
     container/pod, unreachable filesystem) reads as "not reachable".
+
+    The workspace probed is the one system state names (``prime`` on a fresh install, the
+    install's own id on an older one); with none named there is nothing to probe.
     """
+    default_id = await resolve_default_workspace_id(get_storage_provider(request))
+    if default_id is None:
+        return False, "no default workspace recorded"
     workspace_registry = get_workspace_registry(request)
     try:
-        await workspace_registry.get_workspace(RESERVED_DEFAULT_WORKSPACE)
+        await workspace_registry.get_workspace(default_id)
     except NotFoundError as exc:
         return False, str(exc)
     except Exception as exc:  # noqa: BLE001 - any backend failure means "not reachable"

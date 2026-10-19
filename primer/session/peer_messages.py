@@ -38,7 +38,7 @@ from pydantic import BaseModel
 
 from primer.agent.invoke import MAX_INVOCATION_DEPTH
 from primer.authz import principal_rank, rank_label
-from primer.bootstrap.defaults import RESERVED_DEFAULT_WORKSPACE
+from primer.bootstrap.prime import resolve_default_workspace_id
 from primer.events.recorder import actor_of, recorder_for
 from primer.model.except_ import NotFoundError
 from primer.model.principal import PrincipalRef
@@ -229,16 +229,6 @@ async def record_peer_message(storage_provider: Any, message: PeerMessage) -> No
             logger.debug("peer ledger: row %s was already gone", row.id)
 
 
-async def resolve_default_workspace_id(storage_provider: Any) -> str:
-    """The id of the default workspace: the one whose sessions may message a session in ANY workspace (design 6.1, the management plane).
-
-    Works before and after pivot P2 adds ``SystemState.default_workspace_id``: until a deployment records one, the reserved id
-    (``RESERVED_DEFAULT_WORKSPACE``, ``"primer"``) is the default. If P2 ships its own reader, this body becomes a call to it.
-    """
-    state = await storage_provider.get_system_state()
-    return getattr(state, "default_workspace_id", None) or RESERVED_DEFAULT_WORKSPACE
-
-
 def parked_on(row: WorkspaceSession) -> str | None:
     """What ``row`` is waiting for, in the tool's words (``ask_user``, ``approval``, ``wait_for_event``, ``sleep``...), or None when it is not parked.
 
@@ -383,6 +373,8 @@ async def send_peer_message(
     if sender is None:
         raise PeerMessageRefused("unsupported-surface", REFUSE_NO_CALLER)
     target = await sessions.get(target_session_id)
+    # The default workspace (prime) is the management plane: its sessions may message a session in ANY workspace (design 6.1). Which workspace
+    # that is, is the one every module asks for (``primer.bootstrap.prime.resolve_default_workspace_id``); with none named, no session is in it.
     default_workspace_id = await resolve_default_workspace_id(storage_provider)
     if target is None or (target.workspace_id != sender.workspace_id and sender.workspace_id != default_workspace_id):
         # A session of another workspace is answered exactly as a session that does not exist: an id seen in a shared file or a log must not confirm

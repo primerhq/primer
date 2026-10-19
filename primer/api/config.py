@@ -359,8 +359,9 @@ class AppConfig(BaseSettings):
     default_workspace_template: str = Field(
         default="local-default",
         description=(
-            "Workspace template the seed materialises the default 'primer' "
-            "workspace from. A deployment whose pods are ephemeral must "
+            "Workspace template the seed materialises the default workspace "
+            "(prime) from, at boot and on POST /v1/setup/seed. A deployment "
+            "whose pods are ephemeral must "
             "point this at a template on a durable provider (e.g. "
             "k3s-default): the reserved local-default template puts the "
             "workspace on the API pod's own disk, which a k8s install "

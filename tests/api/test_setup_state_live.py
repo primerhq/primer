@@ -4,7 +4,6 @@ BACKEND-GAP #13: 2 of 6 predicates were presence-only, not live).
 """
 from __future__ import annotations
 
-from primer.bootstrap.defaults import RESERVED_DEFAULT_WORKSPACE
 from primer.model.provider import (
     AnthropicConfig,
     LLMProvider,
@@ -90,8 +89,9 @@ async def test_default_workspace_live_check_fails_on_unresolvable_row(client, ap
     from datetime import datetime, timezone
 
     storage = app.state.storage_provider.get_storage(Workspace)
+    await app.state.storage_provider.set_default_workspace_id("prime")
     await storage.create(Workspace(
-        id=RESERVED_DEFAULT_WORKSPACE,
+        id="prime",
         template_id="does-not-exist-template",
         provider_id="does-not-exist-provider",
         created_at=datetime.now(timezone.utc),
@@ -136,3 +136,64 @@ async def test_setup_state_endpoint_is_admin_only(raw_client, app):
     resp = await raw_client.get("/v1/setup/state")
     assert resp.status_code == 403, resp.text
     assert resp.json()["extensions"]["error"] == "forbidden_role"
+
+
+class _ReachableRegistry:
+    """A workspace registry that can attach any workspace and notes which ids it was asked for."""
+
+    def __init__(self) -> None:
+        self.asked: list[str] = []
+
+    async def get_workspace(self, workspace_id: str):
+        self.asked.append(workspace_id)
+        return object()
+
+
+async def _default_workspace_predicate(client) -> dict:
+    r = await client.get("/v1/setup/state")
+    assert r.status_code == 200, r.text
+    return {p["key"]: p for p in r.json()["predicates"]}["default_workspace"]
+
+
+async def _seed_workspace_row(app, workspace_id: str) -> None:
+    from datetime import datetime, timezone
+
+    await app.state.storage_provider.get_storage(Workspace).create(Workspace(
+        id=workspace_id,
+        template_id="local-default",
+        provider_id="local",
+        created_at=datetime.now(timezone.utc),
+        runtime_meta=WorkspaceRuntimeMeta(url="ws://nowhere", token="nope"),
+    ))
+
+
+async def test_default_workspace_live_check_probes_the_recorded_id(client, app):
+    """A fresh install records ``prime``; the re-attach asks for that id, not for a constant."""
+    registry = _ReachableRegistry()
+    app.state.workspace_registry = registry
+    await _seed_workspace_row(app, "prime")
+    await app.state.storage_provider.set_default_workspace_id("prime")
+    predicate = await _default_workspace_predicate(client)
+    assert (predicate["ok"], predicate["live"], predicate["detail"]) == (True, True, None)
+    assert registry.asked == ["prime"]
+
+
+async def test_default_workspace_live_check_probes_the_legacy_row_on_an_unrecorded_install(client, app):
+    registry = _ReachableRegistry()
+    app.state.workspace_registry = registry
+    await _seed_workspace_row(app, "primer")
+    predicate = await _default_workspace_predicate(client)
+    assert (predicate["ok"], predicate["live"]) == (True, True)
+    assert registry.asked == ["primer"]
+
+
+async def test_default_workspace_live_check_without_a_default_says_none_is_recorded(app):
+    from types import SimpleNamespace
+
+    from primer.api.routers.setup import _live_default_workspace_check
+
+    registry = _ReachableRegistry()
+    app.state.workspace_registry = registry
+    request = SimpleNamespace(app=app)
+    assert await _live_default_workspace_check(request) == (False, "no default workspace recorded")
+    assert registry.asked == [], "nothing is probed when there is no default"
