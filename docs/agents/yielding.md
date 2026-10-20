@@ -279,7 +279,13 @@ session.
   waits: name the kinds you need. Such a run also may not pass `expr`
   (a rego module), and its `fields` matchers may use only the `eq` and
   `prefix` ops (`regex` is refused): filter with those instead. An
-  admin's run may wait on any kind, with `expr` and `regex`.
+  admin's run may wait on any kind, with a data-only `expr` and
+  `regex`. No principal may reference the host `opa` package from an
+  `expr`, including `opa.runtime()`: the platform refuses it before
+  storing either a `wait_for_event` subscription or an admin-created
+  `/v1/event_subscriptions` row, and a legacy stored expression that
+  contains one never matches. If a filter needs a deployment value,
+  bake that value into the event data and compare it through `input`.
 - **A run that is not an admin may not put a regular expression in
   `ask_user`'s `response_schema`.** The server validates the answer
   against your schema, so `pattern` and `patternProperties` anywhere

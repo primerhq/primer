@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from primer.agent.inner_dispatch import run_principal
 from primer.authz import _role_allows
+from primer.events.filters import validate_filter_expr
 from primer.events.redaction import redact_payload
 from primer.events.visibility import user_safe_glob, user_safe_kinds
 from primer.model.event import (
@@ -70,8 +71,8 @@ class _WaitForEventArgs(BaseModel):
         default=None,
         description=(
             "Optional rego module (package primer.event_filter, boolean "
-            "`match` rule) evaluated with the event as input. Admin runs "
-            "only."
+            "`match` rule) evaluated with the event as input. References "
+            "to the opa package are refused. Admin runs only."
         ),
     )
     timeout_seconds: float | None = Field(
@@ -95,8 +96,8 @@ def _non_admin_refusal(ctx: ToolContext, args: _WaitForEventArgs) -> str | None:
 
     * the kinds: the event that wakes the wait becomes the run's tool result, so it may wait only on what ``GET /v1/events`` shows a
       non-admin (``primer.events.visibility``, the feed's own rule; a glob that could match a hidden kind is refused too);
-    * no ``expr``: the dispatcher evaluates the rego module server-side, where builtins such as ``opa.runtime()`` read the process
-      environment (secrets included), and whether the wait wakes or times out turns that into a one-bit oracle;
+    * no ``expr``: the dispatcher evaluates the rego module server-side; every expr is also checked separately for references to the
+      host ``opa`` package, including for an admin;
     * no ``regex`` field matcher: patterns run in the shared, leader-elected dispatcher loop, so a catastrophic one stalls every
       subscription. ``eq`` and ``prefix`` stay open.
     """
@@ -139,6 +140,10 @@ def make_wait_for_event_handler(storage_provider: "StorageProvider"):
         refusal = _non_admin_refusal(ctx, args)
         if refusal is not None:
             return _err(refusal, error_type="forbidden")
+        try:
+            validate_filter_expr(args.expr)
+        except ValueError as exc:
+            return _err(str(exc), error_type="validation-error")
         for matcher in args.fields or []:
             if matcher.op == "regex":
                 try:

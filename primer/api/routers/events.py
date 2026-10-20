@@ -24,6 +24,7 @@ from primer.api.deps import (
 )
 from primer.api.routers._crud import make_crud_router
 from primer.api.errors import common_responses
+from primer.events.filters import validate_filter_expr
 from primer.events.redaction import redact_event
 from primer.events.visibility import user_safe
 from primer.model.event import Event, EventSubscription
@@ -126,11 +127,27 @@ async def set_subscription_paused(
 async def _reject_converge_sink(
     entity: EventSubscription, request: Request,
 ) -> None:
+    _reject_unsafe_expr(entity)
     if entity.sink.kind == "converge":
         raise SemanticValidationError(
             "converge sinks are system-managed; user subscriptions may "
             "use 'log' (session_wake belongs to the wait_for_event tool)"
         )
+
+
+def _reject_unsafe_expr(entity: EventSubscription) -> None:
+    try:
+        validate_filter_expr(entity.filter.expr)
+    except ValueError as exc:
+        raise SemanticValidationError(str(exc)) from exc
+
+
+async def _reject_unsafe_expr_on_update(
+    entity: EventSubscription,
+    existing: EventSubscription,
+    request: Request,
+) -> None:
+    _reject_unsafe_expr(entity)
 
 
 event_subscription_router = make_crud_router(
@@ -140,6 +157,7 @@ event_subscription_router = make_crud_router(
     tag="event-subscriptions",
     managed_by_field="managed_by",
     on_pre_create=_reject_converge_sink,
+    on_pre_update=_reject_unsafe_expr_on_update,
 )
 
 

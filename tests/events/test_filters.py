@@ -1,6 +1,7 @@
 """Filter semantics per tier: globs, excludes, field matchers, rego."""
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 from primer.events.filters import matches
@@ -98,3 +99,27 @@ def test_rego_expr_matches_and_fails_closed():
     # A module without a boolean `match` rule is a no-match.
     no_match_rule = "package primer.event_filter\nx := 1\n"
     assert not matches(e, EventFilter(expr=no_match_rule))
+
+
+def test_a_legacy_expr_that_references_opa_runtime_fails_closed(caplog):
+    e = _event(payload={"collection_id": "kb"})
+    expr = (
+        "package primer.event_filter\n"
+        "match := opa.runtime() != {}\n"
+    )
+
+    with caplog.at_level(logging.WARNING, logger="primer.events.filters"):
+        assert not matches(e, EventFilter(expr=expr))
+
+    assert "references to the opa package are not allowed" in caplog.text
+
+
+def test_a_data_only_expr_may_compare_text_that_names_opa_runtime():
+    e = _event(payload={"label": "opa.runtime()"})
+    expr = (
+        "package primer.event_filter\n"
+        "# A comment that names opa.runtime() is event documentation.\n"
+        'match if input.payload.label == "opa.runtime()"\n'
+    )
+
+    assert matches(e, EventFilter(expr=expr))

@@ -1338,7 +1338,10 @@ def build_system_toolset(
                 + "); any other kind, or a glob that could match one, "
                 "is refused with ``type=forbidden``, and so is an ``expr`` "
                 "or a ``regex`` field matcher from such a run (``eq`` and "
-                "``prefix`` matchers stay open)."
+                "``prefix`` matchers stay open). Every expr is limited to "
+                "the event document: a reference to the ``opa`` package is "
+                "refused for every principal; put needed configuration into "
+                "the event data first."
             ),
             args_schema=_WaitForEventArgs.model_json_schema(),
             examples=[

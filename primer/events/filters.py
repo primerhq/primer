@@ -9,8 +9,9 @@ Tier order is cheapest-first and short-circuits:
    document as ``input``.
 
 Failures fail CLOSED: a bad regex, a missing path, an expression that
-does not compile or does not produce a boolean ``match`` all mean "no
-match" (logged), mirroring the approval gate's conservative stance.
+references the host ``opa`` package, does not compile, or does not
+produce a boolean ``match`` all mean "no match" (logged), mirroring
+the approval gate's conservative stance.
 """
 
 from __future__ import annotations
@@ -27,12 +28,72 @@ from primer.model.event import Event, EventFilter, FieldMatcher
 logger = logging.getLogger(__name__)
 
 _PACKAGE_QUERY = "data.primer.event_filter"
+_OPA_PACKAGE_REF = re.compile(r"(?<![\w.])opa\s*(?:\.|\[)")
+_OPA_PACKAGE_REFUSAL = (
+    "event filter expr may use only the event document through input; "
+    "references to the opa package are not allowed"
+)
 
 # Compiled-regex cache; bad patterns cache as None so each is logged once.
 _REGEX_CACHE: dict[str, re.Pattern | None] = {}
 # Validated rego modules by content digest (regopy interpreters are
 # cheap to build; the cache only dedupes the validation logging).
 _EXPR_SEEN: set[str] = set()
+
+
+def _rego_code_only(expr_text: str) -> str:
+    """Replace Rego strings and comments with spaces for a token check.
+
+    Rego has JSON-style quoted strings, raw backtick strings, and ``#``
+    line comments. Keeping the remaining characters in place lets the
+    package-reference check accept event values that merely contain the
+    text ``opa.`` while still catching whitespace around the access dot.
+    """
+    chars = list(expr_text)
+    index = 0
+    while index < len(chars):
+        char = chars[index]
+        if char == "#":
+            while index < len(chars) and chars[index] != "\n":
+                chars[index] = " "
+                index += 1
+            continue
+        if char not in {'"', "`"}:
+            index += 1
+            continue
+        quote = char
+        chars[index] = " "
+        index += 1
+        while index < len(chars):
+            char = chars[index]
+            chars[index] = " "
+            index += 1
+            if quote == '"' and char == "\\" and index < len(chars):
+                chars[index] = " "
+                index += 1
+                continue
+            if char == quote:
+                break
+    return "".join(chars)
+
+
+def validate_filter_expr(expr_text: str | None) -> None:
+    """Reject host-package references from an event-data expression.
+
+    regopy does not expose an allow-list for builtins. Event filters are
+    therefore limited to their ``input`` document and may not reference
+    the root ``opa`` package. The check ignores strings and comments, and
+    rejects both dotted and indexed root access.
+    """
+    if expr_text and _OPA_PACKAGE_REF.search(_rego_code_only(expr_text)):
+        raise ValueError(_OPA_PACKAGE_REFUSAL)
+
+
+def _log_expr_rejection(expr_text: str, exc: Exception) -> None:
+    digest = hashlib.sha256(expr_text.encode("utf-8")).hexdigest()
+    if digest not in _EXPR_SEEN:
+        _EXPR_SEEN.add(digest)
+        logger.warning("event filter expr rejected (no match): %s", exc)
 
 
 def _compiled(pattern: str) -> re.Pattern | None:
@@ -92,6 +153,11 @@ def evaluate_filter_expr(expr_text: str, input_doc: dict[str, Any]) -> bool:
     treated as no-match.
     """
     try:
+        validate_filter_expr(expr_text)
+    except ValueError as exc:
+        _log_expr_rejection(expr_text, exc)
+        return False
+    try:
         import regopy
     except (ImportError, OSError) as exc:
         logger.warning("regopy unavailable for event filters: %s", exc)
@@ -116,10 +182,7 @@ def evaluate_filter_expr(expr_text: str, input_doc: dict[str, Any]) -> bool:
             )
         return match
     except Exception as exc:  # noqa: BLE001 - fail closed by contract
-        digest = hashlib.sha256(expr_text.encode("utf-8")).hexdigest()
-        if digest not in _EXPR_SEEN:
-            _EXPR_SEEN.add(digest)
-            logger.warning("event filter expr rejected (no match): %s", exc)
+        _log_expr_rejection(expr_text, exc)
         return False
 
 
@@ -142,4 +205,4 @@ def matches(event: Event, filter_: EventFilter) -> bool:
     return True
 
 
-__all__ = ["matches", "evaluate_filter_expr"]
+__all__ = ["matches", "evaluate_filter_expr", "validate_filter_expr"]
