@@ -190,13 +190,15 @@ async def test_two_sessions_in_one_workspace_message_each_other(
         assert ping["text"].startswith(
             f"[from session {sid_a} (agent {agents['a']})]"
         ), ping["text"]
-        assert ping["peer"] == {
-            "from_session_id": sid_a,
-            "from_workspace_id": wid,
-            "from_agent_id": agents["a"],
-            "from_graph_id": None,
-            "hops": 1,
-        }
+        peer = ping["peer"]
+        assert peer["from_session_id"] == sid_a
+        assert peer["from_workspace_id"] == wid
+        assert peer["from_agent_id"] == agents["a"]
+        assert peer["from_graph_id"] is None
+        assert peer["hops"] == 1
+        # message_id is the rate ledger's row id (pmsg-...); pin its shape, not its value.
+        assert isinstance(peer["message_id"], str)
+        assert peer["message_id"].startswith("pmsg-")
 
         # A saw B's pong as a user message; the hop count survived the
         # queue (B replied while A's turn was still open).
