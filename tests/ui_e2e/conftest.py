@@ -325,6 +325,26 @@ def failed_requests() -> list[dict]:
 
 
 @pytest.fixture
+def context(context: "BrowserContext") -> "BrowserContext":
+    """Clear the persisted ?force-desktop=1 escape hatch for this test's context.
+
+    viewport.js's forceDesktopActive() PERSISTS a ?force-desktop=1 visit into
+    localStorage ("primer.force-desktop"), and while it is set the 390px band
+    renders the desktop shell - a mobile journey then waits out its full
+    timeout on nv-mobile-shell, which will never come (GHA runs 39346172295 /
+    39352650049). Removed in an init script at context creation rather than
+    once up front: it runs before each document's own scripts, so a
+    same-context navigation that re-sets the flag mid-test cannot leak into
+    the next document. The try/catch keeps it silent on about:blank, where
+    localStorage access itself throws SecurityError.
+    """
+    context.add_init_script(
+        "try { localStorage.removeItem('primer.force-desktop'); } catch {}"
+    )
+    return context
+
+
+@pytest.fixture
 def page(
     page: "Page",
     console_messages: list[dict],
