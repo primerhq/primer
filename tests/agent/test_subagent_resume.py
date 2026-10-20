@@ -22,6 +22,7 @@ from __future__ import annotations
 from primer.model_profile import ResolvedModel
 from primer.model.model_profile import ModelProfile, ModelProfileConfig
 
+import contextlib
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -58,6 +59,24 @@ class _FakeLLM:
     def stream(self, *, model, messages, **kwargs):  # noqa: ANN001
         async def _gen() -> AsyncIterator:
             for ev in self._events:
+                yield ev
+
+        return _gen()
+
+
+class _RecordingScriptedLLM:
+    """Record each request and emit one scripted stream per request."""
+
+    def __init__(self, *, scripts: list[list]) -> None:
+        self._scripts = list(scripts)
+        self.requests: list[list[Message]] = []
+
+    def stream(self, *, model, messages, **kwargs):  # noqa: ANN001
+        self.requests.append(list(messages))
+        events = self._scripts.pop(0)
+
+        async def _gen() -> AsyncIterator:
+            for ev in events:
                 yield ev
 
         return _gen()
@@ -329,3 +348,76 @@ async def test_build_subagent_toolmanager_includes_tools():
     tools = await manager.list_tools(principal="user-1")
     ids = {t.id for t in tools}
     assert "t1__do_it" in ids
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("depth", [1, 2])
+async def test_resumed_subagent_keeps_the_first_requests_system_prompt_and_task(depth):
+    from primer.agent.invoke import (
+        invocation_depth_guard,
+        resume_subagent,
+        run_subagent,
+    )
+    from primer.workspace.instructions import workspace_instructions_part
+
+    task = "inspect the resumed state"
+    instructions = "Keep the workspace answer concise."
+    call_id = f"wait-at-depth-{depth}"
+    llm = _RecordingScriptedLLM(
+        scripts=[
+            _tool_call_script("t1__wait", call_id),
+            _final_text_script("resumed"),
+        ]
+    )
+    agent = _agent(tools=["t1__wait"])
+    storage = _StorageProvider(agent=agent, provider_row=_provider_row())
+    registry = _ProviderRegistry(llm=llm, toolset=_YieldingToolsetProvider())
+    identity = PrincipalRef(
+        type="user",
+        id="u-admin",
+        display="admin",
+        role="admin",
+        source="local",
+    )
+
+    with pytest.raises(YieldToWorker) as raised:
+        with contextlib.ExitStack() as stack:
+            for _ in range(depth):
+                stack.enter_context(invocation_depth_guard())
+            await run_subagent(
+                agent_id="agent-sub",
+                prompt=task,
+                storage_provider=storage,
+                provider_registry=registry,
+                session_id="sess-parent",
+                workspace_id="ws-parent",
+                invoke_tool_call_id="parent-tcid",
+                identity=identity,
+                workspace_instructions=instructions,
+            )
+
+    (frame,) = raised.value.frames
+    assert frame.depth == depth
+    assert await resume_subagent(
+        agent_id=frame.agent_id,
+        context=frame.context,
+        llm_messages=frame.llm_messages,
+        child_result=ToolResultPart(id=call_id, output="ready", error=False),
+        depth=frame.depth,
+        storage_provider=storage,
+        provider_registry=registry,
+        invoke_tool_call_id=frame.tool_call_id,
+    ) == "resumed"
+
+    first_request, resumed_request = llm.requests
+    assert resumed_request[:2] == first_request[:2]
+    assert [message.role for message in resumed_request[:4]] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+    ]
+    assert first_request[0].parts[0].text == (
+        "you are a subagent\n\n" + workspace_instructions_part(instructions)
+    )
+    assert first_request[1].parts[0].text == task

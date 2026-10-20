@@ -12,6 +12,8 @@ def _agent_frame():
         context=AgentResumeContext(
             session_id="ses-1", workspace_id="ws-1", chat_id=None,
             principal="user-1", tools=["system__ask_user"],
+            prompt="do the delegated task",
+            workspace_instructions="Keep it concise.",
         ),
     )
 
@@ -28,6 +30,8 @@ def test_agent_frame_roundtrips():
     assert g.depth == 2
     assert g.context.session_id == "ses-1"
     assert g.context.tools == ["system__ask_user"]
+    assert g.context.prompt == "do the delegated task"
+    assert g.context.workspace_instructions == "Keep it concise."
 
 def test_graph_frame_roundtrips():
     f = GraphFrame(graph_id="g1", gsid="gs-1", checkpoint={"k": 1}, tool_call_id="tc-2")
