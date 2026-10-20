@@ -24,7 +24,12 @@ from primer.model.provider import (
     StorageProviderType,
 )
 from primer.storage.factory import StorageProviderFactory
-from tests.pg_gate import explicit_port, postgres_url, require_postgres_url
+from tests.pg_gate import (
+    explicit_port,
+    needs_postgres,
+    postgres_url,
+    require_postgres_url,
+)
 
 
 _BACKENDS: list = ["sqlite"]
@@ -108,3 +113,40 @@ async def test_distinct_provider_subject_allowed(provider: StorageProvider) -> N
         UserIdentity(user_id="user-2", provider_id="p", subject="s2", created_at=now)
     )
     assert created.subject == "s2"
+
+
+@needs_postgres("the sequential-provider useridentity regression test")
+@pytest.mark.asyncio
+async def test_sequential_providers_do_not_share_ensure_state() -> None:
+    """Each fresh provider in one process must run its own table DDL.
+
+    Regression for the ensure state that used to be a module-level cache
+    keyed by ``id(provider)``: id() is a recycled memory address, so a fresh
+    provider allocated at a dead provider's address started with a stale
+    "table ensured" entry, skipped the DDL for its (unique) schema, and hit
+    a missing table on the first write -- the postgres-lane flake this file
+    produced in CI. Sequential providers here mirror the fixture above, so a
+    reused address (near-certain once enough providers churn in one process)
+    is exactly the window the old code failed in.
+    """
+    now = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    for i in range(20):
+        cfg = _pg_config_for_test()
+        p = StorageProviderFactory.create(cfg)
+        await p.initialize()
+        try:
+            s = p.get_storage(UserIdentity)
+            await s.create(
+                UserIdentity(
+                    user_id=f"user-{i}", provider_id="p", subject=f"s-{i}",
+                    created_at=now,
+                )
+            )
+        finally:
+            schema = cfg.config.db_schema
+            try:
+                async with p.pool.acquire() as c:
+                    await c.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            except Exception:
+                pass
+            await p.aclose()
