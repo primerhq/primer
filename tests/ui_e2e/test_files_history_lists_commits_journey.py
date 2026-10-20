@@ -18,7 +18,7 @@ import pytest
 from playwright.sync_api import Page, expect
 
 from tests._support.smk import smk
-from tests.ui_e2e._shell_helpers import open_mobile_tab
+from tests.ui_e2e._shell_helpers import boot_mobile_shell, open_mobile_tab
 from tests.ui_e2e._studio_helpers import files_list, open_studio
 
 pytestmark = smk("SMK-UI-06", status="partial")
@@ -76,7 +76,7 @@ def test_the_mobile_files_tab_history_lists_the_commits_too(
     # The page fixture's first load may already have fetched the log, so reload first: the console's next log fetch hits the mock.
     page.reload(wait_until="domcontentloaded")
     page.set_viewport_size({"width": 390, "height": 844})
-    page.goto(f"{console_url}#/w/{wid}")
+    boot_mobile_shell(page, f"{console_url}#/w/{wid}")
     open_mobile_tab(page, console_url, "files")
     page.get_by_test_id("nv-mob-files-history").click()
 

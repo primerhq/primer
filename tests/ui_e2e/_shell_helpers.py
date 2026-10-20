@@ -441,7 +441,7 @@ MOBILE_TABS = ["inbox", "spaces", "files", "more"]
 
 
 def _mobile_shell_facts(page: Page) -> dict:
-    """The in-page facts that explain a missing mobile shell, for the failure message and the self-heal in open_mobile_shell.
+    """The in-page facts that explain a missing mobile shell, for the failure message and the self-heal in boot_mobile_shell.
 
     ``innerWidth`` says whether useViewport's band (<=639px is mobile, ui/foundation/viewport.js) could have evaluated to
     mobile at all; ``forceDesktop`` says whether the ?force-desktop=1 escape hatch is active (viewport.js PERSISTS a
@@ -465,29 +465,32 @@ def _mobile_shell_facts(page: Page) -> dict:
         return {"innerWidth": None, "forceDesktop": None, "dataMobile": None, "hash": None}
 
 
-def open_mobile_shell(page: Page, console_url: str, *, timeout: int = 45_000) -> None:
-    """Load the console root and wait for the mobile shell (NV_MobileShell, US-014) to mount.
+def boot_mobile_shell(page: Page, url: str, *, timeout: int = 45_000) -> None:
+    """Boot the console at ``url`` (a FULL target URL, e.g. ``console_url + "#/w/<wid>?view=platform:agents"``) and wait
+    for the mobile shell (NV_MobileShell, US-014) to mount.
 
     45s, not 20: the budget must cover a cold boot (the ~3MB server-pre-transpiled bundle plus the first API reads) on a
     loaded CI runner, and the lane's flake evidence (GHA runs 39346172295 / 39352650049) shows boots completing around
     the old 20s mark.
 
-    A timeout here used to be indistinguishable from "still loading": the observed failure was the fully booted DESKTOP
-    console at the 390px viewport (GHA runs 39346172295 and 39352650049: 1-4 mobile victims per run, varying set, the app
-    itself healthy). So before failing this diagnoses in-page and self-heals the two known causes (both in
-    ui/foundation/viewport.js):
+    A timeout here is not "still loading": the observed failure is the fully booted DESKTOP console at the 390px viewport
+    (GHA runs 39346172295 and 39352650049: 1-4 mobile victims per run, varying set, the app itself healthy; the same class
+    hit the deep-link boots this helper did not cover in GHA runs 39376800897, 39376816475 and 39376110103). So before
+    failing this diagnoses in-page and self-heals the two known causes (both in ui/foundation/viewport.js):
 
     * innerWidth > 639 - the viewport override did not apply to this document, so the band evaluated non-mobile at first
-      render: re-apply the 390x844 viewport and reload;
-    * localStorage "primer.force-desktop" = "1" - the ?force-desktop=1 escape hatch is persisted and active: remove it and
-      reload.
+      render: re-apply the 390x844 viewport;
+    * localStorage "primer.force-desktop" = "1" - the ?force-desktop=1 escape hatch is persisted and active: remove it.
 
-    The reload re-evaluates the band on a fresh document (and, with neither cause present, re-rolls the module-load race
-    nv-shell.jsx has when NV_MobileShell is not a function yet), so it always runs after the fixes. Up to 2 retries; the
-    final failure carries the last in-page diagnostics.
+    The re-boot is a FULL document load at the exact target URL - page.goto("about:blank") followed by page.goto(url) -
+    not page.reload(): the app consumes a deep link on the first boot (it rewrites the URL, e.g. drops
+    "view=platform"), so a reload re-boots at the CONSUMED url and loses the deep-link state; a hash-only re-goto is a
+    same-document navigation that does not re-run the viewport band; and the fresh document re-rolls the module-load race
+    nv-shell.jsx has when NV_MobileShell is not a function yet, so the hop always runs after the fixes. Up to 2 retries;
+    the final failure carries the last in-page diagnostics.
     """
     shell = page.get_by_test_id("nv-mobile-shell")
-    page.goto(f"{console_url}#/")
+    page.goto(url)
     try:
         expect(shell).to_be_visible(timeout=timeout)
         return
@@ -500,7 +503,8 @@ def open_mobile_shell(page: Page, console_url: str, *, timeout: int = 45_000) ->
             page.evaluate("localStorage.removeItem('primer.force-desktop')")
         if facts.get("innerWidth") is not None and facts["innerWidth"] > 639:
             page.set_viewport_size({"width": 390, "height": 844})
-        page.reload()
+        page.goto("about:blank")
+        page.goto(url)
         try:
             expect(shell).to_be_visible(timeout=timeout)
             return
@@ -513,6 +517,18 @@ def open_mobile_shell(page: Page, console_url: str, *, timeout: int = 45_000) ->
         f"nv-root[data-mobile]={facts.get('dataMobile')!r} "
         f"hash={facts.get('hash')!r}"
     )
+
+
+def open_mobile_shell(page: Page, console_url: str, *, timeout: int = 45_000) -> None:
+    """Load the console root and wait for the mobile shell (NV_MobileShell, US-014) to mount: ``boot_mobile_shell`` at the root url.
+
+    At the root there is no deep link to lose, so the about:blank re-boot hop is a plain fresh-document load back at the
+    root. Deep-link boots - ``#/w/<wid>?view=...``, ``?overlay=...``, ``?doc=...`` - that must land AT a link and then
+    assert it was consumed call ``boot_mobile_shell`` directly: they used to set the 390x844 viewport and goto the link
+    themselves, and got no self-heal (GHA runs 39376800897, 39376816475 and 39376110103: the desktop-boot flake class of
+    the root boots, on a boot path this helper did not cover).
+    """
+    boot_mobile_shell(page, f"{console_url}#/", timeout=timeout)
 
 
 def open_mobile_tab(page: Page, console_url: str, tab_id: str, *, timeout: int = 45_000):

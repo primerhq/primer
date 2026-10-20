@@ -18,7 +18,7 @@ from playwright.sync_api import Page, expect
 
 from tests._support.mock_llm import Rule
 from tests.ui_e2e._scripted_session import seed_scripted_agent, start_session
-from tests.ui_e2e._shell_helpers import run_verb, session_row, shell_url
+from tests.ui_e2e._shell_helpers import boot_mobile_shell, run_verb, session_row, shell_url
 from tests.ui_e2e._studio_helpers import open_session_in_studio
 
 PHONE = {"width": 390, "height": 844}
@@ -128,7 +128,7 @@ def test_a_phone_can_park_and_end_a_session_and_is_not_offered_split_right(
         sid = start_session(client, ids, "end me on a phone", auto_start=False)
 
     page.set_viewport_size(PHONE)
-    page.goto(shell_url(console_url, ids["workspace"]) + f"?doc=session:{sid}")
+    boot_mobile_shell(page, shell_url(console_url, ids["workspace"]) + f"?doc=session:{sid}")
     expect(page.get_by_test_id("nv-mob-session-screen")).to_be_visible(timeout=20_000)
     page.get_by_test_id("nv-session-overflow").click()
     expect(page.get_by_test_id("nv-session-park")).to_be_visible()
