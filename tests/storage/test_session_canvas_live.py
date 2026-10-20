@@ -28,7 +28,6 @@ from primer.canvas.lang import parse_program
 from primer.canvas.service import CanvasService
 from primer.model.canvas import SessionCanvas
 from primer.model.provider import PoolConfig, PostgresConfig
-from primer.storage import postgres as pg_backend
 from primer.storage.postgres import PostgresStorageProvider
 from tests.pg_gate import explicit_port, postgres_marks, require_postgres_url
 
@@ -80,9 +79,6 @@ async def pods() -> AsyncIterator[Pods]:
             async with api_sp.pool.acquire() as conn:
                 await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
             for sp in (api_sp, worker_sp):
-                # The "table ensured" cache is keyed by id(provider): a later provider at this address must not skip its CREATE.
-                for key in [k for k in pg_backend._table_ensured if k[0] == id(sp)]:
-                    pg_backend._table_ensured.discard(key)
                 await sp.aclose()
 
 

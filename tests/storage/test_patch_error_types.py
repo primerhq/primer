@@ -20,14 +20,16 @@ from pydantic import BaseModel, Field, ValidationError
 from primer.model.common import Identifiable
 from primer.model.except_ import ProviderError
 from primer.storage._patch import PatchSpecError, check_canonical_json, document_matches, json_equal
-from primer.storage.postgres import PostgresStorage, _table_ensured
+from primer.storage.postgres import PostgresStorage
 from tests.storage._patch_scenarios import StrictDoc
 from tests.storage.test_patch_if_postgres_fixup import TXN_BEGIN, TXN_END, _Provider, _ScriptedConn, _row
 
 
 def _postgres_storage(model_class=StrictDoc) -> PostgresStorage:
     storage = PostgresStorage(provider=_Provider(), model_class=model_class)
-    _table_ensured.add((id(storage._provider), model_class))
+    # Mark the table as ensured so _ensure_table() short-circuits without
+    # touching the (exploding) pool.
+    storage._table_ensured = True
     return storage
 
 

@@ -91,9 +91,6 @@ async def provider(
                     await c.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
             except Exception:
                 pass
-            from primer.storage import postgres as _pg
-            for key in [k for k in _pg._table_ensured if k[0] == id(p)]:
-                _pg._table_ensured.discard(key)
         await p.aclose()
 
 

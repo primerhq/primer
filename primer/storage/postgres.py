@@ -532,13 +532,6 @@ class PostgresStorageProvider(StorageProvider):
 # ===========================================================================
 
 
-# Module-level cache of "we've ensured the table exists for this class
-# on this provider". Keyed by (provider id, model class). Avoids a
-# round-trip to Postgres on every operation while staying correct when
-# the same provider is shared across handles.
-_table_ensured: set[tuple[int, type[BaseModel]]] = set()
-
-
 # ---------------------------------------------------------------------------
 # Hot-field expression indexes
 # ---------------------------------------------------------------------------
@@ -671,12 +664,19 @@ class PostgresStorage(Storage[ModelT]):
         self._table = _table_name_for(model_class)
         # Quoted, schema-qualified table reference for inline SQL.
         self._qualified = f'"{provider.schema}"."{self._table}"'
+        # Per-handle "table DDL has run" flag, mirroring the SQLite handle.
+        # Deliberately NOT module-level state keyed by id(provider): id() is
+        # a recycled memory address, so a dead provider's "ensured" entry
+        # survives into a fresh provider allocated at the same address, the
+        # DDL is skipped for its (new) schema, and the first query hits a
+        # missing table. The provider's handle cache keeps one handle per
+        # model, so the flag is shared exactly as broadly as before.
+        self._table_ensured = False
 
     # ---------- DDL --------------------------------------------------------
 
     async def _ensure_table(self) -> None:
-        cache_key = (id(self._provider), self._model)
-        if cache_key in _table_ensured:
+        if self._table_ensured:
             return
         ddl_table = (
             f'CREATE TABLE IF NOT EXISTS {self._qualified} ('
@@ -717,7 +717,9 @@ class PostgresStorage(Storage[ModelT]):
                 f"failed to create table {self._qualified}: {exc}",
                 cause=exc,
             ) from exc
-        _table_ensured.add(cache_key)
+        # Reached only when the DDL committed (a race loss means the other
+        # process committed the same table): mark this handle ensured.
+        self._table_ensured = True
 
     # ---------- Serialisation ---------------------------------------------
 

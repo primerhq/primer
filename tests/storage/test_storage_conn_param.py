@@ -19,7 +19,7 @@ import json
 import pytest
 
 from primer.model.agent import Agent, AgentModel
-from primer.storage.postgres import PostgresStorage, _table_ensured
+from primer.storage.postgres import PostgresStorage
 
 
 class _FakeRow(dict):
@@ -81,9 +81,8 @@ class _FakeConn:
 def _make_storage() -> PostgresStorage[Agent]:
     storage = PostgresStorage[Agent](provider=_FakeProvider(), model_class=Agent)
     # Mark the table as ensured so _ensure_table() short-circuits without
-    # touching the (exploding) pool. The cache key mirrors the production
-    # code: (id(provider), model_class).
-    _table_ensured.add((id(storage._provider), Agent))
+    # touching the (exploding) pool.
+    storage._table_ensured = True
     return storage
 
 

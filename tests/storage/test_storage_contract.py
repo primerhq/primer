@@ -98,14 +98,6 @@ async def provider(
                     await c.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
             except Exception:
                 pass
-            # The "table ensured" cache is keyed by ``id(provider)``. With a
-            # fresh per-test schema, a later provider can be allocated at the
-            # same address as this one once it is GC'd, aliasing onto a stale
-            # entry and skipping the CREATE for the new schema. Evict this
-            # provider's entries so the next test always re-creates its table.
-            from primer.storage import postgres as _pg
-            for key in [k for k in _pg._table_ensured if k[0] == id(p)]:
-                _pg._table_ensured.discard(key)
         await p.aclose()
 
 

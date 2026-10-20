@@ -14,7 +14,7 @@ import json
 import pytest
 
 from primer.storage._patch import PatchSpecError
-from primer.storage.postgres import PostgresStorage, _table_ensured
+from primer.storage.postgres import PostgresStorage
 from tests.storage._patch_scenarios import StrictDoc
 
 
@@ -71,7 +71,9 @@ class _ScriptedConn:
 
 def _storage() -> PostgresStorage[StrictDoc]:
     storage = PostgresStorage[StrictDoc](provider=_Provider(), model_class=StrictDoc)
-    _table_ensured.add((id(storage._provider), StrictDoc))
+    # Mark the table as ensured so _ensure_table() short-circuits without
+    # touching the (exploding) pool.
+    storage._table_ensured = True
     return storage
 
 

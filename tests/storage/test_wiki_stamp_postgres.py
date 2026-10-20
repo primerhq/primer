@@ -21,7 +21,6 @@ import pytest_asyncio
 from primer.knowledge.wiki.stamp import claim, read_stamp, still_mine
 from primer.model.provider import PoolConfig, PostgresConfig
 from primer.model.wiki import WIKI_STAMP_ID
-from primer.storage import postgres as pg_backend
 from primer.storage.postgres import PostgresStorageProvider
 from tests.pg_gate import explicit_port, postgres_marks, require_postgres_url
 
@@ -54,9 +53,6 @@ async def provider() -> AsyncIterator[PostgresStorageProvider]:
         async with asyncio.timeout(_BOUND_S):
             async with sp.pool.acquire() as c:
                 await c.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
-            # The "table ensured" cache is keyed by id(provider): a later provider at this address must not skip its CREATE.
-            for key in [k for k in pg_backend._table_ensured if k[0] == id(sp)]:
-                pg_backend._table_ensured.discard(key)
             await sp.aclose()
 
 

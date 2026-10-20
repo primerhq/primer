@@ -27,7 +27,6 @@ import pytest_asyncio
 from primer.common.secret_box import SecretBox
 from primer.model.mcp_oauth import McpOAuthTokenSet
 from primer.model.provider import PoolConfig, PostgresConfig, Toolset
-from primer.storage import postgres as pg_backend
 from primer.storage import raw_generation
 from primer.storage.postgres import PostgresStorageProvider
 from primer.toolset.oauth.service import OAuthTarget, ToolsetOAuthService, config_fingerprint
@@ -97,9 +96,6 @@ async def pools() -> AsyncIterator[tuple[PostgresStorageProvider, PostgresStorag
             async with first.pool.acquire() as connection:
                 await connection.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
             for provider in (first, second):
-                # The "table ensured" cache is keyed by id(provider): a later provider at this address must not skip its CREATE.
-                for key in [k for k in pg_backend._table_ensured if k[0] == id(provider)]:
-                    pg_backend._table_ensured.discard(key)
                 await provider.aclose()
 
 
