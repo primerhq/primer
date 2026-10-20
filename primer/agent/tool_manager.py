@@ -782,7 +782,20 @@ class ToolExecutionManager:
                     f"but is not in the agent's registered tool list"
                 )
 
-        # Approval gate — runs after routing resolution, before dispatch.
+        # Enforce the toolset provider's role floor before consulting the
+        # approval resolver. Approval cannot grant a caller a role they do not
+        # have, and an approval resume must not bypass this authorization.
+        if ws_bare is None:
+            denial = self._role_floor_denial(
+                call,
+                provider=self._toolsets[toolset_id],
+                bare_name=bare_name,
+            )
+            if denial is not None:
+                return denial
+
+        # Approval gate: runs after routing and the role floor, before
+        # dispatch.
         # The ``external`` pseudo-toolset is exempt by design: the caller
         # mediates every external call (it answers its own tool), so an
         # approval layer on top adds nothing, and a policy row targeting
@@ -946,6 +959,26 @@ class ToolExecutionManager:
             id=call.id, output=NOTIFYING_TOOL_RESULT, error=False
         )
 
+    def _role_floor_denial(
+        self,
+        call: ToolCallPart,
+        *,
+        provider: ToolsetProvider,
+        bare_name: str,
+    ) -> ToolResultPart | None:
+        """Return the shared in-band denial when the invoker is below floor."""
+        need = provider.required_role(bare_name)
+        if _role_allows(self._initiated_by, need):
+            return None
+        return ToolResultPart(
+            id=call.id,
+            output=(
+                f"access denied: tool {bare_name!r} requires the "
+                f"{need!r} role"
+            ),
+            error=True,
+        )
+
     async def _dispatch_toolset(
         self,
         call: ToolCallPart,
@@ -967,16 +1000,13 @@ class ToolExecutionManager:
         # persisted PrincipalRef; a None invoker fails closed (deny), which
         # is why every construction site threads a real ref or the system
         # fallback.
-        need = provider.required_role(bare_name)
-        if not _role_allows(self._initiated_by, need):
-            return ToolResultPart(
-                id=call.id,
-                output=(
-                    f"access denied: tool {bare_name!r} requires the "
-                    f"{need!r} role"
-                ),
-                error=True,
-            )
+        denial = self._role_floor_denial(
+            call,
+            provider=provider,
+            bare_name=bare_name,
+        )
+        if denial is not None:
+            return denial
         # The run's context (session or chat, identity, turn, principal) for a handler that declares ``ctx``: see ``context_for``.
         ctx = self.context_for(call.id, principal=principal)
         try:
