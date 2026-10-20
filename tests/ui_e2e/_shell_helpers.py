@@ -440,12 +440,82 @@ def open_legacy_route(page: Page, console_url: str, route: str,
 MOBILE_TABS = ["inbox", "spaces", "files", "more"]
 
 
-def open_mobile_shell(page: Page, console_url: str, *, timeout: int = 20_000) -> None:
+def _mobile_shell_facts(page: Page) -> dict:
+    """The in-page facts that explain a missing mobile shell, for the failure message and the self-heal in open_mobile_shell.
+
+    ``innerWidth`` says whether useViewport's band (<=639px is mobile, ui/foundation/viewport.js) could have evaluated to
+    mobile at all; ``forceDesktop`` says whether the ?force-desktop=1 escape hatch is active (viewport.js PERSISTS a
+    ?force-desktop=1 visit into localStorage under "primer.force-desktop" and nothing clears it); ``dataMobile`` is what the
+    console root itself reports (nv-shell.jsx renders data-mobile on nv-root, "true" only when the mobile shell actually
+    mounted). Never raises: it runs on the failure path, where a second exception would bury the one being described.
+    """
+    try:
+        return page.evaluate(
+            """() => {
+                const root = document.querySelector('[data-testid="nv-root"]');
+                return {
+                    innerWidth: window.innerWidth,
+                    forceDesktop: localStorage.getItem('primer.force-desktop'),
+                    dataMobile: root ? root.getAttribute('data-mobile') : null,
+                    hash: window.location.hash,
+                };
+            }"""
+        )
+    except Exception:  # noqa: BLE001 - a page mid-reload must not hide the failure being described
+        return {"innerWidth": None, "forceDesktop": None, "dataMobile": None, "hash": None}
+
+
+def open_mobile_shell(page: Page, console_url: str, *, timeout: int = 45_000) -> None:
+    """Load the console root and wait for the mobile shell (NV_MobileShell, US-014) to mount.
+
+    45s, not 20: the budget must cover a cold boot (the ~3MB server-pre-transpiled bundle plus the first API reads) on a
+    loaded CI runner, and the lane's flake evidence (GHA runs 39346172295 / 39352650049) shows boots completing around
+    the old 20s mark.
+
+    A timeout here used to be indistinguishable from "still loading": the observed failure was the fully booted DESKTOP
+    console at the 390px viewport (GHA runs 39346172295 and 39352650049: 1-4 mobile victims per run, varying set, the app
+    itself healthy). So before failing this diagnoses in-page and self-heals the two known causes (both in
+    ui/foundation/viewport.js):
+
+    * innerWidth > 639 - the viewport override did not apply to this document, so the band evaluated non-mobile at first
+      render: re-apply the 390x844 viewport and reload;
+    * localStorage "primer.force-desktop" = "1" - the ?force-desktop=1 escape hatch is persisted and active: remove it and
+      reload.
+
+    The reload re-evaluates the band on a fresh document (and, with neither cause present, re-rolls the module-load race
+    nv-shell.jsx has when NV_MobileShell is not a function yet), so it always runs after the fixes. Up to 2 retries; the
+    final failure carries the last in-page diagnostics.
+    """
+    shell = page.get_by_test_id("nv-mobile-shell")
     page.goto(f"{console_url}#/")
-    expect(page.get_by_test_id("nv-mobile-shell")).to_be_visible(timeout=timeout)
+    try:
+        expect(shell).to_be_visible(timeout=timeout)
+        return
+    except Exception:  # noqa: BLE001 - the timeout is the path this self-heal exists for
+        pass
+    facts = None
+    for _ in range(2):
+        facts = _mobile_shell_facts(page)
+        if facts.get("forceDesktop") == "1":
+            page.evaluate("localStorage.removeItem('primer.force-desktop')")
+        if facts.get("innerWidth") is not None and facts["innerWidth"] > 639:
+            page.set_viewport_size({"width": 390, "height": 844})
+        page.reload()
+        try:
+            expect(shell).to_be_visible(timeout=timeout)
+            return
+        except Exception:  # noqa: BLE001 - retry with fresh diagnostics
+            continue
+    raise AssertionError(
+        "the mobile shell (nv-mobile-shell) never mounted after 2 self-heal retries; in-page facts: "
+        f"innerWidth={facts.get('innerWidth')} "
+        f"force-desktop={facts.get('forceDesktop')!r} "
+        f"nv-root[data-mobile]={facts.get('dataMobile')!r} "
+        f"hash={facts.get('hash')!r}"
+    )
 
 
-def open_mobile_tab(page: Page, console_url: str, tab_id: str, *, timeout: int = 20_000):
+def open_mobile_tab(page: Page, console_url: str, tab_id: str, *, timeout: int = 45_000):
     """Land on one of the mobile shell's bottom-nav tabs (Inbox / Spaces /
     Files / More) - the actual top-level surfaces a phone user reaches,
     replacing the desktop's ?overlay= grammar at this viewport band."""
@@ -457,7 +527,7 @@ def open_mobile_tab(page: Page, console_url: str, tab_id: str, *, timeout: int =
 
 
 def open_mobile_platform_nav(page: Page, console_url: str, nav_id: str, *,
-                              timeout: int = 20_000):
+                              timeout: int = 45_000):
     """Drill into a Platform entity list from the More tab (NV_MobilePlatform)
     - the mobile-native replacement for a desktop Platform overlay, always
     rendered as .card rows (NV_MobilePlatform has no <table> branch), never
