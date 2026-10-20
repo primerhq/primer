@@ -28,6 +28,7 @@ from primer.model.chat import (
     ToolCallStart,
     ToolResultPart,
 )
+from primer.model.principal import PrincipalRef
 from primer.session.delegation import DelegationRecorder, reset_delegation_sink, set_delegation_sink
 from primer.session.timeline import build_turn_timeline
 from primer.worker.frames import AgentResumeContext
@@ -267,6 +268,7 @@ async def test_a_parked_run_writes_the_run_id_into_the_frame_context():
                 await run_subagent(
                     agent_id="agent-sub", prompt="x", storage_provider=storage, provider_registry=registry, principal="user-1",
                     approval_resolver=_Resolver(), session_id="sess-1", workspace_id="ws-1", invoke_tool_call_id="call_0",
+                    identity=PrincipalRef.system(),
                 )
     finally:
         reset_delegation_sink(token)

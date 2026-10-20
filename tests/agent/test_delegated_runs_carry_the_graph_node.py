@@ -15,6 +15,7 @@ import pytest
 from primer.agent.invoke import invocation_depth_guard, resume_subagent, run_subagent
 from primer.graph._node_identity import reset_current_graph_node_id, set_current_graph_node_id
 from primer.model.chat import StreamStart, TextDelta, ToolResultPart
+from primer.model.principal import PrincipalRef
 from primer.session.delegation import DelegationRecorder, reset_delegation_sink, set_delegation_sink
 from primer.worker.frames import AgentResumeContext
 from tests.agent.test_delegated_runs_carry_a_run_id import (
@@ -213,6 +214,7 @@ async def test_a_run_that_parks_carries_the_node_in_the_frame_it_pushes() -> Non
                 await run_subagent(
                     agent_id="agent-sub", prompt="x", storage_provider=storage, provider_registry=registry, principal="user-1",
                     approval_resolver=_Resolver(), session_id="sess-1", workspace_id="ws-1", invoke_tool_call_id="call_0",
+                    identity=PrincipalRef.system(),
                 )
     finally:
         reset_delegation_sink(sink_token)

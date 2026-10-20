@@ -280,6 +280,7 @@ async def test_run_subagent_approval_gate_pushes_agent_frame():
             workspace_id="ws-parent",
             chat_id=None,
             invoke_tool_call_id="parent-tcid",
+            identity=PrincipalRef.system(),
             turn_no=42,
         )
 
