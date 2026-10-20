@@ -173,6 +173,7 @@ var TR_REMEDIES = {
   not_a_webhook_trigger: "{message}. Only a webhook trigger has a token.",
   parked_session_only_from_yield: "{message}. A session creates one itself when it waits on the trigger; it is not made from here.",
   cron_invalid: "{message}. Check each field's range (minute 0-59, hour 0-23, day of month 1-31, month 1-12, weekday 0-6).",
+  text_pattern_unsafe: "{message}. Use a pattern without nested unbounded repetition, for example (a+)+, then save it again.",
   timezone_invalid: "{message}. Pick a timezone from the list.",
 };
 
