@@ -202,6 +202,10 @@ from primer.toolset._system_tools import (
     make_read_doc_content_handler,
 )
 from primer.toolset._system_web import web_active_config_tools
+from primer.toolset._system_wiki import (
+    _wiki_read_tool,
+    _wiki_search_tool,
+)
 
 
 # Told to the agent in the create / update descriptors of the entities in ``admin_writes_by_label`` (and used as the refusal message).
@@ -979,6 +983,13 @@ def build_system_toolset(
     registry[name] = entry
     # describe_tool reports the LIVE gate, so it reads the same resolver the meta-dispatch gate does (one cache, one /invalidate).
     name, entry = _describe_tool_tool(provider_registry, approval_resolver)
+    registry[name] = entry
+    # wiki_read and wiki_search read and search the platform wiki (the system
+    # collection, task 11): user-role and non-pausing, part of the core kit
+    # (primer/toolset/core_kit.py).
+    name, entry = _wiki_read_tool(storage_provider)
+    registry[name] = entry
+    name, entry = _wiki_search_tool(provider_registry)
     registry[name] = entry
 
     # ---- Collection / Document extras --------------------------------
