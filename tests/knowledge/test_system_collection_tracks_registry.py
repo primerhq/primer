@@ -1,6 +1,7 @@
-"""S5 P4: /tools follows the live registry, so the operator cannot rot."""
+"""S5 P4: the tool reference follows the live registry, so the operator cannot rot."""
 from __future__ import annotations
 
+import pytest
 import pytest_asyncio
 
 from primer.knowledge.system_collection import (
@@ -31,7 +32,28 @@ async def sp(tmp_path):
     await provider.aclose()
 
 
-async def test_a_new_toolset_shows_up_on_the_next_pass(sp):
+@pytest.fixture
+def wiki(tmp_path, monkeypatch):
+    """A hand-written wiki plus an empty ai-docs dir, pinned by env vars."""
+    root = tmp_path / "wiki"
+    root.mkdir()
+    (root / "index.md").write_text(
+        "---\n"
+        "title: Platform wiki\n"
+        "summary: The tracks test wiki root.\n"
+        "---\n"
+        "\n"
+        "The tracks wiki.\n",
+        encoding="utf-8",
+    )
+    docs = tmp_path / "ai-docs"
+    docs.mkdir()
+    monkeypatch.setenv("PRIMER_WIKI_DIR", str(root))
+    monkeypatch.setenv("PRIMER_AI_DOCS_DIR", str(docs))
+    return root
+
+
+async def test_a_new_toolset_shows_up_on_the_next_pass(sp, wiki):
     await regenerate_system_collection(sp, toolset_providers={})
     tree = DocumentTreeService(sp)
     from primer.model.except_ import NotFoundError
@@ -39,21 +61,25 @@ async def test_a_new_toolset_shows_up_on_the_next_pass(sp):
 
     with pytest.raises(NotFoundError):
         await tree.read(
-            collection_id=SYSTEM_COLLECTION_ID, path="tools/crud/create_agent",
+            collection_id=SYSTEM_COLLECTION_ID,
+            path="reference/tools/crud/create_agent",
         )
 
     await regenerate_system_collection(
         sp, toolset_providers={"crud": build_crud_toolset(storage_provider=sp)},
     )
     page = await tree.read(
-        collection_id=SYSTEM_COLLECTION_ID, path="tools/crud/create_agent",
+        collection_id=SYSTEM_COLLECTION_ID,
+        path="reference/tools/crud/create_agent",
     )
     assert page.body.strip()
-    index = await tree.read(collection_id=SYSTEM_COLLECTION_ID, path="tools/crud")
+    index = await tree.read(
+        collection_id=SYSTEM_COLLECTION_ID, path="reference/tools/crud",
+    )
     assert "create_agent" in index.body and "update_trigger" in index.body
 
 
-async def test_a_removed_toolset_is_pruned(sp):
+async def test_a_removed_toolset_is_pruned(sp, wiki):
     await regenerate_system_collection(
         sp, toolset_providers={"crud": build_crud_toolset(storage_provider=sp)},
     )
@@ -63,4 +89,6 @@ async def test_a_removed_toolset_is_pruned(sp):
     import pytest
 
     with pytest.raises(NotFoundError):
-        await tree.read(collection_id=SYSTEM_COLLECTION_ID, path="tools/crud")
+        await tree.read(
+            collection_id=SYSTEM_COLLECTION_ID, path="reference/tools/crud",
+        )

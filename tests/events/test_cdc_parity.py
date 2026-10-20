@@ -72,11 +72,11 @@ async def test_storage_mutation_converges_via_the_subscription(sp):
 
     tree = DocumentTreeService(sp)
     page = await tree.read(collection_id=SYSTEM_COLLECTION_ID,
-                           path="agents/agent-ev")
+                           path="this-install/agents/agent-ev")
     assert "a converged purpose" in page.body
     index = await tree.read(collection_id=SYSTEM_COLLECTION_ID,
-                            path="agents")
-    assert "agents/agent-ev" in index.body
+                            path="this-install/agents")
+    assert "this-install/agents/agent-ev" in index.body
 
     # Update converges the new body.
     row = await sp.get_storage(Agent).get("agent-ev")
@@ -85,7 +85,7 @@ async def test_storage_mutation_converges_via_the_subscription(sp):
     )
     await dispatcher.drain_once()
     page = await tree.read(collection_id=SYSTEM_COLLECTION_ID,
-                           path="agents/agent-ev")
+                           path="this-install/agents/agent-ev")
     assert "rewritten purpose" in page.body
 
     # Delete takes the page away.
@@ -93,7 +93,7 @@ async def test_storage_mutation_converges_via_the_subscription(sp):
     await dispatcher.drain_once()
     with pytest.raises(NotFoundError):
         await tree.read(collection_id=SYSTEM_COLLECTION_ID,
-                        path="agents/agent-ev")
+                        path="this-install/agents/agent-ev")
 
 
 async def test_seed_is_idempotent_and_repairs(sp):

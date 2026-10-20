@@ -2540,7 +2540,7 @@ async def test_t0554_post_collection_then_collections_search_reflects_cdc(
         # carries the indexing hooks. Asserted here rather than through
         # /v1/collections/search, which S2 left inert.
         await _wait_for_system_page(
-            client, f"collections/{collection_id}", distinctive,
+            client, f"this-install/collections/{collection_id}", distinctive,
         )
 
         found = False
@@ -2554,7 +2554,8 @@ async def test_t0554_post_collection_then_collections_search_reflects_cdc(
             assert search.status_code == 200, search.text
             last = search.json()
             if any(
-                h.get("meta", {}).get("path") == f"collections/{collection_id}"
+                h.get("meta", {}).get("path")
+                == f"this-install/collections/{collection_id}"
                 for h in last["hits"]
             ):
                 found = True
@@ -2965,7 +2966,7 @@ async def test_new_agent_is_searchable_through_the_system_collection(
             # The page converges via the event-log dispatcher (bounded by
             # its poll interval), not inline with the POST.
             await _wait_for_system_page(
-                client, f"agents/{agent_id}", distinctive,
+                client, f"this-install/agents/{agent_id}", distinctive,
             )
 
             # And it is searchable, without bootstrapping a second time.
@@ -2980,7 +2981,8 @@ async def test_new_agent_is_searchable_through_the_system_collection(
                 assert search.status_code == 200, search.text
                 last = search.json()
                 if any(
-                    f"agents/{agent_id}" == h.get("meta", {}).get("path")
+                    f"this-install/agents/{agent_id}"
+                    == h.get("meta", {}).get("path")
                     for h in last["hits"]
                 ):
                     found = True

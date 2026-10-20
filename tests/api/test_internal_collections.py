@@ -720,8 +720,10 @@ async def test_system_collection_exists_without_ic_activation(client):
         "/v1/collections/system/docs", params={"parent": "", "depth": 1}
     )
     assert docs.status_code == 200
+    # Slice 6: the live map lives under this-install/; the wiki roots
+    # (index, reference) only appear when a hand-written wiki is present.
     roots = {n["slug"] for n in docs.json()["nodes"]}
-    assert {"agents", "graphs", "tools", "collections", "docs"} <= roots
+    assert "this-install" in roots
 
 
 async def test_user_write_to_system_collection_403(client):

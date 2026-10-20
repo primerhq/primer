@@ -1,9 +1,8 @@
 """Tool entries for the wiki build tests.
 
-``primer.toolset.tool_catalog.ToolEntry`` (pivot P1 task 5) is not on main when this
-slice lands, so the tests build entries with the same fields and the same two derived
-properties. The build reads an entry only through ``ToolEntryView``, which the real
-entry satisfies, so nothing here changes when the catalog arrives.
+The build reads an entry only through ``ToolEntryView``, so these stand-ins and the
+real ``primer.toolset.tool_catalog.ToolEntry`` (pivot P1 task 5) are interchangeable;
+``test_reference.py`` pins the ``call_tool`` page through the real catalog.
 
 ``real_entries()`` is the production shape: every tool of the built-in toolsets that
 ``tests/docs/_live_toolsets.py`` builds, with the facts a catalog would derive (the role

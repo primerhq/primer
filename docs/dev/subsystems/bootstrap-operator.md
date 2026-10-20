@@ -76,7 +76,7 @@ The crud approval policies are ordinary `ToolApprovalPolicy` rows with the deter
 
 The two seeded agents are ordinary `Agent` rows. Their `model.profile_id` is resolved from the default model profile at creation and PRESERVED thereafter.
 
-The system collection is a `Collection` with `system=True` at id `system`, holding a document tree: `/agents`, `/graphs`, `/tools`, `/collections`, `/docs`, `/workspaces`, `/providers`, `/how-to` and a root index.
+The system collection is a `Collection` with `system=True` at id `system`, holding a document tree: `index` (the platform wiki's table of contents), `reference/` (one generated page per tool, under `reference/tools/<toolset>/<tool>`), `this-install/` (the live install map: agents, graphs, collections, workspaces and providers) and the legacy `docs/` and `how-to/` layers, kept verbatim until their replacements are written.
 
 ## 6. Lifecycle
 
@@ -112,7 +112,7 @@ Nothing here writes a marker of its own. Re-running the pass is the repair mecha
 - `reset_agents` overwrites exactly three fields (`description`, `system_prompt`, `tools`) on exactly two rows. `model.profile_id` is preserved when the row exists, and resolved from the default profile only when the row is being created. Nothing else in storage is touched.
 - Agent seeding requires a default model profile; without one it skips and repairs on the next pass.
 - The operator does NOT hold the crud toolset. It reads, searches and delegates; the builder constructs. That split is what makes the approval gate meaningful, since the agent a human talks to cannot itself mutate the platform.
-- The system collection is regenerated from live state at every pass, and pruned: a deleted workspace or provider disappears from the map on the next boot.
+- The system collection is regenerated at every pass: the live map under `this-install/` is rebuilt from live state whatever the wiki stamp says and pruned (a deleted workspace or provider disappears from the map on the next boot), while the platform wiki is written only when the version stamp lets this build replace the stored one - a build with no hand-written pages or a skipped toolset never claims the stamp and never deletes stored pages. See the [knowledge](knowledge.md) subsystem's platform-wiki-build paragraph.
 
 ## 10. Testing patterns
 

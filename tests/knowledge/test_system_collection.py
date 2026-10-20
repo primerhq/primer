@@ -40,9 +40,11 @@ async def test_regeneration_builds_subtrees_without_any_embedder(sp):
     coll = await sp.get_storage(Collection).get(SYSTEM_COLLECTION_ID)
     assert coll is not None and coll.system is True and coll.search is None
     tree = DocumentTreeService(sp)
-    res = await tree.read(collection_id=SYSTEM_COLLECTION_ID, path="agents/agent-a")
+    res = await tree.read(
+        collection_id=SYSTEM_COLLECTION_ID, path="this-install/agents/agent-a",
+    )
     assert "helper" in res.body
-    idx = await tree.read(collection_id=SYSTEM_COLLECTION_ID, path="agents")
+    idx = await tree.read(collection_id=SYSTEM_COLLECTION_ID, path="this-install/agents")
     assert "agent-a" in idx.body
 
 
@@ -55,7 +57,9 @@ async def test_regeneration_is_idempotent_and_prunes_stale(sp):
     await regenerate_system_collection(sp, toolset_providers={})
     tree = DocumentTreeService(sp)
     with pytest.raises(NotFoundError):
-        await tree.read(collection_id=SYSTEM_COLLECTION_ID, path="agents/agent-a")
+        await tree.read(
+            collection_id=SYSTEM_COLLECTION_ID, path="this-install/agents/agent-a",
+        )
 
 
 class _RecordingStore:
@@ -178,10 +182,11 @@ async def test_entity_write_converges_and_indexes_that_entity(sp):
 
     tree = DocumentTreeService(sp)
     page = await tree.read(collection_id=SYSTEM_COLLECTION_ID,
-                           path="agents/agent-new")
+                           path="this-install/agents/agent-new")
     assert "a distinctive purpose" in page.body
-    index = await tree.read(collection_id=SYSTEM_COLLECTION_ID, path="agents")
-    assert "agents/agent-new" in index.body
+    index = await tree.read(collection_id=SYSTEM_COLLECTION_ID,
+                            path="this-install/agents")
+    assert "this-install/agents/agent-new" in index.body
     assert page.document.id in store.documents(), (
         "the new agent's page never reached the vector store"
     )
@@ -194,7 +199,7 @@ async def test_entity_write_converges_and_indexes_that_entity(sp):
     )
     with pytest.raises(NotFoundError):
         await tree.read(collection_id=SYSTEM_COLLECTION_ID,
-                        path="agents/agent-new")
+                        path="this-install/agents/agent-new")
 
 
 async def test_the_index_hook_is_deferred_off_the_write() -> None:
@@ -257,7 +262,7 @@ async def test_a_failing_deferred_index_does_not_escape() -> None:
 async def test_regeneration_survives_a_page_created_underneath_it(sp, monkeypatch):
     """A CDC convergence hook can win the create; the pass must not die.
 
-    Seeding an agent fires converge_entity for ``agents/<id>``, the very
+    Seeding an agent fires converge_entity for ``this-install/agents/<id>``, the very
     path the regeneration that runs next is about to write. When that hook
     lands between the regeneration's not-found miss and its create, the
     create raises ConflictError. Before the fix that killed the whole
@@ -274,7 +279,7 @@ async def test_regeneration_survives_a_page_created_underneath_it(sp, monkeypatc
     raced: dict[str, bool] = {}
 
     async def racing_create(self, *, collection_id, parent, slug, body,
-                            title=None, strict_slugs=True):
+                            title=None, strict_slugs=True, meta=None):
         # Stand in for the hook: write the page, then report the collision
         # the regeneration would really have seen.
         if slug == "agent-raced" and not raced.get("done"):
@@ -282,12 +287,12 @@ async def test_regeneration_survives_a_page_created_underneath_it(sp, monkeypatc
             await real_create(
                 self, collection_id=collection_id, parent=parent, slug=slug,
                 body="written by the convergence hook", title=title,
-                strict_slugs=strict_slugs,
+                strict_slugs=strict_slugs, meta=meta,
             )
             raise ConflictError(f"path {parent}/{slug!r} already exists")
         return await real_create(
             self, collection_id=collection_id, parent=parent, slug=slug,
-            body=body, title=title, strict_slugs=strict_slugs,
+            body=body, title=title, strict_slugs=strict_slugs, meta=meta,
         )
 
     monkeypatch.setattr(DocumentTreeService, "create", racing_create)
@@ -298,7 +303,7 @@ async def test_regeneration_survives_a_page_created_underneath_it(sp, monkeypatc
     # The pass took the page over instead of leaving the hook's stand-in body.
     tree = DocumentTreeService(sp)
     page = await tree.read(
-        collection_id=SYSTEM_COLLECTION_ID, path="agents/agent-raced",
+        collection_id=SYSTEM_COLLECTION_ID, path="this-install/agents/agent-raced",
     )
     assert page.body != "written by the convergence hook"
     assert "agent-raced" in page.body
