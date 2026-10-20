@@ -6,6 +6,8 @@ import pytest
 
 from primer.agent.approval import ApprovalResolver
 from primer.agent.tool_manager import ToolExecutionManager
+from primer.model.chat import ToolCallPart
+from primer.model.principal import PrincipalRef
 from primer.model.tool_approval import (
     ApproverSpec,
     RequiredApprovalConfig,
@@ -38,9 +40,54 @@ class _PoliciesOnlyResolver(ApprovalResolver):
         return None
 
 
+class _EventRecorder:
+    def __init__(self) -> None:
+        self.events: list[str] = []
+
+    async def emit(self, event_type: str, **kwargs) -> None:
+        del kwargs
+        self.events.append(event_type)
+
+
 # The catalog scopes tool names as ``toolset_id__bare_name``, so the LLM
 # (and these tests) use ``_test__echo`` as the call name.
 _SCOPED_NAME = "_test__echo"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bypass_approval", [False, True])
+async def test_role_floor_denies_before_approval_gate(
+    tool_manager_with_test_tools,
+    bypass_approval,
+):
+    provider = tool_manager_with_test_tools._toolsets["_test"]
+    recorder = _EventRecorder()
+    tm = ToolExecutionManager(
+        toolset_providers={"_test": provider},  # type: ignore[arg-type]
+        approval_resolver=_PoliciesOnlyResolver(
+            [
+                ToolApprovalPolicy(
+                    id="p",
+                    toolset_id="_test",
+                    tool_name="echo",
+                    approval=RequiredApprovalConfig(),
+                ),
+            ]
+        ),
+        initiated_by=PrincipalRef(
+            type="user", id="u", display="u", role="user", source="local",
+        ),
+        event_recorder=recorder,
+    )
+
+    result = await tm.execute(
+        ToolCallPart(id="c0", name=_SCOPED_NAME, arguments={"x": 0}),
+        bypass_approval=bypass_approval,
+    )
+
+    assert result.error is True
+    assert result.output == "access denied: tool 'echo' requires the 'admin' role"
+    assert "approval.requested" not in recorder.events
 
 
 @pytest.mark.asyncio
@@ -131,6 +178,7 @@ async def test_approval_event_key_is_session_scoped(
     tm = ToolExecutionManager(
         toolset_providers={"_test": provider},  # type: ignore[arg-type]
         workspace_session=sess,  # type: ignore[arg-type]
+        initiated_by=PrincipalRef.system(),
     )
     tm._approval_resolver = _PoliciesOnlyResolver(
         [
@@ -156,6 +204,7 @@ def _tm_bound_to(sess, provider) -> ToolExecutionManager:
     tm = ToolExecutionManager(
         toolset_providers={"_test": provider},  # type: ignore[arg-type]
         workspace_session=sess,  # type: ignore[arg-type]
+        initiated_by=PrincipalRef.system(),
     )
     tm._approval_resolver = _PoliciesOnlyResolver(
         [

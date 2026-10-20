@@ -77,11 +77,15 @@ A `ToolApprovalPolicy` row has:
 The dispatch path is:
 
 1. `ToolExecutionManager` is asked to run tool `T` with args `A`.
-2. It calls `ApprovalResolver.find(toolset_id, T)`. Result is the
+2. After routing and the agent tool allowlist, it checks the toolset
+   provider's `required_role` against the run's invoker. A below-floor
+   caller gets an in-band denial before policy evaluation or parking,
+   including on an approval resume.
+3. It calls `ApprovalResolver.find(toolset_id, T)`. Result is the
    policy row or None.
-3. If None, dispatch.
-4. If found and `enabled=False`, dispatch.
-5. If found and `enabled=True`, evaluate the gate. Outcome is one of:
+4. If None, dispatch.
+5. If found and `enabled=False`, dispatch.
+6. If found and `enabled=True`, evaluate the gate. Outcome is one of:
    - `allowed` - dispatch.
    - `required` - raise `YieldToWorker(Yielded(...))` with tool name
      `_approval` and resume metadata that holds the original tool +
