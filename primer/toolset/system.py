@@ -927,8 +927,28 @@ def build_system_toolset(
     )
 
     # ---- Provider-specific fetch_models ------------------------------
+    # LLM adapters intentionally have no list_models method: registered
+    # models live in ModelProfile rows. Reuse the saved-provider REST probe,
+    # which reads the unredacted stored config and queries the upstream
+    # catalogue. Embedders and cross-encoders still own models on their rows
+    # and list them through their adapters.
+    async def _fetch_saved_llm_models(provider_id: str) -> dict[str, Any]:
+        from primer.api.routers.providers import discover_saved_llm_models
+
+        return await discover_saved_llm_models(
+            provider_id=provider_id,
+            providers=storage_provider.get_storage(LLMProvider),
+        )
+
+    name, entry = _fetch_models_tool(
+        label="llm_provider",
+        pretty="LLM",
+        registry=provider_registry,
+        fetch_models=_fetch_saved_llm_models,
+        registered_models="model-profile rows registered for the provider",
+    )
+    registry[name] = entry
     for label, pretty, method in (
-        ("llm_provider", "LLM", "get_llm"),
         ("embedding_provider", "embedding", "get_embedder"),
         ("cross_encoder_provider", "cross-encoder", "get_cross_encoder"),
     ):
