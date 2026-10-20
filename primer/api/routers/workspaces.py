@@ -2036,7 +2036,11 @@ async def steer_session(
     when an ENDED session is non-restartable (workspace_lost/force_deleted).
     """
     from primer.model.external_tool import ExternalToolCall
-    from primer.session.enqueue import SessionWakeDeps, wake_session
+    from primer.session.enqueue import (
+        SessionWakeDeps,
+        SessionWakeReceipt,
+        wake_session,
+    )
     from primer.session.external_tools import (
         CANCEL_REASON_SUPERSEDED,
         _pending_targets,
@@ -2218,6 +2222,13 @@ async def steer_session(
             workspace_registry=registry,
             event_bus=event_bus,
         )
+        routing_receipt = (
+            SessionWakeReceipt()
+            if not body.tool_results
+            and not body.external_tools
+            and not body.attachments
+            else None
+        )
         return await wake_session(
             workspace_id=workspace_id,
             session_id=session_id,
@@ -2229,6 +2240,7 @@ async def steer_session(
             external_tools=body.external_tools,
             extra_parts=extra_parts,
             extra_payload=extra_payload,
+            receipt=routing_receipt,
             deps=deps,
         )
 
