@@ -38,6 +38,7 @@ dependencies = [
     "regopy>=1.4.0",
     "python-multipart>=0.0.32",
     "pyyaml>=6.0.3",
+    "regex>=2026.9.3",
     "tiktoken>=0.13.0",
     "trafilatura>=2.1.0",
     "typer>=0.21.2",

@@ -112,6 +112,9 @@ EventMatcher (the binding predicate, AND of present fields):
 - `event_type` (required), `surface`, `command_name`, `mentions_bot`,
   `sender_roles_any`, `sender_ids_any`, `text_pattern` (regex),
   `room_external_ids`. Omitted fields are unconstrained.
+- `text_pattern` must be a valid regex and may not contain nested
+  unbounded repetition such as `(a+)+`. Matching also has a 10 ms
+  execution budget; a pattern that exceeds it is treated as a non-match.
 
 ReplyTarget (where the action's reply goes):
 - `source_thread` (default) | `source_room` | `dm_sender` | `none`,

@@ -90,7 +90,10 @@ A `Subscription` row:
 - `event_matcher` - optional `EventMatcher` (channel triggers only).
   When present, only channel events that match the predicate dispatch
   this subscription; `None` (the default, and the only option for
-  time/webhook triggers) means every fire dispatches.
+  time/webhook triggers) means every fire dispatches. A `text_pattern`
+  must be a valid regex and may not contain nested unbounded repetition
+  such as `(a+)+`; every search has a 10 ms budget and a timeout is a
+  non-match.
 - `reply_target` - optional `ReplyTarget` (channel triggers only).
   `source_thread` (default) | `source_room` | `dm_sender` | `none`,
   or an explicit `{channel_id, anchor}`. For session subscriptions the

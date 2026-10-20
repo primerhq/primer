@@ -117,7 +117,7 @@ from primer.model.channel import (
     Channel,
     ChannelProvider,
 )
-from primer.model.event_matcher import EventMatcher
+from primer.model.event_matcher import EventMatcher, EventMatcherPatternError
 from primer.model.principal import PrincipalRef
 from primer.channel.reply_binding import ReplyTarget
 from primer.model.trigger import SubscriptionConfig
@@ -792,6 +792,8 @@ def build_system_toolset(
             )
         except TriggerNotFound as exc:
             return _err(str(exc), error_type="trigger_not_found")
+        except EventMatcherPatternError as exc:
+            return _err(str(exc), error_type="validation-error")
         return _ok(sub)
 
     registry["create_channel_binding"] = (

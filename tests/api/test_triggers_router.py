@@ -72,6 +72,17 @@ def _scheduled_body(
     }
 
 
+def _channel_body(slug: str) -> dict:
+    return {
+        "slug": slug,
+        "name": "Channel trigger",
+        "config": {
+            "kind": "channel",
+            "provider_id": "cp-redos-test",
+        },
+    }
+
+
 def _detail_code(body: dict) -> str | None:
     """Pull the error code out of the RFC 7807 envelope.
 
@@ -82,6 +93,15 @@ def _detail_code(body: dict) -> str | None:
     if isinstance(extensions, dict):
         return extensions.get("code")
     return None
+
+
+def _assert_text_pattern_validation_problem(response) -> None:
+    assert response.status_code == 422, response.text
+    assert response.headers["content-type"].startswith("application/problem+json")
+    problem = response.json()
+    assert problem["type"] == "/errors/validation-error"
+    assert problem["extensions"]["code"] == "text_pattern_unsafe"
+    assert "nested unbounded repetition" in problem["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +195,61 @@ async def test_create_subscription_parked_session_rejected_422(client):
     r2 = await client.post(f"/v1/triggers/{tid}/subscriptions", json=sub_body)
     assert r2.status_code == 422, r2.text
     assert _detail_code(r2.json()) == "parked_session_only_from_yield"
+
+
+@pytest.mark.asyncio
+async def test_create_subscription_rejects_pathological_text_pattern(client):
+    trigger = await client.post(
+        "/v1/triggers",
+        json=_channel_body("redos-create"),
+    )
+    assert trigger.status_code == 201, trigger.text
+
+    response = await client.post(
+        f"/v1/triggers/{trigger.json()['id']}/subscriptions",
+        json={
+            "config": {"kind": "session_append", "session_id": "sess-1"},
+            "event_matcher": {
+                "event_type": "message.posted",
+                "text_pattern": r"(a+)+$",
+            },
+        },
+    )
+
+    _assert_text_pattern_validation_problem(response)
+
+
+@pytest.mark.asyncio
+async def test_update_subscription_rejects_pathological_text_pattern(client):
+    trigger = await client.post(
+        "/v1/triggers",
+        json=_channel_body("redos-update"),
+    )
+    assert trigger.status_code == 201, trigger.text
+    trigger_id = trigger.json()["id"]
+    subscription = await client.post(
+        f"/v1/triggers/{trigger_id}/subscriptions",
+        json={
+            "config": {"kind": "session_append", "session_id": "sess-1"},
+            "event_matcher": {
+                "event_type": "message.posted",
+                "text_pattern": r"^deploy\b",
+            },
+        },
+    )
+    assert subscription.status_code == 201, subscription.text
+
+    response = await client.put(
+        f"/v1/triggers/{trigger_id}/subscriptions/{subscription.json()['id']}",
+        json={
+            "event_matcher": {
+                "event_type": "message.posted",
+                "text_pattern": r"(a+)+$",
+            },
+        },
+    )
+
+    _assert_text_pattern_validation_problem(response)
 
 
 # ---------------------------------------------------------------------------
