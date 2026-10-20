@@ -12,7 +12,7 @@ import httpx
 import pytest
 from playwright.sync_api import Page, expect
 
-from tests.ui_e2e._shell_helpers import open_shell
+from tests.ui_e2e._shell_helpers import boot_mobile_shell, open_shell
 
 MISSING = "nope-c019"
 
@@ -70,7 +70,7 @@ def test_the_phone_files_tab_says_the_workspace_was_not_found_instead_of_no_file
     requests: list[str] = []
     page.on("request", lambda req: requests.append(req.url))
     page.set_viewport_size({"width": 390, "height": 844})
-    page.goto(f"{console_url}#/w/{MISSING}")
+    boot_mobile_shell(page, f"{console_url}#/w/{MISSING}")
     page.get_by_role("tab", name="Files").click()
 
     panel = page.get_by_test_id("nv-mobile-panel:files")

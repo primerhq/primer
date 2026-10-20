@@ -15,7 +15,7 @@ import httpx
 import pytest
 from playwright.sync_api import Page, expect
 
-from tests.ui_e2e._shell_helpers import open_mobile_shell
+from tests.ui_e2e._shell_helpers import boot_mobile_shell, open_mobile_shell
 
 PHONE = {"width": 390, "height": 844}
 
@@ -39,7 +39,7 @@ def test_a_deep_linked_section_fills_the_screen_and_back_returns_to_the_tab(
 ) -> None:
     wid = _a_workspace_id(base_url)
     page.set_viewport_size(PHONE)
-    page.goto(f"{console_url}#/w/{wid}?overlay=agents")
+    boot_mobile_shell(page, f"{console_url}#/w/{wid}?overlay=agents")
 
     expect(page.get_by_test_id("nv-mob-plat-page:agents")).to_be_visible(timeout=15_000)
     expect(page.get_by_test_id("nv-mob-profile")).to_have_count(0)
@@ -54,7 +54,7 @@ def test_a_deep_linked_section_fills_the_screen_and_back_returns_to_the_tab(
 def test_a_platform_view_link_opens_that_section_on_the_phone(page: Page, base_url: str, console_url: str) -> None:
     wid = _a_workspace_id(base_url)
     page.set_viewport_size(PHONE)
-    page.goto(f"{console_url}#/w/{wid}?view=platform:agents")
+    boot_mobile_shell(page, f"{console_url}#/w/{wid}?view=platform:agents")
     expect(page.get_by_test_id("nv-mob-plat-page:agents")).to_be_visible(timeout=15_000)
 
 
@@ -67,7 +67,7 @@ def test_the_palette_opens_the_section_again_after_back(page: Page, base_url: st
     half and is the user-visible check, not its mutant killer."""
     wid = _a_workspace_id(base_url)
     page.set_viewport_size(PHONE)
-    page.goto(f"{console_url}#/w/{wid}?view=platform:agents")
+    boot_mobile_shell(page, f"{console_url}#/w/{wid}?view=platform:agents")
     expect(page.get_by_test_id("nv-mob-plat-page:agents")).to_be_visible(timeout=15_000)
     page.get_by_test_id("nv-mob-plat-back").click()
     expect(page.get_by_test_id("nv-mob-plat-sections")).to_be_visible()
@@ -96,7 +96,7 @@ def test_a_back_gesture_does_not_reopen_a_section_the_user_has_left(page: Page, 
         assert r.status_code == 201, r.text
         sid = r.json()["id"]
     page.set_viewport_size(PHONE)
-    page.goto(f"{console_url}#/w/{wid}?view=platform:agents")
+    boot_mobile_shell(page, f"{console_url}#/w/{wid}?view=platform:agents")
     expect(page.get_by_test_id("nv-mob-plat-page:agents")).to_be_visible(timeout=15_000)
     expect(page).not_to_have_url(re.compile(r"view=platform"), timeout=10_000)   # consumed: the URL no longer names it
     page.get_by_test_id("nv-mob-plat-back").click()
