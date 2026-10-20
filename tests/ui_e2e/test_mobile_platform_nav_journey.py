@@ -22,7 +22,7 @@ import pytest
 from playwright.sync_api import Page, expect
 
 from tests._support.smk import smk
-from tests.ui_e2e._shell_helpers import open_mobile_shell
+from tests.ui_e2e._shell_helpers import boot_mobile_shell, open_mobile_shell
 
 pytestmark = smk("SMK-UI-01", status="partial")
 
@@ -94,7 +94,7 @@ def test_providers_lists_its_types_and_a_type_shows_its_catalog(page: Page, cons
 def test_a_provider_type_link_opens_that_type(page: Page, base_url: str, console_url: str) -> None:
     wid = _a_workspace_id(base_url)
     page.set_viewport_size(PHONE)
-    page.goto(f"{console_url}#/w/{wid}?view=platform:providers:tts")
+    boot_mobile_shell(page, f"{console_url}#/w/{wid}?view=platform:providers:tts")
 
     expect(page.get_by_test_id("nv-mob-plat-page:providers")).to_be_visible(timeout=20_000)
     expect(page.get_by_test_id("provider-body-tts")).to_be_visible(timeout=20_000)

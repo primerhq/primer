@@ -14,7 +14,7 @@ import httpx
 from playwright.sync_api import Page, expect
 
 from tests._support.smk import smk
-from tests.ui_e2e._shell_helpers import open_shell, session_row
+from tests.ui_e2e._shell_helpers import boot_mobile_shell, open_shell, session_row
 from tests.ui_e2e.test_trace_sidebar_journey import _seed
 
 pytestmark = smk("SMK-UI-06", status="partial")
@@ -82,6 +82,14 @@ def _load_and_settle(page: Page, url: str) -> None:
     page.wait_for_timeout(1_200)
 
 
+def _phone_load_and_settle(page: Page, url: str) -> None:
+    """The phone legs of this journey: boot_mobile_shell (the self-heal for the desktop-boot flake) plus the same 1.2s settle _load_and_settle gives after the
+    auth status read. The shell-mount wait already passed that barrier (the gate renders NV_Shell only once the status is answered), so the settle keeps the
+    restore, which runs right after the status, ahead of the asserts."""
+    boot_mobile_shell(page, url)
+    page.wait_for_timeout(1_200)
+
+
 def _store(page: Page) -> dict[str, str]:
     return page.evaluate("() => Object.fromEntries(Object.keys(localStorage).filter(k => k.startsWith('primer.console.tabs.v1:')).map(k => [k, localStorage.getItem(k)]))")
 
@@ -96,7 +104,7 @@ def test_a_phone_loads_its_inbox_not_a_tab_a_desktop_left_behind(page: Page, bas
     expect(page.locator('[data-testid^="nv-tg-tab:session:"]')).to_have_count(3)
 
     page.set_viewport_size(PHONE)
-    _load_and_settle(page, console_url)
+    _phone_load_and_settle(page, console_url)
 
     expect(page.get_by_test_id("nv-mobile-shell")).to_be_visible(timeout=20_000)
     expect(page.get_by_test_id("nv-mobile-panel:inbox")).to_be_visible()
@@ -116,7 +124,7 @@ def test_using_a_phone_does_not_overwrite_the_desktops_stored_tabs(page: Page, b
     assert len(before) == 1
 
     page.set_viewport_size(PHONE)
-    _load_and_settle(page, f"{console_url}#/w/{wid}?doc=session:{sids[0]}")
+    _phone_load_and_settle(page, f"{console_url}#/w/{wid}?doc=session:{sids[0]}")
     expect(page.get_by_test_id("nv-mob-screen-back")).to_be_visible(timeout=20_000)
     page.get_by_test_id("nv-mob-screen-back").click()
     expect(page.get_by_test_id("nv-mobile-panel:inbox")).to_be_visible(timeout=10_000)

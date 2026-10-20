@@ -12,7 +12,7 @@ import httpx
 import pytest
 from playwright.sync_api import Page, expect
 
-from tests.ui_e2e._shell_helpers import open_doc
+from tests.ui_e2e._shell_helpers import boot_mobile_shell, open_doc
 
 BOGUS = "sess-bogus-c020"
 
@@ -58,7 +58,7 @@ def test_a_link_to_a_missing_session_says_it_no_longer_exists_and_the_tab_can_be
 def test_the_phone_shows_the_same_card_behind_its_back_button(page: Page, base_url: str, console_url: str) -> None:
     wid = _a_workspace_id(base_url)
     page.set_viewport_size({"width": 390, "height": 844})
-    page.goto(f"{console_url}#/w/{wid}?doc=session:{BOGUS}")
+    boot_mobile_shell(page, f"{console_url}#/w/{wid}?doc=session:{BOGUS}")
 
     screen = page.get_by_test_id("nv-mob-session-screen")
     expect(screen).to_be_visible(timeout=20_000)
