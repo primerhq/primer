@@ -202,6 +202,48 @@ def _push_agent_frame_on_yield(
     yld.frames = [frame] + existing
 
 
+def _build_subagent_prompt(*, agent: Any, context: Any) -> list[Message]:
+    """Build the stable system + task prefix for a delegated run.
+
+    The first request and every resumed request use this one builder. A legacy
+    frame has no saved prompt, so it keeps the old history-only resume shape.
+    """
+    prompt = getattr(context, "prompt", None)
+    if prompt is None:
+        return []
+
+    from primer.agent.prompt_render import render_system_prompt_or_raw
+    from primer.model.graph import build_execution_context
+    from primer.workspace.instructions import workspace_instructions_parts
+
+    workspace_id = getattr(context, "workspace_id", None)
+    chat_id = getattr(context, "chat_id", None)
+    surface = "workspace" if workspace_id else ("chat" if chat_id else "memory")
+    execution_context = build_execution_context(
+        surface=surface,
+        workspace_id=workspace_id,
+        session_id=getattr(context, "session_id", None),
+        identity=getattr(context, "initiated_by", None),
+    )
+    system_prompt = [
+        *agent.system_prompt,
+        *workspace_instructions_parts(
+            agent,
+            getattr(context, "workspace_instructions", None),
+        ),
+    ]
+    system_text = (
+        render_system_prompt_or_raw(system_prompt, execution_context)
+        if system_prompt
+        else ""
+    )
+    messages: list[Message] = []
+    if system_text:
+        messages.append(Message(role="system", parts=[TextPart(text=system_text)]))
+    messages.append(Message(role="user", parts=[TextPart(text=prompt)]))
+    return messages
+
+
 async def run_subagent(
     *,
     agent_id: str,
@@ -280,6 +322,8 @@ async def run_subagent(
         delegate_run_id=run_id,
         delegate_parent_run_id=parent_run_id,
         delegate_node_id=node_id,
+        prompt=prompt,
+        workspace_instructions=workspace_instructions,
     )
     tool_manager = await build_subagent_toolmanager(
         context,
@@ -288,29 +332,7 @@ async def run_subagent(
         approval_resolver=approval_resolver,
     )
 
-    from primer.model.graph import build_execution_context
-    from primer.agent.prompt_render import render_system_prompt_or_raw
-    from primer.workspace.instructions import workspace_instructions_parts
-
-    surface = "workspace" if workspace_id else ("chat" if chat_id else "memory")
-    _sub_ctx = build_execution_context(
-        surface=surface,
-        workspace_id=workspace_id,
-        session_id=session_id,
-        identity=identity,
-    )
-    system_prompt = [
-        *agent.system_prompt,
-        *workspace_instructions_parts(agent, workspace_instructions),
-    ]
-    sys_text = (
-        render_system_prompt_or_raw(system_prompt, _sub_ctx)
-        if system_prompt else ""
-    )
-    prompt_msgs: list[Message] = []
-    if sys_text:
-        prompt_msgs.append(Message(role="system", parts=[TextPart(text=sys_text)]))
-    prompt_msgs.append(Message(role="user", parts=[TextPart(text=prompt)]))
+    prompt_msgs = _build_subagent_prompt(agent=agent, context=context)
 
     # ``produced`` is the authoritative in-progress conversation at the yield
     # point: run_agent_turn appends the assistant message that carried the
@@ -491,7 +513,11 @@ async def resume_subagent(
     )
 
     rehydrated = [Message.model_validate(m) for m in (llm_messages or [])]
-    resume_prompt = rehydrated + [Message(role="tool", parts=[child_result])]
+    resume_prompt = [
+        *_build_subagent_prompt(agent=agent, context=context),
+        *rehydrated,
+        Message(role="tool", parts=[child_result]),
+    ]
 
     produced: list[Message] = []
     capped: list[bool] = []

@@ -104,6 +104,13 @@ class AgentResumeContext:
         The graph node (fan-out-instance-qualified, ``worker[0]``) whose agent made the delegating call, so a resumed run's records
         keep the ``payload["delegate_node_id"]`` that tells fan-out siblings sharing a raw call id apart (ticket 01a11cca). ``None``
         outside a graph, and on frames parked before this field existed.
+    prompt
+        The task the parent gave this subagent. A resumed model request starts
+        with the same user message as the first request. ``None`` only on
+        frames parked before this field existed.
+    workspace_instructions
+        The workspace's agents.md text captured when the subagent started, so
+        every resumed request rebuilds the same workspace instruction section.
     """
 
     session_id: str
@@ -116,6 +123,8 @@ class AgentResumeContext:
     delegate_run_id: str | None = None
     delegate_parent_run_id: str | None = None
     delegate_node_id: str | None = None
+    prompt: str | None = None
+    workspace_instructions: str | None = None
 
     def to_jsonable(self) -> dict[str, Any]:
         """Render to a JSON-safe dict."""
@@ -134,6 +143,8 @@ class AgentResumeContext:
             "delegate_run_id": self.delegate_run_id,
             "delegate_parent_run_id": self.delegate_parent_run_id,
             "delegate_node_id": self.delegate_node_id,
+            "prompt": self.prompt,
+            "workspace_instructions": self.workspace_instructions,
         }
 
     @classmethod
@@ -154,6 +165,8 @@ class AgentResumeContext:
             delegate_run_id=data.get("delegate_run_id"),
             delegate_parent_run_id=data.get("delegate_parent_run_id"),
             delegate_node_id=data.get("delegate_node_id"),
+            prompt=data.get("prompt"),
+            workspace_instructions=data.get("workspace_instructions"),
         )
 
 
