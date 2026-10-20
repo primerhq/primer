@@ -13,8 +13,8 @@
      "parts": [
       [
        "text",
-       1247,
-       "de655d8144e3e255"
+       1539,
+       "6d326d5a73fe0bee"
       ]
      ],
      "role": "system"
@@ -374,8 +374,8 @@
      "parts": [
       [
        "text",
-       1247,
-       "de655d8144e3e255"
+       1539,
+       "6d326d5a73fe0bee"
       ]
      ],
      "role": "system"
@@ -492,8 +492,8 @@
      "parts": [
       [
        "text",
-       1247,
-       "de655d8144e3e255"
+       1539,
+       "6d326d5a73fe0bee"
       ]
      ],
      "role": "system"
@@ -873,8 +873,8 @@
      "parts": [
       [
        "text",
-       1247,
-       "de655d8144e3e255"
+       1539,
+       "6d326d5a73fe0bee"
       ]
      ],
      "role": "system"
@@ -1124,8 +1124,8 @@
      "parts": [
       [
        "text",
-       1247,
-       "de655d8144e3e255"
+       1539,
+       "6d326d5a73fe0bee"
       ]
      ],
      "role": "system"
@@ -1232,8 +1232,8 @@
      "parts": [
       [
        "text",
-       1247,
-       "de655d8144e3e255"
+       1539,
+       "6d326d5a73fe0bee"
       ]
      ],
      "role": "system"
@@ -1312,8 +1312,8 @@
      "parts": [
       [
        "text",
-       46856,
-       "2d06b7bffeb1b815"
+       46568,
+       "eb568f6fa64ec148"
       ]
      ],
      "role": "user"
@@ -1380,8 +1380,8 @@
      "parts": [
       [
        "text",
-       1247,
-       "de655d8144e3e255"
+       1539,
+       "6d326d5a73fe0bee"
       ]
      ],
      "role": "system"
@@ -1460,8 +1460,8 @@
      "parts": [
       [
        "text",
-       46860,
-       "a450ea75c1d2dbcd"
+       46572,
+       "8415858f3c3ff86e"
       ]
      ],
      "role": "user"
@@ -1517,8 +1517,8 @@
    ]
   }
  ],
- "captured_from": "b215bb2ab5f48caa5bef669b78b2ba49a07bf354",
- "captured_from_subject": "fix(agent): an overflow delivered as a yielded Error is recovered like a raised one, with one terminal record",
+ "captured_from": "13540abe4d68ec065c9160996c2ef659280a8220",
+ "captured_from_subject": "test(e2e): two sessions in one workspace message each other",
  "recaptures": [
   {
    "changed_turns": [
@@ -1548,6 +1548,19 @@
    "previous_captured_from": "eeb4853eb8bc9216301761fc165509b2979bb896",
    "previous_fixture_sha256": "5ed8340820c80344321f42cf81ce32cc5e9bb59f03af8d717c4541a7ea4a7d45",
    "reason": "scenario: turn 3 is seeded with a prior compaction marker and its kept tail, so the forced compaction runs over a reconstructed [summary, *tail, ...] and folds the old summary into the new one (the chained-compaction coverage the per-turn sessions had dropped: markers per turn were [0,1,1,1,0,0], turn 3 now writes two). Every other turn is byte-identical."
+  },
+  {
+   "changed_turns": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "previous_captured_from": "b215bb2ab5f48caa5bef669b78b2ba49a07bf354",
+   "previous_fixture_sha256": "4dfbabfa3ad0253fd7a0549de72b2f0cab749380c245268361e46cd5e914a117",
+   "reason": "pivot P3 slice C (T7, T8): the workspaces toolset catalog names list_my_sessions and message_session and the session prompt block carries the peer-messaging paragraph, so every turn's system prompt grew (+292 chars, +72 fixed-overhead tokens) and the compaction markers' figures moved with it; the scenario itself is untouched"
   }
  ],
  "turns": [
@@ -1756,7 +1769,7 @@
       "len": 120653,
       "record": "compaction_marker",
       "seq": 1,
-      "sha": "5f8c90c0831f51d2"
+      "sha": "533899d040cc3c07"
      },
      {
       "len": 65,
@@ -1768,7 +1781,7 @@
     "markers": [
      {
       "created_at": "<ts>",
-      "fixed_overhead_tokens": 3113,
+      "fixed_overhead_tokens": 3185,
       "kept_tail": [
        {
         "len": 76,
@@ -1802,13 +1815,13 @@
       "seq": 1,
       "summary_len": 51,
       "summary_sha": "b6ebe312fb275ed4",
-      "tokens_after": 33182,
-      "tokens_before": 213621,
+      "tokens_after": 33254,
+      "tokens_before": 213693,
       "trigger_tokens": 82627,
       "unreducible": null
      }
     ],
-    "sha256": "d091133ce74cabeb81f7e0670b056cc151c3092f62a6fca75166ebb03445ff63"
+    "sha256": "163b4155f1794a35f59ea5b996713fe17db1413c11557fd45495caec41c40c72"
    },
    "llm_calls": 2,
    "turn": "2-tier2-summary"
@@ -1827,7 +1840,7 @@
       "len": 584,
       "record": "compaction_marker",
       "seq": 1,
-      "sha": "6c3bbb008f2671f6"
+      "sha": "ab7c7f298d7927f8"
      },
      {
       "len": 2068,
@@ -1923,7 +1936,7 @@
       "len": 6947,
       "record": "compaction_marker",
       "seq": 2,
-      "sha": "eab0403c292fa72e"
+      "sha": "a49fde9f4b0c0490"
      },
      {
       "len": 65,
@@ -1935,7 +1948,7 @@
     "markers": [
      {
       "created_at": "<ts>",
-      "fixed_overhead_tokens": 3113,
+      "fixed_overhead_tokens": 3185,
       "kept_tail": [
        {
         "len": 80,
@@ -1964,7 +1977,7 @@
      },
      {
       "created_at": "<ts>",
-      "fixed_overhead_tokens": 3113,
+      "fixed_overhead_tokens": 3185,
       "kept_tail": [
        {
         "len": 76,
@@ -2022,13 +2035,13 @@
       "seq": 2,
       "summary_len": 51,
       "summary_sha": "8c49090b2ac9e12d",
-      "tokens_after": 4737,
-      "tokens_before": 6863,
+      "tokens_after": 4809,
+      "tokens_before": 6935,
       "trigger_tokens": 82627,
       "unreducible": null
      }
     ],
-    "sha256": "b2d3ce912bad9ab923a4fb11fe9f64caaf4c2e6503db0ed24364522575038b9e"
+    "sha256": "a51a869b4e1974f9dbf0992e2bbf1b2fb38b1ad0a75362802d81c6f707539136"
    },
    "llm_calls": 3,
    "turn": "3-overflow-replay"
@@ -2095,7 +2108,7 @@
       "len": 120589,
       "record": "compaction_marker",
       "seq": 1,
-      "sha": "498916ff7630077b"
+      "sha": "05d0bbc4b8534515"
      },
      {
       "len": 76,
@@ -2119,7 +2132,7 @@
     "markers": [
      {
       "created_at": "<ts>",
-      "fixed_overhead_tokens": 3113,
+      "fixed_overhead_tokens": 3185,
       "kept_tail": [
        {
         "len": 76,
@@ -2147,20 +2160,20 @@
       "seq": 1,
       "summary_len": 51,
       "summary_sha": "eac741dd554ebe61",
-      "tokens_after": 33171,
-      "tokens_before": 123203,
+      "tokens_after": 33243,
+      "tokens_before": 123275,
       "trigger_tokens": 82627,
       "unreducible": null
      }
     ],
-    "sha256": "c5fe586120e52e4f3798e5b0efd441eab280b0b0383a9df96bb2fde84b238246"
+    "sha256": "b51446a563c80b002ba8a1382e3fb2cc5c7334b7c739ba823ef1464aa65a7032"
    },
    "llm_calls": 2,
    "turn": "4-deferred-steers"
   },
   {
    "file": {
-    "bytes": 317698,
+    "bytes": 317410,
     "lines": [
      {
       "len": 56,
@@ -2205,10 +2218,10 @@
       "sha": "5ebd4ca098b68297"
      },
      {
-      "len": 46879,
+      "len": 46591,
       "message": "user",
       "preview": "pppppppppppppppppppppppppppppppppppppppp",
-      "sha": "b10a5d873a59c5af"
+      "sha": "93b82e37b9d9d65a"
      },
      {
       "len": 67,
@@ -2218,7 +2231,7 @@
      }
     ],
     "markers": [],
-    "sha256": "610cf1740e8a134c83fc18331429aadd571f89c29b0bbbe8705514d4adecbb5a"
+    "sha256": "7e91e4989084b289fad3414f1cc2c3bf3a998d6312f3a7ece315f85786fd4c8e"
    },
    "llm_calls": 1,
    "target_estimate": 82626,
@@ -2226,7 +2239,7 @@
   },
   {
    "file": {
-    "bytes": 317702,
+    "bytes": 317414,
     "lines": [
      {
       "len": 56,
@@ -2271,10 +2284,10 @@
       "sha": "5ebd4ca098b68297"
      },
      {
-      "len": 46883,
+      "len": 46595,
       "message": "user",
       "preview": "pppppppppppppppppppppppppppppppppppppppp",
-      "sha": "c46f6e028314d1a1"
+      "sha": "b246bc176a12d4d2"
      },
      {
       "len": 67,
@@ -2284,7 +2297,7 @@
      }
     ],
     "markers": [],
-    "sha256": "00ab813210e9cb8c59475777e7af9fc91b6e6aa85dfb8b346b0be0b6cb0d0df9"
+    "sha256": "ab48b7ab8f8d99f3a2b1a05da3bf1f9fcb0966223833ec951bf0c0197764af42"
    },
    "llm_calls": 1,
    "target_estimate": 82627,

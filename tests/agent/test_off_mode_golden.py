@@ -13,7 +13,11 @@ History of the fixture (``captured_from`` is the ``primer/`` tree hash it was ca
 4. re-captured for R2 (task 01a10914): the fixed overhead counts, so the markers' figures and the boundary
    turns' padding moved (turns 2 to 6; every prompt of turns 2 to 4 is byte-identical);
 5. re-captured when turn 3 was seeded with a prior marker and its kept tail, which gives back the chained
-   compaction the per-turn sessions had dropped (only turn 3 moved: it now writes two markers).
+   compaction the per-turn sessions had dropped (only turn 3 moved: it now writes two markers);
+6. re-captured, under the guard below, for pivot P3 slice C (T7, T8): the workspaces toolset catalog names
+   ``list_my_sessions`` and ``message_session`` and the session prompt block carries the peer-messaging
+   paragraph, so every turn's system prompt grew (+292 chars, +72 fixed-overhead tokens) and the markers'
+   figures moved with it (turns 1 to 6; the scenario itself is untouched).
    The fixture's ``recaptures`` list says which turns moved and why.
 
 ``tests/_support/off_golden.py`` runs one scripted session through every path the budget work
@@ -49,8 +53,8 @@ from tests._support.off_golden import (
 
 FIXTURE = Path(__file__).parent / "fixtures" / "off_mode_golden.json"
 
-TURN_1_SHA256 = "d17e974df0cd07f740fda3c7160ba1f05cd5e143810555ce72fe402195710a88"
-CALL_0_SHA256 = "97730bbfdd63185dd865548254190931526605a2c5bbdf547638493e7e17719a"
+TURN_1_SHA256 = "3f7133e996d4392be8851775ff1e384a6893394fabc7b000eeca4293dbb8da00"
+CALL_0_SHA256 = "ebd12f094f0dbc4803801c92be08847eb05284302cb92a4d232e73950e651e8d"
 
 
 @pytest.fixture(scope="module")
