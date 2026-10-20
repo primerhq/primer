@@ -15,7 +15,7 @@ from typing import Any
 
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.workspace_session import PeerAttribution, WorkspaceSession
-from primer.session.enqueue import SessionWakeDeps, wake_session
+from primer.session.enqueue import SessionWakeDeps, SessionWakeReceipt, wake_session
 from primer.session.pending_messages import PendingQueueFull, store_pending_steer
 from primer.session.steer_routing import ROUTE_PENDING, route_steer
 
@@ -122,6 +122,7 @@ async def deliver_steer(
             return SteerDelivery(outcome=DELIVERED_QUEUE_FULL, session_id=session_id)
         return SteerDelivery(outcome=DELIVERED_QUEUED, session_id=session_id)
     try:
+        receipt = SessionWakeReceipt()
         woken = await wake_session(
             workspace_id=row.workspace_id,
             session_id=session_id,
@@ -135,6 +136,8 @@ async def deliver_steer(
                 event_bus=event_bus,
             ),
             peer=peer,
+            open_turn=parallelism,
+            receipt=receipt,
         )
     except PendingQueueFull:
         # The pause hold stored nothing: the queue it would have joined is full and the message is a peer's.
@@ -154,6 +157,12 @@ async def deliver_steer(
             detail=getattr(exc, "message", None) or str(exc),
             conflict=isinstance(exc, ConflictError),
         )
+    if receipt.outcome == "skipped_busy":
+        return SteerDelivery(
+            outcome=DELIVERED_SKIPPED_BUSY, session_id=session_id,
+        )
+    if receipt.outcome == "queued":
+        return SteerDelivery(outcome=DELIVERED_QUEUED, session_id=session_id)
     if woken is not None and woken.turn_status != "claimable":
         return SteerDelivery(outcome=DELIVERED_QUEUED, session_id=session_id)
     return SteerDelivery(outcome=DELIVERED_WOKEN, session_id=session_id)

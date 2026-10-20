@@ -32,7 +32,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from primer.int.claim import ClaimKind
 from primer.model.except_ import ConflictError, NotFoundError, PrimerError
@@ -83,6 +83,13 @@ class SessionWakeDeps:
     claim_engine: Any
     workspace_registry: Any
     event_bus: Any | None = None
+
+
+@dataclass
+class SessionWakeReceipt:
+    """How a routed wake handled its instruction after taking the lock."""
+
+    outcome: Literal["woken", "queued", "skipped_busy"] = "woken"
 
 
 async def _reopen_a_stale_ended_slot(slot: Any) -> None:
@@ -178,6 +185,8 @@ async def wake_session(
     extra_parts: "list | None" = None,
     extra_payload: "dict | None" = None,
     peer: PeerAttribution | None = None,
+    open_turn: Literal["queue", "skip"] = "queue",
+    receipt: SessionWakeReceipt | None = None,
 ) -> WorkspaceSession:
     """Append ``instruction`` (if any) and re-arm the session's claim.
 
@@ -231,6 +240,14 @@ async def wake_session(
     which refuses a message from another session when the queue is full: that
     raises ``PendingQueueFull`` (a ConflictError) out of this function, before
     anything is written, and the pause stays as it was.
+
+    A routed caller may pass ``receipt`` after deciding an earlier row was
+    idle. The row is then read again under the lifecycle lock, and a plain
+    text instruction that now finds an open turn is queued (or skipped when
+    ``open_turn="skip"``) instead of writing a second USER_INPUT. The receipt
+    reports that late routing decision to the caller. Internal realizations
+    of an already-pending message omit it because they are the turn-boundary
+    action that must write the next USER_INPUT.
     """
     sessions = deps.storage_provider.get_storage(WorkspaceSession)
     async with session_lifecycle_lock().acquire(session_id):
@@ -327,7 +344,44 @@ async def wake_session(
                 deps, workspace_id=workspace_id, session_id=session_id,
                 row=row, action="queued", pending_id=pending_id,
             )
+            if receipt is not None:
+                receipt.outcome = "queued"
             return row
+
+        # The routing read in deliver_steer and the REST steer path happens
+        # before this lock. Another wake can arm the target in that gap. Make
+        # the decisive open-turn read here, beside the canonical USER_INPUT
+        # write, so only the first wake starts the turn and every later plain
+        # text instruction follows the pending-message path. Calls carrying
+        # per-turn tools or attachment parts stay on their existing path:
+        # PendingSessionMessage cannot represent those payloads.
+        if (
+            receipt is not None
+            and instruction
+            and external_tools is None
+            and not extra_parts
+            and not extra_payload
+        ):
+            from primer.session.steer_routing import ROUTE_PENDING, route_steer
+
+            if route_steer(row) == ROUTE_PENDING:
+                if open_turn == "skip":
+                    receipt.outcome = "skipped_busy"
+                    return row
+                from primer.session.pending_messages import store_pending_steer
+
+                await store_pending_steer(
+                    storage_provider=deps.storage_provider,
+                    session=row,
+                    text=instruction,
+                    workspace_registry=deps.workspace_registry,
+                    event_bus=deps.event_bus,
+                    attribution=(
+                        peer.as_attribution() if peer is not None else None
+                    ),
+                )
+                receipt.outcome = "queued"
+                return row
 
         # 1. Append the user message to the on-disk slot FIFO (the queue) and
         #    persist a USER_INPUT record to messages.jsonl so the sent message
@@ -524,4 +578,9 @@ async def _record_pause_superseded(
             )
 
 
-__all__ = ["PeerCannotReopen", "SessionWakeDeps", "wake_session"]
+__all__ = [
+    "PeerCannotReopen",
+    "SessionWakeDeps",
+    "SessionWakeReceipt",
+    "wake_session",
+]

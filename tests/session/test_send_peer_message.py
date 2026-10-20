@@ -685,6 +685,59 @@ async def test_two_senders_do_not_wait_for_each_other(monkeypatch):
     assert (await first).delivery == "woken"
 
 
+async def test_two_concurrent_wakes_start_one_turn_and_preserve_both_messages(monkeypatch):
+    """Two senders can both route an idle target before either wake lands."""
+    world = await _world()
+    await seed_session(
+        world,
+        sid="ses-c",
+        binding=AgentSessionBinding(agent_id="reviewer"),
+        initiated_by=USER,
+        status=SessionStatus.RUNNING,
+        turn_status="running",
+        turn_no=1,
+    )
+    await seed_session(world, sid="ses-b", turn_no=1)
+
+    real_wake = steer_delivery.wake_session
+    both_routed = asyncio.Event()
+    routed = 0
+
+    async def wake_together(**kwargs):
+        nonlocal routed
+        routed += 1
+        if routed == 2:
+            both_routed.set()
+        await both_routed.wait()
+        return await real_wake(**kwargs)
+
+    monkeypatch.setattr(steer_delivery, "wake_session", wake_together)
+    outcomes = await asyncio.gather(
+        _send(world, "ses-b", sender="ses-a", text="first"),
+        _send(world, "ses-b", sender="ses-c", text="second"),
+    )
+
+    assert {outcome.delivery for outcome in outcomes} == {"woken", "queued"}
+    user_inputs = [
+        record for record in records(world, "ses-b")
+        if record["kind"] == "user_input"
+    ]
+    pending = await _pending(world)
+    assert len(user_inputs) == 1
+    assert len(pending) == 1
+    preserved = {
+        user_inputs[0]["payload"]["text"],
+        pending[0].parts[0]["text"],
+    }
+    assert preserved == {
+        "[from session ses-a (agent planner)]\nfirst",
+        "[from session ses-c (agent reviewer)]\nsecond",
+    }
+    assert {message.delivery for message in await _ledger(world)} == {
+        "woken", "queued",
+    }
+
+
 # ---- the row the delivery is about to look at -------------------------------------------------------------------------------------
 
 
