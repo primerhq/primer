@@ -126,6 +126,28 @@ async def test_parks_and_writes_channel_parked_subscription(
 
 
 @pytest.mark.asyncio
+async def test_rejects_pathological_text_pattern(fake_storage_provider):
+    await _seed_channel_trigger(fake_storage_provider)
+    handler = _make_subscribe_channel_handler(fake_storage_provider)
+
+    result = await handler(
+        {
+            "trigger_id": "trg-ch-1",
+            "event_matcher": {
+                "event_type": "message.posted",
+                "text_pattern": r"(a+)+$",
+            },
+        },
+        ctx=_ctx(),
+    )
+
+    assert result.is_error
+    payload = json.loads(result.output)
+    assert payload["type"] == "validation-error"
+    assert "nested unbounded repetition" in payload["message"]
+
+
+@pytest.mark.asyncio
 async def test_rejects_non_channel_trigger(fake_storage_provider):
     await _seed_scheduled_trigger(fake_storage_provider)
     handler = _make_subscribe_channel_handler(fake_storage_provider)

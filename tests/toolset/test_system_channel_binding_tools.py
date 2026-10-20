@@ -238,6 +238,31 @@ async def test_create_channel_binding_unknown_trigger_returns_trigger_not_found(
     assert payload["type"] == "trigger_not_found"
 
 
+@pytest.mark.asyncio
+async def test_create_channel_binding_rejects_pathological_text_pattern(
+    sp: _SP, system_toolset
+):
+    await _seed_channel_trigger(sp)
+
+    result = await system_toolset.call(
+        tool_name="create_channel_binding",
+        arguments={
+            "trigger_id": "trg-ch-1",
+            "event_matcher": {
+                "event_type": "message.posted",
+                "text_pattern": r"(a+)+$",
+            },
+            "config": {"kind": "session_append", "session_id": "sess-1"},
+        },
+    )
+
+    assert result.is_error
+    payload = json.loads(result.output)
+    assert payload["type"] == "validation-error"
+    assert "nested unbounded repetition" in payload["message"]
+    assert not sp.get_storage(Subscription)._data
+
+
 # ===========================================================================
 # list_channel_bindings
 # ===========================================================================

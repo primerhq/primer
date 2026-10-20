@@ -213,6 +213,12 @@ them on the extra being present, and leave the fallback tests ungated.
   startup, `grpcio` backs the OTLP gRPC span exporter, `trafilatura`
   performs extraction for the core web-fetch toolset, and `tiktoken` counts
   tokens for the OpenAI family.
+- **`regex` is a direct core dependency (2026-10-20).** Channel-event
+  matching is an always-on core path and needs an engine-enforced search
+  timeout so an expensive user pattern cannot stall the shared inbound
+  dispatcher. `regex` was already present transitively, but declaring it
+  directly makes the security boundary independent of another package's
+  dependency graph.
 - **The slim image became the default tag (2026-08-09).** Unsuffixed
   `:{version}` and `:latest` now resolve to the slim build; batteries
   included moved to `-full`. The `-slim` and `-fat` aliases are kept one

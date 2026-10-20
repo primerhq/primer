@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from primer.model.event_matcher import validate_text_pattern
 from primer.model.except_ import NotFoundError
 from primer.model.principal import PrincipalRef
 from primer.model.storage import OffsetPage, Op
@@ -399,6 +400,8 @@ async def create_subscription(
     ``subscribe_to_trigger`` yielding tool — the REST + toolset create
     paths reject them.
     """
+    if event_matcher is not None:
+        validate_text_pattern(event_matcher.text_pattern)
     triggers_storage = deps.storage_provider.get_storage(Trigger)
     trigger = await triggers_storage.get(trigger_id)
     if trigger is None:
@@ -452,6 +455,8 @@ async def update_subscription(
     the ``_UNSET`` sentinel so callers can leave them untouched while
     still being able to explicitly clear them by passing ``None``.
     """
+    if event_matcher is not _UNSET and event_matcher is not None:
+        validate_text_pattern(event_matcher.text_pattern)
     subs_storage = deps.storage_provider.get_storage(Subscription)
     sub = await subs_storage.get(subscription_id)
     if sub is None or sub.trigger_id != trigger_id:

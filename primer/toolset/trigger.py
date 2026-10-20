@@ -42,7 +42,11 @@ from pydantic import BaseModel, Field, ValidationError
 
 from primer.common.validation_errors import without_input
 from primer.model.chat import Tool, ToolCallResult, ToolExample
-from primer.model.event_matcher import EventMatcher
+from primer.model.event_matcher import (
+    EventMatcher,
+    EventMatcherPatternError,
+    validate_text_pattern,
+)
 from primer.model.trigger import (
     ParkedSessionSubConfig,
     Subscription,
@@ -943,6 +947,14 @@ def _make_subscribe_channel_handler(
             args = _SubscribeChannelArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_validation(exc)
+        try:
+            validate_text_pattern(
+                args.event_matcher.text_pattern
+                if args.event_matcher is not None
+                else None
+            )
+        except EventMatcherPatternError as exc:
+            return _err(str(exc), error_type="validation-error")
 
         trigger_storage = storage_provider.get_storage(Trigger)
         trigger = await trigger_storage.get(args.trigger_id)

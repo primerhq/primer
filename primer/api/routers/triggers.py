@@ -31,6 +31,8 @@ mapping covers the cases the service layer reports:
   an admin; list / get show such callers the token masked)
 * :class:`~primer.trigger.cron.CronInvalid` → 422 ``cron_invalid``
 * :class:`~primer.trigger.cron.TimezoneInvalid` → 422 ``timezone_invalid``
+* :class:`~primer.model.event_matcher.EventMatcherPatternError` → 422
+  ``text_pattern_unsafe``
 """
 
 from __future__ import annotations
@@ -47,7 +49,7 @@ from primer.api.deps import (
     get_storage_provider,
 )
 from primer.channel.reply_binding import ReplyTarget
-from primer.model.event_matcher import EventMatcher
+from primer.model.event_matcher import EventMatcher, EventMatcherPatternError
 from primer.model.principal import PrincipalRef
 from primer.model.trigger import (
     Subscription,
@@ -401,6 +403,8 @@ async def create_subscription_endpoint(
         _raise_code(404, "trigger_not_found", str(exc))
     except ParkedSessionOnlyFromYield as exc:
         _raise_code(422, "parked_session_only_from_yield", str(exc))
+    except EventMatcherPatternError as exc:
+        _raise_code(422, "text_pattern_unsafe", str(exc))
     return JSONResponse(
         status_code=201,
         content=sub.model_dump(mode="json"),
@@ -501,6 +505,8 @@ async def update_subscription_endpoint(
         )
     except SubscriptionNotFound as exc:
         _raise_code(404, "subscription_not_found", str(exc))
+    except EventMatcherPatternError as exc:
+        _raise_code(422, "text_pattern_unsafe", str(exc))
     return JSONResponse(
         status_code=200,
         content=sub.model_dump(mode="json"),

@@ -3,13 +3,19 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+import primer.model.event_matcher as event_matcher_module
 from primer.model.channel_event import (
     ChannelEvent,
     EventSender,
     NormalizedEventType,
 )
 from primer.model.channel import ChannelProviderType
-from primer.model.event_matcher import EventMatcher, matches
+from primer.model.event_matcher import (
+    EventMatcher,
+    EventMatcherPatternError,
+    matches,
+    validate_text_pattern,
+)
 
 
 def test_matcher_requires_event_type():
@@ -111,6 +117,48 @@ def test_text_pattern_regex():
     )
     assert matches(m_halt, _ev()) is False
     assert matches(m_deploy, _ev(text=None)) is False
+
+
+def test_text_pattern_rejects_nested_unbounded_repetition():
+    with pytest.raises(EventMatcherPatternError, match="nested unbounded repetition"):
+        validate_text_pattern(r"(a+)+$")
+
+
+def test_text_pattern_rejects_invalid_regex():
+    with pytest.raises(EventMatcherPatternError, match="valid regular expression"):
+        validate_text_pattern(r"(unclosed")
+
+
+def test_text_pattern_allows_bounded_nested_repetition():
+    validate_text_pattern(r"^(?:https?://)?example\.com$")
+    matcher = EventMatcher(
+        event_type=NormalizedEventType.MESSAGE_POSTED,
+        text_pattern=r"^(?:https?://)?example\.com$",
+    )
+    assert matches(matcher, _ev(text="https://example.com")) is True
+
+
+def test_legacy_pathological_text_pattern_times_out_as_no_match(monkeypatch):
+    seen: dict[str, object] = {}
+
+    def _timeout_search(pattern, text, *, flags, timeout):
+        seen.update(
+            pattern=pattern,
+            text=text,
+            flags=flags,
+            timeout=timeout,
+        )
+        raise TimeoutError
+
+    monkeypatch.setattr(event_matcher_module.regex, "search", _timeout_search)
+    matcher = EventMatcher(
+        event_type=NormalizedEventType.MESSAGE_POSTED,
+        text_pattern=r"(a+)+$",
+    )
+
+    assert matches(matcher, _ev(text="a" * 10_000 + "!")) is False
+    assert seen["pattern"] == r"(a+)+$"
+    assert seen["timeout"] == 0.01
 
 
 def test_sender_roles_any():
