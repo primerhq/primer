@@ -773,9 +773,14 @@ def _fetch_models_tool(
     label: str,
     pretty: str,
     registry: "ProviderRegistry",
-    fetch_method: str,
+    fetch_method: str | None = None,
+    fetch_models: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
+    registered_models: str = "the configured ``models`` field on the provider row",
 ) -> tuple[str, tuple[Tool, ToolHandler]]:
     """Build a ``fetch_<label>_models`` tool."""
+
+    if (fetch_method is None) == (fetch_models is None):
+        raise ValueError("supply exactly one model-list fetch strategy")
 
     async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
         try:
@@ -783,13 +788,28 @@ def _fetch_models_tool(
         except ValidationError as exc:
             return _err_from_validation(exc)
         try:
-            adapter = await getattr(registry, fetch_method)(args.provider_id)
-            models = await adapter.list_models()
+            if fetch_models is not None:
+                payload = await fetch_models(args.provider_id)
+            else:
+                adapter = await getattr(registry, fetch_method)(args.provider_id)
+                models = await adapter.list_models()
+                payload = {"models": list(models)}
         except NotFoundError as exc:
             return _err_from_primer(exc, error_type="not-found")
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="provider-error")
-        return _ok({"models": list(models)})
+        except AttributeError:
+            logger.exception(
+                "%s provider model-list integration raised AttributeError",
+                pretty,
+                extra={"provider_id": args.provider_id},
+            )
+            return _err(
+                f"{pretty} provider {args.provider_id!r} could not list models "
+                "because its model-list integration is unavailable.",
+                error_type="provider-error",
+            )
+        return _ok(payload)
 
     name = f"fetch_{label}_models"
     return name, (
@@ -802,16 +822,16 @@ def _fetch_models_tool(
             ),
             when=(
                 "Use when you need the model identifiers the provider "
-                "currently exposes; differs from the configured "
-                "``models`` field on the provider row (what the app is "
-                f"permitted to send) and from ``get_{label}`` (the stored "
+                "currently exposes; differs from "
+                f"{registered_models} (what the app is permitted to send) "
+                f"and from ``get_{label}`` (the stored "
                 "config row)."
             ),
             args_schema=_ProviderIdArgs.model_json_schema(),
             examples=[
                 ToolExample(
                     args={"provider_id": "anthropic-1"},
-                    returns="the provider's available model ids",
+                    returns="the provider's available model catalogue",
                 )
             ],
             required_role="admin",

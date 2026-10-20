@@ -46,7 +46,7 @@ Registering a provider is two steps for an LLM and one for the other families: a
 | `system::create_cross_encoder_provider` | Registering a cross-encoder provider, models included. |
 | `system::create_llm_provider` | Registering an LLM connection. |
 | `system::create_model_profile` | Registering one model of an LLM provider, so an agent can use it. |
-| `system::fetch_llm_provider_models` | Not usable for an LLM provider today (see the last item of Gotchas). |
+| `system::fetch_llm_provider_models` | Live-probing a saved LLM provider with its stored credentials to see the models its upstream currently offers. |
 
 The same checks exist over REST for a client that is not an agent: `POST /v1/huggingface/_check_models`, `POST /v1/embedding_providers/_test` and `POST /v1/cross_encoder_providers/_test` take the same arguments and return the same bodies.
 
@@ -102,6 +102,21 @@ Register an LLM provider, then one profile per model, each named `<provider>--<m
 {"tool": "system::create_llm_provider", "arguments": {"entity": {"id": "lmstudio", "provider": "openchat", "config": {"url": "http://localhost:1234/v1", "flavor": "lmstudio"}, "limits": {"max_concurrency": 2}}}}
 ```
 
+Fetch the saved provider's live upstream catalogue. This reads the stored
+credential server-side, rather than replaying the masked value returned by a
+provider GET:
+
+```json
+{"tool": "system::fetch_llm_provider_models", "arguments": {"provider_id": "lmstudio"}}
+```
+
+```json
+{"models": [{"name": "qwen3-8b", "context_length": 32768}]}
+```
+
+Some upstream catalogues omit `context_length`; ask the operator or consult the
+model card before creating a profile rather than guessing it.
+
 ```json
 {"tool": "system::create_model_profile", "arguments": {"entity": {"id": "lmstudio--qwen3-8b", "description": "Imported from lmstudio", "provider_id": "lmstudio", "model_name": "qwen3-8b", "context_length": 32768}}}
 ```
@@ -123,7 +138,7 @@ An agent can now use `{"profile_id": "lmstudio--qwen3-8b"}` as its model.
 - **The Hub is asked from the primer server**, using the deployment's `HF_ENDPOINT` (the public Hub unless an operator set a mirror). "Can be pulled" means the server's network and the token can pull it, which is what matters when the model loads.
 - **Never test with a value you read back.** A stored key comes back masked (`**********`), and a test would send exactly that to the server. Pass the real key, or test the stored provider through its own routes.
 - **An embedding or cross-encoder provider needs at least one model**, and a Hugging Face model that failed its check will fail the same way the first time it is used. Register the ones that passed. The ids `huggingface` (embedding) and `huggingface-ce` (cross encoder) belong to the built-in rows the platform seeds; creating a row with either id is refused.
-- **`system::fetch_llm_provider_models` does not list an LLM provider's models.** An LLM adapter has no model list of its own (a provider's models are its profiles), so the call fails on every real provider. To see what a saved LLM provider's server offers, read `GET /v1/llm_providers/{id}/discovered_models`; for what is already registered, `GET /v1/llm_providers/{id}/models`. The embedding and cross-encoder variants return the model names configured on the row.
+- **Fetched and registered LLM models are different sets.** `system::fetch_llm_provider_models` live-probes what the saved provider's upstream currently offers; it does not list the model profiles already registered in primer. Over REST the same distinction is `GET /v1/llm_providers/{id}/discovered_models` for the upstream catalogue versus `GET /v1/llm_providers/{id}/models` for registered profiles. The embedding and cross-encoder fetch tools return the model names configured on their provider rows.
 
 ## Related
 

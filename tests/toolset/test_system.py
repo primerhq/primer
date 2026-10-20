@@ -608,22 +608,67 @@ class TestCascadeInvalidation:
 
 class TestFetchModels:
     @pytest.mark.asyncio
-    async def test_fetch_llm_provider_models(self, system_toolset, pr) -> None:
+    async def test_fetch_llm_provider_models_uses_the_saved_provider_probe(
+        self, sp, monkeypatch
+    ) -> None:
+        from primer.api.routers import providers as provider_routes
+
+        provider_registry = ProviderRegistry(sp)  # type: ignore[arg-type]
+        system_toolset = build_system_toolset(
+            storage_provider=sp,  # type: ignore[arg-type]
+            provider_registry=provider_registry,
+        )
         body = dump_for_storage(_llm())
         await system_toolset.call(
             tool_name="create_llm_provider", arguments={"entity": body}
         )
-        adapter = MagicMock()
-        adapter.list_models = AsyncMock(return_value=["claude-sonnet-4-6"])
-        adapter.aclose = AsyncMock()
-        pr._llm_factory = lambda p: adapter  # type: ignore[attr-defined]
+        discover = AsyncMock(
+            return_value=[{"name": "claude-sonnet-4-6", "context_length": 200000}]
+        )
+        monkeypatch.setattr(
+            provider_routes, "_discover_anthropic_models", discover
+        )
 
         result = await system_toolset.call(
             tool_name="fetch_llm_provider_models",
             arguments={"provider_id": "anthropic-1"},
         )
         assert not result.is_error
-        assert json.loads(result.output) == {"models": ["claude-sonnet-4-6"]}
+        assert json.loads(result.output) == {
+            "models": [
+                {"name": "claude-sonnet-4-6", "context_length": 200000}
+            ]
+        }
+        discover.assert_awaited_once()
+        saved = await sp.get_storage(LLMProvider).get("anthropic-1")
+        assert saved.last_probe_at is not None
+        assert saved.last_probe_ok is True
+
+    @pytest.mark.asyncio
+    async def test_fetch_llm_provider_models_maps_attribute_error(
+        self, sp, monkeypatch
+    ) -> None:
+        from primer.api.routers import providers as provider_routes
+
+        provider_registry = ProviderRegistry(sp)  # type: ignore[arg-type]
+        system_toolset = build_system_toolset(
+            storage_provider=sp,  # type: ignore[arg-type]
+            provider_registry=provider_registry,
+        )
+        await sp.get_storage(LLMProvider).create(_llm())
+        monkeypatch.setattr(
+            provider_routes,
+            "_discover_anthropic_models",
+            AsyncMock(side_effect=AttributeError("unexpected provider response")),
+        )
+
+        result = await system_toolset.call(
+            tool_name="fetch_llm_provider_models",
+            arguments={"provider_id": "anthropic-1"},
+        )
+
+        assert result.is_error
+        assert json.loads(result.output)["type"] == "provider-error"
 
     @pytest.mark.asyncio
     async def test_fetch_models_returns_not_found_when_missing(
