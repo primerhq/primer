@@ -266,27 +266,12 @@ fi
 
 echo "[bringup] launching primer on port $PORT..." >&2
 : > "$STDOUT_FILE"
-# PRIMER_WIKI_DIR: the e2e checkout ships no docs/wiki, and a build with no
-# hand-written pages neither claims the wiki stamp nor writes the generated
-# reference pages (pivot plan 01, lead ruling (b), slice 6). A one-page wiki
-# keeps the reference/ pages written so the seed test can read them back.
-WIKI_DIR="$E2E_DIR/wiki"
-mkdir -p "$WIKI_DIR"
-cat > "$WIKI_DIR/index.md" <<'EOF'
----
-title: Platform wiki
-summary: The e2e platform wiki root.
----
-
-The e2e install ships a one-page wiki so the generated reference pages are written.
-EOF
 # PRIMER_HARNESS_ALLOW_FILE_URLS=1: the harness suites register file:// bare
 # repos under tmp_path, and the server refuses any git_url but https:// unless
 # the operator opts in (primer/model/harness.py, security review 2026-10-08).
 # Test lane only; production never sets it.
 (
-    PRIMER_HARNESS_ALLOW_FILE_URLS=1 PRIMER_WIKI_DIR="$WIKI_DIR" \
-    uv run primer api --config "$CONFIG" \
+    PRIMER_HARNESS_ALLOW_FILE_URLS=1 uv run primer api --config "$CONFIG" \
         > "$STDOUT_FILE" 2>&1 &
     echo $! > "$PID_FILE"
     disown
