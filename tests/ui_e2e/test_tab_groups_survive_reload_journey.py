@@ -83,15 +83,29 @@ def _load_and_settle(page: Page, url: str) -> None:
 
 
 def _phone_load_and_settle(page: Page, url: str) -> None:
-    """The phone legs of this journey: boot_mobile_shell (the self-heal for the desktop-boot flake) plus the same 1.2s settle _load_and_settle gives after the
-    auth status read. The shell-mount wait already passed that barrier (the gate renders NV_Shell only once the status is answered), so the settle keeps the
-    restore, which runs right after the status, ahead of the asserts."""
+    """The phone legs of this journey: a fresh document (the about:blank hop), then boot_mobile_shell (the self-heal for the desktop-boot flake) plus the same
+    1.2s settle _load_and_settle gives after the auth status read. The about:blank hop matters for the leg that follows a desktop phase on the SAME page: a
+    plain goto to a console URL from the console origin is a same-document fragment navigation (no new document), so the phone would keep the desktop's live
+    tab model (its Back then closes a tab and the active one jumps into it). The hop makes the phone a fresh document, whose first render is mobile (the
+    viewport is already phone-sized), with only the deep-linked tab."""
+    page.goto("about:blank")
     boot_mobile_shell(page, url)
     page.wait_for_timeout(1_200)
 
 
 def _store(page: Page) -> dict[str, str]:
     return page.evaluate("() => Object.fromEntries(Object.keys(localStorage).filter(k => k.startsWith('primer.console.tabs.v1:')).map(k => [k, localStorage.getItem(k)]))")
+
+
+def _wait_for_store_key(page: Page, key: str, timeout_ms: int = 8_000) -> None:
+    """Wait until the tab store has written under a user key. The app's first restore and first write land at or after its settle window (a static desktop
+    document settles by the timer, not by a resize), so a bare assert made right after the last tab opens can land inside that window and see an empty store
+    on a fast runner. The poll tolerates the window and runner speed without coupling the test to the settle constant."""
+    for _ in range(max(1, timeout_ms // 100)):
+        if key in _store(page):
+            return
+        page.wait_for_timeout(100)
+    assert key in _store(page), f"the tab store never wrote under {key!r} within {timeout_ms}ms"
 
 
 def test_a_phone_loads_its_inbox_not_a_tab_a_desktop_left_behind(page: Page, base_url: str, console_url: str, mock_llm_lan, tmp_path: Path) -> None:
@@ -154,7 +168,7 @@ def test_a_refetch_that_turns_out_to_be_another_user_does_not_store_the_first_us
     for sid in sids[:2]:
         session_row(page, sid, wid).dblclick()
         expect(page.get_by_test_id(f"nv-tg-tab:session:{sid}")).to_be_visible(timeout=10_000)
-    assert "primer.console.tabs.v1:alice" in _store(page)
+    _wait_for_store_key(page, "primer.console.tabs.v1:alice")
 
     who["name"] = "bob"
     page.evaluate("() => document.dispatchEvent(new Event('visibilitychange'))")
