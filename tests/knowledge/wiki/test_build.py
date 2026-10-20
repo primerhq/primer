@@ -491,6 +491,35 @@ def test_the_hash_covers_the_legacy_pages(tmp_path):
     assert len(hashes) == 2 and base not in hashes
 
 
+def test_the_hash_is_identical_across_processes_and_hash_seeds(tmp_path):
+    """The stamp compares build hashes across processes, and pods of a
+    rolling deploy run with different ``PYTHONHASHSEED``; a seed-dependent
+    digest would let an identical fleet of builds fight the stamp forever,
+    so two fresh interpreters must agree on the production-shape digest."""
+    import os
+    import subprocess
+    import sys
+
+    src = tmp_path / "src"
+    _wiki(src)
+    snippet = (
+        "import pathlib, sys\n"
+        "from primer.knowledge.wiki.build import build_wiki\n"
+        "from tests.knowledge.wiki._entries import real_entries\n"
+        "print(build_wiki(pathlib.Path(sys.argv[1]), real_entries()).content_hash)\n"
+    )
+    hashes = {
+        subprocess.run(
+            [sys.executable, "-c", snippet, str(src)],
+            capture_output=True, text=True, check=True,
+            env={**os.environ, "PYTHONHASHSEED": seed},
+        ).stdout.strip()
+        for seed in ("0", "42")
+    }
+    assert len(hashes) == 1
+    assert len(next(iter(hashes))) == 64
+
+
 # ---- source mistakes ------------------------------------------------------------------------------
 
 

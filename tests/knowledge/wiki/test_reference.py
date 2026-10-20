@@ -23,10 +23,8 @@ from primer.model.chat import Tool, ToolExample
 from tests.knowledge.wiki._entries import (
     OBJECT_SCHEMA,
     StandInEntry,
-    entry_from_tool,
     make_entry,
     real_entries,
-    real_tool,
 )
 
 DASH, ELLIPSIS, E_ACUTE = chr(0x2014), chr(0x2026), chr(0xE9)
@@ -226,10 +224,25 @@ def test_a_session_tool_page_shows_a_direct_call():
 
 
 def test_a_call_tool_reference_page():
-    entry = entry_from_tool(real_tool("system", "call_tool"))
+    """The call_tool page through the real catalog, not a stand-in.
+
+    The stand-in derives the role fails-closed (``required_role or
+    "admin"``); the door's own declaration is what the page must show.
+    """
+    import asyncio
+
+    from primer.toolset.tool_catalog import collect_tool_entries
+    from tests.docs._live_toolsets import built_in_providers
+
+    entries = {
+        e.scoped_id: e
+        for e in asyncio.run(collect_tool_entries(built_in_providers()))
+    }
+    entry = entries["system__call_tool"]
     page = reference_pages([entry], used_in={})["reference/tools/system/call_tool"]
     assert page.kind == "reference" and page.title == "system__call_tool"
-    assert page.meta["pauses_turn"] is True and page.meta["role"] == entry.required_role
+    assert page.meta["role"] == "user"
+    assert page.meta["pauses_turn"] is True
     assert _headings(page.body) == SIX_HEADINGS
     assert "- Pauses the turn: yes" in page.body
     assert "Call it through system__call_tool." in page.body

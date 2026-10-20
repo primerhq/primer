@@ -158,10 +158,12 @@ class DocumentTreeService:
         return doc
 
     async def update(self, *, collection_id: str, path: str,
-                     body: str | None = None, title: str | None = None) -> Document:
+                     body: str | None = None, title: str | None = None,
+                     meta: dict[str, Any] | None = None) -> Document:
         doc = await self.resolve(collection_id=collection_id, path=path)
         updated = doc.model_copy(update={
             "title": doc.title if title is None else title,
+            "meta": doc.meta if meta is None else meta,
             "updated_at": _utcnow(),
         })
         async with self._sp.transaction() as conn:

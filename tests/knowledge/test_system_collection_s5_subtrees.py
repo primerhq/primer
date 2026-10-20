@@ -1,10 +1,18 @@
-"""S5 P3: the operator's map covers workspaces, providers and how-to."""
+"""S5 P3: the operator's map covers workspaces, providers and how-to.
+
+Slice 6 moved the live map under ``this-install/`` and the generated roots
+(``index``, ``reference``) behind the wiki stamp, so every pass here runs
+with a one-page hand-written wiki: without one the wiki pass is degraded
+(lead ruling (b)) and those roots are not written.
+"""
 from __future__ import annotations
 
+import pytest
 import pytest_asyncio
 
 from primer.knowledge.system_collection import (
     HOW_TO_GUIDES,
+    LIVE_ROOT,
     ROOT_INDEX_SLUG,
     SYSTEM_COLLECTION_ID,
     regenerate_system_collection,
@@ -34,35 +42,55 @@ async def sp(tmp_path):
     await provider.aclose()
 
 
-SUBTREES = {
-    "agents", "graphs", "tools", "collections", "docs",
-    "workspaces", "providers", "how-to",
-}
+@pytest.fixture
+def wiki(tmp_path, monkeypatch):
+    """A hand-written wiki plus an empty ai-docs dir, pinned by env vars."""
+    root = tmp_path / "wiki"
+    root.mkdir()
+    (root / "index.md").write_text(
+        "---\n"
+        "title: Platform wiki\n"
+        "summary: The s5 test wiki root.\n"
+        "---\n"
+        "\n"
+        "The s5 wiki.\n",
+        encoding="utf-8",
+    )
+    docs = tmp_path / "ai-docs"
+    docs.mkdir()
+    monkeypatch.setenv("PRIMER_WIKI_DIR", str(root))
+    monkeypatch.setenv("PRIMER_AI_DOCS_DIR", str(docs))
+    return root
 
 
-async def test_every_subtree_is_present_at_the_root(sp):
+# The roots a healthy pass holds: the table of contents, the generated
+# reference, the live install map and the legacy how-to layer.
+ROOT_SLUGS = {"index", "reference", LIVE_ROOT, "how-to"}
+
+
+async def test_every_subtree_is_present_at_the_root(sp, wiki):
     await regenerate_system_collection(sp, toolset_providers={})
     tree = DocumentTreeService(sp)
     roots = {
         n.slug
         for n in await tree.tree(collection_id=SYSTEM_COLLECTION_ID, depth=1)
     }
-    assert SUBTREES <= roots
+    assert ROOT_SLUGS <= roots
     assert ROOT_INDEX_SLUG in roots
 
 
-async def test_the_root_index_names_every_subtree(sp):
+async def test_the_root_index_names_every_subtree(sp, wiki):
     """The operator's entry point: one document that links to all of them."""
     await regenerate_system_collection(sp, toolset_providers={})
     tree = DocumentTreeService(sp)
     index = await tree.read(
         collection_id=SYSTEM_COLLECTION_ID, path=ROOT_INDEX_SLUG,
     )
-    for subtree in SUBTREES:
+    for subtree in ("reference", LIVE_ROOT, "how-to"):
         assert f"({subtree})" in index.body, subtree
 
 
-async def test_providers_subtree_tracks_registry_state(sp):
+async def test_providers_subtree_tracks_registry_state(sp, wiki):
     await sp.get_storage(LLMProvider).create(
         LLMProvider(
             id="llm-1",
@@ -83,16 +111,17 @@ async def test_providers_subtree_tracks_registry_state(sp):
     await regenerate_system_collection(sp, toolset_providers={})
     tree = DocumentTreeService(sp)
     llm = await tree.read(
-        collection_id=SYSTEM_COLLECTION_ID, path="providers/llm/llm-1",
+        collection_id=SYSTEM_COLLECTION_ID, path="this-install/providers/llm/llm-1",
     )
     assert "ollama" in llm.body
     profiles = await tree.read(
-        collection_id=SYSTEM_COLLECTION_ID, path="providers/model-profiles",
+        collection_id=SYSTEM_COLLECTION_ID,
+        path="this-install/providers/model-profiles",
     )
     assert "llm-1--qwen" in profiles.body
 
 
-async def test_aggregated_profile_renders_its_pool_not_none_on_none(sp):
+async def test_aggregated_profile_renders_its_pool_not_none_on_none(sp, wiki):
     """01a067c4 gate finding #4: an aggregated profile has no model_name/
     provider_id/context_length -- the single-profile label used to
     render this literally as "None on None, context None"."""
@@ -117,7 +146,8 @@ async def test_aggregated_profile_renders_its_pool_not_none_on_none(sp):
     await regenerate_system_collection(sp, toolset_providers={})
     tree = DocumentTreeService(sp)
     profiles = await tree.read(
-        collection_id=SYSTEM_COLLECTION_ID, path="providers/model-profiles",
+        collection_id=SYSTEM_COLLECTION_ID,
+        path="this-install/providers/model-profiles",
     )
     assert "None on None" not in profiles.body
     assert "agg-pool" in profiles.body
@@ -125,7 +155,7 @@ async def test_aggregated_profile_renders_its_pool_not_none_on_none(sp):
     assert "leaf-b" in profiles.body
 
 
-async def test_how_to_guides_are_written(sp):
+async def test_how_to_guides_are_written(sp, wiki):
     await regenerate_system_collection(sp, toolset_providers={})
     tree = DocumentTreeService(sp)
     index = await tree.read(collection_id=SYSTEM_COLLECTION_ID, path="how-to")
@@ -137,7 +167,7 @@ async def test_how_to_guides_are_written(sp):
         assert page.body.strip()
 
 
-async def test_a_removed_provider_disappears_from_the_next_pass(sp):
+async def test_a_removed_provider_disappears_from_the_next_pass(sp, wiki):
     await sp.get_storage(LLMProvider).create(
         LLMProvider(
             id="llm-1",
@@ -151,9 +181,9 @@ async def test_a_removed_provider_disappears_from_the_next_pass(sp):
     await regenerate_system_collection(sp, toolset_providers={})
     tree = DocumentTreeService(sp)
     from primer.model.except_ import NotFoundError
-    import pytest
 
     with pytest.raises(NotFoundError):
         await tree.read(
-            collection_id=SYSTEM_COLLECTION_ID, path="providers/llm/llm-1",
+            collection_id=SYSTEM_COLLECTION_ID,
+            path="this-install/providers/llm/llm-1",
         )

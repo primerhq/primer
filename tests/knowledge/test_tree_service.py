@@ -66,6 +66,19 @@ async def test_update_body_and_title(tree):
     assert res.body == "v2" and res.document.title == "Ay"
 
 
+async def test_update_meta_replaces_the_bag_and_none_leaves_it(tree):
+    await tree.create(collection_id="c1", parent="", slug="a", body="v1",
+                      meta={"summary": "old"})
+    res = await tree.read(collection_id="c1", path="a")
+    assert res.document.meta == {"summary": "old"}
+    await tree.update(collection_id="c1", path="a", meta={"summary": "new"})
+    res = await tree.read(collection_id="c1", path="a")
+    assert res.document.meta == {"summary": "new"} and res.body == "v1"
+    await tree.update(collection_id="c1", path="a", body="v2")
+    res = await tree.read(collection_id="c1", path="a")
+    assert res.document.meta == {"summary": "new"} and res.body == "v2"
+
+
 async def test_tree_depth_walk(tree):
     await tree.create(collection_id="c1", parent="", slug="a", body="")
     await tree.create(collection_id="c1", parent="a", slug="b", body="")
