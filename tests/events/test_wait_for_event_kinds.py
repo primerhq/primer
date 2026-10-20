@@ -1,7 +1,8 @@
 """What a run whose principal is not an admin may ask ``wait_for_event`` for (pivot P1, the lead's rulings on #764).
 
 ``system__wait_for_event`` is role user. A non-admin run is held to three limits, each refused with ``type=forbidden`` before anything is
-stored; an admin, and the system principal, keep all three. A context that names no initiator ranks as an ordinary user, as for ``call_tool``.
+stored; an admin, and the system principal, keep all three except that no principal may reference the host ``opa`` package from an expr.
+A context that names no initiator ranks as an ordinary user, as for ``call_tool``.
 
 * The kinds: the event that wakes the wait becomes the run's tool result, so it may wait only on what ``GET /v1/events`` shows a non-admin:
   the lifecycle kinds of ``primer.events.visibility``, the feed's own rule (one copy, read by both). A glob that could match another kind is
@@ -105,6 +106,10 @@ def test_the_rule_is_the_event_feeds_own():
 # ---- expr and regex: admin runs only ------------------------------------------------------------------------------------------------------------------
 
 EXPR = 'package primer.event_filter\nmatch := input.payload.collection_id == "kb"\n'
+OPA_EXPRS = [
+    "package primer.event_filter\nmatch := opa.runtime() != {}\n",
+    "package primer.event_filter\nmatch := opa.future_host_builtin()\n",
+]
 REGEX = [{"path": "payload.path", "op": "regex", "value": "^guides/"}]
 EQ_AND_PREFIX = [{"path": "payload.workspace_id", "op": "eq", "value": "w"}, {"path": "payload.path", "op": "prefix", "value": "src/"}]
 
@@ -157,3 +162,20 @@ async def test_an_admin_keeps_expr_and_regex(sp, who):  # noqa: F811
     assert isinstance(result, Yielded), result
     [stored] = await _subscriptions(sp)
     assert stored.filter.expr == EXPR and [(m.op, m.value) for m in stored.filter.fields] == [("regex", "^guides/")]
+
+
+@pytest.mark.parametrize("who", [ADMIN, PrincipalRef.system()], ids=["admin", "system"])
+@pytest.mark.parametrize("expr", OPA_EXPRS, ids=["runtime", "any-opa-package"])
+async def test_even_an_admin_may_not_store_an_expr_that_references_the_opa_package(sp, who, expr):  # noqa: F811
+    result = await make_wait_for_event_handler(sp)(
+        {"event_types": ["collection.document_pushed"], "expr": expr}, ctx=_ctx(who),
+    )
+
+    assert json.loads(result.output) == {
+        "type": "validation-error",
+        "message": (
+            "event filter expr may use only the event document through input; "
+            "references to the opa package are not allowed"
+        ),
+    }
+    assert await _subscriptions(sp) == [], "an unsafe wait stores no subscription"

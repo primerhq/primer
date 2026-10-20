@@ -6,6 +6,16 @@ import pytest
 from tests.api.conftest import raw_client as client, app, fake_provider_registry  # noqa: F401
 
 
+OPA_EXPRS = [
+    "package primer.event_filter\nmatch := opa.runtime() != {}\n",
+    "package primer.event_filter\nmatch := opa.future_host_builtin()\n",
+]
+OPA_REFUSAL = (
+    "event filter expr may use only the event document through input; "
+    "references to the opa package are not allowed"
+)
+
+
 async def _login(client) -> None:
     reg = await client.post(
         "/v1/auth/register",
@@ -77,6 +87,56 @@ async def test_subscription_crud_and_guards(client, app) -> None:
 
     gone = await client.delete(f"/v1/event_subscriptions/{sub_id}")
     assert gone.status_code == 204, gone.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("expr", OPA_EXPRS, ids=["runtime", "any-opa-package"])
+async def test_subscription_create_refuses_opa_package_references(client, app, expr) -> None:
+    await _login(client)
+
+    refused = await client.post(
+        "/v1/event_subscriptions",
+        json={
+            "description": "unsafe log tap",
+            "filter": {"event_types": ["agent.*"], "expr": expr},
+            "sink": {"kind": "log"},
+        },
+    )
+
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["detail"] == OPA_REFUSAL
+    listed = await client.get("/v1/event_subscriptions")
+    assert all(row["description"] != "unsafe log tap" for row in listed.json()["items"])
+
+
+@pytest.mark.asyncio
+async def test_subscription_update_refuses_opa_package_references(client, app) -> None:
+    await _login(client)
+    safe_expr = (
+        "package primer.event_filter\n"
+        'match := input.payload.collection_id == "kb"\n'
+    )
+    created = await client.post(
+        "/v1/event_subscriptions",
+        json={
+            "description": "safe log tap",
+            "filter": {"event_types": ["agent.*"], "expr": safe_expr},
+            "sink": {"kind": "log"},
+        },
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    body["filter"]["expr"] = OPA_EXPRS[0]
+
+    refused = await client.put(
+        f"/v1/event_subscriptions/{body['id']}", json=body,
+    )
+
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["detail"] == OPA_REFUSAL
+    stored = await client.get(f"/v1/event_subscriptions/{body['id']}")
+    assert stored.status_code == 200, stored.text
+    assert stored.json()["filter"]["expr"] == safe_expr
 
 
 @pytest.mark.asyncio
