@@ -578,21 +578,20 @@ async def test_an_approved_ask_user_asks_the_person_and_the_answer_comes_back_as
 
 
 @pytest.mark.asyncio
-async def test_an_approved_call_is_still_refused_by_the_role_floor_of_the_resumed_node(tmp_path: Path) -> None:
-    """The approval decides about THIS call, not about who may make it: the manager's role floor is not bypassed (``bypass_approval`` skips the gate only), so an admin tool the node's identity may not run is refused with
-    the floor's own message and never runs."""
+async def test_a_below_floor_call_is_refused_before_the_approval_gate(tmp_path: Path) -> None:
+    """Approval cannot grant a role: the floor denies before the gate can park."""
     rec = _Recorder({"admin_x": "admin"})
     run = _Run(tmp_path, providers={"rec": rec}, tools=["rec__admin_x"], policies=[_policy("rec", "admin_x")], initiated_by=USER)
-    checkpoint, _live, _seq, _yld = await run.park(_Model(_asks("rec__admin_x", ARGS)))
-    entry = _only_entry(checkpoint)
-    assert entry["tool_name"] == "_approval", "the gate fires before the role floor does"
-
-    model = _Model(_says("understood"))
-    await run.resume(model, checkpoint, entry, {"decision": "approved"})
+    model = _Model(_asks("rec__admin_x", ARGS), _says("understood"))
+    executor = await run.executor(model)
+    async for _event in executor.invoke([]):
+        pass
 
     assert rec.calls == []
     (result,) = _read(model)
     assert (result.id, result.error) == ("call-1", True) and "requires the 'admin' role" in result.output
+    state = await executor.load_state()
+    assert state is not None and (state["status"], state["ended_reason"]) == ("ended", "completed")
 
 
 @pytest.mark.asyncio
