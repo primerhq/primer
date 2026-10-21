@@ -47,6 +47,7 @@ from primer.api.deps import (
     get_cross_encoder_provider_storage,
     get_embedding_provider_storage,
     get_llm_provider_storage,
+    get_mcp_oauth,
     get_model_profile_storage,
     get_principal,
     get_provider_registry,
@@ -56,6 +57,7 @@ from primer.api.deps import (
 )
 from primer.api.errors import common_responses
 from primer.model.chat import tool_catalogue_flags
+from primer.model.mcp_oauth import McpSignInRequiredError
 from primer.model.except_ import (
     BadRequestError,
     NetworkError,
@@ -1412,6 +1414,8 @@ async def _catalogue_tools(
             return [], (
                 f"did not respond within {_CATALOGUE_PROBE_TIMEOUT_S:g}s"
             )
+        if isinstance(leaf, McpSignInRequiredError):
+            return [], leaf.message
         return [], f"{type(leaf).__name__}: {leaf}"
     return tools, None
 
@@ -1626,6 +1630,13 @@ async def _toolset_on_pre_update(
     own_python_source_version(entity, existing)
 
 
+async def _toolset_on_delete(toolset_id: str, request: Request) -> None:
+    await _invalidate_toolset(toolset_id, request)
+    service = getattr(request.app.state, "mcp_oauth", None)
+    if service is not None:
+        await service.forget(toolset_id)
+
+
 # ---- Toolset router --------------------------------------------------------
 
 toolset_router = make_crud_router(
@@ -1634,7 +1645,7 @@ toolset_router = make_crud_router(
     plural="toolsets",
     tag="toolsets",
     on_update=_invalidate_toolset,
-    on_delete=_invalidate_toolset,
+    on_delete=_toolset_on_delete,
     on_pre_create=_toolset_on_pre_create,
     on_pre_update=_toolset_on_pre_update,
     managed_by_field="harness_id",
@@ -1858,6 +1869,7 @@ async def list_all_tools(
     principal: str | None = Depends(get_principal),
     registry: ProviderRegistry = Depends(get_provider_registry),
     storage_provider=Depends(get_storage_provider),
+    mcp_oauth=Depends(get_mcp_oauth),
 ) -> dict:
     """Fan out across every reachable toolset and return a single
     flat catalogue keyed by toolset.
@@ -1923,6 +1935,14 @@ async def list_all_tools(
                 "available": True,
                 "tools": [],
             }
+            from primer.toolset.oauth.service import OAuthTarget
+
+            if OAuthTarget.from_toolset(row) is not None:
+                status = await mcp_oauth.status(row)
+                entry["auth"] = status.model_dump(
+                    mode="json",
+                    include={"mode", "state", "reason", "expires_at"},
+                )
             tools, reason = await _catalogue_tools(
                 registry, row.id, principal,
             )

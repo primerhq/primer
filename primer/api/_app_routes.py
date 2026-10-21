@@ -72,6 +72,8 @@ def _mount_routers(
     # alongside auth_router so SSO login works in all runtime modes.
     from primer.api.routers.sso import sso_router
     app.include_router(sso_router, prefix=prefix)
+    from primer.api.routers.mcp_oauth import mcp_oauth_public_router
+    app.include_router(mcp_oauth_public_router, prefix=prefix)
 
     # Service serving plane (/svc/*) — services spec section 6. Mounted
     # OUTSIDE the /v1 prefix: these are app URLs, not API resources.
@@ -163,6 +165,8 @@ def _mount_routers(
     # toolset_router so GET /toolsets/builtin is matched by the literal
     # route rather than being captured as toolset_id="builtin".
     app.include_router(providers.builtin_toolsets_router, prefix=prefix, dependencies=user_dep)
+    from primer.api.routers.mcp_oauth import mcp_oauth_router
+    app.include_router(mcp_oauth_router, prefix=prefix, dependencies=user_dep)
     app.include_router(providers.toolset_router, prefix=prefix, dependencies=user_dep)
     # Spec B §3.4 — flat tool catalogue for the graph editor's ToolCall
     # picker => feature => require_user.
