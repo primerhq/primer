@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import errno
+import os
 import shutil
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -10,6 +13,7 @@ import pytest
 
 from pydantic import SecretStr
 
+from primer.model.except_ import BadRequestError
 from primer.model.workspace import (
     WorkspaceRuntimeMeta,
     WorkspaceStatus,
@@ -77,6 +81,78 @@ async def test_read_write_file(tmp_path: Path) -> None:
     )
     await ws.write_file("hello.txt", b"world")
     assert await ws.read_file("hello.txt") == b"world"
+
+
+@pytest.mark.asyncio
+async def test_read_file_refuses_fifo_before_blocking(tmp_path: Path) -> None:
+    fifo = tmp_path / "agents.md"
+    os.mkfifo(fifo)
+    sb = FakeSandbox(root=tmp_path)
+    ws = await SandboxWorkspace.materialise(
+        workspace_id="ws-1", template=_template(),
+        sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
+    )
+
+    read_task = asyncio.create_task(ws.read_file("agents.md"))
+    try:
+        with pytest.raises(BadRequestError, match="FIFO"):
+            await asyncio.wait_for(asyncio.shield(read_task), timeout=0.1)
+    finally:
+        if not read_task.done():
+            for _ in range(50):
+                try:
+                    fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+                except OSError as exc:
+                    if exc.errno != errno.ENXIO:
+                        raise
+                    await asyncio.sleep(0.01)
+                else:
+                    try:
+                        os.write(fd, b"release")
+                    finally:
+                        os.close(fd)
+                    break
+            await asyncio.wait_for(read_task, timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_read_file_still_refuses_directory(tmp_path: Path) -> None:
+    sb = FakeSandbox(root=tmp_path)
+    ws = await SandboxWorkspace.materialise(
+        workspace_id="ws-1", template=_template(),
+        sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
+    )
+    await ws.make_dir("src")
+
+    with pytest.raises(BadRequestError, match="not a file"):
+        await ws.read_file("src")
+
+
+@pytest.mark.asyncio
+async def test_write_file_refuses_fifo_before_blocking(tmp_path: Path) -> None:
+    fifo = tmp_path / "output"
+    os.mkfifo(fifo)
+    sb = FakeSandbox(root=tmp_path)
+    ws = await SandboxWorkspace.materialise(
+        workspace_id="ws-1", template=_template(),
+        sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
+    )
+
+    write_task = asyncio.create_task(ws.write_file("output", b"content"))
+    try:
+        with pytest.raises(BadRequestError, match="FIFO"):
+            await asyncio.wait_for(asyncio.shield(write_task), timeout=0.1)
+    finally:
+        if not write_task.done():
+            fd = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+            try:
+                await asyncio.wait_for(write_task, timeout=1.0)
+                os.read(fd, 1024)
+            finally:
+                os.close(fd)
 
 
 @pytest.mark.asyncio

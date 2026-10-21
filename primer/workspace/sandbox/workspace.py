@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import stat
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from typing import TYPE_CHECKING, Literal
@@ -448,12 +449,18 @@ class SandboxWorkspace(Workspace):
             raise NotFoundError(f"{path!r} not found")
         if info.kind != "file":
             raise BadRequestError(f"{path!r} is not a file")
+        if stat.S_ISFIFO(info.mode):
+            raise BadRequestError(f"{path!r} is a FIFO and cannot be read")
         return await self._sandbox.read_file(target)
 
     async def write_file(self, path: str, content: bytes) -> None:
         self._refuse_reserved(path)
         target = self._resolve_path(path)
         info = await self._sandbox.stat(target)
+        if info is not None and stat.S_ISFIFO(info.mode):
+            raise BadRequestError(
+                f"{path!r} is a FIFO and cannot be overwritten with file content"
+            )
         if info is not None and info.kind == "dir":
             raise BadRequestError(
                 f"{path!r} is a directory; cannot overwrite with file content"
