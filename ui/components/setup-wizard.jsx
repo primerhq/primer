@@ -179,7 +179,7 @@ function SW_tidy(text) {
     .trim();
 }
 
-// The text of an error shown on the Setup page or the gate: what the console always showed (the error's message, or the error itself as text), cleaned.
+// The text of an error shown on the gate: what the console always showed (the error's message, or the error itself as text), cleaned.
 function SW_errorText(err) {
   return SW_tidy(err && err.message ? err.message : String(err));
 }
@@ -504,19 +504,13 @@ function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
 }
 
 // ============================================================================
-// Six live setup predicates (R5 BUILD: notes section 4 Setup + section 5
-// first-boot gate). GET /setup/state is the live-checked source (2 of 6
-// predicates are real network/backend probes, not just row presence —
-// docs/superpowers/uiv2/03-backend-gap-map.md:162); shared by the
-// first-boot wizard gate below and the admin Setup page.
+// Six live setup predicates (R5 BUILD: notes section 5 first-boot gate).
+// GET /setup/state is the live-checked source (2 of 6 predicates are
+// real network/backend probes, not just row presence).
 // ============================================================================
 
 function _fetchSetupState() {
   return window.primerApi.apiFetch("GET", "/setup/state", null, {});
-}
-
-function _fetchCapabilities() {
-  return window.primerApi.apiFetch("GET", "/capabilities", null, {});
 }
 
 // SetupPredicatesList — the six-row checklist. Renders in whichever
@@ -552,129 +546,6 @@ function SetupPredicatesList({ state, onConfigureProvider, onRerunSeed, busy, te
         );
       })}
     </ul>
-  );
-}
-
-const _CAPABILITY_GATES = {
-  huggingface: "local embedder + cross-encoder + speech models",
-  lance: "local semantic-search vector store",
-  docker: "container workspace backend",
-  kubernetes: "kubernetes workspace backend",
-  channels: "Slack / Discord / Telegram channel bridges",
-};
-
-// ============================================================================
-// NV_SetupPage — the System > Setup admin surface (R5 BUILD). Six live
-// predicates with fix-actions, a capabilities table, Re-run seed and
-// Reset base agent roster (both REUSE — POST /setup/seed,
-// POST /setup/reset_agents already existed and needed no backend change).
-// ============================================================================
-
-function NV_SetupPage() {
-  const [state, setState] = React.useState(null);
-  const [capabilities, setCapabilities] = React.useState(null);
-  const [error, setError] = React.useState(null);
-  const [busy, setBusy] = React.useState(null); // "seed" | "reset" | null
-  const [configuring, setConfiguring] = React.useState(false);
-
-  const load = React.useCallback(() => {
-    setError(null);
-    Promise.all([_fetchSetupState(), _fetchCapabilities()]).then(
-      ([s, c]) => { setState(s); setCapabilities(c); },
-      (err) => setError(SW_errorText(err)),
-    );
-  }, []);
-  React.useEffect(load, [load]);
-
-  const rerunSeed = () => {
-    setBusy("seed");
-    window.primerApi.apiFetch("POST", "/setup/seed", null, {}).then(
-      load, (err) => setError(SW_errorText(err)),
-    ).finally(() => setBusy(null));
-  };
-
-  const resetRoster = () => {
-    setBusy("reset");
-    window.primerApi.apiFetch("POST", "/setup/reset_agents", null, {}).then(
-      load, (err) => setError(SW_errorText(err)),
-    ).finally(() => setBusy(null));
-  };
-
-  if (configuring) {
-    return (
-      <div data-testid="nv-sys-setup-configure">
-        <SetupWizardSteps onComplete={() => { setConfiguring(false); load(); }} />
-      </div>
-    );
-  }
-
-  return (
-    <div className="col" style={{ gap: 14 }} data-testid="nv-sys-setup-page">
-      <div className="filter-bar">
-        <span style={{ fontSize: 13, fontWeight: 600 }}>Setup</span>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-          <Btn size="sm" kind="ghost" icon="refresh" onClick={load}>Refresh</Btn>
-          <Btn size="sm" kind="ghost" icon="play" onClick={rerunSeed}
-            disabled={busy != null} data-testid="nv-sys-setup-rerun-seed">
-            {busy === "seed" ? "Running…" : "Re-run seed"}
-          </Btn>
-          <Btn size="sm" kind="ghost" icon="rotate-ccw" onClick={resetRoster}
-            disabled={busy != null} data-testid="nv-sys-setup-reset-roster">
-            {busy === "reset" ? "Resetting…" : "Reset base agent roster"}
-          </Btn>
-        </div>
-      </div>
-
-      {error && <Banner kind="error" title="Couldn't load setup state" detail={error} />}
-
-      {state && (
-        <SetupPredicatesList
-          state={state}
-          busy={busy}
-          testidPrefix="nv-sys-setup"
-          onConfigureProvider={() => setConfiguring(true)}
-          onRerunSeed={rerunSeed}
-        />
-      )}
-
-      {capabilities && (
-        <div data-testid="nv-sys-capabilities-table" className="tbl-wrap">
-          <table className="tbl">
-            <thead>
-              <tr><th></th><th>Capability</th><th>Gates</th></tr>
-            </thead>
-            <tbody>
-              {Object.keys(capabilities.extras).sort().map((name) => {
-                const status = capabilities.extras[name];
-                return (
-                  <tr key={name} data-testid={"nv-sys-capability-row:" + name}>
-                    <td>
-                      <Icon name={status.installed ? "check" : "x-circle"}
-                        className={status.installed ? undefined : "muted"} size={14} />
-                    </td>
-                    <td className="mono">{name}</td>
-                    <td className="muted text-sm">{_CAPABILITY_GATES[name] || "—"}</td>
-                  </tr>
-                );
-              })}
-              <tr data-testid="nv-sys-capability-row:speech">
-                <td>
-                  <Icon
-                    name={(capabilities.speech.stt_configured || capabilities.speech.tts_configured) ? "check" : "x-circle"}
-                    className={(capabilities.speech.stt_configured || capabilities.speech.tts_configured) ? undefined : "muted"}
-                    size={14} />
-                </td>
-                <td className="mono">speech</td>
-                <td className="muted text-sm">
-                  stt {capabilities.speech.stt_configured ? "configured" : "not configured"},{" "}
-                  tts {capabilities.speech.tts_configured ? "configured" : "not configured"}
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -817,4 +688,3 @@ window.SetupWizardSteps = SetupWizardSteps;
 window.SetupWizardGate = SetupWizardGate;
 window.SetupWaitingScreen = SetupWaitingScreen;
 window.SetupPredicatesList = SetupPredicatesList;
-window.NV_SetupPage = NV_SetupPage;

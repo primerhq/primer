@@ -4,7 +4,7 @@
 // with drain/purge, and the cross-workspace "needs a human" panel via
 // client fan-out over pending yields); the admin surfaces re-host the
 // existing pages (users, API tokens, SSO, MCP, internal collections,
-// activity, setup) - they keep their handlers, lose their chrome; the
+// activity) - they keep their handlers, lose their chrome; the
 // profile page is the operator's own: password + linked accounts.
 
 var NV_SYS_ICONS = {
@@ -18,9 +18,6 @@ var NV_SYS_ICONS = {
   mcp: "M2 4h10v6H2Z M4 10v2h6v-2 M5 6.5h4",
   internal: "M3.5 1.5h7v11h-5.5a1.5 1.5 0 0 0-1.5 1.5Z M3.5 1.5V14 M6 5h3",
   activity: "M1.5 7h2.5l1.5-4 2.5 8L9.5 7H12",
-  setup: "M7 4.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Z M7 1v2 M7 11v2 "
-    + "M1 7h2 M11 7h2 M2.8 2.8l1.4 1.4 M9.8 9.8l1.4 1.4 M11.2 2.8 9.8 "
-    + "4.2 M4.2 9.8l-1.4 1.4",
   profile: "M7 6.5a2.4 2.4 0 1 0 0-.01 M2.5 12.5c0-2.4 2-3.8 4.5-3.8s4.5 "
     + "1.4 4.5 3.8",
 };
@@ -33,7 +30,6 @@ var NV_SYS_LABELS = {
   mcp: "MCP server",
   internal: "Internal collections",
   activity: "Activity",
-  setup: "Setup",
   profile: "Profile",
 };
 
@@ -48,7 +44,7 @@ var NV_SYS_LABELS = {
 // with nothing lost.
 function NV_sysNavsFor(role) {
   var all = ["dashboard", "users", "apikeys", "sso", "mcp", "internal",
-    "activity", "setup", "profile"];
+    "activity", "profile"];
   if (role === "admin") return all;
   return ["profile"];
 }
@@ -822,10 +818,6 @@ function NV_SysBody(props) {
     );
   }
   if (nav === "activity") return <window.SH_ActivityPanel />;
-  // R5 BUILD: six live predicates + fix-actions + capabilities table +
-  // re-run seed / reset roster, replacing the bare 2-step wizard reuse
-  // (that stays available as the fix-action for the two provider rows).
-  if (nav === "setup") return <window.NV_SetupPage />;
   return null;
 }
 
