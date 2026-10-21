@@ -9,7 +9,8 @@ the implementation diverged from a spec, this set describes the implementation a
 records the divergence in a per-doc "Historical decisions" callout. It is not a
 changelog, not the spec archive, and not user-facing documentation. The changelog
 lives in git history, the spec archive stays under `docs/superpowers/specs/`, the
-agent-facing docs live under `docs/agents/`, and the operator-facing docs live in
+agent-facing docs live under `docs/wiki/` (the platform wiki source, which
+replaces `docs/agents/`), and the operator-facing docs live in
 a separate external repo (the `primerhq.github.io` Pages site). Read this set when
 you need to understand or extend a subsystem; read the specs only when you need the
 original rationale behind a decision this set summarises.
