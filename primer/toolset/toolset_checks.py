@@ -100,6 +100,32 @@ def repoints_stored_secrets(entity: Toolset, existing: Toolset) -> bool:
     return restored != entity
 
 
+def oauth_settings_changed(entity: Toolset, existing: Toolset) -> bool:
+    """Whether an update changes the URL or OAuth block of an existing OAuth MCP toolset.
+
+    Served masks are restored on a deep copy before comparing. A mask that cannot be restored counts as changed, so the role check fails closed while the
+    write path still returns its precise validation refusal. Headers and the HTTP/SSE transport are deliberately outside this comparison.
+    """
+    existing_config = getattr(existing.config, "config", None)
+    if (
+        existing.provider != ToolsetProviderType.MCP
+        or not isinstance(existing_config, HttpConfig)
+        or existing_config.oauth is None
+    ):
+        return False
+
+    restored = entity.model_copy(deep=True)
+    try:
+        preserve_masked_secrets(restored, existing)
+    except PrimerValidationError:
+        return True
+
+    updated_config = getattr(restored.config, "config", None)
+    if restored.provider != ToolsetProviderType.MCP or not isinstance(updated_config, HttpConfig):
+        return True
+    return updated_config.url != existing_config.url or updated_config.oauth != existing_config.oauth
+
+
 _STDIO_REASON = (
     "Creating or changing an MCP toolset on the stdio transport requires the admin role: it launches a command on the server host. "
     "Use an http or sse MCP toolset, or ask an admin."
@@ -110,6 +136,10 @@ _PYTHON_REASON = (
 _REPOINT_REASON = (
     "Changing a toolset's URL or OAuth endpoints while keeping its stored secrets requires the admin role, and the stored secrets are kept only "
     "for the same origin (scheme, host and port): re-enter the secrets (headers, OAuth client secret) when changing the URL, or ask an admin."
+)
+_OAUTH_REASON = (
+    "Changing the URL or the OAuth settings of a toolset that signs in with OAuth requires the admin role: every agent that uses it "
+    "acts as whoever connected it, and an admin's change signs it out until it is connected again."
 )
 
 
@@ -129,6 +159,8 @@ def toolset_admin_reason(entity: Toolset, existing: Toolset | None = None) -> st
         return _PYTHON_REASON
     if existing is not None and repoints_stored_secrets(entity, existing):
         return _REPOINT_REASON
+    if existing is not None and oauth_settings_changed(entity, existing):
+        return _OAUTH_REASON
     return None
 
 
@@ -151,6 +183,7 @@ __all__ = [
     "check_toolset_on_create",
     "check_toolset_on_update",
     "launches_a_command",
+    "oauth_settings_changed",
     "own_python_source_version",
     "repoints_stored_secrets",
     "runs_python",

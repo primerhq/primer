@@ -143,7 +143,12 @@ from primer.channel.checks import check_channel_on_create, check_channel_on_upda
 from primer.model_profile.checks import check_profile_on_create, check_profile_on_update
 from primer.knowledge.checks import check_collection_system_flag
 from primer.knowledge.lifecycle import purge_collection
-from primer.toolset.toolset_checks import check_toolset_on_create, check_toolset_on_update, toolset_admin_reason
+from primer.toolset.toolset_checks import (
+    check_toolset_on_create,
+    check_toolset_on_update,
+    oauth_settings_changed,
+    toolset_admin_reason,
+)
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 from primer.workspace.instructions import load_workspace_instructions
 
@@ -216,7 +221,8 @@ _ADMIN_WRITE_NOTES: dict[str, str] = {
         "toolset's URL or OAuth endpoints while sending a secret back masked (re-enter the secrets instead; even an admin keeps a "
         "stored secret only for the same origin (scheme, host and port), else ``type=validation-error``). When the run was not "
         "started by an admin, or carries no identity (a call through the MCP endpoint), it returns ``type=forbidden`` and nothing "
-        "is stored. Other http and sse toolset writes are unaffected."
+        "is stored. Changing the URL or OAuth settings of a toolset that signs in with OAuth also requires an admin, and an accepted "
+        "change signs it out until an admin connects it again. Other http and sse toolset writes are unaffected."
     ),
 }
 
@@ -227,6 +233,7 @@ if TYPE_CHECKING:
     from primer.api.registries.semantic_search_registry import SemanticSearchRegistry
     from primer.api.registries.workspace_registry import WorkspaceRegistry
     from primer.int.storage_provider import StorageProvider
+    from primer.toolset.oauth.service import ToolsetOAuthService
 
 
 # ===========================================================================
@@ -243,6 +250,7 @@ def build_system_toolset(
     toolset_id: str = SYSTEM_TOOLSET_ID,
     approval_resolver: "ApprovalResolver | None" = None,
     artifact_storage_registry: "ArtifactStorageRegistry | None" = None,
+    mcp_oauth: "ToolsetOAuthService | None" = None,
 ) -> InternalToolsetProvider:
     """Construct the immutable ``_system`` toolset.
 
@@ -259,6 +267,9 @@ def build_system_toolset(
     ``artifact_storage_registry`` is the process's :class:`ArtifactStorageRegistry`. An update or a delete of an artifact-storage provider calls
     its ``invalidate``, which publishes on the invalidation bus the lifespan bound it to, so the cached store is dropped in every process (a tool runs
     in whichever process executes the session). ``None`` (standalone/test builders) leaves the cache alone.
+
+    ``mcp_oauth`` is the process-wide shared sign-in service. An accepted URL or OAuth settings change through ``update_toolset`` forgets that
+    toolset's sign-in, matching the REST update path. ``None`` leaves standalone builders without OAuth state.
     """
     registry: dict[str, tuple[Tool, ToolHandler]] = {}
 
@@ -366,6 +377,8 @@ def build_system_toolset(
 
     async def _toolset_pre_update(entity: Toolset, existing: Toolset) -> None:
         check_toolset_on_update(entity, existing)
+        if mcp_oauth is not None and oauth_settings_changed(entity, existing):
+            await mcp_oauth.forget(entity.id)
 
     async def _profile_pre_create(entity: ModelProfile) -> None:
         await check_profile_on_create(entity, storage_provider=storage_provider)

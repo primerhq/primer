@@ -78,7 +78,12 @@ from primer.api.routers._probe_text import validation_detail as _validation_deta
 from primer.common.entity_checks import EntityCheckError
 from primer.common.log import redact_url_secrets
 from primer.model.common import preserve_masked_secrets
-from primer.toolset.toolset_checks import check_python_toolset, own_python_source_version, toolset_admin_reason
+from primer.toolset.toolset_checks import (
+    check_python_toolset,
+    oauth_settings_changed,
+    own_python_source_version,
+    toolset_admin_reason,
+)
 from primer.model.provider import (
     AnthropicConfig,
     CrossEncoderProvider,
@@ -1616,18 +1621,22 @@ async def _toolset_on_pre_update(
     moves when the source does.
 
     Admin-only when either the stored row or the new body is a stdio MCP or python toolset (the code it runs on the server host is
-    what changes hands), and when the URL or OAuth endpoints change while a secret is sent back masked (the stored secret would go
-    to the new endpoint); see :func:`primer.toolset.toolset_checks.toolset_admin_reason`. Checked before anything else touches the
-    body, in particular before the masked secrets are restored.
+    what changes hands), when the URL or OAuth endpoints change while a secret is sent back masked (the stored secret would go to the
+    new endpoint), and when an OAuth toolset's URL or OAuth block changes. An accepted OAuth settings change forgets the shared sign-in.
+    See :func:`primer.toolset.toolset_checks.toolset_admin_reason`. The role check runs before anything else touches the body, in
+    particular before the masked secrets are restored.
     """
     reason = toolset_admin_reason(entity, existing)
     if reason is not None:
         _require_admin_for_toolset(request, reason)
     preserve_masked_secrets(entity, existing)
-    if entity.provider != ToolsetProviderType.PYTHON:
-        return
-    _validate_python_toolset(entity)
-    own_python_source_version(entity, existing)
+    if entity.provider == ToolsetProviderType.PYTHON:
+        _validate_python_toolset(entity)
+        own_python_source_version(entity, existing)
+    if oauth_settings_changed(entity, existing):
+        service = getattr(request.app.state, "mcp_oauth", None)
+        if service is not None:
+            await service.forget(entity.id)
 
 
 async def _toolset_on_delete(toolset_id: str, request: Request) -> None:

@@ -253,6 +253,7 @@ def _make_lifespan(config: AppConfig):
             # tool evicts the cached store in every process: the registry
             # publishes on the invalidation bus bound below (01a11358).
             artifact_storage_registry=artifact_storage_registry,
+            mcp_oauth=mcp_oauth,
         )
         provider_registry._system_toolset_provider = system_toolset  # noqa: SLF001
         # NOTE: the always-on _workspaces toolset is built later in this
