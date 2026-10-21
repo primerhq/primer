@@ -39,6 +39,7 @@ from primer.model.except_ import (
     WorkspaceUnreachableError,
 )
 from primer.model.payload_too_large import PayloadTooLargeError
+from primer.model.mcp_oauth import McpSignInRequiredError
 from primer.model.problem_details import ProblemDetails
 from primer.model.workspace_refusal import WorkspaceRefusedError
 
@@ -68,6 +69,7 @@ _PRIMER_ERROR_MAP: list[tuple[type[PrimerError], int, str, str]] = [
     # A refused local workspace is a 409 with its own type URI, so the console can tell "move this workspace
     # to a docker or kubernetes provider" from any other conflict (ticket 01a1072f).
     (WorkspaceRefusedError, 409, "/errors/workspace-refused", "Workspace Refused"),
+    (McpSignInRequiredError, 409, "/errors/mcp-sign-in-required", "MCP Sign-in Required"),
     (ConflictError, 409, "/errors/conflict", "Conflict"),
     (RateLimitError, 429, "/errors/rate-limited", "Rate Limited"),
     (DimensionMismatchError, 422, "/errors/dimension-mismatch", "Dimension Mismatch"),
