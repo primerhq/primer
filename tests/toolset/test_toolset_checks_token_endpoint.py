@@ -49,11 +49,13 @@ def test_a_token_endpoint_that_appears_with_a_masked_secret_is_a_repoint():
 
 
 def test_re_entering_the_secret_lifts_the_repoint():
-    """A secret the caller typed goes nowhere it was not sent by that caller: the user tier may move the endpoint when it re-enters the secret."""
+    """Re-entry lifts the repoint gate, but the endpoint move still changes
+    where shared client credentials are sent, so an admin is required.
+    """
     stored = _toolset("https://home.example/token", STORED)
     moved = _toolset("https://other.example/token", "typed-by-the-caller")
     assert repoints_stored_secrets(moved, stored) is False
-    assert toolset_admin_reason(moved, stored) is None
+    assert toolset_admin_reason(moved, stored) is not None  # the shared sign-in admin rule (plan 07 T12)
 
 
 def test_a_toolset_with_a_token_endpoint_and_no_change_is_not_a_repoint():
