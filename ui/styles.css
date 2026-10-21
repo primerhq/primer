@@ -5832,6 +5832,46 @@ button.nv-trace-line { cursor: pointer; }
   padding: 1px 5px;
 }
 .nv-attn-ws { font-size: 11px; color: var(--text-4); }
+.nv-sys-setup {
+  border: 1px solid var(--border);
+  border-radius: var(--r-8);
+  background: var(--bg-1);
+  padding: 12px 13px;
+  position: relative;
+}
+.nv-sys-setup-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.nv-sys-setup-headline {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.nv-sys-setup-list {
+  display: flex;
+  flex-direction: column;
+  margin-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.nv-sys-setup-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.nv-sys-setup-item:last-child {
+  border-bottom: none;
+}
+.nv-sys-setup-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 10;
+}
 .nv-profile-pw {
   display: flex;
   flex-direction: column;
