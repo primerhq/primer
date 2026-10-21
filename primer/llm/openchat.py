@@ -1,4 +1,4 @@
-"""OpenChat LLM adapter — wraps the OpenAI Chat Completions API.
+"""OpenChat LLM adapter - wraps the OpenAI Chat Completions API.
 
 Subclasses :class:`primer.int.LLM` and translates the universal chat
 interface (:mod:`primer.model.chat`) onto the legacy OpenAI
@@ -28,7 +28,7 @@ from primer.common.openai_errors import classify_openai_exception
 from primer.int.coordinator import RateLimiter
 from primer.int.llm import LLM
 from primer.llm._failure import describe_failure
-from primer.llm._reasoning import openchat_extended
+from primer.llm._reasoning import debug_once, openchat_extended
 from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout
 from primer.llm._openai_compat import (
     _build_sampling_params,
@@ -78,6 +78,28 @@ def _extract_extended_kwargs(extended: dict[str, Any] | None) -> dict[str, Any]:
     """The shared Chat Completions whitelist plus the reasoning knobs this wire takes."""
     return _extract_compat_kwargs(
         extended, sdk_keys=_REASONING_SDK_KEYS, body_keys=_REASONING_BODY_KEYS,
+    )
+
+
+def _fit_reasoning_tool_choice(
+    request: dict[str, Any], *, flavor: OpenChatFlavor, provider_id: str, model: str,
+) -> None:
+    """Use the strongest tool choice OpenAI Chat Completions accepts with reasoning."""
+    if flavor is not OpenChatFlavor.OPENAI:
+        return
+    if request.get("reasoning_effort") in (None, "none"):
+        return
+    choice = request.get("tool_choice")
+    if choice != "required" and not isinstance(choice, dict):
+        return
+    request["tool_choice"] = "auto"
+    debug_once(
+        ("openchat-reasoning", provider_id, "forced-tool-choice"),
+        "OpenChat provider %s: OpenAI Chat Completions rejects forced "
+        "tool_choice while reasoning is enabled; using auto for model %s",
+        provider_id,
+        model,
+        log=logger,
     )
 
 
@@ -254,6 +276,12 @@ class OpenChatLLM(LLM):
         if rf_param is not None:
             request["response_format"] = rf_param
         request.update(_extract_extended_kwargs(extended))
+        _fit_reasoning_tool_choice(
+            request,
+            flavor=self._config.flavor,
+            provider_id=self._provider.id,
+            model=model,
+        )
 
         logger.info(
             "OpenChat stream starting",

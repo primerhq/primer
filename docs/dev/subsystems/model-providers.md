@@ -333,6 +333,13 @@ folds `thinking_budget` or `thinking_level` into `thinking_config` (keeping
 the level when both arrive), `ollama` sends `think` at the top level and
 `anthropic` sends the `thinking` block and `output_config`.
 
+On real OpenAI Chat Completions, a non-`none` `reasoning_effort` cannot be
+combined with a forced `tool_choice`. The `openchat` adapter changes `required`
+or a named tool to `auto` and logs that adjustment once, preserving reasoning
+and allowing the call to proceed. The Responses API accepts forced tool choices
+with reasoning, and OpenRouter defines them independently of its `reasoning`
+object, so `openresponses` and `openrouter` leave the caller's choice unchanged.
+
 **Anthropic: the rest of the request.** Thinking has rules the call's other
 settings can break, so `_fit_thinking` and `_fit_sampling` in
 `primer/llm/anthropic.py` make such a request valid instead of letting it

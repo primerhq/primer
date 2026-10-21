@@ -13,9 +13,10 @@ Spec: docs/superpowers/specs/2026-06-04-openrouter-llm-provider-design.md
 from __future__ import annotations
 
 from primer.model_profile import ResolvedModel
-from primer.model.model_profile import ModelProfileConfig
+from primer.model.model_profile import ModelProfileConfig, ReasoningLevel
 
 import importlib
+import json
 
 import httpx
 import pytest
@@ -304,6 +305,31 @@ class TestStream:
                 "bad model id" in str(exc_info.value).lower()
                 or "400" in str(exc_info.value)
             )
+        finally:
+            await llm.aclose()
+
+    async def test_reasoning_keeps_required_tool_choice(self, wire: _Wire) -> None:
+        """OpenRouter accepts required tool choice beside its reasoning object."""
+        wire.respond(
+            200,
+            content=b"data: [DONE]\n\n",
+            headers={"content-type": "text/event-stream"},
+        )
+        llm = OpenRouterLLM(_make_provider())
+        try:
+            async for _ in llm.stream(
+                model="openai/o3",
+                messages=[Message(role="user", parts=[TextPart(text="hi")])],
+                tool_choice="required",
+                extended=llm.profile_extended(
+                    ModelProfileConfig(reasoning=ReasoningLevel.HIGH),
+                    model="openai/o3",
+                ),
+            ):
+                pass
+            body = json.loads(wire.last.content)
+            assert body["reasoning"] == {"effort": "high"}
+            assert body["tool_choice"] == "required"
         finally:
             await llm.aclose()
 

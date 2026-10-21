@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from primer.model_profile import ResolvedModel
-from primer.model.model_profile import ModelProfileConfig
+from primer.model.model_profile import ModelProfileConfig, ReasoningLevel
 
 import logging
 from typing import Any
@@ -1072,6 +1072,81 @@ class TestStream:
         assert len(kwargs["tools"]) == 1
         assert kwargs["tools"][0]["function"]["name"] == "search"
         assert kwargs["tool_choice"] == "auto"
+
+    @pytest.mark.parametrize("forced_choice", ["required", "search"])
+    async def test_openai_reasoning_downgrades_forced_tool_choice(
+        self, monkeypatch: pytest.MonkeyPatch, forced_choice: str
+    ) -> None:
+        """OpenAI Chat Completions rejects forced choices while reasoning is on."""
+        llm = OpenChatLLM(_make_provider())
+        client = _patched_client(monkeypatch)
+        client.chat.completions.create.return_value = _aiter(_simple_text_chunk_seq())
+
+        async for _ in llm.stream(
+            model="o3",
+            messages=[Message(role="user", parts=[TextPart(text="hi")])],
+            tools=[
+                Tool(
+                    id="search",
+                    description="Search",
+                    toolset_id="default",
+                    args_schema={"type": "object", "properties": {}},
+                )
+            ],
+            tool_choice=forced_choice,
+            extended=llm.profile_extended(
+                ModelProfileConfig(reasoning=ReasoningLevel.HIGH), model="o3"
+            ),
+        ):
+            pass
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["reasoning_effort"] == "high"
+        assert kwargs["tool_choice"] == "auto"
+
+    async def test_openai_reasoning_off_keeps_required_tool_choice(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = OpenChatLLM(_make_provider())
+        client = _patched_client(monkeypatch)
+        client.chat.completions.create.return_value = _aiter(_simple_text_chunk_seq())
+
+        async for _ in llm.stream(
+            model="gpt-5.1",
+            messages=[Message(role="user", parts=[TextPart(text="hi")])],
+            tool_choice="required",
+            extended=llm.profile_extended(
+                ModelProfileConfig(reasoning=ReasoningLevel.OFF), model="gpt-5.1"
+            ),
+        ):
+            pass
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["reasoning_effort"] == "none"
+        assert kwargs["tool_choice"] == "required"
+
+    async def test_self_hosted_reasoning_keeps_required_tool_choice(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = OpenChatLLM(_make_provider(flavor=OpenChatFlavor.VLLM))
+        client = _patched_client(monkeypatch)
+        client.chat.completions.create.return_value = _aiter(_simple_text_chunk_seq())
+
+        async for _ in llm.stream(
+            model="qwen3",
+            messages=[Message(role="user", parts=[TextPart(text="hi")])],
+            tool_choice="required",
+            extended=llm.profile_extended(
+                ModelProfileConfig(reasoning=ReasoningLevel.HIGH), model="qwen3"
+            ),
+        ):
+            pass
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["extra_body"] == {
+            "chat_template_kwargs": {"enable_thinking": True}
+        }
+        assert kwargs["tool_choice"] == "required"
 
     async def test_request_payload_routes_response_format(
         self, monkeypatch: pytest.MonkeyPatch
