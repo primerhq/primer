@@ -101,6 +101,21 @@ An `Agent` row carries:
 - `harness_id` - non-null for agents installed by a harness;
   blocks public CRUD.
 
+The five seeded agents (`operator`, `builder`, `planner`, `explorer`,
+`tool-runner`) are granted the **core kit** - `system__call_tool`,
+`system__wiki_read`, `system__wiki_search`, `system__ask_user`,
+`misc__inform_user` - and the operator alone adds the two workspaces
+messaging tools (`workspaces__list_my_sessions`,
+`workspaces__message_session`). Everything else an agent can do is
+reached through `system__call_tool` and documented in the platform wiki
+(the regenerated `system` collection); the wiki's tool pages are the
+ground truth for a tool's arguments. `POST /v1/setup/reset_agents`
+restores these shipped definitions (the `model.profile_id` each agent
+runs under is preserved); an install whose rows predate the core kit is
+moved over once by migration 11, which rewrites only a row that still
+equals a shipped definition and leaves an edited row alone with a
+warning.
+
 Structured output is configured on a **graph node** (its
 `output_schema`), not on the agent; the agent itself has no
 `response_format` field.

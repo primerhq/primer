@@ -8,7 +8,11 @@ from primer.bootstrap.defaults import (
     RESERVED_BUILDER_AGENT,
     RESERVED_OPERATOR_AGENT,
 )
-from primer.bootstrap.operator_defaults import BUILDER_TOOLS, OPERATOR_TOOLS
+from primer.bootstrap.operator_defaults import (
+    BUILDER_TOOLS,
+    CORE_KIT_TOOLS,
+    OPERATOR_TOOLS,
+)
 from primer.bootstrap.seed import ensure_seeded_agents
 from primer.model.agent import Agent
 from primer.model.model_profile import ModelProfile
@@ -51,7 +55,7 @@ async def test_the_next_pass_repairs_the_agents(fake_storage_provider):
     assert operator.model.profile_id == profile_id
     assert operator.tools == list(OPERATOR_TOOLS)
     assert builder.tools == list(BUILDER_TOOLS)
-    assert "crud__create_agent" in builder.tools
+    assert "system__call_tool" in builder.tools
     assert not any(t.startswith("crud__") for t in operator.tools)
     state = await fake_storage_provider.get_system_state()
     assert state.default_agent_id == RESERVED_OPERATOR_AGENT
@@ -86,27 +90,20 @@ async def test_a_deleted_builder_is_repaired(fake_storage_provider):
 
 
 async def test_roster_grants_match_the_design(fake_storage_provider):
-    """Each specialist gets exactly the spec table's tools, nothing more."""
+    """Every non-operator seeded agent gets exactly the core kit, nothing more."""
     fake_storage_provider.get_storage(ModelProfile)._data.clear()
     await _seed_profile(fake_storage_provider)
     await ensure_seeded_agents(fake_storage_provider)
     agents = fake_storage_provider.get_storage(Agent)
 
-    planner = await agents.get(RESERVED_PLANNER_AGENT)
-    assert planner.tools == [
-        "collections__search", "collections__read_document",
-    ], "the planner grounds but never mutates"
-
-    explorer = await agents.get(RESERVED_EXPLORER_AGENT)
-    assert explorer.tools == [
-        "collections__search", "collections__read_document",
-        "collections__collection_tree",
-    ]
-
-    runner = await agents.get(RESERVED_TOOL_RUNNER_AGENT)
-    assert runner.tools == [
-        "collections__search", "system__call_tool",
-    ], "vision ch.3: two meta-tools and nothing else"
+    for agent_id in (
+        RESERVED_BUILDER_AGENT,
+        RESERVED_PLANNER_AGENT,
+        RESERVED_EXPLORER_AGENT,
+        RESERVED_TOOL_RUNNER_AGENT,
+    ):
+        row = await agents.get(agent_id)
+        assert row.tools == list(CORE_KIT_TOOLS), agent_id
 
 
 async def test_a_deleted_planner_is_repaired(fake_storage_provider):
