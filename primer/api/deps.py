@@ -54,6 +54,7 @@ if TYPE_CHECKING:
     from primer.int.scheduler import Scheduler
     from primer.int.storage import Storage
     from primer.int.storage_provider import StorageProvider
+    from primer.toolset.oauth.service import ToolsetOAuthService
     from primer.worker.pool import WorkerPool
 
 
@@ -431,7 +432,7 @@ def get_event_bus(request: Request) -> "EventBus":
     return bus
 
 
-def get_mcp_oauth(request: Request):
+def get_mcp_oauth(request: Request) -> "ToolsetOAuthService":
     """Resolve the process-wide MCP toolset OAuth service."""
     service = getattr(request.app.state, "mcp_oauth", None)
     if service is None:

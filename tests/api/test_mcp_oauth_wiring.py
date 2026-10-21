@@ -8,6 +8,7 @@ from primer.api.registries.provider_registry import _build_default_toolset_facto
 from primer.model.provider import Toolset
 from primer.toolset.mcp import McpToolsetProvider
 from primer.toolset.oauth.service import ToolsetOAuthService
+from tests._support.mock_oauth_mcp_fixtures import mock_oauth_mcp  # noqa: F401
 
 
 def _toolset() -> Toolset:
@@ -34,3 +35,17 @@ def test_public_url_is_normalised() -> None:
     assert AppConfig(public_url="https://primer.example/").public_url == "https://primer.example"
     with pytest.raises(ValueError, match="public_url must be an absolute"):
         AppConfig(public_url="primer.example")
+
+
+@pytest.mark.asyncio
+async def test_an_oauth_toolset_is_creatable_before_it_is_connected(client, mock_oauth_mcp) -> None:
+    response = await client.post(
+        "/v1/toolsets",
+        json={
+            "id": "oauth-before-connect",
+            "provider": "mcp",
+            "config": {"transport": "http", "config": {"url": mock_oauth_mcp.mcp_url, "oauth": {}}},
+        },
+    )
+
+    assert response.status_code == 201, response.text
