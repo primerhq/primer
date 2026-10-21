@@ -54,6 +54,7 @@ class TestRegistry:
 
     def test_latest_version_matches_registry(self) -> None:
         assert LATEST_VERSION == len(MIGRATIONS)
+        assert LATEST_VERSION == 12
 
     def test_every_migration_has_a_description(self) -> None:
         assert all(m.description.strip() for m in MIGRATIONS)
@@ -570,3 +571,81 @@ async def test_m006_leaves_untouched_grants_alone(sp):
 
     row = await sp.get_storage(AgentView).get("agent-clean")
     assert row.tools == ["collections__search"]
+
+
+# ---------------------------------------------------------------------------
+# m012: workspaces own a create-time template snapshot
+# ---------------------------------------------------------------------------
+
+
+async def test_m012_snapshots_the_full_template_on_a_legacy_workspace(sp):
+    from primer.model.workspace import Workspace as LiveWorkspace
+    from primer.storage.migrations.m012_workspace_template_snapshots import (
+        M012WorkspaceTemplateSnapshots,
+        Workspace as WorkspaceView,
+        WorkspaceTemplate as TemplateView,
+    )
+
+    await sp.get_storage(TemplateView).create(
+        TemplateView(
+            id="tpl-legacy",
+            provider_id="local",
+            description="the create-time recipe",
+            backend={"kind": "local"},
+            env={"TOKEN": "secret-value"},
+            files=[],
+            resources={"network": "egress"},
+        )
+    )
+    await sp.get_storage(WorkspaceView).create(
+        WorkspaceView(
+            id="ws-legacy",
+            template_id="tpl-legacy",
+            provider_id="local",
+            created_at="2026-10-21T00:00:00Z",
+            phase="running",
+            runtime_meta={"url": "ws://runtime.test:5959/", "token": "runtime-token"},
+        )
+    )
+
+    await M012WorkspaceTemplateSnapshots().apply(sp)
+
+    row = await sp.get_storage(LiveWorkspace).get("ws-legacy")
+    assert row is not None and row.template_snapshot is not None
+    assert row.template_snapshot.id == "tpl-legacy"
+    assert row.template_snapshot.description == "the create-time recipe"
+    assert row.template_snapshot.env["TOKEN"].get_secret_value() == "secret-value"
+
+
+async def test_m012_keeps_an_existing_snapshot(sp):
+    from primer.model.workspace import Workspace as LiveWorkspace
+    from primer.storage.migrations.m012_workspace_template_snapshots import (
+        M012WorkspaceTemplateSnapshots,
+        Workspace as WorkspaceView,
+        WorkspaceTemplate as TemplateView,
+    )
+
+    old = {
+        "id": "tpl-old", "provider_id": "local", "description": "original",
+        "backend": {"kind": "local"},
+    }
+    await sp.get_storage(TemplateView).create(
+        TemplateView(**{**old, "description": "edited later"})
+    )
+    await sp.get_storage(WorkspaceView).create(
+        WorkspaceView(
+            id="ws-snapshotted",
+            template_id="tpl-old",
+            template_snapshot=old,
+            provider_id="local",
+            created_at="2026-10-21T00:00:00Z",
+            phase="running",
+            runtime_meta={"url": "ws://runtime.test:5959/", "token": "runtime-token"},
+        )
+    )
+
+    await M012WorkspaceTemplateSnapshots().apply(sp)
+
+    row = await sp.get_storage(LiveWorkspace).get("ws-snapshotted")
+    assert row is not None and row.template_snapshot is not None
+    assert row.template_snapshot.description == "original"

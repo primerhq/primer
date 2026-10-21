@@ -141,6 +141,7 @@ def test_unknown_top_level_field_is_left_to_the_renderer() -> None:
         # A kind=url file source carries a MaskedUserinfoUrl since #721, so the list of mounts holds a secret.
         (WorkspaceTemplate, "files"),
         (Workspace, "overrides"),
+        (Workspace, "template_snapshot"),
         (Workspace, "runtime_meta"),
     ],
 )

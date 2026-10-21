@@ -857,6 +857,8 @@ class TestWorkspaceRouter:
         wid = body["id"]
         assert body["template_id"] == "tpl-1"
         assert body["provider_id"] == "local-1"
+        assert body["template_snapshot"]["id"] == "tpl-1"
+        assert body["template_snapshot"]["description"] == _template().description
 
         get = await client.get(f"/v1/workspaces/{wid}")
         assert get.status_code == 200
