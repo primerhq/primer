@@ -2563,7 +2563,7 @@ async def test_t0222_workspace_provider_delete_then_recreate_same_id(
 
 
 # ============================================================================
-# T0223 -- WorkspaceTemplate DELETE while a workspace exists: refused, 409
+# T0223 -- WorkspaceTemplate DELETE while a workspace exists
 # ============================================================================
 
 
@@ -2571,19 +2571,11 @@ async def test_t0222_workspace_provider_delete_then_recreate_same_id(
 async def test_t0223_workspace_template_delete_with_active_workspace(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:
-    """T0223 -- a template a workspace was made from cannot be deleted: 409 ``template_in_use``.
+    """T0223: deleting the source template leaves its workspace usable.
 
-    This test pinned the OPPOSITE until platform revamp plan 08 (lead ruling 6): "Spec section 12 documents WorkspaceTemplate as a snapshot
-    row, so deleting it while a workspace is active must succeed, and the workspace keeps working". That was true of a Local provider only,
-    which never reads the template again. A Docker or Kubernetes workspace is re-attached, on any process that has not cached it, by reading
-    its template (``WorkspaceRegistry.get_workspace`` -> ``backend.get(..., template=...)``), so deleting the template broke that workspace for
-    good, and the router's "they keep working without it" was wrong for them. The delete is now refused for EVERY provider kind, naming the
-    count and up to five workspace ids, the way a provider is refused while a template or a workspace uses it. This journey runs on a Local
-    provider because that is what the e2e server can host; ``tests/api/test_workspace_template_in_use.py`` pins Docker and Kubernetes templates
-    on the real router.
-
-    Companion contracts: the refused delete changes nothing (the template reads back and the workspace still writes and reads files), and the
-    template deletes once the workspace is gone.
+    Every workspace stores the full template it was created from. The source
+    template can therefore be deleted while the workspace exists, and the
+    workspace keeps working from its snapshot.
     """
     provider_id, template_id = await _setup_provider_template(
         client, suffix=unique_suffix, root=tmp_path,
@@ -2596,42 +2588,30 @@ async def test_t0223_workspace_template_delete_with_active_workspace(
         assert ws.status_code == 201, ws.text
         workspace_id = ws.json()["id"]
 
-        # DELETE the template -- refused, with the count and the workspace id
-        refused = await client.delete(f"/v1/workspace_templates/{template_id}")
-        assert refused.status_code == 409, refused.text
-        problem = refused.json()
-        assert problem["extensions"]["error"] == "template_in_use", problem
-        assert problem["extensions"]["count"] == 1, problem
-        assert problem["extensions"]["workspace_ids"] == [workspace_id], problem
-        assert template_id in problem["detail"] and workspace_id in problem["detail"], problem
+        deleted = await client.delete(f"/v1/workspace_templates/{template_id}")
+        assert deleted.status_code == 204, deleted.text
+        gone = await client.get(f"/v1/workspace_templates/{template_id}")
+        assert gone.status_code == 404, gone.text
 
-        # Nothing changed: the template reads back ...
-        kept = await client.get(f"/v1/workspace_templates/{template_id}")
-        assert kept.status_code == 200, kept.text
-
-        # ... and the workspace is still accessible and usable
+        # The workspace is still accessible and usable from its snapshot.
         got = await client.get(f"/v1/workspaces/{workspace_id}")
         assert got.status_code == 200, got.text
+        assert got.json()["template_snapshot"]["id"] == template_id
         put = await client.put(
-            f"/v1/workspaces/{workspace_id}/files?path=after_refused_delete.txt",
+            f"/v1/workspaces/{workspace_id}/files?path=after_template_delete.txt",
             json={"content": "still works", "encoding": "text"},
         )
         assert put.status_code == 204, put.text
         read = await client.get(
             f"/v1/workspaces/{workspace_id}/files/read"
-            f"?path=after_refused_delete.txt",
+            f"?path=after_template_delete.txt",
         )
         assert read.status_code == 200, read.text
         assert read.json().get("content") == "still works"
 
-        # Once the workspace is gone, the template can be deleted
         rmws = await client.delete(f"/v1/workspaces/{workspace_id}")
         assert rmws.status_code == 204, rmws.text
         workspace_id = None
-        rm = await client.delete(f"/v1/workspace_templates/{template_id}")
-        assert rm.status_code == 204, rm.text
-        gone = await client.get(f"/v1/workspace_templates/{template_id}")
-        assert gone.status_code == 404, gone.text
     finally:
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")

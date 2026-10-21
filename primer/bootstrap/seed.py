@@ -145,6 +145,7 @@ async def ensure_default_workspace(
                 id=workspace_id,
                 name=PRIME_WORKSPACE_NAME,
                 template_id=wanted,
+                template_snapshot=template,
                 provider_id=template.provider_id,
                 created_at=datetime.now(timezone.utc),
                 # phase="running" because materialise returned a live

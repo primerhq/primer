@@ -260,19 +260,17 @@ it's called from a context with no implicit session.
   `workspaces::delete_workspace_template` - reusable workspace
   configs. `list_workspace_templates` (and the other list tools) refuse
   an `order_by` on a secret-bearing field (a template's `env`, a
-  workspace's `overrides`, and any field nesting a `SecretStr` or a
-  masked URL) with `type=validation-error`; those fields cannot be a
+  workspace's `overrides` or `template_snapshot`, and any field
+  nesting a `SecretStr` or a masked URL) with
+  `type=validation-error`; those fields cannot be a
   find predicate either, because the row stores them in clear while
-  every read masks them. `delete_workspace_template` is refused while
-  any workspace was made from the template, on every provider kind:
-  the answer is `type=conflict` and the message starts `template_in_use:`,
-  naming how many workspaces use it and the first five workspace ids.
-  A workspace's `template_id` is live, not a snapshot: a Docker or
-  Kubernetes workspace reads the template again whenever it is
-  re-attached, so deleting the template would break that workspace.
-  Delete the workspaces first, then the template (REST answers 409
-  `/errors/conflict` with `extensions.error` `template_in_use` and the
-  same count and ids).
+  every read masks them. Each workspace stores the full template
+  document it was created from in `template_snapshot`; `template_id`
+  is provenance only. Re-attachment reads the snapshot, so editing or
+  deleting the source template does not change or break an existing
+  workspace. `delete_workspace_template` may therefore delete an
+  ordinary template while workspaces made from it still exist. The
+  reserved-template and admin-only-settings delete guards still apply.
 - Some template fields are admin-only: container `extra_mounts`,
   Kubernetes `extra_volumes`, `extra_volume_mounts`, `pod_overrides`,
   `container_security_context_overrides`, `service_account_name` and
@@ -306,10 +304,10 @@ it's called from a context with no implicit session.
   `primer/workspace-runtime:1.1`), `backend.cpu_cores` and
   `backend.memory_bytes`, and has no disk setting. Kubernetes
   (`backend.kind=kubernetes`) takes `backend.image` (required) and
-  `backend.entrypoint`, which should be
-  `["python", "-m", "primer_runtime.server"]` (the command that starts the
-  runtime: with none, the pod runs `sleep infinity` and the runtime never
-  starts); the size in the template's `resources.cpu_cores` and
+  optional `backend.entrypoint`; when it is absent the pod starts
+  `["python", "-m", "primer_runtime.server"]`, while an explicit
+  entrypoint still wins and `backend.args` is appended. The size is in
+  the template's `resources.cpu_cores` and
   `resources.memory_bytes` (requests = limits; the older
   `backend.cpu_request`, `cpu_limit`, `memory_request` and `memory_limit`
   strings are ignored); the disk in `backend.pvc_size` (for example `10Gi`);

@@ -93,6 +93,8 @@ async def test_a_fresh_install_creates_prime_and_records_it(fake_storage_provide
     row = await fake_storage_provider.get_storage(Workspace).get("prime")
     assert row.name == "prime"
     assert row.template_id == RESERVED_LOCAL_WORKSPACE_TEMPLATE
+    assert row.template_snapshot is not None
+    assert row.template_snapshot.id == RESERVED_LOCAL_WORKSPACE_TEMPLATE
     assert row.provider_id == "local"
     assert row.phase == "running"
     assert await _recorded(fake_storage_provider) == "prime"

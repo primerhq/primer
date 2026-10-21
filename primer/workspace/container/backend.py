@@ -322,13 +322,12 @@ class ContainerWorkspaceBackend(BaseWorkspaceBackend):
         cached = False
         try:
             # Lazy re-attach: the sandbox is alive (started by the adapter
-            # if it had stopped). Without a persisted template we cannot
-            # rebuild the SandboxWorkspace wrapper; the caller will see
-            # None and can re-issue the call with the template.
+            # if it had stopped). Without the persisted template snapshot we
+            # cannot rebuild the SandboxWorkspace wrapper.
             if template is None:
                 logger.debug(
                     "ContainerWorkspaceBackend.get: sandbox %r exists but no "
-                    "template supplied for re-attach; returning None",
+                    "template snapshot was supplied; returning None",
                     name,
                 )
                 return None

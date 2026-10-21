@@ -125,7 +125,6 @@ from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 from primer.workspace.env_names import ENV_NAME_PATTERN, MAX_ENV_NAME_LENGTH, RUNTIME_TOKEN_ENV_NAMES
 from primer.workspace.provider_choices import list_provider_choices
 from primer.workspace.reserved import reserved_tree, reserved_tree_for, reserved_trees
-from primer.workspace.template_in_use import TEMPLATE_IN_USE, workspaces_made_from
 from primer.workspace.template_privilege import (
     admin_only_override_fields,
     admin_only_settings_held,
@@ -537,7 +536,8 @@ _ENV_NAME_RULE = (
 
 _CREATE_WORKSPACE_PURPOSE = (
     "Materialise a new Workspace from a template. Looks up the template, asks the matching backend to create the live "
-    "instance, then persists a Workspace row with the assigned id. Optional ``overrides`` layer per-instantiation env "
+    "instance, then persists a Workspace row with the assigned id and a full create-time template snapshot used for re-attachment. "
+    "Optional ``overrides`` layer per-instantiation env "
     "vars / files / init commands on top of the template. "
     "``overrides.resources`` sizes THIS workspace instead of the template: ``cpu_cores`` and ``memory_bytes`` on Kubernetes "
     "and Docker, ``disk_bytes`` on Kubernetes only (it is the PVC size). A Local workspace takes none of the three and "
@@ -566,9 +566,9 @@ _TEMPLATE_FIELDS_BY_PROVIDER = (
     "``backend.cpu_cores`` and ``backend.memory_bytes`` size it, and there is no disk setting. "
     f"A custom image must contain the primer workspace runtime (build it FROM ``{DOCKER_RUNTIME_IMAGE}``); if the runtime does not "
     "answer within 30 seconds ``create_workspace`` fails (REST 503, ``type=backend-error``) with a message that names the image. "
-    "Kubernetes (``backend.kind=kubernetes``): ``backend.image`` is required, and ``backend.entrypoint`` should be "
-    '``["python", "-m", "primer_runtime.server"]``, the command that starts the runtime: with none the pod runs ``sleep infinity`` '
-    "and the runtime never starts. "
+    "Kubernetes (``backend.kind=kubernetes``): ``backend.image`` is required, and ``backend.entrypoint`` is optional: "
+    'with none the pod starts ``["python", "-m", "primer_runtime.server"]``; an explicit entrypoint wins and ``backend.args`` '
+    "is appended. "
     "``resources.cpu_cores`` and ``resources.memory_bytes`` are the pod's requests and limits (the old ``backend.cpu_request``, "
     "``cpu_limit``, ``memory_request`` and ``memory_limit`` are ignored), ``backend.pvc_size`` is the disk (for example ``10Gi``), "
     "and the placement fields are ``node_selector`` (label key to value), ``tolerations`` (``key``, ``operator``, ``value``, "
@@ -1131,12 +1131,9 @@ def build_workspaces_toolset(
     async def _inv_provider(eid: str) -> None:
         await workspace_registry.invalidate(eid)
 
-    # What the REST workspace routers guard (task 01a111d1, D5 phase 1): the reserved bootstrap rows, a provider a template or a
-    # workspace still references, and (lead ruling 6 of plan 08, platform revamp 2026-10) a template a workspace was made from.
-    # A template is not a snapshot: the workspace names it by id and a Docker or Kubernetes workspace reads it again whenever it is
-    # re-attached, so a template deleted under a workspace broke that workspace for good. The template's block is a
-    # ``delete_blockers`` entry rather than a ``ToolReference`` because its answer names the count and the first five workspace ids;
-    # the REST route asks the same function (``primer.workspace.template_in_use``), so the two cannot disagree.
+    # What the REST workspace routers guard (task 01a111d1, D5 phase 1): the reserved bootstrap rows and a provider a template or a
+    # workspace still references. A workspace carries a create-time template snapshot, so its provenance template is not a delete
+    # dependency.
     # Imported here: the registry and the bootstrap defaults import toolsets, so module-level imports would be cycles.
     from primer.api.registries.provider_registry import RESERVED_WORKSPACE_PROVIDER_IDS
     from primer.bootstrap.defaults import RESERVED_WORKSPACE_TEMPLATES
@@ -1154,17 +1151,11 @@ def build_workspaces_toolset(
         ),
     )
 
-    async def _template_in_use_blocker(sp: Any, template: WorkspaceTemplate) -> str | None:
-        """The refusal sentence while a workspace was made from ``template`` (``template_in_use: ...``), else ``None``."""
-        in_use = await workspaces_made_from(sp.get_storage(WorkspaceRow), template.id)
-        return None if in_use is None else f"{TEMPLATE_IN_USE}: {in_use.message}"
-
     template_guards = CrudGuards(
         kind="workspace_template",
         reserved_create_ids=_reserved_templates,
         reserved_update_ids=_reserved_templates,
         reserved_delete_ids=_reserved_templates,
-        delete_blockers=(_template_in_use_blocker,),
     )
 
     # ------------------- Provider CRUD (no update) ---------------------
@@ -1426,17 +1417,13 @@ def build_workspaces_toolset(
     name, entry = _tool(
         "delete_workspace_template",
         (
-            "Delete a WorkspaceTemplate. Refused while any workspace was made from it, on every provider kind: "
-            "the workspace names its template by id and a Docker or Kubernetes workspace reads the template "
-            "again whenever it is re-attached, so deleting it would break that workspace."
+            "Delete a WorkspaceTemplate. Existing workspaces keep their create-time template snapshot and are unaffected."
         ),
         (
             "Use when retiring a recipe; not for destroying a "
-            "materialised workspace (use ``delete_workspace``). While a workspace uses the template the answer is "
-            "``type=conflict`` and the message starts ``template_in_use:``, naming how many workspaces use it and the "
-            "first 5 workspace ids: delete those workspaces first (``delete_workspace``), then delete the template. "
+            "materialised workspace (use ``delete_workspace``). "
             "A template that holds admin-only settings is refused to a non-admin (``type=forbidden``) before this "
-            f"check, and a built-in template ({_reserved_template_names}) is never deletable (``type=forbidden``)."
+            f"delete, and a built-in template ({_reserved_template_names}) is never deletable (``type=forbidden``)."
         ),
         _IdArgs,
         _make_delete_handler(
@@ -1532,6 +1519,7 @@ def build_workspaces_toolset(
             row = WorkspaceRow(
                 id=row_id,
                 template_id=args.template_id,
+                template_snapshot=template,
                 provider_id=template.provider_id,
                 overrides=args.overrides,
                 created_at=datetime.now(timezone.utc),

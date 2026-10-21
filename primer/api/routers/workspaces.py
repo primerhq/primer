@@ -126,7 +126,6 @@ from primer.workspace.diagnostic import (
 from primer.model.user import User
 from primer.model.workspace_refusal import ReservedWorkspaceError
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
-from primer.workspace.template_in_use import workspaces_made_from
 from primer.workspace.template_privilege import (
     admin_only_override_fields,
     admin_only_settings_held,
@@ -680,20 +679,13 @@ def _check_template_privilege(entity: WorkspaceTemplate, existing: WorkspaceTemp
 
 
 async def _workspace_template_pre_delete(existing, request: Request) -> None:
-    """Deleting a template that holds admin-only settings is admin-only too (lead re-review of #473), and a template a workspace was
-    made from cannot be deleted at all (409 ``template_in_use``, lead ruling 6 of plan 08).
-
-    The 403 comes first: a caller who may not touch the template never learns which workspaces use it.
-    """
+    """Deleting a template that holds admin-only settings is admin-only too (lead re-review of #473)."""
     held = admin_only_settings_held(existing)
     if held and not _caller_is_admin(request):
         raise HTTPException(
             status_code=403,
             detail={"error": "forbidden_role", "fields": held, "message": held_refusal_message(held, "delete")},
         )
-    in_use = await workspaces_made_from(_ref_workspace_storage(request), existing.id)
-    if in_use is not None:
-        raise HTTPException(status_code=409, detail=in_use.detail)
 
 
 async def _workspace_template_pre_create(entity, request: Request) -> None:
@@ -717,18 +709,11 @@ template_router = make_crud_router(
     tag="workspace-templates",
     on_pre_create=_workspace_template_pre_create,
     on_pre_update=_workspace_template_pre_update,
-    # 403: a non-admin writing admin-only fields, or updating or deleting a template that holds them. 409 on the delete: a workspace
-    # was made from the template.
+    # 403: a non-admin writing admin-only fields, or updating or deleting a template that holds them.
     extra_create_responses=common_responses(403),
     extra_update_responses=common_responses(403),
-    extra_delete_responses=common_responses(403, 409),
+    extra_delete_responses=common_responses(403),
     on_pre_delete_id=_reject_reserved_workspace_template_delete,
-    # The reference guard is in the hook rather than in ``references=[...]``: its answer names the count and the first five workspace
-    # ids (``template_in_use``), which the generic reference block does not carry, and it must run after the 403 above. A template
-    # is NOT a snapshot: a workspace names it by id and a Docker or Kubernetes workspace reads it again whenever it is re-attached
-    # (``WorkspaceRegistry.get_workspace``), so a template deleted under a workspace broke that workspace for good (lead ruling 6 of
-    # plan 08, platform revamp 2026-10; e2e T0223 used to pin the opposite, for a Local provider, which never reads it again).
-    # The delete tool asks the same function (``primer.workspace.template_in_use``).
     on_pre_delete=_workspace_template_pre_delete,
 )
 
@@ -1013,6 +998,7 @@ async def create_workspace(
             id=row_id,
             name=body.name,
             template_id=body.template_id,
+            template_snapshot=template,
             provider_id=template.provider_id,
             overrides=body.overrides,
             created_at=datetime.now(timezone.utc),

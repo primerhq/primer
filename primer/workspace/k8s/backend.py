@@ -265,7 +265,7 @@ def _build_statefulset_manifest(
     if tcfg.entrypoint is not None:
         base_container["command"] = list(tcfg.entrypoint)
     else:
-        base_container["command"] = ["sleep", "infinity"]
+        base_container["command"] = ["python", "-m", "primer_runtime.server"]
     if tcfg.args is not None:
         base_container["args"] = list(tcfg.args)
     if tcfg.image_pull_policy is not None:
@@ -853,9 +853,8 @@ class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
 
         Called by :meth:`BaseWorkspaceBackend.get` only once the cache
         lookup (with gone-eviction) misses. The StatefulSet may exist from
-        a previous process. We need a template to materialise the
-        SandboxWorkspace wrapper; without one, return None and let the API
-        layer re-issue with the template loaded from storage.
+        a previous process. We need the workspace's template snapshot to
+        materialise the SandboxWorkspace wrapper; without one, return None.
         """
         if template is None:
             return None

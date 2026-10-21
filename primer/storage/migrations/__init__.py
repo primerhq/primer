@@ -57,6 +57,9 @@ from primer.storage.migrations.m010_default_workspace import M010DefaultWorkspac
 from primer.storage.migrations.m011_seeded_agents_core_kit import (
     M011SeededAgentsCoreKit,
 )
+from primer.storage.migrations.m012_workspace_template_snapshots import (
+    M012WorkspaceTemplateSnapshots,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +89,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     M009DockerTemplateRuntimeImage(),
     M010DefaultWorkspace(),
     M011SeededAgentsCoreKit(),
+    M012WorkspaceTemplateSnapshots(),
 )
 
 #: Highest version this build knows how to apply.

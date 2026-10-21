@@ -123,6 +123,22 @@ def test_manifest_carries_image() -> None:
     assert container["image"] == "alpine:latest"
 
 
+def test_manifest_starts_the_runtime_when_the_template_has_no_entrypoint() -> None:
+    container = _pod_spec()["containers"][0]
+
+    assert container["command"] == ["python", "-m", "primer_runtime.server"]
+
+
+def test_manifest_keeps_an_explicit_entrypoint_and_args() -> None:
+    container = _pod_spec(
+        entrypoint=["/opt/custom-runtime"],
+        args=["--listen", "5959"],
+    )["containers"][0]
+
+    assert container["command"] == ["/opt/custom-runtime"]
+    assert container["args"] == ["--listen", "5959"]
+
+
 def test_pod_overrides_deep_merge() -> None:
     cfg = _provider_cfg()
     template = _template(
@@ -152,7 +168,7 @@ def _pod_spec(**template_overrides) -> dict:
 
 
 def test_the_pod_shares_its_process_namespace_so_the_pods_pid_1_reaps_orphans() -> None:
-    """The container ALWAYS gets a ``command`` here (the template's entrypoint, or ``sleep infinity``), and a Kubernetes
+    """The container ALWAYS gets a ``command`` here (the template's entrypoint, or the runtime server), and a Kubernetes
     ``command`` replaces the image's ENTRYPOINT, so the tini baked into the runtime image never runs in a workspace pod.
     With a shared process namespace the pod's pause container is PID 1 and reaps what the command leaves orphaned."""
     assert _pod_spec()["shareProcessNamespace"] is True

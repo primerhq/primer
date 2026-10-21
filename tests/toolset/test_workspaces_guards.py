@@ -7,10 +7,9 @@ reserved ``local`` provider or a provider in use. Pinned here, on a real sqlite 
 
 * a reserved id cannot be created (conflict), updated or deleted (forbidden; the delete holds even when no row exists);
 * a provider referenced by a template or a workspace cannot be deleted (conflict);
-* a template a workspace was made from cannot be deleted (conflict, ``template_in_use``), whichever provider kind it runs on: the workspace
-  names its template and a Docker or Kubernetes workspace reads it again whenever it is re-attached, so a delete used to break it for good
-  (lead ruling 6 of plan 08, platform revamp 2026-10; the REST router refuses the same way). This used to be pinned the other way, as a
-  deliberate non-guard ("a snapshot consumed at materialisation", e2e T0223), which was only true of a Local provider.
+* a template a workspace was made from can be deleted because the workspace
+  keeps the create-time template snapshot used for re-attachment;
+* a template that holds admin-only settings keeps its independent role guard.
 """
 
 from __future__ import annotations
@@ -70,8 +69,10 @@ def _template(template_id: str = "tpl-1", provider_id: str = "local-1") -> Works
 
 
 def _workspace(workspace_id: str = "ws-1", provider_id: str = "local-1", template_id: str = "tpl-1") -> Workspace:
+    template = _template(template_id, provider_id)
     return Workspace(
-        id=workspace_id, template_id=template_id, provider_id=provider_id, created_at=datetime.now(timezone.utc), phase="running",
+        id=workspace_id, template_id=template_id, template_snapshot=template, provider_id=provider_id,
+        created_at=datetime.now(timezone.utc), phase="running",
         runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959/", token=SecretStr("t")),
     )
 
@@ -184,23 +185,22 @@ class TestWorkspaceTemplateGuards:
         assert await sp.get_storage(WorkspaceTemplate).get("tpl-1") is None
 
     @pytest.mark.asyncio
-    async def test_a_template_a_workspace_was_made_from_cannot_be_deleted(self, world) -> None:
-        """Lead ruling 6 of plan 08 (it pinned the OPPOSITE until then, as a deliberate non-guard, together with e2e T0223): the workspace row
-        names its template, and re-attaching a Docker or Kubernetes workspace reads the template again, so the delete is refused."""
+    async def test_a_template_a_workspace_was_made_from_can_be_deleted(self, world) -> None:
         sp, toolset = world
         await sp.get_storage(WorkspaceTemplate).create(_template())
         await sp.get_storage(Workspace).create(_workspace())
 
         is_error, answer = await _call(toolset, "delete_workspace_template", id="tpl-1")
 
-        assert is_error and answer["type"] == "conflict", answer
-        assert answer["message"].startswith("template_in_use: "), answer
-        assert "tpl-1" in answer["message"] and "1 workspace" in answer["message"] and "ws-1" in answer["message"], answer["message"]
-        assert await sp.get_storage(WorkspaceTemplate).get("tpl-1") is not None, "the refused delete took the template away"
+        assert not is_error, answer
+        assert await sp.get_storage(WorkspaceTemplate).get("tpl-1") is None
+        row = await sp.get_storage(Workspace).get("ws-1")
+        assert row is not None and row.template_snapshot is not None
+        assert row.template_snapshot.id == "tpl-1"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("kind", ["local", "container", "kubernetes"])
-    async def test_every_provider_kind_is_guarded_through_the_tools(self, world, kind) -> None:
+    async def test_every_provider_kind_keeps_a_snapshot_through_the_tools(self, world, kind) -> None:
         """The whole path through the tools, on each kind of provider: provider row, template and workspace made by the tools themselves."""
         sp, toolset = world
         providers = {
@@ -229,17 +229,17 @@ class TestWorkspaceTemplateGuards:
         made, made_row = await _call(toolset, "create_workspace", id="ws-made", template_id="tpl-kind")
         assert not (created or made), made_row
 
-        refused, answer = await _call(toolset, "delete_workspace_template", id="tpl-kind")
-        assert refused and answer["type"] == "conflict" and "template_in_use" in answer["message"] and "ws-made" in answer["message"], answer
-        assert await sp.get_storage(WorkspaceTemplate).get("tpl-kind") is not None
-
-        assert not (await _call(toolset, "delete_workspace", id="ws-made"))[0]
-        freed, _ = await _call(toolset, "delete_workspace_template", id="tpl-kind")
-        assert not freed
+        delete_error, answer = await _call(
+            toolset, "delete_workspace_template", id="tpl-kind",
+        )
+        assert not delete_error, answer
         assert await sp.get_storage(WorkspaceTemplate).get("tpl-kind") is None
+        workspace = await sp.get_storage(Workspace).get("ws-made")
+        assert workspace is not None and workspace.template_snapshot is not None
+        assert workspace.template_snapshot.id == "tpl-kind"
 
     @pytest.mark.asyncio
-    async def test_the_refusal_names_the_count_and_up_to_five_ids(self, world) -> None:
+    async def test_many_workspaces_do_not_block_template_deletion(self, world) -> None:
         sp, toolset = world
         await sp.get_storage(WorkspaceTemplate).create(_template())
         for n in (7, 3, 5, 1, 6, 2, 4):
@@ -247,9 +247,8 @@ class TestWorkspaceTemplateGuards:
 
         is_error, answer = await _call(toolset, "delete_workspace_template", id="tpl-1")
 
-        assert is_error and answer["type"] == "conflict"
-        assert "7 workspaces" in answer["message"] and "first 5: ws-1, ws-2, ws-3, ws-4, ws-5" in answer["message"], answer["message"]
-        assert "ws-6" not in answer["message"] and "ws-7" not in answer["message"]
+        assert not is_error, answer
+        assert await sp.get_storage(WorkspaceTemplate).get("tpl-1") is None
 
     @pytest.mark.asyncio
     async def test_a_workspace_made_from_another_template_does_not_block(self, world) -> None:
@@ -264,7 +263,7 @@ class TestWorkspaceTemplateGuards:
 
     @pytest.mark.asyncio
     async def test_editing_a_template_a_workspace_uses_is_not_blocked(self, world) -> None:
-        """Only the delete is guarded."""
+        """Editing the source template does not change the stored snapshot."""
         sp, toolset = world
         await sp.get_storage(WorkspaceTemplate).create(_template())
         await sp.get_storage(Workspace).create(_workspace())
@@ -275,10 +274,12 @@ class TestWorkspaceTemplateGuards:
 
         assert not is_error, answer
         assert (await sp.get_storage(WorkspaceTemplate).get("tpl-1")).description == "edited while in use"
+        row = await sp.get_storage(Workspace).get("ws-1")
+        assert row is not None and row.template_snapshot is not None
+        assert row.template_snapshot.description == "dev"
 
     @pytest.mark.asyncio
-    async def test_a_caller_who_may_not_delete_the_template_is_told_so_before_the_workspaces(self, world) -> None:
-        """Forbidden first, as on REST: a caller below admin never learns which workspaces use a template they may not touch."""
+    async def test_admin_only_settings_still_guard_template_deletion(self, world) -> None:
         sp, toolset = world
         held = WorkspaceTemplate.model_validate({
             **_template_body(), "id": "tpl-held", "files": [{"path": "creds", "source": {"kind": "secret", "name": "OPENAI_API_KEY"}}],
@@ -290,7 +291,8 @@ class TestWorkspaceTemplateGuards:
         admin_error, admin_answer = await _call(toolset, "delete_workspace_template", ctx=_ctx("admin"), id="tpl-held")
 
         assert user_error and user_answer["type"] == "forbidden" and "ws-secret-user" not in user_answer["message"], user_answer
-        assert admin_error and admin_answer["type"] == "conflict" and "ws-secret-user" in admin_answer["message"], admin_answer
+        assert not admin_error, admin_answer
+        assert await sp.get_storage(WorkspaceTemplate).get("tpl-held") is None
 
     @pytest.mark.asyncio
     async def test_create_workspace_rejects_an_id_that_fails_the_id_rule(self, world) -> None:

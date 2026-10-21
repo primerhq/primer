@@ -291,6 +291,7 @@ async def test_a_legacy_id_reattaches_through_the_registry_path_that_requests_us
     row = Workspace(
         id="LegacyWS",
         template_id="dev",
+        template_snapshot=_template(),
         provider_id="local-1",
         created_at=datetime.now(timezone.utc),
         runtime_meta=WorkspaceRuntimeMeta(url="ws://localhost:1", token=SecretStr("t")),

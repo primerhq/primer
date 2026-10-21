@@ -201,9 +201,9 @@ class WorkspaceRegistry:
         """Resolve the live :class:`Workspace` handle.
 
         After a process restart the backend may have an empty in-memory
-        cache. We load the persisted template and pass it to
-        ``backend.get`` so Container/K8s backends can re-attach to the
-        long-lived sandbox they materialised on a previous boot.
+        cache. We pass the workspace's create-time template snapshot to
+        ``backend.get`` so every backend can re-attach without consulting
+        a template row that may since have changed or been deleted.
         """
         row = await self.get_workspace_row(workspace_id)
         try:
@@ -211,10 +211,7 @@ class WorkspaceRegistry:
         except WorkspaceRefusedError as exc:
             # The gate only sees a provider; say which workspace the caller was resolving.
             raise exc.for_workspace(workspace_id) from None
-        template = await self._sp.get_storage(WorkspaceTemplate).get(
-            row.template_id,
-        )
-        ws = await backend.get(workspace_id, template=template)
+        ws = await backend.get(workspace_id, template=row.template_snapshot)
         if ws is None:
             raise NotFoundError(
                 f"Workspace {workspace_id!r} row exists but the backend "

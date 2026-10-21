@@ -157,12 +157,12 @@ def test_template_tools_carry_the_runtime_requirement_the_503_and_the_caps(tools
 
 
 @pytest.mark.parametrize("name", _TEMPLATE_TOOLS)
-def test_template_tools_tell_a_kubernetes_author_to_set_the_entrypoint(tools, name) -> None:
-    """With no ``backend.entrypoint`` the pod runs ``sleep infinity`` and the runtime never starts (plan 08 ruling 7: the default stays a ticket)."""
+def test_template_tools_describe_the_kubernetes_runtime_default(tools, name) -> None:
     d = tools[name].description
 
     assert "backend.entrypoint" in d and '["python", "-m", "primer_runtime.server"]' in d
-    assert "sleep infinity" in d and "the runtime never starts" in d
+    assert "with none the pod starts" in d and "explicit entrypoint wins" in d
+    assert "backend.args" in d and "is appended" in d
 
 
 @pytest.mark.parametrize("name", _TEMPLATE_TOOLS)
