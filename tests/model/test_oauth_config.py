@@ -15,11 +15,13 @@ from primer.model.provider import HttpConfig, OAuthConfig
 def test_defaults():
     c = OAuthConfig()
     assert (c.grant, c.scopes, c.token_endpoint, c.static_client, c.resource_uri, c.client_name) == ("authorization_code", [], None, None, None, "primer")
-    assert c.redirect_uri is None
+    assert not hasattr(c, "redirect_uri")
 
 
-def test_the_redirect_uri_is_optional_and_kept_when_given():
-    assert str(OAuthConfig(redirect_uri="https://p.example/cb").redirect_uri) == "https://p.example/cb"
+def test_the_retired_keys_are_ignored_when_an_old_row_loads():
+    c = OAuthConfig.model_validate({"redirect_uri": "https://p.example/cb", "spec_version": "2025-03-26"})
+    assert not hasattr(c, "redirect_uri")
+    assert not hasattr(c, "spec_version")
 
 
 def test_the_grant_is_one_of_the_two_sign_ins():
@@ -75,8 +77,14 @@ def test_an_old_row_still_loads():
     assert h.oauth.grant == "authorization_code" and h.oauth.scopes == ["a"]
 
 
-def test_a_row_with_the_old_required_redirect_uri_round_trips_unchanged():
-    row = {"url": "https://m.example/mcp", "oauth": {"redirect_uri": "https://p.example/cb", "scopes": [], "client_name": "primer-x"}}
+def test_a_row_with_the_old_required_redirect_uri_round_trips_without_the_retired_key():
+    row = {
+        "url": "https://m.example/mcp",
+        "oauth": {"redirect_uri": "https://p.example/cb", "grant": "authorization_code", "scopes": [], "client_name": "primer-x"},
+    }
     h = HttpConfig.model_validate(row)
     again = HttpConfig.model_validate(h.model_dump(mode="json"))
-    assert str(again.oauth.redirect_uri) == "https://p.example/cb" and again.oauth.client_name == "primer-x"
+    assert again.oauth.grant == "authorization_code"
+    assert again.oauth.scopes == []
+    assert again.oauth.client_name == "primer-x"
+    assert not hasattr(again.oauth, "redirect_uri")
