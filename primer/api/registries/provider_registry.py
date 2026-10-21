@@ -35,6 +35,7 @@ from primer.model.provider import (
 if TYPE_CHECKING:
     from primer.int.storage_provider import StorageProvider
     from primer.llm.aggregated import AggregatedLLM
+    from primer.toolset.oauth.service import ToolsetOAuthService
 
 
 logger = logging.getLogger(__name__)
@@ -251,6 +252,7 @@ RESERVED_WORKSPACE_PROVIDER_IDS: frozenset[str] = frozenset({"local"})
 def _build_default_toolset_factory(
     *,
     allowed_stdio_commands: frozenset[str] | None = None,
+    oauth: "ToolsetOAuthService | None" = None,
 ) -> Callable[[Toolset], ToolsetProvider]:
     """Build the default ``toolset_factory`` closure.
 
@@ -267,6 +269,7 @@ def _build_default_toolset_factory(
             return McpToolsetProvider(
                 toolset_id=toolset.id,
                 config=toolset.config,
+                oauth=oauth,
                 allowed_stdio_commands=allowed_stdio_commands,
             )
         if toolset.provider == ToolsetProviderType.PYTHON:

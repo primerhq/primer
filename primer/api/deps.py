@@ -431,6 +431,17 @@ def get_event_bus(request: Request) -> "EventBus":
     return bus
 
 
+def get_mcp_oauth(request: Request):
+    """Resolve the process-wide MCP toolset OAuth service."""
+    service = getattr(request.app.state, "mcp_oauth", None)
+    if service is None:
+        raise ConfigError(
+            "MCP OAuth service not on app.state; the lifespan handler "
+            "(or create_test_app) must build one."
+        )
+    return service
+
+
 def get_worker_pool(request: Request) -> "WorkerPool":
     """Resolve the live :class:`WorkerPool`.
 

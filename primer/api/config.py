@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import (
@@ -218,6 +219,30 @@ class AppConfig(BaseSettings):
     # --- HTTP server -----------------------------------------------------
     host: str = Field(default="0.0.0.0", description="Bind host for uvicorn.")
     port: int = Field(default=8000, description="Bind port for uvicorn.")
+    public_url: str | None = Field(
+        default=None,
+        description=(
+            "Public base URL for callbacks, such as https://primer.example.com. "
+            "When unset, request-derived URLs are used where safe. Env: PRIMER_PUBLIC_URL."
+        ),
+    )
+
+    @field_validator("public_url")
+    @classmethod
+    def _validate_public_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parts = urlsplit(value)
+        if (
+            parts.scheme.lower() not in ("http", "https")
+            or not parts.hostname
+            or "?" in value
+            or "#" in value
+        ):
+            raise ValueError(
+                "public_url must be an absolute http(s) URL without a query or fragment, e.g. https://primer.example.com"
+            )
+        return value.removesuffix("/")
 
     # --- Documentation site ----------------------------------------------
     docs_url: str = Field(
