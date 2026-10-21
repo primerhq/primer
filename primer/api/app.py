@@ -227,6 +227,7 @@ def create_test_app(
             # Same sharing invariant as the real lifespan (01a06610).
             approval_resolver=_test_approval_resolver,
             artifact_storage_registry=_test_artifact_registry,
+            mcp_oauth=mcp_oauth,
         )
     if workspaces_toolset is None:
         # The test factory builds its scheduler/event_bus/claim_engine
