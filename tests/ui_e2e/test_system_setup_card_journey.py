@@ -90,7 +90,7 @@ def test_re_run_seed_reports_errors_as_errors(page: Page, console_url: str) -> N
     page.get_by_test_id("nv-sys-setup-menu-btn").click()
     page.get_by_test_id("nv-sys-setup-rerun-seed").click()
 
-    toast = page.locator(".nv-toasts-alert")
+    toast = page.get_by_test_id("nv-toasts-alert")
     expect(toast).to_contain_text("Seed finished with errors", timeout=15_000)
 
 
