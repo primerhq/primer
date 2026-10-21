@@ -11,10 +11,9 @@ Three properties matter more than the plumbing:
   ``{{ x }}`` in the file would be evaluated, or fail the render. :func:`jinja_literal` escapes every ``{``, so
   the text reaches the model as written.
 * **Bounded.** The file counts at most :data:`AGENTS_MD_MAX_BYTES` bytes; a longer one is cut and says so. The
-  read itself is bounded too: a file over :data:`AGENTS_MD_READ_LIMIT_BYTES` is not read at all, and a read that
-  takes longer than :data:`AGENTS_MD_READ_TIMEOUT_S` is given up on, because the file is the workspace's and
-  anything that can write there can put a FIFO (the container runtime's ``open()`` blocks on it for good) or a
-  huge file at that name.
+  read itself is bounded too: a file over :data:`AGENTS_MD_READ_LIMIT_BYTES` is not read at all, sandbox reads
+  refuse a FIFO from its stat metadata before opening it, and a read that takes longer than
+  :data:`AGENTS_MD_READ_TIMEOUT_S` is given up on as a backstop for a stuck mount or backend.
 * **Never fatal.** A missing file is normal (``None``, no log); an unreadable one (a directory, a read error, a
   file too large or too slow to read) logs one warning and is skipped. A turn must run whatever the file is.
 
@@ -77,8 +76,9 @@ async def load_workspace_instructions(workspace: Any) -> str | None:
         except NotFoundError:
             continue
         except TimeoutError as exc:
-            # A FIFO makes a container runtime's read block in open() for good, and that thread cannot be cancelled:
-            # stop waiting for it. (A TimeoutError the backend raised itself keeps its own words.)
+            # Sandbox reads refuse FIFOs before opening them. Other stuck mounts or backends can still outlast the
+            # caller, and a runtime thread already blocked in I/O cannot be cancelled, so stop waiting for it.
+            # A TimeoutError the backend raised itself keeps its own words.
             _skip(workspace, name, str(exc) or f"the read did not finish within {AGENTS_MD_READ_TIMEOUT_S:g} seconds")
             return None
         except Exception as exc:  # noqa: BLE001 - an unreadable file must never fail the turn

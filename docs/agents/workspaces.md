@@ -135,7 +135,8 @@ started with `system::invoke_agent`.
   instructions, and a file with nothing in it adds nothing. A file that
   cannot be read (`agents.md` is a directory, the file is over 1 MiB,
   the read fails, or it takes longer than 5 seconds) is skipped with a
-  warning in the server log, and the turn runs without it.
+  warning in the server log, and the turn runs without it. A FIFO (named
+  pipe) is refused before it is opened, so it cannot pin a runtime thread.
 - **One file, at the root.** There is no per-user file and no file in a
   sub-folder.
 - **However it got there.** Primer does not care who put the file at the

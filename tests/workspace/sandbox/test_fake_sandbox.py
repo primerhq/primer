@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import io
+import os
+import stat
 import tarfile
 from pathlib import Path
 
@@ -56,6 +58,18 @@ async def test_stat_file(tmp_path: Path) -> None:
     assert info is not None
     assert info.kind == "file"
     assert info.size_bytes == 5
+
+
+@pytest.mark.asyncio
+async def test_stat_fifo_preserves_file_type_bits(tmp_path: Path) -> None:
+    os.mkfifo(tmp_path / "events")
+    sb = FakeSandbox(root=tmp_path)
+
+    info = await sb.stat("/workspace/events")
+
+    assert info is not None
+    assert info.kind == "file"
+    assert stat.S_ISFIFO(info.mode)
 
 
 @pytest.mark.asyncio

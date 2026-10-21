@@ -302,7 +302,7 @@ class FakeSandbox(Sandbox):
             path=rel,
             kind=kind,  # type: ignore[arg-type]
             size_bytes=st.st_size if kind == "file" else 0,
-            mode=st.st_mode & 0o7777,
+            mode=st.st_mode,
             modified_at=datetime.fromtimestamp(st.st_mtime, tz=timezone.utc),
         )
 
