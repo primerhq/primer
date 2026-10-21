@@ -340,6 +340,13 @@ and allowing the call to proceed. The Responses API accepts forced tool choices
 with reasoning, and OpenRouter defines them independently of its `reasoning`
 object, so `openresponses` and `openrouter` leave the caller's choice unchanged.
 
+**OpenAI Chat Completions: reasoning sampling.** When `reasoning_effort` is
+present and not `none`, real OpenAI refuses `temperature`, `top_p` and
+`top_k`. The `openchat` adapter drops those knobs and logs the adjustment
+once per provider and model. This includes compaction's `temperature: 0.0`.
+Reasoning-off calls, self-hosted `openchat`, OpenAI Responses and OpenRouter
+keep their sampling knobs unchanged.
+
 **Anthropic: the rest of the request.** Thinking has rules the call's other
 settings can break, so `_fit_thinking` and `_fit_sampling` in
 `primer/llm/anthropic.py` make such a request valid instead of letting it

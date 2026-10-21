@@ -420,6 +420,7 @@ from pydantic import BaseModel as PydanticBaseModel
 from primer.llm.openchat import (
     _build_sampling_params,
     _extract_extended_kwargs,
+    _fit_reasoning_sampling,
     _response_format_to_param,
 )
 
@@ -455,6 +456,22 @@ class TestSampling:
         assert _build_sampling_params(
             temperature=None, top_p=None, max_output_tokens=None, stop=None,
         ) == {}
+
+    def test_reasoning_fit_drops_top_k_and_logs_once(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.DEBUG, logger="primer.llm.openchat")
+        for _ in range(2):
+            request = {"reasoning_effort": "low", "top_k": 20}
+            _fit_reasoning_sampling(
+                request,
+                flavor=OpenChatFlavor.OPENAI,
+                provider_id="sampling-unit",
+                model="o3",
+            )
+            assert "top_k" not in request
+        hits = [r for r in caplog.records if "top_k" in r.getMessage()]
+        assert len(hits) == 1
 
 
 class TestExtendedKwargs:
@@ -1072,6 +1089,83 @@ class TestStream:
         assert len(kwargs["tools"]) == 1
         assert kwargs["tools"][0]["function"]["name"] == "search"
         assert kwargs["tool_choice"] == "auto"
+
+    async def test_openai_reasoning_drops_sampling_knobs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = OpenChatLLM(_make_provider())
+        client = _patched_client(monkeypatch)
+        client.chat.completions.create.return_value = _aiter(_simple_text_chunk_seq())
+
+        async for _ in llm.stream(
+            model="o3",
+            messages=[Message(role="user", parts=[TextPart(text="hi")])],
+            temperature=0.0,
+            top_p=0.9,
+            extended=llm.profile_extended(
+                ModelProfileConfig(
+                    reasoning=ReasoningLevel.LOW,
+                    extended={"top_k": 20},
+                ),
+                model="o3",
+            ),
+        ):
+            pass
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["reasoning_effort"] == "low"
+        assert "temperature" not in kwargs
+        assert "top_p" not in kwargs
+        assert "top_k" not in kwargs
+
+    async def test_openai_reasoning_off_keeps_sampling_knobs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = OpenChatLLM(_make_provider())
+        client = _patched_client(monkeypatch)
+        client.chat.completions.create.return_value = _aiter(_simple_text_chunk_seq())
+
+        async for _ in llm.stream(
+            model="gpt-5.1",
+            messages=[Message(role="user", parts=[TextPart(text="hi")])],
+            temperature=0.0,
+            top_p=0.9,
+            extended=llm.profile_extended(
+                ModelProfileConfig(reasoning=ReasoningLevel.OFF),
+                model="gpt-5.1",
+            ),
+        ):
+            pass
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["reasoning_effort"] == "none"
+        assert kwargs["temperature"] == 0.0
+        assert kwargs["top_p"] == 0.9
+
+    async def test_self_hosted_reasoning_keeps_sampling_knobs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = OpenChatLLM(_make_provider(flavor=OpenChatFlavor.VLLM))
+        client = _patched_client(monkeypatch)
+        client.chat.completions.create.return_value = _aiter(_simple_text_chunk_seq())
+
+        async for _ in llm.stream(
+            model="qwen3",
+            messages=[Message(role="user", parts=[TextPart(text="hi")])],
+            temperature=0.0,
+            top_p=0.9,
+            extended=llm.profile_extended(
+                ModelProfileConfig(reasoning=ReasoningLevel.HIGH), model="qwen3"
+            ),
+        ):
+            pass
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["temperature"] == 0.0
+        assert kwargs["top_p"] == 0.9
+        assert kwargs["extra_body"] == {
+            "chat_template_kwargs": {"enable_thinking": True}
+        }
 
     @pytest.mark.parametrize("forced_choice", ["required", "search"])
     async def test_openai_reasoning_downgrades_forced_tool_choice(

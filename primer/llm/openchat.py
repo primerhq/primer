@@ -81,13 +81,20 @@ def _extract_extended_kwargs(extended: dict[str, Any] | None) -> dict[str, Any]:
     )
 
 
+def _is_openai_reasoning_request(
+    request: dict[str, Any], *, flavor: OpenChatFlavor,
+) -> bool:
+    return (
+        flavor is OpenChatFlavor.OPENAI
+        and request.get("reasoning_effort") not in (None, "none")
+    )
+
+
 def _fit_reasoning_tool_choice(
     request: dict[str, Any], *, flavor: OpenChatFlavor, provider_id: str, model: str,
 ) -> None:
     """Use the strongest tool choice OpenAI Chat Completions accepts with reasoning."""
-    if flavor is not OpenChatFlavor.OPENAI:
-        return
-    if request.get("reasoning_effort") in (None, "none"):
+    if not _is_openai_reasoning_request(request, flavor=flavor):
         return
     choice = request.get("tool_choice")
     if choice != "required" and not isinstance(choice, dict):
@@ -102,6 +109,28 @@ def _fit_reasoning_tool_choice(
         log=logger,
     )
 
+
+def _fit_reasoning_sampling(
+    request: dict[str, Any], *, flavor: OpenChatFlavor, provider_id: str, model: str,
+) -> None:
+    """Drop, in place, sampling knobs OpenAI Chat Completions reasoning refuses."""
+    if not _is_openai_reasoning_request(request, flavor=flavor):
+        return
+    dropped = [
+        key for key in ("temperature", "top_p", "top_k") if key in request
+    ]
+    for key in dropped:
+        del request[key]
+    if dropped:
+        debug_once(
+            ("openchat-reasoning-sampling", provider_id, model, ",".join(dropped)),
+            "OpenChat provider %s: OpenAI model %s does not take %s while "
+            "reasoning is enabled; dropped",
+            provider_id,
+            model,
+            ", ".join(dropped),
+            log=logger,
+        )
 
 @dataclass(frozen=True)
 class _FlavorPolicy:
@@ -276,6 +305,12 @@ class OpenChatLLM(LLM):
         if rf_param is not None:
             request["response_format"] = rf_param
         request.update(_extract_extended_kwargs(extended))
+        _fit_reasoning_sampling(
+            request,
+            flavor=self._config.flavor,
+            provider_id=self._provider.id,
+            model=model,
+        )
         _fit_reasoning_tool_choice(
             request,
             flavor=self._config.flavor,

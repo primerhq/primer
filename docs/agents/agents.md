@@ -315,6 +315,11 @@ Chat Completions rejects `required` or a named `tool_choice` while reasoning
 is on, so primer sends `auto` for that call. OpenAI Responses and OpenRouter
 keep the forced choice because those wires accept it with reasoning.
 
+On real OpenAI Chat Completions, primer omits `temperature`, `top_p` and
+`top_k` while a profile's reasoning is on because that wire refuses the
+combination. Reasoning-off calls, self-hosted OpenAI-compatible servers,
+OpenAI Responses and OpenRouter keep those sampling settings.
+
 - `system::create_model_profile`, `system::get_model_profile`,
   `system::list_model_profiles`, `system::find_model_profiles`,
   `system::update_model_profile`, `system::delete_model_profile` - admin

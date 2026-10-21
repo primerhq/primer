@@ -308,8 +308,10 @@ class TestStream:
         finally:
             await llm.aclose()
 
-    async def test_reasoning_keeps_required_tool_choice(self, wire: _Wire) -> None:
-        """OpenRouter accepts required tool choice beside its reasoning object."""
+    async def test_reasoning_keeps_forced_choice_and_sampling_knobs(
+        self, wire: _Wire
+    ) -> None:
+        """OpenRouter accepts these settings beside its reasoning object."""
         wire.respond(
             200,
             content=b"data: [DONE]\n\n",
@@ -321,6 +323,8 @@ class TestStream:
                 model="openai/o3",
                 messages=[Message(role="user", parts=[TextPart(text="hi")])],
                 tool_choice="required",
+                temperature=0.0,
+                top_p=0.9,
                 extended=llm.profile_extended(
                     ModelProfileConfig(reasoning=ReasoningLevel.HIGH),
                     model="openai/o3",
@@ -330,6 +334,8 @@ class TestStream:
             body = json.loads(wire.last.content)
             assert body["reasoning"] == {"effort": "high"}
             assert body["tool_choice"] == "required"
+            assert body["temperature"] == 0.0
+            assert body["top_p"] == 0.9
         finally:
             await llm.aclose()
 

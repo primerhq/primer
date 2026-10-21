@@ -1315,6 +1315,31 @@ class TestStream:
         assert kwargs["parallel_tool_calls"] is False
         assert "frobnicate" not in kwargs
 
+    async def test_reasoning_keeps_sampling_knobs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = OpenResponsesLLM(_make_provider())
+        client = _patched_client(monkeypatch)
+        client.responses.create.return_value = _aiter(
+            [NS(type="response.completed", response=NS(usage=None))]
+        )
+
+        async for _ in llm.stream(
+            model="o3",
+            messages=[Message(role="user", parts=[TextPart(text="hi")])],
+            temperature=0.0,
+            top_p=0.9,
+            extended=llm.profile_extended(
+                ModelProfileConfig(reasoning=ReasoningLevel.LOW), model="o3"
+            ),
+        ):
+            pass
+
+        kwargs = client.responses.create.call_args.kwargs
+        assert kwargs["reasoning"] == {"effort": "low"}
+        assert kwargs["temperature"] == 0.0
+        assert kwargs["top_p"] == 0.9
+
 
 class TestExceptionWrapping:
     async def test_pre_stream_exception_re_raised_as_primer(
