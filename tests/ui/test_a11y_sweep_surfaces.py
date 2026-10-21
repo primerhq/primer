@@ -86,14 +86,15 @@ def test_a_page_with_no_form_says_why() -> None:
 
 
 def test_the_system_views_that_open_a_create_form_are_swept_through_it() -> None:
-    """The reviewer's list (B2'): Create user, Add provider (SSO) and, through the embedded token page, Create token."""
+    """The reviewer's list (B2'): Create user, + API key (API keys), Add provider (SSO) and, through the embedded token page, + API key."""
     assert surfaces.SYSTEM_FORMS == {
         "users": [surfaces.Form("Create user", surfaces.MODAL)],
+        "apikeys": [surfaces.Form("+ API key", surfaces.MODAL)],
         "sso": [surfaces.Form("Add provider", surfaces.MODAL)],
-        "profile": [surfaces.Form("Create token", surfaces.MODAL)],
+        "profile": [surfaces.Form("+ API key", surfaces.MODAL)],
     }
-    for view, button in (("users", "Create user"), ("sso", "Add provider"), ("profile", "Create token")):
-        page = {"users": "admin_users.jsx", "sso": "sso_admin.jsx", "profile": "api_tokens.jsx"}[view]
+    for view, button in (("users", "Create user"), ("apikeys", "+ API key"), ("sso", "Add provider"), ("profile", "+ API key")):
+        page = {"users": "admin_users.jsx", "apikeys": "api_tokens.jsx", "sso": "sso_admin.jsx", "profile": "api_tokens.jsx"}[view]
         assert button in (ROOT / "ui" / "components" / page).read_text(encoding="utf-8"), (view, button)
 
 
@@ -129,7 +130,7 @@ def test_the_artifact_storage_page_is_swept_through_its_register_menu_and_no_pag
     assert surfaces.LEGACY_FORMS["providers/artifact_storage"] == [surfaces.Form("Register provider", surfaces.MODAL, surfaces.KIND_MENU_ITEM)]
     assert "overlay-page providers/artifact_storage" not in surfaces.NO_FORM
     assert "overlay-page providers/artifact_storage / Register provider" in surfaces.expected_surfaces(7)
-    assert len(surfaces.expected_surfaces(7)) == 101   # the Platform profiles page has one form again: + Aggregate (Platform revamp, design 7.1), not New profile; Workspaces, Workspace templates and Setup left the swept views (Task 7); the workers and health overlay pages left with the workers overlay (Revamp 10 Task 5, D4); the model-profiles overlay page left with the catalog's profiles panel (Revamp 02 Task 8; design 7 and B5, profiles live on the LLM Profiles page)
+    assert len(surfaces.expected_surfaces(7)) == 102   # the Platform profiles page has one form again: + Aggregate (Platform revamp, design 7.1), not New profile; Workspaces, Workspace templates and Setup left the swept views (Task 7); the workers and health overlay pages left with the workers overlay (Revamp 10 Task 5, D4); the model-profiles overlay page left with the catalog's profiles panel (Revamp 02 Task 8; design 7 and B5, profiles live on the LLM Profiles page); System > API keys gained + API key (Revamp 10 Task 6, D5)
 
 
 def test_every_platform_create_button_the_console_draws_has_a_form_entry() -> None:

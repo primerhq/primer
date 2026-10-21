@@ -1,10 +1,10 @@
-/* global React, Icon, Btn, Modal, Banner */
+/* global React, Icon, Btn, Modal, Banner, PK_PageHeader, PK_usePagedFilter */
 // API tokens console page (Spec §8).
 //
 // Prefix AT_ to avoid global name collisions with other components.
 //
 // Reads/writes the /v1/auth/tokens CRUD endpoints shipped in commit
-// d7e6755. POST /v1/auth/tokens is the ONLY place plaintext appears —
+// d7e6755. POST /v1/auth/tokens is the ONLY place plaintext appears:
 // the create flow surfaces a "copy this now, you won't see it again"
 // one-time view dialog before refreshing the list.
 
@@ -12,13 +12,15 @@
 // Constants
 // ============================================================================
 
+const AT_PAGE_SIZE = 20;
+
 // Scopes are validated server-side against a known allowlist (Spec §6).
 // v1 ships with a single scope; the checkbox list is intentionally tiny.
 const AT_SCOPE_OPTIONS = [
   {
     value: "mcp",
     label: "mcp",
-    description: "Allow the token to call the MCP bridge endpoints.",
+    description: "Allow the key to call the MCP bridge endpoints.",
   },
 ];
 
@@ -26,10 +28,34 @@ const AT_SCOPE_OPTIONS = [
 // Helpers
 // ============================================================================
 
-// Relative-time formatter — "in 2h" / "5m ago" / "—" for null. Matches
+function AT_countText(n) {
+  const count = Number(n) || 0;
+  return count === 1 ? "1 API key" : `${count} API keys`;
+}
+
+function AT_filterText(token) {
+  if (!token) return "";
+  const name = token.name || "";
+  const prefix = token.prefix || "";
+  const owner = token._ownerName || token._ownerId || "";
+  const scopes = Array.isArray(token.scopes) ? token.scopes.join(" ") : "";
+  const status = AT_statusOf(token);
+  return [name, prefix, owner, scopes, status].filter(Boolean).join(" ");
+}
+
+function AT_ownerText(token, username) {
+  if (!token) return "-";
+  const owner = token._ownerName || token._ownerId || "-";
+  if (owner !== "-" && username && owner === username) {
+    return `${owner} (you)`;
+  }
+  return owner;
+}
+
+// Relative-time formatter: "in 2h" / "5m ago" / "-" for null. Matches
 // the formatter used by triggers.jsx so the look is consistent.
 function AT_relTime(iso) {
-  if (!iso) return "—";
+  if (!iso) return "-";
   const t = typeof iso === "string" ? Date.parse(iso) : (iso instanceof Date ? iso.getTime() : NaN);
   if (!Number.isFinite(t)) return iso;
   const diffMs = t - Date.now();
@@ -68,21 +94,19 @@ function AT_extractError(err) {
 }
 
 // ============================================================================
-// AT_ApiTokensPage — top-level list view + create entry point
+// AT_ApiTokensPage: top-level list view + create entry point
 //
-// mode: "personal" (default, unchanged) — GET/POST/DELETE /auth/tokens,
-// the caller's own tokens only. mode="admin" — the System API-keys page
-// (R5 ruling: this is the admin ALL-USERS token table now; personal
-// tokens moved to Profile, see NV_SysProfile). No flat "every token"
-// backend route exists (admin_tokens.py is per-user: GET/DELETE
-// /admin/users/{user_id}/tokens[/{id}]), so admin mode fans out GET
-// /admin/users -> GET .../tokens per user and flattens client-side,
-// tagging each row with its owner. No create in admin mode — minting is
-// inherently self-service (an admin cannot mint a token AS someone
-// else); Revoke uses the per-user admin route instead of /auth/tokens.
+// mode: "personal" (default) - GET/POST/DELETE /auth/tokens, the caller's own
+// keys only. mode="admin" - the System API-keys page (R5 ruling: this is the
+// admin ALL-USERS token table now; personal tokens moved to Profile, see
+// NV_SysProfile). No flat "every token" backend route exists (admin_tokens.py
+// is per-user: GET/DELETE /admin/users/{user_id}/tokens[/{id}]), so admin mode
+// fans out GET /admin/users -> GET .../tokens per user and flattens client-side,
+// tagging each row with its owner. Both modes provide + API key in the kit
+// header, minting for the signed-in user.
 // ============================================================================
 
-function AT_ApiTokensPage({ mode }) {
+function AT_ApiTokensPage({ mode, username }) {
   const isAdmin = mode === "admin";
   const { useResource, apiFetch } = window.primerApi;
   const [createOpen, setCreateOpen] = React.useState(false);
@@ -112,36 +136,57 @@ function AT_ApiTokensPage({ mode }) {
   );
 
   const items = list.data?.items ?? [];
+  const paged = (window.PK_usePagedFilter || PK_usePagedFilter)(items, {
+    pageSize: AT_PAGE_SIZE,
+    text: AT_filterText,
+  });
+
+  const PageHeader = window.PK_PageHeader || PK_PageHeader;
 
   return (
-    <div className="col" style={{ gap: 14 }}>
-      <div className="filter-bar">
-        <span style={{ fontSize: 13, fontWeight: 600 }}>
-          {isAdmin ? "API tokens — every user" : "API tokens"}
-        </span>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-          <Btn size="sm" kind="ghost" icon="refresh" onClick={list.refetch}>Refresh</Btn>
-          {!isAdmin && (
-            <Btn
-              size="sm"
-              kind="primary"
-              icon="plus"
-              data-testid="create-token-btn"
-              onClick={() => setCreateOpen(true)}
-            >
-              Create token
-            </Btn>
-          )}
-        </div>
-      </div>
+    <div
+      className={"col " + (isAdmin ? "at-page-admin" : "at-page-personal")}
+      data-testid={isAdmin ? "at-page-admin" : "at-page-personal"}
+      style={{ gap: 14 }}
+    >
+      <PageHeader
+        title={isAdmin ? "API keys" : "Your API keys"}
+        count={AT_countText(items.length)}
+        filter={{
+          value: paged.q,
+          onChange: paged.setQ,
+          label: "Filter API keys",
+          testid: "at-filter",
+        }}
+        pager={{
+          page: paged.page,
+          pages: paged.pages,
+          from: paged.from,
+          to: paged.to,
+          total: paged.total,
+          onPage: paged.setPage,
+        }}
+        action={{
+          label: "+ API key",
+          onClick: () => setCreateOpen(true),
+          testid: "create-token-btn",
+        }}
+        extra={
+          <Btn size="sm" kind="ghost" icon="refresh" onClick={list.refetch}>
+            Refresh
+          </Btn>
+        }
+      />
 
       {list.loading && items.length === 0 && (
-        <div className="muted text-sm" style={{ padding: 40, textAlign: "center" }}>Loading…</div>
+        <div className="muted text-sm" style={{ padding: 40, textAlign: "center" }}>
+          Loading…
+        </div>
       )}
       {list.error && items.length === 0 && (
         <Banner
           kind="error"
-          title={list.error.title || "Couldn't load tokens"}
+          title={list.error.title || "Couldn't load API keys"}
           detail={list.error.detail || list.error.message}
           actions={<Btn size="sm" icon="refresh" onClick={list.refetch}>Retry</Btn>}
         />
@@ -149,16 +194,22 @@ function AT_ApiTokensPage({ mode }) {
       {!list.loading && !list.error && items.length === 0 && (
         <div className="empty" style={{ padding: "40px 20px" }}>
           <div className="ico-wrap"><Icon name="key" size={22} /></div>
-          <div className="head">No API tokens yet</div>
+          <div className="head">No API keys yet</div>
           <div className="sub">
             {isAdmin
-              ? "No user has minted an API token yet."
-              : "Create a token to authenticate programmatic clients (e.g. the MCP bridge) without a browser session."}
+              ? "No user has an API key yet."
+              : "An API key lets a program, such as an MCP client, call this server as you without a browser session."}
           </div>
         </div>
       )}
 
-      {items.length > 0 && (
+      {items.length > 0 && paged.total === 0 && (
+        <div className="empty at-no-match" data-testid="at-no-match" style={{ padding: "40px 20px" }}>
+          <div className="sub">No API keys match the filter.</div>
+        </div>
+      )}
+
+      {items.length > 0 && paged.total > 0 && (
         <div data-testid="api-tokens-table" className="tbl-wrap">
           <table className="tbl">
             <thead>
@@ -174,11 +225,12 @@ function AT_ApiTokensPage({ mode }) {
               </tr>
             </thead>
             <tbody>
-              {items.map((t) => (
+              {paged.visible.map((t) => (
                 <AT_TokenRow
                   key={(t._ownerId || "") + ":" + t.id}
                   token={t}
                   isAdmin={isAdmin}
+                  username={username}
                   onRevoke={() => setConfirmRevoke(t)}
                 />
               ))}
@@ -189,12 +241,9 @@ function AT_ApiTokensPage({ mode }) {
 
       {createOpen && (
         <AT_CreateTokenDialog
+          username={username}
           onClose={() => setCreateOpen(false)}
-          onCreated={() => {
-            // The create dialog handles the one-time-view modal internally.
-            // The list refresh happens after THAT modal closes — see the
-            // dialog's onDone callback below.
-          }}
+          onCreated={() => {}}
           onDone={() => {
             setCreateOpen(false);
             list.refetch();
@@ -218,10 +267,10 @@ function AT_ApiTokensPage({ mode }) {
 }
 
 // ============================================================================
-// AT_TokenRow — one row of the table.
+// AT_TokenRow: one row of the table.
 // ============================================================================
 
-function AT_TokenRow({ token, onRevoke, isAdmin }) {
+function AT_TokenRow({ token, onRevoke, isAdmin, username }) {
   const status = AT_statusOf(token);
   // Color mapping (Spec §8):
   //   active  -> green  (pill-claimed)
@@ -236,7 +285,7 @@ function AT_TokenRow({ token, onRevoke, isAdmin }) {
   return (
     <tr data-testid={`api-token-row-${token.id}`}>
       <td>{token.name}</td>
-      {isAdmin && <td className="mono">{token._ownerName || token._ownerId || "—"}</td>}
+      {isAdmin && <td className="mono">{AT_ownerText(token, username)}</td>}
       <td className="mono">{token.prefix}…</td>
       <td>
         {Array.isArray(token.scopes) && token.scopes.length > 0 ? (
@@ -248,7 +297,7 @@ function AT_TokenRow({ token, onRevoke, isAdmin }) {
             ))}
           </div>
         ) : (
-          <span className="muted text-sm">—</span>
+          <span className="muted text-sm">-</span>
         )}
       </td>
       <td title={token.last_used_at || ""}>
@@ -271,7 +320,7 @@ function AT_TokenRow({ token, onRevoke, isAdmin }) {
           icon="trash"
           disabled={isRevoked}
           onClick={onRevoke}
-          title={isRevoked ? "Token already revoked" : "Revoke this token"}
+          title={isRevoked ? "Key already revoked" : "Revoke this key"}
           data-testid={`revoke-token-btn-${token.id}`}
         >
           Revoke
@@ -282,17 +331,17 @@ function AT_TokenRow({ token, onRevoke, isAdmin }) {
 }
 
 // ============================================================================
-// AT_CreateTokenDialog — form → POST /v1/auth/tokens → one-time view dialog
+// AT_CreateTokenDialog: form -> POST /v1/auth/tokens -> one-time view dialog
 // ============================================================================
 
-function AT_CreateTokenDialog({ onClose, onCreated, onDone }) {
+function AT_CreateTokenDialog({ onClose, onCreated, onDone, username }) {
   const { apiFetch } = window.primerApi;
 
   const [name, setName] = React.useState("");
   const [scopes, setScopes] = React.useState([]); // selected scope values
   // expires_at uses a datetime-local input (browser local time, no
   // offset). We convert to a UTC ISO instant at submit. Empty string
-  // means "never expires" — the server treats null as no expiry.
+  // means "never expires" - the server treats null as no expiry.
   const [expiresAtLocal, setExpiresAtLocal] = React.useState("");
 
   const [busy, setBusy] = React.useState(false);
@@ -321,7 +370,7 @@ function AT_CreateTokenDialog({ onClose, onCreated, onDone }) {
     try {
       let expiresIso = null;
       if (expiresAtLocal) {
-        // datetime-local has no timezone — interpret as the browser's
+        // datetime-local has no timezone - interpret as the browser's
         // local time, emit UTC ISO so the server stores a tz-aware ts.
         const dt = new Date(expiresAtLocal);
         if (!isNaN(dt.getTime())) {
@@ -358,7 +407,7 @@ function AT_CreateTokenDialog({ onClose, onCreated, onDone }) {
 
   return (
     <Modal
-      title="Create API token"
+      title="New API key"
       onClose={onClose}
       footer={
         <>
@@ -371,16 +420,27 @@ function AT_CreateTokenDialog({ onClose, onCreated, onDone }) {
             busy={busy}
             data-testid="create-token-submit"
           >
-            {busy ? "Creating…" : "Create token"}
+            {busy ? "Creating…" : "Create key"}
           </Btn>
         </>
       }
     >
       <div data-testid="at-create-form">
+        {username ? (
+          <div
+            className="at-acts-as text-sm muted"
+            data-testid="at-acts-as"
+            style={{ marginBottom: 12 }}
+          >
+            {"This key acts as you, " + username + "."}
+          </div>
+        ) : null}
+
         <div className="field">
           <label className="field-label" htmlFor="at-name">Name</label>
           <input
             id="at-name"
+            data-testid="at-name"
             className="input"
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -389,7 +449,7 @@ function AT_CreateTokenDialog({ onClose, onCreated, onDone }) {
             autoFocus
           />
           <div className="field-help muted text-sm" style={{ marginTop: 4 }}>
-            Must be unique among your tokens. ≤ 128 chars.
+            Must be unique among your keys. Up to 128 characters.
           </div>
         </div>
 
@@ -421,7 +481,7 @@ function AT_CreateTokenDialog({ onClose, onCreated, onDone }) {
             ))}
           </div>
           <div className="field-help muted text-sm" style={{ marginTop: 4 }}>
-            Tokens without any scope can authenticate but won't be able
+            Keys without any scope can authenticate but won't be able
             to call scope-gated endpoints.
           </div>
         </div>
@@ -439,7 +499,7 @@ function AT_CreateTokenDialog({ onClose, onCreated, onDone }) {
             style={{ width: "100%" }}
           />
           <div className="field-help muted text-sm" style={{ marginTop: 4 }}>
-            Leave blank for a non-expiring token. Must be in the future.
+            Leave blank for a non-expiring key. Must be in the future.
           </div>
         </div>
 
@@ -456,7 +516,7 @@ function AT_CreateTokenDialog({ onClose, onCreated, onDone }) {
 }
 
 // ============================================================================
-// AT_PlaintextOneTimeDialog — the only place the plaintext is visible.
+// AT_PlaintextOneTimeDialog: the only place the plaintext is visible.
 //
 // Per Spec §8: copy button + dire warning + separate close button. The
 // `<pre>` is selectable for keyboard users; the copy button uses the
@@ -495,7 +555,7 @@ function AT_PlaintextOneTimeDialog({ token, onClose }) {
 
   return (
     <Modal
-      title="Token created — copy it now"
+      title="API key created: copy it now"
       danger
       onClose={onClose}
       footer={
@@ -506,14 +566,14 @@ function AT_PlaintextOneTimeDialog({ token, onClose }) {
             onClick={copy}
             data-testid="copy-token-btn"
           >
-            {copied ? "Copied!" : "Copy token"}
+            {copied ? "Copied!" : "Copy key"}
           </Btn>
           <Btn
             kind="default"
             onClick={onClose}
             data-testid="close-plaintext-btn"
           >
-            I have saved it — close
+            I have saved it, close
           </Btn>
         </>
       }
@@ -521,11 +581,11 @@ function AT_PlaintextOneTimeDialog({ token, onClose }) {
       <div data-testid="at-plaintext-dialog">
         <Banner
           kind="warning"
-          title="This is the only time you'll see this token."
-          detail="Copy it now — it cannot be retrieved later. If you lose it, revoke this token and create a new one."
+          title="This is the only time you will see this key."
+          detail="Copy it now: it cannot be retrieved later. If you lose it, revoke the key and make a new one."
         />
         <div className="field" style={{ marginTop: 12 }}>
-          <label className="field-label">Token</label>
+          <label className="field-label">API key</label>
           <pre
             data-testid="plaintext-display"
             className="mono"
@@ -578,7 +638,7 @@ function AT_PlaintextOneTimeDialog({ token, onClose }) {
           <Banner
             kind="error"
             title="Copy failed"
-            detail={copyError + " — select the token above and copy manually."}
+            detail={copyError + " - select the key above and copy manually."}
           />
         )}
       </div>
@@ -587,7 +647,7 @@ function AT_PlaintextOneTimeDialog({ token, onClose }) {
 }
 
 // ============================================================================
-// AT_RevokeConfirmDialog — confirm + DELETE /v1/auth/tokens/{id}
+// AT_RevokeConfirmDialog: confirm + DELETE /v1/auth/tokens/{id}
 // ============================================================================
 
 function AT_RevokeConfirmDialog({ token, onClose, onRevoked, isAdmin }) {
@@ -622,7 +682,7 @@ function AT_RevokeConfirmDialog({ token, onClose, onRevoked, isAdmin }) {
 
   return (
     <Modal
-      title={`Revoke token · ${token.name}`}
+      title={`Revoke API key · ${token.name}`}
       danger
       onClose={onClose}
       footer={
@@ -635,15 +695,15 @@ function AT_RevokeConfirmDialog({ token, onClose, onRevoked, isAdmin }) {
             busy={busy}
             data-testid="revoke-confirm-btn"
           >
-            {busy ? "Revoking…" : "Revoke token"}
+            {busy ? "Revoking…" : "Revoke key"}
           </Btn>
         </>
       }
     >
       <div data-testid="at-revoke-confirm">
-        <p>Token will stop working immediately. The row stays for audit.</p>
+        <p>The key stops working immediately. The row stays for audit.</p>
         <ul>
-          <li>Any in-flight request authenticated by this token completes.</li>
+          <li>Any in-flight request authenticated by this key completes.</li>
           <li>Future requests with this bearer get a 401.</li>
           <li>This action cannot be undone.</li>
         </ul>
@@ -663,8 +723,14 @@ function AT_RevokeConfirmDialog({ token, onClose, onRevoked, isAdmin }) {
 // Exports
 // ============================================================================
 
-window.AT_ApiTokensPage = AT_ApiTokensPage;
-window.AT_TokenRow = AT_TokenRow;
-window.AT_CreateTokenDialog = AT_CreateTokenDialog;
-window.AT_PlaintextOneTimeDialog = AT_PlaintextOneTimeDialog;
-window.AT_RevokeConfirmDialog = AT_RevokeConfirmDialog;
+Object.assign(window, {
+  AT_PAGE_SIZE,
+  AT_countText,
+  AT_filterText,
+  AT_ownerText,
+  AT_ApiTokensPage,
+  AT_TokenRow,
+  AT_CreateTokenDialog,
+  AT_PlaintextOneTimeDialog,
+  AT_RevokeConfirmDialog,
+});

@@ -6,7 +6,7 @@ and a problem envelope whose ``detail`` is the code and whose ``extensions.error
 right"; and an EXPIRED session answers 401 as well, with another detail, which must not be told as a wrong password: the mapping is on the code, not on the status.
 
 ADM-27: the Linked accounts empty state said "Link a single sign-on provider below", but with no provider configured there is nothing below; the API tokens empty state offered a
-second "Create token" button next to the header's.
+second "+ API key" button next to the header's.
 
 ``NV_passwordChangeMessage`` (``nv-system.jsx``) and ``LA_emptyHint`` (``linked_accounts.jsx``) are pure and run in MiniRacer on the real source; the components are JSX, so how they
 use them is a source check (this checkout has no render harness for them), and ``tests/ui_e2e/test_profile_page_journey.py`` drives the real page.
@@ -154,13 +154,12 @@ def test_the_empty_state_uses_the_hint_and_only_a_successful_providers_read_mark
     assert "setProvidersLoaded(true)" not in after_catch, "a FAILED read must not turn into a claim that none are configured"
 
 
-# ---- ADM-27: API tokens ----------------------------------------------------------------------------------------------------------------------------------------
+# ---- ADM-27: API keys ----------------------------------------------------------------------------------------------------------------------------------------
 
 
-def test_the_api_tokens_empty_state_does_not_repeat_the_headers_create_button() -> None:
+def test_the_api_keys_empty_state_does_not_repeat_the_headers_create_button() -> None:
     page = TOKENS[TOKENS.index("function AT_ApiTokensPage("):]
-    empty = page[page.index('<div className="head">No API tokens yet</div>'):]
-    empty = empty[:empty.index("{items.length > 0 && (")]
-
-    assert "Create token" not in empty and "setCreateOpen" not in empty, "the header already has the button"
-    assert 'data-testid="create-token-btn"' in page[:page.index("No API tokens yet")], "and the header keeps it"
+    empty = page[page.index('<div className="head">No API keys yet</div>'):]
+    empty = empty[:empty.index("api-tokens-table")]
+    assert "+ API key" not in empty and "setCreateOpen" not in empty, "the header already has the button"
+    assert 'testid: "create-token-btn"' in page[:page.index("No API keys yet")], "and the header keeps it"
