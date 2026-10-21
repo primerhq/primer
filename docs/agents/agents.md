@@ -310,6 +310,11 @@ how the same model is offered with reasoning on and off. In an aggregated
 profile, each member's own `config` applies to the calls that member
 serves; the aggregate's own `config` is not applied.
 
+One provider-specific adjustment is visible to tool routing: real OpenAI
+Chat Completions rejects `required` or a named `tool_choice` while reasoning
+is on, so primer sends `auto` for that call. OpenAI Responses and OpenRouter
+keep the forced choice because those wires accept it with reasoning.
+
 - `system::create_model_profile`, `system::get_model_profile`,
   `system::list_model_profiles`, `system::find_model_profiles`,
   `system::update_model_profile`, `system::delete_model_profile` - admin

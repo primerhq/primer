@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from primer.model_profile import ResolvedModel
-from primer.model.model_profile import ModelProfileConfig
+from primer.model.model_profile import ModelProfileConfig, ReasoningLevel
 
 import asyncio
 import logging
@@ -221,7 +221,7 @@ class TestPartToInputContent:
         ``data:application/pdf;base64,JVBER...``. The Stainless SDK
         type calls this 'base64-encoded data of the file' which
         sounds raw, but the live Responses API rejects raw base64
-        with ``invalid_union`` on the input parameter — production
+        with ``invalid_union`` on the input parameter - production
         OSS implementations (home-assistant, agno, ChatDev) all use
         the data URI shape."""
         part = DocumentPart(
@@ -241,7 +241,7 @@ class TestPartToInputContent:
 
     def test_document_part_data_defaults_mime_when_missing(self) -> None:
         """A DocumentPart created without a mime_type still produces a
-        valid data URI — the adapter falls back to application/pdf so
+        valid data URI - the adapter falls back to application/pdf so
         the file is at least classifiable upstream."""
         part = DocumentPart(data=b"%PDF")
         out = _part_to_input_content(part)
@@ -1218,6 +1218,37 @@ class TestStream:
         assert len(kwargs["tools"]) == 1
         assert kwargs["tools"][0]["name"] == "search"
         assert kwargs["tool_choice"] == "auto"
+
+    async def test_reasoning_keeps_required_tool_choice(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The Responses API accepts required tool choice with reasoning."""
+        provider = _make_provider()
+        llm = OpenResponsesLLM(provider)
+        client = _patched_client(monkeypatch)
+        client.responses.create.return_value = _aiter(
+            [NS(type="response.completed", response=NS(usage=None))]
+        )
+        async for _ in llm.stream(
+            model="o3",
+            messages=[Message(role="user", parts=[TextPart(text="hi")])],
+            tools=[
+                Tool(
+                    id="search",
+                    description="Search",
+                    toolset_id="default",
+                    args_schema={"type": "object", "properties": {}},
+                )
+            ],
+            tool_choice="required",
+            extended=llm.profile_extended(
+                ModelProfileConfig(reasoning=ReasoningLevel.HIGH), model="o3"
+            ),
+        ):
+            pass
+        kwargs = client.responses.create.call_args.kwargs
+        assert kwargs["reasoning"] == {"effort": "high"}
+        assert kwargs["tool_choice"] == "required"
 
     async def test_request_payload_omits_optional_keys_when_none(
         self, monkeypatch: pytest.MonkeyPatch
