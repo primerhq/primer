@@ -132,15 +132,15 @@ SYSTEM_VIEWS: list[str] = ["dashboard", "users", "apikeys", "sso", "mcp", "inter
 
 SYSTEM_FORMS: dict[str, list[Form]] = {
     "users": [Form("Create user", MODAL)],
+    "apikeys": [Form("+ API key", MODAL)],
     "sso": [Form("Add provider", MODAL)],
-    "profile": [Form("Create token", MODAL)],           # the Profile page embeds the personal token page
+    "profile": [Form("+ API key", MODAL)],           # the Profile page embeds the personal token page
 }
 
 NO_FORM: dict[str, str] = {
     "overlay-page approvals": "its policies are created on the Platform view (platform-view approvals, + Policy)",
     "platform-view tools": "the tool catalogue is read-only",
     "system-view dashboard": "the dashboard shows the install's state; nothing is created from it",
-    "system-view apikeys": "the admin view of every user's tokens only lists and revokes; a token is created from Profile",
     "system-view mcp": "the MCP page lists the install's MCP servers and their tools; nothing is created from it",
     "system-view internal": "its Configure form is swept through the overlay-page of the internal collections",
     "system-view activity": "the activity feed is read only",
@@ -302,7 +302,8 @@ FLOORS: dict[str, int] = {
     "system-view internal": 1,
     "system-view activity": 4,
     "system-view profile": 3,
-    "system-view profile / Create token": 1,
+    "system-view apikeys / + API key": 1,
+    "system-view profile / + API key": 1,
     "graph builder": 3,
     "graph builder / step 1": 5,
     "graph builder / step 2": 13,

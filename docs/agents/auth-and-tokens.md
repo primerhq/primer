@@ -144,7 +144,7 @@ curl -X POST https://primer.example/v1/auth/tokens \
   -d '{"name": "claude-desktop", "scopes": ["mcp"], "expires_at": null}'
 ```
 
-The response includes `{"id": "...", "token": "primer_pk_XXXXXX...", ...}`.
+The response includes `{"id": "...", "plaintext": "primer_pk_XXXXXX...", ...}`.
 After the response is consumed, the plaintext is unrecoverable.
 
 ## Workflows
@@ -155,10 +155,10 @@ After the response is consumed, the plaintext is unrecoverable.
 They mint a token, hand the plaintext to the desktop client config,
 and never see it again.
 
-1. Operator opens the console, navigates to the API Tokens page, clicks
-   "New token", names it `claude-desktop`, picks the `mcp` scope, and
-   submits. The page shows the plaintext token in a one-time modal
-   with a "Copy" button.
+1. Open System > Profile (any user) or System > API keys (admins), press
+   "+ API key", name it, pick "mcp", and click "Create key". The key acts as
+   the user who made it; the plaintext shows once in a one-time dialog with a
+   "Copy key" button.
 2. Operator pastes the token into the desktop's MCP server config
    (`{"url": "https://primer.example/v1/mcp", "headers": {"Authorization": "Bearer <token>"}}`)
    and closes the modal.

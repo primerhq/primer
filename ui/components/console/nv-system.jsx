@@ -437,7 +437,7 @@ function NV_SysProfile() {
       {/* One-title rule: the re-hosted pages render their own
           action-bearing headers ("API tokens" / "Linked accounts"). */}
       {typeof window.AT_ApiTokensPage === "function"
-        ? <window.AT_ApiTokensPage mode="personal" />
+        ? <window.AT_ApiTokensPage mode="personal" username={con.username} />
         : null}
       {typeof window.LA_LinkedAccountsPage === "function"
         ? <window.LA_LinkedAccountsPage />
@@ -450,12 +450,13 @@ function NV_SysProfile() {
 // each mounts bare (one-title rule).
 function NV_SysBody(props) {
   var nav = props.nav;
+  var username = props.username;
   if (nav === "dashboard") return <NV_SysDashboard />;
   if (nav === "profile") return <NV_SysProfile />;
   if (nav === "users") return <window.ADM_AdminUsersPage />;
   // R5 tokens ruling: this is now the admin all-users token table
   // (personal tokens live under Profile, above).
-  if (nav === "apikeys") return <window.AT_ApiTokensPage mode="admin" />;
+  if (nav === "apikeys") return <window.AT_ApiTokensPage mode="admin" username={username} />;
   if (nav === "sso") return <window.SSO_ProvidersPage />;
   if (nav === "mcp") return <window.MC_McpPage />;
   if (nav === "internal") {
@@ -499,7 +500,7 @@ function NV_System() {
       </div>
       <div className="nv-plat-main">
         <div className="nv-plat-wrap" data-testid={"nv-sys-page:" + nav}>
-          <NV_SysBody nav={nav} />
+          <NV_SysBody nav={nav} username={con.username} />
         </div>
       </div>
     </div>

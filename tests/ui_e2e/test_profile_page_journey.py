@@ -66,8 +66,8 @@ def test_a_wrong_current_password_is_told_in_words_and_the_empty_states_describe
     expect(empty).to_contain_text("System > SSO")
     assert "below" not in empty.inner_text(), empty.inner_text()
 
-    # One "Create token" on the page, the header's: the empty state does not repeat it.
-    expect(page.get_by_test_id("nv-sys-profile").get_by_role("button", name="Create token")).to_have_count(1)
+    # One "+ API key" on the page, the header's: the empty state does not repeat it.
+    expect(page.get_by_test_id("nv-sys-profile").get_by_role("button", name="+ API key")).to_have_count(1)
 
 
 def test_with_a_provider_configured_the_linked_accounts_hint_points_at_the_list_below(page: Page, console_url: str) -> None:

@@ -298,8 +298,8 @@ function MC_EndpointPanel({ exposure, availableItems }) {
         <div className="field-help muted text-sm" style={{ marginTop: 4 }}>
           Paste the config under <span className="mono">mcpServers</span> in
           your Claude Desktop config file, then replace
-          {" "}<span className="mono">&lt;YOUR_TOKEN&gt;</span> with a token
-          from the API tokens page.
+          {" "}<span className="mono">&lt;YOUR_TOKEN&gt;</span> with an API key
+          (+ API key on System > Profile or System > API keys).
         </div>
       </div>
 
