@@ -22,10 +22,15 @@
 
 // ---------------------------------------------------------------------------
 // Panel primitive: scrim + centered panel + header (title, close) +
-// scrolling body + optional footer. Esc and scrim-click close.
+// scrolling body + optional footer. Esc and a press-and-release on the
+// scrim close.
 function NV_OverlayPanel(props) {
   var onClose = props.onClose;
   var panelRef = React.useRef(null);
+  // A click after a drag from the panel to the scrim targets the scrim, even
+  // though the press began inside. Close only when both ends of the gesture
+  // land on the scrim so selecting text cannot discard the open surface.
+  var scrimDownRef = React.useRef(false);
   var titleId = React.useId();
   // Console review C-028: focus moves into the overlay (the first field or control of its body, not the close button), Tab cycles inside
   // it, and Escape or Close gives focus back to whatever opened it (foundation/focus-trap.js, the same trap Modal uses).
@@ -40,7 +45,10 @@ function NV_OverlayPanel(props) {
   window.primerApi.useEscape(function () { onClose(); });
   return (
     <div className="nv-scrim" data-testid="nv-overlay-scrim"
-      onClick={function () { onClose(); }}>
+      onPointerDown={function (ev) { scrimDownRef.current = ev.target === ev.currentTarget; }}
+      onClick={function (ev) {
+        if (ev.target === ev.currentTarget && scrimDownRef.current) onClose();
+      }}>
       <div className="nv-overlay-panel" role="dialog" aria-modal="true" aria-labelledby={titleId}
         tabIndex={-1} ref={panelRef}
         data-wide={props.wide ? "true" : "false"}
