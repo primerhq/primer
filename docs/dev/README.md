@@ -49,6 +49,7 @@ flowchart TD
         semantic[Semantic Search]
         knowledge[Knowledge]
         workspaces[Workspaces]
+        mcpoauth[MCP OAuth]
     end
 
     subgraph UI["UI subsystems"]
@@ -105,6 +106,10 @@ flowchart TD
 
     workspaces --> provider
     workspaces --> storage
+
+    mcpoauth --> provider
+    mcpoauth --> storage
+    mcpoauth --> rest
 
     uifound --> rest
     uipages --> rest
@@ -176,6 +181,9 @@ flowchart TD
 - [model-providers](subsystems/model-providers.md) - the adapter layer that converts
   Primer's universal model interfaces into concrete vendor SDK wire shapes for LLMs,
   embedders, and cross-encoder rerankers.
+- [mcp-oauth](subsystems/mcp-oauth.md) - the shared, admin-owned OAuth sign-in for
+  outbound MCP toolsets, including encrypted persistence, cross-pod refresh, REST
+  routes, and agent-visible status.
 - [services](subsystems/services.md) - agent-published web apps: immutable versioned
   bundles served at /svc/{name}/ by any API replica, with bundle python executing
   per-request in the python-runner sandbox.

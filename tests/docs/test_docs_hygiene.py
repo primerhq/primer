@@ -44,6 +44,7 @@ SUBSYSTEM_DOCS = [
     "web-search",
     "triggers",
     "harness",
+    "mcp-oauth",
     "model-providers",
     "speech",
     "ui-foundation",
