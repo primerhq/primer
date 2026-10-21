@@ -251,6 +251,362 @@ function NV_WorkerFleet() {
   );
 }
 
+function NV_setupFix(key) {
+  if (key === "llm_provider" || key === "model_profile") {
+    return { label: "Open Providers", action: "providers" };
+  }
+  return { label: "Re-run seed", action: "seed" };
+}
+
+function NV_setupCardView(state) {
+  var preds = (state && Array.isArray(state.predicates)) ? state.predicates : [];
+  var total = preds.length || 6;
+  var failing = [];
+  for (var i = 0; i < preds.length; i++) {
+    var p = preds[i];
+    if (!p.ok) {
+      var detailStr = p.detail != null ? (typeof SW_tidy === "function" ? SW_tidy(p.detail) : String(p.detail)) : "";
+      failing.push({
+        key: p.key,
+        label: p.label,
+        detail: detailStr,
+        fix: NV_setupFix(p.key),
+      });
+    }
+  }
+  if (failing.length === 0) {
+    return {
+      tone: "ok",
+      headline: "All " + total + " setup checks pass",
+      failing: [],
+    };
+  }
+  var headline = failing.length === 1
+    ? "1 of " + total + " setup checks fails"
+    : failing.length + " of " + total + " setup checks fail";
+  return {
+    tone: "error",
+    headline: headline,
+    failing: failing,
+  };
+}
+
+function NV_seedOutcome(result) {
+  var res = result || {};
+  var errors = res.errors || [];
+  if (errors.length) {
+    var errParts = errors.map(function (e) {
+      var key = e[0];
+      var msg = String(e[1] || "");
+      if (msg.length > 200) {
+        msg = msg.slice(0, 200) + "…";
+      }
+      return key + ": " + msg;
+    });
+    return {
+      kind: "error",
+      text: "Seed finished with errors: " + errParts.join(", "),
+    };
+  }
+  var created = res.created || [];
+  if (created.length) {
+    return {
+      kind: "info",
+      text: "Seed ran: created " + created.join(", ") + ".",
+    };
+  }
+  return {
+    kind: "info",
+    text: "Seed ran: nothing was missing.",
+  };
+}
+
+function NV_resetOutcome(result) {
+  var reset = (result && result.reset) || [];
+  return "Reset the default agents: " + reset.join(", ") + ".";
+}
+
+var NV_RESET_AGENTS_CONFIRM = {
+  title: "Reset default agents",
+  message: "Reset the default definitions of operator, builder, planner, explorer, and tool-runner? This replaces any edits you have made.",
+  confirmLabel: "Reset default agents",
+  danger: true,
+};
+
+var NV_CAPABILITY_GATES = {
+  huggingface: "local embedder + cross-encoder + speech models",
+  lance: "local semantic-search vector store",
+  docker: "container workspace backend",
+  kubernetes: "kubernetes workspace backend",
+  channels: "Slack / Discord / Telegram channel bridges",
+};
+
+function NV_capabilityRows(caps) {
+  if (!caps) return [];
+  var data = caps.data || caps;
+  var rows = [];
+  var extras = (data && data.extras) || {};
+  var extraKeys = Object.keys(extras).sort();
+  for (var i = 0; i < extraKeys.length; i++) {
+    var name = extraKeys[i];
+    var status = extras[name] || {};
+    rows.push({
+      name: name,
+      ok: !!status.installed,
+      text: NV_CAPABILITY_GATES[name] || "",
+    });
+  }
+  if (data && data.speech) {
+    var sp = data.speech;
+    var speechOk = !!(sp.stt_configured || sp.tts_configured);
+    rows.push({
+      name: "speech",
+      ok: speechOk,
+      text: "stt " + (sp.stt_configured ? "configured" : "not configured") + ", tts " + (sp.tts_configured ? "configured" : "not configured"),
+    });
+  }
+  return rows;
+}
+
+function NV_SysSetupCard() {
+  var con = NV_useConsole();
+  var setupState = window.primerApi.useResource(
+    "nv-sys:setup-state",
+    function (signal) {
+      return window.primerApi.apiFetch("GET", "/setup/state", null, { signal: signal });
+    }
+  );
+  var setupResourceState = window.primerApi.resourceState(setupState);
+  var caps = window.primerApi.useCapabilities();
+  var capRows = NV_capabilityRows(caps);
+  var busyState = React.useState(null);
+  var busy = busyState[0];
+  var setBusy = busyState[1];
+
+  NV_useMenuDismiss(con, "sys-setup", "nv-sys-setup-menu-btn");
+
+  var cardView = NV_setupCardView(setupState.data);
+
+  function toggleMenu(ev) {
+    if (ev) ev.stopPropagation();
+    if (busy != null) return;
+    con.toggleMenu("sys-setup");
+  }
+
+  function recheck() {
+    if (busy != null) return;
+    con.toggleMenu(null);
+    setupState.refetch();
+  }
+
+  function rerunSeed() {
+    if (busy != null) return;
+    con.toggleMenu(null);
+    setBusy("seed");
+    window.primerApi.apiFetch("POST", "/setup/seed", null, {}).then(
+      function (res) {
+        var outcome = NV_seedOutcome(res);
+        con.toast(outcome.text, outcome.kind);
+        setupState.refetch();
+      },
+      function (e) {
+        con.toast("Re-run seed failed: " + window.primerApi.readRefusal(e).message, {
+          kind: "error",
+          requestId: e && e.requestId,
+        });
+      }
+    ).finally(function () {
+      setBusy(null);
+    });
+  }
+
+  function resetAgents() {
+    if (busy != null) return;
+    con.toggleMenu(null);
+    window.confirmDialog(NV_RESET_AGENTS_CONFIRM).then(function (ok) {
+      if (!ok) return;
+      setBusy("reset");
+      window.primerApi.apiFetch("POST", "/setup/reset_agents", null, {}).then(
+        function (res) {
+          con.toast(NV_resetOutcome(res), "info");
+          setupState.refetch();
+        },
+        function (e) {
+          con.toast("Reset failed: " + window.primerApi.readRefusal(e).message, {
+            kind: "error",
+            requestId: e && e.requestId,
+          });
+        }
+      ).finally(function () {
+        setBusy(null);
+      });
+    });
+  }
+
+  var headline = busy === "seed"
+    ? "Re-running seed…"
+    : busy === "reset"
+    ? "Resetting default agents…"
+    : setupResourceState === "stuck"
+    ? "Couldn't check setup"
+    : setupResourceState === "loading"
+    ? "Checking setup…"
+    : cardView.headline;
+
+  var tone = (busy || setupResourceState === "loading")
+    ? ""
+    : setupResourceState === "stuck"
+    ? "error"
+    : cardView.tone;
+
+  var dotColor = (busy || setupResourceState === "loading")
+    ? "var(--text-4)"
+    : (setupResourceState === "stuck" || cardView.tone === "error")
+    ? "var(--red)"
+    : "var(--green)";
+
+  var menuOpen = con.openMenu === "sys-setup";
+  var PK_FoldComp = window.PK_Fold || (typeof PK_Fold !== "undefined" ? PK_Fold : null);
+  var IconComp = window.Icon || (typeof Icon !== "undefined" ? Icon : null);
+
+  return (
+    <div className="nv-sys-setup" data-testid="nv-sys-setup" data-tone={tone}>
+      <div className="nv-sys-setup-head">
+        <span className="nv-health-dot" style={{ background: dotColor }} />
+        <span className="nv-sys-setup-headline" data-testid="nv-sys-setup-headline">
+          {headline}
+        </span>
+        <span style={{ flex: 1 }} />
+        <div style={{ position: "relative" }}>
+          <button
+            type="button"
+            className="pk-card-menu-btn"
+            data-testid="nv-sys-setup-menu-btn"
+            aria-label="Setup actions"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen ? "true" : "false"}
+            onClick={toggleMenu}
+          >
+            •••
+          </button>
+          {menuOpen && (
+            <div
+              className="nv-sys-setup-menu pk-card-menu-list"
+              data-testid="nv-sys-setup-menu"
+              role="menu"
+              onClick={function (ev) { ev.stopPropagation(); }}
+              onBlur={function (ev) {
+                if (NV_menuFocusLeft(ev, "nv-sys-setup-menu-btn")) con.toggleMenu(null);
+              }}
+            >
+              <button
+                type="button"
+                className="pk-card-menu-item"
+                role="menuitem"
+                data-testid="nv-sys-setup-recheck"
+                onClick={recheck}
+              >
+                Check again
+              </button>
+              <button
+                type="button"
+                className="pk-card-menu-item"
+                role="menuitem"
+                data-testid="nv-sys-setup-rerun-seed"
+                onClick={rerunSeed}
+              >
+                Re-run seed
+              </button>
+              <button
+                type="button"
+                className="pk-card-menu-item"
+                role="menuitem"
+                data-danger="true"
+                data-testid="nv-sys-setup-reset-agents"
+                onClick={resetAgents}
+              >
+                Reset default agents
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {cardView.failing.length > 0 && (
+        <div className="nv-sys-setup-list">
+          {cardView.failing.map(function (f) {
+            return (
+              <div
+                key={f.key}
+                className="nv-sys-setup-item"
+                data-testid={"nv-sys-setup-check:" + f.key}
+              >
+                <div style={{ display: "flex", flexDirection: "column", gap: 2, flex: 1, minWidth: 0 }}>
+                  <span style={{ fontWeight: 500 }}>{f.label}</span>
+                  {f.detail ? (
+                    <span className="muted text-sm" style={{ color: "var(--text-3)", fontSize: 11 }}>
+                      {f.detail}
+                    </span>
+                  ) : null}
+                </div>
+                <button
+                  type="button"
+                  className="nv-btn-secondary"
+                  data-testid={"nv-sys-setup-fix:" + f.key}
+                  onClick={function () {
+                    if (f.fix.action === "providers") {
+                      con.goView("platform", "providers");
+                    } else {
+                      rerunSeed();
+                    }
+                  }}
+                >
+                  {f.fix.label}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {PK_FoldComp ? (
+        <div style={{ marginTop: 10 }}>
+          <PK_FoldComp label="Installed extras" testid="nv-sys-setup-extras">
+            <div className="tbl-wrap" style={{ marginTop: 6 }}>
+              <table className="tbl">
+                <thead>
+                  <tr><th></th><th>Capability</th><th>Gates</th></tr>
+                </thead>
+                <tbody>
+                  {capRows.map(function (row) {
+                    return (
+                      <tr key={row.name} data-testid={"nv-sys-capability-row:" + row.name}>
+                        <td>
+                          {IconComp ? (
+                            <IconComp
+                              name={row.ok ? "check" : "x-circle"}
+                              className={row.ok ? undefined : "muted"}
+                              size={14}
+                            />
+                          ) : (
+                            <span className="ico" data-icon={row.ok ? "check" : "x-circle"} />
+                          )}
+                        </td>
+                        <td className="mono">{row.name}</td>
+                        <td className="muted text-sm">{row.text || "-"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </PK_FoldComp>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 // Cross-workspace attention: GET /v1/yields/pending (the real aggregate,
 // batch-1) - workspace_id/workspace_name/session_id/session_name/kind/
 // agent_binding/created_at per row, already sorted newest-first and
@@ -347,6 +703,7 @@ function NV_SysDashboard() {
     <div data-testid="nv-sys-dashboard">
       <div className="nv-plat-title nv-sys-title">Dashboard</div>
       <NV_HealthCards />
+      <NV_SysSetupCard />
       <NV_WorkerFleet />
       <NV_AttentionEverywhere />
     </div>
@@ -509,3 +866,11 @@ function NV_System() {
 
 window.NV_sysNavsFor = NV_sysNavsFor;
 window.NV_System = NV_System;
+window.NV_SysSetupCard = NV_SysSetupCard;
+window.NV_setupFix = NV_setupFix;
+window.NV_setupCardView = NV_setupCardView;
+window.NV_seedOutcome = NV_seedOutcome;
+window.NV_resetOutcome = NV_resetOutcome;
+window.NV_RESET_AGENTS_CONFIRM = NV_RESET_AGENTS_CONFIRM;
+window.NV_CAPABILITY_GATES = NV_CAPABILITY_GATES;
+window.NV_capabilityRows = NV_capabilityRows;

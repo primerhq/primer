@@ -10,7 +10,7 @@ helper, and this guard keeps them migrated:
   - ui/components/console/nv-system.jsx: NV_HealthCards (scheduler/worker
     pool/sessions active/attention tiles), NV_AttentionEverywhere (the
     cross-workspace "needs a human" table), NV_WorkerFleet (the worker
-    list) - the System dashboard IS the liveness page.
+    list), NV_SysSetupCard (the setup checks card) - the System dashboard IS the liveness page.
   - ui/components/health.jsx: the standalone health page - the strongest
     existing pattern before this round (a real three-way split), upgraded
     from raw `.error` (flips on a single blip) to `.degraded` (debounced).
@@ -42,7 +42,7 @@ UI = ROOT / "ui"
 # entering here is what "migrated" means for the purposes of this guard.
 _GUARDED_FILES = {
     "components/console/nv-system.jsx": {
-        "health", "activeSessions", "attention", "pending", "workers",
+        "health", "activeSessions", "attention", "pending", "workers", "setupState",
     },
     "components/health.jsx": {"health"},
 }
