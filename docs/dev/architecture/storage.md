@@ -170,7 +170,14 @@ delegates instead of rewriting rows itself: it calls
 `primer.bootstrap.prime.adopt_legacy_default_workspace`, the same function
 the ensure pass calls (a baselined database never runs the migration, so
 the rule lives in one function both call), and changes nothing on a fresh
-install.
+install. `m011_seeded_agents_core_kit.py` rewrites seeded rows by
+definition rather than by field: it reads the five seeded agents through a
+migration-local `Agent` view, upgrades a row in place only while it still
+equals a previously shipped definition (the frozen copy in
+`primer.bootstrap.seeded_agents_v1`), writes only `description`,
+`system_prompt` and `tools` through a `patch_if` guarded on the stored
+description, and names an edited row in one warning rather than
+overwriting it.
 
 ### The `document_content` table
 

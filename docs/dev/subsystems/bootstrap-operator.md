@@ -33,7 +33,7 @@ flowchart TD
     Toolsets --> Ensure[run_ensure_pass: every startup]
     Ensure --> Policies[crud approval policies]
     Ensure --> Workspace[default workspace]
-    Ensure --> Agents[operator + builder]
+    Ensure --> Agents[five seeded agents]
     Ensure --> Collection[system collection]
     Ensure --> Serve[Serve requests]
     Wizard[Setup wizard] -->|POST /v1/setup/seed| Ensure
@@ -56,12 +56,14 @@ flowchart TD
 | `primer/bootstrap/seed.py` | The ensure pass and its four steps. |
 | `primer/bootstrap/prime.py` | The default workspace (prime): the resolver, adopting an existing install's `primer` row, recording the id. |
 | `primer/bootstrap/setup_state.py` | The derived setup predicate and its missing codes. |
-| `primer/bootstrap/operator_defaults.py` | Prompts, descriptions and tool grants for the two seeded agents. |
+| `primer/bootstrap/operator_defaults.py` | The five seeded agents: the core-kit grants, descriptions, v2 prompts and the roster factories. |
+| `primer/bootstrap/seeded_agents_v1.py` | The five definitions as they shipped before the core-kit upgrade, frozen and digest-pinned. |
 | `primer/toolset/crud.py` | The `crud` reserved toolset: nine construction tools. |
 | `primer/toolset/_python_tools.py` | The python-toolset trio, factored out so `crud` can scope them. |
 | `primer/knowledge/system_collection.py` | The regenerated map of the install. |
 | `primer/api/routers/setup.py` | `POST /v1/setup/seed` and `POST /v1/setup/reset_agents`. |
 | `primer/storage/migrations/m010_default_workspace.py` | The versioned step that records and renames an upgraded install's default workspace. |
+| `primer/storage/migrations/m011_seeded_agents_core_kit.py` | The versioned step that moves an upgraded install's seeded agents to the core kit. |
 | `ui/components/setup-wizard.jsx` | The three wizard globals: steps, gate, waiting screen. |
 
 ## 5. Data model
@@ -74,7 +76,7 @@ The seeded-world reserved ids live in `primer/bootstrap/defaults.py` as `RESERVE
 
 The crud approval policies are ordinary `ToolApprovalPolicy` rows with the deterministic id `tool-approval-policy-crud-<tool_name>`, `enabled=True` and `approval={"type": "required"}`. One per crud tool.
 
-The two seeded agents are ordinary `Agent` rows. Their `model.profile_id` is resolved from the default model profile at creation and PRESERVED thereafter.
+The five seeded agents are ordinary `Agent` rows. Their `model.profile_id` is resolved from the default model profile at creation and PRESERVED thereafter. Every one of them is granted the core kit (`primer/toolset/core_kit.py`: `system__call_tool`, `system__wiki_read`, `system__wiki_search`, `system__ask_user`, `misc__inform_user`); the operator alone adds the two workspaces messaging tools (`workspaces__list_my_sessions`, `workspaces__message_session`). Every other capability an agent needs is reached through `call_tool` and documented in the platform wiki. The grants as they shipped before the core kit are frozen in `primer/bootstrap/seeded_agents_v1.py` (one entry per agent, sha256-digested in `tests/bootstrap/test_seeded_agents_v1.py`): migration 11 rewrites a stored row only while it still equals a shipped definition, so an operator edit is never undone by an upgrade (`POST /v1/setup/reset_agents` restores the shipped definition on demand).
 
 The system collection is a `Collection` with `system=True` at id `system`, holding a document tree: `index` (the platform wiki's table of contents), `reference/` (one generated page per tool, under `reference/tools/<toolset>/<tool>`), `this-install/` (the live install map: agents, graphs, collections, workspaces and providers) and the legacy `docs/` and `how-to/` layers, kept verbatim until their replacements are written.
 
@@ -103,15 +105,16 @@ Nothing here writes a marker of its own. Re-running the pass is the repair mecha
 - `GET /v1/auth/status` carries `setup_complete: bool` and `setup_missing: list[str]` alongside the auth facts. It is the console's single boot probe, which is exactly why the setup fact rides it rather than getting an endpoint of its own.
 - `POST /v1/setup/seed` (admin) runs the ensure pass with the deployment's `default_workspace_template` and returns `{created, skipped, errors, setup_complete, setup_missing}`. On a fresh install `created` carries `prime`; on an install that predates the record it carries nothing for the workspace (the row is adopted, not created).
 - `POST /v1/workspaces/{id}/main_session` (user) ensures the caller's main operator session on the workspace: 201 with the row when this call created it, 200 with the caller's existing open operator session otherwise (section 2, "the main operator session").
-- `POST /v1/setup/reset_agents` (admin) restores the two seeded agents' defaults and returns `{reset: ["operator", "builder"]}`.
+- `POST /v1/setup/reset_agents` (admin) restores the five seeded agents' shipped definitions and returns `{reset: [...]}`, the roster ids in order (`operator`, `builder`, `planner`, `explorer`, `tool-runner`).
 - The `crud` toolset exposes nine tools: create and update for agents, graphs and triggers, plus the python-toolset trio. Every one is approval-gated by a seeded policy.
 
 ## 9. Internal contracts
 
 - Ensure NEVER overwrites a user edit. It creates when absent and returns.
-- `reset_agents` overwrites exactly three fields (`description`, `system_prompt`, `tools`) on exactly two rows. `model.profile_id` is preserved when the row exists, and resolved from the default profile only when the row is being created. Nothing else in storage is touched.
+- `reset_agents` overwrites exactly three fields (`description`, `system_prompt`, `tools`) on the five seeded rows. `model.profile_id` is preserved when the row exists, and resolved from the default profile only when the row is being created. Nothing else in storage is touched.
 - Agent seeding requires a default model profile; without one it skips and repairs on the next pass.
-- The operator does NOT hold the crud toolset. It reads, searches and delegates; the builder constructs. That split is what makes the approval gate meaningful, since the agent a human talks to cannot itself mutate the platform.
+- No seeded agent holds the crud toolset directly. Every agent reaches construction through `call_tool`, and the per-tool approval gate runs on the crud tools whatever the path (the meta-dispatch enforces the same gate a direct grant would), so the agent a human talks to cannot mutate the platform without approval.
+- Migration 11 (`m011_seeded_agents_core_kit.py`) is the only path that rewrites a stored seeded row in place: it upgrades a row only while it still equals a previously shipped definition (the v1 freeze in `primer/bootstrap/seeded_agents_v1.py`: same description, same prompt list, tools as a set), writes only `description`, `system_prompt` and `tools` through a `patch_if` guarded on the stored description, and leaves an edited row exactly as it is, naming it in one boot warning. `POST /v1/setup/reset_agents` is the explicit way back.
 - The system collection is regenerated at every pass: the live map under `this-install/` is rebuilt from live state whatever the wiki stamp says and pruned (a deleted workspace or provider disappears from the map on the next boot), while the platform wiki is written only when the version stamp lets this build replace the stored one - a build with no hand-written pages or a skipped toolset never claims the stamp and never deletes stored pages. See the [knowledge](knowledge.md) subsystem's platform-wiki-build paragraph.
 
 ## 10. Testing patterns
@@ -131,4 +134,5 @@ The wizard's two POSTs get a real integration test against a monkeypatched model
 - **The crud toolset re-homes existing handlers rather than duplicating them.** Why: `_crud_tools_for` already built create and update descriptors for agents and graphs, and the trigger toolset already had its own. Re-scoping the descriptors with `model_copy` keeps one implementation and one set of error codes. The factory's default is no guards, so this toolset passes the agent and graph managed-row declarations it shares with the system toolset (`AGENT_GUARDS` / `GRAPH_GUARDS` in `primer/toolset/_system_guards.py`); a re-homed descriptor without them would leave harness-managed rows writable by the builder (a structural test requires `guards=` on every call of the factory). Added: S5 (2026-08-19). Amended: D5 (2026-10-07).
 - **The python-toolset trio moved from `system` to `crud`.** Why: a tool that registers arbitrary python is a tool that runs arbitrary python, so it belongs behind the same approval gate as the rest of the construction surface. The bare names are unchanged; only the scope moved. Added: S5 (2026-08-19).
 - **Setup completeness is derived rather than stamped.** Why: a stamp claims something exists; deleting the row it described would leave the claim standing and the install permanently past a gate it no longer satisfies. Added: S5 (2026-08-19).
+- **The seeded agents' grants collapse to the core kit, moved by a versioned upgrade rather than at seed time.** Why: every agent reaches every capability through `system__call_tool` and discovers it in the platform wiki, so per-role grant lists are maintenance surface that drifts from the wiki; the upgrade is migration 11, which rewrites only a row that still equals a shipped definition (a `patch_if` guarded on the stored description, touching only `description`, `system_prompt` and `tools`), names an edited row in one warning, and preserves the model and every other field - the ensure pass still never overwrites. Added: pivot P2 slice S6 (2026-10-21).
 - **The default workspace's id is recorded, and an existing install keeps its own.** Why: the id `primer` was a constant every caller assumed, so naming the default workspace "prime" would have meant moving a live install's workspace (its sessions, files and Kubernetes objects are keyed by the id). A new `system_state.default_workspace_id` column names it instead: a fresh install creates `prime`, an upgraded one keeps `primer` and shows `prime`, and code asks `resolve_default_workspace_id`. The id is recorded before the row is created so the delete guard can name the default at every instant (the #770 review's binding point); adoption renames with a field-scoped `patch_if` so it cannot revert what the probe task writes; and adoption lives in one function called by both migration 10 and the ensure pass, because a baselined database never runs the migration. Added: pivot P2 slice S2 (2026-10-19).

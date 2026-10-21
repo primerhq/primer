@@ -54,6 +54,9 @@ from primer.storage.migrations.m009_docker_template_runtime_image import (
     M009DockerTemplateRuntimeImage,
 )
 from primer.storage.migrations.m010_default_workspace import M010DefaultWorkspace
+from primer.storage.migrations.m011_seeded_agents_core_kit import (
+    M011SeededAgentsCoreKit,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +85,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     M008EmbeddingProviderRepair(),
     M009DockerTemplateRuntimeImage(),
     M010DefaultWorkspace(),
+    M011SeededAgentsCoreKit(),
 )
 
 #: Highest version this build knows how to apply.
