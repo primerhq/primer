@@ -2,7 +2,7 @@
 
 Setup completeness is derived live (``primer/bootstrap/setup_state.py``): when the ``operator`` or
 ``builder`` agent row is missing, ``GET /v1/auth/status`` reports ``setup_complete: false`` and the
-console gate sends every admin to the setup checklist and parks every other user on a waiting screen.
+console gate sends every admin to the Finish setup screen and parks every other user on a waiting screen.
 The agents card used to delete either one behind the same generic "Permanently delete ...?" prompt, so
 one click and one OK locked everyone out of the console without a word of warning.
 
@@ -97,8 +97,10 @@ def test_deleting_a_setup_agent_says_it_reopens_setup_and_how_to_get_it_back(age
     text = dialog["message"]
     assert agent_id in text
     assert "not set up" in text, "it must say the install counts as not set up"
-    assert "setup checklist" in text and "waits" in text, "it must say who is sent where"
+    assert "Finish setup screen" in text and "waits" in text, "it must say who is sent where"
+    assert "setup checklist" not in text, "D6: there is no checklist page; the gate is the Finish setup screen"
     assert "restart" in text and "Re-run seed" in text, "it must say how the agent comes back"
+    assert "Setup card" in text and "System > Dashboard" in text, "and where else Re-run seed is"
     assert "default definition" in text, "it must say the re-created agent loses the user's edits"
     assert dialog["title"] == f"Delete {agent_id}"
     assert dialog["danger"] is True

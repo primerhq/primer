@@ -1,8 +1,8 @@
 """Deleting a built-in setup agent from the Platform agents card says what it does (ADM-13).
 
 The agents card used to ask the generic "Permanently delete operator?" for the ``operator`` and ``builder`` rows, and a
-single confirm then made ``GET /v1/auth/status`` report ``setup_complete: false``: every admin was sent to the setup
-checklist and every other user parked on a waiting screen. The unit tests (``tests/ui/test_platform_delete_confirm.py``)
+single confirm then made ``GET /v1/auth/status`` report ``setup_complete: false``: every admin was sent to the Finish setup screen
+and every other user parked on a waiting screen. The unit tests (``tests/ui/test_platform_delete_confirm.py``)
 run the prompt and the confirm-then-DELETE flow through MiniRacer; this journey drives the real card on the real server.
 
 The operator is only ever CANCELLED here: confirming it would take the shared server out of setup and fail every other
@@ -55,7 +55,7 @@ def test_the_operator_card_names_the_consequence_and_cancel_deletes_nothing(
     dialog = page.locator(".modal-overlay")
     expect(dialog).to_contain_text("Delete operator", timeout=5_000)
     expect(dialog).to_contain_text("not set up")
-    expect(dialog).to_contain_text("setup checklist")
+    expect(dialog).to_contain_text("Finish setup screen")
     expect(dialog).to_contain_text("Re-run seed")
     expect(dialog).to_contain_text("default definition")
 

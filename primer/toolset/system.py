@@ -489,8 +489,9 @@ def build_system_toolset(
         ),
         "agent": (
             f"Deleting the seeded ``{RESERVED_OPERATOR_AGENT}`` or ``{RESERVED_BUILDER_AGENT}`` agent marks the install as not set up: "
-            "admins are sent to the setup checklist and every other user waits on a setup screen until the agent is back. "
-            "``POST /v1/setup/seed`` (Re-run seed on the setup checklist), or the next server start, re-creates it with its default "
+            "from their next page load admins see the Finish setup screen and every other user waits on a setup screen until the agent is back. "
+            "``POST /v1/setup/seed`` (Re-run seed, on the Finish setup screen or in the Setup card's menu on System > Dashboard), "
+            "or the next server start, re-creates it with its default "
             "definition, not your edits. That delete is allowed. Any agent delete is refused (``type=conflict``, ``in_use_by``) while "
             "a graph's agent node, a session that is not ended or a trigger subscription still names the agent: remove or end those first. "
             f"It is also refused while the agent is the system default agent (the one a session created without a binding runs), "

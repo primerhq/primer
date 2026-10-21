@@ -283,10 +283,10 @@ Agents are managed via standard CRUD plus the semantic search tool.
   ended session can be re-opened later with `reset_session` (back to
   created) after its agent was deleted, and then fails at its next turn
   (`POST .../resume` itself answers 409 for an ended session). Deleting the seeded `operator` or `builder` agent is
-  allowed but marks the install as not set up (admins are sent to the
-  setup checklist, every other user waits on a setup screen) until
-  `POST /v1/setup/seed` or the next server start re-creates it with its
-  default definition, not your edits.
+  allowed but marks the install as not set up (from their next page load, admins see the
+  Finish setup screen and every other user waits on a setup screen) until
+  `POST /v1/setup/seed` (Re-run seed, also in the Setup card's menu on System > Dashboard)
+  or the next server start re-creates it with its default definition, not your edits.
 - `system::find_agents` - predicate query. A field that holds a secret (a `SecretStr`, a masked URL, or anything nesting one) cannot be a predicate or `order_by` key, and a cursor only carries the keys its own request sorts by: such a query, and a bad cursor, are refused `type=validation-error`.
 
 ### Model profiles (system toolset)
