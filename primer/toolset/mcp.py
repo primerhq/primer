@@ -24,7 +24,7 @@ from primer.common.mcp_errors import classify_mcp_exception
 from primer.int.toolset import ToolsetProvider
 from primer.llm._failure import mask_values
 from primer.model.chat import Tool, ToolCallResult
-from primer.model.except_ import AuthRequiredError, ConfigError, PrimerError
+from primer.model.except_ import ConfigError, PrimerError
 from primer.model.provider import (
     HttpConfig,
     McpConfig,
@@ -32,7 +32,6 @@ from primer.model.provider import (
     TransportType,
 )
 from primer.model.yield_ import ToolContext, Yielded
-from primer.toolset.oauth.handler import PrimerOAuthHandler
 
 
 # Canonical tool_name for MCP task parks in the resume registry.
@@ -76,11 +75,7 @@ class McpToolsetProvider(ToolsetProvider):
     call (cheap; the SDK has no long-lived equivalent for stateless
     HTTP MCP).
 
-    The ``oauth`` constructor argument and :meth:`complete_oauth` method
-    are accepted unconditionally so sub-project #10 can wire OAuth in
-    without breaking callers built against this version. In this
-    sub-project ``oauth`` MUST be ``None``; passing anything else is
-    accepted (the field is stored) but unused.
+    OAuth sign-in is wired by the shared service in the API layer.
     """
 
     # Listing means a round trip to another process or host that can be down, can need a sign-in, or can accept the
@@ -92,7 +87,6 @@ class McpToolsetProvider(ToolsetProvider):
         toolset_id: str,
         config: McpConfig,
         *,
-        oauth: PrimerOAuthHandler | None = None,
         client_name: str = "primer",
         client_version: str = "0.0.1",
         allowed_stdio_commands: frozenset[str] | None = None,
@@ -107,7 +101,6 @@ class McpToolsetProvider(ToolsetProvider):
         """
         self._toolset_id = toolset_id
         self._config = config
-        self._oauth = oauth
         self._client_name = client_name
         self._client_version = client_version
         self._allowed_stdio_commands = allowed_stdio_commands
@@ -386,12 +379,6 @@ class McpToolsetProvider(ToolsetProvider):
             except Exception as exc:
                 raise self._classified(exc) from exc
 
-    async def complete_oauth(self, *, code: str, state: str) -> None:
-        """Finish an OAuth flow started by an earlier AuthRequiredError."""
-        if self._oauth is None:
-            raise ConfigError("OAuth not configured for this provider")
-        await self._oauth.complete_oauth(code=code, state_id=state)
-
     async def aclose(self) -> None:
         """No-op: stdio subprocesses are per-dispatch and already closed.
 
@@ -414,10 +401,7 @@ class McpToolsetProvider(ToolsetProvider):
         error. The subprocess is local to this dispatch -- concurrent
         dispatches each get their own subprocess, so there is no shared
         cached session to stomp. HTTP: opens a fresh session per call.
-        ``principal`` is forwarded into the OAuth flow for HTTP
-        transports; passing it as a parameter (rather than via an
-        instance field) closes the race where two concurrent requests
-        would clobber each other's principal.
+        ``principal`` remains accepted for the common provider interface.
 
         Subclasses may override this entirely (used in tests to inject a
         pre-built session over in-memory streams).
@@ -441,10 +425,6 @@ class McpToolsetProvider(ToolsetProvider):
             base_headers: dict[str, str] = {
                 k: v.get_secret_value() for k, v in http_cfg.headers.items()
             }
-            if self._oauth is not None:
-                # May raise AuthRequiredError -- intended bubble-out.
-                auth_headers = await self._oauth.authorize(principal=principal)
-                base_headers.update(auth_headers)
             headers = base_headers if base_headers else None
 
             # Structured, lexically-nested `async with` -- NOT AsyncExitStack.
@@ -491,7 +471,7 @@ class McpToolsetProvider(ToolsetProvider):
                             async with ClientSession(read, write) as session:
                                 await session.initialize()
                                 yield session
-            except (ConfigError, AuthRequiredError, GeneratorExit):
+            except (ConfigError, GeneratorExit):
                 raise
             except Exception as exc:
                 raise self._classified(exc) from exc

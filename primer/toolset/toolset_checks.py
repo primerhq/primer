@@ -68,17 +68,16 @@ def runs_python(entity: Toolset) -> bool:
     return entity.provider == ToolsetProviderType.PYTHON
 
 
-def _endpoint(entity: Toolset) -> tuple[str, str | None, str | None, str | None] | None:
-    """Where an http / sse MCP toolset sends its stored secrets: the URL and the OAuth endpoints (the legacy redirect URI, the resource, the token endpoint of a client-credentials sign-in).
+def _endpoint(entity: Toolset) -> tuple[str, str | None, str | None] | None:
+    """Where an http / sse MCP toolset sends its stored secrets: the URL and the OAuth resource and token endpoints.
     ``None`` for any other toolset."""
     config = getattr(entity.config, "config", None)
     if entity.provider != ToolsetProviderType.MCP or not isinstance(config, HttpConfig):
         return None
     oauth = config.oauth
     if oauth is None:
-        return (config.url, None, None, None)
-    redirect_uri = None if oauth.redirect_uri is None else str(oauth.redirect_uri)
-    return (config.url, redirect_uri, oauth.resource_uri, oauth.token_endpoint)
+        return (config.url, None, None)
+    return (config.url, oauth.resource_uri, oauth.token_endpoint)
 
 
 def repoints_stored_secrets(entity: Toolset, existing: Toolset) -> bool:

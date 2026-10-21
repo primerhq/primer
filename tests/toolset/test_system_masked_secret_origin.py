@@ -138,15 +138,22 @@ async def test_create_still_accepts_a_real_body(system_toolset, sp) -> None:
 # ---- part B: update_toolset answers instead of raising ---------------------------------------------------------------------------------------------------------------------
 
 
-def _toolset(url: str, redirect: str, header: str | None = None) -> dict:
-    http = {"url": url, "oauth": {"redirect_uri": redirect, "static_client": {"client_id": "c", "client_secret": "cs-123456"}}}
+def _toolset(url: str, token_endpoint: str, header: str | None = None) -> dict:
+    http = {
+        "url": url,
+        "oauth": {
+            "grant": "client_credentials",
+            "token_endpoint": token_endpoint,
+            "static_client": {"client_id": "c", "client_secret": "cs-123456"},
+        },
+    }
     if header is not None:
         http["headers"] = {"Authorization": header}
     return {"id": "ts-http", "provider": "mcp", "config": {"transport": "http", "config": http}}
 
 
 @pytest.mark.asyncio
-async def test_update_toolset_answers_a_redirect_uri_that_carries_the_mask_instead_of_raising(system_toolset, sp) -> None:
+async def test_update_toolset_answers_a_token_endpoint_that_carries_the_mask_instead_of_raising(system_toolset, sp) -> None:
     """The check that decides who may write (``admin_when`` -> ``repoints_stored_secrets``) runs ``preserve_masked_secrets`` on a copy, and it used to raise out of the tool."""
     await _create(system_toolset, _toolset("http://127.0.0.1:9/mcp", "http://127.0.0.1:9/cb"), kind="toolset")
     body = _toolset("http://127.0.0.1:9/mcp", "http://u:**********@127.0.0.1:9/cb2")
@@ -155,7 +162,7 @@ async def test_update_toolset_answers_a_redirect_uri_that_carries_the_mask_inste
     user = await system_toolset.call(tool_name="update_toolset", arguments={"id": "ts-http", "entity": body}, ctx=caller("user"))
 
     assert admin.is_error and _error_type(admin) == "validation-error", admin.output           # the mask cannot be restored: a refusal the agent can read
-    assert user.is_error and _error_type(user) == "forbidden", user.output                      # the admin gate still answers first for a non-admin
+    assert user.is_error and _error_type(user) == "validation-error", user.output                # malformed endpoint credentials are refused before the role gate
 
 
 @pytest.mark.asyncio

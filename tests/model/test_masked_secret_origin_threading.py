@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import AnyUrl, BaseModel, HttpUrl, SecretStr
+from pydantic import AnyUrl, BaseModel, SecretStr
 
 from primer.model.common import preserve_masked_secrets, refuse_served_masks
 from primer.model.except_ import ValidationError as PrimerValidationError
@@ -115,7 +115,7 @@ def test_an_endpoint_that_goes_away_is_a_moved_origin() -> None:
 
 
 def _oauth(url: str, secret: str, resource_uri: str | None = None) -> HttpConfig:
-    oauth: dict = {"redirect_uri": "https://home.example/cb", "static_client": {"client_id": "c", "client_secret": secret}}
+    oauth: dict = {"static_client": {"client_id": "c", "client_secret": secret}}
     if resource_uri is not None:
         oauth["resource_uri"] = resource_uri
     return HttpConfig.model_validate({"url": url, "oauth": oauth})
@@ -139,17 +139,6 @@ def test_moving_only_the_oauth_resource_uri_refuses_the_client_secret_mask() -> 
 
     with pytest.raises(PrimerValidationError, match="re-enter the secret"):
         preserve_masked_secrets(moved, stored)
-
-
-def test_moving_only_the_oauth_redirect_uri_is_not_a_move_of_where_the_secret_is_sent() -> None:
-    """The redirect URI is where the browser returns, not where the client secret goes: the toolset admin gate still asks an admin for it (``toolset_admin_reason``), the origin rule does not."""
-    stored = _oauth("https://home.example/mcp", STORED)
-    sent = _oauth("https://home.example/mcp", BARE)
-    sent.oauth.redirect_uri = HttpUrl("https://attacker.example/cb")
-
-    preserve_masked_secrets(sent, stored)
-
-    assert sent.oauth.static_client.client_secret.get_secret_value() == STORED
 
 
 def _client_credentials(token_endpoint: str | None, secret: str, url: str = "https://home.example/mcp") -> HttpConfig:

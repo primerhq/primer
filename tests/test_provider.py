@@ -863,42 +863,33 @@ class TestOAuthConfig:
     def test_minimal_oauth_config(self) -> None:
         from primer.model.provider import OAuthConfig
 
-        c = OAuthConfig(redirect_uri="https://app.example/callback")
-        assert str(c.redirect_uri).startswith("https://app.example/callback")
+        c = OAuthConfig()
+        assert c.grant == "authorization_code"
         assert c.scopes == []
         assert c.resource_uri is None
         assert c.static_client is None
-        assert c.spec_version is None
         assert c.client_name == "primer"
 
     def test_with_scopes_and_static_client(self) -> None:
         from primer.model.provider import OAuthClientCredentials, OAuthConfig
 
         c = OAuthConfig(
-            redirect_uri="https://app.example/cb",
             scopes=["read", "write"],
             static_client=OAuthClientCredentials(
                 client_id="abc",
                 client_secret="shh",
             ),
-            spec_version="2025-06-18",
         )
         assert c.scopes == ["read", "write"]
         assert c.static_client is not None
         assert c.static_client.client_id == "abc"
-        assert c.spec_version == "2025-06-18"
 
-    def test_invalid_spec_version_rejected(self) -> None:
-        import pytest
-        from pydantic import ValidationError
-
+    def test_retired_keys_on_an_old_row_are_ignored(self) -> None:
         from primer.model.provider import OAuthConfig
 
-        with pytest.raises(ValidationError):
-            OAuthConfig(
-                redirect_uri="https://app.example/cb",
-                spec_version="2024-01-01",
-            )
+        c = OAuthConfig.model_validate({"redirect_uri": "https://app.example/cb", "spec_version": "2025-06-18"})
+        assert not hasattr(c, "redirect_uri")
+        assert not hasattr(c, "spec_version")
 
 
 class TestHttpConfigOAuth:
@@ -913,10 +904,10 @@ class TestHttpConfigOAuth:
 
         c = HttpConfig(
             url="http://localhost:9999/mcp",
-            oauth=OAuthConfig(redirect_uri="https://app.example/cb"),
+            oauth=OAuthConfig(),
         )
         assert c.oauth is not None
-        assert str(c.oauth.redirect_uri).startswith("https://app.example/cb")
+        assert c.oauth.grant == "authorization_code"
 
 
 def test_semantic_search_provider_pgvector_construction():
