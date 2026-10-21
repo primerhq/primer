@@ -137,22 +137,6 @@ class TestConstructor:
         )
         assert provider is not None
 
-    def test_complete_oauth_without_handler_raises_config_error(self) -> None:
-        provider = McpToolsetProvider(
-            toolset_id="ts1",
-            config=McpConfig(
-                transport=TransportType.STDIO,
-                config=StdioConfig(command=["true"]),
-            ),
-        )
-
-        async def _go() -> None:
-            await provider.complete_oauth(code="x", state="y")
-
-        with pytest.raises(ConfigError):
-            asyncio.run(_go())
-
-
 class TestListToolsStdio:
     async def test_lists_both_test_tools(self) -> None:
         server = _make_test_server()
@@ -849,75 +833,6 @@ class TestSessionRequestErrors:
         provider = _InMemoryMcpToolsetProvider(toolset_id="ts1", session=fake_session)
         with pytest.raises(PrimerError):
             await provider.call(tool_name="echo", arguments={})
-
-
-# ---- OAuth integration tests ----------------------------------------------
-
-
-class TestMcpOAuthIntegration:
-    def test_complete_oauth_with_handler_dispatches(self, monkeypatch) -> None:
-        from unittest.mock import AsyncMock
-
-        from primer.model.provider import OAuthConfig
-        from primer.toolset.oauth.handler import PrimerOAuthHandler
-
-        config = OAuthConfig(redirect_uri="https://app.example/cb")
-        handler = PrimerOAuthHandler(
-            oauth_config=config,
-            mcp_url="https://mcp.example/mcp",
-            toolset_id="ts1",
-        )
-        complete_mock = AsyncMock()
-        monkeypatch.setattr(handler, "complete_oauth", complete_mock)
-
-        provider = McpToolsetProvider(
-            toolset_id="ts1",
-            config=McpConfig(
-                transport=TransportType.HTTP,
-                config=HttpConfig(url="https://mcp.example/mcp"),
-            ),
-            oauth=handler,
-        )
-
-        async def _go():
-            await provider.complete_oauth(code="c", state="s")
-
-        asyncio.run(_go())
-        complete_mock.assert_awaited_once_with(code="c", state_id="s")
-
-    async def test_oauth_authorize_raises_auth_required_propagates_to_list_tools(
-        self, monkeypatch
-    ) -> None:
-        from primer.model.except_ import AuthRequiredError
-        from primer.model.provider import OAuthConfig
-        from primer.toolset.oauth.handler import PrimerOAuthHandler
-
-        config = OAuthConfig(redirect_uri="https://app.example/cb")
-        handler = PrimerOAuthHandler(
-            oauth_config=config,
-            mcp_url="https://mcp.example/mcp",
-            toolset_id="ts1",
-        )
-
-        async def _raise(*, principal):
-            raise AuthRequiredError(
-                "consent",
-                auth_url="https://idp.example/auth",
-                state="state-id",
-            )
-        monkeypatch.setattr(handler, "authorize", _raise)
-
-        provider = McpToolsetProvider(
-            toolset_id="ts1",
-            config=McpConfig(
-                transport=TransportType.HTTP,
-                config=HttpConfig(url="https://mcp.example/mcp"),
-            ),
-            oauth=handler,
-        )
-        with pytest.raises(AuthRequiredError):
-            async for _ in provider.list_tools(principal="u-1"):
-                pass
 
 
 class TestBrokenStdioHandshake:

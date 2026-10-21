@@ -48,7 +48,11 @@ def _http(url: str, header: str, client_secret: str | None = None, toolset_id: s
     if client_secret is not None:
         config = {
             "url": url,
-            "oauth": {"redirect_uri": "http://127.0.0.1:9/cb", "static_client": {"client_id": "c", "client_secret": client_secret}},
+            "oauth": {
+                "grant": "client_credentials",
+                "token_endpoint": "http://127.0.0.1:9/token",
+                "static_client": {"client_id": "c", "client_secret": client_secret},
+            },
         }
     return {"id": toolset_id, "provider": "mcp", "config": {"transport": "http", "config": config}}
 
@@ -160,8 +164,8 @@ async def test_a_user_run_cannot_repoint_a_toolset_while_its_oauth_client_secret
 
 @pytest.mark.parametrize(
     "oauth_change",
-    [{"redirect_uri": "http://evil.example/cb"}, {"resource_uri": "http://evil.example/mcp"}],
-    ids=["redirect_uri", "resource_uri"],
+    [{"token_endpoint": "http://evil.example/token"}, {"resource_uri": "http://evil.example/mcp"}],
+    ids=["token_endpoint", "resource_uri"],
 )
 async def test_a_user_run_cannot_move_only_the_oauth_endpoints_while_the_client_secret_rides_along(toolset_and_storage, oauth_change):
     """The URL stays put: only the OAuth endpoints count as the move, so the rule must compare them too."""
@@ -176,7 +180,7 @@ async def test_a_user_run_cannot_move_only_the_oauth_endpoints_while_the_client_
 
     assert result.is_error and _error_type(result) == "forbidden", result.output
     oauth = (await storage.get("ts-http")).config.config.oauth
-    assert (str(oauth.redirect_uri), oauth.resource_uri) == ("http://127.0.0.1:9/cb", None)
+    assert (oauth.token_endpoint, oauth.resource_uri) == ("http://127.0.0.1:9/token", None)
 
 
 async def test_a_user_run_may_repoint_a_toolset_when_it_re_enters_the_secrets(toolset_and_storage):

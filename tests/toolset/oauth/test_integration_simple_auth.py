@@ -18,7 +18,6 @@ Optional env (read per the no-hardcoded-secrets rule):
                              http://localhost:8765/callback -- this test never
                              binds it; it intercepts the redirect itself)
   PRIMER_OAUTH_SCOPES        space-separated scopes (default "user")
-  PRIMER_OAUTH_SPEC_VERSION  force a spec version (default: probe)
   PRIMER_OAUTH_TOOL          tool name to call after auth (default: first tool)
   PRIMER_OAUTH_USERNAME      demo-login username (default "demo_user")
   PRIMER_OAUTH_PASSWORD      demo-login password (default "demo_password")
@@ -29,7 +28,7 @@ credentials (read from env, never hardcoded as secrets -- the defaults are
 the example's public demo values) to obtain the redirect carrying the code.
 
 What it asserts: primer does DCR -> builds a PKCE authorization URL ->
-the (auto-consenting) AS redirects back with a code -> complete_oauth()
+the (auto-consenting) AS redirects back with a code -> the shared service
 exchanges it for a bearer token -> an authenticated MCP tools/call succeeds.
 """
 
@@ -42,18 +41,17 @@ from urllib.parse import parse_qs, urljoin, urlparse
 import httpx
 import pytest
 
-from primer.model.except_ import AuthRequiredError
+from primer.common.secret_box import SecretBox
 from primer.model.provider import (
     HttpConfig,
     McpConfig,
     OAuthConfig,
+    Toolset,
+    ToolsetProviderType,
     TransportType,
 )
 from primer.toolset.mcp import McpToolsetProvider
-from primer.toolset.oauth.handler import PrimerOAuthHandler
-from primer.toolset.oauth.registration import InMemoryClientCredentialsCache
-from primer.toolset.oauth.state import InMemoryStateStore
-from primer.toolset.oauth.token_store import InMemoryTokenStore
+from primer.toolset.oauth.service import OAuthTarget, ToolsetOAuthService
 
 
 _MCP_URL = os.environ.get("PRIMER_OAUTH_MCP_URL")
@@ -66,17 +64,12 @@ pytestmark = pytest.mark.skipif(
 
 def _config() -> OAuthConfig:
     scopes = os.environ.get("PRIMER_OAUTH_SCOPES", "user").split()
-    spec = os.environ.get("PRIMER_OAUTH_SPEC_VERSION") or None
     return OAuthConfig(
-        redirect_uri=os.environ.get(
-            "PRIMER_OAUTH_REDIRECT_URI", "http://localhost:8765/callback"
-        ),
         scopes=scopes,
         # None -> primer derives the MCP origin as the resource indicator.
         resource_uri=None,
         # None -> primer performs Dynamic Client Registration (RFC 7591).
         static_client=None,
-        spec_version=spec,  # type: ignore[arg-type]
         client_name="primer-oauth-integration-test",
     )
 
@@ -153,50 +146,53 @@ async def _follow_auth_url_for_code(auth_url: str) -> tuple[str, str]:
         raise AssertionError("too many redirects following the auth URL")
 
 
-async def test_headless_oauth_flow_against_simple_auth() -> None:
+async def test_headless_oauth_flow_against_simple_auth(fake_storage_provider) -> None:
     assert _MCP_URL is not None
+    redirect_uri = os.environ.get("PRIMER_OAUTH_REDIRECT_URI", "http://localhost:8765/callback")
+    toolset = Toolset(
+        id="integration-ts",
+        provider=ToolsetProviderType.MCP,
+        config=McpConfig(
+            transport=TransportType.HTTP,
+            config=HttpConfig(url=_MCP_URL, oauth=_config()),
+        ),
+    )
+    target = OAuthTarget.from_toolset(toolset)
+    assert target is not None
     async with httpx.AsyncClient(timeout=30.0) as http:
-        handler = PrimerOAuthHandler(
-            oauth_config=_config(),
-            mcp_url=_MCP_URL,
-            toolset_id="integration-ts",
-            token_store=InMemoryTokenStore(),
-            state_store=InMemoryStateStore(),
-            client_cache=InMemoryClientCredentialsCache(),
+        service = ToolsetOAuthService(
+            storage_provider=fake_storage_provider,
+            secret_box=SecretBox.from_key_material("integration-test-key-0123456789"),
             http=http,
         )
-
-        # Phase 1: authorize() with no cached token must raise AuthRequired
-        # after doing discovery + DCR + building the PKCE authorization URL.
-        with pytest.raises(AuthRequiredError) as exc:
-            await handler.authorize(principal="integration-user")
-        auth_url = exc.value.auth_url
-        state_id = exc.value.state
+        start = await service.start_sign_in(target, redirect_uri=redirect_uri, started_by="integration-user")
+        assert start.authorize_url is not None
+        auth_url = start.authorize_url
 
         q = parse_qs(urlparse(auth_url).query)
         assert q["response_type"] == ["code"]
         assert q["code_challenge_method"] == ["S256"]
-        assert q["state"] == [state_id]
+        assert q["state"]
 
         # Phase 2: script-follow the auth URL (server auto-consents).
         code, returned_state = await _follow_auth_url_for_code(auth_url)
-        assert returned_state == state_id
+        assert returned_state == q["state"][0]
 
         # Phase 3: exchange the code for a token.
-        await handler.complete_oauth(code=code, state_id=returned_state)
-
-        # The next authorize() now returns the bearer header from cache.
-        headers = await handler.authorize(principal="integration-user")
-        assert headers["Authorization"].startswith("Bearer ")
+        await service.complete_sign_in(
+            toolset,
+            toolset_id=toolset.id,
+            state=returned_state,
+            code=code,
+            error=None,
+        )
+        assert await service.access_token(target)
 
         # Phase 4: an authenticated MCP tools/call must succeed.
         provider = McpToolsetProvider(
             toolset_id="integration-ts",
-            config=McpConfig(
-                transport=TransportType.HTTP,
-                config=HttpConfig(url=_MCP_URL),
-            ),
-            oauth=handler,
+            config=toolset.config,
+            oauth=service,
         )
         tools = [t async for t in provider.list_tools(principal="integration-user")]
         assert tools, "authenticated list_tools returned no tools"
@@ -208,3 +204,4 @@ async def test_headless_oauth_flow_against_simple_auth() -> None:
             principal="integration-user",
         )
         assert result is not None
+        await service.aclose()

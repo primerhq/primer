@@ -56,13 +56,6 @@ class OAuthConfig(BaseModel):
             "exchanges static_client's id and secret for a token itself (both are required)."
         ),
     )
-    redirect_uri: HttpUrl | None = Field(
-        default=None,
-        description=(
-            "Legacy. The redirect URI of a browser sign-in is derived from the deployment's public URL and the toolset id, so this value is not "
-            "needed; it is accepted so that rows written before the revamp still load."
-        ),
-    )
     scopes: list[str] = Field(
         default_factory=list,
         description="OAuth scopes to request. Empty list = whatever the server defaults to.",
@@ -81,14 +74,6 @@ class OAuthConfig(BaseModel):
             "credentials. Required when the auth server does not "
             "support DCR; optional otherwise. With grant='client_credentials' "
             "the client_secret is required too."
-        ),
-    )
-    spec_version: Literal["2025-03-26", "2025-06-18", "2025-11-25"] | None = Field(
-        default=None,
-        description=(
-            "Force a specific MCP authorization spec version. If None, "
-            "the adapter probes (newest -> oldest) and picks the first "
-            "version the server supports."
         ),
     )
     token_endpoint: str | None = Field(
