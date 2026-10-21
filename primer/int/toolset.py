@@ -10,17 +10,17 @@ construction time and expose two operations:
 * :meth:`ToolsetProvider.call` -- invoke one tool by name with an
   argument dict, returning a :class:`primer.model.chat.ToolCallResult`.
 
-The optional ``principal`` parameter on both methods is the
-caller-supplied identity of the end user on whose behalf the operation
-runs. Providers that hold per-user state (an OAuth token cache, for
-instance) use it as the cache key; providers that don't (the in-process
-internal registry, MCP without OAuth) ignore it. ``None`` is permitted
-and is treated as an anonymous principal by providers that distinguish.
+The optional ``principal`` parameter on both methods is the identity in
+the dispatch or run context. The model cannot choose it. Providers may
+use it for caller-aware policy, while providers without caller-specific
+behaviour ignore it. MCP OAuth is one shared sign-in per toolset and does
+not choose credentials by principal. ``None`` is permitted and means the
+dispatch has no principal context.
 
-Adapters that need OAuth consent before they can answer raise
-:class:`primer.model.except_.AuthRequiredError` (added in sub-project
-#10). Callers MUST handle that case explicitly so the URL reaches the
-end user before any generic ``except PrimerError`` swallows it.
+An MCP adapter whose shared sign-in is unusable raises
+:class:`primer.model.mcp_oauth.McpSignInRequiredError`. Agent dispatch
+turns that into a tool error, while remote listing omits the toolset and
+adds a notice to the turn.
 
 See the design spec at
 ``docs/superpowers/specs/2026-04-26-toolset-provider-oauth-design.md``
@@ -68,10 +68,10 @@ class ToolsetProvider(ABC):
         Parameters
         ----------
         principal
-            Caller-supplied end-user identity. Providers that scope
-            state per user (OAuth token cache) use it as the cache key.
-            Providers that don't ignore it. ``None`` is the anonymous
-            principal.
+            Identity supplied by the dispatch or run context. Providers
+            may use it for caller-aware policy. MCP OAuth credentials are
+            shared by toolset and ignore it. ``None`` means no principal
+            context is available.
 
         Returns
         -------
@@ -83,8 +83,9 @@ class ToolsetProvider(ABC):
 
         Raises
         ------
-        primer.model.except_.AuthRequiredError
-            OAuth consent required before this provider can answer.
+        primer.model.mcp_oauth.McpSignInRequiredError
+            The MCP toolset needs an operator to reconnect its shared
+            sign-in before it can answer.
         primer.model.except_.ProviderError
         primer.model.except_.NetworkError
             Standard upstream / transport failures.
@@ -133,8 +134,9 @@ class ToolsetProvider(ABC):
         ------
         primer.model.except_.UnsupportedContentError
             ``tool_name`` is not exposed by this provider.
-        primer.model.except_.AuthRequiredError
-            OAuth consent required before this provider can answer.
+        primer.model.mcp_oauth.McpSignInRequiredError
+            The MCP toolset needs an operator to reconnect its shared
+            sign-in before it can answer.
         primer.model.except_.ProviderError
         primer.model.except_.NetworkError
             Standard upstream / transport failures.
