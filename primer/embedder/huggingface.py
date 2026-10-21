@@ -7,13 +7,17 @@ not API-shaped: no SDK client, no HTTP. Wraps the synchronous
 
 Models load lazily on first :meth:`embed` call against each model
 (downloads from HuggingFace Hub on first use, cached locally
-thereafter via the standard HF cache).
+thereafter via the standard HF cache). The loaded model is cached
+process-wide per (model name, token), so provider rows sharing a model
+load it once (PR #835 capacity fix); see the process-wide model cache
+below.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from collections.abc import Iterable
 from typing import Any
 
@@ -209,6 +213,79 @@ def _classify_hf_exception(exc: Exception) -> PrimerError:
     return ProviderError(str(exc), cause=exc)
 
 
+# --------------------------------------------------------------------------- #
+# Process-wide model cache                                                     #
+# --------------------------------------------------------------------------- #
+#
+# Provider rows are per-connection objects (one HuggingFaceEmbedder per
+# row via the provider registry), but the loaded sentence-transformers
+# model is per (model name, token): the e2e lifecycle suite seeds 34 rows
+# with the same model, and a per-row cache re-paid the ~90MB load on every
+# IC bootstrap (PR #835 capacity recurrence, e2e red x2 at 0a92b5695).
+#
+# _cache_lock guards only the synchronous dict ops - never across an await
+# (the primer/llm/_tokenizer/_executor.py pattern). Concurrent first
+# loads of the same key dedup through the per-key future so the loader
+# runs exactly once even when two rows race into _get_model together; a
+# failed load is not cached, so the next call retries.
+
+
+_model_cache: dict[tuple[str, str | None], SentenceTransformer] = {}
+_pending_loads: dict[
+    tuple[str, str | None], asyncio.Future[SentenceTransformer]
+] = {}
+_cache_lock = threading.Lock()
+
+
+def _clear_model_cache() -> None:
+    """Test seam: drop every cached model and in-flight load.
+
+    The unit tests patch ``SentenceTransformer`` per test, so a cache
+    entry from an earlier test would shadow the patch; the test module
+    clears the cache around every test.
+    """
+    with _cache_lock:
+        _model_cache.clear()
+        _pending_loads.clear()
+
+
+async def _load_shared_model(
+    name: str, token: str | None
+) -> SentenceTransformer:
+    """Load ``name`` exactly once per (name, token) per process.
+
+    Returns the cached model when a previous load finished; when another
+    coroutine is already loading the same key, awaits that loader's
+    future instead of starting a second load.
+    """
+    key = (name, token)
+    with _cache_lock:
+        model = _model_cache.get(key)
+        if model is not None:
+            return model
+        loader = _pending_loads.get(key)
+        if loader is None:
+            loader = asyncio.get_running_loop().create_future()
+            _pending_loads[key] = loader
+            is_loader = True
+        else:
+            is_loader = False
+    if not is_loader:
+        return await loader
+    try:
+        model = await asyncio.to_thread(SentenceTransformer, name, token=token)
+    except BaseException as exc:
+        with _cache_lock:
+            _pending_loads.pop(key, None)
+        loader.set_exception(exc)
+        raise
+    with _cache_lock:
+        _model_cache[key] = model
+        _pending_loads.pop(key, None)
+    loader.set_result(model)
+    return model
+
+
 class HuggingFaceEmbedder(Embedder):
     """Local embedding adapter via sentence-transformers."""
 
@@ -257,15 +334,17 @@ class HuggingFaceEmbedder(Embedder):
         return [m.name for m in self._provider.models]
 
     async def _get_model(self, name: str) -> SentenceTransformer:
-        if name not in self._models:
-            # The token is optional (a public model needs none): no token and an empty one both mean "anonymous".
-            token_value = self._config.token.get_secret_value() if self._config.token is not None else ""
-            self._models[name] = await asyncio.to_thread(
-                SentenceTransformer,
-                name,
-                token=token_value or None,
-            )
-        return self._models[name]
+        """Load the model through the process-wide cache.
+
+        ``self._models`` stays the per-instance view (the historical
+        introspection surface of this adapter); the loaded weights are
+        shared across every HuggingFaceEmbedder in the process.
+        """
+        # The token is optional (a public model needs none): no token and an empty one both mean "anonymous".
+        token_value = self._config.token.get_secret_value() if self._config.token is not None else ""
+        model = await _load_shared_model(name, token_value or None)
+        self._models[name] = model
+        return model
 
     async def embed(  # type: ignore[override]
         self,

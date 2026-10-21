@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
+import time
+from collections.abc import Iterator
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -22,12 +25,13 @@ from primer.model.provider import (
 
 def _make_provider(
     *,
+    provider_id: str = "hf-default",
     token: str = "hf-test-token",
     models: list[str] | None = None,
     max_concurrency: int = 4,
 ) -> EmbeddingProvider:
     return EmbeddingProvider(
-        id="hf-default",
+        id=provider_id,
         provider=EmbeddingProviderType.HUGGINGFACE,
         models=[
             EmbeddingModel(name=name)
@@ -108,6 +112,7 @@ import numpy as np
 
 from primer.embedder.huggingface import (
     _classify_hf_exception,
+    _clear_model_cache,
     _encode_sync,
     _part_to_text,
     _translate_response,
@@ -133,6 +138,16 @@ from primer.model.except_ import (
     ProviderError,
     UnsupportedContentError,
 )
+
+
+@pytest.fixture(autouse=True)
+def _fresh_model_cache() -> Iterator[None]:
+    """The model cache is process-wide: clear it before and after every
+    test so a per-test SentenceTransformer patch is never shadowed by a
+    cache entry left behind by an earlier test."""
+    _clear_model_cache()
+    yield
+    _clear_model_cache()
 
 
 class TestPartToText:
@@ -497,6 +512,106 @@ class TestConcurrency:
 
         await asyncio.gather(consume(), consume(), consume())
         assert peak == 1
+
+
+class TestProcessWideModelCache:
+    """The model cache is process-wide, keyed by (model name, token).
+
+    Provider rows are per-connection objects, but the loaded
+    sentence-transformers model is per (model name, token): the e2e
+    lifecycle suite seeds 34 rows with the same model, and the per-row
+    cache re-paid the ~90MB load on every bootstrap (PR #835 capacity
+    recurrence). Two rows sharing a model + token load it once; different
+    models or different tokens do not collide.
+    """
+
+    async def test_two_provider_rows_same_model_and_token_load_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cls_mock, instance = _patched_st(monkeypatch, np.array([[0.1]]))
+        embedder_a = HuggingFaceEmbedder(
+            _make_provider(provider_id="row-a", models=["m1"])
+        )
+        embedder_b = HuggingFaceEmbedder(
+            _make_provider(provider_id="row-b", models=["m1"])
+        )
+        out_a = await embedder_a.embed(model="m1", inputs=[TextPart(text="a")])
+        out_b = await embedder_b.embed(model="m1", inputs=[TextPart(text="b")])
+        assert cls_mock.call_count == 1
+        assert instance.encode.call_count == 2
+        assert out_a.embeddings[0].vector == pytest.approx(
+            out_b.embeddings[0].vector
+        )
+
+    async def test_different_model_names_do_not_collide(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cls_mock, _ = _patched_st(monkeypatch, np.array([[0.1]]))
+        embedder = HuggingFaceEmbedder(_make_provider(models=["m1", "m2"]))
+        await embedder.embed(model="m1", inputs=[TextPart(text="a")])
+        await embedder.embed(model="m2", inputs=[TextPart(text="b")])
+        assert cls_mock.call_count == 2
+
+    async def test_different_tokens_do_not_collide(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cls_mock, _ = _patched_st(monkeypatch, np.array([[0.1]]))
+        embedder_a = HuggingFaceEmbedder(
+            _make_provider(provider_id="row-a", models=["m1"], token="tok-a")
+        )
+        embedder_b = HuggingFaceEmbedder(
+            _make_provider(provider_id="row-b", models=["m1"], token="tok-b")
+        )
+        await embedder_a.embed(model="m1", inputs=[TextPart(text="a")])
+        await embedder_b.embed(model="m1", inputs=[TextPart(text="b")])
+        assert cls_mock.call_count == 2
+
+    async def test_failed_load_is_not_cached(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A load failure propagates raw (embed only classifies encode
+        # failures); the key must not be cached, so the retry loads again.
+        instance = _make_st_mock(np.array([[0.1]]))
+        cls_mock = MagicMock(
+            side_effect=[RuntimeError("hub down"), instance]
+        )
+        monkeypatch.setattr("primer.embedder.huggingface.SentenceTransformer", cls_mock)
+        embedder = HuggingFaceEmbedder(_make_provider(models=["m1"]))
+        with pytest.raises(RuntimeError, match="hub down"):
+            await embedder.embed(model="m1", inputs=[TextPart(text="a")])
+        out = await embedder.embed(model="m1", inputs=[TextPart(text="b")])
+        assert cls_mock.call_count == 2
+        assert out.embeddings[0].vector == pytest.approx([0.1])
+
+    async def test_concurrent_first_loads_of_one_key_dedup_to_a_single_load(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        loaded = threading.Event()
+
+        def slow_load(*args, **kwargs):
+            loaded.set()
+            time.sleep(0.2)
+            return _make_st_mock(np.array([[0.1]]))
+
+        cls_mock = MagicMock(side_effect=slow_load)
+        monkeypatch.setattr("primer.embedder.huggingface.SentenceTransformer", cls_mock)
+        # Distinct rate-limit keys (distinct provider ids), so the per-row
+        # limiter cannot serialise the two first loads for us.
+        embedder_a = HuggingFaceEmbedder(
+            _make_provider(provider_id="row-a", models=["m1"], max_concurrency=1)
+        )
+        embedder_b = HuggingFaceEmbedder(
+            _make_provider(provider_id="row-b", models=["m1"], max_concurrency=1)
+        )
+        out_a, out_b = await asyncio.gather(
+            embedder_a.embed(model="m1", inputs=[TextPart(text="a")]),
+            embedder_b.embed(model="m1", inputs=[TextPart(text="b")]),
+        )
+        assert cls_mock.call_count == 1
+        assert loaded.is_set()
+        assert out_a.embeddings[0].vector == pytest.approx(
+            out_b.embeddings[0].vector
+        )
 
 
 class TestPackageReexport:
