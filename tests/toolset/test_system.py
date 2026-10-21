@@ -363,6 +363,7 @@ class TestCatalog:
         assert "fetch_embedding_provider_models" in names
         assert "fetch_cross_encoder_provider_models" in names
         assert "list_toolset_tools" in names
+        assert "get_toolset_auth_status" in names
         assert "call_tool" in names
         assert "describe_tool" in names
         assert "list_collection_documents" in names

@@ -32,6 +32,8 @@ from primer.common.entity_checks import EntityCheckError
 from primer.common.toolset_ids import canonical_toolset_id
 from primer.agent.tool_schemas import find_tool
 from primer.model.chat import Tool, ToolCallResult, ToolExample
+from primer.model.mcp_oauth import McpSignInRequiredError
+from primer.model.provider import Toolset
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import ok as _ok
 from primer.model.collection import Collection, Document
@@ -72,6 +74,7 @@ from primer.toolset._system_guards import (
 )
 from primer.toolset.internal import ToolHandler
 from primer.toolset.tool_catalog import ToolEntry, list_toolset_entries
+from primer.toolset.oauth.service import ToolsetAuthStatus
 
 
 if TYPE_CHECKING:
@@ -80,6 +83,7 @@ if TYPE_CHECKING:
     from primer.int.storage_provider import StorageProvider
     from primer.knowledge.document_service import DocumentService
     from primer.knowledge.tree import DocumentTreeService
+    from primer.toolset.oauth.service import ToolsetOAuthService
 
 
 logger = logging.getLogger("primer.toolset.system")
@@ -845,10 +849,11 @@ def _fetch_models_tool(
 # ===========================================================================
 
 
-# Neither tool takes a ``principal`` argument (pivot P1). The principal is the key of an MCP toolset's per-user OAuth token cache, and both
-# tools used to forward a MODEL-chosen one into it, so a run could list or call a toolset as somebody else. The provider is handed the
-# principal the dispatch layer put on the run's context (``ToolContext.principal``) and nothing else; an extra ``principal`` key in the
-# arguments is ignored, as any unknown key is.
+# Neither tool takes a ``principal`` argument (pivot P1). An MCP toolset's
+# OAuth sign-in is shared by every caller, and the provider is handed only the
+# principal the dispatch layer put on the run's context
+# (``ToolContext.principal``). An extra model-supplied ``principal`` key is
+# ignored, as any unknown key is.
 class _ToolsetIdArgs(BaseModel):
     toolset_id: str = Field(
         ..., min_length=1, description="Id of the toolset to query."
@@ -881,8 +886,12 @@ def _list_toolset_tools_tool(
             return _err_from_primer(exc, error_type="provider-error")
         tools_out: list[dict[str, Any]] = []
         # The run's own principal, as call_tool hands its inner provider (never one from the arguments).
-        async for tool in provider.list_tools(principal=ctx.principal if ctx is not None else None):
-            tools_out.append(tool.model_dump(mode="json"))
+        try:
+            principal = ctx.principal if ctx is not None else None
+            async for tool in provider.list_tools(principal=principal):
+                tools_out.append(tool.model_dump(mode="json"))
+        except McpSignInRequiredError as exc:
+            return _err(str(exc), error_type="sign-in-required")
         return _ok({"tools": tools_out})
 
     return "list_toolset_tools", (
@@ -894,7 +903,7 @@ def _list_toolset_tools_tool(
                 "Use when you want to discover what a toolset offers "
                 "before dispatching to it via ``call_tool``. Calls the "
                 "live provider, so OAuth-protected MCP toolsets may return "
-                "``is_error=true`` ``type=auth-required``."
+                "``is_error=true`` ``type=sign-in-required``."
             ),
             args_schema=_ToolsetIdArgs.model_json_schema(),
             examples=[
@@ -904,6 +913,70 @@ def _list_toolset_tools_tool(
                         "``{'tools': [Tool, ...]}`` where each Tool carries "
                         "its id, description, schema, and toolset_id"
                     ),
+                )
+            ],
+            required_role="user",
+        ),
+        _handler,
+    )
+
+
+def _toolset_auth_status_tool(
+    *,
+    storage_provider: "StorageProvider",
+    oauth: "ToolsetOAuthService | None",
+    built_in_ids: frozenset[str],
+) -> tuple[str, tuple[Tool, ToolHandler]]:
+    storage = storage_provider.get_storage(Toolset)
+
+    async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+        try:
+            args = _ToolsetIdArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+
+        if args.toolset_id in built_in_ids:
+            status = ToolsetAuthStatus(
+                toolset_id=args.toolset_id,
+                mode="none",
+                state="not_applicable",
+            )
+            return _ok(status.model_dump(mode="json"))
+
+        toolset = await storage.get(args.toolset_id)
+        if toolset is None:
+            return _err(
+                f"Toolset {args.toolset_id!r} does not exist",
+                error_type="not-found",
+            )
+        if oauth is None:
+            return _err(
+                "the MCP OAuth service is unavailable in this process",
+                error_type="unavailable",
+            )
+        status = await oauth.status(toolset)
+        return _ok(status.model_dump(mode="json"))
+
+    name = "get_toolset_auth_status"
+    return name, (
+        make_tool(
+            id=name,
+            toolset_id=SYSTEM_TOOLSET_ID,
+            purpose=(
+                "Read a toolset's sign-in status: connected, needs_sign_in, "
+                "error or not_applicable, with the reason and expiry."
+            ),
+            when=(
+                "Use when a tool of an MCP toolset failed with 'needs an "
+                "operator to reconnect it', or before relying on an "
+                "OAuth-protected MCP toolset. Read-only: only an admin can "
+                "connect a toolset, from the console."
+            ),
+            args_schema=_ToolsetIdArgs.model_json_schema(),
+            examples=[
+                ToolExample(
+                    args={"toolset_id": "github-mcp"},
+                    returns="the shared sign-in mode, state, reason and expiry",
                 )
             ],
             required_role="user",

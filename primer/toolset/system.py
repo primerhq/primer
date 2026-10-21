@@ -185,6 +185,7 @@ from primer.toolset._system_crud import (
     _hint,
     _ListDocumentsArgs,
     _list_toolset_tools_tool,
+    _toolset_auth_status_tool,
     _call_tool_tool,
     _describe_tool_tool,
     _collection_extras,
@@ -308,6 +309,7 @@ def build_system_toolset(
         RESERVED_EMBEDDER_IDS,
         RESERVED_LLM_IDS,
         RESERVED_SSP_IDS,
+        RESERVED_TOOLSET_IDS,
         RESERVED_TOOLSET_ROW_IDS,
     )
 
@@ -991,6 +993,12 @@ def build_system_toolset(
             storage=storage_provider.get_storage(ToolApprovalPolicy),
         )
     name, entry = _list_toolset_tools_tool(provider_registry)
+    registry[name] = entry
+    name, entry = _toolset_auth_status_tool(
+        storage_provider=storage_provider,
+        oauth=mcp_oauth,
+        built_in_ids=RESERVED_TOOLSET_IDS,
+    )
     registry[name] = entry
     name, entry = _call_tool_tool(provider_registry, approval_resolver)
     registry[name] = entry
