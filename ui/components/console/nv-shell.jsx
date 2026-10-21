@@ -737,11 +737,11 @@ function NV_Shell() {
       // which left that affordance dead on every error (BDD round 2).
       toast: function (msg, extra) {
         if (window.primerApi.toastPush) {
+          var opts = typeof extra === "string" ? { kind: extra } : (extra || {});
           window.primerApi.toastPush({
-            kind: (extra && extra.kind) || "info",
+            kind: opts.kind || "info",
             text: String(msg),
-            requestId: (extra && (extra.requestId || extra.request_id))
-              || null,
+            requestId: opts.requestId || opts.request_id || null,
           });
         }
       },
