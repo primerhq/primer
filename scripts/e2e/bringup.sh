@@ -264,6 +264,23 @@ fi
 
 # ---- 5. Launch primer in background -----------------------------------------
 
+# The e2e server serves the live map only: pin PRIMER_WIKI_DIR to an empty
+# directory so the boot-time wiki build writes no hand-written pages into
+# the system collection. The full platform wiki (docs/wiki) is unit-covered
+# by tests/docs; a full build at IC-bootstrap time is knife-edge on the
+# shared runner - 34 lifecycle bootstrap tests each seed a fresh HuggingFace
+# provider row, the embedder model cache is per instance, so every bootstrap
+# reloads the ~90MB model and re-embeds the full system collection against
+# the 120s _BOOTSTRAP_TIMEOUT and the 180s per-test budget. Ruling
+# 2026-10-20 11:15Z on #817 (the PRIMER_WIKI_DIR fixture bloat) established
+# the live-map-only invariant; the 2026-10-21 #835 capacity recurrence
+# (e2e red x2 at 0a92b5695, once docs/wiki/ landed in the checkout that
+# resolve_wiki_dir() falls back to) re-established it here. A caller can
+# export PRIMER_WIKI_DIR (e.g. at docs/wiki) to opt a lane back into the
+# full wiki.
+: "${PRIMER_WIKI_DIR:=$ROOT/tests/.e2e/wiki-empty}"
+mkdir -p "$PRIMER_WIKI_DIR"
+
 echo "[bringup] launching primer on port $PORT..." >&2
 : > "$STDOUT_FILE"
 # PRIMER_HARNESS_ALLOW_FILE_URLS=1: the harness suites register file:// bare
@@ -271,7 +288,7 @@ echo "[bringup] launching primer on port $PORT..." >&2
 # the operator opts in (primer/model/harness.py, security review 2026-10-08).
 # Test lane only; production never sets it.
 (
-    PRIMER_HARNESS_ALLOW_FILE_URLS=1 uv run primer api --config "$CONFIG" \
+    PRIMER_HARNESS_ALLOW_FILE_URLS=1 PRIMER_WIKI_DIR="$PRIMER_WIKI_DIR" uv run primer api --config "$CONFIG" \
         > "$STDOUT_FILE" 2>&1 &
     echo $! > "$PID_FILE"
     disown

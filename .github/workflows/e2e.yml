@@ -42,6 +42,16 @@ jobs:
   e2e:
     name: e2e (live server)
     runs-on: ubuntu-latest
+    env:
+      # Live-map-only invariant (ruling 2026-10-20 11:15Z on #817, re-armed
+      # by the 2026-10-21 #835 capacity recurrence): the full platform wiki
+      # (docs/wiki) is unit-covered by tests/docs, and a full build at
+      # IC-bootstrap time is knife-edge on the shared runner. Job-level, not
+      # only the bringup.sh default, because tests/_support/restart.py
+      # relaunches the server from the pytest process env, so a mid-suite
+      # restart must keep the same wiki-less collection. bringup.sh creates
+      # the directory.
+      PRIMER_WIKI_DIR: tests/.e2e/wiki-empty
     # The e2e suite runs serially (-n0, shared live server + DB) and has grown
     # past the old 30-min budget (already borderline on main); --timeout=300
     # (pyproject addopts) still fails any genuinely-hung test, so a job-level
@@ -121,6 +131,11 @@ jobs:
   ui-e2e:
     name: ui-e2e (Playwright)
     runs-on: ubuntu-latest
+    env:
+      # Same live-map-only invariant as the e2e job above (ruling
+      # 2026-10-20 11:15Z on #817, the 2026-10-21 #835 recurrence); see
+      # that job's comment.
+      PRIMER_WIKI_DIR: tests/.e2e/wiki-empty
     # Matches the e2e job: a run that reaches most of the suite takes
     # considerably longer than one that gave up after five failures.
     timeout-minutes: 45
