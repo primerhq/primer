@@ -682,12 +682,11 @@ def test_a_setup_error_text_is_cleaned_like_every_other_failure() -> None:
     assert "s3cret" not in text and "host.example/v1/models" in text
 
 
-def test_the_setup_pages_errors_and_the_predicate_details_go_through_the_cleaning() -> None:
-    """The five setError sites of the Setup page and the gate, and the live-checked predicate's detail (the server fills it with `str(exc)` of the provider probe)."""
+def test_the_gates_errors_and_the_predicate_details_go_through_the_cleaning() -> None:
+    """The gate's two setError sites and the live-checked predicate's detail; the Dashboard card cleans its details too (tests/ui/test_system_setup_card.py)."""
     assert "setError(err && err.message ? err.message : String(err))" not in SRC, "a raw message is shown"
-    # the Setup page sets the cleaned text itself; the gate sets {title, text} (a failed read and a failed seed are told apart), the text is cleaned the same way
-    cleaned = re.findall(r"setError\((?:SW_errorText\(err\)|\{ title: \"[^\"]+\", text: SW_errorText\(err\) \})\)", SRC)
-    assert len(cleaned) >= 5, "the five places the Setup page and the gate show an error"
+    cleaned = re.findall(r"setError\(\{ title: \"[^\"]+\", text: SW_errorText\(err\) \}\)", SRC)
+    assert len(cleaned) >= 2, "the two places the gate shows an error"
     assert '<span className="setup-predicate-detail muted text-sm">{SW_tidy(p.detail)}</span>' in SRC
 
 

@@ -61,7 +61,7 @@ BASELINE: dict[str, int] = {
     "semantic-search.jsx": 4,
     "session-detail.jsx": 4,
     "sessions-list.jsx": 3,
-    "setup-wizard.jsx": 5,
+    "setup-wizard.jsx": 3,
     "shared/pager.jsx": 2,
     "shared/session-controls.jsx": 1,
     "shared/transcript.jsx": 2,

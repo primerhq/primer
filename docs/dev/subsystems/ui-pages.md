@@ -12,7 +12,7 @@ The backend REST contract these pages consume (the `/v1/*` CRUD surface, the `ma
 
 ## 2. Conceptual model
 
-The console is three views over one URL (the 2026-08-23 designer handoff): STUDIO (the default - a rail of session bands and files, a centre of document tabs, the composer, an optional terminal panel and events sidebar), PLATFORM (grouped nav over per-entity card pages), and SYSTEM (dashboard, users, API keys, SSO, MCP, internal collections, activity, setup, profile - reached from the profile menu). Overlays open above whichever view is active, and a command palette reaches every verb. `ui/app.jsx` is one mount, `AuthGate` wrapping `NV_Shell`, and nothing else.
+The console is three views over one URL (the 2026-08-23 designer handoff): STUDIO (the default - a rail of session bands and files, a centre of document tabs, the composer, an optional terminal panel and events sidebar), PLATFORM (grouped nav over per-entity card pages), and SYSTEM (dashboard, users, API keys, SSO, MCP, internal collections, activity, profile - reached from the profile menu). Overlays open above whichever view is active, and a command palette reaches every verb. `ui/app.jsx` is one mount, `AuthGate` wrapping `NV_Shell`, and nothing else.
 
 **The verb registry is the routing table.** Every action a user can take is registered once, with an id, a label, the contexts it applies to and the surfaces it renders on (rail, tab menu, palette, overlay button). A surface renders the verbs the registry gives it rather than hard-coding buttons, which is what makes the dual-render rule checkable: a verb declared for a surface but never rendered from the registry, or a doc kind the URL can address that no verb opens, is an orphan, and a static guard fails on it.
 
@@ -186,7 +186,7 @@ Page-by-page index follows. The first column is the overlay target that reaches 
 | `services[::<id>]` | SV_ServicesPage | `services.jsx` | `GET /v1/services`, `.../versions` |
 | `new-session` | NV_CreateSessionOverlay (graph-input rows: SharedNewSessionSchemaField) | `console/nv-overlays.jsx`, `new-session-form.jsx` | `GET /v1/agents`, `/v1/graphs`, `POST .../sessions` |
 | `new-workspace` | NV_CreateWorkspaceOverlay | `console/nv-overlays.jsx` | `GET /v1/workspace_templates`, `POST /v1/workspaces` |
-| (System view navs) | NV_System re-hosts ADM_AdminUsersPage, AT_ApiTokensPage (+ API key), SSO_ProvidersPage, MC_McpPage, InternalCollectionsPage, SH_ActivityPanel, SetupWizardSteps | `console/nv-system.jsx` | users, SSO, API tokens, MCP, internal collections, activity, setup, profile |
+| (System view navs) | NV_System re-hosts ADM_AdminUsersPage, AT_ApiTokensPage (+ API key), SSO_ProvidersPage, MC_McpPage, InternalCollectionsPage, SH_ActivityPanel; NV_SysSetupCard on Dashboard | `console/nv-system.jsx` | users, SSO, API tokens, MCP, internal collections, activity, profile |
 | `collections` (subsystem view) | InternalCollectionsPage | `internal-collections.jsx` | `GET/PUT/DELETE /v1/internal_collections/config` (the `GET` with `?allow_missing=true`, so "not configured" is a 200 and not a console 404), `/bootstrap[/status]` |
 
 The user docs render at `/docs` outside the shell, served by `ui/components/docs.jsx`; they are a reader, not a console surface.
@@ -413,6 +413,8 @@ The `tests/ui_e2e/` suite (gated behind `PRIMER_RUN_UI_E2E=1`, with mobile suite
 - **The worker card's Manage button and the `workers` overlay were removed because they repeated the Dashboard's worker list (the user's D4, 2026-10-18; Platform revamp 10, Task 5).** Why: the overlay was a second copy of the list the Dashboard card already shows, so the card keeps its Drain and Purge dead actions and `overlay=workers` / `overlay=workers:health` drop on parse like `overlay=admin`; `workers.jsx` stays for the docs embed `workers-stats`. Spec: docs/superpowers/plans/2026-10-18-platform-revamp-10-system-view.md.
 
 - **System > API keys takes the kit header and a + API key that acts as you (platform revamp D5, 2026-10-18).** Why: the admin table fans out over all users and previously lacked a create button; minting is self-service and creates a key for the caller. Both admin and personal views use `AT_ApiTokensPage` with `PK_PageHeader`, paged filtering (20 per page), an Owner column with `(you)` in admin mode, and the acts-as line in the create dialog.
+
+- **The System > Setup page was removed (the user's D6); its checks, Re-run seed and Reset default agents are the Dashboard's Setup card, a provider is configured through the Register overlay on Platform > Providers, and `view=system:setup` opens the Dashboard (Plan 01).** Why: the page was a duplicate of setup actions that belong on the System dashboard alongside the other platform checks. The first-run gate (`SetupWizardGate`) is unchanged. Spec: docs/superpowers/plans/2026-10-18-platform-revamp-10-system-view.md.
 
 ## Cross-reference: external tools
 

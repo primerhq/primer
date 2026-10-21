@@ -56,7 +56,7 @@ def test_role_gating():
     admin_navs = json.loads(ctx.eval("JSON.stringify(adminOut)"))
     assert admin_navs == [
         "dashboard", "users", "apikeys", "sso", "mcp", "internal",
-        "activity", "setup", "profile",
+        "activity", "profile",
     ]
 
 
@@ -135,16 +135,11 @@ def test_attention_open_uses_the_aggregate_fields_and_promotes():
 
 
 def test_admin_bodies_rehost_the_existing_pages():
-    # R5 BUILD: the bare 2-step SetupWizardSteps reuse is replaced by
-    # NV_SetupPage (six live predicates + capabilities table + re-run
-    # seed / reset roster); SetupWizardSteps is still reachable one
-    # layer deeper, as NV_SetupPage's own fix-action for the two
-    # provider-configuration predicates (see test_setup_wizard.py).
-    for comp in ("ADM_AdminUsersPage", "AT_ApiTokensPage",
-                 "SSO_ProvidersPage", "MC_McpPage",
-                 "InternalCollectionsPage", "SH_ActivityPanel",
-                 "NV_SetupPage", "LA_LinkedAccountsPage"):
+    for comp in ("ADM_AdminUsersPage", "AT_ApiTokensPage", "SSO_ProvidersPage", "MC_McpPage",
+                 "InternalCollectionsPage", "SH_ActivityPanel", "LA_LinkedAccountsPage"):
         assert comp in SYS, comp
+    assert "NV_SetupPage" not in SYS, "D6: the Setup page is gone; its checks and actions are the Dashboard's Setup card"
+    assert "<NV_SysSetupCard" in SYS
 
 
 def test_profile_changes_password_via_the_auth_route():

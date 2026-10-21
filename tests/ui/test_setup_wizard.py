@@ -22,7 +22,7 @@ def test_three_globals_are_exported() -> None:
 def test_r5_globals_are_exported() -> None:
     src = _src()
     assert "window.SetupPredicatesList = SetupPredicatesList" in src
-    assert "window.NV_SetupPage = NV_SetupPage" in src
+    assert "NV_SetupPage" not in src
 
 
 def test_step_sequence_has_no_chrome_and_no_navigation() -> None:
@@ -115,7 +115,7 @@ def test_predicates_list_reads_the_live_state_endpoint() -> None:
 def test_predicates_list_renders_ok_and_fix_action_per_row() -> None:
     src = _src()
     start = src.index("function SetupPredicatesList(")
-    end = src.index("\nconst _CAPABILITY_GATES", start)
+    end = src.index("function SetupWizardGate(", start)
     body = src[start:end]
     assert "state.predicates.map" in body
     assert "p.ok" in body
@@ -123,41 +123,6 @@ def test_predicates_list_renders_ok_and_fix_action_per_row() -> None:
     assert "Configure provider" in body
     assert "Re-run seed" in body
 
-
-def test_fetch_capabilities_hits_the_capabilities_endpoint() -> None:
-    src = _src()
-    start = src.index("function _fetchCapabilities(")
-    end = src.index("\n}", start)
-    body = src[start:end]
-    assert '"/capabilities"' in body
-
-
-def test_admin_setup_page_has_predicates_capabilities_and_reset_actions() -> None:
-    """R5 BUILD: NV_SetupPage is the whole Setup admin surface - six
-    predicates + capabilities table + Re-run seed + Reset base agent
-    roster (the latter two REUSE - no backend change needed)."""
-    src = _src()
-    start = src.index("function NV_SetupPage(")
-    end = src.index("\n// ====", start)
-    body = src[start:end]
-    assert "SetupPredicatesList" in body
-    assert "_fetchCapabilities()" in body
-    assert "nv-sys-setup-rerun-seed" in body
-    assert '"/setup/seed"' in body
-    assert "nv-sys-setup-reset-roster" in body
-    assert '"/setup/reset_agents"' in body
-    assert "nv-sys-capabilities-table" in body
-
-
-def test_admin_setup_page_configure_provider_reuses_the_wizard_steps() -> None:
-    """The provider/profile predicates can't be auto-seeded (notes: they
-    need real operator input) - their fix-action reopens the existing
-    2-step SetupWizardSteps inline rather than duplicating that form."""
-    src = _src()
-    start = src.index("function NV_SetupPage(")
-    end = src.index("\n// ====", start)
-    body = src[start:end]
-    assert "<SetupWizardSteps" in body
 
 
 def test_gate_requires_all_predicates_before_entering() -> None:
@@ -347,12 +312,6 @@ def test_the_step_sequence_resumes_from_the_server_on_mount() -> None:
     assert "initialStep" in body, "the docs harness still starts a capture at a given step"
     assert "SW_saveProvider(" in body and "SW_saveProfile(" in body, "both steps are idempotent"
 
-
-def test_system_setup_configure_provider_uses_the_same_resumable_steps() -> None:
-    """The System > Setup "Configure provider" route had the same dead end; it reuses SetupWizardSteps, so one fix covers both."""
-    src = _src()
-    page = src[src.index("function NV_SetupPage("):src.index("// ====", src.index("function NV_SetupPage("))]
-    assert "<SetupWizardSteps" in page
 
 
 def test_the_error_titles_name_the_phase_that_failed() -> None:
