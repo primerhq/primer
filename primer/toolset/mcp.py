@@ -29,9 +29,13 @@ from primer.model.provider import (
     HttpConfig,
     McpConfig,
     StdioConfig,
+    Toolset,
+    ToolsetProviderType,
     TransportType,
 )
 from primer.model.yield_ import ToolContext, Yielded
+from primer.toolset.oauth.bearer import McpBearerAuth
+from primer.toolset.oauth.service import OAuthTarget, ToolsetOAuthService
 
 
 # Canonical tool_name for MCP task parks in the resume registry.
@@ -75,7 +79,10 @@ class McpToolsetProvider(ToolsetProvider):
     call (cheap; the SDK has no long-lived equivalent for stateless
     HTTP MCP).
 
-    OAuth sign-in is wired by the shared service in the API layer.
+    For an HTTP toolset with an OAuth block, the shared OAuth service supplies
+    one bearer token for every caller. A rejected token is refreshed once by
+    the transport auth flow; a sign-in failure is surfaced after the SDK
+    transport closes so its internal task group cannot swallow the error.
     """
 
     # Listing means a round trip to another process or host that can be down, can need a sign-in, or can accept the
@@ -87,6 +94,7 @@ class McpToolsetProvider(ToolsetProvider):
         toolset_id: str,
         config: McpConfig,
         *,
+        oauth: ToolsetOAuthService | None = None,
         client_name: str = "primer",
         client_version: str = "0.0.1",
         allowed_stdio_commands: frozenset[str] | None = None,
@@ -101,6 +109,7 @@ class McpToolsetProvider(ToolsetProvider):
         """
         self._toolset_id = toolset_id
         self._config = config
+        self._oauth = oauth
         self._client_name = client_name
         self._client_version = client_version
         self._allowed_stdio_commands = allowed_stdio_commands
@@ -426,6 +435,18 @@ class McpToolsetProvider(ToolsetProvider):
                 k: v.get_secret_value() for k, v in http_cfg.headers.items()
             }
             headers = base_headers if base_headers else None
+            auth: McpBearerAuth | None = None
+            if http_cfg.oauth is not None and self._oauth is not None:
+                target = OAuthTarget.from_toolset(
+                    Toolset(
+                        id=self._toolset_id,
+                        provider=ToolsetProviderType.MCP,
+                        config=self._config,
+                    )
+                )
+                assert target is not None
+                token = await self._oauth.access_token(target)
+                auth = McpBearerAuth(self._oauth, target, token)
 
             # Structured, lexically-nested `async with` -- NOT AsyncExitStack.
             # The HTTP/SSE transport client runs an anyio task group whose
@@ -455,7 +476,7 @@ class McpToolsetProvider(ToolsetProvider):
                     from mcp.client.sse import sse_client
 
                     async with sse_client(
-                        url=http_cfg.url, headers=headers,
+                        url=http_cfg.url, headers=headers, auth=auth,
                     ) as (read, write):
                         async with ClientSession(read, write) as session:
                             await session.initialize()
@@ -464,7 +485,7 @@ class McpToolsetProvider(ToolsetProvider):
                     from mcp.client.streamable_http import streamable_http_client
                     from mcp.shared._httpx_utils import create_mcp_http_client
 
-                    async with create_mcp_http_client(headers=headers) as http_client:
+                    async with create_mcp_http_client(headers=headers, auth=auth) as http_client:
                         async with streamable_http_client(
                             url=http_cfg.url, http_client=http_client,
                         ) as (read, write):
@@ -474,6 +495,12 @@ class McpToolsetProvider(ToolsetProvider):
             except (ConfigError, GeneratorExit):
                 raise
             except Exception as exc:
+                if auth is not None and auth.sign_in_required is not None:
+                    from primer.model.mcp_oauth import McpSignInRequiredError
+
+                    raise McpSignInRequiredError(self._toolset_id, reason=auth.sign_in_required) from exc
+                if auth is not None and auth.failure is not None:
+                    raise auth.failure from exc
                 raise self._classified(exc) from exc
             return
 

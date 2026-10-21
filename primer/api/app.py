@@ -186,6 +186,13 @@ def create_test_app(
     app.add_middleware(BodySizeLimitMiddleware, **body_limit_options(RequestLimitsConfig()))
     _install_request_id(app)
     _install_auth_middleware(app)
+    from primer.common.secret_box import SecretBox
+    from primer.toolset.oauth.service import ToolsetOAuthService
+
+    mcp_oauth = ToolsetOAuthService(
+        storage_provider=storage_provider,
+        secret_box=SecretBox.from_key_material("test-encryption-key-0123456789"),
+    )
     # secret_provider omitted: this lightweight app path does not wire
     # secret-sourced file mounts (they raise a clear error if declared).
     if workspace_registry is None:
@@ -359,6 +366,7 @@ def create_test_app(
     provider_registry._canvas_toolset_provider = canvas_toolset  # noqa: SLF001
     app.state.storage_provider = storage_provider
     app.state.provider_registry = provider_registry
+    app.state.mcp_oauth = mcp_oauth
     app.state.workspace_registry = workspace_registry
     app.state.system_toolset = system_toolset
     app.state.workspaces_toolset = workspaces_toolset

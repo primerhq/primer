@@ -209,6 +209,14 @@ def _make_lifespan(config: AppConfig):
             secret_provider=secret_provider,
             local_policy=local_workspace_policy,
         )
+        from primer.auth.secret import resolve_secret_box
+        from primer.toolset.oauth.service import ToolsetOAuthService
+
+        mcp_oauth = ToolsetOAuthService(
+            storage_provider=storage_provider,
+            secret_box=await resolve_secret_box(config, storage_provider),
+            public_url=config.public_url,
+        )
         # Bootstrap the system toolset before constructing the
         # ProviderRegistry so the registry can short-circuit
         # ``get_toolset('system')`` to it.
@@ -227,6 +235,7 @@ def _make_lifespan(config: AppConfig):
             storage_provider,
             toolset_factory=_build_default_toolset_factory(
                 allowed_stdio_commands=allowlist,
+                oauth=mcp_oauth,
             ),
             trace_llm_io=config.observability.trace_llm_io,
         )
@@ -343,6 +352,7 @@ def _make_lifespan(config: AppConfig):
         app.state.storage_provider = storage_provider
         app.state.secret_provider = secret_provider
         app.state.provider_registry = provider_registry
+        app.state.mcp_oauth = mcp_oauth
         app.state.workspace_registry = workspace_registry
         app.state.system_toolset = system_toolset
         app.state.misc_toolset = misc_toolset
@@ -1133,6 +1143,10 @@ def _make_lifespan(config: AppConfig):
                 await provider_registry.aclose()
             except Exception:
                 logger.exception("provider_registry.aclose failed")
+            try:
+                await mcp_oauth.aclose()
+            except Exception:
+                logger.exception("mcp_oauth.aclose failed")
             try:
                 # The token-counter threads (a no-op when no count ever ran).
                 from primer.llm._tokenizer._executor import shutdown_counter_executor
