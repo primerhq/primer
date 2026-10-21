@@ -202,3 +202,58 @@ class TestCompactionOnAClaudeModelThatRefusesSampling:
         )
         sent = client.messages.create.call_args.kwargs
         assert ("temperature" in sent) is kept
+
+
+class TestCompactionOnAnOpenAIReasoningModelThatRefusesSampling:
+    """OpenAI reasoning rejects the temperature 0 requested by compaction."""
+
+    async def test_the_summariser_drops_temperature_but_keeps_reasoning(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from pydantic import HttpUrl, SecretStr
+
+        from primer.llm.openchat import OpenChatLLM
+        from primer.model.provider import (
+            Limits,
+            LLMProvider,
+            LLMProviderType,
+            OpenChatConfig,
+            OpenChatFlavor,
+        )
+        from tests.llm.test_openchat import (
+            _aiter,
+            _patched_client,
+            _simple_text_chunk_seq,
+        )
+
+        client = _patched_client(monkeypatch)
+        client.chat.completions.create.return_value = _aiter(
+            _simple_text_chunk_seq(model="o3")
+        )
+        llm = OpenChatLLM(
+            LLMProvider(
+                id="openchat-compaction",
+                provider=LLMProviderType.OPENCHAT,
+                config=OpenChatConfig(
+                    url=HttpUrl("https://api.openai.com/v1/"),
+                    api_key=SecretStr("sk-test"),
+                    flavor=OpenChatFlavor.OPENAI,
+                ),
+                limits=Limits(max_concurrency=1),
+            )
+        )
+        resolved = ResolvedModel(
+            profile_id="p",
+            provider_id="openchat-compaction",
+            model_name="o3",
+            context_length=1000,
+            config=ModelProfileConfig(reasoning=ReasoningLevel.LOW),
+        )
+
+        await CompactionStrategy(tail_turns=1).force_compact(
+            agent=_agent(), llm=llm, model=resolved, history=list(HISTORY),
+        )
+
+        sent = client.chat.completions.create.call_args.kwargs
+        assert sent["reasoning_effort"] == "low"
+        assert "temperature" not in sent
