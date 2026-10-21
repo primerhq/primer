@@ -1,19 +1,32 @@
 """E2E: the S5 vision loop, end to end against a live server.
 
-The user asks for a capability that does not exist. The operator greps the
-system collection, delegates to the builder inside its own turn
-(invoke_agent, S1 C1 inline delegation), the builder's create_agent call
-trips the seeded approval gate, an operator approves it, and the operator
-finally invokes the freshly created agent and reports its output.
+The user asks for a capability that does not exist. The operator consults
+the system collection, delegates to the builder inside its own turn
+(inline delegation), the builder's create_agent call trips the seeded
+approval gate, the operator approves it, and the operator finally invokes
+the freshly created agent and reports its output.
 
-Two scenarios, because the scripted mock keys its rules on the REQUEST
-MODEL name (mock_llm.py:95-96):
+S6 core-kit topology: every seeded agent now carries the SAME core kit
+(system__call_tool plus the wiki, ask, and inform tools), so no capability
+is reached by a direct grant: the operator's index consult, both
+delegations, and the builder's construction all go through
+system__call_tool meta-dispatch. The offered tool set therefore no longer
+separates the roles, and the scripts disambiguate by REQUEST MODEL name
+instead (mock_llm.py keys its rules on the request model):
 
-* ``<suffix>-loop``    - the operator AND the builder. They share one
-  profile, so they are separated by WHICH TOOLS ARE OFFERED: only the
-  builder is granted ``crud__create_agent``.
-* ``<suffix>-weather`` - the agent the builder creates. Its own scenario,
+* ``s5-op-<suffix>``      - the operator.
+* ``s5-builder-<suffix>`` - the builder.
+* ``s5-weather-<suffix>`` - the agent the builder creates. Its own model,
   so its reply cannot be confused with an operator or builder turn.
+
+The call_tool -> crud__create_agent leg pins the gate semantics: the
+meta-dispatch resolves the INNER tool's shipped approval policy and parks
+the OUTER session (the builder runs inline in the operator's turn), so
+the journey's single-session approval watch is unchanged.
+
+The journey also asserts the S6 grant topology of the seeded roster
+before any repoint: every seeded agent carries exactly the core kit, the
+operator adds the two workspaces messaging tools on top.
 
 The journey repoints the two SEEDED agents at the scripted provider and
 restores their original profiles in a finally: the e2e server is shared
@@ -33,6 +46,23 @@ from tests._support.default_workspace import default_workspace_id
 from tests._support.mock_llm import Rule
 from tests._support.model_profiles import profile_id_for
 
+#: The S6 core kit as the seeded agents carry it (source:
+#: primer/toolset/core_kit.py; grants: primer/bootstrap/operator_defaults.py).
+CORE_KIT_EXPECTED = [
+    "system__call_tool",
+    "system__wiki_read",
+    "system__wiki_search",
+    "system__ask_user",
+    "misc__inform_user",
+]
+
+#: The two workspaces messaging tools the operator adds on top of the kit
+#: (source: OPERATOR_MESSAGING_TOOLS in primer/bootstrap/operator_defaults.py).
+OPERATOR_MESSAGING_EXPECTED = [
+    "workspaces__list_my_sessions",
+    "workspaces__message_session",
+]
+
 
 async def _wait_for(
     client: httpx.AsyncClient,
@@ -43,9 +73,10 @@ async def _wait_for(
 ) -> dict:
     """Poll the transcript for ``needle``, approving any gate that parks.
 
-    The builder runs INLINE inside the operator's turn (C1), so its gated
-    create_agent parks the OPERATOR's session; there is one session id to
-    watch and one to approve on.
+    The builder's gated create_agent - reached through call_tool, which
+    resolves the inner tool's policy - parks the OPERATOR's session (the
+    builder runs INLINE inside the operator's turn); there is one session
+    id to watch and one to approve on.
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_s
@@ -82,65 +113,86 @@ async def test_operator_delegates_construction_and_invokes_the_result(
     client: httpx.AsyncClient, mock_llm, unique_suffix: str,
 ) -> None:
     registry, mock_url = mock_llm
-    loop_model = f"s5-loop-{unique_suffix}"
+    op_model = f"s5-op-{unique_suffix}"
+    builder_model = f"s5-builder-{unique_suffix}"
     weather_model = f"s5-weather-{unique_suffix}"
     provider_id = f"llm-s5-{unique_suffix}"
-    loop_profile = profile_id_for(provider_id, loop_model)
+    op_profile = profile_id_for(provider_id, op_model)
+    builder_profile = profile_id_for(provider_id, builder_model)
     weather_profile = profile_id_for(provider_id, weather_model)
     new_agent_id = f"agent-weather-{unique_suffix}"
     built = f"BUILT-{unique_suffix}"
     marker = f"CAPABILITY-{unique_suffix}"
 
-    # ----- The scripts. Rule order is FIRST-MATCH-WINS ----------------
+    # ----- The scripts. One model per role; FIRST-MATCH-WINS ----------
     registry.register(
-        loop_model,
+        op_model,
         [
-            # Builder, turn 2: it has a tool result, so it reports back.
-            Rule(
-                when_tool_offered="crud__create_agent",
-                when_tool_result=True,
-                emit_text=built,
-            ),
-            # Builder, turn 1: the only agent offered create_agent.
-            Rule(
-                when_tool_offered="crud__create_agent",
-                emit_tool="crud__create_agent",
-                emit_args={
-                    "entity": {
-                        "id": new_agent_id,
-                        "description": "answers weather questions",
-                        "model": {"profile_id": weather_profile},
-                        "system_prompt": ["Answer weather questions."],
-                    }
-                },
-                emit_tool_call_id="call_build",
-            ),
             # Operator, turn 4: the new agent has answered.
             Rule(when_last_tool_result_contains=marker, emit_text=f"done {marker}"),
             # Operator, turn 3: the builder reported back; invoke what it made.
             Rule(
                 when_last_tool_result_contains=built,
-                emit_tool="system__invoke_agent",
-                emit_args={"agent_id": new_agent_id, "prompt": "weather?"},
+                emit_tool="system__call_tool",
+                emit_args={
+                    "toolset_id": "system",
+                    "tool_name": "invoke_agent",
+                    "arguments": {"agent_id": new_agent_id, "prompt": "weather?"},
+                },
                 emit_tool_call_id="call_invoke",
             ),
-            # Operator, turn 2: the grep came back empty; delegate.
+            # Operator, turn 2: the index consult came back; delegate.
             Rule(
                 when_tool_result=True,
-                emit_tool="system__invoke_agent",
+                emit_tool="system__call_tool",
                 emit_args={
-                    "agent_id": "builder",
-                    "prompt": "create an agent that answers weather questions",
+                    "toolset_id": "system",
+                    "tool_name": "invoke_agent",
+                    "arguments": {
+                        "agent_id": "builder",
+                        "prompt": "create an agent that answers weather questions",
+                    },
                 },
                 emit_tool_call_id="call_delegate",
             ),
             # Operator, turn 1: consult the index first, through the
-            # unified search tool (mode auto -> the fulltext floor, which
-            # on this lane exercises the Postgres FTS path for real).
+            # unified search reached via the meta-tool (mode auto -> the
+            # fulltext floor, which on this lane exercises the Postgres
+            # FTS path for real).
             Rule(
-                emit_tool="collections__search",
-                emit_args={"collection": "system", "query": "weather"},
+                emit_tool="system__call_tool",
+                emit_args={
+                    "toolset_id": "collections",
+                    "tool_name": "search",
+                    "arguments": {"collection": "system", "query": "weather"},
+                },
                 emit_tool_call_id="call_grep",
+            ),
+        ],
+    )
+    registry.register(
+        builder_model,
+        [
+            # Builder, turn 2: its create_agent was approved and ran; report.
+            Rule(when_tool_result=True, emit_text=built),
+            # Builder, turn 1: construct through the meta-tool. The inner
+            # crud__create_agent carries the shipped approval policy, so
+            # this call parks the outer (operator) session for approval.
+            Rule(
+                emit_tool="system__call_tool",
+                emit_args={
+                    "toolset_id": "crud",
+                    "tool_name": "create_agent",
+                    "arguments": {
+                        "entity": {
+                            "id": new_agent_id,
+                            "description": "answers weather questions",
+                            "model": {"profile_id": weather_profile},
+                            "system_prompt": ["Answer weather questions."],
+                        }
+                    },
+                },
+                emit_tool_call_id="call_build",
             ),
         ],
     )
@@ -157,7 +209,11 @@ async def test_operator_delegates_construction_and_invokes_the_result(
         },
     )
     assert pr.status_code in (200, 201), pr.text
-    for pid, model in ((loop_profile, loop_model), (weather_profile, weather_model)):
+    for pid, model in (
+        (op_profile, op_model),
+        (builder_profile, builder_model),
+        (weather_profile, weather_model),
+    ):
         prof = await client.post(
             "/v1/model_profiles",
             json={
@@ -184,9 +240,26 @@ async def test_operator_delegates_construction_and_invokes_the_result(
             assert got.status_code == 200, got.text
             row = got.json()
             originals[agent_id] = row
+        # The S6 grant topology, before any repoint: everyone carries
+        # exactly the core kit; the operator adds the messaging tools.
+        assert originals["builder"]["tools"] == CORE_KIT_EXPECTED, (
+            f"the builder must carry exactly the S6 core kit "
+            f"(got {originals['builder']['tools']})"
+        )
+        assert originals["operator"]["tools"] == (
+            CORE_KIT_EXPECTED + OPERATOR_MESSAGING_EXPECTED
+        ), (
+            f"the operator must carry the S6 core kit plus the messaging tools "
+            f"(got {originals['operator']['tools']})"
+        )
+        for agent_id, profile in (
+            ("operator", op_profile),
+            ("builder", builder_profile),
+        ):
+            row = originals[agent_id]
             upd = await client.put(
                 f"/v1/agents/{agent_id}",
-                json={**row, "model": {"profile_id": loop_profile}},
+                json={**row, "model": {"profile_id": profile}},
             )
             assert upd.status_code in (200, 201), upd.text
 
@@ -208,12 +281,24 @@ async def test_operator_delegates_construction_and_invokes_the_result(
 
         # ----- The loop's shape, not just its ending -------------------
         text = json.dumps(outcome["log"])
-        assert "collections__search" in text, "the operator must consult the index first"
+        assert "system__call_tool" in text, (
+            "every step of the loop must run through the meta-tool (S6 core kit)"
+        )
+        assert (
+            '"search"' in text
+            and '"invoke_agent"' in text
+            and '"create_agent"' in text
+        ), (
+            "the index consult, both delegations, and the construction must "
+            "all reach their tools by id through call_tool"
+        )
         assert "mode_used" in text and "fulltext" in text, (
             "the unified search must have run and reported its rung"
         )
         assert built in text, "the builder must have reported what it created"
-        assert outcome["approvals"] >= 1, "create_agent must have tripped the gate"
+        assert outcome["approvals"] >= 1, (
+            "create_agent, reached through call_tool, must have tripped the gate"
+        )
 
         created = await client.get(f"/v1/agents/{new_agent_id}")
         assert created.status_code == 200, created.text
@@ -221,6 +306,6 @@ async def test_operator_delegates_construction_and_invokes_the_result(
         for agent_id, row in originals.items():
             await client.put(f"/v1/agents/{agent_id}", json=row)
         await client.delete(f"/v1/agents/{new_agent_id}")
-        for pid in (loop_profile, weather_profile):
+        for pid in (op_profile, builder_profile, weather_profile):
             await client.delete(f"/v1/model_profiles/{pid}")
         await client.delete(f"/v1/llm_providers/{provider_id}")
