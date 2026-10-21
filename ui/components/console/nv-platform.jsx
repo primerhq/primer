@@ -125,10 +125,11 @@ function NV_deleteConfirm(nav, row) {
   }
   if (nav === "agents" && NV_SETUP_AGENT_IDS.indexOf(row.id) !== -1) {
     message = id + " is a built-in agent that setup checks for. "
-      + "Deleting it marks this install as not set up: admins are sent to "
-      + "the setup checklist and everyone else waits on a setup screen "
-      + "until the agent is back. A server restart, or Re-run seed on the "
-      + "setup checklist, re-creates it with its default definition, not "
+      + "Deleting it marks this install as not set up: from the next page "
+      + "load, admins see the Finish setup screen and everyone else waits on "
+      + "a setup screen until the agent is back. A server restart, or Re-run "
+      + "seed (on the Finish setup screen, or in the Setup card's menu on "
+      + "System > Dashboard), re-creates it with its default definition, not "
       + "your edits.";
   }
   return { title: "Delete " + (row.name || row.id), message: message };

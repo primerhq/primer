@@ -1,7 +1,7 @@
 """The ``delete_agent`` tool tells the agent what deleting the operator or builder does before it acts (ADM-13).
 
 Setup completeness is derived live (``primer/bootstrap/setup_state.py``): with the seeded ``operator`` or ``builder`` row gone,
-``GET /v1/auth/status`` reports ``setup_complete: false``, admins are sent to the setup checklist and every other user waits on a
+``GET /v1/auth/status`` reports ``setup_complete: false``, admins are sent to the Finish setup screen and every other user waits on a
 setup screen. The console warns before it deletes either one (``tests/ui/test_platform_delete_confirm.py``). The lead ruled that the
 SERVER does not refuse (a restart or Re-run seed is the designed way back) but that the system tool's descriptor carries the same
 facts, so an agent reads them before it acts.
@@ -32,7 +32,8 @@ async def test_delete_agent_names_the_two_agents_and_what_deleting_them_does(wor
 
     assert RESERVED_OPERATOR_AGENT in text and RESERVED_BUILDER_AGENT in text, "it must name the two agents"
     assert "not set up" in text, "it must say the install counts as not set up"
-    assert "setup checklist" in text and "waits" in text, "it must say who is sent where"
+    assert "Finish setup screen" in text and "waits" in text, "it must say who is sent where"
+    assert "Setup card" in text and "setup checklist" not in text
     assert "POST /v1/setup/seed" in text, "it must say how the agent comes back"
     assert "default definition" in text, "it must say the re-created agent loses the operator's edits"
 
