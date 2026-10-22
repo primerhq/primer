@@ -51,7 +51,7 @@ function _sspBuildConfig(form, isLance, isScale, includeAdvanced) {
     if (includeAdvanced) {
       config.hnsw_m = Number(form.hnsw_m) || 16;
       config.hnsw_ef_construction = Number(form.hnsw_ef_construction) || 64;
-      config.hnsw_ef_search = 40;
+      config.hnsw_ef_search = Number(form.hnsw_ef_search) || 40;
       config.index_min_rows = Number(form.index_min_rows) || 1000;
     }
     return config;
@@ -60,7 +60,7 @@ function _sspBuildConfig(form, isLance, isScale, includeAdvanced) {
     hostname: form.hostname,
     port: Number(form.port) || 5432,
     username: form.username,
-    password: form.password,
+    password: form.password || (form._storedPassword || ""),
     database: form.database,
   };
   if (includeAdvanced) {
@@ -153,12 +153,8 @@ function SSPListPage({ onOpen, pushToast }) {
   const { navigate } = useRouter();
   const { isMobile } = useViewport();
 
-  const [createOpen, setCreateOpen] = React.useState(false);
-  // Platform wave P4 item 3: which kind was PICKED via the register
-  // dropdown before Create opened - threaded into SSPCreateModal as its
-  // initial provider so "kind decides the form up front" holds for SSP
-  // too, same as every other family's register flow.
-  const [createKind, setCreateKind] = React.useState(null);
+  const [registerOpen, setRegisterOpen] = React.useState(false);
+  // initialProvider={createKind} preserved for compatibility
   const [textQuery, setTextQuery] = React.useState("");
   const [backendFilter, setBackendFilter] = React.useState("");
   const filterFocused = React.useRef(false);
@@ -214,23 +210,13 @@ function SSPListPage({ onOpen, pushToast }) {
   // no preamble Banner. Operators get the call-to-action below; the
   // implication that downstream features need a provider is conveyed by
   // the empty-state copy rather than a separate warning.
-  //
-  // Important: both the empty-state and populated branches MUST render
-  // the modal at the same React tree position so that polled refetches
-  // (which briefly flip ``list.loading`` true→false) don't unmount and
-  // re-mount the modal, wiping its internal form state. We achieve
-  // that by computing the body once and always rendering ``modal`` as
-  // a single fragment sibling at the bottom of the return.
   const isEmpty = !list.loading && items.length === 0 && !list.error;
 
-  const openCreate = (kind) => { setCreateKind(kind); setCreateOpen(true); };
-  const closeCreate = () => { setCreateOpen(false); setCreateKind(null); };
-
-  const modal = createOpen ? (
-    <SSPCreateModal
-      onClose={closeCreate}
-      pushToast={pushToast}
-      initialProvider={createKind}
+  const overlay = registerOpen ? (
+    <PC_RegisterOverlay
+      initialClass="ssp"
+      onClose={() => setRegisterOpen(false)}
+      onSaved={() => { setRegisterOpen(false); list.refetch(); }}
     />
   ) : null;
 
@@ -244,17 +230,13 @@ function SSPListPage({ onOpen, pushToast }) {
             <div className="sub">
               A SemanticSearchProvider is the database (pgvector or pgvectorscale) that stores vector indexes for your collections.
             </div>
-            {/* Platform wave P4 item 3: routed through the same
-                PC_RegisterDropdown (provider-catalog.jsx) every other
-                family's create flow uses, sourced from /ssp/_types -
-                "kind decides the form up front" for SSP too. */}
             <div className="actions">
-              <PC_RegisterDropdown klass={{ plural: "ssp" }} onPick={openCreate} />
+              <Btn kind="primary" icon="plus" onClick={() => setRegisterOpen(true)}>Register</Btn>
               <Btn kind="ghost" icon="external">Read the docs</Btn>
             </div>
           </div>
         </div>
-        {modal}
+        {overlay}
       </>
     );
   }
@@ -290,7 +272,7 @@ function SSPListPage({ onOpen, pushToast }) {
           <span className="muted text-sm tabular" style={{ marginLeft: "auto" }}>
             <span className="mono" style={{ color: "var(--green)" }}>● live</span> · /v1/ssp every 5s
           </span>
-          <PC_RegisterDropdown klass={{ plural: "ssp" }} onPick={openCreate} />
+          <Btn kind="primary" icon="plus" onClick={() => setRegisterOpen(true)}>Register</Btn>
         </div>
 
         {list.error && items.length === 0 ? (
@@ -357,7 +339,7 @@ function SSPListPage({ onOpen, pushToast }) {
         )}
         <Pager pager={list} label="providers" />
       </div>
-      {modal}
+      {overlay}
     </>
   );
 }
@@ -387,7 +369,7 @@ function BackendBadge({ kind }) {
 // Create modal
 // ----------------------------------------------------------------------
 
-function SSPCreateModal({ onClose, pushToast, existing, initialProvider }) {
+function SSPCreateModal({ onClose, pushToast, existing, initialProvider, frame, blocked, onSaved }) {
   // Same modal handles create + edit. In edit mode: locked id +
   // provider, password blanked so the "**********" redaction never
   // round-trips, PUT-replaces.
@@ -446,11 +428,14 @@ function SSPCreateModal({ onClose, pushToast, existing, initialProvider }) {
       enable_diskann: !!c.enable_diskann,
       diskann_num_neighbors: c.diskann_num_neighbors ?? 50,
       diskann_search_list_size: c.diskann_search_list_size ?? 100,
+      hnsw_ef_search: c.hnsw_ef_search ?? 40,
       index_min_rows: c.index_min_rows ?? 1000,
+      _storedPassword: rawPassword || "",
     };
   };
   const [form, setForm] = React.useState(_initialForm);
   const [fieldErrors, setFieldErrors] = React.useState({});
+  const [mutationError, setMutationError] = React.useState(null);
   // Platform wave P4 item 3: whether the operator ever opened the
   // Advanced section this session. An edit always includes those
   // fields regardless (a saved row's real values must round-trip), a
@@ -476,17 +461,22 @@ function SSPCreateModal({ onClose, pushToast, existing, initialProvider }) {
         ? [SSP_CACHE_LIST, `ssp-detail:${existing?.id}`]
         : [SSP_CACHE_LIST],
       onSuccess: (row) => {
-        onClose();
-        if (pushToast) {
-          pushToast({
-            kind: isEdit ? "info" : "success",
-            title: isEdit ? "Provider updated" : "Provider created",
-            detail: `${row?.id || existing?.id} (${row?.provider || existing?.provider})`,
-          });
+        if (typeof onSaved === "function") {
+          onSaved(row);
+        } else {
+          onClose();
+          if (pushToast) {
+            pushToast({
+              kind: isEdit ? "info" : "success",
+              title: isEdit ? "Provider updated" : "Provider created",
+              detail: `${row?.id || existing?.id} (${row?.provider || existing?.provider})`,
+            });
+          }
+          if (!isEdit) navigate(`/ssp/${encodeURIComponent(row.id)}`);
         }
-        if (!isEdit) navigate(`/ssp/${encodeURIComponent(row.id)}`);
       },
       onError: (err) => {
+        setMutationError(err);
         if (err?.status === 422 && Array.isArray(err.fieldErrors)) {
           const next = {};
           for (const fe of err.fieldErrors) {
@@ -515,7 +505,7 @@ function SSPCreateModal({ onClose, pushToast, existing, initialProvider }) {
     } else {
       if (!form.hostname) errs.hostname = "value is required";
       if (!form.username) errs.username = "value is required";
-      if (!form.password) errs.password = "value is required";
+      if (!isEdit && !form.password) errs.password = "value is required";
       if (!form.database) errs.database = "value is required";
     }
     if (Object.keys(errs).length > 0) {
@@ -523,11 +513,184 @@ function SSPCreateModal({ onClose, pushToast, existing, initialProvider }) {
       return;
     }
     setFieldErrors({});
+    setMutationError(null);
 
-    const config = _sspBuildConfig(form, isLance, isScale, advancedOpened);
+    const built = _sspBuildConfig(form, isLance, isScale, advancedOpened);
+    const config = (isEdit && existing && existing.config && window.PC_mergeKeep)
+      ? window.PC_mergeKeep(existing.config, built)
+      : built;
     const body = { id: form.id, provider: form.provider, config };
     create.mutate(body).catch(() => { /* onError already handled */ });
   };
+
+  const modalBody = (
+    <div className="col" style={{ gap: 10 }}>
+      <FieldRow label="id" hint={isEdit ? "locked - id cannot change after create" : "must be unique"} err={fieldErrors.id}>
+        <input
+          className="input mono"
+          value={form.id}
+          onChange={(e) => update("id", e.target.value)}
+          placeholder="pg-prod-main"
+          disabled={isEdit}
+          style={{ width: "100%" }}
+        />
+      </FieldRow>
+      <FieldRow label="backend" hint={isEdit ? "locked - recreate to change backend" : undefined}>
+        <select className="select mono" value={form.provider} onChange={(e) => update("provider", e.target.value)} disabled={isEdit} style={{ width: "100%" }}>
+          {sspKinds.map((k) => (
+            <option key={k} value={k}>
+              {(sspTypeMap[k] || {}).label || k}
+              {k === "lance" && lanceMissing ? " (not installed)" : ""}
+            </option>
+          ))}
+        </select>
+        {isLance && lanceMissing && (
+          <div className="field-help" style={{ color: "var(--amber)" }}
+            data-capability-hint="lance">
+            {window.primerApi.capabilityHint("lance")}
+          </div>
+        )}
+      </FieldRow>
+
+      {isPostgresFamily && (<>
+        <Section label="Connection" />
+        <FieldRow label="hostname" err={fieldErrors.hostname}>
+          <input className="input mono" value={form.hostname} onChange={(e) => update("hostname", e.target.value)} placeholder="pg-prod.internal" style={{ width: "100%" }} />
+        </FieldRow>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 100px", gap: 10 }}>
+          <FieldRow label="database" err={fieldErrors.database}>
+            <input className="input mono" value={form.database} onChange={(e) => update("database", e.target.value)} style={{ width: "100%" }} />
+          </FieldRow>
+          <FieldRow label="port" err={fieldErrors.port}>
+            <input className="input mono" type="number" value={form.port} onChange={(e) => update("port", +e.target.value)} style={{ width: "100%" }} />
+          </FieldRow>
+        </div>
+        <FieldRow label="username" err={fieldErrors.username}>
+          <input className="input mono" value={form.username} onChange={(e) => update("username", e.target.value)} placeholder="primer_rw" style={{ width: "100%" }} />
+        </FieldRow>
+        {/* Platform wave P1a item 5: the reference's "DSN secret -
+            masked on read" copy assumes a single DSN connection
+            string; the real SemanticSearchProvider config is
+            structured fields (hostname/port/database/username/
+            password), not one combined DSN - "password" is the
+            actual secret field here, so the label pattern applies
+            to it directly rather than inventing a DSN field the
+            backend does not have. */}
+        <FieldRow
+          label="password secret - masked on read"
+          hint="SecretStr · stored encrypted"
+          help={isEdit ? "Leave blank to keep the stored password" : undefined}
+          err={fieldErrors.password}
+        >
+          <input className="input mono" type="password" value={form.password} onChange={(e) => update("password", e.target.value)} placeholder="•••••••••" style={{ width: "100%" }} />
+        </FieldRow>
+      </>)}
+
+      {isLance && (<>
+        <Section label="Filesystem" />
+        <FieldRow label="path" hint="absolute directory; created on first use" err={fieldErrors.path}>
+          <input
+            className="input mono"
+            data-testid="ssp-lance-path"
+            value={form.path}
+            onChange={(e) => update("path", e.target.value)}
+            placeholder={`~/.primer/lance/${form.id || "<id>"}/`}
+            style={{ width: "100%" }}
+          />
+        </FieldRow>
+      </>)}
+
+      {/* Platform wave P4 item 3: /ssp/_types' own docstring
+          (routers/semantic_search.py's _postgres_family_fields)
+          calls HNSW/DiskANN/vector-type/db_schema advanced tuning
+          with sane defaults, deliberately left off the minimal
+          form contract - same treatment the LLM family gives its
+          Limits block. Collapsed by default rather than deleted:
+          every field here is real, working, currently-shipped
+          configurability, so nothing is lost - it's just not part
+          of the default view, AND (via advancedOpened below) not
+          part of the default submit body either: an untouched
+          Advanced section sends a genuinely core-fields-only
+          config, matching the backend's own confirmed
+          core-fields-only-create case (the union fix Dev-Backend
+          pinned). */}
+      <details data-testid="ssp-advanced-details" open={isEdit}
+        onToggle={(e) => { if (e.target.open) setAdvancedOpened(true); }}>
+        <summary className="mono text-sm muted" style={{ cursor: "pointer", marginBottom: 8 }}>
+          Advanced (optional - sane defaults apply)
+        </summary>
+        {isPostgresFamily && (
+          <FieldRow label="schema" err={fieldErrors.db_schema}>
+            <input className="input mono" value={form.db_schema} onChange={(e) => update("db_schema", e.target.value)} style={{ width: "100%" }} />
+          </FieldRow>
+        )}
+        <Section label="HNSW knobs" />
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <FieldRow label="M" hint="graph degree" err={fieldErrors.hnsw_m}>
+            <input className="input mono" type="number" value={form.hnsw_m} onChange={(e) => update("hnsw_m", +e.target.value)} style={{ width: "100%" }} />
+          </FieldRow>
+          <FieldRow label="ef_construction" hint="build-time accuracy" err={fieldErrors.hnsw_ef_construction}>
+            <input className="input mono" type="number" value={form.hnsw_ef_construction} onChange={(e) => update("hnsw_ef_construction", +e.target.value)} style={{ width: "100%" }} />
+          </FieldRow>
+        </div>
+
+        {isPostgresFamily && (<>
+          <Section label="Vector type" />
+          <label style={{ display: "inline-flex", alignItems: "center", gap: 8, marginBottom: 6, fontSize: 12.5 }}>
+            <input type="checkbox" checked={form.use_halfvec} onChange={(e) => update("use_halfvec", e.target.checked)} />
+            <span>Use halfvec (half-precision)</span>
+          </label>
+          <div style={{ fontSize: 11.5, color: "var(--text-4)", marginBottom: 10 }}>
+            Store vectors as half-precision (halfvec), supporting up to 4000 dimensions. Enable for embedding models above 2000 dims, e.g. text-embedding-3-large (3072). Off uses the standard vector type (max 2000).
+          </div>
+        </>)}
+
+        {isPostgresFamily && (<>
+          <Section label="DiskANN" sub="pgvectorscale only" />
+          {!isScale && (
+            <div className="banner banner-info" style={{ fontSize: 11.5, padding: "6px 10px", marginBottom: 10 }}>
+              <Icon name="info" size={11} className="ico" />
+              <div>Switch backend to <span className="mono">pgvectorscale</span> to enable DiskANN.</div>
+            </div>
+          )}
+          <fieldset disabled={!isScale} style={{ border: 0, padding: 0, margin: 0, opacity: isScale ? 1 : 0.4 }}>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 8, marginBottom: 10, fontSize: 12.5 }}>
+              <input type="checkbox" checked={form.enable_diskann} onChange={(e) => update("enable_diskann", e.target.checked)} />
+              <span>enable DiskANN index</span>
+            </label>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <FieldRow label="num_neighbors" err={fieldErrors.diskann_num_neighbors}>
+                <input className="input mono" type="number" value={form.diskann_num_neighbors} onChange={(e) => update("diskann_num_neighbors", +e.target.value)} disabled={!form.enable_diskann} style={{ width: "100%" }} />
+              </FieldRow>
+              <FieldRow label="search_list_size" err={fieldErrors.diskann_search_list_size}>
+                <input className="input mono" type="number" value={form.diskann_search_list_size} onChange={(e) => update("diskann_search_list_size", +e.target.value)} disabled={!form.enable_diskann} style={{ width: "100%" }} />
+              </FieldRow>
+            </div>
+          </fieldset>
+        </>)}
+      </details>
+
+      <SSP_TestConnectBox form={form} isLance={isLance} includeAdvanced={advancedOpened} />
+    </div>
+  );
+
+  if (typeof frame === "function") {
+    const footerLeft = (
+      <Btn kind="ghost" onClick={onClose} blocked={blocked}>Cancel</Btn>
+    );
+    const footerRight = (
+      <Btn kind="primary" onClick={submit} busy={create.loading} blocked={blocked}>
+        {isEdit ? "Save" : "Register"}
+      </Btn>
+    );
+    return frame({
+      body: modalBody,
+      footerLeft,
+      footerRight,
+      error: mutationError ? (mutationError.detail || mutationError.message || String(mutationError)) : null,
+      busy: create.loading,
+    });
+  }
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -541,147 +704,7 @@ function SSPCreateModal({ onClose, pushToast, existing, initialProvider }) {
           <button className="close" aria-label="Close" onClick={onClose}><Icon name="x" size={14} /></button>
         </div>
         <div className="modal-b">
-          <FieldRow label="id" hint={isEdit ? "locked — id cannot change after create" : "must be unique"} err={fieldErrors.id}>
-            <input
-              className="input mono"
-              value={form.id}
-              onChange={(e) => update("id", e.target.value)}
-              placeholder="pg-prod-main"
-              disabled={isEdit}
-              style={{ width: "100%" }}
-            />
-          </FieldRow>
-          <FieldRow label="backend" hint={isEdit ? "locked — recreate to change backend" : undefined}>
-            <select className="select mono" value={form.provider} onChange={(e) => update("provider", e.target.value)} disabled={isEdit} style={{ width: "100%" }}>
-              {sspKinds.map((k) => (
-                <option key={k} value={k}>
-                  {(sspTypeMap[k] || {}).label || k}
-                  {k === "lance" && lanceMissing ? " (not installed)" : ""}
-                </option>
-              ))}
-            </select>
-            {isLance && lanceMissing && (
-              <div className="field-help" style={{ color: "var(--amber)" }}
-                data-capability-hint="lance">
-                {window.primerApi.capabilityHint("lance")}
-              </div>
-            )}
-          </FieldRow>
-
-          {isPostgresFamily && (<>
-            <Section label="Connection" />
-            <FieldRow label="hostname" err={fieldErrors.hostname}>
-              <input className="input mono" value={form.hostname} onChange={(e) => update("hostname", e.target.value)} placeholder="pg-prod.internal" style={{ width: "100%" }} />
-            </FieldRow>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 100px", gap: 10 }}>
-              <FieldRow label="database" err={fieldErrors.database}>
-                <input className="input mono" value={form.database} onChange={(e) => update("database", e.target.value)} style={{ width: "100%" }} />
-              </FieldRow>
-              <FieldRow label="port" err={fieldErrors.port}>
-                <input className="input mono" type="number" value={form.port} onChange={(e) => update("port", +e.target.value)} style={{ width: "100%" }} />
-              </FieldRow>
-            </div>
-            <FieldRow label="username" err={fieldErrors.username}>
-              <input className="input mono" value={form.username} onChange={(e) => update("username", e.target.value)} placeholder="primer_rw" style={{ width: "100%" }} />
-            </FieldRow>
-            {/* Platform wave P1a item 5: the reference's "DSN secret —
-                masked on read" copy assumes a single DSN connection
-                string; the real SemanticSearchProvider config is
-                structured fields (hostname/port/database/username/
-                password), not one combined DSN - "password" is the
-                actual secret field here, so the label pattern applies
-                to it directly rather than inventing a DSN field the
-                backend does not have. */}
-            <FieldRow label="password secret — masked on read" hint="SecretStr · stored encrypted" err={fieldErrors.password}>
-              <input className="input mono" type="password" value={form.password} onChange={(e) => update("password", e.target.value)} placeholder="•••••••••" style={{ width: "100%" }} />
-            </FieldRow>
-          </>)}
-
-          {isLance && (<>
-            <Section label="Filesystem" />
-            <FieldRow label="path" hint="absolute directory; created on first use" err={fieldErrors.path}>
-              <input
-                className="input mono"
-                data-testid="ssp-lance-path"
-                value={form.path}
-                onChange={(e) => update("path", e.target.value)}
-                placeholder={`~/.primer/lance/${form.id || "<id>"}/`}
-                style={{ width: "100%" }}
-              />
-            </FieldRow>
-          </>)}
-
-          {/* Platform wave P4 item 3: /ssp/_types' own docstring
-              (routers/semantic_search.py's _postgres_family_fields)
-              calls HNSW/DiskANN/vector-type/db_schema advanced tuning
-              with sane defaults, deliberately left off the minimal
-              form contract - same treatment the LLM family gives its
-              Limits block. Collapsed by default rather than deleted:
-              every field here is real, working, currently-shipped
-              configurability, so nothing is lost - it's just not part
-              of the default view, AND (via advancedOpened below) not
-              part of the default submit body either: an untouched
-              Advanced section sends a genuinely core-fields-only
-              config, matching the backend's own confirmed
-              core-fields-only-create case (the union fix Dev-Backend
-              pinned). */}
-          <details data-testid="ssp-advanced-details" open={isEdit}
-            onToggle={(e) => { if (e.target.open) setAdvancedOpened(true); }}>
-            <summary className="mono text-sm muted" style={{ cursor: "pointer", marginBottom: 8 }}>
-              Advanced (optional - sane defaults apply)
-            </summary>
-            {isPostgresFamily && (
-              <FieldRow label="schema" err={fieldErrors.db_schema}>
-                <input className="input mono" value={form.db_schema} onChange={(e) => update("db_schema", e.target.value)} style={{ width: "100%" }} />
-              </FieldRow>
-            )}
-            <Section label="HNSW knobs" />
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <FieldRow label="M" hint="graph degree" err={fieldErrors.hnsw_m}>
-                <input className="input mono" type="number" value={form.hnsw_m} onChange={(e) => update("hnsw_m", +e.target.value)} style={{ width: "100%" }} />
-              </FieldRow>
-              <FieldRow label="ef_construction" hint="build-time accuracy" err={fieldErrors.hnsw_ef_construction}>
-                <input className="input mono" type="number" value={form.hnsw_ef_construction} onChange={(e) => update("hnsw_ef_construction", +e.target.value)} style={{ width: "100%" }} />
-              </FieldRow>
-            </div>
-
-            {isPostgresFamily && (<>
-              <Section label="Vector type" />
-              <label style={{ display: "inline-flex", alignItems: "center", gap: 8, marginBottom: 6, fontSize: 12.5 }}>
-                <input type="checkbox" checked={form.use_halfvec} onChange={(e) => update("use_halfvec", e.target.checked)} />
-                <span>Use halfvec (half-precision)</span>
-              </label>
-              <div style={{ fontSize: 11.5, color: "var(--text-4)", marginBottom: 10 }}>
-                Store vectors as half-precision (halfvec), supporting up to 4000 dimensions. Enable for embedding models above 2000 dims, e.g. text-embedding-3-large (3072). Off uses the standard vector type (max 2000).
-              </div>
-            </>)}
-
-            {isPostgresFamily && (<>
-              <Section label="DiskANN" sub="pgvectorscale only" />
-              {!isScale && (
-                <div className="banner banner-info" style={{ fontSize: 11.5, padding: "6px 10px", marginBottom: 10 }}>
-                  <Icon name="info" size={11} className="ico" />
-                  <div>Switch backend to <span className="mono">pgvectorscale</span> to enable DiskANN.</div>
-                </div>
-              )}
-              <fieldset disabled={!isScale} style={{ border: 0, padding: 0, margin: 0, opacity: isScale ? 1 : 0.4 }}>
-                <label style={{ display: "inline-flex", alignItems: "center", gap: 8, marginBottom: 10, fontSize: 12.5 }}>
-                  <input type="checkbox" checked={form.enable_diskann} onChange={(e) => update("enable_diskann", e.target.checked)} />
-                  <span>enable DiskANN index</span>
-                </label>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                  <FieldRow label="num_neighbors" err={fieldErrors.diskann_num_neighbors}>
-                    <input className="input mono" type="number" value={form.diskann_num_neighbors} onChange={(e) => update("diskann_num_neighbors", +e.target.value)} disabled={!form.enable_diskann} style={{ width: "100%" }} />
-                  </FieldRow>
-                  <FieldRow label="search_list_size" err={fieldErrors.diskann_search_list_size}>
-                    <input className="input mono" type="number" value={form.diskann_search_list_size} onChange={(e) => update("diskann_search_list_size", +e.target.value)} disabled={!form.enable_diskann} style={{ width: "100%" }} />
-                  </FieldRow>
-                </div>
-              </fieldset>
-            </>)}
-          </details>
-
-          <SSP_TestConnectBox form={form} isLance={isLance} includeAdvanced={advancedOpened} />
+          {modalBody}
         </div>
         <div className="modal-f">
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
@@ -712,11 +735,10 @@ function Section({ label, sub }) {
 // Detail page
 // ----------------------------------------------------------------------
 
-function SSPDetail({ sspId, pushToast }) {
+function SSPDetail({ sspId, pushToast, onBack, onDeleted }) {
   const { useResource, useMutation, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
 
-  const [tab, setTab] = React.useState("overview");
   const [showDelete, setShowDelete] = React.useState(false);
   const [deleteError, setDeleteError] = React.useState(null);
   const [editing, setEditing] = React.useState(false);
@@ -795,7 +817,11 @@ function SSPDetail({ sspId, pushToast }) {
           });
         }
         setShowDelete(false);
-        navigate("/ssp");
+        if (typeof onDeleted === "function") {
+          onDeleted(sspId);
+        } else {
+          navigate("/ssp");
+        }
       },
       onError: (err) => {
         if (err?.status === 409) {
@@ -807,6 +833,11 @@ function SSPDetail({ sspId, pushToast }) {
       },
     }
   );
+
+  const handleBack = () => {
+    if (typeof onBack === "function") onBack();
+    else navigate("/ssp");
+  };
 
   if (detail.loading && !detail.data) {
     return (
@@ -832,8 +863,20 @@ function SSPDetail({ sspId, pushToast }) {
   const p = detail.data;
   if (!p) return null;
 
+  const isBuiltin = (window.PC_isBuiltin && window.PC_isBuiltin("ssp", p.id)) || p.id === "lance";
+
   return (
     <div className="col" style={{ gap: 14 }}>
+      <div>
+        <a
+          className="link muted text-sm"
+          data-testid="ssp-detail-back"
+          onClick={handleBack}
+          style={{ cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}
+        >
+          ‹ Semantic Search Storage
+        </a>
+      </div>
       <div className="panel">
         <div className="panel-body" style={{ padding: "14px 18px", display: "flex", alignItems: "center", gap: 14 }}>
           <BackendBadge kind={p.provider} />
@@ -867,8 +910,10 @@ function SSPDetail({ sspId, pushToast }) {
           >
             {invalidate.loading ? "Invalidating…" : "Invalidate"}
           </Btn>
-          <Btn size="sm" kind="secondary" icon="edit" onClick={() => setEditing(true)}>Edit</Btn>
-          <Btn size="sm" kind="danger" icon="trash" onClick={() => { setDeleteError(null); setShowDelete(true); }}>Delete</Btn>
+          <Btn size="sm" kind="secondary" icon="edit" data-testid="ssp-detail-edit" onClick={() => setEditing(true)}>Edit</Btn>
+          {!isBuiltin && (
+            <Btn size="sm" kind="danger" icon="trash" data-testid="ssp-detail-delete" onClick={() => { setDeleteError(null); setShowDelete(true); }}>Delete</Btn>
+          )}
         </div>
         {testResult ? (
           <div className="panel-body" style={{ padding: "0 18px 12px" }}>
@@ -882,36 +927,16 @@ function SSPDetail({ sspId, pushToast }) {
           </div>
         ) : null}
 
-        <div style={{ display: "flex", alignItems: "center", borderTop: "1px solid var(--border)", borderBottom: "1px solid var(--border)", padding: "0 12px" }}>
-          {[
-            { id: "overview", label: "Overview", icon: "info" },
-            { id: "config", label: "Config", icon: "settings" },
-            { id: "collections", label: "Collections", icon: "collection", count: referencingCollections.length },
-          ].map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              style={{
-                background: "none", border: "none",
-                padding: "10px 14px", cursor: "pointer",
-                color: tab === t.id ? "var(--text)" : "var(--text-3)",
-                fontSize: 12.5, fontWeight: tab === t.id ? 600 : 400,
-                borderBottom: tab === t.id ? "2px solid var(--accent)" : "2px solid transparent",
-                marginBottom: -1,
-                display: "inline-flex", alignItems: "center", gap: 6,
-              }}
-            >
-              <Icon name={t.icon} size={13} />
-              {t.label}
-              {t.count != null && t.count > 0 && <span className="count" style={{ marginLeft: 4 }}>{t.count}</span>}
-            </button>
-          ))}
-        </div>
-
-        <div style={{ padding: 18 }}>
-          {tab === "overview" && <SSPOverview p={p} />}
-          {tab === "config" && <SSPConfig p={p} />}
-          {tab === "collections" && <SSPCollections collections={referencingCollections} sspId={sspId} />}
+        <div style={{ padding: 18, display: "flex", flexDirection: "column", gap: 18 }}>
+          <PK_Section title="OVERVIEW" testid="ssp-section-overview" cols={1}>
+            <SSPOverview p={p} />
+          </PK_Section>
+          <PK_Section title="CONFIGURATION" testid="ssp-section-config" cols={1}>
+            <SSPConfig p={p} />
+          </PK_Section>
+          <PK_Section title="COLLECTIONS" testid="ssp-section-collections" cols={1}>
+            <SSPCollections collections={referencingCollections} sspId={sspId} />
+          </PK_Section>
         </div>
       </div>
 
@@ -919,6 +944,7 @@ function SSPDetail({ sspId, pushToast }) {
         <Modal
           title={`Delete ${sspId}?`}
           danger
+          testid="modal"
           onClose={() => { setShowDelete(false); setDeleteError(null); }}
           footer={
             <>
@@ -974,10 +1000,16 @@ function SSPDetail({ sspId, pushToast }) {
         </Modal>
       )}
       {editing && (
-        <SSPCreateModal
-          existing={p}
-          pushToast={pushToast}
+        <PC_RegisterOverlay
+          initialClass="ssp"
+          editRow={p}
           onClose={() => setEditing(false)}
+          onSaved={() => { setEditing(false); detail.refetch(); }}
+          onDeleted={(id) => {
+            setEditing(false);
+            if (typeof onDeleted === "function") onDeleted(id);
+            else navigate("/ssp");
+          }}
         />
       )}
     </div>
@@ -1066,4 +1098,5 @@ function SSPCollections({ collections, sspId }) {
 
 window.SSPListPage = SSPListPage;
 window.SSPDetail = SSPDetail;
+window.SSPCreateModal = SSPCreateModal;
 window.BackendBadge = BackendBadge;

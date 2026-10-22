@@ -192,15 +192,16 @@ def test_draft_test_connect_is_mounted_in_the_create_modal() -> None:
     assert "<SSP_TestConnectBox form={form} isLance={isLance} includeAdvanced={advancedOpened} />" in modal
 
 
-# ---- Register dropdown routes SSP creation --------------------------------
+# ---- Register overlay routes SSP creation ---------------------------------
 
 
-def test_ssp_creation_is_routed_through_the_shared_register_dropdown() -> None:
-    """'like every other family' - reuses PC_RegisterDropdown
-    (provider-catalog.jsx) rather than a bespoke New-provider button, so
-    kind decides the form up front for SSP too."""
+def test_ssp_creation_opens_the_register_overlay() -> None:
+    """SSPListPage create opens PC_RegisterOverlay with initialClass="ssp"
+    (plan 02 Task 17)."""
     list_src = _list_src()
-    assert '<PC_RegisterDropdown klass={{ plural: "ssp" }} onPick={openCreate} />' in list_src
+    assert 'initialClass="ssp"' in list_src
+    assert "PC_RegisterOverlay" in list_src
+    assert "PC_RegisterDropdown" not in list_src
     assert "New provider" not in list_src
     assert "New Semantic Search provider" not in list_src
 
