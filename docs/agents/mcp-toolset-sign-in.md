@@ -89,7 +89,7 @@ Response when it needs an admin:
   "expires_at": null,
   "connected_at": null,
   "refreshed_at": null,
-  "scope": [],
+  "scope": null,
   "redirect_uri": null
 }
 ```
@@ -115,7 +115,7 @@ An abridged connected response looks like:
   "state": "connected",
   "reason": null,
   "expires_at": "2026-10-22T18:00:00Z",
-  "scope": ["search"]
+  "scope": "search"
 }
 ```
 
