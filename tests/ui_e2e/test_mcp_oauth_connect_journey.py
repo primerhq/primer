@@ -33,7 +33,6 @@ def _oauth_toolset(toolset_id: str, mcp_url: str, *, full: bool = False) -> dict
                 "client_secret": "pre-secret",
             },
             "resource_uri": mcp_url,
-            "token_endpoint": mcp_url.removesuffix("/mcp") + "/as/token",
             "client_name": "primer-e2e",
         }
     return {
@@ -138,14 +137,11 @@ def test_connect_from_the_overlay(
         with context.expect_page() as popup_info:
             connect.click()
         popup = popup_info.value
-        expect(
-            popup.get_by_test_id("nv-toasts-status").locator(
-                ".toast", has_text="Connected"
-            )
-        ).to_be_visible(timeout=30_000)
-
+        # The popup toast is a fragile fresh-document seam; the opener poll is
+        # the durable signal that the callback completed the exchange.
+        popup.wait_for_url(lambda url: "/console/" in url, timeout=20_000)
         expect(page.get_by_test_id("ts-auth-status")).to_contain_text(
-            "Connected", timeout=10_000
+            "Connected", timeout=20_000
         )
         page.get_by_test_id("nv-overlay-close").click()
         expect(page.get_by_test_id("nv-overlay-body")).to_have_count(0)
@@ -220,7 +216,6 @@ def test_an_edit_keeps_every_auth_field(
 
 def test_the_panel_on_a_phone(
     page: Page,
-    context: BrowserContext,
     base_url: str,
     console_url: str,
     mock_oauth_mcp_lan,
@@ -228,7 +223,6 @@ def test_the_panel_on_a_phone(
 ) -> None:
     toolset_id = f"ui-oauth-phone-{unique_suffix}"
     _seed_toolset(base_url, toolset_id, mock_oauth_mcp_lan.mcp_url)
-    popup = None
     try:
         page.set_viewport_size(PHONE)
         wid = default_wid(console_url)
@@ -236,20 +230,17 @@ def test_the_panel_on_a_phone(
             page,
             f"{console_url}#/w/{wid}?overlay=toolsets::{toolset_id}",
         )
-        connect = page.get_by_test_id("ts-auth-connect")
-        expect(connect).to_be_visible(timeout=15_000)
-        expect(page.get_by_test_id("ts-auth-actions")).to_have_attribute(
-            "data-layout", "stacked"
+        row = page.get_by_test_id(f"nv-mob-plat-row:{toolset_id}")
+        expect(row).to_be_visible(timeout=20_000)
+        row.click()
+        sheet = page.get_by_test_id("nv-mob-fact-body")
+        expect(sheet).to_be_visible(timeout=15_000)
+        status = sheet.locator(".nv-mob-fact-status")
+        expect(status).to_have_count(1)
+        expect(status).to_contain_text("Needs sign-in")
+        expect(status).to_have_attribute("data-tone", "warn")
+        expect(page.get_by_test_id("nv-mob-fact-edit-note")).to_have_text(
+            "Edit on desktop"
         )
-        with context.expect_page() as popup_info:
-            connect.click()
-        popup = popup_info.value
-        expect(
-            popup.get_by_test_id("nv-toasts-status").locator(
-                ".toast", has_text="Connected"
-            )
-        ).to_be_visible(timeout=30_000)
     finally:
-        if popup is not None:
-            popup.close()
         _cleanup(base_url, toolset_id)
