@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 pytest.importorskip("playwright")
-from playwright.sync_api import BrowserContext, Page, expect  # noqa: E402
+from playwright.sync_api import BrowserContext, Page, TimeoutError, expect  # noqa: E402
 
 from tests._support.mock_oauth_mcp_fixtures import mock_oauth_mcp_lan  # noqa: E402,F401
 from tests._support.smk import smk  # noqa: E402
@@ -232,9 +232,23 @@ def test_the_panel_on_a_phone(
         )
         row = page.get_by_test_id(f"nv-mob-plat-row:{toolset_id}")
         expect(row).to_be_visible(timeout=20_000)
-        row.click()
         sheet = page.get_by_test_id("nv-mob-fact-body")
-        expect(sheet).to_be_visible(timeout=15_000)
+        # The mobile shell (nv-mobile-shell.jsx, M5 spec pt 6) auto-opens the
+        # fact sheet for a row a deep link names, once the section list has
+        # loaded. On a fast local box the click below can win that race; on a
+        # slower CI runner the auto-open wins and its sheet-overlay intercepts
+        # the click. Either path lands on the same sheet: BottomSheet renders
+        # nothing while closed, so a visible nv-mob-fact-body means the sheet
+        # is open.
+        if not sheet.is_visible():
+            try:
+                row.click(timeout=5_000)
+            except TimeoutError:
+                # The auto-open won the race after the check: the overlay now
+                # intercepts the click; the sheet assertion below still
+                # verifies the same final state.
+                pass
+        expect(sheet).to_be_visible(timeout=20_000)
         status = sheet.locator(".nv-mob-fact-status")
         expect(status).to_have_count(1)
         expect(status).to_contain_text("Needs sign-in")
