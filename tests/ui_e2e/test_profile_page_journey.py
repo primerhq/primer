@@ -54,9 +54,10 @@ def test_a_wrong_current_password_is_told_in_words_and_the_empty_states_describe
 
     page.get_by_test_id("nv-pw-current").fill("definitely-not-the-password-1")
     page.get_by_test_id("nv-pw-next").fill("a-long-enough-new-one-1")
+    page.get_by_test_id("nv-pw-confirm").fill("a-long-enough-new-one-1")
     page.get_by_test_id("nv-pw-submit").click()
 
-    error = page.locator(".nv-form-error")
+    error = page.get_by_test_id("nv-pw-error")
     expect(error).to_contain_text("The current password is not right.", timeout=15_000)
     assert "invalid_credentials" not in error.inner_text(), error.inner_text()
 
@@ -76,3 +77,68 @@ def test_with_a_provider_configured_the_linked_accounts_hint_points_at_the_list_
 
     expect(page.get_by_test_id("linked-accounts-empty")).to_contain_text("Link a single sign-on provider below", timeout=15_000)
     expect(page.get_by_test_id("link-provider-btn-okta")).to_be_visible()
+
+
+def test_the_profile_page_is_laid_out_in_the_kit_style(page: Page, console_url: str) -> None:
+    _stub_reads(page, providers=[])
+    _open_profile(page, console_url)
+
+    title = page.get_by_test_id("nv-sys-profile-title")
+    expect(title).to_have_text("Profile")
+
+    identity = page.get_by_test_id("nv-sys-identity")
+    expect(identity).to_contain_text("system")
+    expect(identity).to_contain_text("Sign-in is off on this server")
+
+    cur_box = page.get_by_test_id("nv-pw-current").bounding_box()
+    next_box = page.get_by_test_id("nv-pw-next").bounding_box()
+    confirm_box = page.get_by_test_id("nv-pw-confirm").bounding_box()
+    assert cur_box and next_box and confirm_box
+    assert abs(cur_box["y"] - next_box["y"]) <= 1
+    assert abs(next_box["y"] - confirm_box["y"]) <= 1
+
+    submit_box = page.get_by_test_id("nv-pw-submit").bounding_box()
+    section_box = page.get_by_test_id("nv-sys-password").bounding_box()
+    assert submit_box and section_box
+    submit_right = submit_box["x"] + submit_box["width"]
+    section_right = section_box["x"] + section_box["width"]
+    assert abs(section_right - submit_right) <= 24
+
+
+def test_a_mismatched_confirmation_is_refused_before_any_request(page: Page, console_url: str) -> None:
+    _stub_reads(page, providers=[])
+    posts: list[str] = []
+
+    def handle_change(route):
+        posts.append(route.request.url)
+        route.continue_()
+
+    page.route(re.compile(r".*/v1/auth/change-password$"), handle_change)
+    _open_profile(page, console_url)
+
+    page.get_by_test_id("nv-pw-current").fill("old-password-1")
+    page.get_by_test_id("nv-pw-next").fill("a-long-enough-new-one-1")
+    page.get_by_test_id("nv-pw-confirm").fill("different-password-2")
+    page.get_by_test_id("nv-pw-submit").click()
+
+    password_section = page.get_by_test_id("nv-sys-password")
+    expect(password_section).to_contain_text("The two new passwords do not match.")
+    assert len(posts) == 0
+
+
+def test_on_a_phone_the_password_fields_stack(page: Page, console_url: str) -> None:
+    page.set_viewport_size({"width": 390, "height": 844})
+    wid = default_wid(console_url) or "primer"
+    page.goto(f"{console_url}#/w/{wid}?view=system:profile")
+    expect(page.get_by_test_id("nv-sys-profile")).to_be_visible(timeout=20_000)
+
+    cur_box = page.get_by_test_id("nv-pw-current").bounding_box()
+    next_box = page.get_by_test_id("nv-pw-next").bounding_box()
+    confirm_box = page.get_by_test_id("nv-pw-confirm").bounding_box()
+    assert cur_box and next_box and confirm_box
+    assert abs(cur_box["x"] - next_box["x"]) <= 1
+    assert abs(next_box["x"] - confirm_box["x"]) <= 1
+
+    scroll_w = page.evaluate("() => document.documentElement.scrollWidth")
+    inner_w = page.evaluate("() => window.innerWidth")
+    assert scroll_w <= inner_w

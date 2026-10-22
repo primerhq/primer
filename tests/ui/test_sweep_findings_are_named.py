@@ -65,6 +65,7 @@ CONTROLS = [
     ("mcp.jsx", 'data-testid="mcp-tool-search"', ("aria", "Search exposed tools")),
     ("console/nv-system.jsx", 'data-testid="nv-pw-current"', ("aria", "Current password")),
     ("console/nv-system.jsx", 'data-testid="nv-pw-next"', ("aria", "New password")),
+    ("console/nv-system.jsx", 'data-testid="nv-pw-confirm"', ("aria", "Confirm new password")),
     ("shared/entity-picker.jsx", 'role="listbox"', ("aria", "{")),   # named after the picker's own label or placeholder (a JSX expression)
 ]
 

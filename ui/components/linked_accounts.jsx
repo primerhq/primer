@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Modal, Banner */
+/* global React, Icon, Btn, Modal, Banner, PK_PageHeader, PK_usePagedFilter */
 // Self-service "Linked accounts" console page (Layer 2 OIDC SSO, Task 10).
 //
 // Prefix LA_ to avoid global name collisions with other components.
@@ -25,6 +25,17 @@
 function LA_extractError(err) {
   const r = window.primerApi.readRefusal(err);
   return { code: r.code, message: r.message };
+}
+
+const LA_PAGE_SIZE = 20;
+
+function LA_countText(n) {
+  return n === 1 ? "1 linked account" : n + " linked accounts";
+}
+
+function LA_filterText(identity) {
+  if (!identity) return "";
+  return [identity.provider_name, identity.subject, identity.email].filter(Boolean).join(" ");
 }
 
 // Absolute local-time display for created_at — this is an audit-style
@@ -86,14 +97,36 @@ function LA_LinkedAccountsPage() {
   const linkedProviderIds = new Set(items.map((i) => i.provider_id));
   const linkable = providers.filter((p) => !linkedProviderIds.has(p.id));
 
+  const paged = PK_usePagedFilter(items, {
+    pageSize: LA_PAGE_SIZE,
+    text: LA_filterText,
+  });
+
   return (
-    <div className="col" style={{ gap: 14 }}>
-      <div className="filter-bar">
-        <span style={{ fontSize: 13, fontWeight: 600 }}>Linked accounts</span>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-          <Btn size="sm" kind="ghost" icon="refresh" onClick={list.refetch}>Refresh</Btn>
-        </div>
-      </div>
+    <div className="col" data-testid="la-page" style={{ gap: 14 }}>
+      <PK_PageHeader
+        title="Linked accounts"
+        count={LA_countText(items.length)}
+        filter={{
+          value: paged.q,
+          onChange: paged.setQ,
+          label: "Filter linked accounts",
+          testid: "la-filter",
+        }}
+        pager={{
+          page: paged.page,
+          pages: paged.pages,
+          from: paged.from,
+          to: paged.to,
+          total: paged.total,
+          onPage: paged.setPage,
+        }}
+        extra={
+          <Btn size="sm" kind="ghost" icon="refresh" onClick={list.refetch}>
+            Refresh
+          </Btn>
+        }
+      />
 
       {list.loading && items.length === 0 && (
         <div className="muted text-sm" style={{ padding: 40, textAlign: "center" }}>Loading…</div>
@@ -116,7 +149,13 @@ function LA_LinkedAccountsPage() {
         </div>
       )}
 
-      {items.length > 0 && (
+      {items.length > 0 && paged.total === 0 && (
+        <div className="empty" style={{ padding: "40px 20px" }}>
+          <div className="sub">No linked accounts match the filter.</div>
+        </div>
+      )}
+
+      {items.length > 0 && paged.total > 0 && (
         <div data-testid="linked-accounts-table" className="tbl-wrap">
           <table className="tbl">
             <thead>
@@ -129,7 +168,7 @@ function LA_LinkedAccountsPage() {
               </tr>
             </thead>
             <tbody>
-              {items.map((identity) => (
+              {paged.visible.map((identity) => (
                 <LA_IdentityRow
                   key={identity.id}
                   identity={identity}
@@ -287,3 +326,6 @@ function LA_UnlinkConfirmDialog({ identity, onClose, onUnlinked }) {
 window.LA_LinkedAccountsPage = LA_LinkedAccountsPage;
 window.LA_IdentityRow = LA_IdentityRow;
 window.LA_UnlinkConfirmDialog = LA_UnlinkConfirmDialog;
+window.LA_PAGE_SIZE = LA_PAGE_SIZE;
+window.LA_countText = LA_countText;
+window.LA_filterText = LA_filterText;
