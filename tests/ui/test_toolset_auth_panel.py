@@ -183,3 +183,14 @@ def test_buttons_stack_on_a_phone(panel) -> None:
     panel.eval("window.__mobile = true")
     _mount(panel)
     assert panel.eval("MR.find('ts-auth-actions').props['data-layout']") == "stacked"
+
+
+def test_a_saved_edit_invalidates_the_auth_status_resource() -> None:
+    """The T12 sign-out on change must reach the open T18 edit journey panel."""
+    src = TOOLSETS.read_text(encoding="utf-8")
+    branch_start = src.index("invalidates: isEdit")
+    branch_end = src.index(': ["toolsets:list"],', branch_start)
+    edit_invalidates = src[branch_start:branch_end]
+    assert '"toolsets:list"' in edit_invalidates
+    assert '"toolset-detail:" + (existing?.id || "")' in edit_invalidates
+    assert '"toolset-auth:" + (existing?.id || "")' in edit_invalidates
