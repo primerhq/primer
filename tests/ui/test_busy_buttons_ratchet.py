@@ -46,7 +46,6 @@ BASELINE: dict[str, int] = {
     "console/nv-mobile-shell.jsx": 3,
     "console/nv-overlays.jsx": 1,
     "console/nv-session-doc.jsx": 3,
-    "console/nv-system.jsx": 1,
     "graph-builder/gb-dryrun.jsx": 1,
     "graph-builder/gb-palette.jsx": 1,
     "graph-builder/graph-builder.jsx": 2,

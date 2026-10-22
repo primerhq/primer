@@ -152,5 +152,5 @@ def test_script_and_css_landed():
     shell_i = HTML.index("components/console/nv-shell.jsx")
     assert sys_i < shell_i
     for cls in (".nv-health-card", ".nv-worker-row", ".nv-attn-row",
-                ".nv-profile-pw"):
+                ".nv-sys-identity"):
         assert cls in CSS, cls

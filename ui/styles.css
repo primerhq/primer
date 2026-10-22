@@ -5872,11 +5872,34 @@ button.nv-trace-line { cursor: pointer; }
   right: 0;
   z-index: 10;
 }
-.nv-profile-pw {
+.nv-sys-identity {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-width: 360px;
+  align-items: center;
+  gap: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-8);
+  background: var(--bg-1);
+  padding: 12px 14px;
+}
+.nv-sys-identity-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.nv-sys-identity-facts {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.nv-sys-pw-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 4px;
 }
 
 /* =========================================================================

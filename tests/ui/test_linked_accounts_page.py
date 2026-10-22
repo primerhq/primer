@@ -146,3 +146,12 @@ def test_no_duplicate_top_level_declaration_in_bundle() -> None:
     assert etag and body
     text = body.decode("utf-8")
     assert text.count("function LA_LinkedAccountsPage(") == 1
+
+
+def test_the_header_is_the_kit_header() -> None:
+    """D7: Linked accounts takes the same kit header as Your API keys."""
+    src = _src()
+    assert "<PK_PageHeader" in src and "PK_usePagedFilter(" in src
+    assert 'title="Linked accounts"' in src and '"la-filter"' in src
+    assert 'className="filter-bar"' not in src
+

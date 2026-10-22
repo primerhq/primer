@@ -1,4 +1,4 @@
-/* global React, SH_api, NV_useConsole, NV_identity, relativeTime */
+/* global React, SH_api, NV_useConsole, NV_identity, relativeTime, PK_Section, PK_Field, Btn */
 // The System view (wiring plan P5 T11): SYSNAV rail + one body per nav.
 // The dashboard is fresh (health cards off /health, the worker fleet
 // with drain/purge, and the cross-workspace "needs a human" panel via
@@ -730,71 +730,171 @@ function NV_passwordChangeMessage(err) {
   return r.message;
 }
 
+function NV_passwordFormErrors(form) {
+  var f = form || {};
+  var errors = {};
+  if (!f.current) {
+    errors.current = "Enter your current password.";
+  }
+  if (!f.next || f.next.length < 8) {
+    errors.next = "The new password needs at least 8 characters.";
+  }
+  if (f.confirm !== f.next) {
+    errors.confirm = "The two new passwords do not match.";
+  }
+  return errors;
+}
+
+function NV_signInText(status) {
+  if (!status) return "";
+  var m = status.sign_in_method;
+  if (m === "password") return "Signed in with a password";
+  if (m === "sso") {
+    return status.sign_in_provider
+      ? "Signed in with single sign-on (" + status.sign_in_provider + ")"
+      : "Signed in with single sign-on";
+  }
+  if (m === "api_token") return "Signed in with an API key";
+  if (m === "auth_disabled") return "Sign-in is off on this server";
+  return "";
+}
+
 function NV_SysProfile() {
   var con = NV_useConsole();
+  var authStatus = window.primerApi.useResource(
+    "auth-status",
+    function (signal) {
+      return window.primerApi.apiFetch("GET", "/auth/status", null, { signal: signal });
+    }
+  );
   var curState = React.useState("");
   var cur = curState[0];
   var setCur = curState[1];
   var nextState = React.useState("");
   var next = nextState[0];
   var setNext = nextState[1];
+  var confirmState = React.useState("");
+  var confirm = confirmState[0];
+  var setConfirm = confirmState[1];
+  var submittedState = React.useState(false);
+  var submitted = submittedState[0];
+  var setSubmitted = submittedState[1];
   var errState = React.useState(null);
   var err = errState[0];
   var setErr = errState[1];
   var busyState = React.useState(false);
   var busy = busyState[0];
   var setBusy = busyState[1];
+
+  var initials = String(con.username || "?").slice(0, 2).toLowerCase();
+  var signInText = NV_signInText(authStatus && authStatus.data);
+
+  var fieldErrors = NV_passwordFormErrors({ current: cur, next: next, confirm: confirm });
+  var hasErrors = Object.keys(fieldErrors).length > 0;
+
   function submit() {
-    if (busy || !cur || next.length < 8) {
-      if (next && next.length < 8) setErr({ message: "New password needs at least 8 characters." });
-      return;
-    }
+    if (busy) return;
+    setSubmitted(true);
+    if (hasErrors) return;
     setBusy(true);
     setErr(null);
-    window.primerApi.apiFetch("POST", "/auth/change-password",
-      { current_password: cur, new_password: next }).then(function () {
-      setBusy(false);
-      setCur("");
-      setNext("");
-      con.toast("Password changed");
-    }, function (e) {
-      setBusy(false);
-      setErr(e);
-    });
+    window.primerApi.apiFetch("POST", "/auth/change-password", {
+      current_password: cur,
+      new_password: next,
+    }).then(
+      function () {
+        setBusy(false);
+        setCur("");
+        setNext("");
+        setConfirm("");
+        setSubmitted(false);
+        con.toast("Password changed");
+      },
+      function (e) {
+        setBusy(false);
+        setErr(e);
+      }
+    );
   }
+
+  var PK_Section = window.PK_Section;
+  var PK_Field = window.PK_Field;
+
   return (
-    <div data-testid="nv-sys-profile">
-      <div className="nv-plat-title nv-sys-title">
-        Profile — {con.username}
+    <div className="col" data-testid="nv-sys-profile" style={{ gap: 20 }}>
+      <div className="nv-plat-title nv-sys-title" data-testid="nv-sys-profile-title">
+        Profile
       </div>
-      <div className="nv-sys-subtitle">Change password</div>
-      {err ? (
-        <div className="nv-form-error">{NV_passwordChangeMessage(err)}</div>
-      ) : null}
-      <div className="nv-profile-pw">
-        <input className="nv-input" type="password" value={cur}
-          aria-label="Current password"
-          placeholder="Current password" data-testid="nv-pw-current"
-          autoComplete="current-password"
-          onChange={function (ev) { setCur(ev.target.value); }} />
-        <input className="nv-input" type="password" value={next}
-          aria-label="New password"
-          placeholder="New password (min 8 chars)" data-testid="nv-pw-next"
-          autoComplete="new-password"
-          onChange={function (ev) { setNext(ev.target.value); }} />
-        <button type="button" className="nv-btn-primary" disabled={busy}
-          data-testid="nv-pw-submit" onClick={submit}>
-          {busy ? "Changing…" : "Change password"}
-        </button>
+
+      <div className="nv-sys-identity" data-testid="nv-sys-identity">
+        <div className="nv-avatar">{initials}</div>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div className="nv-sys-identity-name" data-testid="nv-sys-identity-name">
+            {con.username}
+          </div>
+          <div className="nv-sys-identity-facts">
+            <span data-testid="nv-sys-identity-role">{con.role}</span>
+            {signInText ? (
+              <span data-testid="nv-sys-identity-sign-in">{signInText}</span>
+            ) : null}
+          </div>
+        </div>
       </div>
+
+      <PK_Section title="Password" testid="nv-sys-password" cols={3}>
+        <PK_Field label="Current password" error={submitted ? fieldErrors.current : null}>
+          <input
+            className="input"
+            type="password"
+            value={cur}
+            aria-label="Current password"
+            autoComplete="current-password"
+            data-testid="nv-pw-current"
+            onChange={function (ev) { setCur(ev.target.value); }}
+          />
+        </PK_Field>
+        <PK_Field label="New password" help="At least 8 characters" error={submitted ? fieldErrors.next : null}>
+          <input
+            className="input"
+            type="password"
+            value={next}
+            aria-label="New password"
+            autoComplete="new-password"
+            data-testid="nv-pw-next"
+            onChange={function (ev) { setNext(ev.target.value); }}
+          />
+        </PK_Field>
+        <PK_Field label="Confirm new password" error={submitted ? fieldErrors.confirm : null}>
+          <input
+            className="input"
+            type="password"
+            value={confirm}
+            aria-label="Confirm new password"
+            autoComplete="new-password"
+            data-testid="nv-pw-confirm"
+            onChange={function (ev) { setConfirm(ev.target.value); }}
+          />
+        </PK_Field>
+        <div className="nv-sys-pw-actions">
+          {err ? (
+            <div data-testid="nv-pw-error" role="alert" style={{ marginRight: "auto" }}>
+              <div className="nv-form-error">{NV_passwordChangeMessage(err)}</div>
+            </div>
+          ) : null}
+          <Btn kind="primary" busy={busy} data-testid="nv-pw-submit" onClick={submit}>
+            {busy ? "Changing…" : "Change password"}
+          </Btn>
+        </div>
+      </PK_Section>
+
       {/* One-title rule: the re-hosted pages render their own
           action-bearing headers ("API tokens" / "Linked accounts"). */}
-      {typeof window.AT_ApiTokensPage === "function"
-        ? <window.AT_ApiTokensPage mode="personal" username={con.username} />
-        : null}
-      {typeof window.LA_LinkedAccountsPage === "function"
-        ? <window.LA_LinkedAccountsPage />
-        : null}
+      {typeof window.AT_ApiTokensPage === "function" ? (
+        <window.AT_ApiTokensPage mode="personal" username={con.username} />
+      ) : null}
+      {typeof window.LA_LinkedAccountsPage === "function" ? (
+        <window.LA_LinkedAccountsPage />
+      ) : null}
     </div>
   );
 }
@@ -866,3 +966,6 @@ window.NV_resetOutcome = NV_resetOutcome;
 window.NV_RESET_AGENTS_CONFIRM = NV_RESET_AGENTS_CONFIRM;
 window.NV_CAPABILITY_GATES = NV_CAPABILITY_GATES;
 window.NV_capabilityRows = NV_capabilityRows;
+window.NV_passwordFormErrors = NV_passwordFormErrors;
+window.NV_signInText = NV_signInText;
+window.NV_SysProfile = NV_SysProfile;
