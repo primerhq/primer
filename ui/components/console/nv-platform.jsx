@@ -457,9 +457,10 @@ var NV_PLAT_PAGES = {
         id: row.id, name: row.id, sub: row.tagline || row.description || "",
         badge: row.builtin ? "built in" : (row.kind || "registered"),
         // notes 3.1: red = unreachable, not amber (amber is in-progress).
-        status: row.available === false
-          ? { label: "unavailable", tone: "error" }
-          : { label: "available", tone: "ok" },
+        status: (window.TS_cardAuthStatus && window.TS_cardAuthStatus(row))
+          || (row.available === false
+            ? { label: "unavailable", tone: "error" }
+            : { label: "available", tone: "ok" }),
         facts: [
           NV_fact("tools", NV_countOf(row.tools)),
           NV_fact("source", row.source || row.transport),
