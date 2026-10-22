@@ -22,9 +22,10 @@ def test_the_url_field_says_to_re_enter_the_secrets_when_it_changes() -> None:
     src = SRC.read_text(encoding="utf-8")
     note = src.index('data-testid="toolset-url-secrets-reenter"')
     url_label = src.index('<FormField label="URL"')
-    headers = src.index('label="Headers"')
-    assert url_label < note < headers, "the note must sit under the URL field, above the headers"
+    auth = src.index("<TS_McpAuthSection")
+    assert url_label < note < auth, "the note must sit under the URL field, above the auth section"
     assert "isEdit && (" in src[url_label:note], "the note is about editing a stored toolset"
-    text = src[note:headers]
+    text = src[note:auth]
     assert "Re-enter the header values" in text
-    assert "OAuth client secret" in text and "OAuth endpoints" in text, "the OAuth secret and endpoints move the same way"
+    assert "OAuth client secret" in text and "OAuth settings" in text
+    assert "Only an admin" in text

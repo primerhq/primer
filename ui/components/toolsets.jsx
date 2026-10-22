@@ -417,6 +417,8 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
   // mode the id field locks and PUT-replaces.
   const isEdit = !!existing;
   const { useMutation, apiFetch } = window.primerApi;
+  const useResource = window.primerApi.useResource;
+  const useViewport = window.primerApi.useViewport;
 
   // Re-hydrate dict[str,str] fields back into the KV-editor pair shape.
   const _dictToPairs = (d) => d && typeof d === "object"
@@ -439,10 +441,27 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
     () => _dictToPairs(existing?.config?.config?.env)
   );
   const [url, setUrl] = React.useState(existing?.config?.config?.url || "");
-  const [httpHeaders, setHttpHeaders] = React.useState(
-    () => _dictToPairs(existing?.config?.config?.headers)
+  const [authForm, setAuthForm] = React.useState(
+    () => window.TS_authFormOf
+      ? window.TS_authFormOf(existing?.config?.config || {})
+      : {
+          mode: existing?.config?.config?.headers ? "header" : "none",
+          headers: _dictToPairs(existing?.config?.config?.headers),
+          scopes: "", clientId: "", clientSecret: "", resource: "", tokenEndpoint: "",
+        }
   );
   const [fieldErrors, setFieldErrors] = React.useState({});
+  const viewport = typeof useViewport === "function" ? useViewport() : { isMobile: false };
+  const authStatus = typeof useResource === "function"
+    ? useResource(
+        "auth-status",
+        (signal) => apiFetch("GET", "/auth/status", null, { signal }),
+        { pollMs: 0 },
+      )
+    : { data: null };
+  const isAdmin = !!(authStatus.data && authStatus.data.role === "admin");
+  const existingUsesOAuth = !!(existing && existing.config && existing.config.config && existing.config.config.oauth);
+  const authLocked = isEdit && existingUsesOAuth && !isAdmin;
   // "Create anyway" escape hatch. When the backend rejects the create because
   // the MCP endpoint is unreachable (400 + type "/errors/toolset-unreachable"),
   // we hold the connection message + the exact body so the operator can
@@ -522,6 +541,17 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
   );
 
   const submit = async () => {
+    const authErrors = provider === "mcp" && transport !== "stdio" && window.TS_validateAuth
+      ? window.TS_validateAuth(authForm)
+      : {};
+    if (Object.keys(authErrors).length) {
+      const nextErrors = {};
+      Object.entries(authErrors).forEach(function (entry) {
+        nextErrors["body.config.config." + entry[0]] = entry[1];
+      });
+      setFieldErrors(nextErrors);
+      return;
+    }
     setFieldErrors({});
     setUnreachable(null);
     let config = null;
@@ -548,10 +578,16 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
           }
         : {
             transport: transport,
-            config: {
-              url: url.trim(),
-              headers: kvToDict(httpHeaders),
-            },
+            config: window.TS_applyAuth
+              ? window.TS_applyAuth(
+                  { ...(existing?.config?.config || {}), url: url.trim() },
+                  authForm,
+                )
+              : {
+                  ...(existing?.config?.config || {}),
+                  url: url.trim(),
+                  headers: kvToDict(authForm.headers || []),
+                },
           };
     }
     const body = {
@@ -722,25 +758,37 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
               <FormField label="URL" err={fieldErrors["body.config.config.url"]}>
                 <input
                   className="input mono"
+                  data-testid="toolset-url-input"
                   value={url}
                   onChange={(e) => setUrl(e.target.value)}
                   placeholder="https://mcp.example.com/sse"
+                  disabled={authLocked}
                   style={{ width: "100%" }}
                 />
                 {isEdit && (
                   <div className="field-help warn" data-testid="toolset-url-secrets-reenter">
-                    Changing the URL or the OAuth endpoints (redirect URI, resource URI)? Re-enter the header values below and the OAuth client secret in the same save: the stored secrets are only kept for the endpoint they were set for. Without the admin role, a new endpoint with masked secrets gets a 403.
+                    Changing the URL or the OAuth settings? Re-enter the header values and the OAuth client secret in the same save: stored secrets are kept only for the endpoint they were set for. Only an admin may change an OAuth toolset's URL or OAuth settings, and the change signs it out.
                   </div>
                 )}
               </FormField>
-              <TS_KvEditor
-                label="Headers"
-                hint="optional · sent on every request to the MCP server"
-                pairs={httpHeaders}
-                onChange={setHttpHeaders}
-                keyPlaceholder="Authorization"
-                valuePlaceholder="Bearer …"
-              />
+              {window.TS_McpAuthSection ? (
+                <TS_McpAuthSection
+                  form={authForm}
+                  onChange={setAuthForm}
+                  errors={fieldErrors}
+                  locked={authLocked}
+                  isMobile={!!viewport.isMobile}
+                />
+              ) : (
+                <TS_KvEditor
+                  label="Headers"
+                  hint="optional: sent on every request to the MCP server"
+                  pairs={authForm.headers || []}
+                  onChange={(headers) => setAuthForm({ ...authForm, headers })}
+                  keyPlaceholder="Authorization"
+                  valuePlaceholder="Bearer ..."
+                />
+              )}
             </>
           )}
         </>

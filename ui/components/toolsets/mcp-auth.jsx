@@ -1,0 +1,245 @@
+/* global React, PK_Section, PK_Segmented, PK_Grid, PK_Field, PK_Fold, TS_KvEditor */
+
+// Authentication form helpers shared by the toolset create and edit modal.
+// Every exported name carries the TS_ prefix because Babel loads these files
+// into one browser-global scope.
+const TS_AUTH_MODES = [
+  { value: "none", label: "None" },
+  { value: "header", label: "Header" },
+  { value: "oauth_browser", label: "OAuth (browser sign-in)" },
+  { value: "oauth_client_credentials", label: "OAuth (client credentials)" },
+];
+
+function TS_authModeOf(httpConfig) {
+  const cfg = httpConfig || {};
+  if (cfg.oauth) {
+    return cfg.oauth.grant === "client_credentials"
+      ? "oauth_client_credentials"
+      : "oauth_browser";
+  }
+  return cfg.headers && Object.keys(cfg.headers).length ? "header" : "none";
+}
+
+function TS_authPairs(headers) {
+  return headers && typeof headers === "object"
+    ? Object.entries(headers).map(function (entry) {
+        return { key: entry[0], value: String(entry[1]) };
+      })
+    : [];
+}
+
+function TS_authFormOf(httpConfig) {
+  const cfg = httpConfig || {};
+  const oauth = cfg.oauth || {};
+  const client = oauth.static_client || {};
+  return {
+    mode: TS_authModeOf(cfg),
+    headers: TS_authPairs(cfg.headers),
+    scopes: Array.isArray(oauth.scopes) ? oauth.scopes.join(" ") : "",
+    clientId: client.client_id || "",
+    clientSecret: client.client_secret || "",
+    resource: oauth.resource_uri || "",
+    tokenEndpoint: oauth.token_endpoint || "",
+  };
+}
+
+function TS_authHeaders(pairs) {
+  return Object.fromEntries(
+    (pairs || [])
+      .map(function (pair) { return [String(pair.key || "").trim(), pair.value || ""]; })
+      .filter(function (entry) { return entry[0].length > 0; }),
+  );
+}
+
+function TS_applyAuth(httpConfig, form) {
+  const cfg = JSON.parse(JSON.stringify(httpConfig || {}));
+  const next = form || { mode: "none", headers: [] };
+  if (next.mode === "none") {
+    cfg.oauth = null;
+    cfg.headers = {};
+    return cfg;
+  }
+  if (next.mode === "header") {
+    cfg.oauth = null;
+    cfg.headers = TS_authHeaders(next.headers);
+    return cfg;
+  }
+
+  const oauth = Object.assign({}, cfg.oauth || {});
+  const clientId = String(next.clientId || "").trim();
+  oauth.grant = next.mode === "oauth_client_credentials"
+    ? "client_credentials"
+    : "authorization_code";
+  oauth.scopes = String(next.scopes || "").trim().split(/\s+/).filter(Boolean);
+  oauth.static_client = clientId
+    ? { client_id: clientId, client_secret: next.clientSecret || "" }
+    : null;
+  oauth.resource_uri = String(next.resource || "").trim() || null;
+  if (next.mode === "oauth_client_credentials") {
+    oauth.token_endpoint = String(next.tokenEndpoint || "").trim() || null;
+  }
+  cfg.oauth = oauth;
+  cfg.headers = TS_authHeaders(next.headers);
+  return cfg;
+}
+
+function TS_validateAuth(form) {
+  const errors = {};
+  if (form && form.mode === "oauth_client_credentials") {
+    if (!String(form.clientId || "").trim()) {
+      errors["oauth.static_client.client_id"] = "Required";
+    }
+    if (!String(form.clientSecret || "").trim()) {
+      errors["oauth.static_client.client_secret"] = "Required";
+    }
+  }
+  return errors;
+}
+
+function TS_authError(errors, suffix) {
+  const all = errors || {};
+  return all[suffix] || all["body.config.config." + suffix] || null;
+}
+
+function TS_McpAuthSection({ form, onChange, errors, locked, isMobile }) {
+  const change = function (patch) { onChange(Object.assign({}, form, patch)); };
+  const isOAuth = form.mode === "oauth_browser" || form.mode === "oauth_client_credentials";
+  const isClientCredentials = form.mode === "oauth_client_credentials";
+  const clientIdError = TS_authError(errors, "oauth.static_client.client_id");
+  const clientSecretError = TS_authError(errors, "oauth.static_client.client_secret");
+  const scopesError = TS_authError(errors, "oauth.scopes");
+  const resourceError = TS_authError(errors, "oauth.resource_uri");
+  const endpointError = TS_authError(errors, "oauth.token_endpoint");
+
+  return (
+    <PK_Section title="AUTHENTICATION" testid="ts-auth-section" cols={1}>
+      {locked ? (
+        <div className="field-help warn" data-testid="ts-auth-locked">
+          Only an admin can change an OAuth toolset's URL or sign-in settings.
+        </div>
+      ) : null}
+      <fieldset disabled={!!locked} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+        <PK_Segmented
+          testid="ts-auth-mode"
+          ariaLabel="Authentication"
+          options={TS_AUTH_MODES}
+          value={form.mode}
+          onChange={function (mode) { change({ mode: mode }); }}
+        />
+        <PK_Grid cols={isMobile ? 1 : 2}>
+          {form.mode === "header" ? (
+            <TS_KvEditor
+              testid="ts-auth-headers"
+              label="Headers"
+              hint="Sent on every request to the MCP server"
+              pairs={form.headers}
+              onChange={function (headers) { change({ headers: headers }); }}
+              keyPlaceholder="Authorization"
+              valuePlaceholder="Bearer ..."
+            />
+          ) : null}
+          {isOAuth ? (
+            <React.Fragment>
+              <PK_Field
+                label="Client id"
+                required={isClientCredentials}
+                help={isClientCredentials ? null : "Leave empty to register a client automatically"}
+                error={clientIdError}
+              >
+                <input
+                  className="input mono"
+                  data-testid="ts-oauth-client-id"
+                  value={form.clientId}
+                  disabled={!!locked}
+                  required={isClientCredentials}
+                  onChange={function (event) { change({ clientId: event.target.value }); }}
+                  style={{ width: "100%" }}
+                />
+              </PK_Field>
+              <PK_Field
+                label="Client secret"
+                required={isClientCredentials}
+                help={isClientCredentials ? null : "Only for a pre-registered confidential client"}
+                error={clientSecretError}
+              >
+                <input
+                  className="input mono"
+                  type="password"
+                  data-testid="ts-oauth-client-secret"
+                  value={form.clientSecret}
+                  disabled={!!locked}
+                  required={isClientCredentials}
+                  onChange={function (event) { change({ clientSecret: event.target.value }); }}
+                  style={{ width: "100%" }}
+                />
+              </PK_Field>
+              <PK_Field
+                label="Scopes"
+                help="Space-separated. Empty asks for the server's default scopes."
+                error={scopesError}
+              >
+                <input
+                  className="input mono"
+                  data-testid="ts-oauth-scopes"
+                  value={form.scopes}
+                  disabled={!!locked}
+                  onChange={function (event) { change({ scopes: event.target.value }); }}
+                  style={{ width: "100%" }}
+                />
+              </PK_Field>
+              {isClientCredentials ? (
+                <PK_Field
+                  label="Token endpoint"
+                  help="Found from the server when empty"
+                  error={endpointError}
+                >
+                  <input
+                    className="input mono"
+                    data-testid="ts-oauth-token-endpoint"
+                    value={form.tokenEndpoint}
+                    disabled={!!locked}
+                    onChange={function (event) { change({ tokenEndpoint: event.target.value }); }}
+                    style={{ width: "100%" }}
+                  />
+                </PK_Field>
+              ) : (
+                <PK_Fold label="More" testid="ts-oauth-more">
+                  <PK_Field
+                    label="Resource"
+                    help="Defaults to the server URL"
+                    error={resourceError}
+                  >
+                    <input
+                      className="input mono"
+                      data-testid="ts-oauth-resource"
+                      value={form.resource}
+                      disabled={!!locked}
+                      onChange={function (event) { change({ resource: event.target.value }); }}
+                      style={{ width: "100%" }}
+                    />
+                  </PK_Field>
+                </PK_Fold>
+              )}
+              <TS_KvEditor
+                testid="ts-auth-headers"
+                label="Extra headers"
+                hint="Sent on every request to the MCP server"
+                pairs={form.headers}
+                onChange={function (headers) { change({ headers: headers }); }}
+                keyPlaceholder="X-Tenant"
+                valuePlaceholder="value"
+              />
+            </React.Fragment>
+          ) : null}
+        </PK_Grid>
+      </fieldset>
+    </PK_Section>
+  );
+}
+
+window.TS_AUTH_MODES = TS_AUTH_MODES;
+window.TS_authModeOf = TS_authModeOf;
+window.TS_authFormOf = TS_authFormOf;
+window.TS_applyAuth = TS_applyAuth;
+window.TS_validateAuth = TS_validateAuth;
+window.TS_McpAuthSection = TS_McpAuthSection;
