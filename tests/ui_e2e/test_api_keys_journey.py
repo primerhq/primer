@@ -33,9 +33,20 @@ def test_an_admin_mints_a_key_that_acts_as_them(page: Page, base_url: str, conso
         wid = default_wid(console_url) or "primer"
         open_view(page, console_url, wid, "system:apikeys")
 
+        # Settle the console before asserting: the shell's auth-status resource is a
+        # one-shot fetch with no retry (pollMs=0; use-resource's schedule() bails
+        # without a poll interval), so a transient boot-time error pins the console
+        # context's username to its "anon" fallback for the page's whole lifetime
+        # (nv-shell.jsx:655). A reload on the warm server refetches it cleanly, and
+        # the hash URL survives the reload. (Lead ruling 2026-10-22; the reds at
+        # #833 and #837.)
+        page.reload()
+        expect(page.get_by_test_id("nv-root")).to_be_visible(timeout=20_000)
+
         page.get_by_test_id("create-token-btn").click()
 
         acts_as = page.get_by_test_id("at-acts-as")
+        expect(acts_as).to_be_visible(timeout=20_000)
         expect(acts_as).to_have_text(f"This key acts as you, {username}.")
 
         page.get_by_test_id("at-name").fill(key_name)
