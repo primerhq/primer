@@ -162,6 +162,8 @@ Two provider files are MOUNTED, not routed. `provider-form.jsx` is the one param
 
 **Files > History reads `commits`.** `GET /v1/workspaces/{wid}/log` answers `{"commits": [...]}`, not the `{"items": [...]}` list envelope the other routes use. Both Files sidebars (`nv-files-sidebar.jsx` and the mobile Files tab in `nv-mobile-shell.jsx`) take their rows through `SH_api.commitRows(body)` (`ui/components/shell/sh-api.jsx`), so the key is named in one place; reading `items` made History say "No turn commits yet." for every workspace. `tests/ui/test_files_history_reads_the_log_shape.py` feeds the real response shape through the real module, and an items-shaped body is deliberately not a commit log.
 
+**An OAuth MCP toolset connects from its detail overlay (Platform revamp 07, Task 16).** The Config tab reads `GET /v1/toolsets/{id}/oauth/status` and gives an admin Connect or Reconnect through `POST /v1/toolsets/{id}/oauth/start`, plus Disconnect through `POST /v1/toolsets/{id}/oauth/disconnect`; other roles see the state but cannot act. A browser sign-in opens the provider in a new tab and the public `GET /v1/toolsets/{id}/oauth/callback` sends the browser back to the same overlay, where the one-shot result becomes a toast and is removed from the URL. The Tools tab and the post-save connection result show the same panel when listing answers `mcp-sign-in-required`. The old fake Re-link probe is gone: the panel drives the real shared sign-in routes and reports their status.
+
 Page-by-page index follows. The first column is the overlay target that reaches each surface, in the `<name>[:<section>[:<id>]]` form the URL takes.
 
 | Overlay target | Page component | Source file | Primary REST dependency |
