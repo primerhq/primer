@@ -204,7 +204,7 @@ function ChannelProvidersPage({ onOpen, pushToast }) {
   );
 }
 
-function NewChannelProviderModal({ onClose, onCreated, pushToast, existing }) {
+function NewChannelProviderModal({ onClose, onCreated, pushToast, existing, frame = null, onSaved = null, blocked = false }) {
   const { apiFetch, useMutation } = window.primerApi;
   const isEdit = !!existing;
   const [id, setId] = React.useState(existing?.id || "");
@@ -216,7 +216,7 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing }) {
       const seed = { ...(existing?.config || {}) };
       const fs = CH_PROVIDER_FIELDS[existing?.provider] || [];
       for (const f of fs) {
-        if (f.secret && /^\*{6,}$/.test(String(seed[f.key] || ""))) {
+        if (f.secret) {
           seed[f.key] = "";
         }
       }
@@ -230,7 +230,7 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing }) {
   });
   const [fieldErrors, setFieldErrors] = React.useState({});
 
-  // Re-seed defaults whenever the provider type changes — skip the
+  // Re-seed defaults whenever the provider type changes - skip the
   // FIRST render in edit mode so we keep the prefill we just set up.
   const _isFirstRender = React.useRef(true);
   React.useEffect(() => {
@@ -253,7 +253,12 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing }) {
     const out = {};
     for (const f of fields) {
       const v = values[f.key];
-      if (v === undefined || v === null || v === "") continue;
+      if (v === undefined || v === null || v === "") {
+        if (isEdit && f.secret && existing?.config?.[f.key] !== undefined) {
+          out[f.key] = existing.config[f.key];
+        }
+        continue;
+      }
       if (f.type === "number") {
         const n = Number(v);
         if (Number.isFinite(n)) out[f.key] = n;
@@ -272,7 +277,13 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing }) {
       invalidates: isEdit
         ? [CH_LIST_PROVIDERS, "channel-provider-detail:" + (existing?.id || "")]
         : [CH_LIST_PROVIDERS],
-      onSuccess: (row) => { onCreated(row); },
+      onSuccess: (row) => {
+        if (typeof onSaved === "function") {
+          onSaved(row);
+        } else if (typeof onCreated === "function") {
+          onCreated(row);
+        }
+      },
       onError: (err) => {
         if (err.status === 422 && Array.isArray(err.fieldErrors)) {
           const map = {};
@@ -292,33 +303,27 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing }) {
 
   const submit = () => {
     setFieldErrors({});
+    const cleaned = cleanConfig();
+    const config = (isEdit && existing?.config && window.PC_mergeKeep)
+      ? window.PC_mergeKeep(existing.config, cleaned)
+      : cleaned;
     const body = {
       ...(isEdit ? { id: existing.id } : (id ? { id } : {})),
       provider,
-      config: cleanConfig(),
+      config,
     };
     create.mutate(body);
   };
 
   const formReady = fields.every((f) => {
     if (!f.required) return true;
+    if (isEdit && f.secret) return true;
     const v = values[f.key];
     return v !== undefined && v !== null && v !== "";
   });
 
-  return (
-    <Modal
-      title={isEdit ? `Edit channel provider · ${existing.id}` : "New channel provider"}
-      onClose={onClose}
-      footer={
-        <>
-          <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" icon={isEdit ? "check" : "plus"} onClick={submit} disabled={!formReady} busy={create.loading}>
-            {create.loading ? (isEdit ? "Saving…" : "Creating…") : (isEdit ? "Save changes" : "Create provider")}
-          </Btn>
-        </>
-      }
-    >
+  const modalBody = (
+    <>
       <FormField label="id" hint={isEdit ? "locked \u2014 id cannot change after create" : "auto-generated if blank"} err={fieldErrors["body.id"]}>
         <input
           className="input mono"
@@ -354,14 +359,14 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing }) {
           const errKey = `body.${f.key}`;
           const err = fieldErrors[errKey];
           return (
-            <FormField key={f.key} label={f.label} hint={f.required ? <span style={{ color: "var(--amber)" }}>required</span> : undefined} help={f.type === "checkbox" ? undefined : f.hint} err={err}>
+            <FormField key={f.key} label={f.label} hint={(!isEdit && f.required) ? <span style={{ color: "var(--amber)" }}>required</span> : undefined} help={f.type === "checkbox" ? undefined : f.hint} err={err}>
               {f.type === "checkbox" ? (
                 <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
                   <input
                     type="checkbox"
                     aria-required={f.required ? "true" : undefined}
                     checked={values[f.key] !== undefined ? !!values[f.key] : !!f.default}
-                    onChange={(e) => setValues({ ...values, [f.key]: e.target.checked })}
+                    onChange={(e) => { const c = e.target.checked; setValues((prev) => ({ ...prev, [f.key]: c })); }}
                   />
                   <span>{f.hint}</span>
                 </label>
@@ -371,7 +376,7 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing }) {
                   type="number"
                   aria-required={f.required ? "true" : undefined}
                   value={values[f.key] ?? ""}
-                  onChange={(e) => setValues({ ...values, [f.key]: e.target.value === "" ? "" : Number(e.target.value) })}
+                  onChange={(e) => { const n = e.target.value === "" ? "" : Number(e.target.value); setValues((prev) => ({ ...prev, [f.key]: n })); }}
                   style={{ width: "100%" }}
                 />
               ) : (
@@ -379,9 +384,9 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing }) {
                   className="input mono"
                   type={f.secret ? "password" : "text"}
                   aria-required={f.required ? "true" : undefined}
-                  placeholder={f.placeholder}
+                  placeholder={isEdit && f.secret ? "Leave blank to keep the stored secret" : f.placeholder}
                   value={values[f.key] ?? ""}
-                  onChange={(e) => setValues({ ...values, [f.key]: e.target.value })}
+                  onChange={(e) => { const v = e.target.value; setValues((prev) => ({ ...prev, [f.key]: v })); }}
                   style={{ width: "100%" }}
                 />
               )}
@@ -389,13 +394,48 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing }) {
           );
         })}
       </div>
+    </>
+  );
+
+  if (typeof frame === "function") {
+    const footerLeft = (
+      <Btn kind="ghost" onClick={onClose} blocked={blocked}>Cancel</Btn>
+    );
+    const footerRight = (
+      <Btn kind="primary" onClick={submit} disabled={!formReady} busy={create.loading} blocked={blocked}>
+        {isEdit ? "Save" : "Register"}
+      </Btn>
+    );
+    return frame({
+      body: modalBody,
+      footerLeft,
+      footerRight,
+      error: create.error ? (create.error.detail || create.error.message || String(create.error)) : null,
+      busy: create.loading,
+    });
+  }
+
+  return (
+    <Modal
+      title={isEdit ? `Edit channel provider · ${existing.id}` : "New channel provider"}
+      onClose={onClose}
+      footer={
+        <>
+          <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
+          <Btn kind="primary" icon={isEdit ? "check" : "plus"} onClick={submit} disabled={!formReady} busy={create.loading}>
+            {create.loading ? (isEdit ? "Saving…" : "Creating…") : (isEdit ? "Save changes" : "Create provider")}
+          </Btn>
+        </>
+      }
+    >
+      {modalBody}
     </Modal>
   );
 }
 
 // ============== Provider detail ==============
 
-function ChannelProviderDetail({ providerId, pushToast }) {
+function ChannelProviderDetail({ providerId, pushToast, onBack = null, onDeleted = null }) {
   const { apiFetch, useResource, useMutation, useRouter } = window.primerApi;
   const { navigate } = useRouter();
   const detailKey = CH_DETAIL_PREFIX + providerId;
@@ -409,7 +449,7 @@ function ChannelProviderDetail({ providerId, pushToast }) {
     { deps: [providerId] },
   );
 
-  // Channels under this provider — fetched from the channels list and
+  // Channels under this provider - fetched from the channels list and
   // filtered client-side (no per-provider sub-route on the server).
   const channels = useResource(
     CH_LIST_CHANNELS,
@@ -425,11 +465,15 @@ function ChannelProviderDetail({ providerId, pushToast }) {
       onSuccess: () => {
         if (pushToast) pushToast({ kind: "warning", title: "Provider deleted", detail: providerId });
         setShowDelete(false);
-        navigate("/channels/providers");
+        if (typeof onDeleted === "function") {
+          onDeleted(providerId);
+        } else {
+          navigate("/channels/providers");
+        }
       },
       onError: (err) => {
         if (err?.status === 409) {
-          setDeleteError(err.detail || "Cannot delete — channels still reference this provider.");
+          setDeleteError(err.detail || "Cannot delete - channels still reference this provider.");
         } else {
           setShowDelete(false);
           CH_toastErr(pushToast, "Delete failed")(err);
@@ -437,6 +481,11 @@ function ChannelProviderDetail({ providerId, pushToast }) {
       },
     },
   );
+
+  const handleBack = () => {
+    if (typeof onBack === "function") onBack();
+    else navigate("/channels/providers");
+  };
 
   if (detail.loading && !detail.data) {
     return (
@@ -461,9 +510,20 @@ function ChannelProviderDetail({ providerId, pushToast }) {
   if (!p) return null;
 
   const configFields = CH_PROVIDER_FIELDS[p.provider] || [];
+  const RegisterOverlay = window.PC_RegisterOverlay || (typeof PC_RegisterOverlay !== "undefined" ? PC_RegisterOverlay : null);
 
   return (
     <div className="col" style={{ gap: 14 }}>
+      <div>
+        <a
+          className="link muted text-sm"
+          data-testid="ch-detail-back"
+          onClick={handleBack}
+          style={{ cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}
+        >
+          ‹ Channel Providers
+        </a>
+      </div>
       <div className="panel">
         <div className="panel-body" style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 18px" }}>
           <ProviderBadge kind={p.provider} />
@@ -480,55 +540,56 @@ function ChannelProviderDetail({ providerId, pushToast }) {
           >
             Probe
           </Btn>
-          <Btn size="sm" kind="secondary" icon="edit" onClick={() => setEditing(true)}>Edit</Btn>
-          <Btn size="sm" kind="danger" icon="trash" onClick={() => { setDeleteError(null); setShowDelete(true); }}>Delete</Btn>
+          <Btn size="sm" kind="secondary" icon="edit" data-testid="ch-detail-edit" onClick={() => setEditing(true)}>Edit</Btn>
+          <Btn size="sm" kind="danger" icon="trash" data-testid="ch-detail-delete" onClick={() => { setDeleteError(null); setShowDelete(true); }}>Delete</Btn>
         </div>
-      </div>
-
-      <div className="panel">
-        <div className="panel-h"><Icon name="settings" size={13} className="muted" /><span>Config</span></div>
-        <div className="panel-body">
-          <dl className="kv" style={{ gridTemplateColumns: "180px 1fr" }}>
-            {configFields.map((f) => {
-              const v = p.config?.[f.key];
-              return (
-                <React.Fragment key={f.key}>
-                  <dt>{f.key}</dt>
-                  <dd>
-                    {f.secret
-                      ? (v
-                          ? <span className="mono">{String(v)} <span className="muted">(masked)</span></span>
-                          : <span className="muted">(not set)</span>)
-                      : <span className="mono">{v === undefined || v === null ? "—" : String(v)}</span>}
-                  </dd>
-                </React.Fragment>
-              );
-            })}
-          </dl>
-        </div>
-      </div>
-
-      <div className="panel">
-        <div className="panel-h"><Icon name="bell" size={13} className="muted" /><span>Channels</span><span className="sub">· {chs.length}</span></div>
-        <div className="panel-body" style={{ padding: 0 }}>
-          {chs.length === 0 ? (
-            <div className="empty" style={{ padding: 20 }}>
-              <div className="head">No channels</div>
-              <div className="sub">Create channels under this provider to start routing.</div>
-            </div>
-          ) : (
-            <table className="tbl">
-              <tbody>
-                {chs.map((c) => (
-                  <tr key={c.id}>
-                    <td className="mono">{c.id}</td>
-                    <td className="mono muted">{c.external_id}</td>
-                    <td>{c.label}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+        <div style={{ padding: 18, display: "flex", flexDirection: "column", gap: 18 }}>
+          <PK_Section title="OVERVIEW" testid="ch-section-overview" cols={1}>
+            <dl className="kv" style={{ gridTemplateColumns: "180px 1fr" }}>
+              <dt>id</dt><dd className="mono">{p.id}</dd>
+              <dt>platform</dt><dd><ProviderBadge kind={p.provider} /></dd>
+              <dt>created</dt><dd className="mono">{CH_relAge(p.created_at)}</dd>
+            </dl>
+          </PK_Section>
+          <PK_Section title="CONFIGURATION" testid="ch-section-config" cols={1}>
+            <dl className="kv" style={{ gridTemplateColumns: "180px 1fr" }}>
+              {configFields.map((f) => {
+                const v = p.config?.[f.key];
+                return (
+                  <React.Fragment key={f.key}>
+                    <dt>{f.key}</dt>
+                    <dd>
+                      {f.secret
+                        ? (v
+                            ? <span className="mono">{String(v)} <span className="muted">(masked)</span></span>
+                            : <span className="muted">(not set)</span>)
+                        : <span className="mono">{v === undefined || v === null ? "-" : String(v)}</span>}
+                    </dd>
+                  </React.Fragment>
+                );
+              })}
+            </dl>
+          </PK_Section>
+          <PK_Section title="CHANNELS" testid="ch-section-channels" cols={1}>
+            {chs.length === 0 ? (
+              <div className="empty" style={{ padding: 20 }}>
+                <div className="head">No channels</div>
+                <div className="sub">Create channels under this provider to start routing.</div>
+              </div>
+            ) : (
+              <table className="tbl">
+                <tbody>
+                  {chs.map((c) => (
+                    <tr key={c.id}>
+                      <td className="mono">{c.id}</td>
+                      <td className="mono muted">{c.external_id}</td>
+                      <td>{c.label}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </PK_Section>
         </div>
       </div>
 
@@ -536,6 +597,7 @@ function ChannelProviderDetail({ providerId, pushToast }) {
         <Modal
           title={`Delete ${providerId}?`}
           danger
+          testid="modal"
           onClose={() => { setShowDelete(false); setDeleteError(null); }}
           footer={
             <>
@@ -569,17 +631,22 @@ function ChannelProviderDetail({ providerId, pushToast }) {
           )}
         </Modal>
       )}
-      {editing && (
-        <NewChannelProviderModal
-          existing={p}
-          pushToast={pushToast}
+      {editing && RegisterOverlay && (
+        <RegisterOverlay
+          initialClass="channel"
+          editRow={p}
           onClose={() => setEditing(false)}
-          onCreated={() => {
+          onSaved={() => {
             setEditing(false);
             if (typeof pushToast === "function") {
               pushToast({ kind: "info", title: "Provider updated", detail: p.id });
             }
             detail.refetch();
+          }}
+          onDeleted={(id) => {
+            setEditing(false);
+            if (typeof onDeleted === "function") onDeleted(id);
+            else navigate("/channels/providers");
           }}
         />
       )}
@@ -989,6 +1056,7 @@ function NewChannelModal({ providers, onClose, onCreated, pushToast, existing })
 }
 
 window.ChannelProvidersPage = ChannelProvidersPage;
+window.NewChannelProviderModal = NewChannelProviderModal;
 window.ChannelProviderDetail = ChannelProviderDetail;
 window.ChannelsPage = ChannelsPage;
 window.NewChannelModal = NewChannelModal;
