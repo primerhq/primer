@@ -271,76 +271,6 @@ function _tsTarget(t) {
   return null;
 }
 
-// MCP toolset overlay OAuth section (notes 3.9: "endpoint, OAuth re-link,
-// bound tools with badges"). Renders the REAL state, not an assumed one:
-// McpToolsetProvider.complete_oauth() and the callback route both exist,
-// but the production toolset factory never builds a PrimerOAuthHandler and
-// passes it in (backend batch-2 finding), so complete_oauth always 503s
-// "OAuth not configured for this provider" today regardless of whether
-// this toolset's config carries an oauth block. Re-link calls the REAL
-// route and shows whatever comes back rather than a hardcoded string, so
-// this stops needing an edit the day that factory gets wired.
-function TS_McpOAuthPanel({ id, ts }) {
-  const { apiFetch } = window.primerApi;
-  const oauthConfigured = !!(ts && ts.config && ts.config.config && ts.config.config.oauth);
-  const [result, setResult] = React.useState(null); // {ok, message} | null
-  const [busy, setBusy] = React.useState(false);
-
-  if (!oauthConfigured) {
-    return (
-      <div className="field-help" data-testid="toolset-oauth-unconfigured" style={{ marginBottom: 12 }}>
-        OAuth not configured for this provider.
-      </div>
-    );
-  }
-
-  const relink = async () => {
-    setBusy(true);
-    setResult(null);
-    try {
-      // No real authorization code exists to exchange here -- this is a
-      // state probe, not a consent flow (the browser has to redirect to
-      // the auth server's auth_url first, then land back on the real
-      // callback route with a code MINTED by that redirect). Any code/
-      // state reaches McpToolsetProvider.complete_oauth's "is self._oauth
-      // None" check first, so the response is the truth about whether
-      // this deployment can even start that flow yet.
-      await apiFetch(
-        "GET",
-        "/toolsets/" + encodeURIComponent(id) + "/oauth/callback"
-          + "?code=console-relink-probe&state=console-relink-probe",
-      );
-      setResult({ ok: true, message: "Reconnected." });
-    } catch (err) {
-      setResult({
-        ok: false,
-        message: (err && (err.detail || err.message || err.title)) || "Could not reconnect.",
-      });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div data-testid="toolset-oauth-panel" style={{ marginBottom: 12 }}>
-      <Btn size="sm" kind="secondary" icon="refresh" data-testid="toolset-oauth-relink"
-        disabled={busy} onClick={relink}>
-        {busy ? "Reconnecting…" : "Re-link OAuth"}
-      </Btn>
-      {result ? (
-        <div
-          data-testid="toolset-oauth-result"
-          data-ok={result.ok ? "1" : "0"}
-          className="field-help"
-          style={{ marginTop: 6, color: result.ok ? "var(--green)" : "var(--red)" }}
-        >
-          {result.message}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 // Whether a freshly saved toolset has a connection to check. Only an MCP server does. A Python toolset's tools are the functions in the source the
 // operator writes AFTER the create, so probing it reports "0 tools" and a "Connected" that means nothing (ADM-11).
 function TS_hasConnection(row) {
@@ -399,6 +329,16 @@ function TS_ConnectResult({ row, isEdit, probing, probe }) {
             <strong>Could not connect.</strong>
           </div>
           <div className="text-sm" style={{ marginTop: 6, color: "var(--text-2)", wordBreak: "break-word" }}>{probe.message}</div>
+          {probe.type === "/errors/mcp-sign-in-required" ? (
+            <React.Fragment>
+              <div className="field-help" style={{ marginTop: 8 }}>
+                This server needs a sign-in before its tools can be listed.
+              </div>
+              {window.TS_McpAuthPanel ? (
+                <TS_McpAuthPanel toolsetId={row.id} pushToast={window.primerApi.toastPush} compact />
+              ) : null}
+            </React.Fragment>
+          ) : null}
           <div className="field-help" style={{ marginTop: 8 }}>
             The toolset is saved, but its tools stay unavailable until it connects. Double-check the URL/command — if Primer runs in a container, <span className="mono">localhost</span> is the container, not your host (try the host IP or <span className="mono">host.docker.internal</span>).
           </div>
@@ -491,7 +431,11 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
       })
       .catch((err) => {
         if (alive) {
-          setProbe({ ok: false, message: (err && (err.detail || err.message || err.title)) || "Could not connect" });
+          setProbe({
+            ok: false,
+            type: err && err.type,
+            message: (err && (err.detail || err.message || err.title)) || "Could not connect",
+          });
         }
       })
       .finally(() => { if (alive) setProbing(false); });
@@ -871,6 +815,21 @@ function ToolsetDetail({ toolsetId, pushToast }) {
   const tab = TS_TABS.some((t) => t.id === query.tab) ? query.tab : "config";
   const setTab = (t) => navigate("/toolsets/" + id, { tab: t });
 
+  React.useEffect(() => {
+    if (!window.TS_takeOAuthReturn || !window.location || !window.history) return;
+    const result = window.TS_takeOAuthReturn(window.location, window.history);
+    if (!result || result.toolsetId !== id || typeof pushToast !== "function") return;
+    if (result.outcome === "connected") {
+      pushToast({ kind: "success", title: "Connected", detail: id });
+    } else {
+      pushToast({
+        kind: "error",
+        title: "Sign-in not completed",
+        detail: window.TS_oauthReturnText(result.code),
+      });
+    }
+  }, [id, pushToast]);
+
   const detail = useResource(
     "toolset-detail:" + id,
     (signal) => apiFetch("GET", "/toolsets/" + encodeURIComponent(id), null, { signal }),
@@ -988,7 +947,7 @@ function ToolsetDetail({ toolsetId, pushToast }) {
         </div>
         <div className="panel-body" style={{ padding: 0 }}>
           {tab === "config" && <TS_ConfigTab ts={ts} pushToast={pushToast} />}
-          {tab === "tools" && <TS_ToolsTab id={id} ts={ts} onInvalidate={() => invalidate.mutate()} />}
+          {tab === "tools" && <TS_ToolsTab id={id} ts={ts} pushToast={pushToast} onInvalidate={() => invalidate.mutate()} />}
           {tab === "sessions" && <TS_SessionsTab id={id} />}
         </div>
       </div>
@@ -1088,7 +1047,9 @@ function TS_ConfigTab({ ts, pushToast }) {
         </div>
       </div>
       {ts?.provider === "mcp" && (transport === "http" || transport === "sse") ? (
-        <TS_McpOAuthPanel id={ts.id} ts={ts} />
+        window.TS_McpAuthPanel ? (
+          <TS_McpAuthPanel toolsetId={ts.id} pushToast={pushToast} />
+        ) : null
       ) : null}
       {editing && (
         <TS_NewToolsetModal
@@ -1114,7 +1075,7 @@ function TS_ConfigTab({ ts, pushToast }) {
 // Tools tab — fetches /tools + T0711 banner + per-tool approval badges
 // ============================================================================
 
-function TS_ToolsTab({ id, ts, onInvalidate }) {
+function TS_ToolsTab({ id, ts, pushToast, onInvalidate }) {
   const { useResource, apiFetch } = window.primerApi;
   const tools = useResource(
     "toolset-tools:" + id,
@@ -1133,6 +1094,20 @@ function TS_ToolsTab({ id, ts, onInvalidate }) {
     return <div className="muted text-sm" style={{ padding: 24, textAlign: "center" }}>Loading tools…</div>;
   }
   if (tools.error) {
+    if (tools.error.type === "/errors/mcp-sign-in-required") {
+      return (
+        <div style={{ padding: 14 }}>
+          <Banner
+            kind="warning"
+            title="Needs sign-in"
+            detail="This server needs a sign-in before its tools can be listed."
+          />
+          {window.TS_McpAuthPanel ? (
+            <TS_McpAuthPanel toolsetId={id} pushToast={pushToast} compact />
+          ) : null}
+        </div>
+      );
+    }
     // T0711 — an unreachable / erroring MCP-HTTP upstream. It now surfaces as
     // a proper 5xx (NetworkError -> 504, ProviderError -> 502, ...) rather than
     // the old leaked 500, so treat any server-side failure on an HTTP toolset

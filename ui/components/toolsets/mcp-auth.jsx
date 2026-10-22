@@ -243,3 +243,237 @@ window.TS_authFormOf = TS_authFormOf;
 window.TS_applyAuth = TS_applyAuth;
 window.TS_validateAuth = TS_validateAuth;
 window.TS_McpAuthSection = TS_McpAuthSection;
+
+const TS_OAUTH_RETURN_TEXT = {
+  invalid_state: "The sign-in expired or was already used. Connect again.",
+  access_denied: "The sign-in was cancelled at the provider.",
+  exchange_failed: "The provider refused the sign-in. Check the client settings and connect again.",
+  settings_changed: "The toolset's settings changed during the sign-in. Connect again.",
+};
+
+function TS_oauthReturnText(code) {
+  return Object.prototype.hasOwnProperty.call(TS_OAUTH_RETURN_TEXT, code)
+    ? TS_OAUTH_RETURN_TEXT[code]
+    : "The sign-in did not complete. Connect again.";
+}
+
+function TS_openSignIn(url) {
+  const opened = window.open(url, "_blank");
+  if (opened === null && window.location && typeof window.location.assign === "function") {
+    window.location.assign(url);
+  }
+}
+
+function TS_takeOAuthReturn(location, history) {
+  if (!location || !location.search) return null;
+  const entries = location.search.replace(/^\?/, "").split("&").filter(Boolean);
+  const kept = [];
+  const found = {};
+  entries.forEach(function (entry) {
+    const split = entry.indexOf("=");
+    const rawKey = split >= 0 ? entry.slice(0, split) : entry;
+    const rawValue = split >= 0 ? entry.slice(split + 1) : "";
+    let key = rawKey;
+    let value = rawValue;
+    try { key = decodeURIComponent(rawKey.replace(/\+/g, " ")); } catch (_error) { /* keep raw */ }
+    try { value = decodeURIComponent(rawValue.replace(/\+/g, " ")); } catch (_error) { /* keep raw */ }
+    if (key === "mcp_oauth" || key === "mcp_oauth_toolset" || key === "mcp_oauth_error") {
+      found[key] = value;
+    } else {
+      kept.push(entry);
+    }
+  });
+  if (!found.mcp_oauth || !found.mcp_oauth_toolset) return null;
+  const next = (location.pathname || "")
+    + (kept.length ? "?" + kept.join("&") : "")
+    + (location.hash || "");
+  if (history && typeof history.replaceState === "function") {
+    history.replaceState(null, "", next);
+  }
+  return {
+    toolsetId: found.mcp_oauth_toolset,
+    outcome: found.mcp_oauth === "connected" ? "connected" : "error",
+    code: found.mcp_oauth_error || null,
+  };
+}
+
+function TS_authExpiryText(expiresAt) {
+  if (!expiresAt) return "no expiry";
+  const minutes = Math.max(0, Math.round((new Date(expiresAt).getTime() - Date.now()) / 60000));
+  return "expires in " + minutes + " min";
+}
+
+function TS_McpAuthPanel({ toolsetId, pushToast, compact }) {
+  const api = window.primerApi;
+  const status = api.useResource(
+    "toolset-auth:" + toolsetId,
+    function (signal) {
+      return api.apiFetch(
+        "GET",
+        "/toolsets/" + encodeURIComponent(toolsetId) + "/oauth/status",
+        null,
+        { signal: signal },
+      );
+    },
+    { pollMs: 0, deps: [toolsetId] },
+  );
+  const auth = api.useResource(
+    "auth-status",
+    function (signal) { return api.apiFetch("GET", "/auth/status", null, { signal: signal }); },
+    { pollMs: 0 },
+  );
+  const viewport = typeof api.useViewport === "function" ? api.useViewport() : { isMobile: false };
+  const [actionError, setActionError] = React.useState(null);
+  const pollStarted = React.useRef(0);
+  const pollDone = React.useRef(false);
+  const push = typeof pushToast === "function" ? pushToast : api.toastPush;
+  const invalidates = [
+    "toolset-auth:" + toolsetId,
+    "toolset-tools:" + toolsetId,
+    "toolsets:catalogue",
+    "nv-plat:toolsets",
+  ];
+
+  function connected() {
+    if (pollDone.current) return;
+    pollDone.current = true;
+    status.refetch();
+    if (typeof push === "function") push({ kind: "success", title: "Connected", detail: toolsetId });
+  }
+
+  function poll() {
+    if (pollDone.current || Date.now() - pollStarted.current >= 600000) return;
+    api.apiFetch("GET", "/toolsets/" + encodeURIComponent(toolsetId) + "/oauth/status")
+      .then(function (next) {
+        if (next && next.state === "connected") connected();
+        else window.setTimeout(poll, 2000);
+      })
+      .catch(function () { window.setTimeout(poll, 2000); });
+  }
+
+  const start = api.useMutation(
+    function () {
+      return api.apiFetch("POST", "/toolsets/" + encodeURIComponent(toolsetId) + "/oauth/start");
+    },
+    {
+      invalidates: invalidates,
+      onSuccess: function (answer) {
+        setActionError(null);
+        if (answer && answer.authorize_url) {
+          pollDone.current = false;
+          pollStarted.current = Date.now();
+          TS_openSignIn(answer.authorize_url);
+          window.setTimeout(poll, 2000);
+        } else {
+          connected();
+        }
+      },
+      onError: function (error) {
+        const message = (error && (error.detail || error.message || error.title)) || "Could not connect.";
+        setActionError(message);
+        if (typeof push === "function") push({ kind: "error", title: "Connect failed", detail: message });
+      },
+    },
+  );
+  const disconnect = api.useMutation(
+    function () {
+      return api.apiFetch("POST", "/toolsets/" + encodeURIComponent(toolsetId) + "/oauth/disconnect");
+    },
+    {
+      invalidates: invalidates,
+      onSuccess: function () {
+        setActionError(null);
+        status.refetch();
+        if (typeof push === "function") push({ kind: "success", title: "Disconnected", detail: toolsetId });
+      },
+      onError: function (error) {
+        const message = (error && (error.detail || error.message || error.title)) || "Could not disconnect.";
+        setActionError(message);
+        if (typeof push === "function") push({ kind: "error", title: "Disconnect failed", detail: message });
+      },
+    },
+  );
+
+  async function askDisconnect() {
+    const ok = await window.confirmDialog({
+      title: "Disconnect " + toolsetId + "?",
+      message: "Every agent that uses this toolset loses access to it until an admin connects it again.",
+      confirmLabel: "Disconnect",
+      danger: true,
+    });
+    if (ok) {
+      try { await disconnect.mutate(); } catch (_error) { /* shown inline and as a toast */ }
+    }
+  }
+
+  function beginStart() {
+    pollDone.current = false;
+    start.mutate().catch(function () {});
+  }
+
+  if (status.loading && !status.data) {
+    return <div className="muted text-sm" data-testid="ts-auth-panel">Checking sign-in...</div>;
+  }
+  if (status.error && !status.data) {
+    return (
+      <div data-testid="ts-auth-panel">
+        <Banner
+          kind="error"
+          title="Could not read sign-in status"
+          detail={status.error.detail || status.error.message}
+          actions={<Btn size="sm" onClick={status.refetch}>Retry</Btn>}
+        />
+      </div>
+    );
+  }
+  const value = status.data || {};
+  if (value.state === "not_applicable") return null;
+  const isAdmin = !!(auth.data && auth.data.role === "admin");
+  const hasConnection = !!value.connected_at;
+  let stateText = "Needs sign-in";
+  if (value.state === "connected") stateText = "Connected " + TS_authExpiryText(value.expires_at);
+  else if (value.state === "error") stateText = "Error" + (value.reason ? " " + value.reason : "");
+  else if (value.reason) stateText += " " + value.reason;
+
+  return (
+    <div data-testid="ts-auth-panel" style={compact ? { marginTop: 8 } : { marginBottom: 12 }}>
+      <div className="text-sm" data-testid="ts-auth-status">{stateText}</div>
+      {actionError ? <div className="field-help warn" data-testid="ts-auth-action-error">{actionError}</div> : null}
+      <div
+        data-testid="ts-auth-actions"
+        data-layout={viewport.isMobile ? "stacked" : "inline"}
+        style={{ display: "flex", flexDirection: viewport.isMobile ? "column" : "row", gap: 8, marginTop: 8 }}
+      >
+        <Btn
+          size="sm"
+          kind="secondary"
+          data-testid={hasConnection ? "ts-auth-reconnect" : "ts-auth-connect"}
+          disabled={!isAdmin}
+          busy={start.loading}
+          onClick={beginStart}
+        >
+          {hasConnection ? "Reconnect" : "Connect"}
+        </Btn>
+        {hasConnection ? (
+          <Btn
+            size="sm"
+            kind="danger"
+            data-testid="ts-auth-disconnect"
+            disabled={!isAdmin}
+            busy={disconnect.loading}
+            onClick={askDisconnect}
+          >Disconnect</Btn>
+        ) : null}
+      </div>
+      {!isAdmin ? (
+        <div className="field-help" data-testid="ts-auth-admin-note">Only an admin can connect this toolset.</div>
+      ) : null}
+    </div>
+  );
+}
+
+window.TS_OAUTH_RETURN_TEXT = TS_OAUTH_RETURN_TEXT;
+window.TS_oauthReturnText = TS_oauthReturnText;
+window.TS_openSignIn = TS_openSignIn;
+window.TS_takeOAuthReturn = TS_takeOAuthReturn;
+window.TS_McpAuthPanel = TS_McpAuthPanel;

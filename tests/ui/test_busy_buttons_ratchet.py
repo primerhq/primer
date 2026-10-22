@@ -66,7 +66,7 @@ BASELINE: dict[str, int] = {
     "shared/transcript.jsx": 2,
     "shell/sh-activity.jsx": 2,
     "sso_admin.jsx": 1,
-    "toolsets.jsx": 4,
+    "toolsets.jsx": 3,
     "toolsets/python-editor.jsx": 1,
     "triggers.jsx": 18,
     "workers.jsx": 3,
