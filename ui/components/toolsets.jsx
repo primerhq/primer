@@ -460,8 +460,14 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
       ? apiFetch("PUT", "/toolsets/" + encodeURIComponent(existing.id), body)
       : apiFetch("POST", "/toolsets" + (allowUnreachable ? "?allow_unreachable=true" : ""), body),
     {
+      // A saved edit that changes OAuth settings signs the toolset out (#834 T12),
+      // so refresh the open panel's status in the same T18 overlay session.
       invalidates: isEdit
-        ? ["toolsets:list", "toolset-detail:" + (existing?.id || "")]
+        ? [
+            "toolsets:list",
+            "toolset-detail:" + (existing?.id || ""),
+            "toolset-auth:" + (existing?.id || ""),
+          ]
         : ["toolsets:list"],
       // Don't close yet -- show the connection result first (see the effect
       // above). `onCreate` fires from the "Done" button.
