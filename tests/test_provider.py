@@ -927,6 +927,30 @@ def test_semantic_search_provider_pgvector_construction():
     assert isinstance(ssp.config, PgVectorConfig)
 
 
+def test_pgvector_config_hnsw_ef_search_defaults_to_100():
+    # Recall pin: at pgvector's stock ef_search of 40, HNSW graphs built
+    # incrementally under concurrent inserts miss recently written
+    # documents; primer defaults to 100 (the minimum beam proven to clear
+    # the observed miss boundary). The field lives on the shared
+    # _PgVectorBaseConfig, so assert both pgvector family members.
+    cfg = PgVectorConfig(
+        hostname="h",
+        username="u",
+        password=SecretStr("p"),
+        database="db",
+        pool=PoolConfig(),
+    )
+    assert cfg.hnsw_ef_search == 100
+    scale = PgVectorScaleConfig(
+        hostname="h",
+        username="u",
+        password=SecretStr("p"),
+        database="db",
+        pool=PoolConfig(),
+    )
+    assert scale.hnsw_ef_search == 100
+
+
 def test_semantic_search_provider_mismatched_config_rejected():
     with pytest.raises(ValidationError):
         SemanticSearchProvider(
@@ -970,7 +994,7 @@ class TestLanceConfig:
         assert cfg.path == tmp_path
         assert cfg.hnsw_m == 16
         assert cfg.hnsw_ef_construction == 64
-        assert cfg.hnsw_ef_search == 40
+        assert cfg.hnsw_ef_search == 100
         assert cfg.index_min_rows == 1000
 
     def test_construction_with_overrides(self, tmp_path):

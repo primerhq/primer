@@ -133,7 +133,7 @@ RESERVED_SSPS: dict[str, dict] = {
             "path": "~/.primer/vector",
             "hnsw_m": 16,
             "hnsw_ef_construction": 64,
-            "hnsw_ef_search": 40,
+            "hnsw_ef_search": 100,
             "index_min_rows": 1000,
         },
     },
