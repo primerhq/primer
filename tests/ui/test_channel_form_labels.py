@@ -68,6 +68,6 @@ def test_each_config_fields_hint_is_the_rows_help_so_the_input_is_described_by_i
 
 
 def test_the_required_marker_is_the_rows_hint_and_the_input_says_aria_required() -> None:
-    """The amber ``required`` word is part of the label's name ("Bot token required"); nothing else pinned it, so ``hint={undefined}`` passed every test."""
-    assert _attr('hint={f.required ? <span style={{ color: "var(--amber)" }}>required</span> : undefined}')
+    """The amber ``required`` word is part of the label's name ("Bot token required"); design 6.9: required on create only."""
+    assert _attr('hint={(!isEdit && f.required) ? <span style={{ color: "var(--amber)" }}>required</span> : undefined}')
     assert SRC.count('aria-required={f.required ? "true" : undefined}') == 3, "the checkbox, number and text inputs of a config field"
