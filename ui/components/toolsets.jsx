@@ -159,7 +159,12 @@ function ToolsetsPage({ pushToast }) {
             renderCard={(t) => {
               const kindLabel = t.builtin ? "built-in" : "user";
               const kindColor = t.builtin ? "var(--blue)" : "var(--accent)";
-              const statusPill = t.available ? (
+              const authState = window.TS_cardAuthStatus && window.TS_cardAuthStatus(t);
+              const statusPill = authState ? (
+                <span className={`pill ${authState.tone === "ok" ? "pill-ended" : "pill-cancelled"}`}>
+                  <span className="dot"></span>{authState.label}
+                </span>
+              ) : t.available ? (
                 <span className="pill pill-ended"><span className="dot"></span>available</span>
               ) : (
                 <span className="pill pill-cancelled" title={t.unavailable_reason || ""}><span className="dot"></span>unavailable</span>
@@ -206,6 +211,7 @@ function ToolsetsPage({ pushToast }) {
             ) : filtered.map((t) => {
               const kindLabel = t.builtin ? "built-in" : "user";
               const kindColor = t.builtin ? "var(--blue)" : "var(--accent)";
+              const authState = window.TS_cardAuthStatus && window.TS_cardAuthStatus(t);
               return (
                 <tr key={t.id} onClick={() => navigate("/toolsets/" + t.id)} style={{ cursor: "pointer" }}>
                   <td className="mono">{t.id}</td>
@@ -216,7 +222,11 @@ function ToolsetsPage({ pushToast }) {
                     </span>
                   </td>
                   <td>
-                    {t.available ? (
+                    {authState ? (
+                      <span className={`pill ${authState.tone === "ok" ? "pill-ended" : "pill-cancelled"}`}>
+                        <span className="dot"></span>{authState.label}
+                      </span>
+                    ) : t.available ? (
                       <span className="pill pill-ended"><span className="dot"></span>available</span>
                     ) : (
                       <span

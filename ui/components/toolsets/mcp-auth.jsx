@@ -472,8 +472,17 @@ function TS_McpAuthPanel({ toolsetId, pushToast, compact }) {
   );
 }
 
+function TS_cardAuthStatus(row) {
+  const state = row && row.auth && row.auth.state;
+  if (state === "connected") return { label: "Connected", tone: "ok" };
+  if (state === "needs_sign_in") return { label: "Needs sign-in", tone: "warn" };
+  if (state === "error") return { label: "Error", tone: "error" };
+  return null;
+}
+
 window.TS_OAUTH_RETURN_TEXT = TS_OAUTH_RETURN_TEXT;
 window.TS_oauthReturnText = TS_oauthReturnText;
 window.TS_openSignIn = TS_openSignIn;
 window.TS_takeOAuthReturn = TS_takeOAuthReturn;
 window.TS_McpAuthPanel = TS_McpAuthPanel;
+window.TS_cardAuthStatus = TS_cardAuthStatus;
