@@ -183,6 +183,16 @@ function _wpFromProvider(row) {
     k_namespace: "primer",
     k_reach_kind: "in_cluster",
     k_ingress_url_template: "",
+    k_gw_name: "",
+    k_gw_namespace: "",
+    k_gw_section_name: "",
+    k_gw_routing: "hostname",
+    k_gw_hostname_template: "{workspace_id}.ws.local",
+    k_gw_hostname: "",
+    k_gw_path_template: "/ws/{workspace_id}",
+    k_gw_scheme: "ws",
+    k_gw_external_port: 80,
+    k_gw_backend_port: 5959,
     k_image_pull_secrets: [],
   };
   if (!row) return defaults;
@@ -228,19 +238,33 @@ function _wpFromProvider(row) {
     out.k_reach_kind = reach.kind || "in_cluster";
     if (reach.kind === "ingress") {
       out.k_ingress_url_template = reach.url_template || "";
+    } else if (reach.kind === "gateway_httproute") {
+      const gw = reach.gateway || {};
+      out.k_gw_name = gw.name || "";
+      out.k_gw_namespace = gw.namespace || "";
+      out.k_gw_section_name = gw.section_name || "";
+      const r = reach.routing || {};
+      out.k_gw_routing = r.kind || "hostname";
+      out.k_gw_hostname_template = r.hostname_template || "{workspace_id}.ws.local";
+      out.k_gw_hostname = r.hostname || "";
+      out.k_gw_path_template = r.path_template || "/ws/{workspace_id}";
+      out.k_gw_scheme = reach.scheme || "ws";
+      out.k_gw_external_port = reach.external_port ?? 80;
+      out.k_gw_backend_port = reach.backend_port ?? 5959;
     }
     out.k_image_pull_secrets = Array.isArray(cfg.image_pull_secrets) ? cfg.image_pull_secrets : [];
   }
   return out;
 }
 
-function WorkspaceProviderCreateModal({ onClose, pushToast, existing = null, onCreated = null }) {
+function WorkspaceProviderCreateModal({ onClose, pushToast, existing = null, onCreated = null, frame = null, blocked = false, onSaved = null }) {
   const { useMutation, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
   const isEdit = !!existing;
 
   const [form, setForm] = React.useState(() => _wpFromProvider(existing));
   const [fieldErrors, setFieldErrors] = React.useState({});
+  const [mutationError, setMutationError] = React.useState(null);
   // Container and Kubernetes backends need optional extras; local does
   // not. Say so at pick time rather than at first workspace create.
   const caps = window.primerApi.useCapabilities();
@@ -255,18 +279,23 @@ function WorkspaceProviderCreateModal({ onClose, pushToast, existing = null, onC
         ? [WP_LIST_KEY, `ws:provider:${existing.id}`]
         : [WP_LIST_KEY],
       onSuccess: (row) => {
-        onClose();
-        if (pushToast) pushToast({
-          kind: "success",
-          title: isEdit ? "Provider updated" : "Provider created",
-          detail: row.id,
-        });
-        if (!isEdit) {
-          if (typeof onCreated === "function") onCreated(row.id);
-          else navigate(`/workspaces/providers/${encodeURIComponent(row.id)}`);
+        if (typeof onSaved === "function") {
+          onSaved(row);
+        } else {
+          onClose();
+          if (pushToast) pushToast({
+            kind: "success",
+            title: isEdit ? "Provider updated" : "Provider created",
+            detail: row.id,
+          });
+          if (!isEdit) {
+            if (typeof onCreated === "function") onCreated(row.id);
+            else navigate(`/workspaces/providers/${encodeURIComponent(row.id)}`);
+          }
         }
       },
       onError: (err) => {
+        setMutationError(err);
         if (err?.status === 422 && Array.isArray(err.fieldErrors)) {
           const map = {};
           for (const fe of err.fieldErrors) {
@@ -300,12 +329,22 @@ function WorkspaceProviderCreateModal({ onClose, pushToast, existing = null, onC
       }
       if (!form.k_namespace) errs.k_namespace = "value is required";
       if (form.k_reach_kind === "ingress" && !form.k_ingress_url_template) errs.k_ingress_url_template = "value is required";
+      if (form.k_reach_kind === "gateway_httproute") {
+        if (!form.k_gw_name) errs.k_gw_name = "value is required";
+        if (form.k_gw_routing === "hostname") {
+          if (!form.k_gw_hostname_template) errs.k_gw_hostname_template = "value is required";
+        } else if (form.k_gw_routing === "path_prefix") {
+          if (!form.k_gw_hostname) errs.k_gw_hostname = "value is required";
+        }
+        if (!form.k_gw_external_port) errs.k_gw_external_port = "value is required";
+      }
     }
     if (Object.keys(errs).length > 0) {
       setFieldErrors(errs);
       return;
     }
     setFieldErrors({});
+    setMutationError(null);
 
     let config;
     if (form.backend === "local") {
@@ -352,8 +391,32 @@ function WorkspaceProviderCreateModal({ onClose, pushToast, existing = null, onC
       let reachability;
       if (form.k_reach_kind === "in_cluster") {
         reachability = { kind: "in_cluster" };
-      } else {
+      } else if (form.k_reach_kind === "ingress") {
         reachability = { kind: "ingress", url_template: form.k_ingress_url_template };
+      } else if (form.k_reach_kind === "gateway_httproute") {
+        const gateway = { name: form.k_gw_name };
+        if (form.k_gw_namespace) gateway.namespace = form.k_gw_namespace;
+        if (form.k_gw_section_name) gateway.section_name = form.k_gw_section_name;
+
+        let routing;
+        if (form.k_gw_routing === "hostname") {
+          routing = { kind: "hostname", hostname_template: form.k_gw_hostname_template };
+        } else {
+          routing = {
+            kind: "path_prefix",
+            hostname: form.k_gw_hostname,
+            path_template: form.k_gw_path_template || "/ws/{workspace_id}",
+          };
+        }
+
+        reachability = {
+          kind: "gateway_httproute",
+          gateway,
+          routing,
+          scheme: form.k_gw_scheme || "ws",
+          external_port: Number(form.k_gw_external_port),
+          backend_port: Number(form.k_gw_backend_port) || 5959,
+        };
       }
       config = {
         kind: "kubernetes",
@@ -364,7 +427,11 @@ function WorkspaceProviderCreateModal({ onClose, pushToast, existing = null, onC
         image_pull_secrets: form.k_image_pull_secrets || [],
       };
     }
-    const body = { id: form.id, provider: form.backend, config };
+    const builtConfig = config;
+    const finalConfig = (isEdit && existing && existing.config && window.PC_mergeKeep)
+      ? window.PC_mergeKeep(existing.config, builtConfig)
+      : builtConfig;
+    const body = { id: form.id, provider: form.backend, config: finalConfig };
     create.mutate(body).catch(() => { /* onError handled */ });
   };
 
@@ -372,23 +439,12 @@ function WorkspaceProviderCreateModal({ onClose, pushToast, existing = null, onC
   const isContainer = form.backend === "container";
   const isK8s = form.backend === "kubernetes";
 
-  return (
-    <Modal
-      title={isEdit ? `Edit workspace provider · ${existing.id}` : "New workspace provider"}
-      onClose={onClose}
-      footer={
-        <>
-          <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" icon={isEdit ? "check" : "plus"} busy={create.loading} onClick={submit}>
-            {create.loading ? (isEdit ? "Saving…" : "Creating…") : (isEdit ? "Save changes" : "Create")}
-          </Btn>
-        </>
-      }
-    >
-      <WS_FieldRow label="id" hint={isEdit ? "locked — id cannot change after create" : "must be unique"} err={fieldErrors.id}>
+  const modalBody = (
+    <div className="col" style={{ gap: 10 }}>
+      <WS_FieldRow label="id" hint={isEdit ? "locked - id cannot change after create" : "must be unique"} err={fieldErrors.id}>
         <input className="input mono" value={form.id} onChange={(e) => update("id", e.target.value)} placeholder="local-dev" disabled={isEdit} style={{ width: "100%" }} />
       </WS_FieldRow>
-      <WS_FieldRow label="backend" hint={isEdit ? "locked — backend kind cannot change after create" : undefined}>
+      <WS_FieldRow label="backend" hint={isEdit ? "locked - backend kind cannot change after create" : undefined}>
         <select className="select mono" value={form.backend} onChange={(e) => update("backend", e.target.value)} disabled={isEdit} style={{ width: "100%" }}>
           <option value="local">local (host filesystem)</option>
           <option value="container">
@@ -525,6 +581,7 @@ function WorkspaceProviderCreateModal({ onClose, pushToast, existing = null, onC
           <select className="select mono" value={form.k_reach_kind} onChange={(e) => update("k_reach_kind", e.target.value)} style={{ width: "100%" }}>
             <option value="in_cluster">in_cluster (headless-service DNS)</option>
             <option value="ingress">ingress (operator URL pattern)</option>
+            <option value="gateway_httproute">gateway_httproute (Gateway API HTTPRoute)</option>
           </select>
         </WS_FieldRow>
         {form.k_reach_kind === "ingress" && (
@@ -532,19 +589,95 @@ function WorkspaceProviderCreateModal({ onClose, pushToast, existing = null, onC
             <input className="input mono" value={form.k_ingress_url_template} onChange={(e) => update("k_ingress_url_template", e.target.value)} placeholder="wss://{workspace_id}.ws.example.com" style={{ width: "100%" }} />
           </WS_FieldRow>
         )}
+        {form.k_reach_kind === "gateway_httproute" && (<>
+          <WS_FieldRow label="Gateway name" err={fieldErrors.k_gw_name} hint="Gateway resource name">
+            <input className="input mono" value={form.k_gw_name} onChange={(e) => update("k_gw_name", e.target.value)} placeholder="prod-gw" style={{ width: "100%" }} />
+          </WS_FieldRow>
+          <WS_FieldRow label="Gateway namespace" hint="optional · workspace namespace if blank">
+            <input className="input mono" value={form.k_gw_namespace} onChange={(e) => update("k_gw_namespace", e.target.value)} placeholder={form.k_namespace || "primer"} style={{ width: "100%" }} />
+          </WS_FieldRow>
+          <WS_FieldRow label="Listener" hint="optional · listener name (sectionName) on the Gateway">
+            <input className="input mono" value={form.k_gw_section_name} onChange={(e) => update("k_gw_section_name", e.target.value)} placeholder="https" style={{ width: "100%" }} />
+          </WS_FieldRow>
+          <WS_FieldRow label="Routing" hint="how the HTTPRoute matches the workspace">
+            <select className="select mono" value={form.k_gw_routing} onChange={(e) => update("k_gw_routing", e.target.value)} style={{ width: "100%" }}>
+              <option value="hostname">hostname</option>
+              <option value="path_prefix">path_prefix</option>
+            </select>
+          </WS_FieldRow>
+          {form.k_gw_routing === "hostname" && (
+            <WS_FieldRow label="Hostname template" err={fieldErrors.k_gw_hostname_template} hint="hostname with {workspace_id} placeholder">
+              <input className="input mono" value={form.k_gw_hostname_template} onChange={(e) => update("k_gw_hostname_template", e.target.value)} placeholder="{workspace_id}.ws.local" style={{ width: "100%" }} />
+            </WS_FieldRow>
+          )}
+          {form.k_gw_routing === "path_prefix" && (<>
+            <WS_FieldRow label="Hostname" err={fieldErrors.k_gw_hostname} hint="shared hostname">
+              <input className="input mono" value={form.k_gw_hostname} onChange={(e) => update("k_gw_hostname", e.target.value)} placeholder="ws.example.com" style={{ width: "100%" }} />
+            </WS_FieldRow>
+            <WS_FieldRow label="Path template" hint="path prefix with {workspace_id} placeholder">
+              <input className="input mono" value={form.k_gw_path_template} onChange={(e) => update("k_gw_path_template", e.target.value)} placeholder="/ws/{workspace_id}" style={{ width: "100%" }} />
+            </WS_FieldRow>
+          </>)}
+          <WS_FieldRow label="Scheme" hint="WebSocket scheme the platform dials">
+            <select className="select mono" value={form.k_gw_scheme} onChange={(e) => update("k_gw_scheme", e.target.value)} style={{ width: "100%" }}>
+              <option value="ws">ws</option>
+              <option value="wss">wss</option>
+            </select>
+          </WS_FieldRow>
+          <WS_FieldRow label="External port" err={fieldErrors.k_gw_external_port} hint="port the platform dials (1 to 65535)">
+            <input className="input mono" type="number" min={1} max={65535} value={form.k_gw_external_port} onChange={(e) => update("k_gw_external_port", e.target.value ? +e.target.value : "")} placeholder="80" style={{ width: "100%" }} />
+          </WS_FieldRow>
+          <WS_FieldRow label="Backend port" hint="workspace Service port (default 5959)">
+            <input className="input mono" type="number" min={1} max={65535} value={form.k_gw_backend_port} onChange={(e) => update("k_gw_backend_port", e.target.value ? +e.target.value : "")} placeholder="5959" style={{ width: "100%" }} />
+          </WS_FieldRow>
+        </>)}
         <WS_Section label="Registry auth" />
         <WS_FieldRow label="image_pull_secrets" hint="optional · names of pre-created imagePullSecrets in the namespace">
           <window.WorkspaceStringListEditor value={form.k_image_pull_secrets} onChange={(v) => update("k_image_pull_secrets", v)} placeholder="my-registry-secret" />
         </WS_FieldRow>
       </>)}
+    </div>
+  );
+
+  if (typeof frame === "function") {
+    const footerLeft = (
+      <Btn kind="ghost" onClick={onClose} blocked={blocked}>Cancel</Btn>
+    );
+    const footerRight = (
+      <Btn kind="primary" onClick={submit} busy={create.loading} blocked={blocked}>
+        {isEdit ? "Save" : "Register"}
+      </Btn>
+    );
+    return frame({
+      body: modalBody,
+      footerLeft,
+      footerRight,
+      error: mutationError ? (mutationError.detail || mutationError.message || String(mutationError)) : null,
+      busy: create.loading,
+    });
+  }
+
+  return (
+    <Modal
+      title={isEdit ? `Edit workspace provider · ${existing.id}` : "New workspace provider"}
+      onClose={onClose}
+      footer={
+        <>
+          <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
+          <Btn kind="primary" icon={isEdit ? "check" : "plus"} busy={create.loading} onClick={submit}>
+            {create.loading ? (isEdit ? "Saving…" : "Creating…") : (isEdit ? "Save changes" : "Create")}
+          </Btn>
+        </>
+      }
+    >
+      {modalBody}
     </Modal>
   );
 }
 
-function WorkspaceProviderDetail({ providerId, pushToast }) {
+function WorkspaceProviderDetail({ providerId, pushToast, onBack = null, onDeleted = null }) {
   const { useResource, useMutation, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
-  const [tab, setTab] = React.useState("overview");
   const [showDelete, setShowDelete] = React.useState(false);
   const [deleteError, setDeleteError] = React.useState(null);
   const [editOpen, setEditOpen] = React.useState(false);
@@ -573,11 +706,15 @@ function WorkspaceProviderDetail({ providerId, pushToast }) {
       onSuccess: () => {
         if (pushToast) pushToast({ kind: "warning", title: "Provider deleted", detail: providerId });
         setShowDelete(false);
-        navigate("/workspaces/providers");
+        if (typeof onDeleted === "function") {
+          onDeleted(providerId);
+        } else {
+          navigate("/workspaces/providers");
+        }
       },
       onError: (err) => {
         if (err?.status === 409) {
-          setDeleteError(err.detail || "Cannot delete — templates still reference this provider.");
+          setDeleteError(err.detail || "Cannot delete - templates still reference this provider.");
         } else {
           setShowDelete(false);
           _wpToastErr(pushToast, "Delete failed")(err);
@@ -585,6 +722,11 @@ function WorkspaceProviderDetail({ providerId, pushToast }) {
       },
     },
   );
+
+  const handleBack = () => {
+    if (typeof onBack === "function") onBack();
+    else navigate("/workspaces/providers");
+  };
 
   if (detail.loading && !detail.data) {
     return <div className="panel"><div className="panel-body" style={{ padding: 18 }}><span className="muted text-sm">Loading provider…</span></div></div>;
@@ -595,8 +737,23 @@ function WorkspaceProviderDetail({ providerId, pushToast }) {
   const p = detail.data;
   if (!p) return null;
 
+  const isReadonly = (window.PC_isReadonly && window.PC_isReadonly("workspace", p.id)) || _wpIsReserved(p.id);
+  const isBuiltin = (window.PC_isBuiltin && window.PC_isBuiltin("workspace", p.id)) || _wpIsReserved(p.id);
+
+  const RegisterOverlay = window.PC_RegisterOverlay || (typeof PC_RegisterOverlay !== "undefined" ? PC_RegisterOverlay : null);
+
   return (
     <div className="col" style={{ gap: 14 }}>
+      <div>
+        <a
+          className="link muted text-sm"
+          data-testid="wp-detail-back"
+          onClick={handleBack}
+          style={{ cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}
+        >
+          ‹ Workspace Providers
+        </a>
+      </div>
       <div className="panel">
         <div className="panel-body" style={{ padding: "14px 18px", display: "flex", alignItems: "center", gap: 14 }}>
           <window.WorkspaceBackendBadge kind={p.provider} />
@@ -606,60 +763,46 @@ function WorkspaceProviderDetail({ providerId, pushToast }) {
               {_wpSummary(p)}
             </div>
           </div>
-          <Btn
-            size="sm"
-            icon="edit"
-            onClick={() => setEditOpen(true)}
-            disabled={_wpIsReserved(p.id)}
-            title={_wpIsReserved(p.id) ? "Reserved providers are managed by the platform — recreate via config rather than editing" : undefined}
-          >
-            Edit
-          </Btn>
-          <Btn size="sm" kind="danger" icon="trash" onClick={() => { setDeleteError(null); setShowDelete(true); }}>Delete</Btn>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", borderTop: "1px solid var(--border)", borderBottom: "1px solid var(--border)", padding: "0 12px" }}>
-          {[
-            { id: "overview", label: "Overview", icon: "info" },
-            { id: "config", label: "Config", icon: "settings" },
-            { id: "templates", label: "Templates", icon: "tools", count: referencingTemplates.length },
-          ].map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              style={{
-                background: "none", border: "none",
-                padding: "10px 14px", cursor: "pointer",
-                color: tab === t.id ? "var(--text)" : "var(--text-3)",
-                fontSize: 12.5, fontWeight: tab === t.id ? 600 : 400,
-                borderBottom: tab === t.id ? "2px solid var(--accent)" : "2px solid transparent",
-                marginBottom: -1,
-                display: "inline-flex", alignItems: "center", gap: 6,
-              }}
+          {!isReadonly && (
+            <Btn
+              size="sm"
+              icon="edit"
+              data-testid="wp-detail-edit"
+              onClick={() => setEditOpen(true)}
             >
-              <Icon name={t.icon} size={13} />
-              {t.label}
-              {t.count != null && t.count > 0 && <span className="count" style={{ marginLeft: 4 }}>{t.count}</span>}
-            </button>
-          ))}
+              Edit
+            </Btn>
+          )}
+          {!isBuiltin && (
+            <Btn
+              size="sm"
+              kind="danger"
+              icon="trash"
+              data-testid="wp-detail-delete"
+              onClick={() => { setDeleteError(null); setShowDelete(true); }}
+            >
+              Delete
+            </Btn>
+          )}
         </div>
-        <div style={{ padding: 18 }}>
-          {tab === "overview" && (
+        <div style={{ padding: 18, display: "flex", flexDirection: "column", gap: 18 }}>
+          <PK_Section title="OVERVIEW" testid="wp-section-overview" cols={1}>
             <dl className="kv" style={{ gridTemplateColumns: "200px 1fr" }}>
               <dt>id</dt><dd className="mono">{p.id}</dd>
               <dt>backend</dt><dd><window.WorkspaceBackendBadge kind={p.provider} /></dd>
               <dt>summary</dt><dd className="mono">{_wpSummary(p)}</dd>
             </dl>
-          )}
-          {tab === "config" && (
+          </PK_Section>
+          <PK_Section title="CONFIGURATION" testid="wp-section-config" cols={1}>
             <div>
               <div className="muted text-sm mb-2">Raw provider config (server-redacted secrets, where applicable).</div>
               <div className="code-block" style={{ maxHeight: 420, overflow: "auto", whiteSpace: "pre", fontFamily: "var(--font-mono, monospace)", fontSize: 12 }}>
                 {JSON.stringify({ id: p.id, provider: p.provider, config: p.config }, null, 2)}
               </div>
             </div>
-          )}
-          {tab === "templates" && (
-            referencingTemplates.length === 0 ? (
+          </PK_Section>
+          <PK_Section title="TEMPLATES" testid="wp-section-templates" cols={1}>
+            {referencingTemplates.length === 0 ? (
               <div className="empty" style={{ padding: 20 }}>
                 <div className="head">No templates bound</div>
                 <div className="sub">No workspace_templates reference this provider yet.</div>
@@ -671,22 +814,28 @@ function WorkspaceProviderDetail({ providerId, pushToast }) {
                   {referencingTemplates.map((t) => (
                     <tr key={t.id} onClick={() => navigate(`/workspaces/templates/${encodeURIComponent(t.id)}`)} style={{ cursor: "pointer" }}>
                       <td className="mono">{t.id}</td>
-                      <td className="muted">{t.description || <span style={{ color: "var(--text-4)" }}>—</span>}</td>
+                      <td className="muted">{t.description || <span style={{ color: "var(--text-4)" }}>-</span>}</td>
                       <td><window.WorkspaceBackendBadge kind={t.backend?.kind} /></td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-            )
-          )}
+            )}
+          </PK_Section>
         </div>
       </div>
 
-      {editOpen && (
-        <WorkspaceProviderCreateModal
-          existing={p}
+      {editOpen && RegisterOverlay && (
+        <RegisterOverlay
+          initialClass="workspace"
+          editRow={p}
           onClose={() => setEditOpen(false)}
-          pushToast={pushToast}
+          onSaved={() => { setEditOpen(false); detail.refetch(); }}
+          onDeleted={(id) => {
+            setEditOpen(false);
+            if (typeof onDeleted === "function") onDeleted(id);
+            else navigate("/workspaces/providers");
+          }}
         />
       )}
 
@@ -694,6 +843,7 @@ function WorkspaceProviderDetail({ providerId, pushToast }) {
         <Modal
           title={`Delete ${providerId}?`}
           danger
+          testid="modal"
           onClose={() => { setShowDelete(false); setDeleteError(null); }}
           footer={
             <>
@@ -711,10 +861,10 @@ function WorkspaceProviderDetail({ providerId, pushToast }) {
           }
         >
           {deleteError ? (
-            <><strong style={{ color: "var(--red)" }}>409 Conflict</strong> — {deleteError}</>
+            <><strong style={{ color: "var(--red)" }}>409 Conflict</strong> - {deleteError}</>
           ) : referencingTemplates.length > 0 ? (
             <>
-              <strong style={{ color: "var(--red)" }}>409 Conflict</strong> — this provider is referenced by{" "}
+              <strong style={{ color: "var(--red)" }}>409 Conflict</strong> - this provider is referenced by{" "}
               <strong>{referencingTemplates.length}</strong> template{referencingTemplates.length === 1 ? "" : "s"}:
               <ul>{referencingTemplates.slice(0, 6).map((t) => <li key={t.id} className="mono">{t.id}</li>)}</ul>
               Delete or repoint those templates first.
