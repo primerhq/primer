@@ -59,11 +59,13 @@ class _PgVectorBaseConfig(_PostgresBaseConfig):
         ),
     )
     hnsw_ef_search: PositiveInt = Field(
-        default=40,
+        default=100,
         description=(
             "Query-time 'hnsw.ef_search' GUC -- candidate list size during "
-            "queries. Higher = better recall, slower queries. pgvector "
-            "default is 40."
+            "queries. Higher = better recall, slower queries. pgvector's "
+            "own default is 40; primer defaults to 100 because graphs "
+            "built incrementally under concurrent inserts miss recently "
+            "written documents at the stock beam."
         ),
     )
     reindex_cron: str | None = Field(
@@ -209,7 +211,7 @@ class LanceConfig(BaseModel):
         ),
     )
     hnsw_ef_search: PositiveInt = Field(
-        default=40,
+        default=100,
         description=(
             "HNSW query-time candidate list size. Higher = better "
             "recall, slower queries. Mirrors PgVectorConfig.hnsw_ef_search "

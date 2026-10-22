@@ -166,7 +166,7 @@ Auto-bootstrap creates five reserved rows (the `BootstrapRunner` path), defined 
   `max_concurrency=2`, `token=""` (an empty string; `HuggingFaceConfig.token` is optional, and the
   adapter converts an empty or missing token to `None` since the model is public).
 - `lance` (`SemanticSearchProvider`): LanceDB at `~/.primer/vector` with
-  `hnsw_m=16`, `hnsw_ef_construction=64`, `hnsw_ef_search=40`,
+  `hnsw_m=16`, `hnsw_ef_construction=64`, `hnsw_ef_search=100`,
   `index_min_rows=1000`.
 - `huggingface-ce` (`CrossEncoderProvider`): `cross-encoder/ms-marco-MiniLM-L-6-v2`,
   `max_concurrency=2`, `token=None` (the cross-encoder config's `token` is optional,
