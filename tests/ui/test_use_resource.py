@@ -131,6 +131,86 @@ def _hook_ctx():
     return ctx
 
 
+def _race_ctx():
+    from py_mini_racer import MiniRacer
+
+    ctx = MiniRacer()
+    ctx.eval("var window = globalThis;")
+    ctx.eval(
+        """
+        var document = { addEventListener: function () {}, hidden: false };
+        var setTimeout = function () { return 1; };
+        var clearTimeout = function () {};
+        var __cleanups = [];
+        var __requests = [];
+        var __snapshots = [];
+        function AbortController() {
+          var listeners = [];
+          this.signal = {
+            aborted: false,
+            addEventListener: function (name, fn) {
+              if (name === "abort") listeners.push(fn);
+            },
+          };
+          this.abort = function () {
+            this.signal.aborted = true;
+            listeners.forEach(function (fn) { fn(); });
+          };
+        }
+        window.React = {
+          useState: function (init) {
+            var value = typeof init === "function" ? init() : init;
+            return [value, function (next) {
+              value = next;
+              __snapshots.push(next);
+            }];
+          },
+          useRef: function (value) { return { current: value }; },
+          useCallback: function (fn) { return fn; },
+          useEffect: function (fn) {
+            var cleanup = fn();
+            if (typeof cleanup === "function") __cleanups.push(cleanup);
+          },
+        };
+        function __fetcher(signal) {
+          var request = { signal: signal };
+          request.promise = new Promise(function (resolve, reject) {
+            request.resolve = resolve;
+            request.reject = reject;
+          });
+          __requests.push(request);
+          return request.promise;
+        }
+        """
+    )
+    ctx.eval(MODULE.read_text(encoding="utf-8"))
+    return ctx
+
+
+def _mount_race_resource(ctx, key: str = "auth-status") -> None:
+    ctx.eval(
+        "window.primerApi.useResource("
+        + json.dumps(key)
+        + ", __fetcher, { pollMs: 0 });"
+    )
+
+
+def _resolve_request(ctx, index: int, data: dict) -> None:
+    ctx.eval(f"__requests[{index}].resolve({json.dumps(data)});")
+    ctx.eval("void 0;")
+
+
+def _peek(ctx, key: str = "auth-status"):
+    return json.loads(
+        ctx.eval(
+            "JSON.stringify(window.primerApi._resource.peekData("
+            + json.dumps(key)
+            + "))"
+        )
+        or "null"
+    )
+
+
 def test_a_live_key_fetches_once_so_the_null_key_tests_are_not_vacuous() -> None:
     ctx = _hook_ctx()
     ctx.eval("window.primerApi.useResource('live:key', __fetcher, { pollMs: 0 });")
@@ -160,3 +240,49 @@ def test_a_null_key_does_not_poison_findkeys_for_a_later_mutation() -> None:
     # useMutation calls this after every successful write with a non-empty `invalidates`.
     keys = json.loads(ctx.eval("JSON.stringify(window.primerApi._resource.findKeys('workers:list'))"))
     assert keys == ["workers:list"]
+
+
+def test_a_superseded_first_success_seeds_an_empty_live_entry() -> None:
+    ctx = _race_ctx()
+    _mount_race_resource(ctx)
+    ctx.eval("window.primerApi._resource.refetchKey('auth-status');")
+    assert ctx.eval("__requests.length") == 2
+    assert ctx.eval("__requests[0].signal.aborted") is True
+
+    _resolve_request(ctx, 0, {"username": "alice", "source": "first"})
+
+    assert _peek(ctx) == {"username": "alice", "source": "first"}
+    assert json.loads(
+        ctx.eval("JSON.stringify(__snapshots[__snapshots.length - 1].data)")
+    ) == {"username": "alice", "source": "first"}
+    ctx.eval("window.primerApi._resource.refetchKey('auth-status');")
+    assert ctx.eval("__requests[1].signal.aborted") is True
+
+
+def test_a_superseded_success_never_overwrites_newer_data() -> None:
+    ctx = _race_ctx()
+    _mount_race_resource(ctx)
+    ctx.eval("window.primerApi._resource.refetchKey('auth-status');")
+
+    _resolve_request(ctx, 1, {"username": "alice", "source": "latest"})
+    _resolve_request(ctx, 0, {"username": "stale", "source": "first"})
+
+    assert _peek(ctx) == {"username": "alice", "source": "latest"}
+
+
+def test_last_subscriber_churn_does_not_reuse_an_aborted_entry() -> None:
+    ctx = _race_ctx()
+    _mount_race_resource(ctx)
+    ctx.eval("__cleanups[0]();")
+    assert ctx.eval("__requests[0].signal.aborted") is True
+    assert json.loads(
+        ctx.eval("JSON.stringify(window.primerApi._resource.findKeys('auth-status'))")
+    ) == []
+
+    _mount_race_resource(ctx)
+    assert ctx.eval("__requests.length") == 2
+    _resolve_request(ctx, 0, {"username": "stale"})
+    assert _peek(ctx) is None
+
+    _resolve_request(ctx, 1, {"username": "alice"})
+    assert _peek(ctx) == {"username": "alice"}

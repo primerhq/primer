@@ -156,14 +156,20 @@
     }
     try {
       const data = await entry.fetcher(ctrl.signal);
-      if (entry.abortCtrl !== ctrl) return; // superseded
+      const isCurrent = entry.abortCtrl === ctrl;
+      // A first successful response may finish after a refetch superseded it.
+      // Let it seed an otherwise-empty live entry so a one-shot resource cannot
+      // stay loading forever. Once any data exists, the current request alone
+      // may write it, preserving latest-wins for refreshes and polls. An entry
+      // evicted on last-subscriber cleanup is never revived by its old request.
+      if (!isCurrent && (entry.data !== undefined || cache.get(key) !== entry)) return;
       entry.data = data;
       entry.error = null;
       entry.loading = false;
       entry.errorCount = 0;
-      entry.abortCtrl = null;
+      if (isCurrent) entry.abortCtrl = null;
       emit(entry);
-      schedule(entry, key);
+      if (isCurrent) schedule(entry, key);
     } catch (e) {
       if (e && (e.name === "AbortError" || e.code === 20)) return;
       if (entry.abortCtrl !== ctrl) return;
