@@ -37,6 +37,7 @@ Nothing here logs a token, a code, a PKCE verifier, a ``state`` or a client secr
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 import logging
@@ -44,10 +45,11 @@ import os
 import secrets
 import socket
 import time
-from collections.abc import Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, ParamSpec, TypeVar
 from urllib.parse import quote
 
 import httpx
@@ -61,7 +63,7 @@ from primer.model.except_ import BadRequestError, ConfigError, PrimerError, Prov
 from primer.model.mcp_oauth import ClientAuthMethod, ClientSource, McpOAuthClient, McpOAuthPendingSignIn, McpOAuthTokenSet, McpSignInRequiredError
 from primer.model.provider import HttpConfig, McpConfig, OAuthConfig, Toolset, ToolsetProviderType, TransportType
 from primer.storage import raw_generation
-from primer.toolset.oauth import protocol
+from primer.toolset.oauth import egress, protocol
 from primer.toolset.oauth.protocol import ClientAuth, Discovery
 from primer.toolset.oauth.store import McpOAuthStore, binding_digest
 
@@ -120,6 +122,28 @@ TOKEN_REJECTED = "The MCP server rejected the access token."
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def _calls_for(target: OAuthTarget) -> AbstractContextManager[None]:
+    """The OAuth calls made for ``target``: its MCP host, and a token endpoint it configures, are reached directly; any other host the server
+    names passes the private-destination guard (:mod:`primer.toolset.oauth.egress`, audit G4-08)."""
+    oauth = target.oauth
+    return egress.calls_for(target.server_url, oauth.token_endpoint if oauth.grant == "client_credentials" else None)
+
+
+def _for_its_target(method: Callable[_P, Awaitable[_R]]) -> Callable[_P, Awaitable[_R]]:
+    """Run a service method whose first argument after ``self`` is an :class:`OAuthTarget` inside :func:`_calls_for` that target."""
+    @functools.wraps(method)
+    async def run(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        target = args[1]
+        assert isinstance(target, OAuthTarget)
+        with _calls_for(target):
+            return await method(*args, **kwargs)
+    return run
 
 
 # ---- what a toolset says about its sign-in -------------------------------------------------------------------------------------------------------------------------------
@@ -272,7 +296,8 @@ class ToolsetOAuthService:
         self._store = McpOAuthStore(storage_provider, secret_box)
         self._public_url = public_url.rstrip("/") if public_url else None
         self._owns_http = http is None
-        self._http = http if http is not None else httpx.AsyncClient(timeout=HTTP_TIMEOUT_S, follow_redirects=False)
+        # The service's own client routes each request by its host (audit G4-08): one handed in (a test's) is used as it is.
+        self._http = http if http is not None else egress.oauth_http_client(timeout=HTTP_TIMEOUT_S)
         self._clock = clock
         self._owner_id = owner_id or f"{socket.gethostname()}:{os.getpid()}:{secrets.token_hex(3)}"
         #: One lock per toolset: the callers of ONE process take turns at the lease, so a process makes at most one exchange at a time per toolset.
@@ -304,6 +329,7 @@ class ToolsetOAuthService:
 
     # ---- browser sign-in ------------------------------------------------------------------------------------------------------------------------------------------------
 
+    @_for_its_target
     async def start_sign_in(self, target: OAuthTarget, *, redirect_uri: str, started_by: str | None, browser_binding: str) -> SignInStart:
         """Start a browser sign-in of ``target``: the authorize URL to open, valid for :data:`PENDING_TTL`.
 
@@ -401,10 +427,11 @@ class ToolsetOAuthService:
             logger.warning("MCP toolset %s: the pending sign-in cannot be read with the current encryption key", toolset_id)
             raise SignInError("exchange_failed", toolset_id) from None
         try:
-            grant = await protocol.exchange_code(
-                token_endpoint=pending.token_endpoint, client=client, code=code, redirect_uri=pending.redirect_uri, code_verifier=verifier,
-                resource=pending.resource, http=self._http, now=now,
-            )
+            with _calls_for(target):
+                grant = await protocol.exchange_code(
+                    token_endpoint=pending.token_endpoint, client=client, code=code, redirect_uri=pending.redirect_uri, code_verifier=verifier,
+                    resource=pending.resource, http=self._http, now=now,
+                )
         except protocol.TokenEndpointRejected as exc:
             logger.warning("MCP toolset %s: the authorization server refused the code (HTTP %s, %s)", toolset_id, exc.status, safe_code(exc.error))
             raise SignInError("exchange_failed", toolset_id) from None
@@ -435,6 +462,7 @@ class ToolsetOAuthService:
 
     # ---- client credentials ---------------------------------------------------------------------------------------------------------------------------------------------
 
+    @_for_its_target
     async def connect_client_credentials(self, target: OAuthTarget, *, connected_by: str | None) -> ToolsetAuthStatus:
         """Connect a client-credentials toolset at once: exchange its client id and secret at its token endpoint (the configured one, else the
         discovered one) and store the token. Raises :class:`~primer.model.except_.BadRequestError` when the token endpoint refuses the credentials
@@ -498,7 +526,13 @@ class ToolsetOAuthService:
             logger.info("MCP toolset %s: %d pending sign-in(s) ended by the disconnect", toolset.id, dropped)
         row = await self._store.get_tokens(toolset.id)
         if row is not None:
-            revoked = await self._revoke(OAuthTarget.from_toolset(toolset), row)
+            target = OAuthTarget.from_toolset(toolset)
+            http_config = _http_config(toolset)
+            calls: AbstractContextManager[None] = (
+                _calls_for(target) if target is not None else egress.calls_for(str(http_config.url)) if http_config is not None else nullcontext()
+            )
+            with calls:
+                revoked = await self._revoke(target, row)
             await self._store.delete_tokens(toolset.id)
             logger.info("MCP toolset %s: disconnected (revoked at the authorization server: %s)", toolset.id, revoked)
         return await self.status(toolset)
@@ -541,6 +575,7 @@ class ToolsetOAuthService:
 
     # ---- using the token ------------------------------------------------------------------------------------------------------------------------------------------------
 
+    @_for_its_target
     async def access_token(self, target: OAuthTarget) -> str:
         """The access token to send to ``target``'s MCP server, refreshed first when it expires within :data:`REFRESH_SKEW`.
 
@@ -560,6 +595,7 @@ class ToolsetOAuthService:
             raise McpSignInRequiredError(target.toolset_id, reason=EXPIRED_NO_REFRESH)
         return await self._refresh(target, observed=row, forced=False)
 
+    @_for_its_target
     async def refresh_after_401(self, target: OAuthTarget, *, rejected: str, www_authenticate: str | None) -> str:
         """A replacement for the access token ``rejected``, which the MCP server answered with 401: the stored token when another caller or process
         already replaced it, else a forced refresh (whatever the stored expiry says). A browser sign-in without a refresh token is signed out with

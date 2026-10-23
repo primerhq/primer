@@ -201,7 +201,8 @@ def _make_lifespan(config: AppConfig):
         configure_allow_private_destinations(config.workspace_allow_private_url_sources)
         if config.workspace_allow_private_url_sources:
             logger.warning(
-                "workspace_allow_private_url_sources is on: url file sources may fetch private and loopback addresses"
+                "workspace_allow_private_url_sources is on: url file sources, and the OAuth endpoints an MCP server names on another "
+                "host, may reach private and loopback addresses"
             )
         workspace_registry = WorkspaceRegistry(
             storage_provider,

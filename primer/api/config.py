@@ -289,7 +289,9 @@ class AppConfig(BaseSettings):
             "non-global addresses (refused by default: the platform fetches the URL, so any template author could "
             "otherwise read an internal endpoint such as the cloud metadata service). Turn it on only when every "
             "template author is trusted with the platform's network position, e.g. a deployment seeding workspaces "
-            "from an internal file server, or the e2e suite. Env: PRIMER_WORKSPACE_ALLOW_PRIVATE_URL_SOURCES."
+            "from an internal file server, or the e2e suite. The same switch covers the OAuth endpoints an MCP server names on "
+            "another host than its own (its protected-resource and authorization-server metadata, token, registration and revocation "
+            "URLs): refused on such addresses by default, allowed when this is on. Env: PRIMER_WORKSPACE_ALLOW_PRIVATE_URL_SOURCES."
         ),
     )
 

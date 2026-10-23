@@ -42,6 +42,8 @@ one pod refreshes while its peers wait for the winning token row.
 - `primer/toolset/oauth/client.py` performs authorization-code, client-credentials,
   refresh, revocation, and dynamic-registration requests.
 - `primer/toolset/oauth/store.py` encrypts and persists OAuth state.
+- `primer/toolset/oauth/egress.py` routes the OAuth client's requests: the MCP
+  host directly, every other host through the private-destination guard.
 - `primer/toolset/oauth/service.py` owns the shared sign-in lifecycle and status.
 - `primer/toolset/oauth/bearer.py` attaches bearer tokens and retries once after a
   401.
@@ -191,6 +193,21 @@ through `primer.common.bounded_read.read_capped`) before it is parsed, because t
 servers that send them are named by the MCP server's metadata (audit G4-15). A
 larger document is not used, and a larger token or registration answer is a
 temporary server error; a revocation answer's body is never read.
+
+The OAuth client does not call private addresses an MCP server names (audit
+G4-08). Its transport (`primer/toolset/oauth/egress.py`) routes each request by
+host: the MCP URL's own host, and a token endpoint the toolset configures, are
+reached directly (the MCP URL is chosen by the toolset's author and is not
+guarded); any other host (the protected-resource document a 401 points at, the
+authorization server's metadata, token, registration and revocation endpoints)
+passes `primer.common.ssrf`'s private-destination policy at connect time
+(`ssrf.public_addresses` through `netguard.GuardedNetworkBackend`) and connects to
+the address that passed. A refused endpoint is a 400 naming the URL (a refresh
+keeps its tokens and reports `error`). The only opt-in is the policy's existing
+one, `workspace_allow_private_url_sources` (`PRIMER_WORKSPACE_ALLOW_PRIVATE_URL_SOURCES`),
+for deployments whose MCP servers use an authorization server on a private
+network. Like the web tools' guarded client, the explicit transport means httpx
+does not apply `HTTP(S)_PROXY` to these calls.
 
 ## 10. Testing patterns
 
