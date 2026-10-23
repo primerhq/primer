@@ -67,6 +67,16 @@ def _project_gated_call(p: "_PendingToolCall", node_tool_id: str | None) -> dict
     return projected
 
 
+def _list_or_empty(value: Any) -> list[Any]:
+    """A copy of a stored list field of a pending entry; empty when absent or not a list (ticket 01a15327)."""
+    return list(value) if isinstance(value, list) else []
+
+
+def _dict_or_empty(value: Any) -> dict[str, Any]:
+    """A copy of a stored mapping field of a pending entry; empty when absent or not a dict (ticket 01a15327)."""
+    return dict(value) if isinstance(value, dict) else {}
+
+
 class _CheckpointMixin:
     """Snapshot / restore / park-yield methods for `_BaseGraphExecutor`."""
 
@@ -462,10 +472,11 @@ class _CheckpointMixin:
                 frames=list(raw.get("frames") or []),
                 leaf=dict(raw["leaf"]) if raw.get("leaf") is not None else None,
                 scoped_tool_call_id=raw.get("scoped_tool_call_id"),
-                # Ticket 01a15327: absent in a checkpoint written before the round was carried (an empty round: the parked call alone is answered).
-                completed_results=list(raw.get("completed_results") or []),
-                remaining_calls=list(raw.get("remaining_calls") or []),
-                remaining_scoped_call_ids=dict(raw.get("remaining_scoped_call_ids") or {}),
+                # Ticket 01a15327: absent in a checkpoint written before the round was carried, or of the wrong type (a damaged checkpoint): an
+                # empty round, the parked call alone is answered. The elements are judged on resume (``ParkedRound.from_record``).
+                completed_results=_list_or_empty(raw.get("completed_results")),
+                remaining_calls=_list_or_empty(raw.get("remaining_calls")),
+                remaining_scoped_call_ids=_dict_or_empty(raw.get("remaining_scoped_call_ids")),
             )
             for raw in (payload.get("pending_agent_yields") or [])
         ]

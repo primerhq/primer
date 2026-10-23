@@ -221,7 +221,8 @@ async def resume_graph_from_checkpoint(
                 tap.coalesce_state.scoped_call_ids[(raw["node_id"], raw["tool_call_id"])] = raw["scoped_tool_call_id"]
             # Ticket 01a15327: the calls of the node's round after the parked one, which ``_resume_agent_node`` runs (whatever answered the parked call):
             # their results are written under the ids of their call rows, and a later call that parks the node again gets its id back from this state.
-            for raw_id, scoped_id in (raw.get("remaining_scoped_call_ids") or {}).items():
+            remaining_ids = raw.get("remaining_scoped_call_ids")
+            for raw_id, scoped_id in (remaining_ids.items() if isinstance(remaining_ids, dict) else ()):
                 tap.coalesce_state.scoped_call_ids[(raw["node_id"], raw_id)] = scoped_id
 
     # The ResumeContext a value-yielding tool_call node's hook receives is

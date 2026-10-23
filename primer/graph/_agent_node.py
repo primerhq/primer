@@ -103,6 +103,18 @@ def _parked_round_of(pending: Any) -> ParkedRound:
     return ParkedRound.from_record(getattr(pending, "completed_results", None), getattr(pending, "remaining_calls", None))
 
 
+def _carried_scoped_ids(pending: Any, park: YieldToWorker) -> dict[str, str]:
+    """The scoped ids of the round's calls that still wait after ``park``, a pause in the SAME round the entry ``pending`` carries (ticket 01a15327).
+
+    The entry's own ``remaining_scoped_call_ids``, kept for the calls ``park`` still names. The node's re-park carries them, instead of relying on the
+    resume drain's stash, which runs only when the drain has a tap. A damaged map (not a dict) carries nothing.
+    """
+    known = getattr(pending, "remaining_scoped_call_ids", None)
+    if not isinstance(known, dict):
+        return {}
+    return {call.id: known[call.id] for call in park.remaining_calls or [] if call.id in known}
+
+
 def _strip_json_fences(text: str) -> str:
     """Strip a single wrapping markdown code fence from ``text``.
 
@@ -384,6 +396,7 @@ class _AgentNodeMixin:
             if isinstance(paused, YieldToWorker):
                 # The same call of the round still waits: its round is the entry's (a nested run inside the approved call may have stamped its own).
                 _parked_round_of(pending).stamp(paused)
+                paused.remaining_scoped_call_ids = _carried_scoped_ids(pending, paused)
             raise
         except Exception as exc:  # noqa: BLE001 - fail-closed synthesis, as the agent session's resume does
             logger.exception("resume: the approved call of node %r (tool call %r) raised; answering it with an error result", pending.node_id, pending.tool_call_id)
@@ -478,6 +491,7 @@ class _AgentNodeMixin:
             except YieldToWorker as paused:
                 if not paused.llm_messages:
                     paused.llm_messages = list(pending.llm_messages)
+                paused.remaining_scoped_call_ids = _carried_scoped_ids(pending, paused)
                 raise
             tool_result_msg = Message(role="tool", parts=answers)
 

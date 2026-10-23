@@ -887,15 +887,9 @@ async def run_one_session_turn(
 
         # Stamp parked_at_iso into resume_metadata so the resume hook can
         # compute elapsed without a separate read.
-        resume_metadata = dict(yielded.resume_metadata)
-        resume_metadata["parked_at_iso"] = parked_at.isoformat()
-        yielded_stamped = type(yielded)(
-            tool_name=yielded.tool_name,
-            event_key=yielded.event_key,
-            timeout=yielded.timeout,
-            resume_metadata=resume_metadata,
-            event_keys=getattr(yielded, "event_keys", None),
-        )
+        from primer.worker.yield_runtime import stamp_parked_at
+
+        yielded_stamped = stamp_parked_at(yielded, parked_at)
 
         # The executor stamps YieldToWorker.llm_messages with the in-progress
         # turn history (the assistant message that emitted the tool_use).

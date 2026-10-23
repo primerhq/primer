@@ -203,6 +203,42 @@ async def test_a_second_gated_call_of_the_round_parks_the_node_again_carrying_wh
     assert state is not None and (state["status"], state["ended_reason"]) == ("ended", "completed")
 
 
+@pytest.mark.asyncio
+async def test_the_re_park_of_a_second_gate_carries_the_scoped_ids_of_the_calls_that_still_wait_without_a_drain_tap(tmp_path: Path) -> None:
+    """The node's re-park carries the scoped ids the entry already had for the calls that still wait: they are not left to the drain's stash, which runs
+    only when the drain has a tap (a child graph's resume has none)."""
+    run, _rec = _round_run(tmp_path)
+    calls = [("call-g", GATED, {}), ("call-h", SECOND_GATE, {}), ("call-b", "rec__user_b", {})]
+    checkpoint, _live, seq, _yld = await run.park(_Model(_asks_many(calls)))
+    first = _only_entry(checkpoint)
+
+    resumed = await run.resume(_Model(_says("skipped")), checkpoint, first, {"decision": "approved"}, seq=seq)
+
+    assert resumed.repark is not None
+    second = _only_entry(resumed.repark.graph_checkpoint)
+    assert second["tool_call_id"] == "call-h"
+    assert second["remaining_scoped_call_ids"] == {"call-b": first["remaining_scoped_call_ids"]["call-b"]}
+
+
+@pytest.mark.asyncio
+async def test_a_new_round_that_parks_gets_its_own_scoped_ids_even_when_its_raw_ids_repeat_the_old_rounds(tmp_path: Path) -> None:
+    """A continued turn's NEW round can reuse the old round's raw ids (a provider numbers its calls per stream): its re-park takes the ids its own call
+    rows were minted under, never the old round's."""
+    run, _rec = _round_run(tmp_path)
+    checkpoint, _live, seq, _yld = await run.park(_Model(_asks_many([("call-g", GATED, {}), ("call-1", "rec__user_a", {})])))
+    first = _only_entry(checkpoint)
+    old_scoped = first["remaining_scoped_call_ids"]["call-1"]
+
+    model = _Model(_asks_many([("call-h", SECOND_GATE, {}), ("call-1", "rec__user_b", {})]))
+    resumed = await run.resume(model, checkpoint, first, {"decision": "approved"}, seq=seq, with_tap=True)
+
+    assert resumed.repark is not None
+    second = _only_entry(resumed.repark.graph_checkpoint)
+    assert (second["tool_call_id"], [c["name"] for c in second["remaining_calls"]]) == ("call-h", ["rec__user_b"])
+    new_row = next(r["payload"]["id"] for r in resumed.records if r["kind"] == "tool_call" and r["payload"]["name"] == "rec__user_b")
+    assert second["remaining_scoped_call_ids"] == {"call-1": new_row} and new_row != old_scoped
+
+
 # ---- a later call that pauses (ask_user), and an approved call that pauses ----------------------------------------------------------------------------------------
 
 
@@ -318,7 +354,7 @@ async def test_a_park_without_the_round_resumes_as_it_did(tmp_path: Path) -> Non
     checkpoint, _live, _seq, _yld = await run.park(_Model(_asks_many(_the_round(1))))
     entry = _only_entry(checkpoint)
     for key in ("completed_results", "remaining_calls", "remaining_scoped_call_ids"):
-        entry.pop(key)
+        entry.pop(key, None)
 
     model = _Model(_says("done"))
     resumed = await run.resume(model, checkpoint, entry, {"decision": "approved"})
@@ -327,6 +363,33 @@ async def test_a_park_without_the_round_resumes_as_it_did(tmp_path: Path) -> Non
     (request,) = model.requests
     assert _pairing(request) == (["call-a", "call-g", "call-b"], ["call-g"]), "an old park keeps today's behaviour"
     assert _ran(rec) == ["call-a", "call-g"], "the call after the gate is not run for a park that does not name it"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "damaged",
+    [
+        pytest.param({"completed_results": 5, "remaining_calls": 7, "remaining_scoped_call_ids": ["call-b"]}, id="scalars-and-a-list"),
+        pytest.param({"completed_results": "call-a", "remaining_calls": "call-b", "remaining_scoped_call_ids": "call-b"}, id="strings"),
+    ],
+)
+async def test_an_entry_whose_round_fields_are_damaged_restores_as_an_old_one_and_answers_the_parked_call(
+    tmp_path: Path, damaged: dict[str, Any],
+) -> None:
+    """Round fields of the wrong type (a damaged checkpoint) are no round: the entry restores as one from before, the resume drain (with its tap, which
+    reads the stored entry too) does not fail, and the parked call alone is answered."""
+    run, rec = _round_run(tmp_path)
+    checkpoint, _live, seq, _yld = await run.park(_Model(_asks_many(_the_round(1))))
+    entry = _only_entry(checkpoint)
+    entry.update(damaged)
+
+    model = _Model(_says("done"))
+    resumed = await run.resume(model, checkpoint, entry, {"decision": "approved"}, seq=seq, with_tap=True)
+
+    assert resumed.repark is None
+    (request,) = model.requests
+    assert _pairing(request) == (["call-a", "call-g", "call-b"], ["call-g"])
+    assert _ran(rec) == ["call-a", "call-g"]
 
 
 @pytest.mark.asyncio
@@ -342,7 +405,7 @@ async def test_the_checkpoint_round_trips_the_round_and_an_entry_from_before_res
     assert _only_entry(executor.snapshot_state()) == _only_entry(checkpoint), "snapshot, restore, snapshot: the entry is the same"
 
     for key in ("completed_results", "remaining_calls", "remaining_scoped_call_ids"):
-        _only_entry(checkpoint).pop(key)
+        _only_entry(checkpoint).pop(key, None)
     executor.restore_state(checkpoint)
     (old,) = executor._pending_agent_yields
     assert (old.completed_results, old.remaining_calls, old.remaining_scoped_call_ids) == ([], [], {})

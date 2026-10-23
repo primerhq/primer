@@ -999,6 +999,10 @@ class _BaseGraphExecutor(
                             # carried forward when a later call of the round asked to wait (``_resume_agent_node``), the new round of a
                             # continued turn that parked (its batch stamped it).
                             **ParkedRound.of_park(yld).stored_fields(),
+                            # ... and, for a pause in the same round, the scoped ids of its calls that still wait, filtered by the resume
+                            # (``_resume_agent_node``): not left to the drain's stash, which runs only with a tap. A new round's are
+                            # looked up by that stash (its raw ids can repeat the old round's).
+                            remaining_scoped_call_ids=dict(getattr(yld, "remaining_scoped_call_ids", None) or {}),
                         )
                     )
                     continue
