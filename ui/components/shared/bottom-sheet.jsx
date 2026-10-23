@@ -2,6 +2,10 @@
 
 function BottomSheet({ open, onClose, title, footer, children }) {
   const sheetRef = React.useRef(null);
+  // Whether the last press started on the scrim itself (a press inside the sheet bubbles up with a deeper target). The scrim closes only when the
+  // press AND the click both land on it, so a drag-select that starts in the sheet and ends on the scrim does not close it (the shared Modal's
+  // guard, ticket 01a14f37; audit G1-19).
+  const scrimDownRef = React.useRef(false);
   // Focus moves into the open sheet, Tab cycles inside it and focus returns to the opener on close (foundation/focus-trap.js). The sheet
   // stays mounted while closed, so the trap is gated on `open`.
   window.primerApi.useFocusTrap(sheetRef, !!open);
@@ -17,7 +21,11 @@ function BottomSheet({ open, onClose, title, footer, children }) {
 
   if (!open) return null;
   return (
-    <div className="sheet-overlay" onClick={onClose}>
+    <div
+      className="sheet-overlay"
+      onPointerDown={(e) => { scrimDownRef.current = e.target === e.currentTarget; }}
+      onClick={(e) => { if (e.target === e.currentTarget && scrimDownRef.current && onClose) onClose(); }}
+    >
       <div
         className="sheet"
         role="dialog"

@@ -1534,10 +1534,14 @@ function NV_scopeToNode(rows, nodeId) {
 
 function NV_Lightbox(props) {
   window.primerApi.useEscape(function () { props.onClose(); });
+  // Whether the last press started on the scrim itself: the scrim closes only when the press AND the click both land on it, so selecting a line of
+  // the file and releasing over the scrim keeps the lightbox open (the shared Modal's guard, ticket 01a14f37; audit G1-19).
+  var scrimDownRef = React.useRef(false);
   return (
     <div className="nv-lightbox" data-testid="nv-lightbox"
+      onPointerDown={function (ev) { scrimDownRef.current = ev.target === ev.currentTarget; }}
       onClick={function (ev) {
-        if (ev.target === ev.currentTarget) props.onClose();
+        if (ev.target === ev.currentTarget && scrimDownRef.current) props.onClose();
       }}>
       <div className="nv-lightbox-body">
         <div className="nv-lightbox-bar">
