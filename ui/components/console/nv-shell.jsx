@@ -607,7 +607,11 @@ function NV_Shell() {
       id: "provider.register", label: "Register Provider", surfaces: ["palette", "platform-nav"],
       run: function () {
         goView("platform", "providers");
-        if (window.PC_requestRegister) window.PC_requestRegister(null);
+        // The navigation commit may remount the providers page. A synchronous
+        // request would reach the unmounting instance's taker and be lost; the
+        // macrotask runs after the commit so the request reaches the live taker.
+        // The pending mailbox stays as the backstop for slower mounts.
+        if (window.PC_requestRegister) setTimeout(function () { window.PC_requestRegister(null); }, 0);
       },
     });
     reg({
