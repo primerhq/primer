@@ -175,9 +175,12 @@ are not gated.
 - `harness::harness__fetch` - clone + validate. Returns 202; poll `get` to
   see `status=ready` (or `error`).
 - `harness::harness__install` - apply to storage. Returns 202. Idempotent -
-  re-installing replaces the bundle.
+  re-installing replaces the bundle. Takes `overrides`: the stored
+  overrides, unchanged (read them with `harness__get`); another value is
+  refused with `type=conflict`. They are what the call's approval card
+  shows, so the person approving it sees what will be rendered.
 - `harness::harness__sync` - diff + update. Fast-path no-op if no changes
-  upstream. Returns 202.
+  upstream. Returns 202. Takes `overrides` as install does.
 - `harness::harness__uninstall` - remove the harness. Returns 202. An
   installed (inbound) harness takes the objects it installed with it
   (agents, graphs, collections, documents, toolsets), then its rendering and
@@ -190,6 +193,19 @@ the operation for the worker; if one answers with a conflict, the harness
 already has an operation pending. A Stop waits for these calls instead of
 cancelling them, because the operation is queued in two steps (the harness
 row, then its claim lease).
+
+An install or sync applies the inputs it was asked for, or nothing. When it
+is queued (by these tools or the REST routes) the harness records a digest
+of every input the templates render from: the overrides, the name,
+description and slug, the git url, ref and subpath, the fetched commit and
+bundle, the resolved dependencies. While the operation is pending,
+`harness__update` and `harness__update_overrides` answer `type=conflict`.
+If an input changed anyway (an edit over REST), the worker refuses the
+operation before it clones or writes anything, keeps the harness's status
+and records `operation_inputs_changed` in `last_operation_error`, naming
+what changed; request the install or sync again. An operation queued
+without that record (before an upgrade) is refused the same way
+(`operation_inputs_unrecorded`).
 
 ## Workflows
 
@@ -250,14 +266,21 @@ Returns 202. Poll:
 Until `status` is `ready` (a few seconds for small repos, longer
 for repos with large checkouts).
 
-3. Install:
+3. Install, naming the overrides it applies (the stored ones, unchanged):
 
 ```json
 {
   "tool": "harness::harness__install",
-  "arguments": {"id": "h-code-review"}
+  "arguments": {
+    "id": "h-code-review",
+    "overrides": {"llm_provider_id": "lp-claude", "max_concurrent_reviews": 3}
+  }
 }
 ```
+
+The call parks for approval (the default gate), and the approval card
+shows these overrides. A value that is not the stored overrides is
+refused with `type=conflict`.
 
 Poll until `status=installed`. The agents `code-review__lint`,
 `code-review__verdict`, etc. now exist as Agent rows with
@@ -278,12 +301,15 @@ Poll until `status=installed`. The agents `code-review__lint`,
 
 `status` becomes `outdated`.
 
-2. Sync:
+2. Sync, naming the stored overrides as install does:
 
 ```json
 {
   "tool": "harness::harness__sync",
-  "arguments": {"id": "h-code-review"}
+  "arguments": {
+    "id": "h-code-review",
+    "overrides": {"llm_provider_id": "lp-claude", "max_concurrent_reviews": 3}
+  }
 }
 ```
 

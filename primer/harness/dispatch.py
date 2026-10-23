@@ -43,6 +43,7 @@ from primer.harness.git import (
     push_bundle,
 )
 from primer.harness.hashes import (
+    changed_operation_inputs,
     hash_bundle,
     hash_overrides,
     hash_rendered_payload,
@@ -311,10 +312,42 @@ async def _release_harness(
     updated = harness.model_copy(update={
         "status": next_status,
         "pending_operation": None,
+        # The inputs the operation was asked for belong to that operation: the next install or sync stamps its own.
+        "operation_inputs": None,
         "last_operation_error": last_operation_error,
         "last_operation_at": datetime.now(timezone.utc),
     })
     await harness_storage.update(updated)
+
+
+def _refuse_changed_inputs(harness: Harness, operation: str) -> str | None:
+    """The error of an INSTALL or SYNC whose template inputs are not the ones it was asked for, or ``None`` when they are (ticket 01a16a29).
+
+    The enqueue (a person's REST call, or a model's tool call, which an approval gate may have held until a person approved it) stamps the
+    digest of every input on the row (``Harness.operation_inputs``). Anything that changed them since (new overrides, a new name or
+    description the templates read, another commit) would install what nobody asked for, so the job is refused before anything is cloned or
+    written, naming what changed; the harness keeps its status. A row with no stamp (enqueued before the stamp existed, or by a path that
+    does not write it) is refused the same way: the inputs it was asked for cannot be known.
+    """
+    changed = changed_operation_inputs(harness)
+    if changed is None:
+        return json.dumps({
+            "code": "operation_inputs_unrecorded",
+            "message": (
+                f"this {operation} was enqueued without a record of the inputs it was asked for, so nothing was {operation}ed: "
+                f"request the {operation} again"
+            ),
+        })
+    if changed:
+        return json.dumps({
+            "code": "operation_inputs_changed",
+            "message": (
+                f"the harness changed after this {operation} was requested ({', '.join(changed)}), so nothing was {operation}ed: "
+                f"review the change and request the {operation} again"
+            ),
+            "changed": changed,
+        })
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -744,8 +777,14 @@ async def _do_install(
 ) -> tuple[HarnessStatus, str | None]:
     """Clone at available_commit, render + validate, apply_install.
 
+    Refused first, with nothing written and the status kept, when the inputs are not the ones the install was asked for
+    (:func:`_refuse_changed_inputs`).
+
     Returns (next_status, error_json | None).
     """
+    refused = _refuse_changed_inputs(harness, "install")
+    if refused is not None:
+        return harness.status, refused
     token = harness.git_token.get_secret_value() if harness.git_token else None
 
     # Pre-flight: validate overrides against schema
@@ -946,8 +985,14 @@ async def _do_sync(
     Fast path: if available_bundle_hash == bundle_hash AND overrides unchanged,
     just refresh resolved_commit.
 
+    Refused first, with nothing written and the status kept, when the inputs are not the ones the sync was asked for
+    (:func:`_refuse_changed_inputs`).
+
     Returns (next_status, error_json | None).
     """
+    refused = _refuse_changed_inputs(harness, "sync")
+    if refused is not None:
+        return harness.status, refused
     token = harness.git_token.get_secret_value() if harness.git_token else None
 
     overrides_hash = hash_overrides(harness.overrides)

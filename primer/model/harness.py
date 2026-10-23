@@ -265,6 +265,16 @@ class Harness(Identifiable):
             "system / trigger actors). ``None`` (unknown) fails closed."
         ),
     )
+    operation_inputs: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "What the pending INSTALL or SYNC was asked for (ticket 01a16a29): the SHA-256 of each template input as it stood when the "
+            "operation was enqueued (``primer.harness.hashes.operation_input_digests``: the overrides, the name, description and slug, the "
+            "git url, ref and subpath, the fetched commit and bundle, the resolved dependencies). The worker recomputes them and refuses "
+            "the operation, writing nothing, when any differs or none was recorded, so an approved install applies what was approved. "
+            "Cleared when the operation ends."
+        ),
+    )
     last_operation_at: datetime | None = None
     last_operation_error: str | None = None
     dependencies_resolved: list[ResolvedDependency] = Field(default_factory=list)

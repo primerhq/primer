@@ -108,7 +108,7 @@ async def test_install_records_who_asked():
     admin = PrincipalRef(type="user", id="u-admin", display="admin", role="admin", source="local")
     ctx = ToolContext(tool_call_id="tc", session_id=None, workspace_id=None, initiated_by=admin)
 
-    result = await _provider(sp).call(tool_name="harness__install", arguments={"id": "hns_1"}, ctx=ctx)
+    result = await _provider(sp).call(tool_name="harness__install", arguments={"id": "hns_1", "overrides": {}}, ctx=ctx)
 
     assert not result.is_error, result.output
     assert (await sp.get_storage(Harness).get("hns_1")).operation_requested_by == admin

@@ -19,6 +19,7 @@ from pydantic import SecretStr
 
 from primer.harness.dispatch import _do_fetch, _do_install, _do_sync
 from primer.model.harness import Harness, HarnessStatus, ResolvedDependency
+from tests._support.harness_ops import stamped
 from tests.harness.test_dispatch_install_deps import _make_deps_for, _make_harness_row, _make_parent_repo
 
 _SECRET = "parent-secret-token"
@@ -66,7 +67,7 @@ async def _fetched_parent_with_foreign_dep(fake_storage_provider, tmp_path) -> t
             resolved_commit="a" * 40, bundle_hash="b" * 64, depth=0,
         ),
     ]
-    return deps, harness
+    return deps, stamped(harness)
 
 
 def _assert_no_secret(calls: list[dict[str, Any]]) -> None:

@@ -534,3 +534,24 @@ async def test_claim_engine_none_is_noop_for_harness(fake_storage_provider, fake
             pass
         r = await c.post("/v1/harnesses/hns_noop/fetch")
         assert r.status_code == 202
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation, state", [
+    ("install", dict(status=HarnessStatus.READY, overrides_schema={"type": "object"}, overrides={"cmd": "echo hi"})),
+    ("sync", dict(status=HarnessStatus.INSTALLED, available_bundle_hash="abc", available_commit="c" * 40)),
+])
+async def test_a_rest_install_or_sync_stamps_the_inputs_it_is_asked_for(client, app, fake_storage_provider, operation, state):
+    """The worker refuses an INSTALL or SYNC whose template inputs changed after it was enqueued, or that carries no record of them (ticket
+    01a16a29): a person's enqueue over REST stamps them as the harness tools do."""
+    from primer.harness.hashes import operation_input_digests
+
+    storage = fake_storage_provider.get_storage(Harness)
+    await storage.create(_make_harness(id=f"hns_stamp_{operation}", slug=f"stamp-{operation}", **state))
+
+    r = await client.post(f"/v1/harnesses/hns_stamp_{operation}/{operation}")
+
+    assert r.status_code == 202, r.text
+    stored = await storage.get(f"hns_stamp_{operation}")
+    assert stored.pending_operation.value == operation
+    assert stored.operation_inputs == operation_input_digests(stored) and set(stored.operation_inputs) >= {"overrides", "name", "commit"}

@@ -82,8 +82,8 @@ GATED: list[tuple[str, str, str, dict[str, Any], str]] = [
     ("create-a-stdio-toolset", "system", "create_toolset", {"entity": STDIO}, "policy"),
     ("turn-http-into-stdio", "system", "update_toolset", {"id": "ts-http", "entity": {**STDIO, "id": "ts-http"}}, "policy"),
     ("turn-http-into-python", "system", "update_toolset", {"id": "ts-http", "entity": {**PYTHON, "id": "ts-http"}}, "policy"),
-    ("install-a-harness", "harness", "harness__install", {"id": "hns-draft"}, "required"),
-    ("sync-a-harness", "harness", "harness__sync", {"id": "hns-installed"}, "required"),
+    ("install-a-harness", "harness", "harness__install", {"id": "hns-draft", "overrides": {}}, "required"),
+    ("sync-a-harness", "harness", "harness__sync", {"id": "hns-installed", "overrides": {}}, "required"),
     ("uninstall-a-harness", "harness", "harness__uninstall", {"id": "hns-installed"}, "required"),
 ]
 

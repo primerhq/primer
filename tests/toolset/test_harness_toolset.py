@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 
+from primer.harness.hashes import operation_input_digests
 from primer.model.harness import Harness, HarnessOperation, HarnessStatus
 from primer.model.storage import (
     FieldRef,
@@ -610,11 +611,12 @@ class TestInstall:
 
         result = await toolset.call(
             tool_name="harness__install",
-            arguments={"id": h.id},
+            arguments={"id": h.id, "overrides": h.overrides},
         )
         assert not result.is_error
         body = _result(result)
         assert body["pending_operation"] == "install"
+        assert body["operation_inputs"] == operation_input_digests(h), "the inputs the install was asked for are not stamped"
         assert any(key == "harness-claimable" for key, _ in event_bus.published)
 
     @pytest.mark.asyncio
@@ -665,9 +667,10 @@ class TestSync:
 
         result = await toolset.call(
             tool_name="harness__sync",
-            arguments={"id": h.id},
+            arguments={"id": h.id, "overrides": h.overrides},
         )
         assert not result.is_error
         body = _result(result)
         assert body["pending_operation"] == "sync"
+        assert body["operation_inputs"] == operation_input_digests(h), "the inputs the sync was asked for are not stamped"
         assert any(key == "harness-claimable" for key, _ in event_bus.published)
