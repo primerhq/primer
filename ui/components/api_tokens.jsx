@@ -225,7 +225,7 @@ function AT_ApiTokensPage({ mode, username }) {
           actions={<Btn size="sm" icon="refresh" onClick={list.refetch}>Retry</Btn>}
         />
       )}
-      {!list.loading && !list.error && items.length === 0 && (
+      {!list.loading && !list.error && items.length === 0 && failedUsers.length === 0 && (
         <div className="empty" style={{ padding: "40px 20px" }}>
           <div className="ico-wrap"><Icon name="key" size={22} /></div>
           <div className="head">No API keys yet</div>
@@ -600,7 +600,12 @@ function AT_PlaintextOneTimeDialog({ token, onClose }) {
         document.body.appendChild(ta);
         ta.focus();
         ta.select();
-        try { document.execCommand("copy"); } finally { document.body.removeChild(ta); }
+        // execCommand answers false when the copy is blocked: then the key is NOT on the clipboard, and the close guard must stay armed.
+        try {
+          if (!document.execCommand("copy")) throw new Error("Copy failed");
+        } finally {
+          document.body.removeChild(ta);
+        }
       }
       copiedOnceRef.current = true;
       setCopied(true);

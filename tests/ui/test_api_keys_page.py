@@ -265,6 +265,22 @@ def test_once_the_key_is_copied_an_implicit_close_does_not_ask(app):
     assert app.js("CLOSED") == 1 and app.data("LOG.confirms") == []
 
 
+def test_a_blocked_fallback_copy_keeps_the_close_guard_armed(app):
+    """Plain-HTTP pages have no navigator.clipboard: when execCommand("copy") answers false the key is not copied, so an implicit close still asks."""
+    app.js(
+        "navigator = {};"
+        "var document = { createElement: function () { return { style: {}, focus: function () {}, select: function () {} }; },"
+        " body: { appendChild: function () {}, removeChild: function () {} }, execCommand: function () { return false; } };"
+    )
+    app.js("CONFIRM = false; " + ONE_TIME)
+    app.click("copy-token-btn")
+    app.settle()
+    assert "Copied!" not in app.text()
+    app.js("LAST_MODAL.onClose()")
+    app.settle()
+    assert app.js("CLOSED") == 0 and len(app.data("LOG.confirms")) == 1
+
+
 # ---- the admin list: every user, a partial failure said, a slower poll (audit G1-13) --------------------------------------------------------------
 
 FAKE_ADMIN_API = r"""
@@ -325,6 +341,13 @@ def test_the_page_says_whose_keys_it_could_not_read(app):
     assert "bo, cy" in text and "count" in text
     app.js('MR.find("at-partial-failure-retry").props.onClick()')
     assert app.js("LOG.refetches") == 1
+
+
+def test_when_every_users_keys_fail_there_is_no_empty_state_under_the_banner(app):
+    app.js('DATA["api-tokens:admin-list"] = { items: [], failedUsers: ["ana", "bo"] }')
+    app.mount("AT_ApiTokensPage", '{ mode: "admin", username: "ana" }')
+    assert app.has("at-partial-failure")
+    assert "No API keys yet" not in app.text()
 
 
 def test_a_complete_read_draws_no_partial_failure_banner(app):
