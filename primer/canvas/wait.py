@@ -121,7 +121,8 @@ async def drop_queued_steers(storage_provider: Any, session_id: str, event_ids: 
 
 
 async def consume_events(service: Any, storage_provider: Any, session_id: str, events: Sequence[Mapping[str, Any]]) -> None:
-    """The agent is being handed ``events`` as a wait's result: drop their queued copies, then mark them seen.
+    """The agent is being handed ``events`` as a wait's result: drop their queued copies, then mark THEM seen, and no other: an earlier
+    unread event the wait did not match stays unread (audit G8-07).
 
     The order is the safe one for a crash in between: a steer dropped and the events not yet marked means the agent reads them again
     in its next ``canvas_get`` or wait; marked first and the steer left would deliver the click twice. Best effort and never raises:
@@ -135,7 +136,7 @@ async def consume_events(service: Any, storage_provider: Any, session_id: str, e
         logger.warning("canvas_wait: the queued steers of %s could not be dropped for session %s", ids, session_id, exc_info=True)
     if seqs:
         try:
-            await service.mark_seen(session_id, max(seqs))
+            await service.mark_events_seen(session_id, seqs)
         except Exception:  # noqa: BLE001 - the events are read again at worst
             logger.warning("canvas_wait: the events %s could not be marked seen for session %s", ids, session_id, exc_info=True)
 

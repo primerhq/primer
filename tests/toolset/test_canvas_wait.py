@@ -121,13 +121,46 @@ async def test_a_wait_for_a_kind_that_does_not_wake_takes_it(provider, ctx, worl
     assert [(e["id"], e["kind"], e["wake"]) for e in body["events"]] == [("e1", "change", False)]
 
 
-async def test_a_wait_returns_every_unseen_matching_event_and_marks_them_all(provider, ctx, world):
+async def test_a_wait_returns_every_unseen_matching_event_and_marks_only_those(provider, ctx, world):
+    """G8-07: the cancel click between the two ok clicks is not what the wait returned, so it stays unread (it used to be swept up by
+    the high-water mark)."""
     await _event(world, "ok", "click")
     await _event(world, "cancel", "click")
     await _event(world, "ok", "click")
     body = json.loads((await provider.call(tool_name="canvas_wait", arguments={"ids": ["ok"]}, ctx=ctx)).output)
     assert [e["id"] for e in body["events"]] == ["e1", "e3"]
-    assert (await world.canvas("s1")).seen_event_seq == 3
+    row = await world.canvas("s1")
+    assert [e.id for e in row.unseen_events()] == ["e2"] and (row.seen_event_seq, row.seen_ahead) == (1, [3])
+
+
+async def test_a_wait_leaves_earlier_unread_events_unread(provider, ctx, world):
+    """G8-07, the audit's scenario: an unread genre change, then an ok click. A wait on ok returns the click alone; the change (and a
+    link open, which leaves no value behind) is still in canvas_get's events since the last read, and a later wait can take it."""
+    await world.service.apply(
+        session_id="s1", workspace_id="ws-1", statements=parse_program('docs = Link("Docs", "https://docs.example.com")\nroot += [docs]'),
+        unit="line", base_rev=None, source="agent", by="agent",
+    )
+    await _event(world, "genre", "change", value="Lo-fi")
+    await _event(world, "docs", "open")
+    await _event(world, "ok", "click")
+    body = json.loads((await provider.call(tool_name="canvas_wait", arguments={"ids": ["ok"]}, ctx=ctx)).output)
+    assert [e["id"] for e in body["events"]] == ["e3"]
+    assert [e.id for e in (await world.canvas("s1")).unseen_events()] == ["e1", "e2"]
+    got = json.loads((await provider.call(tool_name="canvas_get", arguments={"format": "json"}, ctx=ctx)).output)
+    assert [e["id"] for e in got["events"]] == ["e1", "e2"], "the events since the last read do not repeat the click the wait returned"
+    row = await world.canvas("s1")
+    assert row.unseen_events() == [] and (row.seen_event_seq, row.seen_ahead) == (3, [])
+
+
+async def test_a_later_wait_takes_an_event_an_earlier_wait_left_unread(provider, ctx, world):
+    await _event(world, "genre", "change", value="Lo-fi")
+    await _event(world, "ok", "click")
+    first = json.loads((await provider.call(tool_name="canvas_wait", arguments={"ids": ["ok"]}, ctx=ctx)).output)
+    second = json.loads((await provider.call(tool_name="canvas_wait", arguments={"kinds": ["change"]}, ctx=ctx)).output)
+    assert ([e["id"] for e in first["events"]], [e["id"] for e in second["events"]]) == (["e2"], ["e1"])
+    row = await world.canvas("s1")
+    assert (row.seen_event_seq, row.seen_ahead) == (2, []), "once the gap is read the pointer moves over both"
+    await _wait(provider, ctx, ids=["ok"])                                     # the click is not handed out twice
 
 
 async def test_events_of_other_elements_do_not_end_it(provider, ctx, world):
@@ -375,7 +408,8 @@ async def test_the_full_loop_the_click_is_the_tool_result(provider, ctx, world):
     body = json.loads(result.output)
     assert not result.is_error and [e["id"] for e in body["events"]] == ["e2"] and body["events"][0]["kind"] == "click"
     assert body["values"] == {"genre": "Lo-fi"} and body["rev"] == 2
-    assert (await world.canvas("s1")).seen_event_seq == 2
+    row = await world.canvas("s1")
+    assert [e.id for e in row.unseen_events()] == ["e1"], "the change that did not end the wait is still unread (G8-07)"
 
 
 # ---- the resume hook ---------------------------------------------------------------------------------------------------------------
@@ -396,7 +430,8 @@ async def test_the_resume_returns_the_event_and_current_values(provider, world):
     result = await canvas_wait_resume({"ids": ["ok"]}, envelope, resume_context(provider))
     body = json.loads(result.output)
     assert not result.is_error and body == {"events": [envelope["payload"]], "rev": 2, "values": {"genre": "Lo-fi"}}
-    assert (await world.canvas("s1")).seen_event_seq == 2, "the event that ended the wait is marked seen"
+    row = await world.canvas("s1")
+    assert [e.id for e in row.unseen_events()] == ["e1"], "the event that ended the wait is marked seen, and only that one (G8-07)"
 
 
 async def test_the_resume_returns_the_unredacted_stored_event_and_falls_back_when_dropped(provider, ctx, world):
@@ -583,10 +618,10 @@ async def test_a_queue_that_cannot_be_read_does_not_fail_the_wait(provider, ctx,
 async def test_events_that_cannot_be_marked_seen_do_not_fail_the_wait(provider, ctx, world, caplog):
     await _event(world, "ok", "click")
 
-    async def down(session_id, through_seq):
+    async def down(session_id, seqs):
         raise RuntimeError("canvas storage down")
 
-    provider.service.mark_seen = down
+    provider.service.mark_events_seen = down
     with caplog.at_level("WARNING"):
         result = await provider.call(tool_name="canvas_wait", arguments={}, ctx=ctx)
     assert not result.is_error and [e["id"] for e in json.loads(result.output)["events"]] == ["e1"]
@@ -598,18 +633,18 @@ async def test_the_steers_are_dropped_before_the_events_are_marked_seen(provider
     event = await _event(world, "ok", "click")
     await _queue(world, "s1", event.id)
     order: list[str] = []
-    steers, real_mark = world.sp.get_storage(PendingSessionMessage), provider.service.mark_seen
+    steers, real_mark = world.sp.get_storage(PendingSessionMessage), provider.service.mark_events_seen
     real_delete = steers.delete
 
     async def delete(row_id, **kwargs):
         order.append("drop")
         return await real_delete(row_id, **kwargs)
 
-    async def mark(session_id, through_seq):
+    async def mark(session_id, seqs):
         order.append("mark")
-        return await real_mark(session_id, through_seq)
+        return await real_mark(session_id, seqs)
 
-    steers.delete, provider.service.mark_seen = delete, mark
+    steers.delete, provider.service.mark_events_seen = delete, mark
     await provider.call(tool_name="canvas_wait", arguments={}, ctx=ctx)
     assert order == ["drop", "mark"]
 
@@ -643,22 +678,22 @@ async def test_nothing_is_read_when_there_is_nothing_to_drop(world):
 
 
 async def test_events_without_a_seq_or_an_id_mark_and_drop_nothing(provider, world):
-    marked: list[tuple[str, int]] = []
+    marked: list[tuple[str, list[int]]] = []
     dropped: list[Any] = []
 
-    async def mark_seen(session_id, through_seq):
-        marked.append((session_id, through_seq))
+    async def mark_events_seen(session_id, seqs):
+        marked.append((session_id, list(seqs)))
 
     async def find(*args, **kwargs):
         dropped.append(args)
         raise AssertionError("no event id, so no queue to read")
 
-    provider.service.mark_seen = mark_seen
+    provider.service.mark_events_seen = mark_events_seen
     world.sp.get_storage(PendingSessionMessage).find = find
     await consume_events(provider.service, world.sp, "s1", [{"kind": "click"}, {"id": 5, "seq": True}])
     assert marked == [] and dropped == []
     await consume_events(provider.service, world.sp, "s1", [{"seq": 4}, {"seq": 9}, {"seq": 2}])
-    assert marked == [("s1", 9)], "the highest seq, once"
+    assert marked == [("s1", [4, 9, 2])], "exactly those events, once: not every event up to the highest (G8-07)"
 
 
 async def test_a_wake_that_carries_no_event_is_an_empty_result(provider, world):
