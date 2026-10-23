@@ -12,8 +12,9 @@ per server process) is the only code that starts, finishes, uses or ends one:
   ``exchange_failed``. None of them writes a token.
 * **Client credentials**. :meth:`~ToolsetOAuthService.connect_client_credentials` exchanges the toolset's client id and secret at once, at the
   configured token endpoint or the discovered one.
-* **Disconnect** revokes the refresh token (else the access token) where the server advertises RFC 7009 revocation, best effort, and deletes the tokens
-  whatever the answer. :meth:`~ToolsetOAuthService.forget` removes everything stored for a toolset (its deletion, a change of its settings).
+* **Disconnect** ends the toolset's pending sign-ins, revokes the refresh token (else the access token) where the server advertises RFC 7009
+  revocation, best effort, and deletes the tokens whatever the answer. :meth:`~ToolsetOAuthService.forget` removes everything stored for a toolset (its
+  deletion, a change of its settings).
 * **Status** (:meth:`~ToolsetOAuthService.status`) says ``connected``, ``needs_sign_in`` or ``error`` with the reason and expiry, or ``not_applicable``
   for a toolset without OAuth. It never carries a token.
 * **Using the token** (:meth:`~ToolsetOAuthService.access_token`, :meth:`~ToolsetOAuthService.refresh_after_401`). A token that expires within
@@ -465,8 +466,16 @@ class ToolsetOAuthService:
     # ---- disconnect and forget ------------------------------------------------------------------------------------------------------------------------------------------
 
     async def disconnect(self, toolset: Toolset) -> ToolsetAuthStatus:
-        """End the toolset's sign-in: revoke it where the server supports revocation (best effort), then delete the tokens whatever the answer."""
+        """End the toolset's sign-in: drop its pending sign-ins, revoke it where the server supports revocation (best effort), then delete the tokens
+        whatever the answer.
+
+        The pending sign-ins go first (audit G4-06): a Reconnect left open on the provider's page would otherwise stay valid for its ten minutes, and
+        completing it after the Disconnect would connect the toolset again.
+        """
         assert toolset.id is not None
+        dropped = await self._store.drop_pending(toolset.id)
+        if dropped:
+            logger.info("MCP toolset %s: %d pending sign-in(s) ended by the disconnect", toolset.id, dropped)
         row = await self._store.get_tokens(toolset.id)
         if row is not None:
             revoked = await self._revoke(OAuthTarget.from_toolset(toolset), row)

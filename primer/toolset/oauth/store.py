@@ -253,6 +253,15 @@ class McpOAuthStore:
                 removed += 1
         return removed
 
+    async def drop_pending(self, toolset_id: str) -> int:
+        """Delete every pending sign-in of the toolset, live ones included; the number deleted. A disconnect does this, so a sign-in started before
+        it cannot connect the toolset again after it."""
+        removed = 0
+        for row in await self._pending_of(toolset_id):
+            if await self._drop_pending(row.id):
+                removed += 1
+        return removed
+
     async def forget(self, toolset_id: str) -> None:
         """Remove everything stored for the toolset: its tokens, its registered client and every pending sign-in, live ones included
         (:func:`forget_sign_in`)."""
