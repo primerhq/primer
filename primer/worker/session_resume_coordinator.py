@@ -422,7 +422,32 @@ async def resume_engine_session(pool: "WorkerPool", engine_lease, session):
         # so it resumes when the real event fires. Mirrors the normal
         # park path in primer/session/dispatch.py and
         # _repark_continuation below.
-        return pool._repark_resumed_yield_outcome(session, parked, yld)
+        if tool_name != "_approval" or not getattr(yld, "frames", None):
+            return pool._repark_resumed_yield_outcome(session, parked, yld)
+        # Audit G6-3: the approved tool delegated (``invoke_agent`` /
+        # ``invoke_graph``) and the CHILD run paused: the yield carries the
+        # child's frames, and this flat re-park keeps none. It used to park
+        # under the child's call id, so the child's answer was injected as a
+        # tool_result for a call this transcript does not have, the
+        # session's own call was never answered and the child run was lost.
+        # Refused instead, exactly as ``_resume_tool_approval`` refuses the
+        # same pause behind ``call_tool``; the strict xfail in
+        # tests/worker/test_approval_yield_repark.py holds the real fix.
+        original = (
+            (blob.get("yielded") or {}).get("resume_metadata") or {}
+        ).get("original_call") or {}
+        tool_result_part = ToolResultPart(
+            id=parked.tool_call_id or "unknown",
+            output=json.dumps({
+                "is_error": True,
+                "reason": (
+                    "approval resume: the approved tool paused inside a nested agent or graph run, "
+                    "which an approval re-run cannot park again"
+                ),
+                "tool_name": original.get("name", tool_name),
+            }),
+            error=True,
+        )
     except Exception as exc:  # noqa: BLE001 - fail-closed synthesis
         logger.exception(
             "resume: hook for tool %r on session %s raised; synthesising"
