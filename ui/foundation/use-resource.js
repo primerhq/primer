@@ -25,6 +25,7 @@
         timer: null,
         fetcher: null,
         pollMs: 0,
+        retryMs: 0,
         pauseWhile: null,
       };
       cache.set(key, entry);
@@ -127,14 +128,20 @@
   function schedule(entry, key) {
     clearTimer(entry);
     if (!entry.fetcher) return;
-    if (!(entry.pollMs > 0)) return;
+    // retryMs is a failure-only cadence: unlike pollMs it stops after a
+    // successful response. It is for resources such as auth status that must
+    // recover from a transient first-read failure without polling forever.
+    const cadence = entry.errorCount > 0 && entry.retryMs > 0
+      ? entry.retryMs
+      : entry.pollMs;
+    if (!(cadence > 0)) return;
     if (entry.pauseWhile && entry.pauseWhile()) return;
     // Backoff: while erroring the delay grows 2x per failure, clamped to
     // 60s, and the loop never stops (a success resets errorCount, see
     // runFetch) so it recovers on its own instead of dying.
     const delay = entry.errorCount > 0
-      ? Math.min(entry.pollMs * Math.pow(2, entry.errorCount), 60000)
-      : entry.pollMs;
+      ? Math.min(cadence * Math.pow(2, entry.errorCount), 60000)
+      : cadence;
     entry.timer = setTimeout(() => {
       entry.timer = null;
       runFetch(entry, key);
@@ -218,7 +225,7 @@
   // and left an entry under `null` that made findKeys throw inside every
   // later useMutation success path.
   function useResource(cacheKey, fetcher, opts = {}) {
-    const { pollMs = 0, pauseWhile, deps, ignoreIdle = false } = opts;
+    const { pollMs = 0, retryMs = 0, pauseWhile, deps, ignoreIdle = false } = opts;
     const enabled = cacheKey != null;
     const effectiveKey = enabled ? composeKey(cacheKey, deps) : null;
 
@@ -250,6 +257,7 @@
       // takes effect on the next settle.
       entry.fetcher = (signal) => fetcherRef.current(signal);
       entry.pollMs = pollMs;
+      entry.retryMs = retryMs;
       entry.pauseWhile = () => {
         // Two stacked pause sources: the caller's pauseWhile and the
         // global idle flag set by ui/foundation/idle.js. Either pausing
@@ -282,8 +290,8 @@
           cache.delete(effectiveKey);
         }
       };
-      // pollMs intentionally excluded — it's applied in the separate
-      // effect below. Including it would tear down + recreate the cache
+      // pollMs and retryMs intentionally excluded: they are applied in the
+      // separate effect below. Including them would tear down + recreate the cache
       // entry on every cadence change, losing the cached data and firing
       // an immediate refetch. Callers that adapt pollMs to the response
       // (e.g. fast cadence while a long task runs) would then loop:
@@ -291,27 +299,29 @@
       // resets pollMs → another rebuild → flood.
     }, [effectiveKey]);
 
-    // Apply pollMs changes in-place without rebuilding the cache entry.
-    // If a poll timer is pending, reschedule it under the new cadence so
+    // Apply cadence changes in-place without rebuilding the cache entry.
+    // If a poll or retry timer is pending, reschedule it under the new cadence so
     // the new interval takes effect immediately rather than after the
     // next fetch settles.
     useEffect(() => {
       if (!enabled) return;
       const entry = cache.get(effectiveKey);
       if (!entry) return;
-      if (entry.pollMs === pollMs) return;
+      if (entry.pollMs === pollMs && entry.retryMs === retryMs) return;
       entry.pollMs = pollMs;
+      entry.retryMs = retryMs;
       if (entry.timer != null) {
         clearTimer(entry);
         schedule(entry, effectiveKey);
-      } else if (pollMs > 0 && entry.abortCtrl == null && !entry.loading) {
+      } else if ((pollMs > 0 || (retryMs > 0 && entry.errorCount > 0))
+          && entry.abortCtrl == null && !entry.loading) {
         // 0 -> N on a SETTLED entry: no timer was ever pending and no
         // fetch is in flight, so without this the loop never restarts
         // - a doc that stopped polling at "ended" stayed frozen after
         // a reopen flipped its cadence back on (BDD round 2).
         schedule(entry, effectiveKey);
       }
-    }, [effectiveKey, pollMs]);
+    }, [effectiveKey, pollMs, retryMs]);
 
     const refetch = useCallback(() => {
       if (!enabled) return;
