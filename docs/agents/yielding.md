@@ -89,7 +89,11 @@ When the event fires:
 3. The worker loads the parked state, calls `tool.resume(metadata,
    event_payload)`, and gets a normal `ToolResult` back.
 4. The result is appended to the LLM's history; the agent loop
-   continues from where it parked.
+   continues from where it parked. When the model asked for several
+   tool calls in one round, the park records what the calls before the
+   parked one returned, and the calls after it run now, in order (each
+   may park the session again); the history gets one answer per call of
+   the round, in order, before the model is called again.
 
 Crucial detail: **the agent definition is NOT snapshotted in the
 park**. Only the LLM messages are persisted. When the session
