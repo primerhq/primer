@@ -239,7 +239,7 @@ function NV_Shell() {
       return window.primerApi.apiFetch("GET", "/auth/status", null,
         { signal: signal });
     },
-    { pollMs: 2000 }
+    { retryMs: 2000 }
   );
   // The theme verbs (registered once, in the core-verb effect below) run long after the render that registered them, and act on the shell as it is
   // then: the signed-in username (the key of the user's stored choice) and the shell's re-render, which redraws the profile menu's pressed button.

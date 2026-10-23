@@ -777,7 +777,7 @@ function NV_SysProfile() {
     function (signal) {
       return window.primerApi.apiFetch("GET", "/auth/status", null, { signal: signal });
     },
-    { pollMs: 2000 }
+    { retryMs: 2000 }
   );
   var curState = React.useState("");
   var cur = curState[0];

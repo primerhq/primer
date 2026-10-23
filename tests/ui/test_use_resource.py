@@ -195,6 +195,29 @@ def _mount_race_resource(ctx, key: str = "auth-status") -> None:
     )
 
 
+def _install_timer_spy(ctx) -> None:
+    ctx.eval(
+        """
+        var __timers = [];
+        var setTimeout = function (fn, ms) {
+          __timers.push({ fn: fn, ms: ms, cleared: false });
+          return __timers.length;
+        };
+        var clearTimeout = function (id) {
+          if (__timers[id - 1]) __timers[id - 1].cleared = true;
+        };
+        function __runTimer(index) {
+          __timers[index].cleared = true;
+          __timers[index].fn();
+        }
+        function __activeTimerDelays() {
+          return __timers.filter(function (timer) { return !timer.cleared; })
+            .map(function (timer) { return timer.ms; });
+        }
+        """
+    )
+
+
 def _resolve_request(ctx, index: int, data: dict) -> None:
     ctx.eval(f"__requests[{index}].resolve({json.dumps(data)});")
     ctx.eval("void 0;")
@@ -223,6 +246,27 @@ def test_a_live_key_fetches_once_so_the_null_key_tests_are_not_vacuous() -> None
     ctx = _hook_ctx()
     ctx.eval("window.primerApi.useResource('live:key', __fetcher, { pollMs: 0 });")
     assert ctx.eval("__calls") == 1
+
+
+def test_retry_cadence_backs_off_after_failures_and_stops_after_success() -> None:
+    ctx = _race_ctx()
+    _install_timer_spy(ctx)
+    ctx.eval(
+        "window.primerApi.useResource("
+        "'auth-status', __fetcher, { pollMs: 0, retryMs: 2000 });"
+    )
+
+    ctx.eval("__requests[0].reject(new Error('temporary')); void 0;")
+    assert json.loads(ctx.eval("JSON.stringify(__activeTimerDelays())")) == [4000]
+
+    ctx.eval("__runTimer(0)")
+    ctx.eval("__requests[1].reject(new Error('temporary again')); void 0;")
+    assert json.loads(ctx.eval("JSON.stringify(__activeTimerDelays())")) == [8000]
+
+    ctx.eval("__runTimer(1)")
+    _resolve_request(ctx, 2, {"authenticated": True, "username": "alice"})
+    assert json.loads(ctx.eval("JSON.stringify(__activeTimerDelays())")) == []
+    assert _peek(ctx) == {"authenticated": True, "username": "alice"}
 
 
 def test_a_null_key_never_calls_the_fetcher_and_reports_idle() -> None:
