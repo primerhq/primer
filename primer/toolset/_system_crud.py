@@ -12,7 +12,9 @@ f-string-built) are unchanged by the move.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -31,7 +33,6 @@ from primer.agent.inner_dispatch import dispatch_inner_tool, inner_role_refusal
 from primer.authz import _role_allows
 from primer.common.entity_checks import EntityCheckError
 from primer.common.toolset_ids import canonical_toolset_id
-from primer.agent.tool_schemas import LIST_TIMEOUT_S
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.model.mcp_oauth import McpSignInRequiredError
 from primer.model.provider import Toolset
@@ -986,32 +987,70 @@ def _toolset_auth_status_tool(
     )
 
 
-# How long ``call_tool`` waits for the inner toolset's listing (the policy checks' and ``describe_tool``'s clock): a toolset backed by an MCP server that
-# does not answer must not hold the run longer than its call would.
-CALL_TOOL_LIST_TIMEOUT_S = LIST_TIMEOUT_S
+# How long ``call_tool`` keeps a toolset's listing, per toolset id and principal string, before it lists again: the lookup runs on every call, and
+# an MCP toolset's listing is a ``tools/list`` round trip (a stdio one may start a process). A name the kept listing does not have is listed again at
+# once, so a tool the toolset gained meanwhile is found; a tool it lost meanwhile fails at the call, as before the lookup existed.
+CALL_TOOL_LISTING_TTL_S = 30.0
+
+# The most listings kept at once (one per toolset and principal string); past it the expired ones go, then the oldest.
+_LISTINGS_KEPT = 256
 
 # How many of a toolset's tool names an unknown-tool answer lists (``describe_tool`` names the same number).
 _UNKNOWN_TOOL_NAMES_LISTED = 30
 
 
+class _ListingCache:
+    """The listings ``call_tool`` made, keyed ``(toolset id, principal string)``, each kept :data:`CALL_TOOL_LISTING_TTL_S` seconds."""
+
+    def __init__(self) -> None:
+        self._entries: dict[tuple[str, str | None], tuple[float, dict[str, Tool]]] = {}
+
+    def get(self, key: tuple[str, str | None]) -> dict[str, Tool] | None:
+        entry = self._entries.get(key)
+        if entry is None:
+            return None
+        if entry[0] <= time.monotonic():
+            del self._entries[key]
+            return None
+        return entry[1]
+
+    def put(self, key: tuple[str, str | None], tools: dict[str, Tool]) -> None:
+        now = time.monotonic()
+        self._entries.pop(key, None)
+        if len(self._entries) >= _LISTINGS_KEPT:
+            for stale in [k for k, (expires, _) in self._entries.items() if expires <= now]:
+                del self._entries[stale]
+            while len(self._entries) >= _LISTINGS_KEPT:
+                del self._entries[next(iter(self._entries))]
+        self._entries[key] = (now + CALL_TOOL_LISTING_TTL_S, tools)
+
+
 async def _listed_tool(
-    provider: Any, *, toolset_id: str, tool_name: str, ctx: ToolContext | None,
+    provider: Any, *, toolset_id: str, tool_name: str, ctx: ToolContext | None, cache: _ListingCache,
 ) -> Tool | ToolCallResult:
     """The descriptor ``provider`` lists for ``tool_name``, or the refusal ``call_tool`` answers instead (audit G6-8).
 
-    The listing is made as the run's own principal string (``ctx.principal``, the one the call itself is made with) under
-    :data:`CALL_TOOL_LIST_TIMEOUT_S`. A name the toolset does not list is ``not-found``, naming the toolset's first tool ids; a toolset that needs a
-    sign-in is ``sign-in-required`` (as ``list_toolset_tools`` answers it); one that fails to list (with a primer error or a bare exception, as
+    The listing is made as the run's own principal string (``ctx.principal``, the one the call itself is made with) and kept in ``cache`` for
+    :data:`CALL_TOOL_LISTING_TTL_S`. It is bounded by the clock a turn gives the same listing (``tool_listing.TURN_TOOLSET_LIST_TIMEOUT_S``, read at
+    call time; generous because a stdio MCP server's cold start takes tens of seconds), and the listing's async generator is closed however the
+    iteration ends. A name the toolset does not list is ``not-found``, naming the toolset's first tool ids; a toolset that needs a sign-in is
+    ``sign-in-required`` (as ``list_toolset_tools`` answers it); one that fails to list (with a primer error or a bare exception, as
     ``list_toolset_entries`` reads them) or does not answer in time is ``provider-error``. :class:`AuthRequiredError` propagates: its consent URL is
     for the person, as for ``describe_tool``.
     """
-    listed: list[Tool] = []
+    principal = ctx.principal if ctx is not None else None
+    key = (toolset_id, principal)
+    kept = cache.get(key)
+    if kept is not None and tool_name in kept:
+        return kept[tool_name]
+    # Function-local: the turn's listing module is read at call time so a test can lower its clock.
+    from primer.agent import tool_listing
+
+    timeout_s = tool_listing.TURN_TOOLSET_LIST_TIMEOUT_S
     try:
-        async with asyncio.timeout(CALL_TOOL_LIST_TIMEOUT_S):
-            async for tool in provider.list_tools(principal=ctx.principal if ctx is not None else None):
-                if tool.id == tool_name:
-                    return tool
-                listed.append(tool)
+        async with asyncio.timeout(timeout_s):
+            async with contextlib.aclosing(provider.list_tools(principal=principal)) as stream:
+                listed = {tool.id: tool async for tool in stream}
     except AuthRequiredError:
         raise
     except McpSignInRequiredError as exc:
@@ -1022,10 +1061,13 @@ async def _listed_tool(
     except PrimerError as exc:
         return _err_from_primer(exc, error_type="provider-error")
     except TimeoutError:
-        return _err(f"toolset {toolset_id!r} did not list its tools within {CALL_TOOL_LIST_TIMEOUT_S:g} seconds", error_type="provider-error")
+        return _err(f"toolset {toolset_id!r} did not list its tools within {timeout_s:g} seconds", error_type="provider-error")
     except Exception as exc:  # noqa: BLE001 - an adapter that fails with a bare exception is a provider failure to the caller
         return _err(f"toolset {toolset_id!r} could not list its tools: {type(exc).__name__}: {exc}", error_type="provider-error")
-    names = ", ".join(sorted(t.id for t in listed)[:_UNKNOWN_TOOL_NAMES_LISTED])
+    cache.put(key, listed)
+    if tool_name in listed:
+        return listed[tool_name]
+    names = ", ".join(sorted(listed)[:_UNKNOWN_TOOL_NAMES_LISTED])
     return _err(f"no tool {tool_name!r} in toolset {toolset_id!r}; its tools: {names}", error_type="not-found")
 
 
@@ -1033,6 +1075,9 @@ def _call_tool_tool(
     registry: "ProviderRegistry",
     approval_resolver: "ApprovalResolver | None" = None,
 ) -> tuple[str, tuple[Tool, ToolHandler]]:
+    # The listings the inner-tool lookup made, for this toolset build (one per app): see ``_listed_tool``.
+    listings = _ListingCache()
+
     async def _handler(
         arguments: dict[str, Any], *, ctx: ToolContext | None = None,
     ) -> ToolCallResult | Yielded:
@@ -1056,7 +1101,7 @@ def _call_tool_tool(
         # The inner tool, as the toolset LISTS it, before anything is decided about it (audit G6-8). An unknown name used to reach the role
         # check, where it fails closed to ``admin``: a user-role run that mistyped a tool was told it "requires the 'admin' role", and a policy
         # was looked up on a name nothing runs. Everything below (the role, the gate, the park, the dispatch) uses the LISTED name.
-        listed = await _listed_tool(provider, toolset_id=toolset_id, tool_name=args.tool_name, ctx=ctx)
+        listed = await _listed_tool(provider, toolset_id=toolset_id, tool_name=args.tool_name, ctx=ctx, cache=listings)
         if isinstance(listed, ToolCallResult):
             return listed
         tool_name = listed.id

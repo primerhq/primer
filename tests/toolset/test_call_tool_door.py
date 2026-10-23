@@ -424,18 +424,72 @@ async def test_a_toolset_that_cannot_list_answers_before_the_role_check(sp, pr, 
     assert unlistable.calls == []
 
 
-async def test_a_toolset_that_does_not_list_in_time_is_a_provider_error(sp, pr, monkeypatch):
+async def test_a_toolset_that_does_not_list_in_time_is_a_provider_error_and_its_listing_is_closed(sp, pr, monkeypatch):
+    """The lookup waits as long as a turn waits for the same listing (``tool_listing.TURN_TOOLSET_LIST_TIMEOUT_S``, a stdio server's cold start takes
+    tens of seconds), not the 10 s policy-check clock, and the listing's generator is closed when it is given up on."""
     import asyncio
+
+    closed: list[bool] = []
 
     class _Slow(_ListRecorder):
         async def list_tools(self, *, principal: str | None = None) -> AsyncIterator[Tool]:
-            await asyncio.sleep(5)
-            yield Tool(id="user_x", description="late", toolset_id="slow", args_schema={})
+            try:
+                await asyncio.sleep(5)
+                yield Tool(id="user_x", description="late", toolset_id="slow", args_schema={})
+            finally:
+                closed.append(True)
 
-    monkeypatch.setattr("primer.toolset._system_crud.CALL_TOOL_LIST_TIMEOUT_S", 0.05)
+    monkeypatch.setattr("primer.agent.tool_listing.TURN_TOOLSET_LIST_TIMEOUT_S", 0.05)
     slow = _Slow({"user_x": "user"})
     toolset = build_system_toolset(storage_provider=sp, provider_registry=_Registry(pr, {"slow": slow}))  # type: ignore[arg-type]
     r = await toolset.call(tool_name="call_tool", ctx=_ctx(USER), arguments={"toolset_id": "slow", "tool_name": "user_x", "arguments": {}})
     body = json.loads(r.output)
-    assert r.is_error and body["type"] == "provider-error" and "did not list its tools" in body["message"], body
-    assert slow.calls == []
+    assert r.is_error and body == {"type": "provider-error", "message": "toolset 'slow' did not list its tools within 0.05 seconds"}, body
+    assert slow.calls == [] and closed == [True]
+
+
+def test_the_lookup_waits_as_long_as_a_turn_waits_for_the_same_listing():
+    from primer.agent import tool_listing
+    from primer.agent.tool_schemas import LIST_TIMEOUT_S
+
+    assert tool_listing.TURN_TOOLSET_LIST_TIMEOUT_S > LIST_TIMEOUT_S
+
+
+# ---- the lookup's listing is kept per toolset and principal (review of #851) ------------------------------------------------------------------------------
+
+
+async def _call(toolset, principal: str | None, tool_name: str = "user_x"):
+    return await toolset.call(tool_name="call_tool", ctx=_ctx(USER, principal=principal), arguments={
+        "toolset_id": "rec", "tool_name": tool_name, "arguments": {}})
+
+
+async def test_the_listing_is_kept_per_toolset_and_principal(system_toolset, recorder):
+    """One ``tools/list`` per toolset and principal string for ``CALL_TOOL_LISTING_TTL_S``, not one per call: the lookup runs on every call."""
+    for _ in range(3):
+        assert not (await _call(system_toolset, "alice")).is_error
+    assert recorder.listed_as == ["alice"]
+    assert not (await _call(system_toolset, "bob")).is_error
+    assert recorder.listed_as == ["alice", "bob"], "another principal's listing is its own"
+    assert len(recorder.calls) == 4
+
+
+async def test_a_kept_listing_expires(system_toolset, recorder, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr("primer.toolset._system_crud.time.monotonic", lambda: clock[0])
+    await _call(system_toolset, "alice")
+    clock[0] += 29.0
+    await _call(system_toolset, "alice")
+    assert recorder.listed_as == ["alice"]
+    clock[0] += 2.0
+    await _call(system_toolset, "alice")
+    assert recorder.listed_as == ["alice", "alice"], "listed again once the kept listing is 30 s old"
+
+
+async def test_a_name_the_kept_listing_lacks_is_listed_again_before_it_is_not_found(system_toolset, recorder):
+    """A tool the toolset gained since its listing was kept is found: a miss lists again at once instead of answering ``not-found`` from the old listing."""
+    await _call(system_toolset, "alice")
+    recorder.roles["new_x"] = "user"
+    assert not (await _call(system_toolset, "alice", "new_x")).is_error
+    assert recorder.listed_as == ["alice", "alice"]
+    missing = await _call(system_toolset, "alice", "ghost")
+    assert json.loads(missing.output)["type"] == "not-found"
