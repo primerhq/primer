@@ -283,11 +283,15 @@ def build_collections_toolset(
         _read_document,
     )
 
-    async def _run_semantic(coll, query: str, top_k: int):
+    async def _run_semantic(
+        coll, query: str, top_k: int, *, path_prefix: str | None = None,
+    ):
         """Embed + query the vector store; (hits, error) like _parse."""
         from primer.model.chat import TextPart
         from primer.search.run import run_collection_search
 
+        norm_prefix = (path_prefix or "").strip().lstrip("/")
+        fetch_k = max(top_k * 5, 100) if norm_prefix else top_k
         try:
             embedder = await provider_registry.get_embedder(
                 coll.search.embedder.provider_id
@@ -302,7 +306,7 @@ def build_collections_toolset(
             )
             hits = await run_collection_search(
                 collection=coll, embedder=embedder, store=store,
-                query=query, top_k=top_k,
+                query=query, top_k=fetch_k,
                 cross_encoder_resolver=provider_registry, query_vector=vector,
             )
         except PrimerError as exc:
@@ -314,11 +318,15 @@ def build_collections_toolset(
             if not path:
                 doc = await docs.get(hit.record.document_id)
                 path = doc.path if doc is not None else hit.record.document_id
+            if norm_prefix and not path.startswith(norm_prefix):
+                continue
             out.append({
                 "path": path,
                 "excerpt": hit.record.text,
                 "score": hit.score,
             })
+            if len(out) >= top_k:
+                break
         return out, None
 
     def _capability(coll: Collection) -> str:
@@ -353,7 +361,9 @@ def build_collections_toolset(
             )
 
         if mode == "semantic":
-            hits, error = await _run_semantic(coll, args.query, args.limit)
+            hits, error = await _run_semantic(
+                coll, args.query, args.limit, path_prefix=args.path_prefix,
+            )
             if error is not None:
                 return error
             out: dict[str, Any] = {

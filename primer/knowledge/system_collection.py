@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
@@ -151,15 +152,23 @@ async def _ensure_collection(storage_provider) -> Collection:
     return existing
 
 
+def _quote_user_text(text: str | None) -> str:
+    """Render user-written text in this-install/ as quoted user-supplied text."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return "User-supplied description: _(none)_"
+    return f"User-supplied description: {json.dumps(cleaned)}"
+
+
 def _agent_body(a) -> str:
     return (
-        f"# {a.id}\n\n{a.description or ''}\n\n"
+        f"# {a.id}\n\n{_quote_user_text(a.description)}\n\n"
         f"- model profile: `{getattr(a.model, 'profile_id', '')}`\n"
     )
 
 
 def _graph_body(g) -> str:
-    return f"# {g.id}\n\n{g.description or ''}\n"
+    return f"# {g.id}\n\n{_quote_user_text(g.description)}\n"
 
 
 def _collection_body(c) -> str:
@@ -169,7 +178,7 @@ def _collection_body(c) -> str:
         else "fulltext"
     )
     return (
-        f"# {c.id}\n\n{c.description or ''}\n\n"
+        f"# {c.id}\n\n{_quote_user_text(c.description)}\n\n"
         f"- search: {best}\n"
     )
 
@@ -252,11 +261,14 @@ async def _workspaces_map(storage_provider, *, root: str = "") -> dict[str, str]
     lines = ["# Workspaces", "", "Places sessions run. One page each.", ""]
     for row in rows:
         label = row.name or row.id
+        quoted_label = json.dumps(label)
         slug = _live_slug(row.id)
-        lines.append(f"- [{label}]({prefix}workspaces/{slug}) - phase {row.phase}")
+        lines.append(
+            f"- [{row.id}]({prefix}workspaces/{slug}) - name (user-supplied): {quoted_label}, phase {row.phase}"
+        )
         out[f"{prefix}workspaces/{slug}"] = (
             f"# Workspace {row.id}\n\n"
-            f"- name: {label}\n"
+            f"- name (user-supplied): {quoted_label}\n"
             f"- template: {row.template_id}\n"
             f"- provider: {row.provider_id}\n"
             f"- phase: {row.phase}\n"
