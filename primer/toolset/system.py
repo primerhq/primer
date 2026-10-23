@@ -279,8 +279,9 @@ def build_system_toolset(
     its ``invalidate``, which publishes on the invalidation bus the lifespan bound it to, so the cached store is dropped in every process (a tool runs
     in whichever process executes the session). ``None`` (standalone/test builders) leaves the cache alone.
 
-    ``mcp_oauth`` is the process-wide shared sign-in service. An accepted URL or OAuth settings change through ``update_toolset`` forgets that
-    toolset's sign-in, matching the REST update path. ``None`` leaves standalone builders without OAuth state.
+    ``mcp_oauth`` is the process-wide shared sign-in service. An accepted URL or OAuth settings change through ``update_toolset``, and every
+    ``delete_toolset``, forget that toolset's sign-in, matching the REST update and delete paths. ``None`` leaves standalone builders without OAuth
+    state.
     """
     registry: dict[str, tuple[Tool, ToolHandler]] = {}
 
@@ -296,6 +297,14 @@ def build_system_toolset(
 
     async def _inv_ts(eid: str) -> None:
         await provider_registry.invalidate_toolset(eid)
+
+    async def _toolset_on_delete(eid: str) -> None:
+        # As the REST delete (primer.api.routers.providers._toolset_on_delete): the cached provider goes, and so does the shared OAuth sign-in
+        # (its tokens, its registered client and its pending sign-ins), so a toolset created again under this id is never connected on the
+        # sign-in of the one deleted here (audit G4-02).
+        await provider_registry.invalidate_toolset(eid)
+        if mcp_oauth is not None:
+            await mcp_oauth.forget(eid)
 
     async def _inv_ssp(eid: str) -> None:
         if semantic_search_registry is not None:
@@ -454,7 +463,7 @@ def build_system_toolset(
         ("model_profile", "model_profiles", ModelProfile, None, _inv_mp, _inv_mp, "admin"),
         ("embedding_provider", "embedding_providers", EmbeddingProvider, None, _inv_emb, _inv_emb, "admin"),
         ("cross_encoder_provider", "cross_encoder_providers", CrossEncoderProvider, None, _inv_ce, _inv_ce, "admin"),
-        ("toolset", "toolsets", Toolset, None, _inv_ts, _inv_ts, "user"),
+        ("toolset", "toolsets", Toolset, None, _inv_ts, _toolset_on_delete, "user"),
         ("agent", "agents", Agent, None, None, None, "user"),
         ("graph", "graphs", Graph, None, None, None, "user"),
         ("collection", "collections", Collection, None, None, None, "user"),
@@ -518,6 +527,10 @@ def build_system_toolset(
             "The delete is refused (``type=conflict``, ``in_use_by``) while another graph's sub-graph node, a session that is not ended "
             "or a trigger subscription still names the graph: remove or end those first. A graph that names itself does not block "
             "its own delete."
+        ),
+        "toolset": (
+            "Deleting a toolset that signs in with OAuth also forgets its shared sign-in (its tokens, its registered client and any sign-in "
+            "still pending), as the REST delete does: a toolset created again under the same id needs an admin to connect it."
         ),
     }
     # The writes that need an admin CALLER although the tool's static required_role is lower (architecture review A-02, security

@@ -529,6 +529,19 @@ async def _delete_document_content(
     await storage_provider.get_content_store().delete(document_id)
 
 
+async def _forget_toolset_sign_in(storage_provider: Any, toolset_id: str) -> None:
+    """Forget the shared OAuth sign-in of a harness-managed toolset this harness deleted (uninstall, or a sync that drops it).
+
+    Every other toolset delete path does the same (the REST delete and the system ``delete_toolset`` call ``ToolsetOAuthService.forget``):
+    otherwise the tokens, the registered client and the pending sign-ins outlive the toolset, and a toolset installed again under the
+    same id and settings would be connected on the old sign-in with no admin connecting it (audit G4-02). The harness dispatch has no
+    OAuth service in reach, and forgetting needs no key, so it calls the store function the service's ``forget`` is built on.
+    """
+    from primer.toolset.oauth.store import forget_sign_in  # noqa: PLC0415 - the toolset package pulls in the MCP SDK
+
+    await forget_sign_in(storage_provider, toolset_id)
+
+
 async def _index_installed_document(
     *,
     storage_provider: Any,
@@ -799,6 +812,8 @@ async def apply_sync(
                     storage_provider=storage_provider,
                     document_id=entry.resolved_id,
                 )
+            if entry.kind == "toolset":
+                await _forget_toolset_sign_in(storage_provider, entry.resolved_id)
         except Exception as exc:
             apply_errors.append(
                 {"kind": entry.kind, "id": entry.resolved_id, "error": str(exc)}
@@ -964,6 +979,12 @@ async def apply_uninstall(
                         await storage.delete(entry.resolved_id)
                     except Exception:
                         pass  # tolerate "not found"
+                    if kind == "toolset":
+                        try:
+                            await _forget_toolset_sign_in(storage_provider, entry.resolved_id)
+                        except Exception:
+                            logger.warning("harness %s: the OAuth sign-in of the uninstalled toolset %s could not be forgotten", harness.id,
+                                           entry.resolved_id, exc_info=True)
                     # Documents also own a content-store row keyed by the same
                     # stable id; delete it so no orphan body leaks (which would
                     # trip the content store's UNIQUE(collection_id, path) on a
