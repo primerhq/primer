@@ -15,6 +15,7 @@ import logging
 from datetime import timedelta
 
 import pytest
+from pydantic import SecretStr
 
 from primer.common.secret_box import SecretBox
 from primer.model.except_ import ProviderError
@@ -343,13 +344,51 @@ async def test_a_changed_url_never_gets_the_old_token(svc, kb, store, mock_oauth
     assert len(mock_oauth_mcp.state.token_requests) == requests and len(mock_oauth_mcp.state.seen_tokens) == seen
 
 
-async def test_an_unreadable_token_set_signs_out(services, kb, target, store):
-    await connect(services("pod-a", secret_box=SecretBox.from_key_material(OTHER_KEY)), kb)
-    with pytest.raises(McpSignInRequiredError) as caught:
-        await services("pod-b").access_token(target)
-    assert caught.value.reason == KEY_CHANGED
+def _says_the_key_differs(caplog, toolset_id: str = "kb") -> bool:
+    return any(
+        record.levelno == logging.ERROR and toolset_id in record.getMessage() and "encryption key" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+async def test_a_process_that_cannot_read_the_sign_in_fails_only_its_own_call(services, kb, target, store, caplog):
+    """Lead ruling on audit G4-10 (this replaces the test that pinned the old design, which wiped the shared tokens): a process whose key cannot open
+    the token row fails its own call (needs sign-in, KEY_CHANGED) and logs an ERROR that names the toolset and the key. The row is left as it is, so
+    the processes that can open it keep using it; only an admin Disconnect or Reconnect replaces it."""
+    pod_a = services("pod-a", secret_box=SecretBox.from_key_material(OTHER_KEY))
+    await connect(pod_a, kb)
+    before = await store.get_tokens("kb")
+    caplog.set_level(logging.ERROR, logger=service_module.__name__)
+    for call in (services("pod-b").access_token(target), services("pod-b").refresh_after_401(target, rejected="x", www_authenticate=None)):
+        with pytest.raises(McpSignInRequiredError) as caught:
+            await call
+        assert caught.value.reason == KEY_CHANGED
+    assert _says_the_key_differs(caplog)
+    after = await store.get_tokens("kb")
+    assert after.model_dump() == before.model_dump(), "the process that cannot read the row changed it"
+    assert after.access_token_enc is not None and after.refresh_token_enc is not None and after.state == "connected"
+    assert await pod_a.access_token(target) == pod_a.store.unseal(after.access_token_enc), "the process that can read it lost its sign-in"
+
+
+async def test_a_refresh_that_cannot_read_the_refresh_token_keeps_the_shared_tokens(svc, kb, target, store, clock, caplog, mock_oauth_mcp):
+    """The same ruling on the refresh path: a row whose access token this process reads but whose refresh token another key sealed. The lease the
+    process took is released, nothing else is written, and the call fails as needs sign-in (KEY_CHANGED)."""
+    await connect(svc, kb)
     row = await store.get_tokens("kb")
-    assert (row.state, row.reason, row.access_token_enc, row.refresh_token_enc) == ("needs_sign_in", KEY_CHANGED, None, None)
+    sealed_elsewhere = SecretStr(SecretBox.from_key_material(OTHER_KEY).encrypt("rt-of-another-key"))
+    assert await store.patch_tokens("kb", {"refresh_token_enc": sealed_elsewhere}, where={"version": [raw_generation(row, "version")]})
+    before = await store.get_tokens("kb")
+    _near_expiry(clock)
+    requests = len(mock_oauth_mcp.state.token_requests)
+    caplog.set_level(logging.ERROR, logger=service_module.__name__)
+    with pytest.raises(McpSignInRequiredError) as caught:
+        async with asyncio.timeout(_BOUND_S):
+            await svc.access_token(target)
+    assert caught.value.reason == KEY_CHANGED and _says_the_key_differs(caplog)
+    after = await store.get_tokens("kb")
+    assert (after.refresh_lease_until, after.refresh_lease_owner) == (None, None), "the lease was not released"
+    assert after.model_dump() == before.model_dump(), "the shared tokens were changed"
+    assert len(mock_oauth_mcp.state.token_requests) == requests, "a refresh was attempted without a readable refresh token"
 
 
 # ---- after a 401 ---------------------------------------------------------------------------------------------------------------------------------------------------------
