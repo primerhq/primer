@@ -467,8 +467,9 @@ async def test_the_tool_says_what_a_steer_does_for_each_state_and_what_it_return
     assert tool.interruptible is False and tool.requires_workspace is False
     assert is_exposable(tool, provider=toolset) == (True, None)
     assert set(tool.args_schema["required"]) == {"workspace_id", "session_id", "instruction"}
+    # "in any workspace" was dropped (lead ruling 3 of the G7 fixes): from a session outside the default workspace only its own is reachable.
     for sentence in (
-        "Send a user instruction to a session in any workspace: an idle or ended session starts its next turn with it, "
+        "Send a user instruction to a session: an idle or ended session starts its next turn with it, "
         "a busy, parked or paused one reads it at its next turn boundary.",
         "Use when you want to redirect a session; not to pause or resume it (use pause_workspace_session / "
         "resume_workspace_session) and not to answer its ask_user (a queued instruction is never an answer). "
