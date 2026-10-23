@@ -610,10 +610,12 @@ class TestCascadeInvalidation:
 class TestFetchModels:
     @pytest.mark.asyncio
     async def test_fetch_llm_provider_models_uses_the_saved_provider_probe(
-        self, sp, monkeypatch
+        self, fake_storage_provider, monkeypatch
     ) -> None:
+        # The probe stamps the row with a field-scoped patch_if (audit G2-10): a storage that implements it.
         from primer.api.routers import providers as provider_routes
 
+        sp = fake_storage_provider
         provider_registry = ProviderRegistry(sp)  # type: ignore[arg-type]
         system_toolset = build_system_toolset(
             storage_provider=sp,  # type: ignore[arg-type]
@@ -644,6 +646,42 @@ class TestFetchModels:
         saved = await sp.get_storage(LLMProvider).get("anthropic-1")
         assert saved.last_probe_at is not None
         assert saved.last_probe_ok is True
+
+    @pytest.mark.asyncio
+    async def test_fetch_llm_provider_models_keeps_an_edit_made_during_the_probe(
+        self, fake_storage_provider, monkeypatch
+    ) -> None:
+        """Audit G2-10: the tool reaches the same saved-row probe as the REST route, and its stamp writes only the
+        ``last_probe_*`` fields, so an edit saved while the probe runs (a rotated key, new limits) survives it."""
+        import asyncio
+
+        from primer.api.routers import providers as provider_routes
+
+        sp = fake_storage_provider
+        system_toolset = build_system_toolset(storage_provider=sp, provider_registry=ProviderRegistry(sp))  # type: ignore[arg-type]
+        await sp.get_storage(LLMProvider).create(_llm())
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def _held(*_a, **_k):
+            started.set()
+            await release.wait()
+            return [{"name": "claude-sonnet-4-6"}]
+
+        monkeypatch.setattr(provider_routes, "_discover_anthropic_models", _held)
+        call = asyncio.create_task(system_toolset.call(tool_name="fetch_llm_provider_models", arguments={"provider_id": "anthropic-1"}))
+        await asyncio.wait_for(started.wait(), 5)
+        row = await sp.get_storage(LLMProvider).get("anthropic-1")
+        await sp.get_storage(LLMProvider).update(row.model_copy(update={
+            "config": AnthropicConfig(api_key=SecretStr("sk-ant-ROTATED")), "limits": Limits(max_concurrency=9),
+        }))
+        release.set()
+        result = await asyncio.wait_for(call, 5)
+
+        assert not result.is_error, result.output
+        saved = await sp.get_storage(LLMProvider).get("anthropic-1")
+        assert saved.config.api_key.get_secret_value() == "sk-ant-ROTATED"
+        assert saved.limits.max_concurrency == 9
+        assert saved.last_probe_ok is True and saved.last_probe_at is not None
 
     @pytest.mark.asyncio
     async def test_fetch_llm_provider_models_maps_attribute_error(

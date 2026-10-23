@@ -494,3 +494,105 @@ class TestProbeStateStamping:
         body = got.json()
         assert body["last_probe_ok"] is True
         assert body["last_error"] is None
+
+
+class TestTheProbeStampWritesOnlyItsOwnFields:
+    """Audit G2-10: the saved-row probe can run for seconds, and its stamp used to write back the WHOLE row read before the
+    probe, so an edit saved meanwhile (a rotated key, a new URL, new limits) was reverted. The stamp is now a field-scoped
+    ``patch_if`` of ``last_probe_at`` / ``last_probe_ok`` / ``last_error``. Run on a real SQLite store, whose ``patch_if``
+    evaluates the guard in the database, with the PUT sent through the REST route while the probe is held open."""
+
+    @staticmethod
+    async def _app_on_sqlite(tmp_path):
+        from primer.api.app import create_test_app
+        from primer.api.registries import ProviderRegistry
+        from primer.model.provider import SqliteConfig
+        from primer.storage.sqlite import SqliteStorageProvider
+
+        sp = SqliteStorageProvider(SqliteConfig(path=str(tmp_path / "probe.sqlite")))
+        await sp.initialize()
+        registry = ProviderRegistry(
+            sp, llm_factory=lambda p: object(), embedder_factory=lambda p: object(),  # type: ignore[arg-type]
+            cross_encoder_factory=lambda p: object(), toolset_factory=lambda t: object(),
+        )
+        app = create_test_app(storage_provider=sp, provider_registry=registry)  # type: ignore[arg-type]
+        client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test")
+        await client.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+        return sp, client
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("outcome", ["ok", "refused"])
+    async def test_a_put_that_lands_during_the_probe_survives_it(self, tmp_path, monkeypatch, outcome) -> None:
+        import asyncio
+
+        from primer.api.routers import providers as provider_routes
+        from primer.model.except_ import BadRequestError
+        from primer.model.provider import LLMProvider
+
+        sp, client = await self._app_on_sqlite(tmp_path)
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def _held_probe(provider: str, config: dict) -> dict:
+            started.set()
+            await release.wait()
+            if outcome == "refused":
+                raise BadRequestError("upstream said no")
+            return {"models": [{"name": "m-1"}]}
+
+        monkeypatch.setattr(provider_routes, "_dispatch_llm_probe", _held_probe)
+        try:
+            body = {
+                "id": "held", "provider": "openchat", "limits": {"max_concurrency": 4},
+                "config": {"url": "http://old.example/v1", "flavor": "other", "api_key": "sk-OLD-0000"},
+            }
+            assert (await client.post("/v1/llm_providers", json=body)).status_code == 201
+            probe = asyncio.create_task(client.get("/v1/llm_providers/held/discovered_models"))
+            await asyncio.wait_for(started.wait(), 5)
+            edited = {**body, "limits": {"max_concurrency": 9},
+                      "config": {"url": "http://new.example/v1", "flavor": "other", "api_key": "sk-NEW-9999"}}
+            put = await client.put("/v1/llm_providers/held", json=edited)
+            assert put.status_code == 200, put.text
+            release.set()
+            r = await asyncio.wait_for(probe, 5)
+            assert r.status_code == (200 if outcome == "ok" else 400), r.text
+
+            row = await sp.get_storage(LLMProvider).get("held")
+            assert row.config.api_key.get_secret_value() == "sk-NEW-9999"
+            assert str(row.config.url) == "http://new.example/v1"
+            assert row.limits.max_concurrency == 9
+            assert row.last_probe_at is not None
+            assert row.last_probe_ok is (outcome == "ok")
+            assert (row.last_error is None) if outcome == "ok" else ("upstream said no" in row.last_error)
+        finally:
+            await client.aclose()
+            await sp.aclose()
+
+    @pytest.mark.asyncio
+    async def test_a_row_deleted_during_the_probe_is_not_stamped_or_recreated(self, tmp_path, monkeypatch) -> None:
+        import asyncio
+
+        from primer.api.routers import providers as provider_routes
+        from primer.model.provider import LLMProvider
+
+        sp, client = await self._app_on_sqlite(tmp_path)
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def _held_probe(provider: str, config: dict) -> dict:
+            started.set()
+            await release.wait()
+            return {"models": [{"name": "m-1"}]}
+
+        monkeypatch.setattr(provider_routes, "_dispatch_llm_probe", _held_probe)
+        try:
+            body = {"id": "gone", "provider": "openchat", "limits": {"max_concurrency": 1}, "config": {"url": "http://x.example/v1", "flavor": "other"}}
+            assert (await client.post("/v1/llm_providers", json=body)).status_code == 201
+            probe = asyncio.create_task(client.get("/v1/llm_providers/gone/discovered_models"))
+            await asyncio.wait_for(started.wait(), 5)
+            assert (await client.delete("/v1/llm_providers/gone")).status_code == 204
+            release.set()
+            r = await asyncio.wait_for(probe, 5)
+            assert r.status_code == 200, r.text
+            assert await sp.get_storage(LLMProvider).get("gone") is None
+        finally:
+            await client.aclose()
+            await sp.aclose()

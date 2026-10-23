@@ -820,7 +820,8 @@ async def discover_saved_llm_models(
     provider is actually probed (the draft-config sibling above has no
     persisted row to stamp), so success/failure here is stamped onto
     ``last_probe_at``/``last_probe_ok``/``last_error`` before the
-    original outcome (result or re-raise) proceeds.
+    original outcome (result or re-raise) proceeds. The stamp writes those
+    three fields and nothing else (:func:`_stamp_saved_probe`).
     """
     from primer.model.except_ import NotFoundError
 
@@ -837,14 +838,39 @@ async def discover_saved_llm_models(
             str(getattr(row.provider, "value", row.provider)), config,
         )
     except BadRequestError as exc:
-        await providers.update(row.model_copy(update={
-            "last_probe_at": now, "last_probe_ok": False, "last_error": str(exc),
-        }))
+        await _stamp_saved_probe(providers, row, at=now, ok=False, error=str(exc))
         raise
-    await providers.update(row.model_copy(update={
-        "last_probe_at": now, "last_probe_ok": True, "last_error": None,
-    }))
+    await _stamp_saved_probe(providers, row, at=now, ok=True, error=None)
     return result
+
+
+_PROBE_STAMP_FIELDS = frozenset({"last_probe_at", "last_probe_ok", "last_error"})
+
+
+async def _stamp_saved_probe(providers: Any, row: Any, *, at: datetime, ok: bool, error: str | None) -> None:
+    """Write ONLY the probe stamp (``last_probe_at``, ``last_probe_ok``, ``last_error``) onto the stored row (audit G2-10).
+
+    The probe can run for seconds (Ollama asks ``/api/show`` once per model), and the stamp used to write back the whole row
+    read BEFORE it: an edit saved meanwhile (a rotated key, a new URL, new limits) was reverted, behind the cached adapter's
+    back. A field-scoped ``patch_if`` leaves every other field as it is now. It is guarded on the provider kind the probe ran
+    against, so a row whose kind was changed meanwhile is not stamped with a probe of the old one; a row deleted meanwhile is
+    not stamped at all. Both routes that probe a saved row reach this: ``GET /llm_providers/{id}/discovered_models`` and the
+    system tool ``fetch_llm_provider_models``.
+    """
+    from primer.model.except_ import NotFoundError
+    from primer.storage import raw_generation
+    from primer.storage.cas import patch_if_checked
+
+    stamp = row.model_copy(update={"last_probe_at": at, "last_probe_ok": ok, "last_error": error}).model_dump(
+        mode="json", include=set(_PROBE_STAMP_FIELDS),
+    )
+    try:
+        written = await patch_if_checked(providers, row.id, stamp, where={"provider": [raw_generation(row, "provider")]})
+    except NotFoundError:
+        logger.info("LLMProvider %s was deleted while it was probed; the probe is not stamped", row.id)
+        return
+    if written is None:
+        logger.info("LLMProvider %s changed kind while it was probed; the probe is not stamped", row.id)
 
 
 def _unwrap_secrets(value: Any) -> Any:
