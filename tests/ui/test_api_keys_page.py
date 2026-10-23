@@ -18,14 +18,17 @@ var window = globalThis;
 var DATA = {};
 var LOG = { calls: [] };
 
+LOG.opts = {};
+LOG.refetches = 0;
 window.primerApi = {
   useResource: function (key, fetcher, opts) {
+    LOG.opts[key] = opts || {};
     var entry = DATA[key] || { items: [] };
     return {
       data: entry,
       loading: false,
       error: null,
-      refetch: function () {},
+      refetch: function () { LOG.refetches += 1; },
     };
   },
   apiFetch: function (method, path, body) {
@@ -53,7 +56,10 @@ function Btn(p) {
   return React.createElement("button", props, p.children);
 }
 
+// The shared Modal routes Escape, a backdrop click and its X through onClose: the stub keeps the last one's props so a test can call it.
+var LAST_MODAL = null;
 function Modal(p) {
+  LAST_MODAL = p;
   return React.createElement("div", { className: "modal-stub", "data-title": p.title },
     p.title ? React.createElement("h3", null, p.title) : null,
     p.children,
@@ -68,6 +74,16 @@ function Banner(p) {
     p.actions || null
   );
 }
+
+LOG.confirms = [];
+var CONFIRM = true;
+window.confirmDialog = function (opts) {
+  LOG.confirms.push(opts);
+  return Promise.resolve(CONFIRM);
+};
+var CLIPBOARD = [];
+var navigator = { clipboard: { writeText: function (t) { CLIPBOARD.push(t); return Promise.resolve(); } } };
+var setTimeout = function () { return 0; };
 
 function ROWS(n) {
   var out = [];
@@ -205,3 +221,123 @@ def test_an_empty_list_says_so_and_keeps_one_create_button(app):
     app.js('DATA["api-tokens:admin-list"] = { items: [] }')
     app.mount("AT_ApiTokensPage", '{ mode: "admin", username: "ana" }')
     assert "No API keys yet" in app.texts() and len(app.find_all("create-token-btn")) == 1
+
+
+# ---- the one-time key dialog asks before an implicit close (audit G1-12) ------------------------------------------------------------------------------
+
+ONE_TIME = 'var CLOSED = 0; MR.mount(AT_PlaintextOneTimeDialog, { token: { plaintext: "pk_secret", name: "ci", prefix: "pk_ab", scopes: [] }, onClose: function () { CLOSED += 1; } })'
+
+
+def test_escape_the_backdrop_or_the_x_ask_before_the_only_copy_of_the_key_goes(app):
+    """The shared Modal sends Escape, a backdrop click and its X through onClose; each would throw away the only copy of the plaintext."""
+    app.js("CONFIRM = false; " + ONE_TIME)
+    app.js("LAST_MODAL.onClose()")
+    app.settle()
+    assert app.js("CLOSED") == 0, "a declined confirm keeps the key on screen"
+    [confirm] = app.data("LOG.confirms")
+    assert confirm["danger"] is True and "only time" in confirm["message"]
+    app.js("CONFIRM = true; LAST_MODAL.onClose()")
+    app.settle()
+    assert app.js("CLOSED") == 1
+
+
+def test_a_second_implicit_close_while_the_confirm_is_open_asks_only_once(app):
+    app.js("CONFIRM = false; " + ONE_TIME)
+    app.js("LAST_MODAL.onClose(); LAST_MODAL.onClose();")
+    app.settle()
+    assert len(app.data("LOG.confirms")) == 1
+
+
+def test_the_saved_it_button_closes_without_asking(app):
+    app.js(ONE_TIME)
+    app.click("close-plaintext-btn")
+    app.settle()
+    assert app.js("CLOSED") == 1 and app.data("LOG.confirms") == []
+
+
+def test_once_the_key_is_copied_an_implicit_close_does_not_ask(app):
+    app.js(ONE_TIME)
+    app.click("copy-token-btn")
+    app.settle()
+    assert app.data("CLIPBOARD") == ["pk_secret"]
+    app.js("LAST_MODAL.onClose()")
+    app.settle()
+    assert app.js("CLOSED") == 1 and app.data("LOG.confirms") == []
+
+
+# ---- the admin list: every user, a partial failure said, a slower poll (audit G1-13) --------------------------------------------------------------
+
+FAKE_ADMIN_API = r"""
+var API_CALLS = [];
+var FAIL_FOR = {};
+function fakeApi(method, path, body, opts) {
+  API_CALLS.push(path);
+  if (path === "/admin/users") return Promise.resolve({ items: [{ id: "u1", username: "ana" }, { id: "u2", username: "bo" }] });
+  var m = /^\/admin\/users\/([^/]+)\/tokens$/.exec(path);
+  if (m && FAIL_FOR[m[1]]) return Promise.reject(FAIL_FOR[m[1]]);
+  if (m) return Promise.resolve({ items: [{ id: "t-" + m[1], name: "key-" + m[1] }] });
+  return Promise.reject(new Error("unexpected " + path));
+}
+var GOT = null, ERR = null;
+function read() { AT_readAdminTokens(fakeApi, "SIG").then(function (r) { GOT = r; }, function (e) { ERR = e; }); }
+"""
+
+
+def _drain(app) -> None:
+    """Let the pending promise jobs run (nothing is mounted, so there is nothing to re-render)."""
+    for _ in range(4):
+        app.js("void 0;")
+
+
+def test_the_admin_list_reads_every_user_and_tags_each_key_with_its_owner(app):
+    """GET /admin/users answers every user (the router loops the storage's pages); the old ``?limit=200`` was a cap the server never applied."""
+    app.js(FAKE_ADMIN_API + "read();")
+    _drain(app)
+    assert app.data("API_CALLS") == ["/admin/users", "/admin/users/u1/tokens", "/admin/users/u2/tokens"]
+    assert app.data("GOT") == {
+        "items": [
+            {"id": "t-u1", "name": "key-u1", "_ownerId": "u1", "_ownerName": "ana"},
+            {"id": "t-u2", "name": "key-u2", "_ownerId": "u2", "_ownerName": "bo"},
+        ],
+        "failedUsers": [],
+    }
+
+
+def test_a_user_whose_keys_cannot_be_read_is_named_not_silently_dropped(app):
+    app.js(FAKE_ADMIN_API + 'FAIL_FOR.u2 = { status: 500, message: "boom" }; read();')
+    _drain(app)
+    got = app.data("GOT")
+    assert [t["id"] for t in got["items"]] == ["t-u1"]
+    assert got["failedUsers"] == ["bo"]
+
+
+def test_an_aborted_read_is_an_abort_not_a_partial_failure(app):
+    app.js(FAKE_ADMIN_API + 'var ab = new Error("aborted"); ab.name = "AbortError"; FAIL_FOR.u2 = ab; read();')
+    _drain(app)
+    assert app.js("GOT") is None and app.js("ERR.name") == "AbortError"
+
+
+def test_the_page_says_whose_keys_it_could_not_read(app):
+    app.js('DATA["api-tokens:admin-list"] = { items: ROWS(2), failedUsers: ["bo", "cy"] }')
+    app.mount("AT_ApiTokensPage", '{ mode: "admin", username: "ana" }')
+    assert app.has("at-partial-failure")
+    text = app.text()
+    assert "bo, cy" in text and "count" in text
+    app.js('MR.find("at-partial-failure-retry").props.onClick()')
+    assert app.js("LOG.refetches") == 1
+
+
+def test_a_complete_read_draws_no_partial_failure_banner(app):
+    app.js('DATA["api-tokens:admin-list"] = { items: ROWS(2), failedUsers: [] }')
+    app.mount("AT_ApiTokensPage", '{ mode: "admin", username: "ana" }')
+    assert not app.has("at-partial-failure")
+
+
+def test_the_admin_list_polls_slower_than_the_personal_one(app):
+    """The admin list is 1 + N requests a read (one per user); the personal list is one."""
+    app.js('DATA["api-tokens:admin-list"] = { items: [] }')
+    app.mount("AT_ApiTokensPage", '{ mode: "admin", username: "ana" }')
+    assert app.data('LOG.opts["api-tokens:admin-list"]') == {"pollMs": 60000}
+    app.js('DATA["api-tokens:list"] = { items: [] }')
+    app.mount("AT_ApiTokensPage", '{ mode: "personal", username: "ana" }')
+    assert app.data('LOG.opts["api-tokens:list"]') == {"pollMs": 10000}
