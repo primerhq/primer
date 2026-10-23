@@ -63,6 +63,19 @@ class ParkedRound:
             remaining=tuple(ToolCallPart.model_validate(call) for call in remaining or ()),
         )
 
+    @classmethod
+    def from_record(cls, completed: Any, remaining: Any) -> "ParkedRound":
+        """The round a park record stored, as a resume reads it: :meth:`from_jsonable`, except that a round it cannot read is EMPTY (logged).
+
+        A resume must not fail on its park's round: one it cannot read (a hand-edited or damaged record) answers the parked call alone, as a park
+        from before rounds were carried does.
+        """
+        try:
+            return cls.from_jsonable(completed, remaining)
+        except (TypeError, ValueError):
+            logger.error("resume: the parked tool round cannot be read; answering the parked call alone", exc_info=True)
+            return cls()
+
     def completed_jsonable(self) -> list[dict[str, Any]]:
         return [part.model_dump(mode="json") for part in self.completed]
 
