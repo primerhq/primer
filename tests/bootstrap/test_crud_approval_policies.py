@@ -4,6 +4,7 @@ from __future__ import annotations
 from primer.agent.approval import ApprovalResolver
 from primer.bootstrap.seed import crud_policy_id, default_policy_id, ensure_crud_approval_policies
 from primer.model.tool_approval import PolicyApprovalConfig, RequiredApprovalConfig, ToolApprovalPolicy
+from primer.session.approvers import ADMIN_ONLY_SPEC
 from primer.toolset.admin_gates import ADMIN_GATES, HOST_CODE_TOOLSET_POLICY
 from primer.toolset.crud import CRUD_TOOL_NAMES, CRUD_TWINS, DEFAULT_GATED_TOOLS
 
@@ -21,6 +22,9 @@ async def test_seeds_one_policy_per_default_gated_tool(fake_storage_provider):
     for (toolset_id, tool_name), shipped in ADMIN_GATES.items():
         row = await store.get(default_policy_id(toolset_id, tool_name))
         assert (row.toolset_id, row.tool_name, row.enabled, row.approval) == (toolset_id, tool_name, True, shipped)
+        assert row.approvers is not None and row.approvers.model_dump() == ADMIN_ONLY_SPEC, "an admin-tier gate is decided by an admin only"
+    for toolset_id, tool_name in (*(("crud", n) for n in CRUD_TOOL_NAMES), *CRUD_TWINS):
+        assert (await store.get(default_policy_id(toolset_id, tool_name))).approvers is None, "the construction gates keep anyone"
     toolset_gate = await store.get(default_policy_id("system", "create_toolset"))
     assert toolset_gate.approval == PolicyApprovalConfig(policy=HOST_CODE_TOOLSET_POLICY)
     store = fake_storage_provider.get_storage(ToolApprovalPolicy)

@@ -16,7 +16,8 @@ import pytest_asyncio
 from primer.bootstrap.seed import default_policy_id
 from primer.model.provider import SqliteConfig
 from primer.model.storage import OffsetPage
-from primer.model.tool_approval import PolicyApprovalConfig, RequiredApprovalConfig, ToolApprovalPolicy
+from primer.model.tool_approval import ApproverSpec, PolicyApprovalConfig, RequiredApprovalConfig, ToolApprovalPolicy
+from primer.session.approvers import ADMIN_ONLY_SPEC
 from primer.storage.migrations import MIGRATIONS
 from primer.storage.migrations.m016_admin_run_gates import M016AdminRunGates
 from primer.storage.sqlite import SqliteStorageProvider
@@ -53,7 +54,8 @@ async def test_an_untouched_install_gets_the_shipped_gate_on_every_admin_tier_wr
         row = rows[default_policy_id(toolset_id, tool_name)]
         assert (row.toolset_id, row.tool_name, row.enabled) == (toolset_id, tool_name, True)
         assert row.approval == shipped, (toolset_id, tool_name)
-        assert row.approvers is None and row.timeout_seconds is None and row.preview_args is None
+        assert row.approvers == ApproverSpec.model_validate(ADMIN_ONLY_SPEC), "an admin-tier gate is decided by an admin only"
+        assert row.timeout_seconds is None and row.preview_args is None
     assert {rows[default_policy_id(t, n)].approval.type.value for t, n in HOST_CODE_TOOLSET_WRITES} == {"policy"}
 
 
@@ -109,4 +111,5 @@ def test_the_frozen_table_is_the_live_one_today():
     assert set(frozen) == set(ADMIN_GATES)
     assert all(frozen[key] == shipped.model_dump(mode="json") for key, shipped in ADMIN_GATES.items())
     assert m016._HOST_CODE_TOOLSET_POLICY == HOST_CODE_TOOLSET_POLICY
+    assert m016._ADMIN_ONLY == ADMIN_ONLY_SPEC
     assert all(m016._policy_id(t, n) == default_policy_id(t, n) for t, n, _ in m016._GATES)
