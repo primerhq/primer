@@ -101,8 +101,8 @@ def _non_admin_refusal(ctx: ToolContext, args: _WaitForEventArgs) -> str | None:
     * no ``regex`` field matcher: patterns run in the shared, leader-elected dispatcher loop, so a catastrophic one stalls every
       subscription. ``eq`` and ``prefix`` stay open;
     * a scope on a canvas wait: a ``canvas.*`` event carries what a user entered (a value, Html emit data, who did it), so a wait whose
-      kinds can match one must name the workspace or the session with an ``eq`` matcher on ``workspace_id`` or ``session_id`` (audit
-      G8-08); without it a user-role run in one workspace would wake on any session's canvas in the install.
+      kinds can match one must name the run's OWN workspace or session with an ``eq`` matcher on ``workspace_id`` or ``session_id``
+      (audit G8-08); without it, or with another workspace's or session's id, a user-role run would wake on a canvas that is not its own.
     """
     if _role_allows(run_principal(ctx), "admin"):
         return None
@@ -121,11 +121,15 @@ def _non_admin_refusal(ctx: ToolContext, args: _WaitForEventArgs) -> str | None:
             + ", ".join(repr(path) for path in regex)
         )
     unscoped = [glob for glob in args.event_types if needs_scope(glob)]
-    scoped = any(matcher.op == "eq" and matcher.path in SCOPE_PATHS and matcher.value for matcher in args.fields or [])
+    own = {"workspace_id": ctx.workspace_id, "session_id": ctx.session_id}
+    scoped = any(
+        matcher.op == "eq" and matcher.path in SCOPE_PATHS and matcher.value and matcher.value == own[matcher.path]
+        for matcher in args.fields or []
+    )
     if unscoped and not scoped:
         return (
-            _NOT_ADMIN + "a wait on canvas events must name the workspace or the session they are for: add a fields matcher "
-            "{path: workspace_id or session_id, op: eq, value}; refused: " + ", ".join(repr(glob) for glob in unscoped)
+            _NOT_ADMIN + "a wait on canvas events must name this run's own workspace or session: add a fields matcher "
+            "{path: workspace_id or session_id, op: eq, value: this run's own id}; refused: " + ", ".join(repr(glob) for glob in unscoped)
         )
     return None
 

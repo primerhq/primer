@@ -284,10 +284,12 @@ session.
   (a rego module), and its `fields` matchers may use only the `eq` and
   `prefix` ops (`regex` is refused): filter with those instead. A
   canvas event carries what a user entered (a value, Html emit data,
-  who clicked), so such a run's wait on `canvas.*` must also name the
-  workspace or the session it is for with an `eq` matcher, for example
+  who clicked), so such a run's wait on `canvas.*` must also name its
+  OWN workspace or session with an `eq` matcher, for example
   `{"path": "session_id", "op": "eq", "value": "<your session id>"}`
-  (or `workspace_id`); without one it is refused with `type=forbidden`.
+  (or `workspace_id` with your workspace id); without one, or with
+  another workspace's or session's id, it is refused with
+  `type=forbidden`.
   An admin's run may wait on any kind, with a data-only `expr` and
   `regex`. No principal may reference the host `opa` package from an
   `expr`, including `opa.runtime()`: the platform refuses it before
