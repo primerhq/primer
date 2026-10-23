@@ -5,7 +5,8 @@
 names a stored ModelProfile, ``{"profile_id": ...}``, and a body without one is refused by the model (and, since the create check, a
 ``profile_id`` that names no stored profile is refused as well). Nothing parsed the examples, so nothing noticed.
 
-Two checks over every JSON code block in ``docs/agents/``:
+Two checks over every JSON code block in ``docs/agents/`` and ``docs/wiki/`` (the platform wiki pages are served to agents the same way the agent
+docs are, so they carry the same contract):
 
 * wherever a ``model`` object appears that looks like an agent's (it carries ``profile_id``, ``provider_id`` or ``model_name``), it is a valid
   :class:`~primer.model.agent.AgentModel`;
@@ -30,6 +31,8 @@ from primer.model.model_profile import ModelProfile
 
 REPO = Path(__file__).resolve().parents[2]
 AGENT_DOCS = sorted(p for p in (REPO / "docs" / "agents").rglob("*.md") if not p.name.startswith("_"))
+# The wiki pages are scanned the same way: the agent bodies they show (the create_agent examples of the P4 recipes) must be bodies primer accepts.
+AGENT_DOCS += sorted(p for p in (REPO / "docs" / "wiki").rglob("*.md") if not p.name.startswith("_"))
 _FENCE = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
 _MODEL_KEYS = {"profile_id", "provider_id", "model_name"}
 
@@ -100,7 +103,11 @@ def _count_agent_bodies(text: str) -> int:
 
 def test_the_scan_finds_enough_agent_bodies_to_be_real() -> None:
     total = sum(_count_agent_bodies(doc.read_text(encoding="utf-8")) for doc in AGENT_DOCS)
-    assert total >= 8, f"only {total} agent bodies found in docs/agents/; the scan would pass vacuously"
+    assert total >= 8, f"only {total} agent bodies found in docs/agents/ and docs/wiki/; the scan would pass vacuously"
+
+
+def test_the_wiki_is_scanned_for_agent_bodies() -> None:
+    assert any("docs/wiki" in p.as_posix() for p in AGENT_DOCS)
 
 
 @pytest.mark.parametrize("doc", AGENT_DOCS, ids=lambda p: str(p.relative_to(REPO)))

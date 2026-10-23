@@ -1,14 +1,16 @@
-"""Every example tool call in the agent docs passes the arguments its tool's input schema accepts (follow-up to finding A-19).
+"""Every example tool call in the agent docs and the platform wiki passes the arguments its tool's input schema accepts (follow-up to finding A-19).
 
 ``docs/agents/`` is served to agents by search, and its examples are copied into tool calls. Checking only that a documented tool EXISTS (see
 ``test_docs_name_real_tools_and_routes.py``) missed examples whose arguments the tool refuses: a matcher written ``"surface": "channel"`` where the
 schema wants a list (``["channel"]``), an agent passed without its ``entity`` wrapper, an agent whose ``model`` was still the retired provider/model
 pair. This validates the arguments of every documented call against the live tool's ``args_schema`` with ``jsonschema``.
 
-Two shapes of documented call are read:
+Three shapes of documented call are read:
 
 * a JSON block with ``{"tool": "<toolset>::<tool>", "arguments": {...}}`` (``channels.md`` and others);
-* the cookbook shape, an inline-code line ``<toolset>::<tool>`` followed immediately by a JSON block, which is the arguments.
+* the cookbook shape, an inline-code line ``<toolset>::<tool>`` followed immediately by a JSON block, which is the arguments;
+* the wiki shape, a JSON block with ``{"toolset_id": "<toolset>", "tool_name": "<tool>", "arguments": {...}}``: a ``call_tool`` call, the way the
+  ``docs/wiki/`` pages and cookbooks show every call.
 
 Every fenced block is paired with its own closing fence whatever its language, so a ``text`` or ``bash`` block cannot hide the calls after it.
 
@@ -32,6 +34,8 @@ from tests.docs._live_toolsets import built_in_tools
 
 REPO = Path(__file__).resolve().parents[2]
 AGENT_DOCS = sorted(p for p in (REPO / "docs" / "agents").rglob("*.md") if not p.name.startswith("_"))
+WIKI_DOCS = sorted(p for p in (REPO / "docs" / "wiki").rglob("*.md") if not p.name.startswith("_"))
+DOC_FILES = [*AGENT_DOCS, *WIKI_DOCS]
 
 # Every fenced block, whatever its info string (``json``, ``text``, ``bash``, none): a fence must be paired with its own closing fence, or a
 # ```text block shifts every later pair by one and the calls after it go unread. Only the ``json`` and unlabelled blocks are parsed.
@@ -62,7 +66,7 @@ def _objects(value: Any):
 
 
 def calls_in(text: str) -> list[Call]:
-    """Every documented call to a tool of a built-in toolset, in the two shapes the docs use."""
+    """Every documented call to a tool of a built-in toolset, in the three shapes the docs use."""
     found: list[Call] = []
     for match in _PROSE_CALL.finditer(text):
         try:
@@ -81,6 +85,12 @@ def calls_in(text: str) -> list[Call]:
             if isinstance(tool, str) and "::" in tool and isinstance(obj.get("arguments"), dict):
                 toolset, _, name = tool.partition("::")
                 found.append(Call(toolset, name, obj["arguments"]))
+            elif (
+                isinstance(obj.get("toolset_id"), str)
+                and isinstance(obj.get("tool_name"), str)
+                and isinstance(obj.get("arguments"), dict)
+            ):
+                found.append(Call(obj["toolset_id"], obj["tool_name"], obj["arguments"]))
     return found
 
 
@@ -105,10 +115,10 @@ def problems_in(call: Call) -> list[str]:
 
 
 def test_the_scan_finds_enough_documented_calls_to_be_real() -> None:
-    calls = [call for doc in AGENT_DOCS for call in calls_in(doc.read_text(encoding="utf-8"))]
+    calls = [call for doc in DOC_FILES for call in calls_in(doc.read_text(encoding="utf-8"))]
     checked = [c for c in calls if built_in_tools().get(c.toolset, {}).get(c.tool) is not None]
 
-    assert len(checked) >= 60, f"only {len(checked)} documented calls to a built-in tool found in docs/agents/"
+    assert len(checked) >= 60, f"only {len(checked)} documented calls to a built-in tool found in docs/agents/ and docs/wiki/"
 
 
 def test_every_built_in_toolset_has_tools_and_schemas() -> None:
@@ -118,7 +128,7 @@ def test_every_built_in_toolset_has_tools_and_schemas() -> None:
         assert any(t.args_schema for t in tools.values()), f"no tool of the {toolset_id} toolset carries an args_schema"
 
 
-@pytest.mark.parametrize("doc", AGENT_DOCS, ids=lambda p: str(p.relative_to(REPO)))
+@pytest.mark.parametrize("doc", DOC_FILES, ids=lambda p: str(p.relative_to(REPO)))
 def test_every_documented_call_passes_its_tools_input_schema(doc: Path) -> None:
     problems = [p for call in calls_in(doc.read_text(encoding="utf-8")) for p in problems_in(call)]
 
@@ -135,6 +145,17 @@ def test_both_shapes_of_a_documented_call_are_read() -> None:
     )
 
     assert [(c.toolset, c.tool) for c in calls_in(text)] == [("system", "create_channel"), ("system", "delete_agent")]
+
+
+def test_the_call_tool_shape_is_read() -> None:
+    """The wiki's shape: a json object with ``toolset_id``, ``tool_name`` and an ``arguments`` object is a ``call_tool`` call."""
+    text = (
+        '```json\n{"toolset_id": "web", "tool_name": "web_search", "arguments": {"query": "x"}}\n```\n'
+        '```json\n{"toolset_id": "workspaces", "tool_name": "create_workspace", '
+        '"arguments": {"template_id": "py-base"}}\n```\n'
+    )
+
+    assert [(c.toolset, c.tool) for c in calls_in(text)] == [("web", "web_search"), ("workspaces", "create_workspace")]
 
 
 def test_a_fence_in_another_language_does_not_hide_the_calls_after_it() -> None:
@@ -186,3 +207,11 @@ def test_an_argument_the_tool_does_not_declare_is_refused() -> None:
 
     assert any("id: not an argument" in p for p in problems) and any("overrides: not an argument" in p for p in problems), problems
     assert problems_in(Call("harness", "harness__register", {"name": "n", "slug": "my-slug", "git_url": "u"})) == []
+
+
+def test_a_web_search_call_with_max_results_is_refused() -> None:
+    """C6 pin: the web_search schema declares no ``max_results``, so the declared-names rule refuses it."""
+    call = Call("web", "web_search", {"query": "x", "max_results": 5})
+    problems = problems_in(call)
+
+    assert any("max_results" in p and "not an argument" in p for p in problems), problems

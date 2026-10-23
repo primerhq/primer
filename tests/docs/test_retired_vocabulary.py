@@ -47,13 +47,18 @@ EXEMPT = {
 
 def _docs() -> list[Path]:
     out: list[Path] = [REPO / "README.md", REPO / "AGENTS.md"]
-    for root in ("docs/dev", "docs/agents"):
+    for root in ("docs/dev", "docs/agents", "docs/wiki"):
         out.extend((REPO / root).rglob("*.md"))
     return sorted(
         p for p in out
         if p.exists()
         and not any(str(p.relative_to(REPO)).startswith(e) for e in EXEMPT)
     )
+
+
+def test_the_wiki_root_is_scanned() -> None:
+    """The P4 content lands in docs/wiki; a scan that stopped seeing it would pass every wiki page."""
+    assert any(p.relative_to(REPO).as_posix().startswith("docs/wiki") for p in _docs())
 
 
 def test_no_doc_uses_retired_vocabulary() -> None:
@@ -120,6 +125,7 @@ _CHAT_OK = re.compile(
     r"|chat_message"
     r"|dropped `chats` keys"
     r"|chat fallback"
+    r"|session or chat"    # the two live approval surfaces: the agent session and the channel conversation
     r"|chat Part-union"
     r"|claim fields were removed"          # the straight-cutover note
     r"|Plain chat and the"          # the README transition banner
