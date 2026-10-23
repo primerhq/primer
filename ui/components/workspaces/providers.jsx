@@ -327,10 +327,12 @@ function WorkspaceProviderCreateModal({ onClose, pushToast, existing = null, onC
             "local", "container", "kubernetes", "socket", "remote", "in_cluster", "kubeconfig", "service_account_token",
             "host_port", "bridge_network", "ingress", "gateway_httproute", "hostname", "path_prefix",
           ]);
+          // A union's tag sits first (the provider kind) or right after its union field; anywhere else the name is a real field (path_prefix routing has `hostname`).
+          const unionFields = new Set(["connection", "reachability", "routing"]);
           for (const fe of err.fieldErrors) {
             const loc = (fe.loc || []).filter((s) => s !== "body");
             if (loc[0] === "config") loc.shift();
-            const path = loc.filter((s) => !discriminatorNames.has(s)).join(".");
+            const path = loc.filter((s, i) => !(discriminatorNames.has(s) && (i === 0 || unionFields.has(loc[i - 1])))).join(".");
             map[fieldNames[path] || path] = fe.msg;
           }
           setFieldErrors(map);
