@@ -107,7 +107,10 @@ def artifact_store_tools(
         id="get_active_artifact_store",
         toolset_id=SYSTEM_TOOLSET_ID,
         purpose="Read the artifact store selected for new writes.",
-        when="Use before changing where new artifact bytes are stored. Returns the selected provider id and backend kind.",
+        when=(
+            "Use when reading which artifact store is selected for new writes, "
+            "such as before changing providers. Returns the selected provider id and backend kind."
+        ),
         args_schema=_GetActiveArtifactStoreArgs.model_json_schema(),
         examples=[ToolExample(args={}, returns='``{provider_id: "artifact-storage-default", provider: "db"}``')],
         required_role="admin",
@@ -117,8 +120,9 @@ def artifact_store_tools(
         toolset_id=SYSTEM_TOOLSET_ID,
         purpose="Probe an artifact-storage provider and select it for new writes.",
         when=(
-            "Use after testing or registering the provider. An unknown or unusable provider returns ``type=validation-error`` "
-            "and the current selection is unchanged. Existing artifacts remain where they were written."
+            "Use when switching where new artifact bytes are written, after testing or registering the provider. "
+            "An unknown or unusable provider returns ``type=validation-error`` and the current selection is unchanged. "
+            "Existing artifacts remain where they were written."
         ),
         args_schema=_SetActiveArtifactStoreArgs.model_json_schema(),
         examples=[ToolExample(args={"provider_id": "artifact-storage-1"}, returns="the selected provider id and backend kind")],
