@@ -100,3 +100,35 @@ async def test_an_unknown_session_is_not_found_before_the_rank_rule(tool):
     world = make_world(with_bus=True)
     result, body = await _call(world, tool, "nope", actor=_principal("user"))
     assert result.is_error and body["type"] == "not-found"
+
+
+# ---- the own-session rule is a live request's, never a run's (review of #853, N1) ---------------------------------------------------
+
+
+ADA_THEN = PrincipalRef(type="user", id="u-ada", display="ada", role="admin", source="local")
+
+
+@pytest.mark.parametrize("tool", TOOLS)
+async def test_a_person_over_mcp_may_act_on_their_own_session_whatever_its_recorded_rank(tool):
+    """The MCP request carries the account's current role (``user``: Ada was demoted), and the session's runs execute at most at it."""
+    world = make_world(with_bus=True)
+    await _target(world, tool, by=ADA_THEN)
+    ada_now = Principal(type="user", id="u-ada", display="ada", role="user", source="local")
+
+    result, body = await _call(world, tool, "ses-b", actor=ada_now)
+
+    assert not result.is_error, result.output
+
+
+@pytest.mark.parametrize("tool", TOOLS)
+async def test_a_run_carrying_the_same_identity_at_a_lower_rank_may_not(tool):
+    """A trigger-capped run carries an admin's identity at ``user`` rank while that admin's own sessions still run at admin: the own-session rule is
+    not a run's."""
+    world = make_world(with_bus=True)
+    before = (await _target(world, tool, by=ADA_THEN)).model_dump(mode="json")
+    capped = ToolContext(tool_call_id="c1", session_id=None, workspace_id=None, initiated_by=ADA_THEN.model_copy(update={"role": "user"}))
+
+    result, body = await _call(world, tool, "ses-b", ctx=capped)
+
+    assert result.is_error and body == {"type": "forbidden", "message": OUTRANKED_MESSAGE}
+    assert (await world.sessions.get("ses-b")).model_dump(mode="json") == before

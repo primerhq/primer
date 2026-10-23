@@ -11,6 +11,7 @@ state path.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 
 import pytest
@@ -27,6 +28,13 @@ from tests.tap.test_mcp_tap_tool import (
 )
 
 TOOL = "read_workspace_session_messages"
+
+
+def _run_in_the_workspace():
+    """A user's run in a session of the transcript's own workspace. Since the review of #853 a calling session reaches only its own workspace (or
+    every one from prime), so the run reading ``_WID``'s transcripts is one of ``_WID`` (``caller()``'s context names a session of workspace ``w``,
+    which no longer reaches ``_WID``: ``tests/api/test_session_control_rule_table.py``)."""
+    return dataclasses.replace(caller("user"), workspace_id=_WID)
 
 
 async def _setup():
@@ -55,7 +63,7 @@ def test_the_tool_is_registered_for_users():
     assert ts.required_role(TOOL) == "user"
 
 
-@pytest.mark.parametrize("ctx", [caller("user"), None], ids=["user-run", "mcp"])
+@pytest.mark.parametrize("ctx", [_run_in_the_workspace(), None], ids=["user-run", "mcp"])
 async def test_a_user_reads_a_sessions_transcript(ctx):
     ts, _, _ = await _setup()
     res = await _call(ts, {"workspace_id": _WID, "session_id": "s1"}, ctx)
@@ -70,7 +78,7 @@ async def test_after_seq_and_limit_page_the_transcript():
     ts, _, _ = await _setup()
     res = await _call(
         ts, {"workspace_id": _WID, "session_id": "s1", "after_seq": 1, "limit": 1},
-        caller("user"),
+        _run_in_the_workspace(),
     )
     body = json.loads(res.output)
     assert [i["seq"] for i in body["items"]] == [2]
@@ -109,13 +117,13 @@ async def test_a_session_on_another_workspace_is_not_found():
         tap_router=None,
     )
     res = await _call(
-        ts, {"workspace_id": "ws-other", "session_id": "s1"}, caller("user"),
+        ts, {"workspace_id": "ws-other", "session_id": "s1"}, _run_in_the_workspace(),
     )
     assert res.is_error, res.output
     assert json.loads(res.output)["type"] == "not-found"
     assert "PONG-SECRET" not in res.output
     # Premise: the same registry serves s1 under its own workspace.
-    ok = await _call(ts, {"workspace_id": _WID, "session_id": "s1"}, caller("user"))
+    ok = await _call(ts, {"workspace_id": _WID, "session_id": "s1"}, _run_in_the_workspace())
     assert not ok.is_error and "PONG-SECRET" in ok.output
 
 
@@ -124,7 +132,7 @@ async def test_offset_pages_older_from_the_tail_like_rest():
     res = await _call(
         ts,
         {"workspace_id": _WID, "session_id": "s1", "tail": True, "limit": 1, "offset": 1},
-        caller("user"),
+        _run_in_the_workspace(),
     )
     assert not res.is_error, res.output
     assert [i["seq"] for i in json.loads(res.output)["items"]] == [2]
@@ -132,7 +140,7 @@ async def test_offset_pages_older_from_the_tail_like_rest():
 
 async def test_an_unknown_session_is_not_found():
     ts, _, _ = await _setup()
-    res = await _call(ts, {"workspace_id": _WID, "session_id": "nope"}, caller("user"))
+    res = await _call(ts, {"workspace_id": _WID, "session_id": "nope"}, _run_in_the_workspace())
     assert res.is_error
     assert json.loads(res.output)["type"] == "not-found"
 
@@ -140,12 +148,12 @@ async def test_an_unknown_session_is_not_found():
 async def test_a_session_with_no_log_yet_reads_empty():
     ts, provider, _ = await _setup()
     await _seed_session(provider.store, "s2")
-    res = await _call(ts, {"workspace_id": _WID, "session_id": "s2"}, caller("user"))
+    res = await _call(ts, {"workspace_id": _WID, "session_id": "s2"}, _run_in_the_workspace())
     assert not res.is_error, res.output
     assert json.loads(res.output)["items"] == []
 
 
-@pytest.mark.parametrize("ctx", [caller("user"), None], ids=["user-run", "mcp"])
+@pytest.mark.parametrize("ctx", [_run_in_the_workspace(), None], ids=["user-run", "mcp"])
 async def test_the_raw_state_read_is_still_refused(ctx):
     """The guard is not weakened: the raw path stays refused."""
     ts, _, _ = await _setup()

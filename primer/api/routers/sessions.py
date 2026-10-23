@@ -18,6 +18,7 @@ from primer.model.external_tool import (
     validate_external_tool_defs,
 )
 
+from primer.api.routers._session_rank import refuse_outranked
 from primer.api.deps import (
     get_claim_engine,
     get_event_bus,
@@ -228,9 +229,10 @@ _RESUMABLE = {SessionStatus.CREATED, SessionStatus.PAUSED, SessionStatus.WAITING
     "/workspaces/{workspace_id}/sessions/{session_id}/resume",
     response_model=WorkspaceSession,
     summary="Idempotent start-or-resume",
-    responses=common_responses(404, 409, 500),
+    responses=common_responses(403, 404, 409, 500),
 )
 async def resume_session(
+    request: Request,
     workspace_id: str = Path(...),
     session_id: str = Path(...),
     sessions=Depends(get_session_storage),
@@ -244,6 +246,8 @@ async def resume_session(
       ``started_at`` if unset, clears the pause flag, and enqueues with
       the scheduler.
     * 409 when the session is ENDED.
+    * 403 ``forbidden_rank`` when the session's creator outranks the caller
+      (review of #853; ``primer.api.routers._session_rank``).
 
     The write is ONE field-scoped ``patch_if`` of the fields resume changes
     (``status``, ``pause_requested``, and ``started_at`` when the row it read
@@ -270,6 +274,7 @@ async def resume_session(
                 f"Session {session_id!r} does not exist on workspace "
                 f"{workspace_id!r}"
             )
+        refuse_outranked(request, s)
         for attempt in range(2):
             if s.status == SessionStatus.ENDED:
                 raise ConflictError(f"Session {session_id!r} has ended")
@@ -360,9 +365,10 @@ async def pause_session(
     "/workspaces/{workspace_id}/sessions/{session_id}/cancel",
     response_model=WorkspaceSession,
     summary="Hard cancel - transitions to ENDED/cancelled",
-    responses=common_responses(404, 409, 500),
+    responses=common_responses(403, 404, 409, 500),
 )
 async def cancel_session(
+    request: Request,
     workspace_id: str = Path(...),
     session_id: str = Path(...),
     scheduler=Depends(get_scheduler),
@@ -382,6 +388,8 @@ async def cancel_session(
       legacy ``scheduler.signal_cancel`` for backward compat with the
       pre-engine claim path.
     * 409 when the session is already ENDED.
+    * 403 ``forbidden_rank`` when the session's creator outranks the caller
+      (review of #853), before anything is written.
 
     Delegates to :func:`primer.workspace.session_factory.cancel_session`
     so the REST route and the ``cancel_workspace_session`` MCP tool share
@@ -392,6 +400,10 @@ async def cancel_session(
         cancel_session as _cancel_session_helper,
     )
 
+    target = await storage_provider.get_storage(WorkspaceSession).get(session_id)
+    if target is not None and target.workspace_id == workspace_id:
+        # A missing session (or one on another workspace) is the 404 the helper raises, in its own words.
+        refuse_outranked(request, target)
     deps = SessionCancelDeps(
         storage_provider=storage_provider,
         scheduler=scheduler,

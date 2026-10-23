@@ -171,3 +171,20 @@ def test_may_drive_is_the_rank_rule_of_every_path_that_drives_a_session():
     assert not may_drive(ref("admin"), PrincipalRef.system()) and may_drive(PrincipalRef.system(), ref("admin"))
     assert may_drive(None, ref("user")) and may_drive(ref("user"), None) and not may_drive(None, ref("admin"))
     assert not may_drive(ref("restricted"), ref("user")) and not may_drive(ref(None, "api_token"), ref("user"))
+
+
+def test_the_own_session_rule_is_offered_only_where_asked_and_never_to_nobody():
+    """Review of #853, N1: a live request may act on a session its own account or token started; a run (a peer message) is never offered it."""
+    from primer.authz import may_drive, same_principal
+    from primer.session.peer_messages import sender_may_message
+
+    ada_then = PrincipalRef(type="user", id="u-ada", display="ada", role="admin", source="local")
+    ada_now = ada_then.model_copy(update={"role": "user"})
+    assert may_drive(ada_now, ada_then, own_session=True) and not may_drive(ada_now, ada_then)
+    assert not sender_may_message(ada_now, ada_then), "a run with an admin's identity at user rank (a trigger-capped one) must not drive it"
+    bob = PrincipalRef(type="user", id="u-bob", display="bob", role="user", source="local")
+    assert not may_drive(bob, ada_then, own_session=True)
+    token = PrincipalRef(type="api_token", id="u-ada", display="ci", role="user", source="internal")
+    assert not same_principal(token, ada_then), "a token is not the account even when the ids collide"
+    assert not same_principal(PrincipalRef.unattributed(), PrincipalRef.unattributed())
+    assert not same_principal(PrincipalRef.system(), PrincipalRef.system()) and not same_principal(None, ada_then)
