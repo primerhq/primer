@@ -254,12 +254,19 @@ def test_a_form_opened_after_the_menus_types_request_failed_fetches_its_fields_a
         open_provider_catalog(page, console_url, cls="web_search")
         card = page.get_by_test_id(f"pk-card:web_search:{provider_id}")
         expect(card).to_be_visible(timeout=15_000)
+
+        page.get_by_test_id("pc-register-open").click()
+        create_overlay = page.get_by_test_id("pc-register")
+        expect(create_overlay.get_by_test_id("provider-form-types-error")).to_be_visible(timeout=15_000)
+        create_overlay.get_by_test_id("provider-form-cancel").click()
+        expect(create_overlay).to_have_count(0)
+
         card.click()
         overlay = page.get_by_test_id("pc-register")
         overlay.wait_for(state="visible", timeout=15_000)
         expect(overlay.get_by_test_id("provider-form-save")).to_be_visible(timeout=15_000)
         expect(overlay.get_by_test_id("provider-form-types-error")).to_have_count(0)
-        assert calls["n"] >= 1
+        assert calls["n"] == 2
     finally:
         page.unroute_all(behavior="ignoreErrors")
         with httpx.Client(base_url=base_url, timeout=30.0) as client:
