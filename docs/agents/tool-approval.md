@@ -74,8 +74,43 @@ becomes inaccessible. To restore it: drop the policy. This includes the
 tools the platform gates by default: over MCP, every create, update and
 delete of an agent, a graph or a trigger (`crud`, and the `system` and
 `trigger` tools such as `system::create_agent`, `trigger::create` and
-the deletes) is refused (`approval_required`) unless the operator
-disables or retunes its gate.
+the deletes), every approval policy write, a `system::create_toolset` or
+`update_toolset` whose body is a Python or stdio MCP toolset, and a
+harness install, sync or uninstall is refused (`approval_required`)
+unless the operator disables or retunes its gate.
+
+### What a fresh install gates
+
+The platform ships gates of its own: one `ToolApprovalPolicy` row per
+tool, written at boot (an upgraded install gets them from a migration),
+each an ordinary row the operator can disable, retune or replace. A
+tool that already has a policy, under any id, keeps it and gets no
+second row.
+
+| Tools | Gate | Why |
+|---|---|---|
+| `crud::create_` / `update_agent`, `_graph`, `_trigger`, and the Python toolset tools | `required` | the builder's platform writes |
+| `system::create_` / `update_` / `delete_agent` and `_graph`; `trigger::create`, `update`, `delete` | `required` | the other doors to the same writes |
+| `system::create_tool_approval_policy`, `update_tool_approval_policy`, `delete_tool_approval_policy` | `required` | a run must not remove or relax the gate that protects a write |
+| `system::create_toolset`, `update_toolset` | `policy` (Rego) | a Python toolset runs its source and a stdio MCP toolset launches a command on the server host |
+| `harness::harness__install`, `harness__sync`, `harness__uninstall` | `required` | they write a bundle's agents, graphs, triggers and toolsets |
+
+The toolset gate reads the body of the call. It lets a call through
+only when `arguments.entity` is exactly an http or sse MCP toolset
+(`provider: "mcp"`, `config.transport: "http"` or `"sse"`) or an
+internal one, and parks every other body: Python, stdio, and any body
+it does not recognise (a provider or transport in another case or
+missing). An update that turns an http toolset into a stdio or Python
+one parks; to gate every toolset write, replace the policy with a
+`required` one.
+
+A gate binds the call whatever the run's role: a run an admin started
+(the seeded operator's main session usually runs at its creator's rank)
+parks like any other. It binds the calls a model makes: an agent, a
+graph node, `system::call_tool` (which meets the inner tool's gate) and
+the MCP endpoint. A person acting directly over the REST API is not
+gated: the routes under `/v1/tool_approval_policies`, `/v1/toolsets` and
+`/v1/harnesses` write at once, as they always have.
 
 ## Mental model
 
@@ -131,9 +166,11 @@ without anyone asking, so it draws only what is declared safe to draw:
 - **The tool declares it.** `make_tool(preview_args=("path", "mode"))` (in memory only, never serialized) lists dotted paths into the arguments; a path allows
   its whole subtree and a list is transparent (`entity.nodes.agent_id` is the `agent_id` of every node). A path that names nothing is an error when the tool is
   built. The tools the platform gates by default (the builder's `crud` toolset: create and update of agents, graphs and triggers, and the Python toolset
-  tools, and the other doors to the same writes: the `system` and `trigger` tools that create, update and delete agents, graphs and triggers) declare the paths that say WHAT is created or changed and leave out the free text: an agent's system prompt, compaction prompt, description and response
-  format, a graph's and a node's description and templates, a trigger's description, a webhook trigger's token and HMAC secret, a Python toolset's source. No
-  description is ever listed: a person pastes a key into a description as easily as into a prompt.
+  tools, and the other doors to the same writes: the `system` and `trigger` tools that create, update and delete agents, graphs and triggers; the approval policy
+  writes, the `system` toolset writes and the harness install, sync and uninstall) declare the paths that say WHAT is created or changed and leave out the free text: an agent's system prompt, compaction prompt, description and response
+  format, a graph's and a node's description and templates, a trigger's description, a webhook trigger's token and HMAC secret, a Python toolset's source, a stdio
+  toolset's command and env, a toolset's URL and headers, a policy's Rego source and judge prompt. No description is ever listed: a person pastes a key into a
+  description as easily as into a prompt.
 - **The operator can override it.** `ToolApprovalPolicy.preview_args` (a list of the same paths) wins over the tool's declaration, and `[]` shows no value. This is the
   only way to cover an MCP tool or a Python tool, whose author declared nothing. Each path must name an argument of the gated tool: the console and the system
   `create_` / `update_tool_approval_policy` tools refuse a path that does not (a typo would hide more than meant, silently), and refuse paths for a tool that is not in
@@ -280,7 +317,10 @@ characters; anything else is a `422`. A respond with no `gate_id` is still accep
 This capability has no MCP tools of its own. Policy CRUD is
 operator-only (REST routes under `/v1/tool_approval_policies` + the
 console UI). Agents don't manage their own approval policies - by
-design.
+design: the `system::create_` / `update_` / `delete_tool_approval_policy`
+tools need the admin role, and even a run an admin started parks on
+each of them for an approval (the shipped gates above), so a model
+cannot remove or relax a gate without a person deciding it.
 
 What an agent *does* see:
 
