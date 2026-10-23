@@ -14,6 +14,8 @@ SETUP_WIZARD = ROOT / "ui" / "components" / "setup-wizard.jsx"
 CHROME = ROOT / "ui" / "components" / "console" / "nv-chrome.jsx"
 KIT = ROOT / "ui" / "components" / "shared" / "platform-kit.jsx"
 SYSTEM = ROOT / "ui" / "components" / "console" / "nv-system.jsx"
+API = (ROOT / "ui" / "foundation" / "api.js").read_text(encoding="utf-8")
+USE_RESOURCE = (ROOT / "ui" / "foundation" / "use-resource.js").read_text(encoding="utf-8")
 
 _PREDICATES = [
     ("llm_provider", "LLM provider responds"),
@@ -351,8 +353,58 @@ def test_a_failed_read_says_so_and_still_offers_check_again(app):
     app.js('ERRORS["nv-sys:setup-state"] = { detail: "upstream down", status: 503 }')
     app.mount("NV_SysSetupCard")
     assert app.text_of("nv-sys-setup-headline") == "Couldn't check setup"
+    assert app.text_of("nv-sys-setup-retry") == "Retry"
     app.click("nv-sys-setup-menu-btn")
     assert app.has("nv-sys-setup-recheck")
+
+
+def test_a_failed_read_uses_the_failed_state_from_the_real_resource(code):
+    """A no-poll resource fails once, so it is errored but never reaches resourceState's three-error stuck threshold."""
+    prelude = (
+        "var window = globalThis;\n"
+        + API
+        + "\nvar document = { hidden: false, addEventListener: function () {} };\n"
+        + "function AbortController() { this.signal = { aborted: false }; this.abort = function () { this.signal.aborted = true; }; }\n"
+        + USE_RESOURCE
+        + r"""
+var CALLS = 0;
+window.primerApi.apiFetch = function (method, path) {
+  if (method === "GET" && path === "/setup/state") {
+    CALLS += 1;
+    return Promise.reject({ status: 503, detail: "upstream down" });
+  }
+  return Promise.resolve({});
+};
+window.primerApi.useCapabilities = function () { return { data: null, loading: true, error: null }; };
+window.primerApi.useEscape = function () {};
+window.confirmDialog = function () { return Promise.resolve(false); };
+var __con = {
+  openMenu: null,
+  toggleMenu: function (name) { __con.openMenu = __con.openMenu === name ? null : name; MR.rerender(); },
+  goView: function () {}, toast: function () {}
+};
+window.NV_useConsole = function () { return __con; };
+function Icon(p) { return React.createElement("span", { "data-icon": p.name }); }
+function Btn(p) { return React.createElement("button", Object.assign({}, p), p.children); }
+var SH_api = {};
+function relativeTime(s) { return String(s); }
+function NV_identity() { return { d: "", color: "" }; }
+"""
+    )
+    ctx = mini_react_context(code, prelude)
+    try:
+        ctx.eval("MR.mount(NV_SysSetupCard, {})")
+        for _ in range(4):
+            ctx.eval("void 0; MR.rerender();")
+        assert ctx.eval('MR.find("nv-sys-setup-headline").children.join("")') == "Couldn't check setup"
+        assert ctx.eval('MR.find("nv-sys-setup-retry").children.join("")') == "Retry"
+        assert ctx.eval("CALLS") == 1
+        ctx.eval('MR.click("nv-sys-setup-retry")')
+        for _ in range(4):
+            ctx.eval("void 0; MR.rerender();")
+        assert ctx.eval("CALLS") == 2
+    finally:
+        ctx.close()
 
 
 def test_the_card_has_the_installed_extras_fold(app):
