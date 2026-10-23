@@ -442,21 +442,27 @@ async def builtin_toolset_providers(provider_registry) -> dict[str, ToolsetProvi
     setup seed route - and both must cover every built-in toolset, so the map
     is built here, once, instead of each caller carrying its own copy. A
     toolset the registry cannot build raises a PrimerError; it is logged with
-    its id and skipped so one missing toolset does not drop the rest.
+    its id and skipped so one missing toolset does not drop the rest. A
+    toolset the install has switched off on purpose (``canvas`` while
+    ``canvas.agent_tools_enabled`` is off, audit G8-02) is left out at INFO:
+    it is not a failure, and the wiki build expects it absent too.
     """
     from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
-    from primer.model.except_ import NotFoundError, PrimerError
+    from primer.model.except_ import PrimerError
 
+    try:
+        off = await provider_registry.toolsets_off_by_design()
+    except PrimerError as err:
+        # An undecodable canvas settings row: nothing is "off by design", so the canvas is tried below and skipped with a WARNING.
+        logger.warning("seed: could not read which built-in toolsets are switched off: %s", err)
+        off = frozenset()
     providers: dict[str, ToolsetProvider] = {}
     for tid in sorted(RESERVED_TOOLSET_IDS):
+        if tid in off:
+            logger.info("seed: the built-in toolset %r is switched off on this install; its tools are not seeded", tid)
+            continue
         try:
             providers[tid] = await provider_registry.get_toolset(tid)
-        except NotFoundError as err:
-            if tid != "canvas":
-                logger.warning("seed: skipping built-in toolset %r: %s", tid, err)
-            else:
-                # Off by design while CanvasSettings.agent_tools_enabled is off (audit G8-02): not a failure worth a warning on every boot.
-                logger.info("seed: the canvas toolset is off (canvas.agent_tools_enabled); its tools are not seeded")
         except PrimerError as err:
             logger.warning("seed: skipping built-in toolset %r: %s", tid, err)
     return providers

@@ -32,6 +32,9 @@ async def test_seed_regenerates_with_every_builtin_toolset(client, fake_storage_
 
 async def test_a_toolset_the_registry_cannot_build_is_skipped(caplog):
     class _Reg:
+        async def toolsets_off_by_design(self):
+            return frozenset()               # nothing switched off on purpose: every reserved id is asked for
+
         async def get_toolset(self, tid):
             if tid == "web":
                 raise NotFoundError("no web")

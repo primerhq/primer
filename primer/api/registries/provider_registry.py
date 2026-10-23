@@ -204,6 +204,22 @@ RESERVED_TOOLSET_IDS: frozenset[str] = frozenset({
     _CANVAS_TOOLSET_ID,
 })
 
+
+
+async def toolsets_off_by_design(storage_provider: "StorageProvider") -> frozenset[str]:
+    """The reserved toolsets this install has switched off on purpose, not through a failure.
+
+    ``canvas`` while ``CanvasSettings.agent_tools_enabled`` is off (audit G8-02: the toolset stays off until the canvas panel ships).
+    ``get_toolset`` answers such an id as unknown; a reader that expects every reserved toolset (the boot wiki build, the seed, the MCP
+    catalogue) leaves these out instead of reporting them missing. Raises what ``read_canvas_settings`` raises for an undecodable row.
+    """
+    from primer.canvas.settings import read_canvas_settings
+
+    if (await read_canvas_settings(storage_provider)).agent_tools_enabled:
+        return frozenset()
+    return frozenset({_CANVAS_TOOLSET_ID})
+
+
 # Toolset ids that are SCOPES of the tool manager, not built-in providers: ``external`` is the invoker-supplied per-invocation
 # tool scope, ``workspace`` / ``workspace_ext`` the workspace-tool scopes, ``client`` the per-turn client tools (a grant scope the
 # manager exempts from the agent's allowlist, and a direct scope of the tool catalog). None of them may exist as a stored Toolset row:
@@ -528,6 +544,10 @@ class ProviderRegistry:
                 self._cross_encoder_cache[provider_id] = adapter
             return adapter
 
+    async def toolsets_off_by_design(self) -> frozenset[str]:
+        """The reserved toolsets this install has switched off on purpose (module :func:`toolsets_off_by_design`)."""
+        return await toolsets_off_by_design(self._sp)
+
     async def get_toolset(self, toolset_id: str) -> ToolsetProvider:
         # Transparently resolve old `_*` ids to new prefix-less ids so
         # agent rows persisted before the rename continue to work.
@@ -601,13 +621,11 @@ class ProviderRegistry:
             self._canvas_toolset_provider is not None
             and toolset_id == _CANVAS_TOOLSET_ID
         ):
-            from primer.canvas.settings import read_canvas_settings
-
-            if (await read_canvas_settings(self._sp)).agent_tools_enabled:
-                return self._canvas_toolset_provider
-            raise NotFoundError(
-                f"Toolset {toolset_id!r} does not exist"
-            )
+            if toolset_id in await self.toolsets_off_by_design():
+                raise NotFoundError(
+                    f"Toolset {toolset_id!r} does not exist"
+                )
+            return self._canvas_toolset_provider
         async with self._lock:
             cached = self._toolset_cache.get(toolset_id)
             if cached is not None:
@@ -904,4 +922,5 @@ __all__ = [
     "RESERVED_TOOLSET_SCOPE_IDS",
     "RESERVED_WORKSPACE_PROVIDER_IDS",
     "canonical_toolset_id",
+    "toolsets_off_by_design",
 ]

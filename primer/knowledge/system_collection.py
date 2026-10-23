@@ -758,7 +758,18 @@ async def _wiki_pass(
         from primer.api.registries.provider_registry import (
             RESERVED_TOOLSET_IDS as required_toolsets,
         )
-    expected_toolsets = set(required_toolsets) | set(toolset_providers or {})
+    # A toolset the install has switched off on purpose (the canvas while
+    # canvas.agent_tools_enabled is off, audit G8-02) is not a skipped one:
+    # the seed leaves it out, so the build must not wait for it (it would
+    # never write the wiki) and its stale pages are pruned like any other.
+    from primer.api.registries.provider_registry import toolsets_off_by_design
+
+    try:
+        off_by_design = await toolsets_off_by_design(storage_provider)
+    except Exception:  # noqa: BLE001 - unreadable settings: expect every toolset, so the build degrades instead of pruning pages
+        logger.warning("system collection: could not read which toolsets are switched off", exc_info=True)
+        off_by_design = frozenset()
+    expected_toolsets = (set(required_toolsets) - off_by_design) | set(toolset_providers or {})
     skipped = sorted(expected_toolsets - {e.toolset_id for e in entries})
     if skipped:
         problems.append("skipped toolset(s): " + ", ".join(skipped))
