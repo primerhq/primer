@@ -44,6 +44,7 @@ from primer.worker.yield_runtime import (
     classify_approval_payload,
     classify_resume_payload,
     ParkedState,
+    stamp_parked_at,
 )
 
 if TYPE_CHECKING:
@@ -870,15 +871,7 @@ def repark_resumed_yield_outcome(pool: "WorkerPool", session, parked, yld):
 
     # Stamp parked_at_iso so the eventual resume hook can compute elapsed
     # without a separate read (mirrors dispatch.py's first-park path).
-    resume_metadata = dict(yielded.resume_metadata)
-    resume_metadata["parked_at_iso"] = now.isoformat()
-    yielded_stamped = type(yielded)(
-        tool_name=yielded.tool_name,
-        event_key=yielded.event_key,
-        timeout=yielded.timeout,
-        resume_metadata=resume_metadata,
-        event_keys=getattr(yielded, "event_keys", None),
-    )
+    yielded_stamped = stamp_parked_at(yielded, now)
 
     new_parked = ParkedState(
         yielded=yielded_stamped,
@@ -946,15 +939,7 @@ def repark_parked_round(pool: "WorkerPool", session, parked, paused):
     yielded = paused.yielded
     now = datetime.now(timezone.utc)
     timeout = yielded.timeout if yielded.timeout is not None else 3600.0
-    resume_metadata = dict(yielded.resume_metadata)
-    resume_metadata["parked_at_iso"] = now.isoformat()
-    yielded_stamped = type(yielded)(
-        tool_name=yielded.tool_name,
-        event_key=yielded.event_key,
-        timeout=yielded.timeout,
-        resume_metadata=resume_metadata,
-        event_keys=getattr(yielded, "event_keys", None),
-    )
+    yielded_stamped = stamp_parked_at(yielded, now)
     frames = list(getattr(paused, "frames", None) or [])
     # The session-level call that waits now: a nested yield's ``tool_call_id`` is the INNER call's raw id, and the outermost frame is keyed by the session's own call.
     waiting_call_id = (frames[0].tool_call_id if frames else None) or paused.tool_call_id

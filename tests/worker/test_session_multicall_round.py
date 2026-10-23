@@ -526,7 +526,7 @@ async def test_a_park_without_the_round_resumes_as_it_did(tmp_path: Path, monkey
     parked = await session.first_turn(_asks_many(_the_round(1)))
     assert parked.park is not None
     for key in ("completed_results", "remaining_calls", "remaining_scoped_call_ids"):
-        parked.park.parked_state.pop(key)
+        parked.park.parked_state.pop(key, None)
 
     outcome = await session.resume(parked, {"decision": "approved"})
 
@@ -534,6 +534,35 @@ async def test_a_park_without_the_round_resumes_as_it_did(tmp_path: Path, monkey
     request = await session.next_request()
     assert _pairing(request) == (["call-a", "call-g", "call-b"], ["call-g"]), "an old park keeps today's behaviour"
     assert _ran(rec) == ["call-a", "call-g"], "the call after the gate is not run for a park that does not name it"
+
+
+_DAMAGED_ROUNDS = [
+    pytest.param({"completed_results": 5, "remaining_calls": 7, "remaining_scoped_call_ids": ["call-b"]}, id="scalars-and-a-list"),
+    pytest.param({"completed_results": "call-a", "remaining_calls": "call-b", "remaining_scoped_call_ids": "call-b"}, id="strings"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("damaged", _DAMAGED_ROUNDS)
+async def test_a_park_whose_round_fields_are_damaged_loads_as_an_old_park_and_answers_the_parked_call(
+    tmp_path: Path, monkeypatch: Any, damaged: dict[str, Any],
+) -> None:
+    """Round fields of the wrong type (a damaged blob) are no round: the park loads as one from before, nothing fails, and the resume answers the parked
+    call alone, as an old park does."""
+    session, rec = await _session(tmp_path, monkeypatch)
+    parked = await session.first_turn(_asks_many(_the_round(1)))
+    assert parked.park is not None
+    parked.park.parked_state.update(damaged)
+
+    loaded = ParkedState.from_jsonable(parked.park.parked_state)
+    assert (loaded.completed_results, loaded.remaining_calls, loaded.remaining_scoped_call_ids) == (None, None, None)
+
+    outcome = await session.resume(parked, {"decision": "approved"})
+
+    assert (outcome.success, outcome.drop_lease, outcome.park) == (True, False, None)
+    request = await session.next_request()
+    assert _pairing(request) == (["call-a", "call-g", "call-b"], ["call-g"])
+    assert _ran(rec) == ["call-a", "call-g"]
 
 
 def test_the_park_record_round_trips_the_round_and_a_record_from_before_has_none() -> None:
@@ -553,6 +582,6 @@ def test_the_park_record_round_trips_the_round_and_a_record_from_before_has_none
     assert {key: blob[key] for key in round_fields} == round_fields
     assert (back.completed_results, back.remaining_calls, back.remaining_scoped_call_ids) == tuple(round_fields.values())
     for key in round_fields:
-        blob.pop(key)
+        blob.pop(key, None)
     old = ParkedState.from_jsonable(blob)
     assert (old.completed_results, old.remaining_calls, old.remaining_scoped_call_ids) == (None, None, None)

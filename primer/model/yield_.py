@@ -466,6 +466,11 @@ class YieldToWorker(Exception):
         self.batch_index: int | None = None
         self.completed_results: list | None = None
         self.remaining_calls: list | None = None
+        # The scoped ids of the TOOL_CALL records of ``remaining_calls`` (raw provider id -> scoped id), when the resume that
+        # raised this knows them: a graph agent node's resume sets them for a pause in the SAME round it was finishing (the
+        # parked call paused again, or a later call of the round asked to wait), so the node's re-park carries them. ``None``
+        # otherwise (a first park, a new round of a continued turn), and the park's stash looks them up.
+        self.remaining_scoped_call_ids: dict | None = None
 
 
 class ToolWaitPark(Exception):

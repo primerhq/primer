@@ -294,20 +294,37 @@ class ParkedState:
                 if data.get("node_tool_call_seq") is not None
                 else None
             ),
-            # Absent in a blob written before the round was carried (ticket 01a15327): None, an empty round.
+            # Absent in a blob written before the round was carried (ticket 01a15327): None, an empty round. A value of the wrong type
+            # (a damaged blob) is None too, so the park loads as one from before; the elements are judged by ParkedState's reader
+            # (``ParkedRound.from_record``), which treats a round it cannot read as empty.
             completed_results=_list_or_none(data.get("completed_results")),
             remaining_calls=_list_or_none(data.get("remaining_calls")),
-            remaining_scoped_call_ids=(
-                dict(data["remaining_scoped_call_ids"])
-                if data.get("remaining_scoped_call_ids") is not None
-                else None
-            ),
+            remaining_scoped_call_ids=_dict_or_none(data.get("remaining_scoped_call_ids")),
         )
 
 
-def _list_or_none(value: "list[Any] | None") -> "list[Any] | None":
-    """A copy of a stored list field, ``None`` kept as ``None`` (a park written before the field existed)."""
-    return list(value) if value is not None else None
+def _list_or_none(value: Any) -> "list[Any] | None":
+    """A copy of a stored list field; ``None`` for a park written before the field existed, and for a value that is not a list (a damaged blob)."""
+    return list(value) if isinstance(value, list) else None
+
+
+def _dict_or_none(value: Any) -> "dict[str, Any] | None":
+    """A copy of a stored mapping field; ``None`` for a park written before the field existed, and for a value that is not a dict (a damaged blob)."""
+    return dict(value) if isinstance(value, dict) else None
+
+
+def stamp_parked_at(yielded: Yielded, parked_at: datetime) -> Yielded:
+    """``yielded`` with ``resume_metadata["parked_at_iso"]`` stamped, as every park writes it: the resume hook computes how long the call waited
+    from it without a separate read. A first park (``primer.session.dispatch``) and the resume re-parks share it."""
+    resume_metadata = dict(yielded.resume_metadata)
+    resume_metadata["parked_at_iso"] = parked_at.isoformat()
+    return type(yielded)(
+        tool_name=yielded.tool_name,
+        event_key=yielded.event_key,
+        timeout=yielded.timeout,
+        resume_metadata=resume_metadata,
+        event_keys=getattr(yielded, "event_keys", None),
+    )
 
 
 # ===========================================================================
@@ -1237,4 +1254,5 @@ __all__ = [
     "merge_pending_dispatch",
     "reply_payloads_equal",
     "resume_call_tool_dispatch",
+    "stamp_parked_at",
 ]

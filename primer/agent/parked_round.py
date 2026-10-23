@@ -36,6 +36,8 @@ logger = logging.getLogger(__name__)
 
 # The answer of a remaining call when the resumed run has no tool manager to run it with (no production resume lacks one).
 _NO_MANAGER_REFUSAL = "not run: the resumed run had no tool manager to run the call with"
+# ... and when its dispatch returned no result for it (the batch answers every call it runs, so this is a defence only).
+_NO_RESULT_REFUSAL = "interrupted: the call returned no result (it may have run)"
 
 
 @dataclass(frozen=True)
@@ -161,7 +163,10 @@ async def finish_round(
                 logger.exception("resume: tool call %r (%s) of the parked round raised; answering it with an error result", call.id, call.name)
                 part = ToolResultPart(id=call.id, output=redact_credentials(str(exc)) or type(exc).__name__, error=True)
             else:
-                part = next(p for message in messages for p in message.parts if isinstance(p, ToolResultPart))
+                part = next(
+                    (p for message in messages for p in message.parts if isinstance(p, ToolResultPart)),
+                    ToolResultPart(id=call.id, output=_NO_RESULT_REFUSAL, error=True),
+                )
         for action in actions:
             yield ExtendedEvent(extended=action)
         yield _result_event(part)
