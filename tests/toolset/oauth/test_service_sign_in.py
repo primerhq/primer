@@ -22,7 +22,7 @@ import respx
 from primer.common.secret_box import SecretBox
 from primer.model.common import dump_for_storage
 from primer.model.except_ import BadRequestError, ConfigError
-from primer.model.mcp_oauth import McpOAuthPendingSignIn
+from primer.model.mcp_oauth import McpOAuthClient, McpOAuthPendingSignIn
 from primer.model.provider import Toolset
 from primer.toolset.oauth.service import (
     EXPIRED_NO_REFRESH,
@@ -521,6 +521,52 @@ async def test_forget_removes_everything_of_one_toolset(svc, kb, store):
     await svc.forget("kb")
     assert await store.get_tokens("kb") is None and await store.get_client("kb") is None
     assert await store.purge_pending("kb", now=NOW + timedelta(days=1)) == 0
+
+
+# ---- the shapes the deleted tests pinned (audit G4-18) ---------------------------------------------------------------------------------------------------------------------
+
+
+async def test_a_legacy_server_signs_in_and_refreshes_without_a_resource(svc, kb, target, store, mock_oauth_mcp):
+    """A server of the 2025-03-26 shape publishes no protected-resource metadata: its authorization server is its own origin and the authorize, code
+    and refresh requests carry no ``resource`` (the mock refuses any that does)."""
+    mock_oauth_mcp.state.legacy_metadata = True
+    start = await svc.start_sign_in(target, redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
+    assert "resource" not in parse_qs(urlsplit(start.authorize_url).query)
+    back = authorize(start.authorize_url)
+    status = await svc.complete_sign_in(kb, toolset_id="kb", state=back["state"], code=back["code"], error=None, browser_binding=BINDING)
+    assert status.state == "connected"
+    row = await store.get_tokens("kb")
+    assert (row.issuer, row.resource) == (mock_oauth_mcp.base_url, None)
+    old = store.unseal(row.access_token_enc)
+    new = await svc.refresh_after_401(target, rejected=old, www_authenticate=None)
+    assert new != old and mcp_answers(mock_oauth_mcp.mcp_url, new) == 200
+    grants = [request["grant_type"] for request in mock_oauth_mcp.state.token_requests]
+    assert grants == ["authorization_code", "refresh_token"]
+    assert all("resource" not in request for request in mock_oauth_mcp.state.token_requests)
+
+
+async def test_a_registration_that_issues_a_secret_is_sealed_and_used(svc, kb, target, store, mock_oauth_mcp, fake_storage_provider):
+    """Some servers answer a dynamic registration with a client secret: it is stored sealed, and the code exchange, the refresh and the revocation
+    authenticate with it (the mock refuses that client without it)."""
+    mock_oauth_mcp.state.register_confidential = True
+    assert (await connect(svc, kb)).state == "connected"
+    registered = await store.get_client("kb")
+    secret = store.unseal(registered.client_secret_enc)
+    assert secret and secret.startswith("dcr-secret-")
+    stored = json.dumps(dump_for_storage(await fake_storage_provider.get_storage(McpOAuthClient).get("kb")), default=str)
+    assert secret not in stored, "the client secret is stored sealed"
+    row = await store.get_tokens("kb")
+    assert (row.client_source, row.token_endpoint_auth_method) == ("registered", "client_secret_basic")
+
+    old = store.unseal(row.access_token_enc)
+    new = await svc.refresh_after_401(target, rejected=old, www_authenticate=None)
+    assert new != old, "the refresh authenticated with the registered secret"
+    assert [request["grant_type"] for request in mock_oauth_mcp.state.token_requests] == ["authorization_code", "refresh_token"]
+    assert all("client_secret" not in request for request in mock_oauth_mcp.state.token_requests), "Basic, not the form"
+
+    refresh = store.unseal((await store.get_tokens("kb")).refresh_token_enc)
+    await svc.disconnect(kb)
+    assert mock_oauth_mcp.state.revocations == [refresh], "the revocation authenticated with the registered secret"
 
 
 # ---- status --------------------------------------------------------------------------------------------------------------------------------------------------------------

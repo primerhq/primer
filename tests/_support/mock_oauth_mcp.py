@@ -90,7 +90,8 @@ class _Books:
         self.codes: dict[str, _Code] = {}
         self.access: dict[str, _Access] = {}
         self.refresh: dict[str, _Refresh] = {}
-        self.clients: dict[str, list[str]] = {}          # registered (public) clients: client_id -> redirect URIs
+        self.clients: dict[str, list[str]] = {}          # registered clients: client_id -> redirect URIs
+        self.client_secrets: dict[str, str] = {}         # the registered clients that were issued a secret: client_id -> secret
 
 
 @dataclass
@@ -107,6 +108,11 @@ class MockOAuthState:
         ``deny_next_authorize``: the next valid authorization request is declined with ``access_denied``; the flag is then reset.
         ``reject_bearer_tokens``: ``/mcp`` answers every bearer token with the 401 challenge, a live one too (a resource server that will not take
         what its authorization server issues: another audience, a consent revoked on the resource side). The token endpoint is untouched.
+        ``legacy_metadata``: the 2025-03-26 shape. No protected-resource metadata (those documents answer 404 and the 401 challenge names none), the
+        authorization-server metadata is at the root of the origin with the origin as its issuer, and an authorization or token request that carries
+        a ``resource`` is refused: on this path a client must send none.
+        ``register_confidential``: a registration answers a client secret (``client_secret_basic``) although the client asked for a public client,
+        as some servers do; that client must then authenticate with it at the token and revocation endpoints.
         ``static_clients``: pre-registered clients, id to secret. An empty secret makes the client public.
 
     Records
@@ -123,6 +129,8 @@ class MockOAuthState:
     token_delay_s: float = 0.0
     deny_next_authorize: bool = False
     reject_bearer_tokens: bool = False
+    legacy_metadata: bool = False
+    register_confidential: bool = False
     static_clients: dict[str, str] = field(default_factory=lambda: {"cc-client": "cc-secret", "pre-client": "pre-secret"})
 
     token_requests: list[dict[str, str]] = field(default_factory=list)
@@ -216,17 +224,29 @@ def build_mock_oauth_mcp_app(state: MockOAuthState, *, base_url: str) -> Starlet
     base = base_url.rstrip("/")
     mcp_url = base + "/mcp"
     issuer = base + "/as"
-    challenge = f'Bearer resource_metadata="{base}/.well-known/oauth-protected-resource/mcp", scope="{_SCOPE}"'
+    modern_challenge = f'Bearer resource_metadata="{base}/.well-known/oauth-protected-resource/mcp", scope="{_SCOPE}"'
+    legacy_challenge = f'Bearer scope="{_SCOPE}"'
     books = state._books
 
     # ---- metadata ---------------------------------------------------------------------------------------------------------------------------------------------------------
 
     async def protected_resource(_request: Request) -> Response:
+        if state.legacy_metadata:
+            return JSONResponse({"error": "not_found"}, status_code=404)
         return JSONResponse({"resource": mcp_url, "authorization_servers": [issuer], "scopes_supported": [_SCOPE]})
 
     async def authorization_server(_request: Request) -> Response:
-        return JSONResponse({
-            "issuer": issuer,
+        return JSONResponse(as_metadata(issuer))
+
+    async def legacy_authorization_server(_request: Request) -> Response:
+        """The root document: only in the legacy shape, where the authorization server is the MCP server's own origin."""
+        if not state.legacy_metadata:
+            return JSONResponse({"error": "not_found"}, status_code=404)
+        return JSONResponse(as_metadata(base))
+
+    def as_metadata(named_issuer: str) -> dict[str, Any]:
+        return {
+            "issuer": named_issuer,
             "authorization_endpoint": issuer + "/authorize",
             "token_endpoint": issuer + "/token",
             "registration_endpoint": issuer + "/register",
@@ -235,7 +255,7 @@ def build_mock_oauth_mcp_app(state: MockOAuthState, *, base_url: str) -> Starlet
             "code_challenge_methods_supported": ["S256"],
             "token_endpoint_auth_methods_supported": ["none", "client_secret_basic", "client_secret_post"],
             "grant_types_supported": ["authorization_code", "refresh_token", "client_credentials"],
-        })
+        }
 
     async def not_found(_request: Request) -> Response:
         return JSONResponse({"error": "not_found"}, status_code=404)
@@ -255,14 +275,15 @@ def build_mock_oauth_mcp_app(state: MockOAuthState, *, base_url: str) -> Starlet
         if body.get("token_endpoint_auth_method", "none") != "none":
             return _error(400, "invalid_client_metadata", "this server registers public clients only (token_endpoint_auth_method none)")
         client_id = "dcr-" + secrets.token_hex(8)
+        answer: dict[str, Any] = {**body, "client_id": client_id, "client_id_issued_at": int(time.time()), "token_endpoint_auth_method": "none"}
         with books.lock:
             books.clients[client_id] = list(uris)
             state.registrations.append(body)
-        return JSONResponse(
-            {**body, "client_id": client_id, "client_id_issued_at": int(time.time()), "token_endpoint_auth_method": "none"},
-            status_code=201,
-            headers={"Cache-Control": "no-store"},
-        )
+            if state.register_confidential:
+                secret = "dcr-secret-" + secrets.token_hex(12)
+                books.client_secrets[client_id] = secret
+                answer.update(client_secret=secret, client_secret_expires_at=0, token_endpoint_auth_method="client_secret_basic")
+        return JSONResponse(answer, status_code=201, headers={"Cache-Control": "no-store"})
 
     # ---- authorization endpoint -------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -291,7 +312,10 @@ def build_mock_oauth_mcp_app(state: MockOAuthState, *, base_url: str) -> Starlet
         client_state = q.get("state", "")
         if not client_state:
             return _error(400, "invalid_request", "state is required")
-        if q.get("resource") != mcp_url:
+        if state.legacy_metadata:
+            if "resource" in q:
+                return _error(400, "invalid_request", "this server publishes no protected-resource metadata, so a resource is not expected")
+        elif q.get("resource") != mcp_url:
             return _error(400, "invalid_request", f"resource must be {mcp_url}")
         with books.lock:                                # check and reset together: "the next" request is one request, even when two arrive at once
             deny = state.deny_next_authorize
@@ -334,6 +358,11 @@ def build_mock_oauth_mcp_app(state: MockOAuthState, *, base_url: str) -> Starlet
             return _Client(client_id, static=True)
         with books.lock:
             known = client_id in books.clients
+            issued = books.client_secrets.get(client_id)
+        if known and issued is not None:
+            if not any(_same(issued, candidate) for candidate in supplied):
+                return _invalid_client("the registered client's secret is missing or wrong")
+            return _Client(client_id, static=False)
         if known and not supplied:
             return _Client(client_id, static=False)
         return _invalid_client("unknown client, or a public client that sent a secret")
@@ -369,6 +398,8 @@ def build_mock_oauth_mcp_app(state: MockOAuthState, *, base_url: str) -> Starlet
         if isinstance(client, JSONResponse):
             return client
         resource = form.get("resource")
+        if state.legacy_metadata and resource is not None:
+            return _error(400, "invalid_target", "this server publishes no protected-resource metadata, so a resource is not expected")
         if resource is not None and resource != mcp_url:
             return _error(400, "invalid_target", f"resource must be {mcp_url}")
         grant = form.get("grant_type")
@@ -469,7 +500,7 @@ def build_mock_oauth_mcp_app(state: MockOAuthState, *, base_url: str) -> Starlet
                 refusal = JSONResponse(
                     {"error": "invalid_token", "error_description": "a valid access token is required"},
                     status_code=401,
-                    headers={"WWW-Authenticate": challenge},
+                    headers={"WWW-Authenticate": legacy_challenge if state.legacy_metadata else modern_challenge},
                 )
                 await refusal(scope, receive, send)
                 return
@@ -492,7 +523,7 @@ def build_mock_oauth_mcp_app(state: MockOAuthState, *, base_url: str) -> Starlet
             Route("/.well-known/oauth-protected-resource/mcp", protected_resource),
             Route("/.well-known/oauth-authorization-server/as", authorization_server),
             Route("/.well-known/oauth-protected-resource", not_found),
-            Route("/.well-known/oauth-authorization-server", not_found),
+            Route("/.well-known/oauth-authorization-server", legacy_authorization_server),
             Route("/.well-known/openid-configuration", not_found),
             Route("/as/register", register_client, methods=["POST"]),
             Route("/as/authorize", authorize, methods=["GET"]),
