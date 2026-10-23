@@ -125,6 +125,7 @@ async def agent_status(
     llm_providers=Depends(get_llm_provider_storage),
     toolsets=Depends(get_toolset_storage),
     model_profiles=Depends(get_model_profile_storage),
+    storage_provider=Depends(get_storage_provider),
 ) -> dict:
     """Returns ``{"ok": bool, "issues": [...], "warnings": [...]}``.
 
@@ -201,7 +202,9 @@ async def agent_status(
     # workspaces / misc / web / harness ..., including their retired
     # underscore-prefixed ids) has no Toolset row and is skipped; any
     # other must have one.
-    for ts_id in await missing_toolset_ids(agent.tools, toolsets=toolsets):
+    for ts_id in await missing_toolset_ids(
+        agent.tools, toolsets=toolsets, storage_provider=storage_provider,
+    ):
         issues.append(
             f"Toolset {ts_id!r} referenced by tools does not exist"
         )

@@ -21,7 +21,10 @@ from tests.api.conftest import _FakeStorageProvider
 
 @pytest.mark.asyncio
 async def test_the_lifespan_builds_the_subsystem_with_every_builtin_toolset(monkeypatch: pytest.MonkeyPatch) -> None:
+    from primer.model.canvas import CANVAS_SETTINGS_ID, CanvasSettings
+
     storage = _FakeStorageProvider()
+    await storage.get_storage(CanvasSettings).create(CanvasSettings(id=CANVAS_SETTINGS_ID, agent_tools_enabled=True))
     await storage.get_storage(InternalCollectionsConfig).create(InternalCollectionsConfig(
         id=INTERNAL_COLLECTIONS_CONFIG_ID, embedding_provider_id="emb", embedding_model="m", search_provider_id="ssp",
     ))

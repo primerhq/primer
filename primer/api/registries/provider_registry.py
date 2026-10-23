@@ -596,12 +596,18 @@ class ProviderRegistry:
             and toolset_id == _CRUD_TOOLSET_ID
         ):
             return self._crud_toolset_provider
-        # Reserved id `canvas` resolves to the always-on session-canvas toolset built at app startup (pivot P5).
+        # Reserved id `canvas` resolves to the session-canvas toolset built at app startup (pivot P5) when canvas.agent_tools_enabled is on.
         if (
             self._canvas_toolset_provider is not None
             and toolset_id == _CANVAS_TOOLSET_ID
         ):
-            return self._canvas_toolset_provider
+            from primer.canvas.settings import read_canvas_settings
+
+            if (await read_canvas_settings(self._sp)).agent_tools_enabled:
+                return self._canvas_toolset_provider
+            raise NotFoundError(
+                f"Toolset {toolset_id!r} does not exist"
+            )
         async with self._lock:
             cached = self._toolset_cache.get(toolset_id)
             if cached is not None:
