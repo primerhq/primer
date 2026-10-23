@@ -120,7 +120,9 @@ def test_the_platform_card_opens_from_a_button_inside_the_card() -> None:
     assert 'type="button"' in tag, tag
     assert "tabIndex" not in tag, f"the Open button is out of the tab order:\n{tag}"
     assert "onClick={function () { props.onOpen(); }}" in tag, f"the Open button does not open the card:\n{tag}"
-    assert 'aria-label={"Open " + props.title}' in tag, f"the Open button is not named after the card:\n{tag}"
+    # named after the card: its label when it has one (a tool's scoped id, audit G1-21), else its title
+    assert 'aria-label={"Open " + name}' in tag, f"the Open button is not named after the card:\n{tag}"
+    assert "var name = props.label || props.title;" in src, "the card's name falls back to its title"
     assert "title={props.title}" in tag, f"the stretched Open covers the title, so the full name rides on the button:\n{tag}"
     assert "Open" in _inner_text(src, start), "the button has no words a screen reader could read"
 
