@@ -305,3 +305,83 @@ async def test_concurrent_creations_yield_one_main_session(sqlite_sp) -> None:
     rows = await _sessions(sqlite_sp)
     assert [r.id for r in rows] == ["sess-prime-main-1"]
     assert rows[0].initiated_by == caller
+
+
+# ---- the caller is its principal type and id (lead ruling 4 of the G7 fixes, audit G7-12) ------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change",
+    [
+        pytest.param({"display": "ada lovelace"}, id="a new display name"),
+        pytest.param({"source": "okta"}, id="an SSO login instead of a password"),
+        pytest.param({"role": "admin"}, id="a promotion"),
+    ],
+)
+async def test_the_same_person_keeps_their_main_session_whatever_else_changed(prime_sp, change) -> None:
+    """The lookup used to compare the whole PrincipalRef, so any of these handed the same person a second main session."""
+    from primer.bootstrap.prime import ensure_main_operator_session
+
+    first, _ = await ensure_main_operator_session(prime_sp, workspace_id="prime", initiated_by=_principal("ada"))
+
+    again, created = await ensure_main_operator_session(
+        prime_sp, workspace_id="prime", initiated_by=_principal("ada").model_copy(update=change),
+    )
+
+    assert created is False and again.id == first.id
+    assert [r.id for r in await _sessions(prime_sp)] == [first.id]
+
+
+@pytest.mark.asyncio
+async def test_an_api_token_of_the_same_person_is_its_own_principal(prime_sp) -> None:
+    from primer.bootstrap.prime import ensure_main_operator_session
+
+    first, _ = await ensure_main_operator_session(prime_sp, workspace_id="prime", initiated_by=_principal("ada"))
+    token = PrincipalRef(type="api_token", id="user-ada", display="ci", role="user", source="internal")
+
+    row, created = await ensure_main_operator_session(prime_sp, workspace_id="prime", initiated_by=token)
+
+    assert created is True and row.id != first.id and row.initiated_by == token
+
+
+@pytest.mark.asyncio
+async def test_a_demoted_admin_is_not_handed_the_admin_session_they_can_no_longer_drive(prime_sp) -> None:
+    """Its recorded rank is admin, so the person's own steer would be refused (lead ruling 2): they get a new main session at their rank."""
+    from primer.bootstrap.prime import ensure_main_operator_session
+
+    admin_main, _ = await ensure_main_operator_session(prime_sp, workspace_id="prime", initiated_by=_principal("ada", "admin"))
+
+    row, created = await ensure_main_operator_session(prime_sp, workspace_id="prime", initiated_by=_principal("ada", "user"))
+
+    assert created is True and row.id != admin_main.id and row.initiated_by.role == "user"
+
+
+@pytest.mark.asyncio
+async def test_the_lookup_is_one_query_filtered_in_storage(prime_sp, monkeypatch) -> None:
+    """Never a scan of the workspace's sessions: the caller's session is found by one ``find`` whose predicate names the workspace, the
+    principal's id, the operator binding and the status, however many other sessions the workspace holds."""
+    from primer.bootstrap.prime import ensure_main_operator_session
+
+    caller = _principal("ada")
+    for i in range(250):
+        await _session(prime_sp, name=f"other {i}", by=_principal(f"u{i}"))
+    mine = await _session(prime_sp, name="mine", by=caller)
+    finds: list = []
+    sessions = prime_sp.get_storage(WorkspaceSession)
+    real_find = sessions.find
+
+    async def _find(predicate, page, **kw):
+        finds.append((predicate, page))
+        return await real_find(predicate, page, **kw)
+
+    monkeypatch.setattr(sessions, "find", _find)
+
+    row, created = await ensure_main_operator_session(prime_sp, workspace_id="prime", initiated_by=caller)
+
+    assert created is False and row.id == mine.id
+    (predicate, page), = finds
+    named = predicate.model_dump_json()
+    for field in ("workspace_id", "initiated_by.id", "binding.agent_id", "status"):
+        assert f'"{field}"' in named, field
+    assert page.offset == 0
