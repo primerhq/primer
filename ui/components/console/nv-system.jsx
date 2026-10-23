@@ -373,6 +373,8 @@ function NV_SysSetupCard() {
     }
   );
   var setupResourceState = window.primerApi.resourceState(setupState);
+  var setupUnavailable = !!(setupState.error && setupState.data == null)
+    || setupResourceState === "stuck";
   var caps = window.primerApi.useCapabilities();
   var capRows = NV_capabilityRows(caps);
   var busyState = React.useState(null);
@@ -443,21 +445,21 @@ function NV_SysSetupCard() {
     ? "Re-running seed…"
     : busy === "reset"
     ? "Resetting default agents…"
-    : setupResourceState === "stuck"
+    : setupUnavailable
     ? "Couldn't check setup"
     : setupResourceState === "loading"
     ? "Checking setup…"
     : cardView.headline;
 
-  var tone = (busy || setupResourceState === "loading")
+  var tone = (busy || (setupResourceState === "loading" && !setupUnavailable))
     ? ""
-    : setupResourceState === "stuck"
+    : setupUnavailable
     ? "error"
     : cardView.tone;
 
-  var dotColor = (busy || setupResourceState === "loading")
+  var dotColor = (busy || (setupResourceState === "loading" && !setupUnavailable))
     ? "var(--text-4)"
-    : (setupResourceState === "stuck" || cardView.tone === "error")
+    : (setupUnavailable || cardView.tone === "error")
     ? "var(--red)"
     : "var(--green)";
 
@@ -527,6 +529,13 @@ function NV_SysSetupCard() {
           )}
         </div>
       </div>
+
+      {setupUnavailable ? (
+        <button type="button" className="nv-btn-secondary"
+          data-testid="nv-sys-setup-retry" onClick={recheck}>
+          Retry
+        </button>
+      ) : null}
 
       {cardView.failing.length > 0 && (
         <div className="nv-sys-setup-list">
