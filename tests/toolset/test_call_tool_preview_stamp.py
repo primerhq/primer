@@ -3,10 +3,10 @@
 ``system::call_tool`` runs any tool of any toolset by id. Two parks involve it:
 
 1. A policy on the INNER tool: the handler parks for approval itself, with the INNER call as ``original_call`` (name and arguments) and ``via_call_tool``. The card
-   must filter those arguments by the INNER tool's list, so the handler looks the inner tool up (the registry, under a clock) and resolves the stamp like the agent loop does
-   (policy list, else the tool's declaration, else the closed-set default). An inner tool that cannot be found has no descriptor to take a schema from: every argument is
-   withheld, and the stamp says ``default`` with no paths. An inner TOOLSET that cannot be found is refused ``not-found`` before the gate (pivot P1: the handler resolves
-   the provider first, to check the inner tool's role), so it never parks.
+   must filter those arguments by the INNER tool's list, so the stamp is resolved like the agent loop does (policy list, else the tool's declaration, else the
+   closed-set default) from the descriptor the handler's lookup listed. An inner TOOLSET that cannot be found is refused ``not-found`` before the gate (pivot P1: the
+   handler resolves the provider first, to check the inner tool's role), and so is an inner TOOL the toolset does not list, while a toolset that fails to list is a
+   ``provider-error`` (audit G6-8: the lookup comes before the role check and the gate), so none of them parks.
 2. A policy on ``call_tool`` itself, gated by the tool manager: its arguments are ``{toolset_id, tool_name, arguments}``. Its own declaration shows the first
    two; the inner ``arguments`` are shown by the inner tool's paths (``arguments.<path>``) when the manager holds the inner descriptor, and withheld otherwise. An operator's
    list on the ``call_tool`` policy is taken as it is.
@@ -116,19 +116,28 @@ async def test_the_operators_list_on_the_inner_policy_wins() -> None:
     assert meta["preview"] == {"paths": ["note"], "source": "policy"}
 
 
+async def _refused_before_the_gate(providers: dict[str, _Provider], policy: ToolApprovalPolicy) -> dict:
+    _, (_, handler) = _call_tool_tool(_Registry(providers), _Resolver(policy))  # type: ignore[arg-type]
+    ctx = ToolContext(tool_call_id="call-1", session_id="sess-1", workspace_id="ws-1", chat_id=None)
+    result = await handler({"toolset_id": policy.toolset_id, "tool_name": policy.tool_name, "arguments": ARGS}, ctx=ctx)
+    assert result.is_error
+    return json.loads(result.output)
+
+
+# Audit G6-8: the handler looks the inner tool up in its toolset's listing BEFORE the role check and the gate. These two used to park a card with
+# every argument withheld (the descriptor could not be found); a tool that is not listed cannot run, so there is no call to approve.
 @pytest.mark.asyncio
-async def test_an_inner_tool_the_toolset_does_not_list_has_every_argument_withheld() -> None:
-    meta = await _park_inner({"pv": _Provider(_inner("other"))}, _policy("pv", "inner"))
+async def test_an_inner_tool_the_toolset_does_not_list_is_refused_before_the_gate_and_draws_no_card() -> None:
+    body = await _refused_before_the_gate({"pv": _Provider(_inner("other"))}, _policy("pv", "inner"))
 
-    assert meta["preview"] == {"paths": [], "source": "default"}
+    assert body["type"] == "not-found" and "'inner'" in body["message"] and "other" in body["message"], body
 
 
 @pytest.mark.asyncio
-async def test_a_toolset_that_fails_to_list_has_every_argument_withheld_and_the_park_still_happens() -> None:
-    meta = await _park_inner({"pv": _Provider(fail=True)}, _policy("pv", "inner"))
+async def test_a_toolset_that_fails_to_list_is_refused_before_the_gate_and_draws_no_card() -> None:
+    body = await _refused_before_the_gate({"pv": _Provider(fail=True)}, _policy("pv", "inner"))
 
-    assert meta["preview"] == {"paths": [], "source": "default"}
-    assert meta["policy_id"] == "p-1"
+    assert body == {"type": "provider-error", "message": "toolset 'pv' could not list its tools: RuntimeError: unreachable"}
 
 
 @pytest.mark.asyncio

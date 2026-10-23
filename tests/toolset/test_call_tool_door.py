@@ -23,14 +23,15 @@ from primer.agent.tool_manager import ToolExecutionManager
 from primer.api.registries import ProviderRegistry
 from primer.model.chat import Tool, ToolCallPart
 from primer.model.common import dump_for_storage
+from primer.model.except_ import ProviderError
+from primer.model.mcp_oauth import McpSignInRequiredError
 from primer.model.principal import PrincipalRef
 from primer.model.tool_approval import ToolApprovalPolicy
 from primer.model.yield_ import ToolContext, YieldToWorker
 from primer.toolset.system import build_system_toolset
 from tests.agent.test_inner_dispatch import ADMIN, USER, _Recorder, _Session
 
-# Re-export so pytest resolves the in-memory storage and the real provider registry the neighbouring call_tool tests use.
-from tests.toolset.test_system import _llm, _required_policy, pr, sp  # noqa: F401
+from tests.toolset.test_system import _llm, _required_policy
 
 
 class _ListRecorder(_Recorder):
@@ -63,12 +64,33 @@ class _Registry:
 
 
 @pytest.fixture
+def sp(fake_storage_provider):
+    """The conftest's in-memory storage, whose ``find`` honours the predicate (audit G6-12).
+
+    The neighbouring ``tests/toolset/test_system.py`` fake answers every ``find`` with every row, so a gate lookup under the WRONG
+    ``(toolset_id, tool_name)`` still found the policy there and a test of the key could not fail.
+    """
+    return fake_storage_provider
+
+
+@pytest.fixture
+def pr(sp) -> ProviderRegistry:
+    return ProviderRegistry(
+        sp,  # type: ignore[arg-type]
+        llm_factory=lambda p: object(),  # type: ignore[arg-type,return-value]
+        embedder_factory=lambda p: object(),  # type: ignore[arg-type,return-value]
+        cross_encoder_factory=lambda p: object(),  # type: ignore[arg-type,return-value]
+        toolset_factory=lambda p: object(),  # type: ignore[arg-type,return-value]
+    )
+
+
+@pytest.fixture
 def recorder() -> _ListRecorder:
     return _ListRecorder({"user_x": "user", "admin_x": "admin"})
 
 
 @pytest.fixture
-def system_toolset(sp, pr: ProviderRegistry, recorder: _ListRecorder):  # noqa: F811 - the re-exported fixtures
+def system_toolset(sp, pr: ProviderRegistry, recorder: _ListRecorder):
     provider = build_system_toolset(
         storage_provider=sp,  # type: ignore[arg-type]
         provider_registry=_Registry(pr, {"rec": recorder}),  # type: ignore[arg-type]
@@ -179,7 +201,7 @@ async def test_a_nested_call_tool_cannot_launder_the_role(system_toolset, record
     assert recorder.calls == []
 
 
-async def test_the_role_is_checked_before_the_approval_gate(system_toolset, sp):  # noqa: F811
+async def test_the_role_is_checked_before_the_approval_gate(system_toolset, sp):
     await sp.get_storage(ToolApprovalPolicy).create(_required_policy("system", "get_llm_provider"))
     r = await system_toolset.call(tool_name="call_tool", ctx=_ctx(USER), arguments={
         "toolset_id": "system", "tool_name": "get_llm_provider", "arguments": {"id": "x"}})
@@ -269,14 +291,151 @@ async def test_the_inner_tool_receives_the_callers_context(system_toolset, recor
     assert recorder.calls[-1][3] is ctx
 
 
-async def test_the_approval_park_names_the_inner_toolset_and_tool(system_toolset, sp):  # noqa: F811
+async def test_the_approval_park_names_the_inner_toolset_and_tool(system_toolset, sp):
     await sp.get_storage(ToolApprovalPolicy).create(_required_policy("rec", "user_x"))
     with pytest.raises(YieldToWorker) as exc:
         await system_toolset.call(tool_name="call_tool", ctx=_ctx(USER), arguments={"toolset_id": "rec", "tool_name": "user_x", "arguments": {}})
     assert exc.value.yielded.resume_metadata["via_call_tool"] == {"toolset_id": "rec", "tool_name": "user_x"}
 
 
-async def test_an_unknown_toolset_is_not_found_before_the_role_check_or_the_gate(system_toolset, sp):  # noqa: F811
+async def test_an_unknown_toolset_is_not_found_before_the_role_check_or_the_gate(system_toolset, sp):
     await sp.get_storage(ToolApprovalPolicy).create(_required_policy("nope", "x"))
     r = await system_toolset.call(tool_name="call_tool", ctx=_ctx(USER), arguments={"toolset_id": "nope", "tool_name": "x", "arguments": {}})
     assert r.is_error and json.loads(r.output)["type"] == "not-found"
+
+
+async def test_the_gate_reads_the_inner_tools_own_key_and_no_other(system_toolset, sp, recorder):
+    """The gate is looked up under the INNER ``(toolset_id, tool_name)``. On a storage whose ``find`` honours the predicate (audit G6-12), a policy
+    on another tool of the same toolset, or on ``call_tool`` itself (the tool manager's gate on the OUTER call, not this handler's), leaves the
+    inner call ungated: the suite's old fake returned every row for every lookup, so a lookup under the wrong key passed there."""
+    store = sp.get_storage(ToolApprovalPolicy)
+    await store.create(_required_policy("rec", "admin_x"))
+    await store.create(_required_policy("system", "call_tool").model_copy(update={"id": "tap-outer"}))
+    r = await system_toolset.call(tool_name="call_tool", ctx=_ctx(USER), arguments={"toolset_id": "rec", "tool_name": "user_x", "arguments": {}})
+    assert not r.is_error, r.output
+    assert [name for name, *_ in recorder.calls] == ["user_x"]
+
+
+# ---- the gate's context: the run's agent (audit G6-7) ---------------------------------------------------------------------------------------------------
+
+_BUILDER_ONLY = (
+    "package primer.tool_approval\n"
+    "default required := false\n"
+    'required if input.agent_id == "agent-builder"\n'
+)
+
+
+def _manager_for(agent_id: str, system_toolset, recorder, sp) -> ToolExecutionManager:  # noqa: ANN001 - fixtures
+    from primer.agent.approval import ApprovalResolver
+
+    return ToolExecutionManager.for_workspace(
+        toolset_providers={"system": system_toolset, "rec": recorder},
+        session=_Session("s-1", "ws-1", agent_id=agent_id),
+        approval_resolver=ApprovalResolver(storage=sp.get_storage(ToolApprovalPolicy)),
+        tools=["system__call_tool", "rec__user_x"],
+        initiated_by=USER,
+    )
+
+
+@pytest.mark.parametrize("name, arguments", [
+    ("rec__user_x", {}),
+    ("system__call_tool", {"toolset_id": "rec", "tool_name": "user_x", "arguments": {}}),
+], ids=["direct", "through-call-tool"])
+async def test_a_policy_on_the_runs_agent_gates_the_call_whatever_the_door(system_toolset, recorder, sp, name, arguments):
+    """A Rego (or LLM judge) policy that reads ``input.agent_id`` sees the run's agent through ``call_tool`` as it does on a direct call: the manager
+    puts the bound session's agent on the context (``ToolContext.agent_id``) and the door hands it to the gate. It used to hand ``None``, so a policy
+    that gates one agent's calls gated its direct call and let the same call through the door, every seeded agent's only route."""
+    from primer.model.tool_approval import PolicyApprovalConfig
+
+    await sp.get_storage(ToolApprovalPolicy).create(ToolApprovalPolicy(
+        id="p-builder", toolset_id="rec", tool_name="user_x", approval=PolicyApprovalConfig(policy=_BUILDER_ONLY),
+    ))
+    with pytest.raises(YieldToWorker) as parked:
+        await _manager_for("agent-builder", system_toolset, recorder, sp).execute(ToolCallPart(id="c1", name=name, arguments=arguments))
+    assert parked.value.yielded.resume_metadata["policy_id"] == "p-builder"
+    assert recorder.calls == []
+
+    part = await _manager_for("agent-planner", system_toolset, recorder, sp).execute(ToolCallPart(id="c2", name=name, arguments=arguments))
+    assert part.error is False, part.output
+    assert [call_name for call_name, *_ in recorder.calls] == ["user_x"], "another agent's call is not gated"
+
+
+def test_the_context_carries_the_bound_sessions_agent():
+    mgr = ToolExecutionManager.for_workspace(toolset_providers={}, session=_Session("s-1", "ws-1", agent_id="agent-builder"), initiated_by=USER)
+    ctx = mgr.context_for("c1")
+    assert ctx is not None and ctx.agent_id == "agent-builder"
+    bare = ToolExecutionManager(toolset_providers={}, initiated_by=USER)
+    assert bare.context_for("c1") is None
+
+
+# ---- the inner tool is looked up in its toolset's listing first (audit G6-8) ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("principal_ref", [USER, ADMIN], ids=["user", "admin"])
+async def test_an_unknown_tool_is_not_found_whoever_runs_it(system_toolset, principal_ref):
+    """A tool the toolset does not list is ``not-found`` for every run. It used to reach the role check first, where an unknown name fails closed
+    to ``admin``: a user-role run that mistyped a name was told the tool "requires the 'admin' role" (a refusal errors.md says not to retry), and
+    an admin run got ``tool-call-error`` from the provider instead."""
+    r = await system_toolset.call(tool_name="call_tool", ctx=_ctx(principal_ref), arguments={
+        "toolset_id": "system", "tool_name": "create_agnet", "arguments": {}})
+    body = json.loads(r.output)
+    assert r.is_error and body["type"] == "not-found", body
+    assert "'create_agnet'" in body["message"] and "'system'" in body["message"] and "create_agent" in body["message"], body
+
+
+async def test_an_unknown_tool_draws_no_approval_card(system_toolset, sp, recorder):
+    """A policy stored for a name the toolset does not list gates nothing that could run: the lookup answers before the gate, so no card is parked
+    for a call that cannot run."""
+    await sp.get_storage(ToolApprovalPolicy).create(_required_policy("rec", "ghost"))
+    r = await system_toolset.call(tool_name="call_tool", ctx=_ctx(USER), arguments={"toolset_id": "rec", "tool_name": "ghost", "arguments": {}})
+    assert r.is_error and json.loads(r.output)["type"] == "not-found"
+    assert recorder.calls == []
+
+
+async def test_the_listing_is_made_as_the_runs_own_principal(system_toolset, recorder):
+    """The lookup lists the toolset as the run's principal string (the context's), the one the call itself is made with, never a model's."""
+    await system_toolset.call(tool_name="call_tool", ctx=_ctx(USER, principal="alice"), arguments={
+        "toolset_id": "rec", "tool_name": "user_x", "arguments": {}, "principal": "mallory"})
+    assert recorder.listed_as == ["alice"]
+    assert recorder.calls[-1][2] == "alice"
+
+
+class _Unlistable(_ListRecorder):
+    """A toolset whose listing fails (an MCP server that is down, or one that needs a sign-in); its call is never reached."""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__({"user_x": "user"})
+        self.error = error
+
+    async def list_tools(self, *, principal: str | None = None) -> AsyncIterator[Tool]:
+        raise self.error
+        yield  # pragma: no cover - an async generator
+
+
+@pytest.mark.parametrize("error, expected", [
+    (ProviderError("the MCP server is down"), "provider-error"),
+    (McpSignInRequiredError("remote"), "sign-in-required"),
+], ids=["down", "needs-sign-in"])
+async def test_a_toolset_that_cannot_list_answers_before_the_role_check(sp, pr, error, expected):
+    unlistable = _Unlistable(error)
+    toolset = build_system_toolset(storage_provider=sp, provider_registry=_Registry(pr, {"remote": unlistable}))  # type: ignore[arg-type]
+    r = await toolset.call(tool_name="call_tool", ctx=_ctx(USER), arguments={"toolset_id": "remote", "tool_name": "user_x", "arguments": {}})
+    assert r.is_error and json.loads(r.output) == {"type": expected, "message": str(error)}
+    assert unlistable.calls == []
+
+
+async def test_a_toolset_that_does_not_list_in_time_is_a_provider_error(sp, pr, monkeypatch):
+    import asyncio
+
+    class _Slow(_ListRecorder):
+        async def list_tools(self, *, principal: str | None = None) -> AsyncIterator[Tool]:
+            await asyncio.sleep(5)
+            yield Tool(id="user_x", description="late", toolset_id="slow", args_schema={})
+
+    monkeypatch.setattr("primer.toolset._system_crud.CALL_TOOL_LIST_TIMEOUT_S", 0.05)
+    slow = _Slow({"user_x": "user"})
+    toolset = build_system_toolset(storage_provider=sp, provider_registry=_Registry(pr, {"slow": slow}))  # type: ignore[arg-type]
+    r = await toolset.call(tool_name="call_tool", ctx=_ctx(USER), arguments={"toolset_id": "slow", "tool_name": "user_x", "arguments": {}})
+    body = json.loads(r.output)
+    assert r.is_error and body["type"] == "provider-error" and "did not list its tools" in body["message"], body
+    assert slow.calls == []

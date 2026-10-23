@@ -660,6 +660,9 @@ class ToolExecutionManager:
                 initiated_by=self._initiated_by,
                 turn_no=self._turn_no,
                 principal=principal,
+                # The agent the approval gate names in its context (``ApprovalContext.agent_id``, below): a door that gates another tool for
+                # this run reads it here, so a policy keyed on the agent fires through the door too (audit G6-7).
+                agent_id=getattr(sess, "agent_id", None),
             )
         if self._chat_id is not None:
             return ToolContext(
