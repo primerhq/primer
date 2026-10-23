@@ -214,6 +214,7 @@ window.SH_shimPath = SH_shimPath;
 window.SH_shimParams = SH_shimParams;
 window.SH_shimQuery = SH_shimQuery;
 window.SH_SHIM_LIST_TARGETS = SH_SHIM_LIST_TARGETS;
+window.SH_shimUsesTemplateListOverlay = SH_shimUsesTemplateListOverlay;
 window.SH_shimListTarget = SH_shimListTarget;
 window.SH_shimSessionId = SH_shimSessionId;
 window.SH_shimSessionWorkspace = SH_shimSessionWorkspace;
