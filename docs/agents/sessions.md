@@ -219,6 +219,15 @@ can run an agent or graph headlessly end to end.
   `workspaces::resume_workspace_session` - pause a running session at
   the next turn boundary, or resume it.
 - `workspaces::steer_workspace_session` - send a user instruction (an idle or ended session starts its next turn with it; a busy, parked or paused one reads it at its next turn boundary; it never answers an `ask_user`). Called from inside a workspace session it is a message from that session, with every limit of `workspaces::message_session`: the target sees a user message that starts with `[from session <your session id> (agent <your agent id>)]`; a session outside your reach (your own workspace, or any workspace from the default one) answers `type=not-found` exactly as an unknown id; `type=forbidden` when the target runs at a higher rank than your run; `type=hop-limit` at 8 messages in a chain; `type=rate-limited` at 20 messages per 10 minutes; `type=conflict` for a session an operator cancelled (only a person reopens it), an ended session that cannot reopen, or a full queue. Called with no session (MCP) the caller must rank at least as high as the session's creator (`type=forbidden`), and a cancelled session is refused too.
+- From a session outside the default workspace (prime), every one of
+  these tools that names a session or a workspace reaches only your own
+  workspace: cancel, get, read messages, pause, resume, interrupt,
+  create, list, find, steer and restart. Another workspace answers
+  `type=not-found` exactly as an unknown id does. Cancel and resume are
+  also refused (`type=forbidden`) when the session runs at a higher rank
+  than your run. With no calling session (MCP) the caller keeps its reach,
+  and cancel and resume follow the same rank rule (a person may always
+  act on a session they started).
 - `workspaces::restart_workspace_session` - reopen an ENDED session and run it again with optional `input`. From inside a workspace session it is a message from that session like the steer above: `input` is required, the same limits apply, the reopened turn carries the hop count, and a session that has not ended is `type=conflict`. A session an operator cancelled is never reopened by this tool (`type=conflict`); a person reopens it (the console, `POST .../restart`).
 - `workspaces::interrupt_workspace_session` - Stop the turn a session is
   running without ending the session. Args: `workspace_id`, `session_id`.
