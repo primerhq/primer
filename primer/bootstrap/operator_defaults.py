@@ -264,8 +264,9 @@ def tool_runner_agent(profile_id: str) -> Agent:
 
 
 #: The five factories in roster order, keyed by the reserved agent id.
-#: Seed, setup-reset and migration 11 all iterate THIS mapping, so the
-#: roster cannot drift in one place only.
+#: The seed (``ensure_seeded_agents``), the setup reset (``POST
+#: /v1/setup/reset_agents``) and migrations 11 and 15 all iterate THIS
+#: mapping, so the roster cannot drift in one place only.
 SEEDED_AGENT_FACTORIES: dict[str, Callable[[str], Agent]] = {
     RESERVED_OPERATOR_AGENT: operator_agent,
     RESERVED_BUILDER_AGENT: builder_agent,

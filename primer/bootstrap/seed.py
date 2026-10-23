@@ -209,27 +209,17 @@ async def default_profile_id(storage_provider) -> str | None:
 
 
 async def ensure_seeded_agents(storage_provider) -> list[str]:
-    """Ensure the operator and builder rows, then stamp default_agent_id.
+    """Ensure the seeded agents' rows, then stamp default_agent_id.
 
-    No-op while no ModelProfile exists (amendment C3): the wizard creates
-    one, and the next pass repairs the agents. Existing rows are NEVER
-    overwritten here; POST /v1/setup/reset_agents is the explicit,
-    admin-only way back to these defaults.
+    The roster is ``SEEDED_AGENT_FACTORIES``, the one mapping the
+    setup reset and migrations 11 and 15 iterate too. No-op while no
+    ModelProfile exists (amendment C3): the wizard creates one, and the
+    next pass repairs the agents. Existing rows are NEVER overwritten
+    here; POST /v1/setup/reset_agents is the explicit, admin-only way
+    back to these defaults.
     """
-    from primer.bootstrap.defaults import (
-        RESERVED_BUILDER_AGENT,
-        RESERVED_EXPLORER_AGENT,
-        RESERVED_OPERATOR_AGENT,
-        RESERVED_PLANNER_AGENT,
-        RESERVED_TOOL_RUNNER_AGENT,
-    )
-    from primer.bootstrap.operator_defaults import (
-        builder_agent,
-        explorer_agent,
-        operator_agent,
-        planner_agent,
-        tool_runner_agent,
-    )
+    from primer.bootstrap.defaults import RESERVED_OPERATOR_AGENT
+    from primer.bootstrap.operator_defaults import SEEDED_AGENT_FACTORIES
     from primer.model.agent import Agent
 
     profile_id = await default_profile_id(storage_provider)
@@ -238,13 +228,7 @@ async def ensure_seeded_agents(storage_provider) -> list[str]:
         return []
     agents = storage_provider.get_storage(Agent)
     created: list[str] = []
-    for agent_id, factory in (
-        (RESERVED_OPERATOR_AGENT, operator_agent),
-        (RESERVED_BUILDER_AGENT, builder_agent),
-        (RESERVED_PLANNER_AGENT, planner_agent),
-        (RESERVED_EXPLORER_AGENT, explorer_agent),
-        (RESERVED_TOOL_RUNNER_AGENT, tool_runner_agent),
-    ):
+    for agent_id, factory in SEEDED_AGENT_FACTORIES.items():
         if await agents.get(agent_id) is not None:
             continue
         try:

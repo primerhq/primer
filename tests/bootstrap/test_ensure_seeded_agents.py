@@ -130,3 +130,24 @@ async def test_descriptions_carry_the_advertisement_convention(
         row = await agents.get(agent_id)
         assert "Use when" in row.description, agent_id
         assert "Returns" in row.description, agent_id
+
+
+async def test_the_seed_iterates_the_factory_mapping(fake_storage_provider, monkeypatch):
+    """Audit G7-11: the seed's roster is SEEDED_AGENT_FACTORIES, not a list of its own."""
+    from primer.bootstrap.operator_defaults import (
+        SEEDED_AGENT_FACTORIES,
+        tool_runner_agent,
+    )
+
+    def probe(profile_id: str) -> Agent:
+        return tool_runner_agent(profile_id).model_copy(
+            update={"id": "probe-agent", "system_prompt": ["probe"]},
+        )
+
+    monkeypatch.setitem(SEEDED_AGENT_FACTORIES, "probe-agent", probe)
+    fake_storage_provider.get_storage(ModelProfile)._data.clear()
+    await _seed_profile(fake_storage_provider)
+
+    assert await ensure_seeded_agents(fake_storage_provider) == list(SEEDED_AGENT_FACTORIES)
+    probe_row = await fake_storage_provider.get_storage(Agent).get("probe-agent")
+    assert probe_row.system_prompt == ["probe"]
