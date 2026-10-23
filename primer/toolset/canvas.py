@@ -29,8 +29,9 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from primer.canvas.catalog import EVENT_KINDS
 from primer.canvas.decompile import MAX_EVENT_LINES, decompile, preorder
-from primer.canvas.lang import CanvasLangError, LangError, parse_program
+from primer.canvas.lang import ROOT_ID, CanvasLangError, LangError, parse_program
 from primer.canvas.ops import (
     MAX_BATCH_STATEMENTS,
     MAX_OPS_CHARS,
@@ -133,6 +134,44 @@ def _unknown_ids(ids: Sequence[str], elements: Mapping[str, Any]) -> ToolCallRes
         return None
     noun = "element" if len(missing) == 1 else "elements"
     return _error("validation-error", f"no {noun} named " + ", ".join(f"'{element_id}'" for element_id in missing))
+
+
+def _why_it_cannot_end(element_id: str, element: Mapping[str, Any], kinds: Sequence[str]) -> str | None:
+    """Why an event of ``element`` can never end a wait for ``kinds`` (no kinds: an event that wakes the agent), or ``None`` when one can.
+
+    The same rule the service applies to an event (``primer.canvas.service``): an element sends the kinds ``EVENT_KINDS`` gives its type,
+    and one of them wakes the agent by the type's default or, when the element has one, by its ``wake`` prop.
+    """
+    etype = str(element.get("type"))
+    sends = EVENT_KINDS.get(etype, {})
+    if not sends:
+        return f"'{element_id}' ({etype}) sends no events"
+    if kinds:
+        if not set(kinds) & set(sends):
+            return f"'{element_id}' ({etype}) sends only {', '.join(sends)} events"
+        return None
+    props = element.get("props") or {}
+    if any(bool(props["wake"]) if "wake" in props else wakes for wakes in sends.values()):
+        return None
+    return f"'{element_id}' ({etype}) does not wake you with its {', '.join(sends)} events; name kinds to wait for one"
+
+
+def _never_ends(ids: Sequence[str], kinds: Sequence[str], elements: Mapping[str, Any]) -> ToolCallResult | None:
+    """The refusal for a wait no event can ever end (audit G8-09), or ``None``: a wait on an empty canvas, on an element that sends no
+    event the wait takes (a Column, a Button for ``change``, a Select without ``kinds``), or, without ``ids``, on a canvas where nothing
+    sends one. Every named id is judged, as ``_unknown_ids`` judges them, so one reply fixes them all."""
+    if not any(element_id != ROOT_ID for element_id in elements):
+        return _error("validation-error", "the canvas is empty, so nothing on it can end the wait; draw on it with canvas_apply first")
+    if ids:
+        problems = [
+            problem for element_id in dict.fromkeys(ids)
+            if (problem := _why_it_cannot_end(element_id, elements[element_id], kinds)) is not None
+        ]
+        return _error("validation-error", "this wait could never end: " + "; ".join(problems)) if problems else None
+    if any(_why_it_cannot_end(element_id, element, kinds) is None for element_id, element in elements.items()):
+        return None
+    wanted = " or ".join(kinds) + " events" if kinds else "an event that wakes you (a Button click or an Html emit)"
+    return _error("validation-error", f"this wait could never end: nothing on the canvas sends {wanted}")
 
 
 # ===========================================================================
@@ -377,6 +416,12 @@ def _make_canvas_wait(service: CanvasService, storage_provider: "StorageProvider
             await _discard(storage_provider, created.id)
             await consume_events(service, storage_provider, session_id, waiting)
             return _ok({"events": waiting, "values": row.values, "rev": row.rev})
+        # A wait nothing on the canvas can end would park for up to timeout_s (audit G8-09): refuse it instead. Judged after the
+        # unread events, so an event already there (from an element since replaced) still ends a wait at once.
+        dead = _never_ends(ids, kinds, row.elements)
+        if dead is not None:
+            await _discard(storage_provider, created.id)
+            return dead
         return Yielded(
             tool_name="",  # stamped by the provider
             event_key=event_key,
@@ -591,7 +636,8 @@ def build_canvas_toolset(
                     "Use when your next step depends on a click or a choice and you have nothing else to do meanwhile. ids limits it "
                     "to some elements, kinds to some event kinds (click, change, emit, set_value, play, pause, ended, open); without "
                     "kinds it waits for an event that wakes (a Button click or an Html emit). It returns at once if such an event "
-                    "arrived since your last canvas read. timeout_s defaults to 600 (at most 86400)."
+                    "arrived since your last canvas read. timeout_s defaults to 600 (at most 86400). A wait nothing could end (an "
+                    "element that never sends such an event, or an empty canvas) is refused."
                 ),
                 args_schema=_CanvasWaitArgs.model_json_schema(),
                 examples=[

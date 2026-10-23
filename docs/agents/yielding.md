@@ -332,8 +332,13 @@ session.
   unread event it did not match stays unread, so `canvas_get` still
   lists it and a later wait can take it. `ids` limits the
   wait to some elements (an id that is not on the canvas is refused at
-  once, as `canvas_get` refuses it, so a typo never parks), `timeout_s`
-  (1 to 86400, default 600) ends it with `{timeout: true}`, and the
+  once, as `canvas_get` refuses it, so a typo never parks). A wait that
+  could never end is refused too: an element that never sends an event
+  the wait takes (a Column; a Button when `kinds` is `["change"]`; a
+  Select, an Audio or a Link, or a Button with `wake=false`, when you
+  name no `kinds`; the refusal names each such element), or an empty
+  canvas. `timeout_s` (1 to 86400, default 600) ends it with
+  `{timeout: true}`, and the
   result carries the canvas `rev` and the current `values`.
 
 ## Related
