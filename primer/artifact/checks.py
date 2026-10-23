@@ -10,6 +10,7 @@ default id therefore comes from the leaf ``primer.model.providers.artifact`` (``
 
 from __future__ import annotations
 
+from primer.artifact.routing import count_artifacts_held
 from primer.common.entity_checks import EntityCheckError
 from primer.int.storage_provider import StorageProvider
 from primer.model.provider import ArtifactStorageProvider, ArtifactStorageProviderType
@@ -52,6 +53,53 @@ async def check_artifact_provider_delete(storage_provider: StorageProvider, prov
             code="cascade_blocked",
             extra={"referenced_by": ACTIVE_ARTIFACT_STORAGE_CONFIG_ID},
         )
+    count = await count_artifacts_held(storage_provider, provider_id)
+    if count:
+        raise EntityCheckError(
+            "conflict",
+            f"artifact provider {provider_id!r} still holds {count} artifact(s), and they are read from it; it can be deleted once they are gone",
+            code="artifact_provider_holds_artifacts",
+            extra={"count": count},
+        )
 
 
-__all__ = ["ARTIFACT_DEFAULT_WRITE_NOTE", "check_artifact_provider_delete", "check_artifact_provider_write"]
+def _moved_field(entity: ArtifactStorageProvider, existing: ArtifactStorageProvider) -> str | None:
+    if entity.provider is not existing.provider:
+        return "provider"
+    if entity.provider is ArtifactStorageProviderType.FILESYSTEM and entity.config.root != existing.config.root:
+        return "config.root"
+    if entity.provider is ArtifactStorageProviderType.S3:
+        if entity.config.bucket != existing.config.bucket:
+            return "config.bucket"
+        if entity.config.prefix != existing.config.prefix:
+            return "config.prefix"
+    return None
+
+
+async def check_artifact_provider_update(
+    storage_provider: StorageProvider,
+    entity: ArtifactStorageProvider,
+    existing: ArtifactStorageProvider,
+) -> None:
+    """Refuse a location-key change while stored artifacts still name the row."""
+    field = _moved_field(entity, existing)
+    if field is None:
+        return
+    count = await count_artifacts_held(storage_provider, entity.id)
+    if count:
+        raise EntityCheckError(
+            "conflict",
+            f"artifact provider {entity.id!r} holds {count} artifact(s) at its current location; changing {field} would leave them unreadable. "
+            "Register a new provider and select it as the active store instead",
+            code="artifact_provider_holds_artifacts",
+            field=field,
+            extra={"count": count},
+        )
+
+
+__all__ = [
+    "ARTIFACT_DEFAULT_WRITE_NOTE",
+    "check_artifact_provider_delete",
+    "check_artifact_provider_update",
+    "check_artifact_provider_write",
+]
