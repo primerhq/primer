@@ -38,7 +38,7 @@ from primer.storage import raw_generation
 from primer.storage.cas import patch_if_checked
 from primer.storage.q import Q
 
-__all__ = ["McpOAuthStore", "pending_key"]
+__all__ = ["McpOAuthStore", "forget_sign_in", "pending_key"]
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,50 @@ def _require_sealed_row(row: Any) -> None:
 def pending_key(state: str) -> str:
     """The id a pending sign-in is stored under: the SHA-256 hex of its ``state``. Knowing it does not take the row back; only the state does."""
     return hashlib.sha256(state.encode("utf-8")).hexdigest()
+
+
+async def _delete_quietly(storage: Any, row_id: str) -> bool:
+    """Delete one row; ``True`` when there was one (deleting nothing is not an error)."""
+    try:
+        await storage.delete(row_id)
+    except NotFoundError:
+        return False
+    return True
+
+
+async def _pending_rows(pending: Any, toolset_id: str) -> list[McpOAuthPendingSignIn]:
+    """Every pending sign-in of one toolset, live and expired, read page by page."""
+    predicate = Q(McpOAuthPendingSignIn).where("toolset_id", toolset_id).build()
+    rows: list[McpOAuthPendingSignIn] = []
+    cursor: str | None = None
+    while True:
+        page = await pending.find(predicate, CursorPage(cursor=cursor, length=_PAGE))
+        rows.extend(page.items)
+        cursor = page.next_cursor
+        if cursor is None:
+            return rows
+
+
+async def _forget(tokens: Any, clients: Any, pending: Any, toolset_id: str) -> None:
+    await _delete_quietly(tokens, toolset_id)
+    await _delete_quietly(clients, toolset_id)
+    for row in await _pending_rows(pending, toolset_id):
+        await _delete_quietly(pending, row.id)
+
+
+async def forget_sign_in(storage_provider: StorageProvider, toolset_id: str) -> None:
+    """Remove everything stored for a toolset's shared sign-in: its tokens, its registered client and every pending sign-in, live ones included.
+
+    The same as :meth:`McpOAuthStore.forget`, without a key: nothing is sealed or opened. Every path that deletes a toolset calls one of the two
+    (G4-02), so a toolset created again under the same id and settings is never connected on the sign-in of the one that was deleted. The harness
+    uninstall and sync, which delete toolsets with no OAuth service in reach, call this one.
+    """
+    await _forget(
+        storage_provider.get_storage(McpOAuthTokenSet),
+        storage_provider.get_storage(McpOAuthClient),
+        storage_provider.get_storage(McpOAuthPendingSignIn),
+        toolset_id,
+    )
 
 
 class McpOAuthStore:
@@ -150,11 +194,7 @@ class McpOAuthStore:
 
     async def delete_tokens(self, toolset_id: str) -> bool:
         """Remove the toolset's token row. ``True`` when there was one; deleting nothing is not an error."""
-        try:
-            await self._tokens.delete(toolset_id)
-        except NotFoundError:
-            return False
-        return True
+        return await _delete_quietly(self._tokens, toolset_id)
 
     # ---- the registered client ----------------------------------------------------------------------------------------------------------------------------------------
 
@@ -214,29 +254,12 @@ class McpOAuthStore:
         return removed
 
     async def forget(self, toolset_id: str) -> None:
-        """Remove everything stored for the toolset: its tokens, its registered client and every pending sign-in, live ones included."""
-        await self.delete_tokens(toolset_id)
-        try:
-            await self._clients.delete(toolset_id)
-        except NotFoundError:
-            pass
-        for row in await self._pending_of(toolset_id):
-            await self._drop_pending(row.id)
+        """Remove everything stored for the toolset: its tokens, its registered client and every pending sign-in, live ones included
+        (:func:`forget_sign_in`)."""
+        await _forget(self._tokens, self._clients, self._pending, toolset_id)
 
     async def _pending_of(self, toolset_id: str) -> list[McpOAuthPendingSignIn]:
-        predicate = Q(McpOAuthPendingSignIn).where("toolset_id", toolset_id).build()
-        rows: list[McpOAuthPendingSignIn] = []
-        cursor: str | None = None
-        while True:
-            page = await self._pending.find(predicate, CursorPage(cursor=cursor, length=_PAGE))
-            rows.extend(page.items)
-            cursor = page.next_cursor
-            if cursor is None:
-                return rows
+        return await _pending_rows(self._pending, toolset_id)
 
     async def _drop_pending(self, key: str) -> bool:
-        try:
-            await self._pending.delete(key)
-        except NotFoundError:
-            return False
-        return True
+        return await _delete_quietly(self._pending, key)

@@ -53,7 +53,9 @@ For both grants, the shared access token is attached to every MCP request. A
 pods.
 
 Disconnect removes the shared sign-in for every caller. Deleting the toolset
-does the same. A changed encryption key also requires every connected toolset
+does the same, whichever way it is deleted: the console or the REST API, the
+`system::delete_toolset` tool, or a harness uninstall or sync that drops it. A
+toolset created again under the same id needs an admin to connect it. A changed encryption key also requires every connected toolset
 to reconnect. This includes setting `PRIMER_ENCRYPTION_KEY` after the deployment
 previously used the session-secret fallback.
 

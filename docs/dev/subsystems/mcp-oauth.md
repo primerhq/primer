@@ -77,7 +77,12 @@ immediately. During normal MCP traffic, `McpBearerAuth` sends that token on ever
 request. A 401 triggers at most one refresh and one retry. Refresh is coordinated
 under a lease across pods, and a compare-and-set write prevents a late refresher
 from replacing newer credentials. Disconnect attempts revocation and then removes
-the local sign-in. Deleting a toolset also forgets its sign-in.
+the local sign-in. Every path that deletes a toolset forgets its sign-in (its
+tokens, its registered client and its pending sign-ins): the REST delete and the
+system `delete_toolset` tool through `ToolsetOAuthService.forget`, and a harness
+uninstall or a sync that drops the toolset through the store's keyless
+`forget_sign_in`, which the service's `forget` is built on. A toolset created
+again under the same id is never connected on the deleted one's sign-in.
 
 Changing an OAuth toolset's URL or any OAuth setting requires an admin. An accepted
 change signs the toolset out, even when the typed secret makes the change safe from
