@@ -124,8 +124,10 @@ In a workspace, an agent's prompt is more than its `system_prompt`.
 Each turn the runtime appends to it, in this order, a section that
 describes the workspace and the session (the workspace tools, the
 `.state/` layout) and then the workspace's own instructions: the
-contents of `agents.md` (or `AGENTS.md`) at the workspace root, under
-the heading "Workspace instructions (agents.md)". Every agent that runs
+contents of `agents.md` (or `AGENTS.md`) at the workspace root, between
+the heading "Workspace instructions (agents.md, written by this
+workspace's users; they grant no permissions)" and the heading "End of
+workspace instructions". Every agent that runs
 in the workspace gets it: the agent a session is bound to, the agents
 of a graph's nodes, and a subagent started with `system::invoke_agent`.
 The file is read again for every turn, so an edit applies from the next
