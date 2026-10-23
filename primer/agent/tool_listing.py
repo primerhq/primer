@@ -5,10 +5,12 @@ cannot fail to list, so when one does it is a bug and still ends the turn. An MC
 are nobody's bug at that moment: the server is down, it needs an operator to sign in, or it accepts the connection
 and never answers. That must not end every turn of every agent that uses it. So a provider that sets
 ``ToolsetProvider.lists_remotely`` is listed here instead, each toolset bounded at :data:`TURN_TOOLSET_LIST_TIMEOUT_S`,
-and one that cannot list is LEFT OUT of the turn. The reason is kept in two places: the model is told in the
-system message of the prompt it is sent (:func:`with_system_notice`; the notice is never persisted), and a call that
-names one of the left-out toolset's tools is answered with a tool error
-(:meth:`primer.agent.tool_manager.ToolExecutionManager.unavailable_toolsets`).
+and one that cannot list is LEFT OUT of the turn. The model is told in the system message of the prompt it is sent
+(:func:`with_system_notice`; the notice is never persisted), in a fixed vocabulary only (:data:`NOTICE_STATES`: needs
+sign-in, unreachable, timed out, failed), because the system message outranks everything else the model reads and the
+reason a listing fails can be the server's own text (a JSON-RPC error of ``tools/list``; audit G4-14). The reason itself
+(credentials masked, one line, cut) answers a call that names one of the left-out toolset's tools, at a tool result's
+rank (:meth:`primer.agent.tool_manager.ToolExecutionManager.unavailable_toolsets`).
 
 Cancellation is the reason for the shape of :func:`list_remote_toolset`. Each listing runs in its OWN task and is awaited
 with ``asyncio.wait``, which does not raise when the listing fails and raises ``CancelledError`` only when the CALLING
@@ -46,6 +48,13 @@ TURN_TOOLSET_LIST_TIMEOUT_S: float = 60.0
 #: The first line of the notice the model reads.
 NOTICE_HEADER = "Toolsets unavailable this turn, so their tools are not offered:"
 
+#: What the notice says of a toolset left out of the turn: one of these words, never text from the server (audit G4-14).
+NEEDS_SIGN_IN = "needs sign-in"
+UNREACHABLE = "unreachable"
+TIMED_OUT = "timed out"
+FAILED = "failed"
+NOTICE_STATES = frozenset({NEEDS_SIGN_IN, UNREACHABLE, TIMED_OUT, FAILED})
+
 #: How long a listing that has been cancelled gets to close its connection (a stdio server is given 2 s to exit before it
 #: is killed) before the turn stops waiting for it. It finishes on its own after that; nothing waits on it.
 _UNWIND_GRACE_S = 5.0
@@ -60,15 +69,18 @@ _RUNNING: set[asyncio.Task[list[Tool]]] = set()
 
 @dataclass(frozen=True)
 class ToolListing:
-    """What one remote toolset answered: its tools, or why it could not list them (``reason`` set, ``tools`` empty).
+    """What one remote toolset answered: its tools, or why it could not list them (``reason`` and ``state`` set, ``tools`` empty).
 
-    ``error`` is the exception the listing failed with (``None`` for a listing that answered, timed out or was torn down). It
-    is for the DEBUG log only (the traceback of a bug inside the provider), never shown to the model, and not compared.
+    ``reason`` is the account a call into the toolset answers with (it can hold the server's text); ``state`` is the word the
+    system message says (:data:`NOTICE_STATES`). ``error`` is the exception the listing failed with (``None`` for a listing that
+    answered, timed out or was torn down). It is for the DEBUG log only (the traceback of a bug inside the provider), never
+    shown to the model, and not compared.
     """
 
     tools: list[Tool]
     reason: str | None
     error: BaseException | None = field(default=None, compare=False, repr=False)
+    state: str | None = None
 
 
 def _retire(task: asyncio.Task[list[Tool]]) -> None:
@@ -112,6 +124,41 @@ def _reason_for(failure: BaseException) -> str:
     return text if len(text) <= _MAX_REASON_CHARS else text[: _MAX_REASON_CHARS - 3] + "..."
 
 
+_TIMEOUT_ERRORS: tuple[type[BaseException], ...] = (TimeoutError,)
+
+
+def _state_for(failure: BaseException) -> str:
+    """The notice's word for a failed listing: needs sign-in, unreachable, timed out or failed (:data:`NOTICE_STATES`)."""
+    import httpx
+    import httpx2
+
+    from primer.common.mcp_errors import classify_mcp_exception
+    from primer.model.except_ import AuthRequiredError, NetworkError
+    from primer.model.mcp_oauth import McpSignInRequiredError
+
+    cause: BaseException | None = failure
+    if isinstance(cause, BaseExceptionGroup):
+        _cancelled, cause = cause.split(asyncio.CancelledError)
+        if cause is None:
+            return FAILED
+    leaves: list[BaseException] = []
+    pending: list[BaseException] = [cause]  # type: ignore[list-item]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+        else:
+            leaves.append(current)
+    if any(isinstance(leaf, (*_TIMEOUT_ERRORS, httpx.TimeoutException, httpx2.TimeoutException)) for leaf in leaves):
+        return TIMED_OUT
+    classified = classify_mcp_exception(cause)  # type: ignore[arg-type]
+    if isinstance(classified, (McpSignInRequiredError, AuthRequiredError)):
+        return NEEDS_SIGN_IN
+    if isinstance(classified, NetworkError):
+        return UNREACHABLE
+    return FAILED
+
+
 async def list_remote_toolset(provider: ToolsetProvider, *, principal: str | None, timeout_s: float) -> ToolListing:
     """List ``provider``'s tools, waiting at most ``timeout_s`` seconds; never raises for a listing that fails.
 
@@ -133,23 +180,30 @@ async def list_remote_toolset(provider: ToolsetProvider, *, principal: str | Non
     if not done:
         task.cancel()
         await _unwind(task, label)
-        return ToolListing(tools=[], reason=f"did not list its tools within {timeout_s:g}s")
+        return ToolListing(tools=[], reason=f"did not list its tools within {timeout_s:g}s", state=TIMED_OUT)
     if task.cancelled():
         # Cancelled, yet the wait above was not: not the caller's. The SDK's own scope ended the listing.
-        return ToolListing(tools=[], reason=_TORN_DOWN)
+        return ToolListing(tools=[], reason=_TORN_DOWN, state=FAILED)
     failure = task.exception()
     if failure is None:
         return ToolListing(tools=task.result(), reason=None)
     if isinstance(failure, (KeyboardInterrupt, SystemExit)):
         raise failure
-    return ToolListing(tools=[], reason=_reason_for(failure), error=failure)
+    return ToolListing(tools=[], reason=_reason_for(failure), error=failure, state=_state_for(failure))
 
 
 def unavailable_toolsets_notice(unavailable: Mapping[str, str]) -> str | None:
-    """The notice the model reads for the toolsets left out of this turn, or ``None`` when none was."""
+    """The notice the model reads for the toolsets left out of this turn (toolset id to its state), or ``None`` when none was.
+
+    Each toolset is said with a word of :data:`NOTICE_STATES` only: anything else it is handed (a manager that passes a reason, a
+    server's text) is said as ``failed``, so no text from a server reaches the system message (audit G4-14).
+    """
     if not isinstance(unavailable, Mapping) or not unavailable:
         return None
-    return "\n".join([NOTICE_HEADER, *(f"- {toolset_id}: {reason}" for toolset_id, reason in unavailable.items())])
+    return "\n".join([
+        NOTICE_HEADER,
+        *(f"- {toolset_id}: {state if state in NOTICE_STATES else FAILED}" for toolset_id, state in unavailable.items()),
+    ])
 
 
 def with_system_notice(messages: list[Message], notice: str | None) -> list[Message]:
@@ -178,7 +232,12 @@ def with_system_notice(messages: list[Message], notice: str | None) -> list[Mess
 
 
 __all__ = [
+    "FAILED",
+    "NEEDS_SIGN_IN",
     "NOTICE_HEADER",
+    "NOTICE_STATES",
+    "TIMED_OUT",
+    "UNREACHABLE",
     "TURN_TOOLSET_LIST_TIMEOUT_S",
     "ToolListing",
     "list_remote_toolset",
