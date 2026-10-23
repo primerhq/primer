@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import httpx
 from tests.ui_e2e._shell_helpers import open_legacy_route
+from tests.ui_e2e._studio_helpers import open_provider_catalog
 
 
 def _cleanup(base_url: str, urls: list[str]) -> None:
@@ -114,73 +115,45 @@ def test_u0047_provider_list_reflects_new_row_after_modal_create(
     base_url: str,
     console_url: str,
     unique_suffix: str,
+    mock_llm_lan,
 ) -> None:
-    """U0047 — Open /providers/llm, create a new LLM provider via
-    the modal, after the navigate-to-detail+back, assert the new
-    id is visible in the list without a page reload.
-
-    Priority 1 — mutation feedback for the list-page surface. The
-    provider list uses ``useResource("providers:llm_providers", ...)``
-    with no poll; freshness is driven by the mutation's
-    ``invalidates`` array (providers.jsx:336). After the modal's
-    onCreate also triggers an explicit ``list.refetch()``
-    (providers.jsx:117), the next mount of /providers/llm renders
-    the fresh row.
-
-    Provider choice: ``anthropic`` — its config requires only
-    ``api_key``, so the form has nothing else to fill. An LLM provider
-    no longer carries a models list (its ModelProfile rows are the
-    registry), so creating one needs no model step at all; that is the
-    behaviour this now asserts.
+    """U0047: Register an LLM provider through the overlay with mock_llm_lan,
+    import 1 model, and assert the new card is visible.
     """
+    from playwright.sync_api import expect
+
+    _registry, mock_base_url = mock_llm_lan
     provider_id = f"llm-u0047-{unique_suffix}"
     try:
-        # RETARGET (01a063ab, designer reconciliation): Register now
-        # lists the active class's KINDS directly (PC_RegisterDropdown) -
-        # picking "anthropic" there opens the form with kind already
-        # preselected, no in-form re-pick left to do. The round trip out
-        # to a detail page and back is still gone, and the list still has
-        # to show the new row in place, just now behind Register -> kind
-        # -> Save.
-        open_legacy_route(page, console_url, "providers/llm")
-        page.get_by_test_id("provider-register-toggle").click()
-        page.get_by_test_id("provider-register-kind-anthropic").click()
-        form = page.get_by_test_id("provider-form-llm_providers")
-        form.wait_for(state="visible", timeout=15_000)
+        open_provider_catalog(page, console_url, cls="llm")
+        page.get_by_test_id("pc-register-open").click()
+        overlay = page.get_by_test_id("pc-register")
+        overlay.wait_for(state="visible", timeout=15_000)
 
-        from playwright.sync_api import expect
+        overlay.locator('[data-testid="pc-field:id"] input').fill(provider_id)
+        overlay.locator('[data-testid="pc-field:url"] input').fill(f"{mock_base_url}/v1")
 
-        # The kind's fields (the Limits box the LLM class has, and anthropic's API key) come from GET /llm_providers/_types. Wait for them: the form
-        # used to be usable before they arrived, and a Save pressed then sent no limits and answered 422 (board task 01a12350-792d; the form now keeps
-        # Save off until they are there, which tests/ui_e2e/test_provider_form_save_journey.py holds with the request delayed).
-        expect(form.get_by_test_id("provider-form-limits")).to_be_visible(timeout=15_000)
-        form.locator('[data-field="id"] input').fill(provider_id)
-        form.locator("input[type=password]").first.fill("sk-test-placeholder")
+        next_btn = overlay.get_by_test_id("pc-register-next")
+        expect(next_btn).to_be_enabled(timeout=10_000)
+        next_btn.click()
 
-        # No model step: an LLM provider has no models[] to declare, so
-        # Save must already be enabled. This is the regression guard --
-        # the old form gated submit on models.length > 0, which made LLM
-        # providers uncreatable once the field was removed.
-        save_btn = form.get_by_test_id("provider-form-save")
-        expect(save_btn).to_be_enabled()
-        save_btn.click()
+        models_view = overlay.locator('[data-testid="pc-llm-models"]')
+        models_view.wait_for(state="visible", timeout=15_000)
 
-        # The row appears in the instance list beside the form, with no
-        # reload and no navigation. The list paginates at 25 with no
-        # search field (provider-catalog.jsx's PC_InstanceList) and the
-        # shared stack legitimately accumulates fixture residue across
-        # rounds (by design), which can push the new row past page 1 -
-        # page forward within the SAME already-open list (no reload, no
-        # route change) rather than assuming page 1.
-        row = page.get_by_test_id("provider-instances-llm").get_by_text(
-            provider_id, exact=True,
-        )
-        next_btn = page.get_by_test_id("pager-next")
-        for _ in range(50):
-            if row.count() > 0 or next_btn.is_disabled():
-                break
-            next_btn.click()
-            page.wait_for_timeout(300)
-        expect(row).to_be_visible(timeout=15_000)
+        first_box = overlay.locator('[data-testid^="pc-import:"]').first
+        first_box.check()
+        ctx_input = overlay.locator('[data-testid^="pc-import-context:"]').first
+        if ctx_input.input_value() == "":
+            ctx_input.fill("8192")
+
+        submit = overlay.get_by_test_id("pc-register-submit")
+        expect(submit).to_be_enabled(timeout=10_000)
+        submit.click()
+
+        expect(overlay).not_to_be_visible(timeout=15_000)
+        card = page.get_by_test_id(f"pk-card:llm:{provider_id}")
+        expect(card).to_be_visible(timeout=15_000)
     finally:
+        with httpx.Client(base_url=base_url, timeout=30.0) as c:
+            c.delete(f"/v1/llm_providers/{provider_id}")
         _cleanup(base_url, [f"/v1/llm_providers/{provider_id}"])

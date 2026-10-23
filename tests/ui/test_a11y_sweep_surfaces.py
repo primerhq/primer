@@ -22,6 +22,7 @@ SYSTEM_JSX = (ROOT / "ui" / "components" / "console" / "nv-system.jsx").read_tex
 OVERLAYS_JSX = (ROOT / "ui" / "components" / "console" / "nv-overlays.jsx").read_text(encoding="utf-8")
 MOBILE_JSX = (ROOT / "ui" / "components" / "console" / "nv-mobile-shell.jsx").read_text(encoding="utf-8")
 CATALOG_JSX = (ROOT / "ui" / "components" / "provider-catalog.jsx").read_text(encoding="utf-8")
+COMMON_JSX = (ROOT / "ui" / "components" / "providers" / "register-common.jsx").read_text(encoding="utf-8")
 
 
 def _grammar(name: str, source: str | None = None) -> list[str]:
@@ -109,28 +110,28 @@ def test_a_form_is_never_rooted_at_its_page_so_the_sweep_cannot_record_the_page_
 
 
 def test_a_provider_form_opens_through_the_first_kind_of_the_register_menu() -> None:
-    """The 'Register provider' button is a dropdown toggle (PC_RegisterDropdown, PC_RegisterAll): the form is a Modal that opens after a menu item is picked."""
-    assert 'data-testid={`provider-register-kind-${k}`}' in CATALOG_JSX and 'data-testid={`provider-register-type-${cls.key}`}' in CATALOG_JSX
-    registers = [(route, form) for route, forms in surfaces.LEGACY_FORMS.items() for form in forms if form.button == "Register provider"]
-    registers += [(nav, form) for nav, forms in surfaces.PLATFORM_FORMS.items() for form in forms if form.button == "Register provider"]
-    assert len(registers) == 10, [route for route, _ in registers]   # the eight crud classes (artifact storage since #706 serves its kinds), the semantic-search stores and the Platform page's all-types menu
+    """The '+ Register' button opens the register overlay and picks the type with pc-register-type."""
+    assert 'testid: "pc-register-open"' in CATALOG_JSX or 'data-testid="pc-register-open"' in CATALOG_JSX
+    assert 'testid: "pc-register-type"' in (ROOT / "ui" / "components" / "providers" / "register-overlay.jsx").read_text(encoding="utf-8")
+    registers = [(route, form) for route, forms in surfaces.LEGACY_FORMS.items() for form in forms if form.button == "+ Register"]
+    registers += [(nav, form) for nav, forms in surfaces.PLATFORM_FORMS.items() for form in forms if form.button == "+ Register"]
+    assert len(registers) == 10, [route for route, _ in registers]   # the eight crud classes, ssp, and the Platform page
     for route, form in registers:
         assert form.root == surfaces.MODAL, (route, form)
-        assert form.then in ('[data-testid^="provider-register-kind-"]', '[data-testid^="provider-register-type-"]'), (route, form)
+        assert form.then == surfaces.REGISTER_TYPE, (route, form)
     for table in (surfaces.LEGACY_FORMS, surfaces.PLATFORM_FORMS, surfaces.SYSTEM_FORMS):
         for page, forms in table.items():
             for form in forms:
-                assert form.then is None or form.button == "Register provider", (page, form)
+                assert form.then is None or form.button == "+ Register", (page, form)
 
 
 def test_the_artifact_storage_page_is_swept_through_its_register_menu_and_no_page_is_excused_from_one() -> None:
-    """Round 6 of #668: ``GET /v1/artifact_storage_providers/_types`` is served since #706 (ticket 01a1214c), so the page's Register provider menu lists db, filesystem and s3. The exemption (a
-    dead-menu assertion and a ``NO_FORM`` reason) is gone: the page is in ``LEGACY_FORMS`` with its menu item, like the other crud classes."""
+    """Round 6 of #668: GET /v1/artifact_storage_providers/_types is served since #706 (ticket 01a1214c)."""
     assert not hasattr(surfaces, "DEAD_REGISTER_MENUS") and not hasattr(surfaces, "DEAD_MENU_TEXT"), "nothing is excused from its register menu"
-    assert surfaces.LEGACY_FORMS["providers/artifact_storage"] == [surfaces.Form("Register provider", surfaces.MODAL, surfaces.KIND_MENU_ITEM)]
+    assert surfaces.LEGACY_FORMS["providers/artifact_storage"] == [surfaces.Form("+ Register", surfaces.MODAL, surfaces.REGISTER_TYPE)]
     assert "overlay-page providers/artifact_storage" not in surfaces.NO_FORM
-    assert "overlay-page providers/artifact_storage / Register provider" in surfaces.expected_surfaces(7)
-    assert len(surfaces.expected_surfaces(7)) == 102   # the Platform profiles page has one form again: + Aggregate (Platform revamp, design 7.1), not New profile; Workspaces, Workspace templates and Setup left the swept views (Task 7); the workers and health overlay pages left with the workers overlay (Revamp 10 Task 5, D4); the model-profiles overlay page left with the catalog's profiles panel (Revamp 02 Task 8; design 7 and B5, profiles live on the LLM Profiles page); System > API keys gained + API key (Revamp 10 Task 6, D5)
+    assert "overlay-page providers/artifact_storage / + Register" in surfaces.expected_surfaces(7)
+    assert len(surfaces.expected_surfaces(7)) == 102
 
 
 def test_every_platform_create_button_the_console_draws_has_a_form_entry() -> None:
@@ -149,7 +150,7 @@ def test_every_platform_create_button_the_console_draws_has_a_form_entry() -> No
         if not create and not extra:
             assert not buttons, f"{nav}: the console draws no create button"
             assert f"platform-view {nav}" in surfaces.NO_FORM
-    assert [form.button for form in surfaces.PLATFORM_FORMS["providers"]] == ["Register provider"]
+    assert [form.button for form in surfaces.PLATFORM_FORMS["providers"]] == ["+ Register"]
 
 
 def test_the_legacy_routes_are_the_ones_the_shell_helper_opens() -> None:
@@ -159,7 +160,7 @@ def test_the_legacy_routes_are_the_ones_the_shell_helper_opens() -> None:
 
 def test_the_overlay_grammar_is_swept_section_by_section() -> None:
     """N5: the semantic-search provider (its own create modal) is an overlay section too; every provider class is a route."""
-    classes = re.findall(r'\{ key: "(\w+)", label: ', CATALOG_JSX[CATALOG_JSX.index("const PROVIDER_CLASSES"):CATALOG_JSX.index("const PC_ALL_TYPE_CHIPS")])
+    classes = re.findall(r'\{ key: "(\w+)", label: ', COMMON_JSX[COMMON_JSX.index("const PC_CLASSES"):COMMON_JSX.index("function PC_classByKey")])
     assert len(classes) == 11, classes
     swept = {overlay_target(route) for route in surfaces.LEGACY_FORMS}
     for key in classes:
@@ -195,14 +196,14 @@ def test_a_platform_view_waits_for_its_own_page_and_for_its_list_to_load() -> No
         markers = surfaces.ready_selectors("platform-view", nav)
         assert markers[0] == f'[data-testid="nv-plat-page:{nav}"]', nav
         assert len(markers) == (3 if nav == "providers" else 2), f"{nav}: the page, and the proof that its list or body has loaded"
-    assert surfaces.ready_selectors("platform-view", "providers")[1:] == ['[data-testid="provider-body-all"]', '[data-testid="provider-empty-all"], [data-testid="provider-body-all"] .pc-card']
+    assert surfaces.ready_selectors("platform-view", "providers")[1:] == ['[data-testid="provider-body-all"]', '[data-testid="pc-empty:all"], [data-testid="provider-body-all"] [data-testid^="pk-card:"]']
     assert surfaces.ready_selectors("platform-view", "agents")[1] == '[data-testid="nv-plat-empty"], [data-testid^="pk-card:"]'
 
 
 def test_a_provider_route_waits_for_its_class_to_have_loaded_its_instances_or_said_it_has_none() -> None:
     """B2'': ``provider-body-<class>`` is drawn unconditionally (with "No providers match" while the list loads); a loaded crud class shows a card or its empty state. A panel class mounts its own page."""
-    assert 'data-testid={`provider-empty-${klass.key}`}' in CATALOG_JSX and 'className="pc-card"' in CATALOG_JSX
-    panel = {key for key in re.findall(r'\{ key: "(\w+)", label: [^}]*form: "panel"', CATALOG_JSX[CATALOG_JSX.index("const PROVIDER_CLASSES"):CATALOG_JSX.index("const PC_ALL_TYPE_CHIPS")])}
+    assert 'data-testid={`pc-empty:${classKey}`}' in CATALOG_JSX and 'PK_Card' in CATALOG_JSX
+    panel = {key for key in re.findall(r'\{ key: "(\w+)", label: [^}]*form: "panel"', COMMON_JSX[COMMON_JSX.index("const PC_CLASSES"):COMMON_JSX.index("function PC_classByKey")])}
     assert panel == {"ssp", "workspace", "channel"}
     assert surfaces.PANEL_CLASSES == panel
     for route in surfaces.LEGACY_FORMS:
@@ -210,7 +211,7 @@ def test_a_provider_route_waits_for_its_class_to_have_loaded_its_instances_or_sa
             continue
         key = surfaces._provider_class(route)
         markers = surfaces.ready_selectors("overlay-page", route)
-        loaded = f'[data-testid="provider-empty-{key}"], [data-testid="provider-body-{key}"] .pc-card'
+        loaded = f'[data-testid="pc-empty:{key}"], [data-testid="provider-body-{key}"] [data-testid^="pk-card:"]'
         assert (loaded in markers) == (key not in panel), (route, markers)
 
 

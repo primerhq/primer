@@ -24,7 +24,7 @@ from playwright.sync_api import Page, expect  # noqa: E402
 
 
 from tests._support.smk import smk  # noqa: E402
-from tests.ui_e2e._shell_helpers import open_legacy_route
+from tests.ui_e2e._studio_helpers import open_provider_catalog
 pytestmark = smk("SMK-UI-01", status="partial")
 
 # US-011b: the pre-existing ui_e2e overlay-mount race (orig handoff
@@ -39,13 +39,9 @@ _MOBILE_OVERLAY_FLAKY = pytest.mark.flaky(reruns=2, reruns_delay=1)
 
 def _open_create_sheet(page: Page, console_url: str) -> None:
     page.set_viewport_size({"width": 375, "height": 812})
-    open_legacy_route(page, console_url, "workspaces/providers")
+    open_provider_catalog(page, console_url, cls="workspace")
     page.wait_for_load_state("domcontentloaded")
-    new_btn = page.get_by_role(
-        "button", name="New workspace provider",
-    ).or_(
-        page.get_by_role("button", name="New provider")
-    ).first
+    new_btn = page.get_by_test_id("pc-register-open")
     expect(new_btn).to_be_visible(timeout=10_000)
     new_btn.click()
 

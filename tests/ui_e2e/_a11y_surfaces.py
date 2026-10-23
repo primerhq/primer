@@ -25,14 +25,15 @@ PLATFORM = '[data-testid="nv-platform"]'
 SYSTEM = '[data-testid="nv-view:system"]'
 NEW_WORKSPACE_OVERLAY = '[data-testid="nv-overlay:new-workspace"]'
 
-# the provider classes whose page is a panel of its own (ProviderCatalog's ``form: "panel"``): they have no card grid and no ``provider-empty-<key>``
+# the provider classes whose page is a panel of its own (ProviderCatalog's ``form: "panel"``): they have no card grid and no ``pc-empty:<key>``
 PANEL_CLASSES = {"ssp", "workspace", "channel"}
 
 PAGE_ROOTS = {OVERLAY, PLATFORM, SYSTEM}
 FORM_ROOTS = {MODAL, NEW_WORKSPACE_OVERLAY}
 
-KIND_MENU_ITEM = '[data-testid^="provider-register-kind-"]'    # PC_RegisterDropdown: a menu of the kinds of one class
-TYPE_MENU_ITEM = '[data-testid^="provider-register-type-"]'    # PC_RegisterAll: a menu of the classes, on the Platform page that shows them all
+REGISTER_TYPE = '[data-testid="pc-register-type"]'
+KIND_MENU_ITEM = REGISTER_TYPE
+TYPE_MENU_ITEM = REGISTER_TYPE
 
 # the fixed furniture of a surface, whose controls are examined for names and not counted toward its floor: a modal's title and footer, an overlay's head and foot, the Platform page's kit header, the
 # phone's tab bar, the graph builder's top bar
@@ -45,9 +46,9 @@ class Form(NamedTuple):
     then: str | None = None
 
 
-def _register(menu_item: str) -> Form:
-    """A provider form opens in two steps: 'Register provider' is a dropdown toggle, and the form (a Modal) opens when a kind of the menu is picked."""
-    return Form("Register provider", MODAL, menu_item)
+def _register(menu_item: str = REGISTER_TYPE) -> Form:
+    """A provider form opens in two steps: '+ Register' opens the overlay, and the type selector picks the type."""
+    return Form("+ Register", MODAL, menu_item)
 
 
 # the Platform pages that are overlays, opened by their legacy route
@@ -183,8 +184,8 @@ def ready_selectors(kind: str, name: str) -> list[str]:
 
 
 def _providers_loaded(key: str) -> str:
-    """A provider class has loaded its instances when it shows a card or says it has none; ``provider-body-<key>`` is drawn at once, with "No providers match" in it while the list loads."""
-    return f'[data-testid="provider-empty-{key}"], [data-testid="provider-body-{key}"] .pc-card'
+    """A provider class has loaded its instances when it shows a card or says it has none."""
+    return f'[data-testid="pc-empty:{key}"], [data-testid="provider-body-{key}"] [data-testid^="pk-card:"]'
 
 
 def _provider_class(route: str) -> str:
@@ -251,25 +252,25 @@ FLOORS: dict[str, int] = {
     "overlay-page subsystems/internal-collections": 1,
     "overlay-page subsystems/internal-collections / Configure": 2,
     "overlay-page providers/llm": 4,
-    "overlay-page providers/llm / Register provider": 5,
+    "overlay-page providers/llm / + Register": 5,
     "overlay-page providers/embedding": 1,
-    "overlay-page providers/embedding / Register provider": 5,
+    "overlay-page providers/embedding / + Register": 5,
     "overlay-page providers/cross_encoder": 1,
-    "overlay-page providers/cross_encoder / Register provider": 4,
+    "overlay-page providers/cross_encoder / + Register": 4,
     "overlay-page providers/stt": 3,
-    "overlay-page providers/stt / Register provider": 5,
+    "overlay-page providers/stt / + Register": 5,
     "overlay-page providers/tts": 3,
-    "overlay-page providers/tts / Register provider": 5,
+    "overlay-page providers/tts / + Register": 5,
     "overlay-page providers/web_search": 4,
-    "overlay-page providers/web_search / Register provider": 2,
+    "overlay-page providers/web_search / + Register": 2,
     "overlay-page providers/web_fetch": 3,
-    "overlay-page providers/web_fetch / Register provider": 2,
+    "overlay-page providers/web_fetch / + Register": 2,
     "overlay-page providers/artifact_storage": 3,
-    "overlay-page providers/artifact_storage / Register provider": 2,
+    "overlay-page providers/artifact_storage / + Register": 2,
     "overlay-page ssp": 1,
-    "overlay-page ssp / Register provider": 4,
+    "overlay-page ssp / + Register": 4,
     "platform-view providers": 6,
-    "platform-view providers / Register provider": 5,
+    "platform-view providers / + Register": 5,
     "platform-view profiles": 1,                        # on a fresh install, the empty state's "Open Providers › LLM"
     "platform-view profiles / + Aggregate": 2,
     "platform-view toolsets": 1,

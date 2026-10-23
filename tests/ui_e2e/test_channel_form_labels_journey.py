@@ -12,6 +12,7 @@ from playwright.sync_api import Page, expect
 
 from tests._support.smk import smk
 from tests.ui_e2e._shell_helpers import open_legacy_route
+from tests.ui_e2e._studio_helpers import open_provider_catalog
 
 pytestmark = smk("SMK-UI-06", status="partial")
 
@@ -44,11 +45,11 @@ def _unnamed(modal) -> list[str]:
 
 @pytest.mark.parametrize("platform", ["slack", "telegram", "discord"])
 def test_every_control_of_the_provider_form_is_named_whichever_platform_is_showing(page: Page, console_url: str, platform: str) -> None:
-    open_legacy_route(page, console_url, "channels/providers")
-    page.get_by_role("button", name="New provider", exact=True).click()
-    modal = page.locator(".modal").first
+    open_provider_catalog(page, console_url, cls="channel")
+    page.get_by_test_id("pc-register-open").click()
+    modal = page.get_by_test_id("pc-register")
     expect(modal).to_be_visible(timeout=10_000)
-    modal.locator("select").first.select_option(platform)
+    modal.get_by_label("Platform").select_option(platform)
     expect(modal.locator("input").nth(1)).to_be_visible(timeout=5_000)
 
     assert _unnamed(modal) == []

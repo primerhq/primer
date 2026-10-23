@@ -46,6 +46,7 @@ import httpx
 import pytest
 from playwright.sync_api import expect
 from tests.ui_e2e._shell_helpers import open_legacy_route, wait_for_overlay_url
+from tests.ui_e2e._studio_helpers import open_provider_catalog
 
 
 def _cleanup(base_url: str, provider_ids: list[str]) -> None:
@@ -91,16 +92,12 @@ def test_u0115_channel_provider_modal_invalid_app_token_inline_error(
     cp_id = f"u115-cp-{unique_suffix}"
 
     try:
-        # ----- 1. /channels/providers → New provider modal ----------
-        open_legacy_route(page, console_url, "channels/providers")
-        new_btn = page.get_by_role(
-            "button", name="New provider", exact=True,
-        )
-        expect(new_btn).to_be_visible(timeout=20_000)
-        new_btn.click()
+        # ----- 1. /channels/providers → Register overlay -----------
+        open_provider_catalog(page, console_url, cls="channel")
+        page.get_by_test_id("pc-register-open").click()
 
-        modal = page.locator(".modal").first
-        expect(modal).to_be_visible(timeout=5_000)
+        modal = page.get_by_test_id("pc-register")
+        expect(modal).to_be_visible(timeout=15_000)
 
         # ----- 2. Fill id + invalid app_token + placeholder bot_token --
         modal.get_by_placeholder("auto-generated", exact=False).first.fill(cp_id)
@@ -117,7 +114,7 @@ def test_u0115_channel_provider_modal_invalid_app_token_inline_error(
 
         # ----- 3. Submit → server 422 ------------------------------
         submit = modal.get_by_role(
-            "button", name="Create provider", exact=True,
+            "button", name="Register", exact=True,
         )
         expect(submit).to_be_enabled(timeout=5_000)
         submit.click()

@@ -53,6 +53,7 @@ from playwright.sync_api import expect
 from tests.ui_e2e._studio_helpers import open_workspace_settings
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
 from tests.ui_e2e._shell_helpers import open_legacy_route, wait_for_overlay_url
+from tests.ui_e2e._studio_helpers import open_provider_catalog
 
 
 # 60-char placeholder; satisfies DiscordChannelProviderConfig.bot_token
@@ -183,29 +184,25 @@ def test_u0108_channels_operator_onboarding_journey(
     cleanup_ch = ch_id
 
     try:
-        # ----- 1. /channels/providers → New provider --------------------
-        open_legacy_route(page, console_url, "channels/providers")
-        new_provider_btn = page.get_by_role(
-            "button", name="New provider", exact=True,
-        )
-        expect(new_provider_btn).to_be_visible(timeout=20_000)
-        new_provider_btn.click()
+        # ----- 1. /channels/providers → Register overlay ---------------
+        open_provider_catalog(page, console_url, cls="channel")
+        page.get_by_test_id("pc-register-open").click()
 
-        modal = page.locator(".modal").first
-        expect(modal).to_be_visible(timeout=5_000)
+        modal = page.get_by_test_id("pc-register")
+        expect(modal).to_be_visible(timeout=15_000)
 
         # The id field is the first input in the modal (placeholder
         # "auto-generated").
         modal.get_by_placeholder("auto-generated", exact=False).first.fill(cp_id)
 
         # The platform select defaults to "slack"; switch to discord.
-        modal.locator("select.select").first.select_option("discord")
+        modal.get_by_label("Platform").select_option("discord")
 
         # Discord config asks for bot_token (password input).
         modal.locator("input[type=password]").first.fill(_FAKE_DISCORD_TOKEN)
 
-        # Submit. Provider modal Btn label is "Create provider".
-        modal.get_by_role("button", name="Create provider", exact=True).click()
+        # Submit. Provider modal Btn label is "Register".
+        modal.get_by_role("button", name="Register", exact=True).click()
 
         # Modal closes; Designer's onSuccess navigates to the new
         # provider's detail page.
