@@ -473,45 +473,19 @@ def boot_mobile_shell(page: Page, url: str, *, timeout: int = 45_000) -> None:
     loaded CI runner, and the lane's flake evidence (GHA runs 39346172295 / 39352650049) shows boots completing around
     the old 20s mark.
 
-    A timeout here is not "still loading": the observed failure is the fully booted DESKTOP console at the 390px viewport
-    (GHA runs 39346172295 and 39352650049: 1-4 mobile victims per run, varying set, the app itself healthy; the same class
-    hit the deep-link boots this helper did not cover in GHA runs 39376800897, 39376816475 and 39376110103). So before
-    failing this diagnoses in-page and self-heals the two known causes (both in ui/foundation/viewport.js):
-
-    * innerWidth > 639 - the viewport override did not apply to this document, so the band evaluated non-mobile at first
-      render: re-apply the 390x844 viewport;
-    * localStorage "primer.force-desktop" = "1" - the ?force-desktop=1 escape hatch is persisted and active: remove it.
-
-    The re-boot is a FULL document load at the exact target URL - page.goto("about:blank") followed by page.goto(url) -
-    not page.reload(): the app consumes a deep link on the first boot (it rewrites the URL, e.g. drops
-    "view=platform"), so a reload re-boots at the CONSUMED url and loses the deep-link state; a hash-only re-goto is a
-    same-document navigation that does not re-run the viewport band; and the fresh document re-rolls the module-load race
-    nv-shell.jsx has when NV_MobileShell is not a function yet, so the hop always runs after the fixes. Up to 2 retries;
-    the final failure carries the last in-page diagnostics.
+    A timeout here includes in-page viewport diagnostics. The product hook re-reads
+    ``innerWidth`` when its listener attaches, so this helper must not hide a boot
+    race by loading fresh documents or mutating the viewport after failure.
     """
     shell = page.get_by_test_id("nv-mobile-shell")
     page.goto(url)
     try:
         expect(shell).to_be_visible(timeout=timeout)
         return
-    except Exception:  # noqa: BLE001 - the timeout is the path this self-heal exists for
-        pass
-    facts = None
-    for _ in range(2):
+    except Exception:  # noqa: BLE001 - replace the timeout with product-state diagnostics
         facts = _mobile_shell_facts(page)
-        if facts.get("forceDesktop") == "1":
-            page.evaluate("localStorage.removeItem('primer.force-desktop')")
-        if facts.get("innerWidth") is not None and facts["innerWidth"] > 639:
-            page.set_viewport_size({"width": 390, "height": 844})
-        page.goto("about:blank")
-        page.goto(url)
-        try:
-            expect(shell).to_be_visible(timeout=timeout)
-            return
-        except Exception:  # noqa: BLE001 - retry with fresh diagnostics
-            continue
     raise AssertionError(
-        "the mobile shell (nv-mobile-shell) never mounted after 2 self-heal retries; in-page facts: "
+        "the mobile shell (nv-mobile-shell) never mounted; in-page facts: "
         f"innerWidth={facts.get('innerWidth')} "
         f"force-desktop={facts.get('forceDesktop')!r} "
         f"nv-root[data-mobile]={facts.get('dataMobile')!r} "
