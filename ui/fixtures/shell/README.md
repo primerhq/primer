@@ -36,7 +36,7 @@ Each is a self-contained management surface, opened over the shell and
 addressable in the URL. Names are the registry keys:
 
 `providers`, `collections`, `agents`, `graphs`, `triggers`, `toolsets`,
-`workers`, `approvals`, `harnesses`, `services`,
+`approvals`, `harnesses`, `services`,
 `channels`, `workspaces`, `new-session`, `new-workspace`,
 `internal-collections`, `activity`.
 
@@ -45,9 +45,9 @@ Since the three-view flag day the overlays render as centered panels
 over whichever view is open, still addressed by `overlay=<name>`, and
 the old `admin` overlay is gone - its sections are the System view's
 navs (users, SSO, API keys, MCP). Setup is not a nav the URL can name:
-`view=system:setup` redirects to the Dashboard. The Setup page itself leaves
-the System view with Plan 10 Task 8, which moves its checks to a Dashboard
-card; until then its sidebar row still opens it in the session.
+`view=system:setup` redirects to the Dashboard. The Setup page is gone: its
+checks are the Dashboard's Setup card (Plan 10 Task 8), and the System
+sidebar has no Setup row.
 
 `internal-collections` is the SUBSYSTEM: its config, its bootstrap
 control and the off-state that says why search is unavailable. It is not

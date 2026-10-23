@@ -144,7 +144,7 @@ curl -X POST https://primer.example/v1/auth/tokens \
   -d '{"name": "claude-desktop", "scopes": ["mcp"], "expires_at": null}'
 ```
 
-The response includes `{"id": "...", "plaintext": "primer_pk_XXXXXX...", ...}`.
+The response includes `{"id": "...", "plaintext": "primer_pat_XXXXXX...", ...}`.
 After the response is consumed, the plaintext is unrecoverable.
 
 ## Workflows

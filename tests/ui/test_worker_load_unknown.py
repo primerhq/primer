@@ -3,8 +3,9 @@
 ``GET /v1/workers`` rows and ``/v1/health`` now carry ``in_flight: null`` for a worker from before load reporting (or one that has not sent
 its first heartbeat with a load). The console read ``typeof w.in_flight === "number" ? w.in_flight : 0`` and ``w.in_flight || 0``, so such a
 worker drew an empty bar and "0 / 4 slots in use", and the fleet summed to a confident total over rows that never reported: an
-overloaded fleet of old workers read as idle. The helpers below are evaluated in V8; the page is driven in a real browser by
-``tests/ui_e2e/test_worker_load_unknown_journey.py``.
+overloaded fleet of old workers read as idle. The helpers below are evaluated in V8. The browser journey that drove the page
+(``tests/ui_e2e/test_worker_load_unknown_journey.py``) was deleted with the ``workers`` overlay (Platform revamp 10, Task 5): the page has no console
+mount left, and the Dashboard's pool tile, which shows an unreported load as "n/a", is pinned by ``tests/ui/test_console_system.py``.
 """
 
 from __future__ import annotations

@@ -277,8 +277,9 @@ Two read endpoints expose derived detail the scrape format cannot carry:
   closing it; the fold of 01a11ca5 closes it.
 - `GET /v1/workers/stats` returns the per-lane task counters as JSON
   (`{worker, kind, status, tasks, duration_sum_seconds, duration_count}`), for the
-  console's workers page. The Prometheus text format is a scrape target, not a UI
-  API, which is why the console reads this instead.
+  System Dashboard's worker list (`NV_WorkerFleet`, `nv-system.jsx`), which sums a
+  worker's `tasks` across its lanes as the row's turns. The Prometheus text format is
+  a scrape target, not a UI API, which is why the console reads this instead.
 
 ## 4. How to add a new implementation
 
