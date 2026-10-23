@@ -578,13 +578,91 @@ async def test_unseen_and_mark_seen(world_with_playlist):
     assert [e.id for e in await w.service.unseen_events("s1")] == ["e4"], "an event that comes later is still unseen"
 
 
-async def test_mark_seen_is_one_fenced_patch_of_its_own_field(world_with_playlist):
+async def test_mark_seen_is_one_fenced_patch_of_its_own_fields(world_with_playlist):
+    """The read marks are two fields since G8-07 (the pointer and the events read ahead of it), so the patch writes both and moves the
+    seen_version it is fenced on; nothing else on the row is written."""
     w = world_with_playlist
     await _event(w, "play", "click")
     spy = StoreSpy(w)
     await w.service.mark_seen("s1", 1)
     [one] = spy.patches
-    assert one == {"patch": {"seen_event_seq": 1}, "where": {"seen_event_seq": [0]}}
+    assert one == {"patch": {"seen_event_seq": 1, "seen_ahead": [], "seen_version": 1}, "where": {"seen_version": [0]}}
+
+
+async def test_mark_events_seen_marks_exactly_those_events(world_with_playlist):
+    """G8-07: events read out of order wait in seen_ahead; the pointer moves over them once the events before them are read."""
+    w = world_with_playlist
+    for _ in range(4):
+        await _event(w, "play", "click")
+    await w.service.mark_events_seen("s1", [2, 4])
+    row = await w.canvas("s1")
+    assert [e.id for e in row.unseen_events()] == ["e1", "e3"] and (row.seen_event_seq, row.seen_ahead) == (0, [2, 4])
+    await w.service.mark_events_seen("s1", [1])
+    row = await w.canvas("s1")
+    assert [e.id for e in row.unseen_events()] == ["e3"] and (row.seen_event_seq, row.seen_ahead) == (2, [4])
+    await w.service.mark_seen("s1", 3)
+    row = await w.canvas("s1")
+    assert row.unseen_events() == [] and row.seen_event_seq == 4, "the high-water mark also moves over what was read ahead"
+    await w.service.mark_events_seen("s1", [4, 99, 0])
+    assert (await w.canvas("s1")).seen_ahead == [], "a seq already read, or that names no event, is not kept"
+
+
+async def test_two_marks_from_stale_reads_both_land(world_with_playlist):
+    """Two waits mark different events from the same read: the seen_version fence rejects the second, which reads again."""
+    w = world_with_playlist
+    for _ in range(4):
+        await _event(w, "play", "click")
+    store = w.sp.get_storage(SessionCanvas)
+    real, state = store.patch_if, {"raced": False}
+
+    async def racing(id, patch=None, *, where, set_paths=None, conn=None):  # noqa: A002
+        if not state["raced"]:
+            state["raced"] = True
+            store.patch_if = real
+            await w.service.mark_events_seen("s1", [3])
+            store.patch_if = racing
+        return await real(id, patch, where=where, set_paths=set_paths, conn=conn)
+
+    store.patch_if = racing
+    await w.service.mark_events_seen("s1", [2])
+    row = await w.canvas("s1")
+    assert [e.id for e in row.unseen_events()] == ["e1", "e4"] and row.seen_ahead == [2, 3]
+
+
+async def test_a_mark_from_a_stale_read_keeps_what_another_wait_marked(world_with_playlist):
+    """mark_seen writes only the pointer, so a seen_ahead another wait wrote under it survives."""
+    w = world_with_playlist
+    for _ in range(3):
+        await _event(w, "play", "click")
+    store = w.sp.get_storage(SessionCanvas)
+    real, state = store.patch_if, {"raced": False}
+
+    async def racing(id, patch=None, *, where, set_paths=None, conn=None):  # noqa: A002
+        if not state["raced"]:
+            state["raced"] = True
+            store.patch_if = real
+            await w.service.mark_events_seen("s1", [3])
+            store.patch_if = racing
+        return await real(id, patch, where=where, set_paths=set_paths, conn=conn)
+
+    store.patch_if = racing
+    await w.service.mark_seen("s1", 1)
+    row = await w.canvas("s1")
+    assert [e.id for e in row.unseen_events()] == ["e2"] and (row.seen_event_seq, row.seen_ahead) == (1, [3])
+
+
+async def test_an_event_read_ahead_that_leaves_the_ring_is_dropped_from_seen_ahead(world_with_playlist):
+    w = world_with_playlist
+    await write_canvas_settings(w.sp, CanvasSettings(id=CANVAS_SETTINGS_ID, max_events=10, max_waking_events_per_minute=120))
+    for _ in range(3):
+        await _event(w, "play", "click")
+    await w.service.mark_events_seen("s1", [3])
+    for _ in range(10):
+        await _event(w, "play", "click")                              # e3 leaves the ring of 10
+    await w.service.mark_events_seen("s1", [13])
+    row = await w.canvas("s1")
+    assert [e.seq for e in row.events][0] == 4 and row.seen_ahead == [13]
+    assert [e.seq for e in row.unseen_events()] == list(range(4, 13))
 
 
 async def test_marking_and_reading_a_session_without_a_canvas_is_harmless():

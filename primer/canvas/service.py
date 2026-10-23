@@ -262,6 +262,23 @@ def _check_event(
     )
 
 
+def _settle(row: SessionCanvas, pointer: int, read: set[int]) -> tuple[int, list[int]]:
+    """Where the read marks of ``row`` stand when every event up to ``pointer`` and the events ``read`` have been read.
+
+    The pointer moves over each event of the ring that is read, in order, and stops at the first that is not; the read events past it
+    are returned sorted, as ``seen_ahead``. A seq that is no event of the ring (it left the ring, or never was) is not kept.
+    """
+    ring = [event.seq for event in row.events]
+    for seq in ring:
+        if seq <= pointer:
+            continue
+        if seq not in read:
+            break
+        pointer = seq
+    present = set(ring)
+    return pointer, sorted(seq for seq in read if seq > pointer and seq in present)
+
+
 @dataclass(frozen=True)
 class _Judged:
     """A batch judged against one read of the row: the row, its rev, what identifies that read, and the verdict."""
@@ -319,27 +336,56 @@ class CanvasService:
         return await self._store().get(session_id)
 
     async def unseen_events(self, session_id: str) -> list[CanvasEvent]:
-        """The events the agent has not read yet: those after ``seen_event_seq``, oldest first."""
+        """The events the agent has not read yet (``SessionCanvas.unseen_events``), oldest first."""
         row = await self._store().get(session_id)
         return row.unseen_events() if row is not None else []
 
     async def mark_seen(self, session_id: str, through_seq: int) -> None:
-        """Raise ``seen_event_seq`` to ``through_seq`` (never lower it, never past the last event). One fenced patch of that field."""
+        """Raise ``seen_event_seq`` to ``through_seq`` (never lower it, never past the last event), and on over the events after it
+        that were already read ahead: what ``canvas_get`` marks, the events it listed."""
+        await self._mark(
+            session_id,
+            lambda row: _settle(row, max(row.seen_event_seq, min(through_seq, row.event_seq)), set(row.seen_ahead)),
+            f"through {through_seq}",
+        )
+
+    async def mark_events_seen(self, session_id: str, seqs: Sequence[int]) -> None:
+        """Mark the events ``seqs`` read, and no other (audit G8-07): what a ``canvas_wait`` hands the agent.
+
+        An event before them that the agent has not read stays unread, so ``canvas_get`` and the next wait still show it; the ones read
+        past it wait in ``seen_ahead`` until the gap is read and the pointer moves over them.
+        """
+        wanted = {seq for seq in seqs if isinstance(seq, int) and not isinstance(seq, bool)}
+        if wanted:
+            await self._mark(
+                session_id, lambda row: _settle(row, row.seen_event_seq, set(row.seen_ahead) | wanted), f"the events {sorted(wanted)}",
+            )
+
+    async def _mark(
+        self, session_id: str, settle: Callable[[SessionCanvas], tuple[int, list[int]]], what: str,
+    ) -> None:
+        """One fenced patch of the read marks (``seen_event_seq``, ``seen_ahead``) to where ``settle`` puts them, and no other field, so
+        a click that lands meanwhile is never written over. Every such write moves ``seen_version`` and is fenced on it, so two readers
+        that mark from the same read never lose each other's marks: the one the fence rejects reads again."""
         store = self._store()
         for _ in range(_ATTEMPTS):
             row = await store.get(session_id)
-            target = min(through_seq, row.event_seq) if row is not None else 0
-            if row is None or target <= row.seen_event_seq:
+            if row is None:
+                return
+            pointer, ahead = settle(row)
+            if (pointer, ahead) == (row.seen_event_seq, row.seen_ahead):
                 return
             try:
                 written = await patch_if_checked(
-                    store, session_id, {"seen_event_seq": target}, where={"seen_event_seq": [row.seen_event_seq]},
+                    store, session_id,
+                    {"seen_event_seq": pointer, "seen_ahead": ahead, "seen_version": row.seen_version + 1},
+                    where={"seen_version": [row.seen_version]},
                 )
             except NotFoundError:
                 return                       # the session's canvas was deleted: nothing is left to mark
             if written is not None:
                 return
-        logger.warning("canvas %s: seen_event_seq stayed behind %d after %d rejected fences", session_id, through_seq, _ATTEMPTS)
+        logger.warning("canvas %s: %s stayed unread after %d rejected fences", session_id, what, _ATTEMPTS)
 
     # ---- batches ---------------------------------------------------------------------------------------------------------------
 

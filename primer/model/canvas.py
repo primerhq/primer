@@ -8,7 +8,9 @@ a binding switch does not touch it. ``primer.canvas.service`` writes it, only ev
 
 * ``rev`` counts content changes: a batch (agent or operator), a clear and a value-changing event (``change``, ``set_value``). A
   click, a play, a pause, an end, a link open or an emit bumps ``event_seq`` instead. Every write is fenced on both.
-* ``events`` is a ring of at most ``CanvasSettings.max_events``; ``seen_event_seq`` is how far the agent has read it.
+* ``events`` is a ring of at most ``CanvasSettings.max_events``; ``seen_event_seq`` is how far the agent has read it in order, and
+  ``seen_ahead`` the events past that point it has already read (a ``canvas_wait`` takes only the events it matches, so an earlier
+  one it did not match stays unread; audit G8-07). ``seen_version`` moves with every write of the two and fences them.
 * ``wake_times`` is the ring the waking-events-per-minute limit reads.
 
 ``CanvasSettings`` is the single operator row (``CANVAS_SETTINGS_ID``). This module imports nothing from ``primer.canvas``, which
@@ -144,12 +146,15 @@ class SessionCanvas(Identifiable):
     events: list[CanvasEvent] = Field(default_factory=list)
     event_seq: int = Field(default=0, ge=0)
     seen_event_seq: int = Field(default=0, ge=0)
+    seen_ahead: list[int] = Field(default_factory=list)
+    seen_version: int = Field(default=0, ge=0)
     wake_times: list[datetime] = Field(default_factory=list)
     updated_at: datetime | None = None
 
     def unseen_events(self) -> list[CanvasEvent]:
-        """The events after ``seen_event_seq``, oldest first: what the agent has not read yet."""
-        return [event for event in self.events if event.seq > self.seen_event_seq]
+        """The events after ``seen_event_seq`` that are not in ``seen_ahead``, oldest first: what the agent has not read yet."""
+        ahead = set(self.seen_ahead)
+        return [event for event in self.events if event.seq > self.seen_event_seq and event.seq not in ahead]
 
 
 __all__ = [

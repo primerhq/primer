@@ -323,7 +323,9 @@ session.
   with `wake=true` does). Name `kinds` (`change`, `play`, ...) to wait
   for a silent one. The canvas keeps the events you have not read, so a
   wait that finds a matching one among them returns it without
-  parking, and the event is marked read. `ids` limits the
+  parking. Only the events a wait returns are marked read: an earlier
+  unread event it did not match stays unread, so `canvas_get` still
+  lists it and a later wait can take it. `ids` limits the
   wait to some elements (an id that is not on the canvas is refused at
   once, as `canvas_get` refuses it, so a typo never parks), `timeout_s`
   (1 to 86400, default 600) ends it with `{timeout: true}`, and the
