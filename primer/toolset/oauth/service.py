@@ -557,6 +557,26 @@ class ToolsetOAuthService:
         logger.info("MCP toolset %s: the MCP server rejected the access token (%s); refreshing it", target.toolset_id, safe_code(challenge_error) or "no error code")
         return await self._refresh(target, observed=row, forced=True)
 
+    async def sign_out_rejected(self, target: OAuthTarget, *, rejected: str) -> None:
+        """The MCP server rejected ``rejected`` as well: the token a 401 had just been answered with (the second 401 of one request, audit G4-11).
+
+        A freshly refreshed token that the server will not take either means the sign-in no longer works for this server (another audience, a
+        consent withdrawn on the resource side), so the toolset is signed out with :data:`TOKEN_REJECTED`: its status stops saying connected, and the
+        next call fails at once instead of spending another refresh token. The sign-out is fenced on the version that holds ``rejected`` (and on its
+        lease as read): a reconnect, or a newer token another caller or process stored meanwhile, is left alone. A row this process cannot read is
+        left alone too (:data:`KEY_CHANGED`).
+        """
+        row = await self._store.get_tokens(target.toolset_id)
+        if row is None or row.state != "connected" or row.config_fingerprint != config_fingerprint(target):
+            return
+        try:
+            current = self._store.unseal(row.access_token_enc)
+        except SecretBoxError:
+            return
+        if current != rejected:
+            return
+        await self._sign_out(row, TOKEN_REJECTED)
+
     async def _refresh(self, target: OAuthTarget, *, observed: McpOAuthTokenSet, forced: bool) -> str:
         """Refresh the token set ``observed`` was read from, or take the token another caller or process stored meanwhile.
 

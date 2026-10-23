@@ -432,6 +432,17 @@ def test_revoke_all_drops_every_access_and_refresh_token(mock_oauth_mcp):
     assert refused.status_code == 400 and refused.json()["error"] == "invalid_grant"
 
 
+def test_reject_bearer_tokens_refuses_a_live_token_and_leaves_the_token_endpoint_alone(mock_oauth_mcp):
+    first = _sign_in(mock_oauth_mcp)
+    mock_oauth_mcp.state.reject_bearer_tokens = True
+    assert _mcp(mock_oauth_mcp, first["access_token"]).status_code == 401
+    refreshed = _refresh(mock_oauth_mcp, first["refresh_token"])
+    assert refreshed.status_code == 200, "the token endpoint still answers"
+    assert _mcp(mock_oauth_mcp, refreshed.json()["access_token"]).status_code == 401
+    mock_oauth_mcp.state.reject_bearer_tokens = False
+    assert _mcp(mock_oauth_mcp, refreshed.json()["access_token"]).status_code == 200
+
+
 def test_revocation_is_recorded_and_ends_the_token(mock_oauth_mcp):
     first = _sign_in(mock_oauth_mcp)
     revoked = httpx.post(mock_oauth_mcp.issuer + "/revoke", data={"token": first["refresh_token"], "token_type_hint": "refresh_token"}, auth=PRE)
