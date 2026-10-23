@@ -11,16 +11,21 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
 
 from primer.api.deps import get_artifact_storage_provider_storage
+from primer.api.errors import common_responses
 from primer.api.registries.artifact_storage_registry import (
     DEFAULT_ARTIFACT_PROVIDER_ID,
 )
 from primer.api.routers._crud import make_crud_router
+from primer.api.routers._probe_text import draft_error
 from primer.api.routers.providers import _form_field
 from primer.artifact.checks import check_artifact_provider_write
+from primer.artifact.probe import probe_artifact_provider
 from primer.common.entity_checks import EntityCheckError
 from primer.model.common import preserve_masked_secrets
+from primer.model.except_ import NotFoundError
 from primer.model.provider import ArtifactStorageProvider
 
 
@@ -84,6 +89,65 @@ async def _reject_reserved_delete(entity_id: str, request: Request) -> None:
 
 
 artifact_storage_helpers_router = APIRouter(tags=["artifact-storage-providers"])
+
+
+class _ArtifactStorageDraft(BaseModel):
+    id: str | None = None
+    provider: Any = None
+    config: Any = None
+
+
+def _provider_storage(request: Request):
+    return request.app.state.storage_provider.get_storage(ArtifactStorageProvider)
+
+
+@artifact_storage_helpers_router.post(
+    "/artifact_storage_providers/_test",
+    responses=common_responses(500),
+    summary="Test a draft artifact-storage provider with a live round trip.",
+)
+async def test_artifact_storage_draft(
+    body: _ArtifactStorageDraft,
+    request: Request,
+) -> dict[str, Any]:
+    try:
+        draft = ArtifactStorageProvider.model_validate(
+            body.model_dump(exclude_none=True),
+        )
+        if body.id is not None:
+            stored = await _provider_storage(request).get(body.id)
+            if stored is not None:
+                preserve_masked_secrets(draft, stored)
+    except Exception as exc:  # noqa: BLE001 - a partial draft is a 200 diagnostic
+        return {"ok": False, "error": f"invalid draft: {draft_error(exc)}"}
+    return (
+        await probe_artifact_provider(
+            draft,
+            storage_provider=request.app.state.storage_provider,
+        )
+    ).as_dict()
+
+
+@artifact_storage_helpers_router.post(
+    "/artifact_storage_providers/{provider_id}/_test",
+    responses=common_responses(404, 500),
+    summary="Test a saved artifact-storage provider with a live round trip.",
+)
+async def test_saved_artifact_storage_provider(
+    provider_id: str,
+    request: Request,
+) -> dict[str, Any]:
+    row = await _provider_storage(request).get(provider_id)
+    if row is None:
+        raise NotFoundError(
+            f"ArtifactStorageProvider {provider_id!r} does not exist",
+        )
+    return (
+        await probe_artifact_provider(
+            row,
+            storage_provider=request.app.state.storage_provider,
+        )
+    ).as_dict()
 
 
 @artifact_storage_helpers_router.get(

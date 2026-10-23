@@ -98,6 +98,7 @@ from primer.model.model_profile import ModelProfile
 from primer.common.log import redact_credentials
 from primer.model.chat import Tool, ToolCallResult, ToolExample, ToolTurnCapReached, TurnStreamFailure
 from primer.toolset._describe import make_tool
+from primer.toolset._system_artifact import artifact_store_tools
 from primer.toolset._helpers import err as _err, ok as _ok
 from primer.model.collection import Collection, Document
 from primer.model.except_ import (
@@ -980,6 +981,7 @@ def build_system_toolset(
     # ---- Provider probes: check a provider's models before it exists ---
     # They read no storage and no registry (nothing is stored), so they carry no per-build dependency.
     registry.update(probe_tools())
+    registry.update(artifact_store_tools(storage_provider=storage_provider))
 
     # ---- Toolset extras ---------------------------------------------
     # call_tool's meta-dispatch path enforces the same approval gate the
