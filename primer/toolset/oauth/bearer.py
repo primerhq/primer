@@ -7,6 +7,7 @@ from collections.abc import AsyncGenerator
 
 import httpx2
 
+from primer.model.except_ import ProviderError
 from primer.model.mcp_oauth import McpSignInRequiredError
 from primer.toolset.oauth.service import TOKEN_REJECTED, OAuthTarget, ToolsetOAuthService
 
@@ -24,7 +25,9 @@ class McpBearerAuth(httpx2.Auth):
     When the server rejects the refreshed token as well, the toolset is signed
     out (:meth:`ToolsetOAuthService.sign_out_rejected`, fenced on the version
     that holds that token), so its status stops saying connected and the next
-    call does not spend another refresh token (audit G4-11).
+    call does not spend another refresh token (audit G4-11). A client-credentials
+    toolset is marked ``error`` instead and this call fails as a temporary
+    provider error: the next call exchanges the credentials again.
     """
 
     requires_request_body = True
@@ -59,8 +62,14 @@ class McpBearerAuth(httpx2.Auth):
         if response.status_code == 401:
             try:
                 await self._service.sign_out_rejected(self._target, rejected=token)
-            except Exception:  # never raised into the SDK's task group; the call still fails as needs sign-in
+            except Exception:  # never raised into the SDK's task group; the call still fails
                 logger.warning("MCP toolset %s: the rejected token could not be signed out", self._target.toolset_id, exc_info=True)
+            if getattr(getattr(self._target, "oauth", None), "grant", None) == "client_credentials":
+                # The row is marked error, not signed out: the next call exchanges the client credentials again, with nobody to reconnect it.
+                self.failure = ProviderError(
+                    f"the MCP server {self._target.toolset_id} rejected a freshly issued access token; the next call fetches a new one"
+                )
+                return
             self.sign_in_required = str(McpSignInRequiredError(self._target.toolset_id, reason=TOKEN_REJECTED))
 
 

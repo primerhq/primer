@@ -54,8 +54,10 @@ A client-credentials toolset connects without a browser. Primer sends the
 configured client credentials to the discovered or configured token endpoint.
 For both grants, the shared access token is attached to every MCP request. A
 401 causes one refresh and one retry. If the server rejects the refreshed token
-as well, the toolset is signed out (`needs_sign_in`, reason `The MCP server
-rejected the access token.`) and needs an admin to reconnect it. Refresh runs
+as well, a browser-grant toolset is signed out (`needs_sign_in`, reason `The MCP
+server rejected the access token.`) and needs an admin to reconnect it; a
+client-credentials toolset shows `error` with that reason and tries a fresh
+exchange on its next call. Refresh runs
 under a lease shared across pods.
 
 Disconnect removes the shared sign-in for every caller and ends any sign-in
@@ -142,9 +144,10 @@ The toolset is ready for every caller once the shared status is `connected`.
   when it is on a private, loopback or link-local address (the start answers 400
   naming the URL). An operator whose authorization server is on a private
   network turns on `PRIMER_WORKSPACE_ALLOW_PRIVATE_URL_SOURCES`.
-- `oauth.resource_uri` must be on the MCP server's own origin (scheme, host and
-  port); a create or update that names another one is refused as a validation
-  error naming `config.config.oauth.resource_uri`. A sign-in also refuses a server
+- `oauth.resource_uri` must be the MCP server's URL or a parent of it on the same
+  origin (scheme, host and port), such as the origin itself; a create or update
+  that names another one (another origin, or a sibling path) is refused as a
+  validation error naming `config.config.oauth.resource_uri`. A sign-in also refuses a server
   whose protected-resource metadata describes another server.
 - Tokens, pending PKCE verifiers, and dynamically registered client secrets are
   encrypted. A static client secret typed into the toolset remains in the

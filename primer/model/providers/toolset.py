@@ -64,8 +64,8 @@ class OAuthConfig(BaseModel):
         default=None,
         description=(
             "RFC 8707 resource indicator, sent with the sign-in and token requests when the server publishes protected-resource metadata. "
-            "If None, defaults to the MCP server's full URL (the spec's canonical resource identifier). Must be on the MCP server's own "
-            "origin (scheme, host and port): a write that names another origin is refused."
+            "If None, defaults to the MCP server's full URL (the spec's canonical resource identifier). Must be that URL or a parent of it "
+            "on the same origin (scheme, host and port): a write that names another origin or a sibling path is refused."
         ),
     )
     static_client: OAuthClientCredentials | None = Field(

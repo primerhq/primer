@@ -169,28 +169,32 @@ def toolset_admin_reason(entity: Toolset, existing: Toolset | None = None) -> st
 #: field before the message; a harness: the refused template).
 RESOURCE_URI_FIELD = "config.config.oauth.resource_uri"
 RESOURCE_URI_PROBLEM = (
-    "oauth.resource_uri must be on the MCP server's own origin (the scheme, host and port of its url): the authorization server mints the token "
-    "for this resource, and the token is sent to the MCP server, so a resource elsewhere would ask for another server's token"
+    "oauth.resource_uri must be the MCP server's url or a parent of it on the same origin (scheme, host and port), such as the origin itself: "
+    "the authorization server mints the token for this resource, and the token is sent to the MCP server, so a resource elsewhere (another "
+    "origin, or another path of this one) would ask for another server's token"
 )
 
 
 def check_oauth_resource_uri(entity: Toolset) -> None:
-    """Refuse an http / sse MCP toolset whose ``oauth.resource_uri`` is not on the origin of its ``url`` (audit G4-07).
+    """Refuse an http / sse MCP toolset whose ``oauth.resource_uri`` is not its ``url`` or a parent of it on the same origin (audit G4-07; review L6
+    of #852).
 
     The RFC 8707 resource indicator says what the authorization server mints the token for, and the token then goes to the MCP URL. A resource on
-    another origin would ask for a token meant for another server and send it to this one (and a protected-resource document is accepted when it names
-    the configured resource, :func:`primer.toolset.oauth.protocol.discover`). Same origin is the scheme, host and port after the normalisation a client
-    does (:func:`primer.common.origin.origin_of`); a value that is not a URL is never on it. Raises
+    another origin, or on another path of this one (a sibling server), would ask for a token meant for another server and send it to this one (and a
+    protected-resource document is accepted when it names the configured resource, :func:`primer.toolset.oauth.protocol.discover`). The rule is the
+    one that document is held to (:func:`primer.toolset.oauth.protocol.is_resource_of`): the server's own URL in any equivalent spelling, or a
+    parent of it on its origin (scheme, host and port after the normalisation a client does); a value that is not a URL never is. Raises
     :class:`~primer.common.entity_checks.EntityCheckError` (``validation``, field :data:`RESOURCE_URI_FIELD`).
     """
+    from primer.toolset.oauth.protocol import is_resource_of  # noqa: PLC0415 - the OAuth client pulls in the MCP SDK
+
     config = getattr(entity.config, "config", None)
     if entity.provider != ToolsetProviderType.MCP or not isinstance(config, HttpConfig) or config.oauth is None:
         return
     resource = config.oauth.resource_uri
     if resource is None:
         return
-    origin = origin_of(resource)
-    if origin[0] != "url" or origin != origin_of(str(config.url)):
+    if origin_of(resource)[0] != "url" or not is_resource_of(resource, str(config.url)):
         raise EntityCheckError("validation", RESOURCE_URI_PROBLEM, code="invalid_resource_uri", field=RESOURCE_URI_FIELD)
 
 

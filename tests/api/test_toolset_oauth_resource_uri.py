@@ -40,19 +40,22 @@ def _refused_at_the_field(response) -> None:
     assert body["type"] == "/errors/validation-error"
     [error] = body["extensions"]["errors"]
     assert error["loc"] == LOC
-    assert "origin" in error["msg"] and "oauth.resource_uri" in error["msg"]
+    assert "parent" in error["msg"] and "oauth.resource_uri" in error["msg"]
 
 
 async def test_a_create_with_a_resource_uri_on_another_origin_is_refused_at_the_field(raw_client, app) -> None:
     await _admin(raw_client, app)
-    for other in ("https://other.example/mcp", "http://mcp.example/mcp", "https://mcp.example:8443/mcp", "not a url"):
+    for other in ("https://other.example/mcp", "http://mcp.example/mcp", "https://mcp.example:8443/mcp", "not a url",
+                  "https://mcp.example/tenants/1", "https://mcp.example/mcp-v2", "https://mcp.example/mcp/child", "https://mcp.example/mcp?t=2"):
         _refused_at_the_field(await raw_client.post("/v1/toolsets", params=NO_PROBE, json=_body(other)))
     assert await app.state.storage_provider.get_storage(Toolset).get("kb") is None
 
 
-async def test_a_resource_uri_on_the_servers_origin_is_kept(raw_client, app) -> None:
+async def test_the_servers_url_or_a_parent_of_it_is_kept(raw_client, app) -> None:
+    """Review L6 of #852: the server's own URL (any equivalent spelling) or a parent of it on its origin; a sibling path is another server."""
     await _admin(raw_client, app)
-    for same, url in (("https://MCP.example:443/tenants/1", "https://mcp.example/mcp"), ("https://mcp.example/mcp", "https://user:pw@mcp.example/mcp")):
+    for same, url in (("https://MCP.example:443/", "https://mcp.example/mcp"), ("https://mcp.example/mcp", "https://user:pw@mcp.example/mcp"),
+                      ("https://mcp.example/a", "https://mcp.example/a/mcp"), ("HTTPS://mcp.example/a/mcp/", "https://mcp.example/a/mcp")):
         response = await raw_client.post("/v1/toolsets", params=NO_PROBE, json=_body(same, url))
         assert response.status_code == 201, response.text
         assert (await app.state.storage_provider.get_storage(Toolset).get("kb")).config.config.oauth.resource_uri == same
@@ -81,9 +84,9 @@ async def test_the_system_tools_refuse_it_naming_the_field(app) -> None:
     error = json.loads(created.output)
     assert error["type"] == "validation-error" and "config.config.oauth.resource_uri" in error["message"], created.output
 
-    ok = await tools.call(tool_name="create_toolset", arguments={"entity": _body("https://mcp.example/r")}, ctx=caller("admin"))
+    ok = await tools.call(tool_name="create_toolset", arguments={"entity": _body("https://mcp.example")}, ctx=caller("admin"))
     assert not ok.is_error, ok.output
-    updated = await tools.call(tool_name="update_toolset", arguments={"id": "kb", "entity": _body("https://other.example/r")}, ctx=caller("admin"))
+    updated = await tools.call(tool_name="update_toolset", arguments={"id": "kb", "entity": _body("https://mcp.example/r")}, ctx=caller("admin"))
     assert updated.is_error and json.loads(updated.output)["type"] == "validation-error"
 
 

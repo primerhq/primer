@@ -79,6 +79,17 @@ async def test_a_second_401_after_refresh_records_sign_in() -> None:
     assert service.sign_outs == ["tok-2"], "the refreshed token the server also rejected signs the toolset out (audit G4-11)"
 
 
+async def test_a_second_401_of_a_client_credentials_toolset_is_a_temporary_failure() -> None:
+    """Review L1 of #852: the row is marked error, not signed out, so this call fails as a provider error and the next one exchanges again."""
+    service = _Service()
+    target = SimpleNamespace(toolset_id="kb", oauth=SimpleNamespace(grant="client_credentials"))
+    auth = McpBearerAuth(service, target, "tok-1")
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(lambda request: httpx2.Response(401)), auth=auth) as client:
+        response = await client.get("https://mcp.example/mcp")
+    assert response.status_code == 401 and service.sign_outs == ["tok-2"]
+    assert auth.sign_in_required is None and isinstance(auth.failure, ProviderError) and "fetches a new one" in str(auth.failure)
+
+
 async def test_a_first_401_does_not_sign_out() -> None:
     seen: list[str] = []
 
