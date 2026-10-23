@@ -89,7 +89,7 @@ def test_the_sign_in_line_says_how_this_session_signed_in(status, text):
 PRELUDE = (ROOT / "ui" / "foundation" / "api.js").read_text(encoding="utf-8") + r"""
 var window = globalThis;
 var DATA = {
-  "auth-status": {
+  "nv-shell:auth-status": {
     authenticated: true,
     username: "ana",
     role: "admin",
@@ -248,10 +248,17 @@ def test_the_title_is_profile_alone(page):  # design D7: the title that joined P
 
 
 def test_the_identity_card_shows_name_role_and_how_you_signed_in(page):
-    page.js('DATA["auth-status"].sign_in_method = "sso"; DATA["auth-status"].sign_in_provider = "Okta"')
+    page.js('DATA["nv-shell:auth-status"].sign_in_method = "sso"; DATA["nv-shell:auth-status"].sign_in_provider = "Okta"')
     page.mount("NV_SysProfile")
     assert page.text_of("nv-sys-identity-name") == "ana" and page.text_of("nv-sys-identity-role") == "admin"
     assert page.text_of("nv-sys-identity-sign-in") == "Signed in with single sign-on (Okta)"
+
+
+def test_an_unknown_username_is_neutral_and_is_not_passed_to_api_keys(page):
+    page.js("__con.username = null")
+    page.mount("NV_SysProfile")
+    assert page.text_of("nv-sys-identity-name") == "Signed-in account"
+    assert page.data("LOG.at") == {"mode": "personal", "username": None}
 
 
 def test_the_password_section_has_current_new_and_confirm(page):

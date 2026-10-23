@@ -772,10 +772,11 @@ function NV_signInText(status) {
 function NV_SysProfile() {
   var con = NV_useConsole();
   var authStatus = window.primerApi.useResource(
-    "auth-status",
+    "nv-shell:auth-status",
     function (signal) {
       return window.primerApi.apiFetch("GET", "/auth/status", null, { signal: signal });
-    }
+    },
+    { pollMs: 2000 }
   );
   var curState = React.useState("");
   var cur = curState[0];
@@ -796,6 +797,7 @@ function NV_SysProfile() {
   var busy = busyState[0];
   var setBusy = busyState[1];
 
+  var displayName = con.username || "Signed-in account";
   var initials = String(con.username || "?").slice(0, 2).toLowerCase();
   var signInText = NV_signInText(authStatus && authStatus.data);
 
@@ -840,7 +842,7 @@ function NV_SysProfile() {
         <div className="nv-avatar">{initials}</div>
         <div style={{ minWidth: 0, flex: 1 }}>
           <div className="nv-sys-identity-name" data-testid="nv-sys-identity-name">
-            {con.username}
+            {displayName}
           </div>
           <div className="nv-sys-identity-facts">
             <span data-testid="nv-sys-identity-role">{con.role}</span>
