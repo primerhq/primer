@@ -18,6 +18,7 @@ the tool descriptions, and pinned by a test.
 from __future__ import annotations
 
 from primer.common.entity_checks import EntityCheckError
+from primer.common.origin import origin_of
 from primer.model.common import preserve_masked_secrets
 from primer.model.except_ import ValidationError as PrimerValidationError
 from primer.model.provider import HttpConfig, Toolset, ToolsetProviderType, TransportType
@@ -164,14 +165,46 @@ def toolset_admin_reason(entity: Toolset, existing: Toolset | None = None) -> st
     return None
 
 
+#: Where a toolset's OAuth resource indicator sits in a toolset body: a refusal names it (REST: the ``loc`` of the 422 under ``body``; the tools: the
+#: field before the message; a harness: the refused template).
+RESOURCE_URI_FIELD = "config.config.oauth.resource_uri"
+RESOURCE_URI_PROBLEM = (
+    "oauth.resource_uri must be on the MCP server's own origin (the scheme, host and port of its url): the authorization server mints the token "
+    "for this resource, and the token is sent to the MCP server, so a resource elsewhere would ask for another server's token"
+)
+
+
+def check_oauth_resource_uri(entity: Toolset) -> None:
+    """Refuse an http / sse MCP toolset whose ``oauth.resource_uri`` is not on the origin of its ``url`` (audit G4-07).
+
+    The RFC 8707 resource indicator says what the authorization server mints the token for, and the token then goes to the MCP URL. A resource on
+    another origin would ask for a token meant for another server and send it to this one (and a protected-resource document is accepted when it names
+    the configured resource, :func:`primer.toolset.oauth.protocol.discover`). Same origin is the scheme, host and port after the normalisation a client
+    does (:func:`primer.common.origin.origin_of`); a value that is not a URL is never on it. Raises
+    :class:`~primer.common.entity_checks.EntityCheckError` (``validation``, field :data:`RESOURCE_URI_FIELD`).
+    """
+    config = getattr(entity.config, "config", None)
+    if entity.provider != ToolsetProviderType.MCP or not isinstance(config, HttpConfig) or config.oauth is None:
+        return
+    resource = config.oauth.resource_uri
+    if resource is None:
+        return
+    origin = origin_of(resource)
+    if origin[0] != "url" or origin != origin_of(str(config.url)):
+        raise EntityCheckError("validation", RESOURCE_URI_PROBLEM, code="invalid_resource_uri", field=RESOURCE_URI_FIELD)
+
+
 def check_toolset_on_create(entity: Toolset) -> None:
-    """The create-time checks a tool can run: a python toolset's source must register."""
+    """The create-time checks a tool can run: an OAuth resource indicator on the server's origin, and a python toolset's source must register."""
+    check_oauth_resource_uri(entity)
     if entity.provider == ToolsetProviderType.PYTHON:
         check_python_toolset(entity)
 
 
 def check_toolset_on_update(entity: Toolset, existing: Toolset) -> None:
-    """The update-time checks, in the router's order: the source must register, then ``source_version`` is set by the server."""
+    """The update-time checks, in the router's order: an OAuth resource indicator on the server's origin; for a python toolset, the source must
+    register, then ``source_version`` is set by the server."""
+    check_oauth_resource_uri(entity)
     if entity.provider != ToolsetProviderType.PYTHON:
         return
     check_python_toolset(entity)
@@ -179,6 +212,8 @@ def check_toolset_on_update(entity: Toolset, existing: Toolset) -> None:
 
 
 __all__ = [
+    "RESOURCE_URI_FIELD",
+    "check_oauth_resource_uri",
     "check_python_toolset",
     "check_toolset_on_create",
     "check_toolset_on_update",

@@ -174,6 +174,52 @@ async def test_discover_without_protected_resource_metadata_uses_the_server_orig
     assert found.metadata.token_endpoint == "https://m.example/token", "a root issuer with a trailing slash names the same origin"
 
 
+async def test_a_protected_resource_document_for_another_server_is_refused(http):
+    """Audit G4-07, RFC 9728 section 3.3: an MCP server may not aim its 401 at another server's metadata. A document whose ``resource`` is not this
+    server is not used, and the authorization server it names is never asked."""
+    other = {**PRM_DOC, "resource": "https://another-server.example/mcp"}
+    with respx.mock(assert_all_called=False) as router:
+        router.get("https://another-server.example/prm").mock(return_value=httpx.Response(200, json=other))
+        as_doc = router.get(AS_OAUTH).mock(return_value=httpx.Response(200, json=AS_DOC))
+        with pytest.raises(BadRequestError, match=r"is for the resource https://another-server\.example/mcp, not https://m\.example/mcp.*RFC 9728"):
+            await discover(MCP, www_authenticate='Bearer resource_metadata="https://another-server.example/prm"', http=http)
+    assert not as_doc.called
+
+
+@pytest.mark.parametrize("resource", [None, "", "https://m.example/other", "https://m.example/mcp-v2", "http://m.example/mcp", "https://m.example:8443/mcp",
+                                      "https://evil.example", "https://m.example/mcp?tenant=2"])
+async def test_a_protected_resource_document_for_any_other_resource_is_refused(http, resource):
+    """No resource, a sibling path, another scheme or port, another host, another query: none is this server's resource."""
+    document = {key: value for key, value in PRM_DOC.items() if key != "resource"} if resource is None else {**PRM_DOC, "resource": resource}
+    with respx.mock(assert_all_called=False) as router:
+        router.get(PRM_PATH).mock(return_value=httpx.Response(200, json=document))
+        router.get(AS_OAUTH).mock(return_value=httpx.Response(200, json=AS_DOC))
+        with pytest.raises(BadRequestError, match="RFC 9728 section 3.3"):
+            await discover(MCP, www_authenticate=None, http=http)
+
+
+@pytest.mark.parametrize("resource", ["https://m.example/mcp", "HTTPS://M.Example/mcp/", "https://m.example:443/mcp", "https://m.example", "https://m.example/"])
+async def test_this_servers_resource_and_a_same_origin_parent_are_accepted(http, resource):
+    """The server's own URL in any equivalent spelling, and a parent of it on the same origin (a document that covers the whole origin, as many
+    servers publish; the MCP SDK's client accepts the same, ``mcp.shared.auth_utils.check_resource_allowed``)."""
+    with respx.mock(assert_all_called=False) as router:
+        router.get(PRM_PATH).mock(return_value=httpx.Response(200, json={**PRM_DOC, "resource": resource}))
+        router.get(AS_OAUTH).mock(return_value=httpx.Response(200, json=AS_DOC))
+        found = await discover(MCP, www_authenticate=None, http=http)
+    assert found.protected_resource.resource == resource and found.metadata.issuer == ISSUER
+
+
+async def test_the_configured_resource_uri_is_accepted(http):
+    configured = "https://m.example/api/tenant-1"
+    with respx.mock(assert_all_called=False) as router:
+        router.get(PRM_PATH).mock(return_value=httpx.Response(200, json={**PRM_DOC, "resource": configured}))
+        router.get(AS_OAUTH).mock(return_value=httpx.Response(200, json=AS_DOC))
+        found = await discover(MCP, www_authenticate=None, http=http, resource_uri=configured)
+        with pytest.raises(BadRequestError, match="RFC 9728"):
+            await discover(MCP, www_authenticate=None, http=http)
+    assert found.protected_resource.resource == configured
+
+
 async def test_metadata_naming_another_issuer_is_refused(http):
     with respx.mock(assert_all_called=False) as router:
         router.get(PRM_PATH).mock(return_value=httpx.Response(200, json=PRM_DOC))

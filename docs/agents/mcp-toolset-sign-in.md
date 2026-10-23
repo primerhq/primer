@@ -137,6 +137,10 @@ The toolset is ready for every caller once the shared status is `connected`.
   Use separate toolsets when upstream identities need different privileges.
 - Changing only extra HTTP headers does not sign out an OAuth toolset. Changing
   the URL or any OAuth setting does.
+- `oauth.resource_uri` must be on the MCP server's own origin (scheme, host and
+  port); a create or update that names another one is refused as a validation
+  error naming `config.config.oauth.resource_uri`. A sign-in also refuses a server
+  whose protected-resource metadata describes another server.
 - Tokens, pending PKCE verifiers, and dynamically registered client secrets are
   encrypted. A static client secret typed into the toolset remains in the
   toolset row under the normal masking and origin-binding rules.
