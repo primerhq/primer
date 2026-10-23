@@ -477,9 +477,10 @@ async def test_the_apply_description_teaches_the_whole_language(provider):
     for name in CATALOG:
         assert signature(name) in tool.description, f"the description does not teach {name}"
     for phrase in ("`id = Type(args)` creates or replaces an element", "`id += [a, b]` appends children", "`del a, b` removes elements",
-                   '"""triple quotes"""', "A Button click wakes you with a <canvas_event> message", "a Select change does not unless wake=true",
+                   '"""triple quotes"""', "A Button click wakes canvas_wait", "a Select change does not unless wake=true",
                    "every error names its line and the expected signature: fix those lines and resend."):
         assert phrase in tool.description, phrase
+    assert "<canvas_event>" not in tool.description
     assert "Example: " in tool.description and "base_rev refuses the batch if the user changed the canvas since rev 1" in tool.description
 
 
@@ -521,7 +522,16 @@ def test_the_id_pattern_is_the_languages_id_rule():
 # ---- the registrations ---------------------------------------------------------------------------------------------------------------
 
 
-async def test_canvas_is_a_reserved_builtin_resolved_without_storage(fake_storage_provider):
+async def _enable_canvas_tools(storage_provider) -> None:
+    from primer.canvas.settings import write_canvas_settings
+    from primer.model.canvas import CANVAS_SETTINGS_ID, CanvasSettings
+
+    await write_canvas_settings(storage_provider, CanvasSettings(id=CANVAS_SETTINGS_ID, agent_tools_enabled=True))
+
+
+async def test_canvas_is_a_reserved_builtin_resolved_when_enabled(fake_storage_provider):
+    from primer.model.except_ import NotFoundError
+
     assert "canvas" in RESERVED_TOOLSET_IDS and CANVAS_TOOLSET_ID == "canvas"
     p = build_canvas_toolset(storage_provider=fake_storage_provider)
     reg = ProviderRegistry(
@@ -530,11 +540,49 @@ async def test_canvas_is_a_reserved_builtin_resolved_without_storage(fake_storag
         cross_encoder_factory=lambda p: object(), toolset_factory=lambda t: object(),
         canvas_toolset_provider=p,
     )
+    with pytest.raises(NotFoundError):
+        await reg.get_toolset("canvas")
+    await _enable_canvas_tools(fake_storage_provider)
     assert await reg.get_toolset("canvas") is p
 
 
 @pytest.mark.asyncio
-async def test_the_catalogue_lists_canvas_last_and_opens_it(client):
+async def test_canvas_toolset_is_hidden_and_unresolvable_by_default(client, app, fake_storage_provider):
+    from primer.agent.agent_checks import missing_toolset_ids
+    from primer.model.except_ import NotFoundError
+    from primer.model.provider import Toolset
+    from primer.toolset.system import build_system_toolset
+
+    ids = [it["id"] for it in (await client.get("/v1/toolsets/builtin")).json()["items"]]
+    assert "canvas" not in ids
+    assert (await client.get("/v1/toolsets/canvas")).status_code == 404
+    grouped = {it["id"]: it for it in (await client.get("/v1/tools")).json()["items"]}
+    assert "canvas" not in grouped
+    flat = {item["id"] for item in (await client.get("/v1/tools/catalogue")).json()["items"]}
+    assert not any(tid.startswith("canvas__") for tid in flat)
+    with pytest.raises(NotFoundError):
+        await app.state.provider_registry.get_toolset("canvas")
+
+    sys_ts = build_system_toolset(storage_provider=fake_storage_provider, provider_registry=app.state.provider_registry)
+    desc = await sys_ts.call(tool_name="describe_tool", arguments={"toolset_id": "canvas", "tool_name": "canvas_get"})
+    assert desc.is_error and json.loads(desc.output)["type"] == "not-found"
+    called = await sys_ts.call(tool_name="call_tool", arguments={"toolset_id": "canvas", "tool_name": "canvas_get", "arguments": {}})
+    assert called.is_error and json.loads(called.output)["type"] == "not-found"
+
+    missing = await missing_toolset_ids(
+        ["canvas__canvas_get", "system__call_tool"],
+        toolsets=fake_storage_provider.get_storage(Toolset),
+        storage_provider=fake_storage_provider,
+    )
+    assert missing == ["canvas"]
+
+
+@pytest.mark.asyncio
+async def test_the_catalogue_lists_canvas_last_and_opens_it_when_enabled(client, fake_storage_provider):
+    from primer.agent.agent_checks import missing_toolset_ids
+    from primer.model.provider import Toolset
+
+    await _enable_canvas_tools(fake_storage_provider)
     ids = [it["id"] for it in (await client.get("/v1/toolsets/builtin")).json()["items"]]
     assert ids[-1] == "canvas" and len(ids) == 10
     detail = (await client.get("/v1/toolsets/canvas")).json()
@@ -547,17 +595,25 @@ async def test_the_catalogue_lists_canvas_last_and_opens_it(client):
     assert badges == {
         "canvas_get": (False, True, "user", True), "canvas_apply": (False, True, "user", False), "canvas_wait": (True, True, "user", True),
     }
+    missing = await missing_toolset_ids(
+        ["canvas__canvas_get"],
+        toolsets=fake_storage_provider.get_storage(Toolset),
+        storage_provider=fake_storage_provider,
+    )
+    assert missing == []
 
 
 @pytest.mark.asyncio
-async def test_the_flat_tool_catalogue_lists_the_canvas_tools(client):
+async def test_the_flat_tool_catalogue_lists_the_canvas_tools_when_enabled(client, fake_storage_provider):
+    await _enable_canvas_tools(fake_storage_provider)
     flat = {item["id"] for item in (await client.get("/v1/tools/catalogue")).json()["items"]}
     assert {"canvas__canvas_get", "canvas__canvas_apply", "canvas__canvas_wait"} <= flat
 
 
 @pytest.mark.asyncio
-async def test_the_app_builds_the_toolset_the_registry_serves(app):
+async def test_the_app_builds_the_toolset_the_registry_serves_when_enabled(app, fake_storage_provider):
     assert isinstance(app.state.canvas_toolset, CanvasToolsetProvider)
+    await _enable_canvas_tools(fake_storage_provider)
     assert await app.state.provider_registry.get_toolset("canvas") is app.state.canvas_toolset
 
 

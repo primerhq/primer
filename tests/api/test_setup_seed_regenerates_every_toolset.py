@@ -14,7 +14,10 @@ from primer.bootstrap.seed import builtin_toolset_providers
 from primer.model.except_ import NotFoundError
 
 
-async def test_seed_regenerates_with_every_builtin_toolset(client, monkeypatch):
+async def test_seed_regenerates_with_every_builtin_toolset(client, fake_storage_provider, monkeypatch):
+    from primer.model.canvas import CANVAS_SETTINGS_ID, CanvasSettings
+
+    await fake_storage_provider.get_storage(CanvasSettings).create(CanvasSettings(id=CANVAS_SETTINGS_ID, agent_tools_enabled=True))
     seen = {}
 
     async def spy(storage_provider, *, toolset_providers, **kwargs):

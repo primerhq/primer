@@ -1803,6 +1803,16 @@ async def _internal_search_on(storage_provider) -> bool | None:
         return None
 
 
+async def _canvas_tools_on(storage_provider) -> bool:
+    """Whether ``CanvasSettings.agent_tools_enabled`` exposes the built-in ``canvas`` toolset."""
+    from primer.canvas.settings import read_canvas_settings
+
+    try:
+        return (await read_canvas_settings(storage_provider)).agent_tools_enabled
+    except Exception:
+        return False
+
+
 # A dedicated router registered BEFORE toolset_router in app.py so that
 # GET /toolsets/builtin is matched by this literal route rather than
 # being captured as toolset_id="builtin" by the CRUD GET-by-id.
@@ -1821,8 +1831,11 @@ async def list_builtin_toolsets(
     item also carries ``internal_search`` (tri-state, see
     :func:`_internal_search_on`)."""
     ic = await _internal_search_on(storage_provider)
+    canvas_on = await _canvas_tools_on(storage_provider)
     items = []
     for spec in _BUILTIN_TOOLSETS:
+        if spec["id"] == "canvas" and not canvas_on:
+            continue
         entry = {**spec, "available": True}
         if spec["id"] == "collections":
             entry["internal_search"] = ic
@@ -1856,6 +1869,12 @@ async def get_toolset_with_builtin_shim(
     """
     from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
     from primer.model.provider import Toolset
+
+    if toolset_id == "canvas" and not await _canvas_tools_on(storage_provider):
+        from primer.model.except_ import NotFoundError
+        raise NotFoundError(
+            f"Toolset {toolset_id!r} does not exist"
+        )
 
     if toolset_id in RESERVED_TOOLSET_IDS:
         spec = next(
@@ -1917,8 +1936,11 @@ async def list_all_tools(
 
     # 1. Built-in toolsets (every id in _BUILTIN_TOOLSETS).
     ic = await _internal_search_on(storage_provider)
+    canvas_on = await _canvas_tools_on(storage_provider)
     for spec in _BUILTIN_TOOLSETS:
         tid = spec["id"]
+        if tid == "canvas" and not canvas_on:
+            continue
         entry: dict = {
             "id": tid,
             "builtin": True,
