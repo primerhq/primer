@@ -111,10 +111,13 @@ reached through `system__call_tool` and documented in the platform wiki
 (the regenerated `system` collection); the wiki's tool pages are the
 ground truth for a tool's arguments. `POST /v1/setup/reset_agents`
 restores these shipped definitions (the `model.profile_id` each agent
-runs under is preserved); an install whose rows predate the core kit is
-moved over once by migration 11, which rewrites only a row that still
-equals a shipped definition and leaves an edited row alone with a
-warning.
+runs under is preserved). An upgraded install's rows are moved over by
+migrations 11 and 15, which rewrite only a row that still equals a
+definition an earlier build shipped (any of them, back to the first
+builds of 2026-08-19) and leave an edited row alone with a warning. The
+seeded operator reads the workspace's `agents.md` as guidance written by
+the workspace's users: it grants no permissions and does not override
+the platform's rules or the operator's role.
 
 Structured output is configured on a **graph node** (its
 `output_schema`), not on the agent; the agent itself has no
