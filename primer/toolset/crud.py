@@ -101,8 +101,8 @@ DEFAULT_GATED_TOOLS: tuple[tuple[str, str], ...] = (
 )
 
 
-# What the approval card of each default-gated tool may show (design note 01a11cd3-66b0). The nine are the tools bootstrap/seed.py gates with a required policy, so
-# these are the cards a fresh install shows. Each path names WHAT is created or changed; the free text that can hold a pasted secret is not listed, so it is withheld:
+# What the approval card of each default-gated tool may show (design note 01a11cd3-66b0). bootstrap/seed.py gates these nine with a required policy, and their twins
+# (CRUD_TWINS, which take the same paths through apply_twin_previews), so these are the cards a fresh install shows. Each path names WHAT is created or changed; the free text that can hold a pasted secret is not listed, so it is withheld:
 # an agent's system_prompt, compaction_prompt, description and response_format (a schema with free text inside), a graph's and a node's description and templates and
 # arguments, a trigger's description, a webhook trigger's token and hmac_secret, a Python toolset's source. A description is free text a person pastes a key into as
 # easily as a prompt, so no description is listed.
