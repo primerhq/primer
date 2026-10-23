@@ -872,6 +872,18 @@ async def run_one_session_turn(
         scoped_tool_call_id = coalesce_state.scoped_call_ids.get(
             (None, park.tool_call_id)
         )
+        # Ticket 01a15327: the park left its tool round unfinished. The answers of the calls before the one that asked
+        # to wait were recorded as the loop let the park go (their scoped ids are popped by now); the calls after it have
+        # not run, and the resume runs them. Their scoped ids are still in coalesce_state (nothing answered them), so the
+        # results the resume writes pair with the TOOL_CALL records this turn wrote.
+        from primer.agent.parked_round import ParkedRound
+
+        parked_round = ParkedRound.of_park(park)
+        remaining_scoped_call_ids = {
+            call.id: scoped
+            for call in parked_round.remaining
+            if (scoped := coalesce_state.scoped_call_ids.get((None, call.id))) is not None
+        }
 
         # Stamp parked_at_iso into resume_metadata so the resume hook can
         # compute elapsed without a separate read.
@@ -1004,6 +1016,9 @@ async def run_one_session_turn(
             # that disagreed with the parked one would be a silent
             # mid-turn capability change.
             client_tools_attached=_has_client_toolset(executor),
+            # The round the park left (see above): the resume answers every call of it.
+            **parked_round.stored_fields(),
+            remaining_scoped_call_ids=remaining_scoped_call_ids,
         )
 
         logger.info(

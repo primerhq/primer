@@ -157,6 +157,16 @@ class ParkedState:
     # the raw id in that case, exactly today's behaviour. Optional so
     # pre-existing blobs load without a schema-version bump.
     scoped_tool_call_id: str | None = None
+    # Ticket 01a15327: the tool round the park left unfinished (``primer.agent.parked_round.ParkedRound``). The model can ask for several
+    # tool calls in one round, and the park leaves at the one that asked to wait: ``completed_results`` are the answers of the round's calls
+    # BEFORE it (ToolResultPart JSON, in order; their records were written as the turn parked), ``remaining_calls`` the round's calls AFTER
+    # it (ToolCallPart JSON, in order; not run). The resume runs the remaining calls and answers EVERY call of the round in one tool message.
+    # ``remaining_scoped_call_ids`` maps a remaining call's raw provider id to the scoped id of its durable TOOL_CALL record, so the result
+    # the resume writes pairs with it (the same doctrine as ``scoped_tool_call_id``). ``None`` for a park written before these fields
+    # existed: its round is empty and the parked call alone is answered, as before. Optional, so no schema-version bump.
+    completed_results: list[dict[str, Any]] | None = None
+    remaining_calls: list[dict[str, Any]] | None = None
+    remaining_scoped_call_ids: dict[str, str] | None = None
 
     def to_jsonable(self) -> dict[str, Any]:
         """Render to a JSON-safe dict for persistence in sessions.data."""
@@ -187,6 +197,13 @@ class ParkedState:
             "node_tool_call_seq": (
                 dict(self.node_tool_call_seq)
                 if self.node_tool_call_seq is not None
+                else None
+            ),
+            "completed_results": _list_or_none(self.completed_results),
+            "remaining_calls": _list_or_none(self.remaining_calls),
+            "remaining_scoped_call_ids": (
+                dict(self.remaining_scoped_call_ids)
+                if self.remaining_scoped_call_ids is not None
                 else None
             ),
         }
@@ -277,7 +294,20 @@ class ParkedState:
                 if data.get("node_tool_call_seq") is not None
                 else None
             ),
+            # Absent in a blob written before the round was carried (ticket 01a15327): None, an empty round.
+            completed_results=_list_or_none(data.get("completed_results")),
+            remaining_calls=_list_or_none(data.get("remaining_calls")),
+            remaining_scoped_call_ids=(
+                dict(data["remaining_scoped_call_ids"])
+                if data.get("remaining_scoped_call_ids") is not None
+                else None
+            ),
         )
+
+
+def _list_or_none(value: "list[Any] | None") -> "list[Any] | None":
+    """A copy of a stored list field, ``None`` kept as ``None`` (a park written before the field existed)."""
+    return list(value) if value is not None else None
 
 
 # ===========================================================================
