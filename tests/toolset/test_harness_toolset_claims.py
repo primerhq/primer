@@ -70,7 +70,7 @@ class TestTheOperationBecomesClaimable:
         state, operation = _OPERATIONS[tool]
         harness = _make_harness(sp, **state)
 
-        result = await claiming_toolset.call(tool_name=tool, arguments={"id": harness.id})
+        result = await claiming_toolset.call(tool_name=tool, arguments={"id": harness.id, "overrides": harness.overrides})
 
         assert not result.is_error, result.output
         assert _result(result)["pending_operation"] == operation.value
@@ -117,7 +117,7 @@ class TestDirectionIsGuardedLikeTheRoutes:
     async def test_an_inbound_operation_on_an_outbound_harness_is_refused(self, tool, toolset, sp) -> None:
         harness = _make_harness(sp, direction=HarnessDirection.OUTBOUND)
 
-        result = await toolset.call(tool_name=tool, arguments={"id": harness.id})
+        result = await toolset.call(tool_name=tool, arguments={"id": harness.id, "overrides": harness.overrides})
 
         assert result.is_error
         assert _result(result)["type"] == "direction-mismatch"

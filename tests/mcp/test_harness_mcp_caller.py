@@ -30,7 +30,7 @@ async def _call(fake_storage_provider, tool: str, actor: Principal):
     await update_exposure(enabled=True, allowed_tools=[scoped], updated_by="admin", deps=deps)
     token = current_actor.set(actor)
     try:
-        return await invoke_exposed(scoped_id=scoped, arguments={"id": "hns_1"}, principal=actor.id, actor=actor, deps=deps)
+        return await invoke_exposed(scoped_id=scoped, arguments={"id": "hns_1", "overrides": {}}, principal=actor.id, actor=actor, deps=deps)
     finally:
         current_actor.reset(token)
 

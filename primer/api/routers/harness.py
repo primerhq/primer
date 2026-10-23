@@ -29,7 +29,7 @@ from primer.api.deps import get_claim_engine, get_event_bus, get_storage_provide
 from primer.api.errors import common_responses
 from primer.api.pagination import parse_page
 from primer.harness.enqueue import announce_enqueued
-from primer.harness.hashes import hash_overrides
+from primer.harness.hashes import hash_overrides, operation_input_digests
 from primer.harness.outbound import (
     OutboundBuildError,
     build_bundle_targz,
@@ -645,6 +645,8 @@ async def install_harness(
 
     harness.pending_operation = HarnessOperation.INSTALL
     harness.operation_requested_by = _requested_by(request)
+    # What this install is asked for: the worker refuses it when the inputs change before it runs (ticket 01a16a29).
+    harness.operation_inputs = operation_input_digests(harness)
     updated = await storage.update(harness)
     await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=engine)
     return JSONResponse(
@@ -712,6 +714,7 @@ async def sync_harness(
 
     harness.pending_operation = HarnessOperation.SYNC
     harness.operation_requested_by = _requested_by(request)
+    harness.operation_inputs = operation_input_digests(harness)
     updated = await storage.update(harness)
     await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=engine)
     return JSONResponse(

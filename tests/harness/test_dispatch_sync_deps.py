@@ -29,6 +29,7 @@ from primer.model.harness import (
     HarnessRendering,
     HarnessStatus,
 )
+from tests._support.harness_ops import stamped
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +187,7 @@ async def _fetch_and_install(deps, harness_storage, harness_id: str) -> None:
     assert error_json is None, error_json
     fetched = await harness_storage.get(harness_id)
     assert fetched is not None
-    _next, error_json = await _do_install(deps, fetched)
+    _next, error_json = await _do_install(deps, stamped(fetched))
     assert error_json is None, error_json
 
 
@@ -201,7 +202,7 @@ async def _refetch_and_sync(deps, harness_storage, harness_id: str) -> None:
     assert error_json is None, error_json
     refetched = await harness_storage.get(harness_id)
     assert refetched is not None
-    _next, error_json = await _do_sync(deps, refetched)
+    _next, error_json = await _do_sync(deps, stamped(refetched))
     assert error_json is None, error_json
 
 

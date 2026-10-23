@@ -29,6 +29,7 @@ from primer.model.harness import (
     HarnessRendering,
     HarnessStatus,
 )
+from tests._support.harness_ops import stamped
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +210,7 @@ async def test_install_parent_with_one_dep_creates_both_entity_sets(
     assert len(fetched.dependencies_resolved) == 1
 
     # Step 2: install
-    next_status, error_json = await _do_install(deps, fetched)
+    next_status, error_json = await _do_install(deps, stamped(fetched))
     assert error_json is None, error_json
     assert next_status == HarnessStatus.INSTALLED
 
@@ -269,7 +270,7 @@ async def test_install_uninstall_removes_all_including_sub_entities(
     assert error_json is None, error_json
 
     fetched = await harness_storage.get("h-uninstall")
-    next_status, error_json = await _do_install(deps, fetched)
+    next_status, error_json = await _do_install(deps, stamped(fetched))
     assert error_json is None, error_json
 
     # Pre-flight: both rows exist
@@ -340,7 +341,7 @@ async def test_install_cross_harness_id_collision(
     assert error_json is None, error_json
 
     fetched = await harness_storage.get("h-y")
-    next_status, error_json = await _do_install(deps, fetched)
+    next_status, error_json = await _do_install(deps, stamped(fetched))
 
     assert next_status == HarnessStatus.ERROR
     assert error_json is not None

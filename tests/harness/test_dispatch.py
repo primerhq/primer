@@ -17,6 +17,7 @@ from primer.bus.in_memory import InMemoryEventBus
 from primer.harness.dispatch import HarnessDispatchDeps, run_one_harness_operation, sweep_harnesses
 from primer.model.agent import Agent
 from primer.model.harness import Harness, HarnessOperation, HarnessRendering, HarnessStatus
+from tests._support.harness_ops import enqueued
 
 # ---------------------------------------------------------------------------
 # Local bare-repo fixture seeded with harness files
@@ -199,9 +200,7 @@ async def test_install_happy_path(fake_storage_provider, bare_repo):
     fetched = await harness_storage.get("h3")
     assert fetched.status == HarnessStatus.READY
 
-    fetched = fetched.model_copy(update={
-        "pending_operation": HarnessOperation.INSTALL,
-    })
+    fetched = enqueued(fetched, HarnessOperation.INSTALL)
     await harness_storage.update(fetched)
 
     await run_one_harness_operation(deps, harness_id="h3", worker_id="w1")
@@ -247,10 +246,7 @@ async def test_install_invalid_overrides(fake_storage_provider, bare_repo):
 
     # Now set invalid overrides (missing required profile_id) and install
     fetched = await harness_storage.get("h4")
-    fetched = fetched.model_copy(update={
-        "overrides": {},  # missing required profile_id
-        "pending_operation": HarnessOperation.INSTALL,
-    })
+    fetched = enqueued(fetched, HarnessOperation.INSTALL, overrides={})  # missing required profile_id
     await harness_storage.update(fetched)
 
     await run_one_harness_operation(deps, harness_id="h4", worker_id="w1")
@@ -280,9 +276,7 @@ async def test_sync_noop_fast_path(fake_storage_provider, bare_repo):
     await run_one_harness_operation(deps, harness_id="h5", worker_id="w1")
 
     fetched = await harness_storage.get("h5")
-    fetched = fetched.model_copy(update={
-        "pending_operation": HarnessOperation.INSTALL,
-    })
+    fetched = enqueued(fetched, HarnessOperation.INSTALL)
     await harness_storage.update(fetched)
     await run_one_harness_operation(deps, harness_id="h5", worker_id="w1")
 
@@ -290,9 +284,7 @@ async def test_sync_noop_fast_path(fake_storage_provider, bare_repo):
     installed = await harness_storage.get("h5")
     assert installed.status == HarnessStatus.INSTALLED
 
-    installed = installed.model_copy(update={
-        "pending_operation": HarnessOperation.SYNC,
-    })
+    installed = enqueued(installed, HarnessOperation.SYNC)
     await harness_storage.update(installed)
 
     # Track agent mutations
@@ -345,9 +337,7 @@ async def test_uninstall_cleans_up(fake_storage_provider, bare_repo):
     await run_one_harness_operation(deps, harness_id="h6", worker_id="w1")
 
     fetched = await harness_storage.get("h6")
-    fetched = fetched.model_copy(update={
-        "pending_operation": HarnessOperation.INSTALL,
-    })
+    fetched = enqueued(fetched, HarnessOperation.INSTALL)
     await harness_storage.update(fetched)
     await run_one_harness_operation(deps, harness_id="h6", worker_id="w1")
 
@@ -393,7 +383,7 @@ async def test_uninstall_no_cascade_keeps_entities(fake_storage_provider, bare_r
     await harness_storage.create(harness)
     await run_one_harness_operation(deps, harness_id="h7", worker_id="w1")
     fetched = await harness_storage.get("h7")
-    fetched = fetched.model_copy(update={"pending_operation": HarnessOperation.INSTALL})
+    fetched = enqueued(fetched, HarnessOperation.INSTALL)
     await harness_storage.update(fetched)
     await run_one_harness_operation(deps, harness_id="h7", worker_id="w1")
 

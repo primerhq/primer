@@ -36,6 +36,7 @@ from primer.model.common import refuse_served_masks
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.except_ import ValidationError as PrimerValidationError
 from primer.harness.enqueue import announce_enqueued
+from primer.harness.hashes import hash_overrides, operation_input_digests
 from primer.model.harness import (
     Harness,
     HarnessDirection,
@@ -291,6 +292,20 @@ TOOL_FETCH = make_tool(
     required_role="admin",
 )
 
+# An install or sync names the overrides it applies (ticket 01a16a29): they are on its approval card, so the person who approves the call sees
+# what will be rendered, and the call is refused when they are not the stored ones. Once it is enqueued the worker refuses it if any input
+# changes before it runs, and the harness cannot be edited through these tools until it has.
+_OVERRIDES_ARG: dict[str, Any] = {
+    "type": "object",
+    "description": "The harness's stored overrides, exactly as harness__get shows them: what this operation applies.",
+}
+_OVERRIDES_NOTE = (
+    "Pass ``overrides`` equal to the stored ones (``harness__get``; change them first with ``harness__update_overrides``): a "
+    "different value returns ``type=conflict`` and nothing is enqueued. The call is approval-gated by default and its card shows "
+    "them. Once enqueued, the operation applies the inputs it was asked for or nothing: the harness cannot be updated until it ends, "
+    "and the worker refuses it if anything it renders from changed."
+)
+
 TOOL_INSTALL = make_tool(
     id="harness__install",
     toolset_id=HARNESS_TOOLSET_ID,
@@ -300,20 +315,22 @@ TOOL_INSTALL = make_tool(
         "Use when activating a fetched harness; requires status in "
         "[draft, ready, outdated] and an overrides schema cached "
         "(run ``harness__fetch`` first). Returns ``type=conflict`` or "
-        "``type=overrides-schema-missing`` when preconditions are unmet."
+        "``type=overrides-schema-missing`` when preconditions are unmet. "
+        + _OVERRIDES_NOTE
     ),
     args_schema={
         "type": "object",
-        "required": ["id"],
+        "required": ["id", "overrides"],
         "properties": {
             "id": {"type": "string"},
+            "overrides": _OVERRIDES_ARG,
         },
     },
     examples=[
         ToolExample(
-            args={"id": "hns-1"},
+            args={"id": "hns-1", "overrides": {"some_key": "value"}},
             returns="enqueued INSTALL",
-            note="requires status draft/ready/outdated + overrides cached",
+            note="requires status draft/ready/outdated + overrides cached; overrides equal to the stored ones",
         ),
     ],
     required_role="admin",
@@ -328,20 +345,22 @@ TOOL_SYNC = make_tool(
         "Use when re-applying an already-installed harness; requires status "
         "in [installed, outdated] and a fetched bundle. Returns "
         "``type=conflict`` or ``type=fetch-required`` when preconditions are "
-        "unmet; not for first activation (use ``harness__install``)."
+        "unmet; not for first activation (use ``harness__install``). "
+        + _OVERRIDES_NOTE
     ),
     args_schema={
         "type": "object",
-        "required": ["id"],
+        "required": ["id", "overrides"],
         "properties": {
             "id": {"type": "string"},
+            "overrides": _OVERRIDES_ARG,
         },
     },
     examples=[
         ToolExample(
-            args={"id": "hns-1"},
+            args={"id": "hns-1", "overrides": {"some_key": "value"}},
             returns="enqueued SYNC",
-            note="requires status installed/outdated",
+            note="requires status installed/outdated; overrides equal to the stored ones",
         ),
     ],
     required_role="admin",
@@ -369,6 +388,39 @@ TOOL_UNINSTALL = make_tool(
     ],
     required_role="admin",
 )
+
+
+def _refuse_other_overrides(harness: Harness, arguments: dict[str, Any]) -> ToolCallResult | None:
+    """Refuse an install or sync whose ``overrides`` argument is missing or is not the stored overrides (ticket 01a16a29).
+
+    The argument is what the call's approval card shows, so the overrides the worker renders are the ones a person approved.
+    """
+    named = arguments.get("overrides")
+    if not isinstance(named, dict):
+        return _err(
+            "pass overrides: the harness's stored overrides, as harness__get shows them (they are what this operation applies, and "
+            "its approval card shows them)",
+            error_type="bad-request",
+        )
+    if hash_overrides(named) != hash_overrides(harness.overrides):
+        return _err(
+            f"the overrides passed are not the ones harness {harness.id!r} holds: read them with harness__get (change them first "
+            "with harness__update_overrides) and pass them unchanged",
+            error_type="conflict",
+        )
+    return None
+
+
+def _refuse_while_pending(harness: Harness, what: str) -> ToolCallResult | None:
+    """Refuse a change to a harness that has an operation pending (ticket 01a16a29): an enqueued install or sync applies the inputs it
+    was asked for, so they may not move under it."""
+    if harness.pending_operation is None:
+        return None
+    return _err(
+        f"Harness {harness.id!r} has a pending {harness.pending_operation.value!r} operation; {what} it after the operation "
+        "ends (an enqueued install or sync applies the inputs it was asked for)",
+        error_type="conflict",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -492,6 +544,9 @@ def _make_update_handler(storage_provider: "StorageProvider") -> ToolHandler:
         harness = await storage.get(harness_id)
         if harness is None:
             return _err(f"Harness {harness_id!r} does not exist", error_type="not-found")
+        refusal = _refuse_while_pending(harness, "update")
+        if refusal is not None:
+            return refusal
 
         overrides_dirty = harness.overrides_dirty
 
@@ -536,6 +591,9 @@ def _make_update_overrides_handler(storage_provider: "StorageProvider") -> ToolH
         harness = await storage.get(harness_id)
         if harness is None:
             return _err(f"Harness {harness_id!r} does not exist", error_type="not-found")
+        refusal = _refuse_while_pending(harness, "change the overrides of")
+        if refusal is not None:
+            return refusal
 
         if harness.overrides_schema is None:
             return _err(
@@ -558,8 +616,6 @@ def _make_update_overrides_handler(storage_provider: "StorageProvider") -> ToolH
                 "Overrides validation failed: " + "; ".join(errors),
                 error_type="overrides-invalid",
             )
-
-        from primer.harness.hashes import hash_overrides
 
         harness.overrides = overrides_body
         harness.overrides_hash = hash_overrides(overrides_body)
@@ -675,8 +731,13 @@ def _make_install_handler(
                 error_type="overrides-invalid",
             )
 
+        refusal = _refuse_other_overrides(harness, arguments)
+        if refusal is not None:
+            return refusal
+
         harness.pending_operation = HarnessOperation.INSTALL
         harness.operation_requested_by = _requester(ctx)
+        harness.operation_inputs = operation_input_digests(harness)
         updated = await storage.update(harness)
         await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=claim_engine)
         return _ok(_harness_dict(updated))
@@ -720,8 +781,13 @@ def _make_sync_handler(
                 error_type="fetch-required",
             )
 
+        refusal = _refuse_other_overrides(harness, arguments)
+        if refusal is not None:
+            return refusal
+
         harness.pending_operation = HarnessOperation.SYNC
         harness.operation_requested_by = _requester(ctx)
+        harness.operation_inputs = operation_input_digests(harness)
         updated = await storage.update(harness)
         await announce_enqueued(harness_id=harness_id, event_bus=event_bus, claim_engine=claim_engine)
         return _ok(_harness_dict(updated))

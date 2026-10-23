@@ -117,7 +117,10 @@ PREVIEW_ARGS: Mapping[tuple[str, str], tuple[str, ...]] = MappingProxyType({
     (_SYSTEM, "delete_tool_approval_policy"): ("id",),
     (_SYSTEM, "create_toolset"): _TOOLSET_PREVIEW,
     (_SYSTEM, "update_toolset"): ("id", *_TOOLSET_PREVIEW),
-    **{key: ("id",) for key in HARNESS_LIFECYCLE},
+    # An install or sync names the overrides it applies, and the person who approves it sees them (ticket 01a16a29, R860-1).
+    (_HARNESS, "harness__install"): ("id", "overrides"),
+    (_HARNESS, "harness__sync"): ("id", "overrides"),
+    (_HARNESS, "harness__uninstall"): ("id",),
 })
 
 
