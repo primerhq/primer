@@ -44,6 +44,9 @@ function GB_AddStepPalette(props) {
   const [query, setQuery] = useState("");
   const [stage, setStage] = useState("purpose"); // purpose -> reference
   const cardRef = useRef(null);
+  // Whether the last press started on the scrim itself: the scrim closes only when the press AND the click both land on it, so a drag-select of the
+  // typed query that ends on the scrim keeps the palette and the query (the shared Modal's guard, ticket 01a14f37; audit G1-19).
+  const scrimDownRef = useRef(false);
   const [purpose, setPurpose] = useState(null);
   const [cursor, setCursor] = useState(0);
 
@@ -100,7 +103,9 @@ function GB_AddStepPalette(props) {
 
   return (
     <div
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      data-testid="gb-palette-scrim"
+      onPointerDown={(e) => { scrimDownRef.current = e.target === e.currentTarget; }}
+      onClick={(e) => { if (e.target === e.currentTarget && scrimDownRef.current) onClose(); }}
       style={{
         position: "fixed", inset: 0, background: "rgba(10,11,13,.62)", zIndex: 60,
         display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: 104,
