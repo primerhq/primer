@@ -108,3 +108,12 @@ async def test_the_create_and_update_descriptors_tell_an_agent_about_the_forbidd
 
     for name in ("create_collection", "update_collection"):
         assert "type=forbidden" in described[name] and "system" in described[name], described[name]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_id", ["Docs", "my docs", ".."])
+async def test_creating_a_collection_with_a_non_slug_id_is_refused(world, bad_id: str) -> None:
+    sp, toolset, _ = world
+    is_error, body = await _call(toolset, "create_collection", entity={"id": bad_id, "description": "x"})
+    assert is_error and body["type"] == "validation-error", body
+    assert await sp.get_storage(Collection).get(bad_id) is None

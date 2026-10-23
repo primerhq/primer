@@ -101,3 +101,16 @@ def test_every_caller_of_the_generic_crud_factory_passes_guards() -> None:
 
     assert len(callers) >= 2, f"the scan found no callers of _crud_tools_for ({callers}); the test would pass vacuously"
     assert not missing, f"callers of _crud_tools_for that pass no guards= (the factory default is none): {missing}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_id", ["Team-Graph", "my graph", ".."])
+async def test_create_graph_refuses_non_slug_id_in_crud_and_system_toolsets(fake_storage_provider, bad_id: str) -> None:
+    from primer.toolset.system import build_system_toolset
+
+    crud_ts = build_crud_toolset(storage_provider=fake_storage_provider)
+    sys_ts = build_system_toolset(storage_provider=fake_storage_provider, provider_registry=None)
+    for ts in (crud_ts, sys_ts):
+        is_error, answer = await _call(ts, "create_graph", entity={"id": bad_id, "description": "x"})
+        assert is_error and answer["type"] == "validation-error", answer
+    assert await fake_storage_provider.get_storage(Graph).get(bad_id) is None

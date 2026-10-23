@@ -147,7 +147,11 @@ from primer.artifact.checks import (
 )
 from primer.channel.checks import check_channel_on_create, check_channel_on_update
 from primer.model_profile.checks import check_profile_on_create, check_profile_on_update
-from primer.knowledge.checks import check_collection_system_flag
+from primer.knowledge.checks import (
+    check_collection_id,
+    check_collection_system_flag,
+    check_graph_id,
+)
 from primer.knowledge.lifecycle import purge_collection
 from primer.toolset.toolset_checks import (
     check_toolset_on_create,
@@ -403,10 +407,14 @@ def build_system_toolset(
         await check_channel_on_update(entity, storage_provider=storage_provider)
 
     async def _collection_pre_create(entity: Collection) -> None:
+        check_collection_id(entity)
         check_collection_system_flag(entity)
 
     async def _collection_pre_update(entity: Collection, existing: Collection) -> None:
         check_collection_system_flag(entity, existing)
+
+    async def _graph_pre_create(entity: Graph) -> None:
+        check_graph_id(entity)
 
     async def _artifact_provider_pre_create(entity: ArtifactStorageProvider) -> None:
         # The reserved default must name a kind the factory can build, on a create (its row went missing) as on an update; the REST route
@@ -419,6 +427,7 @@ def build_system_toolset(
 
     pre_checks_by_label: dict[str, tuple[Any, Any]] = {
         "collection": (_collection_pre_create, _collection_pre_update),
+        "graph": (_graph_pre_create, None),
         # The agent's profile and toolset references are looked up before the write, as the REST route does (A-09); the builder's
         # ``crud`` toolset takes the same pair from the same function.
         "agent": agent_pre_checks(storage_provider),

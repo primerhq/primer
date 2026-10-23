@@ -64,7 +64,7 @@ from primer.model.except_ import (
     NotFoundError,
 )
 from primer.common.entity_checks import EntityCheckError
-from primer.knowledge.checks import check_collection_system_flag
+from primer.knowledge.checks import check_collection_id, check_collection_system_flag
 from primer.model.payload_too_large import PayloadTooLargeError
 from primer.knowledge.grep import grep_collection
 from primer.knowledge import importer
@@ -135,10 +135,15 @@ def _system_flag_refusal(exc: EntityCheckError) -> HTTPException:
 
 
 async def _collection_on_pre_create(entity: Collection, request: Request) -> None:
-    """Refuse a create that sets the ``system`` flag (403): the platform writes system collections to storage, not through here."""
+    """Validate the collection id and refuse a create that sets the ``system`` flag (403)."""
     try:
+        check_collection_id(entity)
         check_collection_system_flag(entity)
     except EntityCheckError as exc:
+        if exc.kind == "validation":
+            raise RequestValidationError(
+                [{"type": exc.code, "loc": ("body", exc.field), "msg": exc.message}]
+            ) from exc
         raise _system_flag_refusal(exc) from exc
 
 

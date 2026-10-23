@@ -92,6 +92,12 @@ class TestCollectionRouter:
         resp = await client.get("/v1/collections/missing/documents")
         assert resp.status_code == 404
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_id", ["Docs", "my docs", "..", "a/b"])
+    async def test_create_collection_rejects_non_slug_id(self, client, bad_id: str) -> None:
+        resp = await client.post("/v1/collections", json={"id": bad_id, "description": "x"})
+        assert resp.status_code == 422, resp.text
+
 
 class TestSearchUnregisteredCollection:
     """Search against a collection that exists but was never indexed in

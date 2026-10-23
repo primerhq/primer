@@ -211,6 +211,19 @@ async def agent_status(
 
 # ---- Graph router ----------------------------------------------------------
 
+
+async def _graph_pre_create(entity: Graph, request: Request) -> None:
+    from primer.knowledge.checks import check_graph_id
+
+    del request
+    try:
+        check_graph_id(entity)
+    except EntityCheckError as exc:
+        raise RequestValidationError(
+            [{"type": exc.code, "loc": ("body", exc.field), "msg": exc.message}]
+        ) from exc
+
+
 graph_router = make_crud_router(
     model_cls=Graph,
     storage_dep=get_graph_storage,
@@ -219,6 +232,7 @@ graph_router = make_crud_router(
     cdc_kind="graph",
     managed_by_field="harness_id",
     search_fields=["id", "description"],
+    on_pre_create=_graph_pre_create,
     # Another graph's sub-graph node, a session that is not ended and a trigger subscription still name the graph (shared with the
     # system delete_graph tool).
     references=[ReferenceCheck.from_spec(spec) for spec in GRAPH_REFERENCES],

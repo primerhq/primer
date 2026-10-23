@@ -19,7 +19,9 @@ enables search on it like any other collection.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import re
 from collections.abc import Awaitable, Callable
 
 from primer.ai_docs_path import resolve_ai_docs_dir
@@ -54,6 +56,23 @@ ROOT_INDEX_SLUG = "index"
 # a peer keeps going while the decision still says write, so it lands
 # without a reboot (lead ruling for slice 6).
 _CLAIM_PASSES = 3
+# Optional override for tests; None reads primer.api.registries.provider_registry.RESERVED_TOOLSET_IDS.
+RESERVED_TOOLSET_IDS: frozenset[str] | None = None
+_LIVE_SLUG_RE = re.compile(r"[a-z0-9._-]+")
+_HASH_SUFFIX_RE = re.compile(r".*--[0-9a-f]{8}\Z")
+
+
+def _live_slug(entity_id: str) -> str:
+    """Map an entity id onto a deterministic, lowercased, collision-safe Document slug."""
+    if (
+        _LIVE_SLUG_RE.fullmatch(entity_id)
+        and entity_id not in (".", "..")
+        and not _HASH_SUFFIX_RE.fullmatch(entity_id)
+    ):
+        return entity_id
+    cleaned = re.sub(r"[^a-z0-9._-]+", "-", entity_id.lower()).strip(".-_") or "entity"
+    digest = hashlib.sha256(entity_id.encode("utf-8")).hexdigest()[:8]
+    return f"{cleaned}--{digest}"
 
 
 async def _list_all(storage, model_cls) -> list:
@@ -233,8 +252,9 @@ async def _workspaces_map(storage_provider, *, root: str = "") -> dict[str, str]
     lines = ["# Workspaces", "", "Places sessions run. One page each.", ""]
     for row in rows:
         label = row.name or row.id
-        lines.append(f"- [{label}]({prefix}workspaces/{row.id}) - phase {row.phase}")
-        out[f"{prefix}workspaces/{row.id}"] = (
+        slug = _live_slug(row.id)
+        lines.append(f"- [{label}]({prefix}workspaces/{slug}) - phase {row.phase}")
+        out[f"{prefix}workspaces/{slug}"] = (
             f"# Workspace {row.id}\n\n"
             f"- name: {label}\n"
             f"- template: {row.template_id}\n"
@@ -266,14 +286,15 @@ async def _providers_map(storage_provider, *, root: str = "") -> dict[str, str]:
     llms = await _all_rows(storage_provider, LLMProvider)
     for row in llms:
         keys = sorted(row.config.model_dump(mode="json").keys())
-        out[f"{prefix}providers/llm/{row.id}"] = (
+        slug = _live_slug(row.id)
+        out[f"{prefix}providers/llm/{slug}"] = (
             f"# LLM provider {row.id}\n\n"
             f"- type: {_enum_value(row.provider)}\n"
             f"- config keys (values omitted): {', '.join(keys)}\n"
         )
     out[f"{prefix}providers/llm"] = _index(
         "LLM providers",
-        [(r.id, f"{prefix}providers/llm/{r.id}", _enum_value(r.provider)) for r in llms],
+        [(r.id, f"{prefix}providers/llm/{_live_slug(r.id)}", _enum_value(r.provider)) for r in llms],
     )
 
     def _profile_label(p) -> str:
@@ -302,11 +323,12 @@ async def _providers_map(storage_provider, *, root: str = "") -> dict[str, str]:
     ):
         rows = await _all_rows(storage_provider, cls)
         for row in rows:
-            out[f"{prefix}providers/{sub}/{row.id}"] = (
+            slug = _live_slug(row.id)
+            out[f"{prefix}providers/{sub}/{slug}"] = (
                 f"# {label[:-1]} {row.id}\n\n- type: {_enum_value(row.provider)}\n"
             )
         out[f"{prefix}providers/{sub}"] = _index(
-            label, [(r.id, f"{prefix}providers/{sub}/{r.id}", _enum_value(r.provider)) for r in rows],
+            label, [(r.id, f"{prefix}providers/{sub}/{_live_slug(r.id)}", _enum_value(r.provider)) for r in rows],
         )
 
     out[f"{prefix}providers"] = _index(
@@ -391,26 +413,26 @@ async def _live_pages(storage_provider) -> dict[str, WikiPage]:
 
     agents = await _list_all(storage_provider, Agent)
     for a in agents:
-        put(f"{LIVE_ROOT}/agents/{a.id}", _agent_body(a))
+        put(f"{LIVE_ROOT}/agents/{_live_slug(a.id)}", _agent_body(a))
     put(LIVE_ROOT + "/agents", _index_body(
-        "Agents", [(f"{LIVE_ROOT}/agents/{a.id}", a.id) for a in agents],
+        "Agents", [(f"{LIVE_ROOT}/agents/{_live_slug(a.id)}", a.id) for a in agents],
     ))
 
     graphs = await _list_all(storage_provider, Graph)
     for g in graphs:
-        put(f"{LIVE_ROOT}/graphs/{g.id}", _graph_body(g))
+        put(f"{LIVE_ROOT}/graphs/{_live_slug(g.id)}", _graph_body(g))
     put(LIVE_ROOT + "/graphs", _index_body(
-        "Graphs", [(f"{LIVE_ROOT}/graphs/{g.id}", g.id) for g in graphs],
+        "Graphs", [(f"{LIVE_ROOT}/graphs/{_live_slug(g.id)}", g.id) for g in graphs],
     ))
 
     colls = await _list_all(storage_provider, Collection)
     for c in colls:
         if c.id == SYSTEM_COLLECTION_ID:
             continue
-        put(f"{LIVE_ROOT}/collections/{c.id}", _collection_body(c))
+        put(f"{LIVE_ROOT}/collections/{_live_slug(c.id)}", _collection_body(c))
     put(LIVE_ROOT + "/collections", _index_body(
         "Collections",
-        [(f"{LIVE_ROOT}/collections/{c.id}", c.id)
+        [(f"{LIVE_ROOT}/collections/{_live_slug(c.id)}", c.id)
          for c in colls if c.id != SYSTEM_COLLECTION_ID],
     ))
 
@@ -564,14 +586,59 @@ async def _converge(
             and current.document.meta == page.meta
         ):
             continue
-        await _write_tree_page(
-            tree, path=path, body=page.body, title=page.title, meta=page.meta,
-        )
-        written += 1
+        try:
+            await _write_tree_page(
+                tree, path=path, body=page.body, title=page.title, meta=page.meta,
+            )
+            written += 1
+        except Exception as exc:  # noqa: BLE001 - one bad page never stops the pass
+            logger.warning("system collection: skipping page %r: %s", path, exc)
     return written
 
 
-async def _prune_live(tree: DocumentTreeService, live: dict[str, WikiPage]) -> int:
+async def _live_entity_for_path(
+    storage_provider, path: str,
+) -> tuple[bool, str | None, str | None]:
+    """Check whether a live-map leaf path still corresponds to a stored entity.
+
+    Returns ``(exists, entity_type_if_cdc, entity_id)``.
+    """
+    from primer.model.provider import (
+        EmbeddingProvider,
+        LLMProvider,
+        SemanticSearchProvider,
+    )
+    from primer.model.workspace import Workspace
+
+    parent, _, slug = path.rpartition("/")
+    subtrees: dict[str, tuple[type, str | None]] = {
+        f"{LIVE_ROOT}/agents": (Agent, "agent"),
+        f"{LIVE_ROOT}/graphs": (Graph, "graph"),
+        f"{LIVE_ROOT}/collections": (Collection, "collection"),
+        f"{LIVE_ROOT}/workspaces": (Workspace, None),
+        f"{LIVE_ROOT}/providers/llm": (LLMProvider, None),
+        f"{LIVE_ROOT}/providers/embedding": (EmbeddingProvider, None),
+        f"{LIVE_ROOT}/providers/semantic-search": (SemanticSearchProvider, None),
+    }
+    spec = subtrees.get(parent)
+    if spec is None or not slug:
+        return False, None, None
+    model_cls, entity_type = spec
+    row = await storage_provider.get_storage(model_cls).get(slug)
+    if row is None:
+        for candidate in await _list_all(storage_provider, model_cls):
+            if _live_slug(candidate.id) == slug:
+                row = candidate
+                break
+    if row is None or (entity_type == "collection" and row.id == SYSTEM_COLLECTION_ID):
+        return False, None, None
+    return True, entity_type, row.id
+
+
+async def _prune_live(
+    storage_provider, tree: DocumentTreeService, live: dict[str, WikiPage],
+    *, provider_registry=None, semantic_search_registry=None,
+) -> int:
     """Every node under this-install/ that the live map no longer holds."""
     deleted = 0
     try:
@@ -584,12 +651,26 @@ async def _prune_live(tree: DocumentTreeService, live: dict[str, WikiPage]) -> i
         if node.path in live:
             continue
         try:
+            exists, entity_type, entity_id = await _live_entity_for_path(
+                storage_provider, node.path,
+            )
+            if exists:
+                if entity_type is not None and entity_id is not None:
+                    await converge_entity(
+                        storage_provider,
+                        entity_type=entity_type,
+                        entity_id=entity_id,
+                        provider_registry=provider_registry,
+                        semantic_search_registry=semantic_search_registry,
+                    )
+                continue
             await tree.delete(
                 collection_id=SYSTEM_COLLECTION_ID, path=node.path,
                 recursive=True,
             )
             deleted += 1
-        except PrimerError:
+        except Exception as exc:  # noqa: BLE001 - one bad node never stops pruning
+            logger.warning("system collection: failed to prune %r: %s", node.path, exc)
             continue
     return deleted
 
@@ -653,7 +734,13 @@ async def _wiki_pass(
     problems: list[str] = []
     if not source:
         problems.append(f"no hand-written pages under {source_root}")
-    skipped = sorted(set(toolset_providers or {}) - {e.toolset_id for e in entries})
+    required_toolsets = RESERVED_TOOLSET_IDS
+    if required_toolsets is None:
+        from primer.api.registries.provider_registry import (
+            RESERVED_TOOLSET_IDS as required_toolsets,
+        )
+    expected_toolsets = set(required_toolsets) | set(toolset_providers or {})
+    skipped = sorted(expected_toolsets - {e.toolset_id for e in entries})
     if skipped:
         problems.append("skipped toolset(s): " + ", ".join(skipped))
     if problems:
@@ -686,9 +773,11 @@ async def _wiki_pass(
         return 0
     if decision == "same":
         # Ruling (a): same holds the stamp, not a complete page set (a peer
-        # that claimed and died mid-write leaves one). Converge behind
-        # still_mine; only a won claim may delete.
-        return await _converge(tree, build.pages, still_mine_guard)
+        # that claimed and died mid-write leaves one). Converge and prune
+        # behind still_mine.
+        written = await _converge(tree, build.pages, still_mine_guard)
+        written += await _prune_wiki(tree, build.pages, still_mine_guard)
+        return written
 
     claimed = False
     for _ in range(_CLAIM_PASSES):
@@ -775,10 +864,19 @@ async def regenerate_system_collection(
         storage_provider, indexer=indexer, unindexer=unindexer,
     )
 
-    # The live map, whatever the stamp says.
-    live = await _live_pages(storage_provider)
-    written = await _converge(tree, live)
-    written += await _prune_live(tree, live)
+    # The live map, whatever the stamp says. Even if the live part fails,
+    # _wiki_pass still runs so the versioned wiki is never blocked by live state.
+    written = 0
+    try:
+        live = await _live_pages(storage_provider)
+        written += await _converge(tree, live)
+        written += await _prune_live(
+            storage_provider, tree, live,
+            provider_registry=provider_registry,
+            semantic_search_registry=semantic_search_registry,
+        )
+    except Exception:  # noqa: BLE001 - live map failure must not block the wiki pass
+        logger.exception("system collection: live map pass failed")
 
     # The wiki, behind the stamp.
     written += await _wiki_pass(
@@ -878,7 +976,8 @@ async def converge_entity(
         )
 
         entity = await storage_provider.get_storage(model_cls).get(entity_id)
-        path = f"{subtree}/{entity_id}"
+        path = f"{subtree}/{_live_slug(entity_id)}"
+        wrote_page = False
 
         if entity is None or (
             entity_type == "collection" and entity_id == SYSTEM_COLLECTION_ID
@@ -892,6 +991,7 @@ async def converge_entity(
                 )
             except PrimerError:
                 pass
+            wrote_page = True
         else:
             body = render(entity)
             page = _live_page(path, body)
@@ -902,31 +1002,34 @@ async def converge_entity(
             except PrimerError:
                 current = None
             if (
-                current is not None
-                and current.body == page.body
-                and current.document.title == page.title
-                and current.document.meta == page.meta
+                current is None
+                or current.body != page.body
+                or current.document.title != page.title
+                or current.document.meta != page.meta
             ):
-                return False
-            await _write_tree_page(
-                tree, path=path, body=page.body,
-                title=page.title, meta=page.meta,
-            )
+                await _write_tree_page(
+                    tree, path=path, body=page.body,
+                    title=page.title, meta=page.meta,
+                )
+                wrote_page = True
 
         # Re-render the subtree index so its links match what is there.
         rows = await _list_all(storage_provider, model_cls)
         children = [
-            (f"{subtree}/{r.id}", r.id) for r in rows
+            (f"{subtree}/{_live_slug(r.id)}", r.id) for r in rows
             if not (entity_type == "collection" and r.id == SYSTEM_COLLECTION_ID)
         ]
         index_body = _index_body(title, children)
-        index = _live_page(subtree, index_body)
+        index = _live_page(
+            subtree, index_body, summary=_LIVE_INDEX_SUMMARIES.get(subtree, ""),
+        )
         try:
             current_index = await tree.read(
                 collection_id=SYSTEM_COLLECTION_ID, path=subtree,
             )
         except PrimerError:
             current_index = None
+        wrote_index = False
         if (
             current_index is None
             or current_index.body != index.body
@@ -937,7 +1040,8 @@ async def converge_entity(
                 tree, path=subtree, body=index.body,
                 title=index.title, meta=index.meta,
             )
-        return True
+            wrote_index = True
+        return wrote_page or wrote_index
     except Exception:  # noqa: BLE001 - never fail the entity write
         logger.exception(
             "system collection: converging %s %r failed", entity_type, entity_id,
