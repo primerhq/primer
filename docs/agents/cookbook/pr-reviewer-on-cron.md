@@ -21,6 +21,7 @@ Stand up an hourly cron trigger whose subscription starts a fresh agent session 
 - A workspace provider id to materialise workspaces from; the template's `init_commands` clone the target repo and install `git`.
 - A ModelProfile for the agent's model, e.g. `anthropic-1--claude-sonnet-4-6` (see "Model profiles" in `agents`).
 - Permission to create agents, workspaces, and triggers over MCP.
+- The default approval gates of `system::create_agent` and `trigger::create` disabled or retuned by an operator. Over MCP nothing can park for an approval, so while the gates are on, those steps are refused (`approval_required`). Run from an agent session instead, each of those calls parks until an operator approves it.
 
 ## Steps
 ### 1. Create the review agent

@@ -20,6 +20,7 @@ Every weekday at 9 AM local time, a scheduled trigger starts a fresh agent sessi
 - A ModelProfile for the summariser agent's model, e.g. `anthropic-1--claude-sonnet-4-6` (see "Model profiles" in `agents`).
 - A workspace provider id; the template mounts or has access to the log directory and a TTL of at least 60 minutes.
 - A Slack channel provider already configured, with a channel bound to the workspace by a reply binding (`system::set_reply_binding`), so the agent's `ask_user` prompt is delivered to Slack.
+- The default approval gates of `system::create_agent` and `trigger::create` disabled or retuned by an operator. Over MCP nothing can park for an approval, so while the gates are on, those steps are refused (`approval_required`). Run from an agent session instead, each of those calls parks until an operator approves it.
 
 ## Steps
 ### 1. Create the summariser agent

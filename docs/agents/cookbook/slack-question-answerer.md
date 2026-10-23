@@ -21,6 +21,7 @@ Wire a Slack channel to an agent so that mentioning the bot with a question runs
 - A knowledge collection (e.g. `company-docs`) already populated with the documents the bot should answer from; create one with `system::create_collection` if needed.
 - A ModelProfile for the model the agent runs on, e.g. `anthropic-1--claude-sonnet-4-6` (see "Model profiles" in `agents`); it names a configured LLM provider.
 - A workspace template to materialise the agent's workspace from.
+- The default approval gates of `system::create_agent` and `trigger::create` disabled or retuned by an operator. Over MCP nothing can park for an approval, so while the gates are on, those steps are refused (`approval_required`). Run from an agent session instead, each of those calls parks until an operator approves it.
 
 ## Steps
 ### 1. Create the Slack channel provider

@@ -300,7 +300,7 @@ reachable from `begin`.
   and the server assigns `graph-<hex>`; supply a valid slug (`[a-z0-9._-]+`,
   not `.` or `..`) to use it verbatim (anything else is refused on create with
   `graph_id_invalid` / `type=validation-error`).
-  Immutable after creation. Approval-gated by default, like `update_graph` and `delete_graph` and the builder's `crud` tools: the call parks until an operator approves it (the live gate is the one `system::describe_tool` reports).
+  Immutable after creation. Approval-gated by default, like `update_graph` and `delete_graph` and the builder's `crud` tools: in a session the call parks until an operator approves it; over MCP it is refused (`approval_required`) unless the operator disables or retunes its gate (the live gate is the one `system::describe_tool` reports).
 - `system::update_graph` - replace the row.
 - `system::delete_graph` - refused with a `conflict` error (`in_use_by`,
   the same 409 the REST route answers) while another graph has a

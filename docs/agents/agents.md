@@ -257,7 +257,7 @@ Agents are managed via standard CRUD plus the semantic search tool.
   `<toolset_id>__<tool_name>` strings), optional `temperature` and
   `max_tool_turns` (default 50). Omit `id` and the server assigns
   `agent-<hex>` (e.g. `agent-3f9a1c8d`); supply one to use it
-  verbatim. The id is immutable after creation. Approval-gated by default, like `update_agent` and `delete_agent` and the builder's `crud` tools: the call parks until an operator approves it (the live gate is the one `system::describe_tool` reports).
+  verbatim. The id is immutable after creation. Approval-gated by default, like `update_agent` and `delete_agent` and the builder's `crud` tools: in a session the call parks until an operator approves it; over MCP it is refused (`approval_required`) unless the operator disables or retunes its gate (the live gate is the one `system::describe_tool` reports).
 - `system::update_agent` - partial update. Editing or deleting a
   harness-managed agent (`harness_id` set) returns a `conflict`
   error, and `create_agent` refuses a body that sets `harness_id`

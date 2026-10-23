@@ -21,6 +21,7 @@ Why there is a `verdict` step: a `json_path` router reads only a node's structur
 - An `internal-knowledge` collection populated with known-good reference material (the fact-checker has nothing to check against otherwise).
 - A ModelProfile for the agents' model, e.g. `anthropic-1--claude-opus-4-1` (see "Model profiles" in `agents`).
 - Permission to create agents, graphs, and workspaces over MCP.
+- The default approval gates of `system::create_agent` and `system::create_graph` disabled or retuned by an operator. Over MCP nothing can park for an approval, so while the gates are on, those steps are refused (`approval_required`). Run from an agent session instead, each of those calls parks until an operator approves it.
 
 ## Steps
 ### 1. Create the four agents

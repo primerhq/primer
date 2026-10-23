@@ -78,7 +78,12 @@ The tools you can call are exactly the intersection of three sets:
   `_approval`) are silently dropped - MCP has no pause/resume.
   Session-bound workspace tools (e.g. `watch_files`) are dropped
   too. Tools with `required` tool approval policies are silently
-  dropped (operator owns visibility decisions there).
+  dropped (operator owns visibility decisions there). That includes
+  every tool that creates, updates or deletes an agent, a graph or a
+  trigger (`system::create_agent`, `system::update_graph`,
+  `trigger::create`, the deletes and the `crud` tools): they are gated
+  by default, so over MCP they are refused (`approval_required`)
+  unless the operator disables or retunes their gate.
 - **Scope.** Bearer tokens without `mcp` get 401 before they ever
   see `tools/list`.
 
