@@ -1196,6 +1196,12 @@ class PendingSessionMessage(Identifiable):
 PEER_PAYLOAD_KEY = "peer"
 """The key a peer attribution lives under: in a USER_INPUT record's ``payload`` and in ``PendingSessionMessage.attribution``."""
 
+MACHINE_ATTRIBUTION_KEY = "machine"
+"""The key that marks a queued message no person wrote and no other session sent (a trigger fire, a tool call with no calling session):
+``PendingSessionMessage.attribution == {"machine": True}``. The drain reads it when it realizes the message: such a message, like a peer's, does not
+reopen a session an operator cancelled (lead ruling 1 of the G7 fixes), while a person's queued steer (no attribution) still does. A row queued
+before the key existed has none and is read as a person's."""
+
 
 class PeerAttribution(BaseModel):
     """Who sent a message that came from another session (``message_session``), and how far it is from a person.
@@ -1289,6 +1295,7 @@ __all__ = [
     "AgentSessionBinding",
     "GraphSessionBinding",
     "Instruction",
+    "MACHINE_ATTRIBUTION_KEY",
     "NON_ENDED_STATUSES",
     "NON_ENDED_STATUSES_NOT_PAUSED",
     "PEER_PAYLOAD_KEY",

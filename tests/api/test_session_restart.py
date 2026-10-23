@@ -202,3 +202,25 @@ async def test_reopen_clears_the_stale_ended_detail_and_agent_phase(
     assert row.agent_phase is None
     assert row.agent_phase_turn_no is None
     assert row.agent_phase_stamped_at is None
+
+
+async def test_a_persons_restart_reopens_a_session_an_operator_cancelled(client, app, fake_storage_provider):
+    """Lead ruling 1 of the G7 fixes: no wake but a person's reopens a cancelled session, and the REST Restart is a person's. (The restart tool, an
+    agent's or an MCP client's, is refused: ``tests/toolset/test_restart_tool_peer_guards.py``.)"""
+    from primer.model.workspace_session import SessionStatus
+
+    wid, sid = "ws-restart-cancelled", "s-cancelled"
+    await _seed_session(fake_storage_provider, sid=sid, wid=wid, status=SessionStatus.ENDED, ended_reason="cancelled")
+    ws = _FakeWorkspace()
+
+    async def _get(workspace_id: str):
+        return ws if workspace_id == wid else None
+
+    app.state.workspace_registry.get_workspace = _get  # type: ignore[assignment]
+
+    resp = await client.post(f"/v1/workspaces/{wid}/sessions/{sid}/restart", json={"input": "carry on"})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert (body["status"], body["turn_status"], body["ended_reason"]) == ("running", "claimable", None)
+    assert ws.slots[sid].reopened is True and ws.slots[sid].instructions == ["carry on"]

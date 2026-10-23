@@ -5,7 +5,9 @@ workspace, of any workspace). This module is the service behind it: the tool han
 travels the delivery path every machine entrypoint shares (:func:`primer.session.steer_delivery.deliver_steer`): an idle or ended session starts a
 turn with it, a session with a turn open reads it at its next turn boundary, and a gate the session waits on is never answered by it.
 ``workspaces__list_my_sessions`` is the other half: the sessions of the caller's own workspace, in the shape :func:`session_summary` gives
-(:func:`list_workspace_session_summaries`), so a sender can pick a target.
+(:func:`list_workspace_session_summaries`), so a sender can pick a target. ``workspaces__steer_workspace_session`` and
+``workspaces__restart_workspace_session`` called from inside a session are messages from it too and come through here, with every guard below (pivot
+P3 lead ruling 3; lead ruling 1 of the G7 fixes): a restart is delivered by ``restart_session`` instead of ``deliver_steer``.
 
 What a sender may do is decided here, before anything is written. The guards run in this order, and the first one that fails refuses the send with a
 :class:`PeerMessageRefused` that carries the tool's error ``type`` and writes nothing (no ledger row, no queued message, no record, no event). Before
@@ -42,7 +44,7 @@ from primer.agent.invoke import MAX_INVOCATION_DEPTH
 from primer.authz import principal_rank, rank_label
 from primer.bootstrap.prime import resolve_default_workspace_id
 from primer.events.recorder import actor_of, recorder_for
-from primer.model.except_ import NotFoundError
+from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.principal import PrincipalRef
 from primer.model.storage import FieldRef, OffsetPage, Op, OrderBy, Predicate, Value
 from primer.model.workspace_session import (
@@ -54,11 +56,13 @@ from primer.model.workspace_session import (
     WorkspaceSession,
     session_state_predicate,
 )
+from primer.session.reset import SessionResetDeps, restart_session
 from primer.session.steer_delivery import (
     DELIVERED_MISSING,
     DELIVERED_QUEUE_FULL,
     DELIVERED_QUEUED,
     DELIVERED_SKIPPED_BUSY,
+    DELIVERED_WOKEN,
     SteerDelivery,
     deliver_steer,
 )
@@ -114,6 +118,14 @@ REFUSE_ENDED = "session {session_id!r} has ended ({ended_reason}) and cannot tak
 REFUSE_QUEUE_FULL = "session {session_id!r} is busy and its queue of waiting messages is full; nothing was sent, retry later"  # conflict
 # The tool's argument model rejects these first; they keep the service safe for any other caller (an empty text would re-arm a session with nothing).
 REFUSE_TEXT = "a message is 1 to {limit} characters; write larger outputs to a file and send its path"  # bad-request
+# A restart from inside a session (``workspaces__restart_workspace_session``, lead ruling 1 of the G7 fixes) is a message from that session, so it
+# has a text: the one the reopened session starts its new turn with. The first is the tool's own refusal of a call with no ``input``; the second is
+# the restart of a session that has not ended, in the words ``reset_session`` uses for it.
+REFUSE_RESTART_NEEDS_INPUT = (
+    "from inside a workspace session a restart is a message from that session: give input (1 to {limit} characters), "
+    "the text the reopened session starts its new turn with"
+)  # bad-request
+REFUSE_NOT_ENDED = "Session {session_id!r} is not ENDED (status {status}); reset only re-opens ended sessions."  # conflict
 REFUSE_MODE = "mode is auto or if_idle, not {mode!r}"  # bad-request
 
 # What the sending agent reads when a send was delivered, by what became of the message.
@@ -371,6 +383,51 @@ async def _refusal_for_missing(sessions: Any, target_session_id: str, delivery: 
     return PeerMessageRefused("not-found", delivery.detail or REFUSE_NOT_FOUND.format(session_id=target_session_id))
 
 
+async def _deliver_restart(
+    *,
+    storage_provider: Any,
+    scheduler: Any,
+    claim_engine: Any,
+    workspace_registry: Any,
+    event_bus: Any,
+    target: WorkspaceSession,
+    text: str,
+    peer: PeerAttribution,
+) -> SteerDelivery:
+    """Restart the ENDED session ``target`` with ``text`` as a message from another session, reported the way ``deliver_steer`` reports a delivery.
+
+    The restart is ``restart_session``'s, the one the REST route and the tool always ran: ``reset_session`` reopens the row under the session's
+    lifecycle lock (refusing, on the row read there, one that has not ended, one that cannot be reopened, and a ``cancelled`` one: no person stands
+    behind this restart), then ``wake_session`` writes the USER_INPUT with ``peer`` and arms the turn. A refusal is ``DELIVERED_MISSING`` with the
+    reason, as the steer path reports a session that cannot take a message.
+    """
+    from primer.session.enqueue import SessionWakeDeps
+
+    try:
+        await restart_session(
+            workspace_id=target.workspace_id,
+            session_id=target.id,
+            instruction=text,
+            human_intent=False,
+            peer=peer,
+            reset_deps=SessionResetDeps(
+                storage_provider=storage_provider, workspace_registry=workspace_registry, event_bus=event_bus,
+            ),
+            wake_deps=SessionWakeDeps(
+                storage_provider=storage_provider,
+                scheduler=scheduler,
+                claim_engine=claim_engine,
+                workspace_registry=workspace_registry,
+                event_bus=event_bus,
+            ),
+        )
+    except ConflictError as exc:
+        return SteerDelivery(outcome=DELIVERED_MISSING, detail=exc.message, conflict=True)
+    except NotFoundError as exc:
+        return SteerDelivery(outcome=DELIVERED_MISSING, detail=exc.message)
+    return SteerDelivery(outcome=DELIVERED_WOKEN, session_id=target.id)
+
+
 async def send_peer_message(
     *,
     storage_provider: Any,
@@ -386,6 +443,7 @@ async def send_peer_message(
     now: datetime | None = None,
     reach_any_workspace: bool = False,
     steered_on_every_delivery: bool = False,
+    restart: bool = False,
 ) -> PeerSendResult:
     """Deliver ``text`` from the session ``sender_session_id`` to the session ``target_session_id``, or raise :class:`PeerMessageRefused`.
 
@@ -420,6 +478,12 @@ async def send_peer_message(
     any workspace", and the ruling adds the attribution, hop, rate and rank guards, not a scope. ``steered_on_every_delivery`` emits ``session.steered``
     for a woken target as well as a queued one, as that tool always has (the REST steer route emits it for every steer). Every other guard, the
     ledger and the rulings R1 and R4 apply as for ``message_session``.
+
+    ``restart`` is ``restart_workspace_session`` called from inside a session (lead ruling 1 of the G7 fixes): a restart is a message from the
+    calling session too, so every guard above applies to it, and its text reaches the reopened session with the prefix and the attribution, and its
+    turn with the hop count. It only reopens an ENDED session: one that has not ended is refused (``conflict``, decided on the row read under the
+    sender's lock and again by ``reset_session`` under the session's), and so is one an operator cancelled, as for any peer message. The delivery is
+    ``restart_session``'s (a reset, then a wake), so the answer is always ``woken``.
     """
     if not text or len(text) > PEER_MESSAGE_MAX_CHARS:
         raise PeerMessageRefused("bad-request", REFUSE_TEXT.format(limit=PEER_MESSAGE_MAX_CHARS))
@@ -463,6 +527,8 @@ async def send_peer_message(
         target = await sessions.get(target.id)
         if target is None:
             raise PeerMessageRefused("not-found", REFUSE_NOT_FOUND.format(session_id=target_session_id))
+        if restart and target.status != SessionStatus.ENDED:
+            raise PeerMessageRefused("conflict", REFUSE_NOT_ENDED.format(session_id=target.id, status=target.status.value))
         if mode == "if_idle":
             busy = _busy_reason(target)
             if busy is not None:
@@ -494,18 +560,30 @@ async def send_peer_message(
         waiting_on = parked_on(target)
         paused = _is_paused(target)
 
-        delivery = await deliver_steer(
-            session_id=target.id,
-            text=body,
-            parallelism="queue" if mode == "auto" else "skip",
-            human_intent=False,
-            peer=attribution,
-            storage_provider=storage_provider,
-            scheduler=scheduler,
-            claim_engine=claim_engine,
-            workspace_registry=workspace_registry,
-            event_bus=event_bus,
-        )
+        if restart:
+            delivery = await _deliver_restart(
+                storage_provider=storage_provider,
+                scheduler=scheduler,
+                claim_engine=claim_engine,
+                workspace_registry=workspace_registry,
+                event_bus=event_bus,
+                target=target,
+                text=body,
+                peer=attribution,
+            )
+        else:
+            delivery = await deliver_steer(
+                session_id=target.id,
+                text=body,
+                parallelism="queue" if mode == "auto" else "skip",
+                human_intent=False,
+                peer=attribution,
+                storage_provider=storage_provider,
+                scheduler=scheduler,
+                claim_engine=claim_engine,
+                workspace_registry=workspace_registry,
+                event_bus=event_bus,
+            )
         if delivery.outcome == DELIVERED_SKIPPED_BUSY:
             # The target had a turn open by the time the delivery looked (the guards saw it idle): nothing was stored.
             raise PeerMessageRefused("conflict", REFUSE_BUSY.format(session_id=target.id, reason="busy"))
@@ -615,10 +693,12 @@ __all__ = [
     "REFUSE_MODE",
     "REFUSE_NOT_FOUND",
     "REFUSE_NO_CALLER",
+    "REFUSE_NOT_ENDED",
     "REFUSE_NO_PRINCIPAL",
     "REFUSE_QUEUE_FULL",
     "REFUSE_RANK",
     "REFUSE_RATE",
+    "REFUSE_RESTART_NEEDS_INPUT",
     "REFUSE_SELF",
     "REFUSE_TEXT",
     "PeerMessageRefused",

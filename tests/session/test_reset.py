@@ -109,6 +109,7 @@ async def test_reset_reopens_row_and_writes_divider():
         workspace_id="ws-1",
         session_id="sess-1",
         deps=deps,
+        human_intent=True,
     )
     assert out.status == SessionStatus.CREATED
     assert out.ended_reason is None
@@ -129,7 +130,7 @@ async def test_reset_reopens_a_session_ended_at_the_tool_turn_cap():
     ws = _WS(slot)
     deps = SessionResetDeps(storage_provider=_SP(row), workspace_registry=_Registry(ws))
 
-    out, invocation = await reset_session(workspace_id="ws-1", session_id="sess-1", deps=deps)
+    out, invocation = await reset_session(workspace_id="ws-1", session_id="sess-1", deps=deps, human_intent=True)
 
     assert out.status == SessionStatus.CREATED and out.ended_reason is None
     assert slot.reopened is True and invocation == 2
@@ -149,6 +150,7 @@ async def test_reset_clears_stale_interrupt_requested():
         workspace_id="ws-1",
         session_id="sess-1",
         deps=deps,
+        human_intent=True,
     )
     assert out.interrupt_requested is False
 
@@ -162,7 +164,7 @@ async def test_reset_rejects_non_ended():
         workspace_registry=_Registry(_WS(_Slot())),
     )
     with pytest.raises(ConflictError):
-        await reset_session(workspace_id="ws-1", session_id="sess-1", deps=deps)
+        await reset_session(workspace_id="ws-1", session_id="sess-1", deps=deps, human_intent=True)
 
 
 @pytest.mark.asyncio
@@ -174,7 +176,7 @@ async def test_reset_rejects_workspace_lost():
         workspace_registry=_Registry(_WS(_Slot())),
     )
     with pytest.raises(ConflictError):
-        await reset_session(workspace_id="ws-1", session_id="sess-1", deps=deps)
+        await reset_session(workspace_id="ws-1", session_id="sess-1", deps=deps, human_intent=True)
 
 
 @pytest.mark.asyncio
@@ -187,7 +189,7 @@ async def test_reset_rejects_workspace_lost_while_workspace_still_failed():
         workspace_registry=_Registry(_WS(_Slot()), ws_row=_WSRow(phase="failed")),
     )
     with pytest.raises(ConflictError):
-        await reset_session(workspace_id="ws-1", session_id="sess-1", deps=deps)
+        await reset_session(workspace_id="ws-1", session_id="sess-1", deps=deps, human_intent=True)
 
 
 @pytest.mark.asyncio
@@ -203,7 +205,7 @@ async def test_reset_reopens_workspace_lost_once_workspace_healed():
         workspace_registry=_Registry(ws, ws_row=_WSRow(phase="running")),
     )
     out, invocation = await reset_session(
-        workspace_id="ws-1", session_id="sess-1", deps=deps,
+        workspace_id="ws-1", session_id="sess-1", deps=deps, human_intent=True,
     )
     assert out.status == SessionStatus.CREATED
     assert out.ended_reason is None
@@ -224,7 +226,7 @@ async def test_reset_rejects_force_deleted_even_when_workspace_healthy():
         workspace_registry=_Registry(_WS(_Slot()), ws_row=_WSRow(phase="running")),
     )
     with pytest.raises(ConflictError):
-        await reset_session(workspace_id="ws-1", session_id="sess-1", deps=deps)
+        await reset_session(workspace_id="ws-1", session_id="sess-1", deps=deps, human_intent=True)
 
 
 @pytest.mark.asyncio
@@ -236,6 +238,6 @@ async def test_reset_clears_the_last_turn_error():
     row.last_turn_error = LastTurnError(code="server_error", at=datetime.now(timezone.utc))
     deps = SessionResetDeps(storage_provider=_SP(row), workspace_registry=_Registry(_WS(_Slot())))
 
-    out, _invocation = await reset_session(workspace_id="ws-1", session_id="sess-1", deps=deps)
+    out, _invocation = await reset_session(workspace_id="ws-1", session_id="sess-1", deps=deps, human_intent=True)
 
     assert out.last_turn_error is None

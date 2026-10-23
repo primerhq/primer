@@ -29,6 +29,7 @@ from pydantic import ValidationError
 from primer.model.except_ import ConflictError
 from primer.model.storage import FieldRef, OffsetPage, Op, OrderBy, Predicate, Value
 from primer.model.workspace_session import (
+    MACHINE_ATTRIBUTION_KEY,
     PEER_PAYLOAD_KEY,
     PeerAttribution,
     PendingSessionMessage,
@@ -36,7 +37,7 @@ from primer.model.workspace_session import (
     SessionMessageRecord,
     WorkspaceSession,
 )
-from primer.session.enqueue import PeerCannotReopen, wake_session
+from primer.session.enqueue import OnlyAPersonReopens, wake_session
 from primer.session.persistence import WorkspaceMessageWriter
 from primer.session.seq_reservation import reserve_next_seq
 
@@ -53,7 +54,7 @@ _MAX_PENDING_PER_SESSION = 50
 
 # Why a message was dropped, as the PAUSE_SUPERSEDED record says it (the console shows "queued message dropped (<reason>): <text>").
 _REASON_CAP = f"pending queue exceeded {_MAX_PENDING_PER_SESSION}"
-_REASON_CANCELLED = "the session was cancelled, and a message from another session does not reopen it"
+_REASON_CANCELLED = "the session was cancelled, and a message no person wrote does not reopen it"
 _REASON_QUEUE_FULL = (
     f"the pending queue is full ({_MAX_PENDING_PER_SESSION}), and a message from another session does not evict a person's"
 )
@@ -80,6 +81,14 @@ def _carries_peer(attribution: dict | None) -> bool:
     tell a message from another session without validating it.
     """
     return isinstance(attribution, dict) and PEER_PAYLOAD_KEY in attribution
+
+
+def _written_by_a_person(attribution: dict | None) -> bool:
+    """Whether a queued message was written by a person: it carries neither a peer's attribution nor the machine marker
+    (:func:`primer.session.enqueue.queued_attribution`). A row queued before the marker existed carries neither and is a person's, as it was read then."""
+    if not isinstance(attribution, dict):
+        return True
+    return PEER_PAYLOAD_KEY not in attribution and MACHINE_ATTRIBUTION_KEY not in attribution
 
 
 def _queued_for(session_id: str) -> Predicate:
@@ -290,11 +299,15 @@ async def realize_next_pending(
     malformed attribution is logged and the message is realized as a plain
     one: it must not be lost, and it must not wedge the queue.
 
-    A message from another session that the session then refuses is dropped, on the record, and the drain goes on to the next row (lead rulings R4
-    and R1): the session was cancelled, and only a person reopens a cancelled session (:class:`PeerCannotReopen`), or the pause that now holds the
-    message found the queue full again and a peer does not evict a person's steer (:class:`PendingQueueFull`). The drop is announced like a cap drop,
-    and it does not use up the checkpoint: the person's steer queued behind it is still realized now, because no later checkpoint will come for a
-    session that stays ended. Nothing else is skipped: the rows behind a realized one wait for the next checkpoint, as ever.
+    A message the session then refuses is dropped, on the record, and the drain goes on to the next row (lead rulings R4 and R1): the session was
+    cancelled and no person wrote the message (another session sent it, or a trigger fire or a tool call queued it: the row's attribution says so),
+    and only a person's message reopens a cancelled session (:class:`~primer.session.reset.OnlyAPersonReopens`; ruling 1 of the G7 fixes extends R4
+    from peers to every message no person wrote); or the pause that now holds a peer's message found the queue full again and a peer does not evict
+    a person's steer (:class:`PendingQueueFull`). The wake is still a replay (``human_intent=False``: it does not clear a pause that landed since),
+    but a person's steer is woken as written by a person (``by_a_person``), so it reopens a cancelled session as the lead's ruling on ticket 01a1120e
+    has it. The drop is announced like a cap drop, and it does not use up the checkpoint: the person's steer queued behind it is still realized now,
+    because no later checkpoint will come for a session that stays ended. Nothing else is skipped: the rows behind a realized one wait for the next
+    checkpoint, as ever.
     """
     while True:
         realized = await _realize_oldest(
@@ -340,11 +353,13 @@ async def _realize_oldest(
             # has since been paused, this wake must queue behind that pause
             # like any other non-human wake, not resume it.
             human_intent=False,
+            # Who WROTE it, which the queue kept: a person's steer still reopens a session cancelled since; a peer's or a machine's does not.
+            by_a_person=_written_by_a_person(row.attribution),
             peer=peer,
             deps=wake_deps,
         )
-    except (PeerCannotReopen, PendingQueueFull) as refusal:
-        logger.info("realize: dropped a queued message from another session on %s (%s)", session_id, type(refusal).__name__)
+    except (OnlyAPersonReopens, PendingQueueFull) as refusal:
+        logger.info("realize: dropped a queued message on %s (%s)", session_id, type(refusal).__name__)
         await _record_dropped_pending(
             workspace_registry=wake_deps.workspace_registry,
             event_bus=wake_deps.event_bus,
@@ -353,7 +368,7 @@ async def _realize_oldest(
             session_id=session_id,
             dropped_text=text,
             enqueued_at=row.enqueued_at,
-            reason=_REASON_CANCELLED if isinstance(refusal, PeerCannotReopen) else _REASON_QUEUE_FULL,
+            reason=_REASON_CANCELLED if isinstance(refusal, OnlyAPersonReopens) else _REASON_QUEUE_FULL,
         )
         return None
     return True

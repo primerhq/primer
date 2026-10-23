@@ -278,9 +278,14 @@ async def test_r4_a_steer_from_a_session_never_reopens_a_session_an_operator_can
     row = await world.sessions.get("ses-b")
     assert row.status == SessionStatus.ENDED and records(world, "ses-b") == [] and slot(world, "ses-b").reopened is False
     await _assert_nothing_stored(world)
-    # a person's steer reopens it
+    # A call with no calling session (the MCP endpoint) does not reopen it either: no person stands behind a tool call (ruling 1 of the G7 fixes;
+    # this used to reopen it). A person reopens it through the REST steer or restart route (``human_intent=True``).
     result, body = await _steer(world, "ses-b")
-    assert not result.is_error and (body["status"], body["delivery"]) == ("running", "woken"), result.output
+    assert result.is_error and body == {"type": "conflict", "message": "Session 'ses-b' has ended (cancelled) and cannot take a message"}
+    from primer.session.steer_delivery import DELIVERED_WOKEN, deliver_steer
+
+    out = await deliver_steer(session_id="ses-b", text=INSTRUCTION, parallelism="queue", human_intent=True, **world.deliver_kwargs())
+    assert out.outcome == DELIVERED_WOKEN and (await world.sessions.get("ses-b")).status == SessionStatus.RUNNING
 
 
 # ---- the scope is not one of the guards -------------------------------------------------------------------------------------------

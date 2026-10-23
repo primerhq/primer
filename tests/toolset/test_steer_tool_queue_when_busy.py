@@ -240,7 +240,9 @@ _STALE_PARKS = {
 @pytest.mark.parametrize(
     ("ended_reason", "phase", "reopens"),
     [
-        pytest.param("cancelled", "ready", True, id="cancelled"),
+        # A tool call is no person: it does not reopen a session an operator cancelled (ruling 1 of the G7 fixes; this param used to reopen it).
+        pytest.param("cancelled", "ready", False, id="cancelled: a tool call does not reopen it"),
+        pytest.param("completed", "ready", True, id="completed"),
         pytest.param("workspace_lost", "running", True, id="workspace lost, the workspace is back"),
         pytest.param("workspace_lost", "ready", False, id="workspace lost, the workspace is down"),
     ],
@@ -261,12 +263,15 @@ async def test_steering_an_ended_session_with_its_park_still_set_reopens_it_or_r
         assert [(e.session_id, e.payload["delivery"]) for e in await _steered_events(world)] == [("ses-b", "woken")]
     else:
         assert result.is_error
-        assert body == {"type": "conflict", "message": "Session 'ses-b' has ended (workspace_lost) and cannot take a message"}
+        assert body == {"type": "conflict", "message": f"Session 'ses-b' has ended ({ended_reason}) and cannot take a message"}
         assert row.status == SessionStatus.ENDED and records(world, "ses-b") == []
         assert world.scheduler.enqueued == [] and await _steered_events(world) == []
 
 
-async def test_the_real_cancel_of_a_paused_parked_session_then_a_steer_reopens_it():
+async def test_the_real_cancel_of_a_paused_parked_session_then_a_tool_steer_is_refused_and_a_persons_steer_reopens_it():
+    """Re-pinned (ruling 1 of the G7 fixes): the tool's steer used to reopen the session the operator had just cancelled. A tool call (here with no
+    calling session: the MCP endpoint) is no person, so it is refused; a person's steer (``human_intent=True``, the REST route's) reopens it."""
+    from primer.session.steer_delivery import DELIVERED_WOKEN, deliver_steer
     from primer.workspace.session_factory import SessionCancelDeps, cancel_session
 
     class _Engine:
@@ -281,8 +286,16 @@ async def test_the_real_cancel_of_a_paused_parked_session_then_a_steer_reopens_i
     )
     assert (await world.sessions.get("ses-b")).parked_status == "resumable", "the premise: Cancel keeps the park"
     result, body = await _steer(world, "ses-b")
-    assert not result.is_error, result.output
-    assert (body["status"], body["delivery"], body["parked_status"]) == ("running", "woken", None)
+    assert result.is_error
+    assert body == {"type": "conflict", "message": "Session 'ses-b' has ended (cancelled) and cannot take a message"}
+    assert (await world.sessions.get("ses-b")).status == SessionStatus.ENDED and await _pending(world) == []
+
+    out = await deliver_steer(
+        session_id="ses-b", text=INSTRUCTION, parallelism="queue", human_intent=True, **world.deliver_kwargs(),
+    )
+    assert out.outcome == DELIVERED_WOKEN
+    row = await world.sessions.get("ses-b")
+    assert (row.status, row.parked_status) == (SessionStatus.RUNNING, None)
     assert await _pending(world) == []
 
 

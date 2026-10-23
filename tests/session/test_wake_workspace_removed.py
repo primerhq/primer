@@ -284,5 +284,5 @@ async def test_reset_session_passes_no_guard_and_reports_a_workspace_error_as_it
     slot(world, "ses-b").reopen = reopen
     deps = SessionResetDeps(storage_provider=world.sp, workspace_registry=world.registry, event_bus=None)
     with pytest.raises(OSError, match="Input/output error"):
-        await reset_session(workspace_id="ws-1", session_id="ses-b", deps=deps)
+        await reset_session(workspace_id="ws-1", session_id="ses-b", deps=deps, human_intent=True)
     await _assert_still_ended(world)

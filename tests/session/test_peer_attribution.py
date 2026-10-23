@@ -17,6 +17,7 @@ from primer.int.claim import ClaimKind
 from primer.model.except_ import ConflictError
 from primer.model.storage import OffsetPage
 from primer.model.workspace_session import (
+    MACHINE_ATTRIBUTION_KEY,
     PEER_PAYLOAD_KEY,
     GraphSessionBinding,
     PeerAttribution,
@@ -250,12 +251,18 @@ async def test_a_busy_target_queues_the_message_with_its_attribution():
     assert (await world.sessions.get("ses-b")).peer_hops == 0  # the queued message has not started a turn
 
 
-async def test_a_plain_message_to_a_busy_target_queues_with_no_attribution():
+async def test_a_plain_message_to_a_busy_target_queues_with_no_peer_attribution():
+    """Updated (ruling 1 of the G7 fixes): a message no person wrote (a trigger's, ``human_intent=False``) used to queue with no attribution at all;
+    it now carries the machine mark, so the drain does not let it reopen a session cancelled before it is realized. A person's carries nothing."""
     world = make_world()
     await seed_session(world, sid="ses-b", status=SessionStatus.RUNNING, turn_status="running")
     out = await _send(world, "ses-b", text="from a trigger", peer=None)
     assert out.outcome == DELIVERED_QUEUED
-    assert [p.attribution for p in await _pending(world)] == [None]
+    out = await _send(world, "ses-b", text="from a person", peer=None, human_intent=True)
+    assert out.outcome == DELIVERED_QUEUED
+    assert {p.parts[0]["text"]: p.attribution for p in await _pending(world)} == {
+        "from a trigger": {MACHINE_ATTRIBUTION_KEY: True}, "from a person": None,
+    }
 
 
 async def test_skip_parallelism_drops_a_peer_message_for_a_busy_target_and_stores_nothing():
@@ -529,7 +536,9 @@ async def test_a_steer_in_the_window_where_end_session_has_written_ended_but_not
     from primer.session.dispatch import realize_queued_steer
 
     world = make_world(with_bus=True)
-    row = await seed_session(world, sid="ses-b", status=SessionStatus.ENDED, ended_reason="cancelled", turn_no=2, **_STALE_PARKS["parked"])
+    # The session ended ``completed`` (it used to be ``cancelled``): since ruling 1 of the G7 fixes no wake but a person's reopens a cancelled
+    # session, and the window, not the reason, is what this test is about.
+    row = await seed_session(world, sid="ses-b", status=SessionStatus.ENDED, ended_reason="completed", turn_no=2, **_STALE_PARKS["parked"])
     queued_earlier = PEER.model_copy(update={"hops": 2})
     await store_pending_steer(
         storage_provider=world.sp, session=row, text="queued while it was parked", workspace_registry=world.registry,
@@ -583,8 +592,10 @@ async def test_a_binding_switch_queued_on_the_parked_session_waits_for_the_turn_
 
     world = make_world(with_bus=True)
     request = {"kind": "agent", "agent_id": "builder", "profile_id": None, "actor": "user:u1"}
+    # Ended ``completed`` (it used to be ``cancelled``): since ruling 1 of the G7 fixes no wake but a person's reopens a cancelled session, and the
+    # window, not the reason, is what this test is about.
     row = await seed_session(
-        world, sid="ses-b", status=SessionStatus.ENDED, ended_reason="cancelled", turn_no=2, pending_binding_switch=request, **_STALE_PARKS["parked"],
+        world, sid="ses-b", status=SessionStatus.ENDED, ended_reason="completed", turn_no=2, pending_binding_switch=request, **_STALE_PARKS["parked"],
     )
     await store_pending_steer(
         storage_provider=world.sp, session=row, text="queued while it was parked", workspace_registry=world.registry,
@@ -655,16 +666,16 @@ async def test_a_message_that_is_not_a_peers_is_queued_at_a_full_queue_and_the_c
     assert len(_dropped(world)) == 1
 
 
-# ---- a cancelled session stays cancelled for a peer message (lead ruling R4 on #788) ---------------------------------------------------
-# Only a person's steer or resume reopens a session an operator cancelled. A trigger or a channel message still does (the ruling is about peers).
+# ---- a cancelled session stays cancelled for every wake no person stands behind (lead ruling R4 on #788, ruling 1 of the G7 fixes) ---------------
+# Only a person's message or Restart reopens a session an operator cancelled. A peer message, a trigger fire, a tool call and a queued message
+# realized after the Cancel do not (they wake with ``human_intent=False``). This used to hold for peer messages only: a trigger reopened it.
 
 
 @pytest.mark.parametrize("park", sorted(_STALE_PARKS))
-@pytest.mark.parametrize("human_intent", [True, False], ids=["a person", "a trigger or a channel"])
-async def test_a_message_that_is_not_a_peers_reopens_a_cancelled_target_even_with_its_park_still_set(park, human_intent):
+async def test_a_persons_message_reopens_a_cancelled_target_even_with_its_park_still_set(park):
     world = make_world(with_bus=True)
     await seed_session(world, sid="ses-b", status=SessionStatus.ENDED, ended_reason="cancelled", turn_no=2, peer_hops=2, **_STALE_PARKS[park])
-    out = await _send(world, "ses-b", peer=None, human_intent=human_intent)
+    out = await _send(world, "ses-b", peer=None, human_intent=True)
     assert out.outcome == DELIVERED_WOKEN
     row = await world.sessions.get("ses-b")
     assert (row.status, row.ended_reason, row.turn_status, row.peer_hops) == (SessionStatus.RUNNING, None, "claimable", 0)
@@ -672,24 +683,40 @@ async def test_a_message_that_is_not_a_peers_reopens_a_cancelled_target_even_wit
     assert slot(world, "ses-b").reopened is True and await _pending(world) == []
 
 
-async def test_wake_session_refuses_a_peer_message_to_a_cancelled_session_before_it_writes_anything():
-    """The refusal sits in ``wake_session``, under the session's lifecycle lock and on the row read there, so a Cancel that lands after any earlier check
-    is seen. It is a conflict, so ``deliver_steer`` reports the target as unable to take the message."""
-    from primer.session.enqueue import PeerCannotReopen
+@pytest.mark.parametrize("park", sorted(_STALE_PARKS))
+async def test_a_trigger_or_tool_message_does_not_reopen_a_cancelled_target(park):
+    """Re-pinned (ruling 1 of the G7 fixes): this was ``test_a_message_that_is_not_a_peers_reopens_...`` and pinned a trigger's message reopening the
+    session the operator cancelled. A message no person stands behind is refused like a peer's, and nothing is written."""
+    world = make_world(with_bus=True)
+    await seed_session(world, sid="ses-b", status=SessionStatus.ENDED, ended_reason="cancelled", turn_no=2, peer_hops=2, **_STALE_PARKS[park])
+    before = (await world.sessions.get("ses-b")).model_dump(mode="json")
+    out = await _send(world, "ses-b", peer=None, human_intent=False)
+    assert (out.outcome, out.conflict) == (DELIVERED_MISSING, True)
+    assert "cancelled" in (out.detail or "")
+    assert (await world.sessions.get("ses-b")).model_dump(mode="json") == before
+    assert records(world, "ses-b") == [] and slot(world, "ses-b").reopened is False and await _pending(world) == []
+    assert world.scheduler.enqueued == [] and world.engine.upserts == []
+
+
+@pytest.mark.parametrize("peer", [PEER, None], ids=["a peer message", "a trigger or tool message"])
+async def test_wake_session_refuses_a_wake_no_person_stands_behind_to_a_cancelled_session_before_it_writes_anything(peer):
+    """The refusal sits in ``wake_session`` (``_reopen_ended_locked``), under the session's lifecycle lock and on the row read there, so a Cancel that
+    lands after any earlier check is seen. It is a conflict, so ``deliver_steer`` reports the target as unable to take the message."""
+    from primer.session.enqueue import OnlyAPersonReopens
 
     world = make_world(with_bus=True)
     await seed_session(world, sid="ses-b", status=SessionStatus.ENDED, ended_reason="cancelled", turn_no=2, peer_hops=2, metadata={"invocation": 1})
     before = (await world.sessions.get("ses-b")).model_dump(mode="json")
-    with pytest.raises(PeerCannotReopen) as info:
+    with pytest.raises(OnlyAPersonReopens) as info:
         await wake_session(
-            workspace_id="ws-1", session_id="ses-b", instruction=TEXT, human_intent=False, peer=PEER, deps=world.wake_deps(),
+            workspace_id="ws-1", session_id="ses-b", instruction=TEXT, human_intent=False, peer=peer, deps=world.wake_deps(),
         )
     assert isinstance(info.value, ConflictError) and "cancelled" in str(info.value)
     assert (await world.sessions.get("ses-b")).model_dump(mode="json") == before
     assert records(world, "ses-b") == [] and slot(world, "ses-b").reopened is False and slot(world, "ses-b").appended == []
     assert world.scheduler.enqueued == [] and world.engine.upserts == [] and world.bus.published == []
 
-    out = await _send(world, "ses-b")
+    out = await _send(world, "ses-b", peer=peer)
     assert (out.outcome, out.conflict) == (DELIVERED_MISSING, True)
 
 
