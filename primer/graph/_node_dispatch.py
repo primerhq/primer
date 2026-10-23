@@ -274,7 +274,7 @@ class _NodeDispatchMixin:
                 # render aggregate_template + optional output_schema, then
                 # post a _NodeDone with ended_detail set on failure so the
                 # outer loop terminates `failed`.
-                fres = _render_fanin_output(node, context)
+                fres = await _render_fanin_output(node, context)
                 if fres.error_code is not None:
                     await queue.put(
                         _NodeDone(
@@ -299,7 +299,7 @@ class _NodeDispatchMixin:
                 # End is pure data-shaping; render output_template + optional
                 # schema validation, then post a _NodeDone with ended_detail
                 # set on failure so the outer loop terminates `failed`.
-                res = _render_end_output(node, context)
+                res = await _render_end_output(node, context)
                 if res.error_code is not None:
                     await queue.put(
                         _NodeDone(
@@ -412,7 +412,7 @@ class _NodeDispatchMixin:
                 finally:
                     reset_current_toolcall(call_token)
                 await self._answer_toolcall_row(queue, node_id, context, call_id, result)
-                mapped = _map_toolcall_result(
+                mapped = await _map_toolcall_result(
                     result, output_schema=node.output_schema
                 )
                 if mapped.error_code is not None:

@@ -24,23 +24,23 @@ def _ctx_with_workers() -> GraphContext:
     )
 
 
-def test_empty_template_returns_empty_text() -> None:
+async def test_empty_template_returns_empty_text() -> None:
     fan = _FanInNode(id="join")
-    res = _render_fanin_output(fan, _ctx_with_workers())
+    res = await _render_fanin_output(fan, _ctx_with_workers())
     assert res.text == ""
     assert res.error_code is None
 
 
-def test_renders_aggregate_template() -> None:
+async def test_renders_aggregate_template() -> None:
     fan = _FanInNode(
         id="join",
         aggregate_template="{% for w in nodes.worker %}{{ w.text }} {% endfor %}",
     )
-    res = _render_fanin_output(fan, _ctx_with_workers())
+    res = await _render_fanin_output(fan, _ctx_with_workers())
     assert res.text.strip() == "w0 w1"
 
 
-def test_output_schema_validates() -> None:
+async def test_output_schema_validates() -> None:
     fan = _FanInNode(
         id="join",
         aggregate_template='{"sum": {{ (nodes.worker | map(attribute="parsed") | map(attribute="score") | sum) }}}',
@@ -50,16 +50,16 @@ def test_output_schema_validates() -> None:
             "properties": {"sum": {"type": "integer"}},
         },
     )
-    res = _render_fanin_output(fan, _ctx_with_workers())
+    res = await _render_fanin_output(fan, _ctx_with_workers())
     assert res.parsed == {"sum": 3}
     assert res.error_code is None
 
 
-def test_output_schema_failure() -> None:
+async def test_output_schema_failure() -> None:
     fan = _FanInNode(
         id="join",
         aggregate_template="not json",
         output_schema={"type": "object"},
     )
-    res = _render_fanin_output(fan, _ctx_with_workers())
+    res = await _render_fanin_output(fan, _ctx_with_workers())
     assert res.error_code == "end_output_invalid"

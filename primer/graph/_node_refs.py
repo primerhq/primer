@@ -81,7 +81,37 @@ class _EndOutputResult:
     error_message: str | None = None
 
 
-def _render_end_output(end: "_EndNode", context: "GraphContext") -> _EndOutputResult:
+async def _schema_violation(instance: Any, schema: dict[str, Any]) -> str | None:
+    """Why ``instance`` does not satisfy a node's ``output_schema``, or ``None``.
+
+    The schema is the graph author's and the instance is model or tool
+    output, so its regex keywords are bounded (G6-4): the validation runs in
+    a worker thread and its patterns through
+    :mod:`primer.common.bounded_jsonschema` (at most 1000 characters, the
+    ``regex`` engine releasing the GIL, one time budget). A pattern over the
+    caps or a spent budget is a violation that says so, under the node's
+    usual error code.
+    """
+    import jsonschema  # local import keeps base.py import cheap
+
+    from primer.common.bounded_jsonschema import validate_bounded_off_loop
+    from primer.common.user_regex import UserRegexError, UserRegexTimeout
+
+    try:
+        await validate_bounded_off_loop(instance, schema)
+    except jsonschema.ValidationError as exc:
+        return exc.message
+    except UserRegexTimeout as exc:
+        return (
+            f"output_schema validation stopped: its patterns used their {exc.seconds:g} s matching budget "
+            "(a pattern with overlapping or nested repeats, such as (a|aa)+, backtracks on long values)"
+        )
+    except UserRegexError as exc:
+        return f"output_schema has a pattern that cannot be used: {exc}"
+    return None
+
+
+async def _render_end_output(end: "_EndNode", context: "GraphContext") -> _EndOutputResult:
     """Render End.output_template; if End.output_schema is set, parse + validate.
 
     Errors map to spec §5.4 codes:
@@ -118,16 +148,13 @@ def _render_end_output(end: "_EndNode", context: "GraphContext") -> _EndOutputRe
             error_message=f"output is not JSON: {exc}",
         )
 
-    import jsonschema  # local import keeps base.py import cheap
-
-    try:
-        jsonschema.validate(instance=parsed_obj, schema=end.output_schema)
-    except jsonschema.ValidationError as exc:
+    violation = await _schema_violation(parsed_obj, end.output_schema)
+    if violation is not None:
         return _EndOutputResult(
             text=text,
             parsed=None,
             error_code="end_output_invalid",
-            error_message=exc.message,
+            error_message=violation,
         )
 
     if not isinstance(parsed_obj, dict):
@@ -151,7 +178,7 @@ class _FanInOutputResult:
     error_message: str | None = None
 
 
-def _render_fanin_output(
+async def _render_fanin_output(
     fanin: "_FanInNode", context: "GraphContext"
 ) -> _FanInOutputResult:
     """Render FanIn.aggregate_template + validate optional output_schema.
@@ -190,16 +217,13 @@ def _render_fanin_output(
             error_message=f"output is not JSON: {exc}",
         )
 
-    import jsonschema  # local import keeps base.py import cheap
-
-    try:
-        jsonschema.validate(instance=parsed_obj, schema=fanin.output_schema)
-    except jsonschema.ValidationError as exc:
+    violation = await _schema_violation(parsed_obj, fanin.output_schema)
+    if violation is not None:
         return _FanInOutputResult(
             text=text,
             parsed=None,
             error_code="end_output_invalid",
-            error_message=exc.message,
+            error_message=violation,
         )
 
     if not isinstance(parsed_obj, dict):
@@ -222,7 +246,7 @@ class _ToolCallOutputResult:
     error_message: str | None = None
 
 
-def _map_toolcall_result(
+async def _map_toolcall_result(
     result: "ToolResultPart",
     *,
     output_schema: dict[str, Any] | None,
@@ -264,16 +288,13 @@ def _map_toolcall_result(
             error_message=f"output is not JSON: {exc}",
         )
 
-    import jsonschema  # local import keeps base.py import cheap
-
-    try:
-        jsonschema.validate(instance=parsed_obj, schema=output_schema)
-    except jsonschema.ValidationError as exc:
+    violation = await _schema_violation(parsed_obj, output_schema)
+    if violation is not None:
         return _ToolCallOutputResult(
             text=text,
             parsed=None,
             error_code="tool_output_invalid",
-            error_message=exc.message,
+            error_message=violation,
         )
 
     if not isinstance(parsed_obj, dict):
