@@ -437,6 +437,7 @@ class _Batch:
         self.warnings: list[str] = []
         self.where: dict[str, int] = {}  # id -> line that last defined it or took it out of a parent
         self.children_line: dict[str, int] = {}  # container id -> line that last set its children
+        self.html_line: dict[str, int] = {}  # Html element id -> line that last supplied its html body
         self.last_line = 0
         self.element_ceiling = max(limits.max_elements, state.element_count())
         self.over_since: int | None = None
@@ -504,13 +505,16 @@ class _Batch:
             spec, st.args, st.kwargs, element_id=st.id, current=current, max_html_bytes=self.limits.max_html_bytes
         )
         problems = list(bound.problems)
-        if not problems and spec.type == "Html" and bound.html_supplied and self.script_check is not None:
-            problems = [Problem(f"{st.id}: {text}") for text in self.script_check(bound.element["props"]["html"])]
         if problems:
             for problem in problems:
                 self.err(line, problem.message, problem.expected)
             return
         self._install(st.id, bound.element, current, line)
+        if spec.type == "Html":
+            if bound.html_supplied:
+                self.html_line[st.id] = line
+        else:
+            self.html_line.pop(st.id, None)
 
     def _install(self, eid: str, element: dict[str, Any], current: dict[str, Any] | None, line: int) -> None:
         w = self.w
@@ -574,12 +578,8 @@ class _Batch:
                 else:
                     self.err(line, message, sig)
                 return
-            if param.kind == "html" and self.script_check is not None:
-                texts = self.script_check(value)
-                for text in texts:
-                    self.err(line, f"{st.id}: {text}")
-                if texts:
-                    return
+            if param.kind == "html":
+                self.html_line[st.id] = line
             stored = copy.deepcopy(_store(param, value))
             if param.default is not None and json_equal(stored, param.default):
                 props.pop(param.name, None)
@@ -712,6 +712,7 @@ class _Batch:
             w.value_set_by.pop(gone, None)
             self.where.pop(gone, None)
             self.children_line.pop(gone, None)
+            self.html_line.pop(gone, None)
 
     def _clear(self) -> None:
         self.w.elements = {ROOT_ID: copy.deepcopy(ROOT_ELEMENT)}
@@ -719,6 +720,7 @@ class _Batch:
         self.w.value_set_by = {}
         self.where.clear()
         self.children_line.clear()
+        self.html_line.clear()
 
     # the whole canvas, judged once every statement has been applied
 
@@ -776,6 +778,19 @@ class _Batch:
 
         for line, message in sorted(found, key=lambda item: item[0]):
             self.err(line, message)
+        if not self.errors and self.script_check is not None and self.html_line:
+            surviving = [
+                (eid, line, w.elements[eid]["props"]["html"])
+                for eid, line in sorted(self.html_line.items(), key=lambda item: item[1])
+                if eid in w.elements and w.elements[eid].get("type") == "Html"
+            ]
+            distinct = list(dict.fromkeys(html for _, _, html in surviving))
+            if distinct:
+                many = getattr(self.script_check, "many", None)
+                by_body = many(distinct) if callable(many) else {html: self.script_check(html) for html in distinct}
+                for eid, line, html in surviving:
+                    for text in by_body.get(html, ()):
+                        self.err(line, f"{eid}: {text}")
 
     def _find_cycles(self, found: list[tuple[int, str]]) -> set[tuple[str, str]]:
         """Depth-first search for containers that end up inside themselves.

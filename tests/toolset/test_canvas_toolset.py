@@ -253,16 +253,17 @@ def _compact_size(ops: list[dict]) -> int:
 
 
 def _applying_ops_of_size(n: int) -> list[dict]:
-    """A batch that APPLIES and is EXACTLY ``n`` characters of compact JSON: a Text is set, then the canvas is cleared many times.
-
-    Each ``{"op":"clear"}`` adds 15 characters (14 and a comma) and the Text's ``text`` takes the remainder, so every ``n`` from 57 up is
-    reachable. The Text is cleared away again by the batch itself, so the canvas it ends with is a valid one at any size (a padded
-    string alone could not be: a Text holds 10000 characters at most and a canvas 512 KiB).
-    """
+    """A batch that APPLIES, stays well under the 2000-op cap, and is EXACTLY ``n`` characters of compact JSON."""
     head = {"op": "set", "id": "t", "type": "Text", "props": {"text": ""}}
-    clears, pad = divmod(n - _compact_size([head]), 15)
-    ops = [{**head, "props": {"text": "x" * pad}}, *[{"op": "clear"}] * clears]
-    assert _compact_size(ops) == n
+    big_text = "x" * 9900
+    big_op = {"op": "set", "id": "t", "type": "Text", "props": {"text": big_text}}
+    big_step = _compact_size([big_op, head]) - _compact_size([head])
+    big_count = max(0, (n - _compact_size([head]) - 1500) // big_step)
+    prefix = [big_op] * big_count
+    rem = n - _compact_size([*prefix, head])
+    clears, pad = divmod(rem, 15)
+    ops = [*prefix, {**head, "props": {"text": "x" * pad}}, *[{"op": "clear"}] * clears]
+    assert _compact_size(ops) == n and len(ops) <= 2000
     return ops
 
 
@@ -274,6 +275,16 @@ async def test_ops_of_exactly_the_cap_are_applied_and_one_character_more_is_refu
     assert is_error and body["type"] == "validation-error"
     assert "ops hold 600001 characters of JSON; the limit is 600000" in body["message"], body
     assert (await world.canvas("s1")).rev == 1, "the refused batch applied nothing"
+
+
+async def test_a_batch_over_2000_statements_or_ops_is_refused(provider, ctx, world):
+    is_error, body = await call(provider, "canvas_apply", {"source": "\n".join(["clear"] * 2001)}, ctx)
+    assert is_error and body["type"] == "validation-error"
+    assert body["errors"] == [{"line": 2001, "message": "a batch holds at most 2000 statements; got 2001"}]
+    is_error, body = await call(provider, "canvas_apply", {"ops": [{"op": "clear"}] * 2001}, ctx)
+    assert is_error and body["type"] == "validation-error"
+    assert "a batch holds at most 2000 ops; got 2001" in body["message"]
+    assert await world.canvas("s1") is None
 
 
 # ---- base_rev ------------------------------------------------------------------------------------------------------------------------

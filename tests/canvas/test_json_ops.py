@@ -267,15 +267,27 @@ def test_ops_of_exactly_the_cap_fit_and_one_more_does_not():
 
 
 def test_a_list_of_many_small_ops_is_counted_whole_and_compact():
-    """40000 ``{"op":"clear"}`` are 600001 characters once the commas and brackets are counted (15 per op and one more); 39999 are 599986.
-
-    The size is that of the whole list in compact form: not of the ops alone, and not with the spaces ``json.dumps`` writes by default.
-    """
-    assert (_compact(_clears(39_999)), _compact(_clears(40_000))) == (599_986, 600_001)
-    assert ensure_ops_fit(_clears(39_999)) == _clears(39_999)
+    """The size is that of the whole list in compact form: not of the ops alone, and not with the spaces ``json.dumps`` writes by default."""
+    bare = {"op": "prop", "id": "a", "prop": "b", "value": "x" * 555}
+    # 1000 ops of 599 chars + 999 commas + 2 brackets = 600,001 chars; shrinking the last op by 2 chars gives 599,999.
+    over = [bare] * 1000
+    under = [*[bare] * 999, {**bare, "value": "x" * 553}]
+    assert (_compact(under), _compact(over)) == (599_999, 600_001)
+    assert ensure_ops_fit(under) == under
     with pytest.raises(PydanticCustomError) as exc:
-        ensure_ops_fit(_clears(40_000))
+        ensure_ops_fit(over)
     assert str(exc.value) == "ops hold 600001 characters of JSON; the limit is 600000"
+
+
+def test_ops_are_capped_at_2000_before_parsing():
+    from primer.canvas.ops import MAX_BATCH_STATEMENTS
+
+    assert MAX_BATCH_STATEMENTS == 2000
+    assert ensure_ops_fit(_clears(MAX_BATCH_STATEMENTS)) == _clears(MAX_BATCH_STATEMENTS)
+    with pytest.raises(PydanticCustomError) as exc:
+        ensure_ops_fit(_clears(MAX_BATCH_STATEMENTS + 1))
+    assert exc.value.type == "ops_too_many"
+    assert str(exc.value) == "a batch holds at most 2000 ops; got 2001"
 
 
 def test_the_size_is_counted_in_characters_not_bytes_or_escapes():

@@ -17,7 +17,20 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic_core import PydanticCustomError
 
 from primer.canvas.catalog import CATALOG
-from primer.canvas.lang import KEEP, MAX_ERRORS, Append, Assign, Clear, Delete, LangError, Ref, SetProp, Statement, clip
+from primer.canvas.lang import (
+    KEEP,
+    MAX_BATCH_STATEMENTS,
+    MAX_ERRORS,
+    Append,
+    Assign,
+    Clear,
+    Delete,
+    LangError,
+    Ref,
+    SetProp,
+    Statement,
+    clip,
+)
 from primer.canvas.state import normalize_assign
 
 #: The most characters of Canvas Lang source one batch may hold.
@@ -86,13 +99,20 @@ _MAX_PROBLEMS_PER_OP = 3
 
 
 def ensure_ops_fit(raw: Any) -> Any:
-    """A ``mode="before"`` validator for a field of ops: refuse a list that holds more than ``MAX_OPS_CHARS`` characters of compact JSON.
+    """A ``mode="before"`` validator for a field of ops: refuse a list that holds more than ``MAX_BATCH_STATEMENTS`` ops or
+    ``MAX_OPS_CHARS`` characters of compact JSON.
 
     It runs on the raw value, before pydantic builds a model for each op, so an oversized batch costs one serialisation and nothing more.
-    ``source`` is capped the same way (``MAX_SOURCE_CHARS``, a ``max_length``). ``None`` passes: the field is optional.
+    ``source`` is capped the same way (``MAX_BATCH_STATEMENTS`` and ``MAX_SOURCE_CHARS``). ``None`` passes: the field is optional.
     """
     if raw is None:
         return raw
+    if isinstance(raw, (list, tuple)) and len(raw) > MAX_BATCH_STATEMENTS:
+        raise PydanticCustomError(
+            "ops_too_many",
+            "a batch holds at most {limit} ops; got {count}",
+            {"count": len(raw), "limit": MAX_BATCH_STATEMENTS},
+        )
     try:
         size = len(json.dumps(raw, separators=(",", ":"), ensure_ascii=False))
     except (TypeError, ValueError, RecursionError):
@@ -232,6 +252,7 @@ def statements_to_ops(statements: Sequence[Statement]) -> list[dict[str, Any]]:
 
 
 __all__ = [
+    "MAX_BATCH_STATEMENTS",
     "MAX_OPS_CHARS",
     "MAX_SOURCE_CHARS",
     "OP_SHAPES",

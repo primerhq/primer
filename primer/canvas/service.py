@@ -352,6 +352,30 @@ class CanvasService:
         """
         statements = list(statements)
         store = self._store()
+        checked_html: dict[str, list[str]] = {}
+        base_check = self._script_check
+        memo_check: Callable[[str], list[str]] | None = None
+        if base_check is not None:
+            base_many = getattr(base_check, "many", None)
+
+            def _memo_one(html: str) -> list[str]:
+                if html not in checked_html:
+                    checked_html[html] = base_check(html)
+                return checked_html[html]
+
+            def _memo_many(bodies: Sequence[str]) -> dict[str, list[str]]:
+                unchecked = [b for b in dict.fromkeys(bodies) if b not in checked_html]
+                if unchecked:
+                    if callable(base_many):
+                        checked_html.update(base_many(unchecked))
+                    else:
+                        for b in unchecked:
+                            checked_html[b] = base_check(b)
+                return {b: checked_html[b] for b in dict.fromkeys(bodies)}
+
+            _memo_one.many = _memo_many  # type: ignore[attr-defined]
+            memo_check = _memo_one
+
         for _ in range(_ATTEMPTS):
             row = await store.get(session_id)
             rev = row.rev if row is not None else 0
@@ -361,7 +385,7 @@ class CanvasService:
             limits = Limits(settings.max_elements, settings.max_html_bytes, settings.max_canvas_bytes)
             before = self.state_of(row) if row is not None else CanvasState.empty()
             result = await asyncio.to_thread(
-                apply_batch, before, statements, limits=limits, unit=unit, script_check=self._script_check,
+                apply_batch, before, statements, limits=limits, unit=unit, script_check=memo_check,
             )
             if result.errors or result.state is None:
                 raise CanvasApplyRefused(result.errors, rev)
