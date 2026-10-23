@@ -158,7 +158,8 @@ and never see it again.
 1. Open System > Profile (any user) or System > API keys (admins), press
    "+ API key", name it, pick "mcp", and click "Create key". The key acts as
    the user who made it; the plaintext shows once in a one-time dialog with a
-   "Copy key" button.
+   "Copy key" button. Closing that dialog with Escape, a click outside it or
+   its X before the key was copied asks first.
 2. Operator pastes the token into the desktop's MCP server config
    (`{"url": "https://primer.example/v1/mcp", "headers": {"Authorization": "Bearer <token>"}}`)
    and closes the modal.

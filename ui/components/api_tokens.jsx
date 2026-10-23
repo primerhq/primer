@@ -14,6 +14,11 @@
 
 const AT_PAGE_SIZE = 20;
 
+// How often each list is read again, in ms. The admin list is 1 + N requests a read (the users, then each user's keys), so it is read four
+// times slower than the personal list, which is one request (audit G1-13).
+const AT_PERSONAL_POLL_MS = 10000;
+const AT_ADMIN_POLL_MS = 60000;
+
 // Scopes are validated server-side against a known allowlist (Spec §6).
 // v1 ships with a single scope; the checkbox list is intentionally tiny.
 const AT_SCOPE_OPTIONS = [
@@ -86,6 +91,34 @@ function AT_statusOf(token) {
   return "active";
 }
 
+// The admin list: every user (GET /admin/users answers all of them, the router loops the storage's pages), then each user's keys, flattened and
+// tagged with their owner. A user whose keys cannot be read is NAMED in failedUsers instead of reading as a user with no keys, so the page can say
+// its count leaves them out (audit G1-13). An abort is not a failure: it rejects the whole read, which useResource ignores.
+function AT_readAdminTokens(apiFetch, signal) {
+  return apiFetch("GET", "/admin/users", null, { signal })
+    .then((usersRes) => {
+      const users = usersRes?.items ?? [];
+      return Promise.all(users.map((u) =>
+        apiFetch(
+          "GET", "/admin/users/" + encodeURIComponent(u.id) + "/tokens",
+          null, { signal },
+        ).then(
+          (r) => ({
+            items: (r?.items ?? []).map((t) => ({ ...t, _ownerId: u.id, _ownerName: u.username })),
+            failed: null,
+          }),
+          (e) => {
+            if (e && (e.name === "AbortError" || e.code === 20)) throw e;
+            return { items: [], failed: u.username || u.id };
+          },
+        )
+      )).then((perUser) => ({
+        items: [].concat(...perUser.map((r) => r.items)),
+        failedUsers: perUser.map((r) => r.failed).filter(Boolean),
+      }));
+    });
+}
+
 // {code, message} of a failed request, from the ONE reader in ui/foundation/api.js (window.primerApi.readRefusal: ticket 01a11cd1-7aaf). It looks in
 // every place the API puts a refusal's pieces, so this page cannot disagree with the others about where the code is or what a bare auth code means.
 function AT_extractError(err) {
@@ -116,26 +149,13 @@ function AT_ApiTokensPage({ mode, username }) {
     isAdmin ? "api-tokens:admin-list" : "api-tokens:list",
     (signal) => {
       if (!isAdmin) return apiFetch("GET", "/auth/tokens", null, { signal });
-      return apiFetch("GET", "/admin/users?limit=200", null, { signal })
-        .then((usersRes) => {
-          const users = usersRes?.items ?? [];
-          return Promise.all(users.map((u) =>
-            apiFetch(
-              "GET", "/admin/users/" + encodeURIComponent(u.id) + "/tokens",
-              null, { signal },
-            ).then(
-              (r) => (r?.items ?? []).map((t) => ({
-                ...t, _ownerId: u.id, _ownerName: u.username,
-              })),
-              () => [],
-            )
-          )).then((perUser) => ({ items: [].concat(...perUser) }));
-        });
+      return AT_readAdminTokens(apiFetch, signal);
     },
-    { pollMs: 10000 },
+    { pollMs: isAdmin ? AT_ADMIN_POLL_MS : AT_PERSONAL_POLL_MS },
   );
 
   const items = list.data?.items ?? [];
+  const failedUsers = list.data?.failedUsers ?? [];
   const paged = (window.PK_usePagedFilter || PK_usePagedFilter)(items, {
     pageSize: AT_PAGE_SIZE,
     text: AT_filterText,
@@ -181,6 +201,20 @@ function AT_ApiTokensPage({ mode, username }) {
       {list.loading && items.length === 0 && (
         <div className="muted text-sm" style={{ padding: 40, textAlign: "center" }}>
           Loading…
+        </div>
+      )}
+      {failedUsers.length > 0 && (
+        <div data-testid="at-partial-failure">
+          <Banner
+            kind="warning"
+            title="Some API keys could not be read"
+            detail={"The keys of " + failedUsers.join(", ") + " could not be read, so the count and the table leave them out."}
+            actions={
+              <Btn size="sm" icon="refresh" onClick={list.refetch} data-testid="at-partial-failure-retry">
+                Retry
+              </Btn>
+            }
+          />
         </div>
       )}
       {list.error && items.length === 0 && (
@@ -526,6 +560,30 @@ function AT_CreateTokenDialog({ onClose, onCreated, onDone, username }) {
 function AT_PlaintextOneTimeDialog({ token, onClose }) {
   const [copied, setCopied] = React.useState(false);
   const [copyError, setCopyError] = React.useState(null);
+  // Whether the key was copied at least once (`copied` resets after 2s), and whether a close confirm is already open.
+  const copiedOnceRef = React.useRef(false);
+  const askingRef = React.useRef(false);
+
+  // Escape, a backdrop click and the X all reach the Modal's onClose, and each would throw away the only copy of the plaintext: until the key has
+  // been copied they ask first (audit G1-12). "I have saved it, close" is the explicit way out and closes at once.
+  const closeGuarded = () => {
+    if (copiedOnceRef.current) {
+      onClose();
+      return;
+    }
+    if (askingRef.current) return;
+    askingRef.current = true;
+    window.confirmDialog({
+      title: "Close without copying the key?",
+      message: "This is the only time you will see this key. Once this dialog closes it cannot be shown again; you would have to revoke it and make a new one.",
+      confirmLabel: "Close without copying",
+      cancelLabel: "Keep it open",
+      danger: true,
+    }).then((ok) => {
+      askingRef.current = false;
+      if (ok) onClose();
+    });
+  };
 
   const copy = async () => {
     setCopyError(null);
@@ -544,6 +602,7 @@ function AT_PlaintextOneTimeDialog({ token, onClose }) {
         ta.select();
         try { document.execCommand("copy"); } finally { document.body.removeChild(ta); }
       }
+      copiedOnceRef.current = true;
       setCopied(true);
       // Reset the affordance after 2s so users can copy again if they
       // missed the clipboard the first time round.
@@ -557,7 +616,7 @@ function AT_PlaintextOneTimeDialog({ token, onClose }) {
     <Modal
       title="API key created: copy it now"
       danger
-      onClose={onClose}
+      onClose={closeGuarded}
       footer={
         <>
           <Btn
@@ -728,6 +787,7 @@ Object.assign(window, {
   AT_countText,
   AT_filterText,
   AT_ownerText,
+  AT_readAdminTokens,
   AT_ApiTokensPage,
   AT_TokenRow,
   AT_CreateTokenDialog,
