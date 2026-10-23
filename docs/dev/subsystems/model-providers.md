@@ -313,7 +313,8 @@ setting is used:
 | same, gpt-5-pro | `high` only | `high` |
 | same, a model that does not reason (gpt-4o, gpt-4.1) | nothing | nothing |
 | same, a model not in the table (a deployment name, a self-hosted model) | `reasoning_effort` from `minimal` | `minimal` |
-| `openchat` (vllm/ollama/lmstudio/other) | `chat_template_kwargs.enable_thinking` (request body) | `false` |
+| `openchat` (vllm/lmstudio/other) | `chat_template_kwargs.enable_thinking` (request body) | `false` |
+| `openchat` (ollama) | `reasoning_effort` (`minimal` to `high`; Ollama's `/v1` reads it and ignores `chat_template_kwargs`) | `none` |
 | `ollama` | `think` | `false` |
 | `openrouter` | `reasoning.effort` (request body) | `none` |
 
@@ -322,8 +323,9 @@ date or `@date` suffix, the older `claude-3-x-<family>`, and Fable and Mythos
 by name; `gemini-<major>.<minor>-<pro|flash|flash-lite>`; OpenAI ids with a
 fine-tune or provider prefix stripped. What no table can predict is the
 stream-open guard's: OpenRouter's mandatory-reasoning models refuse
-`effort: "none"`, Ollama answers `think` on a model without the thinking
-capability with a 400, and a deployment name can hide an OpenAI model that
+`effort: "none"`, Ollama answers `think` (or, on its `/v1`, a
+`reasoning_effort`) on a model without the thinking capability with a 400
+("does not support thinking"), and a deployment name can hide an OpenAI model that
 does not reason. Each costs one failed request per process, and the model
 then runs without the setting: that is logged at WARNING, once, naming the
 provider, the model and the settings dropped (never their values), because
