@@ -114,12 +114,15 @@ async def _value(value: Any) -> Any:
 class _Session:
     """One agent session over a real local workspace: the executors of its turns and of its resume, each built fresh as the worker builds them."""
 
-    def __init__(self, tmp_path: Path, *, providers: dict[str, Any], tools: list[str], policies: list[ToolApprovalPolicy], monkeypatch: Any) -> None:
+    def __init__(
+        self, tmp_path: Path, *, providers: dict[str, Any], tools: list[str], policies: list[ToolApprovalPolicy], monkeypatch: Any, registry: Any = None,
+    ) -> None:
         self.tmp_path = tmp_path
         self.providers = providers
         self.tools = tools
         self.policies = policies
         self.monkeypatch = monkeypatch
+        self.registry = registry                   # the provider registry the managers hold (a call_tool park re-runs its inner tool through it)
         self.storage = _FakeStorageProvider()
         self.sessions = self.storage.get_storage(WorkspaceSession)
         self.records = FakeWorkspaceIO()           # the session's display log (the dispatch writer and the resume's record writer)
@@ -135,7 +138,7 @@ class _Session:
     def executor(self, llm: _FakeLLM) -> WorkspaceAgentExecutor:
         manager = ToolExecutionManager.for_workspace(
             toolset_providers=self.providers, session=self.slot, tools=self.tools, initiated_by=USER,
-            approval_resolver=_PoliciesOnlyResolver(self.policies),
+            approval_resolver=_PoliciesOnlyResolver(self.policies), provider_registry=self.registry,
         )
         agent = Agent(id="researcher", description="r", model=AgentModel(profile_id="openai-1--m"), system_prompt=["Be terse."], tools=self.tools)
         return WorkspaceAgentExecutor(agent=agent, llm=llm, llm_model=_model(), tool_manager=manager, session=self.slot)
@@ -413,6 +416,36 @@ async def test_an_approved_call_that_pauses_keeps_the_rest_of_its_round(
     results = _results(request)
     assert json.loads(results["call-a"].output) == {"ran": "user_a"} and json.loads(results["call-q"].output) == {"response": "blue"}
     assert _ran(rec) == ["call-a", "call-b"]
+
+
+@pytest.mark.asyncio
+async def test_an_approved_call_tool_inner_gate_in_a_round_re_runs_its_inner_tool_and_the_round_completes(
+    tmp_path: Path, monkeypatch: Any, sp: Any, pr: Any,  # noqa: F811 - the re-exported fixtures
+) -> None:
+    """The gated call is ``system__call_tool``'s inner tool: the approval re-runs it through ``dispatch_inner_tool`` as the resumed run (the
+    re-run of PR #787), and the calls around it in the round are answered too."""
+    rec = _Recorder({"user_x": "user", "user_a": "user", "user_b": "user"})
+    registry = _Registry(pr, {"rec": rec})
+    system = build_system_toolset(storage_provider=sp, provider_registry=registry)
+    pr._system_toolset_provider = system
+    await sp.get_storage(ToolApprovalPolicy).create(_policy("rec", "user_x"))
+    tools = ["rec__user_a", "system__call_tool", "rec__user_b"]
+    session = _Session(tmp_path, providers={"rec": rec, "system": system}, tools=tools, policies=[], monkeypatch=monkeypatch, registry=registry)
+    await session.start()
+    inner = {"toolset_id": "rec", "tool_name": "user_x", "arguments": {"k": 1}}
+    parked = await session.first_turn(_asks_many([("call-a", "rec__user_a", {}), ("call-c", "system__call_tool", inner), ("call-b", "rec__user_b", {})]))
+    assert parked.park is not None and parked.park.parked_state["yielded"]["resume_metadata"]["via_call_tool"]["toolset_id"] == "rec"
+    assert _ran(rec) == ["call-a"]
+
+    outcome = await session.resume(parked, {"decision": "approved"})
+
+    assert (outcome.success, outcome.park) == (True, None)
+    assert [(c[0], c[3].tool_call_id, c[3].initiated_by) for c in rec.calls] == [
+        ("user_a", "call-a", USER), ("user_x", "call-c", USER), ("user_b", "call-b", USER),
+    ], "the inner tool ran as the resumed run, under the call_tool call, then the call after it"
+    request = await session.next_request()
+    assert _pairing(request) == (["call-a", "call-c", "call-b"], ["call-a", "call-c", "call-b"])
+    assert json.loads(_results(request)["call-c"].output) == {"ran": "user_x"}
 
 
 class _Delegates(ToolsetProvider):

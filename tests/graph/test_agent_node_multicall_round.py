@@ -27,12 +27,13 @@ import pytest
 from primer.graph.invoke_graph import resume_invoke_graph
 from primer.graph.workspace_executor import WorkspaceGraphExecutor
 from primer.model.chat import Done, Message, StreamEvent, TextDelta, ToolCallEnd, ToolCallPart, ToolCallStart, ToolResultPart
+from primer.model.tool_approval import ToolApprovalPolicy
 from primer.model.yield_ import gate_id_of, with_wake_gate
 from primer.toolset.system import build_system_toolset
 from primer.worker import graph_resume_coordinator
 from primer.worker.yield_runtime import ParkedState
 from tests._resume_hook_fakes import EngineFakePool, EngineStorageProvider, NullWorkspaceIO, waiting_graph_session
-from tests.agent.test_inner_dispatch import _Recorder
+from tests.agent.test_inner_dispatch import ADMIN, USER, _Recorder
 from tests.graph.test_agent_node_approval_resume import GATED, _Model, _only_entry, _PausingTool, _policy, _Run, _says
 from tests.toolset.test_call_tool_door import _Registry
 
@@ -271,6 +272,40 @@ async def test_an_approved_call_that_pauses_keeps_the_rest_of_its_round(tmp_path
     results = _results(request)
     assert json.loads(results["call-a"].output) == {"ran": "user_a"} and results["call-w"].output == "waited"
     assert _ran(rec) == ["call-a", "call-b"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resumed_as", ["the-run-that-parked", "a-lesser-run"])
+async def test_a_call_tool_inner_gate_in_a_round_re_runs_its_inner_tool_with_the_role_checked_and_the_round_completes(
+    tmp_path: Path, sp: Any, pr: Any, resumed_as: str,  # noqa: F811 - the re-exported fixtures
+) -> None:
+    """The gated call is ``system__call_tool``'s inner tool, an admin one: the approval re-runs it through ``dispatch_inner_tool`` as the resumed node
+    (the re-run of PRs #787 and #800), its role checked again, so a park made for an admin-initiated run and resumed by a user's run is refused
+    (``forbidden``); either way the calls around it in the round are answered."""
+    rec = _Recorder({"admin_x": "admin", "user_a": "user", "user_b": "user"})
+    registry = _Registry(pr, {"rec": rec})
+    system = build_system_toolset(storage_provider=sp, provider_registry=registry)
+    pr._system_toolset_provider = system
+    await sp.get_storage(ToolApprovalPolicy).create(_policy("rec", "admin_x"))
+    run = _Run(tmp_path, providers={"system": system, "rec": rec}, tools=["rec__user_a", "system__call_tool", "rec__user_b"], registry=registry, initiated_by=ADMIN)
+    inner = {"toolset_id": "rec", "tool_name": "admin_x", "arguments": {}}
+    checkpoint, _live, _seq, _yld = await run.park(_Model(_asks_many([("call-a", "rec__user_a", {}), ("call-c", "system__call_tool", inner), ("call-b", "rec__user_b", {})])))
+    entry = _only_entry(checkpoint)
+    assert entry["resume_metadata"]["via_call_tool"]["toolset_id"] == "rec" and _ran(rec) == ["call-a"]
+
+    model = _Model(_says("done"))
+    resumer = run if resumed_as == "the-run-that-parked" else run.as_run_of(USER)
+    resumed = await resumer.resume(model, checkpoint, entry, {"decision": "approved"})
+
+    assert resumed.repark is None
+    (request,) = model.requests
+    assert _pairing(request) == (["call-a", "call-c", "call-b"], ["call-a", "call-c", "call-b"])
+    answer = _results(request)["call-c"]
+    if resumed_as == "the-run-that-parked":
+        assert (answer.error, json.loads(answer.output)) == (False, {"ran": "admin_x"}) and _ran(rec) == ["call-a", "call-c", "call-b"]
+    else:
+        assert answer.error is True and json.loads(answer.output)["type"] == "forbidden", "the approval ran an admin tool for a run that is not an admin's"
+        assert _ran(rec) == ["call-a", "call-b"]
 
 
 # ---- a park written before the round was carried -----------------------------------------------------------------------------------------------------------------
