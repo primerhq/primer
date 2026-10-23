@@ -100,6 +100,13 @@ composed onto the agent at session start with the workspace
 already bound - they don't take a `workspace_id` arg; they
 operate on "the workspace this session is in."
 
+`grep` takes a pattern of at most 1000 characters (Python `re`
+syntax, run by the `regex` engine). One call may spend 10 seconds
+matching in total; a pattern that backtracks past that, such as
+`(a|aa)+$` or `(x+)+y` on long lines, fails the call with an error
+that says so instead of running on. Simplify the pattern, or narrow
+`path` or `glob`, and call it again.
+
 External access via MCP is different. The `workspaces::*` tools
 take an explicit `workspace_id` because they're called from
 contexts that have no implicit session. They expose the same
