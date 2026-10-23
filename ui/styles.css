@@ -5061,6 +5061,9 @@ button.nv-trace-line { cursor: pointer; }
 }
 .nv-audit-mono { font-family: var(--font-mono); font-size: 11px; }
 .nv-audit-empty { color: var(--text-4); }
+/* A failed read of the decisions (audit G1-16): the reason wraps over the row's width, with Retry after it. */
+.nv-audit-row.nv-audit-error { display: flex; gap: 10px; color: var(--red); }
+.nv-audit-row.nv-audit-error > span { flex: 1; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 
 /* =========================================================================
    platform kit (pk-, ui/components/shared/platform-kit.jsx): the header,
