@@ -220,6 +220,33 @@ async def test_the_configured_resource_uri_is_accepted(http):
     assert found.protected_resource.resource == configured
 
 
+LEGACY_AS_DOC = {**AS_DOC, "issuer": "https://m.example", "authorization_endpoint": "https://m.example/authorize", "token_endpoint": "https://m.example/token"}
+
+
+@pytest.mark.parametrize("answer", [
+    httpx.ConnectError("refused"),
+    httpx.Response(200, text="<html>a sign-in page, not JSON</html>"),
+    httpx.Response(200, json={"resource": MCP, "scopes_supported": ["read"]}),
+    httpx.Response(500, json={"error": "server_error"}),
+], ids=["unreachable", "not_json", "no_authorization_servers", "server_error"])
+async def test_an_unusable_protected_resource_document_falls_back_to_the_servers_origin(http, answer):
+    """Audit G4-18: a protected-resource document that cannot be reached, is not JSON, or names no authorization server is passed over, and the
+    sign-in goes on in the 2025-03-26 shape: the authorization server is the MCP server's origin, and no resource indicator is sent."""
+    with respx.mock(assert_all_called=False) as router:
+        challenged = router.get("https://m.example/prm")
+        if isinstance(answer, Exception):
+            challenged.mock(side_effect=answer)
+        else:
+            challenged.mock(return_value=answer)
+        router.get(PRM_PATH).mock(return_value=httpx.Response(404))
+        router.get(PRM_ROOT).mock(return_value=httpx.Response(404))
+        legacy = router.get("https://m.example/.well-known/oauth-authorization-server").mock(return_value=httpx.Response(200, json=LEGACY_AS_DOC))
+        found = await discover(MCP, www_authenticate='Bearer resource_metadata="https://m.example/prm"', http=http)
+    assert challenged.called and legacy.called
+    assert found.protected_resource is None and found.uses_resource_indicator is False
+    assert (found.metadata.issuer, found.metadata.token_endpoint) == ("https://m.example", "https://m.example/token")
+
+
 async def test_metadata_naming_another_issuer_is_refused(http):
     with respx.mock(assert_all_called=False) as router:
         router.get(PRM_PATH).mock(return_value=httpx.Response(200, json=PRM_DOC))
