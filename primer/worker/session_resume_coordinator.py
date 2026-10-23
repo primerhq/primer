@@ -472,7 +472,7 @@ async def inject_resume_and_continue(
     from primer.model.chat import Message
 
     # ``getattr``: a park stand-in written before these fields existed carries none (an empty round).
-    parked_round = ParkedRound.from_jsonable(
+    parked_round = ParkedRound.from_record(
         getattr(parked, "completed_results", None), getattr(parked, "remaining_calls", None),
     )
     round_events: list = []

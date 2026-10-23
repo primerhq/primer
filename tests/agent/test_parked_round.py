@@ -226,6 +226,16 @@ def test_the_round_round_trips_through_its_stored_form() -> None:
     assert [(c.id, c.name, c.arguments) for c in back.remaining] == [("call-b", "rec__user_b", {"n": "call-b"})]
 
 
+def test_a_round_a_resume_cannot_read_is_empty_so_the_resume_still_answers_the_parked_call() -> None:
+    damaged = [{"output": "no id"}]
+    with pytest.raises(ValueError):
+        ParkedRound.from_jsonable(damaged, None)
+
+    assert ParkedRound.from_record(damaged, None).is_empty
+    assert ParkedRound.from_record(None, "not a list of calls").is_empty
+    assert ParkedRound.from_record([_answer("call-a").model_dump(mode="json")], None).completed == (_answer("call-a"),)
+
+
 def test_a_park_that_stored_no_round_has_an_empty_one() -> None:
     """A park written before rounds were carried (no stored fields), and a park nothing stamped, finish nothing: the parked call alone is answered."""
     assert ParkedRound.from_jsonable(None, None).is_empty

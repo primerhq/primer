@@ -100,7 +100,7 @@ def _make_node_scoped_call_resolver(
 def _parked_round_of(pending: Any) -> ParkedRound:
     """The tool round a pending entry carries (ticket 01a15327). ``getattr``: ``_resume_agent_node`` is also handed a ``_PendingToolWait`` (a claims batch is
     answered whole, so it has no round to finish)."""
-    return ParkedRound.from_jsonable(getattr(pending, "completed_results", None), getattr(pending, "remaining_calls", None))
+    return ParkedRound.from_record(getattr(pending, "completed_results", None), getattr(pending, "remaining_calls", None))
 
 
 def _strip_json_fences(text: str) -> str:
