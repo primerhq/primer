@@ -126,7 +126,10 @@ def _sweep_forms(page: Page, sweep: Sweep, kind: str, name: str, forms: list[For
             if form.then:
                 item = page.locator(f"{form.then}").first
                 expect(item).to_be_visible(timeout=sweep.budget.wait_ms(15_000))
-                item.click(timeout=sweep.budget.wait_ms(10_000))
+                if item.evaluate("el => el.tagName === 'SELECT'"):
+                    item.select_option(index=0, timeout=sweep.budget.wait_ms(10_000))
+                else:
+                    item.click(timeout=sweep.budget.wait_ms(10_000))
             expect(page.locator(form.root).first).to_be_visible(timeout=sweep.budget.wait_ms(10_000))
         except (AssertionError, BrowserError) as exc:
             sweep.budget.spent()

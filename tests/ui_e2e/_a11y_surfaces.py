@@ -62,10 +62,10 @@ LEGACY_FORMS: dict[str, list[Form]] = {
     "services": [Form("New service", MODAL)],
     "workspaces": [Form("New workspace", MODAL)],
     "workspaces/templates": [Form("New template", MODAL)],
-    "workspaces/providers": [Form("New provider", MODAL)],
+    "workspaces/providers": [],
     "channels": [Form("New channel", MODAL)],          # enabled only while a channel provider exists: the sweep seeds one
     "channels/rules": [Form("New rule", MODAL)],        # its toolbar draws only while a channel provider exists
-    "channels/providers": [Form("New provider", MODAL)],
+    "channels/providers": [],
     "knowledge/collections": [Form("New collection", MODAL)],
     "subsystems/internal-collections": [Form("Configure", MODAL)],
     "providers/llm": [_register(KIND_MENU_ITEM)],
@@ -74,7 +74,6 @@ LEGACY_FORMS: dict[str, list[Form]] = {
     "providers/stt": [_register(KIND_MENU_ITEM)],
     "providers/tts": [_register(KIND_MENU_ITEM)],
     "providers/web_search": [_register(KIND_MENU_ITEM)],
-    "providers/web_fetch": [_register(KIND_MENU_ITEM)],
     "providers/artifact_storage": [_register(KIND_MENU_ITEM)],   # db, filesystem and s3 since the class serves its kinds (GET /_types); the first, db, is the one that is built
     "ssp": [_register(KIND_MENU_ITEM)],                 # the semantic-search stores: the same register menu, and a modal of their own
 }
@@ -102,7 +101,6 @@ LEGACY_TITLES: dict[str, str] = {
     "providers/stt": "Providers",
     "providers/tts": "Providers",
     "providers/web_search": "Providers",
-    "providers/web_fetch": "Providers",
     "providers/artifact_storage": "Providers",
     "ssp": "Providers",
 }
@@ -140,6 +138,8 @@ SYSTEM_FORMS: dict[str, list[Form]] = {
 
 NO_FORM: dict[str, str] = {
     "overlay-page approvals": "its policies are created on the Platform view (platform-view approvals, + Policy)",
+    "overlay-page workspaces/providers": "provider registration moved to Platform > Providers > Workspace",
+    "overlay-page channels/providers": "provider registration moved to Platform > Providers > Channels",
     "platform-view tools": "the tool catalogue is read-only",
     "system-view dashboard": "the dashboard shows the install's state; nothing is created from it",
     "system-view mcp": "the MCP page lists the install's MCP servers and their tools; nothing is created from it",
@@ -240,13 +240,11 @@ FLOORS: dict[str, int] = {
     "overlay-page workspaces/templates": 1,
     "overlay-page workspaces/templates / New template": 4,
     "overlay-page workspaces/providers": 2,
-    "overlay-page workspaces/providers / New provider": 1,
     "overlay-page channels": 1,
     "overlay-page channels / New channel": 2,
     "overlay-page channels/rules": 2,
     "overlay-page channels/rules / New rule": 6,
-    "overlay-page channels/providers": 3,
-    "overlay-page channels/providers / New provider": 2,
+    "overlay-page channels/providers": 2,
     "overlay-page knowledge/collections": 1,
     "overlay-page knowledge/collections / New collection": 2,
     "overlay-page subsystems/internal-collections": 1,
@@ -263,8 +261,6 @@ FLOORS: dict[str, int] = {
     "overlay-page providers/tts / + Register": 5,
     "overlay-page providers/web_search": 4,
     "overlay-page providers/web_search / + Register": 2,
-    "overlay-page providers/web_fetch": 3,
-    "overlay-page providers/web_fetch / + Register": 2,
     "overlay-page providers/artifact_storage": 3,
     "overlay-page providers/artifact_storage / + Register": 2,
     "overlay-page ssp": 1,
