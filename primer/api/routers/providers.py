@@ -785,8 +785,8 @@ async def discover_llm_models(
 
     ``ollama``, ``openresponses``, ``openchat``, ``openrouter``,
     ``anthropic``, and ``gemini`` expose a live list-models API. Any
-    other provider type returns 400 and the frontend falls back to its
-    curated suggested-model list.
+    other provider type returns 400; the console then offers to register
+    the provider without models.
     """
     return await _probe_llm_models(body.provider, body.config)
 
