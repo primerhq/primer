@@ -182,3 +182,32 @@ def test_discord_config_enable_dms_toggles():
         bot_token=SecretStr("a" * 60), enable_dms=False,
     )
     assert cfg.enable_dms is False
+
+
+def test_the_served_mask_passes_the_token_rules_for_the_restore_and_nothing_else_does():
+    """Audit G2-01: the exact mask a GET serves passes each token validator (the update restores the stored token and then
+    judges it); a tail-form mask or any other non-token is still refused."""
+    from primer.common.url_userinfo import MASK
+    from primer.model.channel import TelegramChannelProviderConfig
+
+    assert SlackChannelProviderConfig(app_token=SecretStr(MASK), bot_token=SecretStr(MASK)).app_token.get_secret_value() == MASK
+    assert TelegramChannelProviderConfig(bot_token=SecretStr(MASK)).bot_token.get_secret_value() == MASK
+    assert DiscordChannelProviderConfig(bot_token=SecretStr(MASK)).bot_token.get_secret_value() == MASK
+    for near in (MASK + "abcd", MASK[:-1], "x" + MASK):
+        with pytest.raises(ValidationError):
+            SlackChannelProviderConfig(app_token=SecretStr(near), bot_token=SecretStr("xoxb-ok"))
+        with pytest.raises(ValidationError):
+            TelegramChannelProviderConfig(bot_token=SecretStr(near))
+        with pytest.raises(ValidationError):
+            DiscordChannelProviderConfig(bot_token=SecretStr(near))
+
+
+def test_channel_token_problem_refuses_a_mask_that_was_not_restored():
+    from primer.common.url_userinfo import MASK
+    from primer.model.channel import TelegramChannelProviderConfig, channel_token_problem
+
+    assert channel_token_problem(SlackChannelProviderConfig(app_token=SecretStr("xapp-1"), bot_token=SecretStr(MASK)))[0] == "bot_token"
+    assert channel_token_problem(TelegramChannelProviderConfig(bot_token=SecretStr(MASK)))[0] == "bot_token"
+    assert channel_token_problem(DiscordChannelProviderConfig(bot_token=SecretStr(MASK)))[0] == "bot_token"
+    assert channel_token_problem(SlackChannelProviderConfig(app_token=SecretStr("xapp-1"), bot_token=SecretStr("xoxb-1"))) is None
+    assert channel_token_problem(DiscordChannelProviderConfig(bot_token=SecretStr("a" * 40))) is None

@@ -20,7 +20,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from primer.common.entity_checks import EntityCheckError
-from primer.model.channel import Channel, ChannelProvider
+from primer.model.channel import Channel, ChannelProvider, channel_token_problem
+from primer.model.common import refuse_served_masks
+from primer.model.except_ import ValidationError
 from primer.model.storage import OffsetPage
 from primer.storage.q import Q
 
@@ -100,4 +102,23 @@ async def check_channel_on_update(entity: Channel, *, storage_provider: "Storage
     await _refuse_if_pair_taken(entity, storage_provider, ignore_id=entity.id)
 
 
-__all__ = ["check_channel_on_create", "check_channel_on_update"]
+def check_channel_provider_secrets(entity: ChannelProvider) -> None:
+    """Refuse a ChannelProvider whose secrets may not be stored; on an update it runs AFTER the served masks were restored (audit G2-01).
+
+    The token validators of :mod:`primer.model.channel` let the mask a GET serves through, so an edit that leaves a token alone
+    reaches :func:`~primer.model.common.preserve_masked_secrets`, which puts the stored token back. This judges the value that will
+    actually be stored: a secret that is still a served mask (the optional Slack ``signing_secret`` included) is refused, and each
+    token must pass its platform's rule. The REST router's create and update hooks and the system ``create_channel_provider`` /
+    ``update_channel_provider`` tools call it, so neither path can store a mask.
+    """
+    try:
+        refuse_served_masks(entity)
+    except ValidationError as exc:
+        raise EntityCheckError("validation", exc.message) from None
+    found = channel_token_problem(entity.config)
+    if found is not None:
+        name, message = found
+        raise EntityCheckError("validation", message, field=f"config.{name}")
+
+
+__all__ = ["check_channel_on_create", "check_channel_on_update", "check_channel_provider_secrets"]
