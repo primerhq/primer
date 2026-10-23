@@ -404,8 +404,8 @@ def _this_install_body() -> str:
     return (
         "# This install\n\n"
         "This is the map of THIS install. It is rebuilt from live state at "
-        "every startup, so it never goes stale, and it is read-only: grep "
-        "it, read it, do not write to it.\n\n"
+        "every startup (and agent, graph and collection pages update on "
+        "change), and it is read-only: grep it, read it, do not write to it.\n\n"
         f"- [agents]({LIVE_ROOT}/agents) - every agent, its purpose and its model\n"
         f"- [graphs]({LIVE_ROOT}/graphs) - every graph and what it orchestrates\n"
         f"- [collections]({LIVE_ROOT}/collections) - every collection on this install\n"
@@ -564,8 +564,11 @@ async def _write_tree_page(
                     for child in await tree._children(
                         SYSTEM_COLLECTION_ID, orphan_id,
                     ):
-                        await tree._docs.update(
-                            child.model_copy(update={"parent_id": created.id})
+                        assert child.id is not None
+                        await tree._docs.patch_if(
+                            child.id,
+                            {"parent_id": created.id},
+                            where={"parent_id": [orphan_id]},
                         )
 
 

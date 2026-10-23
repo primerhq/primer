@@ -10,7 +10,7 @@ tools:
 related: [start-here/calling-tools, start-here/reading-this-wiki]
 ---
 ## What it is
-A seeded agent's run starts with exactly five tools, granted directly instead of through the door: the core kit. Everything else the platform offers is reachable through `system__call_tool`.
+A seeded agent's run starts with the five core-kit tools, granted directly instead of through the door (the seeded operator also holds two session-messaging tools). Everything else the platform offers is reachable through `system__call_tool`.
 
 ## Concepts
 The five tools, in the order the kit grants them:
@@ -41,10 +41,10 @@ Everything else goes through the door:
 ```
 
 ## Gotchas
-- `system__ask_user` parks the turn: the agent holds no result until the operator answers, and a parked run keeps its lease.
+- `system__ask_user` parks the turn: the agent holds no result until the operator answers, and a parked run releases its worker lease until the answer arrives.
 - `misc__inform_user` never answers: it is for progress, not for questions. A question is `system__ask_user`.
 - A tool that is not in the kit and not a session file tool is not a direct call: name it through `system__call_tool`, or the model's call has no target.
-- The kit is the whole grant: a seeded agent that needs another tool gets it through the door, not by widening the kit.
+- For the builder, planner, explorer and tool-runner, the kit is the whole direct grant (the operator adds only `workspaces__list_my_sessions` and `workspaces__message_session`): a seeded agent that needs another tool gets it through the door, not by widening the kit.
 
 ## Related
 [calling tools](start-here/calling-tools), [reading this wiki](start-here/reading-this-wiki).

@@ -11,11 +11,11 @@ Every agent run is a principal, and every tool names the role it needs. The role
 - The three roles, ordered: `restricted` < `user` < `admin`. A tool's `required_role` is a floor: a run clears it when its principal ranks at or above it.
 - The run's principal: the run is ranked as the one who initiated it; a call with no initiator ranks as an ordinary `user`. The principal is never an argument: the dispatch layer hands the inner tool the run's own context, so a model cannot pick the caller.
 - The inner role check: a `system__call_tool` to a tool whose floor is above the run's principal is refused with `forbidden` before the approval gate, so a `user`-role run cannot reach an `admin` tool through the door.
-- Approval gates: a tool with an enabled approval policy parks the turn; the operator approves or rejects, and only that verdict moves the tool. The `crud` tools are gated by default: a fresh install ships one unconditional gate per platform-mutation tool, and the operator can retune or add gates, so the live answer is the one `system__describe_tool` reports.
+- Approval gates: a tool with an enabled approval policy parks the turn; the operator approves or rejects, and only that verdict moves the tool. A fresh install seeds unconditional gates on the `crud` construction tools and `python` toolset tools, and the operator can retune or add gates, so the live answer is the one `system__describe_tool` reports.
 - A rejection answers the parked call with an error body that names the refusal, so the model can adapt instead of retrying blindly:
 
 ```json
-{"rejected": true, "reason": "not now", "tool_name": "create_agent", "arguments": {}}
+{"rejected": true, "reason": "not now", "tool_name": "crud__create_agent", "arguments": {}}
 ```
 
 ## How to

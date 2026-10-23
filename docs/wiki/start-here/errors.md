@@ -1,13 +1,14 @@
 ---
 title: Errors
-summary: "The error envelope and the ten error types, with what to do next for each."
+summary: "The error envelope and the common error types, with what to do next for each."
+tools: [system__describe_tool, system__list_toolset_tools]
 related: [start-here/calling-tools, start-here/roles-and-approvals]
 ---
 ## What it is
-Every toolset answers a failure with the same envelope: an object with a `type` and a `message`, and the result's error flag set. There are ten types. Each names a class of failure, and the class decides the fix: read the `type`, do the listed thing, and retry only after the fix.
+Every toolset answers a failure with the same envelope: an object with a `type` and a `message`, and the result's error flag set; common types include the ten below alongside domain-specific ones such as `storage-error`. Each names a class of failure, and the class decides the fix: read the `type`, do the listed thing, and retry only after the fix.
 
 ## How to
-The ten types, and the next move for each:
+Common error types, and the next move for each:
 
 - `validation-error` - the arguments do not match the tool's schema (a missing required key, a wrong shape). Read the tool's schema (its reference page, or `system__describe_tool`) and send the arguments it names.
 - `not-found` - the toolset, the tool, or the named entity does not exist. List the toolset's tools with `system__list_toolset_tools`, or search the wiki for the right name; do not retry the same id.
