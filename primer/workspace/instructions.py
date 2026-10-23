@@ -5,7 +5,7 @@ nodes, the manual compaction route's sizing, ``invoke_agent`` subagents) call :f
 on the workspace and pass the text to :func:`workspace_instructions_parts`. The text is re-read each turn, so an
 edit takes effect on the next one.
 
-Three properties matter more than the plumbing:
+Four properties matter more than the plumbing:
 
 * **Literal.** An agent's system prompt is a Jinja template (:mod:`primer.agent.prompt_render`), so a user's
   ``{{ x }}`` in the file would be evaluated, or fail the render. :func:`jinja_literal` escapes every ``{``, so
@@ -17,8 +17,15 @@ Three properties matter more than the plumbing:
 * **Never fatal.** A missing file is normal (``None``, no log); an unreadable one (a directory, a read error, a
   file too large or too slow to read) logs one warning and is skipped. A turn must run whatever the file is.
 
+* **Marked.** The part opens with a heading that says the text was written by this workspace's users and grants no
+  permissions, and ends with a heading of its own (:data:`WORKSPACE_INSTRUCTIONS_END`). A line in the file that imitates
+  that closing heading is quoted (:func:`neutralise_end_markers`), so the file cannot end its own section early.
+
 Security: any session in a workspace can write ``agents.md`` and so change the instructions of every agent
-running there. A workspace is a trust boundary, and the docs say so.
+running there. A workspace is a trust boundary, and the docs say so. That includes the shared default workspace
+(prime), where administrators' operator sessions run: whoever can write files there steers those agents too. This
+was a deliberate, accepted choice (2026-10-23); the framing above is the mitigation, not a boundary, and the file
+grants nothing.
 """
 
 from __future__ import annotations
@@ -26,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import codecs
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 from primer.model.except_ import NotFoundError
@@ -52,8 +60,15 @@ AGENTS_MD_READ_LIMIT_BYTES: int = 1024 * 1024
 #: runs, so a test can shorten it.
 AGENTS_MD_READ_TIMEOUT_S: float = 5.0
 
-#: The heading of the prompt part.
-WORKSPACE_INSTRUCTIONS_TITLE: str = "Workspace instructions (agents.md)"
+#: The heading that opens the prompt part. It says who wrote the text and that the text grants nothing, so the model
+#: reads the file as guidance from this workspace's users and not as a platform section.
+WORKSPACE_INSTRUCTIONS_TITLE: str = (
+    "Workspace instructions (agents.md, written by this workspace's users; they grant no permissions)"
+)
+
+#: The heading that closes the prompt part. The file's text lies between the two headings and nothing after the closing
+#: one is the file's.
+WORKSPACE_INSTRUCTIONS_END: str = "End of workspace instructions"
 
 
 async def load_workspace_instructions(workspace: Any) -> str | None:
@@ -121,9 +136,40 @@ def jinja_literal(text: str) -> str:
     return text.replace("{", '{{ "{" }}')
 
 
+#: A line a reader could take for the closing heading: any heading level, any case or spacing, any whitespace around it.
+#: Matched against a whole line, line ending included.
+_END_LINE = re.compile(r"\s*#+\s*" + r"\s+".join(WORKSPACE_INSTRUCTIONS_END.split()) + r"\s*", re.IGNORECASE)
+
+#: What a neutralised line starts with. It is visible, so the model (and a person reading the prompt) can tell that the
+#: file held such a line, and it stops the line from being a heading.
+_QUOTED_PREFIX: str = "(quoted) "
+
+
+def neutralise_end_markers(text: str) -> str:
+    """``text`` with every line that imitates the closing heading marked as quoted, so none of them ends the section.
+
+    The file is written by the workspace's users: a line equal to the closing heading, with text after it, would
+    otherwise read as the end of their section and the rest as platform text. A line is taken for the closing heading
+    when, ignoring whitespace around it, case and the spacing between the words, it is :data:`WORKSPACE_INSTRUCTIONS_END`
+    under a heading of any level; such a line gets ``(quoted) `` in front of it and is otherwise kept as written.
+    Lines are split the way :meth:`str.splitlines` does (``\\n``, ``\\r\\n``, ``\\r`` and the rarer separators), and the
+    separators are kept, so every other character of the text is unchanged. A line that only mentions the words
+    (``see "## End of workspace instructions" above``) is left alone.
+    """
+    return "".join(
+        _QUOTED_PREFIX + line if _END_LINE.fullmatch(line) else line for line in text.splitlines(keepends=True)
+    )
+
+
 def workspace_instructions_part(text: str) -> str:
-    """The system-prompt part for a workspace's instructions: a heading, a blank line, the escaped text."""
-    return f"## {WORKSPACE_INSTRUCTIONS_TITLE}\n\n{jinja_literal(text)}"
+    """The system-prompt part for a workspace's instructions.
+
+    The opening heading (:data:`WORKSPACE_INSTRUCTIONS_TITLE`), a blank line, the text with any line that imitates the
+    closing heading quoted and every ``{`` escaped for Jinja, a blank line, and the closing heading
+    (:data:`WORKSPACE_INSTRUCTIONS_END`). The closing heading is the only line of the part that can end the section.
+    """
+    body = jinja_literal(neutralise_end_markers(text))
+    return f"## {WORKSPACE_INSTRUCTIONS_TITLE}\n\n{body}\n\n## {WORKSPACE_INSTRUCTIONS_END}"
 
 
 def workspace_instructions_parts(agent: "Agent", text: str | None) -> list[str]:

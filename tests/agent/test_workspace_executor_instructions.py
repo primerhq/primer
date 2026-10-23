@@ -92,6 +92,9 @@ async def test_the_registry_agent_is_not_changed(tmp_path: Path) -> None:
 # (an unknown tag, an undefined name) would send the renderer to its raw-join fallback, which returns the file text
 # byte for byte, so a test on such a text could not tell an escaped file from an unescaped one.
 _RAW = "{{ 1 + 1 }} {# note #} {% if true %}y{% endif %} {"
+# The lines that frame the file in the prompt, written out so a wording change fails here.
+_OPEN = "## Workspace instructions (agents.md, written by this workspace's users; they grant no permissions)"
+_CLOSE = "## End of workspace instructions"
 
 
 async def test_the_model_is_sent_the_file_as_written(tmp_path: Path) -> None:
@@ -108,7 +111,7 @@ async def test_the_model_is_sent_the_file_as_written(tmp_path: Path) -> None:
         assert sys_msg.role == "system"
         text = sys_msg.parts[0].text
         assert text.startswith(f"base {session.workspace_id}\n\n"), f"the agent's prompt is rendered, first: {text[:80]!r}"
-        assert text.endswith("## Workspace instructions (agents.md)\n\n" + _RAW), f"the file is not: {text[-120:]!r}"
+        assert text.endswith(_OPEN + "\n\n" + _RAW + "\n\n" + _CLOSE), f"the file is not: {text[-120:]!r}"
         assert text.index(session.session_id) < text.index("## Workspace instructions"), "after the workspace fragment"
     finally:
         await session.aclose()
@@ -121,7 +124,7 @@ async def test_an_agent_with_no_prompt_of_its_own_still_gets_the_file(tmp_path: 
         llm = _FakeLLM(scripts=[[TextDelta(text="ok", index=0), Done(stop_reason="stop", raw_reason="stop")]])
         ex = _executor(session, system_prompt=[], workspace_instructions="Be brief.", llm=llm)
         await _drain(ex.invoke([Message(role="user", parts=[TextPart(text="hi")])]))
-        assert llm.calls[0]["messages"][0].parts[0].text.endswith("## Workspace instructions (agents.md)\n\nBe brief.")
+        assert llm.calls[0]["messages"][0].parts[0].text.endswith(_OPEN + "\n\nBe brief.\n\n" + _CLOSE)
     finally:
         await session.aclose()
         await backend.aclose()
@@ -135,8 +138,8 @@ async def test_an_edit_reaches_the_next_turn(tmp_path: Path) -> None:
         first = _executor(session, workspace_instructions=await load_workspace_instructions(ws))
         await ws.write_file("agents.md", b"two")
         second = _executor(session, workspace_instructions=await load_workspace_instructions(ws))
-        assert first._agent.system_prompt[-1].endswith("one")
-        assert second._agent.system_prompt[-1].endswith("two")
+        assert first._agent.system_prompt[-1].endswith("one\n\n" + _CLOSE)
+        assert second._agent.system_prompt[-1].endswith("two\n\n" + _CLOSE)
     finally:
         await session.aclose()
         await backend.aclose()

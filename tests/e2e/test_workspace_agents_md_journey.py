@@ -22,7 +22,8 @@ import pytest
 from tests._support.mock_llm import Rule
 from tests._support.runs import make_local_workspace, make_scripted_agent, start_agent_session, wait_completed
 
-_HEADING = "## Workspace instructions (agents.md)"
+_HEADING = "## Workspace instructions (agents.md, written by this workspace's users; they grant no permissions)"
+_END = "## End of workspace instructions"
 # The agent's own prompt holds a Jinja expression: it is rendered for the model, so a render that failed (and fell back to
 # the raw join) shows in the assertions below.
 _AGENT_PROMPT_TEMPLATE = "You are a scripted test agent for workspace {{ ctx.workspace_id }}."
@@ -101,7 +102,7 @@ async def test_agents_md_reaches_every_turn_and_never_fails_one(
     first = (await _wait_for_prompts(registry, scenario, 1))[0]
     await _rested(client, session_id)
     assert first.startswith(agent_prompt), f"the agent's own prompt is rendered, and first: {first[:120]!r}"
-    assert first.endswith(f"{_HEADING}\n\n{_FILE_V1}"), f"the file is not rendered: {first[-160:]!r}"
+    assert first.endswith(f"{_HEADING}\n\n{_FILE_V1}\n\n{_END}"), f"the file is not rendered: {first[-160:]!r}"
     assert first.index(session_id) < first.index(_HEADING), "the workspace section (which names the session), then the file"
 
     # Turn 2: an edit reaches the next turn; nothing else changed.
@@ -109,7 +110,7 @@ async def test_agents_md_reaches_every_turn_and_never_fails_one(
     await _next_turn(client, workspace_id, session_id, "second")
     second = (await _wait_for_prompts(registry, scenario, 2))[1]
     await _rested(client, session_id)
-    assert second.endswith(f"{_HEADING}\n\n{_FILE_V2}"), second
+    assert second.endswith(f"{_HEADING}\n\n{_FILE_V2}\n\n{_END}"), second
     assert "French" not in second, "the old text is gone"
 
     # Turn 3: a deleted file is gone from the next prompt, and the turn runs.

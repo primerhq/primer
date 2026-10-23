@@ -182,6 +182,9 @@ _NODE_PROMPT = "Base {{ ctx.workspace_id }}."
 # unknown tag, an undefined name) would send the renderer to its raw-join fallback, which returns the file text byte for
 # byte, so a test on such a text could not tell an escaped file from an unescaped one.
 _RAW = "{{ 1 + 1 }} {# note #} {% if true %}y{% endif %} {"
+# The lines that frame the file in the prompt, written out so a wording change fails here.
+_OPEN = "## Workspace instructions (agents.md, written by this workspace's users; they grant no permissions)"
+_CLOSE = "## End of workspace instructions"
 
 
 def _executor(graph: Graph, repo, llm: _FakeLLM, *, instructions: str | None, gsid: str) -> WorkspaceGraphExecutor:
@@ -216,7 +219,7 @@ async def test_a_node_agent_sends_the_file_to_the_model_as_written(tmp_path: Pat
         pass
 
     system_texts = [m.parts[0].text for call in llm.calls for m in call["messages"] if m.role == "system"]
-    assert system_texts == ["Base ws-test.\n\n<<FRAGMENT>>\n\n## Workspace instructions (agents.md)\n\n" + _RAW]
+    assert system_texts == ["Base ws-test.\n\n<<FRAGMENT>>\n\n" + _OPEN + "\n\n" + _RAW + "\n\n" + _CLOSE]
 
 
 async def test_a_subgraph_child_inherits_the_instructions(tmp_path: Path) -> None:
