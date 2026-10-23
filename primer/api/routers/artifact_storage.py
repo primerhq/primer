@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from primer.api.deps import get_artifact_storage_provider_storage
 from primer.api.errors import common_responses
@@ -21,12 +21,14 @@ from primer.api.registries.artifact_storage_registry import (
 from primer.api.routers._crud import make_crud_router
 from primer.api.routers._probe_text import draft_error
 from primer.api.routers.providers import _form_field
-from primer.artifact.checks import check_artifact_provider_write
+from primer.artifact.active import read_active_artifact_store, set_active_artifact_store
+from primer.artifact.checks import check_artifact_provider_delete, check_artifact_provider_write
 from primer.artifact.probe import probe_artifact_provider
 from primer.common.entity_checks import EntityCheckError
 from primer.model.common import preserve_masked_secrets
 from primer.model.except_ import NotFoundError
 from primer.model.provider import ArtifactStorageProvider
+from primer.model.providers.artifact import ActiveArtifactStorageConfig
 
 
 async def _on_update(entity_id: str, request: Request) -> None:
@@ -36,15 +38,18 @@ async def _on_update(entity_id: str, request: Request) -> None:
         await registry.invalidate(entity_id)
 
 
+def _raise_check(exc: EntityCheckError, *, kind: str) -> None:
+    status = {"validation": 422, "conflict": 409, "forbidden": 403}[exc.kind]
+    detail = {"error": exc.code, "kind": kind, "field": exc.field, "message": exc.message, **exc.extra}
+    raise HTTPException(status_code=status, detail=detail) from exc
+
+
 def _refuse_an_unbuildable_default(entity: ArtifactStorageProvider) -> None:
-    """Run the rule the system tools share; a refusal is a 422 shaped like the reserved-delete 403, plus the field."""
+    """Run the rule the system tools share and preserve its HTTP shape."""
     try:
         check_artifact_provider_write(entity)
     except EntityCheckError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={"error": exc.code, "kind": "artifact_storage_provider", "field": exc.field, "message": exc.message},
-        ) from exc
+        _raise_check(exc, kind="artifact_storage_provider")
 
 
 async def _pre_create(entity: ArtifactStorageProvider, request: Request) -> None:
@@ -71,6 +76,13 @@ async def _reject_reserved_delete(entity_id: str, request: Request) -> None:
                 ),
             },
         )
+
+
+async def _pre_delete(entity: ArtifactStorageProvider, request: Request) -> None:
+    try:
+        await check_artifact_provider_delete(request.app.state.storage_provider, entity.id)
+    except EntityCheckError as exc:
+        _raise_check(exc, kind="artifact_storage_provider")
 
 
 # ---------- _types: form metadata for the console's provider form ----------
@@ -157,7 +169,7 @@ async def test_saved_artifact_storage_provider(
 async def list_artifact_storage_types() -> dict[str, dict[str, Any]]:
     return {
         "db": {
-            "label": "Database: only the built-in artifact-storage-default row is used",
+            "label": "Database (in primer's own database)",
             "config_fields": [],
             "row_fields": [],
             "discoverable": False,
@@ -196,8 +208,43 @@ artifact_storage_router = make_crud_router(
     on_delete=_on_update,
     on_pre_create=_pre_create,
     on_pre_update=_pre_update,
+    on_pre_delete=_pre_delete,
     on_pre_delete_id=_reject_reserved_delete,
+    extra_delete_responses=common_responses(403, 409),
 )
 
 
-__all__ = ["artifact_storage_helpers_router", "artifact_storage_router"]
+artifact_storage_active_config_router = APIRouter(tags=["artifact-storage-providers"])
+
+
+class _ActiveArtifactStoragePutBody(BaseModel):
+    provider_id: str = Field(..., min_length=1)
+
+
+@artifact_storage_active_config_router.get(
+    "/artifact_storage_active_config",
+    response_model=ActiveArtifactStorageConfig,
+    responses=common_responses(500),
+    summary="Read the active artifact store.",
+)
+async def get_active_artifact_storage_config(request: Request) -> ActiveArtifactStorageConfig:
+    return await read_active_artifact_store(request.app.state.storage_provider)
+
+
+@artifact_storage_active_config_router.put(
+    "/artifact_storage_active_config",
+    response_model=ActiveArtifactStorageConfig,
+    responses=common_responses(422, 500),
+    summary="Select the artifact store used for new writes.",
+)
+async def put_active_artifact_storage_config(
+    body: _ActiveArtifactStoragePutBody,
+    request: Request,
+) -> ActiveArtifactStorageConfig:
+    try:
+        return await set_active_artifact_store(request.app.state.storage_provider, body.provider_id)
+    except EntityCheckError as exc:
+        _raise_check(exc, kind="artifact_storage_active_config")
+
+
+__all__ = ["artifact_storage_active_config_router", "artifact_storage_helpers_router", "artifact_storage_router"]

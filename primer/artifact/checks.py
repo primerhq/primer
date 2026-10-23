@@ -17,7 +17,9 @@ from __future__ import annotations
 
 from primer.artifact.factory import BUILDABLE_KINDS, DEFAULT_ARTIFACT_PROVIDER_ID
 from primer.common.entity_checks import EntityCheckError
+from primer.int.storage_provider import StorageProvider
 from primer.model.provider import ArtifactStorageProvider
+from primer.model.providers.artifact import ACTIVE_ARTIFACT_STORAGE_CONFIG_ID, ActiveArtifactStorageConfig
 
 _BUILDABLE_LITERALS = ", ".join(f"``{value}``" for value in sorted(kind.value for kind in BUILDABLE_KINDS))
 
@@ -49,4 +51,16 @@ def check_artifact_provider_write(entity: ArtifactStorageProvider) -> None:
     )
 
 
-__all__ = ["ARTIFACT_DEFAULT_WRITE_NOTE", "check_artifact_provider_write"]
+async def check_artifact_provider_delete(storage_provider: StorageProvider, provider_id: str) -> None:
+    """Refuse deletion of the provider currently selected for new writes."""
+    active = await storage_provider.get_storage(ActiveArtifactStorageConfig).get(ACTIVE_ARTIFACT_STORAGE_CONFIG_ID)
+    if active is not None and active.provider_id == provider_id:
+        raise EntityCheckError(
+            "conflict",
+            "currently the active artifact store; select another store first",
+            code="cascade_blocked",
+            extra={"referenced_by": ACTIVE_ARTIFACT_STORAGE_CONFIG_ID},
+        )
+
+
+__all__ = ["ARTIFACT_DEFAULT_WRITE_NOTE", "check_artifact_provider_delete", "check_artifact_provider_write"]

@@ -139,7 +139,7 @@ from primer.model.workspace import (
 )
 from primer.model.yield_ import ToolContext, Yielded
 from primer.toolset._system_guards import AGENT_GUARDS, GRAPH_GUARDS, CrudGuards, ToolReference, toolset_guards
-from primer.artifact.checks import ARTIFACT_DEFAULT_WRITE_NOTE, check_artifact_provider_write
+from primer.artifact.checks import ARTIFACT_DEFAULT_WRITE_NOTE, check_artifact_provider_delete, check_artifact_provider_write
 from primer.channel.checks import check_channel_on_create, check_channel_on_update
 from primer.model_profile.checks import check_profile_on_create, check_profile_on_update
 from primer.knowledge.checks import check_collection_system_flag
@@ -536,7 +536,13 @@ def build_system_toolset(
         await purge_collection(storage_provider, semantic_search_registry, collection=existing)
         return None
 
-    pre_deletes_by_label: dict[str, Any] = {"collection": _collection_pre_delete}
+    async def _artifact_provider_pre_delete(existing: ArtifactStorageProvider) -> None:
+        await check_artifact_provider_delete(storage_provider, existing.id)
+
+    pre_deletes_by_label: dict[str, Any] = {
+        "artifact_storage_provider": _artifact_provider_pre_delete,
+        "collection": _collection_pre_delete,
+    }
     for label, plural, cls, on_c, on_u, on_d, role in crud_specs:
         pre_create, pre_update = pre_checks_by_label.get(label, (None, None))
         registry.update(

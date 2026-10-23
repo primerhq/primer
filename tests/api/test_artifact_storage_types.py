@@ -137,11 +137,8 @@ async def test_a_kind_the_factory_cannot_build_says_so_in_its_label_and_one_it_c
 
 
 @pytest.mark.asyncio
-async def test_the_database_kind_is_not_called_the_default_and_says_which_row_is_used(client) -> None:
-    """A newly registered ``db`` row is not the default: only the built-in ``artifact-storage-default`` row is read by the consumers."""
-    label = (await _types(client))["db"]["label"]
-    assert "(default)" not in label
-    assert "artifact-storage-default" in label and "only" in label.lower(), label
+async def test_the_database_kind_says_the_bytes_stay_in_primers_database(client) -> None:
+    assert (await _types(client))["db"]["label"] == "Database (in primer's own database)"
 
 
 @pytest.mark.asyncio
