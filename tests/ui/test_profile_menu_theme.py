@@ -410,11 +410,11 @@ def test_the_theme_verbs_apply_through_the_one_shared_helper(verbs, choice):
 
 def test_the_shell_refreshes_the_environment_the_verbs_run_against_every_render():
     """The verbs are registered once, in an effect that never re-runs, so they read this ref when they RUN. A ref that kept the first render's username would store
-    the choice of whoever was signed in at mount (``anon``, before the status read answers) and the menu would not show it."""
+    the choice of whoever was signed in at mount and the menu would not show it."""
     assert re.search(r"var themeEnvRef = React\.useRef\(", SHELL)
     refresh = re.search(r"themeEnvRef\.current = \{([\s\S]*?)\};", SHELL)
     assert refresh, "the ref is assigned on every render, not only at creation"
-    assert 'status.data.username) || "anon"' in refresh.group(1)
+    assert "username: NV_usernameOf(status.data)" in refresh.group(1)
     assert "setTick(" in refresh.group(1), "bump re-renders the shell, which redraws the menu"
     assert SHELL.index("themeEnvRef.current =") < SHELL.index('id: "theme.light"')
 
