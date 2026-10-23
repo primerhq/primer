@@ -15,6 +15,17 @@ CONNECT_ADMIN_REASON = (
     "Connecting, reconnecting or disconnecting an MCP toolset's OAuth sign-in requires the admin role: every agent that uses the toolset acts as "
     "whoever connected it."
 )
+#: The cookie the start answer sets to bind the sign-in to the browser that started it (audit G4-01).
+BINDING_COOKIE = "primer_mcp_oauth"
+
+
+def _keep_only_the_binding(raw_client) -> None:
+    """The callback needs no session, so drop the admin's session cookie; keep the sign-in's binding cookie, which the callback requires."""
+    kept = [cookie for cookie in raw_client.cookies.jar if cookie.name == BINDING_COOKIE]
+    assert kept, "the start answer set no binding cookie"
+    raw_client.cookies.clear()
+    for cookie in kept:
+        raw_client.cookies.jar.set_cookie(cookie)
 
 
 @pytest.fixture
@@ -93,7 +104,7 @@ async def test_a_browser_callback_redirects_to_the_toolset_overlay(raw_client, o
     await _login_as(raw_client, oauth_app, "admin")
     started = (await raw_client.post("/v1/toolsets/kb/oauth/start")).json()
     back = authorize(started["authorize_url"])
-    raw_client.cookies.clear()
+    _keep_only_the_binding(raw_client)
     response = await raw_client.get(
         "/v1/toolsets/kb/oauth/callback",
         params=back,
@@ -109,7 +120,7 @@ async def test_an_api_callback_answers_json(raw_client, oauth_app, mock_oauth_mc
     await _login_as(raw_client, oauth_app, "admin")
     started = (await raw_client.post("/v1/toolsets/kb/oauth/start")).json()
     back = authorize(started["authorize_url"])
-    raw_client.cookies.clear()
+    _keep_only_the_binding(raw_client)
     response = await raw_client.get("/v1/toolsets/kb/oauth/callback", params=back)
     assert response.status_code == 200, response.text
     assert response.json()["status"]["state"] == "connected"
@@ -119,11 +130,108 @@ async def test_a_replayed_callback_is_invalid_state(raw_client, oauth_app, mock_
     await _store(oauth_app, make_toolset(mock_oauth_mcp.mcp_url, oauth={}))
     await _login_as(raw_client, oauth_app, "admin")
     back = authorize((await raw_client.post("/v1/toolsets/kb/oauth/start")).json()["authorize_url"])
-    raw_client.cookies.clear()
+    _keep_only_the_binding(raw_client)
+    binding = list(raw_client.cookies.jar)
     assert (await raw_client.get("/v1/toolsets/kb/oauth/callback", params=back)).status_code == 200
+    for cookie in binding:                              # a replay that still carries the binding: the state itself is single use
+        raw_client.cookies.jar.set_cookie(cookie)
     replay = await raw_client.get("/v1/toolsets/kb/oauth/callback", params=back)
     assert replay.status_code == 400
     assert replay.json()["extensions"]["code"] == "invalid_state"
+
+
+def _set_cookie_of(response, name: str) -> str:
+    headers = [value for value in response.headers.get_list("set-cookie") if value.startswith(f"{name}=")]
+    assert len(headers) == 1, response.headers.get_list("set-cookie")
+    return headers[0]
+
+
+async def test_the_start_answer_binds_the_sign_in_to_the_browser(raw_client, oauth_app, mock_oauth_mcp) -> None:
+    """Audit G4-01: the start answer sets a short-lived HttpOnly, SameSite=Lax cookie, scoped to the callback path, that the callback requires. Lax is
+    what lets it arrive: the provider sends the browser back with a cross-site, top-level GET."""
+    await _store(oauth_app, make_toolset(mock_oauth_mcp.mcp_url, oauth={}))
+    await _login_as(raw_client, oauth_app, "admin")
+    started = await raw_client.post("/v1/toolsets/kb/oauth/start")
+    assert started.status_code == 200, started.text
+    cookie = _set_cookie_of(started, BINDING_COOKIE)
+    attributes = {part.strip().split("=", 1)[0].lower(): part.strip() for part in cookie.split(";")[1:]}
+    assert attributes["path"] == "Path=/v1/toolsets/kb/oauth/callback"
+    assert attributes["max-age"] == "Max-Age=600", "the cookie lives as long as the pending sign-in"
+    assert "httponly" in attributes and attributes["samesite"].lower() == "samesite=lax"
+    assert "secure" not in attributes, "an http deployment would never send a Secure cookie back"
+    value = cookie.split(";", 1)[0].split("=", 1)[1]
+    assert len(value) >= 43 and value not in started.text, "the binding is a nonce of its own, kept out of the JSON answer"
+
+
+async def test_the_binding_cookie_is_secure_behind_https(raw_client, oauth_app, mock_oauth_mcp) -> None:
+    oauth_app.state.mcp_oauth._public_url = "https://primer.example"  # noqa: SLF001
+    await _store(oauth_app, make_toolset(mock_oauth_mcp.mcp_url, oauth={}))
+    await _login_as(raw_client, oauth_app, "admin")
+    started = await raw_client.post("/v1/toolsets/kb/oauth/start")
+    assert "secure" in _set_cookie_of(started, BINDING_COOKIE).lower().replace(" ", "").split(";")
+
+
+async def test_a_callback_without_the_binding_cookie_is_invalid_state_and_spends_nothing(raw_client, oauth_app, mock_oauth_mcp) -> None:
+    """Audit G4-01: anyone who obtains the authorize URL (a browser history, a shared link, a provider-side log) can complete it with their own account
+    at the provider. Without the cookie of the browser that started the sign-in the callback is refused, the pending sign-in is NOT spent (so the
+    admin's own callback still works), and no token is written."""
+    await _store(oauth_app, make_toolset(mock_oauth_mcp.mcp_url, oauth={}))
+    await _login_as(raw_client, oauth_app, "admin")
+    back = authorize((await raw_client.post("/v1/toolsets/kb/oauth/start")).json()["authorize_url"])
+    _keep_only_the_binding(raw_client)
+    binding = list(raw_client.cookies.jar)
+    raw_client.cookies.clear()
+
+    for headers in ({}, {"Accept": "text/html"}):
+        refused = await raw_client.get("/v1/toolsets/kb/oauth/callback", params=back, headers=headers, follow_redirects=False)
+        if headers:
+            assert refused.status_code == 303
+            assert refused.headers["location"] == (
+                "/console/?mcp_oauth=error&mcp_oauth_toolset=kb&mcp_oauth_error=invalid_state#/?view=platform:toolsets&overlay=toolsets::kb"
+            )
+        else:
+            assert refused.status_code == 400 and refused.json()["extensions"]["code"] == "invalid_state"
+    assert await oauth_app.state.mcp_oauth.store.get_tokens("kb") is None
+
+    for cookie in binding:
+        raw_client.cookies.jar.set_cookie(cookie)
+    response = await raw_client.get("/v1/toolsets/kb/oauth/callback", params=back)
+    assert response.status_code == 200, response.text
+    assert response.json()["status"]["state"] == "connected"
+
+
+async def test_a_callback_carrying_another_browsers_cookie_is_invalid_state(raw_client, oauth_app, mock_oauth_mcp) -> None:
+    await _store(oauth_app, make_toolset(mock_oauth_mcp.mcp_url, oauth={}))
+    await _login_as(raw_client, oauth_app, "admin")
+    back = authorize((await raw_client.post("/v1/toolsets/kb/oauth/start")).json()["authorize_url"])
+    _keep_only_the_binding(raw_client)
+    [cookie] = list(raw_client.cookies.jar)
+    cookie.value = "a-nonce-this-browser-was-never-given-0123456789abcdef"
+    raw_client.cookies.jar.set_cookie(cookie)
+    response = await raw_client.get("/v1/toolsets/kb/oauth/callback", params=back)
+    assert response.status_code == 400 and response.json()["extensions"]["code"] == "invalid_state"
+    assert await oauth_app.state.mcp_oauth.store.get_tokens("kb") is None
+
+
+async def test_a_completed_callback_clears_the_binding_cookie(raw_client, oauth_app, mock_oauth_mcp) -> None:
+    await _store(oauth_app, make_toolset(mock_oauth_mcp.mcp_url, oauth={}))
+    await _login_as(raw_client, oauth_app, "admin")
+    back = authorize((await raw_client.post("/v1/toolsets/kb/oauth/start")).json()["authorize_url"])
+    _keep_only_the_binding(raw_client)
+    response = await raw_client.get("/v1/toolsets/kb/oauth/callback", params=back)
+    assert response.status_code == 200, response.text
+    cleared = _set_cookie_of(response, BINDING_COOKIE).lower()
+    assert "max-age=0" in cleared and "path=/v1/toolsets/kb/oauth/callback" in cleared
+    assert not [cookie for cookie in raw_client.cookies.jar if cookie.name == BINDING_COOKIE]
+
+
+async def test_a_client_credentials_start_sets_no_binding_cookie(raw_client, oauth_app, mock_oauth_mcp) -> None:
+    oauth = {"grant": "client_credentials", "static_client": {"client_id": "cc-client", "client_secret": "cc-secret"}}
+    await _store(oauth_app, make_toolset(mock_oauth_mcp.mcp_url, oauth=oauth))
+    await _login_as(raw_client, oauth_app, "admin")
+    started = await raw_client.post("/v1/toolsets/kb/oauth/start")
+    assert started.status_code == 200, started.text
+    assert not [value for value in started.headers.get_list("set-cookie") if value.startswith(f"{BINDING_COOKIE}=")]
 
 
 async def test_a_declined_callback_is_access_denied(raw_client, oauth_app, mock_oauth_mcp) -> None:
@@ -131,7 +239,7 @@ async def test_a_declined_callback_is_access_denied(raw_client, oauth_app, mock_
     await _login_as(raw_client, oauth_app, "admin")
     mock_oauth_mcp.state.deny_next_authorize = True
     back = authorize((await raw_client.post("/v1/toolsets/kb/oauth/start")).json()["authorize_url"])
-    raw_client.cookies.clear()
+    _keep_only_the_binding(raw_client)
     response = await raw_client.get("/v1/toolsets/kb/oauth/callback", params=back)
     assert response.status_code == 400
     assert response.json()["extensions"]["code"] == "access_denied"
@@ -152,7 +260,7 @@ async def test_a_callback_for_a_toolset_deleted_after_start_is_invalid_state(raw
     await _login_as(raw_client, oauth_app, "admin")
     back = authorize((await raw_client.post("/v1/toolsets/kb/oauth/start")).json()["authorize_url"])
     await oauth_app.state.storage_provider.get_storage(Toolset).delete("kb")
-    raw_client.cookies.clear()
+    _keep_only_the_binding(raw_client)
     response = await raw_client.get("/v1/toolsets/kb/oauth/callback", params=back)
     assert response.status_code == 400
     assert response.json()["extensions"]["code"] == "invalid_state"

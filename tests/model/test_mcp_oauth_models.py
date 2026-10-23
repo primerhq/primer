@@ -130,6 +130,13 @@ def test_the_pending_defaults():
     assert (row.consumed, row.started_by, row.revocation_endpoint, row.resource, row.token_endpoint_auth_method) == (False, None, None, None, None)
 
 
+def test_the_browser_binding_is_optional_and_round_trips():
+    """A row written before the binding existed (audit G4-01) still loads, with no binding; one written with it keeps it."""
+    assert _pending().browser_binding is None
+    row = _pending(browser_binding="b" * 64)
+    assert McpOAuthPendingSignIn.model_validate(dump_for_storage(row)).browser_binding == "b" * 64
+
+
 def test_the_client_authentication_method_is_remembered_and_optional():
     """A refresh authenticates the client the way the sign-in did, without a new discovery; a row from before the field loads with None."""
     for make in (_token_set, _pending):

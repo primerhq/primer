@@ -22,6 +22,8 @@ KEY = "service-test-key-0123456789"
 OTHER_KEY = "another-service-key-0123456789"
 #: Nothing listens there: a test reads the provider's redirect and finishes the sign-in itself.
 REDIRECT = "http://127.0.0.1:9/v1/toolsets/kb/oauth/callback"
+#: The nonce of the browser that starts a sign-in (the route's cookie, audit G4-01); the callback must present it.
+BINDING = "the-browser-that-started-the-sign-in-0123456789"
 INITIALIZE = {
     "jsonrpc": "2.0",
     "id": 1,
@@ -103,10 +105,10 @@ def authorize(url: str) -> dict[str, str]:
 
 
 async def connect(svc: ToolsetOAuthService, toolset: Toolset, *, redirect_uri: str = REDIRECT, started_by: str = "admin") -> ToolsetAuthStatus:
-    """A whole browser sign-in: start, the provider's consent, the callback."""
-    start = await svc.start_sign_in(target_of(toolset), redirect_uri=redirect_uri, started_by=started_by)
+    """A whole browser sign-in: start, the provider's consent, the callback (from the browser that started it)."""
+    start = await svc.start_sign_in(target_of(toolset), redirect_uri=redirect_uri, started_by=started_by, browser_binding=BINDING)
     back = authorize(start.authorize_url)
-    return await svc.complete_sign_in(toolset, toolset_id=toolset.id, state=back["state"], code=back["code"], error=None)
+    return await svc.complete_sign_in(toolset, toolset_id=toolset.id, state=back["state"], code=back["code"], error=None, browser_binding=BINDING)
 
 
 def mcp_answers(url: str, token: str) -> int:
