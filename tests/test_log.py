@@ -249,6 +249,29 @@ def _configured_stream(json_format: bool = True) -> io.StringIO:
     return buf
 
 
+@pytest.fixture
+def access_logger_reaches_root():
+    """uvicorn.access, and its parent uvicorn, as bare loggers that propagate to the root handler, put back afterwards. A test that reads the
+    root handler must not depend on what ran before it in the same worker: the in-process mock OAuth and LLM servers build uvicorn.Config,
+    whose logging config gives both loggers their own handler with propagate=False, and access_log=False empties uvicorn.access (that is how
+    uvicorn silences access lines: it writes them only when the logger has handlers). Both stay that way for the rest of the process."""
+    loggers = [logging.getLogger(name) for name in ("uvicorn", "uvicorn.access")]
+    saved = [(lg.level, lg.propagate, list(lg.handlers), lg.disabled) for lg in loggers]
+    for lg in loggers:
+        lg.setLevel(logging.NOTSET)
+        lg.propagate = True
+        lg.handlers = []
+        lg.disabled = False
+    try:
+        yield loggers[1]
+    finally:
+        for lg, (level, propagate, handlers, disabled) in zip(loggers, saved, strict=True):
+            lg.setLevel(level)
+            lg.propagate = propagate
+            lg.handlers = handlers
+            lg.disabled = disabled
+
+
 class TestUrlSecretRedaction:
     @pytest.mark.parametrize("json_format", [True, False])
     def test_httpx_request_line_for_gemini_hides_the_key(self, json_format):
@@ -378,7 +401,7 @@ class TestUrlSecretRedaction:
         assert took < 1.0, f"{name}: {took:.2f}s for {len(text)} characters"
 
     @pytest.mark.parametrize("path", ["/" + "a." * 20_000, "/x@y://" + "a." * 20_000], ids=["plain path", "path with @ and ://"])
-    def test_a_hostile_request_path_does_not_stall_the_log_call(self, path):
+    def test_a_hostile_request_path_does_not_stall_the_log_call(self, path, access_logger_reaches_root):
         import time
 
         buf = _configured_stream()
