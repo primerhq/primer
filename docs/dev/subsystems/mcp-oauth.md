@@ -164,7 +164,10 @@ MCP call cannot authenticate, its tool error says exactly
 `the MCP server <id> needs an operator to reconnect it`. A remote toolset that cannot
 list is omitted from the current turn. The model receives the heading
 `Toolsets unavailable this turn, so their tools are not offered:` followed by a
-bullet naming the toolset and safe reason. The next turn tries to list it again.
+bullet naming the toolset and its state in a fixed word (`needs sign-in`,
+`unreachable`, `timed out` or `failed`): never the server's text, which a
+`tools/list` error can be (audit G4-14). A call into the toolset answers the
+fuller reason as a tool error. The next turn tries to list it again.
 
 OAuth callbacks reveal no toolset-existence oracle: an unknown toolset is handled
 like invalid state. Pending state is short-lived and single-use. Tokens and secrets

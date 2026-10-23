@@ -76,7 +76,8 @@ disconnect actions in the console.
 If an MCP call cannot use its sign-in, the tool result says
 `the MCP server <id> needs an operator to reconnect it`. If the server cannot
 list its tools, Primer leaves that toolset out of the current turn and tells the
-model which toolset was unavailable.
+model which toolset was unavailable and why, in a fixed word (needs sign-in,
+unreachable, timed out or failed).
 
 ## Workflows
 

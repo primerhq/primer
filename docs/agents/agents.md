@@ -512,7 +512,8 @@ Read the description + system_prompt to confirm fit.
   within 60 seconds no longer ends the turn: the turn starts without that
   toolset's tools, and the system message the model is sent ends with
   "Toolsets unavailable this turn, so their tools are not offered:" and one
-  line per toolset with the reason. A call that names one of its tools
+  line per toolset saying, in a fixed word, why: needs sign-in, unreachable,
+  timed out or failed (never the server's own text). A call that names one of its tools
   anyway comes back as a tool error ("toolset <id> is unavailable this turn:
   <reason>"). The notice is not stored in the session's history, and the
   next turn lists the toolset again, so it is back as soon as its server is.

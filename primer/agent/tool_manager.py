@@ -20,9 +20,10 @@ Errors:
   (``ToolsetProvider.lists_remotely``) that fails to list, needs a sign-in or
   does not answer within :data:`primer.agent.tool_listing.TURN_TOOLSET_LIST_TIMEOUT_S`
   is left out of the catalogue: :meth:`ToolExecutionManager.unavailable_toolsets`
-  says why, the agent loop tells the model, and a call that names one of its
-  tools is answered with a tool error. Any other provider that fails to list
-  still fails the turn.
+  names its state (needs sign-in, unreachable, timed out, failed), the agent loop
+  tells the model in those words, and a call that names one of its tools is
+  answered with a tool error that carries the reason. Any other provider that
+  fails to list still fails the turn.
 * :class:`AuthRequiredError` raised by a CALL -> propagates so the workspace
   executor can transition the session to WAITING / ``_ToolApprovalWaiting``.
 * Any other :class:`PrimerError` from a call -> caught and converted to a
@@ -271,10 +272,12 @@ class ToolExecutionManager:
         # through ``call_tool`` was never in the visible catalogue.
         self._descriptors: dict[str, Tool] = {}
         self._catalogue: list[Tool] | None = None
-        # Toolset id -> why it was left out of THIS manager's catalogue (an MCP toolset that could not list its tools).
-        # Set with the catalogue and kept for the manager's life; the manager is built per turn, so the next turn lists
-        # the toolset again (no tool-list cache).
+        # Toolset id -> why it was left out of THIS manager's catalogue (an MCP toolset that could not list its tools): the
+        # reason a call into it answers, and the state the model is told (a fixed word, never the server's text). Set with
+        # the catalogue and kept for the manager's life; the manager is built per turn, so the next turn lists the toolset
+        # again (no tool-list cache).
         self._unavailable: dict[str, str] = {}
+        self._unavailable_states: dict[str, str] = {}
         self._index_lock = asyncio.Lock()
 
         if self._workspace_tools and self._workspace_session is None:
@@ -418,6 +421,7 @@ class ToolExecutionManager:
                 return list(self._catalogue)
             catalogue: list[Tool] = []
             unavailable: dict[str, str] = {}
+            unavailable_states: dict[str, str] = {}
             # The ``workspace_ext`` toolset is special: its tools are
             # registered into the agent's tool context ONLY inside a
             # workspace session. On a chat (no workspace session) they are
@@ -451,9 +455,10 @@ class ToolExecutionManager:
                 if listing is not None and listing.reason is not None:
                     # Cannot list: left out of the turn, nothing of it enters the routing table.
                     unavailable[toolset_id] = listing.reason
+                    unavailable_states[toolset_id] = listing.state or tool_listing.FAILED
                     logger.warning(
                         "ToolExecutionManager: toolset left out of the turn; it cannot list its tools",
-                        extra={"toolset": toolset_id, "reason": listing.reason},
+                        extra={"toolset": toolset_id, "reason": listing.reason, "state": unavailable_states[toolset_id]},
                     )
                     if listing.error is not None:
                         # The one line above is what the usual log level and the model see. A bug inside the provider is not a
@@ -538,6 +543,7 @@ class ToolExecutionManager:
                     self._uninterruptible.add(scoped_id)
             # Together, once the walk is whole: a listing that fails or is cancelled halfway leaves neither behind.
             self._unavailable = unavailable
+            self._unavailable_states = unavailable_states
             self._catalogue = catalogue
             return list(self._catalogue)
 
@@ -574,13 +580,14 @@ class ToolExecutionManager:
         return dict(zip(remote, listings))
 
     def unavailable_toolsets(self) -> dict[str, str]:
-        """Toolset id -> why it was left out of this turn (an MCP toolset that could not list its tools); a copy.
+        """Toolset id -> the state of a toolset left out of this turn (an MCP toolset that could not list its tools); a copy.
 
-        Empty until :meth:`list_tools` has run, and when nothing was left out. The agent loop reads it every model
-        call and tells the model (:func:`primer.agent.tool_listing.with_system_notice`); a call into one of these
-        toolsets is answered with the reason (:meth:`_left_out_toolset`).
+        The state is a word of :data:`primer.agent.tool_listing.NOTICE_STATES` (needs sign-in, unreachable, timed out,
+        failed), never the server's text: the agent loop reads this every model call and puts it in the SYSTEM message
+        (:func:`primer.agent.tool_listing.with_system_notice`; audit G4-14). Empty until :meth:`list_tools` has run, and when
+        nothing was left out. A call into one of these toolsets is answered with the full reason (:meth:`_left_out_toolset`).
         """
-        return dict(self._unavailable)
+        return dict(self._unavailable_states)
 
     def _left_out_toolset(self, scoped_name: str) -> tuple[str, str] | None:
         """``(toolset id, reason)`` of the left-out toolset a scoped tool name belongs to, or ``None``.
