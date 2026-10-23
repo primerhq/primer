@@ -53,6 +53,7 @@ from typing import TYPE_CHECKING, Any
 
 from primer.common.log import redact_credentials
 from primer.agent.loop import run_agent_turn
+from primer.agent.parked_round import ParkedRound
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.graph.router import RouterRegistry
 from primer.model.chat import (
@@ -994,6 +995,10 @@ class _BaseGraphExecutor(
                             iteration=ay.iteration,
                             frames=frames_to_jsonable(nested_frames) if nested_frames else [],
                             leaf=yld.yielded.to_jsonable() if nested_frames else None,
+                            # Ticket 01a15327: the round the node waits in, as it now stands: unchanged when the parked call paused again,
+                            # carried forward when a later call of the round asked to wait (``_resume_agent_node``), the new round of a
+                            # continued turn that parked (its batch stamped it).
+                            **ParkedRound.of_park(yld).stored_fields(),
                         )
                     )
                     continue
@@ -1144,6 +1149,8 @@ class _BaseGraphExecutor(
                                 yld.yielded.to_jsonable()
                                 if nested_frames else None
                             ),
+                            # Ticket 01a15327: the round the continued turn parked in, as its batch stamped it.
+                            **ParkedRound.of_park(yld).stored_fields(),
                         )
                     )
                     continue

@@ -1007,6 +1007,16 @@ class _PendingAgentYield:
     # 01a0690a: same doctrine as _PendingToolCall.scoped_tool_call_id above
     # -- the id the paired durable TOOL_CALL record actually carries.
     scoped_tool_call_id: str | None = None
+    # Ticket 01a15327: the tool round the node's park left unfinished (``primer.agent.parked_round.ParkedRound``), as the agent session's
+    # ``ParkedState`` carries it. The node's model can ask for several calls in one round and the park leaves at the one that asked to wait:
+    # ``completed_results`` are the answers of the calls BEFORE it (ToolResultPart JSON, in order; recorded as the node parked),
+    # ``remaining_calls`` the calls AFTER it (ToolCallPart JSON, in order; not run). ``_resume_agent_node`` runs the remaining calls and
+    # answers every call of the round in one tool message. ``remaining_scoped_call_ids`` maps a remaining call's raw id to the scoped id of its
+    # TOOL_CALL record (``stash_graph_scoped_ids``), so the results the resume drain writes pair with them. Empty for a park whose call was the
+    # round's only one, and for a checkpoint written before these fields existed: the parked call alone is answered, as before.
+    completed_results: list[dict[str, Any]] = field(default_factory=list)
+    remaining_calls: list[dict[str, Any]] = field(default_factory=list)
+    remaining_scoped_call_ids: dict[str, str] = field(default_factory=dict)
 
     @property
     def is_own_approval_gate(self) -> bool:

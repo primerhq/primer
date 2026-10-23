@@ -28,6 +28,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from primer.agent.loop import run_agent_turn
+from primer.agent.parked_round import ParkedRound, finish_round
 from primer.agent.prompt_render import render_system_prompt_or_raw
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.common.log import redact_credentials
@@ -94,6 +95,12 @@ def _make_node_scoped_call_resolver(
             )
         return scoped_id, record_seq
     return _resolve
+
+
+def _parked_round_of(pending: Any) -> ParkedRound:
+    """The tool round a pending entry carries (ticket 01a15327). ``getattr``: ``_resume_agent_node`` is also handed a ``_PendingToolWait`` (a claims batch is
+    answered whole, so it has no round to finish)."""
+    return ParkedRound.from_jsonable(getattr(pending, "completed_results", None), getattr(pending, "remaining_calls", None))
 
 
 def _strip_json_fences(text: str) -> str:
@@ -357,7 +364,8 @@ class _AgentNodeMixin:
           :func:`primer.agent.inner_dispatch.dispatch_inner_tool`, with the inner tool's role checked again and a principal stored with the park never read;
         * anything else: nothing runs, and the answer is the error result that says the call was rejected (timed out, cancelled);
         * a tool that pauses again (``YieldToWorker``) is not an error: it leaves, stamped with this node's in-progress turn (the assistant message that made the
-          call, so the next resume pairs the tool's own answer with it), and the resume loop parks the node again on the tool's own event;
+          call, so the next resume pairs the tool's own answer with it) and with the round the call waits in, unchanged (ticket 01a15327), and the resume loop
+          parks the node again on the tool's own event;
         * any other failure of the call is an error result the node continues from, as the agent session's resume treats it, and is logged.
         """
         # Function-local: primer.worker.frames imports primer.graph at module level, so primer.worker is imported from here when the call is made.
@@ -373,6 +381,9 @@ class _AgentNodeMixin:
         except (YieldToWorker, ToolWaitPark) as paused:
             if not paused.llm_messages:
                 paused.llm_messages = list(pending.llm_messages)
+            if isinstance(paused, YieldToWorker):
+                # The same call of the round still waits: its round is the entry's (a nested run inside the approved call may have stamped its own).
+                _parked_round_of(pending).stamp(paused)
             raise
         except Exception as exc:  # noqa: BLE001 - fail-closed synthesis, as the agent session's resume does
             logger.exception("resume: the approved call of node %r (tool call %r) raised; answering it with an error result", pending.node_id, pending.tool_call_id)
@@ -446,6 +457,29 @@ class _AgentNodeMixin:
                 tool_result_msg = Message(role="tool", parts=[answer])
             else:
                 tool_result_msg = Message(role="tool", parts=[ToolResultPart(id=pending.tool_call_id, output="")])
+
+        # Ticket 01a15327: the park may have left the node's tool round unfinished (its model asked for several calls in one round). The calls after the
+        # parked one run now, in order, with the node's own manager (each meets its own role floor and approval gate), and their events are forwarded so
+        # the drain records them under their call rows. The model is then sent ONE tool message answering every call of the round, once and in order. A
+        # later call that asks to wait leaves with this turn and the round as it now stands, and the resume loop parks the node again on it. An entry
+        # with no round (its call was the only one, or written before rounds were carried) is answered as before.
+        parked_round = _parked_round_of(pending)
+        if not parked_round.is_empty:
+            answers: list[ToolResultPart] = []
+            try:
+                async for event in finish_round(
+                    parked_round,
+                    [part for part in tool_result_msg.parts if isinstance(part, ToolResultPart)],
+                    tool_manager=tool_manager,
+                    principal=self._principal,
+                    results_out=answers,
+                ):
+                    yield self._wrap_event(event, pending.node_id, pending.iteration)
+            except YieldToWorker as paused:
+                if not paused.llm_messages:
+                    paused.llm_messages = list(pending.llm_messages)
+                raise
+            tool_result_msg = Message(role="tool", parts=answers)
 
         # The same scope the first dispatch rendered with (``_stream_node``): a parked fan-out
         # instance's template uses fanout_index / fanout_item, and the checkpoint restores the

@@ -294,6 +294,10 @@ class _CheckpointMixin:
                     "leaf": dict(p.leaf) if p.leaf is not None else None,
                     # 01a0690a: see _PendingAgentYield's docstring.
                     "scoped_tool_call_id": p.scoped_tool_call_id,
+                    # Ticket 01a15327: the tool round the park left unfinished (see _PendingAgentYield).
+                    "completed_results": list(p.completed_results),
+                    "remaining_calls": list(p.remaining_calls),
+                    "remaining_scoped_call_ids": dict(p.remaining_scoped_call_ids),
                 }
                 for p in self._pending_agent_yields
             ],
@@ -458,6 +462,10 @@ class _CheckpointMixin:
                 frames=list(raw.get("frames") or []),
                 leaf=dict(raw["leaf"]) if raw.get("leaf") is not None else None,
                 scoped_tool_call_id=raw.get("scoped_tool_call_id"),
+                # Ticket 01a15327: absent in a checkpoint written before the round was carried (an empty round: the parked call alone is answered).
+                completed_results=list(raw.get("completed_results") or []),
+                remaining_calls=list(raw.get("remaining_calls") or []),
+                remaining_scoped_call_ids=dict(raw.get("remaining_scoped_call_ids") or {}),
             )
             for raw in (payload.get("pending_agent_yields") or [])
         ]

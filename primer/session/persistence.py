@@ -1197,6 +1197,13 @@ def stash_graph_scoped_ids(
     keeps its original id rather than being re-derived (there is nothing to
     re-derive from a resume-time ``coalesce_state`` that never minted it).
 
+    A ``pending_agent_yields`` entry whose park left its tool round unfinished
+    (ticket 01a15327: ``remaining_calls``, the calls after the parked one, not
+    run) also gets ``remaining_scoped_call_ids``, ``{raw id: scoped id}`` of
+    those calls (keyed ``(node_id, raw id)`` in the state; nothing answered
+    them, so their ids are still there), unless it already carries them: the
+    resume drain writes their results under the ids of their call rows.
+
     Returns a snapshot of ``coalesce_state.tool_call_seq`` (the per-node
     monotonic mint counters) for ``ParkedState.node_tool_call_seq`` — {} for
     an agent-bound park (``graph_checkpoint is None``, nothing to stash).
@@ -1205,6 +1212,12 @@ def stash_graph_scoped_ids(
         return {}
     for entries_key in ("pending_toolcalls", "pending_agent_yields"):
         for entry in graph_checkpoint.get(entries_key) or []:
+            if entries_key == "pending_agent_yields" and entry.get("remaining_calls") and not entry.get("remaining_scoped_call_ids"):
+                entry["remaining_scoped_call_ids"] = {
+                    call["id"]: scoped
+                    for call in entry["remaining_calls"]
+                    if (scoped := coalesce_state.scoped_call_ids.get((entry.get("node_id"), call.get("id")))) is not None
+                }
             if entry.get("scoped_tool_call_id") is not None:
                 continue
             sid = coalesce_state.scoped_call_ids.get(
