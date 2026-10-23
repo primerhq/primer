@@ -97,6 +97,12 @@ async def _run_echo(
     return final, requests
 
 
+def _echoed(requests: list[dict], text: str = "hi") -> bool:
+    """The echo tool's own answer reached the model: a tool result that IS the text it was asked to echo (audit G4-17). Any tool-role message is
+    not enough: the listing alone would satisfy that, and a failing call answers a tool error."""
+    return any(result.strip() == text for result in _tool_results(requests))
+
+
 def _tool_results(requests: list[dict]) -> list[str]:
     return [
         str(message.get("content", ""))
@@ -127,7 +133,7 @@ async def test_browser_sign_in_then_the_agent_uses_the_token(
 
         assert final.get("session_state") == "parked", final
         assert final.get("last_turn_error") is None, final
-        assert _tool_results(requests), "the live MCP tool result never reached the model"
+        assert _echoed(requests), f"the echo call's output never reached the model: {_tool_results(requests)}"
         assert mock_oauth_mcp.state.seen_tokens
         assert all(token.startswith("mock-at-") for token in mock_oauth_mcp.state.seen_tokens)
     finally:
@@ -279,7 +285,7 @@ async def test_client_credentials_connect(
         )
         assert final.get("session_state") == "parked", final
         assert final.get("last_turn_error") is None, final
-        assert _tool_results(requests)
+        assert _echoed(requests), f"the echo call's output never reached the model: {_tool_results(requests)}"
         assert mock_oauth_mcp.state.seen_tokens
         assert mock_oauth_mcp.state.token_requests[-1]["grant_type"] == "client_credentials"
     finally:
