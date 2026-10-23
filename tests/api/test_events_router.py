@@ -137,6 +137,24 @@ async def test_subscription_create_refuses_template_strings(client, app, expr) -
 
 
 @pytest.mark.asyncio
+async def test_subscription_create_caps_a_field_regex(client, app) -> None:
+    """G6-11: a field regex is compiled by the engine that matches it and capped at 1000 characters."""
+    await _login(client)
+
+    refused = await client.post(
+        "/v1/event_subscriptions",
+        json={
+            "description": "long regex tap",
+            "filter": {"event_types": ["agent.*"], "fields": [{"path": "payload.path", "op": "regex", "value": "g" * 1001}]},
+            "sink": {"kind": "log"},
+        },
+    )
+
+    assert refused.status_code == 422, refused.text
+    assert "the limit is 1000" in refused.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_subscription_update_refuses_opa_package_references(client, app) -> None:
     await _login(client)
     safe_expr = (
