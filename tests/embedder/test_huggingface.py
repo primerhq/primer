@@ -643,12 +643,20 @@ class TestProcessWideModelCache:
         import gc
         from primer.embedder import huggingface as hf
 
+        def slow_fail(*args, **kwargs):
+            time.sleep(0.05)
+            raise RuntimeError("hub down")
+
         monkeypatch.setattr(
-            hf, "SentenceTransformer", MagicMock(side_effect=RuntimeError("hub down"))
+            hf, "SentenceTransformer", MagicMock(side_effect=slow_fail)
         )
         with caplog.at_level(logging.ERROR):
-            with pytest.raises(RuntimeError, match="hub down"):
-                await hf._load_shared_model("m1", None)
+            waiter = asyncio.create_task(hf._load_shared_model("m1", None))
+            await asyncio.sleep(0.01)
+            waiter.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiter
+            await asyncio.sleep(0.08)
             gc.collect()
             await asyncio.sleep(0)
         hits = [
@@ -688,6 +696,64 @@ class TestProcessWideModelCache:
         assert ("m1", "shared") in hf._model_cache
         await emb_b.aclose()
         assert ("m1", "shared") not in hf._model_cache
+
+    async def test_aclose_during_first_load_does_not_pin_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from primer.embedder import huggingface as hf
+
+        def slow_load(*args, **kwargs):
+            time.sleep(0.05)
+            return _make_st_mock(np.array([[0.1]]))
+
+        monkeypatch.setattr(hf, "SentenceTransformer", MagicMock(side_effect=slow_load))
+        emb = HuggingFaceEmbedder(_make_provider(provider_id="hf", models=["m1"], token="t"))
+        call = asyncio.create_task(emb.embed(model="m1", inputs=[TextPart(text="x")]))
+        await asyncio.sleep(0.01)
+        await emb.aclose()
+        await call
+        assert hf._model_refs.get(("m1", "t"), 0) == 0
+        assert ("m1", "t") not in hf._model_cache
+
+    async def test_cancelled_only_waiter_does_not_leave_unreferenced_model_cached(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from primer.embedder import huggingface as hf
+
+        def slow_load(*args, **kwargs):
+            time.sleep(0.05)
+            return _make_st_mock(np.array([[0.1]]))
+
+        monkeypatch.setattr(hf, "SentenceTransformer", MagicMock(side_effect=slow_load))
+        task = asyncio.create_task(hf._load_shared_model("m1", None))
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.08)
+        assert ("m1", None) not in hf._model_cache
+        assert hf._model_refs.get(("m1", None), 0) == 0
+
+    async def test_dropped_embedder_releases_ref_via_finalizer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import gc
+        from primer.embedder import huggingface as hf
+
+        _patched_st(monkeypatch, np.array([[0.1]]))
+        emb: HuggingFaceEmbedder | None = HuggingFaceEmbedder(
+            _make_provider(provider_id="hf-gc", models=["m1"], token="tok-gc")
+        )
+        await emb.embed(model="m1", inputs=[TextPart(text="x")])
+        assert hf._model_refs.get(("m1", "tok-gc")) == 1
+        assert ("m1", "tok-gc") in hf._model_cache
+        # Dropping the embedder without calling aclose() (as
+        # ProviderRegistry._flush_caches_local does on bus reconnect) releases
+        # its refcount when garbage collected.
+        emb = None
+        gc.collect()
+        assert hf._model_refs.get(("m1", "tok-gc"), 0) == 0
+        assert ("m1", "tok-gc") not in hf._model_cache
 
 
 
