@@ -171,6 +171,12 @@ class _CountingBus(InMemoryInvalidationBus):
         await super().publish(topic, key)
 
 
+class _FailingSubscribeBus(_CountingBus):
+    async def subscribe(self, topic, handler, *, on_reconnect=None):
+        self.subscribed.append((topic, on_reconnect))
+        raise RuntimeError("subscribe failed")
+
+
 @pytest.mark.asyncio
 async def test_an_invalidation_reaches_every_registry_on_the_bus():
     bus = InMemoryInvalidationBus()
@@ -184,6 +190,20 @@ async def test_an_invalidation_reaches_every_registry_on_the_bus():
     assert a.closed and w.closed
     assert await worker.get_provider("asp-a") is not w
     assert await api.get_provider("asp-a") is not a
+
+
+async def test_a_failed_subscribe_leaves_the_registry_unbound() -> None:
+    """The #784 review pin: a bind that cannot subscribe must not strand later invalidations on a bus this registry never hears."""
+    reg = _registry()
+    cached = await reg.get_provider("asp-a")
+
+    with pytest.raises(RuntimeError, match="subscribe failed"):
+        await reg.bind_invalidation_bus(_FailingSubscribeBus())
+
+    await reg.invalidate("asp-a")
+
+    assert cached.closed
+    assert await reg.get_provider("asp-a") is not cached
 
 
 @pytest.mark.asyncio
