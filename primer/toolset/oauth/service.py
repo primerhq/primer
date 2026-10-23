@@ -23,7 +23,9 @@ per server process) is the only code that starts, finishes, uses or ends one:
   :data:`LEASE_WAIT_S`), so a rotating refresh token is spent once and every process ends with the new one. Every write of the lease holder is fenced
   by the version it leased and its own lease token, so a reconnect, a disconnect or the takeover of a dead lease is never overwritten. A refused refresh
   signs the toolset out; a token endpoint that cannot be reached keeps the tokens and marks the state ``error``. The exchange runs to its end even when
-  its caller is cancelled, so a Stop never loses a refresh token the server already rotated.
+  its caller is cancelled, so a Stop never loses a refresh token the server already rotated. A process whose encryption key cannot open the stored
+  sign-in fails its own call (:data:`KEY_CHANGED`) with an ERROR line and changes nothing: the other processes keep the shared tokens (lead ruling on
+  audit G4-10).
 
 The tokens are bound to the settings they were obtained for: :func:`config_fingerprint` hashes the URL and the OAuth settings, and a toolset whose
 settings no longer hash to the stored value has no usable sign-in, so a token is never sent to a URL it was not issued for.
@@ -525,11 +527,11 @@ class ToolsetOAuthService:
         """The access token to send to ``target``'s MCP server, refreshed first when it expires within :data:`REFRESH_SKEW`.
 
         Raises :class:`~primer.model.mcp_oauth.McpSignInRequiredError` when the toolset has no usable sign-in (never connected, its settings changed,
-        signed out, the key changed), and :class:`~primer.model.except_.ProviderError` for a failure that may pass (the token endpoint cannot be reached,
-        another process holds the lease for too long), which keeps the tokens.
+        signed out) or this process's key cannot read it (:data:`KEY_CHANGED`, the row left as it is), and :class:`~primer.model.except_.ProviderError`
+        for a failure that may pass (the token endpoint cannot be reached, another process holds the lease for too long), which keeps the tokens.
         """
         row = self._require_usable(target, await self._store.get_tokens(target.toolset_id))
-        access = await self._readable_access(row)
+        access = self._readable_access(row)
         now = self._clock()
         if access and _fresh(row, now):
             return access
@@ -545,7 +547,7 @@ class ToolsetOAuthService:
         already replaced it, else a forced refresh (whatever the stored expiry says). A browser sign-in without a refresh token is signed out with
         :data:`TOKEN_REJECTED`. Raises like :meth:`access_token`."""
         row = self._require_usable(target, await self._store.get_tokens(target.toolset_id))
-        access = await self._readable_access(row)
+        access = self._readable_access(row)
         if row.state == "connected" and access and access != rejected:
             return access
         if row.grant == "authorization_code" and row.refresh_token_enc is None:
@@ -568,7 +570,7 @@ class ToolsetOAuthService:
                 row = self._require_usable(target, await self._store.get_tokens(target.toolset_id))
                 now = self._clock()
                 if row.state == "connected" and (row.version > observed.version or not forced) and _fresh(row, now):
-                    access = await self._readable_access(row)
+                    access = self._readable_access(row)
                     if access:
                         return access
                 if row.refresh_lease_until is None or row.refresh_lease_until <= now:
@@ -610,7 +612,11 @@ class ToolsetOAuthService:
                                            method=won.token_endpoint_auth_method)
             refresh_token = self._store.unseal(won.refresh_token_enc)
         except SecretBoxError:
-            return await self._signed_out_or_newer(target, won, fence, KEY_CHANGED, state="needs_sign_in")
+            # Lead ruling on audit G4-10: this process's key cannot open what another process sealed. Only this call fails; the shared tokens stay
+            # for the processes that can open them, and the lease this process took is given back untouched otherwise.
+            await self._store.patch_tokens(toolset_id, {"refresh_lease_until": None, "refresh_lease_owner": None}, where={"refresh_lease_owner": [owner]})
+            self._key_differs(toolset_id)
+            raise McpSignInRequiredError(toolset_id, reason=KEY_CHANGED) from None
         if won.grant == "authorization_code" and refresh_token is None:
             return await self._signed_out_or_newer(target, won, fence, TOKEN_REJECTED if forced else EXPIRED_NO_REFRESH, state="needs_sign_in")
         now = self._clock()
@@ -699,7 +705,7 @@ class ToolsetOAuthService:
         """A connected token stored after ``won`` was leased (a reconnect, a holder that took over), or ``None``. Raises when the sign-in is gone."""
         row = self._require_usable(target, await self._store.get_tokens(target.toolset_id))
         if row.version > won.version and row.state == "connected":
-            return await self._readable_access(row)
+            return self._readable_access(row)
         return None
 
     @staticmethod
@@ -714,13 +720,28 @@ class ToolsetOAuthService:
             raise McpSignInRequiredError(target.toolset_id, reason=row.reason or NOT_CONNECTED)
         return row
 
-    async def _readable_access(self, row: McpOAuthTokenSet) -> str | None:
-        """The row's access token. One the current key cannot open signs the toolset out with :data:`KEY_CHANGED`."""
+    def _readable_access(self, row: McpOAuthTokenSet) -> str | None:
+        """The row's access token. One the current key cannot open fails THIS call with :data:`KEY_CHANGED` and leaves the row as it is.
+
+        Lead ruling on audit G4-10: the row is shared by every process, and a process whose key differs (a worker with another or no
+        ``PRIMER_ENCRYPTION_KEY``, a rolling deploy that introduces the key, the loser of a fresh database's session-secret race) used to wipe the
+        tokens for all of them on first use, and again after every reconnect. Now it fails alone and says so in an ERROR line; only an admin
+        Disconnect or Reconnect replaces the row.
+        """
         try:
             return self._store.unseal(row.access_token_enc)
         except SecretBoxError:
-            await self._sign_out(row, KEY_CHANGED)
-            raise McpSignInRequiredError(row.id, reason=KEY_CHANGED) from None
+            self._key_differs(row.id or "")
+            raise McpSignInRequiredError(row.id or "", reason=KEY_CHANGED) from None
+
+    @staticmethod
+    def _key_differs(toolset_id: str) -> None:
+        logger.error(
+            "MCP toolset %s: this process cannot read the toolset's stored sign-in because its encryption key differs from the key that sealed it "
+            "(PRIMER_ENCRYPTION_KEY must be the same on every API and worker process); the call fails here and the sign-in is left in place for the "
+            "processes that can read it",
+            toolset_id,
+        )
 
     async def _sign_out(self, row: McpOAuthTokenSet, reason: str) -> None:
         """Drop the tokens of ``row`` (read without a lease) with ``reason``, unless the row changed or was leased since it was read."""

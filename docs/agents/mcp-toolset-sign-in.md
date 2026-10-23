@@ -140,6 +140,10 @@ The toolset is ready for every caller once the shared status is `connected`.
 - Without `PRIMER_ENCRYPTION_KEY`, Primer warns and derives the encryption key
   from the session secret. Changing either key material makes old token rows
   unreadable and requires reconnecting.
+- A single process whose key differs from the others' (a misconfigured worker)
+  fails only its own calls as `needs_sign_in` and logs an ERROR naming the
+  toolset; it leaves the shared sign-in in place for the processes that can read
+  it. Fix that process's `PRIMER_ENCRYPTION_KEY` rather than reconnecting.
 
 ## Related
 

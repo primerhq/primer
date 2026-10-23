@@ -103,6 +103,16 @@ When `PRIMER_ENCRYPTION_KEY` is unset, Primer logs a warning and derives the key
 from the persisted session secret. Changing the active key makes existing rows
 unreadable, so every connected toolset must reconnect. Setting
 `PRIMER_ENCRYPTION_KEY` after connecting under the fallback is also a key change.
+
+A process whose key differs from the one that sealed a toolset's rows (a worker
+started without the key or with another one, a rolling deploy that introduces it)
+fails only its own calls: they answer `needs_sign_in` with the `KEY_CHANGED`
+reason, and the process logs an ERROR that names the toolset and says the
+encryption key differs. It never clears the shared tokens, so the processes that
+can open them keep using them; only an admin Disconnect or Reconnect replaces the
+row (lead ruling on audit G4-10). The status a process serves is its own view, so
+a misconfigured process reports `needs_sign_in` while the others report
+`connected`.
 The token, client, pending-sign-in, and lease rows use the same storage provider as
 the rest of the deployment, so API and worker pods observe one shared state.
 
