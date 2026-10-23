@@ -109,8 +109,8 @@ def test_a_form_is_never_rooted_at_its_page_so_the_sweep_cannot_record_the_page_
                 assert form.root in surfaces.FORM_ROOTS, (page, form.root)
 
 
-def test_a_provider_form_opens_through_the_first_kind_of_the_register_menu() -> None:
-    """The '+ Register' button opens the register overlay and picks the type with pc-register-type."""
+def test_a_provider_form_opens_directly_in_the_register_overlay() -> None:
+    """The page chooses the provider type before '+ Register' opens the overlay."""
     assert 'testid: "pc-register-open"' in CATALOG_JSX or 'data-testid="pc-register-open"' in CATALOG_JSX
     assert 'testid: "pc-register-type"' in (ROOT / "ui" / "components" / "providers" / "register-overlay.jsx").read_text(encoding="utf-8")
     registers = [(route, form) for route, forms in surfaces.LEGACY_FORMS.items() for form in forms if form.button == "+ Register"]
@@ -118,17 +118,17 @@ def test_a_provider_form_opens_through_the_first_kind_of_the_register_menu() -> 
     assert len(registers) == 9, [route for route, _ in registers]   # eight provider type pages and the Platform page
     for route, form in registers:
         assert form.root == surfaces.MODAL, (route, form)
-        assert form.then == surfaces.REGISTER_TYPE, (route, form)
+        assert form.then is None, (route, form)
     for table in (surfaces.LEGACY_FORMS, surfaces.PLATFORM_FORMS, surfaces.SYSTEM_FORMS):
         for page, forms in table.items():
             for form in forms:
                 assert form.then is None or form.button == "+ Register", (page, form)
 
 
-def test_the_artifact_storage_page_is_swept_through_its_register_menu_and_no_page_is_excused_from_one() -> None:
+def test_the_artifact_storage_page_is_swept_through_its_register_overlay_and_no_page_is_excused() -> None:
     """Round 6 of #668: GET /v1/artifact_storage_providers/_types is served since #706 (ticket 01a1214c)."""
-    assert not hasattr(surfaces, "DEAD_REGISTER_MENUS") and not hasattr(surfaces, "DEAD_MENU_TEXT"), "nothing is excused from its register menu"
-    assert surfaces.LEGACY_FORMS["providers/artifact_storage"] == [surfaces.Form("+ Register", surfaces.MODAL, surfaces.REGISTER_TYPE)]
+    assert not hasattr(surfaces, "DEAD_REGISTER_MENUS") and not hasattr(surfaces, "DEAD_MENU_TEXT"), "nothing is excused from its register overlay"
+    assert surfaces.LEGACY_FORMS["providers/artifact_storage"] == [surfaces.Form("+ Register", surfaces.MODAL)]
     assert "overlay-page providers/artifact_storage" not in surfaces.NO_FORM
     assert "overlay-page providers/artifact_storage / + Register" in surfaces.expected_surfaces(7)
     assert len(surfaces.expected_surfaces(7)) == 98

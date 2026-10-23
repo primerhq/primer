@@ -6,7 +6,7 @@ the page only enumerates the candidate controls). It visits, in one browser and 
 
 * the Studio shell, a session document with a failed turn (Retry and trace on the page), and the New session, New workspace and Activity overlays;
 * every Platform page as an overlay (the legacy routes, section by section) AND as a VIEW (``view=platform:<id>``, what every Platform nav row opens), and every System view (``view=system:<id>``);
-* for each of them, every create form it has (an explicit table of the button that opens it, and for a provider the menu item picked after it; a form that does not open FAILS, it is not skipped);
+* for each of them, every create form it has (an explicit table of the button that opens it; a form that does not open FAILS, it is not skipped);
 * the graph builder on a seeded graph with a step of each of its kinds, the JSON import and the palette;
 * the four phone tabs.
 
@@ -19,8 +19,8 @@ loading (a spinner, ``aria-busy``, text that starts Loading, Checking or Reading
 ``[role=alert]``, ``.sh-file-conflict``, ``.field-help.warn``, a red ``.nv-bind-empty``); a red span in a table row, a stuck title and an empty list that is really a failure have no shape a selector
 can know and are left to the network. The BODY of every surface (not its fixed chrome) holds at least its floor, and the numbers are printed on every run. Every wait is bounded and the bound is
 shared (``Budget``): once enough looks have used their wait up, the rest wait briefly and are noted, and the sweep has a wall-clock deadline of its own (600 s from the start of the test, seeding included: past it no wait is handed out, the next one raises an ordinary exception, so the findings are reported and the seeds deleted with a live browser); pytest-timeout stays only as the thread-method last resort above it (a signal timeout hangs Playwright's sync API). A broken install is reported, not waited out.
-Only the FIRST kind of a provider class is swept (the first item of its register menu): the fields of the other kinds (the artifact storage page builds db, so the s3 and filesystem fields are not swept) are not looked at. NOT covered (listed in ``docs/dev/subsystems/ui-pages.md``): detail pages, edit forms, the confirm host,
-menus (the provider register menu is only opened to pick from it), the command palette, the Files sidebar and terminal, the phone's drill-downs and sheets, 422 states, the row actions of a
+Only the FIRST kind of a provider class is swept: the fields of the other kinds (the artifact storage page builds db, so the s3 and filesystem fields are not swept) are not looked at. NOT covered (listed in ``docs/dev/subsystems/ui-pages.md``): detail pages, edit forms, the confirm host,
+menus, the command palette, the Files sidebar and terminal, the phone's drill-downs and sheets, 422 states, the row actions of a
 populated list, the Platform and System nav rows, the setup wizard, the controls inside a closed ``<details>``, and what Chromium cannot be asked about: controls inside iframes and shadow
 roots, and a ``div``, ``span`` or ``<a>`` without ``href`` that has only a click handler, a ``[tabindex]`` element without a role, or a dialog's own name.
 
@@ -126,10 +126,7 @@ def _sweep_forms(page: Page, sweep: Sweep, kind: str, name: str, forms: list[For
             if form.then:
                 item = page.locator(f"{form.then}").first
                 expect(item).to_be_visible(timeout=sweep.budget.wait_ms(15_000))
-                if item.evaluate("el => el.tagName === 'SELECT'"):
-                    item.select_option(index=0, timeout=sweep.budget.wait_ms(10_000))
-                else:
-                    item.click(timeout=sweep.budget.wait_ms(10_000))
+                item.click(timeout=sweep.budget.wait_ms(10_000))
             expect(page.locator(form.root).first).to_be_visible(timeout=sweep.budget.wait_ms(10_000))
         except (AssertionError, BrowserError) as exc:
             sweep.budget.spent()
