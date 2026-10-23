@@ -146,6 +146,13 @@ So the practical state in this release:
   read/write/list/move (`get_document_content`, `put_document`,
   `list_documents`, `move_document`); per-collection semantic search
   (`search_collection`) over the indexed bodies.
+- **A regex search is bounded.** `GET /v1/collections/{id}/grep` and
+  the `regex` mode of the collections `search` tool take a pattern of
+  at most 1000 characters, and one search may spend 10 seconds
+  matching. A pattern that backtracks past that (`(a|aa)+$`, `(x+)+y`)
+  is refused with an error that says so (HTTP 400, tool
+  `validation-error`): simplify it, narrow `path_prefix`, or use the
+  `literal` mode, which is a plain substring test with no length cap.
 - **Document write tools keep a document whole.**
   `system::create_document` makes an empty, readable, indexed node (the
   service assigns the id, so any `id` you send is ignored: read it from

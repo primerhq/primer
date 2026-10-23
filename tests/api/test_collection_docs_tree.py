@@ -87,6 +87,26 @@ async def test_grep_endpoint(client):
     assert r.json()["truncated"] is False
 
 
+async def test_grep_endpoint_bounds_a_catastrophic_pattern(client, monkeypatch):
+    """G6-4: GET /grep is user tier; a catastrophic pattern answers 400 with the cause, it does not hold the loop."""
+    import time
+
+    import primer.knowledge.grep as grep_module
+
+    monkeypatch.setattr(grep_module, "GREP_MATCH_SECONDS", 0.3, raising=False)
+    cid = await _mk_collection(client)
+    await client.post(f"/v1/collections/{cid}/docs",
+                      json={"parent": "", "slug": "h", "body": "a" * 36 + "!"})
+    started = time.perf_counter()
+    r = await client.get(f"/v1/collections/{cid}/grep", params={"q": r"(a|aa)+$"})
+    assert time.perf_counter() - started < 2.0
+    assert r.status_code == 400, r.text
+    assert "matching budget" in r.text
+    r = await client.get(f"/v1/collections/{cid}/grep", params={"q": "n" * 1001})
+    assert r.status_code == 400, r.text
+    assert "the limit is 1000" in r.text
+
+
 async def test_body_cap_rejected(client):
     cid = await _mk_collection(client)
     r = await client.post(
