@@ -197,6 +197,21 @@ A policy itself has no lifecycle beyond `enabled / disabled`. The
   approval that names a gate runs only that one, and one that names none,
   among several gates it cannot tell apart (a graph park from before the
   node was part of the gate's key), runs none of them.
+- **several tool calls in one round.** A model can ask for several tool
+  calls at once (one assistant message, several tool calls). They run one
+  after another, so when one of them is gated, the calls before it have
+  already run (their results are in the session's messages as it parks)
+  and the calls after it wait. Once the gate is decided (approved,
+  rejected, timed out or cancelled), the decision is applied to the gated
+  call, then the calls after it run, in their order, each like any call:
+  its own role check and its own gate. The model's next request answers
+  EVERY call of the round, once and in order. A later call that is gated
+  too, or that pauses (`ask_user`), parks the session again, and deciding
+  or answering it continues the round from there (no channel prompt is
+  sent for that later gate: it is listed with the session's pending
+  approvals). The same holds for a graph's agent node and for the agent
+  nodes of a child graph. A session parked before this behaviour existed
+  is resumed as before: only the gated call is answered.
 
 ## Pending-approval HTTP endpoints
 
