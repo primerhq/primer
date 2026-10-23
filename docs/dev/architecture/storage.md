@@ -177,11 +177,14 @@ equals a previously shipped definition (the frozen copy in
 `primer.bootstrap.seeded_agents_v1`), writes only `description`,
 `system_prompt` and `tools` through a `patch_if` guarded on the stored
 description, and names an edited row in one warning rather than
-overwriting it. `m013_approval_twin_policies.py` creates rows rather
+overwriting it. `m014_approval_twin_policies.py` creates rows rather
 than rewriting them: it seeds the approval policy of each twin of a crud
 tool that has none, copying the gate fields of its crud sibling's
-policy as stored (through a migration-local view, so a row the live
-model may reject is copied as it is).
+policy as stored when that is a plain `required` gate (through a
+migration-local view, so a row the live model may reject is copied as
+it is) and the shipped gate otherwise. Like the views, the twin table
+and the policy ids it writes are frozen inside the migration rather
+than imported from live code.
 
 ### The `document_content` table
 

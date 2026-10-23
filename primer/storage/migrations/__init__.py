@@ -63,8 +63,8 @@ from primer.storage.migrations.m012_workspace_template_snapshots import (
 from primer.storage.migrations.m013_hnsw_ef_search_default import (
     M013HnswEfSearchDefault,
 )
-from primer.storage.migrations.m013_approval_twin_policies import (
-    M013ApprovalTwinPolicies,
+from primer.storage.migrations.m014_approval_twin_policies import (
+    M014ApprovalTwinPolicies,
 )
 
 logger = logging.getLogger(__name__)
@@ -97,7 +97,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     M011SeededAgentsCoreKit(),
     M012WorkspaceTemplateSnapshots(),
     M013HnswEfSearchDefault(),
-    M013ApprovalTwinPolicies(),
+    M014ApprovalTwinPolicies(),
 )
 
 #: Highest version this build knows how to apply.

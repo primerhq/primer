@@ -81,7 +81,7 @@ CRUD_TOOL_NAMES: tuple[str, ...] = (
 # ``(toolset_id, tool_name)``, with the crud tool that makes the same write (``None`` for a delete: crud has none). The system tools share the crud
 # tools' factory and guards, and the trigger tools ARE the handlers crud re-exports, and all are role user and reachable through ``system__call_tool``
 # (every seeded agent's door), so a gate on the crud tools alone was a gate a model could walk around. ``bootstrap/seed.py`` seeds a ``required`` policy
-# for each, as it does for the crud tools; migration 13 gives an existing install each twin's policy, copied from its crud sibling's as it stands.
+# for each, as it does for the crud tools; migration 14 gives an existing install each twin's policy, copied from its crud sibling's as it stands.
 CRUD_TWINS: Mapping[tuple[str, str], str | None] = MappingProxyType({
     (SYSTEM_TOOLSET_ID, "create_agent"): "create_agent",
     (SYSTEM_TOOLSET_ID, "update_agent"): "update_agent",
