@@ -324,18 +324,15 @@ closest setting is used (its lowest effort, budget or level), and a model
 with no reasoning control (gpt-4o, an older Claude or Gemini) gets none. A
 setting never makes a call fail: when the provider still refuses it, the
 call is made again without the profile's settings, and that model is called
-without them from then on. `config.extended` holds provider-specific knobs
+without them from then on (the server log says so at WARNING, naming the
+provider, the model and the settings, until a restart or an edit of the
+provider). `config.extended` holds provider-specific knobs
 passed to the provider as-is (for example `{"top_k": 20}`); a key the
 provider adapter does not know is ignored, and a refused one is handled
 like a refused level. Two profiles on one model with different `config` are
 how the same model is offered with reasoning on and off. In an aggregated
 profile, each member's own `config` applies to the calls that member
 serves; the aggregate's own `config` is not applied.
-
-One provider-specific adjustment is visible to tool routing: real OpenAI
-Chat Completions rejects `required` or a named `tool_choice` while reasoning
-is on, so primer sends `auto` for that call. OpenAI Responses and OpenRouter
-keep the forced choice because those wires accept it with reasoning.
 
 On real OpenAI (the `openai` flavor), a reasoning model (o-series, codex,
 gpt-5 and later) refuses `temperature` and `top_p` unless its effort is

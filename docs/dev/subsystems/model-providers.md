@@ -325,7 +325,10 @@ stream-open guard's: OpenRouter's mandatory-reasoning models refuse
 `effort: "none"`, Ollama answers `think` on a model without the thinking
 capability with a 400, and a deployment name can hide an OpenAI model that
 does not reason. Each costs one failed request per process, and the model
-then runs without the setting.
+then runs without the setting: that is logged at WARNING, once, naming the
+provider, the model and the settings dropped (never their values), because
+it silently turns a profile's reasoning off for that model until the
+provider's adapter is rebuilt (a restart or an edit of the provider).
 
 **Onto the wire.** The openai SDK refuses a keyword it does not know, so a
 knob that is not one of its parameters travels in `extra_body`: `openchat`
@@ -336,12 +339,12 @@ folds `thinking_budget` or `thinking_level` into `thinking_config` (keeping
 the level when both arrive), `ollama` sends `think` at the top level and
 `anthropic` sends the `thinking` block and `output_config`.
 
-On real OpenAI Chat Completions, a non-`none` `reasoning_effort` cannot be
-combined with a forced `tool_choice`. The `openchat` adapter changes `required`
-or a named tool to `auto` and logs that adjustment once, preserving reasoning
-and allowing the call to proceed. The Responses API accepts forced tool choices
-with reasoning, and OpenRouter defines them independently of its `reasoning`
-object, so `openresponses` and `openrouter` leave the caller's choice unchanged.
+A forced `tool_choice` (`required` or a named tool) is sent as the caller
+chose it on every wire. `openchat` used to turn it into `auto` on real OpenAI
+whenever a reasoning effort was sent, on a premise no vendor source states
+(audit G2-11); no primer call site forces a choice anyway (the agent loop and
+compaction send `auto`). A refusal of a profile setting reaches the
+stream-open guard like any other.
 
 **OpenAI reasoning models: the rest of the request.** On the `openai` flavor
 of `openchat` and `openresponses`, a model whose family reasons (o-series,
