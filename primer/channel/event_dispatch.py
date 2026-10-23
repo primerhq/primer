@@ -37,6 +37,7 @@ from primer.int.storage_provider import StorageProvider
 from primer.model.channel import Channel
 from primer.model.channel_event import ChannelEvent
 from primer.model.envelope import RELAY_EVERY_TURN_KEY
+from primer.model.event_matcher import channel_event_text_budget
 from primer.model.storage import Op, OffsetPage
 from primer.model.trigger import Trigger
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
@@ -267,38 +268,41 @@ class ChannelEventRouter:
         extra_context = {"event": event_payload}
         fire_ids: list[str] = []
         mapped_session_id: str | None = None
-        for trigger in triggers:
-            try:
-                result = await self._fire_trigger(
-                    trigger_id=trigger.id,
-                    scheduled_for=None,
-                    deps=self._fire_deps,
-                    extra_context=extra_context,
-                )
-            except Exception:  # noqa: BLE001 -- isolate per-trigger failures
-                logger.exception(
-                    "channel event: fire_trigger raised for %s", trigger.id,
-                )
-                continue
-            fire_id = getattr(result, "fire_id", None)
-            if fire_id is not None:
-                fire_ids.append(fire_id)
-            # A conversation maps to exactly ONE session, so only the first
-            # created session binds the thread. An unthreaded room post has
-            # no conversation to bind at all.
-            if mapped_session_id is None and anchor and channel_id is not None:
-                created = _first_artefact(result)
-                if created is not None:
-                    await self._map_thread(
-                        channel_id=channel_id,
-                        anchor=anchor,
-                        reply_anchor=event.thread_anchor,
-                        session_id=created,
-                        interactive=bool(
-                            getattr(trigger.config, "interactive", True)
-                        ),
+        # Every trigger this event fires shares ONE text_pattern match budget
+        # (G6-5): fire_trigger reads it, so N triggers cannot multiply it.
+        with channel_event_text_budget():
+            for trigger in triggers:
+                try:
+                    result = await self._fire_trigger(
+                        trigger_id=trigger.id,
+                        scheduled_for=None,
+                        deps=self._fire_deps,
+                        extra_context=extra_context,
                     )
-                    mapped_session_id = created
+                except Exception:  # noqa: BLE001 -- isolate per-trigger failures
+                    logger.exception(
+                        "channel event: fire_trigger raised for %s", trigger.id,
+                    )
+                    continue
+                fire_id = getattr(result, "fire_id", None)
+                if fire_id is not None:
+                    fire_ids.append(fire_id)
+                # A conversation maps to exactly ONE session, so only the first
+                # created session binds the thread. An unthreaded room post has
+                # no conversation to bind at all.
+                if mapped_session_id is None and anchor and channel_id is not None:
+                    created = _first_artefact(result)
+                    if created is not None:
+                        await self._map_thread(
+                            channel_id=channel_id,
+                            anchor=anchor,
+                            reply_anchor=event.thread_anchor,
+                            session_id=created,
+                            interactive=bool(
+                                getattr(trigger.config, "interactive", True)
+                            ),
+                        )
+                        mapped_session_id = created
         if fire_ids:
             return ChannelRouteOutcome(
                 kind="fired",
