@@ -694,7 +694,7 @@ class _BaseGraphExecutor(
                     return
                 if entry.row_call_id is not None:
                     yield self._toolcall_answer_event(entry.node_id, context, entry.row_call_id, result)
-                mapped = _map_toolcall_result(
+                mapped = await _map_toolcall_result(
                     result, output_schema=node_def.output_schema
                 )
                 if mapped.error_code is not None:
@@ -867,7 +867,7 @@ class _BaseGraphExecutor(
             # Map the result through the same path as the normal
             # _stream_node ToolCall handler so schema-validation failures
             # surface consistently.
-            mapped = _map_toolcall_result(
+            mapped = await _map_toolcall_result(
                 result, output_schema=node_def.output_schema
             )
             if mapped.error_code is not None:

@@ -264,7 +264,12 @@ fields, and use full Jinja, graphs go well beyond linear chains:
 - **Multi-source join** - one node fusing outputs from several
   ancestors in its template.
 - **Validation gates** - `output_schema` on end/tool_call/fan_in to
-  guarantee a conforming output.
+  guarantee a conforming output. A `pattern` (or `patternProperties`
+  key) in it is at most 1000 characters, and one validation may spend
+  1 second matching them: a pattern that backtracks past that, such as
+  `(a|aa)+$` on a long value, fails the node with its usual code
+  (`end_output_invalid` or `tool_output_invalid`) and a message that
+  names the budget.
 
 Nodes also share one workspace, so they can coordinate via files (one
 node writes, a later node reads) in addition to template data-flow.
