@@ -51,7 +51,13 @@ from primer.model.workspace_session import WorkspaceSession
 from primer.tap.cursor import TapCursor
 from primer.tap.event import TapEvent
 from primer.tap.reader import read_session_since
-from primer.tap.selector import TapSelector, session_predicate_for_storage
+from primer.tap.selector import (
+    TapSelector,
+    TapSelectorError,
+    TapSelectorTimeout,
+    check_selector,
+    session_predicate_for_storage,
+)
 
 if TYPE_CHECKING:
     from primer.tap.router import WorkspaceTapRouter
@@ -72,6 +78,23 @@ _ID_FIELD = "id"
 
 
 def _decode_selector(raw: str | None) -> TapSelector:
+    """Decode the ``?selector=`` parameter and check its LIKE patterns (G6-4); either failure is a 400."""
+    selector = _parse_selector(raw)
+    try:
+        check_selector(selector)
+    except TapSelectorError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "type": "/errors/invalid-selector",
+                "title": "Unusable tap selector",
+                "detail": str(exc),
+            },
+        ) from None
+    return selector
+
+
+def _parse_selector(raw: str | None) -> TapSelector:
     """Decode the ``?selector=`` parameter into a :class:`TapSelector`.
 
     Accepts either raw JSON or a base64url-encoded JSON blob (padding
@@ -184,6 +207,11 @@ def _frame(event: TapEvent) -> str:
     return f"id: {event.cursor}\ndata: {data}\n\n"
 
 
+def _error_frame(type_: str, detail: str) -> str:
+    """A named ``error`` SSE event (no ``id:``: it never moves the cursor)."""
+    return f"event: error\ndata: {json.dumps({'type': type_, 'detail': detail})}\n\n"
+
+
 def _delta_frame(frame: dict) -> str:
     """Render one ephemeral delta frame as a bare SSE ``data:`` line.
 
@@ -278,14 +306,21 @@ async def _stream_tap(
                 entry = in_scope[sid]
 
             row, byte_offset = entry
-            events, next_offset = await read_session_since(
-                workspace_io,
-                workspace_id=workspace_id,
-                session=row,
-                after_seq=cursor.resume_seq(sid),
-                selector=selector,
-                from_offset=byte_offset,
-            )
+            try:
+                events, next_offset = await read_session_since(
+                    workspace_io,
+                    workspace_id=workspace_id,
+                    session=row,
+                    after_seq=cursor.resume_seq(sid),
+                    selector=selector,
+                    from_offset=byte_offset,
+                )
+            except TapSelectorTimeout as exc:
+                # The selector's LIKE patterns ran out of one read's time
+                # budget (G6-4): say so in a named error frame and end the
+                # stream, rather than dropping events silently or crashing.
+                yield _error_frame("/errors/selector-timeout", str(exc))
+                return
             in_scope[sid] = (row, next_offset)
 
             for ev in events:
