@@ -47,7 +47,9 @@ class _WikiSearchArgs(BaseModel):
     path_prefix: str | None = Field(
         default=None,
         description="Restrict hits to paths under this prefix (e.g. "
-        "start-here/).",
+        "start-here/). The live map under this-install/ is excluded by "
+        "default; pass 'this-install' (or a sub-prefix such as "
+        "'this-install/agents/') to search it.",
     )
     limit: int = Field(default=10, ge=1, le=50)
 
@@ -227,9 +229,11 @@ def _wiki_search_tool(
                 "Use when you need to find a wiki page by its content (auto, "
                 "fulltext or semantic) or an exact substring (literal), "
                 "optionally restricted to a path prefix. Only the system "
-                "collection is searched; the collections search result passes "
-                "through unchanged (hits with path, excerpt and score, the "
-                "mode used, and its own errors)."
+                "collection is searched; the live map under this-install/ is "
+                "excluded by default and included only when path_prefix is "
+                "'this-install' (or a path under this-install/). Returns hits "
+                "with path, excerpt and score, the mode used, and any search "
+                "errors."
             ),
             args_schema=_WikiSearchArgs.model_json_schema(),
             examples=[

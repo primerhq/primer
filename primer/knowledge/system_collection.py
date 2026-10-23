@@ -699,8 +699,9 @@ async def _prune_wiki(
 ) -> int:
     """Every node outside this-install/ that the build no longer holds.
 
-    Only a won claim calls this: a build that may not replace the wiki may
-    not delete its pages either (the old layout outlives a degraded build).
+    Called after a won claim and on a ``same`` decision behind ``still_mine``:
+    a build that may not replace the wiki may not delete its pages either
+    (the old layout outlives a degraded build).
     """
     deleted = 0
     try:

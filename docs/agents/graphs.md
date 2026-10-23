@@ -67,7 +67,7 @@ graph terminates when an `end` node fires or no ready nodes remain.
 ## Mental model
 
 A `Graph` row carries:
-- `id`, `description` (embedded for `search::search_graphs`).
+- `id`, `description` (embedded for `search::search_graphs`). A new graph's `id` is optional (omitted, the server generates `graph-<hex>`); when supplied on create it must match `[a-z0-9._-]+` and not be `.` or `..` (refused with 422 at `body.id`, error type `graph_id_invalid` over REST, and `type=validation-error` from `create_graph`). Immutable after creation.
 - `nodes` - list of node configs (a discriminated union on `kind`).
 - `edges` - list of edge configs connecting nodes (static or
   conditional).
@@ -297,7 +297,9 @@ reachable from `begin`.
 - `system::get_graph` - fetch the full row.
 - `system::create_graph` - body `{"entity": {...}}` with optional
   `id`, `description`, `nodes`, `edges`, `max_iterations`. Omit `id`
-  and the server assigns `graph-<hex>`; supply one to use it verbatim.
+  and the server assigns `graph-<hex>`; supply a valid slug (`[a-z0-9._-]+`,
+  not `.` or `..`) to use it verbatim (anything else is refused on create with
+  `graph_id_invalid` / `type=validation-error`).
   Immutable after creation.
 - `system::update_graph` - replace the row.
 - `system::delete_graph` - refused with a `conflict` error (`in_use_by`,

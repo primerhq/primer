@@ -38,6 +38,7 @@ These are core-kit tools, called directly by their scoped id (not through call_t
 ## Gotchas
 - A path is a slug path: `start-here/reading-this-wiki`, not the file's `.md` and not a URL.
 - `system__wiki_search` defaults to `mode: auto`; on a collection whose semantic indexing failed it falls back to fulltext and says so in the result. It does not invent hits.
+- `system__wiki_search` excludes the live install map under `this-install/` by default so user-supplied descriptions do not crowd out platform reference pages; pass `path_prefix: "this-install"` (or a sub-prefix such as `"this-install/agents/"`) to search the live map.
 - The generated reference pages are rebuilt from the code at boot: a page that disagrees with the live schema is a stale install, not a stale page.
 
 ## Related
