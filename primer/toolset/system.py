@@ -139,7 +139,12 @@ from primer.model.workspace import (
 )
 from primer.model.yield_ import ToolContext, Yielded
 from primer.toolset._system_guards import AGENT_GUARDS, GRAPH_GUARDS, CrudGuards, ToolReference, toolset_guards
-from primer.artifact.checks import ARTIFACT_DEFAULT_WRITE_NOTE, check_artifact_provider_delete, check_artifact_provider_write
+from primer.artifact.checks import (
+    ARTIFACT_DEFAULT_WRITE_NOTE,
+    check_artifact_provider_delete,
+    check_artifact_provider_update,
+    check_artifact_provider_write,
+)
 from primer.channel.checks import check_channel_on_create, check_channel_on_update
 from primer.model_profile.checks import check_profile_on_create, check_profile_on_update
 from primer.knowledge.checks import check_collection_system_flag
@@ -409,8 +414,8 @@ def build_system_toolset(
         check_artifact_provider_write(entity)
 
     async def _artifact_provider_pre_update(entity: ArtifactStorageProvider, existing: ArtifactStorageProvider) -> None:
-        del existing  # the body id equals the stored id here, and the rule reads only the kind being written
         check_artifact_provider_write(entity)
+        await check_artifact_provider_update(storage_provider, entity, existing)
 
     pre_checks_by_label: dict[str, tuple[Any, Any]] = {
         "collection": (_collection_pre_create, _collection_pre_update),

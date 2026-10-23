@@ -1,6 +1,7 @@
 """System tools for artifact-storage probes and active-store operations."""
 
 from primer.mcp.safety import is_exposable
+from primer.model.artifact import ArtifactLocation
 from primer.model.provider import ArtifactStorageProvider
 from tests.toolset.test_system_crud_guards import _call, world  # noqa: F401
 
@@ -76,3 +77,35 @@ async def test_the_active_store_cannot_be_deleted_by_a_tool(world) -> None:
 
     assert is_error
     assert answer["type"] == "conflict"
+
+
+async def test_a_tool_cannot_delete_or_move_a_store_that_holds_artifacts(world, tmp_path) -> None:
+    sp, toolset, _ = world
+    row = ArtifactStorageProvider(
+        id="fs-held",
+        provider="filesystem",
+        config={"root": str(tmp_path / "a")},
+    )
+    await sp.get_storage(ArtifactStorageProvider).create(row)
+    await sp.get_storage(ArtifactLocation).create(
+        ArtifactLocation(id="artifact-held", provider_id="fs-held"),
+    )
+
+    delete_error, delete_answer = await _call(
+        toolset,
+        "delete_artifact_storage_provider",
+        id="fs-held",
+    )
+    moved = row.model_dump(mode="json")
+    moved["config"]["root"] = str(tmp_path / "b")
+    update_error, update_answer = await _call(
+        toolset,
+        "update_artifact_storage_provider",
+        id="fs-held",
+        entity=moved,
+    )
+
+    assert delete_error and delete_answer["type"] == "conflict"
+    assert "1 artifact(s)" in delete_answer["message"]
+    assert update_error and update_answer["type"] == "conflict"
+    assert update_answer["message"].startswith("config.root: ")

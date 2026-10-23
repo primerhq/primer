@@ -22,7 +22,7 @@ from primer.api.routers._crud import make_crud_router
 from primer.api.routers._probe_text import draft_error
 from primer.api.routers.providers import _form_field
 from primer.artifact.active import read_active_artifact_store, set_active_artifact_store
-from primer.artifact.checks import check_artifact_provider_delete, check_artifact_provider_write
+from primer.artifact.checks import check_artifact_provider_delete, check_artifact_provider_update, check_artifact_provider_write
 from primer.artifact.probe import probe_artifact_provider
 from primer.common.entity_checks import EntityCheckError
 from primer.model.common import preserve_masked_secrets
@@ -61,6 +61,10 @@ async def _pre_update(entity: ArtifactStorageProvider, existing: ArtifactStorage
     """Restore masked secrets, then refuse a write that leaves the reserved default naming a kind the factory cannot build."""
     preserve_masked_secrets(entity, existing)
     _refuse_an_unbuildable_default(entity)
+    try:
+        await check_artifact_provider_update(request.app.state.storage_provider, entity, existing)
+    except EntityCheckError as exc:
+        _raise_check(exc, kind="artifact_storage_provider")
 
 
 async def _reject_reserved_delete(entity_id: str, request: Request) -> None:
@@ -211,6 +215,7 @@ artifact_storage_router = make_crud_router(
     on_pre_delete=_pre_delete,
     on_pre_delete_id=_reject_reserved_delete,
     extra_delete_responses=common_responses(403, 409),
+    extra_update_responses=common_responses(409, 422),
 )
 
 
