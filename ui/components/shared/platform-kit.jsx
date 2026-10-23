@@ -188,6 +188,7 @@ function PK_CardMenu(props) {
 // then the title, the type line and one to three facts, left-aligned; Open at the bottom. The card div has no click of its own: the Open button
 // is stretched over the whole card (.pk-card-open::after), so a click anywhere on it opens it and a keyboard user reaches it by Tab, and the
 // menu and an actionable status sit above the stretch. A status with onClick is a button named by its label (seam I-8); without one it is text.
+// A status's `title`, when it has one, is its tooltip (why a toolset is unreachable).
 // A fact is a string (one line) or a [key, value] pair. The title is cut with an ellipsis when it is long, and the stretched Open covers it, so
 // the card's full name rides on the Open button as its `title` (a tooltip over the whole card).
 function PK_Card(props) {
@@ -211,9 +212,9 @@ function PK_Card(props) {
         {props.badge ? <span className="pk-card-badge" data-testid={"pk-card-badge:" + id}>{props.badge}</span> : null}
         {status && typeof status.onClick === "function" ? (
           <button type="button" className="pk-card-status pk-card-status-btn" data-tone={status.tone} data-testid={statusId}
-            onClick={function (ev) { PK_stop(ev); status.onClick(); }}>{status.label}</button>
+            title={status.title || undefined} onClick={function (ev) { PK_stop(ev); status.onClick(); }}>{status.label}</button>
         ) : status ? (
-          <span className="pk-card-status" data-tone={status.tone} data-testid={statusId}>{status.label}</span>
+          <span className="pk-card-status" data-tone={status.tone} data-testid={statusId} title={status.title || undefined}>{status.label}</span>
         ) : null}
         {menu ? <PK_CardMenu id={id} title={props.title} items={menu} /> : null}
       </div>

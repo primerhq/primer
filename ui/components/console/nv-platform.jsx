@@ -343,7 +343,7 @@ function NV_platFilterText(vm) {
 // Per-entity page config. list() returns a promise of {items}; card(row, con)
 // maps a row to the ONE card view model of every Platform page (seam I-8):
 //   { id, name, sub, badge?, icon?: { path, tone? }, status?: { label, tone:
-//     "ok"|"warn"|"error"|"muted", onClick?, testid? }, facts }
+//     "ok"|"warn"|"error"|"muted", onClick?, testid?, title? }, facts }
 // id is the record id (the scoped id for a tool); badge is a short neutral
 // word ("built in", a backend kind); facts holds strings and [key, value]
 // pairs, and the null NV_fact answers for a missing value, which every
