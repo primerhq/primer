@@ -420,7 +420,6 @@ from pydantic import BaseModel as PydanticBaseModel
 from primer.llm.openchat import (
     _build_sampling_params,
     _extract_extended_kwargs,
-    _fit_reasoning_sampling,
     _response_format_to_param,
 )
 
@@ -456,22 +455,6 @@ class TestSampling:
         assert _build_sampling_params(
             temperature=None, top_p=None, max_output_tokens=None, stop=None,
         ) == {}
-
-    def test_reasoning_fit_drops_top_k_and_logs_once(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        caplog.set_level(logging.DEBUG, logger="primer.llm.openchat")
-        for _ in range(2):
-            request = {"reasoning_effort": "low", "top_k": 20}
-            _fit_reasoning_sampling(
-                request,
-                flavor=OpenChatFlavor.OPENAI,
-                provider_id="sampling-unit",
-                model="o3",
-            )
-            assert "top_k" not in request
-        hits = [r for r in caplog.records if "top_k" in r.getMessage()]
-        assert len(hits) == 1
 
 
 class TestExtendedKwargs:
@@ -1103,11 +1086,7 @@ class TestStream:
             temperature=0.0,
             top_p=0.9,
             extended=llm.profile_extended(
-                ModelProfileConfig(
-                    reasoning=ReasoningLevel.LOW,
-                    extended={"top_k": 20},
-                ),
-                model="o3",
+                ModelProfileConfig(reasoning=ReasoningLevel.LOW), model="o3"
             ),
         ):
             pass
@@ -1116,7 +1095,6 @@ class TestStream:
         assert kwargs["reasoning_effort"] == "low"
         assert "temperature" not in kwargs
         assert "top_p" not in kwargs
-        assert "top_k" not in kwargs
 
     async def test_openai_reasoning_off_keeps_sampling_knobs(
         self, monkeypatch: pytest.MonkeyPatch
