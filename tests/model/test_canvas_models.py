@@ -33,8 +33,8 @@ from primer.tap.event import TapEventClass
 
 def test_settings_defaults_are_the_designs():
     s = CanvasSettings(id=CANVAS_SETTINGS_ID)
-    assert (s.media_policy, s.strict_mode, s.max_elements, s.max_html_bytes, s.max_canvas_bytes, s.max_events,
-            s.max_waking_events_per_minute) == ("any-https", False, 200, 65536, 524288, 100, 10)
+    assert (s.agent_tools_enabled, s.media_policy, s.strict_mode, s.max_elements, s.max_html_bytes, s.max_canvas_bytes,
+            s.max_events, s.max_waking_events_per_minute) == (False, "any-https", False, 200, 65536, 524288, 100, 10)
     assert s.media_allowlist == []
 
 

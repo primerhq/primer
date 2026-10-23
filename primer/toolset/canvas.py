@@ -540,8 +540,8 @@ def build_canvas_toolset(
                     "Link(label, href), Html(html, height?); every element also takes hidden and disabled. Ids are lowercase letters, "
                     "digits and _; root is a Column that always exists and every element must be reachable from it. Arguments go in "
                     "signature order; after one you skip, use name=value. Strings use double quotes; Html may use \"\"\"triple "
-                    "quotes\"\"\". src is an https URL, file:<workspace path> or a small data: URI. A Button click wakes you with a "
-                    "<canvas_event> message; a Select change does not unless wake=true. If any line is wrong nothing is applied and "
+                    "quotes\"\"\". src is an https URL, file:<workspace path> or a small data: URI. A Button click wakes canvas_wait; "
+                    "a Select change does not unless wake=true. If any line is wrong nothing is applied and "
                     "every error names its line and the expected signature: fix those lines and resend."
                 ),
                 args_schema=_CanvasApplyArgs.model_json_schema(),

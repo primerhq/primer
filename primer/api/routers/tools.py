@@ -115,7 +115,12 @@ async def list_tools(
             )
 
     # 1. Built-in toolsets (resolved by the registry without a row).
+    from primer.api.routers.providers import _canvas_tools_on
+
+    canvas_on = await _canvas_tools_on(storage_provider)
     for tid in _BUILTIN_TOOLSET_IDS:
+        if tid == "canvas" and not canvas_on:
+            continue
         await _emit(tid)
 
     # 2. User-defined Toolset rows. Page so the catalogue scales beyond

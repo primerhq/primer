@@ -99,6 +99,11 @@ def reserved_provider_registry(fake_storage_provider) -> ProviderRegistry:
 
     canvas_toolset = build_canvas_toolset(storage_provider=fake_storage_provider)
     registry._canvas_toolset_provider = canvas_toolset  # noqa: SLF001
+    from primer.model.canvas import CANVAS_SETTINGS_ID, CanvasSettings
+
+    fake_storage_provider.get_storage(CanvasSettings)._data[CANVAS_SETTINGS_ID] = CanvasSettings(  # noqa: SLF001
+        id=CANVAS_SETTINGS_ID, agent_tools_enabled=True,
+    )
 
     # search.py only needs a subsystem for its handlers (call()); list_tools()
     # never touches it, so a bare mock is a faithful stand-in here.

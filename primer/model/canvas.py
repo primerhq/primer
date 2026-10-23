@@ -56,6 +56,10 @@ _MAX_ALLOWLIST_HOSTS = 100
 class CanvasSettings(Identifiable):
     """What an operator can tune about every canvas, stored as one row at ``CANVAS_SETTINGS_ID``."""
 
+    agent_tools_enabled: bool = Field(
+        default=False,
+        description="Whether the canvas toolset is exposed to agents and the tool catalogue.",
+    )
     media_policy: MediaPolicy = Field(
         default="any-https",
         description="Where a canvas may load external images and audio from: any https host, only the allowlist, or nowhere.",

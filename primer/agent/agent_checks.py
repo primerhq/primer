@@ -83,12 +83,18 @@ def _resolved_toolset_id(tool_id: str) -> str:
     return canonical_toolset_id(toolset_id_of(tool_id))
 
 
-async def missing_toolset_ids(tool_ids: Iterable[str], *, toolsets: "Storage[Toolset]") -> list[str]:
+async def missing_toolset_ids(
+    tool_ids: Iterable[str],
+    *,
+    toolsets: "Storage[Toolset]",
+    storage_provider: "StorageProvider | None" = None,
+) -> list[str]:
     """The toolsets the tool ids name that resolve to nothing, sorted and each once (a retired alias is reported under its current id).
 
     One resolution for the pre-write checks and ``GET /v1/agents/{id}/status``, so they cannot disagree about what is dangling.
     """
     from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
+    from primer.canvas.settings import read_canvas_settings
 
     seen: set[str] = set()
     missing: set[str] = set()
@@ -97,6 +103,11 @@ async def missing_toolset_ids(tool_ids: Iterable[str], *, toolsets: "Storage[Too
         if toolset_id in seen:
             continue
         seen.add(toolset_id)
+        if toolset_id == "canvas":
+            if storage_provider is not None and (await read_canvas_settings(storage_provider)).agent_tools_enabled:
+                continue
+            missing.add(toolset_id)
+            continue
         if toolset_id in RESERVED_TOOLSET_IDS:
             continue
         if await toolsets.get(toolset_id) is None:
@@ -154,7 +165,9 @@ async def check_toolsets_exist(
         # A tool id of a toolset the stored agent already names is not new, whether or not that toolset still exists.
         already = {_resolved_toolset_id(t) for t in existing.tools}
         tool_ids = [t for t in tool_ids if _resolved_toolset_id(t) not in already]
-    missing = await missing_toolset_ids(tool_ids, toolsets=storage_provider.get_storage(Toolset))
+    missing = await missing_toolset_ids(
+        tool_ids, toolsets=storage_provider.get_storage(Toolset), storage_provider=storage_provider,
+    )
     if missing:
         names = ", ".join(repr(toolset_id) for toolset_id in missing)
         raise _refuse(

@@ -7,8 +7,8 @@ import pytest
 from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
 from primer.api.routers import providers
 
-# The built-in toolsets an agent can bind, in catalogue order (platform revamp, design section 11; pivot P5 adds the reserved canvas toolset, design 8.3).
-BUILTIN_IDS = ["system", "workspaces", "collections", "misc", "web", "harness", "trigger", "workspace_ext", "crud", "canvas"]
+# The built-in toolsets an agent can bind by default, in catalogue order (platform revamp, design section 11; pivot P5's canvas toolset is behind CanvasSettings.agent_tools_enabled, default false).
+BUILTIN_IDS = ["system", "workspaces", "collections", "misc", "web", "harness", "trigger", "workspace_ext", "crud"]
 
 
 @pytest.mark.asyncio
@@ -127,6 +127,8 @@ def test_the_catalogue_is_exactly_the_reserved_toolset_ids():
 @pytest.mark.asyncio
 async def test_every_catalogue_id_resolves_through_get_toolset_without_storage(fake_storage_provider):
     from primer.api.registries import ProviderRegistry
+    from primer.canvas.settings import write_canvas_settings
+    from primer.model.canvas import CANVAS_SETTINGS_ID, CanvasSettings
     from primer.model.except_ import NotFoundError
 
     built_in = {spec["id"]: object() for spec in providers._BUILTIN_TOOLSETS}
@@ -136,6 +138,9 @@ async def test_every_catalogue_id_resolves_through_get_toolset_without_storage(f
         cross_encoder_factory=lambda p: object(), toolset_factory=lambda t: object(),
         **{f"{tid}_toolset_provider": provider for tid, provider in built_in.items()},
     )
+    with pytest.raises(NotFoundError):
+        await registry.get_toolset("canvas")
+    await write_canvas_settings(fake_storage_provider, CanvasSettings(id=CANVAS_SETTINGS_ID, agent_tools_enabled=True))
     for tid, provider in built_in.items():
         assert await registry.get_toolset(tid) is provider, tid
     with pytest.raises(NotFoundError):
