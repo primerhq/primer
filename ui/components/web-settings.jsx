@@ -495,3 +495,224 @@ function WEB_ActiveConfigSection(props) {
     </PK_Section>
   );
 }
+
+function WEB_useKind(kind, enabled) {
+  var k = WEB_KINDS[kind];
+  var activeKey = enabled ? ("web:" + kind + ":active") : null;
+  var listKey = enabled ? ("web:" + kind + ":providers") : null;
+  var activeFetcher = function () {
+    return window.primerApi.apiFetch("GET", k.activePath);
+  };
+  var listFetcher = function () {
+    return window.primerApi.apiFetch("GET", k.listPath);
+  };
+  var activeRes = window.primerApi.useResource(activeKey, activeFetcher, { pollMs: 0 });
+  var providersRes = window.primerApi.useResource(listKey, listFetcher, { pollMs: 0 });
+  return { active: activeRes, providers: providersRes };
+}
+
+function WEB_fetcherCard(row, config) {
+  var title = row.id;
+  var subtitle = WEB_typeLabel("fetch", row.provider_type || (row.config && row.config.type));
+  var badge = row.id === "local" ? "built in" : undefined;
+  var icon = {
+    path: "M7 1.5a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11Z M1.5 7h11 M7 1.5c2.4 2.6 2.4 8.4 0 11-2.4-2.6-2.4-8.4 0-11",
+    tone: "var(--blue)",
+  };
+  var facts = [];
+  if (row.id === "local") {
+    facts.push("Fetches pages directly; no key");
+  } else if (row.provider_type === "jina" || (row.config && row.config.type === "jina")) {
+    if (row.config && row.config.api_key && String(row.config.api_key).trim() !== "") {
+      facts.push("Key set");
+    } else {
+      facts.push("No key (rate-limited)");
+    }
+  } else {
+    if (row.config && row.config.api_key && String(row.config.api_key).trim() !== "") {
+      facts.push("Key set");
+    }
+  }
+
+  if (config) {
+    if (config.mode === "single" && config.provider_id === row.id) {
+      facts.push("Default fetcher");
+    } else if (config.mode === "aggregated" && Array.isArray(config.provider_ids)) {
+      var idx = config.provider_ids.indexOf(row.id);
+      if (idx >= 0) {
+        facts.push("Fetch order: " + (idx + 1) + " of " + config.provider_ids.length);
+      }
+    }
+  }
+
+  return {
+    id: row.id,
+    icon: icon,
+    badge: badge,
+    title: title,
+    subtitle: subtitle,
+    facts: facts,
+  };
+}
+
+function WEB_countText(shown, total) {
+  var noun = total === 1 ? "fetcher" : "fetchers";
+  if (shown !== total) {
+    return shown + " of " + total + " " + noun;
+  }
+  return total + " " + noun;
+}
+
+function WEB_emptyText(q, total) {
+  if (q && String(q).trim() && total > 0) {
+    return 'No fetchers match "' + q + '".';
+  }
+  return "No fetchers yet.";
+}
+
+function WEB_SettingsPage() {
+  var con = (typeof NV_useConsole === "function") ? NV_useConsole() : { role: "admin", goView: function () {} };
+  var isAdmin = con && con.role === "admin";
+  var viewport = (window.primerApi && typeof window.primerApi.useViewport === "function")
+    ? window.primerApi.useViewport()
+    : { isMobile: false };
+  var isMobile = !!(viewport && viewport.isMobile);
+
+  var searchRes = WEB_useKind("search", isAdmin);
+  var fetchRes = WEB_useKind("fetch", isAdmin);
+
+  var fetchProviders = (fetchRes.providers && fetchRes.providers.data)
+    ? (Array.isArray(fetchRes.providers.data) ? fetchRes.providers.data : (fetchRes.providers.data.items || []))
+    : [];
+  var sortedFetchers = WEB_sortProviders("fetch", fetchProviders);
+
+  var pf = PK_usePagedFilter(sortedFetchers, {
+    pageSize: 12,
+    text: function (row) {
+      return row.id + " " + WEB_typeLabel("fetch", row.provider_type || (row.config && row.config.type));
+    },
+  });
+
+  var [overlayRow, setOverlayRow] = React.useState(null);
+  var [overlayOpen, setOverlayOpen] = React.useState(false);
+
+  if (!isAdmin) {
+    return (
+      <div data-testid="web-admin-only">
+        <Banner
+          kind="info"
+          title="Web settings need the admin role"
+          detail="An admin chooses which providers answer web searches and page fetches."
+        />
+      </div>
+    );
+  }
+
+  var RegisterOverlay = window.PC_RegisterOverlay;
+  var hasOverlay = typeof RegisterOverlay === "function";
+
+  function closeOverlay() {
+    setOverlayOpen(false);
+    setOverlayRow(null);
+    if (fetchRes.providers && typeof fetchRes.providers.refetch === "function") {
+      fetchRes.providers.refetch();
+    }
+    if (fetchRes.active && typeof fetchRes.active.refetch === "function") {
+      fetchRes.active.refetch();
+    }
+  }
+
+  var headerAction = hasOverlay ? {
+    label: "+ Fetcher",
+    onClick: function () {
+      setOverlayRow(null);
+      setOverlayOpen(true);
+    },
+    testid: "web-add-fetcher",
+  } : null;
+
+  var fetchCfg = (fetchRes.active && fetchRes.active.data && fetchRes.active.data.config)
+    ? fetchRes.active.data.config
+    : (fetchRes.active && fetchRes.active.data);
+
+  var sectionCols = isMobile ? 1 : 2;
+
+  return (
+    <div className="col" data-testid="web-page" style={{ gap: 16 }}>
+      <PK_PageHeader
+        title="Web"
+        count={WEB_countText(pf.total, sortedFetchers.length)}
+        filter={{
+          value: pf.q,
+          onChange: pf.setQ,
+          label: "Filter fetchers",
+          testid: "web-fetcher-filter",
+        }}
+        pager={{
+          page: pf.page,
+          pages: pf.pages,
+          from: pf.from,
+          to: pf.to,
+          total: pf.total,
+          onPage: pf.setPage,
+        }}
+        action={headerAction}
+      />
+      <WEB_ActiveConfigSection
+        kind="search"
+        active={searchRes.active}
+        providers={searchRes.providers}
+        cols={sectionCols}
+        onManageProviders={function () {
+          con.goView("platform", "providers", "web_search");
+        }}
+      />
+      <WEB_ActiveConfigSection
+        kind="fetch"
+        active={fetchRes.active}
+        providers={fetchRes.providers}
+        cols={sectionCols}
+      >
+        <div style={{ marginTop: 16 }}>
+          <PK_CardGrid testid="web-fetchers">
+            {pf.visible.length === 0 ? (
+              <div className="muted" data-testid="web-fetchers-empty">
+                {WEB_emptyText(pf.q, sortedFetchers.length)}
+              </div>
+            ) : (
+              pf.visible.map(function (row) {
+                var card = WEB_fetcherCard(row, fetchCfg);
+                return (
+                  <PK_Card
+                    key={row.id}
+                    id={row.id}
+                    icon={card.icon}
+                    badge={card.badge}
+                    title={card.title}
+                    subtitle={card.subtitle}
+                    facts={card.facts}
+                    onOpen={function () {
+                      setOverlayRow(row);
+                      setOverlayOpen(true);
+                    }}
+                  />
+                );
+              })
+            )}
+          </PK_CardGrid>
+        </div>
+      </WEB_ActiveConfigSection>
+      {overlayOpen && hasOverlay ? (
+        <RegisterOverlay
+          initialClass="web_fetch"
+          allowedClasses={["web_fetch"]}
+          editRow={overlayRow || undefined}
+          onClose={closeOverlay}
+          onSaved={closeOverlay}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+window.WEB_SettingsPage = WEB_SettingsPage;
