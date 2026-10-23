@@ -108,6 +108,11 @@ class TestOpenChat:
             "reasoning_effort": "low",
         }
 
+    def test_ollama_uses_reasoning_effort_with_none_for_off(self) -> None:
+        """Audit G2-12: Ollama's /v1 reads reasoning_effort ("none" turns thinking off), not chat_template_kwargs."""
+        assert openchat_extended(_cfg(ReasoningLevel.OFF), flavor="ollama") == {"reasoning_effort": "none"}
+        assert openchat_extended(_cfg(ReasoningLevel.HIGH), flavor="ollama") == {"reasoning_effort": "high"}
+
 
 class TestAnthropic:
     """The shape is the model's; the per-family table is pinned in

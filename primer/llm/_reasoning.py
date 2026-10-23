@@ -332,6 +332,18 @@ def openresponses_extended(
     return _openai_effort(config, model)
 
 
+# Ollama's OpenAI-compatible /v1 reads ``reasoning_effort`` (its docs: "reasoning_effort and reasoning.effort control model
+# thinking"; a boolean-only thinking model maps the recognised efforts to on "while "none" requests false", and GPT-OSS takes
+# "none" as no thinking output). It does not read ``chat_template_kwargs``.
+_OLLAMA_COMPAT_EFFORT: dict[ReasoningLevel, str] = {
+    ReasoningLevel.OFF: "none",
+    ReasoningLevel.MINIMAL: "minimal",
+    ReasoningLevel.LOW: "low",
+    ReasoningLevel.MEDIUM: "medium",
+    ReasoningLevel.HIGH: "high",
+}
+
+
 def openchat_extended(
     config: ModelProfileConfig, *, flavor: str | None = None, model: str | None = None,
 ) -> dict[str, Any]:
@@ -342,6 +354,10 @@ def openchat_extended(
     false the response carries ``reasoning: null`` and real content; without
     it, reasoning is emitted and ``content`` is null.
 
+    Ollama's ``/v1`` takes ``reasoning_effort`` instead, ``none`` turning
+    thinking off (:data:`_OLLAMA_COMPAT_EFFORT`, audit G2-12): it ignores
+    ``chat_template_kwargs``, so a profile set to off kept thinking on.
+
     Real OpenAI on this wire takes ``reasoning_effort``, with the value the
     model takes, and none for a model that does not reason (see
     :func:`_openai_effort`).
@@ -349,7 +365,9 @@ def openchat_extended(
     level = config.reasoning
     if level is None:
         return dict(config.extended or {})
-    if flavor in ("vllm", "ollama", "lmstudio", "other"):
+    if flavor == "ollama":
+        return _merge(config, {"reasoning_effort": _OLLAMA_COMPAT_EFFORT[level]})
+    if flavor in ("vllm", "lmstudio", "other"):
         return _merge(config, {
             "chat_template_kwargs": {
                 "enable_thinking": level is not ReasoningLevel.OFF,
@@ -590,7 +608,8 @@ def profile_extended(
 # something else is never retried (OpenAI's moderation text links to its
 # reasoning guide, and a seed-only profile is not a thinking setting).
 _SETTING_WORDS: dict[str, tuple[str, ...]] = {
-    "reasoning_effort": ("reasoning.effort",),
+    # Ollama refuses a thinking setting for a model without the capability as "<model> does not support thinking".
+    "reasoning_effort": ("reasoning.effort", "does not support thinking"),
     "thinking": ("budget_tokens",),
     "output_config": ("output_config.effort", "effort"),
     "thinking_budget": ("thinking_config", "budget", "thinking mode", "thinking"),

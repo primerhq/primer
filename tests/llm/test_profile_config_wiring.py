@@ -100,14 +100,23 @@ class TestEachAdapterTranslatesForItsOwnWire:
         assert llm.profile_extended(_cfg(ReasoningLevel.LOW)) == {"reasoning_effort": "low"}
 
     @pytest.mark.parametrize("flavor", [
-        OpenChatFlavor.VLLM, OpenChatFlavor.OLLAMA, OpenChatFlavor.LMSTUDIO,
-        OpenChatFlavor.OTHER,
+        OpenChatFlavor.VLLM, OpenChatFlavor.LMSTUDIO, OpenChatFlavor.OTHER,
     ])
     def test_openchat_self_hosted_flavors_take_the_template_switch(self, flavor) -> None:
         llm = OpenChatLLM(_openchat(flavor))
         assert llm.profile_extended(_cfg(ReasoningLevel.OFF)) == {
             "chat_template_kwargs": {"enable_thinking": False},
         }
+
+    @pytest.mark.parametrize("level, effort", [
+        (ReasoningLevel.OFF, "none"), (ReasoningLevel.MINIMAL, "minimal"), (ReasoningLevel.LOW, "low"),
+        (ReasoningLevel.MEDIUM, "medium"), (ReasoningLevel.HIGH, "high"),
+    ])
+    def test_openchat_ollama_takes_reasoning_effort(self, level, effort) -> None:
+        """Audit G2-12: Ollama's /v1 reads ``reasoning_effort`` ("none" turns thinking off) and ignores
+        ``chat_template_kwargs``, so the template switch left thinking on for a profile set to off."""
+        llm = OpenChatLLM(_openchat(OpenChatFlavor.OLLAMA))
+        assert llm.profile_extended(_cfg(level, seed=3), model="qwen3:8b") == {"seed": 3, "reasoning_effort": effort}
 
     def test_openresponses_openai_takes_reasoning_effort(self) -> None:
         llm = OpenResponsesLLM(_openresponses(OpenResponsesFlavor.OPENAI))
@@ -466,6 +475,36 @@ class TestTheKnobsReachTheWire:
         )
         await _call_under(OpenChatLLM(_openchat(OpenChatFlavor.VLLM)), _cfg(ReasoningLevel.OFF), model="qwen3")
         assert [("chat_template_kwargs" in b) for b in bodies] == [True, False]
+
+    async def test_openchat_ollama_off_sends_reasoning_effort_none(self, monkeypatch) -> None:
+        wire = _wire_for("openchat", monkeypatch)
+        await _call_under(OpenChatLLM(_openchat(OpenChatFlavor.OLLAMA)), _cfg(ReasoningLevel.OFF), model="qwen3:8b")
+        body = _body(wire)
+        assert body["reasoning_effort"] == "none"
+        assert "chat_template_kwargs" not in body
+
+    async def test_openchat_ollama_model_without_thinking_retries_without_the_effort(self, monkeypatch) -> None:
+        """Ollama refuses a thinking setting for a model without the capability ("does not support thinking"): the guard
+        makes the call once more without the profile's settings, as it does for the native ``think`` flag."""
+        http = _sdk_http_module()
+        bodies: list[dict] = []
+
+        def _handle(request):
+            body = json.loads(request.content)
+            bodies.append(body)
+            if "reasoning_effort" in body:
+                return http.Response(400, json={"error": {
+                    "message": '"llama3.1:8b" does not support thinking', "type": "invalid_request_error", "param": None, "code": None,
+                }})
+            return http.Response(200, content=_SSE, headers={"content-type": "text/event-stream"})
+
+        real = AsyncOpenAI
+        monkeypatch.setattr(
+            "primer.llm.openchat.AsyncOpenAI",
+            lambda **kw: real(**kw, http_client=http.AsyncClient(transport=http.MockTransport(_handle)), max_retries=0),
+        )
+        await _call_under(OpenChatLLM(_openchat(OpenChatFlavor.OLLAMA)), _cfg(ReasoningLevel.HIGH), model="llama3.1:8b")
+        assert [("reasoning_effort" in b) for b in bodies] == [True, False]
 
     async def test_openchat_vllm_sends_the_template_switch_in_the_body(self, monkeypatch) -> None:
         wire = _wire_for("openchat", monkeypatch)

@@ -67,7 +67,7 @@ logger = logging.getLogger(__name__)
 
 
 # What primer.llm._reasoning.openchat_extended emits. ``reasoning_effort``
-# (OpenAI's reasoning models) is a parameter of the openai SDK's
+# (OpenAI's reasoning models, and Ollama's /v1) is a parameter of the openai SDK's
 # ``create()``; ``chat_template_kwargs`` is not (vLLM and the other
 # self-hosted servers read ``enable_thinking`` from it in the chat
 # template), so it travels in the request body.
@@ -213,8 +213,8 @@ class OpenChatLLM(LLM):
     def profile_extended(
         self, config: ModelProfileConfig, *, model: str | None = None,
     ) -> dict[str, Any]:
-        """The flavor picks the wire: ``reasoning_effort`` for OpenAI, the chat
-        template's ``enable_thinking`` switch for the self-hosted servers."""
+        """The flavor picks the wire: ``reasoning_effort`` for OpenAI and Ollama, the
+        chat template's ``enable_thinking`` switch for the other self-hosted servers."""
         return openchat_extended(config, flavor=self._config.flavor.value, model=model)
 
     async def stream(  # type: ignore[override]

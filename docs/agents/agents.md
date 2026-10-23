@@ -317,9 +317,10 @@ effort level from Claude 4.6; on Gemini, a thinking budget on 2.5 and,
 from Gemini 3, a thinking level from the set that model documents (a level
 it lacks becomes the nearest one it has: Gemini 3 Pro has only low and
 high, so `medium` sends high); `reasoning_effort` on OpenAI's reasoning
-models, with the values each takes; Ollama's `think`;
-`chat_template_kwargs.enable_thinking` on a self-hosted OpenAI-compatible
-server; `reasoning.effort` on OpenRouter. Where a model has no true off, the
+models, with the values each takes; Ollama's `think` (and `reasoning_effort`,
+`none` for off, on an `openchat` provider of the `ollama` flavor);
+`chat_template_kwargs.enable_thinking` on another self-hosted
+OpenAI-compatible server; `reasoning.effort` on OpenRouter. Where a model has no true off, the
 closest setting is used (its lowest effort, budget or level), and a model
 with no reasoning control (gpt-4o, an older Claude or Gemini) gets none. A
 setting never makes a call fail: when the provider still refuses it, the
