@@ -494,10 +494,39 @@ def test_when_every_profile_already_exists_the_import_is_done(ctx, envelopes) ->
     """A 409 is a profile that is there, not a failure: nothing is left to retry, so the overlay closes with the provider."""
     _to_page_two(ctx, [{"name": "a", "context_length": 1}, {"name": "b", "context_length": 2}])
     _tick(ctx, "a", "b")
-    _route(ctx, {"POST /model_profiles": {"refuse": envelopes["profile_taken"]}})
+    _route(ctx, {
+        "POST /model_profiles": {"refuse": envelopes["profile_taken"]},
+        "GET /model_profiles/lm--a": {"answer": {"provider_id": "lm", "model_name": "a"}},
+        "GET /model_profiles/lm--b": {"answer": {"provider_id": "lm", "model_name": "b"}},
+    })
     assert _press(ctx, "pc-register-submit") == "fulfilled"
     assert ctx.eval("CLOSED") == 1 and len(js(ctx, "SAVED")) == 1
     assert js(ctx, "TOASTS") == [{"kind": "success", "title": "Provider registered", "detail": "lm: 2 profiles imported"}]
+
+
+def test_a_conflicting_profile_id_is_verified_before_calling_it_imported(ctx, envelopes) -> None:
+    """A 409 can belong to another provider/model pair whose normalized id
+    collides with this row. Only the same pair counts as already imported."""
+    ctx.eval(f"var PROFILE_TAKEN = {json.dumps(envelopes['profile_taken'])};")
+    ctx.eval("""
+    var RESULT = null;
+    PC_importProfiles({
+      apiFetch: function (method, path, body) {
+        if (method === "POST") return refuse(PROFILE_TAKEN);
+        if (method === "GET" && path === "/model_profiles/lm--llama3.1-8b") {
+          return Promise.resolve({ id: "lm--llama3.1-8b", provider_id: "other", model_name: "llama3.1:8b" });
+        }
+        return Promise.reject(new Error("unexpected request"));
+      },
+      providerId: "lm",
+      rows: [{ name: "llama3.1-8b", ticked: true, context: "8192", status: "pending" }]
+    }).then(function (rows) { RESULT = rows; });
+    void 0;
+    """)
+    ctx.eval("void 0;")
+    result = js(ctx, "RESULT")
+    assert result[0]["status"] == "failed"
+    assert result[0]["error"] == "the id is taken by another profile"
 
 
 def test_a_name_with_no_id_cannot_be_ticked(ctx) -> None:
@@ -612,6 +641,7 @@ def test_partial_import_keeps_the_overlay_open_and_retries_only_failed_rows(ctx,
     }
     ctx.eval(
         "HANDLER = (function (inner) { return function (method, path, body) {"
+        " if (method === 'GET' && path === '/model_profiles/lm--b') return Promise.resolve({ provider_id: 'lm', model_name: 'b' });"
         " if (method === 'POST' && path === '/model_profiles') { var answers = " + json.dumps(answers) + "; var r = answers[body.model_name];"
         " if (r.refuse) return refuse(r.refuse); return Promise.resolve(r.answer); }"
         " return inner(method, path, body); }; })(HANDLER);"
@@ -620,6 +650,9 @@ def test_partial_import_keeps_the_overlay_open_and_retries_only_failed_rows(ctx,
     assert _status(ctx, "a") == "imported" and _status(ctx, "b") == "already imported"
     broke = ctx.eval(f"window.primerApi.readRefusal(new window.primerApi.ApiError({json.dumps(envelopes['profile_broke'])})).message")
     assert _status(ctx, "c") == "failed: " + broke
+    assert ctx.eval("MR.find('pc-import-context:c').props['aria-invalid'] === undefined") is True, (
+        "a request failure is not a problem with the context field"
+    )
     assert ctx.eval("CLOSED") == 0 and js(ctx, "SAVED") == [] and js(ctx, "TOASTS") == [], "still open, nothing announced as done"
     assert ctx.eval("MR.find('pc-register-retry-failed') !== null && MR.find('pc-register-submit') === null") is True
     assert ctx.eval("text('pc-register-retry-failed')") == "Retry failed"
@@ -1089,6 +1122,20 @@ def test_the_import_hands_its_own_words_to_on_saved(ctx) -> None:
     assert js(ctx, "WORDS") == [{"title": "Provider registered", "detail": "lm: 1 profile imported"}]
 
 
+def test_a_rowless_provider_success_never_hands_the_typed_key_to_the_host(ctx) -> None:
+    ctx.eval(PAGE_STUBS)
+    ctx.eval("mountPage();")
+    _serve(ctx)
+    _route(ctx, {
+        "POST /llm_providers/_discover_models": {"refuse": {"status": 400, "title": "Bad Request", "detail": "offline"}},
+        "POST /llm_providers": {"answer": None},
+    })
+    _fill(ctx, key="sk-do-not-escape")
+    _press(ctx, "pc-register-next")
+    _press(ctx, "pc-register-without-models")
+    assert js(ctx, "SAVED") == [{"id": "lm"}]
+
+
 def test_the_selector_is_locked_while_a_request_is_out(ctx) -> None:
     _open(ctx)
     _route(ctx, {"POST /llm_providers/_discover_models": {"hold": "discover"}})
@@ -1268,6 +1315,9 @@ def test_import_profiles_posts_only_ticked_undone_rows_in_order(ctx, envelopes) 
         PC_importProfiles({
           apiFetch: function (method, path, body) {
             POSTED.push([method, path, body]);
+            if (method === 'GET' && path === '/model_profiles/p-1--dup') {
+              return Promise.resolve({ provider_id: 'p/1', model_name: 'dup' });
+            }
             if (body.model_name === 'dup') return refuse(ENV.profile_taken);
             if (body.model_name === 'odd') return refuse(ENV.profile_broke);
             return Promise.resolve({});
@@ -1279,7 +1329,7 @@ def test_import_profiles_posts_only_ticked_undone_rows_in_order(ctx, envelopes) 
     )
     ctx.eval("void 0;")
     posted = js(ctx, "POSTED")
-    assert [p[2]["model_name"] for p in posted] == ["new", "again", "dup", "odd"]
+    assert [p[2]["model_name"] for p in posted if p[0] == "POST"] == ["new", "again", "dup", "odd"]
     assert posted[0] == ["POST", "/model_profiles", {"id": "p-1--new", "provider_id": "p/1", "model_name": "new", "context_length": 100, "description": "Imported from p/1"}]
     result = js(ctx, "RESULT")
     assert [(r["name"], r["status"]) for r in result] == [

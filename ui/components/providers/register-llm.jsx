@@ -158,7 +158,7 @@ function PC_llmDone(row) {
 }
 
 // Create the LLM profile of every ticked row that is not done yet, ONE AFTER ANOTHER (there is no bulk route: design 13.3), and answer the rows with their results:
-// "imported" for a 2xx, "already" for a 409 (the profile is there; not a failure), "failed" with the refusal's words for anything else. A row that is not ticked, is done
+// "imported" for a 2xx, "already" when a 409 belongs to this provider/model pair, and "failed" for a conflicting id or any other refusal. A row that is not ticked, is done
 // or cannot have an id is left as it was, so a retry posts only what failed. `onProgress(rows)` hears each row as it is answered; `shouldStop()` is asked before each
 // post (the overlay was closed: the rows after it stay as they were, and "Import more models" will find them).
 async function PC_importProfiles({ apiFetch, providerId, rows, onProgress, shouldStop }) {
@@ -183,9 +183,19 @@ async function PC_importProfiles({ apiFetch, providerId, rows, onProgress, shoul
       await apiFetch("POST", "/model_profiles", body);
       next = { ...rest, status: "imported" };
     } catch (err) {
-      next = err && err.status === 409
-        ? { ...rest, status: "already" }
-        : { ...rest, status: "failed", error: readRefusal(err, String(err)).message };
+      if (err && err.status === 409 && id) {
+        let existing = null;
+        try {
+          existing = await apiFetch("GET", "/model_profiles/" + encodeURIComponent(id));
+        } catch (_lookupErr) {
+          // A failed lookup cannot prove that this exact profile already exists.
+        }
+        next = existing && existing.provider_id === providerId && existing.model_name === row.name
+          ? { ...rest, status: "already" }
+          : { ...rest, status: "failed", error: "the id is taken by another profile" };
+      } else {
+        next = { ...rest, status: "failed", error: readRefusal(err, String(err)).message };
+      }
     }
     current = current.map((r, j) => (j === i ? next : r));
     if (typeof onProgress === "function") onProgress(current);
@@ -320,6 +330,7 @@ function PC_LlmModels({ s }) {
   const PK_CheckTable = window.PK_CheckTable;
   const tableRows = s.rows.map((r, i) => {
     const status = PC_llmRowStatus(r);
+    const contextProblem = PC_llmContextProblem(r.context);
     const settled = PC_llmDone(r) || r.status === "invalid";
     const frozen = s.frozen(r);
     const statusId = s.uid + "-status-" + i;
@@ -331,7 +342,7 @@ function PC_LlmModels({ s }) {
       extra: (
         <div className="pc-import-extra">
           <input type="number" min="1" step="1" inputMode="numeric" className="pc-import-context" data-testid={"pc-import-context:" + r.name}
-            aria-label={"Context window for " + r.name} aria-describedby={statusId} aria-invalid={r.ticked && !settled && status.tone === "error" ? "true" : undefined}
+            aria-label={"Context window for " + r.name} aria-describedby={statusId} aria-invalid={r.ticked && !settled && !!contextProblem ? "true" : undefined}
             readOnly={frozen} value={r.context} onChange={(e) => s.setContext(r.name, e.target.value)} />
           <span className="pc-import-status" id={statusId} data-testid={"pc-import-status:" + r.name} data-tone={status.tone || undefined}>{status.text}</span>
         </div>
@@ -488,8 +499,6 @@ function PC_LlmRegister({ klass, editRow, excludeKinds, frame, blocked, onSaved,
     setStep(2);
     setHandoff((h) => ({ n: h.n + 1, to: "head" }));
   };
-  const savedRow = (row, sent) => (row && typeof row === "object" ? row : sent);
-
   const goNext = async () => {
     if (editing || !formOk || !discoverBody) return;
     const key = JSON.stringify(discoverBody);
@@ -554,7 +563,7 @@ function PC_LlmRegister({ klass, editRow, excludeKinds, frame, blocked, onSaved,
       say(failure);
       return;
     }
-    onSaved(savedRow(row, body));
+    onSaved(window.PC_savedRow(row, body));
   };
   const registerWithout = () => (editing ? undefined : post("register", "POST", "/llm_providers"));
   const save = () => (editing ? post("save", "PUT", "/llm_providers/" + encodeURIComponent(editRow.id)) : undefined);
@@ -591,7 +600,7 @@ function PC_LlmRegister({ klass, editRow, excludeKinds, frame, blocked, onSaved,
         say(failure);
         return;
       }
-      parent = savedRow(made, body);
+      parent = window.PC_savedRow(made, body);
       if (live.current) setProviderRow(parent);
     }
     const id = editing ? editRow.id : parent.id || body.id;
