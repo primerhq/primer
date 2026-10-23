@@ -196,18 +196,19 @@ function WEB_summary(kind, config, rows) {
 }
 
 function WEB_refusalText(err, fallback) {
-  var env = err && err.envelope;
-  var ext = (env && env.extensions) || {};
-  var det = (env && env.detail && typeof env.detail === "object") ? env.detail : {};
-  var code = ext.error || ext.code || det.error || det.code || (err && err.code);
-  if (code === "unknown_provider_ids" || code === "unknown_fetcher_ids") {
-    var ids = ext.unknown_ids || det.unknown_ids || [];
-    return "No longer exists: " + ids.join(", ") + ". The list has been reloaded.";
+  var r = window.primerApi.readRefusal(err, fallback);
+  if (r.code === "unknown_provider_ids" || r.code === "unknown_fetcher_ids") {
+    var ids = [];
+    var re = /'([^']+)'|"([^"]+)"/g;
+    var m;
+    while ((m = re.exec(r.sentence || "")) !== null) {
+      ids.push(m[1] || m[2]);
+    }
+    if (ids.length > 0) {
+      return "No longer exists: " + ids.join(", ") + ". The list has been reloaded.";
+    }
   }
-  if (window.primerApi && typeof window.primerApi.readRefusal === "function") {
-    return window.primerApi.readRefusal(err, fallback).message;
-  }
-  return fallback || "An error occurred";
+  return r.message;
 }
 
 function WEB_ActiveConfigSection(props) {
@@ -304,12 +305,11 @@ function WEB_ActiveConfigSection(props) {
         var text = WEB_refusalText(err, info.notSaved);
         setFieldError(text);
         if (window.primerApi && typeof window.primerApi.toastPush === "function") {
-          var reqId = (err && (err.requestId || (err.envelope && err.envelope.extensions && err.envelope.extensions.request_id))) || null;
           window.primerApi.toastPush({
             kind: "error",
             title: info.notSaved,
             detail: text,
-            requestId: reqId,
+            requestId: (err && err.requestId) || null,
           });
         }
         if (active && typeof active.refetch === "function") active.refetch();
