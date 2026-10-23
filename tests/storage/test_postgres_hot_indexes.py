@@ -23,6 +23,7 @@ from primer.storage.postgres import (
     _hot_field_index_ddl,
     _table_name_for,
 )
+from primer.storage.sqlite import _SQLITE_HOT_FIELD_INDEXES
 
 
 # ---------------------------------------------------------------------------
@@ -32,11 +33,11 @@ from primer.storage.postgres import (
 
 def test_registry_declares_the_hot_tables():
     """token_hash / session status / channel routing / useridentity
-    uniqueness / webhook recovery / tool-approval-record gate key are
-    all registered."""
+    uniqueness / webhook recovery / tool-approval-record gate key /
+    artifact-location routing are all registered."""
     assert set(_HOT_FIELD_INDEXES) == {
         "apitoken", "sessions", "channel", "useridentity",
-        "webhookdelivery", "toolapprovalrecord",
+        "webhookdelivery", "toolapprovalrecord", "artifactlocation",
     }
 
 
@@ -83,6 +84,19 @@ def test_channel_index_covers_provider_id_and_external_id():
     assert expr == "((data->>'provider_id'), (data->>'external_id'))"
 
 
+def test_artifactlocation_index_covers_provider_id_counts():
+    (suffix, unique, expr), = _HOT_FIELD_INDEXES["artifactlocation"]
+    assert suffix == "provider_id"
+    assert unique is False
+    assert expr == "((data->>'provider_id'))"
+    (sqlite_suffix, sqlite_unique, sqlite_expr), = _SQLITE_HOT_FIELD_INDEXES[
+        "artifactlocation"
+    ]
+    assert sqlite_suffix == "provider_id"
+    assert sqlite_unique is False
+    assert sqlite_expr == "(json_extract(data,'$.provider_id'))"
+
+
 def test_session_model_maps_to_the_sessions_table():
     """The status index lives on the same table the Session model stores in."""
     from primer.model.workspace_session import WorkspaceSession
@@ -97,6 +111,7 @@ def test_session_model_maps_to_the_sessions_table():
         ("apitoken", ["apitoken_token_hash_uniq"]),
         ("sessions", ["sessions_status"]),
         ("channel", ["channel_provider_external"]),
+        ("artifactlocation", ["artifactlocation_provider_id"]),
         ("unindexed_table", []),
     ],
 )
@@ -150,6 +165,7 @@ async def _index_names(sp, table: str) -> set[str]:
 async def test_hot_indexes_created_on_first_handle_use(postgres_storage_provider):
     """Touching each model's handle creates its hot-field index(es)."""
     from primer.model.api_token import ApiToken
+    from primer.model.artifact import ArtifactLocation
     from primer.model.channel import Channel
     from primer.model.workspace_session import WorkspaceSession
 
@@ -158,7 +174,9 @@ async def test_hot_indexes_created_on_first_handle_use(postgres_storage_provider
     await sp.get_storage(ApiToken).get("__bootstrap__")
     await sp.get_storage(WorkspaceSession).get("__bootstrap__")
     await sp.get_storage(Channel).get("__bootstrap__")
+    await sp.get_storage(ArtifactLocation).get("__bootstrap__")
 
     assert "apitoken_token_hash_uniq" in await _index_names(sp, "apitoken")
     assert "sessions_status" in await _index_names(sp, "sessions")
     assert "channel_provider_external" in await _index_names(sp, "channel")
+    assert "artifactlocation_provider_id" in await _index_names(sp, "artifactlocation")
