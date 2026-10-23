@@ -233,6 +233,34 @@ def test_lance_edit_keeps_its_hnsw_ef_search(ctx) -> None:
     assert put_call["body"]["config"]["hnsw_ef_search"] == 120
 
 
+def test_lance_fallback_hnsw_ef_search_is_100(ctx) -> None:
+    ctx.eval("""
+    CALLS = [];
+    var row = {
+      id: "ssp-lance",
+      provider: "lance",
+      config: {
+        path: "/data/lance",
+        hnsw_m: 16,
+        hnsw_ef_construction: 64,
+        index_min_rows: 1000
+      }
+    };
+    MR.mount(window.SSPCreateModal, {
+      existing: row,
+      onClose: function () {},
+      frame: frameFn
+    });
+    var btn = ALL("frame-right").filter(function (n) { return n.type === "button"; })[0];
+    btn.props.onClick();
+    """)
+    settle(ctx)
+    calls = js(ctx, "CALLS")
+    put_call = [c for c in calls if c["method"] == "PUT" and "ssp-lance" in c["path"]][0]
+    assert put_call["body"]["config"]["hnsw_ef_search"] == 100
+
+
+
 def test_edit_needs_no_password(ctx) -> None:
     ctx.eval("""
     CALLS = [];

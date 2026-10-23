@@ -51,7 +51,7 @@ function _sspBuildConfig(form, isLance, isScale, includeAdvanced) {
     if (includeAdvanced) {
       config.hnsw_m = Number(form.hnsw_m) || 16;
       config.hnsw_ef_construction = Number(form.hnsw_ef_construction) || 64;
-      config.hnsw_ef_search = Number(form.hnsw_ef_search) || 40;
+      config.hnsw_ef_search = Number(form.hnsw_ef_search) || 100;
       config.index_min_rows = Number(form.index_min_rows) || 1000;
     }
     return config;
@@ -428,7 +428,7 @@ function SSPCreateModal({ onClose, pushToast, existing, initialProvider, frame, 
       enable_diskann: !!c.enable_diskann,
       diskann_num_neighbors: c.diskann_num_neighbors ?? 50,
       diskann_search_list_size: c.diskann_search_list_size ?? 100,
-      hnsw_ef_search: c.hnsw_ef_search ?? 40,
+      hnsw_ef_search: c.hnsw_ef_search ?? 100,
       index_min_rows: c.index_min_rows ?? 1000,
       _storedPassword: rawPassword || "",
     };
@@ -1025,7 +1025,7 @@ function SSPOverview({ p }) {
         <dt>path</dt><dd className="mono">{p.config?.path}</dd>
         <dt>hnsw_m</dt><dd className="mono">{p.config?.hnsw_m ?? 16}</dd>
         <dt>hnsw_ef_construction</dt><dd className="mono">{p.config?.hnsw_ef_construction ?? 64}</dd>
-        <dt>hnsw_ef_search</dt><dd className="mono">{p.config?.hnsw_ef_search ?? 40}</dd>
+        <dt>hnsw_ef_search</dt><dd className="mono">{p.config?.hnsw_ef_search ?? 100}</dd>
         <dt>index_min_rows</dt><dd className="mono">{p.config?.index_min_rows ?? 1000}</dd>
       </dl>
     );
