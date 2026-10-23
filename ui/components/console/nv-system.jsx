@@ -302,7 +302,7 @@ function NV_seedOutcome(result) {
     });
     return {
       kind: "error",
-      text: "Seed finished with errors: " + errParts.join(", "),
+      text: "Seed finished with errors: " + errParts.join("; "),
     };
   }
   var created = res.created || [];
@@ -325,8 +325,8 @@ function NV_resetOutcome(result) {
 
 var NV_RESET_AGENTS_CONFIRM = {
   title: "Reset default agents",
-  message: "Reset the default definitions of operator, builder, planner, explorer, and tool-runner? This replaces any edits you have made.",
-  confirmLabel: "Reset default agents",
+  message: "This restores the description, system prompt and tools of operator, builder, planner, explorer and tool-runner to their defaults. Your edits to those agents are lost; the model profile each one runs on is kept.",
+  confirmLabel: "Reset agents",
   danger: true,
 };
 
@@ -443,9 +443,9 @@ function NV_SysSetupCard() {
   }
 
   var headline = busy === "seed"
-    ? "Re-running seed…"
+    ? "Running the seed…"
     : busy === "reset"
-    ? "Resetting default agents…"
+    ? "Resetting the default agents…"
     : setupUnavailable
     ? "Couldn't check setup"
     : setupResourceState === "loading"
@@ -470,6 +470,7 @@ function NV_SysSetupCard() {
 
   return (
     <div className="nv-sys-setup" data-testid="nv-sys-setup" data-tone={tone}>
+      <div className="nv-sys-setup-title" data-testid="nv-sys-setup-title">Setup</div>
       <div className="nv-sys-setup-head">
         <span className="nv-health-dot" style={{ background: dotColor }} />
         <span className="nv-sys-setup-headline" data-testid="nv-sys-setup-headline">

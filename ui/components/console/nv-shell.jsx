@@ -17,6 +17,15 @@ function NV_useConsole() {
   return React.useContext(NV_ConsoleContext);
 }
 
+function NV_toastPayload(msg, extra) {
+  var opts = typeof extra === "string" ? { kind: extra } : (extra || {});
+  return {
+    kind: opts.kind || "info",
+    text: String(msg),
+    requestId: opts.requestId || opts.request_id || null,
+  };
+}
+
 // The ONE rendered toast stack (ported from the deleted sh shell on
 // flag day). primerApi.toastPush enqueues into module state that only
 // a rendered subscriber displays; without this host every toast is a
@@ -725,12 +734,7 @@ function NV_Shell() {
       // which left that affordance dead on every error (BDD round 2).
       toast: function (msg, extra) {
         if (window.primerApi.toastPush) {
-          var opts = typeof extra === "string" ? { kind: extra } : (extra || {});
-          window.primerApi.toastPush({
-            kind: opts.kind || "info",
-            text: String(msg),
-            requestId: opts.requestId || opts.request_id || null,
-          });
+          window.primerApi.toastPush(NV_toastPayload(msg, extra));
         }
       },
     };
