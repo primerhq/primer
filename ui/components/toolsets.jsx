@@ -281,6 +281,83 @@ function _tsTarget(t) {
   return null;
 }
 
+// ---- a 422's errors, where the toolset form draws them (audit G4-05) ----
+// pydantic names a field inside a union through the member it tried, so a loc is not the field's path: a refused token endpoint comes back as
+// ["config", "function-after[_validate_config_matches_transport(), McpConfig]", "config", "HttpConfig", "oauth", "token_endpoint"], and the
+// PUT route validates the body itself, so its locs have no leading "body". These are the union members a toolset's config can be
+// (primer/model/providers/toolset.py). A member missing from the list stays in the key, so its error lands in the form's banner, not nowhere.
+const TS_CONFIG_MEMBERS = ["McpConfig", "PythonConfig", "StdioConfig", "HttpConfig"];
+
+// One loc as { key, members }. The key is the path FastAPI gives a body field ("body.config.config.oauth.token_endpoint") with the union
+// segments taken out: a validator wrapper ("function-after[...]") and a member's class name. `members` lists the members those segments named.
+function TS_errorPath(loc) {
+  const members = [];
+  const kept = [];
+  (Array.isArray(loc) ? loc : []).forEach(function (part) {
+    const segment = String(part);
+    const wrapper = /^[a-z]+(?:-[a-z]+)*\[(.*)\]$/.exec(segment);
+    if (wrapper) {
+      const named = /(\w+)\s*$/.exec(wrapper[1]);
+      if (named && TS_CONFIG_MEMBERS.indexOf(named[1]) >= 0) members.push(named[1]);
+      return;
+    }
+    if (TS_CONFIG_MEMBERS.indexOf(segment) >= 0) {
+      members.push(segment);
+      return;
+    }
+    kept.push(segment);
+  });
+  if (kept[0] !== "body" && kept[0] !== "query" && kept[0] !== "path") kept.unshift("body");
+  return { key: kept.join("."), members: members };
+}
+
+// The union members a body chose. pydantic reports every member of a union that failed, so a bad token endpoint on an http toolset also
+// brings StdioConfig's "command: Field required" and four PythonConfig errors: those are about a shape the operator did not pick.
+function TS_bodyMembers(provider, transport) {
+  return provider === "python"
+    ? ["PythonConfig"]
+    : ["McpConfig", transport === "stdio" ? "StdioConfig" : "HttpConfig"];
+}
+
+// A 422's error list as { key: message }, keeping the errors of the members the body chose (`chosen`). When that keeps none (a member this
+// form does not know), every error is kept: a refusal is never drawn nowhere. pydantic's "Value error, " prefix is dropped.
+function TS_fieldErrorsOf(errors, chosen) {
+  const all = (Array.isArray(errors) ? errors : []).map(function (fe) {
+    const path = TS_errorPath(fe && fe.loc);
+    const msg = String((fe && fe.msg) || "Invalid value").replace(/^Value error, /, "");
+    return { key: path.key, members: path.members, msg: msg };
+  });
+  const mine = all.filter(function (e) {
+    return e.members.every(function (m) { return (chosen || []).indexOf(m) >= 0; });
+  });
+  const out = {};
+  (mine.length ? mine : all).forEach(function (e) {
+    out[e.key] = out[e.key] && out[e.key] !== e.msg ? out[e.key] + " " + e.msg : e.msg;
+  });
+  return out;
+}
+
+// The error keys the form draws under one of its fields, for what is on screen now: the id, the provider, the stdio command or the URL, and
+// the auth section's fields for its mode (TS_authErrorKeys). Every other error goes to the form's banner.
+function TS_shownErrorKeys(provider, transport, authForm) {
+  const keys = ["body.id", "body.provider"];
+  if (provider !== "mcp") return keys;
+  if (transport === "stdio") return keys.concat(["body.config.config.command"]);
+  const auth = window.TS_authErrorKeys ? window.TS_authErrorKeys(authForm) : [];
+  return keys.concat(["body.config.config.url"], auth.map(function (k) { return "body.config.config." + k; }));
+}
+
+// The errors no field draws, as { key, label, msg }; the label is the path an operator recognises ("oauth", "headers.X-Tenant"), without
+// "body." and the config's "config.config.", and empty for an error about the whole body.
+function TS_unshownErrors(fieldErrors, shownKeys) {
+  return Object.keys(fieldErrors || {})
+    .filter(function (key) { return shownKeys.indexOf(key) < 0; })
+    .map(function (key) {
+      const label = key === "body" ? "" : key.replace(/^body\./, "").replace(/^config\.config\./, "");
+      return { key: key, label: label, msg: fieldErrors[key] };
+    });
+}
+
 // Whether a freshly saved toolset has a connection to check. Only an MCP server does. A Python toolset's tools are the functions in the source the
 // operator writes AFTER the create, so probing it reports "0 tools" and a "Connected" that means nothing (ADM-11).
 function TS_hasConnection(row) {
@@ -474,11 +551,8 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
       onSuccess: (row) => setCreatedRow(row),
       onError: (err) => {
         if (err && err.status === 422 && Array.isArray(err.fieldErrors)) {
-          const next = {};
-          for (const fe of err.fieldErrors) {
-            next[(fe.loc || []).join(".")] = fe.msg;
-          }
-          setFieldErrors(next);
+          // Under its field when the form draws one, else in the banner above the form (TS_unshownErrors).
+          setFieldErrors(TS_fieldErrorsOf(err.fieldErrors, TS_bodyMembers(provider, transport)));
         } else if (err && err.type === "/errors/toolset-unreachable") {
           // Endpoint unreachable — surface inline with a "Create anyway"
           // button instead of a toast. Contract mirrors the backend reject in
@@ -563,6 +637,7 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
   const canSubmit = provider === "mcp"
     ? (transport === "stdio" ? !!command.trim() : !!url.trim())
     : provider === "python";
+  const formErrors = TS_unshownErrors(fieldErrors, TS_shownErrorKeys(provider, transport, authForm));
 
   return (
     <Modal
@@ -587,6 +662,20 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
         <TS_ConnectResult row={createdRow} isEdit={isEdit} probing={probing} probe={probe} />
       ) : (
       <>
+      {formErrors.length > 0 && (
+        <div role="alert" data-testid="toolset-form-errors" style={{ marginBottom: 12 }}>
+          <Banner
+            kind="error"
+            title={isEdit ? "Could not save the toolset" : "Could not create the toolset"}
+            detail={formErrors.map((e) => (
+              <div key={e.key}>
+                {e.label ? <><span className="mono">{e.label}</span>{": "}</> : null}
+                {e.msg}
+              </div>
+            ))}
+          />
+        </div>
+      )}
       {unreachable && (
         <div
           data-testid="toolset-unreachable"
