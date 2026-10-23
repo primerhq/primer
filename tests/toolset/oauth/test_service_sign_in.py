@@ -437,6 +437,30 @@ async def test_disconnect_of_a_toolset_that_is_not_connected_is_a_no_op(svc, kb,
     assert status.state == "needs_sign_in" and mock_oauth_mcp.state.revocations == []
 
 
+async def test_a_sign_in_started_before_a_disconnect_cannot_reconnect_after_it(svc, kb, store, mock_oauth_mcp, fake_storage_provider):
+    """Audit G4-06: the admin clicks Reconnect (a pending sign-in), abandons the provider's page, then clicks Disconnect. The abandoned consent,
+    completed within its ten minutes (by anyone holding the authorize URL), must not connect the toolset again: Disconnect ends the pending
+    sign-ins too."""
+    assert (await connect(svc, kb)).state == "connected"
+    start = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin")
+    back = authorize(start.authorize_url)
+    assert (await svc.disconnect(kb)).state == "needs_sign_in"
+    pending = fake_storage_provider.get_storage(McpOAuthPendingSignIn)
+    assert await pending.get(pending_key(back["state"])) is None, "the pending sign-in outlived the disconnect"
+    exchanges = len(mock_oauth_mcp.state.token_requests)
+    with pytest.raises(SignInError) as caught:
+        await svc.complete_sign_in(kb, toolset_id="kb", state=back["state"], code=back["code"], error=None)
+    assert caught.value.code == "invalid_state"
+    assert await store.get_tokens("kb") is None and len(mock_oauth_mcp.state.token_requests) == exchanges
+
+
+async def test_disconnect_keeps_the_pending_sign_ins_of_other_toolsets(svc, kb, store, mock_oauth_mcp):
+    other = make_toolset(mock_oauth_mcp.mcp_url, oauth={}, toolset_id="other")
+    await svc.start_sign_in(target_of(other), redirect_uri=REDIRECT.replace("/kb/", "/other/"), started_by="admin")
+    await svc.disconnect(kb)
+    assert await store.purge_pending("other", now=NOW + timedelta(days=1)) == 1
+
+
 async def test_forget_removes_everything_of_one_toolset(svc, kb, store):
     await connect(svc, kb)
     await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin")

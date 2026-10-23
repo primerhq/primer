@@ -52,7 +52,9 @@ For both grants, the shared access token is attached to every MCP request. A
 401 causes one refresh and one retry. Refresh runs under a lease shared across
 pods.
 
-Disconnect removes the shared sign-in for every caller. Deleting the toolset
+Disconnect removes the shared sign-in for every caller and ends any sign-in
+still pending, so a Reconnect left open on the provider's page cannot connect the
+toolset again afterwards. Deleting the toolset
 does the same, whichever way it is deleted: the console or the REST API, the
 `system::delete_toolset` tool, or a harness uninstall or sync that drops it. A
 toolset created again under the same id needs an admin to connect it. A changed encryption key also requires every connected toolset

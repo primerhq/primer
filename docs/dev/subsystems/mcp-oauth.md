@@ -76,8 +76,10 @@ For client credentials, an admin starts sign-in and Primer obtains the shared to
 immediately. During normal MCP traffic, `McpBearerAuth` sends that token on every
 request. A 401 triggers at most one refresh and one retry. Refresh is coordinated
 under a lease across pods, and a compare-and-set write prevents a late refresher
-from replacing newer credentials. Disconnect attempts revocation and then removes
-the local sign-in. Every path that deletes a toolset forgets its sign-in (its
+from replacing newer credentials. Disconnect first ends the toolset's pending
+sign-ins (a Reconnect left open on the provider's page would otherwise connect the
+toolset again when completed), attempts revocation and then removes the local
+sign-in. Every path that deletes a toolset forgets its sign-in (its
 tokens, its registered client and its pending sign-ins): the REST delete and the
 system `delete_toolset` tool through `ToolsetOAuthService.forget`, and a harness
 uninstall or a sync that drops the toolset through the store's keyless
@@ -113,8 +115,8 @@ The REST surface is:
   callback without requiring the browser to hold a Primer session.
 - `GET /v1/toolsets/{id}/oauth/status`, user tier, returns
   `ToolsetAuthStatus`.
-- `POST /v1/toolsets/{id}/oauth/disconnect`, admin only, revokes when possible and
-  deletes the stored sign-in.
+- `POST /v1/toolsets/{id}/oauth/disconnect`, admin only, ends the pending
+  sign-ins, revokes when possible and deletes the stored sign-in.
 
 The callback returns a 303 to the console for a browser request whose `Accept`
 header includes `text/html`; other clients receive JSON or an RFC 7807 problem.
