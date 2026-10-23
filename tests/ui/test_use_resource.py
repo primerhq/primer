@@ -351,3 +351,62 @@ def test_last_subscriber_churn_does_not_reuse_an_aborted_entry() -> None:
 
     _resolve_request(ctx, 1, {"username": "alice"})
     assert _peek(ctx) == {"username": "alice"}
+
+
+# ---------------------------------------------------------------------------
+# refetchOnWake: false (audit G1-09). The Setup card reads /setup/state once and again only on Check again, a seed or a reset; each read lists the
+# LLM's models and re-attaches the default workspace. Every tab re-show and every wake from idle refetched it anyway, because the page-wide
+# visibility listener and refetchAll() re-run every subscribed entry. The opt-out leaves such a resource alone on both paths; an explicit
+# refetch() still reads it, and the default stays as it was.
+# ---------------------------------------------------------------------------
+
+
+def _wake_ctx():
+    ctx = _race_ctx()
+    ctx.eval(
+        """
+        var __visibility = null;
+        document.addEventListener = function (name, fn) {
+          if (name === "visibilitychange") __visibility = fn;
+        };
+        function __hide() { document.hidden = true; __visibility(); }
+        function __show() { document.hidden = false; __visibility(); }
+        """
+    )
+    return ctx
+
+
+def test_a_resource_that_opts_out_is_not_read_again_on_a_tab_reshow_or_an_idle_wake() -> None:
+    ctx = _wake_ctx()
+    ctx.eval("window.primerApi.useResource('setup', __fetcher, { refetchOnWake: false });")
+    _resolve_request(ctx, 0, {"ok": True})
+    ctx.eval("__hide(); __show();")
+    assert ctx.eval("__requests.length") == 1, "a tab re-show read it again"
+    ctx.eval("window.primerApi._refetchAll();")
+    assert ctx.eval("__requests.length") == 1, "the idle wake-up read it again"
+    ctx.eval("window.primerApi._resource.refetchKey('setup');")
+    assert ctx.eval("__requests.length") == 2, "an explicit refetch still reads it"
+
+
+def test_hiding_the_tab_does_not_abort_the_one_read_of_a_resource_that_opts_out() -> None:
+    """It is not read again on the re-show, so an aborted first read would leave it loading for good."""
+    ctx = _wake_ctx()
+    ctx.eval("window.primerApi.useResource('setup', __fetcher, { refetchOnWake: false });")
+    ctx.eval("__hide();")
+    assert ctx.eval("__requests[0].signal.aborted") is False
+    _resolve_request(ctx, 0, {"ok": True})
+    ctx.eval("__show();")
+    assert _peek(ctx, "setup") == {"ok": True}
+    assert ctx.eval("__requests.length") == 1
+
+
+def test_a_resource_that_does_not_opt_out_is_still_read_again_on_a_reshow_and_a_wake() -> None:
+    ctx = _wake_ctx()
+    ctx.eval("window.primerApi.useResource('list', __fetcher, {});")
+    _resolve_request(ctx, 0, {"items": []})
+    ctx.eval("__hide();")
+    ctx.eval("__show();")
+    assert ctx.eval("__requests.length") == 2
+    _resolve_request(ctx, 1, {"items": []})
+    ctx.eval("window.primerApi._refetchAll();")
+    assert ctx.eval("__requests.length") == 3

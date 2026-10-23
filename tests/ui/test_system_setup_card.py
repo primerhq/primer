@@ -116,6 +116,25 @@ function NV_identity(b) { return { d: "", color: "" }; }
 """
 
 
+# The card's other dependencies, stubbed for the tests that run the REAL use-resource.js (whose resourceState is not replaced).
+_REAL_RESOURCE_STUBS = r"""
+window.primerApi.useCapabilities = function () { return { data: null, loading: true, error: null }; };
+window.primerApi.useEscape = function () {};
+window.confirmDialog = function () { return Promise.resolve(false); };
+var __con = {
+  openMenu: null,
+  toggleMenu: function (name) { __con.openMenu = __con.openMenu === name ? null : name; MR.rerender(); },
+  goView: function () {}, toast: function () {}
+};
+window.NV_useConsole = function () { return __con; };
+function Icon(p) { return React.createElement("span", { "data-icon": p.name }); }
+function Btn(p) { return React.createElement("button", Object.assign({}, p), p.children); }
+var SH_api = {};
+function relativeTime(s) { return String(s); }
+function NV_identity() { return { d: "", color: "" }; }
+"""
+
+
 @pytest.fixture(scope="module")
 def code() -> str:
     return (
@@ -268,6 +287,48 @@ def test_the_capability_rows(app):
 def test_the_card_reads_setup_state_once_and_never_polls(app):  # Review Focus 4
     app.mount("NV_SysSetupCard")
     assert not app.data('LOG.opts["nv-sys:setup-state"]').get("pollMs")
+    assert app.data('LOG.opts["nv-sys:setup-state"]').get("refetchOnWake") is False
+
+
+def test_a_tab_reshow_or_an_idle_wake_does_not_read_setup_state_again(code):  # Review Focus 4, audit G1-09
+    """The real use-resource.js: each read lists the LLM's models and re-attaches the default workspace, so only Check again, a seed or a reset may
+    read it again, not the page becoming visible or the operator coming back from idle."""
+    prelude = (
+        "var window = globalThis;\n"
+        + API
+        + "\nvar VIS = null;\n"
+        + "var document = { hidden: false, addEventListener: function (n, fn) { if (n === 'visibilitychange') VIS = fn; } };\n"
+        + "function AbortController() { this.signal = { aborted: false }; this.abort = function () { this.signal.aborted = true; }; }\n"
+        + USE_RESOURCE
+        + _REAL_RESOURCE_STUBS
+        + r"""
+var CALLS = 0;
+window.primerApi.apiFetch = function (method, path) {
+  if (method === "GET" && path === "/setup/state") {
+    CALLS += 1;
+    return Promise.resolve({ predicates: [] });
+  }
+  return Promise.resolve({});
+};
+"""
+    )
+    ctx = mini_react_context(code, prelude)
+    try:
+        ctx.eval("MR.mount(NV_SysSetupCard, {})")
+        for _ in range(3):
+            ctx.eval("void 0; MR.rerender();")
+        assert ctx.eval("CALLS") == 1
+        ctx.eval("document.hidden = true; VIS(); document.hidden = false; VIS();")
+        ctx.eval("window.primerApi._refetchAll();")
+        for _ in range(3):
+            ctx.eval("void 0; MR.rerender();")
+        assert ctx.eval("CALLS") == 1, "a re-show or a wake read /setup/state again"
+        ctx.eval('MR.click("nv-sys-setup-menu-btn"); MR.click("nv-sys-setup-recheck");')
+        for _ in range(3):
+            ctx.eval("void 0; MR.rerender();")
+        assert ctx.eval("CALLS") == 2, "Check again still reads it"
+    finally:
+        ctx.close()
 
 
 def test_a_green_card_says_all_checks_pass(app):
@@ -447,21 +508,8 @@ window.primerApi.apiFetch = function (method, path) {
   }
   return Promise.resolve({});
 };
-window.primerApi.useCapabilities = function () { return { data: null, loading: true, error: null }; };
-window.primerApi.useEscape = function () {};
-window.confirmDialog = function () { return Promise.resolve(false); };
-var __con = {
-  openMenu: null,
-  toggleMenu: function (name) { __con.openMenu = __con.openMenu === name ? null : name; MR.rerender(); },
-  goView: function () {}, toast: function () {}
-};
-window.NV_useConsole = function () { return __con; };
-function Icon(p) { return React.createElement("span", { "data-icon": p.name }); }
-function Btn(p) { return React.createElement("button", Object.assign({}, p), p.children); }
-var SH_api = {};
-function relativeTime(s) { return String(s); }
-function NV_identity() { return { d: "", color: "" }; }
 """
+        + _REAL_RESOURCE_STUBS
     )
     ctx = mini_react_context(code, prelude)
     try:
