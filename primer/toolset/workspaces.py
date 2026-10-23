@@ -681,7 +681,11 @@ _PrivilegeCheck = Callable[[Any, Any, "ToolContext | None"], ToolCallResult | No
 _RestoreSecrets = Callable[[Any, Any, "ToolContext | None"], None] | None
 
 
-def _make_list_handler(storage_factory: Callable[[], Any], model_cls: type) -> ToolHandler:
+#: ``(page or row) -> payload``: what a list or get tool serves instead of the stored page or row (a response-only field added to each row).
+_Served = Callable[[Any], Awaitable[Any]] | None
+
+
+def _make_list_handler(storage_factory: Callable[[], Any], model_cls: type, *, served: _Served = None) -> ToolHandler:
     async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
         try:
             args = _PaginationArgs.model_validate(arguments)
@@ -696,7 +700,8 @@ def _make_list_handler(storage_factory: Callable[[], Any], model_cls: type) -> T
         except PrimerValidationError as exc:
             return _err(exc.message, error_type="validation-error")
         try:
-            return _ok(await storage_factory().list(page, order_by=order_by))
+            listed = await storage_factory().list(page, order_by=order_by)
+            return _ok(await served(listed) if served is not None else listed)
         except BadRequestError as exc:
             # A bad cursor (forged, or not this request's) is a client error,
             # answered like the secret-field refusal above (ticket 01a1212a).
@@ -710,7 +715,7 @@ def _make_list_handler(storage_factory: Callable[[], Any], model_cls: type) -> T
 
 
 def _make_get_handler(
-    storage_factory: Callable[[], Any], cls_name: str
+    storage_factory: Callable[[], Any], cls_name: str, *, served: _Served = None,
 ) -> ToolHandler:
     async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
         try:
@@ -722,7 +727,7 @@ def _make_get_handler(
             return _err(
                 f"{cls_name} {args.id!r} does not exist", error_type="not-found"
             )
-        return _ok(row)
+        return _ok(await served(row) if served is not None else row)
 
     return _handler
 
@@ -1469,15 +1474,37 @@ def build_workspaces_toolset(
     registry[name] = entry
 
     # ------------------- Workspace CRUD (no update) -------------------
+    async def _default_workspace_id() -> str | None:
+        from primer.bootstrap.prime import resolve_default_workspace_id
+
+        return await resolve_default_workspace_id(storage_provider)
+
+    def _with_is_default(row: WorkspaceRow, default_id: str | None) -> dict[str, Any]:
+        """A served workspace row: the stored row plus ``is_default``, the response-only flag the REST rows carry (G7-09, lead ruling 5): an
+        agent finds the default workspace (prime) by it, never by its name, which is a label anyone may give any workspace."""
+        return {**row.model_dump(mode="json"), "is_default": row.id == default_id}
+
+    async def _workspace_page_served(page: Any) -> dict[str, Any]:
+        default_id = await _default_workspace_id()
+        return {**page.model_dump(mode="json"), "items": [_with_is_default(row, default_id) for row in page.items]}
+
+    async def _workspace_row_served(row: WorkspaceRow) -> dict[str, Any]:
+        return _with_is_default(row, await _default_workspace_id())
+
     name, entry = _tool(
         "list_workspaces",
-        "List persisted Workspace rows with pagination.",
         (
-            "Use when enumerating materialised workspaces; not for "
-            "fetching one by id (use ``get_workspace``)."
+            "List persisted Workspace rows with pagination. Each row carries "
+            "``is_default``: true for the default workspace (prime)."
+        ),
+        (
+            "Use when enumerating materialised workspaces, or to find the "
+            "default workspace (the row with ``is_default: true``; never by "
+            "its name, which any workspace may carry); not for fetching one "
+            "by id (use ``get_workspace``)."
         ),
         _PaginationArgs,
-        _make_list_handler(_workspace_storage, WorkspaceRow),
+        _make_list_handler(_workspace_storage, WorkspaceRow, served=_workspace_page_served),
         examples=[
             ToolExample(args={}, returns="page of Workspace rows"),
             ToolExample(args={"limit": 20}),
@@ -1487,14 +1514,17 @@ def build_workspaces_toolset(
     registry[name] = entry
     name, entry = _tool(
         "get_workspace",
-        "Fetch one Workspace row by id.",
+        (
+            "Fetch one Workspace row by id, with ``is_default``: true for "
+            "the default workspace (prime)."
+        ),
         (
             "Use when you have a workspace id and want its persisted "
             "record; not for listing all of them (use "
             "``list_workspaces``). ``type=not-found`` if missing."
         ),
         _IdArgs,
-        _make_get_handler(_workspace_storage, "Workspace"),
+        _make_get_handler(_workspace_storage, "Workspace", served=_workspace_row_served),
         examples=[
             ToolExample(args={"id": "ws-1"}, returns="the Workspace row"),
         ],

@@ -426,7 +426,10 @@ To rotate the token: `POST /v1/triggers/{id}/rotate_token` (the old URL stops wo
   and a row you save from inside a run is capped at that run's rank
   for good (re-saving cannot raise it). A `session_append` or
   `parked_session` subscription cannot steer a session that runs above
-  the fire's rank: the fire fails with `steer_outranks_fire`.
+  the fire's rank: the fire fails with `steer_outranks_fire`. A
+  `session_append` fire never reopens a session an operator cancelled,
+  even one queued on the session before the Cancel: only a person
+  reopens it. The fire is skipped with `skipped_session_ended`.
 - **A webhook trigger's token is visible only to its owner or an
   admin.** Everyone else (and any call over MCP) sees `•••redacted•••`
   in `config.token`. `trigger__update` on someone else's webhook

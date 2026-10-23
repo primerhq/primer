@@ -250,7 +250,8 @@ it's called from a context with no implicit session.
   (prime) cannot be deleted: the tool returns `type=forbidden` and the
   REST route answers 403 with `extensions.error` `reserved_workspace`;
   nothing is torn down and its sessions keep running. The
-  `GET /v1/workspaces` rows and `GET /v1/workspaces/{id}` carry
+  `list_workspaces` and `get_workspace` rows, like
+  `GET /v1/workspaces` and `GET /v1/workspaces/{id}`, carry
   `is_default: true` on that one workspace.
 
 ### Providers and templates
@@ -605,9 +606,10 @@ session is outside the group, so it is not killed.
   is shown as `prime`, but its id is `prime` only on an install that
   was set up after the default was recorded; an older install keeps
   the id it always had (usually `primer`) and carries `prime` as its
-  name. Find it by that name in `list_workspaces`, or over REST by the
-  one row with `is_default: true` in `GET /v1/workspaces` (the tool
-  rows do not carry the flag).
+  name. Find it by the one row with `is_default: true`, in
+  `list_workspaces` (or `get_workspace`) as in `GET /v1/workspaces`,
+  never by its name: it can be renamed, and any workspace may be
+  called `prime`.
 - **Workspace delete is synchronous.** `DELETE /v1/workspaces/{id}`
   (and `delete_workspace`) answers 204 only after the backend
   teardown has been requested and the row is gone. On k8s that
