@@ -604,7 +604,7 @@ function NV_Shell() {
       },
     });
     reg({
-      id: "provider.register", label: "Register Provider", surfaces: ["palette"],
+      id: "provider.register", label: "Register Provider", surfaces: ["palette", "platform-nav"],
       run: function () {
         goView("platform", "providers");
         if (window.PC_requestRegister) window.PC_requestRegister(null);

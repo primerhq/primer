@@ -477,7 +477,7 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
               <Banner
                 kind="error"
                 title={`Could not load ${c.label} providers`}
-                detail={err.message || (err.envelope && err.envelope.detail)}
+                detail={window.primerApi.readRefusal(err, err && err.message).message}
                 actions={
                   <Btn size="sm" icon="refresh" onClick={refetch}>Retry</Btn>
                 }

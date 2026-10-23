@@ -834,21 +834,32 @@ function NV_PlatNav() {
                     <span>{label}</span>
                   </button>
                   {id === "providers" && types.length ? (
-                    <div className="nv-plat-subs" role="group"
-                      aria-label="Provider types" data-testid="nv-plat-subs">
-                      {types.map(function (t) {
-                        return (
-                          <button type="button" key={t} className="nv-plat-sub"
-                            data-active={"providers:" + t === active ? "true" : "false"}
-                            data-testid={"nv-plat-sub:" + t}
-                            data-verb={"platform.open.providers." + t}
-                            aria-current={"providers:" + t === active ? "page" : undefined}
-                            onClick={function () { con.goView("platform", "providers", t); }}>
-                            {NV_PROVIDER_TYPE_LABELS[t] || t}
-                          </button>
-                        );
-                      })}
-                    </div>
+                    <React.Fragment>
+                      <div className="nv-plat-subs" role="group"
+                        aria-label="Provider types" data-testid="nv-plat-subs">
+                        {types.map(function (t) {
+                          return (
+                            <button type="button" key={t} className="nv-plat-sub"
+                              data-active={"providers:" + t === active ? "true" : "false"}
+                              data-testid={"nv-plat-sub:" + t}
+                              data-verb={"platform.open.providers." + t}
+                              aria-current={"providers:" + t === active ? "page" : undefined}
+                              onClick={function () { con.goView("platform", "providers", t); }}>
+                              {NV_PROVIDER_TYPE_LABELS[t] || t}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <button type="button" className="nv-plat-sub"
+                        data-testid="nv-plat-sub:register"
+                        data-verb="provider.register"
+                        onClick={function () {
+                          var verb = con.registry && con.registry.get("provider.register");
+                          if (verb && verb.run) verb.run();
+                        }}>
+                        + Register
+                      </button>
+                    </React.Fragment>
                   ) : null}
                 </React.Fragment>
               );

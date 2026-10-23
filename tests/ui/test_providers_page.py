@@ -413,7 +413,7 @@ def test_the_register_verb_is_registered_in_nv_shell() -> None:
     shell_src = NV_SHELL_FILE.read_text(encoding="utf-8")
     assert 'id: "provider.register"' in shell_src
     assert 'label: "Register Provider"' in shell_src
-    assert 'surfaces: ["palette"]' in shell_src
+    assert 'surfaces: ["palette", "platform-nav"]' in shell_src
     assert 'goView("platform", "providers")' in shell_src
     assert "window.PC_requestRegister(null)" in shell_src or "window.PC_requestRegister(" in shell_src
 

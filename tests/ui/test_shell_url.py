@@ -21,6 +21,7 @@ MODULE = ROOT / "ui" / "foundation" / "shell-url.js"
 INDEX = ROOT / "ui" / "index.html"
 MANIFEST = ROOT / "ui" / "fixtures" / "shell" / "manifest.json"
 CATALOG = ROOT / "ui" / "components" / "provider-catalog.jsx"
+REGISTER_COMMON = ROOT / "ui" / "components" / "providers" / "register-common.jsx"
 
 
 def _ctx():
@@ -340,8 +341,8 @@ def test_the_types_are_provider_classes_in_sidebar_order() -> None:
     ctx = _ctx()
     types = json.loads(ctx.eval("JSON.stringify(SH_VIEW_SUBS['platform:providers'])"))
     assert types == SIDEBAR_TYPES, "the sidebar order: TTS and ASR last"
-    catalog = CATALOG.read_text(encoding="utf-8")
-    classes = re.findall(r'\{ key: "(\w+)", label: ', catalog[catalog.index("const PROVIDER_CLASSES"):catalog.index("const PC_ALL_TYPE_CHIPS")])
+    common = REGISTER_COMMON.read_text(encoding="utf-8")
+    classes = re.findall(r'\{ key: "(\w+)", label: ', common[common.index("const PC_CLASSES"):common.index("function PC_classByKey")])
     assert set(types) <= set(classes), "a type that is not a provider class would open the catalog on nothing"
     assert types[-2:] == ["tts", "stt"]
 
