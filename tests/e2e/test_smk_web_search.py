@@ -321,7 +321,7 @@ async def test_web_search_required_approval_park_resume_real_ddg(
     config left at the bootstrap DuckDuckGo provider."""
     # Gate the built-in web toolset's web-search tool with a required policy.
     pol = f"pol-web06-{unique_suffix}"
-    existing = await authed_client.get("/v1/tool_approval_policies")
+    existing = await authed_client.get("/v1/tool_approval_policies", params={"limit": 200})
     if existing.status_code == 200:
         for it in existing.json().get("items", []):
             if (it.get("toolset_id") == _WEB_TOOLSET_ID
@@ -429,7 +429,7 @@ async def test_tool_approval_policy_crud_and_disable(authed_client, unique_suffi
     the enable toggle are pinned."""
     pol = f"pol-web10-{unique_suffix}"
     # Clear any leftover policy on the same (toolset, tool) pair.
-    existing = await authed_client.get("/v1/tool_approval_policies")
+    existing = await authed_client.get("/v1/tool_approval_policies", params={"limit": 200})
     if existing.status_code == 200:
         for it in existing.json().get("items", []):
             if (it.get("toolset_id") == _WEB_TOOLSET_ID

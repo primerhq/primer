@@ -302,7 +302,7 @@ async def test_parked_session_state_survives_a_hard_refresh(
     already run once). Defends against inheriting that debris the same
     way _drive_approval_park does: clear any leftover policy for the
     pair before creating this test's own."""
-    existing = await client.get("/v1/tool_approval_policies")
+    existing = await client.get("/v1/tool_approval_policies", params={"limit": 200})
     if existing.status_code == 200:
         for it in existing.json().get("items", []):
             if it.get("toolset_id") == "misc" and it.get("tool_name") == "uuid_v4":

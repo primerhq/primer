@@ -106,7 +106,7 @@ async def test_list_and_delete(client):
         "approval": {"type": "required"},
     }
     await client.post("/v1/tool_approval_policies", json=body)
-    r = await client.get("/v1/tool_approval_policies")
+    r = await client.get("/v1/tool_approval_policies", params={"limit": 200})
     assert r.status_code == 200
     assert any(p["id"] == "p-list" for p in r.json()["items"])
     r = await client.delete("/v1/tool_approval_policies/p-list")

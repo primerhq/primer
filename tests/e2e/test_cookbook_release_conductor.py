@@ -114,7 +114,7 @@ async def _make_required_policy(client: httpx.AsyncClient, *, policy_id: str) ->
     Policies are unique on ``(toolset_id, tool_name)``; clear any leftover for
     the pair first so re-runs don't 409.
     """
-    existing = await client.get("/v1/tool_approval_policies")
+    existing = await client.get("/v1/tool_approval_policies", params={"limit": 200})
     if existing.status_code == 200:
         for it in existing.json().get("items", []):
             if (
