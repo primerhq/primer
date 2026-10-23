@@ -191,6 +191,12 @@ v1 and v2) and moves an unedited row to the current definition. It
 exists because `m011` had already run on deployed installs when its
 v1-only "before" set was found too narrow, and a migration that has run
 is never edited: the fix is a new version.
+`m016_admin_run_gates.py` creates rows as `m014` does, for the
+admin-tier writes (the approval policy writes, the toolset writes
+whose body runs code on the server host, the harness install, sync
+and uninstall): it creates the shipped gate of each tool that has no
+policy under any id or spelling, and carries its own frozen copy of
+the table and of the toolset gate's Rego text.
 
 ### The `document_content` table
 

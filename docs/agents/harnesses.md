@@ -134,6 +134,16 @@ whoever asked for it (the run's initiator, or the MCP caller over
 `/v1/mcp`) to be an admin; otherwise it fails with
 `toolset_needs_admin` in `last_operation_error`.
 
+`install`, `sync` and `uninstall` are also approval-gated by default
+(see [tool approval](tool-approval.md), "What a fresh install gates"):
+in a session the call parks until a person approves it, even when an
+admin started the run, and over `/v1/mcp` it is refused
+(`approval_required`) unless the operator disables or retunes its
+gate. The bare tool ids carry `harness__`, so an agent calls them
+through `system::call_tool` (`toolset_id: "harness"`), which meets the
+same gate. `POST /v1/harnesses/{id}/install` and the other REST routes
+are not gated.
+
 ### Discovery and inspection
 
 - `harness::harness__list` - paginated listing of harness rows.

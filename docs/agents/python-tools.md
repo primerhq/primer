@@ -24,7 +24,10 @@ An agent that holds the `crud` toolset (the builder) manages python toolsets wit
 REST route. A python toolset runs its source on the Primer host, so creating or changing one
 requires the admin role on every surface: `POST /v1/toolsets` / `PUT /v1/toolsets/{id}` answer 403 below admin,
 and `system::create_toolset` / `system::update_toolset` answer `type=forbidden` unless the run
-was started by an admin (always over `/v1/mcp`, where the caller's role is not known). Creating a toolset with a reserved id (`external`, `workspace`,
+was started by an admin (always over `/v1/mcp`, where the caller's role is not known). For an
+admin's run they are approval-gated by default, as the `crud` tools are: a body that is a python
+or stdio MCP toolset parks until a person approves it (see [tool approval](tool-approval.md),
+"What a fresh install gates"). Creating a toolset with a reserved id (`external`, `workspace`,
 `workspace_ext`) returns `type=conflict`, and so does editing the source of a
 harness-managed toolset. An update bumps `source_version` and drops the running
 toolset from the registry's cache, so the very next call resolves the new
