@@ -42,7 +42,7 @@ from primer.model.workspace_session import (
 from primer.model.problem_details import record_without_traceback
 from primer.model.storage import OffsetPage
 from primer.tap.event import TapEvent, record_to_tap_event
-from primer.tap.selector import event_matches, session_predicate_for_storage
+from primer.tap.selector import match_events, session_predicate_for_storage
 
 if TYPE_CHECKING:
     from primer.tap.cursor import TapCursor
@@ -251,21 +251,23 @@ async def read_session_since(
     next_offset = from_offset + consumed
 
     agent_id, graph_id = _agent_graph_ids(session)
-    events: list[TapEvent] = []
+    candidates: list[TapEvent] = []
     for line in lines:
         record = _parse_record(line)
         if record is None or record.seq <= after_seq:
             continue
-        ev = record_to_tap_event(
+        candidates.append(record_to_tap_event(
             record,
             workspace_id=workspace_id,
             session_id=session.id,
             agent_id=agent_id,
             graph_id=graph_id,
             cursor=f"{session.id}:{record.seq}",
-        )
-        if event_matches(selector, ev):
-            events.append(ev)
+        ))
+    # One batch: a selector with a LIKE is matched off the event loop under
+    # one time budget (G6-4); TapSelectorTimeout propagates to the caller.
+    keep = await match_events(selector, candidates)
+    events = [ev for ev, ok in zip(candidates, keep) if ok]
 
     return events, next_offset
 
@@ -381,35 +383,46 @@ async def read_batch(
 
         agent_id, graph_id = _agent_graph_ids(session)
 
-        # Walk lines, tracking the running absolute byte offset after each line
-        # so we can record the offset of the last CONSUMED line precisely.
+        # Parse and map first, then match the whole window in one batch: a
+        # selector with a LIKE is matched off the event loop under one time
+        # budget (G6-4; TapSelectorTimeout propagates and the cursor is not
+        # advanced). The walk below applies the limit to the decisions.
+        parsed: list[tuple[int, Any, TapEvent | None]] = []
         line_offset = from_offset  # absolute offset at the START of current line
-        last_consumed_offset = from_offset  # updated after each consumed record
-
         for line in lines:
             line_end = line_offset + len(line) + 1  # +1 for the '\n'
+            line_offset = line_end
+            record = _parse_record(line)
+            ev = None
+            if record is not None and record.seq > resume_seq:
+                ev = record_to_tap_event(
+                    record,
+                    workspace_id=workspace_id,
+                    session_id=session.id,
+                    agent_id=agent_id,
+                    graph_id=graph_id,
+                    cursor=f"{session.id}:{record.seq}",
+                )
+            parsed.append((line_end, record, ev))
+        keep = iter(await match_events(selector, [ev for _, _, ev in parsed if ev is not None]))
+
+        # Walk lines, tracking the running absolute byte offset after each line
+        # so we can record the offset of the last CONSUMED line precisely.
+        last_consumed_offset = from_offset  # updated after each consumed record
+
+        for line_end, record, ev in parsed:
             if len(events) >= limit:
                 break
-            record = _parse_record(line)
-            line_offset = line_end  # advance regardless — line is processed
-            if record is None or record.seq <= resume_seq:
+            if ev is None:
                 # Seq-filter backstop: update offset even for skipped records so
                 # the hint stays as far forward as possible.
                 last_consumed_offset = line_end
                 continue
-            ev = record_to_tap_event(
-                record,
-                workspace_id=workspace_id,
-                session_id=session.id,
-                agent_id=agent_id,
-                graph_id=graph_id,
-                cursor=f"{session.id}:{record.seq}",
-            )
             # Advance the seq cursor for every consumed record so a filtered-out
             # record is never re-offered on the next drain.
             cursor.advance(session.id, record.seq)
             last_consumed_offset = line_end
-            if event_matches(selector, ev):
+            if next(keep):
                 events.append(ev)
 
         # Record the offset of the last consumed line (not the end of the whole

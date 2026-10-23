@@ -9,17 +9,49 @@ Two public surfaces:
   given ``workspace_id``.
 * :func:`event_matches` — evaluates the ``events`` predicate in memory
   against a single :class:`~primer.tap.event.TapEvent`.
+* :func:`match_events`, the readers' batch form: when the predicate holds a
+  ``LIKE`` / ``ILIKE`` it runs in a worker thread under one time budget.
+* :func:`check_selector`, the decode-time check of the ``LIKE`` patterns.
+
+A ``LIKE`` pattern is the caller's (G6-4): ``%`` becomes ``.*``, so
+``%a%a%a%a%!`` backtracks polynomially on a long value. Patterns are capped
+at :data:`LIKE_PATTERN_MAX_LENGTH` characters, compiled with the ``regex``
+engine (cached) and matched with the GIL released under one
+:data:`TAP_MATCH_SECONDS` budget per read; a read that runs the budget out
+raises :class:`TapSelectorTimeout`.
 """
 
 from __future__ import annotations
 
-import re
+import asyncio
 from typing import Any
 
+import regex
 from pydantic import BaseModel
 
+from primer.common.user_regex import (
+    MAX_PATTERN_LENGTH,
+    MatchBudget,
+    UserRegexError,
+    compile_user_regex,
+)
+from primer.model.except_ import BadRequestError
 from primer.model.storage import FieldRef, Op, Predicate, Value
 from primer.tap.event import TapEvent
+
+# The longest LIKE / ILIKE pattern a selector's ``events`` predicate may hold.
+LIKE_PATTERN_MAX_LENGTH = MAX_PATTERN_LENGTH
+# The total time one read (an SSE tick, an MCP drain) may spend matching
+# LIKE patterns, over every event it filters.
+TAP_MATCH_SECONDS = 1.0
+
+
+class TapSelectorError(ValueError):
+    """A selector's ``events`` predicate cannot be evaluated safely (a LIKE pattern that is too long or invalid)."""
+
+
+class TapSelectorTimeout(BadRequestError):
+    """Matching a selector's LIKE patterns ran out of the read's time budget."""
 
 # ---------------------------------------------------------------------------
 # Public model
@@ -124,16 +156,23 @@ def _resolve_field(name: str, event: TapEvent) -> Any:
     )
 
 
-def _like_to_regex(pattern: str, *, flags: int = 0) -> re.Pattern[str]:
-    """Convert a SQL LIKE pattern to a compiled regex.
+def _like_to_regex(pattern: str, *, flags: int = 0) -> regex.Pattern:
+    """Convert a SQL LIKE pattern to a compiled (cached) ``regex`` pattern.
 
     * ``%`` -> ``.*``
     * ``_`` -> ``.``
     * All other regex metacharacters are escaped.
 
-    ``flags`` is passed through to :func:`re.compile`; pass
-    ``re.IGNORECASE`` for a case-insensitive (SQL ILIKE) match.
+    ``flags`` is passed through to the compile; pass ``regex.IGNORECASE``
+    for a case-insensitive (SQL ILIKE) match. Raises
+    :class:`TapSelectorError` for a pattern over
+    :data:`LIKE_PATTERN_MAX_LENGTH` characters.
     """
+    if len(pattern) > LIKE_PATTERN_MAX_LENGTH:
+        raise TapSelectorError(
+            f"a LIKE pattern in the selector is {len(pattern)} characters long; "
+            f"the limit is {LIKE_PATTERN_MAX_LENGTH}"
+        )
     parts: list[str] = []
     i = 0
     while i < len(pattern):
@@ -143,12 +182,48 @@ def _like_to_regex(pattern: str, *, flags: int = 0) -> re.Pattern[str]:
         elif ch == "_":
             parts.append(".")
         else:
-            parts.append(re.escape(ch))
+            parts.append(regex.escape(ch))
         i += 1
-    return re.compile("".join(["^"] + parts + ["$"]), flags)
+    try:
+        # The translation, not the user's text, is compiled: escaping can
+        # double its length, so the cap above is the one that applies.
+        return compile_user_regex("".join(["^"] + parts + ["$"]), flags, max_length=None)
+    except UserRegexError as exc:
+        raise TapSelectorError(f"a LIKE pattern in the selector cannot be used: {exc}") from None
 
 
-def _eval_predicate(pred: Predicate, event: TapEvent) -> bool:
+def _like_patterns(pred: Predicate | None) -> list[tuple[Op, str]]:
+    """Every (op, pattern) LIKE / ILIKE comparison in ``pred``."""
+    found: list[tuple[Op, str]] = []
+    stack = [pred] if pred is not None else []
+    while stack:
+        node = stack.pop()
+        if node.op in (Op.AND, Op.OR):
+            stack.extend(side for side in (node.left, node.right) if isinstance(side, Predicate))
+        elif node.op in (Op.LIKE, Op.ILIKE) and isinstance(node.right, Value) and isinstance(node.right.value, str):
+            found.append((node.op, node.right.value))
+    return found
+
+
+def check_selector(selector: TapSelector) -> None:
+    """Refuse a selector whose ``events`` LIKE patterns are too long or do not compile (:class:`TapSelectorError`).
+
+    The SSE route and the MCP tap tool call it when they decode a selector,
+    so the caller is told before a stream starts.
+    """
+    for op, pattern in _like_patterns(selector.events):
+        _like_to_regex(pattern, flags=regex.IGNORECASE if op is Op.ILIKE else 0)
+
+
+def _timeout_error(budget: MatchBudget) -> TapSelectorTimeout:
+    return TapSelectorTimeout(
+        f"tap selector stopped: matching its LIKE patterns used the {budget.seconds:g} s "
+        "budget of one read. A pattern of many % wildcards ('%a%a%a%a%!') backtracks "
+        "on long values; simplify the selector."
+    )
+
+
+def _eval_predicate(pred: Predicate, event: TapEvent, budget: MatchBudget) -> bool:
     """Recursively evaluate *pred* against *event*."""
     op = pred.op
 
@@ -157,11 +232,11 @@ def _eval_predicate(pred: Predicate, event: TapEvent) -> bool:
     # ------------------------------------------------------------------
     if op is Op.AND:
         assert isinstance(pred.left, Predicate) and isinstance(pred.right, Predicate)
-        return _eval_predicate(pred.left, event) and _eval_predicate(pred.right, event)
+        return _eval_predicate(pred.left, event, budget) and _eval_predicate(pred.right, event, budget)
 
     if op is Op.OR:
         assert isinstance(pred.left, Predicate) and isinstance(pred.right, Predicate)
-        return _eval_predicate(pred.left, event) or _eval_predicate(pred.right, event)
+        return _eval_predicate(pred.left, event, budget) or _eval_predicate(pred.right, event, budget)
 
     # ------------------------------------------------------------------
     # Comparison operators — left is FieldRef, right is Value
@@ -215,28 +290,63 @@ def _eval_predicate(pred: Predicate, event: TapEvent) -> bool:
         assert isinstance(field_val, str), (
             f"Op.LIKE can only match string fields, got {type(field_val)}"
         )
-        return bool(_like_to_regex(rhs).match(field_val))
+        return _like_matches(rhs, field_val, 0, budget)
 
     if op is Op.ILIKE:
         assert isinstance(rhs, str), f"Op.ILIKE expects a string pattern, got {type(rhs)}"
         assert isinstance(field_val, str), (
             f"Op.ILIKE can only match string fields, got {type(field_val)}"
         )
-        return bool(_like_to_regex(rhs, flags=re.IGNORECASE).match(field_val))
+        return _like_matches(rhs, field_val, regex.IGNORECASE, budget)
 
     # Should be unreachable if Op enum is exhaustive, but guard anyway.
     raise NotImplementedError(f"Unsupported Op: {op!r}")  # pragma: no cover
 
 
-def event_matches(selector: TapSelector, event: TapEvent) -> bool:
+def _like_matches(pattern: str, value: str, flags: int, budget: MatchBudget) -> bool:
+    compiled = _like_to_regex(pattern, flags=flags)
+    try:
+        return budget.match(compiled, value) is not None
+    except TimeoutError as exc:
+        raise _timeout_error(budget) from exc
+
+
+def _new_budget() -> MatchBudget:
+    return MatchBudget(TAP_MATCH_SECONDS, what="tap selector LIKE pattern")
+
+
+def event_matches(selector: TapSelector, event: TapEvent, *, budget: MatchBudget | None = None) -> bool:
     """Return ``True`` if *event* satisfies *selector.events*.
 
     When ``selector.events`` is ``None`` every event matches (pass-through).
-    Otherwise the predicate tree is evaluated in memory against *event*.
+    Otherwise the predicate tree is evaluated in memory against *event*,
+    its LIKE patterns under ``budget`` (a fresh one when not given).
 
     Raises :class:`ValueError` if a :class:`~primer.model.storage.FieldRef`
-    names a field that does not exist on :class:`~primer.tap.event.TapEvent`.
+    names a field that does not exist on :class:`~primer.tap.event.TapEvent`,
+    :class:`TapSelectorError` for a LIKE pattern that is too long, and
+    :class:`TapSelectorTimeout` when the budget runs out.
     """
     if selector.events is None:
         return True
-    return _eval_predicate(selector.events, event)
+    return _eval_predicate(selector.events, event, budget if budget is not None else _new_budget())
+
+
+async def match_events(selector: TapSelector, events: list[TapEvent]) -> list[bool]:
+    """``event_matches`` for each of ``events``, in order.
+
+    A predicate with a LIKE / ILIKE runs in a worker thread (the engine
+    releases the GIL) under ONE :data:`TAP_MATCH_SECONDS` budget for the
+    whole batch, so a hostile pattern neither stalls the event loop nor
+    runs past the bound; any other predicate is evaluated inline.
+    """
+    if selector.events is None:
+        return [True] * len(events)
+    if not events or not _like_patterns(selector.events):
+        return [_eval_predicate(selector.events, event, _new_budget()) for event in events]
+    budget = _new_budget()
+
+    def _all() -> list[bool]:
+        return [_eval_predicate(selector.events, event, budget) for event in events]
+
+    return await asyncio.to_thread(_all)

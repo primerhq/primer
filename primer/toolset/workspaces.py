@@ -108,7 +108,7 @@ from primer.session.peer_messages import (
 )
 from primer.tap.cursor import TapCursor
 from primer.tap.reader import read_batch
-from primer.tap.selector import TapSelector
+from primer.tap.selector import TapSelector, TapSelectorError, TapSelectorTimeout, check_selector
 from primer.session.slot_view import overlay_row_on_slot_info, overlay_rows_on_infos
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import err as _err, ok as _ok
@@ -483,7 +483,9 @@ class _WorkspaceTapArgs(BaseModel):
         description=(
             "Optional TapSelector as a JSON object with optional "
             "``sessions`` / ``events`` predicates. Scopes which sessions "
-            "and events the drain returns. Malformed → a tool error."
+            "and events the drain returns. Malformed → a tool error. An "
+            "``events`` LIKE / ILIKE pattern is at most 1000 characters, "
+            "and one drain may spend 1 s matching them."
         ),
     )
     cursor: str | None = Field(
@@ -2833,6 +2835,11 @@ def build_workspaces_toolset(
                 "invalid selector: " + json.dumps(without_input(exc.errors()), default=str),
                 error_type="bad-request",
             )
+        # A LIKE pattern over the cap (G6-4) is refused before anything is read.
+        try:
+            check_selector(selector)
+        except TapSelectorError as exc:
+            return _err(f"invalid selector: {exc}", error_type="bad-request")
 
         # Tolerant decode: absent / empty / garbage → fresh drain.
         cursor = TapCursor.decode(args.cursor)
@@ -2864,7 +2871,12 @@ def build_workspaces_toolset(
             )
             return events
 
-        events = await _drain()
+        try:
+            events = await _drain()
+        except TapSelectorTimeout as exc:
+            # The selector's LIKE patterns ran out of the read's time budget
+            # (G6-4): a clear error result; the cursor is not advanced.
+            return _err(str(exc), error_type="bad-request")
 
         # Bounded long-poll: only when the immediate drain is empty AND
         # the caller asked to wait AND a router is wired. This never parks
@@ -2882,7 +2894,10 @@ def build_workspaces_toolset(
                     pass
             finally:
                 await sub.aclose()
-            events = await _drain()
+            try:
+                events = await _drain()
+            except TapSelectorTimeout as exc:
+                return _err(str(exc), error_type="bad-request")
 
         return _ok(
             {
