@@ -29,6 +29,7 @@ from playwright.sync_api import expect
 
 from tests._support.smk import smk  # noqa: E402
 from tests.ui_e2e._shell_helpers import open_legacy_route, wait_for_overlay_url
+from tests.ui_e2e._studio_helpers import open_provider_catalog
 pytestmark = smk("SMK-UI-06", status="partial")
 
 
@@ -62,23 +63,14 @@ def test_workspace_chain_create_journey(
 
     try:
         # ---- 1. Create the provider via the UI ---------------------------
-        page.wait_for_function(
-            "() => typeof window.WorkspaceProvidersPage === 'function'",
-            timeout=20_000,
-        )
-        open_legacy_route(page, console_url, "workspaces/providers")
-        page.get_by_role(
-            "button", name="New workspace provider",
-        ).or_(
-            page.get_by_role("button", name="New provider")
-        ).first.click()
-
-        modal = page.locator(".modal").first
-        expect(modal).to_be_visible(timeout=5_000)
-        modal.locator("input.input.mono").first.fill(provider_id)
-        modal.locator("[data-testid='ws-provider-path']").fill(f"/tmp/{provider_id}")
-        modal.get_by_role("button", name="Create").first.click()
-        expect(modal).not_to_be_visible(timeout=10_000)
+        open_provider_catalog(page, console_url, cls="workspace")
+        page.get_by_test_id("pc-register-open").click()
+        overlay = page.get_by_test_id("pc-register")
+        expect(overlay).to_be_visible(timeout=15_000)
+        overlay.locator("input.input.mono").first.fill(provider_id)
+        overlay.locator("[data-testid='ws-provider-path']").fill(f"/tmp/{provider_id}")
+        overlay.get_by_role("button", name="Register").first.click()
+        expect(overlay).not_to_be_visible(timeout=10_000)
         wait_for_overlay_url(page, f"workspaces/providers/{provider_id}")
 
         # ---- 2. Create the template via the UI ---------------------------

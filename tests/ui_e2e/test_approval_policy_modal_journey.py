@@ -127,24 +127,8 @@ def test_u0110_policy_modal_llm_judge_journey(
     try:
         # --- 1. Verify seeded provider is listed on /providers/llm --
         open_legacy_route(page, console_url, "providers/llm")
-        # The catalog renders provider rows as cards, not a table, so
-        # there is no tbody to filter - and this surface (provider-
-        # catalog.jsx's PC_InstanceList) has no search field at all, just
-        # a 25-per-page pager. The shared stack legitimately accumulates
-        # fixture residue across rounds (by design, not a bug to clean
-        # up), which can push a freshly seeded row past page 1. Page
-        # forward until it's found or there's nowhere left to go, rather
-        # than assuming page 1.
-        provider_row = page.get_by_test_id("provider-instances-llm").get_by_text(
-            pid, exact=True,
-        )
-        next_btn = page.get_by_test_id("pager-next")
-        for _ in range(50):  # generous bound: 50 pages * 25/page = 1250 rows
-            if provider_row.count() > 0 or next_btn.is_disabled():
-                break
-            next_btn.click()
-            page.wait_for_timeout(300)
-        expect(provider_row.first).to_be_visible(timeout=15_000)
+        page.fill('[data-testid="pc-filter"]', pid)
+        page.wait_for_selector(f'[data-testid="pk-card:llm:{pid}"]', timeout=15_000)
 
         # --- 2. Open the policy modal from the Tools page ----------
         # uiv2 cutover: the standalone Tools catalog page retired; the

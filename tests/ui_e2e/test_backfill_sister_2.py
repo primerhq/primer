@@ -145,11 +145,11 @@ def test_u0098_embedding_provider_invalidate_toasts_and_preserves_row(
     cleanup_urls = [f"/v1/embedding_providers/{pid}"]
     try:
         open_provider_catalog(page, console_url, cls="embedding")
-        page.click(f'[data-testid="provider-card-open-{pid}"]')
-        form = page.get_by_test_id("provider-form-embedding_providers")
-        form.wait_for(state="visible", timeout=15_000)
+        page.click(f'[data-testid="pk-card-open:embedding:{pid}"]')
+        overlay = page.get_by_test_id("pc-register")
+        overlay.wait_for(state="visible", timeout=15_000)
 
-        inv = form.get_by_test_id("provider-form-invalidate-action")
+        inv = overlay.locator('[data-testid="pc-register-invalidate"] button')
         # Bumped wait vs U0091's LLM variant, same margin as before this
         # retarget, to give the form's own fetches a beat to settle.
         inv.wait_for(state="visible", timeout=20_000)

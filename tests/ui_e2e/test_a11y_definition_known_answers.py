@@ -286,7 +286,7 @@ _ONLY_THE_NETWORK_SEES = {
     "an entity picker that could not load, with the server's words (entity-picker.jsx draws \"Couldn't load ...\" only when the error has neither detail nor message)": '<div class="field-help warn" style="padding:10px;margin:0">Internal Server Error</div>',
     "the toolsets table error (toolsets.jsx)": '<table><tbody><tr><td colspan="5"><span style="color:var(--red)">Internal Server Error</span> &middot; <a>Retry</a></td></tr></tbody></table>',
     "the health probe failing (health.jsx)": '<div style="font-size:18px">Health probe failing</div><span class="mono" style="color:var(--red)">error: Internal Server Error</span>',
-    "a provider class body while its list loads (provider-catalog.jsx)": '<div data-testid="provider-body-llm"><div class="empty-state"><p>No providers match "".</p></div></div>',
+    "a provider class body while its list loads (provider-catalog.jsx)": '<div data-testid="provider-body-llm"><div class="pc-filter-empty" data-testid="pc-filter-empty">No providers match "".</div></div>',
 }
 
 

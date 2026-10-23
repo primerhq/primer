@@ -17,15 +17,14 @@ import httpx
 from playwright.sync_api import expect
 
 from tests.ui_e2e._shell_helpers import open_legacy_route
+from tests.ui_e2e._studio_helpers import open_provider_catalog
 
 
 def _open_new_provider_modal(page, console_url: str):
-    open_legacy_route(page, console_url, "channels/providers")
-    new_btn = page.get_by_role("button", name="New provider", exact=True)
-    expect(new_btn).to_be_visible(timeout=20_000)
-    new_btn.click()
-    modal = page.locator(".modal").first
-    expect(modal).to_be_visible(timeout=5_000)
+    open_provider_catalog(page, console_url, cls="channel")
+    page.get_by_test_id("pc-register-open").click()
+    modal = page.get_by_test_id("pc-register")
+    expect(modal).to_be_visible(timeout=15_000)
     return modal
 
 
@@ -51,7 +50,7 @@ def test_a_422_the_form_shows_inline_is_not_also_an_uncaught_error(page, base_ur
         expect(tokens).to_have_count(3, timeout=5_000)
         tokens.nth(0).fill("wrongprefix-not-xapp")
         tokens.nth(1).fill("xoxb-test-placeholder")
-        modal.get_by_role("button", name="Create provider", exact=True).click()
+        modal.get_by_role("button", name="Register", exact=True).click()
 
         # The refusal is shown, the modal stays open for a retry...
         expect(modal.get_by_text("xapp-", exact=False).last).to_be_visible(timeout=10_000)
@@ -76,7 +75,7 @@ def test_a_409_shown_as_a_toast_is_not_also_an_uncaught_error(page, base_url: st
         expect(tokens).to_have_count(3, timeout=5_000)
         tokens.nth(0).fill("xapp-test-token")
         tokens.nth(1).fill("xoxb-test-placeholder")
-        modal.get_by_role("button", name="Create provider", exact=True).click()
+        modal.get_by_role("button", name="Register", exact=True).click()
 
         # The duplicate id is refused and the refusal is shown as an error toast (a 409 has no field to sit under): not silence.
         expect(page.locator(".toast.toast-error").first).to_be_visible(timeout=10_000)

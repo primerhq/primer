@@ -117,13 +117,14 @@ def _sweep_forms(page: Page, sweep: Sweep, kind: str, name: str, forms: list[For
             sweep.skip(surface, "its page never showed")
             continue
         try:
-            new = page.locator(scope).get_by_role("button", name=re.compile(rf"^(\+ )?{re.escape(form.button)}\b")).first
+            btn_pat = r"^\+ Register$" if form.button == "+ Register" else rf"^(\+ )?{re.escape(form.button)}\b"
+            new = page.locator(scope).get_by_role("button", name=re.compile(btn_pat)).first
             expect(new).to_be_visible(timeout=sweep.budget.wait_ms(15_000))
             expect(new).to_be_enabled(timeout=sweep.budget.wait_ms(5_000))
             expect(page.locator(form.root)).to_have_count(0, timeout=sweep.budget.wait_ms(5_000))   # a form root that is already there would be the page recorded as the form
             new.click(timeout=sweep.budget.wait_ms(10_000))
             if form.then:
-                item = page.locator(f"{scope} {form.then}").first
+                item = page.locator(f"{form.then}").first
                 expect(item).to_be_visible(timeout=sweep.budget.wait_ms(15_000))
                 item.click(timeout=sweep.budget.wait_ms(10_000))
             expect(page.locator(form.root).first).to_be_visible(timeout=sweep.budget.wait_ms(10_000))

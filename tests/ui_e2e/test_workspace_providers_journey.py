@@ -1,20 +1,9 @@
 """UI E2E: workspace provider create + detail + delete journey.
 
-Multi-page Playwright journey on the new Workspace Providers page.
-Creates a local provider via the modal, asserts the row appears in
-the list and the detail page renders, then deletes via the detail
+Multi-page Playwright journey on the Workspace Providers page.
+Creates a local provider via the register overlay, asserts the row appears
+in the list and the detail page renders, then deletes via the detail
 header.
-
-Pinned invariants:
-  * The empty state renders with the call-to-action.
-  * The create modal's backend select discriminates the form
-    (local shows `path`; container hides it and shows runtime fields).
-  * Submit closes the modal AND navigates to the detail page.
-  * The Templates tab renders an empty state when nothing references
-    the provider.
-  * Delete from the detail page closes the overlay and lands on the
-    Platform Providers page (the address is checked AFTER the delete),
-    and the row is gone.
 """
 
 from __future__ import annotations
@@ -23,15 +12,12 @@ import re
 
 import httpx
 import pytest
-
 from playwright.sync_api import expect
 
+from tests._support.smk import smk
+from tests.ui_e2e._shell_helpers import wait_for_overlay_url
+from tests.ui_e2e._studio_helpers import open_provider_catalog
 
-from tests._support.smk import smk  # noqa: E402
-from tests.ui_e2e._shell_helpers import (
-    open_legacy_route,
-    wait_for_overlay_url,
-)
 pytestmark = smk("SMK-UI-06")
 
 
@@ -44,12 +30,6 @@ def _cleanup(base_url: str, provider_ids: list[str]) -> None:
                 pass
 
 
-# US-011b/US-014 triage (2026-08-29): the pre-existing ui_e2e overlay-mount
-# race (orig handoff known-issue #1) - same family as
-# test_mobile_modal_is_sheet.py's mobile params and
-# test_agents_create.py's u0007. Failed once in the full US-014 E2E run,
-# passed twice in a row in isolation with no code change; a real
-# regression in this surface would still fail outright after the reruns.
 @pytest.mark.flaky(reruns=2, reruns_delay=1)
 def test_workspace_provider_create_detail_delete_journey(
     page,
@@ -60,63 +40,39 @@ def test_workspace_provider_create_detail_delete_journey(
     provider_id = f"ws-prov-{unique_suffix}"
 
     try:
-        # The conftest page fixture already navigated to console_url.
-        # Wait until the page component is defined before pushing the
-        # hash: these load asynchronously (data-type="module" in
-        # index.html), and React crashes with "type is invalid - got
-        # undefined" if the hash lands first. This used to gate on the
-        # sidebar rendering, which the shell replaced with the rail.
-        page.wait_for_function(
-            "() => typeof window.WorkspaceProvidersPage === 'function'",
-            timeout=15_000,
-        )
-
-        # S4 folded every provider class into one catalog, and workspace
-        # providers are the "workspace" class in it. The standalone
-        # #/workspaces/providers route died with the per-class pages; the
-        # page component itself is reused verbatim as that class's panel.
-        open_legacy_route(page, console_url, "workspaces/providers")
+        open_provider_catalog(page, console_url, cls="workspace")
         page.get_by_test_id("provider-body-workspace").wait_for(
             state="visible", timeout=10_000,
         )
 
-        # Empty-state CTA OR filter-bar "New provider" — both work.
-        new_btn = page.get_by_role(
-            "button", name="New workspace provider",
-        ).or_(
-            page.get_by_role("button", name="New provider")
-        ).first
-        expect(new_btn).to_be_visible(timeout=20_000)
-        new_btn.click()
-
-        modal = page.locator(".modal").first
-        expect(modal).to_be_visible(timeout=5_000)
+        page.get_by_test_id("pc-register-open").click()
+        overlay = page.get_by_test_id("pc-register")
+        expect(overlay).to_be_visible(timeout=15_000)
 
         # Default backend is local; path field visible.
-        path_input = modal.locator("[data-testid='ws-provider-path']")
+        path_input = overlay.locator("[data-testid='ws-provider-path']")
         expect(path_input).to_be_visible()
 
         # Switch backend to container — path hides, runtime select appears.
-        backend_select = modal.locator("select.select").first
+        backend_select = overlay.locator("select.select").first
         backend_select.select_option("container")
         expect(path_input).not_to_be_visible()
-        expect(modal.get_by_text("runtime", exact=False).first).to_be_visible()
+        expect(overlay.get_by_text("runtime", exact=False).first).to_be_visible()
 
         # Back to local — path returns.
         backend_select.select_option("local")
         expect(path_input).to_be_visible()
 
         # Fill id + path; submit.
-        # id field is the first input.input.mono in the modal.
-        modal.locator("input.input.mono").first.fill(provider_id)
+        overlay.locator("input.input.mono").first.fill(provider_id)
         path_input.fill(f"/tmp/{provider_id}")
 
-        submit = modal.get_by_role("button", name="Create").first
+        submit = overlay.get_by_role("button", name="Register").first
         expect(submit).to_be_enabled()
         submit.click()
 
-        # Modal closes; URL navigates to detail page.
-        expect(modal).not_to_be_visible(timeout=10_000)
+        # Overlay closes; URL navigates to detail page.
+        expect(overlay).not_to_be_visible(timeout=10_000)
         wait_for_overlay_url(page, f"workspaces/providers/{provider_id}")
 
         # Detail header renders with the backend badge + path summary.
@@ -125,29 +81,20 @@ def test_workspace_provider_create_detail_delete_journey(
         )
         expect(page.get_by_text(f"/tmp/{provider_id}", exact=False).first).to_be_visible()
 
-        # Switch to Templates tab — empty state.
-        page.get_by_role("button", name="Templates", exact=False).first.click()
+        # TEMPLATES section: empty state.
+        expect(page.locator("[data-testid='wp-section-templates']")).to_be_visible(timeout=5_000)
         expect(
             page.get_by_text("No templates bound", exact=False).first
         ).to_be_visible(timeout=5_000)
 
-        # Delete via the detail header. The Delete button is in the panel header.
+        # Delete via the detail header.
         page.get_by_role("button", name="Delete", exact=True).first.click()
-        # Confirmation modal opens. The "Delete provider" button is the danger
-        # action; click it.
         confirm_modal = page.locator(".modal").first
         expect(confirm_modal).to_be_visible(timeout=5_000)
         confirm_modal.get_by_role(
             "button", name="Delete provider"
         ).first.click()
 
-        # The overlay closes and the operator is on the Platform Providers
-        # page (revamp design 10). This step used to wait for the address
-        # ``overlay=providers:workspace``, which is also a PREFIX of the
-        # address from before the delete (``overlay=providers:workspace:
-        # <id>``): it passed at once, whatever the delete did, and the
-        # delete opened the Workspaces overlay on a record called
-        # "providers" ("workspace not found"). Check the address after.
         providers_page = page.get_by_test_id("nv-plat-page:providers")
         expect(providers_page).to_be_visible(timeout=15_000)
         expect(page.locator('[data-testid^="nv-overlay:"]')).to_have_count(0)
@@ -155,11 +102,6 @@ def test_workspace_provider_create_detail_delete_journey(
         expect(page).to_have_url(
             re.compile(r"view=platform(:|%3A)providers"), timeout=5_000,
         )
-        # The row is gone. Scope the page assertion to the page (the toast
-        # stack renders at the shell root, outside it, and the transient
-        # "Provider deleted" toast also renders the id in its detail), and
-        # ask the API too: which provider type the page shows is not part
-        # of this journey.
         expect(
             providers_page.get_by_text(provider_id, exact=True)
         ).to_have_count(0, timeout=5_000)

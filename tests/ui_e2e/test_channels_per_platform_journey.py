@@ -39,6 +39,7 @@ from __future__ import annotations
 import httpx
 from playwright.sync_api import expect
 from tests.ui_e2e._shell_helpers import open_legacy_route, wait_for_overlay_url
+from tests.ui_e2e._studio_helpers import open_provider_catalog
 
 
 # 60-char Discord placeholder — matches the API-side check in
@@ -100,16 +101,12 @@ def test_u0111_channels_per_platform_create_form_journey(
     cp_id = f"u111-cp-{unique_suffix}"
 
     try:
-        # --- 1. Navigate /channels/providers → "New provider" -------
-        open_legacy_route(page, console_url, "channels/providers")
-        new_btn = page.get_by_role(
-            "button", name="New provider", exact=True,
-        )
-        expect(new_btn).to_be_visible(timeout=20_000)
-        new_btn.click()
+        # --- 1. Navigate /channels/providers → Register overlay -----
+        open_provider_catalog(page, console_url, cls="channel")
+        page.get_by_test_id("pc-register-open").click()
 
-        modal = page.locator(".modal").first
-        expect(modal).to_be_visible(timeout=5_000)
+        modal = page.get_by_test_id("pc-register")
+        expect(modal).to_be_visible(timeout=15_000)
 
         # The "id" input is the first input in the modal (placeholder
         # "auto-generated"). Fill it with our deterministic id.
@@ -133,7 +130,7 @@ def test_u0111_channels_per_platform_create_form_journey(
         expect(slack_passwords).to_have_count(3, timeout=5_000)
 
         # --- 3. Switch to Telegram --------------------------------
-        platform_select = modal.locator("select.select").first
+        platform_select = modal.get_by_label("Platform")
         platform_select.select_option("telegram")
 
         # Telegram fields: bot_token + poll_timeout_seconds (default 25).
@@ -181,13 +178,13 @@ def test_u0111_channels_per_platform_create_form_journey(
         # --- 5. Submit Discord form -------------------------------
         disc_passwords.first.fill(_FAKE_DISCORD_TOKEN)
         submit_btn = modal.get_by_role(
-            "button", name="Create provider", exact=True,
+            "button", name="Register", exact=True,
         )
         expect(submit_btn).to_be_enabled(timeout=5_000)
         submit_btn.click()
 
         # Modal closes + URL navigates to /channels/providers/{cp_id}
-        expect(page.locator(".modal")).not_to_be_visible(timeout=10_000)
+        expect(modal).not_to_be_visible(timeout=10_000)
         wait_for_overlay_url(page, f"channels/providers/{cp_id}")
 
         # --- 6. Detail page Probe button disabled with hint --------

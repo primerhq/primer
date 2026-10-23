@@ -86,17 +86,8 @@ def test_knowledge_collection_create_via_ui_then_traverse_pages(
     try:
         # ===== 1. /providers/embedding — verify seeded provider visible =
         open_legacy_route(page, console_url, "providers/embedding")
-        page.locator("h1.page-title").first.wait_for(
-            state="visible", timeout=10_000,
-        )
-        # The catalog lists provider instances as cards beside the form,
-        # not as table rows: the per-class provider pages and their tables
-        # died with S4 P4.
-        expect(
-            page.get_by_test_id("provider-instances-embedding").get_by_text(
-                emb_id, exact=True,
-            )
-        ).to_be_visible(timeout=10_000)
+        page.fill('[data-testid="pc-filter"]', emb_id)
+        page.wait_for_selector(f'[data-testid="pk-card:embedding:{emb_id}"]', timeout=10_000)
 
         # ===== 2. /knowledge/collections — create via the modal ===========
         open_legacy_route(page, console_url, "knowledge/collections")
