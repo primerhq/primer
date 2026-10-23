@@ -109,6 +109,33 @@ async def test_subscription_create_refuses_opa_package_references(client, app, e
     assert all(row["description"] != "unsafe log tap" for row in listed.json()["items"])
 
 
+TEMPLATE_EXPRS = [
+    'package primer.event_filter\nmatch := $"{opa.runtime().env.HOME}" == "/root"\n',
+    'package primer.event_filter\nmatch := $`{opa.runtime().env.HOME}` == "/root"\n',
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("expr", TEMPLATE_EXPRS, ids=["double-quoted", "raw"])
+async def test_subscription_create_refuses_template_strings(client, app, expr) -> None:
+    """G6-2: the code inside a template string's {...} parts is inside the quotes the opa check blanks."""
+    await _login(client)
+
+    refused = await client.post(
+        "/v1/event_subscriptions",
+        json={
+            "description": "template tap",
+            "filter": {"event_types": ["agent.*"], "expr": expr},
+            "sink": {"kind": "log"},
+        },
+    )
+
+    assert refused.status_code == 422, refused.text
+    assert "template strings" in refused.json()["detail"]
+    listed = await client.get("/v1/event_subscriptions")
+    assert all(row["description"] != "template tap" for row in listed.json()["items"])
+
+
 @pytest.mark.asyncio
 async def test_subscription_update_refuses_opa_package_references(client, app) -> None:
     await _login(client)

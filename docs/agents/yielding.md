@@ -295,8 +295,12 @@ session.
   `expr`, including `opa.runtime()`: the platform refuses it before
   storing either a `wait_for_event` subscription or an admin-created
   `/v1/event_subscriptions` row, and a legacy stored expression that
-  contains one never matches. If a filter needs a deployment value,
-  bake that value into the event data and compare it through `input`.
+  contains one never matches. Rego template strings (`$"..."` and
+  `` $`...` ``) are refused, and never match, in the same way, because
+  the code inside their `{...}` parts would run unchecked: compare
+  `input` values with plain strings. If a filter needs a deployment
+  value, bake that value into the event data and compare it through
+  `input`.
 - **A run that is not an admin may not put a regular expression in
   `ask_user`'s `response_schema`.** The server validates the answer
   against your schema, so `pattern` and `patternProperties` anywhere

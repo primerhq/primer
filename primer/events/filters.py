@@ -9,9 +9,9 @@ Tier order is cheapest-first and short-circuits:
    document as ``input``.
 
 Failures fail CLOSED: a bad regex, a missing path, an expression that
-references the host ``opa`` package, does not compile, or does not
-produce a boolean ``match`` all mean "no match" (logged), mirroring
-the approval gate's conservative stance.
+references the host ``opa`` package or uses a template string, does not
+compile, or does not produce a boolean ``match`` all mean "no match"
+(logged), mirroring the approval gate's conservative stance.
 """
 
 from __future__ import annotations
@@ -32,6 +32,15 @@ _OPA_PACKAGE_REF = re.compile(r"(?<![\w.])opa\s*(?:\.|\[)")
 _OPA_PACKAGE_REFUSAL = (
     "event filter expr may use only the event document through input; "
     "references to the opa package are not allowed"
+)
+# Rego template strings ($"..." and $`...`) evaluate the code inside their
+# {...} parts, so a scan that blanks string contents cannot vet them (G6-2).
+# They are refused outright: outside strings and comments ``$`` has no other
+# use in Rego, so any ``$`` left in the code-only text opens one.
+_TEMPLATE_STRING_REFUSAL = (
+    "event filter expr may not use template strings ($\"...\" or $`...`): "
+    "the code inside their {...} parts runs unchecked; compare input values "
+    "with plain strings instead"
 )
 
 # Compiled-regex cache; bad patterns cache as None so each is logged once.
@@ -83,9 +92,17 @@ def validate_filter_expr(expr_text: str | None) -> None:
     regopy does not expose an allow-list for builtins. Event filters are
     therefore limited to their ``input`` document and may not reference
     the root ``opa`` package. The check ignores strings and comments, and
-    rejects both dotted and indexed root access.
+    rejects both dotted and indexed root access. Template strings are
+    refused outright, because the code in their ``{...}`` parts is inside
+    the quotes the check blanks. The same function is the save-time check
+    and the evaluation backstop (:func:`evaluate_filter_expr`).
     """
-    if expr_text and _OPA_PACKAGE_REF.search(_rego_code_only(expr_text)):
+    if not expr_text:
+        return
+    code = _rego_code_only(expr_text)
+    if "$" in code:
+        raise ValueError(_TEMPLATE_STRING_REFUSAL)
+    if _OPA_PACKAGE_REF.search(code):
         raise ValueError(_OPA_PACKAGE_REFUSAL)
 
 
