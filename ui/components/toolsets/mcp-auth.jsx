@@ -281,11 +281,20 @@ function TS_oauthReturnText(code) {
     : "The sign-in did not complete. Connect again.";
 }
 
+// The provider's page opens in a new tab that cannot reach back to the console. The authorization server is named by the MCP server's
+// metadata, so by whoever registered the toolset, and with `window.opener` its page could send this tab to a look-alike sign-in page
+// (reverse tabnabbing). window.open with "noopener" answers null whether or not a tab opened, which would hide a blocked pop-up, so the tab
+// opens blank, its opener is cut, and only then is it sent to the provider. A blocked pop-up still falls back to this tab.
 function TS_openSignIn(url) {
-  const opened = window.open(url, "_blank");
-  if (opened === null && window.location && typeof window.location.assign === "function") {
-    window.location.assign(url);
+  const opened = window.open("about:blank", "_blank");
+  if (!opened) {
+    if (window.location && typeof window.location.assign === "function") window.location.assign(url);
+    return;
   }
+  try {
+    opened.opener = null;
+  } catch (_error) { /* a browser that refuses the write gave the tab no opener to cut */ }
+  opened.location = url;
 }
 
 function TS_takeOAuthReturn(location, history) {

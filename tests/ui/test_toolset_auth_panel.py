@@ -22,7 +22,9 @@ function PK_Field(p) { return React.createElement("div", null, p.children); } fu
 function TS_KvEditor() { return null; }
 function Btn(p) { return React.createElement("button", Object.assign({}, p), p.children); }
 function Banner(p) { return React.createElement("div", { "data-testid": p.testid || "banner" }, p.title, p.detail, p.actions); }
-window.open = function (url) { OPENED.push(url); return window.__popupBlocked ? null : {}; };
+var POPUPS = [];
+window.open = function (url, target, features) { OPENED.push(url); if (window.__popupBlocked) return null;
+  var popup = { opener: window, location: "about:blank", target: target, features: features }; POPUPS.push(popup); return popup; };
 window.location = { assign: function (url) { ASSIGNED.push(url); } };
 window.confirmDialog = function (opts) { window.__confirmOpts = opts; return Promise.resolve(CONFIRM); };
 globalThis.setTimeout = function (fn, ms) { TIMERS.push({ fn: fn, ms: ms }); return TIMERS.length; };
@@ -114,10 +116,22 @@ def test_a_non_admin_sees_no_enabled_buttons(panel) -> None:
 def test_connect_opens_the_sign_in_and_polls(panel) -> None:
     _mount(panel)
     panel.eval("MR.click('ts-auth-connect'); MR.rerender()")
-    assert json.loads(panel.eval("JSON.stringify(OPENED)")) == ["https://id.example/authorize"]
+    assert panel.eval("POPUPS.length") == 1
+    assert panel.eval("POPUPS[0].location") == "https://id.example/authorize"
     assert panel.eval("TIMERS.length > 0")
     panel.eval("STATUS = {toolset_id:'kb',mode:'oauth_browser',state:'connected',connected_at:'now',expires_at:null}; TIMERS.shift().fn(); MR.rerender()")
     assert panel.eval("TOASTS.filter(function(t){return t.title === 'Connected';}).length") == 1
+
+
+def test_the_sign_in_tab_has_no_way_back_to_the_console(panel) -> None:
+    """G4-09: the authorization server is named by the MCP server's metadata. With window.opener it could send the console tab to a
+    look-alike sign-in page. The tab opens blank, its opener is cut, and only then does it go to the provider."""
+    _mount(panel)
+    panel.eval("MR.click('ts-auth-connect'); MR.rerender()")
+    assert json.loads(panel.eval("JSON.stringify(OPENED)")) == ["about:blank"]
+    popup = json.loads(panel.eval("JSON.stringify({opener: POPUPS[0].opener, location: POPUPS[0].location, target: POPUPS[0].target})"))
+    assert popup == {"opener": None, "location": "https://id.example/authorize", "target": "_blank"}
+    assert json.loads(panel.eval("JSON.stringify(ASSIGNED)")) == []
 
 
 def test_a_blocked_popup_falls_back_to_this_tab(panel) -> None:
