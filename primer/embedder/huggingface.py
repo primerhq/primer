@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import weakref
 from collections.abc import Iterable
 from typing import Any
 
@@ -225,9 +226,10 @@ def _classify_hf_exception(exc: Exception) -> PrimerError:
 #
 # _cache_lock guards only the synchronous dict ops - never across an await
 # (the primer/llm/_tokenizer/_executor.py pattern). Concurrent first
-# loads of the same key dedup through the per-key future so the loader
-# runs exactly once even when two rows race into _get_model together; a
-# failed load is not cached, so the next call retries.
+# loads of the same key dedup through the per-key loader task in
+# _pending_loads so the loader runs exactly once even when two rows race
+# into _get_model together; a failed load is not cached, so the next call
+# retries.
 
 
 _model_cache: dict[tuple[str, str | None], SentenceTransformer] = {}
@@ -235,7 +237,25 @@ _model_refs: dict[tuple[str, str | None], int] = {}
 _pending_loads: dict[
     tuple[str, str | None], asyncio.Task[SentenceTransformer]
 ] = {}
+_pending_waiters: dict[tuple[str, str | None], int] = {}
 _cache_lock = threading.Lock()
+
+
+def _release_loaded_keys(loaded_keys: set[tuple[str, str | None]]) -> None:
+    """Decrement reference counts for ``loaded_keys`` and evict unreferenced models."""
+    with _cache_lock:
+        if not loaded_keys:
+            return
+        keys = list(loaded_keys)
+        loaded_keys.clear()
+        for key in keys:
+            remaining = _model_refs.get(key, 0) - 1
+            if remaining <= 0:
+                _model_refs.pop(key, None)
+                if _pending_waiters.get(key, 0) <= 0:
+                    _model_cache.pop(key, None)
+            else:
+                _model_refs[key] = remaining
 
 
 def _clear_model_cache() -> None:
@@ -249,6 +269,7 @@ def _clear_model_cache() -> None:
         _model_cache.clear()
         _model_refs.clear()
         _pending_loads.clear()
+        _pending_waiters.clear()
 
 
 async def _run_load(
@@ -261,8 +282,9 @@ async def _run_load(
             _pending_loads.pop(key, None)
         raise
     with _cache_lock:
-        _model_cache[key] = model
         _pending_loads.pop(key, None)
+        if _pending_waiters.get(key, 0) > 0 or _model_refs.get(key, 0) > 0:
+            _model_cache[key] = model
     return model
 
 
@@ -288,7 +310,18 @@ async def _load_shared_model(
                 lambda t: None if t.cancelled() else t.exception()
             )
             _pending_loads[key] = task
-    return await asyncio.shield(task)
+        _pending_waiters[key] = _pending_waiters.get(key, 0) + 1
+    try:
+        return await asyncio.shield(task)
+    finally:
+        with _cache_lock:
+            remaining = _pending_waiters.get(key, 0) - 1
+            if remaining <= 0:
+                _pending_waiters.pop(key, None)
+                if key not in _pending_loads and _model_refs.get(key, 0) <= 0:
+                    _model_cache.pop(key, None)
+            else:
+                _pending_waiters[key] = remaining
 
 
 class HuggingFaceEmbedder(Embedder):
@@ -313,6 +346,10 @@ class HuggingFaceEmbedder(Embedder):
         self._config: HuggingFaceConfig = provider.config
         self._models: dict[str, SentenceTransformer] = {}
         self._loaded_keys: set[tuple[str, str | None]] = set()
+        self._closed: bool = False
+        self._finalizer = weakref.finalize(
+            self, _release_loaded_keys, self._loaded_keys
+        )
         if rate_limiter is None:
             from primer.coordinator.in_memory import InMemoryRateLimiter
             rate_limiter = InMemoryRateLimiter()
@@ -350,27 +387,31 @@ class HuggingFaceEmbedder(Embedder):
         token_value = self._config.token.get_secret_value() if self._config.token is not None else ""
         token = token_value or None
         key = (name, token)
+        with _cache_lock:
+            if not self._closed and key in self._loaded_keys:
+                cached = _model_cache.get(key)
+                if cached is not None:
+                    self._models[name] = cached
+                    return cached
         model = await _load_shared_model(name, token)
         with _cache_lock:
+            if self._closed:
+                if key not in _pending_loads and _pending_waiters.get(key, 0) <= 0 and _model_refs.get(key, 0) <= 0:
+                    _model_cache.pop(key, None)
+                return model
             if key not in self._loaded_keys:
                 self._loaded_keys.add(key)
                 _model_refs[key] = _model_refs.get(key, 0) + 1
-                _model_cache[key] = model
-        self._models[name] = model
+            _model_cache[key] = model
+            self._models[name] = model
         return model
 
     async def aclose(self) -> None:
         with _cache_lock:
-            keys = list(self._loaded_keys)
-            self._loaded_keys.clear()
+            self._closed = True
             self._models.clear()
-            for key in keys:
-                remaining = _model_refs.get(key, 0) - 1
-                if remaining <= 0:
-                    _model_refs.pop(key, None)
-                    _model_cache.pop(key, None)
-                else:
-                    _model_refs[key] = remaining
+        _release_loaded_keys(self._loaded_keys)
+        self._finalizer.detach()
 
     async def embed(  # type: ignore[override]
         self,
