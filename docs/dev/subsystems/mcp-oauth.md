@@ -185,6 +185,13 @@ update, where the problem's `extensions.errors[].loc` is
 and by a harness install or sync), and a row stored before the rule cannot start a
 sign-in or connect.
 
+Every answer body the OAuth client reads (a discovery document, a token or a
+registration answer) is streamed and read to 1 MiB (`protocol.MAX_BODY_BYTES`,
+through `primer.common.bounded_read.read_capped`) before it is parsed, because the
+servers that send them are named by the MCP server's metadata (audit G4-15). A
+larger document is not used, and a larger token or registration answer is a
+temporary server error; a revocation answer's body is never read.
+
 ## 10. Testing patterns
 
 `tests/toolset/oauth/` covers discovery, client exchanges, encryption, leases,
