@@ -172,3 +172,31 @@ def test_a_dollar_sign_inside_a_string_or_comment_is_not_a_template():
     )
     validate_filter_expr(expr)
     assert matches(_event(payload={"price": "$5"}), EventFilter(expr=expr))
+
+
+
+# ---- round 2, L7: the Rego evaluator reaches no network ------------------------------------------------------------------
+
+
+def test_http_send_remote_jwks_and_dns_are_unavailable_to_a_filter_expr():
+    import socket
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(8)
+    listener.settimeout(0.5)
+    url = f"http://127.0.0.1:{listener.getsockname()[1]}/"
+    try:
+        exprs = {
+            "http.send": f'match := http.send({{"method": "get", "url": "{url}"}}).status_code == 200',
+            "remote jwks": f'match := io.jwt.decode_verify("a.b.c", {{"jwks_url": "{url}"}})[0] == false',
+            "dns": 'match := count(net.lookup_ip_addr("localhost")) > 0',
+        }
+        for name, body in exprs.items():
+            expr = "package primer.event_filter\n" + body + "\n"
+            validate_filter_expr(expr)  # data-only: nothing refuses these at save time
+            assert evaluate_filter_expr(expr, {"event_type": "x", "payload": {}}) is False, name
+        with pytest.raises(TimeoutError):
+            listener.accept()  # nothing ever connected
+    finally:
+        listener.close()
