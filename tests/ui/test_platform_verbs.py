@@ -328,3 +328,30 @@ def test_the_verbs_of_the_specs_are_all_rendered_by_a_row(ctx) -> None:
 
 def test_the_row_attributes_are_the_literals_the_dual_render_guard_looks_for() -> None:
     assert 'data-verb={"platform.open." + id}' in PLATFORM and 'data-verb={"platform.open.providers." + t}' in PLATFORM
+
+
+def test_provider_register_verb_defers_request_past_synchronous_run(palette) -> None:
+    """The provider.register verb defers window.PC_requestRegister to a macrotask (setTimeout 0)
+    so the request arrives after React's navigation commit, reaching the live taker rather than
+    the unmounting instance.
+    """
+    palette.eval("""
+    var CALLS = [];
+    var TIMERS = [];
+    globalThis.setTimeout = function(fn, delay) {
+      TIMERS.push(fn);
+      return 1;
+    };
+    window.PC_requestRegister = function(arg) {
+      CALLS.push(arg);
+    };
+    var verb = registry.get("provider.register");
+    verb.run();
+    """)
+    # Under synchronous delivery, CALLS is 1 inside run() and TIMERS is 0.
+    # Under deferred delivery, CALLS is 0 inside run() and TIMERS is 1.
+    assert palette.eval("CALLS.length") == 0, "PC_requestRegister must not be called synchronously"
+    assert palette.eval("TIMERS.length") == 1, "setTimeout must be scheduled"
+    palette.eval("TIMERS[0]();")
+    assert palette.eval("CALLS.length") == 1
+    assert palette.eval("CALLS[0] === null")
