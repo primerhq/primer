@@ -158,8 +158,15 @@ async def _iter_catalogue(
                 toolset_id, type(exc).__name__, exc,
             )
 
-    # 1. Built-ins resolved from the registry without a storage row.
+    # 1. Built-ins resolved from the registry without a storage row. One the install has switched off on purpose (the canvas while
+    # canvas.agent_tools_enabled is off) is not a broken toolset: it is left out without the WARNING every tools/list would log.
+    try:
+        off = await registry.toolsets_off_by_design()
+    except Exception:  # noqa: BLE001 -- unreadable settings: try every built-in, as before
+        off = frozenset()
     for toolset_id in RESERVED_TOOLSET_IDS:
+        if toolset_id in off:
+            continue
         async for pair in _emit(toolset_id):
             yield pair
 
