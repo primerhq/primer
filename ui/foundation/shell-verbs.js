@@ -26,6 +26,8 @@ var SH_VERB_WORDS = [
   "Jump", "Attach", "Detach", "Speak", "Record", "Reset", "Install",
   "Refresh", "Edit", "Save", "Move", "Add", "Remove", "Enable",
   "Disable", "Invoke", "Steer",
+  // register-overlay verb, revamp 02 T20
+  "Register",
 ];
 
 var SH_DESTRUCTIVE_DAMPENER = 0.35;

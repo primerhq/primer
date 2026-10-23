@@ -27,6 +27,7 @@ SHIM_JS = (UI / "foundation" / "shell-router-shim.js").read_text(encoding="utf-8
 SHELL = (UI / "components" / "console" / "nv-shell.jsx").read_text(encoding="utf-8")
 OVERLAYS_PATH = UI / "components" / "console" / "nv-overlays.jsx"
 CATALOG = (UI / "components" / "provider-catalog.jsx").read_text(encoding="utf-8")
+REGISTER_COMMON = (UI / "components" / "providers" / "register-common.jsx").read_text(encoding="utf-8")
 CSS = (UI / "styles.css").read_text(encoding="utf-8")
 
 
@@ -128,7 +129,7 @@ def test_the_list_targets_are_on_window_and_name_pages_the_grammar_accepts():
         overlays = js(ctx, "SH_OVERLAYS")
     finally:
         ctx.close()
-    provider_types = set(re.findall(r'\{ key: "(\w+)", label:', CATALOG))
+    provider_types = set(re.findall(r'\{ key: "(\w+)", label:', REGISTER_COMMON))
     assert {"workspace", "channel", "llm"} <= provider_types, "the pattern must still read the provider catalogue's registry"
     for path, target in table.items():
         assert path.split("/")[0] in overlays, f"{path}: the shim only reaches a path whose first segment is an overlay it hosts"

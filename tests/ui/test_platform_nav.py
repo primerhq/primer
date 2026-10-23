@@ -85,8 +85,8 @@ def _sub_ids(ctx) -> list[str]:
 
 def test_the_providers_row_has_one_sub_entry_per_type_in_order(nav_ctx) -> None:
     nav_ctx.eval("MR.mount(NV_PlatNav, {});")
-    assert _sub_ids(nav_ctx) == TYPES
-    assert js(nav_ctx, 'MR.findAll("nv-plat-sub:").map(function (e) { return e.props.children; })') == LABELS
+    assert _sub_ids(nav_ctx) == TYPES + ["register"]
+    assert js(nav_ctx, 'MR.findAll("nv-plat-sub:").map(function (e) { return e.props.children; })') == LABELS + ["+ Register"]
 
 
 def test_the_sub_entries_sit_in_one_labelled_group_under_the_providers_row(nav_ctx) -> None:
@@ -98,7 +98,8 @@ def test_the_sub_entries_sit_in_one_labelled_group_under_the_providers_row(nav_c
     providers = order.index("nv-plat-row:providers")
     assert order[providers + 1] == "nv-plat-subs"
     assert order[providers + 2:providers + 2 + len(TYPES)] == ["nv-plat-sub:" + t for t in TYPES], "the types follow the Providers row, before the next row"
-    assert order[providers + 2 + len(TYPES)] == "nv-plat-row:profiles"
+    assert order[providers + 2 + len(TYPES)] == "nv-plat-sub:register"
+    assert order[providers + 3 + len(TYPES)] == "nv-plat-row:profiles"
 
 
 def test_a_sub_entry_is_a_button_of_the_sub_class(nav_ctx) -> None:

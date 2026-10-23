@@ -317,7 +317,7 @@ def test_every_nav_row_and_sub_entry_carries_the_data_verb_of_its_view(ctx) -> N
     rows = js(ctx, 'MR.findAll("nv-plat-row:").map(function (e) { return [e.props["data-testid"].slice("nv-plat-row:".length), e.props["data-verb"]]; })')
     assert rows == [[nav, "platform.open." + nav] for nav in navs], "one row per nav of the grammar, each with its verb, in order"
     subs = js(ctx, 'MR.findAll("nv-plat-sub:").map(function (e) { return [e.props["data-testid"].slice("nv-plat-sub:".length), e.props["data-verb"]]; })')
-    assert subs == [[t, "platform.open.providers." + t] for t in TYPES]
+    assert subs == [[t, "platform.open.providers." + t] for t in TYPES] + [["register", "provider.register"]]
 
 
 def test_the_verbs_of_the_specs_are_all_rendered_by_a_row(ctx) -> None:
