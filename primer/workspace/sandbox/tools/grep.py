@@ -5,18 +5,19 @@ files via :class:`Sandbox.read_file`, applies the regex in Python.
 Slower than ``rg`` shelled into the container but fully portable.
 
 The pattern is bounded exactly as on the local backend (G6-4): the same
-compile, the same per-call budget, and each file is matched in a worker
-thread with the GIL released, never inside the coroutine.
+compile, the same per-call budget and per-search bound, and each file is
+matched on the user-regex executor with the GIL released, never inside the
+coroutine.
 """
 
 from __future__ import annotations
 
-import asyncio
 import fnmatch
 from typing import ClassVar
 
 from pydantic import BaseModel
 
+from primer.common.user_regex import UserRegexTimeout, run_off_loop
 from primer.int.sandbox import Sandbox
 from primer.model.chat import ToolExample
 from primer.model.except_ import NotFoundError
@@ -99,7 +100,7 @@ class SandboxGrep(WorkspaceTool):
             text = body.decode("utf-8", errors="replace")
             rel = workspace_relative(self._root, path_abs)
             try:
-                lines, count = await asyncio.to_thread(
+                lines, count = await run_off_loop(
                     grep_text,
                     text,
                     rel,
@@ -109,8 +110,8 @@ class SandboxGrep(WorkspaceTool):
                     multiline=args.multiline,
                     budget=budget,
                 )
-            except TimeoutError as exc:
-                raise grep_budget_error(budget) from exc
+            except UserRegexTimeout as exc:
+                raise grep_budget_error(budget, exc) from exc
             if count:
                 match_count += count
                 file_count += 1
