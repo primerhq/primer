@@ -54,7 +54,7 @@ class TestRegistry:
 
     def test_latest_version_matches_registry(self) -> None:
         assert LATEST_VERSION == len(MIGRATIONS)
-        assert LATEST_VERSION == 14
+        assert LATEST_VERSION == 15
 
     def test_every_migration_has_a_description(self) -> None:
         assert all(m.description.strip() for m in MIGRATIONS)
