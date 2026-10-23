@@ -28,12 +28,12 @@ def _check(entity: ArtifactStorageProvider) -> None:
 
 
 @pytest.mark.parametrize("kind", ["filesystem", "s3"])
-def test_the_default_may_not_name_a_kind_the_factory_cannot_build(kind) -> None:
+def test_the_default_must_stay_db(kind) -> None:
     with pytest.raises(EntityCheckError) as info:
         _check(_row(kind))
 
-    assert info.value.kind == "validation" and info.value.field == "provider" and info.value.code == "artifact_default_unbuildable"
-    assert kind in info.value.message and DEFAULT_ARTIFACT_PROVIDER_ID in info.value.message and "db" in info.value.message
+    assert (info.value.kind, info.value.field, info.value.code) == ("validation", "provider", "artifact_default_must_be_db")
+    assert repr(kind) in info.value.message and DEFAULT_ARTIFACT_PROVIDER_ID in info.value.message
 
 
 def test_the_default_may_name_db() -> None:
@@ -60,6 +60,16 @@ def test_the_buildable_set_is_the_one_the_factory_dispatches_on() -> None:
         except ConfigError:
             built = False
         assert (row.provider in BUILDABLE_KINDS) is built, kind
+
+
+def test_a_second_buildable_kind_must_not_relax_the_reserved_database_rule() -> None:
+    """#784 review tripwire: a new backend must extend the tests above while the reserved row remains the database fallback."""
+    from primer.artifact.factory import BUILDABLE_KINDS
+
+    assert BUILDABLE_KINDS == {ArtifactStorageProviderType.DB}, (
+        "a second buildable kind shipped; extend test_the_default_must_stay_db "
+        "without relaxing the reserved row's database-only rule"
+    )
 
 
 def test_each_buildable_kind_builds_its_own_backend() -> None:
