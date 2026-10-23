@@ -246,7 +246,7 @@ def test_the_console_uses_only_the_authenticated_username(keyctx) -> None:
 def test_the_shell_retries_auth_status_on_the_resource_backoff() -> None:
     block = SHELL[SHELL.index('var status = window.primerApi.useResource('):SHELL.index('// The theme verbs')]
     assert '"nv-shell:auth-status"' in block
-    assert "{ pollMs: 2000 }" in block
+    assert "{ retryMs: 2000 }" in block
     assert '|| "anon"' not in SHELL
 
 
