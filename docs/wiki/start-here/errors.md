@@ -5,7 +5,7 @@ tools: [system__describe_tool, system__list_toolset_tools]
 related: [start-here/calling-tools, start-here/roles-and-approvals]
 ---
 ## What it is
-Every toolset answers a failure with the same envelope: an object with a `type` and a `message`, and the result's error flag set; common types include the ten below alongside domain-specific ones such as `storage-error`. Each names a class of failure, and the class decides the fix: read the `type`, do the listed thing, and retry only after the fix.
+Every toolset answers a failure with the same envelope: an object with a `type` and a `message`, and the result's error flag set; common types include the twelve below alongside domain-specific ones such as `storage-error`. Each names a class of failure, and the class decides the fix: read the `type`, do the listed thing, and retry only after the fix.
 
 ## How to
 Common error types, and the next move for each:
@@ -15,6 +15,8 @@ Common error types, and the next move for each:
 - `forbidden` - the run's principal ranks below the tool's role. It is a role refusal, not an approval: run the call from a higher-role run, or pick a tool whose floor the run clears.
 - `approval-required` - the tool is gated and the call has nowhere to park for an approval (no session or chat). Invoke it through an agent session or chat, where the operator can decide the gate.
 - `provider-error` - the toolset's provider failed to answer (an MCP server down, an OAuth token stale). The arguments were fine; check the toolset's connection and retry.
+- `sign-in-required` - the MCP toolset signs in with OAuth and has no usable shared sign-in (never connected, signed out, its settings changed). Only an admin can connect it, from the console: read its state with `system__get_toolset_auth_status`, tell the user, and do not retry until it says `connected`.
+- `unavailable` - a service the call needs is not available in the process that ran it (session tools with no scheduler wired in, semantic search with no search registry, the OAuth service, a configuration the server creates at startup). Nothing about the arguments is wrong: use the alternative the `message` names, or tell an operator; retrying the same call in the same place does not help.
 - `tool-call-error` - the inner tool raised while it ran. The `message` names the failure; fix what it names, then retry.
 - `conflict` - the state moved under the call (a version it read was replaced, a guard it needed is gone). Re-read the current state and retry against it.
 - `bad-request` - the request's shape is wrong: a missing piece the surface needs (a live session id for a yielding tool, a workspace root for a file path). Send the shape the tool expects.
