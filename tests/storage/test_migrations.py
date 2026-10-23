@@ -54,7 +54,7 @@ class TestRegistry:
 
     def test_latest_version_matches_registry(self) -> None:
         assert LATEST_VERSION == len(MIGRATIONS)
-        assert LATEST_VERSION == 12
+        assert LATEST_VERSION == 13
 
     def test_every_migration_has_a_description(self) -> None:
         assert all(m.description.strip() for m in MIGRATIONS)
@@ -649,3 +649,70 @@ async def test_m012_keeps_an_existing_snapshot(sp):
     row = await sp.get_storage(LiveWorkspace).get("ws-snapshotted")
     assert row is not None and row.template_snapshot is not None
     assert row.template_snapshot.description == "original"
+
+
+# ---------------------------------------------------------------------------
+# m013: stored hnsw_ef_search=40 upgraded to 100 on semantic-search providers
+# ---------------------------------------------------------------------------
+
+
+async def test_m013_raises_stored_hnsw_ef_search_40_to_100(sp):
+    from primer.model.provider import SemanticSearchProvider as LiveSSP
+    from primer.storage.migrations.m013_hnsw_ef_search_default import (
+        M013HnswEfSearchDefault,
+        SemanticSearchProvider as SSPView,
+    )
+
+    storage = sp.get_storage(SSPView)
+    await storage.create(
+        SSPView(
+            id="lance",
+            provider="lance",
+            config={
+                "path": "/var/data/lance",
+                "hnsw_m": 16,
+                "hnsw_ef_construction": 64,
+                "hnsw_ef_search": 40,
+                "index_min_rows": 1000,
+            },
+        )
+    )
+    await storage.create(
+        SSPView(
+            id="pg-legacy",
+            provider="pgvector",
+            config={
+                "hostname": "pg.internal",
+                "port": 5432,
+                "username": "primer",
+                "password": "secret-password",
+                "database": "primer_db",
+                "hnsw_ef_search": 40,
+            },
+        )
+    )
+    await storage.create(
+        SSPView(
+            id="lance-custom",
+            provider="lance",
+            config={
+                "path": "/var/data/lance-custom",
+                "hnsw_m": 16,
+                "hnsw_ef_construction": 64,
+                "hnsw_ef_search": 80,
+                "index_min_rows": 1000,
+            },
+        )
+    )
+
+    await M013HnswEfSearchDefault().apply(sp)
+
+    live = sp.get_storage(LiveSSP)
+    lance = await live.get("lance")
+    assert lance is not None and lance.config.hnsw_ef_search == 100
+    pg = await live.get("pg-legacy")
+    assert pg is not None and pg.config.hnsw_ef_search == 100
+    assert pg.config.password.get_secret_value() == "secret-password"
+    custom = await live.get("lance-custom")
+    assert custom is not None and custom.config.hnsw_ef_search == 80
+

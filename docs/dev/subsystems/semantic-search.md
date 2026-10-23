@@ -144,7 +144,11 @@ The entities:
 - `SemanticSearchProvider`: `id`, `provider` (`SemanticSearchProviderType`),
   `config`. `LanceConfig` exposes `path` (required, absolute; the directory is
   created with mode `0o700` on first use), `hnsw_m` (16), `hnsw_ef_construction`
-  (64), `hnsw_ef_search` (100), and `index_min_rows` (1000). There is no
+  (64), `hnsw_ef_search` (100), and `index_min_rows` (1000). Migration 13
+  (`m013_hnsw_ef_search_default.py`) upgrades stored `SemanticSearchProvider`
+  rows whose `config.hnsw_ef_search` is still the pre-#841 default of `40` to
+  `100` while leaving custom values alone; an operator who deliberately chose
+  `40` can re-set it after upgrading. There is no
   per-config distance field; `distance` is a per-collection argument on
   `create_collection` and stored on the Lance catalogue row.
   The pgvector / pgvectorscale config family shares `_PgVectorBaseConfig`, which

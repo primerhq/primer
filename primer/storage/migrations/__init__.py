@@ -60,6 +60,9 @@ from primer.storage.migrations.m011_seeded_agents_core_kit import (
 from primer.storage.migrations.m012_workspace_template_snapshots import (
     M012WorkspaceTemplateSnapshots,
 )
+from primer.storage.migrations.m013_hnsw_ef_search_default import (
+    M013HnswEfSearchDefault,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +93,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     M010DefaultWorkspace(),
     M011SeededAgentsCoreKit(),
     M012WorkspaceTemplateSnapshots(),
+    M013HnswEfSearchDefault(),
 )
 
 #: Highest version this build knows how to apply.
