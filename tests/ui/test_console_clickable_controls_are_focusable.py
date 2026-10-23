@@ -205,3 +205,23 @@ def test_the_system_nav_chips_are_content_sized_on_the_phone() -> None:
 def test_the_open_label_is_fully_opaque_at_rest() -> None:
     """At rest it was 0.55 (2.21:1); --accent on --bg-1 is pinned in test_token_contrast.py."""
     assert "opacity" not in _css(".pk-card-open")
+
+
+def test_the_overlay_crumb_is_a_focusable_button() -> None:
+    """Audit G1-20: the crumb of a detail overlay is the documented way back to the entity's Platform page, and it was an ``<a>`` with an
+    ``onClick`` and no ``href``, role or tabindex, so a keyboard user could not reach it."""
+    src = _src("console/nv-overlays.jsx")
+    start, tag = _tag(src, 'data-testid="nv-overlay-crumb"')
+    assert tag.startswith("<button"), f"the overlay crumb is not a native button:\n{tag}"
+    assert 'type="button"' in tag, tag
+    assert "tabIndex" not in tag, f"the crumb is out of the tab order:\n{tag}"
+    assert "onClick=" in tag, tag
+    assert "<a " not in src[src.index('className="nv-overlay-crumb"'):src.index('data-testid="nv-overlay-crumb"')], "no link wraps it"
+
+
+def test_the_overlay_crumb_keeps_the_link_look_of_the_anchor_it_replaced() -> None:
+    """A <button> draws a UA border, background and padding the <a> never had; the crumb keeps its accent text and its hover underline."""
+    rule = _css(".nv-overlay-crumb-link")
+    for decl in ("border: none", "background: transparent", "padding: 0", "color: var(--accent)", "font: inherit", "cursor: pointer"):
+        assert decl in rule, f"{decl!r} missing from .nv-overlay-crumb-link:\n{rule}"
+    assert "text-decoration: underline" in _css(".nv-overlay-crumb-link:hover")
