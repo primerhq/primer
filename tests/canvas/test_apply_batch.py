@@ -416,6 +416,24 @@ def test_script_check_runs_after_limits_and_uses_one_v8_engine_per_batch(monkeyp
     assert len(_Spy.made) == 1 and _Spy.made[0].closed
 
 
+def test_apply_batch_refuses_more_than_2000_statements_before_reading_any():
+    """The parser and the ops validator cap a batch first; apply_batch holds the same cap for a caller that builds statements itself."""
+    from primer.canvas.lang import Assign
+
+    seen: list[str] = []
+
+    def check(html: str) -> list[str]:
+        seen.append(html)
+        return []
+
+    html = [Assign(n, "v", "Html", ("<script>1</script>",), ()) for n in range(1, 2002)]
+    over = apply_batch(S, html, limits=L, script_check=check)
+    assert over.state is None and seen == []
+    assert [e.render() for e in over.errors] == ["line 2001: a batch holds at most 2000 statements; got 2001"]
+    as_ops = apply_batch(S, html, limits=L, unit="op", script_check=check)
+    assert [e.render() for e in as_ops.errors] == ["op 2001: a batch holds at most 2000 ops; got 2001"]
+
+
 # --- binding: arguments, defaults and what a statement may say ------------------------
 
 

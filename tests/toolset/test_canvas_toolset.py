@@ -277,6 +277,18 @@ async def test_ops_of_exactly_the_cap_are_applied_and_one_character_more_is_refu
     assert (await world.canvas("s1")).rev == 1, "the refused batch applied nothing"
 
 
+@pytest.fixture
+def engines(monkeypatch):
+    """Every V8 engine the Html script check starts, through the counting stand-in of the html_check tests."""
+    import py_mini_racer
+
+    from tests.canvas.test_html_check import _Spy
+
+    _Spy.made = []
+    monkeypatch.setattr(py_mini_racer, "MiniRacer", _Spy)
+    return _Spy.made
+
+
 async def test_a_batch_over_2000_statements_or_ops_is_refused(provider, ctx, world):
     is_error, body = await call(provider, "canvas_apply", {"source": "\n".join(["clear"] * 2001)}, ctx)
     assert is_error and body["type"] == "validation-error"
@@ -285,6 +297,41 @@ async def test_a_batch_over_2000_statements_or_ops_is_refused(provider, ctx, wor
     assert is_error and body["type"] == "validation-error"
     assert "a batch holds at most 2000 ops; got 2001" in body["message"]
     assert await world.canvas("s1") is None
+
+
+async def test_an_over_cap_batch_of_html_starts_no_v8_engine(provider, ctx, world, engines):
+    """G8-01: 2001 Html statements (or ops) are refused on the count before anything is parsed, so no script is ever compiled."""
+    source = "\n".join(["root = Column([v])", *[f'v = Html("<script>var x = {i};</script>")' for i in range(2000)]])
+    is_error, body = await call(provider, "canvas_apply", {"source": source}, ctx)
+    assert is_error and body["errors"] == [{"line": 2001, "message": "a batch holds at most 2000 statements; got 2001"}]
+    ops = [
+        {"op": "set", "id": "root", "type": "Column", "children": ["v"]},
+        *[{"op": "set", "id": "v", "type": "Html", "props": {"html": f"<script>var x = {i};</script>"}} for i in range(2000)],
+    ]
+    is_error, body = await call(provider, "canvas_apply", {"ops": ops}, ctx)
+    assert is_error and "a batch holds at most 2000 ops; got 2001" in body["message"]
+    assert engines == [] and await world.canvas("s1") is None
+
+
+async def test_a_batch_at_the_cap_checks_only_the_surviving_html_body(provider, ctx, world, engines):
+    """2000 statements that rewrite one Html element: only the body that survives is compiled, on one engine."""
+    source = "\n".join(["root = Column([v])", *[f'v = Html("<script>var x = {i};</script>")' for i in range(1999)]])
+    is_error, body = await call(provider, "canvas_apply", {"source": source}, ctx)
+    assert not is_error and body["rev"] == 1
+    assert len(engines) == 1 and len(engines[0].evals) == 1 and "var x = 1998;" in engines[0].evals[0][0]
+
+
+async def test_many_html_elements_share_one_v8_engine(provider, ctx, world, engines):
+    """150 Html elements with 150 different scripts: one engine compiles all of them, and one bad script is still named."""
+    ids = [f"h{i}" for i in range(150)]
+    lines = [f"root = Column([{', '.join(ids)}])", *[f'h{i} = Html("<script>var x = {i};</script>")' for i in range(149)]]
+    lines.append('h149 = Html("<script>var = ;</script>")')
+    is_error, body = await call(provider, "canvas_apply", {"source": "\n".join(lines)}, ctx)
+    assert is_error and [(e["line"], e["message"].split(":")[0]) for e in body["errors"]] == [(151, "h149")]
+    assert len(engines) == 1 and len(engines[0].evals) == 150 and engines[0].closed
+    lines[-1] = 'h149 = Html("<script>var x = 149;</script>")'
+    is_error, body = await call(provider, "canvas_apply", {"source": "\n".join(lines)}, ctx)
+    assert not is_error and body["rev"] == 1 and len(engines) == 2, "a second batch is a second engine; never one per statement"
 
 
 # ---- base_rev ------------------------------------------------------------------------------------------------------------------------

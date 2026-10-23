@@ -32,6 +32,7 @@ from primer.canvas.catalog import (
 )
 from primer.canvas.lang import (
     KEEP,
+    MAX_BATCH_STATEMENTS,
     MAX_DEPTH,
     MAX_ERRORS,
     MAX_FLOAT,
@@ -856,7 +857,16 @@ def apply_batch(
     the agent in follow-on errors. ``state`` is never mutated and ``rev`` is left
     to the caller. ``script_check(html)`` returns problems with an Html body's
     scripts; each becomes an error on the Html statement's line.
+
+    A batch of more than ``MAX_BATCH_STATEMENTS`` statements is refused before any
+    of them is looked at (the parser and the ops validator refuse it earlier still;
+    this holds for any caller that builds statements itself).
     """
+    if len(statements) > MAX_BATCH_STATEMENTS:
+        noun = "statements" if unit == "line" else "ops"
+        over = statements[MAX_BATCH_STATEMENTS]
+        message = f"a batch holds at most {MAX_BATCH_STATEMENTS} {noun}; got {len(statements)}"
+        return BatchResult(None, Changed(), (LangError(over.line, message, None, unit),), ())
     batch = _Batch(state, limits, unit, script_check)
     for statement in statements:
         batch.apply(statement)
