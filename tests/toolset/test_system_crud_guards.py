@@ -272,8 +272,8 @@ class TestReservedIds:
         assert not other_error
 
     @pytest.mark.asyncio
-    async def test_the_default_artifact_provider_cannot_be_switched_to_a_kind_that_cannot_be_built(self, world) -> None:
-        """REST answers 422 (ticket 01a1226f): the factory builds only ``db``, so a default naming ``filesystem`` or ``s3`` breaks every consumer of it."""
+    async def test_the_default_artifact_provider_cannot_be_switched_from_db(self, world, tmp_path) -> None:
+        """The reserved row stays the database fallback even after other backends become buildable."""
         from primer.api.registries.artifact_storage_registry import DEFAULT_ARTIFACT_PROVIDER_ID
         from primer.model.providers.artifact import ArtifactStorageProviderType, DbArtifactConfig
 
@@ -283,7 +283,7 @@ class TestReservedIds:
         await storage.create(ArtifactStorageProvider(id="extra", provider=ArtifactStorageProviderType.DB, config=DbArtifactConfig()))
 
         for body in (
-            {"provider": "filesystem", "config": {"root": "/tmp/a"}},
+            {"provider": "filesystem", "config": {"root": str(tmp_path / "a")}},
             {"provider": "s3", "config": {"bucket": "b"}},
         ):
             is_error, answer = await _call(toolset, "update_artifact_storage_provider", id=DEFAULT_ARTIFACT_PROVIDER_ID, entity={"id": DEFAULT_ARTIFACT_PROVIDER_ID, **body})
@@ -292,11 +292,11 @@ class TestReservedIds:
             assert (await storage.get(DEFAULT_ARTIFACT_PROVIDER_ID)).provider is ArtifactStorageProviderType.DB, "the row is unchanged"
 
         kept_error, _ = await _call(toolset, "update_artifact_storage_provider", id=DEFAULT_ARTIFACT_PROVIDER_ID, entity={"id": DEFAULT_ARTIFACT_PROVIDER_ID, "provider": "db", "config": {}})
-        spare_error, _ = await _call(toolset, "update_artifact_storage_provider", id="extra", entity={"id": "extra", "provider": "filesystem", "config": {"root": "/tmp/a"}})
+        spare_error, _ = await _call(toolset, "update_artifact_storage_provider", id="extra", entity={"id": "extra", "provider": "filesystem", "config": {"root": str(tmp_path / "a")}})
         assert not kept_error and not spare_error, "keeping db is fine, and so is any other row"
 
     @pytest.mark.asyncio
-    async def test_a_missing_default_artifact_provider_cannot_be_created_with_a_kind_that_cannot_be_built(self, world) -> None:
+    async def test_a_missing_default_artifact_provider_cannot_be_created_as_anything_but_db(self, world, tmp_path) -> None:
         """B2 of the #708 review: with the row missing (a failed seed, a removal outside the API, a restore without it) a create got around the
         update rule, and the boot seed, which only creates a missing row, never repaired it. REST answers 422."""
         from primer.api.registries.artifact_storage_registry import DEFAULT_ARTIFACT_PROVIDER_ID
@@ -307,7 +307,7 @@ class TestReservedIds:
         assert await storage.get(DEFAULT_ARTIFACT_PROVIDER_ID) is None, "this world starts without the default"
 
         for body in (
-            {"provider": "filesystem", "config": {"root": "/tmp/a"}},
+            {"provider": "filesystem", "config": {"root": str(tmp_path / "a")}},
             {"provider": "s3", "config": {"bucket": "b"}},
         ):
             is_error, answer = await _call(toolset, "create_artifact_storage_provider", entity={"id": DEFAULT_ARTIFACT_PROVIDER_ID, **body})
@@ -315,7 +315,7 @@ class TestReservedIds:
             assert await storage.get(DEFAULT_ARTIFACT_PROVIDER_ID) is None, "nothing is stored"
 
         db_error, created = await _call(toolset, "create_artifact_storage_provider", entity={"id": DEFAULT_ARTIFACT_PROVIDER_ID, "provider": "db", "config": {}})
-        spare_error, spare = await _call(toolset, "create_artifact_storage_provider", entity={"id": "extra", "provider": "filesystem", "config": {"root": "/tmp/a"}})
+        spare_error, spare = await _call(toolset, "create_artifact_storage_provider", entity={"id": "extra", "provider": "filesystem", "config": {"root": str(tmp_path / "a")}})
         assert not db_error and created["provider"] == "db", created
         assert not spare_error, spare
         assert (await storage.get(DEFAULT_ARTIFACT_PROVIDER_ID)).provider is ArtifactStorageProviderType.DB
@@ -326,14 +326,11 @@ class TestReservedIds:
         """The agent reads the rule before it writes (``write_notes_by_label``). docs/agents has no artifact-provider page, so the descriptor
         is the agent-facing doc."""
         from primer.api.registries.artifact_storage_registry import DEFAULT_ARTIFACT_PROVIDER_ID
-        from primer.artifact.factory import BUILDABLE_KINDS
-
         _, toolset, _ = world
         text = {tool.id: tool.description async for tool in toolset.list_tools()}[f"{verb}_artifact_storage_provider"]
 
         assert f"``{DEFAULT_ARTIFACT_PROVIDER_ID}``" in text, text
-        for kind in BUILDABLE_KINDS:
-            assert f"``{kind.value}``" in text, text
+        assert "``db``" in text and "``set_active_artifact_store``" in text, text
         assert "``provider``" in text and "``type=validation-error``" in text and "nothing is stored" in text, text
 
 

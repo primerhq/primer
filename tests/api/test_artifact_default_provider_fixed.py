@@ -1,4 +1,4 @@
-"""The reserved default artifact provider cannot be set to a kind the factory cannot build (ticket 01a1226f, from the #706 review).
+"""The reserved default artifact provider must stay the database backend (ticket 01a1226f, from the #706 review).
 
 ``artifact-storage-default`` is the row ``ArtifactStorageRegistry.get_default()`` reads, and ``build_artifact_storage`` builds only the ``db`` backend
 (``filesystem`` and ``s3`` are accepted enum values whose construction raises ``ConfigError``). Only the DELETE of the reserved row was guarded, so a PUT that
@@ -27,7 +27,7 @@ S3 = {"id": DEFAULT_ARTIFACT_PROVIDER_ID, "provider": "s3", "config": {"bucket":
 DB = {"id": DEFAULT_ARTIFACT_PROVIDER_ID, "provider": "db", "config": {}}
 
 
-def _assert_refused_as_unbuildable(r, kind: str) -> None:
+def _assert_refused_as_not_db(r, kind: str) -> None:
     """The 422 that rest-api.md documents: the problem envelope with the stable code and the field, the message naming the refused kind.
 
     ``"default" in r.text`` proved nothing: the problem's ``instance`` is the row's URL, and the URL holds the id.
@@ -35,7 +35,7 @@ def _assert_refused_as_unbuildable(r, kind: str) -> None:
     assert r.status_code == 422, r.text
     assert r.headers["content-type"] == "application/problem+json", r.headers
     extensions = r.json()["extensions"]
-    assert extensions["error"] == "artifact_default_unbuildable", extensions
+    assert extensions["error"] == "artifact_default_must_be_db", extensions
     assert extensions["field"] == "provider", extensions
     assert extensions["kind"] == "artifact_storage_provider", extensions
     assert repr(kind) in extensions["message"], extensions
@@ -51,10 +51,10 @@ async def _drop_the_default(app):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("body", [FILESYSTEM, S3], ids=["filesystem", "s3"])
-async def test_a_put_cannot_switch_the_default_to_a_kind_that_cannot_be_built(client, app, body) -> None:
+async def test_a_put_cannot_switch_the_default_to_a_kind_other_than_db(client, app, body) -> None:
     r = await client.put(URL, json=body)
 
-    _assert_refused_as_unbuildable(r, body["provider"])
+    _assert_refused_as_not_db(r, body["provider"])
     assert (await client.get(URL)).json()["provider"] == "db", "the row is unchanged"
     assert await app.state.artifact_storage_registry.get_default() is not None, "and the default still resolves"
 
@@ -68,12 +68,15 @@ async def test_a_put_of_the_default_that_keeps_the_db_kind_is_accepted(client) -
 
 
 @pytest.mark.asyncio
-async def test_another_row_may_still_name_a_kind_that_is_not_built_yet(client) -> None:
-    """Only the reserved default is read by everything; a spare row naming ``filesystem`` breaks nothing but itself, as before."""
+async def test_another_row_may_name_any_kind(client, tmp_path) -> None:
+    """Only the reserved row is the database fallback; another row may name any backend."""
     created = await client.post("/v1/artifact_storage_providers", json={"id": "asp-spare", "provider": "db", "config": {}})
     assert created.status_code == 201, created.text
     try:
-        r = await client.put("/v1/artifact_storage_providers/asp-spare", json={**FILESYSTEM, "id": "asp-spare"})
+        r = await client.put(
+            "/v1/artifact_storage_providers/asp-spare",
+            json={**FILESYSTEM, "id": "asp-spare", "config": {"root": str(tmp_path / "artifacts")}},
+        )
         assert r.status_code == 200, r.text
     finally:
         await client.delete("/v1/artifact_storage_providers/asp-spare")
@@ -89,7 +92,7 @@ async def test_a_default_that_was_already_switched_can_be_switched_back(client, 
     refused = await client.put(URL, json=S3)
     repaired = await client.put(URL, json=DB)
 
-    _assert_refused_as_unbuildable(refused, "s3")
+    _assert_refused_as_not_db(refused, "s3")
     assert repaired.status_code == 200, repaired.text
     assert (await client.get(URL)).json()["provider"] == "db"
 
@@ -99,12 +102,12 @@ async def test_a_default_that_was_already_switched_can_be_switched_back(client, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("body", [FILESYSTEM, S3], ids=["filesystem", "s3"])
-async def test_a_missing_default_cannot_be_created_with_a_kind_that_cannot_be_built(client, app, body) -> None:
+async def test_a_missing_default_cannot_be_created_as_anything_but_db(client, app, body) -> None:
     storage = await _drop_the_default(app)
 
     r = await client.post(COLLECTION, json=body)
 
-    _assert_refused_as_unbuildable(r, body["provider"])
+    _assert_refused_as_not_db(r, body["provider"])
     assert await storage.get(DEFAULT_ARTIFACT_PROVIDER_ID) is None, "nothing is stored"
 
 
@@ -129,8 +132,11 @@ async def test_a_post_of_the_default_while_it_exists_is_still_a_conflict(client)
 
 
 @pytest.mark.asyncio
-async def test_another_row_may_be_created_naming_a_kind_that_is_not_built_yet(client) -> None:
-    r = await client.post(COLLECTION, json={**FILESYSTEM, "id": "asp-spare"})
+async def test_another_row_may_be_created_naming_any_kind(client, tmp_path) -> None:
+    r = await client.post(
+        COLLECTION,
+        json={**FILESYSTEM, "id": "asp-spare", "config": {"root": str(tmp_path / "artifacts")}},
+    )
 
     assert r.status_code == 201, r.text
     assert r.json()["provider"] == "filesystem"
