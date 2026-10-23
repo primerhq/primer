@@ -200,6 +200,14 @@ def _resolve_request(ctx, index: int, data: dict) -> None:
     ctx.eval("void 0;")
 
 
+def _reject_aborted_request(ctx, index: int) -> None:
+    ctx.eval(
+        f"var error = new Error('aborted'); error.name = 'AbortError'; "
+        f"__requests[{index}].reject(error);"
+    )
+    ctx.eval("void 0;")
+
+
 def _peek(ctx, key: str = "auth-status"):
     return json.loads(
         ctx.eval(
@@ -268,6 +276,19 @@ def test_a_superseded_success_never_overwrites_newer_data() -> None:
     _resolve_request(ctx, 0, {"username": "stale", "source": "first"})
 
     assert _peek(ctx) == {"username": "alice", "source": "latest"}
+
+
+def test_an_aborted_request_leaves_its_replacement_in_charge() -> None:
+    ctx = _race_ctx()
+    _mount_race_resource(ctx)
+    ctx.eval("window.primerApi._resource.refetchKey('auth-status');")
+    assert ctx.eval("__requests[0].signal.aborted") is True
+
+    _reject_aborted_request(ctx, 0)
+    assert _peek(ctx) is None
+
+    _resolve_request(ctx, 1, {"username": "alice"})
+    assert _peek(ctx) == {"username": "alice"}
 
 
 def test_last_subscriber_churn_does_not_reuse_an_aborted_entry() -> None:
