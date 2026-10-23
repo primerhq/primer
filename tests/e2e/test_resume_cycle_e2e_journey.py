@@ -71,7 +71,7 @@ async def _drive_approval_park(
     pol = f"pol-t861-{suffix}"
     # Approval policies are unique on (toolset_id, tool_name); clear any
     # leftover policy for the pair before creating ours.
-    existing = await client.get("/v1/tool_approval_policies")
+    existing = await client.get("/v1/tool_approval_policies", params={"limit": 200})
     if existing.status_code == 200:
         for it in existing.json().get("items", []):
             if it.get("toolset_id") == "misc" and it.get("tool_name") == "uuid_v4":

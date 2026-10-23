@@ -113,7 +113,7 @@ async def test_stdio_mcp_approval_park_resume(
     # ----- Gate the mounted toolset's bump tool with a required policy -----
     pol = f"pol-x01-{unique_suffix}"
     # Policies are unique on (toolset_id, tool_name); clear any leftover pair.
-    existing = await authed_client.get("/v1/tool_approval_policies")
+    existing = await authed_client.get("/v1/tool_approval_policies", params={"limit": 200})
     if existing.status_code == 200:
         for it in existing.json().get("items", []):
             if it.get("toolset_id") == tid and it.get("tool_name") == "bump":

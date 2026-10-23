@@ -49,7 +49,7 @@ async def _create_gated_uuid_policy(
     """Create a ``required`` approval policy on misc.uuid_v4 so a
     ``misc__uuid_v4`` call parks on ``_approval``. Returns policy id."""
     pol = f"pol-t854-{suffix}"
-    existing = await client.get("/v1/tool_approval_policies")
+    existing = await client.get("/v1/tool_approval_policies", params={"limit": 200})
     if existing.status_code == 200:
         for it in existing.json().get("items", []):
             if it.get("toolset_id") == "misc" and it.get("tool_name") == "uuid_v4":

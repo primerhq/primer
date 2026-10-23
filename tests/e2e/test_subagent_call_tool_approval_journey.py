@@ -27,7 +27,7 @@ from tests._support.runs import make_local_workspace, make_scripted_agent, start
 
 async def _clear_policies_for(client: httpx.AsyncClient, toolset_id: str, tool_name: str) -> None:
     """Remove any policy a previous run left on the pair, so this run gates it exactly once, then drop the resolver's cache."""
-    existing = await client.get("/v1/tool_approval_policies")
+    existing = await client.get("/v1/tool_approval_policies", params={"limit": 200})
     if existing.status_code == 200:
         for item in existing.json().get("items", []):
             if item.get("toolset_id") == toolset_id and item.get("tool_name") == tool_name:
