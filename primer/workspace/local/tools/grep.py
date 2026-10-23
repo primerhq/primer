@@ -1,15 +1,29 @@
-"""``grep`` -- regex search across workspace files."""
+"""``grep`` -- regex search across workspace files.
+
+The pattern is the agent's (G6-4): it is compiled and matched through
+:mod:`primer.common.user_regex` (at most 1000 characters, the ``regex``
+engine, one :data:`GREP_MATCH_SECONDS` budget per call) in a worker thread
+with the GIL released, so a catastrophic pattern ends in a clear error
+instead of stalling every session on the worker. The sandbox backend shares
+:func:`compile_grep_pattern` and :func:`grep_text`.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import fnmatch
-import re
 from pathlib import Path
 from typing import ClassVar, Literal
 
+import regex
 from pydantic import BaseModel, Field
 
+from primer.common.user_regex import (
+    MAX_PATTERN_LENGTH,
+    MatchBudget,
+    UserRegexError,
+    compile_user_regex,
+)
 from primer.model.chat import ToolExample
 from primer.model.except_ import BadRequestError, NotFoundError
 from primer.workspace.tool import ToolCallContext, ToolResult, WorkspaceTool
@@ -18,12 +32,19 @@ from primer.workspace.local.tools._common import resolve_workspace_path, workspa
 
 _BINARY_SNIFF_BYTES = 1024
 _DEFAULT_HEAD_LIMIT = 250
+# The total time the regex engine may spend on one grep call, over every
+# file it reads (file reads and the directory walk do not count).
+GREP_MATCH_SECONDS = 10.0
 
 
 class GrepArgs(BaseModel):
     """Arguments for the ``grep`` tool."""
 
-    pattern: str = Field(..., min_length=1, description="Regular expression.")
+    pattern: str = Field(
+        ...,
+        min_length=1,
+        description=f"Regular expression (at most {MAX_PATTERN_LENGTH} characters).",
+    )
     path: str = Field(
         default=".",
         description="File or directory to search (relative to the workspace root).",
@@ -108,26 +129,22 @@ class Grep(WorkspaceTool):
         if not target.exists():
             raise NotFoundError(f"{args.path!r} not found")
 
-        try:
-            flags = 0
-            if args.case_insensitive:
-                flags |= re.IGNORECASE
-            if args.multiline:
-                flags |= re.DOTALL | re.MULTILINE
-            regex = re.compile(args.pattern, flags)
-        except re.error as exc:
-            raise BadRequestError(f"invalid regex: {exc}") from exc
-
+        rx = compile_grep_pattern(args)
         files = await asyncio.to_thread(_collect_files, target, args.glob)
-        lines, match_count, file_count = await asyncio.to_thread(
-            _grep_files,
-            files,
-            regex=regex,
-            mode=args.output_mode,
-            context=args.context,
-            multiline=args.multiline,
-            workspace_root=self._root,
-        )
+        budget = grep_budget()
+        try:
+            lines, match_count, file_count = await asyncio.to_thread(
+                _grep_files,
+                files,
+                rx=rx,
+                mode=args.output_mode,
+                context=args.context,
+                multiline=args.multiline,
+                workspace_root=self._root,
+                budget=budget,
+            )
+        except TimeoutError as exc:
+            raise grep_budget_error(budget) from exc
 
         capped: list[str]
         truncated = False
@@ -156,6 +173,85 @@ class Grep(WorkspaceTool):
         )
 
 
+def compile_grep_pattern(args: GrepArgs) -> regex.Pattern:
+    """The bounded, compiled pattern for ``args``; a refusal is a ``BadRequestError`` (an error result to the model)."""
+    flags = 0
+    if args.case_insensitive:
+        flags |= regex.IGNORECASE
+    if args.multiline:
+        flags |= regex.DOTALL | regex.MULTILINE
+    try:
+        return compile_user_regex(args.pattern, flags, what="grep pattern")
+    except UserRegexError as exc:
+        raise BadRequestError(str(exc)) from None
+
+
+def grep_budget() -> MatchBudget:
+    return MatchBudget(GREP_MATCH_SECONDS, what="grep pattern")
+
+
+def grep_budget_error(budget: MatchBudget) -> BadRequestError:
+    return BadRequestError(
+        f"grep stopped: matching the pattern used its {budget.seconds:g} s matching budget. "
+        "Overlapping or nested repeats such as (a|aa)+ or (x+)+ backtrack on long lines; "
+        "simplify the pattern, or narrow path or glob."
+    )
+
+
+def grep_text(
+    text: str,
+    rel: str,
+    *,
+    rx: regex.Pattern,
+    mode: str,
+    context: int,
+    multiline: bool,
+    budget: MatchBudget,
+) -> tuple[list[str], int]:
+    """The output lines for one file and its match count (``([], 0)`` when nothing matched).
+
+    Raises :class:`~primer.common.user_regex.UserRegexTimeout` (a ``TimeoutError``) when ``budget`` runs out.
+    """
+    out: list[str] = []
+    if multiline:
+        matches_ml = budget.findall_matches(rx, text)
+        if not matches_ml:
+            return out, 0
+        if mode == "files_with_matches":
+            out.append(rel)
+        elif mode == "count":
+            out.append(f"{rel}:{len(matches_ml)}")
+        else:
+            for m in matches_ml:
+                snippet = m.group(0).replace("\n", "\\n")
+                out.append(f"{rel}::{snippet}")
+        return out, len(matches_ml)
+
+    all_lines = text.splitlines()
+    line_matches = [
+        (lineno, line)
+        for lineno, line in enumerate(all_lines, start=1)
+        if budget.search(rx, line)
+    ]
+    if not line_matches:
+        return out, 0
+    if mode == "files_with_matches":
+        out.append(rel)
+    elif mode == "count":
+        out.append(f"{rel}:{len(line_matches)}")
+    else:  # content mode
+        emitted: set[int] = set()
+        for lineno, _line in line_matches:
+            start = max(0, lineno - 1 - context)
+            end = min(len(all_lines), lineno + context)
+            for i in range(start, end):
+                if i in emitted:
+                    continue
+                emitted.add(i)
+                out.append(f"{rel}:{i + 1}:{all_lines[i]}")
+    return out, len(line_matches)
+
+
 def _collect_files(target: Path, glob_filter: str | None) -> list[Path]:
     if target.is_file():
         return [target]
@@ -173,11 +269,12 @@ def _collect_files(target: Path, glob_filter: str | None) -> list[Path]:
 def _grep_files(
     files: list[Path],
     *,
-    regex: re.Pattern[str],
+    rx: regex.Pattern,
     mode: str,
     context: int,
     multiline: bool,
     workspace_root: Path,
+    budget: MatchBudget,
 ) -> tuple[list[str], int, int]:
     """Return (lines, total-match-count, files-with-a-match-count)."""
     out: list[str] = []
@@ -196,52 +293,22 @@ def _grep_files(
         except OSError:
             continue
         rel = workspace_relative(workspace_root, path)
-
-        if multiline:
-            matches_ml = list(regex.finditer(text))
-            if not matches_ml:
-                continue
-            total += len(matches_ml)
+        lines, count = grep_text(
+            text, rel, rx=rx, mode=mode, context=context, multiline=multiline, budget=budget,
+        )
+        if count:
+            total += count
             file_count += 1
-            if mode == "files_with_matches":
-                out.append(rel)
-                continue
-            if mode == "count":
-                out.append(f"{rel}:{len(matches_ml)}")
-                continue
-            for m in matches_ml:
-                snippet = m.group(0).replace("\n", "\\n")
-                out.append(f"{rel}::{snippet}")
-            continue
-
-        line_matches: list[tuple[int, str]] = []
-        for lineno, line in enumerate(text.splitlines(), start=1):
-            if regex.search(line):
-                line_matches.append((lineno, line))
-
-        if not line_matches:
-            continue
-        total += len(line_matches)
-        file_count += 1
-
-        if mode == "files_with_matches":
-            out.append(rel)
-            continue
-        if mode == "count":
-            out.append(f"{rel}:{len(line_matches)}")
-            continue
-        # content mode
-        all_lines = text.splitlines()
-        emitted: set[int] = set()
-        for lineno, _line in line_matches:
-            start = max(0, lineno - 1 - context)
-            end = min(len(all_lines), lineno + context)
-            for i in range(start, end):
-                if i in emitted:
-                    continue
-                emitted.add(i)
-                out.append(f"{rel}:{i + 1}:{all_lines[i]}")
+            out.extend(lines)
     return out, total, file_count
 
 
-__all__ = ["Grep", "GrepArgs"]
+__all__ = [
+    "GREP_MATCH_SECONDS",
+    "Grep",
+    "GrepArgs",
+    "compile_grep_pattern",
+    "grep_budget",
+    "grep_budget_error",
+    "grep_text",
+]
