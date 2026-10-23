@@ -550,6 +550,10 @@ async def test_a_reconnect_during_a_refresh_wins(svc, kb, target, store, mock_oa
 
 async def test_refresh_paths_never_log_a_token(caplog, svc, kb, target, store, mock_oauth_mcp, clock):
     caplog.set_level(logging.DEBUG)
+    # configure_logging (tests/test_log.py, earlier in the same process) pins httpcore and httpx at INFO; the root level alone would leave their
+    # DEBUG traces, where a token or a code would show, out of the checked log (audit G4-19).
+    for name in ("httpcore", "httpx"):
+        caplog.set_level(logging.DEBUG, logger=name)
     await connect(svc, kb)
     seen = list(await _tokens(store))
     _near_expiry(clock)

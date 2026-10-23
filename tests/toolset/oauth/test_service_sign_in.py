@@ -590,6 +590,10 @@ def test_redirect_uri(fake_storage_provider, box):
 
 async def test_no_token_code_or_verifier_reaches_the_log(caplog, svc, kb, store, mock_oauth_mcp, fake_storage_provider):
     caplog.set_level(logging.DEBUG)
+    # configure_logging (tests/test_log.py, earlier in the same process) pins httpcore and httpx at INFO; the root level alone would leave their
+    # DEBUG traces, where a token or a code would show, out of the checked log (audit G4-19).
+    for name in ("httpcore", "httpx"):
+        caplog.set_level(logging.DEBUG, logger=name)
     start = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
     back = authorize(start.authorize_url)
     pending = await fake_storage_provider.get_storage(McpOAuthPendingSignIn).get(pending_key(back["state"]))
