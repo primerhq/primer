@@ -28,7 +28,7 @@ def test_an_artifact_storage_provider_can_be_registered_and_deleted_from_the_pro
         assert "db" in values and "filesystem" in values and "s3" in values
 
         type_select.select_option("db")
-        overlay.locator('[data-testid="pc-field:id"] input, [data-field="id"] input').first.fill(name)
+        overlay.get_by_test_id("pc-field:id").fill(name)
         expect(overlay.get_by_test_id("provider-form-save")).to_be_enabled()
         overlay.get_by_test_id("provider-form-save").click()
         page.wait_for_selector(f'[data-testid="pk-card:artifact_storage:{name}"]')

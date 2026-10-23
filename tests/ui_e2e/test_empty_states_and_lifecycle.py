@@ -130,8 +130,8 @@ def test_u0047_provider_list_reflects_new_row_after_modal_create(
         overlay = page.get_by_test_id("pc-register")
         overlay.wait_for(state="visible", timeout=15_000)
 
-        overlay.locator('[data-testid="pc-field:id"] input').fill(provider_id)
-        overlay.locator('[data-testid="pc-field:url"] input').fill(f"{mock_base_url}/v1")
+        overlay.get_by_test_id("pc-field:id").fill(provider_id)
+        overlay.get_by_test_id("pc-field:url").fill(mock_base_url)
 
         next_btn = overlay.get_by_test_id("pc-register-next")
         expect(next_btn).to_be_enabled(timeout=10_000)

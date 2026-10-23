@@ -55,14 +55,15 @@ def test_a_provider_row_can_be_created_and_deleted(page, console_url, mock_llm_l
     open_provider_catalog(page, console_url, cls="stt")
     page.click('[data-testid="pc-register-open"]')
     page.wait_for_selector('[data-testid="pc-register"]')
-    page.fill('[data-testid="pc-field:id"] input', "journey-stt")
-    page.fill('[data-testid="pc-field:url"] input', f"{mock_base_url}/v1")
+    page.get_by_test_id("pc-field:id").fill("journey-stt")
+    page.get_by_test_id("pc-field:url").fill(mock_base_url)
     if page.locator('[data-testid="pc-register-next"]').is_visible():
         page.click('[data-testid="pc-register-next"]')
-        page.wait_for_selector('[data-testid^="pc-import-context:"]')
+        page.wait_for_selector('[data-testid="pc-speech-pick"]')
+        page.locator('[data-testid^="pc-pick:"]').first.check()
         page.click('[data-testid="pc-register-submit"]')
     else:
-        page.fill('[data-testid="pc-field:default_model"] input', "whisper-1")
+        page.get_by_test_id("pc-field:default_model").fill("whisper-1")
         page.click('[data-testid="provider-form-save"]')
     page.wait_for_selector('[data-testid="pk-card:stt:journey-stt"]')
 
