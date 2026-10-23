@@ -173,4 +173,4 @@ def test_the_mobile_list_and_pickers_use_the_helper_not_a_fixed_phrase() -> None
 
 def test_the_providers_count_says_providers() -> None:
     assert '"entity"' not in PROVIDERS and '"entities"' not in PROVIDERS
-    assert 'entityCount === 1 ? "provider" : "providers"' in PROVIDERS
+    assert 'totalCount === 1 ? "provider" : "providers"' in PROVIDERS

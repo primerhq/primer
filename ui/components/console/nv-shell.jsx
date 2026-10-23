@@ -604,6 +604,13 @@ function NV_Shell() {
       },
     });
     reg({
+      id: "provider.register", label: "Register Provider", surfaces: ["palette"],
+      run: function () {
+        goView("platform", "providers");
+        if (window.PC_requestRegister) window.PC_requestRegister(null);
+      },
+    });
+    reg({
       id: "palette.open", label: "Open Palette", chord: "Ctrl+k",
       surfaces: ["topbar", "palette"],
       run: function () { paletteRef.current.open(); },

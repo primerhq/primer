@@ -6133,55 +6133,6 @@ button.nv-rail-ws-session {
    Family chips replaced the rail (item 1); the register dropdown, card
    grid and probe panel are new (items 2/3/4).
    ------------------------------------------------------------------ */
-/* Designer reconciliation (uiv2 mockup): compact rounded PILLS, each
-   individually outlined and gapped, rather than .chip-group's shared-
-   border segmented-control look - overrides .chip-group's own
-   container chrome entirely (background/border/padding/gap) rather
-   than layering on top of it, since the two are now visually distinct
-   families, not variations on one. */
-.pc-chips.chip-group {
-  background: transparent; border: none; padding: 0; gap: 8px;
-  flex-wrap: wrap; height: auto;
-}
-.pc-chips .chip {
-  border: 1px solid var(--border); border-radius: 999px;
-  padding: 5px 14px; color: var(--text-3); background: transparent;
-}
-.pc-chips .chip:hover { border-color: var(--border-strong); color: var(--text); }
-.pc-chips .chip.active {
-  border-color: var(--green); background: var(--green-dim); color: var(--green);
-}
-
-/* Item 2/3: "Register provider" dropdown. */
-.pc-register { position: relative; }
-.pc-register-panel {
-  position: absolute; top: calc(100% + 6px); right: 0; z-index: 20;
-  min-width: 260px; max-height: 320px; overflow-y: auto;
-  background: var(--bg-1); border: 1px solid var(--border-strong);
-  border-radius: var(--r-6); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
-  padding: 6px;
-}
-.pc-register-head {
-  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.08em;
-  text-transform: uppercase; color: var(--text-4); padding: 6px 8px 4px;
-}
-.pc-register-row {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 10px; width: 100%; padding: 7px 8px; border-radius: var(--r-4);
-  border: none; background: transparent; color: var(--text);
-  font-size: 12.5px; text-align: left; cursor: pointer; font-family: inherit;
-}
-.pc-register-row:hover { background: var(--bg-hover); }
-.pc-register-annotation { font-size: 10.5px; white-space: nowrap; }
-.pc-register-empty { padding: 8px; }
-/* Platform wave P1b: .pc-register-row reused as a PERSISTENT picker row
-   (model-profiles' Provider|Model columns, workspaces' Template rows) as
-   well as its original one-shot dropdown-item role - selected state only
-   matters for the persistent-picker usage. */
-.pc-register-row[data-selected="true"] {
-  background: var(--accent-dim); color: var(--accent);
-}
-
 /* Item 3: card grid replaces the flat row list. auto-fill/minmax is the
    ENTIRE narrow-viewport story - no isMobile/CardList JS branch, the grid
    reflows its own column count (test_the_list_adapts_to_narrow_viewports). */

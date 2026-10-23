@@ -55,7 +55,6 @@ BASELINE: dict[str, int] = {
     "knowledge.jsx": 9,
     "mcp.jsx": 3,
     "model-profiles.jsx": 1,
-    "provider-catalog.jsx": 1,
     "provider-form.jsx": 4,
     "semantic-search.jsx": 4,
     "session-detail.jsx": 4,

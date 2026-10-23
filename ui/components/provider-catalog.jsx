@@ -1,673 +1,12 @@
-/* global React, Icon, Btn, StatusPill, Banner, Modal, relativeTime */
+/* global React, window, Btn, Banner, PK_PageHeader, PK_CardGrid, PK_Card, PK_usePagedFilter, PK_Fold, PK_cardFacts */
 // ============================================================================
-// Unified provider catalog (S4 P2; platform wave P1a reconciliation;
-// IA restructure 01a04d6a - user directive supersedes the mockup where
-// they conflict).
+// Unified provider catalog (Plan 01 kit switch-over, Plan 02 Task 20).
 //
-// ONE page for every provider class: an "All" default view merges every
-// CRUD class's instances into a single card grid with a per-card type
-// label; a type filter row (PC_TypeFilter) narrows to one class (crud OR
-// panel); a "Register provider" dropdown (PC_RegisterAll) names the TYPE
-// up front, independent of whatever filter is currently active - picking
-// a crud type opens the create overlay (the kind select lives inside the
-// form, unchanged); picking a panel type (vector stores, workspaces,
-// channels) switches the filter to that class, whose own purpose-built
-// panel already carries its native create affordance rather than
-// reimplementing one here. Clicking a crud-class card opens the SAME
-// form overlay in EDIT mode (locked id, secrets render blank with the
-// current mask as help text, save = PUT).
-//
-// This used to be a three-layer stack (platform page -> this overlay ->
-// form overlay); the platform page's own "providers" nav entry now
-// mounts this component directly, inline, with no overlay hop - see
-// nv-platform.jsx's NV_PlatPage.
-//
-// MOUNT CONTRACT (amendment M11d, still holds when mounted inline):
-// props are exactly {initialClass, initialInstanceId, onNavigate} and
-// nothing else - no reach for the console's own routing or address bar.
-// Navigation leaves through onNavigate as a structured ref; the caller
-// decides whether that means an overlay URL (legacy deep link) or local
-// page state (the new inline mount).
-//
-// KNOWN GAP (judgment call, flagged not fixed): SSPDetail's own "back"
-// button (semantic-search.jsx) sends the legacy shell router shim back
-// to "/ssp", which resolves via that shim's overlay-name fallback -
-// with no real overlay open (the inline mount's whole point), that
-// fallback degrades to a no-op. Narrow, cosmetic (one dead back button
-// inside the SSP detail view specifically); not worth reaching into a
-// third file to patch for this pass.
+// Mount contract: props are exactly { initialClass, initialInstanceId, onNavigate }
+// Navigation leaves through onNavigate as a structured ref.
 // ============================================================================
 
-// Designer reconciliation (uiv2 "Primer Console.dc.html", implementer-
-// notes.md 3.2): order and labels now match the mockup's chip row
-// exactly (LLM, Embedding, TTS, ASR, Semantic search, Cross encoding,
-// Workspace, Web search, Web fetch, Channels, Artifact storage) - this
-// array is the single source both the chip row and the Register
-// dropdown draw from, so reordering it here reorders both. Keys are
-// untouched (backend-facing, unrelated to display order/labels).
-const PROVIDER_CLASSES = [
-  { key: "llm", label: "LLM", plural: "llm_providers", form: "crud", profiles: true, invalidate: true },
-  { key: "embedding", label: "Embedding", plural: "embedding_providers", form: "crud", invalidate: true },
-  { key: "tts", label: "TTS", plural: "tts_providers", form: "crud" },
-  { key: "stt", label: "ASR", plural: "stt_providers", form: "crud" },
-  { key: "ssp", label: "Semantic search", plural: "ssp", form: "panel",
-    panel: () => window.SSPListPage,
-    // Without a detail the catalog selected a store and then showed the
-    // list again, so a vector store's own page was unreachable. It takes
-    // its id as `sspId`, hence detailProp.
-    detail: () => window.SSPDetail, detailProp: "sspId" },
-  { key: "cross_encoder", label: "Cross encoding", plural: "cross_encoder_providers", form: "crud", invalidate: true },
-  { key: "workspace", label: "Workspace", plural: "workspace_providers", form: "panel",
-    panel: () => window.WorkspaceProvidersPage,
-    detail: () => window.WorkspaceProviderDetail },
-  { key: "web_search", label: "Web search", plural: "web_search_providers", form: "crud" },
-  { key: "web_fetch", label: "Web fetch", plural: "web_fetch_providers", form: "crud" },
-  { key: "channel", label: "Channels", plural: "channel_providers", form: "panel",
-    panel: () => window.ChannelProvidersPage,
-    // A panel class can still have a detail view; without one the
-    // catalog can select an instance and then show the list again.
-    detail: () => window.ChannelProviderDetail },
-  { key: "artifact_storage", label: "Artifact storage", plural: "artifact_storage_providers", form: "crud" },
-];
-
-// IA restructure 01a04d6a: "All" is a synthetic, non-fetchable pseudo-
-// class - the type filter's default, showing every crud class's
-// instances merged into one grid (see PC_AllInstancesGrid). Prepended
-// here rather than folded into PROVIDER_CLASSES itself, which stays the
-// real backend-class registry every other lookup (Register dropdown,
-// per-card labels, plural/form lookups) keys off unmodified.
-const PC_ALL_TYPE_CHIPS = [{ key: "all", label: "All" }, ...PROVIDER_CLASSES];
-
-// Platform wave P1a item 1: the family rail becomes a CHIPS row (reuses the
-// app's own .chip-group/.chip pattern, already proven elsewhere - e.g. the
-// filter bars - rather than inventing a new control). Same classes/order the
-// rail always used; only the container markup changed.
-//
-// IA restructure 01a04d6a: renamed from PC_FamilyChips - it is now the
-// TYPE FILTER for the unified "all types together" page, not just a
-// family rail for a single-class view. `classes` carries the synthetic
-// "All" entry prepended by the caller (PC_ALL_TYPE_CHIPS below); this
-// component itself stays a plain, presentational chip row with no
-// opinion about what "All" means.
-// Designer reconciliation: compact rounded PILLS, no icons - a single
-// row of .pc-chips overrides (styles.css) rather than the app's default
-// segmented-control .chip-group look, since the two read as visually
-// distinct families (a bordered container of tightly-packed tabs vs.
-// individually-outlined, gapped pills).
-function PC_TypeFilter({ classes, selected, onSelect }) {
-  return (
-    <div className="chip-group pc-chips" role="tablist"
-      aria-label="Provider type" data-testid="provider-chips">
-      {classes.map((cls) => (
-        <span
-          key={cls.key}
-          data-testid={`provider-chip-${cls.key}`}
-          className={`chip touch-target${cls.key === selected ? " active" : ""}`}
-          role="tab"
-          aria-selected={cls.key === selected}
-          tabIndex={0}
-          onClick={() => onSelect(cls.key)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              onSelect(cls.key);
-            }
-          }}
-        >
-          {cls.label}
-        </span>
-      ))}
-    </div>
-  );
-}
-
-// Platform wave P1a items 2+3: the primary CTA becomes a "Register provider"
-// dropdown naming the KIND up front ("kind decides the form") instead of a
-// bare "New" button that dumps the operator into a form defaulted to
-// whichever kind happened to be first. Annotations are read from the SAME
-// /_types response the form already fetches - never a hardcoded kind list,
-// so a kind this deployment does not actually serve (e.g. a class with only
-// one entry) never shows a phantom row, and a kind the backend marks
-// non-discoverable never falsely claims "probes models live".
-function PC_RegisterDropdown({ klass, onPick }) {
-  const { useResource, apiFetch } = window.primerApi;
-  const [open, setOpen] = React.useState(false);
-  const types = useResource(
-    window.PC_typesKey(klass.plural),
-    (signal) => apiFetch("GET", `/${klass.plural}/_types`, null, { signal }),
-    { pollMs: null },
-  );
-  const typeMap = types.data || {};
-  const kinds = Object.keys(typeMap);
-
-  return (
-    <div className="pc-register" data-testid="provider-register">
-      <Btn kind="primary" data-testid="provider-register-toggle"
-        onClick={() => {
-          // A request that failed leaves the entry in error and nothing asks again: opening the menu on it asks once (a request already out is not repeated).
-          if (!open && types.error && !types.data && !types.loading && typeof types.refetch === "function") types.refetch();
-          setOpen((v) => !v);
-        }}>
-        Register provider <Icon name={open ? "chevron-up" : "chevron-down"} size={11} />
-      </Btn>
-      {open ? (
-        <div className="pc-register-panel" role="menu"
-          data-testid="provider-register-panel">
-          <div className="pc-register-head">Kind — decides the form</div>
-          {kinds.length === 0 ? (
-            <div className="pc-register-empty muted text-sm">
-              {types.loading ? "Loading…" : "No kinds available."}
-            </div>
-          ) : kinds.map((k) => {
-            const meta = typeMap[k] || {};
-            // gate on the served data only: a kind's own discoverable flag
-            // decides "probes models live"; the aggregated variant (no flat
-            // field set - the console mounts its own editor) decides
-            // "gated / special". Anything else served with neither signal
-            // gets no annotation rather than a guessed one.
-            const annotation = meta.discoverable
-              ? "probes models live"
-              : meta.variant === "aggregated" ? "gated / special" : null;
-            return (
-              <button type="button" key={k} role="menuitem"
-                className="pc-register-row"
-                data-testid={`provider-register-kind-${k}`}
-                onClick={() => { setOpen(false); onPick(k); }}>
-                <span>{meta.label || k}</span>
-                {annotation ? (
-                  <span className="pc-register-annotation muted">{annotation}</span>
-                ) : null}
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-// IA restructure 01a04d6a: the user-directed replacement for the "which
-// kind" register flow above WHEN NOTHING has narrowed the page to one
-// class yet (the default "All" view has no single `klass` to hand
-// PC_RegisterDropdown). Lists the 11 TYPES themselves - no fetch, no
-// annotations (those were per-KIND signals from a class's own /_types
-// data; a per-TYPE list has no such data to show) - picking one names
-// which provider family the operator wants; the kind picker stays where
-// it already lives, inside PC_ProviderForm's own select.
-function PC_RegisterAll({ onPick }) {
-  const [open, setOpen] = React.useState(false);
-  return (
-    <div className="pc-register" data-testid="provider-register-all">
-      <Btn kind="primary" data-testid="provider-register-all-toggle"
-        onClick={() => setOpen((v) => !v)}>
-        Register provider <Icon name={open ? "chevron-up" : "chevron-down"} size={11} />
-      </Btn>
-      {open ? (
-        <div className="pc-register-panel" role="menu"
-          data-testid="provider-register-all-panel">
-          <div className="pc-register-head">Type - decides which providers list</div>
-          {PROVIDER_CLASSES.map((cls) => (
-            <button type="button" key={cls.key} role="menuitem"
-              className="pc-register-row"
-              data-testid={`provider-register-type-${cls.key}`}
-              onClick={() => { setOpen(false); onPick(cls.key); }}>
-              <span>{cls.label}</span>
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-// Platform wave P4: reachable/unreachable badge derived from
-// last_probe_at/last_probe_ok (LLMProvider only - primer/model/
-// providers/llm.py:341-369; other provider classes don't carry these
-// fields, so `row.last_probe_at` reads undefined for them and this
-// renders nothing, the same as a genuinely virgin LLM row). A row that
-// has never been probed (last_probe_at == null) shows NO badge at all
-// rather than a stale/misleading one - the field's own docstring
-// mandates this, not a UI guess.
-function PC_ReachabilityBadge({ lastProbeAt, lastProbeOk }) {
-  if (lastProbeAt == null) return null;
-  const ok = !!lastProbeOk;
-  // Designer reconciliation: plain colored TEXT, no pill background/dot.
-  return (
-    <span className={`pc-card-status ${ok ? "ok" : "down"}`}
-      data-testid="provider-card-reachability">
-      {ok ? "reachable" : "unreachable"}
-    </span>
-  );
-}
-
-// Designer reconciliation: the card footer is mockup-pure now - Open (a
-// text link) and Delete (muted text) only. Invalidate is real, tested,
-// currently-shipped functionality (the model-family registry caches an
-// adapter per row id, api/registries/provider_registry.py; the sibling
-// registries drop their entry on the CRUD hook and need no button) - it
-// did NOT get dropped, it moved into the provider edit overlay next to
-// the Live-model-probe panel (that panel's own Test connect probes the
-// DRAFT config, never the stored cache, so this stays a genuinely
-// distinct action - see PC_ProbePanel's own comment). A capability-
-// preserving addition beyond the mockup, per lead ruling.
-function PC_InstanceCard({ klass, row, onOpen, onChanged, profileCount }) {
-  const { apiFetch, useResource } = window.primerApi;
-  const [confirmDelete, setConfirmDelete] = React.useState(false);
-  const [err, setErr] = React.useState("");
-  const [busy, setBusy] = React.useState(false);
-  const encoded = encodeURIComponent(row.id);
-
-  // Wave P1a item 3 / CI fix: "models N probed live". Two real gates,
-  // not the old (broken) `discoverable ? key : null` pattern - useResource
-  // has no null-key skip, so that always fired the fetch anyway, 404ing
-  // on embedding/cross_encoder (GET .../discovered_models is an
-  // llm_providers-only route - providers.py:617, no per-id GET exists
-  // for the other classes) and 400ing on unreachable llm rows.
-  //
-  // canProbe is true only when BOTH hold: the route exists for this
-  // class (llm_providers only), and this row already has a confirmed
-  // successful probe (last_probe_ok - virgin/never-probed rows are
-  // excluded too, same virgin rule the reachability badge uses). No
-  // silent auto-probing on page load; a fresh/unreachable row simply
-  // shows no model count until something else establishes reachability.
-  const canProbe = klass.plural === "llm_providers" && row.last_probe_ok === true;
-  const discovered = useResource(
-    `pc:discovered:${row.id}`,
-    (signal) => canProbe
-      ? apiFetch("GET", `/${klass.plural}/${encoded}/discovered_models`, null, { signal })
-      : Promise.resolve(null),
-    { pollMs: null },
-  );
-  const modelCount = canProbe && discovered.data && Array.isArray(discovered.data.models)
-    ? discovered.data.models.length
-    : null;
-
-  const remove = async () => {
-    setErr("");
-    setBusy(true);
-    try {
-      await apiFetch("DELETE", `/${klass.plural}/${encoded}`);
-      setConfirmDelete(false);
-      if (onChanged) onChanged("delete");
-    } catch (deleteErr) {
-      // 403 means a reserved row; the backend detail says which and why
-      // (routers/providers.py:116-135). Show it where the click was
-      // rather than hiding the button behind a copied id list.
-      const detail = deleteErr && deleteErr.detail ? deleteErr.detail : null;
-      const message = (detail && (detail.message || detail))
-        || (deleteErr && deleteErr.title) || String(deleteErr);
-      setErr(deleteErr && deleteErr.status ? `${deleteErr.status}: ${message}` : String(message));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const virgin = row.last_probe_at == null;
-  const unreachable = !virgin && !row.last_probe_ok;
-
-  // Designer reconciliation: the fact SET itself differs by reachability
-  // (matching the mockup's own reachable vs. unreachable examples
-  // exactly), not a single combined list every card shows a subset of -
-  // a reachable row's operationally useful facts (how much it serves,
-  // what depends on it, whether a key is set) are different questions
-  // than an unreachable row's (why, and since when). Every row maps to
-  // a REAL served field; "failover" from the mockup's unreachable
-  // example has NO backend counterpart on a plain LLMProvider (it only
-  // exists inside an aggregated row's own config - primer/model/
-  // providers/llm.py's AggregatedLLMConfig), so it is not rendered here
-  // at all rather than invented - flagged in the PR body.
-  const facts = [];
-  if (!unreachable) {
-    if (modelCount != null) {
-      facts.push({ key: "models", value: `${modelCount} probed live` });
-    }
-    if (klass.profiles && profileCount != null) {
-      facts.push({
-        key: "default for",
-        value: `${profileCount} profile${profileCount === 1 ? "" : "s"}`,
-      });
-    }
-    if (row.config && row.config.api_key) {
-      facts.push({ key: "key", value: row.config.api_key, mono: true });
-    }
-  } else {
-    if (row.last_error) {
-      facts.push({ key: "error", value: row.last_error, mono: true, danger: true });
-    }
-    facts.push({
-      key: "last probe",
-      value: relativeTime((Date.now() - new Date(row.last_probe_at).getTime()) / 1000),
-    });
-  }
-
-  return (
-    <div className="pc-card" data-testid={`provider-card-${row.id}`}>
-      <div className="pc-card-head">
-        <span className="pc-card-title mono">{row.id}</span>
-        <span style={{ flex: 1 }} />
-        <PC_ReachabilityBadge lastProbeAt={row.last_probe_at} lastProbeOk={row.last_probe_ok} />
-      </div>
-      <div className="pc-card-subtitle">
-        {[row.provider, row.config && row.config.url].filter(Boolean).join(" · ")}
-      </div>
-      {facts.length ? (
-        <div className="pc-card-facts">
-          {facts.map((f) => (
-            <div className="pc-card-fact" key={f.key}
-              data-testid={f.key === "error" ? `provider-card-probe-error-${row.id}` : undefined}>
-              <span className="muted">{f.key}</span>
-              <span className={f.mono ? "mono text-sm" : ""}
-                style={f.danger ? { color: "var(--red)" } : undefined}>
-                {f.value}
-              </span>
-            </div>
-          ))}
-        </div>
-      ) : null}
-      <div className="pc-card-footer">
-        <button type="button" className="pc-card-open"
-          data-testid={`provider-card-open-${row.id}`}
-          onClick={() => onOpen(row)}>
-          Open
-        </button>
-        <span style={{ flex: 1 }} />
-        {confirmDelete ? (
-          <React.Fragment>
-            <button type="button" className="pc-card-delete-confirm" disabled={busy}
-              data-testid={`provider-card-delete-confirm-${row.id}`}
-              onClick={remove}>
-              Confirm
-            </button>
-            <button type="button" className="pc-card-delete"
-              onClick={() => setConfirmDelete(false)}>
-              Cancel
-            </button>
-          </React.Fragment>
-        ) : (
-          <button type="button" className="pc-card-delete"
-            data-testid={`provider-card-delete-${row.id}`}
-            onClick={() => { setErr(""); setConfirmDelete(true); }}>
-            Delete
-          </button>
-        )}
-      </div>
-      {err ? (
-        <div className="field-help" data-testid={`provider-card-error-${row.id}`}>{err}</div>
-      ) : null}
-    </div>
-  );
-}
-
-// Designer reconciliation: "default for N profiles" - one combined
-// fetch grouped client-side by provider_id (no server-side provider_id
-// filter is wired for this list route - POST /model_profiles/find takes
-// a Predicate and COULD do this server-side, unused here only to match
-// the existing pattern). `enabled=false` (any class but LLM) skips the
-// fetch entirely rather than running it and discarding the result.
-function PC_useProfileCounts(enabled) {
-  const { useResource, apiFetch } = window.primerApi;
-  const profiles = useResource(
-    "pc:profile-counts",
-    (signal) => enabled
-      ? apiFetch("GET", "/model_profiles?limit=200", null, { signal })
-      : Promise.resolve({ items: [] }),
-    { pollMs: null },
-  );
-  return React.useMemo(() => {
-    const map = {};
-    ((profiles.data && profiles.data.items) || []).forEach((p) => {
-      map[p.provider_id] = (map[p.provider_id] || 0) + 1;
-    });
-    return map;
-  }, [profiles.data]);
-}
-
-// Designer reconciliation: client-side substring filter over name (id)
-// and kind (provider) - "over the visible cards" per the mockup spec,
-// so it narrows THIS page's already-fetched rows rather than issuing a
-// new server query; a filter that hides every row on the current page
-// while matches exist on another page is a known, accepted limit of
-// that scope (Pager itself is untouched by it - it reflects the real
-// server-side list, not the filtered view).
-function PC_filterRows(items, filterQuery) {
-  const q = (filterQuery || "").trim().toLowerCase();
-  if (!q) return items;
-  return items.filter((row) => {
-    const name = String(row.id || "").toLowerCase();
-    const kind = String(row.provider || "").toLowerCase();
-    return name.indexOf(q) >= 0 || kind.indexOf(q) >= 0;
-  });
-}
-
-function PC_InstanceGrid({ klass, onSelect, onRegisterRefetch, filterQuery, onCountChange }) {
-  const { usePagedList } = window.primerApi;
-  const list = usePagedList({
-    key: `catalog:${klass.plural}`,
-    path: `/${klass.plural}`,
-    pageSize: 25,
-    pollMs: null,
-    resetKey: { plural: klass.plural },
-  });
-
-  // Hand the refetch up so a card action refreshes this list in place. A
-  // remount would work too, but it would also throw away the page the
-  // operator was on.
-  React.useEffect(() => {
-    if (onRegisterRefetch) onRegisterRefetch(() => list.refetch());
-  }, [onRegisterRefetch, list.refetch]);
-
-  const items = list.items || [];
-  // The header's "N entities" count - this class's own list, unaffected
-  // by the filter narrowing what's actually drawn below.
-  React.useEffect(() => {
-    if (onCountChange) onCountChange(items.length);
-  }, [items.length, onCountChange]);
-
-  const profileCounts = PC_useProfileCounts(!!klass.profiles);
-
-  if (list.error) {
-    return (
-      <Banner
-        kind="error"
-        title={`Could not load ${klass.label}`}
-        detail={String(list.error.detail || list.error.title || list.error)}
-      />
-    );
-  }
-  if (!list.loading && items.length === 0) {
-    return (
-      <div className="empty-state" data-testid={`provider-empty-${klass.key}`}>
-        <h3>No {klass.label} providers yet</h3>
-        <p>Add one to make this capability available.</p>
-      </div>
-    );
-  }
-
-  const filtered = PC_filterRows(items, filterQuery);
-
-  return (
-    <div data-testid={`provider-instances-${klass.key}`} style={{ minWidth: 0, flex: "1 1 0" }}>
-      {filtered.length === 0 ? (
-        <div className="empty-state" data-testid={`provider-filter-empty-${klass.key}`}>
-          <p>No providers match "{filterQuery}".</p>
-        </div>
-      ) : (
-        <div className="pc-card-grid">
-          {filtered.map((row) => (
-            <PC_InstanceCard
-              key={row.id}
-              klass={klass}
-              row={row}
-              profileCount={profileCounts[row.id]}
-              onOpen={onSelect}
-              onChanged={(what) => {
-                list.refetch();
-                if (what === "delete" && onSelect) onSelect(null);
-              }}
-            />
-          ))}
-        </div>
-      )}
-      <Pager pager={list} label="providers" />
-    </div>
-  );
-}
-
-// IA restructure 01a04d6a: the "All" default view - every CRUD class's
-// instances in ONE grid, each card labelled with its own type so an
-// operator scanning the merged list still knows what they are looking
-// at. One combined fetch (Promise.all over each crud plural) rather than
-// N separate useResource calls, which would call hooks inside a loop.
-// Panel classes (vector stores, workspaces, channels) are deliberately
-// NOT merged in here - each already owns a purpose-built list/detail
-// pair with real, class-specific actions (reindex, channel rules, ...) a
-// generic card would either omit or fake; reachable via their own type
-// filter chip instead, unchanged from before this restructure.
-function PC_AllInstancesGrid({ onSelect, reloadKey, filterQuery, onCountChange }) {
-  const { apiFetch, useResource } = window.primerApi;
-  const crudClasses = PROVIDER_CLASSES.filter((c) => c.form === "crud");
-  const all = useResource(
-    `catalog:all-instances:${reloadKey}`,
-    (signal) => Promise.all(crudClasses.map((c) =>
-      apiFetch("GET", `/${c.plural}?limit=200`, null, { signal })
-        .then((r) => (r && r.items) || [])
-        .catch(() => [])
-    )).then((lists) => {
-      const rows = [];
-      crudClasses.forEach((c, i) => {
-        (lists[i] || []).forEach((row) => rows.push({ klass: c, row }));
-      });
-      return { rows: rows };
-    }),
-    { pollMs: 15000 },
-  );
-  const rows = (all.data && all.data.rows) || [];
-  const profileCounts = PC_useProfileCounts(true);
-
-  React.useEffect(() => {
-    if (onCountChange) onCountChange(rows.length);
-  }, [rows.length, onCountChange]);
-
-  if (all.error) {
-    return (
-      <Banner kind="error" title="Could not load providers">
-        {String(all.error.detail || all.error.title || all.error)}
-      </Banner>
-    );
-  }
-  if (!all.loading && rows.length === 0) {
-    return (
-      <div className="empty-state" data-testid="provider-empty-all">
-        <h3>No providers registered yet</h3>
-        <p>Use Register provider to add one.</p>
-      </div>
-    );
-  }
-
-  const q = (filterQuery || "").trim().toLowerCase();
-  const filtered = q
-    ? rows.filter(({ row }) => PC_filterRows([row], filterQuery).length > 0)
-    : rows;
-
-  return (
-    <div data-testid="provider-instances-all" style={{ minWidth: 0, flex: "1 1 0" }}>
-      {filtered.length === 0 ? (
-        <div className="empty-state" data-testid="provider-filter-empty-all">
-          <p>No providers match "{filterQuery}".</p>
-        </div>
-      ) : (
-        <div className="pc-card-grid">
-          {filtered.map(({ klass, row }) => (
-            <div key={`${klass.key}:${row.id}`} className="pc-card-wrap">
-              <span className="pc-card-type-label"
-                data-testid={`provider-card-type-${row.id}`}>{klass.label}</span>
-              <PC_InstanceCard
-                klass={klass}
-                row={row}
-                profileCount={klass.profiles ? profileCounts[row.id] : null}
-                onOpen={() => onSelect(klass, row)}
-                onChanged={() => all.refetch()}
-              />
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-
-// ---------------------------------------------------------------------------
-// Active defaults, edited in place (amendment M11c)
-// ---------------------------------------------------------------------------
-
-function PC_ActiveSpeechPanel() {
-  const { useResource, apiFetch } = window.primerApi;
-  const [reloadKey, setReloadKey] = React.useState(0);
-  const [draft, setDraft] = React.useState(null);
-
-  const active = useResource(
-    `pc:speech-active:${reloadKey}`,
-    (signal) => apiFetch("GET", "/speech_active_config", null, { signal }),
-    { pollMs: null },
-  );
-  const voices = useResource(
-    "pc:voices",
-    (signal) => apiFetch("GET", "/audio/voices", null, { signal }),
-    { pollMs: null },
-  );
-
-  React.useEffect(() => {
-    if (active.data && draft === null) setDraft(active.data);
-  }, [active.data, draft]);
-
-  const row = draft || active.data || {};
-  const voiceNames = voices.data?.voices ?? [];
-
-  const save = async () => {
-    await apiFetch("PUT", "/speech_active_config", {
-      stt_provider_id: row.stt_provider_id || null,
-      tts_provider_id: row.tts_provider_id || null,
-      tts_voice: row.tts_voice || null,
-    });
-    setReloadKey((k) => k + 1);
-  };
-
-  return (
-    <div className="col" style={{ gap: 8 }} data-testid="active-speech-config">
-      <div className="muted text-sm">
-        Install-wide speech defaults. An agent may override the voice.
-      </div>
-      <input
-        className="input mono"
-        aria-label="Speech-to-text provider id"
-        placeholder="stt_provider_id"
-        value={row.stt_provider_id || ""}
-        onChange={(e) => setDraft({ ...row, stt_provider_id: e.target.value })}
-      />
-      <input
-        className="input mono"
-        aria-label="Text-to-speech provider id"
-        placeholder="tts_provider_id"
-        value={row.tts_provider_id || ""}
-        onChange={(e) => setDraft({ ...row, tts_provider_id: e.target.value })}
-      />
-      <select
-        className="input"
-        aria-label="Voice"
-        // The voice picker is the one control on this panel a caller
-        // needs by name; the panel around it already had a handle.
-        data-testid="active-speech-voice"
-        value={row.tts_voice || ""}
-        onChange={(e) => setDraft({ ...row, tts_voice: e.target.value })}
-      >
-        <option value="">(provider default voice)</option>
-        {voiceNames.map((v) => <option key={v} value={v}>{v}</option>)}
-      </select>
-      <Btn onClick={save}>Save defaults</Btn>
-    </div>
-  );
-}
+const PROVIDER_CLASSES = window.PC_CLASSES;
 
 function PC_ActiveWebSearchPanel() {
   const { apiFetch, useResource } = window.primerApi;
@@ -750,288 +89,448 @@ function PC_ActiveWebSearchPanel() {
   );
 }
 
+window.PC_TYPE_EXTRAS = window.PC_TYPE_EXTRAS || {};
+window.PC_TYPE_EXTRAS.web_search = PC_ActiveWebSearchPanel;
+
+function PC_cardFor(klass, row, ctx) {
+  const isBuiltin = window.PC_isBuiltin(klass.key, row.id);
+  const kind = row.provider || row.provider_type || row.backend;
+  const kindLabel = window.PC_kindLabel(klass.key, kind);
+  const subParts = [klass.label];
+  if (kindLabel) subParts.push(kindLabel);
+  const flavor = row.config && row.config.flavor;
+  if (flavor && flavor !== "other") {
+    const flavorLabel = (window.PC_FLAVOR_LABELS && window.PC_FLAVOR_LABELS[flavor]) || flavor;
+    subParts.push(flavorLabel);
+  }
+
+  let status = null;
+  if (klass.key === "llm" && row.last_probe_at != null) {
+    status = row.last_probe_ok
+      ? { label: "reachable", tone: "ok" }
+      : { label: "unreachable", tone: "error" };
+  }
+
+  const rawFacts = [];
+  if (klass.key === "llm") {
+    const url = (row.config && (row.config.url || row.config.base_url)) || row.url;
+    if (url) {
+      try {
+        rawFacts.push(new URL(url).host);
+      } catch (e) {
+        rawFacts.push(url);
+      }
+    }
+    const count = (ctx.profileCounts && ctx.profileCounts[row.id]) || 0;
+    rawFacts.push(window.PC_countOf ? window.PC_countOf(count, "profile", "profiles") : `${count} ${count === 1 ? "profile" : "profiles"}`);
+    if (row.last_probe_at != null && !row.last_probe_ok && row.last_error) {
+      rawFacts.push(String(row.last_error).slice(0, 80));
+    }
+  } else if (klass.key === "embedding" || klass.key === "cross_encoder") {
+    const models = row.models || [];
+    rawFacts.push(window.PC_countOf ? window.PC_countOf(models.length, "model", "models") : `${models.length} ${models.length === 1 ? "model" : "models"}`);
+    if (models.length > 0) {
+      const first = models[0];
+      const firstName = typeof first === "string" ? first : (first && first.name) || "";
+      if (firstName) rawFacts.push(firstName);
+    }
+  } else if (klass.key === "ssp") {
+    const cfg = row.config || {};
+    if (cfg.path) {
+      rawFacts.push(String(cfg.path));
+    } else if (cfg.hostname && cfg.database) {
+      rawFacts.push(`${cfg.hostname}/${cfg.database}`);
+    } else if (cfg.hostname) {
+      rawFacts.push(String(cfg.hostname));
+    }
+  } else if (klass.key === "workspace") {
+    const cfg = row.config || {};
+    const k = row.provider || "";
+    if (k === "local") {
+      rawFacts.push(cfg.root_path || cfg.path || "");
+    } else if (k === "container") {
+      rawFacts.push(cfg.runtime || "");
+    } else if (k === "kubernetes") {
+      rawFacts.push(`namespace ${cfg.namespace || "default"}`);
+    }
+  } else if (klass.key === "web_search") {
+    if (isBuiltin) rawFacts.push("cannot be deleted");
+  } else if (klass.key === "channel") {
+    // channel has no facts
+  } else if (klass.key === "artifact_storage") {
+    const cfg = row.config || {};
+    if (cfg.root) rawFacts.push(String(cfg.root));
+    else if (cfg.bucket) rawFacts.push(String(cfg.bucket));
+  } else if (klass.key === "tts") {
+    if (row.default_model) rawFacts.push(`model ${row.default_model}`);
+    if (row.default_voice) rawFacts.push(`voice ${row.default_voice}`);
+  } else if (klass.key === "stt") {
+    if (row.default_model) rawFacts.push(`model ${row.default_model}`);
+  }
+
+  const menu = isBuiltin ? null : [
+    {
+      label: "Delete",
+      danger: true,
+      testid: `pc-card-delete:${klass.key}:${row.id}`,
+      onClick: () => ctx.onDelete(klass, row),
+    },
+  ];
+
+  return {
+    id: `${klass.key}:${row.id}`,
+    icon: { path: klass.iconPath },
+    title: row.id,
+    subtitle: subParts.join(" · "),
+    badge: isBuiltin ? "built in" : null,
+    status: status,
+    facts: rawFacts,
+    menu: menu,
+    onOpen: () => ctx.onOpen(klass, row),
+  };
+}
+
+function resolveClassKey(initialClass) {
+  if (initialClass && window.PC_CLASSES && window.PC_CLASSES.some((c) => c.nav && c.key === initialClass)) {
+    return initialClass;
+  }
+  return "all";
+}
+
 function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
-  // Designer reconciliation (uiv2 mockup, supersedes IA restructure
-  // 01a04d6a's "all is the default" directive per the user's own
-  // ratified exhibit): LLM is the default selection, not the merged
-  // "All" grid. isAll/PC_AllInstancesGrid/PC_RegisterAll below are ALL
-  // still fully intact, just unreached from the chip row now that "All"
-  // is not one of its entries - restoring that view is a one-line
-  // PC_TypeFilter classes={PC_ALL_TYPE_CHIPS} swap below, not a rewrite.
-  const [classKey, setClassKey] = React.useState(initialClass || "llm");
+  const { apiFetch, useViewport, toastPush } = window.primerApi || {};
+  const viewport = typeof useViewport === "function" ? useViewport() : { isMobile: false };
+  const isMobile = !!(viewport && viewport.isMobile);
+
+  const [classKey, setClassKey] = React.useState(() => resolveClassKey(initialClass));
   const [instanceId, setInstanceId] = React.useState(initialInstanceId || null);
-  // Header row: entity count (of the current class's own list, not the
-  // filter-narrowed count - a stable "how many exist" stat beside a
-  // separate "narrow what's visible" control) and the client-side
-  // substring filter itself, both threaded down to whichever grid is
-  // showing (PC_InstanceGrid today; PC_AllInstancesGrid if "All" is ever
-  // restored - both accept the same two props).
-  const [entityCount, setEntityCount] = React.useState(0);
-  const [filterQuery, setFilterQuery] = React.useState("");
-  // The addressed instance wins. This was seeded once and never looked at
-  // again, so a page inside the catalog that navigates on its own -- the
-  // vector-store list does, to /ssp/<id> -- updated the url and the crumb
-  // while the catalog went on showing the list, because its own state had
-  // not heard about it. The id slot is what says which instance is open.
+  const [reloadKey, setReloadKey] = React.useState(0);
+  const [loading, setLoading] = React.useState(true);
+  const [classData, setClassData] = React.useState({});
+  const [classErrors, setClassErrors] = React.useState({});
+  const [profileCounts, setProfileCounts] = React.useState({});
+
+  const [overlayState, setOverlayState] = React.useState({
+    open: false,
+    initialClass: null,
+    editRow: null,
+  });
+
+  const refetch = React.useCallback(() => {
+    setReloadKey((k) => k + 1);
+  }, []);
+
+  React.useEffect(() => {
+    setClassKey(resolveClassKey(initialClass));
+  }, [initialClass]);
+
   React.useEffect(() => {
     setInstanceId(initialInstanceId || null);
   }, [initialInstanceId]);
+
+  const classesToFetch = React.useMemo(() => {
+    if (!window.PC_CLASSES) return [];
+    if (classKey === "all") {
+      return window.PC_CLASSES.filter((c) => c.nav);
+    }
+    const found = window.PC_classByKey ? window.PC_classByKey(classKey) : window.PC_CLASSES.find((c) => c.key === classKey);
+    return found ? [found] : [];
+  }, [classKey]);
+
   React.useEffect(() => {
-    if (initialClass) setClassKey(initialClass);
-  }, [initialClass]);
-  const listRefetchRef = React.useRef(null);
-  const [reloadKey, setReloadKey] = React.useState(0);
-  const [draft, setDraft] = React.useState({});
-  // IA restructure 01a04d6a: ONE modal, two modes - formOpen is whether
-  // it is showing at all; editingRow is null for create (the directive's
-  // "create = same overlay empty"), or the fetched row for edit (locked
-  // id, secrets blank - see PC_ProviderForm's `editing` prop). formKlass
-  // is the class the open form targets, independent of the page's own
-  // classKey/chip selection (opening "All" -> edit an LLM row must not
-  // require the page to already be filtered to "llm").
-  const [formOpen, setFormOpen] = React.useState(false);
-  const [editingRow, setEditingRow] = React.useState(null);
-  const [formKlass, setFormKlass] = React.useState(null);
+    let cancelled = false;
+    setLoading(true);
 
-  const isAll = classKey === "all";
-  const klass = isAll ? null
-    : PROVIDER_CLASSES.find((c) => c.key === classKey) || PROVIDER_CLASSES[0];
-  const cls = klass;
+    const fetches = classesToFetch.map(async (c) => {
+      try {
+        const res = await apiFetch("GET", `/${c.plural}?limit=200`);
+        return { key: c.key, items: (res && res.items) || [], error: null };
+      } catch (err) {
+        return { key: c.key, items: [], error: err };
+      }
+    });
 
-  const selectClass = (key) => {
-    setClassKey(key);
-    setInstanceId(null);
-    // A filter narrowing THIS type's cards has no meaning once the type
-    // itself changes - carrying it over would silently hide cards in
-    // the new type with no visible reason why.
-    setFilterQuery("");
-    if (typeof onNavigate === "function") {
-      onNavigate({ kind: "provider-class", classKey: key });
-    }
-  };
+    const hasLlm = classesToFetch.some((c) => c.key === "llm");
+    const profilesPromise = hasLlm
+      ? apiFetch("GET", "/model_profiles?limit=200").catch(() => ({ items: [] }))
+      : Promise.resolve({ items: [] });
 
-  const selectInstance = (id) => {
-    setInstanceId(id);
-    if (typeof onNavigate === "function") {
-      onNavigate({ kind: "provider-instance", classKey: (cls || {}).key || classKey, id });
-    }
-  };
+    Promise.all([Promise.all(fetches), profilesPromise]).then(([results, profRes]) => {
+      if (cancelled) return;
+      const nextData = {};
+      const nextErrors = {};
+      results.forEach((r) => {
+        nextData[r.key] = r.items;
+        if (r.error) nextErrors[r.key] = r.error;
+      });
+      const counts = {};
+      ((profRes && profRes.items) || []).forEach((p) => {
+        if (p.provider_id) {
+          counts[p.provider_id] = (counts[p.provider_id] || 0) + 1;
+        }
+      });
+      setClassData(nextData);
+      setClassErrors(nextErrors);
+      setProfileCounts(counts);
+      setLoading(false);
+    });
 
-  // Register provider (PC_RegisterAll) names a TYPE, not a kind - a crud
-  // class opens the SAME form modal empty (create); a panel class has no
-  // generic form to open at all, so this just switches the filter to it,
-  // where its own native create affordance already lives.
-  function openCreate(key) {
-    const k = PROVIDER_CLASSES.find((c) => c.key === key);
-    if (!k || k.form === "panel") {
-      selectClass(key);
-      return;
-    }
-    setFormKlass(k);
-    setEditingRow(null);
-    setDraft({});
-    setFormOpen(true);
-  }
-
-  // Designer reconciliation: with a type always selected, Register lists
-  // that type's KINDS directly (PC_RegisterDropdown) rather than naming
-  // the type again - picking a kind opens the SAME create modal above,
-  // just pre-seeded with `provider` so the in-form kind picker (now
-  // removed per exhibit 2) is never needed at all, for create or edit.
-  function openCreateWithKind(k, kind) {
-    setFormKlass(k);
-    setEditingRow(null);
-    setDraft({ provider: kind });
-    setFormOpen(true);
-  }
-
-  // New capability (01a04d6a): the SAME form modal, prefilled and locked
-  // to one row - see PC_ProviderForm's `editing`/`existingRow` props for
-  // how the id gets locked and secrets never round-trip the mask. Also
-  // focuses the page on that row's own class/instance (whether reached
-  // from a single-class view or the merged "All" grid), so the breadcrumb
-  // stays consistent with what is now open.
-  function openEdit(k, row) {
-    setFormKlass(k);
-    setEditingRow(row);
-    // The web classes name their kind provider_type on the served row;
-    // the form speaks provider (PC_draftFromRow maps the kind for the
-    // web plurals and shallow-copies the rest).
-    setDraft(window.PC_draftFromRow(k.plural, row));
-    setFormOpen(true);
-    selectClass(k.key);
-    selectInstance(row.id);
-  }
-
-  function closeForm() {
-    setFormOpen(false);
-    setEditingRow(null);
-    setDraft({});
-  }
-
-  const save = async (body) => {
-    const { apiFetch } = window.primerApi;
-    const targetKlass = formKlass || cls;
-    const wasEditingId = editingRow ? editingRow.id : null;
-    const method = wasEditingId ? "PUT" : "POST";
-    const path = wasEditingId
-      ? `/${targetKlass.plural}/${encodeURIComponent(wasEditingId)}`
-      : `/${targetKlass.plural}`;
-    // The web classes speak provider_type and config.type on the wire;
-    // PC_wireBody names the body for them and passes every other class
-    // through unchanged.
-    await apiFetch(method, path, window.PC_wireBody(targetKlass.plural, body));
-    // Refresh the list beside the form. setReloadKey bumps a counter
-    // nothing depends on, so a created/updated provider never appeared
-    // until the operator navigated away and back: the row action beside
-    // it already used this refetch, the create/edit simply never called
-    // it. Also keys PC_AllInstancesGrid's merged fetch, so a save from
-    // ANY class's form is reflected in the "All" view too.
-    if (listRefetchRef.current) listRefetchRef.current();
-    setReloadKey((k) => k + 1);
-    closeForm();
-    const toast = window.primerApi && window.primerApi.toastPush;
-    if (typeof toast === "function") {
-      toast(wasEditingId
-        ? { kind: "success", title: "Provider updated", detail: wasEditingId }
-        : { kind: "success", title: "Provider created", detail: body.id });
-    }
-    if (!wasEditingId && body.id) {
-      // Select what was just made, which is where the operator is
-      // already looking.
-      selectClass(targetKlass.key);
-      selectInstance(body.id);
-    }
-  };
-
-  // Classes with a purpose-built panel host that component rather than
-  // a generic form: vector stores, workspaces and channels each carry
-  // behaviour a parameterised form would have to special-case anyway.
-  // Their own panel renders its own create affordance, so the register
-  // dropdown below is a crud-class-only control.
-  let body;
-  if (isAll) {
-    body = (
-      <PC_AllInstancesGrid onSelect={openEdit} reloadKey={reloadKey}
-        filterQuery={filterQuery} onCountChange={setEntityCount} />
-    );
-  } else if (cls.form === "panel") {
-    const Detail = instanceId && cls.detail ? cls.detail() : null;
-    const Panel = cls.panel();
-    // Detail components predate the catalog and name their id after the
-    // thing they show: sspId, providerId. A class says which, rather
-    // than every one of them being renamed to suit the host.
-    const detailProps = {
-      pushToast: window.primerApi && window.primerApi.toastPush,
+    return () => {
+      cancelled = true;
     };
-    detailProps[cls.detailProp || "providerId"] = instanceId;
-    body = Detail ? (
-      <Detail {...detailProps} />
-    ) : Panel ? (
-      // These panels take the same two props their pages always took.
-      // Mounted bare, onOpen was undefined, so creating a provider threw
-      // on the call meant to open it and clicking a row did nothing at
-      // all; pushToast being undefined swallowed every confirmation too.
-      <Panel
-        onOpen={selectInstance}
-        pushToast={window.primerApi && window.primerApi.toastPush}
-      />
-    ) : (
-      <Banner kind="info" title={`${cls.label} panel unavailable`}>
-        That panel component is not loaded in this bundle.
-      </Banner>
-    );
-  } else {
-    body = (
-      <PC_InstanceGrid
-        klass={cls}
-        onSelect={(row) => {
-          // PC_InstanceCard's onOpen hands back the full row (its own
-          // onDelete path still calls onSelect(null) too, via
-          // onChanged below) - a real open needs every field to
-          // prefill the edit form, which an id alone cannot give it.
-          if (row == null) { selectInstance(null); return; }
-          openEdit(cls, row);
-        }}
-        onRegisterRefetch={(fn) => { listRefetchRef.current = fn; }}
-        filterQuery={filterQuery}
-        onCountChange={setEntityCount}
-      />
+  }, [classesToFetch, reloadKey, apiFetch]);
+
+  const allRows = React.useMemo(() => {
+    const rows = [];
+    classesToFetch.forEach((c) => {
+      const items = classData[c.key] || [];
+      items.forEach((item) => {
+        rows.push({
+          key: `${c.key}:${item.id}`,
+          klass: c,
+          row: item,
+        });
+      });
+    });
+    return rows;
+  }, [classesToFetch, classData]);
+
+  // Deep-link initial instance resolution once loaded
+  React.useEffect(() => {
+    if (!instanceId || loading) return;
+    const item = allRows.find((r) => r.row.id === instanceId);
+    if (!item) return;
+    if (item.klass.form !== "panel") {
+      setOverlayState({
+        open: true,
+        initialClass: item.klass.key,
+        editRow: item.row,
+      });
+    }
+  }, [instanceId, loading, allRows]);
+
+  // Command palette / register request listener
+  React.useEffect(() => {
+    if (typeof window.PC_useRegisterRequest === "function") {
+      const take = (requestedKey) => {
+        const target = requestedKey || (classKey === "all" ? "llm" : classKey);
+        setOverlayState({ open: true, initialClass: target, editRow: null });
+      };
+      if (window.PC_REGISTER_REQUESTS && Array.isArray(window.PC_REGISTER_REQUESTS.takers)) {
+        window.PC_REGISTER_REQUESTS.takers.push(take);
+        if (window.PC_REGISTER_REQUESTS.pending) {
+          const p = window.PC_REGISTER_REQUESTS.pending;
+          window.PC_REGISTER_REQUESTS.pending = null;
+          take(p.classKey);
+        }
+        return () => {
+          const idx = window.PC_REGISTER_REQUESTS.takers.indexOf(take);
+          if (idx >= 0) window.PC_REGISTER_REQUESTS.takers.splice(idx, 1);
+        };
+      }
+    }
+  }, [classKey]);
+
+  const openRegister = (targetKey) => {
+    setOverlayState({
+      open: true,
+      initialClass: targetKey || (classKey === "all" ? "llm" : classKey),
+      editRow: null,
+    });
+  };
+
+  const closeOverlay = () => {
+    setOverlayState({ open: false, initialClass: null, editRow: null });
+    setInstanceId(null);
+    if (typeof onNavigate === "function") {
+      onNavigate({ kind: "provider-class", classKey: classKey });
+    }
+  };
+
+  const openProvider = (k, r) => {
+    if (typeof onNavigate === "function") {
+      onNavigate({ kind: "provider-instance", classKey: k.key, id: r.id });
+    }
+    if (k.form === "panel") {
+      setInstanceId(r.id);
+    } else {
+      setOverlayState({
+        open: true,
+        initialClass: k.key,
+        editRow: r,
+      });
+    }
+  };
+
+  const deleteProvider = async (klass, row) => {
+    if (typeof window.confirmDialog !== "function") return;
+    const ok = await window.confirmDialog({
+      title: `Delete ${row.id}?`,
+      message: `This removes the ${klass.noun} provider. Anything that uses it stops working.`,
+      confirmLabel: "Delete provider",
+      danger: true,
+    });
+    if (!ok) return;
+
+    try {
+      await apiFetch("DELETE", `/${klass.plural}/${encodeURIComponent(row.id)}`);
+      if (typeof toastPush === "function") {
+        toastPush({ kind: "success", title: "Provider deleted", detail: row.id });
+      }
+      refetch();
+    } catch (err) {
+      const refusal = (window.primerApi && window.primerApi.readRefusal && window.primerApi.readRefusal(err)) || {
+        message: err.message || "Delete failed",
+      };
+      if (typeof toastPush === "function") {
+        toastPush({ kind: "error", title: "Delete refused", detail: refusal.message });
+      }
+    }
+  };
+
+  const cardCtx = React.useMemo(() => ({
+    profileCounts: profileCounts,
+    onOpen: openProvider,
+    onDelete: deleteProvider,
+  }), [profileCounts]);
+
+  const paged = PK_usePagedFilter(allRows, {
+    pageSize: 12,
+    text: (r) => [r.row.id, r.klass.label, window.PC_kindLabel ? window.PC_kindLabel(r.klass.key, r.row.provider || r.row.provider_type || r.row.backend) : ""].join(" "),
+  });
+
+  const activeKlass = classKey !== "all" ? (window.PC_classByKey ? window.PC_classByKey(classKey) : (window.PC_CLASSES || []).find((c) => c.key === classKey)) : null;
+
+  // Panel class inline detail
+  if (instanceId && activeKlass && activeKlass.form === "panel") {
+    const klass = activeKlass;
+    const Detail = klass.key === "ssp" ? window.SSPDetail : klass.key === "workspace" ? window.WorkspaceProviderDetail : klass.key === "channel" ? window.ChannelProviderDetail : (klass.detail ? klass.detail() : null);
+    const detailProps = {
+      pushToast: toastPush,
+      onBack: () => {
+        setInstanceId(null);
+        if (typeof onNavigate === "function") {
+          onNavigate({ kind: "provider-class", classKey: classKey });
+        }
+      },
+      onDeleted: () => {
+        setInstanceId(null);
+        if (typeof onNavigate === "function") {
+          onNavigate({ kind: "provider-class", classKey: classKey });
+        }
+        refetch();
+      },
+    };
+    detailProps[klass.detailProp || "providerId"] = instanceId;
+    return (
+      <div data-testid={`provider-body-${classKey}`}>
+        {Detail ? <Detail {...detailProps} /> : null}
+      </div>
     );
   }
+
+  const totalCount = allRows.length;
+  const headerTitle = classKey === "all" ? "Providers" : `${(activeKlass && activeKlass.label) || ""} providers`;
+  const headerCount = `${totalCount} ${totalCount === 1 ? "provider" : "providers"}`;
+
+  const ExtraComponent = classKey !== "all" && window.PC_TYPE_EXTRAS ? window.PC_TYPE_EXTRAS[classKey] : null;
+  const classRows = classKey !== "all" ? (classData[classKey] || []) : [];
+  const PC_RegisterOverlay = window.PC_RegisterOverlay;
 
   return (
     <div className="col pc-catalog" style={{ gap: 16 }}>
-      <div className="row" style={{ alignItems: "center", gap: 16, flexWrap: "wrap" }}>
-        <h2 className="text-lg" style={{ margin: 0 }}>Providers</h2>
-        <span className="muted text-sm" data-testid="provider-entity-count">
-          {entityCount} {entityCount === 1 ? "provider" : "providers"}
-        </span>
-        <span style={{ flex: 1 }} />
-        <input
-          type="text"
-          className="input"
-          aria-label="Filter providers"
-          placeholder="Filter…"
-          value={filterQuery}
-          onChange={(e) => setFilterQuery(e.target.value)}
-          data-testid="provider-filter"
-        />
-        {/* Designer reconciliation: a type is always selected now, so
-            Register lists that type's KINDS (PC_RegisterDropdown) - the
-            type-listing PC_RegisterAll stays reachable for the "All"
-            path if that view is ever restored (isAll above).
-            BUGFIX: a panel class (ssp/workspace/channel) has no generic
-            form to open - openCreateWithKind unconditionally opened
-            PC_ProviderForm regardless of class.form, which for these
-            three opened the WRONG modal on top of their own native
-            create affordance (test_ssp_lance_create_journey caught
-            this live: picking pgvector from the header dropdown opened
-            the generic provider form instead of routing to SSP's own
-            semantic-search.jsx modal). Same guard openCreate() already
-            has for PC_RegisterAll - the panel's own body is the only
-            register affordance for these three, so the header renders
-            nothing rather than a dropdown that opens the wrong thing. */}
-        {klass && klass.form === "panel" ? null : klass ? (
-          <PC_RegisterDropdown klass={klass} onPick={(kind) => openCreateWithKind(klass, kind)} />
+      <PK_PageHeader
+        title={headerTitle}
+        count={headerCount}
+        filter={{
+          value: paged.q,
+          onChange: paged.setQ,
+          label: "Filter providers",
+          testid: "pc-filter",
+        }}
+        pager={{ ...paged, onPage: paged.setPage }}
+        action={{
+          label: "+ Register",
+          onClick: () => openRegister(classKey === "all" ? "llm" : classKey),
+          testid: "pc-register-open",
+        }}
+      />
+
+      {ExtraComponent ? (
+        <div data-testid={`pc-extras:${classKey}`}>
+          {isMobile ? (
+            <PK_Fold label="Defaults">
+              <ExtraComponent rows={classRows} reload={refetch} />
+            </PK_Fold>
+          ) : (
+            <ExtraComponent rows={classRows} reload={refetch} />
+          )}
+        </div>
+      ) : null}
+
+      <div data-testid={`provider-body-${classKey}`}>
+        {classesToFetch.map((c) => {
+          const err = classErrors[c.key];
+          if (!err) return null;
+          return (
+            <div key={`err-${c.key}`} data-testid={`pc-error:${c.key}`} style={{ marginBottom: 12 }}>
+              <Banner
+                kind="error"
+                title={`Could not load ${c.label} providers`}
+                detail={err.message || (err.envelope && err.envelope.detail)}
+                actions={
+                  <Btn size="sm" icon="refresh" onClick={refetch}>Retry</Btn>
+                }
+              />
+            </div>
+          );
+        })}
+
+        {classesToFetch.map((c) => {
+          const items = classData[c.key] || [];
+          if (items.length < 200) return null;
+          return (
+            <div key={`trunc-${c.key}`} className="pc-truncated text-sm muted" data-testid={`pc-truncated:${c.key}`} style={{ marginBottom: 8 }}>
+              Showing the first 200 {c.label} providers
+            </div>
+          );
+        })}
+
+        {loading && totalCount === 0 && Object.keys(classErrors).length === 0 ? (
+          <div className="pc-loading" role="status" data-testid="pc-loading">
+            Loading providers…
+          </div>
+        ) : totalCount === 0 ? (
+          <div className="pc-empty" data-testid={`pc-empty:${classKey}`}>
+            No {classKey === "all" ? "providers registered" : `${(activeKlass && activeKlass.label) || ""} providers`} yet. Use + Register to add one.
+          </div>
+        ) : paged.visible.length === 0 ? (
+          <div className="pc-filter-empty" data-testid="pc-filter-empty">
+            No providers match "{paged.q}".
+          </div>
         ) : (
-          <PC_RegisterAll onPick={openCreate} />
+          <PK_CardGrid testid="pc-cards">
+            {paged.visible.map((item) => (
+              <PK_Card key={item.key} {...PC_cardFor(item.klass, item.row, cardCtx)} />
+            ))}
+          </PK_CardGrid>
         )}
       </div>
-      <PC_TypeFilter
-        classes={PROVIDER_CLASSES}
-        selected={classKey}
-        onSelect={selectClass}
-      />
-      <div className="col" style={{ gap: 16 }}>
-        {!isAll && (klass.key === "stt" || klass.key === "tts")
-          ? <PC_ActiveSpeechPanel /> : null}
-        {!isAll && klass.key === "web_search" ? <PC_ActiveWebSearchPanel /> : null}
-        <div data-testid={`provider-body-${classKey}`}>{body}</div>
-      </div>
-      {formOpen ? (
-        <Modal
-          width={720}
-          // Title is "{name} - {kind}" once an id exists (edit) or "New {type} provider - {kind}" before it does (create). A plain string:
-          // the dialog is named by it, and it carries no developer annotation (a pill saying where the form's schema comes from was
-          // removed: a user cannot act on an internal endpoint path).
-          title={editingRow
-            ? `${editingRow.id} \u2014 ${draft.provider || formKlass.key}`
-            : `New ${formKlass.key} provider \u2014 ${draft.provider || ""}`}
-          onClose={closeForm}
-        >
-          <window.PC_ProviderForm
-            plural={formKlass.plural}
-            typesPath={`/${formKlass.plural}/_types`}
-            value={draft}
-            onChange={setDraft}
-            onSubmit={save}
-            onCancel={closeForm}
-            editing={!!editingRow}
-            existingId={editingRow ? editingRow.id : null}
-            canInvalidate={!!formKlass.invalidate}
-          />
-        </Modal>
+
+      {overlayState.open && typeof PC_RegisterOverlay === "function" ? (
+        <PC_RegisterOverlay
+          initialClass={overlayState.initialClass}
+          editRow={overlayState.editRow}
+          onClose={closeOverlay}
+          onSaved={() => {
+            closeOverlay();
+            refetch();
+          }}
+          onDeleted={() => {
+            closeOverlay();
+            refetch();
+          }}
+        />
       ) : null}
     </div>
   );
@@ -1039,3 +538,4 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
 
 window.PROVIDER_CLASSES = PROVIDER_CLASSES;
 window.ProviderCatalog = ProviderCatalog;
+window.PC_cardFor = PC_cardFor;

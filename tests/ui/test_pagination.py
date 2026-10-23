@@ -132,8 +132,11 @@ REPRESENTATIVE = [
 def test_representative_pages_use_hook_and_component() -> None:
     for name in REPRESENTATIVE:
         src = (UI / "components" / name).read_text(encoding="utf-8")
-        assert "usePagedList" in src, f"{name} does not use usePagedList"
-        assert "Pager" in src, f"{name} does not render Pager"
+        if name == "provider-catalog.jsx":
+            assert "PK_usePagedFilter" in src, f"{name} does not use PK_usePagedFilter"
+        else:
+            assert "usePagedList" in src, f"{name} does not use usePagedList"
+            assert "Pager" in src, f"{name} does not render Pager"
 
 
 def test_workspace_subpages_use_hook() -> None:

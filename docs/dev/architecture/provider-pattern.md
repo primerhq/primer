@@ -130,11 +130,14 @@ Serve the class's form metadata. Every provider class with a console form expose
 `GET /v1/{plural}/_types`, returning one entry per provider-type value with
 `{label, config_fields, row_fields, discoverable}` (plus `limits: true` when
 the class carries a limits block). Mount that helpers router BEFORE the CRUD
-router, or the literal `_types` path loses to `/{id}`. The console renders
-what this endpoint describes through one shared form
-(`ui/components/provider-form.jsx`); it carries no field table of its own, so
-a new provider type becomes usable in the UI the moment its enum and its
-`_types` entry land together.
+router, or the literal `_types` path loses to `/{id}`. In the console, providers
+are displayed on one kit page (`ui/components/provider-catalog.jsx`) with a fold per type
+(`PK_Fold`), cards carrying reachability status and key facts (`PK_CardGrid`, `PK_Card`),
+paged filtering (`PK_usePagedFilter`), and a unified register overlay
+(`ui/components/providers/register-overlay.jsx`). Schema-driven provider types
+render into the register overlay through the shared form (`ui/components/provider-form.jsx`);
+it carries no field table of its own, so a new provider type becomes usable in the UI
+the moment its enum and its `_types` entry land together.
 The classes that serve it are llm, embedding, cross_encoder, stt, tts, web_search, web_fetch, artifact_storage and
 ssp (`ssp/_types`); `channel_providers` and `workspace_providers` have panels of their own and serve none. The
 artifact-storage entry (`primer/api/routers/artifact_storage.py`, `artifact_storage_helpers_router`, mounted before

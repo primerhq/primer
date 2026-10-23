@@ -126,7 +126,8 @@ The entities:
 - `primer/api/app.py`: `_bootstrap_web_search` plus the lifespan wiring that
   constructs the registry, service, and toolset.
 - `ui/components/provider-catalog.jsx`: the `web_search` class on the unified
-  provider catalog's rail, reached at `#/providers?class=web_search`. The
+  provider catalog page (`view=platform:providers:web_search`), with the active-provider
+  card slot rendered above the provider card grid. The
   console create and edit work against this model because the catalog's
   `save()` names the body through `PC_wireBody` (`provider-form.jsx`): the
   form's `provider` becomes `provider_type` and the config gains the
@@ -319,8 +320,8 @@ guarded. A client passed in explicitly (`build_web_toolset(http_client=...)`,
 
 Console: the `web_search` class on the unified provider catalog
 (`ui/components/provider-catalog.jsx`, reached at
-`#/providers?class=web_search`) renders the active-config panel plus the
-providers list, with the shared form's Test affordance and the catalog's
+`view=platform:providers:web_search`) renders the active-provider card slot
+plus the providers list, with the shared form's Test affordance and the catalog's
 delete action; the page detail lives in the UI-pages docs.
 
 Python: `WebSearchAdapter`, `SearchHit`, the named exceptions (re-exported from
