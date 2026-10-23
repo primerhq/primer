@@ -394,6 +394,26 @@ async def test_the_kinds_are_the_kinds_a_canvas_sends(provider):
     assert schema["properties"]["kinds"]["anyOf"][0]["items"]["enum"] == list(CANVAS_EVENT_KINDS)
     assert schema["properties"]["timeout_s"]["minimum"] == 1 and schema["properties"]["timeout_s"]["maximum"] == 86400
     assert schema["properties"]["ids"]["anyOf"][0]["maxItems"] == 50
+    assert schema["properties"]["kinds"]["anyOf"][0]["maxItems"] == 8
+
+
+async def test_more_than_8_kinds_are_refused_and_store_nothing(provider, ctx, world):
+    """G8-10: each kind is an alternation of the stored filter, which the shared dispatcher runs for every canvas event of the session."""
+    result = await provider.call(tool_name="canvas_wait", arguments={"kinds": ["click"] * 9}, ctx=ctx)
+    assert result.is_error and json.loads(result.output)["type"] == "validation-error"
+    assert await _subscriptions(world) == []
+
+
+async def test_repeated_kinds_are_stored_once(provider, ctx, world):
+    y = await _wait(provider, ctx, kinds=["click", "emit", "click", "emit", "click"])
+    assert y.resume_metadata["kinds"] == ["click", "emit"]
+    [sub] = await _subscriptions(world)
+    assert [m.value for m in sub.filter.fields if m.path == "payload.kind"] == ["^(click|emit)$"]
+
+
+def test_the_filter_names_each_word_once():
+    fields = canvas_wait_filter("s1", ids=["ok", "ok"], kinds=["click", "click"]).fields
+    assert [m.value for m in fields[1:]] == ["^(ok)$", "^(click)$"]
 
 
 # ---- the cursor is pinned first (the lead's ruling on #790) ------------------------------------------------------------------------------

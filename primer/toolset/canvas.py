@@ -73,6 +73,8 @@ CANVAS_TOOLSET_ID = "canvas"
 #: the two accept the same words).
 ID_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
 _MAX_IDS = 50
+#: Every kind once is 8 (``primer.model.canvas.CANVAS_EVENT_KINDS``); each one is an alternation in the stored filter (audit G8-10).
+_MAX_KINDS = 8
 
 _NO_SESSION = "the canvas belongs to a workspace session; this call has none"
 
@@ -235,7 +237,10 @@ class _CanvasWaitArgs(BaseModel):
     )
     kinds: list[_EventKind] | None = Field(
         default=None,
-        description="Wait for events of these kinds, whether or not they wake you. Omit to wait for an event that wakes you.",
+        max_length=_MAX_KINDS,
+        description=(
+            "Wait for events of these kinds (at most 8), whether or not they wake you. Omit to wait for an event that wakes you."
+        ),
     )
     timeout_s: float = Field(
         default=600,
@@ -243,6 +248,11 @@ class _CanvasWaitArgs(BaseModel):
         le=86400,
         description="Give up after this many seconds (1 to 86400, default 600); the tool then returns {timeout: true}.",
     )
+
+    @field_validator("kinds")
+    @classmethod
+    def _each_kind_once(cls, kinds: list[str] | None) -> list[str] | None:
+        return list(dict.fromkeys(kinds)) if kinds is not None else None
 
 
 # ===========================================================================
