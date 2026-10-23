@@ -476,3 +476,67 @@ async def test_entity_created_mid_pass_is_not_pruned_by_prune_live(sp, wiki, mon
     assert "created mid-pass" in page.body
     index = (await _read(sp, "this-install/agents")).body
     assert "agent-late" in index
+
+
+async def test_non_ascii_descriptions_and_workspace_names_remain_readable_utf8(sp, wiki):
+    from datetime import UTC, datetime
+    from pydantic import SecretStr
+    from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
+
+    await sp.get_storage(Agent).create(
+        Agent(id="agent-utf8", description="café مرحبا", model=AgentModel(profile_id="p--m")),
+    )
+    await sp.get_storage(Workspace).create(
+        Workspace(
+            id="ws-utf8",
+            name="café مرحبا",
+            template_id="default",
+            provider_id="local",
+            created_at=datetime.now(UTC),
+            runtime_meta=WorkspaceRuntimeMeta(url="ws://127.0.0.1:5959", token=SecretStr("tok")),
+        ),
+    )
+    await regenerate_system_collection(sp, toolset_providers=MISC, app_version="0.6.0")
+
+    agent_page = (await _read(sp, "this-install/agents/agent-utf8")).body
+    assert 'User-supplied description: "café مرحبا"' in agent_page
+    assert "\\u" not in agent_page
+
+    ws_page = (await _read(sp, "this-install/workspaces/ws-utf8")).body
+    assert 'name (user-supplied): "café مرحبا"' in ws_page
+    assert "\\u" not in ws_page
+
+    ws_index = (await _read(sp, "this-install/workspaces")).body
+    assert 'name (user-supplied): "café مرحبا"' in ws_index
+    assert "\\u" not in ws_index
+
+
+async def test_prune_live_does_not_keep_stale_slug_matching_hashed_entity_id(sp, wiki):
+    from primer.knowledge.system_collection import _live_slug
+
+    # Entity id "foo--deadbeef" maps to "foo--deadbeef--<hash>" because it ends
+    # with a "--[0-9a-f]{8}" suffix. A stale page at "this-install/agents/foo--deadbeef"
+    # must be pruned even though get("foo--deadbeef") returns the entity.
+    entity_id = "foo--deadbeef"
+    mapped_slug = _live_slug(entity_id)
+    assert mapped_slug != entity_id
+
+    await sp.get_storage(Agent).create(
+        Agent(id=entity_id, description="hashed slug", model=AgentModel(profile_id="p--m")),
+    )
+    await regenerate_system_collection(sp, toolset_providers=MISC, app_version="0.6.0")
+
+    tree = DocumentTreeService(sp)
+    await tree.create(
+        collection_id=SYSTEM_COLLECTION_ID,
+        parent="this-install/agents",
+        slug=entity_id,
+        body="# stale\n",
+        strict_slugs=False,
+    )
+
+    await regenerate_system_collection(sp, toolset_providers=MISC, app_version="0.6.0")
+
+    await _read(sp, f"this-install/agents/{mapped_slug}")
+    with pytest.raises(NotFoundError):
+        await _read(sp, f"this-install/agents/{entity_id}")

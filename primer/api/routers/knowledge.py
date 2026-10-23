@@ -856,9 +856,10 @@ async def _reject_system_collection(
     # A missing collection is left to referential-integrity handling
     # elsewhere; we only block the system-collection case here.
     if coll is not None and getattr(coll, "system", False):
+        preposition = "from" if verb == "deleted" else "into"
         raise BadRequestError(
             f"Collection {collection_id!r} is system-managed; documents "
-            f"cannot be {verb} into it. Internal collections are "
+            f"cannot be {verb} {preposition} it. Internal collections are "
             f"reconciled automatically from their source entities."
         )
 

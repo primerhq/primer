@@ -285,6 +285,7 @@ class TestSystemCollectionGuard:
         resp = await client.delete("/v1/documents/doc-sys")
         assert resp.status_code == 400, resp.text
         assert "system-managed" in resp.json().get("detail", "")
+        assert "deleted from it" in resp.json().get("detail", "")
         assert await fake_storage_provider.get_storage(Document).get("doc-sys") is not None
 
 
