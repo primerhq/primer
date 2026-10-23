@@ -137,7 +137,8 @@ def _platform_helpers() -> str:
     src = PLATFORM.read_text(encoding="utf-8")
     start = src.index("function NV_emptyText(")
     end = src.index("// Per-entity page config.")
-    exported = ("NV_emptyText", "NV_countText", "NV_platNavAvailable", "NV_platNavLabel", "NV_platProviderTypes", "NV_PROVIDER_TYPE_LABELS", "NV_PLAT_CUSTOM_PAGES")
+    exported = ("NV_emptyText", "NV_countText", "NV_platNavAvailable", "NV_platNavLabel", "NV_platProviderTypes", "NV_PROVIDER_TYPE_LABELS", "NV_PLAT_CUSTOM_PAGES",
+                "NV_platFilterText")
     return src[start:end] + "\n" + "".join(f"window.{name} = {name};\n" for name in exported)
 
 
@@ -906,3 +907,87 @@ def test_a_system_view_opens_full_screen_with_a_way_back(app) -> None:
     assert not app.has("tabs:more") and not app.has("tabs:inbox"), "no tab bar under a takeover screen"
     app.click("nv-mob-system-back")
     assert app.data("LOG.views") == [["studio", None]]
+
+
+# --- the phone's Tools section: the desktop's filter, a Refresh and a loading line (audit G1-17) -------------------------------------------------
+
+# A Tools entry shaped like the real one (``poll: false, refresh: true``; a card named by the bare tool name, its id the scoped one) and a resource
+# whose answer, loading flag and refetches the test controls; each fetcher the list hands it is kept, so a load in flight can be driven.
+_TOOLS = r"""
+var REFETCHES = 0, FETCHERS = {}, ANSWER = { items: [] }, FIRST_LOAD = false;
+NV_PLAT_GROUPS = [{ label: "Build", ids: ["agents", "tools"] }];
+window.NV_PLAT_PAGES.tools = {
+  title: "Tools", noun: ["tool", "tools"], poll: false, refresh: true,
+  list: function () { return Promise.resolve(ANSWER); },
+  card: function (row) {
+    var sep = row.id.indexOf("__");
+    return { id: row.id, name: row.id.slice(sep + 2), sub: row.description || "", facts: [] };
+  },
+};
+window.primerApi.useResource = function (key, fn) {
+  FETCHERS[key] = fn;
+  return { data: FIRST_LOAD ? undefined : ANSWER, loading: FIRST_LOAD, error: null, degraded: false, refetch: function () { REFETCHES += 1; } };
+};
+function openTools() {
+  MR.mount(NV_MobilePlatform, { pending: { kind: "tools", id: null }, onPendingConsumed: function () {}, onNavChange: function () {} });
+}
+function rowIds() { return MR.findAll("nv-mob-plat-row:").map(function (e) { return e.props["data-testid"].slice("nv-mob-plat-row:".length); }); }
+function typeFilter(v) { MR.find("nv-mob-plat-filter").props.onChange({ target: { value: v } }); MR.rerender(); }
+"""
+
+
+def _tools(app, *ids: str, first_load: bool = False) -> None:
+    app.js(_TOOLS + f"ANSWER = {{ items: {json.dumps([{'id': i} for i in ids])} }}; FIRST_LOAD = {json.dumps(first_load)}; openTools();")
+
+
+def test_the_phone_tools_filter_finds_a_toolsets_tools_by_its_id(app) -> None:
+    """The desktop filter matches the card's name, type line AND id (NV_platFilterText); the phone matched the name and the description only, so
+    "web" did not find web__search there."""
+    _tools(app, "web__search", "web__fetch", "system__agents_find")
+    app.js('typeFilter("web")')
+    assert app.data("rowIds()") == ["web__search", "web__fetch"]
+    app.js('typeFilter("SYSTEM__")')
+    assert app.data("rowIds()") == ["system__agents_find"]
+
+
+def test_the_phone_tools_section_has_a_refresh_that_reloads_it(app) -> None:
+    """The section does not poll (``poll: false``), so without a Refresh it never read the catalogue again while it stayed open."""
+    _tools(app, "web__search")
+    assert app.has("nv-mob-plat-refresh")
+    assert app.attr("nv-mob-plat-refresh", "type") == "button"
+    assert app.attr("nv-mob-plat-refresh", "children") == "Refresh"
+    assert app.js('MR.find("nv-mob-plat-refresh").props.disabled === undefined'), "never natively disabled: the focus would drop"
+    app.click("nv-mob-plat-refresh")
+    assert app.js("REFETCHES") == 1
+
+
+def test_a_refetch_in_flight_reads_refreshing_and_a_tap_then_does_nothing(app) -> None:
+    _tools(app, "web__search")
+    app.js("var DONE; window.NV_PLAT_PAGES.tools.list = function () { return new Promise(function (r) { DONE = r; }); };"
+           " FETCHERS['nv-plat:tools'](null); MR.rerender();")
+    assert app.attr("nv-mob-plat-refresh", "children") == "Refreshing…"
+    assert app.attr("nv-mob-plat-refresh", "aria-busy") == "true" and app.attr("nv-mob-plat-refresh", "aria-disabled") == "true"
+    app.click("nv-mob-plat-refresh")
+    assert app.js("REFETCHES") == 0
+    app.js("DONE({ items: [] });")
+    app.js("MR.rerender();")
+    assert app.attr("nv-mob-plat-refresh", "children") == "Refresh"
+
+
+def test_a_section_that_polls_has_no_refresh(app) -> None:
+    app.js(_TOOLS + "MR.mount(NV_MobilePlatform, { pending: { kind: 'agents', id: null }, onPendingConsumed: function () {}, onNavChange: function () {} });")
+    assert app.has("nv-mob-plat-page:agents") and not app.has("nv-mob-plat-refresh")
+
+
+def test_the_phone_list_says_it_is_loading_before_its_first_answer(app) -> None:
+    """It drew nothing at all while loading: no rows, no empty text (rightly), and no word either."""
+    _tools(app, first_load=True)
+    assert app.has("nv-mob-plat-loading:tools")
+    assert app.attr("nv-mob-plat-loading:tools", "role") == "status"
+    assert not app.has("nv-mob-plat-empty:tools")
+    assert app.attr("nv-mob-plat-refresh", "children") == "Refreshing…"
+
+
+def test_an_answered_list_has_no_loading_line(app) -> None:
+    _tools(app, "web__search")
+    assert not app.has("nv-mob-plat-loading:tools")

@@ -1313,14 +1313,30 @@ function NV_MobilePlatform(props) {
   React.useEffect(function () {
     if (props.onNavChange) props.onNavChange(!!shown);
   }, [shown]);
+  // The loads of a section with a Refresh (the Tools catalogue, which does not poll) are counted as the desktop page counts them: the hook reports
+  // `loading` for the first load only, so without the count a Refresh could never say it is on its way (audit G1-17).
+  var flightState = React.useState(0);
+  var inFlight = flightState[0];
+  var setInFlight = flightState[1];
   var res = window.primerApi.useResource(
     page ? "nv-plat:" + nav : "nv-mob-plat:_none",
     function (signal) {
-      return page ? page.list(apiFetch, signal) : Promise.resolve({ items: [] });
+      if (!page) return Promise.resolve({ items: [] });
+      if (!page.refresh) return page.list(apiFetch, signal);
+      setInFlight(function (n) { return n + 1; });
+      function settle() { setInFlight(function (n) { return Math.max(0, n - 1); }); }
+      return page.list(apiFetch, signal).then(function (data) {
+        settle();
+        return data;
+      }, function (err) {
+        settle();
+        throw err;
+      });
     },
     { pollMs: page && page.poll === false ? 0 : 15000, deps: [nav] }
   );
   var items = (res.data && res.data.items) || [];
+  var refreshing = !!(page && page.refresh) && (!!res.loading || inFlight > 0);
 
   // The link this list has already looked at: one that is applied over two passes (it opens the section first) counts once.
   var seen = React.useRef(null);
@@ -1351,11 +1367,11 @@ function NV_MobilePlatform(props) {
     if (props.onPendingConsumed) props.onPendingConsumed();
   }, [props.pending, nav, sub, res.loading]);
 
+  // The desktop page's filter text (NV_platFilterText): the card's name, its type line and its id, so "web" finds web__search here too (audit G1-17).
   var ql = q.trim().toLowerCase();
   var visible = !page ? [] : items.filter(function (row) {
     if (!ql) return true;
-    var vm = page.card(row, con);
-    return (vm.name + " " + (vm.sub || "")).toLowerCase().indexOf(ql) >= 0;
+    return String(window.NV_platFilterText(page.card(row, con))).toLowerCase().indexOf(ql) >= 0;
   });
 
   if (!shown) {
@@ -1448,7 +1464,21 @@ function NV_MobilePlatform(props) {
         aria-label={"Filter " + page.title.toLowerCase()}
         placeholder={"Filter " + page.title.toLowerCase() + "…"}
         value={q} onChange={function (ev) { setQ(ev.target.value); }} />
+      {/* A section that does not poll reloads on this tap, as the desktop header's Refresh does; while a load is on its way it says so and a tap
+          does nothing (aria-disabled, never disabled, so the focus stays on it). */}
+      {page.refresh ? (
+        <button type="button" className="nv-btn-secondary touch-target nv-mob-plat-refresh" data-testid="nv-mob-plat-refresh"
+          aria-busy={refreshing ? "true" : undefined} aria-disabled={refreshing ? "true" : undefined}
+          onClick={function () { if (!refreshing) res.refetch(); }}>
+          {refreshing ? "Refreshing…" : "Refresh"}
+        </button>
+      ) : null}
       <div className="card-list" data-testid={"nv-mob-plat-rows:" + nav}>
+        {res.data == null && !res.error ? (
+          <div className="card-list-empty" role="status" data-testid={"nv-mob-plat-loading:" + nav}>
+            Loading…
+          </div>
+        ) : null}
         {res.error ? (
           <div className="card-list-empty"
             data-testid={"nv-mob-plat-error:" + nav}>
