@@ -104,7 +104,9 @@ from primer.session.peer_messages import (
     REFUSE_RESTART_NEEDS_INPUT,
     PeerMessageRefused,
     PeerSendResult,
+    in_reach,
     list_workspace_session_summaries,
+    reach_of,
     send_peer_message,
 )
 from primer.tap.cursor import TapCursor
@@ -146,6 +148,10 @@ logger = logging.getLogger(__name__)
 
 
 WORKSPACES_TOOLSET_ID = "workspaces"
+
+#: The workspace a calling session is confined to when its workspace cannot be told: an id no workspace has (an id is never empty), so it reaches
+#: nothing (fail closed).
+_NO_WORKSPACE = ""
 
 
 # ===========================================================================
@@ -1861,11 +1867,30 @@ def build_workspaces_toolset(
     )
     registry[name] = entry
 
-    async def _list_sessions(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _caller_reach(ctx: ToolContext | None) -> str | None:
+        """The one workspace the caller may reach, or ``None`` for every workspace (lead ruling 3 of the G7 fixes, audit G7-05).
+
+        A call from a workspace session reaches its own workspace, and every workspace when that is the default one (prime, the management
+        plane): :func:`primer.session.peer_messages.reach_of`, the reach ``message_session`` and the steer and restart tools apply. A call with no
+        calling session (a person over MCP, an API client) keeps its reach over every workspace.
+        """
+        if ctx is None or not ctx.session_id:
+            return None
+        workspace_id = ctx.workspace_id
+        if not workspace_id:
+            row = await _session_row_storage().get(ctx.session_id)
+            workspace_id = row.workspace_id if row is not None else _NO_WORKSPACE
+        return await reach_of(storage_provider, workspace_id)
+
+    async def _list_sessions(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _WorkspaceListSessionsArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        if not in_reach(await _caller_reach(ctx), args.workspace_id):
+            # Out of the calling session's reach: answered exactly as a workspace that does not exist (the registry's own words for one), so a
+            # workspace id seen in a file or a log is never confirmed.
+            return _err_from_primer(NotFoundError(f"Workspace {args.workspace_id!r} does not exist"), error_type="not-found")
         try:
             ws = await workspace_registry.get_workspace(args.workspace_id)
         except NotFoundError as exc:
@@ -1893,7 +1918,9 @@ def build_workspaces_toolset(
         (
             "Use when enumerating the agent sessions on a workspace; "
             "not for one session's state (use "
-            "``get_workspace_session``)."
+            "``get_workspace_session``). From a session outside the default "
+            "workspace (prime) only your own workspace is reachable: another "
+            "one answers type=not-found, as an unknown id does."
         ),
         _WorkspaceListSessionsArgs,
         _list_sessions,
@@ -1908,12 +1935,19 @@ def build_workspaces_toolset(
     )
     registry[name] = entry
 
-    async def _find_sessions(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _find_sessions(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _FindSessionsArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
         filters: list[Predicate] = []
+        reach = await _caller_reach(ctx)
+        if reach is not None:
+            # A session outside the default workspace finds only its own workspace's sessions (lead ruling 3 of the G7 fixes). Another workspace
+            # named in ``workspace_id`` then finds nothing, exactly as a workspace id that does not exist.
+            filters.append(
+                Predicate(left=FieldRef(name="workspace_id"), op=Op.EQ, right=Value(value=reach))
+            )
         if args.workspace_id is not None:
             filters.append(
                 Predicate(
@@ -1961,7 +1995,9 @@ def build_workspaces_toolset(
         (
             "Use when you manage sessions in OTHER workspaces, as the "
             "operator in prime does; not for listing one workspace's "
-            "sessions (use ``list_workspace_sessions``)."
+            "sessions (use ``list_workspace_sessions``). From a session "
+            "outside the default workspace (prime) it finds only your own "
+            "workspace's sessions."
         ),
         _FindSessionsArgs,
         _find_sessions,
@@ -2204,19 +2240,22 @@ def build_workspaces_toolset(
             # An AGENT in a workspace session is steering another session (pivot P3, lead ruling 3): that is a message from the calling session, so it
             # goes through the service ``message_session`` uses and gets its guards (who sent it, the hop count, the per-sender rate limit, the rank
             # check) and the rulings keyed on a peer message (it never evicts a person's queued steer; it never reopens a session an operator
-            # cancelled). A call with no calling session (the MCP endpoint, a chat) is a person or an API client steering, and takes the path below
-            # unchanged. The named workspace is still checked first (above) and is not narrowed to the caller's: this tool has always reached
-            # "a session in any workspace" (``reach_any_workspace``), and it announces ``session.steered`` for every delivery, as it always did.
+            # cancelled). A call with no calling session (the MCP endpoint, a chat) is a person or an API client steering, and takes the path below.
+            # The named workspace is checked first (above), and then the reach of the caller's (lead ruling 3 of the G7 fixes): a session outside the
+            # default workspace reaches only its own, and a session out of reach answers exactly as one that does not exist. It announces
+            # ``session.steered`` for every delivery, as it always did.
             try:
                 sent = await _send_from_session(
                     ctx,
                     ctx.session_id,
                     target_session_id=args.session_id,
                     text=args.instruction,
-                    reach_any_workspace=True,
                     steered_on_every_delivery=True,
                 )
             except PeerMessageRefused as exc:
+                if exc.error_type == "not-found":
+                    # Out of the caller's reach, or gone since the read above: in the words of a session that does not exist.
+                    return _err(_session_not_on_workspace(args), error_type="not-found")
                 return _err(exc.message, error_type=exc.error_type)
             after = await sessions.get(args.session_id) or row
             return _ok({**after.model_dump(mode="json"), "delivery": sent.delivery})
@@ -2272,7 +2311,7 @@ def build_workspaces_toolset(
     name, entry = _tool(
         "steer_workspace_session",
         (
-            "Send a user instruction to a session in any workspace: an idle or "
+            "Send a user instruction to a session: an idle or "
             "ended session starts its next turn with it, a busy, parked or "
             "paused one reads it at its next turn boundary."
         ),
@@ -2284,11 +2323,13 @@ def build_workspaces_toolset(
             "From inside a workspace session it is a message from that "
             "session: the target sees a user message that starts with "
             "[from session <your session id> (agent <your agent id>)], and "
-            "the limits of message_session apply (forbidden, hop-limit, "
-            "rate-limited, conflict). With no calling session (MCP) the "
-            "caller must rank at least as high as the session's creator "
-            "(type=forbidden), and a session an operator cancelled is "
-            "refused (type=conflict)."
+            "the limits of message_session apply (not-found outside your "
+            "reach: a session outside the default workspace reaches only "
+            "its own workspace; forbidden, hop-limit, rate-limited, "
+            "conflict). With no calling session (MCP) any workspace is "
+            "reachable, the caller must rank at least as high as the "
+            "session's creator (type=forbidden), and a session an operator "
+            "cancelled is refused (type=conflict)."
         ),
         _SteerArgs,
         _steer_session,

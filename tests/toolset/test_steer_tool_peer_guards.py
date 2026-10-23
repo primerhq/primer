@@ -4,8 +4,9 @@ The REST steer route and a call with no calling session (the MCP endpoint, a cha
 (``tests/toolset/test_steer_tool_queue_when_busy.py`` pins them). An AGENT in a session that calls the tool is another session putting a message into
 the target, so it goes through ``send_peer_message``, the service ``message_session`` uses: the target sees who sent it (a prefix and ``payload.peer``), the
 hop count and the per-sender rate limit apply, the target's creator may not outrank the sender, and the two lead rulings that are keyed on a peer message
-(a peer never evicts a person's queued steer; a peer never reopens a session an operator cancelled) hold for it too. The tool's workspace scoping is NOT one
-of the guards (it names its own workspace, as before) and its answer keeps the session row's keys and adds ``delivery``.
+(a peer never evicts a person's queued steer; a peer never reopens a session an operator cancelled) hold for it too. Since lead ruling 3 of the G7 fixes
+the reach of the caller's workspace is one of the guards too (it used to be skipped): a session outside the default workspace reaches only its own
+workspace, and a session out of reach answers exactly as one that does not exist. Its answer keeps the session row's keys and adds ``delivery``.
 """
 
 from __future__ import annotations
@@ -288,20 +289,33 @@ async def test_r4_a_steer_from_a_session_never_reopens_a_session_an_operator_can
     assert out.outcome == DELIVERED_WOKEN and (await world.sessions.get("ses-b")).status == SessionStatus.RUNNING
 
 
-# ---- the scope is not one of the guards -------------------------------------------------------------------------------------------
+# ---- the scope is one of the guards (lead ruling 3 of the G7 fixes) ------------------------------------------------------------------
 
 
-async def test_a_steer_names_its_own_workspace_and_is_not_limited_to_the_senders():
-    """Unchanged by the guards: the tool says 'a session in any workspace' and a session of another workspace is reachable by naming it."""
+async def test_a_steer_from_a_session_outside_the_default_workspace_reaches_only_its_own_workspace():
+    """Re-pinned (audit G7-05): this was ``test_a_steer_names_its_own_workspace_and_is_not_limited_to_the_senders`` and pinned the delivery to a
+    session of another workspace that ``message_session`` refused. It answers exactly as an id that does not exist, and nothing is written."""
     world = await _world()
     await seed_session(world, sid="ses-x", workspace_id="ws-2", turn_no=1, created_at=T0 + timedelta(minutes=5))
     result, body = await _steer(world, "ses-x", workspace_id="ws-2", ctx=_ctx())
+    assert result.is_error and body == {"type": "not-found", "message": "Session 'ses-x' does not exist on workspace 'ws-2'"}
+    _, unknown = await _steer(world, "ses-nope", workspace_id="ws-2", ctx=_ctx())
+    assert unknown == {"type": "not-found", "message": "Session 'ses-nope' does not exist on workspace 'ws-2'"}
+    await _assert_nothing_stored(world, target="ses-x", workspace_id="ws-2")
+
+
+async def test_a_steer_from_a_session_in_the_default_workspace_reaches_any_workspace():
+    """Prime is the management plane: its sessions reach every workspace (design 6.1)."""
+    world = make_world(with_bus=True)
+    await world.sp.set_default_workspace_id("ws-prime")
+    await seed_session(world, sid="ses-p", workspace_id="ws-prime", binding=AgentSessionBinding(agent_id="operator"), initiated_by=USER, created_at=T0)
+    await seed_session(world, sid="ses-x", workspace_id="ws-2", turn_no=1, created_at=T0 + timedelta(minutes=5))
+    result, body = await _steer(world, "ses-x", workspace_id="ws-2", ctx=_ctx("ses-p", "ws-prime"))
     assert not result.is_error and body["delivery"] == "woken", result.output
     (message,) = await _ledger(world)
-    assert (message.from_workspace_id, message.to_workspace_id) == ("ws-1", "ws-2")
-    assert slot(world, "ses-x", workspace_id="ws-2").appended == [PREFIXED]
+    assert (message.from_workspace_id, message.to_workspace_id) == ("ws-prime", "ws-2")
     (user_input,) = [r for r in records(world, "ses-x", workspace_id="ws-2") if r["kind"] == "user_input"]
-    assert user_input["payload"]["peer"]["from_workspace_id"] == "ws-1"
+    assert user_input["payload"]["peer"]["from_workspace_id"] == "ws-prime"
 
 
 async def test_a_session_that_is_not_on_the_named_workspace_is_still_not_found_before_any_guard():
