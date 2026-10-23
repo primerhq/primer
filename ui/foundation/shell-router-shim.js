@@ -103,11 +103,22 @@ var SH_SHIM_LIST_TARGETS = {
   "workspaces/providers": { name: "platform", nav: "providers", sub: "workspace" },
 };
 
+// Until the Platform Workspace templates page ships, its legacy list overlay
+// remains the only real templates list. Once the component exists, the same
+// bare path closes to Platform instead. A tab request is never a list request.
+function SH_shimUsesTemplateListOverlay(path, opts) {
+  var clean = SH_shimSegments(path);
+  return clean.join("/") === "workspaces/templates"
+    && !SH_shimTab(path, opts)
+    && typeof window.WT_TemplatesPage !== "function";
+}
+
 // The view a bare list path closes to, or null. A copy, so a caller cannot edit the table. A tab is the page asking for more than the list.
 function SH_shimListTarget(path, opts) {
   var clean = SH_shimSegments(path);
   if (!clean.length || SH_shimTab(path, opts)) return null;
   var key = clean.join("/");
+  if (key === "workspaces/templates" && SH_shimUsesTemplateListOverlay(path, opts)) return null;
   if (!Object.prototype.hasOwnProperty.call(SH_SHIM_LIST_TARGETS, key)) return null;
   var target = SH_SHIM_LIST_TARGETS[key];
   return { name: target.name, nav: target.nav || null, sub: target.sub || null };
@@ -131,6 +142,10 @@ function SH_shimSessionWorkspace(opts) {
 function SH_shimNavigate(overlay, openOverlay, path, opts, closeTo, openSession) {
   var clean = SH_shimSegments(path);
   if (!clean.length) return;
+  if (SH_shimUsesTemplateListOverlay(path, opts)) {
+    openOverlay("workspaces", "templates", null);
+    return;
+  }
   if (typeof closeTo === "function") {
     var target = SH_shimListTarget(path, opts);
     if (target) {

@@ -50,14 +50,15 @@ def js(ctx, expr: str):
     return json.loads(ctx.eval("JSON.stringify(" + expr + ")"))
 
 
-def navigate(overlay, path: str, opts=None, *, close_to: bool = True, open_session: bool = True) -> list:
+def navigate(overlay, path: str, opts=None, *, close_to: bool = True, open_session: bool = True, templates_loaded: bool = False) -> list:
     """``SH_shimNavigate`` with recording callbacks; the calls it made, in order."""
     ctx = _shim_ctx()
     try:
         return js(
             ctx,
             "(function () { var calls = [];"
-            " var open = function (n, s, i) { calls.push(['open', n, s, i]); };"
+            + (" window.WT_TemplatesPage = function () {};" if templates_loaded else "")
+            + " var open = function (n, s, i) { calls.push(['open', n, s, i]); };"
             " var closeTo = function (t) { calls.push(['closeTo', t]); };"
             " var openSession = function (sid, wid) { calls.push(['openSession', sid, wid]); };"
             f" SH_shimNavigate({json.dumps(overlay)}, open, {json.dumps(path)}, {json.dumps(opts)},"
@@ -207,9 +208,10 @@ WORKSPACE_PROVIDERS_PAGE = {"name": "platform", "nav": "providers", "sub": "work
     ],
     ids=["template-overlay", "catalog-overlay", "provider-overlay", "no-overlay"],
 )
-def test_deleting_a_workspace_template_lands_on_the_templates_page(overlay):
-    """It used to read the single trailing segment as a workspace id and open "workspace not found" (``/workspaces/templates`` -> the record "templates")."""
-    assert navigate(overlay, "/workspaces/templates") == [["closeTo", TEMPLATES_PAGE]]
+def test_a_workspace_template_returns_to_the_real_list_that_is_available(overlay):
+    """The legacy overlay remains the list until the Platform templates component ships."""
+    assert navigate(overlay, "/workspaces/templates") == [["open", "workspaces", "templates", None]]
+    assert navigate(overlay, "/workspaces/templates", templates_loaded=True) == [["closeTo", TEMPLATES_PAGE]]
 
 
 @pytest.mark.parametrize(
@@ -496,17 +498,30 @@ def test_the_crumb_closes_to_the_platform_page_instead_of_opening_the_list(host,
 @pytest.mark.parametrize(
     "overlay,target",
     [
-        ({"name": "workspaces", "section": "templates", "id": "t1"}, TEMPLATES_PAGE),
         ({"name": "workspaces", "section": "providers", "id": "p1"}, WORKSPACE_PROVIDERS_PAGE),
         ({"name": "toolsets", "section": "tools", "id": "t1"}, {"name": "platform", "nav": "toolsets", "sub": None}),
     ],
-    ids=["template", "workspace-provider", "toolset-tab"],
+    ids=["workspace-provider", "toolset-tab"],
 )
 def test_the_crumb_of_a_section_overlay_goes_to_that_sections_page(host, overlay, target):
     """``workspaces:templates:<id>`` is a template, not a workspace: its crumb must not send the user to the studio; a tab section is not a page."""
     host.mount(overlay)
     host.click("nv-overlay-crumb")
     assert host.log()["closeTo"] == [target]
+
+
+def test_the_template_crumb_returns_to_the_legacy_list_until_the_platform_page_exists(host):
+    host.mount({"name": "workspaces", "section": "templates", "id": "t1"})
+    host.click("nv-overlay-crumb")
+    assert host.log()["open"] == [["workspaces", "templates", None]]
+    assert host.log()["closeTo"] == []
+
+
+def test_the_template_crumb_closes_to_platform_after_its_component_loads(host):
+    host.eval("(function () { window.WT_TemplatesPage = function () {}; return 1; })()")
+    host.mount({"name": "workspaces", "section": "templates", "id": "t1"})
+    host.click("nv-overlay-crumb")
+    assert host.log()["closeTo"] == [TEMPLATES_PAGE]
 
 
 def test_a_crumb_with_no_platform_page_keeps_opening_the_overlay_root(host):

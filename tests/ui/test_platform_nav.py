@@ -352,13 +352,14 @@ def test_a_custom_page_mounts_its_component_in_the_page_frame(nav_ctx) -> None:
 
 
 def test_a_custom_page_link_with_no_component_falls_back_to_providers(nav_ctx) -> None:
-    """Review Focus 5: ``view=platform:web`` before Plan 04 ships lands on Providers (every type), with its row current: no blank page, no error."""
+    """Review Focus 5: an unloaded custom page lands on Providers and canonicalises the view without pushing history."""
     for nav in ("web", "templates"):
-        nav_ctx.eval(f'CON.view = {{ name: "platform", nav: "{nav}", sub: null }}; CATALOG_SEEN.length = 0; MR.mount(NV_Platform, {{}});')
+        nav_ctx.eval(f'CON.view = {{ name: "platform", nav: "{nav}", sub: null }}; CALLS.length = 0; CATALOG_SEEN.length = 0; MR.mount(NV_Platform, {{}});')
         assert js(nav_ctx, "CATALOG_SEEN[CATALOG_SEEN.length - 1].initialClass") == "all", nav
         assert nav_ctx.eval('!!MR.find("nv-plat-page:providers")') and nav_ctx.eval(f'MR.find("nv-plat-page:{nav}") === null'), nav
         assert nav_ctx.eval('MR.find("nv-plat-row:providers").props["aria-current"]') == "page", nav
         assert nav_ctx.eval(f'MR.find("nv-plat-row:{nav}") === null'), nav
+        assert js(nav_ctx, "CALLS") == [["replaceView", "platform", "providers"]], nav
 
 
 def test_a_retired_nav_in_the_state_falls_back_to_providers_too(nav_ctx) -> None:

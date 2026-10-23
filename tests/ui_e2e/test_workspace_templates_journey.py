@@ -11,13 +11,10 @@ Pinned invariants:
     (description visible in the input).
   * Save (PUT) closes the modal; the detail header re-renders with
     the new description.
-  * Delete confirmation says 'deletion is safe' and removes the row; the
-    overlay closes and the operator lands on the Platform templates page
-    (the address is checked AFTER the delete). That page is a custom page
-    (seam I-2, Plan 08), so the journey asserts its frame
-    ``nv-plat-page:templates`` and the current sidebar row, with a stand-in
-    component loaded until the real page ships; it never asserts what the
-    page itself draws.
+  * Delete confirmation says 'deletion is safe' and removes the row. Until
+    Plan 08 ships its Platform component, the operator returns to the real
+    templates list overlay; afterwards the operator lands on the Platform
+    templates page. The address is checked after the delete in both cases.
 """
 
 from __future__ import annotations
@@ -31,7 +28,6 @@ from playwright.sync_api import expect
 
 from tests._support.smk import smk  # noqa: E402
 from tests.ui_e2e._shell_helpers import (
-    install_templates_page_stand_in,
     open_legacy_route,
     wait_for_overlay_url,
 )
@@ -70,13 +66,6 @@ def test_workspace_template_create_edit_delete_journey(
     _seed_provider(base_url, provider_id)
 
     try:
-        # The Workspace templates page is a custom page that the Platform view
-        # mounts only while ``window.WT_TemplatesPage`` is loaded (Plan 08
-        # ships it), and the generic templates page this journey used to land
-        # on after the delete is gone (design 14.2). Without a component the
-        # delete would land on the Providers fallback, so install the
-        # stand-in the old-link journey uses (it reloads the page).
-        install_templates_page_stand_in(page)
         # Wait for the component to load before navigating (babel-standalone
         # must finish compiling templates.jsx).
         page.wait_for_function(
@@ -147,32 +136,32 @@ def test_workspace_template_create_edit_delete_journey(
             "button", name="Delete template"
         ).first.click()
 
-        # The overlay closes and the operator is on the Platform templates
-        # page (revamp design 10): the custom page's FRAME, with its sidebar
-        # row current. The frame and the row are what the console draws; what
-        # is inside the frame is the stand-in's (until Plan 08), so this never
-        # asks for the stand-in's own test id. This step used to wait for the
-        # address ``overlay=workspaces:templates``, which is also a PREFIX of
-        # the address from before the delete (``overlay=workspaces:templates:
-        # <id>``): it passed at once, whatever the delete did, and the
-        # delete opened the Workspaces overlay on a record called
-        # "templates" ("workspace not found"). Check the address after.
-        templates_page = page.get_by_test_id("nv-plat-page:templates")
-        expect(templates_page).to_be_visible(timeout=15_000)
-        expect(page.get_by_test_id("nv-plat-row:templates")).to_have_attribute(
-            "aria-current", "page", timeout=5_000,
-        )
-        expect(page.locator('[data-testid^="nv-overlay:"]')).to_have_count(0)
-        expect(page).not_to_have_url(re.compile(r"overlay="), timeout=5_000)
-        expect(page).to_have_url(
-            re.compile(r"view=platform(:|%3A)templates"), timeout=5_000,
-        )
+        # Until Plan 08 ships WT_TemplatesPage, Delete returns to the real
+        # legacy templates list overlay. Once that component exists, the same
+        # action closes to its Platform page. Do not install a stand-in here:
+        # this journey pins the transition on the bundle that actually ships.
+        platform_templates = page.evaluate("typeof window.WT_TemplatesPage === 'function'")
+        if platform_templates:
+            templates_page = page.get_by_test_id("nv-plat-page:templates")
+            expect(templates_page).to_be_visible(timeout=15_000)
+            expect(page.get_by_test_id("nv-plat-row:templates")).to_have_attribute(
+                "aria-current", "page", timeout=5_000,
+            )
+            expect(page.locator('[data-testid^="nv-overlay:"]')).to_have_count(0)
+            expect(page).not_to_have_url(re.compile(r"overlay="), timeout=5_000)
+            expect(page).to_have_url(
+                re.compile(r"view=platform(:|%3A)templates"), timeout=5_000,
+            )
+        else:
+            templates_page = page.get_by_test_id("nv-overlay:workspaces")
+            expect(templates_page).to_be_visible(timeout=15_000)
+            expect(page).to_have_url(
+                re.compile(r"overlay=workspaces(:|%3A)templates(?:&|$)"), timeout=5_000,
+            )
+            expect(page).not_to_have_url(re.compile(r"workspaces(?::|%3A)templates(?::|%3A)"), timeout=5_000)
         # The row is gone. Scope the page assertion to the page (the
         # transient "Template deleted" toast renders the id too, outside
-        # it), and ask the API as well. The page assertion holds trivially
-        # while the stand-in fills the frame; it asserts the real list once
-        # Plan 08's page replaces the stand-in. The API check is the proof of
-        # the delete in both cases.
+        # it), and ask the API as well.
         expect(
             templates_page.get_by_text(template_id, exact=True)
         ).to_have_count(0, timeout=5_000)
