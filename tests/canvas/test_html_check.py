@@ -192,7 +192,6 @@ def test_scripts_are_found_the_way_a_browser_finds_them(html, count):
 
 
 @pytest.mark.parametrize("html", [
-    "<!-- <script>var = ;</script> -->",
     "<p>no scripts here</p>",
     "",
     "<script></script>",
@@ -415,20 +414,91 @@ async def test_a_worker_thread_that_cannot_be_started_is_a_problem_not_an_except
     assert check_html_scripts(THREE_SCRIPTS) == UNCHECKED_AROUND_ONE_BAD_SOURCE
 
 
-# --- known limits: what the check cannot see. The frame's CSP blocks each of these in the browser. -------------
+# --- parser differentials (audit G8-06): what a browser runs that html.parser alone would not see --------------
+#
+# Each shape is HTML a Chromium srcdoc frame (scripting enabled) parses into a script it RUNS or FETCHES (the audit's browser probe),
+# while html.parser with scripting off and no foreign-content rules sees no script. The check now parses with scripting on, and
+# refuses a body in which the raw '<script' count (any case) is more than the scripts the parser found: every shape is refused or
+# reported. EVIL is not a CDN, so a script the parser does see is refused for its host; BAD is inline code that does not parse.
 
 EVIL = "https://evil.example/x.js"
+BAD = "var = ;"
+HIDDEN = "is not a script the check can read"
+
+NOSCRIPT_EXT = f'<noscript><p title="</noscript><script src={EVIL}></script>"></noscript>'
+NOSCRIPT_BAD = f'<noscript><p title="</noscript><script>{BAD}</script>"></noscript>'
+SVG_STYLE_EXT = f'<svg><style><script href="{EVIL}"></script></style></svg>'
+SVG_STYLE_BAD = f"<svg><style><script>{BAD}</script></style></svg>"
+SVG_IFRAME_BAD = f"<svg><iframe><script>{BAD}</script></iframe></svg>"
+SVG_TEXTAREA_EXT = f'<svg><textarea><script href="{EVIL}"></script></textarea></svg>'
+SVG_XMP_BAD = f"<svg><xmp><script>{BAD}</script></xmp></svg>"
+SVG_TITLE_EXT = f'<svg><title><script src="{EVIL}"></script></title></svg>'
+DOUBLE_ESCAPED_BAD = f"<script><!--<script></script>\n{BAD}</script>"
+
+
+def test_noscript_is_parsed_as_a_browser_with_scripting_on_parses_it():
+    """With scripting on, <noscript> is raw text: the </noscript> inside the attribute ends it and the script after it is real."""
+    assert check_html_scripts(NOSCRIPT_EXT) == [f"script 1 loads from evil.example; {ALLOWED}"]
+    assert check_html_scripts(NOSCRIPT_BAD)[0].startswith("script 1 does not parse")
 
 
 @pytest.mark.parametrize("html", [
+    NOSCRIPT_EXT, NOSCRIPT_BAD, SVG_STYLE_EXT, SVG_STYLE_BAD, SVG_IFRAME_BAD, SVG_TEXTAREA_EXT, SVG_XMP_BAD, SVG_TITLE_EXT,
+    DOUBLE_ESCAPED_BAD,
+], ids=[
+    "noscript-ext", "noscript-bad", "svg-style-ext", "svg-style-bad", "svg-iframe-bad", "svg-textarea-ext", "svg-xmp-bad",
+    "svg-title-ext", "double-escaped-bad",
+])
+def test_the_nine_shapes_a_browser_runs_are_refused_or_reported(html):
+    assert check_html_scripts(html) != []
+
+
+@pytest.mark.parametrize("html", [
+    SVG_STYLE_EXT, SVG_STYLE_BAD, SVG_IFRAME_BAD, SVG_TEXTAREA_EXT, SVG_XMP_BAD, SVG_TITLE_EXT, DOUBLE_ESCAPED_BAD,
     f'<!--><script src="{EVIL}"></script>-->',
     f'<!---><script src="{EVIL}"></script>-->',
     f'<![CDATA[ x > <script src="{EVIL}"></script> ]]>',
-], ids=["<!-->", "<!--->", "<![CDATA[ x >"])
-def test_known_limit_a_script_after_an_abruptly_closed_comment_or_a_cdata_start_is_not_seen(html):
-    # A browser ends the comment (or the bogus comment that <![CDATA[ opens in HTML) at the first >, so the script is
-    # real. html.parser reads on to a later --> or ]]> and takes the script for part of the comment.
-    assert check_html_scripts(html) == []
+], ids=[
+    "svg-style-ext", "svg-style-bad", "svg-iframe-bad", "svg-textarea-ext", "svg-xmp-bad", "svg-title-ext", "double-escaped-bad",
+    "<!-->", "<!--->", "<![CDATA[ x >",
+])
+def test_a_script_tag_the_parser_cannot_read_fails_closed(html):
+    problems = check_html_scripts(html)
+    assert problems and HIDDEN in problems[-1], problems
+
+
+def test_the_hidden_script_problem_counts_every_script_tag_in_any_case():
+    assert check_html_scripts(f'<script>ok()</script><SVG><STYLE><ScRiPt href="{EVIL}"></ScRiPt></STYLE></SVG>') == [
+        "1 of the 2 '<script' in the html is not a script the check can read; write each script as a plain <script> element "
+        "and split '<script' in any text or string ('<scr' + 'ipt')"
+    ]
+    assert check_html_scripts("<svg><style><script></script><script></script></style></svg>") == [
+        "2 of the 2 '<script' in the html are not a script the check can read; write each script as a plain <script> element "
+        "and split '<script' in any text or string ('<scr' + 'ipt')"
+    ]
+
+
+@pytest.mark.parametrize("html", [
+    f'<p title="<script src={EVIL}></script>">',
+    "<!-- <script>old()</script> -->",
+    "<script>const tag = '<script>';</script>",
+], ids=["in an attribute", "in a comment", "in a string inside a script"])
+def test_fail_closed_also_refuses_script_text_a_browser_would_not_run(html):
+    """The count cannot tell text from a hidden tag, so it refuses both: the agent splits the word instead."""
+    assert HIDDEN in check_html_scripts(html)[-1]
+
+
+def test_well_formed_scripts_are_not_counted_as_hidden():
+    assert check_html_scripts("<script>a()</script>\n<SCRIPT src='https://unpkg.com/x.js'></SCRIPT><p>scripts</p>") == []
+
+
+def test_a_hidden_script_is_an_error_of_its_html_element():
+    r = apply_batch(CanvasState.empty(), parse_program(f'root = Column([v])\nv = Html("""{SVG_TITLE_EXT}""")'), limits=Limits(),
+                    script_check=check_html_scripts)
+    assert r.state is None and len(r.errors) == 1 and r.errors[0].line == 2 and r.errors[0].message.startswith("v: 1 of the 1 '<script'")
+
+
+# --- known limits: what the check cannot see. The frame's CSP (Task 13) is the only control in the browser. -----
 
 
 @pytest.mark.parametrize("html", [
