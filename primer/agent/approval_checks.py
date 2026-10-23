@@ -27,6 +27,9 @@ from primer.storage.q import Q
 if TYPE_CHECKING:
     from primer.int.storage_provider import StorageProvider
 
+# The invoker-supplied tool scope (``primer.agent.external_tools.EXTERNAL_TOOLSET_ID``, spelled here so this light module does not import the worker side).
+_EXTERNAL_TOOLSET_ID = "external"
+
 # ``(toolset_id, tool_name) -> the tool's args_schema``, or None when the tool cannot be found (primer/agent/tool_schemas.py ``find_tool_schema``).
 ToolSchemaOf = Callable[[str, str], Awaitable["dict[str, Any] | None"]]
 
@@ -39,9 +42,19 @@ async def check_toolset_id(
 ) -> None:
     """``toolset_id`` must name a toolset the platform runs: a reserved id (a built-in provider or a tool-manager scope), one of its retired spellings, or a stored Toolset row's id.
 
+    ``external`` is the one reserved scope refused: the caller answers those tools and the gate never consults a policy for them.
+
     The spelling is judged exactly, as the registry and the gate judge it (no case folding, no trimming): ``"System"`` and ``" system"`` resolve to no toolset at all -- they would be stored and gate nothing -- so they are refused at write time instead of surfacing later as a policy that never fires. ``reserved_toolset_ids`` is the set the caller holds (``RESERVED_TOOLSET_ROW_IDS``): the ids the platform runs that never exist as stored Toolset rows.
     """
     resolved = canonical_toolset_id(entity.toolset_id)
+    if resolved == _EXTERNAL_TOOLSET_ID:
+        # A reserved scope, but one the gate never consults (``ToolExecutionManager``): a policy on it would be stored and gate nothing (audit G6-10).
+        raise EntityCheckError(
+            "validation",
+            f"toolset_id {entity.toolset_id!r} names the tools a caller supplies with an invocation: the caller answers them itself, so they are "
+            "never gated and a policy on them would gate nothing",
+            field="toolset_id",
+        )
     if resolved in reserved_toolset_ids:
         return
     if await storage_provider.get_storage(Toolset).get(resolved) is not None:

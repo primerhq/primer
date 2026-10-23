@@ -55,6 +55,14 @@ parks under it), and the approval card and the audit record's
 current id (in its `via_call_tool` block, which is also the audit
 record's `toolset_id`).
 
+A policy cannot name the `external` toolset: those are the tools a
+caller supplies with an invocation and answers itself, so the gate
+never consults a policy for them, and a write that names it is refused
+(`validation-error`, REST 422) instead of storing a policy that gates
+nothing. `client` (the console actions an agent may trigger) is a
+reserved scope like `workspace`: a policy may name it, and no stored
+toolset may take it as its id.
+
 The thing that catches everyone is the interaction with MCP. The MCP
 exposure layer treats "this tool has a `required`-type policy" as
 "this tool cannot be exposed to MCP clients at all" - because MCP

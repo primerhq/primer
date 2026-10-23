@@ -205,8 +205,11 @@ RESERVED_TOOLSET_IDS: frozenset[str] = frozenset({
 })
 
 # Toolset ids that are SCOPES of the tool manager, not built-in providers: ``external`` is the invoker-supplied per-invocation
-# tool scope, ``workspace`` / ``workspace_ext`` the workspace-tool scopes. None of them may exist as a stored Toolset row.
-RESERVED_TOOLSET_SCOPE_IDS: frozenset[str] = frozenset({"external", "workspace", "workspace_ext"})
+# tool scope, ``workspace`` / ``workspace_ext`` the workspace-tool scopes, ``client`` the per-turn client tools (a grant scope the
+# manager exempts from the agent's allowlist, and a direct scope of the tool catalog). None of them may exist as a stored Toolset row:
+# a row under ``client`` was a second toolset behind the scope, listed past the allowlist and reached by call_tool while describe_tool
+# documented the static client tool (audit G6-9).
+RESERVED_TOOLSET_SCOPE_IDS: frozenset[str] = frozenset({"external", "workspace", "workspace_ext", "client"})
 
 # Every id a STORED Toolset row may not take: the built-in providers above (get_toolset answers them before it reads storage, so a
 # row under one is a ghost that GET /v1/toolsets lists and nothing ever runs) plus the tool-manager scopes. The toolset REST router
