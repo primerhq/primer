@@ -140,7 +140,9 @@ def test_u0047_provider_list_reflects_new_row_after_modal_create(
         models_view = overlay.locator('[data-testid="pc-llm-models"]')
         models_view.wait_for(state="visible", timeout=15_000)
 
-        first_box = overlay.locator('[data-testid^="pc-import:"]').first
+        first_box = models_view.locator(
+            '[data-testid^="pc-import:"]:not([data-testid="pc-import:all"])'
+        ).first
         first_box.check()
         ctx_input = overlay.locator('[data-testid^="pc-import-context:"]').first
         if ctx_input.input_value() == "":
