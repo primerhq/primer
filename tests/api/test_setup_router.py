@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from primer.bootstrap.defaults import (
     RESERVED_EXPLORER_AGENT,
@@ -26,6 +27,27 @@ async def test_seed_is_idempotent_and_reports_the_setup_state(client, app):
     assert "setup_complete" in body and "setup_missing" in body
     again = await client.post("/v1/setup/seed")
     assert again.json()["created"] == []
+
+
+async def test_seed_errors_are_redacted_before_they_leave_the_server(
+    client, monkeypatch,
+):
+    async def _failed_pass(*args, **kwargs):
+        return SimpleNamespace(
+            created=[], skipped=[],
+            errors=[(
+                "default_workspace",
+                "ConnectError('https://host/v1?key=AIzaSECRET', Bearer sk-live-token)",
+            )],
+        )
+
+    monkeypatch.setattr("primer.api.routers.setup.run_ensure_pass", _failed_pass)
+    response = await client.post("/v1/setup/seed")
+    assert response.status_code == 200, response.text
+    [[step, detail]] = response.json()["errors"]
+    assert step == "default_workspace"
+    assert "AIzaSECRET" not in detail and "sk-live-token" not in detail
+    assert detail.count("[REDACTED]") == 2
 
 
 async def test_reset_agents_restores_prompt_and_grants(client, app):

@@ -475,6 +475,11 @@ def test_credentials_in_the_base_url_are_not_shown_in_an_error_detail(real) -> N
         ("http://us'er:pass@host/x", "http://host/x"),
         ("'http://u:p@host/a' and 'http://v:q'r@host2/b'", "'http://host/a' and 'http://host2/b'"),
         ("a quoted 'http://host' then user@example.com/x", "a quoted 'http://host' then user@example.com/x"),
+        ("https://host/v1/models?key=AIzaSECRET", "https://host/v1/models?key=[REDACTED]"),
+        ("https://host/v1?access_token=tok123&x=1", "https://host/v1?access_token=[REDACTED]&x=1"),
+        ("https://host/v1?token=tok456", "https://host/v1?token=[REDACTED]"),
+        ("Authorization: Bearer sk-live-abc", "Authorization: Bearer [REDACTED]"),
+        ("dsn host=db user=u password=pw9 dbname=x", "dsn host=db user=u password=[REDACTED] dbname=x"),
     ],
 )
 def test_tidy_strips_credentials_from_every_url_and_leaves_the_rest(text: str, expected: str) -> None:

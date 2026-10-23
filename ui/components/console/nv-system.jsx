@@ -293,7 +293,8 @@ function NV_seedOutcome(result) {
   if (errors.length) {
     var errParts = errors.map(function (e) {
       var key = e[0];
-      var msg = String(e[1] || "");
+      var raw = String(e[1] == null ? "" : e[1]);
+      var msg = typeof SW_tidy === "function" ? SW_tidy(raw) : raw;
       if (msg.length > 200) {
         msg = msg.slice(0, 200) + "…";
       }

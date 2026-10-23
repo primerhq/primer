@@ -106,6 +106,27 @@ async def test_default_workspace_live_check_fails_on_unresolvable_row(client, ap
     assert by_key["default_workspace"]["detail"]
 
 
+async def test_default_workspace_detail_is_redacted_at_state_construction(
+    client, app,
+):
+    class _LeakyRegistry:
+        async def get_workspace(self, workspace_id: str):
+            raise RuntimeError(
+                "attach https://host/v1?access_token=tok-secret "
+                "with Bearer sk-live-secret"
+            )
+
+    app.state.workspace_registry = _LeakyRegistry()
+    await _seed_workspace_row(app, "prime")
+    await app.state.storage_provider.set_default_workspace_id("prime")
+
+    predicate = await _default_workspace_predicate(client)
+    assert predicate["ok"] is False and predicate["live"] is True
+    assert "tok-secret" not in predicate["detail"]
+    assert "sk-live-secret" not in predicate["detail"]
+    assert predicate["detail"].count("[REDACTED]") == 2
+
+
 async def test_setup_state_endpoint_is_admin_only(raw_client, app):
     """Mirrors test_setup_router.py's test_setup_endpoints_are_admin_only
     for the two REUSE endpoints - same construction, extended to /state."""
