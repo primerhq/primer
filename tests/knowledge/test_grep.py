@@ -117,3 +117,19 @@ async def test_a_literal_search_is_a_substring_test_with_no_pattern_cap(store):
     assert [(h.path, h.line) for h in res.hits] == [("long", 2)]
     res = await grep_collection(store, collection_id="c1", pattern="needle", literal=True, max_results=1)
     assert [(h.path, h.line) for h in res.hits] == [("a", 2)] and res.truncated is True
+
+
+async def test_the_timeout_error_names_its_cause(store, monkeypatch):
+    """Round 2, M4: one search past the per-search bound, or the budget spent after N lines, said with where it stopped."""
+    import primer.knowledge.grep as grep_module
+
+    per_line_hostile = r"(a|aa)+\Z"  # \Z: no whole-text prefilter, so each line is its own search
+    await store.upsert(document_id="d7", collection_id="c1", path="slow", content=f"ok\n{HOSTILE_LINE}")
+    monkeypatch.setattr(grep_module, "GREP_PER_SEARCH_SECONDS", 0.05)
+    monkeypatch.setattr(grep_module, "GREP_MATCH_SECONDS", 5.0)
+    with pytest.raises(BadRequestError, match=r"at slow line 2: one search ran past the 0\.05 s per-search bound"):
+        await grep_collection(store, collection_id="c1", pattern=per_line_hostile)
+    monkeypatch.setattr(grep_module, "GREP_PER_SEARCH_SECONDS", 2.0)
+    monkeypatch.setattr(grep_module, "GREP_MATCH_SECONDS", 0.05)
+    with pytest.raises(BadRequestError, match=r"grep stopped after \d+ lines, at slow line 2: .*longest single search"):
+        await grep_collection(store, collection_id="c1", pattern=per_line_hostile)

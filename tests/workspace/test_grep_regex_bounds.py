@@ -94,10 +94,12 @@ async def test_a_pattern_over_1000_characters_is_refused(tmp_path, backend):
 
 
 @pytest.mark.parametrize("backend", sorted(BACKENDS))
-async def test_counted_repeats_that_never_finish_compiling_are_refused(tmp_path, backend):
+async def test_counted_repeats_past_the_cap_are_refused(tmp_path, backend):
+    # The blow-up shapes themselves run through compile_grep_pattern in a child process
+    # (tests/common/test_user_regex_entry_points.py); this one compiles in milliseconds even if the check regressed.
     tool = await BACKENDS[backend](tmp_path, "needle\n")
     with pytest.raises(BadRequestError, match="repeats too much"):
-        await tool.execute(GrepArgs(pattern="(?:a{65535}){65535}", path="."), None)
+        await tool.execute(GrepArgs(pattern="(?:a{101}){100}", path="."), None)
 
 
 @pytest.mark.parametrize("backend", sorted(BACKENDS))
@@ -111,3 +113,74 @@ async def test_ordinary_patterns_answer_as_before(tmp_path, backend):
     assert spanning.output == "f.txt::alpha():\\n    return"
     with pytest.raises(BadRequestError, match="invalid regex"):
         await tool.execute(GrepArgs(pattern="[unclosed", path="."), None)
+
+
+
+# ---- round 2, M4: the error names its cause; L1: the dedicated executor; the prefilter keeps the answers ----------------
+
+# \Z tests the string end, so this pattern gets no whole-text prefilter: each line is searched on its own.
+PER_LINE_HOSTILE = r"(a|aa)+\Z"
+
+
+@pytest.mark.parametrize("backend", sorted(BACKENDS))
+async def test_one_search_past_the_per_search_bound_is_named(tmp_path, backend, monkeypatch):
+    monkeypatch.setattr(grep_module, "GREP_PER_SEARCH_SECONDS", 0.05, raising=False)
+    monkeypatch.setattr(grep_module, "GREP_MATCH_SECONDS", 5.0, raising=False)
+    tool = await BACKENDS[backend](tmp_path, f"ok\n{HOSTILE_LINE}\n")
+    with pytest.raises(BadRequestError) as refused:
+        await tool.execute(GrepArgs(pattern=PER_LINE_HOSTILE, path="."), None)
+    message = str(refused.value)
+    assert "f.txt line 2" in message, message
+    assert "one search ran past the 0.05 s per-search bound" in message, message
+
+
+@pytest.mark.parametrize("backend", sorted(BACKENDS))
+async def test_a_spent_budget_says_how_far_grep_got_and_its_longest_search(tmp_path, backend, monkeypatch):
+    monkeypatch.setattr(grep_module, "GREP_MATCH_SECONDS", 0.3, raising=False)
+    slow_line = "a" * 26 + "!"  # about 0.1 s each in the regex engine
+    tool = await BACKENDS[backend](tmp_path, "\n".join(["ok", "fine"] + [slow_line] * 20) + "\n")
+    with pytest.raises(BadRequestError) as refused:
+        await tool.execute(GrepArgs(pattern=PER_LINE_HOSTILE, path="."), None)
+    message = str(refused.value)
+    assert "grep stopped after " in message and " lines" in message, message
+    assert "matching used its 0.3 s matching budget" in message, message
+    assert "the longest single search took" in message, message
+
+
+@pytest.mark.parametrize("backend", sorted(BACKENDS))
+async def test_grep_matches_on_the_user_regex_executor(tmp_path, backend, monkeypatch):
+    import threading
+
+    import primer.workspace.sandbox.tools.grep as sandbox_grep_module
+
+    names: list[str] = []
+    real = grep_module.grep_text
+
+    def _recording(*args, **kwargs):
+        names.append(threading.current_thread().name)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(grep_module, "grep_text", _recording)
+    monkeypatch.setattr(sandbox_grep_module, "grep_text", _recording)
+    tool = await BACKENDS[backend](tmp_path, "needle\n")
+    result = await tool.execute(GrepArgs(pattern="need", path="."), None)
+    assert result.output == "f.txt"
+    assert names and all(name.startswith("user-regex") for name in names), names
+
+
+@pytest.mark.parametrize("backend", sorted(BACKENDS))
+async def test_the_whole_text_prefilter_keeps_every_answer(tmp_path, backend):
+    body = "\r\n".join(
+        ["def alpha():", "    return 1", "", "x = alpha()  # TODO", "class Beta:", "  def alpha(self): pass", "TODO"]
+    )
+    tool = await BACKENDS[backend](tmp_path, body + "\n")
+    cases = {
+        (r"^\s*def \w+", "content", 0): "f.txt:1:def alpha():\nf.txt:6:  def alpha(self): pass",
+        (r"TODO$", "count", 0): "f.txt:2",
+        (r"alpha\(\)", "content", 1): "f.txt:1:def alpha():\nf.txt:2:    return 1\nf.txt:3:\nf.txt:4:x = alpha()  # TODO\nf.txt:5:class Beta:",
+        (r"\bBeta\b", "files_with_matches", 0): "f.txt",
+        (r"^$", "count", 0): "f.txt:1",
+    }
+    for (pattern, mode, context), expected in cases.items():
+        result = await tool.execute(GrepArgs(pattern=pattern, path=".", output_mode=mode, context=context), None)
+        assert result.output == expected, (pattern, mode, result.output)
