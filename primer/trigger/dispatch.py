@@ -150,19 +150,54 @@ async def _record_delivery_outcomes(
             )
 
 
+async def enabled_subscriptions(storage_provider, trigger_id: str) -> list[Subscription]:
+    """Every enabled subscription of ``trigger_id``.
+
+    Pages in batches of 200 (OffsetPage max). Real-world fan-out is small
+    (<10 subs per trigger), but the loop is bounded defensively at 10k to
+    avoid an infinite walk if the storage layer ever misbehaves.
+    """
+    subs_storage = storage_provider.get_storage(Subscription)
+    q = Q(Subscription).where_op("trigger_id", Op.EQ, trigger_id)
+    enabled: list[Subscription] = []
+    offset = 0
+    while offset < 10_000:
+        subs_page = await subs_storage.find(
+            q.build(), OffsetPage(offset=offset, length=200),
+        )
+        enabled.extend(s for s in subs_page.items if s.enabled)
+        if len(subs_page.items) < 200:
+            break
+        offset += 200
+    return enabled
+
+
+def owner_key(sub: Subscription) -> tuple[str, str] | None:
+    """Whose share of a channel event's text budget a subscription matches under (None: rows saved before owners)."""
+    return (sub.owner.type, sub.owner.id) if sub.owner is not None else None
+
+
+def text_pattern_owners(subs: list[Subscription]) -> set[tuple[str, str] | None]:
+    """The distinct owners of the subscriptions that match an event's text."""
+    return {
+        owner_key(sub) for sub in subs
+        if sub.event_matcher is not None and sub.event_matcher.text_pattern is not None
+    }
+
+
 def _warn_text_budget_spent(
     budget: EventTextBudget, *, trigger_id: str, sub_id: str, event: ChannelEvent | None,
 ) -> None:
-    """One WARNING per channel event whose text_pattern budget ran out (G6-5)."""
+    """One WARNING per channel event whose text_pattern budget (or one owner's share of it) ran out (G6-5)."""
     if budget.warned:
         return
     budget.warned = True
     logger.warning(
-        "channel event %s: text_pattern matching used its %d ms budget at trigger %s "
-        "subscription %s; it and every later subscription with a text_pattern are "
-        "skipped for this event (error_code skipped_match_budget)",
+        "channel event %s: text_pattern matching used its budget (%d ms, shared equally by %d "
+        "owner(s)) at trigger %s subscription %s; it and that owner's later subscriptions "
+        "with a text_pattern are skipped for this event (error_code skipped_match_budget)",
         event.event_id if event is not None else None,
-        round(budget.seconds * 1000), trigger_id, sub_id,
+        round(budget.seconds * 1000), budget.owner_count, trigger_id, sub_id,
     )
 
 
@@ -245,27 +280,16 @@ async def fire_trigger(
         },
     )
 
-    subs_storage = deps.storage_provider.get_storage(Subscription)
-    q = Q(Subscription).where_op("trigger_id", Op.EQ, trigger.id)
-    # Page in batches of 200 (OffsetPage max) to capture every sub
-    # bound to this trigger. Real-world fan-out is small (<10 subs per
-    # trigger), but bound the loop defensively at 10k to avoid an
-    # infinite walk if the storage layer ever misbehaves.
-    enabled_subs: list[Subscription] = []
-    offset = 0
-    while offset < 10_000:
-        subs_page = await subs_storage.find(
-            q.build(), OffsetPage(offset=offset, length=200),
-        )
-        enabled_subs.extend(s for s in subs_page.items if s.enabled)
-        if len(subs_page.items) < 200:
-            break
-        offset += 200
+    enabled_subs = await enabled_subscriptions(deps.storage_provider, trigger.id)
 
     results: list[dict] = []
     # One text_pattern budget per channel event (G6-5): the router opens it
-    # around every trigger the event fires; a fire outside one gets its own.
-    text_budget = current_event_text_budget() or EventTextBudget()
+    # around every trigger the event fires, sized by the distinct owners it
+    # will match; a fire outside one gets its own for this trigger's owners.
+    # Each owner matches under an equal share of it (round 2, M1).
+    text_budget = current_event_text_budget() or EventTextBudget(
+        len(text_pattern_owners(enabled_subs)),
+    )
     for sub in enabled_subs:
         # Channel-event predicate: a sub with an event_matcher only fires when
         # the inbound ChannelEvent (carried in fire_context["event"]) matches.
@@ -281,7 +305,9 @@ async def fire_trigger(
             )
             outcome = (
                 "no_match" if event is None
-                else match_outcome(sub.event_matcher, event, budget=text_budget)
+                else match_outcome(
+                    sub.event_matcher, event, budget=text_budget.for_owner(owner_key(sub)),
+                )
             )
             if outcome == "budget_exhausted":
                 _warn_text_budget_spent(text_budget, trigger_id=trigger.id, sub_id=sub.id, event=event)
