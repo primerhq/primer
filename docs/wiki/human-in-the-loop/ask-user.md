@@ -39,7 +39,7 @@ Reference: [`system__ask_user`](reference/tools/system/ask_user)
 ## Gotchas
 - Ask once, with the questions that matter; a chain of small parks reads as noise.
 - A status update is `misc__inform_user`, not a question; a fixed wait is `workspace_ext__sleep`.
-- While parked the turn holds no result; the run keeps its lease until the answer, the timeout or a cancel.
+- While parked the turn holds no result, and the run releases its lease; the answer, the timeout or a cancel wakes it again.
 - A run whose principal is not an admin may not use `pattern` or `patternProperties` in the `response_schema`; the server runs those as regular expressions on the answer and refuses the call with a `forbidden` error naming the paths.
 
 ## Related
