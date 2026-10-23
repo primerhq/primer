@@ -479,6 +479,85 @@ async def test_probe_challenge_reads_the_401_header(http):
         assert await probe_challenge(MCP, headers={}, http=http) is None
 
 
+# ---- answer bodies are read to a cap (audit G4-15) ------------------------------------------------------------------------------------------------------------------------
+
+MIB = 1024 * 1024
+
+
+class _BigBody(httpx.AsyncByteStream):
+    """An answer body of ``total`` bytes sent in 64 KiB chunks: a JSON object, padded, that would parse if read whole. Counts what was read."""
+
+    def __init__(self, document: dict, total: int) -> None:
+        head = json.dumps(document).encode()[:-1] + b', "padding": "'
+        self._parts = [head, *([b"x" * 65536] * ((total - len(head)) // 65536)), b'"}']
+        self.read = 0
+
+    async def __aiter__(self):
+        for part in self._parts:
+            self.read += len(part)
+            yield part
+
+
+def _big(document: dict, total: int = 8 * MIB) -> tuple[httpx.Response, _BigBody]:
+    body = _BigBody(document, total)
+    return httpx.Response(200, headers={"Content-Type": "application/json"}, stream=body), body
+
+
+async def test_a_token_answer_over_the_cap_is_refused_unread(http):
+    """A server named by the MCP metadata could answer with a body of any size inside the timeout; it is read to 1 MiB and no further."""
+    response, body = _big({"access_token": "at-1", "token_type": "Bearer"})
+    with respx.mock() as router:
+        router.post(TOKEN).mock(return_value=response)
+        with pytest.raises(ServerError, match=r"token endpoint answered 200 with a body larger than 1 MiB"):
+            await _refresh(http)
+    assert body.read <= 2 * MIB, f"{body.read} bytes were read"
+
+
+async def test_a_registration_answer_over_the_cap_is_refused_unread(http):
+    response, body = _big({"client_id": "dcr-1"})
+    with respx.mock() as router:
+        router.post(ISSUER + "/register").mock(return_value=response)
+        with pytest.raises(ServerError, match=r"registration endpoint answered 200 with a body larger than 1 MiB"):
+            await register_client(metadata=_metadata(), redirect_uri="https://p.example/cb", client_name="primer", http=http)
+    assert body.read <= 2 * MIB
+
+
+async def test_a_discovery_document_over_the_cap_is_not_used(http):
+    response, body = _big(AS_DOC)
+    with respx.mock(assert_all_called=False) as router:
+        router.get(PRM_PATH).mock(return_value=httpx.Response(200, json=PRM_DOC))
+        router.get(AS_OAUTH).mock(return_value=response)
+        router.get(AS_OIDC_INSERTED).mock(return_value=httpx.Response(404))
+        router.get(AS_OIDC_APPENDED).mock(return_value=httpx.Response(404))
+        with pytest.raises(BadRequestError, match="publishes no usable OAuth metadata"):
+            await discover(MCP, www_authenticate=None, http=http)
+    assert body.read <= 2 * MIB
+
+
+async def test_an_error_answer_over_the_cap_carries_no_fields(http):
+    big = _BigBody({"error": "invalid_grant", "error_description": "big"}, 4 * MIB)
+    with respx.mock() as router:
+        router.post(TOKEN).mock(return_value=httpx.Response(400, headers={"Content-Type": "application/json"}, stream=big))
+        with pytest.raises(TokenEndpointRejected) as caught:
+            await _refresh(http)
+    assert str(caught.value) == "token endpoint answered 400" and caught.value.error is None and big.read <= 2 * MIB
+
+
+async def test_a_body_under_the_cap_is_read_whole(http):
+    response, _ = _big({"access_token": "at-1", "token_type": "Bearer"}, total=MIB - 4096)
+    with respx.mock() as router:
+        router.post(TOKEN).mock(return_value=response)
+        assert (await _refresh(http)).access_token == "at-1"
+
+
+async def test_a_revocation_answer_is_never_read(http):
+    response, body = _big({"anything": 1})
+    with respx.mock() as router:
+        router.post(REVOKE).mock(return_value=response)
+        assert await revoke(revocation_endpoint=REVOKE, client=PUBLIC, token="rt-1", token_type_hint="refresh_token", http=http) is True
+    assert body.read <= 2 * MIB
+
+
 def test_no_secret_shows_in_a_repr():
     values = (
         TokenGrant(access_token="at-plain", refresh_token="rt-plain", token_type="Bearer", expires_at=None, scope=None),

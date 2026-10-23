@@ -22,6 +22,9 @@ Errors. A token endpoint that refuses (any 4xx but 408 and 429) raises :class:`T
 :class:`~primer.model.except_.NetworkError`. Only :class:`TokenEndpointRejected` means "this grant is dead": a caller keeps its refresh token on every
 other failure. Every error text carries the HTTP status and the RFC 6749 ``error`` and ``error_description`` fields only, as printable ASCII, cut to
 200 characters, with each secret the request carried masked even when the server echoes it: never the response body. Nothing here logs.
+
+Answer bodies (a discovery document, a token or registration answer) are streamed and read to :data:`MAX_BODY_BYTES` before anything is parsed; a
+larger one is not used. A revocation answer's body is never read.
 """
 
 from __future__ import annotations
@@ -40,6 +43,7 @@ from urllib.parse import parse_qsl, quote, quote_plus, urlencode, urlsplit, urlu
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from primer.common.bounded_read import ACCEPT_ENCODING, UnsupportedContentEncoding, read_capped
 from primer.common.log import redact_credentials, redact_url_secrets
 from primer.common.mcp_errors import classify_mcp_exception
 from primer.common.origin import origin_of
@@ -48,6 +52,7 @@ from primer.model.mcp_oauth import ClientAuthMethod
 
 __all__ = [
     "ERROR_TEXT_LIMIT",
+    "MAX_BODY_BYTES",
     "AuthServerMetadata",
     "ClientAuth",
     "ClientAuthMethod",
@@ -76,6 +81,10 @@ __all__ = [
 
 #: The longest error text a failed OAuth call produces.
 ERROR_TEXT_LIMIT = 200
+#: The most of an answer body read from a discovery document, a token endpoint or a registration endpoint (audit G4-15). These servers are named by
+#: the MCP server's metadata, so one could answer with a body of any size inside the timeout; the body is streamed and reading stops past the cap,
+#: before anything is parsed. A larger body is not used (a document is not usable, a grant or a registration answer is a server error).
+MAX_BODY_BYTES = 1024 * 1024
 
 #: 4xx answers that say "not now" rather than "never": a refresh that meets one keeps its refresh token.
 _TEMPORARY_4XX = frozenset({408, 429})
@@ -380,23 +389,53 @@ def _first_problem(exc: ValidationError) -> str:
     return "invalid"
 
 
+@dataclass(frozen=True)
+class _Answer:
+    """An answer whose body was read to :data:`MAX_BODY_BYTES`. ``body`` is ``None`` when it was larger (``too_large``) or did not decode within the
+    bound (an encoding :func:`~primer.common.bounded_read.read_capped` cannot bound, a broken compressed stream)."""
+
+    status: int
+    body: bytes | None
+    too_large: bool = False
+
+
+async def _send(http: httpx.AsyncClient, method: str, url: str, *, headers: Mapping[str, str], **kwargs: Any) -> _Answer:
+    """Send one request and read its answer body, streamed, to :data:`MAX_BODY_BYTES` (decoded bytes, each decode step bounded). Transport failures
+    raise as the client raises them."""
+    sent = {**headers, "Accept-Encoding": ACCEPT_ENCODING}
+    async with http.stream(method, url, headers=sent, **kwargs) as response:
+        try:
+            body, more = await read_capped(response, MAX_BODY_BYTES)
+        except (UnsupportedContentEncoding, httpx.DecodingError):
+            return _Answer(response.status_code, None)
+        if more:
+            return _Answer(response.status_code, None, too_large=True)
+        return _Answer(response.status_code, bytes(body))
+
+
 async def _get_json_object(url: str, http: httpx.AsyncClient) -> tuple[dict[str, Any] | None, bool]:
     """GET ``url``: the JSON object of a 200 answer, or ``None``; and whether any answer came back at all (``False`` for a transport failure)."""
     try:
-        response = await http.get(url, headers=_JSON_ACCEPT)
+        answer = await _send(http, "GET", url, headers=_JSON_ACCEPT)
     except (httpx.HTTPError, httpx.InvalidURL):
         return None, False
-    if response.status_code != 200:
+    if answer.status != 200:
         return None, True
-    return _json_object(response), True
+    return _json_object(answer.body), True
 
 
-def _json_object(response: httpx.Response) -> dict[str, Any] | None:
+def _json_object(body: bytes | None) -> dict[str, Any] | None:
+    if body is None:
+        return None
     try:
-        body = response.json()
+        value = json.loads(body)
     except ValueError:                                   # not JSON, or not UTF-8 (UnicodeDecodeError is a ValueError)
         return None
-    return body if isinstance(body, dict) else None
+    return value if isinstance(value, dict) else None
+
+
+def _over_the_cap(what: str, status: int) -> ServerError:
+    return ServerError(f"{what} answered {status} with a body larger than {MAX_BODY_BYTES // (1024 * 1024)} MiB", code="server_error", status_code=status)
 
 
 async def probe_challenge(server_url: str, *, headers: Mapping[str, str], http: httpx.AsyncClient) -> str | None:
@@ -548,8 +587,8 @@ def _clean_field(value: object, secrets_sent: tuple[str | None, ...]) -> str | N
     return _cut(text) or None
 
 
-def _error_fields(response: httpx.Response, secrets_sent: tuple[str | None, ...]) -> tuple[str | None, str | None]:
-    body = _json_object(response)
+def _error_fields(answer: _Answer, secrets_sent: tuple[str | None, ...]) -> tuple[str | None, str | None]:
+    body = _json_object(answer.body)
     if body is None:
         return None, None
     return _clean_field(body.get("error"), secrets_sent), _clean_field(body.get("error_description"), secrets_sent)
@@ -614,11 +653,13 @@ def _text(body: Mapping[str, Any], key: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _grant_of(response: httpx.Response, now: datetime) -> TokenGrant:
-    body = _json_object(response)
+def _grant_of(answer: _Answer, now: datetime) -> TokenGrant:
+    if answer.too_large:
+        raise _over_the_cap("token endpoint", answer.status)
+    body = _json_object(answer.body)
     access = _text(body, "access_token") if body is not None else None
     if body is None or access is None:
-        raise ServerError(f"token endpoint answered {response.status_code} without an access token", code="server_error", status_code=response.status_code)
+        raise ServerError(f"token endpoint answered {answer.status} without an access token", code="server_error", status_code=answer.status)
     return TokenGrant(
         access_token=access,
         refresh_token=_text(body, "refresh_token"),
@@ -641,13 +682,13 @@ async def _token_request(
     headers = dict(_JSON_ACCEPT)
     _authenticate(client, body, headers)
     try:
-        response = await http.post(token_endpoint, data=body, headers=headers)
+        answer = await _send(http, "POST", token_endpoint, data=body, headers=headers)
     except (httpx.HTTPError, httpx.InvalidURL) as exc:
         raise _call_failed(exc, "the token endpoint") from exc
-    status = response.status_code
+    status = answer.status
     if 200 <= status < 300:
-        return _grant_of(response, now)
-    error, description = _error_fields(response, (*secrets_sent, client.client_secret))
+        return _grant_of(answer, now)
+    error, description = _error_fields(answer, (*secrets_sent, client.client_secret))
     message = _answered("token endpoint", status, error, description)
     if _is_refusal(status):
         raise TokenEndpointRejected(message, error=error, status=status)
@@ -718,17 +759,19 @@ async def register_client(*, metadata: AuthServerMetadata, redirect_uri: str, cl
         "token_endpoint_auth_method": "none",
     }
     try:
-        response = await http.post(metadata.registration_endpoint, json=payload, headers=dict(_JSON_ACCEPT))
+        answer = await _send(http, "POST", metadata.registration_endpoint, json=payload, headers=_JSON_ACCEPT)
     except (httpx.HTTPError, httpx.InvalidURL) as exc:
         raise _call_failed(exc, "the registration endpoint") from exc
-    status = response.status_code
+    status = answer.status
     if 200 <= status < 300:
-        body = _json_object(response)
+        if answer.too_large:
+            raise _over_the_cap("registration endpoint", status)
+        body = _json_object(answer.body)
         client_id = _text(body, "client_id") if body is not None else None
         if body is None or client_id is None:
             raise ServerError(f"registration endpoint answered {status} without a client_id", code="server_error", status_code=status)
         return RegisteredClient(client_id=client_id, client_secret=_text(body, "client_secret"))
-    error, description = _error_fields(response, ())
+    error, description = _error_fields(answer, ())
     message = _answered("registration endpoint", status, error, description)
     if _is_refusal(status):
         raise BadRequestError(message)
@@ -737,12 +780,12 @@ async def register_client(*, metadata: AuthServerMetadata, redirect_uri: str, cl
 
 async def revoke(*, revocation_endpoint: str, client: ClientAuth, token: str, token_type_hint: str, http: httpx.AsyncClient) -> bool:
     """RFC 7009 revocation of ``token``, best effort: ``True`` when the server answered 2xx, ``False`` for any other answer or failure. It never raises
-    (a cancellation still propagates)."""
+    (a cancellation still propagates). Only the status is read: the answer body is never read at all."""
     try:
         body = {"token": token, "token_type_hint": token_type_hint}
         headers = dict(_JSON_ACCEPT)
         _authenticate(client, body, headers)
-        response = await http.post(revocation_endpoint, data=body, headers=headers)
+        async with http.stream("POST", revocation_endpoint, data=body, headers=headers) as response:
+            return 200 <= response.status_code < 300
     except Exception:  # noqa: BLE001 - best effort by contract: the caller deletes the tokens whatever this answers
         return False
-    return 200 <= response.status_code < 300
