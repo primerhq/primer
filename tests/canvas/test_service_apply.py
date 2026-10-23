@@ -610,6 +610,61 @@ async def test_fence_retry_does_not_rerun_script_check_for_same_html():
     assert out.rev == 2 and calls == ["<script>var a = 1;</script>"]
 
 
+async def test_the_script_check_runs_before_the_fenced_attempts():
+    """G8-01 and the ruling on G8-04: the V8 work is done before the first fenced attempt reads the row, so no attempt holds it between
+    its read and its write; an attempt the fence rejects reads again and writes without checking again."""
+    order: list[str] = []
+
+    def check(html: str) -> list[str]:
+        order.append("check")
+        return []
+
+    w = make_world(script_check=check)
+    await seed_session(w)
+    await _apply(w, 'root = Column([v])\nv = Html("<b>initial</b>")')
+    store = w.sp.get_storage(SessionCanvas)
+    real_get, real_patch_if, rejected = store.get, store.patch_if, [False]
+
+    async def get(id, *args, **kwargs):  # noqa: A002
+        order.append("read")
+        return await real_get(id, *args, **kwargs)
+
+    async def patch_if(id, patch=None, *, where, set_paths=None, conn=None):  # noqa: A002
+        if not rejected[0]:
+            rejected[0] = True
+            current = await real_get(id)
+            await real_patch_if(id, {"event_seq": current.event_seq + 1}, where={"event_seq": [current.event_seq]})   # a click got in first
+            order.append("write (rejected)")
+            return None
+        order.append("write")
+        return await real_patch_if(id, patch, where=where, set_paths=set_paths, conn=conn)
+
+    order.clear()
+    store.get, store.patch_if = get, patch_if
+    out = await _apply(w, 'v = Html("<script>var a = 1;</script>")\nw = Html("<script>var b = 2;</script>")\nroot += [w]')
+    assert out.rev == 2
+    # the pass (one read, both bodies checked), attempt 1 (read, rejected write, the CAS tripwire's read), attempt 2 (read, write)
+    assert order == ["read", "check", "check", "read", "write (rejected)", "read", "read", "write"]
+
+
+async def test_an_unmoved_row_is_judged_once(monkeypatch):
+    """The first pass's verdict is the first attempt's while the row has not moved, so a batch is not applied twice for nothing."""
+    import primer.canvas.service as service_module
+
+    judged: list[int] = []
+
+    def counting(*args, **kwargs):
+        judged.append(1)
+        return apply_batch(*args, **kwargs)
+
+    w = make_world()
+    await seed_session(w)
+    await _apply(w, G("playlist_create.cl"))
+    monkeypatch.setattr(service_module, "apply_batch", counting)
+    await _apply(w, 'x = Text("x")\nroot += [x]')
+    assert judged == [1]
+
+
 # ---- reading -----------------------------------------------------------------------------------------------------------------------
 
 

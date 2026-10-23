@@ -42,6 +42,7 @@ from primer.canvas.ops import statements_to_ops
 from primer.canvas.records import append_canvas_record
 from primer.canvas.settings import read_canvas_settings
 from primer.canvas.state import (
+    BatchResult,
     CanvasState,
     Changed,
     Limits,
@@ -261,6 +262,16 @@ def _check_event(
     )
 
 
+@dataclass(frozen=True)
+class _Judged:
+    """A batch judged against one read of the row: the row, its rev, what identifies that read, and the verdict."""
+
+    row: SessionCanvas | None
+    rev: int
+    key: tuple[Any, ...]
+    result: BatchResult
+
+
 class CanvasService:
     """The one door to the session canvas (see the module docstring).
 
@@ -352,41 +363,18 @@ class CanvasService:
         """
         statements = list(statements)
         store = self._store()
-        checked_html: dict[str, list[str]] = {}
-        base_check = self._script_check
-        memo_check: Callable[[str], list[str]] | None = None
-        if base_check is not None:
-            base_many = getattr(base_check, "many", None)
-
-            def _memo_one(html: str) -> list[str]:
-                if html not in checked_html:
-                    checked_html[html] = base_check(html)
-                return checked_html[html]
-
-            def _memo_many(bodies: Sequence[str]) -> dict[str, list[str]]:
-                unchecked = [b for b in dict.fromkeys(bodies) if b not in checked_html]
-                if unchecked:
-                    if callable(base_many):
-                        checked_html.update(base_many(unchecked))
-                    else:
-                        for b in unchecked:
-                            checked_html[b] = base_check(b)
-                return {b: checked_html[b] for b in dict.fromkeys(bodies)}
-
-            _memo_one.many = _memo_many  # type: ignore[attr-defined]
-            memo_check = _memo_one
-
+        script_check = self._batch_script_check()
+        # The V8 work of the batch runs HERE, before the fenced attempts (audit G8-01, and the lead's ruling on G8-04): a first pass
+        # against the canvas as it is now checks every distinct Html body that survives the batch, on one engine, into the batch's
+        # memo. Each attempt then reads the row again, so no attempt holds V8 work between its read and its fenced write, and an event
+        # that lands meanwhile costs a retry only the pure-Python apply. The pass's verdict is reused while the row has not moved.
+        prepared = await self._judge(store, session_id, statements, unit=unit, base_rev=base_rev, script_check=script_check)
         for _ in range(_ATTEMPTS):
-            row = await store.get(session_id)
-            rev = row.rev if row is not None else 0
-            if base_rev is not None and base_rev != rev:
-                raise self._conflict(row, rev, base_rev)
-            settings = await read_canvas_settings(self._sp)
-            limits = Limits(settings.max_elements, settings.max_html_bytes, settings.max_canvas_bytes)
-            before = self.state_of(row) if row is not None else CanvasState.empty()
-            result = await asyncio.to_thread(
-                apply_batch, before, statements, limits=limits, unit=unit, script_check=memo_check,
+            judged = await self._judge(
+                store, session_id, statements, unit=unit, base_rev=base_rev, script_check=script_check, reuse=prepared,
             )
+            prepared = None
+            row, rev, result = judged.row, judged.rev, judged.result
             if result.errors or result.state is None:
                 raise CanvasApplyRefused(result.errors, rev)
             written = await self._write_batch(store, row, result.state, session_id=session_id, workspace_id=workspace_id)
@@ -398,6 +386,65 @@ class CanvasService:
             )
             return ApplyOutcome(written.rev, result.changed, result.warnings)
         raise ConflictError(_CONFLICT)
+
+    async def _judge(
+        self,
+        store: Any,
+        session_id: str,
+        statements: list[Statement],
+        *,
+        unit: Literal["line", "op"],
+        base_rev: int | None,
+        script_check: Callable[[str], list[str]] | None,
+        reuse: "_Judged | None" = None,
+    ) -> "_Judged":
+        """Read the row and judge the batch against it. Raises ``CanvasRevConflict`` for a stale ``base_rev``.
+
+        ``reuse`` is an earlier verdict: it is returned with the fresh row when that row is the one it judged (every write moves
+        ``rev`` or ``event_seq`` and stamps ``updated_at``) under the same limits, so the batch is not applied twice for nothing.
+        """
+        row = await store.get(session_id)
+        rev = row.rev if row is not None else 0
+        if base_rev is not None and base_rev != rev:
+            raise self._conflict(row, rev, base_rev)
+        settings = await read_canvas_settings(self._sp)
+        limits = Limits(settings.max_elements, settings.max_html_bytes, settings.max_canvas_bytes)
+        key = (rev, row.event_seq, row.updated_at, limits) if row is not None else (0, 0, None, limits)
+        if reuse is not None and reuse.key == key:
+            return _Judged(row, rev, key, reuse.result)
+        before = self.state_of(row) if row is not None else CanvasState.empty()
+        result = await asyncio.to_thread(apply_batch, before, statements, limits=limits, unit=unit, script_check=script_check)
+        return _Judged(row, rev, key, result)
+
+    def _batch_script_check(self) -> Callable[[str], list[str]] | None:
+        """The service's script check, memoized for ONE batch: a body is checked once however often the batch is judged.
+
+        A check that has a ``many`` (``check_html_scripts`` does) gets the batch's unchecked bodies in one call, so they share one V8
+        engine; the memo keeps that ``many`` for ``apply_batch`` to find.
+        """
+        base = self._script_check
+        if base is None:
+            return None
+        checked: dict[str, list[str]] = {}
+        base_many = getattr(base, "many", None)
+
+        def one(html: str) -> list[str]:
+            if html not in checked:
+                checked[html] = base(html)
+            return checked[html]
+
+        def many(bodies: Sequence[str]) -> dict[str, list[str]]:
+            wanted = list(dict.fromkeys(bodies))
+            unchecked = [body for body in wanted if body not in checked]
+            if unchecked:
+                if callable(base_many):
+                    checked.update(base_many(unchecked))
+                else:
+                    checked.update((body, base(body)) for body in unchecked)
+            return {body: checked[body] for body in wanted}
+
+        one.many = many  # type: ignore[attr-defined]
+        return one
 
     async def clear(self, *, session_id: str, workspace_id: str, by: str) -> ApplyOutcome:
         """Empty the canvas: an operator's ``clear`` batch."""
