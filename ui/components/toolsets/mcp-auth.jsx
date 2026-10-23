@@ -105,6 +105,19 @@ function TS_authError(errors, suffix) {
   return all[suffix] || all["body.config.config." + suffix] || null;
 }
 
+// The error keys the section draws under a field in the form's mode, relative to the HTTP config as TS_authError reads them. The toolset form
+// puts every other error in its banner (TS_shownErrorKeys in toolsets.jsx), so this list and the fields below must agree.
+function TS_authErrorKeys(form) {
+  const mode = form && form.mode;
+  if (mode !== "oauth_browser" && mode !== "oauth_client_credentials") return [];
+  return [
+    "oauth.static_client.client_id",
+    "oauth.static_client.client_secret",
+    "oauth.scopes",
+    mode === "oauth_client_credentials" ? "oauth.token_endpoint" : "oauth.resource_uri",
+  ];
+}
+
 function TS_McpAuthSection({ form, onChange, errors, locked, isMobile }) {
   const change = function (patch) { onChange(Object.assign({}, form, patch)); };
   const isOAuth = form.mode === "oauth_browser" || form.mode === "oauth_client_credentials";
@@ -114,6 +127,23 @@ function TS_McpAuthSection({ form, onChange, errors, locked, isMobile }) {
   const scopesError = TS_authError(errors, "oauth.scopes");
   const resourceError = TS_authError(errors, "oauth.resource_uri");
   const endpointError = TS_authError(errors, "oauth.token_endpoint");
+  // A folded field is not mounted (PK_Fold), so a refused resource is drawn outside the fold, where its error can be seen.
+  const resourceField = (
+    <PK_Field
+      label="Resource"
+      help="Defaults to the server URL"
+      error={resourceError}
+    >
+      <input
+        className="input mono"
+        data-testid="ts-oauth-resource"
+        value={form.resource}
+        disabled={!!locked}
+        onChange={function (event) { change({ resource: event.target.value }); }}
+        style={{ width: "100%" }}
+      />
+    </PK_Field>
+  );
 
   return (
     <PK_Section title="AUTHENTICATION" testid="ts-auth-section" cols={1}>
@@ -206,22 +236,11 @@ function TS_McpAuthSection({ form, onChange, errors, locked, isMobile }) {
                     style={{ width: "100%" }}
                   />
                 </PK_Field>
+              ) : resourceError ? (
+                resourceField
               ) : (
                 <PK_Fold label="More" testid="ts-oauth-more">
-                  <PK_Field
-                    label="Resource"
-                    help="Defaults to the server URL"
-                    error={resourceError}
-                  >
-                    <input
-                      className="input mono"
-                      data-testid="ts-oauth-resource"
-                      value={form.resource}
-                      disabled={!!locked}
-                      onChange={function (event) { change({ resource: event.target.value }); }}
-                      style={{ width: "100%" }}
-                    />
-                  </PK_Field>
+                  {resourceField}
                 </PK_Fold>
               )}
               <TS_KvEditor
@@ -246,6 +265,7 @@ window.TS_authModeOf = TS_authModeOf;
 window.TS_authFormOf = TS_authFormOf;
 window.TS_applyAuth = TS_applyAuth;
 window.TS_validateAuth = TS_validateAuth;
+window.TS_authErrorKeys = TS_authErrorKeys;
 window.TS_McpAuthSection = TS_McpAuthSection;
 
 const TS_OAUTH_RETURN_TEXT = {

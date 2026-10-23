@@ -1,4 +1,4 @@
-"""The console's toolset form against the real REST routes (audit G4: G4-03, G4-04).
+"""The console's toolset form against the real REST routes (audit G4: G4-03, G4-04, G4-05).
 
 The body is built by the REAL form: ``TS_NewToolsetModal`` (``ui/components/toolsets.jsx``) with the real auth section
 (``ui/components/toolsets/mcp-auth.jsx``), the real platform kit and the real ``FormField``, run in MiniRacer. Its PUT is
@@ -265,3 +265,58 @@ async def test_switching_with_the_masked_secret_kept_is_refused_with_its_reason(
     form.answer(r)
     shown = " ".join([form.banner_text() or "", json.dumps(form.js("TOASTS"))])
     assert "re-enter the secret" in shown
+
+
+# ---- G4-05: the server's 422 is drawn: under its field, or in the form's banner -------------------------------------------------------------------------------
+
+
+async def test_a_refused_token_endpoint_is_shown_under_its_field(forms, raw_client, app) -> None:
+    await _create(raw_client, app, CLIENT_CREDENTIALS, connect=False)
+    form = forms(await _served(raw_client))
+    form.type_into("ts-oauth-token-endpoint", "ftp://127.0.0.1:9/token")
+    form.type_into("ts-oauth-client-secret", "cc-secret")
+
+    r = await raw_client.put("/v1/toolsets/kb", json=form.save())
+    assert r.status_code == 422, r.text
+    locs = [e["loc"] for e in r.json()["extensions"]["errors"]]
+    assert any("function-after[_validate_config_matches_transport(), McpConfig]" in loc and "HttpConfig" in loc for loc in locs), locs
+    assert all(loc[0] != "body" for loc in locs), locs
+    form.answer(r)
+
+    assert "token_endpoint must be an http or https URL with a host" in (form.field_text("ts-oauth-token-endpoint") or "")
+    assert form.banner_text() is None, "the other union members' errors are not the form's"
+
+
+async def test_a_refused_url_is_shown_under_the_url_field(forms, raw_client, app) -> None:
+    await _create(raw_client, app, PUBLIC_STATIC, connect=False)
+    served = await _served(raw_client)
+    form = forms(served)
+    form.save()
+    # The form never sends an empty URL; the server's answer to one is the real error list for the URL field.
+    refused = json.loads(json.dumps(served))
+    refused["config"]["config"]["url"] = ""
+    r = await raw_client.put("/v1/toolsets/kb", json=refused)
+    assert r.status_code == 422, r.text
+    form.answer(r)
+
+    assert "String should have at least 1 character" in (form.field_text("toolset-url-input") or "")
+    assert form.banner_text() is None
+
+
+async def test_an_error_with_no_field_of_its_own_is_shown_in_the_form_banner(forms, raw_client, app) -> None:
+    await _create(raw_client, app, PUBLIC_STATIC, connect=False)
+    served = await _served(raw_client)
+    form = forms(served)
+    form.save()
+    # The body G4-04 used to send: the OAuth block's own check refuses it, at the `oauth` loc, which no single field owns.
+    refused = json.loads(json.dumps(served))
+    refused["config"]["config"]["oauth"]["token_endpoint"] = "http://127.0.0.1:9/token"
+    r = await raw_client.put("/v1/toolsets/kb", json=refused)
+    assert r.status_code == 422, r.text
+    form.answer(r)
+
+    banner = form.banner_text() or ""
+    assert "token_endpoint applies to client credentials only" in banner
+    assert "Value error," not in banner
+    assert "command" not in banner and "source" not in banner, banner
+    assert form.js("TOASTS") == []
