@@ -116,15 +116,16 @@ async def client_tool_descriptors() -> list[Tool]:
 
 
 def default_gate(toolset_id: str, tool_name: str) -> str | None:
-    """The approval gate that ships on a tool: ``"required"`` for the platform-construction (``crud``) tools, ``None`` for every other.
+    """The approval gate that ships on a tool: ``"required"`` for the platform-construction (``crud``) tools and their twins, ``None`` for every other.
 
-    ``ensure_crud_approval_policies`` (``primer/bootstrap/seed.py``) writes one unconditional policy per ``crud`` tool and nothing else is gated by default. An operator can
-    disable or retune any of them, add others, and gate any tool, so this is what a fresh install does and not what a running one does: the live answer is the
-    ``ApprovalResolver``'s (``system__describe_tool`` returns it).
+    ``ensure_crud_approval_policies`` (``primer/bootstrap/seed.py``) writes one unconditional policy per tool of ``DEFAULT_GATED_TOOLS``: the ``crud`` tools and the
+    other doors to the same writes (``CRUD_TWINS``: the system tools that create, update and delete agents and graphs, and the trigger toolset's create, update and
+    delete). Nothing else is gated by default. An operator can disable or retune any of them, add others, and gate any tool, so this is what a fresh install does
+    and not what a running one does: the live answer is the ``ApprovalResolver``'s (``system__describe_tool`` returns it).
     """
-    from primer.toolset.crud import CRUD_TOOL_NAMES, CRUD_TOOLSET_ID
+    from primer.toolset.crud import DEFAULT_GATED_TOOLS
 
-    return "required" if toolset_id == CRUD_TOOLSET_ID and tool_name in CRUD_TOOL_NAMES else None
+    return "required" if (toolset_id, tool_name) in DEFAULT_GATED_TOOLS else None
 
 
 def _entry(provider: ToolsetProvider, toolset_id: str, tool: Tool) -> ToolEntry:

@@ -125,8 +125,8 @@ without anyone asking, so it draws only what is declared safe to draw:
 
 - **The tool declares it.** `make_tool(preview_args=("path", "mode"))` (in memory only, never serialized) lists dotted paths into the arguments; a path allows
   its whole subtree and a list is transparent (`entity.nodes.agent_id` is the `agent_id` of every node). A path that names nothing is an error when the tool is
-  built. The nine tools the platform gates by default (the builder's `crud` toolset: create and update of agents, graphs and triggers, and the Python toolset
-  tools) declare the paths that say WHAT is created or changed and leave out the free text: an agent's system prompt, compaction prompt, description and response
+  built. The tools the platform gates by default (the builder's `crud` toolset: create and update of agents, graphs and triggers, and the Python toolset
+  tools, and the other doors to the same writes: the `system` and `trigger` tools that create, update and delete agents, graphs and triggers) declare the paths that say WHAT is created or changed and leave out the free text: an agent's system prompt, compaction prompt, description and response
   format, a graph's and a node's description and templates, a trigger's description, a webhook trigger's token and HMAC secret, a Python toolset's source. No
   description is ever listed: a person pastes a key into a description as easily as into a prompt.
 - **The operator can override it.** `ToolApprovalPolicy.preview_args` (a list of the same paths) wins over the tool's declaration, and `[]` shows no value. This is the

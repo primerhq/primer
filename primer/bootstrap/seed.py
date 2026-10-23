@@ -16,12 +16,15 @@ from typing import TYPE_CHECKING
 
 import logging
 
+from primer.common.toolset_ids import toolset_id_spellings
 from primer.model.except_ import ConflictError
+from primer.model.storage import OffsetPage
 from primer.model.tool_approval import (
     RequiredApprovalConfig,
     ToolApprovalPolicy,
 )
-from primer.toolset.crud import CRUD_TOOL_NAMES, CRUD_TOOLSET_ID
+from primer.storage.q import Q
+from primer.toolset.crud import CRUD_TOOLSET_ID, DEFAULT_GATED_TOOLS
 
 if TYPE_CHECKING:
     from primer.int.toolset import ToolsetProvider
@@ -30,30 +33,58 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def default_policy_id(toolset_id: str, tool_name: str) -> str:
+    """Deterministic id for the default approval policy of ``toolset_id``'s tool ``tool_name`` (``tool-approval-policy-<toolset>-<tool>``)."""
+    return f"tool-approval-policy-{toolset_id}-{tool_name.replace('_', '-')}"
+
+
 def crud_policy_id(tool_name: str) -> str:
     """Deterministic id for the default approval policy of a crud tool."""
-    return f"tool-approval-policy-crud-{tool_name.replace('_', '-')}"
+    return default_policy_id(CRUD_TOOLSET_ID, tool_name)
+
+
+async def policy_rows_for(store, toolset_id: str, tool_name: str, *, length: int = 50) -> list:
+    """Every stored approval policy of ``(toolset_id, tool_name)``, enabled or not, under every spelling of the toolset id (``_system`` is ``system``).
+
+    The key the gate reads (``ApprovalResolver.find``) and the one the uniqueness check refuses a second row for, so a row found here is the tool's
+    policy whatever its id: the ensure pass and migration 13 seed nothing beside it.
+    """
+    rows: dict[str, object] = {}
+    for spelling in toolset_id_spellings(toolset_id):
+        predicate = Q(ToolApprovalPolicy).where("toolset_id", spelling).where("tool_name", tool_name).build()
+        page = await store.find(predicate, OffsetPage(offset=0, length=length))
+        rows.update((row.id, row) for row in page.items)
+    return list(rows.values())
 
 
 async def ensure_crud_approval_policies(storage_provider) -> list[str]:
-    """Ensure one ``required`` approval policy per crud tool.
+    """Ensure one ``required`` approval policy per default-gated tool (``DEFAULT_GATED_TOOLS``).
 
     Platform mutations are approval-gated by default; the approval system
     is the safety net that makes a user-editable builder agent safe. The
-    rows are ordinary storage rows, so an operator can disable or retune
-    any of them and this pass will leave that choice alone.
+    gated tools are the crud tools AND their twins (``CRUD_TWINS``: the
+    system and trigger tools that make the same writes, and delete
+    agents, graphs and triggers), because ``system__call_tool`` reaches
+    every one of them (audit G6-1). The rows are ordinary storage rows, so
+    an operator can disable or retune any of them and this pass will
+    leave that choice alone; a tool that already has a policy under
+    another id (an operator's own) gets no second one.
     """
     store = storage_provider.get_storage(ToolApprovalPolicy)
     created: list[str] = []
-    for tool_name in CRUD_TOOL_NAMES:
-        policy_id = crud_policy_id(tool_name)
+    for toolset_id, tool_name in DEFAULT_GATED_TOOLS:
+        policy_id = default_policy_id(toolset_id, tool_name)
         if await store.get(policy_id) is not None:
+            continue
+        if await policy_rows_for(store, toolset_id, tool_name, length=1):
+            # The tool's gate is a row the operator wrote: a seeded twin of it would be a duplicate, which the gate reads as
+            # unconditional and decided by an admin only (``primer.agent.approval._choose_policy``).
             continue
         try:
             await store.create(
                 ToolApprovalPolicy(
                     id=policy_id,
-                    toolset_id=CRUD_TOOLSET_ID,
+                    toolset_id=toolset_id,
                     tool_name=tool_name,
                     enabled=True,
                     approval=RequiredApprovalConfig(),
@@ -65,7 +96,7 @@ async def ensure_crud_approval_policies(storage_provider) -> list[str]:
             continue
         created.append(policy_id)
     if created:
-        logger.info("seed: created %d default crud approval policies", len(created))
+        logger.info("seed: created %d default approval policies", len(created))
     return created
 
 
@@ -444,6 +475,8 @@ async def builtin_toolset_providers(provider_registry) -> dict[str, ToolsetProvi
 __all__ = [
     "builtin_toolset_providers",
     "crud_policy_id",
+    "default_policy_id",
+    "policy_rows_for",
     "ensure_crud_approval_policies",
     "ensure_default_workspace",
     "ensure_seeded_agents",

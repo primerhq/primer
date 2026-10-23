@@ -12,7 +12,7 @@ There are TWO independent seeding mechanisms and conflating them is the classic 
 
 `BootstrapRunner` (`primer/bootstrap/runner.py`) is MARKER-GOVERNED: it consults `bootstrap_completed_at` and, when unset, creates the five reserved provider rows (local workspace provider and template, the huggingface embedder and cross-encoder, the lance vector store). It runs once per install by design, because an operator who deletes a reserved provider meant to delete it.
 
-The ENSURE PASS (`primer/bootstrap/seed.py::run_ensure_pass`) is MARKER-INDEPENDENT: it runs at every startup and owns the crud approval policies, the default workspace, the `operator` and `builder` agents, `SystemState.default_agent_id`, and the system collection. Ensure means create-when-absent: it never overwrites a row a human has edited, so an operator who repoints an agent at a better model keeps that choice across restarts.
+The ENSURE PASS (`primer/bootstrap/seed.py::run_ensure_pass`) is MARKER-INDEPENDENT: it runs at every startup and owns the default approval policies, the default workspace, the `operator` and `builder` agents, `SystemState.default_agent_id`, and the system collection. Ensure means create-when-absent: it never overwrites a row a human has edited, so an operator who repoints an agent at a better model keeps that choice across restarts.
 
 The default workspace is `prime`, and the ensure pass decides its id in this order (`primer/bootstrap/seed.py::ensure_default_workspace`; every rule about it lives in `primer/bootstrap/prime.py`):
 
@@ -31,7 +31,7 @@ flowchart TD
     Boot[Process start] --> Runner[BootstrapRunner: marker-governed]
     Runner --> Toolsets[Build the reserved toolsets]
     Toolsets --> Ensure[run_ensure_pass: every startup]
-    Ensure --> Policies[crud approval policies]
+    Ensure --> Policies[default approval policies]
     Ensure --> Workspace[default workspace]
     Ensure --> Agents[five seeded agents]
     Ensure --> Collection[system collection]
@@ -44,7 +44,7 @@ flowchart TD
 - **Ensure seeding on a reserved id.** Every seeded object has a fixed id (`operator`, `builder`, `system`), so "does it exist" is a `get`, not a search, and re-running is free. The default workspace is the one exception: its id is recorded in system state (`prime` on a fresh install, the install's own id on an older one), so it is read with `resolve_default_workspace_id`, not compared with a constant.
 - **Derived state over stamped state.** The setup fact is computed from the rows it describes.
 - **Reserved internal toolset.** `crud` is resolved by the provider registry without a storage row, exactly like `system` and `workspace_ext`.
-- **Approval by policy row, not by gate code.** The per-tool gate already runs for every internal toolset; making the crud tools approval-gated is a matter of seeding `ToolApprovalPolicy` rows, which keeps the operator's ability to relax them.
+- **Approval by policy row, not by gate code.** The per-tool gate already runs for every internal toolset; making the crud tools, and every other door to the same writes, approval-gated is a matter of seeding `ToolApprovalPolicy` rows, which keeps the operator's ability to relax them.
 - **Embeddable UI gate.** The wizard's step sequence is props-only so a different shell can re-host it without inheriting the console's chrome.
 
 ## 4. Code layout
@@ -64,6 +64,7 @@ flowchart TD
 | `primer/api/routers/setup.py` | `POST /v1/setup/seed` and `POST /v1/setup/reset_agents`. |
 | `primer/storage/migrations/m010_default_workspace.py` | The versioned step that records and renames an upgraded install's default workspace. |
 | `primer/storage/migrations/m011_seeded_agents_core_kit.py` | The versioned step that moves an upgraded install's seeded agents to the core kit. |
+| `primer/storage/migrations/m013_approval_twin_policies.py` | The versioned step that gates an upgraded install's twins of the crud tools as their crud siblings are gated. |
 | `ui/components/setup-wizard.jsx` | The three wizard globals: steps, gate, waiting screen. |
 
 ## 5. Data model
@@ -74,7 +75,7 @@ The seeded-world reserved ids live in `primer/bootstrap/defaults.py` as `RESERVE
 
 `SystemState.default_workspace_id` is the second such column (same DDLs, same ALTER guard on sqlite and `ADD COLUMN IF NOT EXISTS` on postgres): it names the default workspace (prime), the one the console opens on first login and the one that cannot be deleted. It is `None` until the ensure pass (or migration 10) records it. Code never compares against a literal id: it calls `primer.bootstrap.prime.resolve_default_workspace_id`, which returns the recorded id, else the legacy `primer` id when that workspace row exists (every install created before the column kept its default workspace under that id), else `None`. The constants `LEGACY_DEFAULT_WORKSPACE_ID`, `PRIME_WORKSPACE_ID` and `PRIME_WORKSPACE_NAME` live in `primer/bootstrap/defaults.py`, and `tests/bootstrap/test_default_workspace_not_hardcoded.py` fails when any module other than `defaults.py`, `prime.py`, `seed.py` and migration 10 names them.
 
-The crud approval policies are ordinary `ToolApprovalPolicy` rows with the deterministic id `tool-approval-policy-crud-<tool_name>`, `enabled=True` and `approval={"type": "required"}`. One per crud tool.
+The default approval policies are ordinary `ToolApprovalPolicy` rows with the deterministic id `tool-approval-policy-<toolset_id>-<tool_name>` (underscores become hyphens: `tool-approval-policy-crud-create-agent`, `tool-approval-policy-system-update-agent`, `tool-approval-policy-trigger-delete`), `enabled=True` and `approval={"type": "required"}`. One per tool of `DEFAULT_GATED_TOOLS` (`primer/toolset/crud.py`): the nine crud tools and their twins, `CRUD_TWINS`, the other doors to the same writes (the system toolset's `create_`, `update_` and `delete_agent` and `_graph`, the trigger toolset's `create`, `update` and `delete`). The twins share the crud tools' factory, guards or handlers, are role user and are reached through `system__call_tool`, so a gate on the crud tools alone was one a model could walk around (audit G6-1); deletes have no crud tool and are gated in their own toolsets. A tool that already has a policy under another id or under a retired spelling of its toolset (an operator's own) gets no seeded row beside it (`policy_rows_for`), because two rows are a duplicate the gate settles as unconditional and decided by an admin only. Migration 13 (`m013_approval_twin_policies.py`) gives an install that predates the twins' gates a policy for each twin copied from its crud sibling's as it stands (`enabled`, `approval`, `timeout_seconds`, `approvers`, `preview_args`), so an operator who relaxed or retuned the gate on an operation keeps that choice on every door to it; a delete, or a twin whose sibling has no row, gets the shipped gate. The twins' tools declare the approval card their crud sibling declares (`apply_twin_previews`; a delete shows `id`).
 
 The five seeded agents are ordinary `Agent` rows. Their `model.profile_id` is resolved from the default model profile at creation and PRESERVED thereafter. Every one of them is granted the core kit (`primer/toolset/core_kit.py`: `system__call_tool`, `system__wiki_read`, `system__wiki_search`, `system__ask_user`, `misc__inform_user`); the operator alone adds the two workspaces messaging tools (`workspaces__list_my_sessions`, `workspaces__message_session`). Every other capability an agent needs is reached through `call_tool` and documented in the platform wiki. The grants as they shipped before the core kit are frozen in `primer/bootstrap/seeded_agents_v1.py` (one entry per agent, sha256-digested in `tests/bootstrap/test_seeded_agents_v1.py`): migration 11 rewrites a stored row only while it still equals a shipped definition, so an operator edit is never undone by an upgrade (`POST /v1/setup/reset_agents` restores the shipped definition on demand).
 
@@ -106,7 +107,7 @@ Nothing here writes a marker of its own. Re-running the pass is the repair mecha
 - `POST /v1/setup/seed` (admin) runs the ensure pass with the deployment's `default_workspace_template` and returns `{created, skipped, errors, setup_complete, setup_missing}`. On a fresh install `created` carries `prime`; on an install that predates the record it carries nothing for the workspace (the row is adopted, not created).
 - `POST /v1/workspaces/{id}/main_session` (user) ensures the caller's main operator session on the workspace: 201 with the row when this call created it, 200 with the caller's existing open operator session otherwise (section 2, "the main operator session").
 - `POST /v1/setup/reset_agents` (admin) restores the five seeded agents' shipped definitions and returns `{reset: [...]}`, the roster ids in order (`operator`, `builder`, `planner`, `explorer`, `tool-runner`).
-- The `crud` toolset exposes nine tools: create and update for agents, graphs and triggers, plus the python-toolset trio. Every one is approval-gated by a seeded policy.
+- The `crud` toolset exposes nine tools: create and update for agents, graphs and triggers, plus the python-toolset trio. Every one is approval-gated by a seeded policy, and so is every twin of them in the system and trigger toolsets (`CRUD_TWINS`).
 
 ## 9. Internal contracts
 

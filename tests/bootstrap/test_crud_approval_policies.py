@@ -1,15 +1,20 @@
-"""S5 P1: every crud tool is approval-gated by default, and stays operator-editable."""
+"""S5 P1: every crud tool, and every other door to the same writes (audit G6-1), is approval-gated by default, and stays operator-editable."""
 from __future__ import annotations
 
 from primer.agent.approval import ApprovalResolver
-from primer.bootstrap.seed import crud_policy_id, ensure_crud_approval_policies
-from primer.model.tool_approval import ToolApprovalPolicy
-from primer.toolset.crud import CRUD_TOOL_NAMES
+from primer.bootstrap.seed import crud_policy_id, default_policy_id, ensure_crud_approval_policies
+from primer.model.tool_approval import PolicyApprovalConfig, RequiredApprovalConfig, ToolApprovalPolicy
+from primer.toolset.crud import CRUD_TOOL_NAMES, CRUD_TWINS, DEFAULT_GATED_TOOLS
 
 
-async def test_seeds_one_required_policy_per_crud_tool(fake_storage_provider):
+async def test_seeds_one_required_policy_per_default_gated_tool(fake_storage_provider):
+    """The crud tools and their twins (the system and trigger tools that make the same writes, and the deletes): this pinned the crud nine only."""
     created = await ensure_crud_approval_policies(fake_storage_provider)
-    assert set(created) == {crud_policy_id(n) for n in CRUD_TOOL_NAMES}
+    assert set(created) == {default_policy_id(t, n) for t, n in DEFAULT_GATED_TOOLS}
+    assert {crud_policy_id(n) for n in CRUD_TOOL_NAMES} <= set(created), "the crud rows keep their ids"
+    twin = await fake_storage_provider.get_storage(ToolApprovalPolicy).get(default_policy_id("system", "update_agent"))
+    assert (twin.toolset_id, twin.tool_name, twin.enabled, twin.approval.type.value) == ("system", "update_agent", True, "required")
+    assert len(CRUD_TWINS) == 9 and len(set(created)) == 18
     store = fake_storage_provider.get_storage(ToolApprovalPolicy)
     row = await store.get(crud_policy_id("create_agent"))
     assert row.toolset_id == "crud"
@@ -40,3 +45,19 @@ async def test_the_resolver_finds_the_seeded_gate(fake_storage_provider):
     )
     found = await resolver.find(toolset_id="crud", tool_name="create_agent")
     assert found is not None and found.approval.type.value == "required"
+
+
+async def test_a_tool_that_already_has_a_policy_under_another_id_gets_no_second_one(fake_storage_provider):
+    """An operator's own policy for a default-gated tool, under any id and either spelling of the toolset, is that tool's gate: a seeded row beside it
+    would be a duplicate, which the gate settles as unconditional and decided by an admin only."""
+    store = fake_storage_provider.get_storage(ToolApprovalPolicy)
+    rego = PolicyApprovalConfig(policy="package primer.tool_approval\ndefault required := false\n")
+    await store.create(ToolApprovalPolicy(id="mine-1", toolset_id="_system", tool_name="update_agent", approval=rego))
+    await store.create(ToolApprovalPolicy(id="mine-2", toolset_id="crud", tool_name="create_agent", enabled=False, approval=RequiredApprovalConfig()))
+
+    created = await ensure_crud_approval_policies(fake_storage_provider)
+
+    assert default_policy_id("system", "update_agent") not in created and crud_policy_id("create_agent") not in created
+    assert await store.get(default_policy_id("system", "update_agent")) is None
+    assert await store.get(crud_policy_id("create_agent")) is None
+    assert default_policy_id("system", "create_agent") in created, "other tools are still seeded"
