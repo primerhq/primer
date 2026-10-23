@@ -23,6 +23,7 @@ from primer.api.registries import ProviderRegistry
 from primer.model.api_token import ApiToken
 from primer.model.chat import ToolCallPart
 from primer.model.principal import PrincipalRef
+from primer.model.storage import OffsetPage
 from primer.model.provider import Toolset
 from primer.model.trigger import ChannelTriggerConfig, Subscription, Trigger
 from primer.model.user import User
@@ -220,6 +221,18 @@ async def test_a_demoted_admin_is_ranked_by_the_role_they_hold_at_fire_time(
     assert _refused(result), result.output
 
 
+async def _refused_fire(sp, sub: Subscription, deps: DispatchDeps) -> None:
+    """The fire is refused before any session is made (``owner_unresolvable``, review of #853 B1): the run would be the subscription owner's, and a
+    run of a gone creator is refused at its first turn, so the failure belongs on the subscription. These tests used to pin a session made at
+    ``user`` rank whose admin tool call was then refused; no session is made now."""
+    res = await AgentFreshSessionDispatcher().dispatch(
+        sub, rendered_payload="go", fire_context={"trigger_id": sub.trigger_id}, fire_id="fire-own-1", deps=deps,
+    )
+    assert (res.ok, res.error_code) == (False, "owner_unresolvable"), res
+    page = await sp.get_storage(WorkspaceSession).find(None, OffsetPage(offset=0, length=10))
+    assert list(page.items) == []
+
+
 @pytest.mark.parametrize("disabled", [False, True], ids=["deleted", "disabled"])
 async def test_an_owner_that_cannot_be_resolved_fails_closed(
     fake_storage_provider, deps, seeded_workspace, seeded_agent, disabled,
@@ -229,10 +242,22 @@ async def test_an_owner_that_cannot_be_resolved_fails_closed(
     stale = _ref("u-gone", "admin")
     sub = await _seed(fake_storage_provider, kind="agent", target_id=seeded_agent.id, trigger_owner=stale, sub_owner=stale)
 
+    await _refused_fire(fake_storage_provider, sub, deps)
+
+
+async def test_a_trigger_owner_that_cannot_be_resolved_still_caps_the_run_at_user(
+    fake_storage_provider, deps, seeded_workspace, seeded_agent,
+):
+    """Only a gone SUBSCRIPTION owner refuses the fire (the run is theirs); a gone TRIGGER owner still caps it at ``user``, fail closed."""
+    admin = await _seed_user(fake_storage_provider, "u-admin", "admin")
+    sub = await _seed(
+        fake_storage_provider, kind="agent", target_id=seeded_agent.id, trigger_owner=_ref("u-gone", "admin"), sub_owner=admin,
+    )
+
     session = await _fire(fake_storage_provider, sub, deps, kind="agent")
     result = await _run_creates_stdio_toolset(fake_storage_provider, session)
 
-    assert session.initiated_by is not None and session.initiated_by.role == "user"
+    assert (session.initiated_by.id, session.initiated_by.role) == ("u-admin", "user")
     assert _refused(result), result.output
 
 
@@ -261,9 +286,7 @@ async def test_a_revoked_api_token_owner_fails_closed(fake_storage_provider, dep
     owner = PrincipalRef(type="api_token", id="tok-1", display="ci", role="admin", source="internal")
     sub = await _seed(fake_storage_provider, kind="agent", target_id=seeded_agent.id, trigger_owner=owner, sub_owner=owner)
 
-    result = await _run_creates_stdio_toolset(fake_storage_provider, await _fire(fake_storage_provider, sub, deps, kind="agent"))
-
-    assert _refused(result), result.output
+    await _refused_fire(fake_storage_provider, sub, deps)
 
 
 async def test_a_token_whose_user_is_disabled_fails_closed(fake_storage_provider, deps, seeded_workspace, seeded_agent):
@@ -275,11 +298,7 @@ async def test_a_token_whose_user_is_disabled_fails_closed(fake_storage_provider
     owner = PrincipalRef(type="api_token", id="tok-1", display="ci", role="admin", source="internal")
     sub = await _seed(fake_storage_provider, kind="agent", target_id=seeded_agent.id, trigger_owner=owner, sub_owner=owner)
 
-    session = await _fire(fake_storage_provider, sub, deps, kind="agent")
-    result = await _run_creates_stdio_toolset(fake_storage_provider, session)
-
-    assert session.initiated_by.role == "user"
-    assert _refused(result), result.output
+    await _refused_fire(fake_storage_provider, sub, deps)
 
 
 async def test_an_expired_api_token_owner_fails_closed(fake_storage_provider, deps, seeded_workspace, seeded_agent):
@@ -292,11 +311,7 @@ async def test_an_expired_api_token_owner_fails_closed(fake_storage_provider, de
     owner = PrincipalRef(type="api_token", id="tok-1", display="ci", role="admin", source="internal")
     sub = await _seed(fake_storage_provider, kind="agent", target_id=seeded_agent.id, trigger_owner=owner, sub_owner=owner)
 
-    session = await _fire(fake_storage_provider, sub, deps, kind="agent")
-    result = await _run_creates_stdio_toolset(fake_storage_provider, session)
-
-    assert session.initiated_by.role == "user"
-    assert _refused(result), result.output
+    await _refused_fire(fake_storage_provider, sub, deps)
 
 
 # ---------------------------------------------------------------------------

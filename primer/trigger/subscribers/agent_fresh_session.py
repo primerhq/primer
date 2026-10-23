@@ -31,7 +31,7 @@ from primer.trigger.subscribers import (
     check_subscription_busy,
     register,
 )
-from primer.trigger.owner import principal_for_fire
+from primer.trigger.owner import OWNER_UNRESOLVABLE, principal_for_fire, unresolvable_subscription_owner
 from primer.workspace.session_factory import (
     SessionFactoryDeps,
     start_workspace_session,
@@ -55,6 +55,12 @@ class AgentFreshSessionDispatcher:
         fire_id: str,
         deps: DispatchDeps,
     ) -> SubscriptionDispatchResult:
+        # A gone subscription owner (deleted, disabled, revoked or expired token) refuses the fire up front: the run would be
+        # theirs and could never run, so no session is made and the failure shows on the subscription (review of #853 B1).
+        gone = await unresolvable_subscription_owner(sub, deps.storage_provider)
+        if gone is not None:
+            return SubscriptionDispatchResult(ok=False, error_code=OWNER_UNRESOLVABLE, error_message=gone)
+
         if sub.parallelism == "skip":
             skip = await check_subscription_busy(
                 sub, deps, fire_context=fire_context,
