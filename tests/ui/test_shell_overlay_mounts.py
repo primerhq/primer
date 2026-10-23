@@ -80,6 +80,14 @@ def test_the_workers_overlay_is_gone() -> None:
     assert "window.WorkersPage" not in src and "window.HealthPage" not in src
 
 
+def test_the_unmounted_health_page_is_not_bundled() -> None:
+    """Audit G1-23: ``HealthPage`` lost its last mount with the workers overlay (Plan 10 Task 5), but ``health.jsx`` was still in the bundle; the
+    Dashboard's health cards (``NV_HealthCards``, ``nv-system.jsx``) are the health surface."""
+    index = (UI / "index.html").read_text(encoding="utf-8")
+    assert "components/health.jsx" not in index
+    assert not (UI / "components" / "health.jsx").exists()
+
+
 def test_switching_workspace_is_a_verb() -> None:
     """Spec section 3: switching is a palette verb and a rail affordance."""
     src = (UI / "components" / "console" / "nv-shell.jsx").read_text(

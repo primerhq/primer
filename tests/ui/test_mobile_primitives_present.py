@@ -25,7 +25,6 @@ MOBILE_AWARE_PAGES = [
     "harnesses.jsx",
     "harness_form.jsx",
     "workers.jsx",
-    "health.jsx",
 ]
 
 # uiv2 Wave 3 (a-14 fold): approvals.jsx dropped OUT of this sweep, not
