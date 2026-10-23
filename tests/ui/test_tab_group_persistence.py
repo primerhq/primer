@@ -241,70 +241,15 @@ def test_the_effects_skip_the_phone_and_never_write_under_another_key() -> None:
     assert "NV_tabsStoreKey(status.data)" in block
 
 
-# --- the C-023 persistence gate on a STALE first-render band (the race #818's re-route exposed) --------------------------------------------------------
-#
-# The first render's viewport band can be stale: window.innerWidth is read before the CDP viewport override applies, so a phone document briefly reports
-# isMobile: false. A persistence effect that ran in that stale window restored the desktop's stored tabs onto the phone (a later Back then jumps the active
-# tab into the restored set) and could write the phone's merged model over the desktop's stored set. Both effects are now also gated on widthSettled: the
-# pure settle decision (NV_widthSettled) below, pinned here, and the shell's wiring, pinned in the last test.
-
-
-def _settle_ms() -> int:
-    m = re.search(r"var NV_WIDTH_SETTLE_MS = (\d+);", SHELL)
-    assert m, "the settle window is a plain module-level literal"
-    ms = int(m.group(1))
-    assert 1000 <= ms <= 5000, "the settle window is short: a desktop document restores within the same boot, delay invisible"
-    return ms
-
-
-@pytest.fixture
-def settlectx():
-    from py_mini_racer import MiniRacer
-
-    c = MiniRacer()
-    c.eval("var window = globalThis;")
-    c.eval(re.search(r"var NV_WIDTH_SETTLE_MS = \d+;", SHELL).group(0))
-    c.eval(_shell_fn("NV_widthSettled"))
-    try:
-        yield c
-    finally:
-        c.close()
-
-
-def test_a_resize_settles_the_width_no_matter_what_the_timer_says(settlectx) -> None:
-    """The document's width has actually moved: the band recompute rides the same event, so the persistence gate may open the moment the flag flips."""
-    ms = _settle_ms()
-    for elapsed in (0, 1, ms // 2, ms - 1, ms + 5):
-        assert _js(settlectx, f"NV_widthSettled({elapsed}, true)") is True
-
-
-def test_without_a_resize_the_width_has_not_settled_before_the_timer(settlectx) -> None:
-    ms = _settle_ms()
-    for elapsed in (0, 1, ms // 2, ms - 1):
-        assert _js(settlectx, f"NV_widthSettled({elapsed}, false)") is False
-
-
-def test_without_a_resize_the_width_settles_exactly_at_the_timer(settlectx) -> None:
-    ms = _settle_ms()
-    assert _js(settlectx, f"NV_widthSettled({ms - 1}, false)") is False
-    assert _js(settlectx, f"NV_widthSettled({ms}, false)") is True
-    assert _js(settlectx, f"NV_widthSettled({ms + 10_000}, false)") is True
-
-
-def test_the_shell_flips_the_settle_flag_only_through_the_predicate_and_the_timer() -> None:
-    """Wiring pins: both flip paths go through the tested predicate (the resize path one frame after the event, in the band recompute's rAF chain, so the
-    flag never leads the band; the timer path is the documented window), and both C-023 effects are gated on the flag in their guard AND their deps - the
-    timer path has no other dep that would re-run them."""
-    settle = SHELL[SHELL.index("var widthSettledState = "):SHELL.index("var tabsStoreKey = ")]
-    assert settle.count("setWidthSettled(NV_widthSettled(") == 2, "both flip paths go through the tested predicate"
-    assert "requestAnimationFrame" in settle, "the resize path waits a frame"
-    assert "window.setTimeout" in settle and "NV_WIDTH_SETTLE_MS" in settle, "a document whose width never moves settles by the timer"
+def test_tab_restore_has_no_viewport_settle_timer() -> None:
+    """The viewport hook closes its render-to-effect race, so desktop restore no longer waits two seconds."""
+    assert "NV_WIDTH_SETTLE_MS" not in SHELL
+    assert "widthSettled" not in SHELL
     block = SHELL[SHELL.index("var tabsStoreKey = "):SHELL.index("// Menus close on any outside click.")]
     restore = block[block.index("React.useEffect"):block.index("React.useEffect", block.index("React.useEffect") + 10)]
     write = block[block.index("React.useEffect", block.index("React.useEffect") + 10):]
     for effect in (restore, write):
-        assert "!widthSettled" in effect, "the effect waits for the width to settle, not only for isMobile"
-        assert "widthSettled" in effect.split("}, [")[-1], "widthSettled is in the effect's deps"
+        assert "if (isMobile ||" in effect
 
 
 def test_ten_groups_of_one_tab_restore_as_exactly_six(ctx) -> None:

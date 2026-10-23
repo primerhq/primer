@@ -45,6 +45,9 @@
         });
       };
       window.addEventListener("resize", onResize);
+      // Close the render-to-effect gap: the viewport may have changed before
+      // the listener existed, so re-read it as soon as the listener attaches.
+      onResize();
       return () => {
         if (rafId != null) cancelAnimationFrame(rafId);
         window.removeEventListener("resize", onResize);

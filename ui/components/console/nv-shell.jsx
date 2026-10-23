@@ -163,16 +163,6 @@ function NV_saveTabs(key, saved) {
     // nothing to do: the working set is a convenience
   }
 }
-// The C-023 persistence gate's settle decision (pure; unit-tested in tests/ui/test_tab_group_persistence.py): a document's width is settled once its
-// viewport has actually moved (a resize event fired) or NV_WIDTH_SETTLE_MS has elapsed since the shell mounted (a document whose width never moves
-// settles only by the timer). The shell flips its flag one animation frame after the resize, in the rAF chain useViewport's band recompute rides, so
-// the flag never leads the band.
-var NV_WIDTH_SETTLE_MS = 2000;
-function NV_widthSettled(elapsedMs, resizeFired) {
-  if (resizeFired) return true;
-  return elapsedMs >= NV_WIDTH_SETTLE_MS;
-}
-
 function NV_Shell() {
   // US-014 M1: a distinct mobile UX (not squeezed desktop), same state
   // and resources - the swap below is purely which chrome renders.
@@ -387,59 +377,31 @@ function NV_Shell() {
     overlay && overlay.name, overlay && overlay.section,
     overlay && overlay.id, anchor]);
 
-  // The first render's viewport band can be STALE: window.innerWidth is read before the CDP viewport override applies (useViewport's first-render race), so a
-  // phone document briefly reports isMobile: false. A persistence effect that runs in that stale window would restore the desktop's stored tabs onto the phone
-  // (a later Back then jumps the active tab into the restored set) and write the phone's merged model over the desktop's stored set. widthSettled stays false
-  // until the document's width has actually settled (NV_widthSettled: a resize fired - the flag flips one frame after, in the band recompute's rAF chain, so it
-  // never leads the band - or the settle timer elapsed); the C-023 persistence effects below are gated on it, so a document that settles to mobile never
-  // restores nor writes the tab store, and a static desktop document still does, after the timer (C-023, delay invisible).
-  var widthSettledState = React.useState(false);
-  var widthSettled = widthSettledState[0];
-  var setWidthSettled = widthSettledState[1];
-  React.useEffect(function () {
-    var mountedAt = Date.now();
-    var rafId = null;
-    var timer = window.setTimeout(function () { setWidthSettled(NV_widthSettled(Date.now() - mountedAt, false)); }, NV_WIDTH_SETTLE_MS);
-    function onResize() {
-      if (rafId != null) return;
-      rafId = requestAnimationFrame(function () {
-        rafId = null;
-        setWidthSettled(NV_widthSettled(Date.now() - mountedAt, true));
-      });
-    }
-    window.addEventListener("resize", onResize);
-    return function () {
-      window.clearTimeout(timer);
-      if (rafId != null) cancelAnimationFrame(rafId);
-      window.removeEventListener("resize", onResize);
-    };
-  }, []);
-
   // The working set survives a reload (console review C-023). Desktop only: the phone's shell shows any open document full screen and its Back closes the tab, so a
   // restored desktop set would take the phone over and a phone's Back would delete what the desktop stored. The key names the signed-in user (NV_tabsStoreKey: none
   // until the auth status says who), and the restore runs ONCE, under the key it read; the write only ever uses that same key (tabsKeyRef), so a later refetch that
   // turns out to be another user (a window shown again after someone else signed in) can neither store the tabs on screen under that user nor read theirs. The
   // restore merges into whatever the load already holds (the URL's document, opened as a tab, stays the active one); the write effect waits for it (tabsRestored),
-  // or the first render's one-tab model would overwrite the stored working set before it was read. The isMobile gate alone is not enough: the band can be stale
-  // on the first render, so both effects are also gated on widthSettled (above).
+  // or the first render's one-tab model would overwrite the stored working set before it was read. useViewport re-reads the width when its listener attaches,
+  // before the auth-status resource can provide a persistence key, so the isMobile guard sees the settled band without delaying desktop restore.
   var tabsStoreKey = NV_tabsStoreKey(status.data);
   var tabsKeyRef = React.useRef(null);
   var tabsRestoredState = React.useState(false);
   var tabsRestored = tabsRestoredState[0];
   var setTabsRestored = tabsRestoredState[1];
   React.useEffect(function () {
-    if (isMobile || !widthSettled || !tabsStoreKey || tabsRestored) return;
+    if (isMobile || !tabsStoreKey || tabsRestored) return;
     tabsKeyRef.current = tabsStoreKey;
     var saved = NV_loadTabs(tabsStoreKey);
     if (saved) {
       setTgModel(function (live) { return window.TG_restoreInto(live, saved, window.SH_DOC_KINDS); });
     }
     setTabsRestored(true);
-  }, [isMobile, widthSettled, tabsStoreKey, tabsRestored]);
+  }, [isMobile, tabsStoreKey, tabsRestored]);
   React.useEffect(function () {
-    if (isMobile || !widthSettled || !tabsRestored || !tabsStoreKey || tabsStoreKey !== tabsKeyRef.current) return;
+    if (isMobile || !tabsRestored || !tabsStoreKey || tabsStoreKey !== tabsKeyRef.current) return;
     NV_saveTabs(tabsKeyRef.current, window.TG_serialize(tgModel));
-  }, [isMobile, widthSettled, tgModel, tabsStoreKey, tabsRestored]);
+  }, [isMobile, tgModel, tabsStoreKey, tabsRestored]);
 
   // Menus close on any outside click.
   React.useEffect(function () {
