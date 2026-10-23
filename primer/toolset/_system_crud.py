@@ -11,6 +11,7 @@ f-string-built) are unchanged by the move.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -30,7 +31,7 @@ from primer.agent.inner_dispatch import dispatch_inner_tool, inner_role_refusal
 from primer.authz import _role_allows
 from primer.common.entity_checks import EntityCheckError
 from primer.common.toolset_ids import canonical_toolset_id
-from primer.agent.tool_schemas import find_tool
+from primer.agent.tool_schemas import LIST_TIMEOUT_S
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.model.mcp_oauth import McpSignInRequiredError
 from primer.model.provider import Toolset
@@ -985,6 +986,49 @@ def _toolset_auth_status_tool(
     )
 
 
+# How long ``call_tool`` waits for the inner toolset's listing (the policy checks' and ``describe_tool``'s clock): a toolset backed by an MCP server that
+# does not answer must not hold the run longer than its call would.
+CALL_TOOL_LIST_TIMEOUT_S = LIST_TIMEOUT_S
+
+# How many of a toolset's tool names an unknown-tool answer lists (``describe_tool`` names the same number).
+_UNKNOWN_TOOL_NAMES_LISTED = 30
+
+
+async def _listed_tool(
+    provider: Any, *, toolset_id: str, tool_name: str, ctx: ToolContext | None,
+) -> Tool | ToolCallResult:
+    """The descriptor ``provider`` lists for ``tool_name``, or the refusal ``call_tool`` answers instead (audit G6-8).
+
+    The listing is made as the run's own principal string (``ctx.principal``, the one the call itself is made with) under
+    :data:`CALL_TOOL_LIST_TIMEOUT_S`. A name the toolset does not list is ``not-found``, naming the toolset's first tool ids; a toolset that needs a
+    sign-in is ``sign-in-required`` (as ``list_toolset_tools`` answers it); one that fails to list (with a primer error or a bare exception, as
+    ``list_toolset_entries`` reads them) or does not answer in time is ``provider-error``. :class:`AuthRequiredError` propagates: its consent URL is
+    for the person, as for ``describe_tool``.
+    """
+    listed: list[Tool] = []
+    try:
+        async with asyncio.timeout(CALL_TOOL_LIST_TIMEOUT_S):
+            async for tool in provider.list_tools(principal=ctx.principal if ctx is not None else None):
+                if tool.id == tool_name:
+                    return tool
+                listed.append(tool)
+    except AuthRequiredError:
+        raise
+    except McpSignInRequiredError as exc:
+        return _err(str(exc), error_type="sign-in-required")
+    except NotFoundError as exc:
+        # A "not found" from the listing is the toolset failing, not an unknown tool or toolset (``list_toolset_entries`` reads it the same way).
+        return _err(f"toolset {toolset_id!r} could not list its tools: {exc.message}", error_type="provider-error")
+    except PrimerError as exc:
+        return _err_from_primer(exc, error_type="provider-error")
+    except TimeoutError:
+        return _err(f"toolset {toolset_id!r} did not list its tools within {CALL_TOOL_LIST_TIMEOUT_S:g} seconds", error_type="provider-error")
+    except Exception as exc:  # noqa: BLE001 - an adapter that fails with a bare exception is a provider failure to the caller
+        return _err(f"toolset {toolset_id!r} could not list its tools: {type(exc).__name__}: {exc}", error_type="provider-error")
+    names = ", ".join(sorted(t.id for t in listed)[:_UNKNOWN_TOOL_NAMES_LISTED])
+    return _err(f"no tool {tool_name!r} in toolset {toolset_id!r}; its tools: {names}", error_type="not-found")
+
+
 def _call_tool_tool(
     registry: "ProviderRegistry",
     approval_resolver: "ApprovalResolver | None" = None,
@@ -1009,12 +1053,20 @@ def _call_tool_tool(
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="provider-error")
 
+        # The inner tool, as the toolset LISTS it, before anything is decided about it (audit G6-8). An unknown name used to reach the role
+        # check, where it fails closed to ``admin``: a user-role run that mistyped a tool was told it "requires the 'admin' role", and a policy
+        # was looked up on a name nothing runs. Everything below (the role, the gate, the park, the dispatch) uses the LISTED name.
+        listed = await _listed_tool(provider, toolset_id=toolset_id, tool_name=args.tool_name, ctx=ctx)
+        if isinstance(listed, ToolCallResult):
+            return listed
+        tool_name = listed.id
+
         # The INNER tool's role, against the run's principal (pivot P1). This tool is role user, and the tool manager's RBAC floor only
         # ever sees it, never the tool it runs: without this check a user-role run reaches every admin tool through it. It runs BEFORE
         # the approval gate, so a call the run may not make never draws an approval card an admin could approve on its behalf. A call
         # with no context (or a context that names no initiator) ranks as an ordinary user (``run_principal``).
         refusal = inner_role_refusal(
-            provider, toolset_id=toolset_id, tool_name=args.tool_name, ctx=ctx,
+            provider, toolset_id=toolset_id, tool_name=tool_name, ctx=ctx,
         )
         if refusal is not None:
             return refusal
@@ -1035,11 +1087,11 @@ def _call_tool_tool(
         # bypass the gate.
         if approval_resolver is not None and ctx is None:
             policy = await approval_resolver.find(
-                toolset_id=toolset_id, tool_name=args.tool_name,
+                toolset_id=toolset_id, tool_name=tool_name,
             )
             if policy is not None and policy.enabled:
                 return _err(
-                    f"tool {args.tool_name!r} in toolset "
+                    f"tool {tool_name!r} in toolset "
                     f"{toolset_id!r} requires approval but there is "
                     "no session or chat to park for it; invoke it through "
                     "an agent session or chat.",
@@ -1047,14 +1099,16 @@ def _call_tool_tool(
                 )
         if approval_resolver is not None and ctx is not None:
             policy = await approval_resolver.find(
-                toolset_id=toolset_id, tool_name=args.tool_name,
+                toolset_id=toolset_id, tool_name=tool_name,
             )
             if policy is not None and policy.enabled:
                 approval_ctx = ApprovalContext(
-                    tool_name=args.tool_name,
+                    tool_name=tool_name,
                     toolset_id=toolset_id,
                     arguments=args.arguments or {},
-                    agent_id=None,
+                    # The run's agent, as the direct gate reads it off the bound session (the manager put it on the context): a Rego or
+                    # LLM-judge policy keyed on ``input.agent_id`` decides the call through the door as it decides the direct one (G6-7).
+                    agent_id=ctx.agent_id,
                     session_id=ctx.session_id,
                     chat_id=ctx.chat_id,
                     requested_at=datetime.now(UTC),
@@ -1108,7 +1162,7 @@ def _call_tool_tool(
                                 verdict=verdict,
                                 original_call={
                                     "id": ctx.tool_call_id,
-                                    "name": args.tool_name,
+                                    "name": tool_name,
                                     "arguments": args.arguments or {},
                                 },
                                 # Inner call re-dispatched via the owning
@@ -1118,12 +1172,11 @@ def _call_tool_tool(
                                 # never one stored with the park.
                                 via_call_tool={
                                     "toolset_id": toolset_id,
-                                    "tool_name": args.tool_name,
+                                    "tool_name": tool_name,
                                 },
-                                # The card filters the INNER call's arguments by the INNER tool's allowlist (design 01a11cd3-66b0). The
-                                # descriptor is looked up through the registry (under a clock); an inner tool that cannot be found has no
-                                # schema to prove anything closed, so every argument is withheld.
-                                preview=resolve_preview(policy=policy, tool=await find_tool(registry, toolset_id, args.tool_name)),
+                                # The card filters the INNER call's arguments by the INNER tool's allowlist (design 01a11cd3-66b0), read off the
+                                # descriptor the lookup above listed.
+                                preview=resolve_preview(policy=policy, tool=listed),
                             ),
                         ),
                         tool_call_id=ctx.tool_call_id,
@@ -1135,7 +1188,7 @@ def _call_tool_tool(
             result = await dispatch_inner_tool(
                 provider=provider,
                 toolset_id=toolset_id,
-                tool_name=args.tool_name,
+                tool_name=tool_name,
                 arguments=args.arguments,
                 ctx=ctx,
             )

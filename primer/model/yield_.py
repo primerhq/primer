@@ -361,6 +361,15 @@ class ToolContext:
         (``system__call_tool``, through
         :func:`primer.agent.inner_dispatch.dispatch_inner_tool`) hands
         THIS value to the inner provider, never one a model chose.
+    agent_id
+        The id of the agent the enclosing workspace session runs (the
+        bound session's ``agent_id``), set by
+        :meth:`ToolExecutionManager.context_for`; ``None`` outside a
+        workspace session, as the direct approval gate has it. A tool that
+        gates another tool for this run (``system__call_tool``) hands it to
+        the gate's :class:`~primer.agent.approval.ApprovalContext`, so a
+        Rego or LLM-judge policy that reads ``input.agent_id`` decides the
+        call through the door as it decides the direct one (audit G6-7).
     """
 
     tool_call_id: str
@@ -373,6 +382,7 @@ class ToolContext:
     initiated_by: PrincipalRef | None = None
     turn_no: int | None = None
     principal: str | None = None
+    agent_id: str | None = None
 
 
 # ===========================================================================
