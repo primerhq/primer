@@ -36,7 +36,6 @@ function statusReads() { return CALLS.filter(function (c) { return c[0] === "GET
 function Host(p) { return p.show ? React.createElement(TS_McpAuthPanel, { toolsetId: "kb", pushToast: function (t) { TOASTS.push(t); } }) : null; }
 window.primerApi = {
   toastPush: function (t) { TOASTS.push(t); },
-  useViewport: function () { return { isMobile: !!window.__mobile }; },
   useResource: function (key) {
     if (key === "auth-status") return { data: { role: ROLE }, loading: false, error: null, refetch: function () {} };
     return { data: STATUS, loading: !!window.__loading, error: window.__statusError || null,
@@ -279,10 +278,16 @@ def test_the_tools_and_post_save_results_explain_a_sign_in() -> None:
     assert src.count("<TS_McpAuthPanel") >= 3
 
 
-def test_buttons_stack_on_a_phone(panel) -> None:
-    panel.eval("window.__mobile = true")
-    _mount(panel)
-    assert panel.eval("MR.find('ts-auth-actions').props['data-layout']") == "stacked"
+def test_the_phone_shows_a_toolset_as_a_fact_sheet_without_the_panel() -> None:
+    """G4-21, the lead's ruling: the phone keeps the read-only fact sheet ("Edit on desktop"), like the phone shell's other admin
+    surfaces, so the panel has no phone layout (its stacked-buttons branch was never rendered and is gone)."""
+    mobile = (ROOT / "ui" / "components" / "console" / "nv-mobile-shell.jsx").read_text(encoding="utf-8")
+    assert "TS_McpAuthPanel" not in mobile
+    assert "Edit on desktop" in mobile
+    panel_src = AUTH.read_text(encoding="utf-8")
+    start = panel_src.index("function TS_McpAuthPanel(")
+    body = panel_src[start:panel_src.index("\n}\n", start)]
+    assert "isMobile" not in body and "data-layout" not in body
 
 
 def test_a_saved_edit_invalidates_the_auth_status_resource() -> None:

@@ -363,7 +363,6 @@ function TS_McpAuthPanel({ toolsetId, pushToast, compact }) {
     function (signal) { return api.apiFetch("GET", "/auth/status", null, { signal: signal }); },
     { pollMs: 0 },
   );
-  const viewport = typeof api.useViewport === "function" ? api.useViewport() : { isMobile: false };
   const [actionError, setActionError] = React.useState(null);
   // The Connect poll (G4-20): one chain at a time, its timer kept here so a new Connect, a result or closing the panel stops it. A chain
   // carries its number; a read that answers after its chain was stopped does nothing.
@@ -522,11 +521,8 @@ function TS_McpAuthPanel({ toolsetId, pushToast, compact }) {
     <div data-testid="ts-auth-panel" style={compact ? { marginTop: 8 } : { marginBottom: 12 }}>
       <div className="text-sm" data-testid="ts-auth-status">{stateText}</div>
       {actionError ? <div className="field-help warn" data-testid="ts-auth-action-error">{actionError}</div> : null}
-      <div
-        data-testid="ts-auth-actions"
-        data-layout={viewport.isMobile ? "stacked" : "inline"}
-        style={{ display: "flex", flexDirection: viewport.isMobile ? "column" : "row", gap: 8, marginTop: 8 }}
-      >
+      {/* Desktop only: the phone shell shows a toolset as a read-only fact sheet and never mounts this panel (lead ruling, G4-21). */}
+      <div data-testid="ts-auth-actions" style={{ display: "flex", gap: 8, marginTop: 8 }}>
         <Btn
           size="sm"
           kind="secondary"
