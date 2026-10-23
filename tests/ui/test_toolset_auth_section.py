@@ -73,6 +73,7 @@ def test_apply_keeps_every_field_the_section_does_not_show(auth) -> None:
     )
     expected = json.loads(json.dumps(stored))
     expected["oauth"]["scopes"] = ["a", "b"]
+    expected["oauth"]["token_endpoint"] = None
     assert got == expected
 
 
@@ -92,7 +93,36 @@ def test_empty_optional_fields_are_null_not_empty_strings(auth) -> None:
         "scopes": [],
         "static_client": None,
         "resource_uri": None,
+        "token_endpoint": None,
     }
+
+
+def test_an_empty_client_secret_is_null_not_an_empty_string(auth) -> None:
+    """G4-03: a public static client is stored with a null secret; the form shows it as an empty field and must send it back as null.
+    An empty string is a secret that differs from null, so an unchanged admin save signed the toolset out and a user's save was refused."""
+    stored = {"url": "https://m.example/mcp", "headers": {},
+              "oauth": {"grant": "authorization_code", "scopes": ["read"], "static_client": {"client_id": "pub", "client_secret": None}}}
+    form = js(auth, f"TS_authFormOf({json.dumps(stored)})")
+    assert form["clientSecret"] == ""
+    got = js(auth, f"TS_applyAuth({json.dumps(stored)}, TS_authFormOf({json.dumps(stored)}))")
+    assert got["oauth"]["static_client"] == {"client_id": "pub", "client_secret": None}
+    cleared = js(auth, "TS_applyAuth({}, {mode:'oauth_browser',headers:[],clientId:'c',clientSecret:''})")
+    assert cleared["oauth"]["static_client"] == {"client_id": "c", "client_secret": None}
+    kept = js(auth, "TS_applyAuth({}, {mode:'oauth_client_credentials',headers:[],clientId:'c',clientSecret:'s'})")
+    assert kept["oauth"]["static_client"] == {"client_id": "c", "client_secret": "s"}
+
+
+def test_a_browser_sign_in_sends_no_token_endpoint(auth) -> None:
+    """G4-04: the token endpoint applies to client credentials only and its field is hidden in browser mode, so a switch from client
+    credentials must drop it or the server refuses the save."""
+    stored = {"url": "https://m.example/mcp", "headers": {},
+              "oauth": {"grant": "client_credentials", "scopes": [], "token_endpoint": "https://as.example/token",
+                        "static_client": {"client_id": "cc", "client_secret": "**********"}}}
+    switched = js(auth, f"TS_applyAuth({json.dumps(stored)}, Object.assign(TS_authFormOf({json.dumps(stored)}), {{mode:'oauth_browser'}}))")
+    assert switched["oauth"]["grant"] == "authorization_code"
+    assert switched["oauth"]["token_endpoint"] is None
+    unchanged = js(auth, f"TS_applyAuth({json.dumps(stored)}, TS_authFormOf({json.dumps(stored)}))")
+    assert unchanged["oauth"]["token_endpoint"] == "https://as.example/token"
 
 
 def test_switching_to_none_clears_oauth_and_headers(auth) -> None:
@@ -224,6 +254,7 @@ def test_an_edit_saves_the_whole_auth_block() -> None:
             "static_client": {"client_id": "c", "client_secret": "**********"},
             "client_name": "primer-x",
             "future_key": 1,
+            "token_endpoint": None,
         }
     finally:
         ctx.close()
