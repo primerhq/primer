@@ -21,7 +21,7 @@ def _read(rel: str) -> str:
 
 
 def test_only_the_llm_class_is_marked_as_carrying_profiles() -> None:
-    src = _read("components/provider-catalog.jsx")
+    src = _read("components/providers/register-common.jsx")
     marked = re.findall(r'key:\s*"(\w+)"[^}]*profiles:\s*true', src)
     assert marked == ["llm"], f"profiles wired to non-LLM classes: {marked}"
 
@@ -43,7 +43,7 @@ def test_model_profile_is_not_a_provider_type() -> None:
 
 
 def test_no_speech_class_offers_a_profile_affordance() -> None:
-    src = _read("components/provider-catalog.jsx")
+    src = _read("components/providers/register-common.jsx")
     for key in ('key: "stt"', 'key: "tts"', 'key: "embedding"', 'key: "cross_encoder"'):
         entry = src[src.index(key): src.index(key) + 200]
         assert "profiles" not in entry, f"{key} must not carry a profiles flag"

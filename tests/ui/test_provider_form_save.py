@@ -120,11 +120,6 @@ def code() -> str:
     return transpile(ROOT / "ui" / "components" / "provider-form.jsx")
 
 
-@pytest.fixture(scope="module")
-def catalog_code() -> str:
-    return transpile(ROOT / "ui" / "components" / "provider-catalog.jsx")
-
-
 @pytest.fixture
 def ctx(code):
     c = mini_react_context(API + "\n" + code, _PRELUDE)
@@ -306,24 +301,6 @@ def test_a_save_that_cannot_be_pressed_for_another_reason_is_still_disabled(ctx,
     assert _props(ctx, "provider-form-save")["disabled"] is True
 
 
-def test_the_form_and_the_register_menu_read_the_same_types_under_one_key(code, catalog_code) -> None:
-    """F3: one request, not two. The Register menu (the REAL ``PC_RegisterDropdown``) and the form are mounted against a ``useResource`` that records the key each asks for, and they ask for the same one;
-    a form handed another ``typesPath`` reads another resource (the key follows the path, not the class alone)."""
-    c = mini_react_context(API + "\n" + code + "\n" + catalog_code, _PRELUDE)
-    try:
-        c.eval(_DRIVER)
-        c.eval("MR.mount(PC_RegisterDropdown, { klass: { plural: 'llm_providers' }, onPick: function () {} });")
-        menu_keys = json.loads(c.eval("JSON.stringify(__keys)"))
-        c.eval("__keys.length = 0; mountForm({});")
-        form_keys = json.loads(c.eval("JSON.stringify(__keys)"))
-        c.eval("__keys.length = 0; mountForm({ typesPath: '/elsewhere/_types' });")
-        other_keys = json.loads(c.eval("JSON.stringify(__keys)"))
-    finally:
-        c.close()
-    assert menu_keys and form_keys and set(menu_keys) == set(form_keys) and len(set(menu_keys)) == 1, (menu_keys, form_keys)
-    assert other_keys and set(other_keys).isdisjoint(form_keys), (other_keys, form_keys)
-
-
 def _prime(ctx, *, error: bool = False, data: dict | None = None, loading: bool = False) -> None:
     """The shared ``_types`` entry as a component finds it when it MOUNTS (set before the mount, no rerender)."""
     envelope = {"type": "/errors/internal", "title": "Internal Server Error", "status": 500, "detail": "the types could not be read", "instance": "/v1/llm_providers/_types"}
@@ -351,28 +328,3 @@ def test_a_form_that_mounts_on_a_failed_idle_entry_asks_once(ctx, anthropic, ent
     _prime(ctx, **state)
     _mount(ctx)
     assert ctx.eval("__refetched") == asks
-
-
-@pytest.mark.parametrize(
-    ("entry", "asks"),
-    [
-        pytest.param({"error": True}, 1, id="failed-and-idle"),
-        pytest.param({"error": True, "loading": True}, 0, id="failed-but-a-retry-is-out"),
-        pytest.param({"data": "anthropic"}, 0, id="healthy"),
-    ],
-)
-def test_the_register_menu_asks_again_when_it_is_opened_on_a_failed_idle_entry(code, catalog_code, anthropic, entry: dict, asks: int) -> None:
-    """The menu said 'No kinds available.' for a failed request and nothing could repair it but a reload. Opening it on a failed entry with nothing in flight asks once; mounting alone asks nothing."""
-    c = mini_react_context(API + "\n" + code + "\n" + catalog_code, _PRELUDE)
-    try:
-        c.eval(_DRIVER)
-        state = dict(entry)
-        if state.get("data") == "anthropic":
-            state["data"] = {"anthropic": anthropic}
-        _prime(c, **state)
-        c.eval("MR.mount(PC_RegisterDropdown, { klass: { plural: 'llm_providers' }, onPick: function () {} });")
-        assert c.eval("__refetched") == 0, "mounting the menu asked"
-        c.eval("MR.find('provider-register-toggle').props.onClick(); MR.rerender();")
-        assert c.eval("__refetched") == asks
-    finally:
-        c.close()

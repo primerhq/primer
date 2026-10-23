@@ -26,9 +26,9 @@ def test_the_pills_style_went_with_it() -> None:
 
 
 def test_the_modal_title_is_the_plain_title() -> None:
-    start = CATALOG.index("`New ${formKlass.key} provider")
-    window = CATALOG[start - 400:start + 400]
-    assert "React.Fragment" not in window, "the title is a string again, which also lets the dialog be named by it"
+    src = (UI / "components" / "providers" / "register-overlay.jsx").read_text(encoding="utf-8")
+    assert "React.Fragment" not in src[src.index("const title ="):src.index("const title =") + 100]
+    assert "title = editing ?" in src
 
 
 def test_no_comment_still_describes_a_verb_chip() -> None:

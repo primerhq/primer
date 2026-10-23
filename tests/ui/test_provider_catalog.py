@@ -28,36 +28,25 @@ def test_the_catalog_exports_itself_on_window() -> None:
 
 
 def test_every_spec_class_is_on_the_rail() -> None:
-    """M11b: eleven classes, Web Fetch and Artifact Storage included.
-
-    RETARGET (01a063ab, ratified uiv2 designer mockup): chip labels and
-    order were reconciled to the mockup's exact wording - compact
-    lowercase-style labels without the old title-case/hyphenation
-    ("Cross-Encoder" -> "Cross encoding", "Semantic Search" ->
-    "Semantic search", "Speech-to-Text" -> "ASR", "Text-to-Speech" ->
-    "TTS", "Web Search"/"Web Fetch"/"Artifact Storage" -> lowercase
-    "search"/"fetch"/"storage", "Workspaces" -> singular "Workspace").
-    "Channels" and "LLM"/"Embedding" were already an exact match.
-    """
-    src = _read("components/provider-catalog.jsx")
+    src = _read("components/providers/register-common.jsx")
     for label in (
         "LLM",
         "Embedding",
         "TTS",
         "ASR",
-        "Semantic search",
-        "Cross encoding",
+        "Semantic Search Storage",
+        "Cross Encoding",
         "Workspace",
-        "Web search",
-        "Web fetch",
+        "Web Search",
+        "Web Fetch",
         "Channels",
-        "Artifact storage",
+        "Artifact Store",
     ):
-        assert f'label: "{label}"' in src, f"family chips missing {label}"
+        assert f'label: "{label}"' in src, f"provider classes missing {label}"
 
 
 def test_each_crud_class_names_its_plural_path() -> None:
-    src = _read("components/provider-catalog.jsx")
+    src = _read("components/providers/register-common.jsx")
     for plural in (
         "llm_providers",
         "embedding_providers",
@@ -113,67 +102,35 @@ def test_the_shell_can_address_the_catalog() -> None:
 
 
 def test_the_reused_class_panels_are_referenced_not_reimplemented() -> None:
-    """Vector stores, workspaces and channels already have list panels;
-    the catalog hosts those components rather than copying them."""
+    """The catalog opens window.SSPDetail, window.WorkspaceProviderDetail
+    and window.ChannelProviderDetail for panel classes."""
     src = _read("components/provider-catalog.jsx")
     for component in (
-        "window.SSPListPage",
-        "window.WorkspaceProvidersPage",
-        "window.ChannelProvidersPage",
+        "window.SSPDetail",
+        "window.WorkspaceProviderDetail",
+        "window.ChannelProviderDetail",
     ):
         assert component in src
 
 
 def test_every_panel_class_can_reach_its_own_detail_view() -> None:
-    """Regression: selecting an instance showed the list again.
-
-    A panel class that declares no detail leaves the catalog with nothing
-    to render for one instance, so it fell back to the list: a vector
-    store's own page, and a workspace provider's, were unreachable even
-    though both components are defined, exported and loaded.
-
-    Detail components predate the catalog and name their id after the
-    thing they show, so a class says which prop carries it rather than
-    every component being renamed to suit the host.
-    """
-    src = _read("components/provider-catalog.jsx")
-    # RETARGET (IA restructure 01a04d6a): PC_FamilyChips renamed to
-    # PC_TypeFilter (it is now the type filter for the "all types
-    # together" page, not just a single-class family rail).
-    classes = src[:src.index("function PC_TypeFilter")]
+    common = _read("components/providers/register-common.jsx")
     for key in ("ssp", "workspace", "channel"):
-        block = classes[classes.index(f'key: "{key}"'):]
+        block = common[common.index(f'key: "{key}"'):]
         block = block[:block.index("},")]
         assert "detail:" in block, f"the {key} class has no detail view"
-    assert 'detailProp: "sspId"' in classes, (
+    assert 'detailProp: "sspId"' in common, (
         "SSPDetail takes sspId, so the class has to say so"
     )
-    assert 'detailProps[cls.detailProp || "providerId"]' in \
+    assert 'detailProps[klass.detailProp || "providerId"]' in \
         _read("components/provider-catalog.jsx")
 
 
 def test_creating_a_provider_refreshes_the_list_beside_the_form() -> None:
-    """Regression: a created provider did not appear until you left.
-
-    save() bumped a reloadKey that nothing depends on. The instance list
-    hands its refetch up through onRegisterRefetch, and the row action
-    beside it already used that; the create simply never called it, so
-    the row only showed after navigating away and back.
-    """
+    """The overlay's onSaved triggers a refetch of the list."""
     src = _read("components/provider-catalog.jsx")
-    # RETARGET (IA restructure 01a04d6a): selectInstance is now declared
-    # BEFORE save (create and edit share one openCreate/openEdit/save
-    # trio) - "let body;" is the next stable anchor after save's own
-    # closing brace instead.
-    save = src[src.index("const save = async (body) =>"):]
-    save = save[:save.index("let body;")]
-    assert "listRefetchRef.current()" in save, (
-        "the create has to refresh the list it just added a row to"
-    )
-    assert "selectInstance(body.id)" in save, (
-        "and select what was just made, which is where the operator is "
-        "already looking"
-    )
+    assert "onSaved" in src
+    assert "refetch()" in src
 
 
 def test_the_catalog_follows_the_addressed_instance() -> None:

@@ -120,7 +120,7 @@ def test_providers_ride_the_real_plurals():
     # (NV_PROV_CLASSES, deleted) - it mounts window.ProviderCatalog
     # inline instead, which owns the one real PROVIDER_CLASSES registry.
     # The check moves with the data.
-    catalog = (UI / "components" / "provider-catalog.jsx").read_text(encoding="utf-8")
+    catalog = (UI / "components" / "providers" / "register-common.jsx").read_text(encoding="utf-8")
     for plural in ("llm_providers", "embedding_providers", "tts_providers",
                    "web_search_providers", "workspace_providers",
                    "channel_providers", "ssp"):

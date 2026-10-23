@@ -62,7 +62,7 @@ def test_the_form_offers_the_test_round_trip() -> None:
 
 
 def test_the_catalog_renders_the_shared_form_for_every_crud_class() -> None:
-    src = _read("components/provider-catalog.jsx")
+    src = _read("components/providers/register-overlay.jsx")
     assert "PC_ProviderForm" in src
 
 

@@ -195,8 +195,8 @@ def test_a_served_web_row_seeds_the_form_kind() -> None:
 
 
 def test_the_catalog_saves_through_the_wire_body() -> None:
-    """The two catalog call sites: save() routes the body through
+    """The two call sites: save() routes the body through
     PC_wireBody, openEdit() seeds the draft through PC_draftFromRow."""
-    src = _read("components/provider-catalog.jsx")
-    assert "window.PC_wireBody(targetKlass.plural, body)" in src
-    assert "window.PC_draftFromRow(k.plural, row)" in src
+    src = _read("components/providers/register-overlay.jsx")
+    assert "window.PC_wireBody(klass.plural, body)" in src
+    assert "window.PC_draftFromRow(klass.plural, editRow)" in src

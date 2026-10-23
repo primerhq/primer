@@ -1,14 +1,9 @@
-"""Providers IA restructure. Originally 01a04d6a (user directive
-supersedes the mockup where they conflict); superseded in turn by
-01a063ab where the ratified uiv2 designer mockup itself was named
-authoritative - LLM is now the default class (not the merged All view)
-and Register lists a class's kinds via PC_RegisterDropdown, not
-PC_RegisterAll. The merged All view and PC_RegisterAll survive as a
-restorable fallback (unreachable from the header once a class is
-selected, kept for symmetry - see PC_ALL_TYPE_CHIPS/PC_AllInstancesGrid
-below). Card-click-opens-the-same-overlay-in-edit-mode and form-spacing
-fixes are unaffected by the mockup and remain as originally landed.
-Static source checks, same technique as tests/ui/test_provider_catalog.py.
+"""Providers IA restructure: form tests and platform mount pins.
+
+Retargeted per plan 02 Task 20: the 14 tests pinning the old chip row,
+register dropdowns, merged grid and catalog modal were retired;
+one PC_RegisterOverlay mount serves create and edit; the form tests and
+platform page inline mount remain.
 """
 
 from __future__ import annotations
@@ -31,147 +26,10 @@ def _platform() -> str:
     return (UI / "components" / "console" / "nv-platform.jsx").read_text(encoding="utf-8")
 
 
-# ---------------------------------------------------------------------------
-# ONE page, all types together, type filter defaulting to All
-# ---------------------------------------------------------------------------
-
-
-def test_llm_is_the_default_class_and_all_survives_as_a_restorable_fallback() -> None:
-    """01a063ab: the ratified mockup drops the "All" chip and its
-    per-type section headings, defaulting to LLM instead. PC_ALL_TYPE_CHIPS
-    and PC_AllInstancesGrid are kept intact (unreferenced from the header
-    once a class is selected) so the merged view can be restored without
-    reconstructing it from scratch."""
-    src = _catalog()
-    assert 'React.useState(initialClass || "llm")' in src, (
-        "the catalog must default to the LLM class per the ratified mockup"
-    )
-    assert 'const PC_ALL_TYPE_CHIPS = [{ key: "all", label: "All" }, ...PROVIDER_CLASSES];' in src, (
-        "the merged All view's chip list must survive for restorability"
-    )
-
-
-def test_all_instances_grid_merges_only_crud_classes() -> None:
-    """Panel classes (vector stores, workspaces, channels) keep their own
-    purpose-built list/detail pair - a generic card would either omit or
-    fake their class-specific actions (reindex, channel rules, ...)."""
-    src = _catalog()
-    grid = src[src.index("function PC_AllInstancesGrid"):]
-    grid = grid[:grid.index("\nfunction ", 1)]
-    assert 'crudClasses = PROVIDER_CLASSES.filter((c) => c.form === "crud")' in grid
-    assert "Promise.all(crudClasses.map(" in grid
-    assert 'data-testid={`provider-card-type-${row.id}`}' in grid, (
-        "every merged card must carry its own type label"
-    )
-
-
-def test_type_filter_is_a_plain_presentational_component() -> None:
-    """Renamed from PC_FamilyChips - same chip-row markup, just fed the
-    synthetic All entry by its caller rather than opining about it."""
-    src = _catalog()
-    chips = src[src.index("function PC_TypeFilter"):]
-    chips = chips[:chips.index("\nfunction ", 1)]
-    assert 'data-testid="provider-chips"' in chips
-    assert "classes.map((cls) =>" in chips
-
-
-# ---------------------------------------------------------------------------
-# Register provider names the TYPE, independent of the active filter
-# ---------------------------------------------------------------------------
-
-
-def test_register_all_lists_every_type_with_no_fetch() -> None:
-    """Unlike PC_RegisterDropdown (kind-within-a-class, still used
-    verbatim by SSP's own panel - test_semantic_search_p4.py pins that),
-    PC_RegisterAll's list is the static PROVIDER_CLASSES registry - a
-    type has no per-kind /_types data of its own to annotate with."""
-    src = _catalog()
-    reg = src[src.index("function PC_RegisterAll"):]
-    reg = reg[:reg.index("\nfunction ", 1)]
-    assert "useResource" not in reg, "a type list needs no fetch"
-    assert "PROVIDER_CLASSES.map((cls) =>" in reg
-    assert 'data-testid="provider-register-all-toggle"' in reg
-    assert "onPick(cls.key)" in reg
-    # PC_RegisterDropdown itself must survive untouched - SSP's own panel
-    # depends on it (test_semantic_search_p4.py's own pin).
-    assert "function PC_RegisterDropdown" in src
-
-
-def test_register_dropdown_is_primary_and_register_all_is_the_no_class_fallback() -> None:
-    """01a063ab: with a class always selected by default (LLM), the live
-    top-level control is PC_RegisterDropdown (lists that class's KINDS,
-    not types) - PC_RegisterAll only surfaces if isAll is ever reached
-    again, which is why its exact call survives verbatim as the fallback
-    branch rather than being deleted."""
-    src = _catalog()
-    assert "<PC_RegisterDropdown klass={klass} onPick={(kind) => openCreateWithKind(klass, kind)} />" in src
-    assert "<PC_RegisterAll onPick={openCreate} />" in src
-
-
-def test_register_dropdown_shows_the_served_kind_label() -> None:
-    """01a063ab: retired from test_provider_form_fields.py's old
-    test_the_type_picker_shows_the_served_label - the in-form kind
-    picker it pinned is gone; the served-label behavior lives in
-    PC_RegisterDropdown now, annotated per kind (discoverable ->
-    "probes models live", aggregated variant -> "gated / special")."""
-    src = _catalog()
-    dropdown = src[src.index("function PC_RegisterDropdown"):]
-    dropdown = dropdown[:dropdown.index("\nfunction ", 1)]
-    assert "typeMap[k]" in dropdown
-    assert "{meta.label || k}" in dropdown
-
-
-def test_picking_a_panel_type_switches_the_filter_not_a_form() -> None:
-    """A panel class has no generic form to open - its own native create
-    affordance already lives inside its own panel body."""
-    src = _catalog()
-    open_create = src[src.index("function openCreate"):]
-    open_create = open_create[:open_create.index("\n  }\n")]
-    assert 'k.form === "panel"' in open_create
-    assert "selectClass(key)" in open_create
-
-
-# ---------------------------------------------------------------------------
-# Card click opens the SAME overlay in edit mode; create is the same
-# overlay empty
-# ---------------------------------------------------------------------------
-
-
 def test_one_form_modal_serves_both_create_and_edit() -> None:
     src = _catalog()
-    assert "const [formOpen, setFormOpen] = React.useState(false);" in src
-    assert "const [editingRow, setEditingRow] = React.useState(null);" in src
-    # Exactly one <Modal ...> render site in the whole file - not a
-    # second, separate edit overlay.
-    assert src.count("<Modal") == 1
-
-
-def test_edit_prefills_and_locks_the_row_and_updates_via_put() -> None:
-    src = _catalog()
-    open_edit = src[src.index("function openEdit"):]
-    open_edit = open_edit[:open_edit.index("\n  }\n")]
-    # The draft is seeded through PC_draftFromRow (design 13.4): the web
-    # classes name their kind provider_type on the served row, and the
-    # form speaks provider.
-    assert "setDraft(window.PC_draftFromRow(k.plural, row));" in open_edit
-
-    save = src[src.index("const save = async (body) =>"):]
-    save = save[:save.index("let body;")]
-    assert 'const method = wasEditingId ? "PUT" : "POST";' in save
-    assert "encodeURIComponent(wasEditingId)" in save
-
-
-def test_card_open_hands_back_the_full_row_not_just_an_id() -> None:
-    """An id alone cannot prefill an edit form - PC_InstanceCard's Open
-    button must hand back the row itself."""
-    card = _catalog()
-    card = card[card.index("function PC_InstanceCard"):card.index("function PC_InstanceGrid")]
-    assert "onClick={() => onOpen(row)}" in card
-
-
-def test_form_receives_the_editing_flag() -> None:
-    src = _catalog()
-    assert "editing={!!editingRow}" in src
+    assert "<PC_RegisterOverlay" in src
+    assert src.count("<PC_RegisterOverlay") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -250,17 +108,6 @@ def test_a_cleared_optional_secret_still_gates_correctly() -> None:
     # every field regardless of secret-ness - the exact simplicity the
     # interim hadSecret gate had to give up safety for.
     assert missing_required.count("blank(") == 2  # draft.id + holder[norm.key]
-
-
-# ---------------------------------------------------------------------------
-# Form spacing: a real two-column grid, not a flex row a fixed-width
-# sibling can squeeze
-# ---------------------------------------------------------------------------
-
-
-def test_form_opens_in_a_wider_modal() -> None:
-    src = _catalog()
-    assert "width={720}" in src
 
 
 def test_fields_and_probe_panel_are_a_real_css_grid() -> None:
