@@ -4,7 +4,8 @@ What :mod:`primer.toolset.oauth.service` builds a sign-in from:
 
 * **Discovery** (:func:`discover`). The RFC 9728 protected-resource metadata is looked up at the ``resource_metadata`` URL of the server's
   ``WWW-Authenticate`` challenge, then path-aware, then at the root (:func:`protected_resource_urls`); the first 200 JSON object that holds
-  ``authorization_servers`` wins. The authorization server is the first one it names, and its metadata is looked up path-aware through RFC 8414 and
+  ``authorization_servers`` wins, and it must describe this server (:func:`is_resource_of`, RFC 9728 section 3.3): a document for another resource is
+  refused. The authorization server is the first one it names, and its metadata is looked up path-aware through RFC 8414 and
   then OpenID discovery (:func:`auth_server_metadata_urls`). A server that publishes no protected-resource metadata has the 2025-03-26 shape: its
   authorization server is the MCP server's own origin, and no resource indicator is sent.
   A metadata document is used only when every endpoint in it is an http(s) URL with a host and no credentials (an authorization endpoint is opened by
@@ -41,6 +42,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from primer.common.log import redact_credentials, redact_url_secrets
 from primer.common.mcp_errors import classify_mcp_exception
+from primer.common.origin import origin_of
 from primer.model.except_ import BadRequestError, NetworkError, PrimerError, ProviderError, RateLimitError, ServerError
 from primer.model.mcp_oauth import ClientAuthMethod
 
@@ -61,6 +63,7 @@ __all__ = [
     "client_credentials_grant",
     "discover",
     "exchange_code",
+    "is_resource_of",
     "parse_www_authenticate",
     "pkce_pair",
     "probe_challenge",
@@ -153,6 +156,30 @@ def auth_server_metadata_urls(issuer: str) -> list[str]:
             f"{origin}{path}/.well-known/openid-configuration",
         ]
     return [f"{origin}/.well-known/oauth-authorization-server", f"{origin}/.well-known/openid-configuration"]
+
+
+def is_resource_of(resource: str | None, server_url: str, *, configured: str | None = None) -> bool:
+    """Whether a protected-resource document whose ``resource`` is ``resource`` describes the MCP server at ``server_url`` (RFC 9728 section 3.3,
+    audit G4-07).
+
+    It does when its resource is the server's own URL (:func:`canonical_resource`, so ``HTTPS://M.example/mcp/`` is ``https://m.example/mcp``), the
+    toolset's configured ``resource_uri``, or a parent of the server's URL on the same origin (``https://m.example`` or ``https://m.example/a`` for
+    ``https://m.example/a/mcp``: a document that covers the whole origin, as many servers publish; the MCP SDK's client accepts the same,
+    ``mcp.shared.auth_utils.check_resource_allowed``). Any other resource (another host, scheme or port, a sibling path, another query) or none is
+    another server's metadata, which a 401 can point at: it is not used.
+    """
+    if not resource:
+        return False
+    candidate = canonical_resource(resource)
+    if candidate == canonical_resource(server_url) or (configured and candidate == canonical_resource(configured)):
+        return True
+    origin = origin_of(candidate)
+    if origin[0] != "url" or origin != origin_of(server_url):
+        return False
+    parent, server = urlsplit(candidate), urlsplit(canonical_resource(server_url))
+    if parent.query:
+        return False
+    return (server.path.rstrip("/") + "/").startswith(parent.path.rstrip("/") + "/")
 
 
 def canonical_resource(server_url: str) -> str:
@@ -389,11 +416,14 @@ async def probe_challenge(server_url: str, *, headers: Mapping[str, str], http: 
         return None
 
 
-async def discover(server_url: str, *, www_authenticate: str | None, http: httpx.AsyncClient) -> Discovery:
+async def discover(server_url: str, *, www_authenticate: str | None, http: httpx.AsyncClient, resource_uri: str | None = None) -> Discovery:
     """Find the authorization server of the MCP server at ``server_url`` and its metadata (see the module docstring for the order).
 
-    Raises :class:`~primer.model.except_.BadRequestError` when no usable metadata is found or a document names another issuer, and
-    :class:`~primer.model.except_.NetworkError` when the authorization server answered none of the requests.
+    A protected-resource document is used only when it describes this server (:func:`is_resource_of`, with ``resource_uri`` the toolset's configured
+    resource): one for another resource is refused, so a 401 cannot steer the sign-in to another server's authorization server.
+
+    Raises :class:`~primer.model.except_.BadRequestError` when no usable metadata is found, the protected-resource document is for another resource
+    or a document names another issuer, and :class:`~primer.model.except_.NetworkError` when the authorization server answered none of the requests.
     """
     challenge = parse_www_authenticate(www_authenticate)
     protected: ProtectedResource | None = None
@@ -405,6 +435,12 @@ async def discover(server_url: str, *, www_authenticate: str | None, http: httpx
             protected = ProtectedResource.model_validate(document)
         except ValidationError as exc:
             raise BadRequestError(f"the protected-resource metadata at {_shown(url)} is not usable ({_first_problem(exc)})") from None
+        if not is_resource_of(protected.resource, server_url, configured=resource_uri):
+            named = _shown(protected.resource) if protected.resource else "no resource"
+            raise BadRequestError(
+                f"the protected-resource metadata at {_shown(url)} is for the resource {named}, not {_shown(canonical_resource(server_url))}, so it "
+                "is not used (RFC 9728 section 3.3)"
+            )
         break
 
     issuer = protected.authorization_servers[0] if protected is not None else _origin(server_url)

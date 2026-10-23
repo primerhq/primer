@@ -35,6 +35,7 @@ from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path, Query, Request
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field, ValidationError
 
 from primer.common.hf_hub import MAX_MODELS_PER_CHECK, check_hf_models
@@ -79,6 +80,7 @@ from primer.common.entity_checks import EntityCheckError
 from primer.common.log import redact_url_secrets
 from primer.model.common import preserve_masked_secrets
 from primer.toolset.toolset_checks import (
+    check_oauth_resource_uri,
     check_python_toolset,
     oauth_settings_changed,
     own_python_source_version,
@@ -1565,6 +1567,7 @@ async def _toolset_on_pre_create(entity: Toolset, request: Request) -> None:
                 ),
             },
         )
+    _refuse_a_resource_uri_elsewhere(entity)
     if _toolset_probe_bypassed(request):
         return
     if entity.provider == ToolsetProviderType.PYTHON:
@@ -1579,6 +1582,17 @@ async def _toolset_on_pre_create(entity: Toolset, request: Request) -> None:
     ):
         return
     await _probe_mcp_reachable(entity, request)
+
+
+def _refuse_a_resource_uri_elsewhere(entity: Toolset) -> None:
+    """422 when an OAuth toolset's ``resource_uri`` is not on its URL's origin (audit G4-07; the rule the system tools apply too,
+    :func:`primer.toolset.toolset_checks.check_oauth_resource_uri`). Raised as a request validation error whose ``loc`` is the field, so the problem's
+    ``extensions.errors`` names it as a schema error would and the console shows it under the field."""
+    try:
+        check_oauth_resource_uri(entity)
+    except EntityCheckError as exc:
+        loc = ("body", *(exc.field or "").split("."))
+        raise RequestValidationError([{"type": "value_error", "loc": loc, "msg": exc.message, "input": None}]) from exc
 
 
 def _validate_python_toolset(entity: Toolset) -> None:
@@ -1630,6 +1644,7 @@ async def _toolset_on_pre_update(
     if reason is not None:
         _require_admin_for_toolset(request, reason)
     preserve_masked_secrets(entity, existing)
+    _refuse_a_resource_uri_elsewhere(entity)
     if entity.provider == ToolsetProviderType.PYTHON:
         _validate_python_toolset(entity)
         own_python_source_version(entity, existing)

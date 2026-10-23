@@ -438,15 +438,17 @@ async def _refuse_toolsets(
 ) -> str | None:
     """Run the shared toolset checks on every Toolset ``entries`` would write; a JSON error refusing the whole bundle, or None.
 
-    The REST toolset routes and the system CRUD tools refuse a reserved toolset id, and a stdio MCP or python toolset (created,
-    or an existing one changed) to anyone below admin (:func:`primer.toolset.toolset_checks.toolset_admin_reason`). An install writes
+    The REST toolset routes and the system CRUD tools refuse a reserved toolset id, a stdio MCP or python toolset (created,
+    or an existing one changed) to anyone below admin (:func:`primer.toolset.toolset_checks.toolset_admin_reason`), and an OAuth
+    ``resource_uri`` that is not on the toolset's URL origin (:func:`primer.toolset.toolset_checks.check_oauth_resource_uri`). An install writes
     rows straight to storage, so it applies the same rules here, against whoever enqueued it
     (``harness.operation_requested_by``, under the tool floor's own predicate: an admin, or the internal system / trigger actors;
     unknown fails closed). The harness routes and tools are admin-only, so this is belt and braces.
     """
     from primer.api.registries.provider_registry import RESERVED_TOOLSET_SCOPE_IDS  # noqa: PLC0415 - import cycle
     from primer.authz import _role_allows  # noqa: PLC0415
-    from primer.toolset.toolset_checks import toolset_admin_reason  # noqa: PLC0415
+    from primer.common.entity_checks import EntityCheckError  # noqa: PLC0415
+    from primer.toolset.toolset_checks import check_oauth_resource_uri, toolset_admin_reason  # noqa: PLC0415
 
     storage = _storage_for_kind(storage_provider, "toolset")
     for entry in entries:
@@ -466,6 +468,14 @@ async def _refuse_toolsets(
             return json.dumps({
                 "code": "toolset_needs_admin",
                 "message": f"template {entry.template_name!r}: {reason} Only an admin may install or sync it.",
+                "template_name": entry.template_name,
+            })
+        try:
+            check_oauth_resource_uri(entity)          # the REST routes and the system tools refuse it too (audit G4-07)
+        except EntityCheckError as exc:
+            return json.dumps({
+                "code": exc.code,
+                "message": f"template {entry.template_name!r}: {exc.tool_message()}",
                 "template_name": entry.template_name,
             })
     return None

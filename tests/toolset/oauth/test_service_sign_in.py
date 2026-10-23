@@ -179,10 +179,22 @@ async def test_start_with_a_static_client_does_not_register(svc, store, mock_oau
 
 
 async def test_start_uses_the_configured_scopes_and_resource(svc, mock_oauth_mcp):
-    toolset = make_toolset(mock_oauth_mcp.mcp_url, oauth={"scopes": ["mcp", "extra"], "resource_uri": "https://r.example/x"})
+    resource = mock_oauth_mcp.base_url + "/x"
+    toolset = make_toolset(mock_oauth_mcp.mcp_url, oauth={"scopes": ["mcp", "extra"], "resource_uri": resource})
     start = await svc.start_sign_in(target_of(toolset), redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
     q = parse_qs(urlsplit(start.authorize_url).query)
-    assert q["scope"] == ["mcp extra"] and q["resource"] == ["https://r.example/x"]
+    assert q["scope"] == ["mcp extra"] and q["resource"] == [resource]
+
+
+async def test_a_resource_uri_on_another_origin_starts_nothing(svc, mock_oauth_mcp):
+    """Audit G4-07: every write refuses such a resource_uri; a row stored before that rule cannot start a sign-in or connect either, so no token is
+    requested for another server's resource."""
+    browser = make_toolset(mock_oauth_mcp.mcp_url, oauth={"resource_uri": "https://r.example/x"})
+    with pytest.raises(BadRequestError, match=r"oauth\.resource_uri .*own origin"):
+        await svc.start_sign_in(target_of(browser), redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
+    with pytest.raises(BadRequestError, match=r"oauth\.resource_uri .*own origin"):
+        await svc.connect_client_credentials(target_of(_cc_toolset(mock_oauth_mcp, resource_uri="https://r.example/x")), connected_by="admin")
+    assert mock_oauth_mcp.state.token_requests == [] and mock_oauth_mcp.state.registrations == []
 
 
 async def test_start_purges_expired_pending_sign_ins(svc, target, store, fake_storage_provider):

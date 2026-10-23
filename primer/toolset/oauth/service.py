@@ -54,6 +54,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from primer.common.error_codes import safe_code
+from primer.common.origin import origin_of
 from primer.common.secret_box import SecretBox, SecretBoxError
 from primer.int.storage_provider import StorageProvider
 from primer.model.except_ import BadRequestError, ConfigError, PrimerError, ProviderError
@@ -319,6 +320,7 @@ class ToolsetOAuthService:
             raise BadRequestError(f"the MCP toolset {target.toolset_id} signs in with client credentials, so it connects without a browser sign-in")
         if not browser_binding:
             raise ValueError("a browser sign-in is bound to the browser that starts it: browser_binding is required")
+        self._require_resource_on_the_server(target)
         now = self._clock()
         await self._store.purge_pending(target.toolset_id, now=now)
         found = await self._discover(target)
@@ -442,6 +444,7 @@ class ToolsetOAuthService:
         secret = _static_secret(target, static.client_id) if static is not None else None
         if oauth.grant != "client_credentials" or static is None or not secret:
             raise BadRequestError(f"the MCP toolset {target.toolset_id} does not sign in with client credentials (a client id and secret)")
+        self._require_resource_on_the_server(target)
         now = self._clock()
         metadata: protocol.AuthServerMetadata | None = None
         if oauth.token_endpoint:
@@ -812,7 +815,18 @@ class ToolsetOAuthService:
 
     async def _discover(self, target: OAuthTarget) -> Discovery:
         challenge = await protocol.probe_challenge(target.server_url, headers=target.headers, http=self._http)
-        return await protocol.discover(target.server_url, www_authenticate=challenge, http=self._http)
+        return await protocol.discover(target.server_url, www_authenticate=challenge, http=self._http, resource_uri=target.oauth.resource_uri)
+
+    @staticmethod
+    def _require_resource_on_the_server(target: OAuthTarget) -> None:
+        """Refuse a ``resource_uri`` that is not on the MCP server's origin (audit G4-07): every write refuses one
+        (:func:`primer.toolset.toolset_checks.check_oauth_resource_uri`), and this keeps a row stored before that rule from starting a sign-in."""
+        resource = target.oauth.resource_uri
+        if resource is not None and (origin_of(resource)[0] != "url" or origin_of(resource) != origin_of(target.server_url)):
+            raise BadRequestError(
+                f"the MCP toolset {target.toolset_id} names an oauth.resource_uri that is not on the MCP server's own origin (scheme, host and port), "
+                "so no token is requested for it: edit the toolset"
+            )
 
     @staticmethod
     def _scopes(target: OAuthTarget, found: Discovery) -> list[str]:

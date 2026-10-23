@@ -170,6 +170,21 @@ must not appear in public status, tool results, errors, or logs. Origin binding
 covers the toolset `url`, `resource_uri`, and `token_endpoint`; a stored masked
 secret never follows a move to another origin.
 
+Discovery uses a protected-resource document only when it describes this server
+(RFC 9728 section 3.3, audit G4-07; `protocol.is_resource_of`): its `resource` is
+the server's canonical URL, the configured `resource_uri`, or a parent of the
+server's URL on the same origin (a document covering the whole origin, which many
+servers publish and the MCP SDK's client accepts too). A document for another
+host, scheme, port, sibling path or query, or with no `resource`, is refused with
+a 400 that names both resources, so a 401 cannot steer the sign-in to another
+server's authorization server. `oauth.resource_uri` itself must be on the MCP URL's
+origin (scheme, host and port): every write refuses another one with a 422 naming
+the field (`toolset_checks.check_oauth_resource_uri`, applied by the REST create and
+update, where the problem's `extensions.errors[].loc` is
+`body.config.config.oauth.resource_uri`, by the system tools as `validation-error`,
+and by a harness install or sync), and a row stored before the rule cannot start a
+sign-in or connect.
+
 ## 10. Testing patterns
 
 `tests/toolset/oauth/` covers discovery, client exchanges, encryption, leases,
