@@ -933,3 +933,108 @@ class TestAnAggregatedProfile:
             assert llm.profile_extended(_cfg(ReasoningLevel.LOW, seed=2)) == {}
         hits = [r for r in caplog.records if "agg-cfg" in r.getMessage()]
         assert len(hits) == 1
+
+
+# --------------------------------------------------------------------------- #
+# OpenAI reasoning models get the request OpenAI accepts (audit G2-02/03/04)  #
+# --------------------------------------------------------------------------- #
+
+# A Responses stream the SDK parses: one completed event.
+_RESPONSES_SSE = (
+    b"event: response.completed\n"
+    b'data: {"type":"response.completed","sequence_number":0,"response":{"id":"r","object":"response","created_at":1,'
+    b'"model":"m","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2,'
+    b'"input_tokens_details":{"cached_tokens":0},"output_tokens_details":{"reasoning_tokens":0}}}}\n\n'
+)
+
+# The call every case makes: the knobs compaction and an agent turn pass beside the profile's.
+_CALL = {"temperature": 0.0, "top_p": 0.9, "max_output_tokens": 4096}
+
+
+async def _whole_body(module: str, llm, cfg: ModelProfileConfig | None, model: str, monkeypatch) -> dict:
+    """The JSON body the adapter put on the HTTP transport for one call under ``cfg``."""
+    wire = _wire_for(module, monkeypatch)
+    if module == "openresponses":
+        wire.respond(200, content=_RESPONSES_SSE, headers={"content-type": "text/event-stream"})
+    try:
+        knobs = profile_extended(llm, cfg, model=model)
+        async for _ in profile_stream(llm, knobs, model=model, messages=_HI, **_CALL):
+            pass
+    finally:
+        await llm.aclose()
+    assert len(wire.requests) == 1, "one request, no retry"
+    return json.loads(wire.last.content)
+
+
+def _chat_body(model: str, **rest) -> dict:
+    return {"model": model, "messages": [{"role": "user", "content": "hi"}], "stream": True,
+            "stream_options": {"include_usage": True}, **rest}
+
+
+def _responses_body(model: str, **rest) -> dict:
+    return {"model": model, "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+            "store": False, "stream": True, **rest}
+
+
+_SAMPLING = {"temperature": 0.0, "top_p": 0.9}
+
+
+class TestOpenAIReasoningModelsGetTheRequestOpenAIAccepts:
+    """Captured at the HTTP transport, whole. OpenAI's reasoning models refuse ``max_tokens`` on Chat Completions (they take
+    ``max_completion_tokens``) and refuse ``temperature`` and ``top_p`` unless the effort is ``none``, with or without an
+    effort sent (they reason by default). The fit is decided from the model's family and only on the ``openai`` flavor."""
+
+    @pytest.mark.parametrize("model", ["o3", "gpt-5", "o4-mini"])
+    @pytest.mark.parametrize("level, effort", [(ReasoningLevel.LOW, {"reasoning_effort": "low"}), (None, {})])
+    async def test_chat_a_reasoning_family_takes_max_completion_tokens_and_no_sampling(self, monkeypatch, model, level, effort) -> None:
+        cfg = None if level is None else _cfg(level)
+        body = await _whole_body("openchat", OpenChatLLM(_openchat(OpenChatFlavor.OPENAI)), cfg, model, monkeypatch)
+        assert body == _chat_body(model, max_completion_tokens=4096, **effort)
+
+    async def test_chat_effort_none_keeps_the_sampling_knobs(self, monkeypatch) -> None:
+        body = await _whole_body("openchat", OpenChatLLM(_openchat(OpenChatFlavor.OPENAI)), _cfg(ReasoningLevel.OFF), "gpt-5.1", monkeypatch)
+        assert body == _chat_body("gpt-5.1", max_completion_tokens=4096, reasoning_effort="none", **_SAMPLING)
+
+    @pytest.mark.parametrize("level", [ReasoningLevel.LOW, None])
+    async def test_chat_a_model_that_does_not_reason_is_unchanged(self, monkeypatch, level) -> None:
+        cfg = None if level is None else _cfg(level)
+        body = await _whole_body("openchat", OpenChatLLM(_openchat(OpenChatFlavor.OPENAI)), cfg, "gpt-4o", monkeypatch)
+        assert body == _chat_body("gpt-4o", max_tokens=4096, **_SAMPLING)
+
+    async def test_chat_an_unknown_model_on_the_openai_flavor_is_unchanged(self, monkeypatch) -> None:
+        """No family: ``max_tokens`` stays, and the sampling knobs stay unless an effort is sent (as before the family rule)."""
+        llm = OpenChatLLM(_openchat(OpenChatFlavor.OPENAI))
+        assert await _whole_body("openchat", llm, None, "my-deployment", monkeypatch) == _chat_body("my-deployment", max_tokens=4096, **_SAMPLING)
+        llm = OpenChatLLM(_openchat(OpenChatFlavor.OPENAI))
+        assert await _whole_body("openchat", llm, _cfg(ReasoningLevel.LOW), "my-deployment", monkeypatch) == _chat_body(
+            "my-deployment", max_tokens=4096, reasoning_effort="low",
+        )
+
+    @pytest.mark.parametrize("flavor", [OpenChatFlavor.VLLM, OpenChatFlavor.OTHER])
+    async def test_chat_an_openai_model_name_on_another_flavor_is_unchanged(self, monkeypatch, flavor) -> None:
+        body = await _whole_body("openchat", OpenChatLLM(_openchat(flavor)), None, "o3", monkeypatch)
+        assert body == _chat_body("o3", max_tokens=4096, **_SAMPLING)
+
+    @pytest.mark.parametrize("model", ["o3", "gpt-5", "o4-mini"])
+    @pytest.mark.parametrize("level, reasoning", [(ReasoningLevel.LOW, {"reasoning": {"effort": "low"}}), (None, {})])
+    async def test_responses_a_reasoning_family_takes_no_sampling(self, monkeypatch, model, level, reasoning) -> None:
+        cfg = None if level is None else _cfg(level)
+        body = await _whole_body("openresponses", OpenResponsesLLM(_openresponses(OpenResponsesFlavor.OPENAI)), cfg, model, monkeypatch)
+        assert body == _responses_body(model, max_output_tokens=4096, **reasoning)
+
+    @pytest.mark.parametrize("model", ["gpt-4o", "my-deployment"])
+    async def test_responses_a_model_that_does_not_reason_or_is_unknown_is_unchanged(self, monkeypatch, model) -> None:
+        body = await _whole_body("openresponses", OpenResponsesLLM(_openresponses(OpenResponsesFlavor.OPENAI)), None, model, monkeypatch)
+        assert body == _responses_body(model, max_output_tokens=4096, **_SAMPLING)
+
+    async def test_responses_on_another_flavor_is_unchanged(self, monkeypatch) -> None:
+        body = await _whole_body("openresponses", OpenResponsesLLM(_openresponses(OpenResponsesFlavor.OTHER)), None, "o3", monkeypatch)
+        assert body == _responses_body("o3", max_output_tokens=4096, **_SAMPLING)
+
+    async def test_the_change_is_logged_once(self, monkeypatch, caplog) -> None:
+        caplog.set_level(logging.DEBUG, logger="primer.llm.openchat")
+        for _ in range(2):
+            await _whole_body("openchat", OpenChatLLM(_openchat(OpenChatFlavor.OPENAI)), None, "o3", monkeypatch)
+        hits = [r for r in caplog.records if "max_completion_tokens" in r.getMessage()]
+        assert len(hits) == 1
+        assert "temperature, top_p dropped" in hits[0].getMessage()

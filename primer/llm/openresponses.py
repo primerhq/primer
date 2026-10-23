@@ -30,6 +30,7 @@ from primer.int.llm import LLM
 from primer.llm._failure import describe_failure, scrubbed_event_text
 from primer.llm._reasoning import openresponses_extended
 from primer.llm._openai_common import build_sampling_params as _build_sampling_params_impl
+from primer.llm._openai_common import fit_openai_reasoning_request
 from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout
 from primer.model.except_ import (
     ConfigError,
@@ -989,6 +990,15 @@ class OpenResponsesLLM(LLM):
         if text_param is not None:
             request["text"] = text_param
         request.update(_extract_extended_kwargs(extended))
+        fit_openai_reasoning_request(
+            request,
+            flavor=self._config.flavor.value,
+            target="responses",
+            adapter="OpenResponses",
+            provider_id=self._provider.id,
+            model=model,
+            log=logger,
+        )
 
         logger.info(
             "OpenResponses stream starting",

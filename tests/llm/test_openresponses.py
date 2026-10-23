@@ -1315,9 +1315,11 @@ class TestStream:
         assert kwargs["parallel_tool_calls"] is False
         assert "frobnicate" not in kwargs
 
-    async def test_reasoning_keeps_sampling_knobs(
+    async def test_an_openai_reasoning_model_drops_the_sampling_knobs(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """o3 and gpt-5 refuse ``temperature`` and ``top_p`` on the Responses API too (audit G2-04; the whole body is pinned at
+        the transport in tests/llm/test_profile_config_wiring.py)."""
         llm = OpenResponsesLLM(_make_provider())
         client = _patched_client(monkeypatch)
         client.responses.create.return_value = _aiter(
@@ -1337,8 +1339,8 @@ class TestStream:
 
         kwargs = client.responses.create.call_args.kwargs
         assert kwargs["reasoning"] == {"effort": "low"}
-        assert kwargs["temperature"] == 0.0
-        assert kwargs["top_p"] == 0.9
+        assert "temperature" not in kwargs
+        assert "top_p" not in kwargs
 
 
 class TestExceptionWrapping:
