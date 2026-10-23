@@ -13,7 +13,6 @@ CLASS_KEYS = [
     "stt",
     "tts",
     "web_search",
-    "web_fetch",
     "artifact_storage",
     "workspace",
     "channel",

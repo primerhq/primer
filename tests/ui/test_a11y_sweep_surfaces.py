@@ -115,7 +115,7 @@ def test_a_provider_form_opens_through_the_first_kind_of_the_register_menu() -> 
     assert 'testid: "pc-register-type"' in (ROOT / "ui" / "components" / "providers" / "register-overlay.jsx").read_text(encoding="utf-8")
     registers = [(route, form) for route, forms in surfaces.LEGACY_FORMS.items() for form in forms if form.button == "+ Register"]
     registers += [(nav, form) for nav, forms in surfaces.PLATFORM_FORMS.items() for form in forms if form.button == "+ Register"]
-    assert len(registers) == 10, [route for route, _ in registers]   # the eight crud classes, ssp, and the Platform page
+    assert len(registers) == 9, [route for route, _ in registers]   # eight provider type pages and the Platform page
     for route, form in registers:
         assert form.root == surfaces.MODAL, (route, form)
         assert form.then == surfaces.REGISTER_TYPE, (route, form)
@@ -131,7 +131,7 @@ def test_the_artifact_storage_page_is_swept_through_its_register_menu_and_no_pag
     assert surfaces.LEGACY_FORMS["providers/artifact_storage"] == [surfaces.Form("+ Register", surfaces.MODAL, surfaces.REGISTER_TYPE)]
     assert "overlay-page providers/artifact_storage" not in surfaces.NO_FORM
     assert "overlay-page providers/artifact_storage / + Register" in surfaces.expected_surfaces(7)
-    assert len(surfaces.expected_surfaces(7)) == 102
+    assert len(surfaces.expected_surfaces(7)) == 98
 
 
 def test_every_platform_create_button_the_console_draws_has_a_form_entry() -> None:
@@ -159,13 +159,15 @@ def test_the_legacy_routes_are_the_ones_the_shell_helper_opens() -> None:
 
 
 def test_the_overlay_grammar_is_swept_section_by_section() -> None:
-    """N5: the semantic-search provider (its own create modal) is an overlay section too; every provider class is a route."""
-    classes = re.findall(r'\{ key: "(\w+)", label: ', COMMON_JSX[COMMON_JSX.index("const PC_CLASSES"):COMMON_JSX.index("function PC_classByKey")])
-    assert len(classes) == 11, classes
+    """N5: every provider class with a Providers entry is an overlay section."""
+    class_source = COMMON_JSX[COMMON_JSX.index("const PC_CLASSES"):COMMON_JSX.index("function PC_classByKey")]
+    classes = re.findall(r'\{ key: "(\w+)",[^}]*\bnav: true\b', class_source, re.S)
+    assert len(classes) == 10, classes
     swept = {overlay_target(route) for route in surfaces.LEGACY_FORMS}
     for key in classes:
         assert f"providers:{key}" in swept, f"the provider class {key!r} is not swept"
     assert {"providers:ssp"} <= swept
+    assert "providers:web_fetch" not in swept
 
 
 def test_every_legacy_page_names_the_title_the_console_gives_its_overlay() -> None:
