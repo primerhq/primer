@@ -79,9 +79,10 @@ function SH_shimSegments(path) {
 // which the Platform view no longer has, means the studio.
 //
 // The key is the cleaned path joined by "/". Two rows are the workspace-shaped sections, whose lists are two segments: a template's Delete lands on
-// the templates page, a workspace provider's on the Providers page. The provider row also names the provider type in the view's `sub` slot
-// ("workspace"); the address carries a type only once the provider-type grammar lands (Plan 01 Task 6), and until then the user lands on the Providers
-// page itself. The rows are exact paths: a path with a record after them ("workspaces/templates/<id>") is a record, as before.
+// the templates page (until that page ships, the legacy templates list overlay: SH_shimUsesTemplateListOverlay below), a workspace provider's on the
+// Providers page. The provider row also names the provider type in the view's `sub` slot ("workspace"), which the address carries
+// (view=platform:providers:workspace, the provider-type grammar of Plan 01 Task 6), so the user lands on the workspace providers. The rows are exact
+// paths: a path with a record after them ("workspaces/templates/<id>") is a record, as before.
 //
 // The cost: navigate("/workspaces/templates") and ("/workspaces/providers") can no longer open a workspace whose id is exactly "templates" or
 // "providers". templates.jsx navigates to /workspaces/<id> for every workspace it lists, so such a workspace would land on the templates page from
