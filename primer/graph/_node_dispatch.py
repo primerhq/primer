@@ -33,6 +33,7 @@ import json
 import uuid
 from typing import Any
 
+from primer.agent.parked_round import ParkedRound
 from primer.graph._node_identity import (
     current_graph_node_id,
     reset_current_graph_node_id,
@@ -508,6 +509,8 @@ class _NodeDispatchMixin:
                         iteration=context.iteration,
                         frames=frames_to_jsonable(nested_frames) if nested_frames else [],
                         leaf=yld.yielded.to_jsonable() if nested_frames else None,
+                        # Ticket 01a15327: the tool round the node's park left unfinished, as the node's batch stamped it.
+                        **ParkedRound.of_park(yld).stored_fields(),
                     )
                 )
                 await queue.put(
