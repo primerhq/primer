@@ -21,6 +21,7 @@ mid-flight assertion fails — that is the regression these guard.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -155,6 +156,8 @@ async def test_cancel_in_flight_blocks_resume_then_converges_ended(
 
     resume_task = asyncio.create_task(
         resume_session(
+            # The route takes the request for its rank rule (review of #853); the session names no creator, so any caller may resume it.
+            request=SimpleNamespace(state=SimpleNamespace(actor=None)),
             workspace_id="ws-1",
             session_id=sid,
             sessions=storage,
@@ -208,6 +211,8 @@ async def test_resume_in_flight_blocks_cancel_then_cancel_is_honored(
 
     resume_task = asyncio.create_task(
         resume_session(
+            # The route takes the request for its rank rule (review of #853); the session names no creator, so any caller may resume it.
+            request=SimpleNamespace(state=SimpleNamespace(actor=None)),
             workspace_id="ws-1",
             session_id=sid,
             sessions=storage,

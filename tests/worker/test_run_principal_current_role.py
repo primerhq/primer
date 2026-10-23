@@ -143,6 +143,10 @@ class _Workspace:
 
     def __init__(self, sid: str) -> None:
         self._session = _AgentSession(sid)
+        self.lines: list[bytes] = []
+
+    async def append_message_line(self, session_id: str, line: bytes) -> None:
+        self.lines.append(line)
 
     async def get_session(self, session_id):
         return self._session if session_id == self._session.session_id else None
@@ -288,17 +292,87 @@ async def test_an_admin_tool_call_approved_while_the_admin_still_is_one_runs(mon
     assert result.error is False and json.loads(result.output) == {"nuked": True}
 
 
-async def test_an_admin_tool_call_approved_after_the_user_was_disabled_is_refused(monkeypatch):
+async def test_an_admin_tool_call_approved_after_the_user_was_disabled_is_refused(monkeypatch, caplog):
     """A disabled creator's run is refused outright: the call does not run at any rank, nothing is injected, and the session ends failed instead of
-    staying parked with no lease."""
+    staying parked with no lease. The transcript and the row say why in fixed words, and the log has a warning, not a traceback (review of #853,
+    N5)."""
+    from primer.authz import RUN_REFUSED_MESSAGE
+
     sp = _FakeStorageProvider()
     calls: list = []
     pool = await _pool(monkeypatch, sp, calls)
+    workspace = _Workspace("ses-1")
+
+    class _Registry:
+        async def get_workspace(self, _wid):
+            return workspace
+
+        async def check_workspace_allowed(self, _wid):
+            return None
+
+    pool._workspace_registry = _Registry()
     await _user(sp, "u-ada", "admin", disabled=True)
     await sp.get_storage(WorkspaceSession).create(_parked_on_an_approval("ses-1"))
 
-    injected = await _resume(monkeypatch, sp, pool, "ses-1")
+    with caplog.at_level("WARNING"):
+        injected = await _resume(monkeypatch, sp, pool, "ses-1")
 
     assert calls == [] and injected == []
     row = await sp.get_storage(WorkspaceSession).get("ses-1")
     assert (row.status, row.ended_reason) == (SessionStatus.ENDED, "failed")
+    assert row.last_turn_error is not None and row.last_turn_error.code == "run_refused"
+    records = [json.loads(line) for blob in workspace.lines for line in blob.decode().splitlines() if line.strip()]
+    assert [(r["kind"], r["payload"]) for r in records if r["kind"] == "error"] == [
+        ("error", {"message": RUN_REFUSED_MESSAGE, "code": "run_refused"}),
+    ]
+    refused = [r for r in caplog.records if "does not run" in r.getMessage()]
+    assert refused and all(r.levelname == "WARNING" and r.exc_info is None for r in refused)
+    assert not [r for r in caplog.records if r.levelname in ("ERROR", "CRITICAL")], "a refused run is not a fault"
+
+
+async def test_a_graph_resume_whose_creator_is_gone_ends_with_the_same_record(monkeypatch, caplog):
+    """The graph resume ends its graph through ``end_graph`` (its end record) and says why in the same fixed words (review of #853, N5)."""
+    from primer.authz import RUN_REFUSED_MESSAGE, RunRefused
+    from primer.model.workspace_session import GraphSessionBinding
+    from primer.worker.graph_resume_coordinator import resume_graph_engine
+
+    sp = _FakeStorageProvider()
+    workspace = _Workspace("ses-g")
+
+    class _Registry:
+        async def get_workspace(self, _wid):
+            return workspace
+
+    pool = await _pool(monkeypatch, sp, [])
+    pool._workspace_registry = _Registry()
+
+    async def _load(_ws_id):
+        return workspace
+
+    async def _refused(_session, _workspace):
+        raise RunRefused("session 'ses-g' does not run: the account or API token that started it is deleted, disabled, revoked or expired")
+
+    monkeypatch.setattr(pool, "_load_workspace_for_persist", _load)
+    monkeypatch.setattr(pool, "_build_graph_executor", _refused)
+    parked_at = NOW - timedelta(seconds=5)
+    parked = ParkedState(
+        yielded=Yielded(tool_name="_approval", event_key="tool_approval:ses-g:tc-1", timeout=600.0, resume_metadata={}),
+        llm_messages=[], turn_no=0, started_at=parked_at, tool_call_id="tc-1", resume_event_payload={"decision": "approved"},
+        graph_checkpoint={},
+    )
+    session = WorkspaceSession(
+        id="ses-g", workspace_id="ws-1", binding=GraphSessionBinding(graph_id="g-1"), status=SessionStatus.RUNNING, created_at=NOW,
+        initiated_by=ADMIN_REF, parked_status="resumable", parked_at=parked_at, parked_state=parked.to_jsonable(),
+    )
+    await sp.get_storage(WorkspaceSession).create(session)
+
+    with caplog.at_level("WARNING"):
+        await resume_graph_engine(pool, session, parked)
+
+    row = await sp.get_storage(WorkspaceSession).get("ses-g")
+    assert (row.status, row.ended_reason) == (SessionStatus.ENDED, "failed")
+    assert row.last_turn_error is not None and row.last_turn_error.code == "run_refused"
+    records = [json.loads(line) for blob in workspace.lines for line in blob.decode().splitlines() if line.strip()]
+    assert {"message": RUN_REFUSED_MESSAGE, "code": "run_refused"} in [r["payload"] for r in records if r["kind"] == "error"]
+    refused = [r for r in caplog.records if "does not run" in r.getMessage()]
+    assert refused and all(r.levelname == "WARNING" and r.exc_info is None for r in refused)

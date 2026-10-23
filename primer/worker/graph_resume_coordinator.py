@@ -34,8 +34,11 @@ from primer.worker.yield_runtime import (
     ParkedState,
 )
 
+from primer.authz import RunRefused
+
 if TYPE_CHECKING:
     from primer.worker.pool import WorkerPool
+
 
 logger = logging.getLogger(__name__)
 
@@ -233,6 +236,12 @@ async def resume_graph_engine(pool: "WorkerPool", session, parked):
     workspace = await pool._load_workspace_for_persist(session.workspace_id)
     try:
         executor_or_driver = await pool._build_graph_executor(session, workspace)
+    except RunRefused as refused:
+        # The creator can no longer run it (G6-6): a warning, not a fault, and the transcript and the row say why in fixed words before the
+        # graph ends failed (review of #853, N5).
+        logger.warning("resume: graph session %s does not run: %s; ending failed", sid, refused)
+        await _record_refused_run(pool, session)
+        return await end_graph(pool, session, reason="failed")
     except Exception:
         logger.exception(
             "resume: failed to build graph executor for session %s -"
@@ -979,3 +988,14 @@ def _repark_graph_tool_wait_outcome(session, repark, *, node_tool_call_seq=None)
             parked_at=now,
         ),
     )
+
+
+async def _record_refused_run(pool, session) -> None:
+    """The refused run's ERROR record and ``last_turn_error`` (``primer.session.dispatch.record_refused_run``), through the pool's workspace IO."""
+    from primer.session.dispatch import record_refused_run
+    from primer.model.workspace_session import WorkspaceSession
+    from primer.worker.pool import _WorkspaceIOShim
+
+    io_shim = _WorkspaceIOShim(workspace_registry=pool._workspace_registry)
+    io_shim.register_session(session.id, session.workspace_id)
+    await record_refused_run(pool._storage.get_storage(WorkspaceSession), io_shim, session, event_bus=getattr(pool, "_event_bus", None))

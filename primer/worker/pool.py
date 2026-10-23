@@ -1107,10 +1107,17 @@ class WorkerPool:
             # parked call, approved or not, at any rank. A normal turn already ends failed when its executor cannot
             # be built (dispatch.py); a resume handler builds its own, so its refusal ends the session here, or the
             # park would stay resumable with no lease, forever.
-            logger.warning("session %s: %s; ending it failed", sid, refused)
+            logger.warning("session %s does not run: %s; ending it failed", sid, refused)
             if self._storage is not None:
-                refused_row = await self._storage.get_storage(WorkspaceSession).get(sid)
+                session_storage = self._storage.get_storage(WorkspaceSession)
+                refused_row = await session_storage.get(sid)
                 if refused_row is not None and refused_row.status != SessionStatus.ENDED:
+                    # The transcript and the row say why, in fixed words (review of #853, N5), before the session ends.
+                    from primer.session.dispatch import record_refused_run
+
+                    io_shim = _WorkspaceIOShim(workspace_registry=self._workspace_registry)
+                    io_shim.register_session(sid, refused_row.workspace_id)
+                    await record_refused_run(session_storage, io_shim, refused_row, event_bus=self._event_bus)
                     outcome = await self._end_session(refused_row, reason="failed")
         except Exception:
             logger.exception(

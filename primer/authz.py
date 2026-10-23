@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from primer.model.except_ import PrimerError
+
 if TYPE_CHECKING:
     from primer.model.principal import Principal, PrincipalRef
 
@@ -95,6 +97,18 @@ OUTRANKED_MESSAGE = (
 )
 
 
+#: What a refused run records (an ERROR record's ``message`` and, as the code, ``last_turn_error.code``): fixed, so it names nobody (review of #853, N5).
+RUN_REFUSED_MESSAGE = "this session's creator can no longer run it"
+RUN_REFUSED_CODE = "run_refused"
+
+
+class RunRefused(PrimerError):
+    """A run of a session is refused because its creator can no longer be resolved: the user was deleted or disabled, or the API token was revoked
+    or has expired (G6-6, the lead's addendum to ruling 2 of the G7 fixes). Such a run does not execute at all, not even at a lower rank: a turn
+    ends ``failed`` and a resume ends the session ``failed``, each with an ERROR record carrying :data:`RUN_REFUSED_MESSAGE` and
+    ``last_turn_error.code`` :data:`RUN_REFUSED_CODE`."""
+
+
 def rank_label(ref: "Principal | PrincipalRef | None") -> str:
     """The rank of ``ref`` in words, without naming who it is.
 
@@ -137,4 +151,4 @@ def _role_allows(actor: "Principal | PrincipalRef | None", need: str) -> bool:
     return _ROLE_RANK.get(actor.role, -1) >= _ROLE_RANK.get(need, 99)
 
 
-__all__ = ["OUTRANKED_MESSAGE", "_ROLE_RANK", "_role_allows", "may_drive", "principal_rank", "rank_label", "same_principal"]
+__all__ = ["OUTRANKED_MESSAGE", "RUN_REFUSED_CODE", "RUN_REFUSED_MESSAGE", "RunRefused", "_ROLE_RANK", "_role_allows", "may_drive", "principal_rank", "rank_label", "same_principal"]
