@@ -13,7 +13,7 @@ The tree of the wiki:
 - [index](index) - the table of contents. `system__wiki_read` with an empty path reads it.
 - sections - every folder holds its own page in its `index.md`; [start-here](start-here) is this one. P4 adds the feature sections.
 - [reference/tools](reference/tools) - one generated page per tool, rendered from the tool's own descriptor: the validating call, the argument schema, the role, the gate. It cannot drift from the code.
-- [this-install](this-install) - the live map of this install: the agents, graphs, collections, workspaces and providers that exist here, written at boot and on every change.
+- [this-install](this-install) - the live map of this install: the agents, graphs, collections, workspaces and providers that exist here, written at boot (and updated on every agent, graph or collection change).
 - the legacy part - the shipped agent docs under the `docs/` prefix and the `how-to/` guides, read alongside until the feature pages replace them.
 
 Links in the wiki are wiki paths, never URLs: no leading slash, no `.md`, an optional `#anchor`. A link that goes nowhere is a defect, not a style.
