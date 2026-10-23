@@ -17,6 +17,7 @@ observable: the profile says ``reasoning: off`` and the call carries
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
@@ -204,56 +205,101 @@ class TestCompactionOnAClaudeModelThatRefusesSampling:
         assert ("temperature" in sent) is kept
 
 
-class TestCompactionOnAnOpenAIReasoningModelThatRefusesSampling:
-    """OpenAI reasoning rejects the temperature 0 requested by compaction."""
+# ---- OpenAI reasoning models, captured at the HTTP transport (audit G2-02, G2-03) ----------------------------------------------
 
-    async def test_the_summariser_drops_temperature_but_keeps_reasoning(
-        self, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        from pydantic import HttpUrl, SecretStr
+_SSE = (
+    b'data: {"id":"x","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"the summary"},"finish_reason":null}]}\n\n'
+    b'data: {"id":"x","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+    b"data: [DONE]\n\n"
+)
 
-        from primer.llm.openchat import OpenChatLLM
-        from primer.model.provider import (
-            Limits,
-            LLMProvider,
-            LLMProviderType,
-            OpenChatConfig,
-            OpenChatFlavor,
-        )
-        from tests.llm.test_openchat import (
-            _aiter,
-            _patched_client,
-            _simple_text_chunk_seq,
-        )
 
-        client = _patched_client(monkeypatch)
-        client.chat.completions.create.return_value = _aiter(
-            _simple_text_chunk_seq(model="o3")
-        )
-        llm = OpenChatLLM(
-            LLMProvider(
-                id="openchat-compaction",
-                provider=LLMProviderType.OPENCHAT,
-                config=OpenChatConfig(
-                    url=HttpUrl("https://api.openai.com/v1/"),
-                    api_key=SecretStr("sk-test"),
-                    flavor=OpenChatFlavor.OPENAI,
-                ),
-                limits=Limits(max_concurrency=1),
-            )
-        )
-        resolved = ResolvedModel(
-            profile_id="p",
-            provider_id="openchat-compaction",
-            model_name="o3",
-            context_length=1000,
-            config=ModelProfileConfig(reasoning=ReasoningLevel.LOW),
-        )
+@pytest.fixture
+def openai_wire(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    """Every JSON body the ``openchat`` adapter puts on the HTTP transport, whole."""
+    from openai import AsyncOpenAI
 
-        await CompactionStrategy(tail_turns=1).force_compact(
-            agent=_agent(), llm=llm, model=resolved, history=list(HISTORY),
-        )
+    from tests.llm.test_openrouter import _sdk_http_module
 
-        sent = client.chat.completions.create.call_args.kwargs
-        assert sent["reasoning_effort"] == "low"
-        assert "temperature" not in sent
+    http = _sdk_http_module()
+    bodies: list[dict] = []
+    real = AsyncOpenAI
+
+    def _handle(request):
+        bodies.append(json.loads(request.content))
+        return http.Response(200, content=_SSE, headers={"content-type": "text/event-stream"})
+
+    monkeypatch.setattr(
+        "primer.llm.openchat.AsyncOpenAI",
+        lambda **kw: real(**kw, http_client=http.AsyncClient(transport=http.MockTransport(_handle))),
+    )
+    return bodies
+
+
+def _openai_chat() -> LLM:
+    from pydantic import HttpUrl, SecretStr
+
+    from primer.llm.openchat import OpenChatLLM
+    from primer.model.provider import Limits, LLMProvider, LLMProviderType, OpenChatConfig, OpenChatFlavor
+
+    return OpenChatLLM(LLMProvider(
+        id="openai-chat", provider=LLMProviderType.OPENCHAT,
+        config=OpenChatConfig(url=HttpUrl("https://api.openai.com/v1/"), api_key=SecretStr("sk-test"), flavor=OpenChatFlavor.OPENAI),
+        limits=Limits(max_concurrency=1),
+    ))
+
+
+def _on(model: str, config: ModelProfileConfig | None) -> ResolvedModel:
+    return ResolvedModel(profile_id="p", provider_id="openai-chat", model_name=model, context_length=100_000, config=config)  # type: ignore[arg-type]
+
+
+def _without_messages(body: dict) -> dict:
+    """The whole body but the prompt (its text is the caller's; every other key is pinned)."""
+    assert isinstance(body["messages"], list) and body["messages"]
+    return {k: v for k, v in body.items() if k != "messages"}
+
+
+_STREAM = {"stream": True, "stream_options": {"include_usage": True}}
+_LOW = ModelProfileConfig(reasoning=ReasoningLevel.LOW)
+# model, profile config -> what the summariser call carries beside the prompt
+_COMPACTION_CASES = [
+    ("o3", _LOW, {"max_completion_tokens": 4096, "reasoning_effort": "low"}),
+    ("gpt-5", _LOW, {"max_completion_tokens": 4096, "reasoning_effort": "low"}),
+    ("o3", None, {"max_completion_tokens": 4096}),
+    ("gpt-5", ModelProfileConfig(), {"max_completion_tokens": 4096}),
+    ("o4-mini", None, {"max_completion_tokens": 4096}),
+    ("gpt-4o", _LOW, {"max_tokens": 4096, "temperature": 0.0}),
+    ("my-deployment", None, {"max_tokens": 4096, "temperature": 0.0}),
+]
+
+
+class TestOpenAIReasoningModelsOnTheWire:
+    """OpenAI's reasoning models refuse ``max_tokens`` (they take ``max_completion_tokens``) and ``temperature`` / ``top_p``
+    unless the effort is ``none``, whether or not an effort is sent: they reason by default. Compaction asks for
+    ``temperature: 0.0`` and a 4096 cap, an agent turn sends the agent's temperature and output cap; on a reasoning model each
+    call carries the shape OpenAI accepts. A model that does not reason (gpt-4o) and one the table does not know are unchanged."""
+
+    @pytest.mark.parametrize("model, config, expected", _COMPACTION_CASES)
+    async def test_the_compaction_summariser_call(self, openai_wire, model, config, expected) -> None:
+        assert CompactionStrategy.DEFAULT_SUMMARY_MAX_TOKENS == 4096
+        await CompactionStrategy(tail_turns=1).force_compact(agent=_agent(), llm=_openai_chat(), model=_on(model, config), history=list(HISTORY))
+        assert len(openai_wire) == 1
+        assert _without_messages(openai_wire[0]) == {"model": model, **_STREAM, **expected}
+
+    @pytest.mark.parametrize("model, config, expected", [
+        ("o3", _LOW, {"max_completion_tokens": 2048, "reasoning_effort": "low"}),
+        ("gpt-5", None, {"max_completion_tokens": 2048}),
+        ("o4-mini", None, {"max_completion_tokens": 2048}),
+        ("gpt-4o", None, {"max_tokens": 2048, "temperature": 0.7}),
+        ("my-deployment", None, {"max_tokens": 2048, "temperature": 0.7}),
+    ])
+    async def test_an_agent_turn_call(self, openai_wire, model, config, expected) -> None:
+        agent = AGENT.model_copy(update={"temperature": 0.7, "max_output_tokens": 2048})
+        async for _ in run_agent_turn(
+            agent=agent, llm=_openai_chat(), llm_model=_on(model, config),
+            tool_manager=_Manager(), prompt=list(_USER),  # type: ignore[arg-type]
+        ):
+            pass
+        assert len(openai_wire) == 1
+        tools = [{"type": "function", "function": {"name": "loop_tool", "description": "d", "parameters": {"type": "object", "properties": {}}}}]
+        assert _without_messages(openai_wire[0]) == {"model": model, **_STREAM, "tools": tools, "tool_choice": "auto", **expected}

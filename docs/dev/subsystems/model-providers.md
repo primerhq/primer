@@ -340,13 +340,22 @@ and allowing the call to proceed. The Responses API accepts forced tool choices
 with reasoning, and OpenRouter defines them independently of its `reasoning`
 object, so `openresponses` and `openrouter` leave the caller's choice unchanged.
 
-**OpenAI Chat Completions: reasoning sampling.** When `reasoning_effort` is
-present and not `none`, real OpenAI refuses `temperature` and `top_p`
-(`top_k` is not an OpenAI parameter, and this wire never sends it). The
-`openchat` adapter drops those knobs and logs the adjustment
-once per provider and model. This includes compaction's `temperature: 0.0`.
-Reasoning-off calls, self-hosted `openchat`, OpenAI Responses and OpenRouter
-keep their sampling knobs unchanged.
+**OpenAI reasoning models: the rest of the request.** On the `openai` flavor
+of `openchat` and `openresponses`, a model whose family reasons (o-series,
+codex, gpt-5 and later, pro; `openai_family` in `primer/llm/_reasoning.py`)
+gets the request OpenAI accepts whether or not the profile sets a reasoning
+level, because these models reason by default.
+`fit_openai_reasoning_request` in `primer/llm/_openai_common.py` sends the
+Chat Completions `max_tokens` as `max_completion_tokens`, and drops `temperature`
+and `top_p` on both wires unless the effort is `none` (OpenAI accepts them
+only then). This covers compaction's `temperature: 0.0` and 4096-token cap and
+an agent's `temperature` and `max_output_tokens`. Each change is logged once
+per adapter, provider and model at DEBUG. A model that does not reason
+(gpt-4o) is sent as shaped. A model the table does not know (a deployment
+name) keeps the earlier rule: on Chat Completions its `temperature` and
+`top_p` are dropped only when an effort other than `none` is sent, and
+`max_tokens` stays; on the Responses API it is sent as shaped. The
+self-hosted flavors and OpenRouter keep their sampling knobs unchanged.
 
 **Anthropic: the rest of the request.** Thinking has rules the call's other
 settings can break, so `_fit_thinking` and `_fit_sampling` in

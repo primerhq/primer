@@ -28,6 +28,7 @@ from primer.common.openai_errors import classify_openai_exception
 from primer.int.coordinator import RateLimiter
 from primer.int.llm import LLM
 from primer.llm._failure import describe_failure
+from primer.llm._openai_common import fit_openai_reasoning_request
 from primer.llm._reasoning import debug_once, openchat_extended
 from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout
 from primer.llm._openai_compat import (
@@ -109,26 +110,6 @@ def _fit_reasoning_tool_choice(
         log=logger,
     )
 
-
-def _fit_reasoning_sampling(
-    request: dict[str, Any], *, flavor: OpenChatFlavor, provider_id: str, model: str,
-) -> None:
-    """Drop, in place, sampling knobs OpenAI Chat Completions reasoning refuses."""
-    if not _is_openai_reasoning_request(request, flavor=flavor):
-        return
-    dropped = [key for key in ("temperature", "top_p") if key in request]
-    for key in dropped:
-        del request[key]
-    if dropped:
-        debug_once(
-            ("openchat-reasoning-sampling", provider_id, model, ",".join(dropped)),
-            "OpenChat provider %s: OpenAI model %s does not take %s while "
-            "reasoning is enabled; dropped",
-            provider_id,
-            model,
-            ", ".join(dropped),
-            log=logger,
-        )
 
 @dataclass(frozen=True)
 class _FlavorPolicy:
@@ -303,11 +284,14 @@ class OpenChatLLM(LLM):
         if rf_param is not None:
             request["response_format"] = rf_param
         request.update(_extract_extended_kwargs(extended))
-        _fit_reasoning_sampling(
+        fit_openai_reasoning_request(
             request,
-            flavor=self._config.flavor,
+            flavor=self._config.flavor.value,
+            target="chat_completions",
+            adapter="OpenChat",
             provider_id=self._provider.id,
             model=model,
+            log=logger,
         )
         _fit_reasoning_tool_choice(
             request,
