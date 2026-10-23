@@ -205,6 +205,18 @@ class TestToolApprovalPolicy:
         assert await sp.get_storage(ToolApprovalPolicy).get("tap-ts") is None, "a policy for a nonexistent toolset was stored"
 
     @pytest.mark.asyncio
+    async def test_a_policy_on_the_external_scope_is_refused_saying_external_tools_are_never_gated(self, world) -> None:
+        """Audit G6-10: the caller answers the tools of the ``external`` scope itself and the gate never consults a policy for them, so a policy there would
+        gate nothing."""
+        sp, toolset, _ = world
+
+        is_error, answer = await _call(toolset, "create_tool_approval_policy", entity=_policy("tap-ext", toolset_id="external"))
+
+        assert is_error and answer["type"] == "validation-error", answer
+        assert "toolset_id" in answer["message"] and "never gated" in answer["message"], answer
+        assert await sp.get_storage(ToolApprovalPolicy).get("tap-ext") is None
+
+    @pytest.mark.asyncio
     async def test_an_update_to_a_toolset_the_platform_does_not_run_is_refused_and_the_row_is_unchanged(self, world) -> None:
         sp, toolset, _ = world
         await _call(toolset, "create_tool_approval_policy", entity=_policy("tap-1"))

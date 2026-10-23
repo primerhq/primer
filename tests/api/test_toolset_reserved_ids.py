@@ -50,3 +50,19 @@ async def test_an_ordinary_id_is_still_accepted(client) -> None:
     resp = await _create(client, "my-own-tools")
 
     assert resp.status_code == 201, resp.text
+
+
+@pytest.mark.asyncio
+async def test_client_is_a_reserved_scope_and_cannot_be_a_toolset_row(client) -> None:
+    """``client`` is a tool-manager scope (audit G6-9): the manager exempts it from the agent's allowlist and the catalogue describes it as the static
+    client tool. A stored row under it was a second toolset behind the same id: an agent that names one of its tools listed every tool of the row past
+    its allowlist, and describe_tool documented the static tool while call_tool reached the row. The id is refused like the other scopes."""
+    from primer.api.registries.provider_registry import RESERVED_TOOLSET_ROW_IDS
+
+    assert "client" in RESERVED_TOOLSET_SCOPE_IDS and "client" in RESERVED_TOOLSET_ROW_IDS
+    resp = await _create(client, "client")
+
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["extensions"]["error"] == "reserved_id"
+    stored = [row["id"] for row in (await client.get("/v1/toolsets")).json()["items"]]
+    assert "client" not in stored

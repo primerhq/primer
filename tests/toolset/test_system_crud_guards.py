@@ -229,7 +229,7 @@ class TestReservedIds:
         assert not is_error, answer
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("scope", ["external", "workspace", "workspace_ext"])
+    @pytest.mark.parametrize("scope", ["external", "workspace", "workspace_ext", "client"])
     async def test_a_toolset_cannot_take_a_reserved_scope_id(self, world, scope) -> None:
         sp, toolset, _ = world
 

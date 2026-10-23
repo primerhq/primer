@@ -229,6 +229,20 @@ async def test_create_for_a_toolset_the_platform_does_not_run_is_422_naming_the_
 
 
 @pytest.mark.asyncio
+async def test_a_policy_on_the_external_scope_is_422_saying_external_tools_are_never_gated(client):
+    """Audit G6-10: ``external`` is the scope of the tools a caller supplies with an invocation. The caller answers them itself, so the gate never
+    consults a policy for them: a row for that id would be stored and gate nothing, the mistake the toolset check exists to refuse."""
+    r = await client.post(
+        "/v1/tool_approval_policies",
+        json={"id": "p-ext", "toolset_id": "external", "tool_name": "x", "approval": {"type": "required"}},
+    )
+    assert r.status_code == 422, r.text
+    errors = r.json()["extensions"]["errors"]
+    assert any(list(e["loc"]) == ["body", "toolset_id"] and "never gated" in e["msg"] for e in errors), errors
+    assert (await client.get("/v1/tool_approval_policies/p-ext")).status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_update_to_a_toolset_the_platform_does_not_run_is_422_and_the_row_is_unchanged(client):
     body = {"id": "p-up", "toolset_id": "system", "tool_name": "x", "approval": {"type": "required"}}
     assert (await client.post("/v1/tool_approval_policies", json=body)).status_code == 201
