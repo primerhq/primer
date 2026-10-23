@@ -89,6 +89,10 @@ def wiki(tmp_path, monkeypatch):
     docs = tmp_path / "ai-docs"
     docs.mkdir()
     monkeypatch.setenv("PRIMER_AI_DOCS_DIR", str(docs))
+    monkeypatch.setattr(
+        "primer.knowledge.system_collection.RESERVED_TOOLSET_IDS",
+        frozenset({"misc"}),
+    )
     return root
 
 
@@ -328,3 +332,147 @@ async def test_orphaned_content_row_recovers_on_regenerate_and_converge(sp, wiki
     )
     assert await converge_entity(sp, entity_type="agent", entity_id="agent-a") is True
     assert "updated helper" in (await _read(sp, "this-install/agents/agent-a")).body
+
+
+async def test_non_slug_live_entity_ids_get_collision_safe_slugs_and_do_not_stop_wiki(sp, wiki):
+    from primer.model.graph import Graph
+
+    await sp.get_storage(Graph).create(Graph(id="Team-Graph", description="upper"))
+    await sp.get_storage(Graph).create(Graph(id="team-graph", description="lower"))
+    await sp.get_storage(Collection).create(Collection(id="Docs", description="team docs"))
+
+    await regenerate_system_collection(sp, toolset_providers=MISC, app_version="0.6.0")
+
+    assert (await read_stamp(sp)).app_version == "0.6.0"
+    await _read(sp, "start-here/calling-tools")
+    lower = await _read(sp, "this-install/graphs/team-graph")
+    assert "lower" in lower.body
+    graphs_index = (await _read(sp, "this-install/graphs")).body
+    assert "Team-Graph" in graphs_index and "team-graph" in graphs_index
+
+
+async def test_a_bad_page_in_converge_or_live_pass_failure_does_not_stop_wiki_pass(sp, wiki, monkeypatch):
+    import primer.knowledge.system_collection as sc
+
+    real_write = sc._write_tree_page
+
+    async def fail_one(tree, *, path, body, title, meta):
+        if path == "this-install/workspaces":
+            raise ValueError("simulated bad live page")
+        await real_write(tree, path=path, body=body, title=title, meta=meta)
+
+    monkeypatch.setattr(sc, "_write_tree_page", fail_one)
+    await regenerate_system_collection(sp, toolset_providers=MISC, app_version="0.6.0")
+    assert (await read_stamp(sp)).app_version == "0.6.0"
+    await _read(sp, "start-here/calling-tools")
+
+    # Even if _live_pages itself raises, _wiki_pass still runs and updates the wiki.
+    async def boom_live(storage_provider):
+        raise RuntimeError("live map crashed")
+
+    monkeypatch.setattr(sc, "_live_pages", boom_live)
+    _set_body_line(wiki, "start-here/calling-tools.md", "updated despite live crash")
+    await regenerate_system_collection(sp, toolset_providers=MISC, app_version="0.7.0")
+    assert (await read_stamp(sp)).app_version == "0.7.0"
+    assert "updated despite live crash" in (await _read(sp, "start-here/calling-tools")).body
+
+
+async def test_ruling_a_same_restores_missing_page_and_prunes_stale_wiki_pages(sp, wiki):
+    await regenerate_system_collection(sp, toolset_providers=MISC, app_version="0.6.0")
+    tree = DocumentTreeService(sp)
+    await tree.delete(collection_id=SYSTEM_COLLECTION_ID, path="start-here/calling-tools")
+    await tree.create(
+        collection_id=SYSTEM_COLLECTION_ID, parent="", slug="agents",
+        body="# Agents\n", strict_slugs=False,
+    )
+    await tree.create(
+        collection_id=SYSTEM_COLLECTION_ID, parent="agents", slug="x",
+        body="# x\n\nold\n", strict_slugs=False,
+    )
+
+    await regenerate_system_collection(sp, toolset_providers=MISC, app_version="0.6.0")
+
+    await _read(sp, "start-here/calling-tools")
+    with pytest.raises(NotFoundError):
+        await _read(sp, "agents/x")
+
+
+async def test_bounded_claim_loop_retries_and_stops_when_exhausted(sp, wiki, monkeypatch):
+    import primer.knowledge.system_collection as sc
+
+    await regenerate_system_collection(sp, toolset_providers=MISC, app_version="0.6.0")
+    _set_body_line(wiki, "start-here/calling-tools.md", "0.7.0 text")
+
+    attempts = 0
+    real_claim = sc.claim
+
+    async def fail_twice(storage_provider, *, app_version, content_hash):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            return False
+        return await real_claim(
+            storage_provider, app_version=app_version, content_hash=content_hash,
+        )
+
+    monkeypatch.setattr(sc, "claim", fail_twice)
+    await regenerate_system_collection(sp, toolset_providers=MISC, app_version="0.7.0")
+    assert attempts == 3
+    assert (await read_stamp(sp)).app_version == "0.7.0"
+
+    # When all _CLAIM_PASSES attempts fail, the pass gives up cleanly without writing.
+    _set_body_line(wiki, "start-here/calling-tools.md", "0.8.0 text")
+    exhausted_attempts = 0
+
+    async def always_lose(storage_provider, *, app_version, content_hash):
+        nonlocal exhausted_attempts
+        exhausted_attempts += 1
+        return False
+
+    monkeypatch.setattr(sc, "claim", always_lose)
+    written = await regenerate_system_collection(sp, toolset_providers=MISC, app_version="0.8.0")
+    assert exhausted_attempts == sc._CLAIM_PASSES
+    assert (await read_stamp(sp)).app_version == "0.7.0"
+    assert "0.8.0 text" not in (await _read(sp, "start-here/calling-tools")).body
+
+
+async def test_missing_reserved_toolset_is_degraded_and_refuses_to_claim(sp, wiki):
+    await regenerate_system_collection(sp, toolset_providers=MISC, app_version="0.6.0")
+    await _read(sp, "reference/tools/misc/get_datetime")
+
+    # Dropping the required built-in toolset from the map marks the pass degraded.
+    await regenerate_system_collection(sp, toolset_providers={}, app_version="0.7.0")
+    assert (await read_stamp(sp)).app_version == "0.6.0"
+    await _read(sp, "reference/tools/misc/get_datetime")
+
+
+async def test_converge_entity_preserves_live_index_summary(sp, wiki):
+    await regenerate_system_collection(sp, toolset_providers=MISC, app_version="0.6.0")
+    await sp.get_storage(Agent).create(
+        Agent(id="agent-x", description="d", model=AgentModel(profile_id="p--m")),
+    )
+    await converge_entity(sp, entity_type="agent", entity_id="agent-x")
+    after = (await _read(sp, "this-install/agents")).document.meta
+    assert after["summary"] == "every agent on this install"
+
+
+async def test_entity_created_mid_pass_is_not_pruned_by_prune_live(sp, wiki, monkeypatch):
+    import primer.knowledge.system_collection as sc
+
+    await regenerate_system_collection(sp, toolset_providers=MISC, app_version="0.6.0")
+    real_live_pages = sc._live_pages
+
+    async def snapshot_then_cdc(storage_provider):
+        live = await real_live_pages(storage_provider)
+        await sp.get_storage(Agent).create(
+            Agent(id="agent-late", description="created mid-pass", model=AgentModel(profile_id="p--m")),
+        )
+        assert await converge_entity(sp, entity_type="agent", entity_id="agent-late") is True
+        return live
+
+    monkeypatch.setattr(sc, "_live_pages", snapshot_then_cdc)
+    await regenerate_system_collection(sp, toolset_providers=MISC, app_version="0.6.0")
+    page = await _read(sp, "this-install/agents/agent-late")
+    assert "created mid-pass" in page.body
+    index = (await _read(sp, "this-install/agents")).body
+    assert "agent-late" in index

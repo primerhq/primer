@@ -264,3 +264,11 @@ async def test_create_with_invalid_input_schema_returns_422(client) -> None:
     body["nodes"][0]["input_schema"] = {"type": 123}
     resp = await client.post("/v1/graphs", json=body)
     assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_id", ["Team-Graph", "my graph", "..", "a/b"])
+async def test_create_graph_rejects_non_slug_id(client, bad_id: str) -> None:
+    body = _minimal_begin_end_body(bad_id)
+    resp = await client.post("/v1/graphs", json=body)
+    assert resp.status_code == 422, resp.text

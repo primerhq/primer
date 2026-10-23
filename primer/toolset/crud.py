@@ -113,9 +113,17 @@ def build_crud_toolset(
     passes it; ``None`` for standalone builds).
     """
     registry: dict[str, tuple[Tool, ToolHandler]] = {}
+    async def _graph_pre_create(entity: Graph) -> None:
+        from primer.knowledge.checks import check_graph_id
+
+        check_graph_id(entity)
+
     # The builder is the principal most likely to name a profile or toolset that does not exist, so its create / update run the
-    # same reference check as the route and the system toolset (A-09). A graph has no such pre-write check.
-    pre_checks_by_label = {"agent": agent_pre_checks(storage_provider)}
+    # same reference check as the route and the system toolset (A-09).
+    pre_checks_by_label: dict[str, tuple[Any, Any]] = {
+        "agent": agent_pre_checks(storage_provider),
+        "graph": (_graph_pre_create, None),
+    }
 
     for label, plural, model_cls, guards in (
         ("agent", "agents", Agent, AGENT_GUARDS),

@@ -50,6 +50,10 @@ def wiki(tmp_path, monkeypatch):
     docs.mkdir()
     monkeypatch.setenv("PRIMER_WIKI_DIR", str(root))
     monkeypatch.setenv("PRIMER_AI_DOCS_DIR", str(docs))
+    monkeypatch.setattr(
+        "primer.knowledge.system_collection.RESERVED_TOOLSET_IDS",
+        frozenset(),
+    )
     return root
 
 

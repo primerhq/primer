@@ -12,10 +12,44 @@ REST hooks answer 403 and the tools ``type=forbidden``, as for the other platfor
 
 from __future__ import annotations
 
+import re
+
 from primer.common.entity_checks import EntityCheckError
 from primer.model.collection import Collection
+from primer.model.graph import Graph
 
 SYSTEM_FLAG_PROTECTED = "system_flag_protected"
+COLLECTION_ID_INVALID = "collection_id_invalid"
+GRAPH_ID_INVALID = "graph_id_invalid"
+_SLUG_RE = re.compile(r"[a-z0-9._-]+")
+
+
+def _is_valid_slug_id(value: str) -> bool:
+    return bool(_SLUG_RE.fullmatch(value)) and value not in (".", "..")
+
+
+def check_collection_id(entity: Collection) -> None:
+    """Refuse a new collection whose id is not a valid slug ([a-z0-9._-]+, not '.' or '..')."""
+    cid = entity.id or ""
+    if not _is_valid_slug_id(cid):
+        raise EntityCheckError(
+            "validation",
+            f"{cid!r} is not a valid collection id: it must match [a-z0-9._-]+ and not be '.' or '..'",
+            code=COLLECTION_ID_INVALID,
+            field="id",
+        )
+
+
+def check_graph_id(entity: Graph) -> None:
+    """Refuse a new graph whose id is not a valid slug ([a-z0-9._-]+, not '.' or '..')."""
+    gid = entity.id or ""
+    if not _is_valid_slug_id(gid):
+        raise EntityCheckError(
+            "validation",
+            f"{gid!r} is not a valid graph id: it must match [a-z0-9._-]+ and not be '.' or '..'",
+            code=GRAPH_ID_INVALID,
+            field="id",
+        )
 
 
 def check_collection_system_flag(entity: Collection, existing: Collection | None = None) -> None:
@@ -38,4 +72,11 @@ def check_collection_system_flag(entity: Collection, existing: Collection | None
         )
 
 
-__all__ = ["SYSTEM_FLAG_PROTECTED", "check_collection_system_flag"]
+__all__ = [
+    "COLLECTION_ID_INVALID",
+    "GRAPH_ID_INVALID",
+    "SYSTEM_FLAG_PROTECTED",
+    "check_collection_id",
+    "check_collection_system_flag",
+    "check_graph_id",
+]
