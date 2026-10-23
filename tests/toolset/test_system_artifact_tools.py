@@ -34,6 +34,45 @@ async def test_the_artifact_tools_are_exposable_over_mcp(world) -> None:
     _, toolset, _ = world
     tools = {tool.id: tool async for tool in toolset.list_tools()}
 
-    tool = tools["test_artifact_storage_provider"]
-    assert toolset.required_role(tool.id) == "admin"
-    assert is_exposable(tool, provider=toolset) == (True, None)
+    for tool_id in (
+        "test_artifact_storage_provider",
+        "get_active_artifact_store",
+        "set_active_artifact_store",
+    ):
+        tool = tools[tool_id]
+        assert toolset.required_role(tool.id) == "admin"
+        assert is_exposable(tool, provider=toolset) == (True, None)
+
+
+async def test_set_then_get_the_active_store(world) -> None:
+    sp, toolset, _ = world
+    await sp.get_storage(ArtifactStorageProvider).create(
+        ArtifactStorageProvider(id="db-2", provider="db", config={}),
+    )
+
+    set_error, selected = await _call(toolset, "set_active_artifact_store", provider_id="db-2")
+    get_error, current = await _call(toolset, "get_active_artifact_store")
+
+    assert not set_error and not get_error
+    assert selected == current == {"provider_id": "db-2", "provider": "db"}
+
+
+async def test_setting_an_unknown_store_is_a_validation_error(world) -> None:
+    _, toolset, _ = world
+    is_error, answer = await _call(toolset, "set_active_artifact_store", provider_id="missing")
+    assert is_error
+    assert answer["type"] == "validation-error"
+    assert answer["message"].startswith("provider_id: ")
+
+
+async def test_the_active_store_cannot_be_deleted_by_a_tool(world) -> None:
+    sp, toolset, _ = world
+    await sp.get_storage(ArtifactStorageProvider).create(
+        ArtifactStorageProvider(id="db-2", provider="db", config={}),
+    )
+    assert not (await _call(toolset, "set_active_artifact_store", provider_id="db-2"))[0]
+
+    is_error, answer = await _call(toolset, "delete_artifact_storage_provider", id="db-2")
+
+    assert is_error
+    assert answer["type"] == "conflict"
