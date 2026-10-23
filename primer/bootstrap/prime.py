@@ -51,11 +51,9 @@ logger = logging.getLogger(__name__)
 #: The display name a created main session carries (task 14 finds it by this name).
 MAIN_SESSION_NAME: str = "main"
 
-#: The console's own session-list cap; the lookup pages at this size and stops at a short page.
+#: The most open operator sessions of ONE caller on one workspace the lookup reads (one query, filtered in storage). A caller has one in
+#: practice; the cap only bounds the read.
 _MAIN_SESSION_PAGE: int = 200
-#: A workspace with more sessions than this is beyond anything the console lists: give up the lookup and make the main
-#: session rather than scan the whole table.
-_MAIN_SESSION_MAX_PAGES: int = 50
 
 
 async def resolve_default_workspace_id(storage_provider: Any) -> str | None:
@@ -166,7 +164,14 @@ async def ensure_main_operator_session(
     * **The lookup is the caller's own.** The caller's open (status not ``ended``) sessions on the workspace bound to
       the ``operator`` agent; when more than one is open, the most recently active wins, so a person lands in the
       conversation they were in, never a fresh one. Another user's session, a non-operator binding and an ended session
-      never qualify.
+      never qualify. "The caller's" is the principal's type and id and nothing else (lead ruling 4 of the G7 fixes, audit
+      G7-12): a new display name, another login source (password or SSO) or a role change keeps the same session; an API
+      token is its own principal. One query, filtered in storage on the workspace, ``initiated_by.id``,
+      ``binding.agent_id`` and the status, reads them: never a scan of the workspace's sessions.
+    * **A session the caller can no longer drive is not theirs any more.** One whose recorded rank is above the caller's
+      current one (an admin's main session, after the admin was demoted) would refuse the caller's own steer
+      (:func:`primer.authz.may_drive`, lead ruling 2), so it is passed over and the caller gets a new main session at
+      their current rank. A promotion does not need one: the session keeps running, at the rank it was created with.
     * **A created session is named ``main`` and runs as the caller.** ``initiated_by`` carries the caller's role, so the
       session clears exactly the caller's role floor (A-20): an admin's main session can call the admin tools through
       the operator, a user's cannot. It is made exactly as the workspace-create seed makes its ``main`` (the plain
@@ -189,28 +194,31 @@ async def ensure_main_operator_session(
         create_session,
     )
 
+    from primer.authz import may_drive
+
     def _is_callers_open_operator(row: WorkspaceSession) -> bool:
         return (
-            row.status is not SessionStatus.ENDED
+            row.workspace_id == workspace_id
+            and row.status is not SessionStatus.ENDED
             and row.initiated_by is not None
-            and row.initiated_by == initiated_by
+            and (row.initiated_by.type, row.initiated_by.id) == (initiated_by.type, initiated_by.id)
             and getattr(row.binding, "agent_id", None) == RESERVED_OPERATOR_AGENT
+            and may_drive(initiated_by, row.initiated_by)
         )
 
+    def _eq(field: str, value: str) -> Predicate:
+        return Predicate(left=FieldRef(name=field), op=Op.EQ, right=Value(value=value))
+
     sessions = storage_provider.get_storage(WorkspaceSession)
-    predicate = Predicate(
-        left=FieldRef(name="workspace_id"), op=Op.EQ, right=Value(value=workspace_id),
-    )
-    candidates: list[WorkspaceSession] = []
-    offset = 0
-    for _ in range(_MAIN_SESSION_MAX_PAGES):
-        page = await sessions.find(
-            predicate, OffsetPage(offset=offset, length=_MAIN_SESSION_PAGE),
-        )
-        candidates.extend(row for row in page.items if _is_callers_open_operator(row))
-        if len(page.items) < _MAIN_SESSION_PAGE:
-            break
-        offset += _MAIN_SESSION_PAGE
+    predicate = _eq("workspace_id", workspace_id)
+    for part in (
+        _eq("initiated_by.id", initiated_by.id),
+        _eq("binding.agent_id", RESERVED_OPERATOR_AGENT),
+        Predicate(left=FieldRef(name="status"), op=Op.NE, right=Value(value=SessionStatus.ENDED.value)),
+    ):
+        predicate = Predicate(left=predicate, op=Op.AND, right=part)
+    page = await sessions.find(predicate, OffsetPage(offset=0, length=_MAIN_SESSION_PAGE))
+    candidates = [row for row in page.items if _is_callers_open_operator(row)]
     if candidates:
         newest = max(
             candidates, key=lambda row: (row.last_turn_at or row.created_at, row.created_at),
