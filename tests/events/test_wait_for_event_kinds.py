@@ -65,12 +65,76 @@ async def test_an_admin_may_wait_on_any_kind(sp, who, glob):  # noqa: F811
     assert [s.filter.event_types for s in await _subscriptions(sp)] == [[glob]]
 
 
+# A canvas wait from a non-admin must also name the workspace or the session it is for (audit G8-08): this matcher does.
+SESSION_SCOPE = [{"path": "session_id", "op": "eq", "value": "sess-1"}]
+
+
 @pytest.mark.parametrize("glob", LIFECYCLE)
 async def test_a_non_admin_may_wait_on_the_kinds_the_feed_shows_it(sp, glob):  # noqa: F811
-    result = await make_wait_for_event_handler(sp)({"event_types": [glob]}, ctx=_ctx(USER))
+    arguments: dict = {"event_types": [glob]}
+    if glob.startswith("canvas."):
+        arguments["fields"] = SESSION_SCOPE
+    result = await make_wait_for_event_handler(sp)(arguments, ctx=_ctx(USER))
 
     assert isinstance(result, Yielded), result
     assert [s.filter.event_types for s in await _subscriptions(sp)] == [[glob]]
+
+
+# ---- canvas events: a non-admin names the workspace or the session (audit G8-08) ---------------------------------------------------
+
+CANVAS_GLOBS = ["canvas.event", "canvas.updated", "canvas.*", "canvas.e?ent"]
+
+
+@pytest.mark.parametrize("who", [USER, None], ids=["user", "no-initiator"])
+@pytest.mark.parametrize("glob", CANVAS_GLOBS)
+@pytest.mark.parametrize("fields", [
+    None,
+    [{"path": "payload.element", "op": "eq", "value": "ok"}],
+    [{"path": "session_id", "op": "prefix", "value": "sess-"}],
+    [{"path": "workspace_id", "op": "prefix", "value": ""}],
+    [{"path": "session_id", "op": "eq", "value": ""}],
+    [{"path": "payload.session_id", "op": "eq", "value": "sess-1"}],
+], ids=["no fields", "element only", "session prefix", "workspace prefix", "empty session", "payload path"])
+async def test_a_non_admin_canvas_wait_without_a_workspace_or_session_is_refused(sp, who, glob, fields):  # noqa: F811
+    """A canvas event carries what a user typed or clicked (a value, Html emit data, the name of who did it); without a scope a
+    user-role run in one workspace would wake on any session's canvas in the install."""
+    arguments: dict = {"event_types": ["session.ended", glob]}
+    if fields is not None:
+        arguments["fields"] = fields
+    result = await make_wait_for_event_handler(sp)(arguments, ctx=_ctx(who))
+
+    assert json.loads(result.output) == {
+        "type": "forbidden",
+        "message": (
+            "this run's principal is not an admin, so a wait on canvas events must name the workspace or the session they are for: "
+            f"add a fields matcher {{path: workspace_id or session_id, op: eq, value}}; refused: {glob!r}"
+        ),
+    }
+    assert await _subscriptions(sp) == [], "a refused wait stores no subscription"
+
+
+@pytest.mark.parametrize("path, value", [("session_id", "sess-1"), ("workspace_id", "w")])
+async def test_a_non_admin_canvas_wait_scoped_to_a_workspace_or_session_parks(sp, path, value):  # noqa: F811
+    from datetime import UTC, datetime
+
+    from primer.events.filters import matches
+    from primer.model.event import Event
+
+    fields = [{"path": "payload.element", "op": "eq", "value": "ok"}, {"path": path, "op": "eq", "value": value}]
+    result = await make_wait_for_event_handler(sp)({"event_types": ["canvas.event"], "fields": fields}, ctx=_ctx(USER))
+
+    assert isinstance(result, Yielded), result
+    [stored] = await _subscriptions(sp)
+    elsewhere = Event(
+        id=7, event_type="canvas.event", occurred_at=datetime.now(UTC), workspace_id="ws-prime", session_id="s-admin", actor="admin",
+        payload={"element": "ok", "kind": "click", "by": "admin", "wake": True},
+    )
+    assert not matches(elsewhere, stored.filter), "another workspace's canvas event does not wake it"
+
+
+@pytest.mark.parametrize("who", [ADMIN, PrincipalRef.system()], ids=["admin", "system"])
+async def test_an_admin_canvas_wait_needs_no_scope(sp, who):  # noqa: F811
+    assert isinstance(await make_wait_for_event_handler(sp)({"event_types": ["canvas.event"]}, ctx=_ctx(who)), Yielded)
 
 
 @pytest.mark.parametrize("who", [USER, None], ids=["user", "no-initiator"])

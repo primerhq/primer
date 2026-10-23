@@ -29,7 +29,7 @@ from primer.agent.inner_dispatch import run_principal
 from primer.authz import _role_allows
 from primer.events.filters import validate_filter_expr
 from primer.events.redaction import redact_payload
-from primer.events.visibility import user_safe_glob, user_safe_kinds
+from primer.events.visibility import SCOPE_PATHS, needs_scope, user_safe_glob, user_safe_kinds
 from primer.model.event import (
     EventFilter,
     EventSubscription,
@@ -99,7 +99,10 @@ def _non_admin_refusal(ctx: ToolContext, args: _WaitForEventArgs) -> str | None:
     * no ``expr``: the dispatcher evaluates the rego module server-side; every expr is also checked separately for references to the
       host ``opa`` package, including for an admin;
     * no ``regex`` field matcher: patterns run in the shared, leader-elected dispatcher loop, so a catastrophic one stalls every
-      subscription. ``eq`` and ``prefix`` stay open.
+      subscription. ``eq`` and ``prefix`` stay open;
+    * a scope on a canvas wait: a ``canvas.*`` event carries what a user entered (a value, Html emit data, who did it), so a wait whose
+      kinds can match one must name the workspace or the session with an ``eq`` matcher on ``workspace_id`` or ``session_id`` (audit
+      G8-08); without it a user-role run in one workspace would wake on any session's canvas in the install.
     """
     if _role_allows(run_principal(ctx), "admin"):
         return None
@@ -116,6 +119,13 @@ def _non_admin_refusal(ctx: ToolContext, args: _WaitForEventArgs) -> str | None:
         return (
             _NOT_ADMIN + "its fields matchers may use only the eq and prefix ops; refused regex on: "
             + ", ".join(repr(path) for path in regex)
+        )
+    unscoped = [glob for glob in args.event_types if needs_scope(glob)]
+    scoped = any(matcher.op == "eq" and matcher.path in SCOPE_PATHS and matcher.value for matcher in args.fields or [])
+    if unscoped and not scoped:
+        return (
+            _NOT_ADMIN + "a wait on canvas events must name the workspace or the session they are for: add a fields matcher "
+            "{path: workspace_id or session_id, op: eq, value}; refused: " + ", ".join(repr(glob) for glob in unscoped)
         )
     return None
 
