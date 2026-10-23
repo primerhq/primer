@@ -95,13 +95,13 @@ async def _world(tmp_path: Path, kind: str):
     if kind == "fresh":
         await ensure_crud_approval_policies(sp)
     else:
-        # What the seed before the fix wrote: one required policy per crud tool and nothing else. The install is at schema version 12, the last
+        # What the seed before the fix wrote: one required policy per crud tool and nothing else. The install is at schema version 13, the last
         # version before the twins were gated, and its boot runs the migrations and then the ensure pass, in that order.
         store = sp.get_storage(ToolApprovalPolicy)
         for name in CRUD_TOOL_NAMES:
             await store.create(ToolApprovalPolicy(id=crud_policy_id(name), toolset_id="crud", tool_name=name, approval=RequiredApprovalConfig()))
         await sp.set_bootstrap_completed(datetime.now(UTC))
-        await sp.set_schema_version(12)
+        await sp.set_schema_version(13)
         assert await run_migrations(sp, is_fresh_install=False) == LATEST_VERSION
         await ensure_crud_approval_policies(sp)
     registry = ProviderRegistry(

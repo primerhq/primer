@@ -47,7 +47,7 @@ async def policy_rows_for(store, toolset_id: str, tool_name: str, *, length: int
     """Every stored approval policy of ``(toolset_id, tool_name)``, enabled or not, under every spelling of the toolset id (``_system`` is ``system``).
 
     The key the gate reads (``ApprovalResolver.find``) and the one the uniqueness check refuses a second row for, so a row found here is the tool's
-    policy whatever its id: the ensure pass and migration 13 seed nothing beside it.
+    policy whatever its id: the ensure pass and migration 14 seed nothing beside it.
     """
     rows: dict[str, object] = {}
     for spelling in toolset_id_spellings(toolset_id):
