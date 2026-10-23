@@ -113,3 +113,36 @@ async def test_a_persons_steer_reopens_a_session_an_operator_cancelled(world, cl
     r = await _steer(client, "ses-c")
     assert r.status_code == 200, r.text
     assert (r.json()["status"], r.json()["ended_reason"]) == ("running", None)
+
+
+# ---- a person may always act on their own session (review of #853, N1) -------------------------------------------------------------
+
+
+async def _user_id(app, username: str) -> str:
+    from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
+    from primer.model.user import User
+
+    page = await app.state.storage_provider.get_storage(User).find(
+        Predicate(left=FieldRef(name="username"), op=Op.EQ, right=Value(value=username)), OffsetPage(offset=0, length=1),
+    )
+    return page.items[0].id
+
+
+@pytest.mark.parametrize("action", ["steer", "restart", "cancel", "resume"])
+async def test_a_demoted_admin_still_acts_on_their_own_session_and_nobody_else_below_it_does(world, app, client, carol, fake_storage_provider, action):
+    """Carol's session was recorded while she was an admin; she is a user now. Her own request carries her current role, which caps every run of the
+    session (``resolve_run_principal``), so she is not locked out of it; another user-role account still is."""
+    carol_then = PrincipalRef(type="user", id=await _user_id(app, "carol"), display="carol", role="admin", source="local")
+    status = {"steer": SessionStatus.WAITING, "restart": SessionStatus.ENDED, "cancel": SessionStatus.WAITING, "resume": SessionStatus.PAUSED}[action]
+    await _seed(fake_storage_provider, "ses-own", by=carol_then, status=status, ended_reason="completed" if action == "restart" else None)
+    payload = {"steer": {"instruction": "hello"}, "restart": {"input": "hello"}}.get(action, {})
+
+    r = await client.post("/v1/admin/users", json={"username": "dave", "password": "davepw12"})
+    assert r.status_code == 201, r.text
+    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as dave:
+        assert (await dave.post("/v1/auth/login", json={"username": "dave", "password": "davepw12"})).status_code == 200
+        refused = await dave.post(f"/v1/workspaces/ws-r/sessions/ses-own/{action}", json=payload)
+    assert refused.status_code == 403, refused.text
+
+    own = await carol.post(f"/v1/workspaces/ws-r/sessions/ses-own/{action}", json=payload)
+    assert own.status_code == 200, own.text

@@ -200,15 +200,17 @@ def _caller_principal(ctx: ToolContext | None) -> Any:
 
 
 def _refuse_outranked(ctx: ToolContext | None, row: WorkspaceSession) -> ToolCallResult | None:
-    """``forbidden`` when the caller ranks below the creator of ``row`` (lead ruling 2 of the G7 fixes, audit G7-06), else ``None``.
+    """``forbidden`` when the caller ranks below the creator of ``row`` (lead ruling 2 of the G7 fixes, audit G7-06; review of #853), else ``None``.
 
-    For the steer and restart tools called with no calling session (the MCP endpoint): a person or an API client must out-rank or equal the session's
-    creator, the rule of the REST routes, of a trigger's fire and of a message from another session (:func:`primer.authz.may_drive`). The message is
-    fixed: it names neither the creator nor the rank.
+    The caller must out-rank or equal the session's creator, the rule of the REST routes, of a trigger's fire and of a message from another session
+    (:func:`primer.authz.may_drive`): for the steer and restart tools called with no calling session, and for the cancel and resume tools from a session
+    or not. The message is fixed: it names neither the creator nor the rank. A call with no ToolContext is the MCP endpoint, a live request whose actor
+    carries the account's current role, so it may always act on a session its own account or token started (``own_session``, N1); a run may not
+    (a trigger-capped run carries an admin's identity at a lower rank).
     """
     from primer.authz import OUTRANKED_MESSAGE, may_drive
 
-    if may_drive(_caller_principal(ctx), row.initiated_by):
+    if may_drive(_caller_principal(ctx), row.initiated_by, own_session=ctx is None):
         return None
     return _err(OUTRANKED_MESSAGE, error_type="forbidden")
 
@@ -223,6 +225,12 @@ def _caller_actor(ctx: ToolContext | None) -> str:
     from primer.mcp.server import current_actor
 
     return actor_of(current_actor.get())
+
+
+def _unknown_workspace(workspace_id: str) -> NotFoundError:
+    """What a workspace that does not exist answers, in the registry's words (``WorkspaceRegistry.get_workspace_row``): an out-of-reach workspace
+    answers exactly this, so its id is never confirmed (lead ruling 3 of the G7 fixes)."""
+    return NotFoundError(f"Workspace {workspace_id!r} does not exist")
 
 
 def _session_not_on_workspace(args: "_WorkspaceSessionArgs") -> str:
@@ -1691,6 +1699,10 @@ def build_workspaces_toolset(
             args = _CreateSessionArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        if not in_reach(await _caller_reach(ctx), args.workspace_id):
+            # A session outside the default workspace creates sessions only in its own (review of #853): a session it made in prime would reach
+            # every workspace. Answered exactly as a workspace that does not exist.
+            return _err_from_primer(_unknown_workspace(args.workspace_id), error_type="not-found")
         from primer.model.principal import PrincipalRef
         from primer.workspace.session_factory import (
             SessionFactoryDeps,
@@ -1737,7 +1749,10 @@ def build_workspaces_toolset(
             "Use when you need to execute an agent or graph headlessly; "
             "poll it with ``get_workspace_session`` and read outputs with "
             "``read_workspace_file``; stop it with "
-            "``cancel_workspace_session``."
+            "``cancel_workspace_session``. From a session outside the "
+            "default workspace (prime) only your own workspace is "
+            "reachable: another one answers type=not-found, as an unknown "
+            "workspace does."
         ),
         _CreateSessionArgs,
         _create_session,
@@ -1769,7 +1784,7 @@ def build_workspaces_toolset(
     registry[name] = entry
 
     async def _cancel_workspace_session(
-        arguments: dict[str, Any],
+        arguments: dict[str, Any], ctx: ToolContext | None = None,
     ) -> ToolCallResult:
         if scheduler is None or claim_engine is None:
             return _err(
@@ -1780,6 +1795,15 @@ def build_workspaces_toolset(
             args = _WorkspaceSessionArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        # The reach of a calling session, then the rank of the caller (review of #853): out of reach answers exactly as an unknown session does
+        # (cancel_session's own words), and a caller below the session's creator is refused before anything is written.
+        if not in_reach(await _caller_reach(ctx), args.workspace_id):
+            return _err(_session_not_on_workspace(args), error_type="not-found")
+        target = await _session_row_storage().get(args.session_id)
+        if target is not None and target.workspace_id == args.workspace_id:
+            refusal = _refuse_outranked(ctx, target)
+            if refusal is not None:
+                return refusal
         from primer.workspace.session_factory import (
             SessionCancelDeps,
             cancel_session,
@@ -1811,7 +1835,7 @@ def build_workspaces_toolset(
             "Use when you need to stop a run; a created or paused session "
             "ends immediately, a running one is preempted at the next safe "
             "point. Not for a temporary halt (use "
-            "``pause_workspace_session``)."
+            "``pause_workspace_session``). " + "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an unknown id does. type=forbidden when the session runs at a higher rank than you (or your run)."
         ),
         _WorkspaceSessionArgs,
         _cancel_workspace_session,
@@ -1830,13 +1854,16 @@ def build_workspaces_toolset(
     registry[name] = entry
 
     async def _interrupt_workspace_session(
-        arguments: dict[str, Any],
+        arguments: dict[str, Any], ctx: ToolContext | None = None,
     ) -> ToolCallResult:
         # No scheduler / claim engine check (unlike the tools above): a Stop touches neither, only the session row and the bus.
         try:
             args = _WorkspaceSessionArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        if not in_reach(await _caller_reach(ctx), args.workspace_id):
+            # Out of the calling session's reach (review of #853): exactly as an unknown session (interrupt_session's own words).
+            return _err(_session_not_on_workspace(args), error_type="not-found")
         from primer.workspace.session_factory import (
             SessionInterruptDeps,
             interrupt_session,
@@ -1877,7 +1904,7 @@ def build_workspaces_toolset(
             "parked waiting on an approval, an answer or a timer (cancel it "
             "instead). A session may stop itself; an autonomous session that "
             "does waits until something wakes it, and a graph session stops "
-            "between graph events, not at the next model call."
+            "between graph events, not at the next model call. " + "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an unknown id does."
         ),
         _WorkspaceSessionArgs,
         _interrupt_workspace_session,
@@ -1920,7 +1947,7 @@ def build_workspaces_toolset(
         if not in_reach(await _caller_reach(ctx), args.workspace_id):
             # Out of the calling session's reach: answered exactly as a workspace that does not exist (the registry's own words for one), so a
             # workspace id seen in a file or a log is never confirmed.
-            return _err_from_primer(NotFoundError(f"Workspace {args.workspace_id!r} does not exist"), error_type="not-found")
+            return _err_from_primer(_unknown_workspace(args.workspace_id), error_type="not-found")
         try:
             ws = await workspace_registry.get_workspace(args.workspace_id)
         except NotFoundError as exc:
@@ -2039,11 +2066,14 @@ def build_workspaces_toolset(
     )
     registry[name] = entry
 
-    async def _get_session(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _get_session(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         try:
             args = _WorkspaceSessionArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        if not in_reach(await _caller_reach(ctx), args.workspace_id):
+            # Out of the calling session's reach (review of #853): exactly as a workspace that does not exist (the registry's own words).
+            return _err_from_primer(_unknown_workspace(args.workspace_id), error_type="not-found")
         try:
             ws = await workspace_registry.get_workspace(args.workspace_id)
         except NotFoundError as exc:
@@ -2076,7 +2106,7 @@ def build_workspaces_toolset(
         ),
         (
             "Use when inspecting one session on a workspace; not for "
-            "listing all of them (use ``list_workspace_sessions``)."
+            "listing all of them (use ``list_workspace_sessions``). " + "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an unknown id does."
         ),
         _WorkspaceSessionArgs,
         _get_session,
@@ -2090,7 +2120,7 @@ def build_workspaces_toolset(
     )
     registry[name] = entry
 
-    async def _session_messages(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _session_messages(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         # The supported transcript reader (A-22): the raw .state path is
         # refused to non-admins, so this is the same rule and the same
         # reader as GET /v1/sessions/{sid}/messages.
@@ -2101,7 +2131,8 @@ def build_workspaces_toolset(
         except ValidationError as exc:
             return _err_from_validation(exc)
         row = await storage_provider.get_storage(WorkspaceSession).get(args.session_id)
-        if row is None or row.workspace_id != args.workspace_id:
+        # Out of the calling session's reach (review of #853) answers exactly as a session that does not exist.
+        if row is None or row.workspace_id != args.workspace_id or not in_reach(await _caller_reach(ctx), args.workspace_id):
             return _err(
                 f"Session {args.session_id!r} does not exist on "
                 f"workspace {args.workspace_id!r}",
@@ -2149,7 +2180,7 @@ def build_workspaces_toolset(
             "(use ``get_workspace_session``). Never read "
             "``.state/sessions/<id>/messages.jsonl`` with "
             "``read_workspace_file``: raw ``.state`` reads are refused "
-            "unless the caller is an admin."
+            "unless the caller is an admin. " + "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an unknown id does."
         ),
         _SessionMessagesArgs,
         _session_messages,
@@ -2163,12 +2194,22 @@ def build_workspaces_toolset(
     )
     registry[name] = entry
 
-    def _session_op(op_name: str) -> ToolHandler:
-        async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+    def _session_op(op_name: str, *, ranked: bool = False) -> ToolHandler:
+        async def _handler(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
             try:
                 args = _WorkspaceSessionArgs.model_validate(arguments)
             except ValidationError as exc:
                 return _err_from_validation(exc)
+            if not in_reach(await _caller_reach(ctx), args.workspace_id):
+                # Out of the calling session's reach (review of #853): exactly as a workspace that does not exist (the registry's own words).
+                return _err_from_primer(_unknown_workspace(args.workspace_id), error_type="not-found")
+            if ranked:
+                # A resume sets a run going at its creator's rank: the caller must out-rank or equal the creator (review of #853).
+                target = await _session_row_storage().get(args.session_id)
+                if target is not None and target.workspace_id == args.workspace_id:
+                    refusal = _refuse_outranked(ctx, target)
+                    if refusal is not None:
+                        return refusal
             try:
                 ws = await workspace_registry.get_workspace(args.workspace_id)
             except NotFoundError as exc:
@@ -2196,7 +2237,7 @@ def build_workspaces_toolset(
             "Use when you want to halt a running session; not to "
             "resume it (use ``resume_workspace_session``). "
             "``type=conflict`` when the session is in an incompatible "
-            "lifecycle state (already ended, etc.)."
+            "lifecycle state (already ended, etc.). " + "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an unknown id does."
         ),
         _WorkspaceSessionArgs,
         _session_op("request_pause"),
@@ -2215,10 +2256,10 @@ def build_workspaces_toolset(
         (
             "Use when restarting a paused session; not to pause it "
             "(use ``pause_workspace_session``). ``type=conflict`` when "
-            "the session is not currently paused."
+            "the session is not currently paused. " + "From a session outside the default workspace (prime) only your own workspace is reachable: another one answers type=not-found, as an unknown id does. type=forbidden when the session runs at a higher rank than you (or your run)."
         ),
         _WorkspaceSessionArgs,
-        _session_op("request_resume"),
+        _session_op("request_resume", ranked=True),
         examples=[
             ToolExample(
                 args={"workspace_id": "ws-1", "session_id": "sess-1"},

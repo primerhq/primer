@@ -13,7 +13,8 @@ caller reaches it by:
 
 The actor ranks ``user`` on every path. Scenarios: the target was started by an admin (``outranked``); by a user (``same rank``); it is in another
 workspace than the sending session's (``out of reach``; the sender is not in the default workspace); an operator cancelled it (``cancelled``); the
-sending session's turn is already 8 hops from a person (``hop limit``). A refused drive writes nothing to the target.
+sending session's turn is already 8 hops from a person (``hop limit``); the sending session is in the default workspace and the target in another
+(``from prime``: prime is the management plane). A refused drive writes nothing to the target.
 """
 
 from __future__ import annotations
@@ -44,19 +45,20 @@ USER = PrincipalRef(type="user", id="u-user", display="user", role="user", sourc
 ADMIN = PrincipalRef(type="user", id="u-root", display="root", role="admin", source="local")
 
 D, F, N, C, H, S = "delivered", "forbidden", "not-found", "conflict", "hop-limit", "skipped"
+P = "from prime"  # the sending session is in the default workspace, the target in another (review of #853, N6)
 
 #: path -> (kind of drive, what each scenario answers). The columns are the table's.
 TABLE: dict[str, tuple[str, dict[str, str]]] = {
-    "message_session":            ("steer", {"outranked": F, "same rank": D, "out of reach": N, "cancelled": C, "hop limit": H}),
-    "steer tool, in a session":   ("steer", {"outranked": F, "same rank": D, "out of reach": N, "cancelled": C, "hop limit": H}),
-    "restart tool, in a session": ("restart", {"outranked": F, "same rank": D, "out of reach": N, "cancelled": C, "hop limit": H}),
-    "steer tool, no session":     ("steer", {"outranked": F, "same rank": D, "out of reach": D, "cancelled": C, "hop limit": D}),
-    "restart tool, no session":   ("restart", {"outranked": F, "same rank": D, "out of reach": D, "cancelled": C, "hop limit": D}),
-    "REST steer":                 ("steer", {"outranked": F, "same rank": D, "out of reach": D, "cancelled": D, "hop limit": D}),
-    "REST restart":               ("restart", {"outranked": F, "same rank": D, "out of reach": D, "cancelled": D, "hop limit": D}),
-    "trigger session_append":     ("steer", {"outranked": F, "same rank": D, "out of reach": D, "cancelled": S, "hop limit": D}),
+    "message_session":            ("steer", {"outranked": F, "same rank": D, "out of reach": N, "cancelled": C, "hop limit": H, P: D}),
+    "steer tool, in a session":   ("steer", {"outranked": F, "same rank": D, "out of reach": N, "cancelled": C, "hop limit": H, P: D}),
+    "restart tool, in a session": ("restart", {"outranked": F, "same rank": D, "out of reach": N, "cancelled": C, "hop limit": H, P: D}),
+    "steer tool, no session":     ("steer", {"outranked": F, "same rank": D, "out of reach": D, "cancelled": C, "hop limit": D, P: D}),
+    "restart tool, no session":   ("restart", {"outranked": F, "same rank": D, "out of reach": D, "cancelled": C, "hop limit": D, P: D}),
+    "REST steer":                 ("steer", {"outranked": F, "same rank": D, "out of reach": D, "cancelled": D, "hop limit": D, P: D}),
+    "REST restart":               ("restart", {"outranked": F, "same rank": D, "out of reach": D, "cancelled": D, "hop limit": D, P: D}),
+    "trigger session_append":     ("steer", {"outranked": F, "same rank": D, "out of reach": D, "cancelled": S, "hop limit": D, P: D}),
 }
-SCENARIOS = ["outranked", "same rank", "out of reach", "cancelled", "hop limit"]
+SCENARIOS = ["outranked", "same rank", "out of reach", "cancelled", "hop limit", P]
 IN_SESSION = {"message_session", "steer tool, in a session", "restart tool, in a session"}
 
 
@@ -70,11 +72,13 @@ class Env:
 async def _seed(world: World, path: str, scenario: str) -> str:
     """The sending session ``ses-a`` (a user's agent session in ``ws-1``) and the target ``ses-t``; returns the target's workspace."""
     kind = TABLE[path][0]
+    if scenario == P:
+        await world.sp.set_default_workspace_id("ws-1")  # the sender's workspace is prime
     await seed_session(
         world, sid="ses-a", workspace_id="ws-1", binding=AgentSessionBinding(agent_id="planner"), initiated_by=USER,
         peer_hops=MAX_PEER_HOPS if scenario == "hop limit" else 0, created_at=NOW,
     )
-    workspace = "ws-2" if scenario == "out of reach" else "ws-1"
+    workspace = "ws-2" if scenario in ("out of reach", P) else "ws-1"
     creator = ADMIN if scenario == "outranked" else USER
     if scenario == "cancelled":
         state = {"status": SessionStatus.ENDED, "ended_reason": "cancelled"}

@@ -41,6 +41,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic import ValidationError as PydanticValidationError
 from pydantic_core import to_jsonable_python
 
+from primer.api.routers._session_rank import refuse_outranked
 from primer.api.deps import (
     get_claim_engine,
     get_collection_storage,
@@ -1996,19 +1997,6 @@ async def rewind_session(
     }
 
 
-def _refuse_outranked(request: Request, row: WorkspaceSession) -> None:
-    """403 ``forbidden_rank`` when the caller ranks below the session's creator (lead ruling 2 of the G7 fixes, audit G7-06).
-
-    The session runs at its creator's rank, so a steer or a restart drives a run at that rank: a person or an API token must out-rank or equal the
-    creator, the rule a trigger's fire and a message from another session follow (:func:`primer.authz.may_drive`). The message is fixed: it names
-    neither the creator nor the rank. People keep their reach over every workspace; this is a rank rule, not a scope.
-    """
-    from primer.authz import OUTRANKED_MESSAGE, may_drive
-
-    if not may_drive(getattr(request.state, "actor", None), row.initiated_by):
-        raise HTTPException(status_code=403, detail={"error": "forbidden_rank", "message": OUTRANKED_MESSAGE})
-
-
 @sessions_router.post(
     "/workspaces/{workspace_id}/sessions/{session_id}/steer",
     response_model=WorkspaceSession,
@@ -2062,7 +2050,7 @@ async def steer_session(
             f"{workspace_id!r}"
         )
     # Before anything is routed, written or announced: a results-only body resumes the run too.
-    _refuse_outranked(request, row)
+    refuse_outranked(request, row)
 
     # Registration gate: external_tools requires allow_external_tools on
     # the session's agent (snapshot when frozen, else the live row).
@@ -2294,7 +2282,7 @@ async def restart_session_route(
     row = await storage_provider.get_storage(WorkspaceSession).get(session_id)
     if row is not None and row.workspace_id == workspace_id:
         # A missing session (or one on another workspace) is the 404 ``restart_session`` raises, in its own words.
-        _refuse_outranked(request, row)
+        refuse_outranked(request, row)
 
     # A restart discards the previous run's in-flight state; resolve any
     # audit rows a prior park left pending (a session that ENDED via

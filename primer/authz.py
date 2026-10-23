@@ -51,8 +51,24 @@ def principal_rank(ref: "Principal | PrincipalRef | None") -> int:
     return _ROLE_RANK.get(ref.role, -1)
 
 
-def may_drive(actor: "Principal | PrincipalRef | None", target_creator: "Principal | PrincipalRef | None") -> bool:
-    """Whether ``actor`` may put input into a session ``target_creator`` started (steer it, restart it, message it): ``actor`` ranks at least as high.
+def same_principal(a: "Principal | PrincipalRef | None", b: "Principal | PrincipalRef | None") -> bool:
+    """Whether ``a`` and ``b`` name the same account or the same API token: the same type and id. The role is not identity. Neither ``None``, the
+    system principal nor the unattributed stand-in names anyone, so none of them is ever the same principal as anything."""
+    if a is None or b is None or a.type not in ("user", "api_token"):
+        return False
+    if (a.type, a.id) == ("user", "unattributed"):
+        return False
+    return (a.type, a.id) == (b.type, b.id)
+
+
+def may_drive(
+    actor: "Principal | PrincipalRef | None",
+    target_creator: "Principal | PrincipalRef | None",
+    *,
+    own_session: bool = False,
+) -> bool:
+    """Whether ``actor`` may act on a session ``target_creator`` started (steer, restart, message, cancel or resume it): ``actor`` ranks at least as
+    high.
 
     The one rank rule of every path that drives another session (lead rulings 2 and 3 of the G7 fixes): a person's REST steer and restart, the
     steer and restart tools called with no calling session (the MCP endpoint), a message or a steer or a restart from another session
@@ -61,13 +77,21 @@ def may_drive(actor: "Principal | PrincipalRef | None", target_creator: "Princip
     rank (the creator's current role, capped by it), so comparing with it never lets a lower rank drive a higher run.
 
     ``None`` ranks as an ordinary user on either side (:func:`principal_rank`).
+
+    ``own_session`` (review of #853, N1): a live request principal (a person's REST call, an MCP call with no calling session) may always act on a
+    session its own account or token started (:func:`same_principal`), whatever ranks they carry, so a demoted admin is not locked out of their own
+    sessions. That is safe because the request carries the account's CURRENT role and the session's runs execute at most at it (the creator's current
+    role caps every run, ``resolve_run_principal``). It is NOT offered to a run (a message or a steer from another session): a trigger-capped run
+    carries an admin's identity at ``user`` rank, and that admin's own sessions still run at admin.
     """
-    return principal_rank(actor) >= principal_rank(target_creator)
+    if principal_rank(actor) >= principal_rank(target_creator):
+        return True
+    return own_session and same_principal(actor, target_creator)
 
 
 #: The refusal a person or an API client reads when :func:`may_drive` says no: fixed, so it names neither the session's creator nor its rank.
 OUTRANKED_MESSAGE = (
-    "this session runs at a higher rank than you; you may steer or restart only a session that runs at or below your own rank"
+    "this session runs at a higher rank than you; you may act on a session only when it runs at or below your own rank"
 )
 
 
@@ -113,4 +137,4 @@ def _role_allows(actor: "Principal | PrincipalRef | None", need: str) -> bool:
     return _ROLE_RANK.get(actor.role, -1) >= _ROLE_RANK.get(need, 99)
 
 
-__all__ = ["OUTRANKED_MESSAGE", "_ROLE_RANK", "_role_allows", "may_drive", "principal_rank", "rank_label"]
+__all__ = ["OUTRANKED_MESSAGE", "_ROLE_RANK", "_role_allows", "may_drive", "principal_rank", "rank_label", "same_principal"]
