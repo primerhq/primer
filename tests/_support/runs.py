@@ -311,6 +311,47 @@ async def wait_completed(
     return last
 
 
+async def wait_completed_approving(
+    client: httpx.AsyncClient,
+    session_id: str,
+    *,
+    timeout_s: float = 60.0,
+    interval_s: float = 0.5,
+) -> tuple[dict, int]:
+    """:func:`wait_completed`, approving every approval gate the session parks on meanwhile; returns the last row and how many gates it approved.
+
+    The seeded policies gate every create, update and delete of an agent, a graph or a trigger, whichever door the call takes (the ``crud`` tools,
+    their ``system`` and ``trigger`` twins, ``system__call_tool``; audit G6-1), so a journey whose scripted agent makes one of those writes parks on
+    its gate before the write runs. A gate is approved through the respond route with its ``gate_id``; a respond that finds the gate already
+    decided (404, or 409 for a gate replaced meanwhile) is not counted.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    approvals = 0
+    last: dict = {}
+    while loop.time() < deadline:
+        pending = await client.get(f"/v1/sessions/{session_id}/tool_approval/pending")
+        if pending.status_code == 200:
+            gate = pending.json()
+            resp = await client.post(
+                f"/v1/sessions/{session_id}/tool_approval/respond",
+                json={"tool_call_id": gate["tool_call_id"], "gate_id": gate.get("gate_id"), "decision": "approved"},
+            )
+            assert resp.status_code in (202, 404, 409), resp.text
+            approvals += resp.status_code == 202
+        else:
+            resp = await client.get(f"/v1/sessions/{session_id}")
+            if resp.status_code == 200:
+                last = resp.json()
+                if last.get("status") in _TERMINAL or (
+                    last.get("session_state") == "parked"
+                    and last.get("parked_status") is None
+                ):
+                    return last, approvals
+        await asyncio.sleep(interval_s)
+    return last, approvals
+
+
 async def wait_turn_advanced(
     client: httpx.AsyncClient,
     session_id: str,
