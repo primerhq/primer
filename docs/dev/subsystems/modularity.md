@@ -218,7 +218,14 @@ them on the extra being present, and leave the fallback tests ungated.
   timeout so an expensive user pattern cannot stall the shared inbound
   dispatcher. `regex` was already present transitively, but declaring it
   directly makes the security boundary independent of another package's
-  dependency graph.
+  dependency graph. Since G6-4/G6-5 every user-written pattern (workspace
+  grep, collection grep and regex search, the tap LIKE selector, graph
+  `output_schema` patterns, event-filter field regexes, `text_pattern`)
+  goes through `primer/common/user_regex.py`: a 1000-character cap where
+  the user writes it, a cap on how far counted repeats unroll at compile
+  time (checked before the compiler runs), a per-process compile cache,
+  and timed matching with `concurrent=True` so a match in a worker thread
+  releases the GIL.
 - **The slim image became the default tag (2026-08-09).** Unsuffixed
   `:{version}` and `:latest` now resolve to the slim build; batteries
   included moved to `-full`. The `-slim` and `-fat` aliases are kept one

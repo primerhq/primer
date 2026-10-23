@@ -203,3 +203,33 @@ async def test_normalizer_none_event_is_ignored(tmp_path: Path, async_closers):
 
     assert bus.published == []
     assert spy.calls == []
+
+
+@pytest.mark.asyncio
+async def test_one_text_pattern_budget_spans_every_trigger_an_event_fires(tmp_path: Path, async_closers):
+    """G6-5: the per-event match budget is opened around the whole fan-out, so
+    each fire_trigger call sees the SAME budget (fire_trigger reads it)."""
+    from primer.model.event_matcher import current_event_text_budget
+
+    p = await _provider(tmp_path, async_closers)
+    ch = await _channel(p)
+    for trigger_id, channel_id in (("trg-a", ch.id), ("trg-b", None)):
+        await p.get_storage(Trigger).create(Trigger(
+            id=trigger_id, slug=trigger_id, name=trigger_id,
+            config=ChannelTriggerConfig(provider_id="cp-1", channel_id=channel_id),
+            created_at=datetime.now(timezone.utc)))
+    seen: list[object] = []
+
+    class _BudgetSpy(_FireSpy):
+        async def __call__(self, **kwargs):
+            seen.append(current_event_text_budget())
+            return await super().__call__(**kwargs)
+
+    router = ChannelEventRouter(
+        storage_provider=p, correlation_store=CorrelationStore(p),
+        fire_deps=_deps(p), event_bus=_RecordingBus(), fire_trigger=_BudgetSpy())
+    await router.route_event(event=_event(channel_id=ch.id), channel=ch)
+
+    assert len(seen) == 2
+    assert seen[0] is not None and seen[0] is seen[1]
+    assert current_event_text_budget() is None

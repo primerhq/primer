@@ -91,9 +91,14 @@ A `Subscription` row:
   When present, only channel events that match the predicate dispatch
   this subscription; `None` (the default, and the only option for
   time/webhook triggers) means every fire dispatches. A `text_pattern`
-  must be a valid regex and may not contain nested unbounded repetition
-  such as `(a+)+`; every search has a 10 ms budget and a timeout is a
-  non-match.
+  must be a valid regex of at most 1000 characters, may not contain
+  nested unbounded repetition such as `(a+)+`, and may not use counted
+  repeats that multiply past 100000 (`(?:a{1000}){1000}`); it is checked
+  in the dialect of the `regex` engine that matches it. Every search has
+  a 10 ms budget and a timeout is a non-match. One channel event also
+  has a 100 ms total across all the subscriptions it is matched against:
+  past it, each remaining subscription with a `text_pattern` is skipped
+  with `error_code` `skipped_match_budget`, so keep patterns simple.
 - `reply_target` - optional `ReplyTarget` (channel triggers only).
   `source_thread` (default) | `source_room` | `dm_sender` | `none`,
   or an explicit `{channel_id, anchor}`. For session subscriptions the
