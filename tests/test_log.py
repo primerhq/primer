@@ -359,6 +359,10 @@ class TestUrlSecretRedaction:
         ("a request path with @ and ://", "GET /x@y://" + "a." * 20_000 + " HTTP/1.1"),
         ("plus signs with @ and ://", "x@y://" + "a+" * 20_000),
         ("dashes with @ and ://", "x@y://" + "a-" * 20_000),
+        # The MCP OAuth callback rule (audit G4-13) runs only on text that holds its path.
+        ("many callback queries", "/oauth/callback?" * 10_000),
+        ("a callback query of many parameters", "/oauth/callback?" + "code=a&state=b&" * 10_000),
+        ("a callback query of ampersands", "/oauth/callback?code=" + "&" * 40_000),
     ]
 
     @pytest.mark.parametrize("name,text", _HOSTILE, ids=[case[0] for case in _HOSTILE])
@@ -475,6 +479,39 @@ class TestUrlSecretRedaction:
         assert _WEBHOOK_TOKEN not in out
         assert "/v1/webhooks/***cdef?x=1" in out
         assert "202" in out
+
+    def test_uvicorn_access_line_masks_the_oauth_callback_code_and_state(self):
+        """Audit G4-13: the access line of an MCP OAuth callback carries the authorization code and the state; both are masked there, and a
+        ``code`` or ``state`` parameter on any other path is left alone."""
+        from uvicorn.logging import AccessFormatter
+
+        configure_logging()
+        access = logging.getLogger("uvicorn.access")
+        buf = io.StringIO()
+        handler = logging.StreamHandler(buf)
+        handler.setFormatter(AccessFormatter('%(client_addr)s - "%(request_line)s" %(status_code)s', use_colors=False))
+        saved = (list(access.handlers), access.propagate, access.level)
+        access.handlers = [handler]
+        access.propagate = False
+        access.setLevel(logging.INFO)
+        try:
+            access.info('%s - "%s %s HTTP/%s" %d', "10.0.0.1:5555", "GET",
+                        "/v1/toolsets/kb/oauth/callback?code=AUTHCODE-123456&state=STATE-abcdefgh&iss=https%3A%2F%2Fas.example", "1.1", 303)
+            access.info('%s - "%s %s HTTP/%s" %d', "10.0.0.1:5555", "GET", "/v1/lookup?code=python&state=open", "1.1", 200)
+        finally:
+            access.handlers, access.propagate, access.level = saved
+        out = buf.getvalue()
+        assert "AUTHCODE-123456" not in out and "STATE-abcdefgh" not in out
+        assert "/v1/toolsets/kb/oauth/callback?code=[REDACTED]&state=[REDACTED]&iss=https%3A%2F%2Fas.example" in out
+        assert "/v1/lookup?code=python&state=open" in out
+
+    def test_the_oauth_callback_masking_covers_any_order_and_a_full_url(self):
+        from primer.common.log import redact_credentials
+
+        line = 'HTTP Request: GET https://primer.example/v1/toolsets/a%2Fb/oauth/callback?state=S1-xyz&error=access_denied&code=C1-xyz "HTTP/1.1 303"'
+        masked = redact_credentials(line)
+        assert "S1-xyz" not in masked and "C1-xyz" not in masked and "error=access_denied" in masked
+        assert redact_credentials(masked) == masked
 
     def test_a_raising_str_in_an_arg_does_not_escape_to_the_caller(self):
         """Filters run outside Handler.handleError's guard: a raising

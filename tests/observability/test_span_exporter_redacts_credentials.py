@@ -315,6 +315,24 @@ def test_a_query_value_under_a_credential_name_redact_credentials_does_not_list_
     assert done.attributes["url.query"] == f"{name}=[REDACTED]&page=2"
 
 
+def test_the_oauth_callback_state_is_masked(pipeline) -> None:
+    """Audit G4-13: an MCP OAuth callback's ``state`` is a capability while the sign-in is pending; ``code`` was masked already. On the callback
+    path only: a ``state`` elsewhere is an ordinary parameter (the test below)."""
+    provider, exporter = pipeline
+
+    with provider.get_tracer("t").start_as_current_span("GET /v1/toolsets/{toolset_id}/oauth/callback") as span:
+        span.set_attribute("http.target", "/v1/toolsets/kb/oauth/callback?code=C0DE-value_9&state=ST4TE-value_9")
+        span.set_attribute("http.url", "http://primer.example/v1/toolsets/kb/oauth/callback?state=ST4TE-value_9&code=C0DE-value_9")
+        span.set_attribute("url.path", "/v1/toolsets/kb/oauth/callback")
+        span.set_attribute("url.query", "state=ST4TE-value_9&code=C0DE-value_9&iss=x")
+
+    [done] = exporter.get_finished_spans()
+    assert done.attributes["http.target"] == "/v1/toolsets/kb/oauth/callback?code=[REDACTED]&state=[REDACTED]"
+    assert done.attributes["http.url"] == "http://primer.example/v1/toolsets/kb/oauth/callback?state=[REDACTED]&code=[REDACTED]"
+    assert done.attributes["url.query"] == "state=[REDACTED]&code=[REDACTED]&iss=x", "a bare query of a callback span is masked as the callback's"
+    assert "ST4TE" not in _everything_exported(exporter)
+
+
 @pytest.mark.parametrize("param", ["page", "q", "state", "limit", "codec", "message_id"])
 def test_an_ordinary_query_parameter_is_left_alone(pipeline, param) -> None:
     """``codec`` and ``message_id`` contain a credential name as a prefix or a part: only the NAME is matched, whole."""
