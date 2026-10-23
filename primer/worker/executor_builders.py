@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from primer.model.except_ import PrimerError
 from primer.model.principal import PrincipalRef
 from primer.model.workspace_session import WorkspaceSession, SessionStatus
 from primer.worker.pool import _toolset_ids_from_scoped
@@ -42,13 +43,55 @@ def _pool_event_recorder(pool):
 
 
 def session_run_principal(session) -> PrincipalRef:
-    """The principal every run of ``session`` is ranked as: its ``initiated_by``, else an unattributed (ordinary) user.
+    """The principal recorded for ``session``: its ``initiated_by``, else an unattributed (ordinary) user.
 
     Never the system principal, which clears every role floor (security review A-20): a row saved before attribution landed, and the
-    "main" session a workspace create used to seed, name no initiator, and a user can reach both. The session's own turn, its graph's
-    nodes, and a subagent resumed inside it (``build_invocation_services``) are all ranked by this one rule.
+    "main" session a workspace create used to seed, name no initiator, and a user can reach both. A run is NOT ranked by this alone:
+    :func:`resolve_run_principal` re-reads the creator's role now (lead ruling 2 of the G7 fixes, G6-6).
     """
     return getattr(session, "initiated_by", None) or PrincipalRef.unattributed()
+
+
+class RunRefused(PrimerError):
+    """A run of a session is refused because its creator can no longer be resolved: the user was deleted or disabled, or the API token was revoked
+    or has expired (G6-6, the lead's addendum to ruling 2 of the G7 fixes). Such a run does not execute at all, not even at a lower rank."""
+
+
+def _is_unattributed(ref: PrincipalRef) -> bool:
+    unknown = PrincipalRef.unattributed()
+    return (ref.type, ref.id) == (unknown.type, unknown.id)
+
+
+async def resolve_run_principal(storage_provider, session) -> PrincipalRef:
+    """The principal a run of ``session`` executes as NOW: the recorded one, with the role its creator holds today, capped by the recorded role.
+
+    The single place a run's rank is computed (lead ruling 2 of the G7 fixes, G6-6): every turn (``build_agent_executor``,
+    ``build_graph_executor``) and every resume (they build their executor here too, and ``build_invocation_services`` ranks a resumed subagent
+    through this function) asks it, once per build. A demoted admin's session therefore runs at ``user`` from its next turn, an approval granted
+    after the demotion re-runs the tool at ``user``, and a later promotion never raises a session created before it (the cap). The rule is the
+    trigger owners' (:func:`primer.trigger.owner.resolve_current_role`): a ``user`` creator by its user row, an ``api_token`` one through its token.
+
+    A creator that cannot be resolved (a deleted or disabled user, a revoked or expired token) raises :class:`RunRefused`: the run does not run.
+    Kept as recorded: the ``system`` principal, a legacy ``trigger``-typed principal (rows saved before owners were recorded; it already ranks
+    ``user``), the unattributed stand-in (it names nobody, and ranks ``user``), and every principal when there is no storage to ask (a pool built
+    without one, in tests).
+    """
+    ref = session_run_principal(session)
+    if storage_provider is None or ref.type in ("system", "trigger") or _is_unattributed(ref):
+        return ref
+    from primer.trigger.owner import resolve_current_role
+
+    role = await resolve_current_role(ref, storage_provider)
+    if role is None:
+        raise RunRefused(
+            f"session {getattr(session, 'id', '?')!r} does not run: the account or API token that started it is deleted, disabled, revoked or expired"
+        )
+    if role == ref.role:
+        return ref
+    logger.info(
+        "session %s runs at its creator's current role %r, not the recorded %r", getattr(session, "id", "?"), role, ref.role,
+    )
+    return ref.model_copy(update={"role": role})
 
 
 if TYPE_CHECKING:
@@ -342,7 +385,8 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
     # created before this attribution landed and on the "main" session a
     # workspace create used to seed with none; a user can reach both, so
     # they rank as an ordinary user, never as system (security review A-20).
-    initiated_by = session_run_principal(session)
+    # The role is the creator's CURRENT one, capped by the recorded one, and a creator that cannot be resolved refuses the run (G7 ruling 2, G6-6).
+    initiated_by = await resolve_run_principal(pool._storage, session)
     gis = pool._build_graph_invocation_services(
         workspace=workspace,
         workspace_session=agent_session,
@@ -495,8 +539,8 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
     # This graph session's own attribution, propagated onto every
     # per-node ToolExecutionManager so a tool_call node's
     # create_workspace_session inherits it (see build_agent_executor). An
-    # unattributed row fails closed, as in build_agent_executor.
-    initiated_by = session_run_principal(session)
+    # unattributed row fails closed, as in build_agent_executor, and the role is the creator's current one (resolve_run_principal).
+    initiated_by = await resolve_run_principal(pool._storage, session)
 
     async def tool_manager_resolver(agent):
         toolset_ids = _toolset_ids_from_scoped(agent.tools)

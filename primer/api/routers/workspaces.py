@@ -1996,13 +1996,27 @@ async def rewind_session(
     }
 
 
+def _refuse_outranked(request: Request, row: WorkspaceSession) -> None:
+    """403 ``forbidden_rank`` when the caller ranks below the session's creator (lead ruling 2 of the G7 fixes, audit G7-06).
+
+    The session runs at its creator's rank, so a steer or a restart drives a run at that rank: a person or an API token must out-rank or equal the
+    creator, the rule a trigger's fire and a message from another session follow (:func:`primer.authz.may_drive`). The message is fixed: it names
+    neither the creator nor the rank. People keep their reach over every workspace; this is a rank rule, not a scope.
+    """
+    from primer.authz import OUTRANKED_MESSAGE, may_drive
+
+    if not may_drive(getattr(request.state, "actor", None), row.initiated_by):
+        raise HTTPException(status_code=403, detail={"error": "forbidden_rank", "message": OUTRANKED_MESSAGE})
+
+
 @sessions_router.post(
     "/workspaces/{workspace_id}/sessions/{session_id}/steer",
     response_model=WorkspaceSession,
     summary="Send a message - invoke / steer / resume (auto-wake)",
-    responses=common_responses(404, 409, 422, 500),
+    responses=common_responses(403, 404, 409, 422, 500),
 )
 async def steer_session(
+    request: Request,
     body: SteerBody,
     workspace_id: str = Path(...),
     session_id: str = Path(...),
@@ -2020,6 +2034,7 @@ async def steer_session(
     the next turn (steer); to a PAUSED session it resumes; to an ENDED
     session it reopens it as a fresh invocation (divider + run). 409 only
     when an ENDED session is non-restartable (workspace_lost/force_deleted).
+    403 ``forbidden_rank`` when the session's creator outranks the caller.
     """
     from primer.model.external_tool import ExternalToolCall
     from primer.session.enqueue import (
@@ -2046,6 +2061,8 @@ async def steer_session(
             f"Session {session_id!r} does not exist on workspace "
             f"{workspace_id!r}"
         )
+    # Before anything is routed, written or announced: a results-only body resumes the run too.
+    _refuse_outranked(request, row)
 
     # Registration gate: external_tools requires allow_external_tools on
     # the session's agent (snapshot when frozen, else the live row).
@@ -2251,9 +2268,10 @@ class RestartBody(BaseModel):
     "/workspaces/{workspace_id}/sessions/{session_id}/restart",
     response_model=WorkspaceSession,
     summary="Reset an ended session and re-invoke (reset-same-session + wake)",
-    responses=common_responses(404, 409, 422, 500),
+    responses=common_responses(403, 404, 409, 422, 500),
 )
 async def restart_session_route(
+    request: Request,
     body: RestartBody,
     workspace_id: str = Path(...),
     session_id: str = Path(...),
@@ -2263,11 +2281,20 @@ async def restart_session_route(
     storage_provider=Depends(get_storage_provider),
     event_bus=Depends(get_event_bus),
 ) -> WorkspaceSession:
-    """Re-open an ENDED session and invoke it (studio-agents-interact §5.3)."""
+    """Re-open an ENDED session and invoke it (studio-agents-interact §5.3).
+
+    A person's Restart: it reopens a session an operator cancelled, which no tool call or other message does. 403 ``forbidden_rank`` when the
+    session's creator outranks the caller, before anything is touched.
+    """
     from primer.model.external_tool import ExternalToolCall
     from primer.session.enqueue import SessionWakeDeps
     from primer.session.external_tools import cancel_pending_external
     from primer.session.reset import SessionResetDeps, restart_session
+
+    row = await storage_provider.get_storage(WorkspaceSession).get(session_id)
+    if row is not None and row.workspace_id == workspace_id:
+        # A missing session (or one on another workspace) is the 404 ``restart_session`` raises, in its own words.
+        _refuse_outranked(request, row)
 
     # A restart discards the previous run's in-flight state; resolve any
     # audit rows a prior park left pending (a session that ENDED via

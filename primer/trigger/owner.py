@@ -27,7 +27,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from primer.authz import _ROLE_RANK, principal_rank, rank_label
+from primer.authz import _ROLE_RANK, may_drive, principal_rank, rank_label
 from primer.events.redaction import MASK
 from primer.model.principal import PrincipalRef
 from primer.model.trigger import Subscription, Trigger
@@ -43,13 +43,17 @@ def _lower(a: str | None, b: str | None) -> str | None:
     return a if _ROLE_RANK.get(a, -1) <= _ROLE_RANK.get(b, -1) else b
 
 
-async def _current_role(owner: PrincipalRef | None, storage_provider: Any) -> str | None:
-    """The role ``owner`` holds now, capped at :data:`_FAIL_CLOSED_ROLE` when it cannot be resolved.
+async def resolve_current_role(owner: PrincipalRef, storage_provider: Any) -> str | None:
+    """The role ``owner`` holds now, capped by the role recorded on it, or ``None`` when it cannot be resolved.
 
-    Returns ``"system"`` for a system owner (not a role: the caller keeps the system principal as is).
+    The recorded role is a CEILING: a later promotion never raises a row saved before it, and a capped principal (an admin's identity ranked ``user``
+    because a user owns the trigger) stays capped. A ``user`` owner is looked up by id; an ``api_token`` owner through its token to the token's user.
+    ``None`` is a deleted or disabled user, a revoked or expired token, a token whose user is gone, and any other type but ``system``. Returns
+    ``"system"`` for a system owner (not a role: the caller keeps the system principal as is).
+
+    One rule for every principal that is re-ranked when it acts later: a trigger's owners at fire time (:func:`_current_role`) and the creator of a
+    session at every run of it (:func:`primer.worker.executor_builders.resolve_run_principal`, lead ruling 2 of the G7 fixes and G6-6).
     """
-    if owner is None:
-        return _FAIL_CLOSED_ROLE
     if owner.type == "system":
         return "system"
     user_id: str | None = None
@@ -71,6 +75,19 @@ async def _current_role(owner: PrincipalRef | None, storage_provider: Any) -> st
         if user is not None and not user.disabled:
             # The recorded role is a ceiling: never rank above what the owner held when the row was saved.
             return _lower(owner.role, user.role)
+    return None
+
+
+async def _current_role(owner: PrincipalRef | None, storage_provider: Any) -> str | None:
+    """The role ``owner`` holds now (:func:`resolve_current_role`), capped at :data:`_FAIL_CLOSED_ROLE` when it cannot be resolved.
+
+    Returns ``"system"`` for a system owner (not a role: the caller keeps the system principal as is).
+    """
+    if owner is None:
+        return _FAIL_CLOSED_ROLE
+    role = await resolve_current_role(owner, storage_provider)
+    if role is not None:
+        return role
     logger.info(
         "trigger owner %s:%s could not be resolved; the fired run ranks at most %r",
         owner.type, owner.id, _FAIL_CLOSED_ROLE,
@@ -111,7 +128,7 @@ async def refuse_steer_above_fire(sub: Subscription, session: Any, storage_provi
     """
     fire = await principal_for_fire(sub, storage_provider)
     target = getattr(session, "initiated_by", None)
-    if _rank(target) <= _rank(fire):
+    if may_drive(fire, target):
         return None
     reason = (
         f"the target session's rank ({_rank_label(target)}) outranks this fire's ({_rank_label(fire)}); "
@@ -214,6 +231,7 @@ async def same_owner(a: PrincipalRef | None, b: PrincipalRef | None, storage_pro
 
 __all__ = [
     "WEBHOOK_TOKEN_MASK",
+    "resolve_current_role",
     "may_manage_trigger",
     "principal_for_fire",
     "view_for",

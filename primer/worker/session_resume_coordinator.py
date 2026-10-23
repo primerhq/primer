@@ -725,17 +725,20 @@ def build_invocation_services(pool: "WorkerPool", session, workspace, executor, 
 
     A subagent resumed here runs as its PARENT session: both subagent callables
     get the frame's context with ``initiated_by`` replaced by the session's run
-    principal (``session_run_principal``, the rule the session's own turn is built
-    with) and ``principal``, the string every tool call of the resumed turn is
-    handed, cleared (``None``, as the session's own turn and every first run use).
-    Nothing stored in the park chooses an identity on resume.
+    principal (``resolve_run_principal``, the rule the session's own turn is built
+    with: the creator's CURRENT role capped by the recorded one, and a creator
+    that is deleted, disabled or revoked refuses the run; G7 ruling 2, G6-6) and
+    ``principal``, the string every tool call of the resumed turn is handed,
+    cleared (``None``, as the session's own turn and every first run use).
+    Nothing stored in the park chooses an identity on resume. The principal is
+    resolved once per bundle, when a subagent callable first needs it.
     """
     from primer.agent.invoke import (
         build_subagent_toolmanager as _build_subagent_toolmanager,
         resume_subagent as _resume_subagent,
     )
     from primer.worker.continuation import InvocationServices
-    from primer.worker.executor_builders import session_run_principal
+    from primer.worker.executor_builders import resolve_run_principal
 
     storage_provider = pool._storage
     provider_registry = pool._provider_registry
@@ -748,14 +751,16 @@ def build_invocation_services(pool: "WorkerPool", session, workspace, executor, 
     # ``run_agent_turn``, which hands it to every ``provider.call(principal=...)`` and
     # ``ctx.principal`` of the resumed turn, and an MCP toolset picks a user's OAuth
     # credentials by it. The session's own turn and every first run use ``None``.
-    run_principal = session_run_principal(session)
+    resolved: list = []
 
-    def as_session_run(context):
-        return dataclasses.replace(context, initiated_by=run_principal, principal=None)
+    async def as_session_run(context):
+        if not resolved:
+            resolved.append(await resolve_run_principal(storage_provider, session))
+        return dataclasses.replace(context, initiated_by=resolved[0], principal=None)
 
     async def build_subagent_toolmanager(context):
         return await _build_subagent_toolmanager(
-            as_session_run(context),
+            await as_session_run(context),
             storage_provider=storage_provider,
             provider_registry=provider_registry,
             approval_resolver=approval_resolver,
@@ -767,7 +772,7 @@ def build_invocation_services(pool: "WorkerPool", session, workspace, executor, 
     ):
         return await _resume_subagent(
             agent_id=agent_id,
-            context=as_session_run(context),
+            context=await as_session_run(context),
             llm_messages=llm_messages,
             child_result=child_result,
             depth=depth,
