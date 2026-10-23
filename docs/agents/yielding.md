@@ -325,8 +325,8 @@ session.
   while it is off `call_tool` and `describe_tool` answer `not-found` for
   them. Without `kinds`, a Button click or an Html emit ends the wait; a
   Select change, an audio event and a link open do not (a Select
-  with `wake=true` does). Name `kinds` (`change`, `play`, ...) to wait
-  for a silent one. The canvas keeps the events you have not read, so a
+  with `wake=true` does). Name `kinds` (`change`, `play`, ...; at most
+  8, a repeated one counts once) to wait for a silent one. The canvas keeps the events you have not read, so a
   wait that finds a matching one among them returns it without
   parking. Only the events a wait returns are marked read: an earlier
   unread event it did not match stays unread, so `canvas_get` still

@@ -55,7 +55,8 @@ def canvas_wait_event_key(ctx: ToolContext, node_id: str | None) -> str:
 
 
 def _any_of(words: Sequence[str]) -> str:
-    return "^(" + "|".join(re.escape(word) for word in words) + ")$"
+    """An anchored alternation of ``words``, each once."""
+    return "^(" + "|".join(re.escape(word) for word in dict.fromkeys(words)) + ")$"
 
 
 def canvas_wait_filter(session_id: str, *, ids: Sequence[str], kinds: Sequence[str]) -> EventFilter:
