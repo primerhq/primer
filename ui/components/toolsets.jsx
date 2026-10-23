@@ -161,7 +161,7 @@ function ToolsetsPage({ pushToast }) {
               const kindColor = t.builtin ? "var(--blue)" : "var(--accent)";
               const authState = window.TS_cardAuthStatus && window.TS_cardAuthStatus(t);
               const statusPill = authState ? (
-                <span className={`pill ${authState.tone === "ok" ? "pill-ended" : "pill-cancelled"}`}>
+                <span className={`pill ${authState.tone === "ok" ? "pill-ended" : "pill-cancelled"}`} title={authState.title || undefined}>
                   <span className="dot"></span>{authState.label}
                 </span>
               ) : t.available ? (
@@ -223,7 +223,7 @@ function ToolsetsPage({ pushToast }) {
                   </td>
                   <td>
                     {authState ? (
-                      <span className={`pill ${authState.tone === "ok" ? "pill-ended" : "pill-cancelled"}`}>
+                      <span className={`pill ${authState.tone === "ok" ? "pill-ended" : "pill-cancelled"}`} title={authState.title || undefined}>
                         <span className="dot"></span>{authState.label}
                       </span>
                     ) : t.available ? (

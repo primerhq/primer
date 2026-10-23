@@ -551,12 +551,19 @@ function TS_McpAuthPanel({ toolsetId, pushToast, compact }) {
   );
 }
 
+// A toolset card's sign-in status, or null for a toolset that does not sign in with OAuth. The sign-in state wins over the plain
+// available/unavailable, but a toolset whose server did not answer the listing (`available: false`) must not look healthy: a connected one
+// reads "Connected, unreachable" in red, and every state carries the listing's failure as its tooltip (`title`; G4-12).
 function TS_cardAuthStatus(row) {
   const state = row && row.auth && row.auth.state;
-  if (state === "connected") return { label: "Connected", tone: "ok" };
-  if (state === "needs_sign_in") return { label: "Needs sign-in", tone: "warn" };
-  if (state === "error") return { label: "Error", tone: "error" };
-  return null;
+  let status = null;
+  if (state === "connected") status = { label: "Connected", tone: "ok" };
+  else if (state === "needs_sign_in") status = { label: "Needs sign-in", tone: "warn" };
+  else if (state === "error") status = { label: "Error", tone: "error" };
+  if (!status || row.available !== false) return status;
+  if (state === "connected") status = { label: "Connected, unreachable", tone: "error" };
+  if (row.unavailable_reason) status.title = row.unavailable_reason;
+  return status;
 }
 
 window.TS_OAUTH_RETURN_TEXT = TS_OAUTH_RETURN_TEXT;
