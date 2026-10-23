@@ -1599,6 +1599,7 @@ function NV_Platform() {
 }
 
 window.NV_PLAT_PAGES = NV_PLAT_PAGES;
+window.NV_platFilterText = NV_platFilterText;
 window.NV_PLAT_POLL_MS = NV_PLAT_POLL_MS;
 window.NV_PROVIDER_TYPE_LABELS = NV_PROVIDER_TYPE_LABELS;
 window.NV_platProviderTypes = NV_platProviderTypes;
