@@ -90,10 +90,16 @@ async def test_the_flat_catalogue_lists_every_tool_the_grouped_catalogue_lists(c
 
 
 @pytest.mark.asyncio
-async def test_the_flat_catalogue_asks_the_registry_for_every_built_in_toolset(client, monkeypatch) -> None:
+@pytest.mark.parametrize("canvas_on", [False, True], ids=["canvas tools off (default)", "canvas tools on"])
+async def test_the_flat_catalogue_asks_the_registry_for_every_built_in_toolset(client, monkeypatch, fake_storage_provider, canvas_on) -> None:
     """The fake test app's registry has no ``trigger`` / ``harness`` / ``collections`` provider, so the route cannot be seen listing
-    their tools there. A spy registry answers every toolset with one tool and records what was asked."""
+    their tools there. A spy registry answers every toolset with one tool and records what was asked.
+
+    ``canvas`` is asked for only while ``canvas.agent_tools_enabled`` is on (audit G8-02); off, it is never enumerated."""
     from types import SimpleNamespace
+
+    from primer.canvas.settings import write_canvas_settings
+    from primer.model.canvas import CANVAS_SETTINGS_ID, CanvasSettings
 
     from primer.api.registries.provider_registry import ProviderRegistry
     from primer.api.routers import providers
@@ -109,12 +115,18 @@ async def test_the_flat_catalogue_asks_the_registry_for_every_built_in_toolset(c
         return _OneTool()
 
     monkeypatch.setattr(ProviderRegistry, "get_toolset", _spy)
+    if canvas_on:
+        await write_canvas_settings(fake_storage_provider, CanvasSettings(id=CANVAS_SETTINGS_ID, agent_tools_enabled=True))
 
     resp = await client.get("/v1/tools/catalogue")
 
     assert resp.status_code == 200, resp.text
     ids = {item["id"] for item in resp.json()["items"]}
     for spec in providers._BUILTIN_TOOLSETS:
+        if spec["id"] == "canvas" and not canvas_on:
+            assert "canvas" not in asked, "the canvas toolset was enumerated while its tools are off"
+            assert not any(i.startswith("canvas__") for i in ids), "a canvas tool reached the catalogue while its tools are off"
+            continue
         assert spec["id"] in asked, f"the built-in toolset {spec['id']!r} was never enumerated"
         assert f"{spec['id']}__probe" in ids, f"the built-in toolset {spec['id']!r} contributed nothing to the catalogue"
 
