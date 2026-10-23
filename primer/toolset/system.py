@@ -580,6 +580,11 @@ def build_system_toolset(
                 pre_delete=pre_deletes_by_label.get(label),
             )
         )
+    # The agent and graph writes here are gated by default like the crud tools they twin (audit G6-1), so their approval cards show what the crud
+    # tools' cards show. Function-local: primer.toolset.crud builds on this package's modules.
+    from primer.toolset.crud import apply_twin_previews
+
+    apply_twin_previews(SYSTEM_TOOLSET_ID, registry)
 
     # ---- SemanticSearchProvider explicit invalidation tool -----------
     class _InvalidateSSPArgs(BaseModel):

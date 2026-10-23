@@ -1072,6 +1072,11 @@ def build_trigger_toolset_provider(
         # (_make_subscribe_handler) remain defined in this module and are
         # imported by ``primer.toolset.workspace_ext``.
     }
+    # create, update and delete are gated by default like the crud tools they twin (audit G6-1), so their approval cards show what the crud
+    # tools' cards show. Function-local: primer.toolset.crud imports this module.
+    from primer.toolset.crud import apply_twin_previews
+
+    apply_twin_previews(TRIGGER_TOOLSET_ID, registry)
     logger.info(
         "trigger toolset assembled with %d tools (id=%s)",
         len(registry),

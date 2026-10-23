@@ -216,6 +216,7 @@ agent is doing generic entity CRUD.
   `kind` is the discriminator inside `config`), optional `description`
   and `enabled`. Validates the cron expression / fire_at timestamp at
   create time. (`payload_template` is set per subscription, not here.)
+  Approval-gated by default, like `update` and `delete` and the builder's `crud` tools: the call parks until an operator approves it (the live gate is the one `system::describe_tool` reports).
 - `trigger::update` - partial update. Editing `cron` recomputes
   `next_fire_at`. Editing kind is rejected.
 - `trigger::delete` - cascade-deletes subscriptions.

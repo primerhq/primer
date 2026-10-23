@@ -13,7 +13,7 @@ on-disk, zero-cost, and zero-credential.
 This doc covers the MARKER-GOVERNED half of startup seeding. There is a second,
 independent mechanism beside it: the S5 ensure pass
 (`primer/bootstrap/seed.py::run_ensure_pass`), which is marker-INDEPENDENT, runs at
-every startup, and owns the crud approval policies, the default workspace, the
+every startup, and owns the default approval policies, the default workspace, the
 `operator` and `builder` agents, `SystemState.default_agent_id` and the system
 collection. The split is deliberate. `BootstrapRunner` seeds five provider rows an
 operator may legitimately want gone, so it consults `bootstrap_completed_at` and
