@@ -116,9 +116,7 @@ def _fit_reasoning_sampling(
     """Drop, in place, sampling knobs OpenAI Chat Completions reasoning refuses."""
     if not _is_openai_reasoning_request(request, flavor=flavor):
         return
-    dropped = [
-        key for key in ("temperature", "top_p", "top_k") if key in request
-    ]
+    dropped = [key for key in ("temperature", "top_p") if key in request]
     for key in dropped:
         del request[key]
     if dropped:

@@ -341,8 +341,9 @@ with reasoning, and OpenRouter defines them independently of its `reasoning`
 object, so `openresponses` and `openrouter` leave the caller's choice unchanged.
 
 **OpenAI Chat Completions: reasoning sampling.** When `reasoning_effort` is
-present and not `none`, real OpenAI refuses `temperature`, `top_p` and
-`top_k`. The `openchat` adapter drops those knobs and logs the adjustment
+present and not `none`, real OpenAI refuses `temperature` and `top_p`
+(`top_k` is not an OpenAI parameter, and this wire never sends it). The
+`openchat` adapter drops those knobs and logs the adjustment
 once per provider and model. This includes compaction's `temperature: 0.0`.
 Reasoning-off calls, self-hosted `openchat`, OpenAI Responses and OpenRouter
 keep their sampling knobs unchanged.
