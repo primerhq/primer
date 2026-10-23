@@ -622,11 +622,27 @@ def _refused_by(llm: Any) -> set[tuple[str, str]]:
         return set()
 
 
-def _remember_refusal(llm: Any, key: tuple[str, str]) -> None:
+def _remember_refusal(llm: Any, key: tuple[str, str]) -> bool:
+    """Remember that ``llm`` refused the settings ``key`` names; True when this is the first time it is remembered."""
     try:
-        _REFUSED.setdefault(llm, set()).add(key)
+        refused = _REFUSED.setdefault(llm, set())
     except TypeError:  # not weakly referenceable: nothing is remembered
-        pass
+        return False
+    if key in refused:
+        return False
+    refused.add(key)
+    return True
+
+
+def _warn_remembered(llm: Any, model: str, knobs: dict[str, Any]) -> None:
+    """Say at WARNING that a model now runs without a profile's settings (audit G2-11c): which provider, which model, and the
+    NAMES of the settings dropped, never their values. The one-time DEBUG record before the retry quotes the refusal itself."""
+    provider_id = getattr(getattr(llm, "_provider", None), "id", None) or type(llm).__name__
+    logger.warning(
+        "LLM provider %s refused the profile's settings %s for model %s; the call was made without them, and this model is "
+        "called without them until the provider's adapter is rebuilt (a restart, or an edit of the provider)",
+        provider_id, ", ".join(sorted(map(str, knobs))), model,
+    )
 
 
 def _names_a_setting(message: str | None, knobs: dict[str, Any]) -> bool:
@@ -662,8 +678,9 @@ def profile_stream(llm: Any, knobs: dict[str, Any], **kwargs: Any) -> AsyncItera
     exactly as it would be without the profile's settings, and the refusal is
     logged once at DEBUG.
     When that call works, the model is called without those settings for the
-    rest of the process. A failure after the first event is never retried:
-    output has already reached the consumer.
+    rest of the process, and that is logged at WARNING with the provider, the
+    model and the names of the settings (never their values). A failure after
+    the first event is never retried: output has already reached the consumer.
 
     ``kwargs`` may carry the caller's own ``extended`` (an aggregated member's
     call does): it rides on top of the profile's settings and stays on the
@@ -728,8 +745,8 @@ async def _stream_with_fallback(
         async for event in retry:
             if not worked:
                 worked = not (isinstance(event, ChatError) and event.fatal)
-                if worked:
-                    _remember_refusal(llm, key)
+                if worked and _remember_refusal(llm, key):
+                    _warn_remembered(llm, key[0], knobs)
             yield event
     finally:
         await _aclose(retry)

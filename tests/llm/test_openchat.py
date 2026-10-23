@@ -1146,10 +1146,11 @@ class TestStream:
         }
 
     @pytest.mark.parametrize("forced_choice", ["required", "search"])
-    async def test_openai_reasoning_downgrades_forced_tool_choice(
+    async def test_openai_reasoning_sends_a_forced_tool_choice_unchanged(
         self, monkeypatch: pytest.MonkeyPatch, forced_choice: str
     ) -> None:
-        """OpenAI Chat Completions rejects forced choices while reasoning is on."""
+        """No vendor source says OpenAI Chat Completions refuses a forced choice while reasoning is on (audit G2-11), so the
+        adapter no longer turns it into ``auto``; a refusal would reach the stream-open guard like any other."""
         llm = OpenChatLLM(_make_provider())
         client = _patched_client(monkeypatch)
         client.chat.completions.create.return_value = _aiter(_simple_text_chunk_seq())
@@ -1174,7 +1175,9 @@ class TestStream:
 
         kwargs = client.chat.completions.create.call_args.kwargs
         assert kwargs["reasoning_effort"] == "high"
-        assert kwargs["tool_choice"] == "auto"
+        assert kwargs["tool_choice"] == (
+            "required" if forced_choice == "required" else {"type": "function", "function": {"name": "search"}}
+        )
 
     async def test_openai_reasoning_off_keeps_required_tool_choice(
         self, monkeypatch: pytest.MonkeyPatch

@@ -516,6 +516,48 @@ class TestTheKnobsReachTheWire:
         hits = [r for r in caplog.records if "mandatory" in r.getMessage()]
         assert len(hits) == 1
 
+    async def test_a_remembered_refusal_is_logged_at_warning_once_with_names_not_values(self, monkeypatch, caplog) -> None:
+        """Audit G2-11c: a refused profile setting is retried without the profile's settings and remembered for the life of
+        the adapter, which turns the profile's reasoning off for that model. That used to be on record only at DEBUG; it is
+        now a WARNING naming the provider, the model and the settings dropped, never a value, once per remembered refusal.
+        The retry semantics are unchanged (refused, retried plain, the next call plain)."""
+        caplog.set_level(logging.DEBUG)
+        http = _sdk_http_module()
+        bodies: list[dict] = []
+
+        def _handle(request):
+            body = json.loads(request.content)
+            bodies.append(body)
+            if body.get("tools") and body.get("reasoning_effort") not in (None, "none"):
+                return http.Response(400, json={"error": {
+                    "message": "Function tools with reasoning_effort are not supported for gpt-5.4 in /v1/chat/completions.",
+                    "type": "invalid_request_error", "param": "reasoning_effort", "code": None,
+                }})
+            return http.Response(200, content=_SSE, headers={"content-type": "text/event-stream"})
+
+        real = AsyncOpenAI
+        monkeypatch.setattr(
+            "primer.llm.openchat.AsyncOpenAI",
+            lambda **kw: real(**kw, http_client=http.AsyncClient(transport=http.MockTransport(_handle)), max_retries=0),
+        )
+        from primer.model.chat import Tool
+
+        tools = [Tool(id="search", description="Search", toolset_id="t", args_schema={"type": "object", "properties": {}})]
+        llm = OpenChatLLM(_openchat(OpenChatFlavor.OPENAI))
+        try:
+            for _ in range(2):
+                knobs = profile_extended(llm, _cfg(ReasoningLevel.HIGH, seed=12345), model="gpt-5.4")
+                async for _ev in profile_stream(llm, knobs, model="gpt-5.4", messages=_HI, tools=tools, tool_choice="auto"):
+                    pass
+        finally:
+            await llm.aclose()
+        assert [("reasoning_effort" in b, "seed" in b) for b in bodies] == [(True, True), (False, False), (False, False)]
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING and r.name == "primer.llm._reasoning"]
+        assert len(warnings) == 1
+        text = warnings[0].getMessage()
+        assert "openchat-1" in text and "gpt-5.4" in text and "reasoning_effort, seed" in text
+        assert "high" not in text and "12345" not in text, "a setting's value is never logged"
+
     @pytest.mark.parametrize("module, make", [
         ("openchat", lambda: OpenChatLLM(_openchat(OpenChatFlavor.VLLM))),
         ("openrouter", lambda: OpenRouterLLM(_openrouter())),
