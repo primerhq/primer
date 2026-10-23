@@ -71,9 +71,12 @@ CDC keeps them in sync) and shouldn't be edited via these tools.
 ## Mental model
 
 A `Collection`:
-- `id` - optional on create; supply one to use it verbatim, or
-  omit it and the server assigns `collection-<hex>`. Immutable
-  after creation.
+- `id` - optional on create; supply a valid slug (`[a-z0-9._-]+`, not
+  `.` or `..`) to use it verbatim, or omit it and the server assigns
+  `collection-<hex>`. Anything else is refused on create (422 at
+  `body.id`, error type `collection_id_invalid` over REST, and
+  `type=validation-error` from `create_collection`). Immutable after
+  creation.
 - `description` - free text. This is what
   `search::search_collections` embeds.
 - `embedder` - `{provider_id, model}`. Bound at create time; not
@@ -164,8 +167,10 @@ path-addressed document tools, and the per-collection extras.
 - `system::create_collection` - body needs `description`,
   `embedder`, `search_provider_id`, and an optional `id`. Omit `id`
   and the server assigns `collection-<hex>` (e.g.
-  `collection-3f9a1c8d`); supply one to use it verbatim. Immutable
-  after creation. Reject reserved ids (`_internal_*`).
+  `collection-3f9a1c8d`); supply a valid slug (`[a-z0-9._-]+`, not
+  `.` or `..`) to use it verbatim (refused with `collection_id_invalid`
+  / `type=validation-error` otherwise). Immutable after creation.
+  Reject reserved ids (`_internal_*`).
 - `system::update_collection` - partial update. `embedder` and
   `search_provider_id` are not editable post-create - attempting
   triggers 422.

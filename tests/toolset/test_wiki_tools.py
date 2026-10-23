@@ -303,3 +303,9 @@ async def test_this_install_quotes_user_text_and_is_excluded_from_search_by_defa
     )
     hits = json.loads(explicit_search.output)["hits"]
     assert any(h["path"] == "this-install/agents/agent-inj" for h in hits)
+
+    # The tool descriptor and path_prefix argument schema document the default exclusion.
+    tools = {t.id: t async for t in toolset.list_tools()}
+    wiki_search_tool = tools["wiki_search"]
+    assert "this-install" in wiki_search_tool.description
+    assert "this-install" in wiki_search_tool.args_schema["properties"]["path_prefix"]["description"]
