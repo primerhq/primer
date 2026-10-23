@@ -189,7 +189,7 @@ globalThis.setTimeout = function () { return 1; };
 window.primerApi = {};
 """
 
-_TOAST_SOURCE = _function_source(SHELL, "NV_ToastHost")
+_TOAST_SOURCE = _function_source(SHELL, "NV_toastPayload") + _function_source(SHELL, "NV_ToastHost")
 
 
 @pytest.fixture
@@ -223,6 +223,13 @@ def test_news_goes_to_the_polite_region_and_an_error_to_the_assertive_one_and_ne
     assert "Saved the thing" in got["status"]["text"] and "No kind given" in got["status"]["text"]
     assert "Could not save" in got["alert"]["text"]
     assert "Could not save" not in got["status"]["text"] and "Saved the thing" not in got["alert"]["text"]
+
+
+def test_a_string_kind_from_the_console_toast_reaches_the_alert_region(toasts) -> None:
+    toasts.eval('window.primerApi.toastPush(NV_toastPayload("Re-run seed failed", "error")); MR.rerender();')
+    got = _regions(toasts)
+    assert "Re-run seed failed" in got["alert"]["text"]
+    assert "Re-run seed failed" not in got["status"]["text"]
 
 
 def test_a_toast_has_no_role_of_its_own(toasts) -> None:

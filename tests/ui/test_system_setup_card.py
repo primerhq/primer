@@ -70,6 +70,7 @@ window.primerApi.apiFetch = function (method, path, body, opts) {
   LOG.calls.push([method, path]);
   var key = method + " " + path;
   var rep = REPLIES[key];
+  if (rep && rep.pending) return new Promise(function () {});
   if (rep && rep.err) return Promise.reject(rep.err);
   if (rep && rep.ok !== undefined) return Promise.resolve(rep.ok);
   return Promise.resolve({});
@@ -277,6 +278,7 @@ def test_a_green_card_says_all_checks_pass(app):
         and app.text_of("nv-sys-setup-headline") == "All 6 setup checks pass"
     )
     assert app.find_all("nv-sys-setup-check:") == []
+    assert app.text_of("nv-sys-setup-title") == "Setup"
 
 
 def test_open_providers_goes_to_the_providers_page(app):
@@ -325,6 +327,37 @@ def test_a_seed_that_answers_with_errors_is_reported_as_failed(app):  # Review F
     )
 
 
+def test_seed_errors_use_the_exact_separator(app):
+    result = app.data('NV_seedOutcome({ errors: [["a", "x"], ["b", "y"]] })')
+    assert result["text"] == "Seed finished with errors: a: x; b: y"
+
+
+def test_seed_busy_copy_is_exact(app):
+    app.js(
+        f'DATA["nv-sys:setup-state"] = {json.dumps(_state())};'
+        ' REPLIES["POST /setup/seed"] = { pending: true }'
+    )
+    app.mount("NV_SysSetupCard")
+    app.click("nv-sys-setup-menu-btn")
+    app.click("nv-sys-setup-rerun-seed")
+    assert app.text_of("nv-sys-setup-headline") == "Running the seed…"
+
+
+def test_seed_failure_toast_is_pinned(app):
+    app.js(
+        f'DATA["nv-sys:setup-state"] = {json.dumps(_state())};'
+        ' REPLIES["POST /setup/seed"] = { err: { detail: "upstream down", requestId: "req-seed" } }'
+    )
+    app.mount("NV_SysSetupCard")
+    app.click("nv-sys-setup-menu-btn")
+    app.click("nv-sys-setup-rerun-seed")
+    app.settle()
+    assert app.data("LOG.toasts") == [[
+        "Re-run seed failed: upstream down",
+        {"kind": "error", "requestId": "req-seed"},
+    ]]
+
+
 def test_reset_default_agents_asks_first_and_a_declined_confirm_posts_nothing(
     app,
 ):  # Review Focus 2
@@ -334,11 +367,12 @@ def test_reset_default_agents_asks_first_and_a_declined_confirm_posts_nothing(
     app.click("nv-sys-setup-reset-agents")
     app.settle()
     [confirm] = app.data("LOG.confirms")
-    assert confirm["title"] == "Reset default agents" and confirm["danger"] is True
-    assert all(
-        a in confirm["message"]
-        for a in ("operator", "builder", "planner", "explorer", "tool-runner")
-    )
+    assert confirm == {
+        "title": "Reset default agents",
+        "message": "This restores the description, system prompt and tools of operator, builder, planner, explorer and tool-runner to their defaults. Your edits to those agents are lost; the model profile each one runs on is kept.",
+        "confirmLabel": "Reset agents",
+        "danger": True,
+    }
     assert ["POST", "/setup/reset_agents"] not in app.data("LOG.calls")
 
 
@@ -358,6 +392,33 @@ def test_a_confirmed_reset_posts_and_names_the_agents(app):
             "info",
         ]
     ]
+
+
+def test_reset_busy_copy_is_exact(app):
+    app.js(
+        f'DATA["nv-sys:setup-state"] = {json.dumps(_state())}; CONFIRM = true;'
+        ' REPLIES["POST /setup/reset_agents"] = { pending: true }'
+    )
+    app.mount("NV_SysSetupCard")
+    app.click("nv-sys-setup-menu-btn")
+    app.click("nv-sys-setup-reset-agents")
+    app.settle()
+    assert app.text_of("nv-sys-setup-headline") == "Resetting the default agents…"
+
+
+def test_reset_failure_toast_is_pinned(app):
+    app.js(
+        f'DATA["nv-sys:setup-state"] = {json.dumps(_state())}; CONFIRM = true;'
+        ' REPLIES["POST /setup/reset_agents"] = { err: { detail: "write refused", requestId: "req-reset" } }'
+    )
+    app.mount("NV_SysSetupCard")
+    app.click("nv-sys-setup-menu-btn")
+    app.click("nv-sys-setup-reset-agents")
+    app.settle()
+    assert app.data("LOG.toasts") == [[
+        "Reset failed: write refused",
+        {"kind": "error", "requestId": "req-reset"},
+    ]]
 
 
 def test_a_failed_read_says_so_and_still_offers_check_again(app):
