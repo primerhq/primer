@@ -336,6 +336,14 @@ function TS_authExpiryText(expiresAt) {
   return "expires in " + minutes + " min";
 }
 
+// Whether a status read during a sign-in reports an error that was not there when the sign-in started: the Connect poll stops on it. An
+// error the toolset already had (a failed refresh, which keeps the tokens) is not the sign-in's outcome; a completed sign-in replaces it.
+function TS_isNewAuthError(before, next) {
+  if (!next || next.state !== "error") return false;
+  if (!before || before.state !== "error") return true;
+  return before.reason !== next.reason || before.refreshed_at !== next.refreshed_at || before.connected_at !== next.connected_at;
+}
+
 function TS_McpAuthPanel({ toolsetId, pushToast, compact }) {
   const api = window.primerApi;
   const status = api.useResource(
@@ -357,8 +365,13 @@ function TS_McpAuthPanel({ toolsetId, pushToast, compact }) {
   );
   const viewport = typeof api.useViewport === "function" ? api.useViewport() : { isMobile: false };
   const [actionError, setActionError] = React.useState(null);
+  // The Connect poll (G4-20): one chain at a time, its timer kept here so a new Connect, a result or closing the panel stops it. A chain
+  // carries its number; a read that answers after its chain was stopped does nothing.
+  const pollTimer = React.useRef(null);
+  const pollChain = React.useRef(0);
   const pollStarted = React.useRef(0);
-  const pollDone = React.useRef(false);
+  const pollFrom = React.useRef(null);
+  const mounted = React.useRef(true);
   const push = typeof pushToast === "function" ? pushToast : api.toastPush;
   const invalidates = [
     "toolset-auth:" + toolsetId,
@@ -367,21 +380,58 @@ function TS_McpAuthPanel({ toolsetId, pushToast, compact }) {
     "nv-plat:toolsets",
   ];
 
+  function stopPolling() {
+    pollChain.current += 1;
+    if (pollTimer.current !== null) {
+      window.clearTimeout(pollTimer.current);
+      pollTimer.current = null;
+    }
+  }
+
+  React.useEffect(function () {
+    mounted.current = true;
+    return function () {
+      mounted.current = false;
+      stopPolling();
+    };
+  }, []);
+
+  function schedulePoll(chain) {
+    pollTimer.current = window.setTimeout(function () { poll(chain); }, 2000);
+  }
+
   function connected() {
-    if (pollDone.current) return;
-    pollDone.current = true;
+    stopPolling();
     status.refetch();
     if (typeof push === "function") push({ kind: "success", title: "Connected", detail: toolsetId });
   }
 
-  function poll() {
-    if (pollDone.current || Date.now() - pollStarted.current >= 600000) return;
-    api.apiFetch("GET", "/toolsets/" + encodeURIComponent(toolsetId) + "/oauth/status")
-      .then(function (next) {
+  function failed(next) {
+    stopPolling();
+    const message = "The sign-in did not complete" + (next.reason ? ": " + next.reason : ".");
+    setActionError(message);
+    status.refetch();
+    if (typeof push === "function") push({ kind: "error", title: "Connect failed", detail: message });
+  }
+
+  function poll(chain) {
+    pollTimer.current = null;
+    if (chain !== pollChain.current) return;
+    if (Date.now() - pollStarted.current >= 600000) {
+      stopPolling();
+      return;
+    }
+    api.apiFetch("GET", "/toolsets/" + encodeURIComponent(toolsetId) + "/oauth/status").then(
+      function (next) {
+        if (chain !== pollChain.current) return;
         if (next && next.state === "connected") connected();
-        else window.setTimeout(poll, 2000);
-      })
-      .catch(function () { window.setTimeout(poll, 2000); });
+        else if (TS_isNewAuthError(pollFrom.current, next)) failed(next);
+        else schedulePoll(chain);
+      },
+      function () {
+        if (chain === pollChain.current) schedulePoll(chain);
+      },
+    );
   }
 
   const start = api.useMutation(
@@ -393,10 +443,11 @@ function TS_McpAuthPanel({ toolsetId, pushToast, compact }) {
       onSuccess: function (answer) {
         setActionError(null);
         if (answer && answer.authorize_url) {
-          pollDone.current = false;
+          stopPolling();
           pollStarted.current = Date.now();
+          pollFrom.current = answer.status || status.data || null;
           TS_openSignIn(answer.authorize_url);
-          window.setTimeout(poll, 2000);
+          if (mounted.current) schedulePoll(pollChain.current);
         } else {
           connected();
         }
@@ -440,7 +491,6 @@ function TS_McpAuthPanel({ toolsetId, pushToast, compact }) {
   }
 
   function beginStart() {
-    pollDone.current = false;
     start.mutate().catch(function () {});
   }
 
@@ -516,6 +566,7 @@ function TS_cardAuthStatus(row) {
 window.TS_OAUTH_RETURN_TEXT = TS_OAUTH_RETURN_TEXT;
 window.TS_oauthReturnText = TS_oauthReturnText;
 window.TS_openSignIn = TS_openSignIn;
+window.TS_isNewAuthError = TS_isNewAuthError;
 window.TS_takeOAuthReturn = TS_takeOAuthReturn;
 window.TS_McpAuthPanel = TS_McpAuthPanel;
 window.TS_cardAuthStatus = TS_cardAuthStatus;
