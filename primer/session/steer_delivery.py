@@ -15,7 +15,7 @@ from typing import Any
 
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.workspace_session import PeerAttribution, WorkspaceSession
-from primer.session.enqueue import SessionWakeDeps, SessionWakeReceipt, wake_session
+from primer.session.enqueue import SessionWakeDeps, SessionWakeReceipt, queued_attribution, wake_session
 from primer.session.pending_messages import PendingQueueFull, store_pending_steer
 from primer.session.steer_routing import ROUTE_PENDING, route_steer
 
@@ -88,9 +88,10 @@ async def deliver_steer(
     trigger fire is not, and must not silently clear an operator's pause.
 
     A row that is absent OR cannot take a message (a non-restartable ENDED
-    session, or a CANCELLED one when the message is a peer's: an operator's
-    Cancel sticks) reports ``DELIVERED_MISSING``, so the channel router
-    remaps the thread to a fresh session instead of dropping the message.
+    session, or a CANCELLED one when no person stands behind the message,
+    ``human_intent=False``: an operator's Cancel sticks) reports
+    ``DELIVERED_MISSING``, so the channel router remaps the thread to a fresh
+    session instead of dropping the message.
 
     A peer message (``peer`` given) to a session whose queue already holds
     the cap's worth of messages reports ``DELIVERED_QUEUE_FULL`` with nothing
@@ -116,7 +117,9 @@ async def deliver_steer(
                 text=text,
                 workspace_registry=workspace_registry,
                 event_bus=event_bus,
-                attribution=peer.as_attribution() if peer is not None else None,
+                # A peer's sender and hops, or the mark of a message no person wrote (a trigger fire, a tool call): the drain that realizes it
+                # reads them (``queued_attribution``; such a message does not reopen a session an operator cancelled).
+                attribution=queued_attribution(peer, by_a_person=human_intent),
             )
         except PendingQueueFull:
             return SteerDelivery(outcome=DELIVERED_QUEUE_FULL, session_id=session_id)
@@ -144,7 +147,8 @@ async def deliver_steer(
         return SteerDelivery(outcome=DELIVERED_QUEUE_FULL, session_id=session_id)
     except (NotFoundError, ConflictError) as exc:
         # Raced deletion, or an ENDED session whose ended_reason forbids a
-        # restart (or, for a peer message, a session an operator cancelled).
+        # restart (or, for a wake no person stands behind, a session an
+        # operator cancelled).
         # Either way this target cannot receive the message: report
         # it missing so the caller can create a fresh one. The reason travels
         # with it, for a caller that tells its own caller why.

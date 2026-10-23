@@ -92,6 +92,18 @@ class SessionAppendDispatcher:
                 error_code="dispatch_failed",
                 error_message=str(exc),
             )
+        if delivery.outcome == DELIVERED_MISSING and delivery.conflict:
+            # The session is there and has ended in a way that takes no message from a fire: an operator cancelled it (only a person reopens a
+            # cancelled session: lead ruling R4, and ruling 1 of the G7 fixes) or it cannot be reopened at all. Nothing was delivered.
+            return SubscriptionDispatchResult(
+                ok=True,
+                skipped=True,
+                error_code="skipped_session_ended",
+                error_message=(
+                    delivery.detail
+                    or f"session {sub.config.session_id!r} has ended and cannot take a message"
+                ),
+            )
         if delivery.outcome == DELIVERED_MISSING:
             return SubscriptionDispatchResult(
                 ok=True,

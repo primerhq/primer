@@ -469,7 +469,7 @@ def _wake_deps(ws):
 
 
 async def test_a_peer_row_the_wake_refuses_as_cancelled_is_dropped_with_a_record_and_the_next_row_is_realized(monkeypatch):
-    from primer.session.enqueue import PeerCannotReopen
+    from primer.session.enqueue import OnlyAPersonReopens
 
     sp, ws = _SP(), _FakeWorkspace()
     await _session_with(sp, [(_peer_text("p1"), _peer()), ("q", None), (_peer_text("p2"), _peer())])
@@ -477,7 +477,7 @@ async def test_a_peer_row_the_wake_refuses_as_cancelled_is_dropped_with_a_record
 
     async def _wake(**kw):
         if kw["peer"] is not None:
-            raise PeerCannotReopen("cancelled")
+            raise OnlyAPersonReopens("cancelled")
         woken.append(kw["instruction"])
 
     monkeypatch.setattr("primer.session.pending_messages.wake_session", _wake)
@@ -490,13 +490,13 @@ async def test_a_peer_row_the_wake_refuses_as_cancelled_is_dropped_with_a_record
 
 
 async def test_when_the_wake_refuses_every_queued_peer_row_nothing_is_realized_and_each_drop_is_recorded(monkeypatch):
-    from primer.session.enqueue import PeerCannotReopen
+    from primer.session.enqueue import OnlyAPersonReopens
 
     sp, ws = _SP(), _FakeWorkspace()
     await _session_with(sp, [(_peer_text("p1"), _peer()), (_peer_text("p2"), _peer())])
 
     async def _wake(**kw):
-        raise PeerCannotReopen("cancelled")
+        raise OnlyAPersonReopens("cancelled")
 
     monkeypatch.setattr("primer.session.pending_messages.wake_session", _wake)
     did = await realize_next_pending(storage_provider=sp, workspace_id="ws-1", session_id="s", wake_deps=_wake_deps(ws))

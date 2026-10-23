@@ -101,6 +101,7 @@ from primer.model.workspace_session import (
 from primer.model.yield_ import ToolContext, Yielded
 from primer.session.peer_messages import (
     PEER_MESSAGE_MAX_CHARS,
+    REFUSE_RESTART_NEEDS_INPUT,
     PeerMessageRefused,
     PeerSendResult,
     list_workspace_session_summaries,
@@ -2275,7 +2276,7 @@ def build_workspaces_toolset(
     )
     registry[name] = entry
 
-    async def _restart_session(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _restart_session(arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolCallResult:
         if scheduler is None or claim_engine is None:
             return _err(
                 "session tools unavailable: scheduler/claim_engine not wired",
@@ -2288,12 +2289,39 @@ def build_workspaces_toolset(
         from primer.session.enqueue import SessionWakeDeps
         from primer.session.reset import SessionResetDeps, restart_session
 
+        if ctx is not None and ctx.session_id:
+            # An AGENT in a workspace session is restarting another session (lead ruling 1 of the G7 fixes): that is a message from the calling
+            # session, exactly as a steer from it is, so it goes through the service ``message_session`` uses and gets every one of its guards (the
+            # reach of the caller's workspace, the rank, the hop count, the per-sender rate limit) and its attribution (the prefix, ``payload.peer``,
+            # the hop count of the reopened turn, the ledger row, ``session.messaged``). A session an operator cancelled is refused, as for any peer
+            # message. A call with no calling session (the MCP endpoint) takes the path below.
+            if args.input is None:
+                return _err(REFUSE_RESTART_NEEDS_INPUT.format(limit=f"{PEER_MESSAGE_MAX_CHARS:,}"), error_type="bad-request")
+            sessions = storage_provider.get_storage(WorkspaceSession)
+            row = await sessions.get(args.session_id)
+            if row is None or row.workspace_id != args.workspace_id:
+                return _err(_session_not_on_workspace(args), error_type="not-found")
+            try:
+                await _send_from_session(
+                    ctx, ctx.session_id, target_session_id=args.session_id, text=args.input, restart=True,
+                )
+            except PeerMessageRefused as exc:
+                if exc.error_type == "not-found":
+                    # Out of the caller's reach, or gone since the read above: answered in the words of a session that does not exist, so a
+                    # session id seen in a shared file or a log is never confirmed.
+                    return _err(_session_not_on_workspace(args), error_type="not-found")
+                return _err(exc.message, error_type=exc.error_type)
+            after = await sessions.get(args.session_id) or row
+            return _ok(after.model_dump(mode="json"))
+
         try:
             row = await restart_session(
                 workspace_id=args.workspace_id,
                 session_id=args.session_id,
                 instruction=args.input,
-                human_intent=False,  # 01a08c08: an agent's tool call
+                # 01a08c08: no person stands behind a tool call (an MCP client, or a context with no session), so it does not clear a pause
+                # and does not reopen a session an operator cancelled (lead ruling 1 of the G7 fixes; only the REST Restart does).
+                human_intent=False,
                 reset_deps=SessionResetDeps(
                     storage_provider=storage_provider,
                     workspace_registry=workspace_registry,
@@ -2328,7 +2356,14 @@ def build_workspaces_toolset(
             "Use when you want to run an ended session again (optionally "
             "with new input) without creating a new one; not to steer a "
             "live session or to continue one that rested after a failed "
-            "model call (use ``steer_workspace_session``)."
+            "model call (use ``steer_workspace_session``). A session that "
+            "ended cancelled is refused (type=conflict): only a person "
+            "reopens it. From inside a workspace session the restart is a "
+            "message from that session: input is required, the target sees "
+            "a user message that starts with [from session <your session "
+            "id> (agent <your agent id>)], and the limits of message_session "
+            "apply (not-found outside your reach, forbidden, hop-limit, "
+            "rate-limited, conflict)."
         ),
         _RestartArgs,
         _restart_session,

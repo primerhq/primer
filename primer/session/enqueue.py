@@ -15,8 +15,9 @@ Behaviour by status (studio-agents-interact §4.2 / §5.1):
   * PAUSED, human_intent=False -> hold   (queue the message; pause untouched
                                           -- 01a08c08, see ``human_intent``)
   * ENDED             -> restart (reopen + invocation divider, then invoke);
-                         a message from another session does not restart a
-                         CANCELLED session (PeerCannotReopen)
+                         a message no person wrote (a peer's, a trigger's,
+                         a tool's) does not restart a CANCELLED session
+                         (OnlyAPersonReopens)
 
 Uniform "send a message" semantics: every clean agent turn ends the session,
 and sending a NEW message to an ENDED session reopens it (reopen the on-disk
@@ -35,8 +36,9 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 
 from primer.int.claim import ClaimKind
-from primer.model.except_ import ConflictError, NotFoundError, PrimerError
+from primer.model.except_ import NotFoundError, PrimerError
 from primer.model.workspace_session import (
+    MACHINE_ATTRIBUTION_KEY,
     PEER_PAYLOAD_KEY,
     PeerAttribution,
     SessionMessageKind,
@@ -46,7 +48,7 @@ from primer.model.workspace_session import (
 )
 from primer.session.mutation_lock import session_lifecycle_lock
 from primer.session.persistence import WorkspaceMessageWriter, WorkspaceWriteTimeout
-from primer.session.reset import _reopen_ended_locked
+from primer.session.reset import OnlyAPersonReopens, _reopen_ended_locked
 from primer.session.seq_reservation import reserve_next_seq
 from primer.session.title import derive_title_from_text
 
@@ -59,13 +61,18 @@ _RESUMABLE = {
 }
 
 
-class PeerCannotReopen(ConflictError):
-    """A message from another session (``peer``) was refused because the session ended as ``cancelled``.
+def queued_attribution(peer: PeerAttribution | None, *, by_a_person: bool) -> dict | None:
+    """What a queued message carries about its sender, so the drain that realizes it later wakes with the right rule.
 
-    An operator's Cancel sticks (pivot P3, lead ruling R4): only a person's steer or resume reopens the session. ``cancelled`` is a restartable ended
-    reason, so without this a peer message, a queued one realized by the cancelled exit's own drain checkpoint included, would reopen the session the
-    operator had just cancelled. It is raised under the session's lifecycle lock, on the row read there, before anything is written.
+    A message from another session carries its ``peer`` attribution (the hop count survives the queue); one no person wrote and no session sent (a
+    trigger fire, a tool call with no calling session) carries the machine marker (``{"machine": True}``), so it does not reopen a session an
+    operator cancelled when it is realized (lead ruling 1 of the G7 fixes); a person's message carries nothing, as it always did.
     """
+    if peer is not None:
+        return peer.as_attribution()
+    if not by_a_person:
+        return {MACHINE_ATTRIBUTION_KEY: True}
+    return None
 
 
 @dataclass
@@ -187,6 +194,7 @@ async def wake_session(
     peer: PeerAttribution | None = None,
     open_turn: Literal["queue", "skip"] = "queue",
     receipt: SessionWakeReceipt | None = None,
+    by_a_person: bool | None = None,
 ) -> WorkspaceSession:
     """Append ``instruction`` (if any) and re-arm the session's claim.
 
@@ -224,14 +232,25 @@ async def wake_session(
     compile without someone consciously stating which side of that line
     they're on.
 
+    ``by_a_person`` says whether a person WROTE the instruction, which is not
+    always whether a person is acting now: the drain realizing a person's
+    steer that was queued earlier passes ``human_intent=False`` (the replay
+    must not clear a pause that landed since) and ``by_a_person=True``. It
+    decides whether the wake may reopen a session an operator cancelled, and
+    it travels into the queue with a message this wake stores
+    (:func:`queued_attribution`). ``None`` (every direct caller) means
+    ``human_intent``.
+
     Raises NotFoundError (missing / workspace mismatch). An ENDED session is
     reopened in place (reopen slot + invocation divider + ENDED->CREATED)
     before the normal invoke flow, so a new message restarts it; a
     non-restartable ``ended_reason`` (``workspace_lost``/``force_deleted``)
-    still raises ConflictError. A message from another session (``peer``) does
-    not restart a session that ended as ``cancelled``: only a person's message
-    does, so that one raises :class:`PeerCannotReopen` (a ConflictError) before
-    anything is written. Serialised against concurrent
+    still raises ConflictError. A message no person wrote (``by_a_person``
+    False: a message from another session, a trigger fire, a tool call, and
+    any of them realized from the queue later) does not restart a session
+    that ended as ``cancelled``: only a person's message does, so that one
+    raises :class:`~primer.session.reset.OnlyAPersonReopens` (a ConflictError)
+    before anything is written. Serialised against concurrent
     cancel/pause/resume via the session lifecycle lock so the ``turn_status``
     flip + status transition never interleave with a racing cancel's ENDED
     write.
@@ -249,6 +268,7 @@ async def wake_session(
     of an already-pending message omit it because they are the turn-boundary
     action that must write the next USER_INPUT.
     """
+    sent_by_a_person = human_intent if by_a_person is None else by_a_person
     sessions = deps.storage_provider.get_storage(WorkspaceSession)
     async with session_lifecycle_lock().acquire(session_id):
         row = await sessions.get(session_id)
@@ -258,12 +278,9 @@ async def wake_session(
                 f"{workspace_id!r}"
             )
         if row.status == SessionStatus.ENDED:
-            if peer is not None and row.ended_reason == "cancelled":
-                # An operator's Cancel sticks (lead ruling R4): a message from another session does not undo it. Decided here, under the lifecycle
-                # lock and on the row just read, so a Cancel that landed after any earlier look is seen; a person's message (no peer) still reopens.
-                raise PeerCannotReopen(
-                    f"Session {session_id!r} was cancelled and a message from another session does not reopen it; only a person can"
-                )
+            # An operator's Cancel sticks (lead ruling R4, and ruling 1 of the G7 fixes): a message no person wrote does not undo it.
+            # ``_reopen_ended_locked`` decides it first, here under the lifecycle lock and on the row just read, so a Cancel that landed after
+            # any earlier look is seen; a person's message (``by_a_person``) still reopens.
             # Reopen the ended session in place so a NEW message restarts it
             # (reopen slot + invocation divider + ENDED->CREATED). We hold the
             # non-reentrant session_lifecycle_lock, and reset_session acquires
@@ -286,6 +303,7 @@ async def wake_session(
                 session_id=session_id,
                 sessions=sessions,
                 workspace_registry=deps.workspace_registry,
+                by_a_person=sent_by_a_person,
                 workspace_write=lambda: _workspace_write(
                     deps, workspace_id=workspace_id, what=f"reopening session {session_id!r}",
                 ),
@@ -336,8 +354,9 @@ async def wake_session(
                     workspace_registry=deps.workspace_registry,
                     event_bus=deps.event_bus,
                     # The sender and hop count ride the queue (pivot P3): realize_next_pending hands them back to the wake that
-                    # delivers this message, or a reply chain would restart at hop 1 each time a pause held it.
-                    attribution=peer.as_attribution() if peer is not None else None,
+                    # delivers this message, or a reply chain would restart at hop 1 each time a pause held it. So does whether a person
+                    # wrote it (G7 ruling 1): a held trigger message must not reopen a session cancelled before it is realized.
+                    attribution=queued_attribution(peer, by_a_person=sent_by_a_person),
                 )
                 pending_id = pending.id
             await _record_pause_superseded(
@@ -376,9 +395,7 @@ async def wake_session(
                     text=instruction,
                     workspace_registry=deps.workspace_registry,
                     event_bus=deps.event_bus,
-                    attribution=(
-                        peer.as_attribution() if peer is not None else None
-                    ),
+                    attribution=queued_attribution(peer, by_a_person=sent_by_a_person),
                 )
                 receipt.outcome = "queued"
                 return row
@@ -579,8 +596,9 @@ async def _record_pause_superseded(
 
 
 __all__ = [
-    "PeerCannotReopen",
+    "OnlyAPersonReopens",
     "SessionWakeDeps",
     "SessionWakeReceipt",
+    "queued_attribution",
     "wake_session",
 ]

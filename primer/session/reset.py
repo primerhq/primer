@@ -19,6 +19,7 @@ from typing import Any
 
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.workspace_session import (
+    PeerAttribution,
     SessionMessageKind,
     SessionMessageRecord,
     SessionStatus,
@@ -35,6 +36,26 @@ logger = logging.getLogger(__name__)
 _RESTARTABLE = {"completed", "failed", "cancelled", "tool_turn_cap"}
 
 
+class OnlyAPersonReopens(ConflictError):
+    """A message no person wrote was refused because the session ended as ``cancelled``.
+
+    An operator's Cancel sticks (pivot P3 lead ruling R4, extended by lead ruling 1 of the G7 fixes): only a person's message reopens the session.
+    That is a person's steer (the REST steer route, a channel reply), a person's Restart (the REST restart route), and a person's steer that was
+    queued on the session and is realized by the drain after the Cancel (lead ruling of 2026-10-07 on ticket 01a1120e: the drain realizes on a
+    cancelled end too). Every other message is refused: one from another session, a trigger fire, an agent's or an MCP client's steer or restart tool
+    call, and any of those queued and realized later. ``cancelled`` is a restartable ended reason, so without this any of them would reopen the
+    session the operator had just cancelled. It is raised under the session's lifecycle lock, on the row read there, before anything is written.
+    """
+
+
+def _refuse_a_cancelled_reopen(row: WorkspaceSession, *, session_id: str, by_a_person: bool) -> None:
+    """Raise :class:`OnlyAPersonReopens` when ``row`` ended as ``cancelled`` and no person wrote the message that would reopen it."""
+    if row.ended_reason == "cancelled" and not by_a_person:
+        raise OnlyAPersonReopens(
+            f"Session {session_id!r} was cancelled, and only a person's message or Restart reopens it"
+        )
+
+
 @dataclass
 class SessionResetDeps:
     storage_provider: Any
@@ -49,6 +70,7 @@ async def _reopen_ended_locked(
     session_id: str,
     sessions: Any,
     workspace_registry: Any,
+    by_a_person: bool,
     workspace_write: Callable[[], AbstractAsyncContextManager[None]] | None = None,
 ) -> tuple[WorkspaceSession, int]:
     """Reopen an ENDED session row IN PLACE — lock-free reopen body.
@@ -59,6 +81,9 @@ async def _reopen_ended_locked(
     ``reset_session`` from inside ``wake_session``'s lock would deadlock.
 
     Assumes the caller verified ``row.status == SessionStatus.ENDED``.
+    Refuses first a ``cancelled`` row when no person wrote the message that
+    reopens it (``by_a_person=False``: :class:`OnlyAPersonReopens`, before
+    anything is written), so the wake and the restart share one rule for it.
     Enforces the ``_RESTARTABLE`` ended_reason guard here (raising
     ConflictError for ``force_deleted`` always, and for ``workspace_lost``
     UNLESS the workspace has since healed - see below), reopens the
@@ -98,6 +123,7 @@ async def _reopen_ended_locked(
     and its template) and the closing row update. A refused pool connection is an ``OSError`` too, and under that guard it was reported as a
     removal of a workspace nobody had touched. Without the argument (``reset_session``) nothing wraps anything and every failure surfaces as it is.
     """
+    _refuse_a_cancelled_reopen(row, session_id=session_id, by_a_person=by_a_person)
     if row.ended_reason not in _RESTARTABLE:
         recoverable = False
         if row.ended_reason == "workspace_lost":
@@ -173,12 +199,16 @@ async def reset_session(
     workspace_id: str,
     session_id: str,
     deps: SessionResetDeps,
+    human_intent: bool,
 ) -> tuple[WorkspaceSession, int]:
     """Re-open an ENDED session and append an invocation divider.
 
     Returns ``(row, invocation_number)``. Raises NotFoundError (missing /
     workspace mismatch) / ConflictError (not ENDED, or a non-restartable
-    ``ended_reason`` such as ``workspace_lost``/``force_deleted``).
+    ``ended_reason`` such as ``workspace_lost``/``force_deleted``, or a
+    ``cancelled`` session that no person is reopening: ``human_intent``,
+    REQUIRED like :func:`~primer.session.enqueue.wake_session`'s, is True
+    only for a person's Restart; :class:`OnlyAPersonReopens`).
     """
     sessions = deps.storage_provider.get_storage(WorkspaceSession)
     async with session_lifecycle_lock().acquire(session_id):
@@ -200,6 +230,7 @@ async def reset_session(
             session_id=session_id,
             sessions=sessions,
             workspace_registry=deps.workspace_registry,
+            by_a_person=human_intent,
         )
 
         if deps.event_bus is not None:
@@ -222,6 +253,7 @@ async def restart_session(
     human_intent: bool,
     reset_deps: "SessionResetDeps",
     wake_deps,  # primer.session.enqueue.SessionWakeDeps
+    peer: PeerAttribution | None = None,
 ) -> WorkspaceSession:
     """Reset an ENDED session then invoke it (studio-agents-interact §5.3).
 
@@ -233,19 +265,27 @@ async def restart_session(
     reopen branch never fires here, so there is exactly one invocation
     divider (no double-reopen).
 
-    ``human_intent`` (01a08c08) is forwarded to ``wake_session`` for
-    completeness and to keep this call site honest about its own two
-    callers (the REST restart endpoint vs. the ``workspaces__restart_
-    session`` agent tool) -- it is a no-op here in practice, since
-    ``_reopen_ended_locked`` already clears ``pause_requested`` as part of
-    the ENDED->CREATED reopen (a stale pause from a PRIOR, now-ended
-    invocation has nothing to do with THIS one), so ``wake_session``'s own
-    pause check never sees it set.
+    ``human_intent`` (01a08c08) says whether a person stands behind the
+    restart: True for the REST restart endpoint, False for the
+    ``workspaces__restart_workspace_session`` tool (an agent, or an MCP
+    client). ``reset_session`` refuses a ``cancelled`` session for a
+    restart no person makes (:class:`OnlyAPersonReopens`: an operator's
+    Cancel sticks). It is also forwarded to ``wake_session``, where it is a
+    no-op for the pause in practice: ``_reopen_ended_locked`` already clears
+    ``pause_requested`` as part of the ENDED->CREATED reopen (a stale pause
+    from a PRIOR, now-ended invocation has nothing to do with THIS one).
+
+    ``peer`` says the restart was sent by another session (the restart tool
+    called from inside a workspace session, through
+    :func:`primer.session.peer_messages.send_peer_message`): it is forwarded
+    to ``wake_session``, so the USER_INPUT record names the sender
+    (``payload["peer"]``) and the reopened turn's ``peer_hops`` is the
+    message's hop count.
     """
     from primer.session.enqueue import wake_session
 
     await reset_session(
-        workspace_id=workspace_id, session_id=session_id, deps=reset_deps,
+        workspace_id=workspace_id, session_id=session_id, deps=reset_deps, human_intent=human_intent,
     )
     return await wake_session(
         workspace_id=workspace_id,
@@ -253,10 +293,12 @@ async def restart_session(
         instruction=instruction,
         human_intent=human_intent,
         deps=wake_deps,
+        peer=peer,
     )
 
 
 __all__ = [
+    "OnlyAPersonReopens",
     "SessionResetDeps",
     "_reopen_ended_locked",
     "reset_session",
