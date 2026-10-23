@@ -44,6 +44,7 @@ from primer.model.providers.toolset import Toolset
 from primer.model.storage import OffsetPage
 from primer.model.tool_approval import RequiredApprovalConfig, ToolApprovalPolicy
 from primer.model.yield_ import YieldToWorker
+from primer.session.approvers import ADMIN_ONLY_SPEC
 from primer.storage.migrations import LATEST_VERSION, run_migrations
 from primer.storage.sqlite import SqliteStorageProvider
 from primer.toolset.crud import CRUD_TOOL_NAMES, CRUD_TWINS, DEFAULT_GATED_TOOLS, build_crud_toolset
@@ -207,11 +208,72 @@ async def test_an_admin_run_parks_on_the_seeded_gate_before_anything_is_written(
         assert parked.value.yielded.tool_name == "_approval"
         assert meta["policy_id"] == default_policy_id(toolset_id, tool_name), meta
         assert meta["approval_type"] == gate
+        assert meta["approvers"] == ADMIN_ONLY_SPEC, "an admin-tier gate is decided by an admin only"
         if "call-tool" in door:
             assert meta["via_call_tool"] == {"toolset_id": toolset_id, "tool_name": tool_name}
         assert await _state(sp) == before, "a row changed before the gate was decided"
     finally:
         await sp.aclose()
+
+
+@pytest.mark.parametrize("toolset_id, tool_name, arguments", [(t, n, a) for _, t, n, a, _ in GATED], ids=[c for c, *_ in GATED])
+async def test_only_an_admin_may_decide_an_admin_tier_gate(tmp_path, toolset_id, tool_name, arguments):
+    """The lead's ruling on #860 (R860-6): the shipped admin-tier gates carry the admin-only approver spec, so a user cannot approve one over
+    REST and a chat-platform user primer cannot identify cannot answer one from a channel; an admin can."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from primer.api.approver_guard import enforce_approvers
+    from primer.bus.in_memory import InMemoryEventBus
+    from primer.channel.adapter import ResponseEnvelope
+    from primer.channel.inbox import ChannelInbox
+    from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
+    from primer.session.approvers import ApproverRefusedError, may_decide
+    from tests.conftest import _FakeStorageProvider
+
+    sp, registry, toolsets, resolver = await _world(tmp_path, "fresh")
+    try:
+        with pytest.raises(YieldToWorker) as parked:
+            await _manager(toolsets, resolver, registry).execute(_call("through-call-tool", toolset_id, tool_name, arguments))
+    finally:
+        await sp.aclose()
+    meta = parked.value.yielded.resume_metadata
+
+    assert may_decide(meta, username="root", role="admin")
+    assert not may_decide(meta, username="bob", role="user")
+    assert not may_decide(meta, username=None, role=None), "an unidentified decider answered an admin-only gate"
+    enforce_approvers(meta, SimpleNamespace(username="root", role="admin"))
+    with pytest.raises(HTTPException) as refused:
+        enforce_approvers(meta, SimpleNamespace(username="bob", role="user"))
+    assert refused.value.status_code == 403
+
+    # A Slack user answers the parked gate from a channel: refused before anything reaches the bus.
+    now = datetime.now(UTC)
+    event_key = "tool_approval:s-1:c1"
+    session = WorkspaceSession(
+        id="s-1", workspace_id="ws-1", binding=AgentSessionBinding(kind="agent", agent_id="operator"), status=SessionStatus.RUNNING,
+        created_at=now, parked_status="parked", parked_at=now, parked_event_key=event_key,
+        parked_state={"tool_call_id": "c1", "yielded": {"tool_name": "_approval", "event_key": event_key, "resume_metadata": meta}},
+    )
+    bus = InMemoryEventBus()
+    await bus.initialize()
+    channel_sp = _FakeStorageProvider()
+    await channel_sp.get_storage(WorkspaceSession).create(session)
+    events = bus.subscribe()
+    try:
+        reply = ResponseEnvelope(
+            kind="tool_approval", workspace_id="ws-1", session_id="s-1", tool_call_id="c1", response=None, decision="approved", reason=None,
+            platform_metadata={"slack_user_id": "U123"},
+        )
+        with pytest.raises(ApproverRefusedError):
+            await ChannelInbox(event_bus=bus, storage_provider=channel_sp).handle_response(reply)
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(anext(events), timeout=0.2)
+    finally:
+        await events.aclose()
+        await bus.aclose()
 
 
 @pytest.mark.parametrize("door", _DOORS["system"])
@@ -250,11 +312,14 @@ async def test_both_worlds_end_with_the_same_admin_run_gates(tmp_path):
         sp, *_ = await _world(tmp_path, kind)
         try:
             rows = (await sp.get_storage(ToolApprovalPolicy).list(_page())).items
-            shapes[kind] = sorted((p.id, p.toolset_id, p.tool_name, p.enabled, p.approval.model_dump(mode="json").__repr__()) for p in rows)
+            shapes[kind] = sorted(
+                (p.id, p.toolset_id, p.tool_name, p.enabled, repr(p.approval.model_dump(mode="json")), repr(p.approvers and p.approvers.model_dump()))
+                for p in rows
+            )
         finally:
             await sp.aclose()
     assert shapes["fresh"] == shapes["upgraded"]
-    assert {(t, n) for _, t, n, _, _ in GATED} <= {(t, n) for _, t, n, _, _ in shapes["fresh"]}
+    assert {(t, n) for _, t, n, _, _ in GATED} <= {(t, n) for _, t, n, *_ in shapes["fresh"]}
 
 
 # ---- the toolset gate cannot be walked around by spelling the body differently ---------------------------------------------------------------------

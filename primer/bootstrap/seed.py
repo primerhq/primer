@@ -21,7 +21,7 @@ from primer.model.except_ import ConflictError
 from primer.model.storage import OffsetPage
 from primer.model.tool_approval import ToolApprovalPolicy
 from primer.storage.q import Q
-from primer.toolset.crud import CRUD_TOOLSET_ID, DEFAULT_GATED_TOOLS, shipped_gate
+from primer.toolset.crud import CRUD_TOOLSET_ID, DEFAULT_GATED_TOOLS, shipped_approvers, shipped_gate
 
 if TYPE_CHECKING:
     from primer.int.toolset import ToolsetProvider
@@ -67,7 +67,8 @@ async def ensure_crud_approval_policies(storage_provider) -> list[str]:
     approval policy writes, the toolset writes whose body runs code on the
     server host, the harness install, sync and uninstall; ticket
     01a16a29). Every gate is ``required`` but the toolset writes', a Rego
-    policy that lets an http, sse or internal toolset through. The rows
+    policy that lets an http, sse or internal toolset through, and the
+    admin-tier gates are decided by an admin only (``shipped_approvers``). The rows
     are ordinary storage rows, so an operator can disable or retune any
     of them and this pass will leave that choice alone; a tool that
     already has a policy under another id (an operator's own) gets no
@@ -91,6 +92,7 @@ async def ensure_crud_approval_policies(storage_provider) -> list[str]:
                     tool_name=tool_name,
                     enabled=True,
                     approval=shipped_gate(toolset_id, tool_name),
+                    approvers=shipped_approvers(toolset_id, tool_name),
                 )
             )
         except ConflictError:

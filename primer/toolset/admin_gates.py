@@ -11,7 +11,8 @@ creator's) walked around the approval system:
 * :data:`HARNESS_LIFECYCLE`: harness install, sync and uninstall, which create, update and delete a bundle's agents, graphs, triggers and toolsets.
 
 :data:`ADMIN_GATES` maps each to the gate a fresh install ships: ``required``, except the two toolset writes, whose gate is the Rego policy
-:data:`HOST_CODE_TOOLSET_POLICY`. ``bootstrap/seed.py`` seeds them with the crud gates (``crud.DEFAULT_GATED_TOOLS`` lists every default gate);
+:data:`HOST_CODE_TOOLSET_POLICY`. Each is decided by an admin only (``approvers`` = ``primer.session.approvers.ADMIN_ONLY_SPEC``, through
+``crud.shipped_approvers``): a person who may not make the write, or a chat-platform user primer cannot identify, cannot approve it. ``bootstrap/seed.py`` seeds them with the crud gates (``crud.DEFAULT_GATED_TOOLS`` lists every default gate);
 migration 16 gives an existing install the same rows. Like every policy they gate model-initiated calls: the tool manager, ``system__call_tool``
 (the harness tools' one door in a run, as their bare ids carry ``__`` and the tool manager will not mount them) and the MCP endpoint, which has no
 park and refuses a gated call as ``approval_required``. A person acting over REST is not gated.

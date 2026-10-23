@@ -9,7 +9,8 @@ gate for each (``primer.toolset.admin_gates``); this migration gives an install 
 * a tool that already has a policy (under any id, either spelling of ``system``, enabled or not) is left alone: it is the operator's, and a second
   row would be a duplicate, which the gate reads as unconditional and decided by an admin only;
 * otherwise it gets the shipped gate: ``required`` (enabled) for the policy writes and the harness operations, and for the two toolset writes the
-  Rego policy that parks a body that is not exactly an http or sse MCP toolset or an internal one.
+  Rego policy that parks a body that is not exactly an http or sse MCP toolset or an internal one; every one decided by an admin only
+  (``approvers`` = the admin-only spec, the lead's ruling on #860).
 
 There is no sibling to copy a gate from (migration 14 copied the crud sibling's): none of these writes has a crud twin with the same arguments.
 
@@ -57,6 +58,9 @@ required := false if {
 """
 
 _REQUIRED: dict[str, Any] = {"type": "required"}
+# Who may decide these gates: an admin only (``primer.session.approvers.ADMIN_ONLY_SPEC`` as it shipped: no role and no user is named, and an
+# admin is always admitted).
+_ADMIN_ONLY: dict[str, Any] = {"kind": "roles", "roles": [], "users": []}
 _HOST_CODE: dict[str, Any] = {"type": "policy", "policy": _HOST_CODE_TOOLSET_POLICY}
 
 # ``(toolset_id, tool_name, approval)``: the admin-tier writes as this step gates them (frozen; the live table is
@@ -114,7 +118,10 @@ class M016AdminRunGates:
                 continue
             try:
                 await store.create(
-                    ToolApprovalPolicy(id=policy_id, toolset_id=toolset_id, tool_name=tool_name, enabled=True, approval=dict(approval)),
+                    ToolApprovalPolicy(
+                        id=policy_id, toolset_id=toolset_id, tool_name=tool_name, enabled=True, approval=dict(approval),
+                        approvers=dict(_ADMIN_ONLY),
+                    ),
                 )
             except ConflictError:
                 continue

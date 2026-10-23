@@ -41,7 +41,8 @@ from primer.common.preview_paths import missing_paths
 from primer.model.agent import Agent
 from primer.model.chat import Tool
 from primer.model.graph import Graph
-from primer.model.tool_approval import PolicyApprovalConfig, RequiredApprovalConfig
+from primer.model.tool_approval import ApproverSpec, PolicyApprovalConfig, RequiredApprovalConfig
+from primer.session.approvers import ADMIN_ONLY_SPEC
 from primer.toolset._python_tools import build_python_toolset_tools
 from primer.toolset._system_common import SYSTEM_TOOLSET_ID
 from primer.toolset._system_crud import _crud_tools_for
@@ -104,6 +105,15 @@ DEFAULT_GATED_TOOLS: tuple[tuple[str, str], ...] = (
     *CRUD_TWINS,
     *ADMIN_GATES,
 )
+
+
+def shipped_approvers(toolset_id: str, tool_name: str) -> ApproverSpec | None:
+    """Who may decide the shipped gate of ``(toolset_id, tool_name)``: an admin only for the admin-tier gates (``admin_gates.ADMIN_GATES``, the
+    lead's ruling on #860: a gate on a write only an admin may make, or that runs code on the host, is decided by an admin), ``None`` (whoever
+    may decide the session's gates) for the construction gates and every other tool."""
+    if (toolset_id, tool_name) not in ADMIN_GATES:
+        return None
+    return ApproverSpec.model_validate(ADMIN_ONLY_SPEC)
 
 
 def shipped_gate(toolset_id: str, tool_name: str) -> RequiredApprovalConfig | PolicyApprovalConfig | None:
@@ -267,6 +277,7 @@ __all__ = [
     "PREVIEW_ARGS",
     "apply_twin_previews",
     "build_crud_toolset",
+    "shipped_approvers",
     "shipped_gate",
     "twin_preview_args",
 ]
