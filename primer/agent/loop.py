@@ -24,6 +24,12 @@ Behaviour:
   yields no convertible events (empty / error stream).
 * Writes the assistant + tool-result messages into the caller-provided
   ``messages_out`` list (mutated in place).
+* A call that asks to park (``YieldToWorker``) leaves in the middle of its
+  round: the client actions and results of the calls that finished before it
+  are yielded first (as a finished batch yields them), the park exception
+  carries those results and the calls after it (``completed_results``,
+  ``remaining_calls``), and the round is NOT appended to ``messages_out``:
+  the resume answers every call of it (``primer.agent.parked_round``).
 """
 
 from __future__ import annotations
@@ -149,6 +155,27 @@ def _answer_a_stopped_park(
             yielding = tool_calls[index]
             own[yielding.id] = ToolResultPart(id=yielding.id, output=_PARK_STOPPED_REFUSAL, error=True)
     yield from _answer_undispatched(tool_calls, _STOPPED_REFUSAL, messages_out, results=own)
+
+
+def _report_finished_before_park(
+    park: YieldToWorker, client_actions: "list[_ClientAction]",
+) -> Iterator[ExtendedEvent]:
+    """The events of the calls a round finished before the call that asked to park (ticket 01a15327).
+
+    The batch reports its calls only once it has run them all, so a park in the middle of a round used to drop what had
+    finished: a delivered notifying call's client action never went out and no result of an earlier call was ever
+    recorded. They are reported as the park leaves, as a finished batch reports them: the client actions first, then one
+    ``tool_result`` per finished call (``park.completed_results``, stamped by :func:`_dispatch_tool_calls`), in the
+    round's order. Nothing is appended to ``messages_out``: the round is not answered yet, the park carries the finished
+    results and the calls after the one that parked (``primer.agent.parked_round``), and the resume answers the whole
+    round in one ``tool`` message.
+    """
+    for action in client_actions:
+        yield ExtendedEvent(extended=action)
+    for part in park.completed_results or []:
+        yield ExtendedEvent(
+            extended=_ExecutorToolResult(call_id=part.id, output=part.output, error=part.error, metadata=part.metadata)
+        )
 
 
 class PromptGuard(Protocol):
@@ -458,7 +485,11 @@ async def run_agent_turn(
         notifying calls' real results), appends to ``interrupted_out``, hands
         the park to ``stopped_park_out`` and returns. A park that asks a PERSON (see
         :data:`primer.model.yield_.YIELD_KIND_PREFIXES`) still parks and the
-        Stop is dropped: what they answer later wins. Calls later in the batch
+        Stop is dropped: what they answer later wins. Whenever the park goes
+        ahead (no Stop, or a park that asks a person), what the round finished
+        before the call that asked to wait is yielded first, as a finished
+        batch would yield it, and the park leaves with the round stamped on it
+        for its resume (``primer.agent.parked_round``). Calls later in the batch
         are refused once the Stop is set, so they can neither park nor deliver
         a client action. A Cancel
         sets the same event and is treated the same way (the dispatch then ends
@@ -824,6 +855,11 @@ async def run_agent_turn(
                 or not interrupt.is_set()
                 or (isinstance(park, YieldToWorker) and asks_a_person(park.yielded))
             ):
+                if isinstance(park, YieldToWorker):
+                    # The park leaves in the middle of the round: what finished before the call that asks to wait is
+                    # reported now, as a finished batch reports it, and the park carries the rest to its resume.
+                    for finished_event in _report_finished_before_park(park, client_actions):
+                        yield finished_event
                 raise
             for answer_event in _answer_a_stopped_park(park, tool_calls, client_actions, messages_out):
                 yield answer_event
@@ -993,11 +1029,14 @@ async def _dispatch_tool_calls(
         except AuthRequiredError:
             raise
         except YieldToWorker as park:
-            # Say where in this batch the call asked to wait and what had finished before it, as the exception
-            # leaves (a Stop that ends the park answers the round from these; a normal park ignores them). The
-            # outermost batch stamps last, so a nested yield carries the OUTER position, not the subagent's.
+            # Say where in this batch the call asked to wait, what had finished before it and which calls come after
+            # it, as the exception leaves (a Stop that ends the park answers the round from these; a park keeps the
+            # finished results and the calls after it, so its resume answers every call of the round:
+            # ``primer.agent.parked_round``). The outermost batch stamps last, so a nested yield carries the OUTER
+            # position, not the subagent's.
             park.batch_index = index
             park.completed_results = list(result_parts)
+            park.remaining_calls = list(calls[index + 1:])
             raise
         except PrimerError as exc:  # defence-in-depth.
             rp = ToolResultPart(id=call.id, output=redact_credentials(str(exc)), error=True)
