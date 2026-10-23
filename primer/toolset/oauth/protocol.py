@@ -24,7 +24,8 @@ other failure. Every error text carries the HTTP status and the RFC 6749 ``error
 200 characters, with each secret the request carried masked even when the server echoes it: never the response body. Nothing here logs.
 
 Answer bodies (a discovery document, a token or registration answer) are streamed and read to :data:`MAX_BODY_BYTES` before anything is parsed; a
-larger one is not used. A revocation answer's body is never read.
+larger one is not used. A revocation answer's body is never read. A destination the service's client refuses (a server-named endpoint on a private
+address, :mod:`primer.toolset.oauth.egress`) is a :class:`~primer.model.except_.BadRequestError` naming the endpoint.
 """
 
 from __future__ import annotations
@@ -47,6 +48,7 @@ from primer.common.bounded_read import ACCEPT_ENCODING, UnsupportedContentEncodi
 from primer.common.log import redact_credentials, redact_url_secrets
 from primer.common.mcp_errors import classify_mcp_exception
 from primer.common.origin import origin_of
+from primer.common.ssrf import BlockedDestinationError
 from primer.model.except_ import BadRequestError, NetworkError, PrimerError, ProviderError, RateLimitError, ServerError
 from primer.model.mcp_oauth import ClientAuthMethod
 
@@ -417,6 +419,8 @@ async def _get_json_object(url: str, http: httpx.AsyncClient) -> tuple[dict[str,
     """GET ``url``: the JSON object of a 200 answer, or ``None``; and whether any answer came back at all (``False`` for a transport failure)."""
     try:
         answer = await _send(http, "GET", url, headers=_JSON_ACCEPT)
+    except BlockedDestinationError:
+        raise _refused_destination("the OAuth metadata at", url) from None
     except (httpx.HTTPError, httpx.InvalidURL):
         return None, False
     if answer.status != 200:
@@ -432,6 +436,15 @@ def _json_object(body: bytes | None) -> dict[str, Any] | None:
     except ValueError:                                   # not JSON, or not UTF-8 (UnicodeDecodeError is a ValueError)
         return None
     return value if isinstance(value, dict) else None
+
+
+def _refused_destination(what: str, url: str) -> BadRequestError:
+    """A server-named endpoint the private-destination guard refused (:mod:`primer.toolset.oauth.egress`, audit G4-08). The text names the URL, never
+    the address it resolved to."""
+    return BadRequestError(
+        f"{what} {_shown(url)} is not a public address and is on another host than the MCP server, so it is not called (an operator can allow "
+        "private addresses with PRIMER_WORKSPACE_ALLOW_PRIVATE_URL_SOURCES)"
+    )
 
 
 def _over_the_cap(what: str, status: int) -> ServerError:
@@ -683,6 +696,8 @@ async def _token_request(
     _authenticate(client, body, headers)
     try:
         answer = await _send(http, "POST", token_endpoint, data=body, headers=headers)
+    except BlockedDestinationError:
+        raise _refused_destination("the token endpoint", token_endpoint) from None
     except (httpx.HTTPError, httpx.InvalidURL) as exc:
         raise _call_failed(exc, "the token endpoint") from exc
     status = answer.status
@@ -760,6 +775,8 @@ async def register_client(*, metadata: AuthServerMetadata, redirect_uri: str, cl
     }
     try:
         answer = await _send(http, "POST", metadata.registration_endpoint, json=payload, headers=_JSON_ACCEPT)
+    except BlockedDestinationError:
+        raise _refused_destination("the registration endpoint", metadata.registration_endpoint) from None
     except (httpx.HTTPError, httpx.InvalidURL) as exc:
         raise _call_failed(exc, "the registration endpoint") from exc
     status = answer.status

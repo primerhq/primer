@@ -137,6 +137,10 @@ The toolset is ready for every caller once the shared status is `connected`.
   Use separate toolsets when upstream identities need different privileges.
 - Changing only extra HTTP headers does not sign out an OAuth toolset. Changing
   the URL or any OAuth setting does.
+- Primer does not call an OAuth endpoint the MCP server names on another host
+  when it is on a private, loopback or link-local address (the start answers 400
+  naming the URL). An operator whose authorization server is on a private
+  network turns on `PRIMER_WORKSPACE_ALLOW_PRIVATE_URL_SOURCES`.
 - `oauth.resource_uri` must be on the MCP server's own origin (scheme, host and
   port); a create or update that names another one is refused as a validation
   error naming `config.config.oauth.resource_uri`. A sign-in also refuses a server

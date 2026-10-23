@@ -29,6 +29,9 @@ Public surface:
 * :func:`vet_host` - resolve and check, return the addresses to connect to.
 * :func:`guarded_async_client` - an :class:`httpx.AsyncClient` whose every
   connection goes through :func:`vet_host`.
+* :func:`guarded_transport` - the transport under it, for a caller that
+  routes requests itself; ``vet`` swaps in another address rule (the MCP
+  OAuth client applies :mod:`primer.common.ssrf`'s policy this way).
 * :class:`GuardedResolver` - the same rule as an aiohttp resolver (for the
   workspace url file mounts, which still use aiohttp; not wired yet).
 * :func:`vet_ip_literal` - the literal-address check aiohttp needs (it
@@ -42,7 +45,7 @@ import ipaddress
 import re
 import socket
 import ssl
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
 import anyio
@@ -228,8 +231,15 @@ class GuardedNetworkBackend(httpcore.AsyncNetworkBackend):
     tried one after another, not raced.
     """
 
-    def __init__(self, inner: httpcore.AsyncNetworkBackend | None = None) -> None:
+    def __init__(
+        self,
+        inner: httpcore.AsyncNetworkBackend | None = None,
+        *,
+        vet: Callable[[str, int], Awaitable[list[str]]] | None = None,
+    ) -> None:
         self._inner = inner or httpcore.AnyIOBackend()
+        #: The address rule: :func:`vet_host` unless the caller names another (same contract: resolve, refuse, return the addresses to use).
+        self._vet = vet
 
     async def connect_tcp(
         self,
@@ -242,7 +252,7 @@ class GuardedNetworkBackend(httpcore.AsyncNetworkBackend):
         deadline = None if timeout is None else anyio.current_time() + timeout
         try:
             with anyio.fail_after(timeout):
-                addrs = await vet_host(host, port)
+                addrs = await (self._vet or vet_host)(host, port)
         except TimeoutError as exc:
             raise httpcore.ConnectTimeout(
                 f"resolving {host} exceeded the {timeout}s connect timeout"
@@ -279,22 +289,13 @@ class GuardedNetworkBackend(httpcore.AsyncNetworkBackend):
         await self._inner.sleep(seconds)
 
 
-def guarded_async_client(
+def transport_over(
+    network_backend: httpcore.AsyncNetworkBackend,
     *,
-    network_backend: httpcore.AsyncNetworkBackend | None = None,
     verify: ssl.SSLContext | str | bool = True,
     trust_env: bool = True,
-    **client_kwargs: Any,
-) -> httpx.AsyncClient:
-    """An :class:`httpx.AsyncClient` whose connections all pass :func:`vet_host`.
-
-    ``network_backend`` is the backend the vetted connection is opened on
-    (tests pass an httpcore mock). An explicit transport also means httpx
-    ignores the ``HTTP(S)_PROXY`` environment, so the guard always sees
-    the real destination. ``verify`` and ``trust_env`` reach the TLS
-    context as they would on a plain httpx client (``trust_env`` there only
-    means ``SSL_CERT_FILE`` / ``SSL_CERT_DIR``).
-    """
+) -> httpx.AsyncHTTPTransport:
+    """An httpx transport whose connections are opened by ``network_backend`` (httpx's defaults otherwise: HTTP/1.1, default limits)."""
     transport = httpx.AsyncHTTPTransport(verify=verify, trust_env=trust_env)
     # httpx exposes no network_backend knob; swap in a pool built with one.
     # Fail loudly if an httpx upgrade changes what the transport holds, rather
@@ -311,8 +312,40 @@ def guarded_async_client(
         max_connections=100,
         max_keepalive_connections=20,
         keepalive_expiry=5.0,
-        network_backend=GuardedNetworkBackend(network_backend),
+        network_backend=network_backend,
     )
+    return transport
+
+
+def guarded_transport(
+    *,
+    network_backend: httpcore.AsyncNetworkBackend | None = None,
+    vet: Callable[[str, int], Awaitable[list[str]]] | None = None,
+    verify: ssl.SSLContext | str | bool = True,
+    trust_env: bool = True,
+) -> httpx.AsyncHTTPTransport:
+    """A transport whose every connection is vetted (:class:`GuardedNetworkBackend`, with ``vet`` or :func:`vet_host`) and opened on the vetted
+    address, on ``network_backend`` (tests pass an httpcore mock)."""
+    return transport_over(GuardedNetworkBackend(network_backend, vet=vet), verify=verify, trust_env=trust_env)
+
+
+def guarded_async_client(
+    *,
+    network_backend: httpcore.AsyncNetworkBackend | None = None,
+    verify: ssl.SSLContext | str | bool = True,
+    trust_env: bool = True,
+    **client_kwargs: Any,
+) -> httpx.AsyncClient:
+    """An :class:`httpx.AsyncClient` whose connections all pass :func:`vet_host`.
+
+    ``network_backend`` is the backend the vetted connection is opened on
+    (tests pass an httpcore mock). An explicit transport also means httpx
+    ignores the ``HTTP(S)_PROXY`` environment, so the guard always sees
+    the real destination. ``verify`` and ``trust_env`` reach the TLS
+    context as they would on a plain httpx client (``trust_env`` there only
+    means ``SSL_CERT_FILE`` / ``SSL_CERT_DIR``).
+    """
+    transport = guarded_transport(network_backend=network_backend, verify=verify, trust_env=trust_env)
     return httpx.AsyncClient(transport=transport, trust_env=trust_env, **client_kwargs)
 
 
@@ -353,7 +386,9 @@ __all__ = [
     "GuardedResolver",
     "configure_egress_allow",
     "guarded_async_client",
+    "guarded_transport",
     "parse_egress_allow",
+    "transport_over",
     "vet_host",
     "vet_ip_literal",
 ]
