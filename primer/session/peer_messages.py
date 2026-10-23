@@ -316,6 +316,24 @@ async def list_workspace_session_summaries(
     return {"workspace_id": workspace_id, "items": items, "total": page.total if page.total is not None else len(items)}
 
 
+async def reach_of(storage_provider: Any, workspace_id: str) -> str | None:
+    """The workspace a session of ``workspace_id`` may reach, or ``None`` when it may reach every workspace.
+
+    The scope of every path by which a session acts on another session (design 6.1; lead ruling 3 of the G7 fixes): a session reaches its own
+    workspace, and a session in the default workspace (prime, the management plane) reaches every workspace. Which workspace is the default is the one
+    every module asks for (``primer.bootstrap.prime.resolve_default_workspace_id``); with none named, no session is in it. A person (REST) or an API
+    client (MCP), who calls with no session, is not scoped by this.
+    """
+    default_workspace_id = await resolve_default_workspace_id(storage_provider)
+    return None if workspace_id == default_workspace_id else workspace_id
+
+
+def in_reach(reach: str | None, workspace_id: str) -> bool:
+    """Whether a session in ``workspace_id`` is within ``reach`` (:func:`reach_of`). Out of reach is answered exactly as a session that does not
+    exist, by every caller, so a session id seen in a shared file or a log is never confirmed."""
+    return reach is None or workspace_id == reach
+
+
 class PeerSendResult(BaseModel):
     """What ``message_session`` answers when the message was delivered or queued."""
 
@@ -441,7 +459,6 @@ async def send_peer_message(
     text: str,
     mode: Literal["auto", "if_idle"] = "auto",
     now: datetime | None = None,
-    reach_any_workspace: bool = False,
     steered_on_every_delivery: bool = False,
     restart: bool = False,
 ) -> PeerSendResult:
@@ -473,11 +490,10 @@ async def send_peer_message(
     ``wait_for_event`` is woken as by a doorbell while the message itself stays queued for the turn boundary), and ``session.steered`` too when the
     target had a turn open.
 
-    Two switches exist for ``steer_workspace_session`` called from inside a session, which is a peer message too (lead ruling 3) and the only caller
-    that sets them. ``reach_any_workspace`` skips the reach guard: that tool names the target's workspace itself and has always reached "a session in
-    any workspace", and the ruling adds the attribution, hop, rate and rank guards, not a scope. ``steered_on_every_delivery`` emits ``session.steered``
-    for a woken target as well as a queued one, as that tool always has (the REST steer route emits it for every steer). Every other guard, the
-    ledger and the rulings R1 and R4 apply as for ``message_session``.
+    One switch exists for ``steer_workspace_session`` called from inside a session, which is a peer message too (lead ruling 3) and the only caller
+    that sets it: ``steered_on_every_delivery`` emits ``session.steered`` for a woken target as well as a queued one, as that tool always has (the
+    REST steer route emits it for every steer). Every guard, the reach of the sender's workspace included (lead ruling 3 of the G7 fixes: it used to
+    skip it), the ledger and the rulings R1 and R4 apply as for ``message_session``.
 
     ``restart`` is ``restart_workspace_session`` called from inside a session (lead ruling 1 of the G7 fixes): a restart is a message from the
     calling session too, so every guard above applies to it, and its text reaches the reopened session with the prefix and the attribution, and its
@@ -496,12 +512,9 @@ async def send_peer_message(
     if sender is None:
         raise PeerMessageRefused("unsupported-surface", REFUSE_NO_CALLER)
     target = await sessions.get(target_session_id)
-    # The default workspace (prime) is the management plane: its sessions may message a session in ANY workspace (design 6.1). Which workspace
-    # that is, is the one every module asks for (``primer.bootstrap.prime.resolve_default_workspace_id``); with none named, no session is in it.
-    default_workspace_id = await resolve_default_workspace_id(storage_provider)
-    if target is None or (
-        not reach_any_workspace and target.workspace_id != sender.workspace_id and sender.workspace_id != default_workspace_id
-    ):
+    # A session reaches its own workspace; the default workspace (prime) is the management plane, and its sessions reach ANY workspace (design 6.1,
+    # :func:`reach_of`). For every caller of this service, the steer and restart tools included.
+    if target is None or not in_reach(await reach_of(storage_provider, sender.workspace_id), target.workspace_id):
         # A session of another workspace is answered exactly as a session that does not exist: an id seen in a shared file or a log must not confirm
         # that the session is there. This comes before the rank check for the same reason.
         raise PeerMessageRefused("not-found", REFUSE_NOT_FOUND.format(session_id=target_session_id))
@@ -704,10 +717,12 @@ __all__ = [
     "PeerMessageRefused",
     "PeerSendResult",
     "check_peer_rate",
+    "in_reach",
     "list_workspace_session_summaries",
     "next_peer_hops",
     "parked_on",
     "peer_prefix",
+    "reach_of",
     "rank_label",
     "record_peer_message",
     "resolve_default_workspace_id",
