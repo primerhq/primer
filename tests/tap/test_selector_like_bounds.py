@@ -269,7 +269,81 @@ async def test_the_sse_stream_ends_with_a_named_error_frame_when_the_budget_runs
         async for frame in stream:
             frames.append(frame)
     assert len(frames) == 1
-    assert frames[0].startswith("event: error\n")
+    # A long retry: an EventSource reconnects on its own, and the same selector would only fail again (round 2, L4).
+    assert frames[0].startswith("retry: 3600000\nevent: error\n")
     data = json.loads(frames[0].split("data: ", 1)[1])
     assert data["type"] == "/errors/selector-timeout"
     assert "simplify the selector" in data["detail"]
+
+
+
+# ---- round 2: M3 the drain matches only what the limit asks for; L9 a LIKE compiles once per selector; L1 the executor ----
+
+
+def _counting_eval(monkeypatch) -> list[int]:
+    calls: list[int] = []
+    real = selector_module._eval_predicate
+
+    def _counting(pred, event, ctx):
+        calls.append(event.seq)
+        return real(pred, event, ctx)
+
+    monkeypatch.setattr(selector_module, "_eval_predicate", _counting)
+    return calls
+
+
+@pytest.mark.parametrize("op", [Op.EQ, Op.LIKE], ids=["plain-predicate", "like-off-loop"])
+async def test_a_drain_matches_no_more_events_than_its_limit_asks_for(monkeypatch, op):
+    provider = _Provider()
+    await provider.store.create(_session())
+    io = _IO()
+    for seq in range(1, 51):  # a backlog of 10x the limit, every event matching
+        io.add("s1", seq, "user_input", text="needle")
+    calls = _counting_eval(monkeypatch)
+    pattern = "needle" if op is Op.EQ else "need%"
+    events, cursor = await read_batch(
+        provider, io, workspace_id=_WID, selector=_like(pattern, op), cursor=TapCursor.decode(None), limit=5,
+    )
+    assert [e.seq for e in events] == [1, 2, 3, 4, 5]
+    assert len(calls) == 5, calls
+    assert cursor.resume_seq("s1") == 5
+    # The next drain resumes exactly there.
+    events, _cursor = await read_batch(
+        provider, io, workspace_id=_WID, selector=_like(pattern, op), cursor=cursor, limit=5,
+    )
+    assert [e.seq for e in events] == [6, 7, 8, 9, 10]
+
+
+async def test_a_selector_compiles_each_like_pattern_once(monkeypatch):
+    compiles: list[str] = []
+    real = selector_module._like_to_regex
+
+    def _counting(pattern, *, flags=0):
+        compiles.append(pattern)
+        return real(pattern, flags=flags)
+
+    monkeypatch.setattr(selector_module, "_like_to_regex", _counting)
+    io = _IO()
+    for seq in range(1, 101):
+        io.add("s1", seq, "user_input", text=f"needle {seq}")
+    selector = _like("needle%")
+    events, _offset = await read_session_since(io, workspace_id=_WID, session=_session(), after_seq=0, selector=selector)
+    assert len(events) == 100
+    assert compiles == ["needle%"]
+
+
+async def test_like_matching_runs_on_the_user_regex_executor(monkeypatch):
+    import threading
+
+    names: list[str] = []
+    real = selector_module._like_matches
+
+    def _recording(*args, **kwargs):
+        names.append(threading.current_thread().name)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(selector_module, "_like_matches", _recording)
+    io = _IO()
+    io.add("s1", 1, "user_input", text="needle")
+    await read_session_since(io, workspace_id=_WID, session=_session(), after_seq=0, selector=_like("need%"))
+    assert names and all(name.startswith("user-regex") for name in names), names

@@ -207,9 +207,15 @@ def _frame(event: TapEvent) -> str:
     return f"id: {event.cursor}\ndata: {data}\n\n"
 
 
+# The reconnect delay (ms) an error frame asks for: an EventSource reconnects
+# on its own after a stream ends, and the same selector would only fail again.
+_ERROR_RETRY_MS = 3_600_000
+
+
 def _error_frame(type_: str, detail: str) -> str:
-    """A named ``error`` SSE event (no ``id:``: it never moves the cursor)."""
-    return f"event: error\ndata: {json.dumps({'type': type_, 'detail': detail})}\n\n"
+    """A named ``error`` SSE event (no ``id:``: it never moves the cursor), with a long ``retry:`` (round 2, L4)."""
+    data = json.dumps({"type": type_, "detail": detail})
+    return f"retry: {_ERROR_RETRY_MS}\nevent: error\ndata: {data}\n\n"
 
 
 def _delta_frame(frame: dict) -> str:

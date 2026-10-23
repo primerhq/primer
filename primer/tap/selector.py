@@ -23,17 +23,18 @@ raises :class:`TapSelectorTimeout`.
 
 from __future__ import annotations
 
-import asyncio
+from dataclasses import dataclass
 from typing import Any
 
 import regex
-from pydantic import BaseModel
+from pydantic import BaseModel, PrivateAttr
 
 from primer.common.user_regex import (
     MAX_PATTERN_LENGTH,
     MatchBudget,
     UserRegexError,
     compile_user_regex,
+    run_off_loop,
 )
 from primer.model.except_ import BadRequestError
 from primer.model.storage import FieldRef, Op, Predicate, Value
@@ -71,6 +72,20 @@ class TapSelector(BaseModel):
 
     sessions: Predicate | None = None
     events: Predicate | None = None
+
+    # The compiled LIKE / ILIKE patterns of ``events``, compiled once for as
+    # long as this selector lives (one stream or one drain): a selector's
+    # patterns are one-shot, so they never enter the process-wide cache.
+    _like_compiled: dict[tuple[str, int], regex.Pattern] = PrivateAttr(default_factory=dict)
+
+    def compiled_like(self, pattern: str, flags: int) -> regex.Pattern:
+        """``pattern`` translated and compiled, once per selector (:class:`TapSelectorError` when refused)."""
+        key = (pattern, flags)
+        compiled = self._like_compiled.get(key)
+        if compiled is None:
+            compiled = _like_to_regex(pattern, flags=flags)
+            self._like_compiled[key] = compiled
+        return compiled
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +227,7 @@ def check_selector(selector: TapSelector) -> None:
     so the caller is told before a stream starts.
     """
     for op, pattern in _like_patterns(selector.events):
-        _like_to_regex(pattern, flags=regex.IGNORECASE if op is Op.ILIKE else 0)
+        selector.compiled_like(pattern, regex.IGNORECASE if op is Op.ILIKE else 0)
 
 
 def _timeout_error(budget: MatchBudget) -> TapSelectorTimeout:
@@ -223,7 +238,15 @@ def _timeout_error(budget: MatchBudget) -> TapSelectorTimeout:
     )
 
 
-def _eval_predicate(pred: Predicate, event: TapEvent, budget: MatchBudget) -> bool:
+@dataclass(frozen=True)
+class _Eval:
+    """What one evaluation needs besides the event: the selector (its compiled LIKEs) and the read's budget."""
+
+    selector: TapSelector
+    budget: MatchBudget
+
+
+def _eval_predicate(pred: Predicate, event: TapEvent, budget: _Eval) -> bool:
     """Recursively evaluate *pred* against *event*."""
     op = pred.op
 
@@ -303,12 +326,12 @@ def _eval_predicate(pred: Predicate, event: TapEvent, budget: MatchBudget) -> bo
     raise NotImplementedError(f"Unsupported Op: {op!r}")  # pragma: no cover
 
 
-def _like_matches(pattern: str, value: str, flags: int, budget: MatchBudget) -> bool:
-    compiled = _like_to_regex(pattern, flags=flags)
+def _like_matches(pattern: str, value: str, flags: int, ctx: _Eval) -> bool:
+    compiled = ctx.selector.compiled_like(pattern, flags)
     try:
-        return budget.match(compiled, value) is not None
+        return ctx.budget.match(compiled, value) is not None
     except TimeoutError as exc:
-        raise _timeout_error(budget) from exc
+        raise _timeout_error(ctx.budget) from exc
 
 
 def _new_budget() -> MatchBudget:
@@ -329,24 +352,32 @@ def event_matches(selector: TapSelector, event: TapEvent, *, budget: MatchBudget
     """
     if selector.events is None:
         return True
-    return _eval_predicate(selector.events, event, budget if budget is not None else _new_budget())
+    return _eval_predicate(selector.events, event, _Eval(selector, budget if budget is not None else _new_budget()))
 
 
-async def match_events(selector: TapSelector, events: list[TapEvent]) -> list[bool]:
+def new_read_budget() -> MatchBudget:
+    """The budget of one read (an SSE tick or a drain): pass it to every :func:`match_events` batch of that read."""
+    return _new_budget()
+
+
+async def match_events(
+    selector: TapSelector, events: list[TapEvent], *, budget: MatchBudget | None = None,
+) -> list[bool]:
     """``event_matches`` for each of ``events``, in order.
 
-    A predicate with a LIKE / ILIKE runs in a worker thread (the engine
-    releases the GIL) under ONE :data:`TAP_MATCH_SECONDS` budget for the
-    whole batch, so a hostile pattern neither stalls the event loop nor
-    runs past the bound; any other predicate is evaluated inline.
+    A predicate with a LIKE / ILIKE runs on the user-regex executor (the
+    engine releases the GIL) under ONE :data:`TAP_MATCH_SECONDS` budget for
+    the read (``budget``, shared by the read's batches; a fresh one when not
+    given), so a hostile pattern neither stalls the event loop nor runs past
+    the bound; any other predicate is evaluated inline.
     """
     if selector.events is None:
         return [True] * len(events)
+    ctx = _Eval(selector, budget if budget is not None else _new_budget())
     if not events or not _like_patterns(selector.events):
-        return [_eval_predicate(selector.events, event, _new_budget()) for event in events]
-    budget = _new_budget()
+        return [_eval_predicate(selector.events, event, ctx) for event in events]
 
     def _all() -> list[bool]:
-        return [_eval_predicate(selector.events, event, budget) for event in events]
+        return [_eval_predicate(selector.events, event, ctx) for event in events]
 
-    return await asyncio.to_thread(_all)
+    return await run_off_loop(_all)
