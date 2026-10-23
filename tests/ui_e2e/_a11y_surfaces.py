@@ -4,11 +4,11 @@ Kept in a module of its own, with no browser in it, so that a unit test (``tests
 shell without a row here fails that test, and a row cannot be dropped without it noticing. ``expected_surfaces`` is the exact list of surface names a complete sweep records, in order; the sweep
 asserts it visited exactly that, so a form that silently failed to open (the old helper returned quietly when its button was missing) is a failure, not a pass.
 
-A form entry is ``Form(button, root, then)``: the button that is pressed, the root of what it opens, and (only for the provider register menus) the menu item that is picked after it. ``MODAL`` is
+A form entry is ``Form(button, root, then)``: the button that is pressed, the root of what it opens, and an optional second control that must be pressed. ``MODAL`` is
 the dialog every form opens now (``NEW_WORKSPACE_OVERLAY``, the root of the New workspace overlay, stays a known form root: the Platform page's own New workspace form left with the Workspaces page). A form root is never the root of its page (the page is on screen before the button is pressed,
 so a sweep rooted there records the page and calls it the form); the sweep also asserts the root is absent before the click. An empty list says the page has no form, and ``NO_FORM`` says why.
 
-Only the FIRST kind's form of a provider class is swept (the first item of its register menu): the other kinds draw other fields and are not looked at.
+Only the FIRST kind's form of a provider class is swept: the other kinds draw other fields and are not looked at.
 
 ``ready_selectors`` is what a surface must show before it is looked at: its own page (not a neighbour's, not the first row of the nav that a view falls back to) and the proof that its list or body
 has loaded. ``FLOORS`` is the fewest controls the BODY of a surface may hold (``CHROME`` is the fixed furniture around it that does not count): about half of what each held when the floors were
@@ -32,8 +32,6 @@ PAGE_ROOTS = {OVERLAY, PLATFORM, SYSTEM}
 FORM_ROOTS = {MODAL, NEW_WORKSPACE_OVERLAY}
 
 REGISTER_TYPE = '[data-testid="pc-register-type"]'
-KIND_MENU_ITEM = REGISTER_TYPE
-TYPE_MENU_ITEM = REGISTER_TYPE
 
 # the fixed furniture of a surface, whose controls are examined for names and not counted toward its floor: a modal's title and footer, an overlay's head and foot, the Platform page's kit header, the
 # phone's tab bar, the graph builder's top bar
@@ -46,9 +44,9 @@ class Form(NamedTuple):
     then: str | None = None
 
 
-def _register(menu_item: str = REGISTER_TYPE) -> Form:
-    """A provider form opens in two steps: '+ Register' opens the overlay, and the type selector picks the type."""
-    return Form("+ Register", MODAL, menu_item)
+def _register() -> Form:
+    """The page's '+ Register' button opens its provider form directly."""
+    return Form("+ Register", MODAL)
 
 
 # the Platform pages that are overlays, opened by their legacy route
@@ -68,14 +66,14 @@ LEGACY_FORMS: dict[str, list[Form]] = {
     "channels/providers": [],
     "knowledge/collections": [Form("New collection", MODAL)],
     "subsystems/internal-collections": [Form("Configure", MODAL)],
-    "providers/llm": [_register(KIND_MENU_ITEM)],
-    "providers/embedding": [_register(KIND_MENU_ITEM)],
-    "providers/cross_encoder": [_register(KIND_MENU_ITEM)],
-    "providers/stt": [_register(KIND_MENU_ITEM)],
-    "providers/tts": [_register(KIND_MENU_ITEM)],
-    "providers/web_search": [_register(KIND_MENU_ITEM)],
-    "providers/artifact_storage": [_register(KIND_MENU_ITEM)],   # db, filesystem and s3 since the class serves its kinds (GET /_types); the first, db, is the one that is built
-    "ssp": [_register(KIND_MENU_ITEM)],                 # the semantic-search stores: the same register menu, and a modal of their own
+    "providers/llm": [_register()],
+    "providers/embedding": [_register()],
+    "providers/cross_encoder": [_register()],
+    "providers/stt": [_register()],
+    "providers/tts": [_register()],
+    "providers/web_search": [_register()],
+    "providers/artifact_storage": [_register()],   # db, filesystem and s3 since the class serves its kinds (GET /_types); the first, db, is the one that is built
+    "ssp": [_register()],                           # the semantic-search store uses the same overlay shell and a panel form of its own
 }
 
 # the title each of those overlays shows (nv-overlay-title): it is section specific, which is what tells "channels:rules" from "channels" under one overlay testid
@@ -112,7 +110,7 @@ PENDING_CUSTOM_PAGES: set[str] = {"web", "templates"}
 
 # the Platform VIEW (view=platform:<id>: what every Platform nav row opens), one entry per id of the shell's grammar (ui/foundation/shell-url.js SH_VIEWS.platform) that is not a pending custom page
 PLATFORM_FORMS: dict[str, list[Form]] = {
-    "providers": [_register(TYPE_MENU_ITEM)],
+    "providers": [_register()],
     "profiles": [Form("+ Aggregate", MODAL)],
     "toolsets": [Form("+ Toolset", MODAL)],
     "tools": [],
@@ -251,17 +249,17 @@ FLOORS: dict[str, int] = {
     "overlay-page subsystems/internal-collections / Configure": 2,
     "overlay-page providers/llm": 4,
     "overlay-page providers/llm / + Register": 5,
-    "overlay-page providers/embedding": 1,
+    "overlay-page providers/embedding": 0,             # an empty kit card grid has no body controls; its loaded empty state is the page proof
     "overlay-page providers/embedding / + Register": 5,
-    "overlay-page providers/cross_encoder": 1,
+    "overlay-page providers/cross_encoder": 0,         # an empty kit card grid has no body controls; its loaded empty state is the page proof
     "overlay-page providers/cross_encoder / + Register": 4,
-    "overlay-page providers/stt": 3,
+    "overlay-page providers/stt": 1,
     "overlay-page providers/stt / + Register": 5,
-    "overlay-page providers/tts": 3,
+    "overlay-page providers/tts": 2,
     "overlay-page providers/tts / + Register": 5,
-    "overlay-page providers/web_search": 4,
+    "overlay-page providers/web_search": 3,
     "overlay-page providers/web_search / + Register": 2,
-    "overlay-page providers/artifact_storage": 3,
+    "overlay-page providers/artifact_storage": 1,
     "overlay-page providers/artifact_storage / + Register": 2,
     "overlay-page ssp": 1,
     "overlay-page ssp / + Register": 4,
