@@ -27,8 +27,13 @@ window.open = function (url, target, features) { OPENED.push(url); if (window.__
   var popup = { opener: window, location: "about:blank", target: target, features: features }; POPUPS.push(popup); return popup; };
 window.location = { assign: function (url) { ASSIGNED.push(url); } };
 window.confirmDialog = function (opts) { window.__confirmOpts = opts; return Promise.resolve(CONFIRM); };
-globalThis.setTimeout = function (fn, ms) { TIMERS.push({ fn: fn, ms: ms }); return TIMERS.length; };
-globalThis.clearTimeout = function () {};
+globalThis.setTimeout = function (fn, ms) { TIMERS.push({ fn: fn, ms: ms, id: TIMERS.length + 1, cleared: false }); return TIMERS.length; };
+globalThis.clearTimeout = function (id) { TIMERS.forEach(function (t) { if (t.id === id) t.cleared = true; }); };
+// Runs every timer that is due (set, not yet run, not cleared), as the browser would after its delay.
+function runDue() { TIMERS.filter(function (t) { return !t.ran && !t.cleared; }).forEach(function (t) { t.ran = true; t.fn(); }); }
+function live() { return TIMERS.filter(function (t) { return !t.ran && !t.cleared; }).length; }
+function statusReads() { return CALLS.filter(function (c) { return c[0] === "GET" && c[1].endsWith("/oauth/status"); }).length; }
+function Host(p) { return p.show ? React.createElement(TS_McpAuthPanel, { toolsetId: "kb", pushToast: function (t) { TOASTS.push(t); } }) : null; }
 window.primerApi = {
   toastPush: function (t) { TOASTS.push(t); },
   useViewport: function () { return { isMobile: !!window.__mobile }; },
@@ -132,6 +137,87 @@ def test_the_sign_in_tab_has_no_way_back_to_the_console(panel) -> None:
     popup = json.loads(panel.eval("JSON.stringify({opener: POPUPS[0].opener, location: POPUPS[0].location, target: POPUPS[0].target})"))
     assert popup == {"opener": None, "location": "https://id.example/authorize", "target": "_blank"}
     assert json.loads(panel.eval("JSON.stringify(ASSIGNED)")) == []
+
+
+def test_a_second_connect_keeps_one_poll_chain(panel) -> None:
+    """G4-20: each click used to start another chain of status reads, every one of them polling for ten minutes."""
+    _mount(panel)
+    panel.eval("MR.click('ts-auth-connect'); MR.rerender()")
+    panel.eval("MR.click('ts-auth-connect'); MR.rerender()")
+    assert panel.eval("live()") == 1
+    for _ in range(3):
+        before = panel.eval("statusReads()")
+        panel.eval("runDue()")
+        assert panel.eval("statusReads()") == before + 1
+        assert panel.eval("live()") == 1
+
+
+def test_closing_the_panel_stops_the_poll(panel) -> None:
+    """G4-20: the poll kept reading the status every two seconds for up to ten minutes after the overlay closed."""
+    panel.eval("MR.mount(Host, { show: true })")
+    panel.eval("MR.click('ts-auth-connect'); MR.rerender()")
+    assert panel.eval("live()") == 1
+    panel.eval("MR.rerender({ show: false })")
+    assert panel.eval("live()") == 0
+    before = panel.eval("statusReads()")
+    panel.eval("TIMERS.forEach(function (t) { if (!t.ran) { t.ran = true; t.fn(); } })")
+    assert panel.eval("statusReads()") == before, "a stale timer still read the status"
+
+
+def test_a_read_that_is_already_out_when_the_panel_closes_schedules_nothing(panel) -> None:
+    panel.eval("MR.mount(Host, { show: true })")
+    panel.eval("MR.click('ts-auth-connect'); MR.rerender()")
+    # the timer fires and its status read is out; the panel closes before the answer arrives
+    panel.eval("runDue(); MR.rerender({ show: false })")
+    panel.eval("MR.rerender()")
+    assert panel.eval("live()") == 0
+
+
+def test_an_error_during_the_sign_in_stops_the_poll_with_its_reason(panel) -> None:
+    """G4-20: the poll stops on state 'error' and says why, instead of polling on until it times out."""
+    _mount(panel)
+    panel.eval("MR.click('ts-auth-connect'); MR.rerender()")
+    panel.eval("STATUS = {toolset_id:'kb',mode:'oauth_browser',state:'error',reason:'The token endpoint could not be reached.',"
+               "connected_at:'t1',refreshed_at:'t2',expires_at:null}")
+    panel.eval("runDue()")
+    panel.eval("MR.rerender()")
+    assert panel.eval("live()") == 0
+    assert "The sign-in did not complete: The token endpoint could not be reached." in _texts(panel)
+    toasts = json.loads(panel.eval("JSON.stringify(TOASTS)"))
+    assert [t["title"] for t in toasts] == ["Connect failed"]
+
+
+def test_an_error_the_toolset_already_had_does_not_stop_a_reconnect(panel) -> None:
+    """An error (a failed refresh, which keeps the tokens) that was there before the sign-in started is not the sign-in's outcome."""
+    panel.eval("STATUS = {toolset_id:'kb',mode:'oauth_browser',state:'error',reason:'Refresh failed.',connected_at:'t1',refreshed_at:'t2',expires_at:null}")
+    panel.eval("window.__start = {authorize_url:'https://id.example/authorize', status: STATUS}")
+    _mount(panel)
+    panel.eval("MR.click('ts-auth-reconnect'); MR.rerender()")
+    panel.eval("runDue()")
+    panel.eval("MR.rerender()")
+    assert panel.eval("live()") == 1, "the poll stopped on the old error"
+    assert "did not complete" not in _texts(panel)
+    panel.eval("STATUS = {toolset_id:'kb',mode:'oauth_browser',state:'connected',connected_at:'t3',expires_at:null}")
+    panel.eval("runDue()")
+    panel.eval("MR.rerender()")
+    assert panel.eval("TOASTS.filter(function(t){return t.title === 'Connected';}).length") == 1
+    assert panel.eval("live()") == 0
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "new"),
+    [
+        (None, {"state": "error", "reason": "x"}, True),
+        ({"state": "needs_sign_in"}, {"state": "error", "reason": "x"}, True),
+        ({"state": "error", "reason": "x", "refreshed_at": "a"}, {"state": "error", "reason": "x", "refreshed_at": "a"}, False),
+        ({"state": "error", "reason": "x", "refreshed_at": "a"}, {"state": "error", "reason": "y", "refreshed_at": "a"}, True),
+        ({"state": "error", "reason": "x", "refreshed_at": "a"}, {"state": "error", "reason": "x", "refreshed_at": "b"}, True),
+        ({"state": "needs_sign_in"}, {"state": "needs_sign_in"}, False),
+        ({"state": "needs_sign_in"}, None, False),
+    ],
+)
+def test_is_new_auth_error(panel, before, after, new: bool) -> None:
+    assert panel.eval(f"TS_isNewAuthError({json.dumps(before)}, {json.dumps(after)})") is new
 
 
 def test_a_blocked_popup_falls_back_to_this_tab(panel) -> None:
