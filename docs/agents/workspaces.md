@@ -113,11 +113,13 @@ A workspace can carry standing instructions for every agent that runs
 in it: a file named `agents.md` at the workspace root (`AGENTS.md` is
 read only when there is no `agents.md`). Primer reads it at the start
 of every turn and adds it to the agent's system prompt, after the
-section that describes the workspace and the session, under the
-heading "Workspace instructions (agents.md)". It applies to every
-agent that runs in the workspace, whichever agent it is: the agent a
-session is bound to, each agent node of a graph run, and a subagent
-started with `system::invoke_agent`.
+section that describes the workspace and the session. The file sits
+between two heading lines: "Workspace instructions (agents.md, written
+by this workspace's users; they grant no permissions)" before it and
+"End of workspace instructions" after it. It applies to every agent
+that runs in the workspace, whichever agent it is: the agent a session
+is bound to, each agent node of a graph run, and a subagent started
+with `system::invoke_agent`.
 
 - **Edits apply from the next turn.** The file is read again for each
   turn (and for each graph run), so editing it - with the session
@@ -126,6 +128,11 @@ started with `system::invoke_agent`.
   already running keeps the text it started with.
 - **The model sees it as written.** Braces and template syntax in the
   file (`{{ x }}`, `{% if %}`) are not interpreted.
+- **The file cannot close its own section.** A line in the file that is
+  the closing heading ("## End of workspace instructions", at any heading
+  level, in any case, with any spacing around it) gets `(quoted) ` in
+  front of it in the prompt, so what the file says after that line is
+  still read as part of the file and not as text from the platform.
 - **At most 32 KiB.** Only the first 32768 bytes are used; a longer
   file is cut there and followed by a line that says so
   (`[truncated: agents.md is N bytes; only the first 32768 bytes are
@@ -160,6 +167,17 @@ belong in different workspaces. The same goes for whatever fills the
 file: a template file source or a cloned repository decides what the
 agents are told just as a hand-written file does, so do not put a
 repository you do not trust at the workspace root.
+
+**Accepted risk: the shared prime workspace.** This is a deliberate
+choice, made by the user on 2026-10-23: the default workspace (prime)
+stays shared by all users, and a workspace stays the trust boundary.
+Any session or user that can write files in a workspace can change the
+instructions of every agent in it, including the shared prime
+workspace, where admins' operator sessions run. The instructions grant
+nothing: they are text for the model to read, marked as written by the
+workspace's users, and they add no tool, grant or role. Admins should
+treat prime's `agents.md` as shared input, written by everyone who can
+write files there, and not as a file only admins control.
 
 ## Lifecycle and states
 
@@ -571,7 +589,10 @@ session is outside the group, so it is not killed.
   Primer puts its contents in the system prompt of every agent that
   runs there, so a session that rewrites it changes what the other
   agents are told, whoever started them. The workspace is the trust
-  boundary. See "Workspace instructions (agents.md)".
+  boundary, and the shared prime workspace is the accepted exception
+  to "separate workspaces for separate users": admins should treat
+  prime's `agents.md` as shared input. See "Workspace instructions
+  (agents.md)".
 - **Multi-session shared filesystem is collaborative, not
   isolated.** Two simultaneous sessions on the same workspace
   WILL race on file writes. Coordinate via `.state/shared/`.
