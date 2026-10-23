@@ -41,6 +41,10 @@ _REDACTED = "[REDACTED]"
 
 # Attributes that hold a bare query string (``api_key=...&page=2``).
 _QUERY_STRING_KEYS = frozenset({"url.query", "http.query"})
+# Attributes that hold a span's request path (or its whole URL): a span whose path is an MCP OAuth callback has its bare query masked as that
+# callback's query, ``state`` included (audit G4-13; a URL that holds the path is masked by redact_credentials itself).
+_PATH_KEYS = ("url.path", "http.target", "http.route", "http.url", "url.full")
+_OAUTH_CALLBACK = "/oauth/callback"
 
 # Query parameter NAMES that redact_credentials does not list: OAuth codes and tokens, signatures, presigned-URL parts (SigV4 ``X-Amz-*``, GCS ``X-Goog-*``), vendor
 # tokens. Matched whole and case-insensitively, after a ``?``, ``&`` or ``#`` (the first parameter of a URL fragment, ``#access_token=...``, is where an implicit-flow
@@ -83,13 +87,19 @@ def _is_unsafe_header(key: str) -> bool:
     return False
 
 
-def _bare_query(value: str) -> str:
-    """A bare query string masked as a query: a ``?`` in front gives its first parameter the anchor the rules need."""
-    masked = _text("?" + value)
-    return value if masked == "?" + value else masked.removeprefix("?")
+def _bare_query(value: str, *, callback: bool = False) -> str:
+    """A bare query string masked as a query: a ``?`` in front gives its first parameter the anchor the rules need. On an MCP OAuth callback span
+    the anchor is the callback path, so its ``code`` and ``state`` are masked too."""
+    anchor = _OAUTH_CALLBACK + "?" if callback else "?"
+    masked = _text(anchor + value)
+    return value if masked == anchor + value else masked.removeprefix(anchor)
 
 
-def _value(key: str, value: Any, *, unsafe_header: bool) -> Any:
+def _is_oauth_callback(attributes: Mapping[str, Any] | None) -> bool:
+    return bool(attributes) and any(_OAUTH_CALLBACK in str(attributes.get(key) or "") for key in _PATH_KEYS)
+
+
+def _value(key: str, value: Any, *, unsafe_header: bool, callback: bool = False) -> Any:
     """One attribute value, masked; the SAME object when nothing changed.
 
     Strings are masked (a captured header that is not on the safe list, whole), ``bytes`` as UTF-8 text and re-encoded only when something was masked, sequences
@@ -98,7 +108,7 @@ def _value(key: str, value: Any, *, unsafe_header: bool) -> Any:
     if isinstance(value, str):
         if unsafe_header:
             return _REDACTED
-        return _bare_query(value) if key in _QUERY_STRING_KEYS else _text(value)
+        return _bare_query(value, callback=callback) if key in _QUERY_STRING_KEYS else _text(value)
     if isinstance(value, (bytes, bytearray)):
         if unsafe_header:
             return b"[REDACTED]"
@@ -106,10 +116,10 @@ def _value(key: str, value: Any, *, unsafe_header: bool) -> Any:
         masked = _text(text)
         return value if masked == text else masked.encode("utf-8")
     if isinstance(value, Mapping):
-        items = {k: _value(key, v, unsafe_header=unsafe_header) for k, v in value.items()}
+        items = {k: _value(key, v, unsafe_header=unsafe_header, callback=callback) for k, v in value.items()}
         return value if all(items[k] is value[k] for k in items) else items
     if isinstance(value, Sequence):
-        elements = tuple(_value(key, v, unsafe_header=unsafe_header) for v in value)
+        elements = tuple(_value(key, v, unsafe_header=unsafe_header, callback=callback) for v in value)
         return value if all(a is b for a, b in zip(elements, value, strict=True)) else elements
     return value
 
@@ -118,7 +128,8 @@ def _attributes(attributes: Mapping[str, Any] | None) -> tuple[Mapping[str, Any]
     """``(attributes, changed)``: the masked mapping, or the original object when no value changed."""
     if not attributes:
         return attributes, False
-    masked = {k: _value(k, v, unsafe_header=_is_unsafe_header(k)) for k, v in attributes.items()}
+    callback = _is_oauth_callback(attributes)
+    masked = {k: _value(k, v, unsafe_header=_is_unsafe_header(k), callback=callback) for k, v in attributes.items()}
     changed = any(masked[k] is not attributes[k] for k in masked)
     return (masked, True) if changed else (attributes, False)
 

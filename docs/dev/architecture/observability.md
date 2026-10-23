@@ -145,7 +145,9 @@ The instrumentation plumbing lives in `primer/observability/`:
   `code`, `auth_token`, `access_token` / `accessToken` / `access-token`, `api_token`, `access_key`, `oauth_token`, `session_token`, `id_token`, `id_token_hint`,
   `private_token`, `jwt`, `passwd`, `hm`, `hub.verify_token`, `subscription-key`, every `X-Amz-*` and `X-Goog-*`; case-insensitive, whole names, after a `?`,
   `&` or `#`, so the first parameter of a URL fragment, `#access_token=...`, is covered; `zipcode` or `country_code` is not a `code`); a Telegram token whose `:`
-  is percent-encoded is masked; `url.query` / `http.query`, which hold a bare query string, are masked as a query. A captured header is masked unless its
+  is percent-encoded is masked; `url.query` / `http.query`, which hold a bare query string, are masked as a query, and on a span whose path
+  (`url.path`, `http.target`, `http.route`, `http.url` or `url.full`) is an MCP OAuth callback as that callback's query, so its `state` is masked
+  too (a full callback URL in any attribute is masked by `redact_credentials` itself; audit G4-13). A captured header is masked unless its
   name is on a short safe list (`accept`, `accept_encoding`, `accept_language`, `cache_control`, `connection`, `content_encoding`, `content_length`,
   `content_type`, `host`, `traceparent`, `tracestate`, `user_agent`, `x_request_id`): a header Primer sends itself (`x-goog-api-key`) or an operator names
   (an MCP server's) has no shape to recognise. A span with nothing to mask is exported as the very object the SDK made; one with something to mask is
@@ -178,7 +180,9 @@ The instrumentation plumbing lives in `primer/observability/`:
   caller must not print it at all: the draft-validation detail of a provider probe omits pydantic's
   `input_value` for that reason. The mask also covers Telegram
   `/bot<id>:<secret>` segments (`/bot[REDACTED]`), webhook capability tokens
-  (`/v1/webhooks/***<last4>`) and `Bearer <token>` / `Basic <base64 user:password>` tokens in the message (a non-str message such as
+  (`/v1/webhooks/***<last4>`), the `code` and `state` of an MCP toolset's OAuth
+  callback query (`/oauth/callback?code=[REDACTED]&state=[REDACTED]`, on that path
+  only: a `code` or `state` elsewhere is an ordinary parameter; audit G4-13) and `Bearer <token>` / `Basic <base64 user:password>` tokens in the message (a non-str message such as
   `logger.warning(exc)` too), each arg, every string extra (`extra={"path": ...}`,
   which `_JsonFormatter` emits verbatim) and the exception text. Args are rewritten
   one by one, and collapsed into the message only when a credential spans the format
