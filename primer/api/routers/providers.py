@@ -1099,8 +1099,9 @@ async def _probe_gemini_models(config: dict[str, Any], *, method: str) -> dict:
     """List the models Gemini serves for ``method``: ``generateContent`` for the LLM form, ``embedContent`` for the embedding form.
 
     Both forms read the same ListModels catalogue with the same draft (a ``GoogleConfig``: one API key), so they share this body and its failure texts.
-    A refused key (HTTP 401 or 403) is a 400 in words of ours; any other status and any transport error is a 400 built by :func:`_probe_failure`, which
-    masks URL-borne credentials. The caller masks the configured key (:func:`_reraise_masked`), as it does for every other probe.
+    A refused key is a 400 in words of ours: HTTP 401 or 403, and the HTTP 400 ``INVALID_ARGUMENT`` whose ``ErrorInfo`` reason is ``API_KEY_INVALID``,
+    which is how Google answers a bad key (its Gemini API errors page; audit G2-19). Any other status and any transport error is a 400 built by
+    :func:`_probe_failure`, which masks URL-borne credentials. The caller masks the configured key (:func:`_reraise_masked`), as it does for every other probe.
     """
     try:
         gem_draft = GoogleConfig.model_validate(config)
@@ -1112,7 +1113,7 @@ async def _probe_gemini_models(config: dict[str, Any], *, method: str) -> dict:
         catalogue = await _discover_gemini_models(gem_draft, method=method)
     except httpx.HTTPStatusError as exc:
         status = exc.response.status_code
-        if status in (401, 403):
+        if status in (401, 403) or (status == 400 and _is_google_api_key_invalid(exc.response)):
             raise BadRequestError(
                 "Gemini API key invalid or unauthorized (HTTP "
                 f"{status}); check the key from Google AI Studio.",
@@ -1128,6 +1129,19 @@ async def _probe_gemini_models(config: dict[str, Any], *, method: str) -> dict:
             f"{exc}",
         ) from exc
     return {"models": catalogue}
+
+
+def _is_google_api_key_invalid(response: httpx.Response) -> bool:
+    """True when a Google API error body names ``API_KEY_INVALID`` as the reason of one of its ``details`` (``google.rpc.ErrorInfo``)."""
+    try:
+        body = response.json()
+    except ValueError:
+        return False
+    error = body.get("error") if isinstance(body, dict) else None
+    details = error.get("details") if isinstance(error, dict) else None
+    if not isinstance(details, list):
+        return False
+    return any(isinstance(d, dict) and d.get("reason") == "API_KEY_INVALID" for d in details)
 
 
 async def _probe_ollama_models(config: dict[str, Any]) -> dict:

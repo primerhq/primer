@@ -73,6 +73,40 @@ async def test_a_refused_gemini_key_is_a_400_without_the_key(client) -> None:
     assert KEY not in r.text
 
 
+# What Google answers for a bad key (its Gemini API errors page): HTTP 400, INVALID_ARGUMENT, reason API_KEY_INVALID (audit G2-19).
+GOOGLE_KEY_INVALID = {"error": {
+            "code": 400, "message": "API key not valid. Please pass a valid API key.", "status": "INVALID_ARGUMENT",
+            "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "API_KEY_INVALID", "domain": "googleapis.com",
+                         "metadata": {"service": "generativelanguage.googleapis.com"}}],
+        }}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_googles_400_for_a_bad_key_is_the_key_message(client) -> None:
+    respx.get(f"{GEMINI_BASE_URL}/models").mock(return_value=httpx.Response(400, json=GOOGLE_KEY_INVALID))
+
+    r = await client.post("/v1/embedding_providers/_discover_models", json=_draft())
+
+    assert r.status_code == 400, r.text
+    assert "Gemini API key invalid or unauthorized (HTTP 400)" in r.json()["detail"]
+    assert KEY not in r.text
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_another_400_is_not_read_as_a_bad_key(client) -> None:
+    body = {"error": {"code": 400, "message": "Request contains an invalid argument.", "status": "INVALID_ARGUMENT",
+                      "details": [{"@type": "type.googleapis.com/google.rpc.BadRequest"}]}}
+    respx.get(f"{GEMINI_BASE_URL}/models").mock(return_value=httpx.Response(400, json=body))
+
+    r = await client.post("/v1/embedding_providers/_discover_models", json=_draft())
+
+    assert r.status_code == 400, r.text
+    assert "Gemini discover failed: HTTP 400" in r.json()["detail"]
+    assert "API key invalid" not in r.json()["detail"]
+
+
 @pytest.mark.asyncio
 @respx.mock
 async def test_a_gemini_failure_that_quotes_the_key_is_masked(client) -> None:
