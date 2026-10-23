@@ -37,20 +37,22 @@ one pod refreshes while its peers wait for the winning token row.
 
 ## 4. Code layout
 
-- `primer/toolset/oauth/discovery.py` validates protected-resource and
-  authorization-server metadata.
-- `primer/toolset/oauth/client.py` performs authorization-code, client-credentials,
-  refresh, revocation, and dynamic-registration requests.
+- `primer/toolset/oauth/protocol.py` is the pure-HTTP OAuth client: discovery
+  (the protected-resource and authorization-server metadata, and their checks),
+  PKCE, and the authorization-code, client-credentials, refresh, revocation and
+  dynamic-registration requests.
 - `primer/toolset/oauth/store.py` encrypts and persists OAuth state.
 - `primer/toolset/oauth/egress.py` routes the OAuth client's requests: the MCP
   host directly, every other host through the private-destination guard.
-- `primer/toolset/oauth/service.py` owns the shared sign-in lifecycle and status.
+- `primer/toolset/oauth/service.py` owns the shared sign-in lifecycle and status:
+  `ToolsetOAuthService`, the public `ToolsetAuthStatus` and `SignInStart`
+  models, and the refresh lease.
 - `primer/toolset/oauth/bearer.py` attaches bearer tokens and retries once after a
   401.
 - `primer/toolset/mcp.py` opens the upstream MCP transport only after the OAuth
   preflight succeeds.
 - `primer/api/routers/mcp_oauth.py` exposes the sign-in routes.
-- `primer/model/mcp_oauth.py` defines stored rows, public status, and the typed
+- `primer/model/mcp_oauth.py` defines the stored rows and the typed
   sign-in-required error.
 
 ## 5. Data model

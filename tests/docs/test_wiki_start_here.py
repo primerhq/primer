@@ -38,4 +38,4 @@ def test_the_errors_page_names_every_error_type():
     body = repo_wiki().pages["start-here/errors"].body
     assert all(f"`{t}`" in body for t in ("validation-error", "not-found", "forbidden", "approval-required",
                                          "provider-error", "tool-call-error", "conflict", "bad-request",
-                                         "unsupported-surface", "tool-error"))
+                                         "unsupported-surface", "tool-error", "sign-in-required", "unavailable"))

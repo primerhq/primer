@@ -22,9 +22,9 @@ An MCP adapter whose shared sign-in is unusable raises
 turns that into a tool error, while remote listing omits the toolset and
 adds a notice to the turn.
 
-See the design spec at
-``docs/superpowers/specs/2026-04-26-toolset-provider-oauth-design.md``
-for the full contract and the per-provider mapping rules.
+The shared sign-in (the service, the routes, the refresh lease and the
+status) is described in ``docs/dev/subsystems/mcp-oauth.md``; the earlier
+per-user OAuth spec it replaced no longer applies.
 """
 
 from __future__ import annotations

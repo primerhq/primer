@@ -1699,7 +1699,7 @@ async def invalidate_toolset_provider(
 @toolset_router.get(
     "/toolsets/{toolset_id}/tools",
     summary="List tools currently exposed by a toolset",
-    responses=common_responses(401, 404, 500, 502, 504),
+    responses=common_responses(401, 404, 409, 500, 502, 504),
 )
 async def list_toolset_tools(
     toolset_id: str = Path(..., description="Toolset id"),
@@ -1708,9 +1708,12 @@ async def list_toolset_tools(
 ) -> dict:
     """Enumerate the toolset's tools from the live provider.
 
-    OAuth-protected MCP toolsets raise ``AuthRequiredError``, which the
-    error mapper serialises as 401 + ``extensions.auth_url`` so the
-    caller can prompt the user to consent.
+    An MCP toolset that signs in with OAuth and has no usable shared sign-in
+    (never connected, signed out, its settings changed) answers 409
+    ``/errors/mcp-sign-in-required`` with ``extensions.toolset_id`` and
+    ``extensions.reason``: an admin connects it from the console
+    (``POST /v1/toolsets/{toolset_id}/oauth/start``). No consent URL is
+    served here.
     """
     from primer.model.except_ import ProviderError
 
