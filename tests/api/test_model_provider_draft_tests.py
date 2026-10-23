@@ -181,6 +181,25 @@ async def test_gemini_draft_lists_embed_content_models(client) -> None:
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_googles_400_for_a_bad_gemini_key_is_the_key_message(client) -> None:
+    """What Google answers for a bad key: HTTP 400, INVALID_ARGUMENT, reason API_KEY_INVALID (audit G2-19); the 401 below
+    is the other shape the probe still maps."""
+    body = {"error": {
+        "code": 400, "message": "API key not valid. Please pass a valid API key.", "status": "INVALID_ARGUMENT",
+        "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "API_KEY_INVALID", "domain": "googleapis.com",
+                     "metadata": {"service": "generativelanguage.googleapis.com"}}],
+    }}
+    respx.get(f"{GEMINI_BASE_URL}/models").mock(return_value=httpx.Response(400, json=body))
+
+    r = await client.post(EMBEDDING, json={"provider": "gemini", "config": {"api_key": "AIza-test-KEY-9876"}})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["ok"] is False and "Gemini API key invalid or unauthorized (HTTP 400)" in r.json()["error"]
+    assert "AIza-test-KEY-9876" not in r.text
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_a_refused_gemini_key_is_a_not_ok_answer_without_the_key(client) -> None:
     respx.get(f"{GEMINI_BASE_URL}/models").mock(return_value=httpx.Response(401, json={"error": {"message": "API key not valid. AIza-test-KEY-9876"}}))
 

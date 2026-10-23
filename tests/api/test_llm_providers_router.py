@@ -209,6 +209,21 @@ class TestDiscoverGemini:
         )
 
 
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_googles_400_for_a_bad_key_is_the_key_message(self, client) -> None:
+        """Google answers a bad key with HTTP 400 INVALID_ARGUMENT, reason API_KEY_INVALID (its Gemini API errors page), not
+        a 401: the probe used to answer "Gemini discover failed: HTTP 400 {json}" for the common case (audit G2-19)."""
+        respx.get(f"{GEMINI_BASE_URL}/models").mock(return_value=httpx.Response(400, json={"error": {
+            "code": 400, "message": "API key not valid. Please pass a valid API key.", "status": "INVALID_ARGUMENT",
+            "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "API_KEY_INVALID", "domain": "googleapis.com",
+                         "metadata": {"service": "generativelanguage.googleapis.com"}}],
+        }}))
+        r = await client.post("/v1/llm_providers/_discover_models", json={"provider": "gemini", "config": {"api_key": "AIza-bad-key-1234"}})
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"] == "Gemini API key invalid or unauthorized (HTTP 400); check the key from Google AI Studio."
+
+
 class TestDiscoverOpenChat:
     """openchat is an OpenAI-compatible Chat Completions provider, so its
     /v1/models endpoint is live-discoverable via the shared probe (same
