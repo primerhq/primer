@@ -538,9 +538,13 @@ the trigger.
 - **No post-resolve notification.** Once a yield resolves (reply,
   timeout, cancellation), any channel button is not updated. Late
   clickers see no effect silently.
-- **Secrets are redacted in GET/list responses.** Re-fetching a
-  ChannelProvider and re-POSTing it would zero out the secrets.
-  Updates must be partial.
+- **Secrets are redacted in GET/list responses.** A PUT (or
+  `update_channel_provider`) of the body a GET served keeps the stored
+  tokens: each mask is replaced by the stored token, so you can change
+  one field and send the rest back as served. POSTing the served body
+  as a new provider (or `create_channel_provider`) is refused with a
+  422 (`validation-error`): there is no stored token to restore the
+  mask from, so send the real tokens.
 
 ## Related
 

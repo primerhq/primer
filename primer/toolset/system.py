@@ -146,7 +146,7 @@ from primer.artifact.checks import (
     check_artifact_provider_update,
     check_artifact_provider_write,
 )
-from primer.channel.checks import check_channel_on_create, check_channel_on_update
+from primer.channel.checks import check_channel_on_create, check_channel_on_update, check_channel_provider_secrets
 from primer.model_profile.checks import check_profile_on_create, check_profile_on_update
 from primer.knowledge.checks import (
     check_collection_id,
@@ -424,6 +424,14 @@ def build_system_toolset(
         del existing  # the new pair is what counts: the row is rewritten whole
         await check_channel_on_update(entity, storage_provider=storage_provider)
 
+    async def _channel_provider_pre_create(entity: ChannelProvider) -> None:
+        check_channel_provider_secrets(entity)
+
+    async def _channel_provider_pre_update(entity: ChannelProvider, existing: ChannelProvider) -> None:
+        # The update handler has already restored the served masks (preserve_masked_secrets); this judges the restored value (audit G2-01).
+        del existing
+        check_channel_provider_secrets(entity)
+
     async def _collection_pre_create(entity: Collection) -> None:
         check_collection_id(entity)
         check_collection_system_flag(entity)
@@ -453,6 +461,7 @@ def build_system_toolset(
         "toolset": (_toolset_pre_create, _toolset_pre_update),
         "model_profile": (_profile_pre_create, _profile_pre_update),
         "channel": (_channel_pre_create, _channel_pre_update),
+        "channel_provider": (_channel_provider_pre_create, _channel_provider_pre_update),
         "artifact_storage_provider": (_artifact_provider_pre_create, _artifact_provider_pre_update),
     }
 

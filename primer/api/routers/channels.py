@@ -7,14 +7,15 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 
 from primer.api.deps import get_storage_provider
-from primer.api.routers._crud import make_crud_router, preserve_masked_secrets_on_update
+from primer.api.routers._crud import make_crud_router
 from primer.api.routers._references import ReferenceCheck
-from primer.channel.checks import check_channel_on_create, check_channel_on_update
+from primer.channel.checks import check_channel_on_create, check_channel_on_update, check_channel_provider_secrets
 from primer.common.entity_checks import EntityCheckError
 from primer.model.channel import (
     Channel,
     ChannelProvider,
 )
+from primer.model.common import preserve_masked_secrets
 from primer.model.except_ import ConflictError
 
 
@@ -121,13 +122,37 @@ async def _invalidate_provider_channels(entity_id: str, request: Request) -> Non
 # ---------------------------------------------------------------------------
 
 
+async def _channel_provider_on_pre_create(entity: ChannelProvider, request: Request) -> None:
+    """The secrets that will be stored must be real tokens (the create route has already refused a served mask)."""
+    del request
+    try:
+        check_channel_provider_secrets(entity)
+    except EntityCheckError as exc:
+        raise _as_rest_error(exc) from exc
+
+
+async def _channel_provider_on_pre_update(entity: ChannelProvider, existing: ChannelProvider, request: Request) -> None:
+    """Restore first, then validate (audit G2-01).
+
+    An edit that leaves a token alone sends back the mask a GET served; the model lets it through, this puts the stored token back,
+    and then the value that will be stored is checked, so a mask that was not restored is refused and never stored.
+    """
+    del request
+    preserve_masked_secrets(entity, existing)
+    try:
+        check_channel_provider_secrets(entity)
+    except EntityCheckError as exc:
+        raise _as_rest_error(exc) from exc
+
+
 def make_channel_provider_router() -> APIRouter:
     return make_crud_router(
         model_cls=ChannelProvider,
         storage_dep=_get_channel_provider_storage,
         plural="channel_providers",
         tag="channel_providers",
-        on_pre_update=preserve_masked_secrets_on_update,
+        on_pre_create=_channel_provider_on_pre_create,
+        on_pre_update=_channel_provider_on_pre_update,
         on_update=_invalidate_provider_channels,
         on_delete=_invalidate_provider_channels,
         references=[

@@ -160,25 +160,67 @@ class TestEveryEntityNotOnlyTheOnesWithAnInvalidationHook:
         assert config.secret_key.get_secret_value() == "sec-live-9876543210"
 
 
-class TestAModelThatValidatesItsSecretRefusesTheMaskInsteadOfStoringIt:
-    """A Slack token must start with ``xapp-`` / ``xoxb-``, so the served mask never validates: the body is rejected before any
-    secret could be restored (the REST route does the same: its PUT validates the body before the pre-update hook). Not
-    round-trippable, but nothing is corrupted: the stored tokens are untouched, and a real rotation still works. Tracked as its
-    own follow-up; this pins that the failure is loud and harmless."""
+_CHANNEL_TOKENS = {
+    "slack": {"app_token": "xapp-1-live-0123456789", "bot_token": "xoxb-live-9876543210"},
+    "telegram": {"bot_token": "123456:abcdefghijklmnopqrstuvwxyz123456"},
+    "discord": {"bot_token": "D" * 40},
+}
+_CHANNEL_CHANGE = {"slack": {"signing_secret": "rotated-signing-1234"}, "telegram": {"poll_timeout_seconds": 40}, "discord": {"enable_dms": False}}
+
+
+class TestAModelThatValidatesItsTokensKeepsThemThroughTheMask:
+    """A channel token must match its platform's shape (Slack ``xapp-`` / ``xoxb-``, Telegram ``123456:...``, Discord 30+ characters),
+    and the served mask matches none. The validators let the exact mask through, the update handler restores the stored token,
+    and the restored value is then checked (audit G2-01; the REST route does the same). Before, the mask was refused before any
+    restore, so a read-then-write of a channel provider always failed."""
 
     @pytest.mark.asyncio
-    async def test_a_masked_channel_provider_body_is_refused_and_the_tokens_are_untouched(self, system_toolset, sp) -> None:
+    @pytest.mark.parametrize("platform", sorted(_CHANNEL_TOKENS))
+    async def test_a_channel_provider_written_back_with_one_change_keeps_its_tokens(self, system_toolset, sp, platform: str) -> None:
+        from primer.model.channel import ChannelProvider
+
+        await _create(system_toolset, "channel_provider", {"id": "cp-1", "provider": platform, "config": dict(_CHANNEL_TOKENS[platform])})
+        served = await _served(system_toolset, "channel_provider", "cp-1")
+        assert all(served["config"][name] != value for name, value in _CHANNEL_TOKENS[platform].items()), "precondition: served masked"
+        served["config"].update(_CHANNEL_CHANGE[platform])
+
+        result = await system_toolset.call(tool_name="update_channel_provider", arguments={"id": "cp-1", "entity": served})
+
+        assert not result.is_error, result.output
+        config = sp.get_storage(ChannelProvider)._data["cp-1"].config
+        assert {name: getattr(config, name).get_secret_value() for name in _CHANNEL_TOKENS[platform]} == _CHANNEL_TOKENS[platform]
+        for name, value in _CHANNEL_CHANGE[platform].items():
+            got = getattr(config, name)
+            assert (got.get_secret_value() if hasattr(got, "get_secret_value") else got) == value
+
+    @pytest.mark.asyncio
+    async def test_a_mask_with_nothing_stored_to_restore_is_refused_and_never_stored(self, system_toolset, sp) -> None:
         from primer.model.channel import ChannelProvider
 
         await _create(system_toolset, "channel_provider", _channel_provider_body())
         served = await _served(system_toolset, "channel_provider", "cp-1")
+        assert served["config"]["signing_secret"] is None
+        served["config"]["signing_secret"] = served["config"]["bot_token"]          # the served mask, where nothing was stored
 
         result = await system_toolset.call(tool_name="update_channel_provider", arguments={"id": "cp-1", "entity": served})
 
-        assert result.is_error and json.loads(result.output)["type"] == "validation-error"
+        assert result.is_error and json.loads(result.output)["type"] == "validation-error", result.output
         config = sp.get_storage(ChannelProvider)._data["cp-1"].config
+        assert config.signing_secret is None
         assert config.bot_token.get_secret_value() == "xoxb-live-9876543210"
-        assert config.app_token.get_secret_value() == "xapp-1-live-0123456789"
+
+    @pytest.mark.asyncio
+    async def test_a_create_that_carries_the_mask_is_refused(self, system_toolset, sp) -> None:
+        from primer.model.channel import ChannelProvider
+
+        await _create(system_toolset, "channel_provider", _channel_provider_body())
+        served = await _served(system_toolset, "channel_provider", "cp-1")
+        served["id"] = "cp-copy"
+
+        result = await system_toolset.call(tool_name="create_channel_provider", arguments={"entity": served}, ctx=ADMIN_CALLER)
+
+        assert result.is_error and json.loads(result.output)["type"] == "validation-error", result.output
+        assert "cp-copy" not in sp.get_storage(ChannelProvider)._data
 
     @pytest.mark.asyncio
     async def test_a_real_token_rotation_is_stored(self, system_toolset, sp) -> None:

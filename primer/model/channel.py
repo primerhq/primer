@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Annotated, ClassVar, Literal, Union
+from typing import Annotated, Callable, ClassVar, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
+from primer.common.url_userinfo import MASK
 from primer.model.common import Identifiable
 
 
@@ -14,6 +15,43 @@ class ChannelProviderType(str, Enum):
     SLACK = "slack"
     TELEGRAM = "telegram"
     DISCORD = "discord"
+
+
+# The token rules of each platform. Each returns the refusal message for a token that breaks the rule, else ``None``.
+def _slack_app_token_problem(tok: str) -> str | None:
+    return None if tok.startswith("xapp-") else "app_token must start with 'xapp-' (Slack app-level token)"
+
+
+def _slack_bot_token_problem(tok: str) -> str | None:
+    return None if tok.startswith("xoxb-") else "bot_token must start with 'xoxb-' (Slack bot token)"
+
+
+def _telegram_bot_token_problem(tok: str) -> str | None:
+    return None if ":" in tok and len(tok) >= 20 else "bot_token must be in the '123456:ABCDEF...' shape"
+
+
+def _discord_bot_token_problem(tok: str) -> str | None:
+    if tok and len(tok) >= 30:
+        return None
+    return "bot_token must be the Developer Portal bot token (>=30 chars); do NOT include the 'Bot ' prefix"
+
+
+def _token_or_served_mask(v: SecretStr, problem: Callable[[str], str | None]) -> SecretStr:
+    """``v`` when it passes ``problem``'s rule, or when it is the mask a GET serves for a stored token (audit G2-01).
+
+    GET serves every token as :data:`~primer.common.url_userinfo.MASK`, and an edit that leaves a token alone sends that mask
+    back. The rule cannot judge the mask, so it lets the mask through for the update to restore the stored token
+    (:func:`~primer.model.common.preserve_masked_secrets`); the REST route and the system tool then run
+    :func:`channel_token_problem` on the RESTORED body, which refuses a mask that was not restored, so a mask is never stored.
+    A create refuses the mask outright (:func:`~primer.model.common.refuse_served_masks`).
+    """
+    plain = v.get_secret_value()
+    if plain == MASK:
+        return v
+    message = problem(plain)
+    if message is not None:
+        raise ValueError(message)
+    return v
 
 
 class SlackChannelProviderConfig(BaseModel):
@@ -49,20 +87,12 @@ class SlackChannelProviderConfig(BaseModel):
     @field_validator("app_token")
     @classmethod
     def _validate_app_token(cls, v: SecretStr) -> SecretStr:
-        if not v.get_secret_value().startswith("xapp-"):
-            raise ValueError(
-                "app_token must start with 'xapp-' (Slack app-level token)"
-            )
-        return v
+        return _token_or_served_mask(v, _slack_app_token_problem)
 
     @field_validator("bot_token")
     @classmethod
     def _validate_bot_token(cls, v: SecretStr) -> SecretStr:
-        if not v.get_secret_value().startswith("xoxb-"):
-            raise ValueError(
-                "bot_token must start with 'xoxb-' (Slack bot token)"
-            )
-        return v
+        return _token_or_served_mask(v, _slack_bot_token_problem)
 
 
 class TelegramChannelProviderConfig(BaseModel):
@@ -86,12 +116,7 @@ class TelegramChannelProviderConfig(BaseModel):
     @field_validator("bot_token")
     @classmethod
     def _validate_bot_token(cls, v: SecretStr) -> SecretStr:
-        tok = v.get_secret_value()
-        if ":" not in tok or len(tok) < 20:
-            raise ValueError(
-                "bot_token must be in the '123456:ABCDEF...' shape"
-            )
-        return v
+        return _token_or_served_mask(v, _telegram_bot_token_problem)
 
 
 class DiscordChannelProviderConfig(BaseModel):
@@ -115,19 +140,40 @@ class DiscordChannelProviderConfig(BaseModel):
     @field_validator("bot_token")
     @classmethod
     def _validate_bot_token(cls, v: SecretStr) -> SecretStr:
-        tok = v.get_secret_value()
-        if not tok or len(tok) < 30:
-            raise ValueError(
-                "bot_token must be the Developer Portal bot token "
-                "(>=30 chars); do NOT include the 'Bot ' prefix"
-            )
-        return v
+        return _token_or_served_mask(v, _discord_bot_token_problem)
 
 
 ChannelProviderConfig = Annotated[
     SlackChannelProviderConfig | TelegramChannelProviderConfig | DiscordChannelProviderConfig,
     Field(description="Platform-specific config; must match parent provider."),
 ]
+
+
+_TOKEN_RULES: dict[type[BaseModel], dict[str, Callable[[str], str | None]]] = {
+    SlackChannelProviderConfig: {"app_token": _slack_app_token_problem, "bot_token": _slack_bot_token_problem},
+    TelegramChannelProviderConfig: {"bot_token": _telegram_bot_token_problem},
+    DiscordChannelProviderConfig: {"bot_token": _discord_bot_token_problem},
+}
+
+
+def channel_token_problem(config: BaseModel) -> tuple[str, str] | None:
+    """The first token of ``config`` that may not be stored, as ``(field, message)``, else ``None``.
+
+    Run on a body AFTER its served masks were restored (audit G2-01): the field validators let the served mask through so the
+    update can restore the stored token, and this is where a mask that was NOT restored is refused, with every token's
+    platform rule applied to the value that will actually be stored.
+    """
+    for name, problem in _TOKEN_RULES.get(type(config), {}).items():
+        value = getattr(config, name, None)
+        if not isinstance(value, SecretStr):
+            continue
+        plain = value.get_secret_value()
+        if plain == MASK:
+            return name, f"{name}: this is the mask a GET serves, not a token: re-enter the token"
+        message = problem(plain)
+        if message is not None:
+            return name, message
+    return None
 
 
 class ChannelProvider(Identifiable):
@@ -296,4 +342,5 @@ __all__ = [
     "SlackChannelProviderConfig",
     "TelegramChannelConfig",
     "TelegramChannelProviderConfig",
+    "channel_token_problem",
 ]
