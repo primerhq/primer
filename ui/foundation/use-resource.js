@@ -26,6 +26,7 @@
         fetcher: null,
         pollMs: 0,
         retryMs: 0,
+        refetchOnWake: true,
         pauseWhile: null,
       };
       cache.set(key, entry);
@@ -191,7 +192,9 @@
   }
 
   // Single page-wide visibilitychange listener; cancel/clear on hide,
-  // immediate refetch + resume on show.
+  // immediate refetch + resume on show. A resource that opted out
+  // (refetchOnWake: false) is left alone both ways: it is not read again on
+  // the show, so its one read must not be aborted on the hide either.
   let visibilityBound = false;
   function ensureVisibility() {
     if (visibilityBound) return;
@@ -199,6 +202,7 @@
     document.addEventListener("visibilitychange", () => {
       const hidden = document.hidden;
       for (const [key, entry] of cache) {
+        if (entry.refetchOnWake === false) continue;
         if (hidden) {
           abortInflight(entry);
           clearTimer(entry);
@@ -224,8 +228,17 @@
   // ordinary key, which ran the fetcher with the missing id (a doomed 404)
   // and left an entry under `null` that made findKeys throw inside every
   // later useMutation success path.
+  //
+  // opts.refetchOnWake (default true): false leaves the resource out of the
+  // page-wide refetches, the one when the tab becomes visible again and the
+  // one when the operator comes back from idle (refetchAll). It is for a
+  // read-once resource whose read is costly or has side effects (the Setup
+  // card's /setup/state lists the LLM's models), read again only by its own
+  // refetch(). Polling and retries are unaffected.
   function useResource(cacheKey, fetcher, opts = {}) {
-    const { pollMs = 0, retryMs = 0, pauseWhile, deps, ignoreIdle = false } = opts;
+    const {
+      pollMs = 0, retryMs = 0, pauseWhile, deps, ignoreIdle = false, refetchOnWake = true,
+    } = opts;
     const enabled = cacheKey != null;
     const effectiveKey = enabled ? composeKey(cacheKey, deps) : null;
 
@@ -258,6 +271,7 @@
       entry.fetcher = (signal) => fetcherRef.current(signal);
       entry.pollMs = pollMs;
       entry.retryMs = retryMs;
+      entry.refetchOnWake = refetchOnWake;
       entry.pauseWhile = () => {
         // Two stacked pause sources: the caller's pauseWhile and the
         // global idle flag set by ui/foundation/idle.js. Either pausing
@@ -307,6 +321,7 @@
       if (!enabled) return;
       const entry = cache.get(effectiveKey);
       if (!entry) return;
+      entry.refetchOnWake = refetchOnWake;
       if (entry.pollMs === pollMs && entry.retryMs === retryMs) return;
       entry.pollMs = pollMs;
       entry.retryMs = retryMs;
@@ -321,7 +336,7 @@
         // a reopen flipped its cadence back on (BDD round 2).
         schedule(entry, effectiveKey);
       }
-    }, [effectiveKey, pollMs, retryMs]);
+    }, [effectiveKey, pollMs, retryMs, refetchOnWake]);
 
     const refetch = useCallback(() => {
       if (!enabled) return;
@@ -376,11 +391,12 @@
   }
 
   // Re-fire every active entry (those with at least one subscriber and
-  // a registered fetcher). Used by the idle module on wake-up to
-  // resync the UI after a quiet period.
+  // a registered fetcher) that did not opt out with refetchOnWake: false.
+  // Used by the idle module on wake-up to resync the UI after a quiet period.
   function refetchAll() {
     for (const [key, entry] of cache) {
       if (entry.subscribers.size === 0 || !entry.fetcher) continue;
+      if (entry.refetchOnWake === false) continue;
       entry.errorCount = 0;
       runFetch(entry, key);
     }

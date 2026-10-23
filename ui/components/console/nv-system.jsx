@@ -367,11 +367,14 @@ function NV_capabilityRows(caps) {
 
 function NV_SysSetupCard() {
   var con = NV_useConsole();
+  // Read once, then only on Check again, a seed or a reset (plan 10, Review Focus 4): each read lists the LLM's models and re-attaches the
+  // default workspace, so a tab re-show or an idle wake-up must not read it again (refetchOnWake: false; audit G1-09).
   var setupState = window.primerApi.useResource(
     "nv-sys:setup-state",
     function (signal) {
       return window.primerApi.apiFetch("GET", "/setup/state", null, { signal: signal });
-    }
+    },
+    { refetchOnWake: false }
   );
   var setupResourceState = window.primerApi.resourceState(setupState);
   var setupUnavailable = !!(setupState.error && setupState.data == null)
