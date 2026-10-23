@@ -67,8 +67,15 @@ Added with pivot P3 (plan task 7):
   ``session.steered`` when the target had a turn open), with no transaction across them; a cancel between leaves a delivered message the rate limit
   never counted, or a counted one whose event never fired (a session waiting on ``session.messaged`` is not woken).
 
+Added with revamp 09 (Tasks 4-7, active artifact store):
+
+* ``system`` test_artifact_storage_provider and set_active_artifact_store: the probe writes, then deletes, a temporary object
+  on the provider's store, with no transaction, so a cancel inside the put can leave a stray object; and set_active runs that
+  probe and then writes the setting row.
+
 Examined and left interruptible (pivot P3, plan task 7): ``workspaces`` list_my_sessions is ONE read (a filtered page of session rows) and writes
-nothing, so a cancel loses nothing.
+nothing, so a cancel loses nothing. Examined and left interruptible (revamp 09, Tasks 4-7): ``system`` get_active_artifact_store is ONE read
+of the setting row.
 
 Examined later and left interruptible (task 01a10871, Stop as a system tool): ``workspaces`` interrupt_workspace_session is ONE
 guarded row write (the Stop flag, ``interrupt_requested`` and ``cancel_requested_at``) followed by a best-effort bus publish. The flag
@@ -161,6 +168,11 @@ CONFIRMED_NOT_INTERRUPTIBLE = {
     # pivot P5 (design 8.3): the canvas snapshot row, then the canvas_op record and canvas.updated on other stores; a cancel between
     # leaves a canvas the transcript and the event feed do not show
     (CANVAS_TOOLSET_ID, "canvas_apply"),
+    # revamp 09 (Tasks 4-7, active artifact store): the probe writes, then deletes, a temporary object on the provider's
+    # store, with no transaction, so a cancel inside the put can leave a stray object; set_active runs that probe and then
+    # writes the setting row
+    (SYSTEM_TOOLSET_ID, "test_artifact_storage_provider"),
+    (SYSTEM_TOOLSET_ID, "set_active_artifact_store"),
 }
 
 EXAMINED_AND_INTERRUPTIBLE = {
@@ -191,6 +203,8 @@ EXAMINED_AND_INTERRUPTIBLE = {
     (CANVAS_TOOLSET_ID, "canvas_wait"),
     # pivot P3: one read of the caller's workspace, nothing written
     (WORKSPACES_TOOLSET_ID, "list_my_sessions"),
+    # revamp 09 (Tasks 4-7): one read of the setting row
+    (SYSTEM_TOOLSET_ID, "get_active_artifact_store"),
 }
 
 
