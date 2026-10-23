@@ -4908,8 +4908,16 @@ button.nv-trace-line { cursor: pointer; }
   font-size: 12px;
   margin-bottom: 10px;
 }
-.nv-overlay-crumb a { color: var(--accent); cursor: pointer; }
-.nv-overlay-crumb a:hover { text-decoration: underline; }
+/* The crumb's way back is a button drawn as the link it used to be (audit G1-20). */
+.nv-overlay-crumb-link {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+}
+.nv-overlay-crumb-link:hover { text-decoration: underline; }
 .nv-crumb-sep { color: var(--text-4); }
 .nv-overlay-crumb span:last-child { font-family: var(--font-mono); }
 .nv-legacy-host { min-height: 0; }

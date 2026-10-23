@@ -984,7 +984,8 @@ function NV_LegacyOverlay(props) {
       {(overlay.section || overlay.id)
         && NV_overlayTitle(overlay) !== (NV_OVERLAY_TITLES[name] || name) ? (
           <div className="nv-overlay-crumb">
-            <a data-testid="nv-overlay-crumb"
+            {/* A native button, so a keyboard user reaches the way back to the Platform page (audit G1-20); it was an <a> with no href. */}
+            <button type="button" className="nv-overlay-crumb-link" data-testid="nv-overlay-crumb"
               onClick={function () {
                 // A record's crumb leaves the overlay for the entity's Platform page; opening the bare overlay rendered the LIST inside the
                 // overlay (design 10). A section may be the page ("workspaces:templates:<id>" is a template, so its crumb is the templates page) or a
@@ -1001,7 +1002,7 @@ function NV_LegacyOverlay(props) {
                 else con.openOverlay(name, null, null);
               }}>
               {NV_OVERLAY_TITLES[name] || name}
-            </a>
+            </button>
             <span className="nv-crumb-sep">/</span>
             <span>{NV_overlayTitle(overlay)}</span>
           </div>
