@@ -23,9 +23,10 @@ from primer.bootstrap.seeded_agents_v1 import (
     definition_digest,
 )
 
-#: The sha256 of each definition the current factories build.
+#: The sha256 of each definition the current factories build (v3: v2 with
+#: the operator's agents.md paragraph reworded).
 CURRENT_DIGESTS = {
-    "operator": "934facec1314713b992b6793e98d6f09fad721226501a0ce22c3f9fc61ba7bd1",
+    "operator": "b26e038513e1e952cb4b188fe023fb13fdb55e91d8f0dedd916f55b3d2523de4",
     "builder": "f09b4c2df4612ebf8589731c1a48cabb9d329338a68ac8ed71fcb4a44bf49d97",
     "planner": "0f8739cd3a84e5d1adc16a518ea1a6fbda0273b243a274a7925f45bd4a5574e3",
     "explorer": "967cb562101ae11d52dab5ea50d20ddf8e3187d602e63c30ba2d0561cc42dc41",
@@ -118,6 +119,22 @@ def test_previous_shipped_holds_every_shipped_definition_once_in_shipping_order(
             if agent_id in build and definition_digest(build[agent_id]) not in expected:
                 expected.append(definition_digest(build[agent_id]))
         assert [definition_digest(d) for d in lineage] == expected, agent_id
+
+
+def test_v3_changes_only_the_operator_s_agents_md_paragraph():
+    """v3 rewords one operator paragraph; every other definition is still v2."""
+    from primer.bootstrap.operator_defaults import WORKSPACE_INSTRUCTIONS_PROMPT_PART
+
+    current = _current()
+    v2 = SEEDED_AGENTS_V2["operator"]
+    (old,) = [p for p in v2.system_prompt if "agents.md" in p]
+    expected = tuple(
+        WORKSPACE_INSTRUCTIONS_PROMPT_PART if p == old else p for p in v2.system_prompt
+    )
+    assert current["operator"] == SeededDefinition(v2.description, expected, v2.tools)
+    assert current["operator"] != v2
+    for agent_id in ("builder", "planner", "explorer", "tool-runner"):
+        assert current[agent_id] == SEEDED_AGENTS_V2[agent_id], agent_id
 
 
 def test_the_current_definitions_are_pinned():
