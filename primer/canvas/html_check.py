@@ -31,8 +31,9 @@ this check sees none) RUNS; only external loads are held to the CSP's hosts.
 How the scripts are found. ``html.parser`` reads the body with scripting ON, as the frame does (a ``<noscript>`` is
 raw text, so what follows its end tag is markup). It still has no foreign-content rules (inside ``<svg>``, a
 ``<style>``, ``<iframe>``, ``<xmp>``, ``<textarea>`` or ``<title>`` holds markup in a browser and text here), and it
-ends a script at its first ``</script>`` where a browser in the double-escaped state does not. So the check fails
-closed: when the body holds more ``<script`` (in any case) than the scripts the parser found, it is refused, because
+ends a script at its first ``</script>`` where a browser in the double-escaped state does not, and it reads
+``<script/>`` as an empty script where a browser ignores the slash and runs what follows. So such a tag is not
+counted as a script it read, and the check fails closed: when the body holds more ``<script`` (in any case) than the scripts the parser found, it is refused, because
 a browser may run what the check cannot see. That also refuses the word in text, a comment, an attribute or a JS
 string; the agent splits it (``'<scr' + 'ipt'``).
 
@@ -43,7 +44,9 @@ not a ``<script>``, so it cannot see:
 * event-handler attributes (``onerror="..."``);
 * ``javascript:`` URLs;
 * ``import`` and ``import()`` in an inline module (or, for ``import()``, a classic script);
-* a script inside a nested ``<iframe srcdoc>`` whose markup is written with character references (``&lt;script``).
+* a script inside a nested ``<iframe srcdoc>`` whose markup is written with character references (``&lt;script``);
+* a whole document encoded in a URL: an ``<iframe>``, ``<object>`` or ``<embed>`` whose ``src`` or ``data`` is a
+  ``data:`` URL, or ``<meta http-equiv="refresh">`` to a ``data:`` URL.
 
 Pure: no I/O besides the throwaway engine.
 """
@@ -91,7 +94,8 @@ _URL_ATTRIBUTES = ("src", "href", "xlink:href")
 
 
 class _Scripts(HTMLParser):
-    """Collects every ``<script>``: its attributes (the first of a repeated one wins) and its text."""
+    """Collects every ``<script>``: its attributes (the first of a repeated one wins), its text, and whether it counts as a script
+    the check could read (a self-closed ``<script/>`` does not; see :meth:`handle_startendtag`)."""
 
     def __init__(self) -> None:
         try:
@@ -99,7 +103,7 @@ class _Scripts(HTMLParser):
             super().__init__(convert_charrefs=True, scripting=True)
         except TypeError:  # pragma: no cover - CPython before the flag
             super().__init__(convert_charrefs=True)
-        self.scripts: list[tuple[dict[str, str | None], str]] = []
+        self.scripts: list[tuple[dict[str, str | None], str, bool]] = []
         self._attrs: dict[str, str | None] | None = None
         self._text: list[str] = []
 
@@ -107,14 +111,21 @@ class _Scripts(HTMLParser):
         if tag != "script":
             return
         self._finish()
-        first: dict[str, str | None] = {}
-        for name, value in attrs:
-            first.setdefault(name, value)
-        self._attrs = first
+        self._attrs = _first_of_each(attrs)
 
     def handle_data(self, data: str) -> None:
         if self._attrs is not None:
             self._text.append(data)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        # ``<script/>`` is NOT an empty script to a browser: in HTML the slash is ignored and what follows is the script's text,
+        # which html.parser reads as markup. Its URLs are still judged, but it is not counted as a script the check read, so the
+        # '<script' count is one higher than the scripts found and the body fails closed (review N1 on #856). Any other
+        # self-closed tag is no script.
+        if tag != "script":
+            return
+        self._finish()
+        self.scripts.append((_first_of_each(attrs), "", False))
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "script":
@@ -127,9 +138,16 @@ class _Scripts(HTMLParser):
 
     def _finish(self) -> None:
         if self._attrs is not None:
-            self.scripts.append((self._attrs, "".join(self._text)))
+            self.scripts.append((self._attrs, "".join(self._text), True))
             self._attrs = None
             self._text = []
+
+
+def _first_of_each(attrs: list[tuple[str, str | None]]) -> dict[str, str | None]:
+    first: dict[str, str | None] = {}
+    for name, value in attrs:
+        first.setdefault(name, value)
+    return first
 
 
 def _is_classic(type_attr: str | None) -> bool:
@@ -246,14 +264,14 @@ def check_html_scripts_many(bodies: Sequence[str]) -> dict[str, list[str]]:
         parser.feed(html)
         parser.close()
         found: dict[int, list[str]] = {}
-        for number, (attrs, text) in enumerate(parser.scripts, start=1):
+        for number, (attrs, text, read) in enumerate(parser.scripts, start=1):
             for attribute in _URL_ATTRIBUTES:
                 if attribute in attrs:
                     found.setdefault(number, []).extend(_check_url(number, attribute, attrs[attribute]))
-            if "src" not in attrs and _is_classic(attrs.get("type")):
+            if read and "src" not in attrs and _is_classic(attrs.get("type")):
                 inline_tasks.append((len(inline_tasks), number, text, html))
         found_by_body[html] = found
-        hidden = _hidden(html.lower().count("<script"), len(parser.scripts))
+        hidden = _hidden(html.lower().count("<script"), sum(1 for _attrs, _text, read in parser.scripts if read))
         if hidden is not None:
             hidden_by_body[html] = hidden
     if inline_tasks:

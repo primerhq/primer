@@ -16,6 +16,10 @@ from primer.canvas.lang import parse_program
 from primer.canvas.state import CanvasState, Limits, apply_batch
 
 ALLOWED = "only cdnjs.cloudflare.com, cdn.jsdelivr.net, unpkg.com and esm.sh are allowed"
+HIDDEN_ONE_OF_ONE = (
+    "1 of the 1 '<script' in the html is not a script the check can read; write each script as a plain <script> element "
+    "and split '<script' in any text or string ('<scr' + 'ipt')"
+)
 
 
 def test_the_allowed_hosts():
@@ -126,7 +130,9 @@ def test_the_svg_scripts_the_review_found_were_not_judged():
     loads = f"script 1 loads from evil.example; {ALLOWED}"
     assert check_html_scripts('<svg><script href="https://evil.example/x.js"></script></svg>') == [loads]
     assert check_html_scripts('<svg><script xlink:href="https://evil.example/x.js"></script></svg>') == [loads]
-    assert check_html_scripts('<svg><script href="https://evil.example/x.js"/></svg>') == [loads]        # SVG allows self-closing
+    # SVG allows self-closing, but the check cannot tell an SVG script from an HTML one, where the slash is ignored and what follows
+    # runs: the URL is still judged, and the tag fails closed (review N1 on #856).
+    assert check_html_scripts('<svg><script href="https://evil.example/x.js"/></svg>') == [loads, HIDDEN_ONE_OF_ONE]
 
 
 def test_every_url_attribute_a_script_has_is_judged_so_a_good_one_never_excuses_a_bad_one():
@@ -476,6 +482,19 @@ def test_the_hidden_script_problem_counts_every_script_tag_in_any_case():
         "2 of the 2 '<script' in the html are not a script the check can read; write each script as a plain <script> element "
         "and split '<script' in any text or string ('<scr' + 'ipt')"
     ]
+
+
+@pytest.mark.parametrize("html", [
+    f"<script/>{BAD}</script>",
+    f"<SCRIPT />{BAD}</SCRIPT>",
+    f'<script src="{EVIL}"/>',
+    '<svg><script href="https://unpkg.com/x.js"/></svg>',
+], ids=["self-closed then bad code", "upper case", "self-closed with a src", "self-closed svg script"])
+def test_a_self_closed_script_tag_fails_closed(html):
+    """Review N1 on #856: a browser ignores the slash of ``<script/>`` in HTML and runs what follows; html.parser read it as an empty
+    script, so the count matched and ``<script/>bad(</script>`` passed. It is not counted as a script found now."""
+    problems = check_html_scripts(html)
+    assert problems and HIDDEN in problems[-1], problems
 
 
 @pytest.mark.parametrize("html", [
