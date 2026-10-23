@@ -445,12 +445,18 @@ async def builtin_toolset_providers(provider_registry) -> dict[str, ToolsetProvi
     its id and skipped so one missing toolset does not drop the rest.
     """
     from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
-    from primer.model.except_ import PrimerError
+    from primer.model.except_ import NotFoundError, PrimerError
 
     providers: dict[str, ToolsetProvider] = {}
     for tid in sorted(RESERVED_TOOLSET_IDS):
         try:
             providers[tid] = await provider_registry.get_toolset(tid)
+        except NotFoundError as err:
+            if tid != "canvas":
+                logger.warning("seed: skipping built-in toolset %r: %s", tid, err)
+            else:
+                # Off by design while CanvasSettings.agent_tools_enabled is off (audit G8-02): not a failure worth a warning on every boot.
+                logger.info("seed: the canvas toolset is off (canvas.agent_tools_enabled); its tools are not seeded")
         except PrimerError as err:
             logger.warning("seed: skipping built-in toolset %r: %s", tid, err)
     return providers

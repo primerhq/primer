@@ -588,6 +588,19 @@ async def test_canvas_toolset_is_hidden_and_unresolvable_by_default(client, app,
     assert missing == ["canvas"]
 
 
+async def test_a_canvas_toolset_that_is_off_is_left_out_of_the_seed_without_a_warning(app, caplog):
+    """The boot ensure pass and the internal collections take every built-in from the registry: the canvas is left out while it is
+    off, which is the design, not a failure to warn about on every boot."""
+    import logging
+
+    from primer.bootstrap.seed import builtin_toolset_providers
+
+    with caplog.at_level(logging.INFO, logger="primer.bootstrap.seed"):
+        providers = await builtin_toolset_providers(app.state.provider_registry)
+    assert "canvas" not in providers and "system" in providers
+    assert [r.levelname for r in caplog.records if "canvas" in r.getMessage()] == ["INFO"]
+
+
 @pytest.mark.asyncio
 async def test_the_catalogue_lists_canvas_last_and_opens_it_when_enabled(client, fake_storage_provider):
     from primer.agent.agent_checks import missing_toolset_ids

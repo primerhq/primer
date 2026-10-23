@@ -601,14 +601,15 @@ class TestBootstrap:
 
     @pytest.mark.asyncio
     async def test_bootstrap_builds_the_subsystem_with_every_builtin_toolset(
-        self, client, app, fake_storage_provider
+        self, client, app, sp
     ) -> None:
         """The subsystem embeds the tools of the toolsets it is given. The route hands it the registry's map, one provider for every id
         in RESERVED_TOOLSET_IDS, and not a hand-written list (the old one had lost ``collections`` and ``crud``, and could lose the
         next built-in toolset too). The lifespan's twin is tests/api/test_lifespan_internal_collections_toolsets.py."""
         from primer.model.canvas import CANVAS_SETTINGS_ID, CanvasSettings
 
-        await fake_storage_provider.get_storage(CanvasSettings).create(
+        # This module's app runs on its own ``sp``, not the suite's ``fake_storage_provider``: the setting must be where the registry reads.
+        await sp.get_storage(CanvasSettings).create(
             CanvasSettings(id=CANVAS_SETTINGS_ID, agent_tools_enabled=True),
         )
         await client.put("/v1/internal_collections/config", json=_config_body())
