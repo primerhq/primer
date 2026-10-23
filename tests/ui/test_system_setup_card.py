@@ -531,3 +531,68 @@ def test_the_card_has_the_installed_extras_fold(app):
     app.js(f'DATA["nv-sys:setup-state"] = {json.dumps(_state())}')
     app.mount("NV_SysSetupCard")
     assert app.has("nv-sys-setup-extras")
+
+
+# ---- the Setup menu's keyboard (audit G1-14) and a long failing detail (audit G1-15) ----------------------------------------------------------------
+
+# A stand-in for React attaching the menu's ref to its DOM node before the effects run (the harness has no DOM): the list node, whose items take
+# the focus as a browser's would (the document's active element moves).
+_MENU_DOM = r"""
+var document = (typeof document !== "undefined" && document) || {};
+var FOCUSED = null;
+var MENU_ITEMS = ["nv-sys-setup-recheck", "nv-sys-setup-rerun-seed", "nv-sys-setup-reset-agents"].map(function (id) {
+  return { id: id, focus: function () { FOCUSED = id; document.activeElement = this; } };
+});
+var MENU_NODE = {
+  querySelector: function () { return MENU_ITEMS[0]; },
+  querySelectorAll: function () { return MENU_ITEMS; },
+};
+var PREVENTED = 0;
+(function () {
+  var inner = React.createElement;
+  React.createElement = function (type, props) {
+    if (props && props["data-testid"] === "nv-sys-setup-menu" && props.ref && typeof props.ref === "object") props.ref.current = MENU_NODE;
+    return inner.apply(null, arguments);
+  };
+})();
+function menuKey(k) {
+  MR.find("nv-sys-setup-menu").props.onKeyDown({
+    key: k, currentTarget: MENU_NODE, preventDefault: function () { PREVENTED++; },
+  });
+}
+"""
+
+
+def test_opening_the_setup_menu_moves_the_focus_to_its_first_item(app):
+    app.js(f'DATA["nv-sys:setup-state"] = {json.dumps(_state())};' + _MENU_DOM)
+    app.mount("NV_SysSetupCard")
+    assert app.js("FOCUSED") is None
+    app.click("nv-sys-setup-menu-btn")
+    assert app.js("FOCUSED") == "nv-sys-setup-recheck"
+
+
+def test_the_arrow_keys_home_and_end_move_between_the_setup_menus_items(app):
+    app.js(f'DATA["nv-sys:setup-state"] = {json.dumps(_state())};' + _MENU_DOM)
+    app.mount("NV_SysSetupCard")
+    app.click("nv-sys-setup-menu-btn")
+    app.js('menuKey("ArrowDown")')
+    assert app.js("FOCUSED") == "nv-sys-setup-rerun-seed"
+    app.js('menuKey("ArrowDown"); menuKey("ArrowDown")')
+    assert app.js("FOCUSED") == "nv-sys-setup-recheck", "it wraps from the last item to the first"
+    app.js('menuKey("ArrowUp")')
+    assert app.js("FOCUSED") == "nv-sys-setup-reset-agents", "and from the first to the last"
+    app.js('menuKey("Home")')
+    assert app.js("FOCUSED") == "nv-sys-setup-recheck"
+    app.js('menuKey("End")')
+    assert app.js("FOCUSED") == "nv-sys-setup-reset-agents"
+    assert app.js("PREVENTED") == 6
+    app.js('menuKey("Tab"); menuKey("a")')
+    assert app.js("PREVENTED") == 6, "any other key is left alone, Tab included"
+
+
+def test_a_long_failing_detail_wraps_anywhere_instead_of_widening_the_row(app):
+    long_url = "connection refused: https://registry.example/" + "a" * 120 + "/v1/models"
+    app.js(f'DATA["nv-sys:setup-state"] = {json.dumps(_state({"llm_provider": long_url}))}')
+    app.mount("NV_SysSetupCard")
+    style = app.attr("nv-sys-setup-detail:llm_provider", "style") or {}
+    assert style.get("overflowWrap") == "anywhere", style
