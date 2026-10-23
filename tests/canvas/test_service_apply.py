@@ -583,6 +583,33 @@ async def test_no_script_check_is_a_service_without_one():
     assert (await _apply(w, 'root = Column([v])\nv = Html("<script>var b = ;</script>")')).rev == 1
 
 
+async def test_fence_retry_does_not_rerun_script_check_for_same_html():
+    calls: list[str] = []
+
+    def counting_check(html: str) -> list[str]:
+        calls.append(html)
+        return []
+
+    w = make_world(script_check=counting_check)
+    await seed_session(w)
+    await _apply(w, 'root = Column([v])\nv = Html("<b>initial</b>")')
+    calls.clear()
+
+    store = w.sp.get_storage(SessionCanvas)
+    real_patch_if = store.patch_if
+    first = [True]
+
+    async def reject_once(id, patch=None, *, where, set_paths=None, conn=None):  # noqa: A002
+        if first[0]:
+            first[0] = False
+            return None  # simulate a concurrent writer winning the first fence attempt
+        return await real_patch_if(id, patch, where=where, set_paths=set_paths, conn=conn)
+
+    store.patch_if = reject_once
+    out = await _apply(w, 'v = Html("<script>var a = 1;</script>")')
+    assert out.rev == 2 and calls == ["<script>var a = 1;</script>"]
+
+
 # ---- reading -----------------------------------------------------------------------------------------------------------------------
 
 

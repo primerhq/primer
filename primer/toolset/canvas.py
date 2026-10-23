@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from primer.canvas.decompile import MAX_EVENT_LINES, decompile, preorder
 from primer.canvas.lang import CanvasLangError, LangError, parse_program
 from primer.canvas.ops import (
+    MAX_BATCH_STATEMENTS,
     MAX_OPS_CHARS,
     MAX_SOURCE_CHARS,
     CanvasOp,
@@ -159,12 +160,15 @@ class _CanvasApplyArgs(BaseModel):
     source: str | None = Field(
         default=None,
         max_length=MAX_SOURCE_CHARS,
-        description=f"Canvas Lang statements, one per line (at most {MAX_SOURCE_CHARS} characters). Give this or ops.",
+        description=(
+            f"Canvas Lang statements, one per line (at most {MAX_BATCH_STATEMENTS} statements and {MAX_SOURCE_CHARS} characters). "
+            "Give this or ops."
+        ),
     )
     ops: list[CanvasOp] | None = Field(
         default=None,
         description=(
-            f"JSON ops instead of source (at most {MAX_OPS_CHARS} characters of JSON), applied in order: "
+            f"JSON ops instead of source (at most {MAX_BATCH_STATEMENTS} ops and {MAX_OPS_CHARS} characters of JSON), applied in order: "
             '{op: "set", id, type, props?, children?}, {op: "prop", id, prop, value}, {op: "append", id, children}, '
             '{op: "delete", ids}, {op: "clear"}. Give this or source.'
         ),

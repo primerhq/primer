@@ -403,3 +403,20 @@ def test_format_value_never_uses_single_quotes_and_refuses_what_it_cannot_write(
         format_value(object())
     with pytest.raises(ValueError):
         format_value([[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]])
+
+
+def test_statements_are_capped_at_2000_before_parsing():
+    from primer.canvas.lang import MAX_BATCH_STATEMENTS
+
+    assert MAX_BATCH_STATEMENTS == 2000
+    at_cap = "\n".join(["clear"] * MAX_BATCH_STATEMENTS)
+    assert len(parse_program(at_cap)) == MAX_BATCH_STATEMENTS
+    # Comments and blank lines do not count toward the statement cap.
+    with_comments = "# comment\n\n" + at_cap + "\n# trailing\n"
+    assert len(parse_program(with_comments)) == MAX_BATCH_STATEMENTS
+    over_cap = "\n".join(["clear"] * (MAX_BATCH_STATEMENTS + 1))
+    with pytest.raises(CanvasLangError) as exc:
+        parse_program(over_cap)
+    assert [e.render() for e in exc.value.errors] == [
+        "line 2001: a batch holds at most 2000 statements; got 2001"
+    ]

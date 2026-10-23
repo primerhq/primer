@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
@@ -168,8 +169,8 @@ def _unchecked(number: int) -> str:
     return f"script {number} could not be checked: the syntax check failed"
 
 
-def _compile_scripts(scripts: list[tuple[int, str]]) -> dict[int, str]:
-    """The problem with each inline script that has one, by script number.
+def _compile_scripts(scripts: list[tuple[int, int, str]]) -> dict[int, str]:
+    """The problem with each inline script that has one, by task index (with ``number`` as its script number in its document).
 
     One engine serves every script. Whatever goes wrong with it (it cannot start, it times
     out, it runs out of memory, it raises something nobody expected) is "could not be
@@ -178,17 +179,17 @@ def _compile_scripts(scripts: list[tuple[int, str]]) -> dict[int, str]:
     try:
         compiler = _Compiler()
     except Exception:
-        return {number: _unchecked(number) for number, _ in scripts}
+        return {idx: _unchecked(number) for idx, number, _ in scripts}
     problems: dict[int, str] = {}
     try:
-        for number, source in scripts:
+        for idx, number, source in scripts:
             try:
                 message = compiler.problem(source)
             except Exception:
-                problems[number] = _unchecked(number)
+                problems[idx] = _unchecked(number)
             else:
                 if message is not None:
-                    problems[number] = f"script {number} does not parse: {message}"
+                    problems[idx] = f"script {number} does not parse: {message}"
     finally:
         try:
             compiler.close()
@@ -197,7 +198,7 @@ def _compile_scripts(scripts: list[tuple[int, str]]) -> dict[int, str]:
     return problems
 
 
-def _compile(scripts: list[tuple[int, str]]) -> dict[int, str]:
+def _compile(scripts: list[tuple[int, int, str]]) -> dict[int, str]:
     """:func:`_compile_scripts`, on a worker thread when this thread has a running event loop."""
     try:
         asyncio.get_running_loop()
@@ -207,7 +208,35 @@ def _compile(scripts: list[tuple[int, str]]) -> dict[int, str]:
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="canvas-script-check") as pool:
             return pool.submit(_compile_scripts, scripts).result()
     except Exception:
-        return {number: _unchecked(number) for number, _ in scripts}
+        return {idx: _unchecked(number) for idx, number, _ in scripts}
+
+
+def check_html_scripts_many(bodies: Sequence[str]) -> dict[str, list[str]]:
+    """Problems with the scripts in each distinct body of ``bodies``, using at most ONE V8 engine for the whole batch."""
+    unique = list(dict.fromkeys(bodies))
+    found_by_body: dict[str, dict[int, list[str]]] = {}
+    inline_tasks: list[tuple[int, int, str, str]] = []
+    for html in unique:
+        parser = _Scripts()
+        parser.feed(html)
+        parser.close()
+        found: dict[int, list[str]] = {}
+        for number, (attrs, text) in enumerate(parser.scripts, start=1):
+            for attribute in _URL_ATTRIBUTES:
+                if attribute in attrs:
+                    found.setdefault(number, []).extend(_check_url(number, attribute, attrs[attribute]))
+            if "src" not in attrs and _is_classic(attrs.get("type")):
+                inline_tasks.append((len(inline_tasks), number, text, html))
+        found_by_body[html] = found
+    if inline_tasks:
+        compiled = _compile([(idx, number, text) for idx, number, text, _ in inline_tasks])
+        for idx, problem in compiled.items():
+            _, number, _, html = inline_tasks[idx]
+            found_by_body[html].setdefault(number, []).append(problem)
+    return {
+        html: [problem for number in sorted(found) for problem in found[number]]
+        for html, found in found_by_body.items()
+    }
 
 
 def check_html_scripts(html: str) -> list[str]:
@@ -216,21 +245,10 @@ def check_html_scripts(html: str) -> list[str]:
     An empty list means every external script is allowed and every classic inline
     script parses.
     """
-    parser = _Scripts()
-    parser.feed(html)
-    parser.close()
-    found: dict[int, list[str]] = {}
-    inline: list[tuple[int, str]] = []
-    for number, (attrs, text) in enumerate(parser.scripts, start=1):
-        for attribute in _URL_ATTRIBUTES:
-            if attribute in attrs:
-                found.setdefault(number, []).extend(_check_url(number, attribute, attrs[attribute]))
-        if "src" not in attrs and _is_classic(attrs.get("type")):
-            inline.append((number, text))
-    if inline:
-        for number, problem in _compile(inline).items():
-            found.setdefault(number, []).append(problem)
-    return [problem for number in sorted(found) for problem in found[number]]
+    return check_html_scripts_many([html])[html]
 
 
-__all__ = ["SCRIPT_HOSTS", "check_html_scripts"]
+check_html_scripts.many = check_html_scripts_many  # type: ignore[attr-defined]
+
+
+__all__ = ["SCRIPT_HOSTS", "check_html_scripts", "check_html_scripts_many"]

@@ -381,12 +381,39 @@ def test_the_script_check_runs_on_new_html_only_and_every_problem_is_an_error():
     assert seen == ["<b>ok</b>"]
     apply_batch(s, parse_program('v.html = "<i>new</i>"'), limits=L, script_check=check)
     assert seen == ["<b>ok</b>", "<i>new</i>"]
-    r = apply_batch(s, parse_program('v.html = "bad"\nv = Html("bad too")'), limits=L, script_check=check)
-    assert [e.render() for e in r.errors] == ["line 1: v: first", "line 1: v: second", "line 2: v: first", "line 2: v: second"]
+    r = apply_batch(s, parse_program('v.html = "bad"\nw = Html("bad too")\nroot += [w]'), limits=L, script_check=check)
+    assert [e.render() for e in r.errors] == ["line 1: v: first", "line 1: v: second", "line 2: w: first", "line 2: w: second"]
+    # an overwritten Html body in the same batch is not checked; only the surviving one is
+    seen.clear()
+    overwritten = apply_batch(s, parse_program('v.html = "bad"\nv = Html("<b>survives</b>")'), limits=L, script_check=check)
+    assert overwritten.errors == () and seen == ["<b>survives</b>"]
     # an oversized body is refused before it is checked
     seen.clear()
     big = apply_batch(S, parse_program('root = Column([v])\nv = Html("' + "x" * 70000 + '")'), limits=L, script_check=check)
     assert seen == [] and [e.render() for e in big.errors] == ["line 2: v: Html is 70000 bytes; the limit is 65536"]
+
+
+def test_script_check_runs_after_limits_and_uses_one_v8_engine_per_batch(monkeypatch):
+    import py_mini_racer
+    from primer.canvas.html_check import check_html_scripts
+    from tests.canvas.test_html_check import _Spy
+
+    _Spy.made = []
+    monkeypatch.setattr(py_mini_racer, "MiniRacer", _Spy)
+
+    # 300 Html elements exceed max_elements (200): refused on the element-count limit with 0 V8 engines spawned.
+    ids = ", ".join(f"h{i}" for i in range(300))
+    lines = [f"root = Column([{ids}])"] + [f'h{i} = Html("<script>var x = {i};</script>")' for i in range(300)]
+    over = apply_batch(S, parse_program("\n".join(lines)), limits=L, script_check=check_html_scripts)
+    assert over.state is None and "the batch would make 300 elements; the limit is 200" in over.errors[0].render()
+    assert _Spy.made == []
+
+    # 5 distinct Html elements with inline scripts use at most 1 V8 engine for the whole batch.
+    five_ids = ", ".join(f"h{i}" for i in range(5))
+    five_lines = [f"root = Column([{five_ids}])"] + [f'h{i} = Html("<script>var x = {i};</script>")' for i in range(5)]
+    ok = apply_batch(S, parse_program("\n".join(five_lines)), limits=L, script_check=check_html_scripts)
+    assert ok.errors == () and ok.state is not None
+    assert len(_Spy.made) == 1 and _Spy.made[0].closed
 
 
 # --- binding: arguments, defaults and what a statement may say ------------------------

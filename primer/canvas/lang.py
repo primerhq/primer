@@ -45,6 +45,8 @@ RESERVED_IDS = frozenset({"true", "false", "null"})
 MAX_DEPTH = 32
 #: Syntax errors reported before the rest are only counted.
 MAX_ERRORS = 50
+#: Most statements (or JSON ops) one batch may hold.
+MAX_BATCH_STATEMENTS = 2000
 #: Most digits in an integer a program may write; a longer one is "number is out of range".
 MAX_INT_DIGITS = 15
 #: The same limit as a magnitude: the largest integer, and negated the smallest, a program may write.
@@ -693,10 +695,7 @@ def parse_program(text: str) -> list[Statement]:
     """
     text = _normalize(text)
     n = len(text)
-    statements: list[Statement] = []
-    errors: list[LangError] = []
-    dropped = 0
-    dropped_line = 0
+    spans: list[tuple[int, int, int]] = []
     pos = 0
     line = 1
     while pos < n:
@@ -718,17 +717,30 @@ def parse_program(text: str) -> list[Statement]:
             line += 1
             continue
         end = _logical_end(text, j)
-        try:
-            statements.append(_Stmt(text[j:end], line).parse())
-        except _Fail as fail:
-            if len(errors) < MAX_ERRORS:
-                errors.append(LangError(line, fail.message))
-            else:
-                if not dropped:
-                    dropped_line = line
-                dropped += 1
+        spans.append((j, end, line))
         line += text.count("\n", j, end) + 1
         pos = end + 1
+    if len(spans) > MAX_BATCH_STATEMENTS:
+        raise CanvasLangError([
+            LangError(
+                spans[MAX_BATCH_STATEMENTS][2],
+                f"a batch holds at most {MAX_BATCH_STATEMENTS} statements; got {len(spans)}",
+            )
+        ])
+    statements: list[Statement] = []
+    errors: list[LangError] = []
+    dropped = 0
+    dropped_line = 0
+    for j, end, stmt_line in spans:
+        try:
+            statements.append(_Stmt(text[j:end], stmt_line).parse())
+        except _Fail as fail:
+            if len(errors) < MAX_ERRORS:
+                errors.append(LangError(stmt_line, fail.message))
+            else:
+                if not dropped:
+                    dropped_line = stmt_line
+                dropped += 1
     if dropped:
         errors.append(LangError(dropped_line, f"{dropped} more syntax errors are not shown"))
     if errors:
@@ -782,6 +794,7 @@ def _format(value: Any, depth: int) -> str:
 __all__ = [
     "IDENT_RE",
     "KEEP",
+    "MAX_BATCH_STATEMENTS",
     "MAX_DEPTH",
     "MAX_ERRORS",
     "MAX_FLOAT",
