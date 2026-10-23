@@ -315,7 +315,10 @@ session.
   needs one.
 - **`canvas_wait` ends only on an event that wakes you, unless you name
   `kinds`, and it returns at once when that event already happened.**
-  Without `kinds`, a Button click or an Html emit ends the wait; a
+  The `canvas` tools exist only while the canvas setting
+  `agent_tools_enabled` is on (it ships off until the canvas panel does);
+  while it is off `call_tool` and `describe_tool` answer `not-found` for
+  them. Without `kinds`, a Button click or an Html emit ends the wait; a
   Select change, an audio event and a link open do not (a Select
   with `wake=true` does). Name `kinds` (`change`, `play`, ...) to wait
   for a silent one. The canvas keeps the events you have not read, so a
