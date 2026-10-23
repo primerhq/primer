@@ -242,6 +242,17 @@ def test_long_seed_error_message_is_truncated(app):
     assert res["text"] == expected
 
 
+def test_seed_error_messages_are_cleaned_before_the_length_limit(app):
+    result = app.data(
+        "NV_seedOutcome({ errors: [[\"default_workspace\", "
+        "\"ConnectError('https://host/v1?key=AIzaSECRET Authorization: Bearer sk-live-abc')\"]] })"
+    )
+    assert result["kind"] == "error"
+    assert "AIzaSECRET" not in result["text"]
+    assert "sk-live-abc" not in result["text"]
+    assert result["text"].count("[REDACTED]") == 2
+
+
 def test_the_capability_rows(app):
     rows = app.data(
         "NV_capabilityRows({ extras: { lance: { installed: false }, docker: { installed: true } }, speech: { stt_configured: true, tts_configured: false } })"

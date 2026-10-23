@@ -173,6 +173,9 @@ function SW_missingField(type, url, apiKey) {
 function SW_tidy(text) {
   return String(text || "")
     .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\/\s"]*@/gi, "$1")
+    .replace(/([?&](?:key|api_key|apikey|api-key|token|access_token|refresh_token|id_token|client_secret|secret|password)=)[^&#\s'"<>\\]+/gi, "$1[REDACTED]")
+    .replace(/(\bBearer\s+)[A-Za-z0-9._~+/=-]+/gi, "$1[REDACTED]")
+    .replace(/(\bpassword\s*=\s*)[^\s'";,&]+/gi, "$1[REDACTED]")
     .replace(/\s*For further information visit \S+/g, "")
     .replace(/\s*For more information check: \S+/g, "")
     .replace(/\s*\[type=[^\n]*?input_type=[^\]\n]*\]/g, "")

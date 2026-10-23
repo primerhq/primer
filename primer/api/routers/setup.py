@@ -46,6 +46,7 @@ from primer.bootstrap.setup_state import (
     MISSING_SYSTEM_COLLECTION,
     evaluate_setup_state,
 )
+from primer.common.log import redact_credentials
 from primer.model.agent import Agent
 from primer.model.except_ import BadRequestError, ConfigError, NotFoundError
 from primer.model.provider import LLMProvider
@@ -88,7 +89,10 @@ async def seed_now(request: Request) -> dict:
     return {
         "created": result.created,
         "skipped": result.skipped,
-        "errors": [list(pair) for pair in result.errors],
+        "errors": [
+            [name, redact_credentials(str(detail))]
+            for name, detail in result.errors
+        ],
         "setup_complete": state.complete,
         "setup_missing": state.missing,
     }
@@ -305,6 +309,8 @@ async def get_setup_state(request: Request) -> SetupStateResponse:
             ok = key not in presence_missing
             detail = None if ok else "row does not exist"
             live = False
+        if detail is not None:
+            detail = redact_credentials(str(detail))
         predicates.append(SetupPredicateOut(
             key=key, label=_PREDICATE_LABELS[key], ok=ok, live=live, detail=detail,
         ))
