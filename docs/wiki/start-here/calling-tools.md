@@ -34,7 +34,7 @@ related: [start-here/roles-and-approvals, start-here/errors]
 
 ## Gotchas
 - The arguments are the inner tool's arguments: no `principal`, no session id, nothing the inner schema does not name. An unknown key is ignored; a wrong type is a `validation-error`.
-- The door checks the run's principal against the inner tool's role first: a run below the floor is a `forbidden` before any approval gate. The roles are on [roles and approvals](start-here/roles-and-approvals).
+- The door looks the tool up in its toolset first: a name the toolset does not list is a `not-found` that names its tools, for every run. Then it checks the run's principal against the inner tool's role: a run below the floor is a `forbidden` before any approval gate. The roles are on [roles and approvals](start-here/roles-and-approvals).
 - A gated inner tool parks the turn under the `call_tool` call, exactly as a direct gated call would.
 - The reference pages under [reference/tools](reference/tools) carry the exact, validating call for every tool; read one before you invent arguments.
 
