@@ -399,6 +399,32 @@ async def test_the_resume_returns_the_event_and_current_values(provider, world):
     assert (await world.canvas("s1")).seen_event_seq == 2, "the event that ended the wait is marked seen"
 
 
+async def test_the_resume_returns_the_unredacted_stored_event_and_falls_back_when_dropped(provider, ctx, world):
+    y = await _wait(provider, ctx, ids=["viz"])
+    await _park(world, y)
+    raw_data = {
+        "env": "staging",
+        "token": "tok-123",
+        "api_key": "k-1",
+        "headers": {"X-Trace": "on"},
+        "repo": "https://bob:pw@git.example/r",
+    }
+    await _event(world, "viz", "emit", name="submit", data=raw_data)
+    await EventDispatcher(storage_provider=world.sp, event_bus=world.bus).drain_once()
+    [(_, envelope)] = [(k, p) for k, p in world.bus.published if k == y.event_key]
+    assert envelope["payload"]["data"]["token"] != "tok-123", "the dispatcher redacted the bus envelope"
+
+    result = await canvas_wait_resume(y.resume_metadata, envelope, resume_context(provider))
+    body = json.loads(result.output)
+    assert body["events"][0]["data"] == raw_data
+
+    # When the ring has dropped the event, fall back to the envelope payload.
+    canvas_row = await world.canvas("s1")
+    await world.sp.get_storage(type(canvas_row)).update(canvas_row.model_copy(update={"events": []}))
+    fallback = await canvas_wait_resume(y.resume_metadata, envelope, resume_context(provider))
+    assert json.loads(fallback.output)["events"] == [envelope["payload"]]
+
+
 async def test_the_resume_without_a_registry_is_the_event_alone(provider, world):
     envelope = await _envelope(world)
     result = await canvas_wait_resume({}, envelope, resume_context(provider, resolve=False))
