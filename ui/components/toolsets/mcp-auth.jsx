@@ -71,13 +71,17 @@ function TS_applyAuth(httpConfig, form) {
     ? "client_credentials"
     : "authorization_code";
   oauth.scopes = String(next.scopes || "").trim().split(/\s+/).filter(Boolean);
+  // An empty secret is null, never "": a public client is stored with a null secret and shown as an empty field, and an "" sent back is a
+  // different secret, so an unchanged save would count as an OAuth change (an admin's signs the toolset out, a user's is refused).
   oauth.static_client = clientId
-    ? { client_id: clientId, client_secret: next.clientSecret || "" }
+    ? { client_id: clientId, client_secret: next.clientSecret ? next.clientSecret : null }
     : null;
   oauth.resource_uri = String(next.resource || "").trim() || null;
-  if (next.mode === "oauth_client_credentials") {
-    oauth.token_endpoint = String(next.tokenEndpoint || "").trim() || null;
-  }
+  // The token endpoint applies to client credentials only, and its field is hidden for a browser sign-in: a switch from client credentials
+  // that kept it would be refused, with no field to clear it in.
+  oauth.token_endpoint = next.mode === "oauth_client_credentials"
+    ? String(next.tokenEndpoint || "").trim() || null
+    : null;
   cfg.oauth = oauth;
   cfg.headers = TS_authHeaders(next.headers);
   return cfg;
