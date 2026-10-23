@@ -4,7 +4,9 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from primer.events.filters import matches
+import pytest
+
+from primer.events.filters import evaluate_filter_expr, matches, validate_filter_expr
 from primer.model.event import Event, EventFilter, FieldMatcher
 
 
@@ -123,3 +125,50 @@ def test_a_data_only_expr_may_compare_text_that_names_opa_runtime():
     )
 
     assert matches(e, EventFilter(expr=expr))
+
+
+# G6-2: a Rego template string runs the code inside its {...} parts, so the
+# string-blanking scan cannot see an opa reference there. Template strings
+# are refused outright, at save time and by the evaluation backstop.
+_TEMPLATE_EXPRS = {
+    "double_quoted": (
+        "package primer.event_filter\n"
+        'match := $"{opa.runtime().env.G6_FILTER_SECRET}" == "s3cr3t"\n'
+    ),
+    "raw": (
+        "package primer.event_filter\n"
+        'match := $`{opa.runtime().env.G6_FILTER_SECRET}` == "s3cr3t"\n'
+    ),
+    "harmless": (
+        "package primer.event_filter\n"
+        'match := $"{input.event_type}" == "agent.created"\n'
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_TEMPLATE_EXPRS))
+def test_save_time_check_refuses_a_template_string(name):
+    with pytest.raises(ValueError, match="template strings"):
+        validate_filter_expr(_TEMPLATE_EXPRS[name])
+
+
+@pytest.mark.parametrize("name", sorted(_TEMPLATE_EXPRS))
+def test_evaluation_backstop_refuses_a_template_string(name, monkeypatch, caplog):
+    # The secret is right, so an expression that reached the interpreter
+    # would answer True: the one-bit oracle on the host environment.
+    monkeypatch.setenv("G6_FILTER_SECRET", "s3cr3t")
+    expr = _TEMPLATE_EXPRS[name]
+    with caplog.at_level(logging.WARNING, logger="primer.events.filters"):
+        assert evaluate_filter_expr(expr, {"event_type": "agent.created", "payload": {}}) is False
+        assert not matches(_event(), EventFilter(expr=expr))
+    assert "template strings" in caplog.text
+
+
+def test_a_dollar_sign_inside_a_string_or_comment_is_not_a_template():
+    expr = (
+        "package primer.event_filter\n"
+        "# costs $5, see $`docs`\n"
+        'match if input.payload.price == "$5"\n'
+    )
+    validate_filter_expr(expr)
+    assert matches(_event(payload={"price": "$5"}), EventFilter(expr=expr))
