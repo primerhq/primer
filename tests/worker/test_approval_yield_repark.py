@@ -613,19 +613,42 @@ async def test_an_approved_tool_whose_child_run_pauses_reaches_the_childs_pause(
 
 
 @pytest.mark.asyncio
+@_NESTED_PAUSE_SHAPES
+async def test_an_approved_tool_whose_child_run_pauses_is_refused_with_an_error_on_the_session_path(monkeypatch, through_call_tool: bool):
+    """What the session path does until the held fix lands (audit G6-3): the coordinator's flat re-park keeps no frames, so a pause inside a nested
+    agent or graph run after an approval is REFUSED, the same way for both shapes. The session's own call is answered with an error result, and the
+    session is not parked on the child's question.
+
+    The directly gated shape used to be re-parked flat, under the CHILD's call id: when the person answered the child's question, the answer was
+    injected as a tool_result for ``child-call`` into a transcript whose pending call is the session's own, the session's call was never answered,
+    and the child run was lost."""
+    row, executor, provider, outer = await _approve_a_tool_whose_child_run_pauses(monkeypatch, through_call_tool=through_call_tool)
+
+    assert provider.calls == [outer], "the approved tool ran once"
+    ((*_assistant, answer),) = executor.injected
+    (part,) = answer.parts
+    assert part.id == outer and part.error is True, part
+    body = json.loads(part.output)
+    assert body["is_error"] is True and "nested agent or graph run" in body["reason"], body
+    assert row is not None and row.parked_status != "parked", "the session must not wait on the child's question"
+    assert (row.parked_state or {}).get("tool_call_id") != "child-call"
+
+
+@pytest.mark.asyncio
 @pytest.mark.xfail(
     strict=True,
     raises=AssertionError,
     reason=(
         "held: the session path's re-park (repark_resumed_yield_outcome) keeps no frames, so a pause inside a nested agent or graph run after an "
-        "approval is answered with an error (call_tool) or parked without the child's frame (a directly gated delegating tool)"
+        "approval is refused with an error result, through call_tool and on a directly gated delegating tool alike (audit G6-3)"
     ),
 )
 @_NESTED_PAUSE_SHAPES
 async def test_an_approved_tool_whose_child_run_pauses_parks_the_session_on_the_childs_question(monkeypatch, through_call_tool: bool):
     """BEHAVIOUR a fix must reach: the session parks again on the child's question with the child's frame kept under the session's call, so the
-    answer unwinds through the child run to that call. Today a call_tool re-run is refused with an error result (``_resume_tool_approval``), and a
-    directly gated delegating tool is parked flat without the frame, so the child's answer would be delivered to the child's own call id."""
+    answer unwinds through the child run to that call. Today both shapes are refused with an error result: a call_tool re-run in
+    ``_resume_tool_approval``, a directly gated delegating tool in the coordinator (it used to be parked flat without the frame, so the child's
+    answer was delivered to the child's own call id)."""
     row, executor, _provider, outer = await _approve_a_tool_whose_child_run_pauses(monkeypatch, through_call_tool=through_call_tool)
 
     state = (row.parked_state if row is not None else None) or {}
