@@ -95,12 +95,14 @@ def test_workspace_provider_create_detail_delete_journey(
             "button", name="Delete provider"
         ).first.click()
 
-        providers_page = page.get_by_test_id("nv-plat-page:providers")
+        # The provider catalogue owns its panel detail now. Delete returns to
+        # the Workspace type page in the same catalogue surface.
+        providers_page = page.get_by_test_id("provider-body-workspace")
         expect(providers_page).to_be_visible(timeout=15_000)
-        expect(page.locator('[data-testid^="nv-overlay:"]')).to_have_count(0)
-        expect(page).not_to_have_url(re.compile(r"overlay="), timeout=5_000)
+        expect(page.get_by_test_id("pc-register-open")).to_be_visible()
         expect(page).to_have_url(
-            re.compile(r"view=platform(:|%3A)providers"), timeout=5_000,
+            re.compile(r"[?&]overlay=providers(:|%3A)workspace(?:&|$)"),
+            timeout=5_000,
         )
         expect(
             providers_page.get_by_text(provider_id, exact=True)
