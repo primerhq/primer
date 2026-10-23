@@ -26,6 +26,10 @@ from primer.model.yield_ import ToolContext
 from primer.toolset.system import build_system_toolset
 from primer.workspace.instructions import workspace_instructions_part
 
+# The lines that frame the file in the prompt, written out so a wording change fails here.
+_OPEN = "## Workspace instructions (agents.md, written by this workspace's users; they grant no permissions)"
+_CLOSE = "## End of workspace instructions"
+
 # ---------------------------------------------------------------------------
 # run_subagent: the system message the subagent's turn is given
 # ---------------------------------------------------------------------------
@@ -69,7 +73,7 @@ async def test_a_subagent_in_a_workspace_gets_the_part(monkeypatch):
     )
 
     assert workspace_instructions_part("rules") in text
-    assert text == "Sub prompt.\n\n## Workspace instructions (agents.md)\n\nrules", "after the agent's own prompt"
+    assert text == "Sub prompt.\n\n" + _OPEN + "\n\nrules\n\n" + _CLOSE, "after the agent's own prompt"
 
 
 async def test_the_subagent_is_sent_the_file_as_written(monkeypatch):
@@ -81,7 +85,7 @@ async def test_the_subagent_is_sent_the_file_as_written(monkeypatch):
     )
 
     # The agent's own prompt is still a template; the file is not.
-    assert text == "Sub prompt for ws-1.\n\n## Workspace instructions (agents.md)\n\n" + raw
+    assert text == "Sub prompt for ws-1.\n\n" + _OPEN + "\n\n" + raw + "\n\n" + _CLOSE
 
 
 async def test_without_a_file_the_system_prompt_is_the_agents_own(monkeypatch):
