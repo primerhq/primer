@@ -448,3 +448,58 @@ def test_a_stdio_toolset_card_names_the_toolset_and_its_transport_and_withholds_
     assert secret not in card["arguments"] + " ".join(card["hidden_keys"])
     assert '"provider": "mcp"' in card["arguments"] and '"transport": "stdio"' in card["arguments"] and '"id": "ts-stdio"' in card["arguments"]
     assert "entity.config.config" in card["hidden_keys"] and card["truncated"] is True
+
+
+# ---- the doors with no park surface: call_tool with no context, and the MCP endpoint ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("body, runs", [(SSE, True), ({**HTTP, "id": "ts-http-3"}, True), (STDIO, False), (PYTHON, False)], ids=["sse", "http", "stdio", "python"])
+async def test_call_tool_with_no_context_evaluates_the_gate_like_the_direct_door(tmp_path, body, runs):
+    """Review of #860, R860-3: with no session to park on (``invoke_one`` passes no context, as an out-of-loop dispatch does), ``call_tool``
+    refused ANY enabled policy without evaluating it, so ``call_tool(system, create_toolset, <sse body>)`` was refused while
+    ``system__create_toolset`` with the same body ran. It now evaluates the gate as the MCP endpoint does and refuses only when it says so."""
+    import json
+
+    from primer.agent.tool_manager import invoke_one
+
+    sp, _registry, toolsets, _resolver = await _world(tmp_path, "fresh")
+    try:
+        result = await invoke_one(
+            provider=toolsets["system"], tool_name="call_tool", principal=None,
+            arguments={"toolset_id": "system", "tool_name": "create_toolset", "arguments": {"entity": body}},
+        )
+        stored = await sp.get_storage(Toolset).get(body["id"])
+        if runs:
+            assert not result.is_error, result.output
+            assert stored is not None
+        else:
+            assert result.is_error and json.loads(result.output)["type"] == "approval-required", result.output
+            assert stored is None
+    finally:
+        await sp.aclose()
+
+
+@pytest.mark.parametrize("toolset_id, tool_name, arguments", [(t, n, a) for _, t, n, a, _ in GATED], ids=[c for c, *_ in GATED])
+async def test_over_the_mcp_endpoint_an_admin_caller_is_refused_every_gated_write(tmp_path, toolset_id, tool_name, arguments):
+    """R860-8: the MCP endpoint itself (``invoke_exposed``, with the tool allowlisted and an admin caller), not only its gate function."""
+    from primer.mcp.dispatch import NotExposed, invoke_exposed
+    from primer.mcp.exposure import ExposureDeps, update_exposure
+    from primer.model.principal import Principal
+
+    sp, registry, _toolsets, resolver = await _world(tmp_path, "fresh")
+    try:
+        deps = ExposureDeps(storage_provider=sp, provider_registry=registry, approval_resolver=resolver)
+        scoped = f"{toolset_id}__{tool_name}"
+        await update_exposure(enabled=True, allowed_tools=[scoped, "system__create_toolset"], updated_by="admin", deps=deps)
+        admin = Principal(type="user", id="u-admin", display="admin", role="admin", source="local")
+        before = await _state(sp)
+
+        with pytest.raises(NotExposed) as refused:
+            await invoke_exposed(scoped_id=scoped, arguments=arguments, principal=admin.id, actor=admin, deps=deps)
+
+        assert refused.value.reason == "approval_required"
+        assert await _state(sp) == before
+        ran = await invoke_exposed(scoped_id="system__create_toolset", arguments={"entity": SSE}, principal=admin.id, actor=admin, deps=deps)
+        assert not ran.is_error, ran.output
+    finally:
+        await sp.aclose()

@@ -1127,14 +1127,28 @@ def _call_tool_tool(
         # approve, or returns an error on reject/timeout/cancel.
         #
         # ``ctx`` is None only when there is no session/chat to park onto
-        # (e.g. an out-of-loop dispatch). Without a park surface we cannot
-        # safely run a gated tool, so fail closed with an error rather than
-        # bypass the gate.
+        # (e.g. an out-of-loop dispatch, or the MCP endpoint). Without a park
+        # surface we cannot safely run a gated tool, so fail closed with an
+        # error rather than bypass the gate. The gate is EVALUATED first, as
+        # the MCP endpoint's own gate does (no agent, no session): a
+        # conditional policy that lets this call through (the shipped Rego
+        # gate on create_toolset passes an http or sse body) must not refuse
+        # it here while the direct door runs it (review of #860, R860-3).
         if approval_resolver is not None and ctx is None:
             policy = await approval_resolver.find(
                 toolset_id=toolset_id, tool_name=tool_name,
             )
+            verdict = None
             if policy is not None and policy.enabled:
+                verdict = await evaluate_approval_gate(
+                    policy=policy,
+                    context=ApprovalContext(
+                        tool_name=tool_name, toolset_id=toolset_id, arguments=args.arguments or {},
+                        agent_id=None, session_id=None, chat_id=None, requested_at=datetime.now(UTC),
+                    ),
+                    provider_registry=registry,
+                )
+            if verdict is not None and verdict.required:
                 return _err(
                     f"tool {tool_name!r} in toolset "
                     f"{toolset_id!r} requires approval but there is "
