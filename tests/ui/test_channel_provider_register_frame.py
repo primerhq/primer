@@ -150,7 +150,7 @@ async def test_edit_keeps_a_stored_secret_left_blank(ctx, real_router, real_stor
     served = (await real_router.get(f"/v1/channel_providers/{rid}")).json()
     assert all(served["config"][name] == MASK for name in _SECRETS[platform]), served
 
-    ctx.eval("CALLS = []; MR.mount(window.NewChannelProviderModal, { existing: %s, onClose: function () {}, frame: frameFn });" % json.dumps(served))
+    ctx.eval(f"CALLS = []; MR.mount(window.NewChannelProviderModal, {{ existing: {json.dumps(served)}, onClose: function () {{}}, frame: frameFn }});")
     ctx.eval(_CHANGE[platform][0] + " MR.rerender();")
     ctx.eval('ALL("frame-right").filter(function (n) { return n.type === "button"; })[0].props.onClick();')
     settle(ctx)
