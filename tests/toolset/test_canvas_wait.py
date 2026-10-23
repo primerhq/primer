@@ -302,6 +302,86 @@ async def test_a_refused_wait_reads_nothing(provider, ctx, world):
     assert [e["id"] for e in body["events"]] == ["e1"], "the same click ends a wait that names the right id"
 
 
+# ---- a wait that could never end is refused (audit G8-09) --------------------------------------------------------------------------
+
+NEVER = "this wait could never end: "
+
+
+@pytest.mark.parametrize("arguments, message", [
+    ({"ids": ["root"]}, "'root' (Column) sends no events"),
+    ({"ids": ["ok"], "kinds": ["change"]}, "'ok' (Button) sends only click events"),
+    ({"ids": ["genre"]}, "'genre' (Select) does not wake you with its change events; name kinds to wait for one"),
+    ({"ids": ["player"]}, "'player' (Audio) does not wake you with its play, pause, ended events; name kinds to wait for one"),
+    ({"ids": ["viz"], "kinds": ["click", "change"]}, "'viz' (Html) sends only emit, set_value events"),
+    (
+        {"ids": ["ok", "root", "genre", "root"]},
+        "'root' (Column) sends no events; 'genre' (Select) does not wake you with its change events; name kinds to wait for one",
+    ),
+], ids=["a column", "a kind the button never sends", "a select without kinds", "audio without kinds", "html for kinds it never sends",
+        "every bad id once"])
+async def test_a_wait_on_an_element_that_can_never_end_it_is_refused(provider, ctx, world, arguments, message):
+    result = await provider.call(tool_name="canvas_wait", arguments=arguments, ctx=ctx)
+    assert result.is_error and json.loads(result.output) == {"type": "validation-error", "message": NEVER + message}
+    assert await _subscriptions(world) == []
+    assert await world.sp.get_event_store().active_cursor_floor() is None, "the cursor the wait pinned is gone too"
+
+
+@pytest.mark.parametrize("arguments", [
+    {"ids": ["genre"], "kinds": ["change"]}, {"ids": ["player"], "kinds": ["ended"]}, {"ids": ["viz"]}, {"ids": ["ok"], "kinds": []},
+], ids=["select change", "audio ended", "html emit wakes", "empty kinds is no kinds"])
+async def test_a_wait_an_element_can_end_still_parks(provider, ctx, arguments):
+    assert (await _wait(provider, ctx, **arguments)).tool_name == "canvas_wait"
+
+
+async def test_the_wake_prop_decides_whether_an_element_ends_a_wait_without_kinds(provider, ctx, world):
+    await world.service.apply(
+        session_id="s1", workspace_id="ws-1", unit="line", base_rev=None, source="agent", by="agent",
+        statements=parse_program('quiet = Button("Quiet", wake=false)\nloud = Select("Loud", ["a", "b"], wake=true)\nroot += [quiet, loud]'),
+    )
+    result = await provider.call(tool_name="canvas_wait", arguments={"ids": ["quiet"]}, ctx=ctx)
+    assert json.loads(result.output)["message"] == NEVER + "'quiet' (Button) does not wake you with its click events; name kinds to wait for one"
+    assert (await _wait(provider, ctx, ids=["loud"])).tool_name == "canvas_wait"
+
+
+async def test_a_wait_on_a_canvas_where_nothing_sends_such_an_event_is_refused(provider, ctx, world):
+    await world.service.apply(
+        session_id="s1", workspace_id="ws-1", unit="line", base_rev=None, source="agent", by="agent",
+        statements=parse_program('clear\nroot = Column([t, genre])\nt = Text("hi")\ngenre = Select("Genre", ["Jazz", "Lo-fi"])'),
+    )
+    result = await provider.call(tool_name="canvas_wait", arguments={}, ctx=ctx)
+    assert json.loads(result.output)["message"] == (
+        NEVER + "nothing on the canvas sends an event that wakes you (a Button click or an Html emit)"
+    )
+    result = await provider.call(tool_name="canvas_wait", arguments={"kinds": ["open", "play"]}, ctx=ctx)
+    assert json.loads(result.output)["message"] == NEVER + "nothing on the canvas sends open or play events"
+    assert (await _wait(provider, ctx, kinds=["change"])).tool_name == "canvas_wait"
+    assert len(await _subscriptions(world)) == 1, "only the wait that can end parked"
+
+
+async def test_a_wait_on_an_empty_canvas_is_refused():
+    w = make_world()
+    await seed_session(w)
+    p = build_canvas_toolset(storage_provider=w.sp, event_bus=w.bus, workspace_registry=w.registry)
+    for arguments in ({}, {"kinds": ["click"]}, {"timeout_s": 86400}):
+        result = await p.call(tool_name="canvas_wait", arguments=arguments, ctx=ToolContext(tool_call_id="call-1", session_id="s1", workspace_id="ws-1"))
+        assert result.is_error and json.loads(result.output) == {
+            "type": "validation-error",
+            "message": "the canvas is empty, so nothing on it can end the wait; draw on it with canvas_apply first",
+        }
+    assert await _subscriptions(w) == [] and await w.canvas("s1") is None
+
+
+async def test_an_unread_event_still_ends_a_wait_on_an_element_that_changed_since(provider, ctx, world):
+    """The unread events are looked at first: a click on ok, then ok replaced by a Text, still ends a wait on ok at once."""
+    await _event(world, "ok", "click")
+    await world.service.apply(
+        session_id="s1", workspace_id="ws-1", unit="line", base_rev=None, source="agent", by="agent",
+        statements=parse_program('ok = Text("done")'),
+    )
+    body = json.loads((await provider.call(tool_name="canvas_wait", arguments={"ids": ["ok"]}, ctx=ctx)).output)
+    assert [e["id"] for e in body["events"]] == ["e1"]
+
+
 async def test_without_a_session_the_wait_refuses(provider):
     unsupported = {"type": "unsupported-surface", "message": "the canvas belongs to a workspace session; this call has none"}
     for ctx in (None, ToolContext(tool_call_id="c", session_id=None, workspace_id=None, chat_id="chat-1")):
@@ -714,6 +794,7 @@ async def test_the_tool_is_declared_as_the_plan_says(provider):
     assert wait.description.startswith("Pause this turn until the user acts on the canvas; returns the matching events with the current values, or {timeout: true}.")
     assert "without kinds it waits for an event that wakes (a Button click or an Html emit)" in wait.description
     assert "It returns at once if such an event arrived since your last canvas read. timeout_s defaults to 600 (at most 86400)." in wait.description
+    assert "A wait nothing could end (an element that never sends such an event, or an empty canvas) is refused." in wait.description
     assert 'Example: {"ids":["ok","cancel"]} -> ``{events: [{id, element, kind, ...}], values, rev}``  (yielding; worker released)' in wait.description
     assert [name for name in tools] == ["canvas_get", "canvas_apply", "canvas_wait"]
 
