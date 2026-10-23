@@ -16,7 +16,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKERS = (ROOT / "ui" / "components" / "workers.jsx").read_text(encoding="utf-8")
-HEALTH = (ROOT / "ui" / "components" / "health.jsx").read_text(encoding="utf-8")
 
 
 @pytest.fixture
@@ -75,8 +74,3 @@ def test_the_page_no_longer_turns_a_missing_load_into_zero() -> None:
 def test_the_capacity_bar_draws_an_unreported_load_as_unknown() -> None:
     bar = WORKERS[WORKERS.index("function CapacityBar"):WORKERS.index("function SummaryStat")]
     assert "inFlight == null" in bar and '"Load not reported"' in bar
-
-
-def test_the_legacy_health_page_does_not_turn_an_unreported_load_into_zero() -> None:
-    assert 'typeof wp.in_flight === "number" ? wp.in_flight : 0' not in HEALTH
-    assert "inFlight == null" in HEALTH

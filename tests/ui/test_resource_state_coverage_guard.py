@@ -11,11 +11,11 @@ helper, and this guard keeps them migrated:
     pool/sessions active/attention tiles), NV_AttentionEverywhere (the
     cross-workspace "needs a human" table), NV_WorkerFleet (the worker
     list), NV_SysSetupCard (the setup checks card) - the System dashboard IS the liveness page.
-  - ui/components/health.jsx: the standalone health page - the strongest
-    existing pattern before this round (a real three-way split), upgraded
-    from raw `.error` (flips on a single blip) to `.degraded` (debounced).
+  - ui/components/health.jsx, the standalone health page, was the second
+    file until it was deleted with its last mount (audit G1-23): the
+    Dashboard's NV_HealthCards above is the health surface.
 
-Deliberately scoped to these two files, not tests/e2e's directory-wide
+Deliberately scoped to this one file, not tests/e2e's directory-wide
 guard shape: most useResource consumers app-wide are ordinary CRUD lists
 where "still loading" indefinitely on a fetch that never resolves is a
 real but much lower-stakes gap, out of scope for this round (see task
@@ -44,7 +44,6 @@ _GUARDED_FILES = {
     "components/console/nv-system.jsx": {
         "health", "activeSessions", "attention", "pending", "workers", "setupState",
     },
-    "components/health.jsx": {"health"},
 }
 
 _ASSIGN_RE_TEMPLATE = r'(?:var|const|let)\s+({names})\s*=\s*(?:window\.primerApi\.)?useResource\('
