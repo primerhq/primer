@@ -422,6 +422,7 @@ async def canvas_wait_resume(meta: dict[str, Any], payload: Any, rctx: ResumeCon
     registry the result is the event alone. A canvas that cannot be read never fails the resume: the wake is the answer.
     """
     service, storage_provider = await _resolve_canvas(rctx)
+    row = None
     state: dict[str, Any] = {}
     if service is not None and rctx.session_id:
         try:
@@ -440,6 +441,12 @@ async def canvas_wait_resume(meta: dict[str, Any], payload: Any, rctx: ResumeCon
             return _ok({"timeout": True, **state})
         return _ok({"cancelled": True, "cancel_reason": payload.reason})
     found = payload.get("payload") if isinstance(payload, dict) else None
+    if isinstance(found, dict) and row is not None:
+        event_id = found.get("id")
+        if isinstance(event_id, str):
+            stored = next((e.public() for e in row.events if e.id == event_id), None)
+            if stored is not None:
+                found = stored
     events = [found] if isinstance(found, dict) else []
     if service is not None and storage_provider is not None and rctx.session_id:
         await consume_events(service, storage_provider, rctx.session_id, events)
