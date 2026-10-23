@@ -324,6 +324,42 @@ def test_gateway_422_error_is_mapped_to_the_visible_port_field(ctx) -> None:
     assert "must be at most 65535" in js(ctx, "textOf(MR.find('frame-body'))")
 
 
+def _gateway_row(routing: dict) -> str:
+    return json.dumps({
+        "id": "wp-errors", "provider": "kubernetes",
+        "config": {
+            "kind": "kubernetes", "variant": "system", "namespace": "primer",
+            "connection": {"kind": "in_cluster"},
+            "reachability": {"kind": "gateway_httproute", "gateway": {"name": "gw"}, "routing": routing,
+                             "scheme": "wss", "external_port": 443, "backend_port": 5959},
+        },
+    })
+
+
+@pytest.mark.parametrize(
+    ("routing", "loc_tail", "label"),
+    [
+        # `hostname` is a routing tag AND the path_prefix routing's field: the field's error must still reach the Hostname row.
+        ({"kind": "path_prefix", "hostname": "ws.example.test", "path_template": "/ws/{workspace_id}"}, ["path_prefix", "hostname"], "Hostname"),
+        ({"kind": "hostname", "hostname_template": "{workspace_id}.example.test"}, ["hostname", "hostname_template"], "Hostname template"),
+    ],
+)
+def test_a_routing_field_error_lands_on_its_own_row(ctx, routing: dict, loc_tail: list, label: str) -> None:
+    loc = ["body", "config", "kubernetes", "reachability", "gateway_httproute", "routing", *loc_tail]
+    ctx.eval(f"""
+    var row = {_gateway_row(routing)};
+    HANDLER = function () {{ return refuse({{ status: 422, title: "Validation Error", detail: "invalid",
+      extensions: {{ errors: [{{ loc: {json.dumps(loc)}, msg: "not a valid host" }}] }} }}); }};
+    MR.mount(window.WorkspaceProviderCreateModal, {{ existing: row, onClose: function () {{}}, frame: frameFn }});
+    ALL("frame-right").filter(function (n) {{ return n.type === "button"; }})[0].props.onClick();
+    """)
+    settle(ctx)
+    errs = js(ctx, f"""ALL("frame-body").filter(function (n) {{ return typeof n.type === "function" && n.props.label === {json.dumps(label)}; }})
+      .map(function (n) {{ return n.props.err || null; }})""")
+    # WS_FieldRow hands its props to the kit FormField, so the row is seen twice: every copy carries the error.
+    assert errs and set(errs) == {"not a valid host"}
+
+
 def test_the_form_renders_inside_a_frame_with_register_and_save_labels(ctx) -> None:
     ctx.eval("""
     LAST_FRAME = null;
