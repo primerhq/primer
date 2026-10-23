@@ -21,6 +21,9 @@ from tests.ui._platform_page_harness import platform_page_context
 # 25 resolved decisions, session s0 the oldest and s24 the newest; every fifth one is rejected, and the tool of decision i is web__fetch<i>.
 ANSWERS = """
 var ANSWERS = {};
+var ERRORS = {};
+var LOADING_KEYS = {};
+var REFETCHED = [];
 function RECORDS(n) {
   var out = [];
   for (var i = 0; i < n; i++) {
@@ -33,7 +36,10 @@ function RECORDS(n) {
   window.primerApi.useResource = function (key, fn, opts) {
     RESOURCE_OPTS[key] = opts || null;
     var data = Object.prototype.hasOwnProperty.call(ANSWERS, key) ? ANSWERS[key] : undefined;
-    return { data: data, loading: false, error: null, degraded: false, refetch: function () {} };
+    return {
+      data: data, loading: !!LOADING_KEYS[key], error: ERRORS[key] || null, degraded: false,
+      refetch: function () { REFETCHED.push(key); },
+    };
   };
 })();
 """
@@ -168,3 +174,42 @@ def test_the_polling_of_the_audits_resources_is_unchanged(audit) -> None:
     _mount(audit)
     assert js(audit, 'RESOURCE_OPTS["nv-plat:approval-records"]') == {"pollMs": 5000}
     assert js(audit, 'RESOURCE_OPTS["nv-plat:audit-parked-sessions"]') == {"pollMs": 5000}
+
+
+# ---- loading and a failed read are not "no decisions" (audit G1-16) ---------------------------------------------------------------------------------
+
+
+def test_a_slow_first_read_says_it_is_loading_not_that_there_are_no_decisions(audit) -> None:
+    audit.eval('ANSWERS["nv-plat:audit-parked-sessions"] = { items: [] }; LOADING_KEYS["nv-plat:approval-records"] = true; MR.mount(NV_ApprovalsAudit, {});')
+    texts = js(audit, "MR.texts()")
+    assert "No decisions recorded yet." not in texts
+    assert audit.eval("MR.find('nv-audit-loading') !== null")
+    assert audit.eval("MR.find('nv-audit-loading').props.role") == "status"
+    assert "Loading decisions…" in texts
+
+
+def test_a_failed_read_says_so_and_offers_retry_instead_of_a_false_empty_state(audit) -> None:
+    audit.eval('ANSWERS["nv-plat:audit-parked-sessions"] = { items: [] };'
+               ' ERRORS["nv-plat:approval-records"] = { status: 503, detail: "approval store unavailable" }; MR.mount(NV_ApprovalsAudit, {});')
+    texts = js(audit, "MR.texts()")
+    assert "No decisions recorded yet." not in texts
+    assert audit.eval("MR.find('nv-audit-error').props.role") == "alert"
+    assert any("approval store unavailable" in t for t in texts), texts
+    assert audit.eval("MR.find('nv-audit-loading') === null"), "a failed read is not still loading"
+    audit.eval("MR.click('nv-audit-retry');")
+    assert js(audit, "REFETCHED") == ["nv-plat:approval-records"]
+
+
+def test_a_failed_read_with_pending_rows_still_says_the_decided_ones_are_missing(audit) -> None:
+    """The pending rows come from another read, so they may be on screen while the decided ones failed to load."""
+    audit.eval('ANSWERS["nv-plat:audit-parked-sessions"] = { items: [{ id: "s-park" }] };'
+               ' ANSWERS["nv-plat:audit-pending:s-park"] = { gate_id: "g1", tool_call_id: "c1", tool_name: "web__fetch", approvers: [], parked_at: "2026-10-01T09:00:00Z" };'
+               ' ERRORS["nv-plat:approval-records"] = { status: 503, detail: "approval store unavailable" }; MR.mount(NV_ApprovalsAudit, {});')
+    assert "s-park" in js(audit, "MR.texts()"), "the pending row is drawn"
+    assert audit.eval("MR.find('nv-audit-error') !== null")
+
+
+def test_a_read_that_answered_an_empty_list_still_says_no_decisions(audit) -> None:
+    _mount(audit, 0)
+    assert "No decisions recorded yet." in js(audit, "MR.texts()")
+    assert audit.eval("MR.find('nv-audit-loading') === null && MR.find('nv-audit-error') === null")

@@ -1249,7 +1249,21 @@ function NV_ApprovalsAudit() {
             </div>
           );
         })}
-        {!rows.length ? (
+        {/* The decided rows have not arrived: a slow read says it is loading and a failed one says why, never "No decisions recorded yet."
+            (audit G1-16). The pending rows come from other reads, so they may be drawn above either line. */}
+        {records.data == null && records.error ? (
+          <div className="nv-audit-row nv-audit-empty nv-audit-error" role="alert" data-testid="nv-audit-error">
+            <span>{"Couldn't load the decisions: " + (records.error.detail || records.error.message || "the request failed")}</span>
+            <button type="button" className="nv-btn-secondary" data-testid="nv-audit-retry"
+              onClick={function () { records.refetch(); }}>Retry</button>
+          </div>
+        ) : null}
+        {records.data == null && !records.error ? (
+          <div className="nv-audit-row nv-audit-empty" role="status" data-testid="nv-audit-loading">
+            <span>Loading decisions…</span>
+          </div>
+        ) : null}
+        {!rows.length && records.data != null ? (
           <div className="nv-audit-row nv-audit-empty">
             <span>
               {allRows.length === 0
