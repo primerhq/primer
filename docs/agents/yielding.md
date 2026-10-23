@@ -300,11 +300,13 @@ session.
   the code inside their `{...}` parts would run unchecked: compare
   `input` values with plain strings. If a filter needs a deployment
   value, bake that value into the event data and compare it through
-  `input`. Both are bounded in time: a `regex` field pattern is at most
-  1000 characters (checked with the `regex` engine that matches it),
-  and each search that runs past 10 ms is a non-match; an `expr` that
-  takes longer than half a second to evaluate is a non-match too, so
-  keep filters to plain comparisons.
+  `input`. Both are bounded in time. A `regex` field pattern is at most
+  1000 characters, checked with the `regex` engine that matches it,
+  and follows the same pattern rules as `grep`. Each search that runs
+  past 10 ms is a non-match. An `expr` that takes longer than half a
+  second to evaluate is a non-match too, and while such an evaluation
+  is still running every `expr` answers non-match at once, so keep
+  filters to plain comparisons.
 - **A run that is not an admin may not put a regular expression in
   `ask_user`'s `response_schema`.** The server validates the answer
   against your schema, so `pattern` and `patternProperties` anywhere

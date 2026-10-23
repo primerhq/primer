@@ -101,11 +101,14 @@ already bound - they don't take a `workspace_id` arg; they
 operate on "the workspace this session is in."
 
 `grep` takes a pattern of at most 1000 characters (Python `re`
-syntax, run by the `regex` engine). One call may spend 10 seconds
-matching in total; a pattern that backtracks past that, such as
-`(a|aa)+$` or `(x+)+y` on long lines, fails the call with an error
-that says so instead of running on. Simplify the pattern, or narrow
-`path` or `glob`, and call it again.
+syntax, run by the `regex` engine). It may not use comment groups,
+the verbose flag, inline flags anywhere but one `(?i)`-style group at
+the very start, group calls or fuzzy matching, and its counted repeats
+may not multiply past 10000. One call may spend 10 seconds matching
+in total and one line search 2 seconds. A pattern that backtracks past
+either, such as `(a|aa)+$` or `(x+)+y` on long lines, fails the call
+with an error that names the cause and where it stopped. Simplify the
+pattern, or narrow `path` or `glob`, and call it again.
 
 External access via MCP is different. The `workspaces::*` tools
 take an explicit `workspace_id` because they're called from
