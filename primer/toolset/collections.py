@@ -15,7 +15,6 @@ it did find, and every write refuses a system-owned collection.
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
@@ -67,7 +66,8 @@ class _ReadArgs(_CollArgs):
 class _SearchArgs(_CollArgs):
     query: str = Field(..., min_length=1, description=(
         "What to find. Natural language for auto/fulltext/semantic; an "
-        "exact substring for literal; a pattern only for regex."))
+        "exact substring for literal; a pattern only for regex (at most "
+        "1000 characters, and 10 s of matching per search)."))
     mode: Literal["auto", "semantic", "fulltext", "literal", "regex"] = Field(
         default="auto")
     path_prefix: str | None = Field(default=None)
@@ -381,11 +381,11 @@ def build_collections_toolset(
             out = {"hits": [h.model_dump() for h in result.hits],
                    "truncated": result.truncated, "mode_used": "fulltext"}
         else:  # literal | regex
-            pattern = args.query if mode == "regex" else re.escape(args.query)
             try:
                 result = await _grep(
-                    content, collection_id=args.collection, pattern=pattern,
+                    content, collection_id=args.collection, pattern=args.query,
                     path_prefix=args.path_prefix, max_results=args.limit,
+                    literal=mode == "literal",
                 )
             except PrimerError as exc:
                 return _map_error(exc)

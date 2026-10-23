@@ -125,6 +125,48 @@ async def test_search_regex_mode_is_a_pattern(env):
     assert data["hits"][0]["path"] == "guides"
 
 
+async def test_search_regex_mode_bounds_a_catastrophic_pattern(env, monkeypatch):
+    """G6-4: the regex mode is the agent's pattern; a catastrophic one is a clear error result, not a stalled loop."""
+    import time
+
+    import primer.knowledge.grep as grep_module
+
+    monkeypatch.setattr(grep_module, "GREP_MATCH_SECONDS", 0.3, raising=False)
+    await env.call(tool_name="create_document", arguments={
+        "collection": "collection-u", "slug": "hostile", "body": "a" * 36 + "!",
+    })
+    started = time.perf_counter()
+    res = await env.call(tool_name="search", arguments={
+        "collection": "collection-u", "query": r"(a|aa)+$", "mode": "regex",
+    })
+    assert time.perf_counter() - started < 2.0
+    data = json.loads(res.output)
+    assert data["type"] == "validation-error"
+    assert "matching budget" in data["message"]
+
+
+async def test_search_regex_mode_refuses_a_pattern_over_1000_characters(env):
+    res = await env.call(tool_name="search", arguments={
+        "collection": "collection-u", "query": "n" * 1001, "mode": "regex",
+    })
+    data = json.loads(res.output)
+    assert data["type"] == "validation-error"
+    assert "1001 characters long; the limit is 1000" in data["message"]
+
+
+async def test_search_literal_mode_has_no_pattern_cap(env):
+    body = "(" * 1500 + " end"
+    await env.call(tool_name="create_document", arguments={
+        "collection": "collection-u", "slug": "parens", "body": body,
+    })
+    res = await env.call(tool_name="search", arguments={
+        "collection": "collection-u", "query": "(" * 1500, "mode": "literal",
+    })
+    data = json.loads(res.output)
+    assert data["mode_used"] == "literal"
+    assert [h["path"] for h in data["hits"]] == ["parens"]
+
+
 async def test_search_explicit_semantic_without_index_names_alternatives(env):
     res = await env.call(tool_name="search", arguments={
         "collection": "collection-u", "query": "anything",
