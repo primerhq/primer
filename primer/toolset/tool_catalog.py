@@ -67,7 +67,7 @@ class ToolEntry:
     """One agent-callable tool, with the facts a reader needs besides its descriptor.
 
     ``tool`` is the descriptor as its provider lists it (``tool.id`` is the bare wire name, the ``tool_name`` of a ``call_tool``). ``default_gate`` is the approval
-    gate that ships on the tool (``"required"``), or ``None``; see :func:`default_gate`.
+    gate that ships on the tool (``"required"`` or ``"policy"``), or ``None``; see :func:`default_gate`.
     """
 
     toolset_id: str
@@ -116,16 +116,20 @@ async def client_tool_descriptors() -> list[Tool]:
 
 
 def default_gate(toolset_id: str, tool_name: str) -> str | None:
-    """The approval gate that ships on a tool: ``"required"`` for the platform-construction (``crud``) tools and their twins, ``None`` for every other.
+    """The approval gate that ships on a tool, as its approval type: ``"required"`` or ``"policy"`` (a Rego condition) for a default-gated tool, ``None`` for
+    every other.
 
-    ``ensure_crud_approval_policies`` (``primer/bootstrap/seed.py``) writes one unconditional policy per tool of ``DEFAULT_GATED_TOOLS``: the ``crud`` tools and the
-    other doors to the same writes (``CRUD_TWINS``: the system tools that create, update and delete agents and graphs, and the trigger toolset's create, update and
-    delete). Nothing else is gated by default. An operator can disable or retune any of them, add others, and gate any tool, so this is what a fresh install does
-    and not what a running one does: the live answer is the ``ApprovalResolver``'s (``system__describe_tool`` returns it).
+    ``ensure_crud_approval_policies`` (``primer/bootstrap/seed.py``) writes one policy per tool of ``DEFAULT_GATED_TOOLS``, the gate ``crud.shipped_gate`` names: an
+    unconditional one for the ``crud`` tools, the other doors to the same writes (``CRUD_TWINS``: the system tools that create, update and delete agents and graphs,
+    and the trigger toolset's create, update and delete), the tool approval policy writes and the harness install, sync and uninstall; a Rego one for the system
+    toolset's ``create_toolset`` and ``update_toolset``, which gates a body that runs code on the server host (``admin_gates``). Nothing else is gated by default.
+    An operator can disable or retune any of them, add others, and gate any tool, so this is what a fresh install does and not what a running one does: the live
+    answer is the ``ApprovalResolver``'s (``system__describe_tool`` returns it).
     """
-    from primer.toolset.crud import DEFAULT_GATED_TOOLS
+    from primer.toolset.crud import shipped_gate
 
-    return "required" if (toolset_id, tool_name) in DEFAULT_GATED_TOOLS else None
+    gate = shipped_gate(toolset_id, tool_name)
+    return gate.type.value if gate is not None else None
 
 
 def _entry(provider: ToolsetProvider, toolset_id: str, tool: Tool) -> ToolEntry:

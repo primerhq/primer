@@ -4,17 +4,25 @@ from __future__ import annotations
 from primer.agent.approval import ApprovalResolver
 from primer.bootstrap.seed import crud_policy_id, default_policy_id, ensure_crud_approval_policies
 from primer.model.tool_approval import PolicyApprovalConfig, RequiredApprovalConfig, ToolApprovalPolicy
+from primer.toolset.admin_gates import ADMIN_GATES, HOST_CODE_TOOLSET_POLICY
 from primer.toolset.crud import CRUD_TOOL_NAMES, CRUD_TWINS, DEFAULT_GATED_TOOLS
 
 
-async def test_seeds_one_required_policy_per_default_gated_tool(fake_storage_provider):
-    """The crud tools and their twins (the system and trigger tools that make the same writes, and the deletes): this pinned the crud nine only."""
+async def test_seeds_one_policy_per_default_gated_tool(fake_storage_provider):
+    """The crud tools and their twins (the system and trigger tools that make the same writes, and the deletes), then the admin-tier writes (the
+    policy writes, the toolset writes that run code on the host, the harness lifecycle; ticket 01a16a29): this pinned the crud nine only, then 18."""
     created = await ensure_crud_approval_policies(fake_storage_provider)
     assert set(created) == {default_policy_id(t, n) for t, n in DEFAULT_GATED_TOOLS}
     assert {crud_policy_id(n) for n in CRUD_TOOL_NAMES} <= set(created), "the crud rows keep their ids"
-    twin = await fake_storage_provider.get_storage(ToolApprovalPolicy).get(default_policy_id("system", "update_agent"))
+    store = fake_storage_provider.get_storage(ToolApprovalPolicy)
+    twin = await store.get(default_policy_id("system", "update_agent"))
     assert (twin.toolset_id, twin.tool_name, twin.enabled, twin.approval.type.value) == ("system", "update_agent", True, "required")
-    assert len(CRUD_TWINS) == 9 and len(set(created)) == 18
+    assert len(CRUD_TWINS) == 9 and len(ADMIN_GATES) == 8 and len(set(created)) == 26
+    for (toolset_id, tool_name), shipped in ADMIN_GATES.items():
+        row = await store.get(default_policy_id(toolset_id, tool_name))
+        assert (row.toolset_id, row.tool_name, row.enabled, row.approval) == (toolset_id, tool_name, True, shipped)
+    toolset_gate = await store.get(default_policy_id("system", "create_toolset"))
+    assert toolset_gate.approval == PolicyApprovalConfig(policy=HOST_CODE_TOOLSET_POLICY)
     store = fake_storage_provider.get_storage(ToolApprovalPolicy)
     row = await store.get(crud_policy_id("create_agent"))
     assert row.toolset_id == "crud"

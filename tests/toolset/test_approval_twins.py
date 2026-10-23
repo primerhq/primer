@@ -178,8 +178,10 @@ async def test_both_worlds_end_with_the_same_gates(tmp_path):
 
 
 def test_the_shipped_gate_of_every_twin_is_required():
-    """The reference pages and ``describe_tool``'s callers read the shipped gate from ``default_gate``: the twins ship gated like the crud tools."""
-    assert all(default_gate(t, n) == "required" for t, n in DEFAULT_GATED_TOOLS)
+    """The reference pages and ``describe_tool``'s callers read the shipped gate from ``default_gate``: the twins ship gated like the crud tools. (The
+    other default gates, on the admin-tier writes, are pinned by ``tests/toolset/test_admin_run_gates.py``.)"""
+    assert all(default_gate("crud", n) == "required" for n in CRUD_TOOL_NAMES)
+    assert all(default_gate(t, n) == "required" for t, n in CRUD_TWINS)
     assert default_gate("system", "get_agent") is None and default_gate("trigger", "list") is None
 
 

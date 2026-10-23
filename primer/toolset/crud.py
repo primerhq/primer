@@ -41,10 +41,12 @@ from primer.common.preview_paths import missing_paths
 from primer.model.agent import Agent
 from primer.model.chat import Tool
 from primer.model.graph import Graph
+from primer.model.tool_approval import PolicyApprovalConfig, RequiredApprovalConfig
 from primer.toolset._python_tools import build_python_toolset_tools
 from primer.toolset._system_common import SYSTEM_TOOLSET_ID
 from primer.toolset._system_crud import _crud_tools_for
 from primer.toolset._system_guards import AGENT_GUARDS, GRAPH_GUARDS
+from primer.toolset.admin_gates import ADMIN_GATES
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 from primer.toolset.trigger import (
     TRIGGER_TOOLSET_ID,
@@ -94,11 +96,23 @@ CRUD_TWINS: Mapping[tuple[str, str], str | None] = MappingProxyType({
     (TRIGGER_TOOLSET_ID, "delete"): None,
 })
 
-#: Every ``(toolset_id, tool_name)`` a fresh install gates with a ``required`` approval policy: the crud tools, then their twins.
+#: Every ``(toolset_id, tool_name)`` a fresh install gates with an approval policy: the crud tools, their twins, then the admin-tier writes
+#: (``primer.toolset.admin_gates``: the policy writes, the toolset writes that run code on the host, the harness lifecycle). :func:`shipped_gate`
+#: says which gate each gets.
 DEFAULT_GATED_TOOLS: tuple[tuple[str, str], ...] = (
     *((CRUD_TOOLSET_ID, name) for name in CRUD_TOOL_NAMES),
     *CRUD_TWINS,
+    *ADMIN_GATES,
 )
+
+
+def shipped_gate(toolset_id: str, tool_name: str) -> RequiredApprovalConfig | PolicyApprovalConfig | None:
+    """The approval a fresh install gates ``(toolset_id, tool_name)`` with, a new copy each call: ``required``, or the Rego policy of a toolset write
+    (``admin_gates.ADMIN_GATES``). ``None`` for a tool that ships ungated. The seed writes it, and ``tool_catalog.default_gate`` reports its type."""
+    if (toolset_id, tool_name) not in DEFAULT_GATED_TOOLS:
+        return None
+    gate = ADMIN_GATES.get((toolset_id, tool_name))
+    return gate.model_copy(deep=True) if gate is not None else RequiredApprovalConfig()
 
 
 # What the approval card of each default-gated tool may show (design note 01a11cd3-66b0). bootstrap/seed.py gates these nine with a required policy, and their twins
@@ -253,5 +267,6 @@ __all__ = [
     "PREVIEW_ARGS",
     "apply_twin_previews",
     "build_crud_toolset",
+    "shipped_gate",
     "twin_preview_args",
 ]

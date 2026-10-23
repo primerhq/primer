@@ -19,12 +19,9 @@ import logging
 from primer.common.toolset_ids import toolset_id_spellings
 from primer.model.except_ import ConflictError
 from primer.model.storage import OffsetPage
-from primer.model.tool_approval import (
-    RequiredApprovalConfig,
-    ToolApprovalPolicy,
-)
+from primer.model.tool_approval import ToolApprovalPolicy
 from primer.storage.q import Q
-from primer.toolset.crud import CRUD_TOOLSET_ID, DEFAULT_GATED_TOOLS
+from primer.toolset.crud import CRUD_TOOLSET_ID, DEFAULT_GATED_TOOLS, shipped_gate
 
 if TYPE_CHECKING:
     from primer.int.toolset import ToolsetProvider
@@ -47,7 +44,7 @@ async def policy_rows_for(store, toolset_id: str, tool_name: str, *, length: int
     """Every stored approval policy of ``(toolset_id, tool_name)``, enabled or not, under every spelling of the toolset id (``_system`` is ``system``).
 
     The key the gate reads (``ApprovalResolver.find``) and the one the uniqueness check refuses a second row for, so a row found here is the tool's
-    policy whatever its id: the ensure pass and migration 14 seed nothing beside it.
+    policy whatever its id: the ensure pass and migrations 14 and 16 seed nothing beside it.
     """
     rows: dict[str, object] = {}
     for spelling in toolset_id_spellings(toolset_id):
@@ -58,17 +55,23 @@ async def policy_rows_for(store, toolset_id: str, tool_name: str, *, length: int
 
 
 async def ensure_crud_approval_policies(storage_provider) -> list[str]:
-    """Ensure one ``required`` approval policy per default-gated tool (``DEFAULT_GATED_TOOLS``).
+    """Ensure one approval policy per default-gated tool (``DEFAULT_GATED_TOOLS``), the gate ``shipped_gate`` names.
 
     Platform mutations are approval-gated by default; the approval system
     is the safety net that makes a user-editable builder agent safe. The
     gated tools are the crud tools AND their twins (``CRUD_TWINS``: the
     system and trigger tools that make the same writes, and delete
     agents, graphs and triggers), because ``system__call_tool`` reaches
-    every one of them (audit G6-1). The rows are ordinary storage rows, so
-    an operator can disable or retune any of them and this pass will
-    leave that choice alone; a tool that already has a policy under
-    another id (an operator's own) gets no second one.
+    every one of them (audit G6-1), and the admin-tier writes a run at an
+    admin's rank could otherwise make ungated (``admin_gates``: the tool
+    approval policy writes, the toolset writes whose body runs code on the
+    server host, the harness install, sync and uninstall; ticket
+    01a16a29). Every gate is ``required`` but the toolset writes', a Rego
+    policy that lets an http, sse or internal toolset through. The rows
+    are ordinary storage rows, so an operator can disable or retune any
+    of them and this pass will leave that choice alone; a tool that
+    already has a policy under another id (an operator's own) gets no
+    second one.
     """
     store = storage_provider.get_storage(ToolApprovalPolicy)
     created: list[str] = []
@@ -87,7 +90,7 @@ async def ensure_crud_approval_policies(storage_provider) -> list[str]:
                     toolset_id=toolset_id,
                     tool_name=tool_name,
                     enabled=True,
-                    approval=RequiredApprovalConfig(),
+                    approval=shipped_gate(toolset_id, tool_name),
                 )
             )
         except ConflictError:
