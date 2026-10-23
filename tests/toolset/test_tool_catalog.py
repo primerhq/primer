@@ -108,11 +108,16 @@ async def test_the_default_gate_is_what_the_seed_gates(fake_storage_provider):
     """``default_gate`` is a statement about ``ensure_crud_approval_policies``; this fails when either moves without the other."""
     await ensure_crud_approval_policies(fake_storage_provider)
     seeded = (await fake_storage_provider.get_storage(ToolApprovalPolicy).list(OffsetPage(offset=0, length=200))).items
-    assert {p.approval.type.value for p in seeded} == {"required"}
+    assert {p.approval.type.value for p in seeded} == {"required", "policy"}
 
     entries = await collect_tool_entries(built_in_providers())
 
-    assert {(e.toolset_id, e.tool.id) for e in entries if e.default_gate == "required"} == {(p.toolset_id, p.tool_name) for p in seeded}
+    assert {(e.toolset_id, e.tool.id, e.default_gate) for e in entries if e.default_gate} == {
+        (p.toolset_id, p.tool_name, p.approval.type.value) for p in seeded
+    }
+    assert {(t, n) for t, n, gate in ((e.toolset_id, e.tool.id, e.default_gate) for e in entries) if gate == "policy"} == {
+        ("system", "create_toolset"), ("system", "update_toolset"),
+    }
 
 
 # ---- the whole catalog ---------------------------------------------------------------------------------------------------------------------------------

@@ -58,6 +58,7 @@ from primer.model.storage import (
     Value,
 )
 from primer.toolset._helpers import err as _err, ok_json as _ok
+from primer.toolset.admin_gates import apply_admin_gate_previews
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 
 
@@ -768,6 +769,8 @@ def build_harness_toolset_provider(
             _make_enqueue_handler(storage_provider, event_bus, claim_engine, HarnessOperation.UNINSTALL),
         ),
     }
+    # Install, sync and uninstall are gated by default (ticket 01a16a29): their approval cards name the harness.
+    apply_admin_gate_previews(toolset_id, registry)
     logger.info(
         "harness toolset assembled with %d tools (id=%s)",
         len(registry),

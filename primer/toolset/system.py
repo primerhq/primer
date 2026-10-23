@@ -618,6 +618,10 @@ def build_system_toolset(
     from primer.toolset.crud import apply_twin_previews
 
     apply_twin_previews(SYSTEM_TOOLSET_ID, registry)
+    # The policy and toolset writes are gated by default too (ticket 01a16a29): their cards name the row and, for a toolset, what kind it is.
+    from primer.toolset.admin_gates import apply_admin_gate_previews
+
+    apply_admin_gate_previews(SYSTEM_TOOLSET_ID, registry)
 
     # ---- SemanticSearchProvider explicit invalidation tool -----------
     class _InvalidateSSPArgs(BaseModel):

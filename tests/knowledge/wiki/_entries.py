@@ -15,7 +15,7 @@ from typing import Any
 
 from primer.model.chat import Tool, ToolExample
 from primer.toolset._describe import make_tool
-from primer.toolset.crud import DEFAULT_GATED_TOOLS
+from primer.toolset.tool_catalog import default_gate
 
 DIRECT_CALL_TOOLSETS = frozenset({"workspace", "client"})
 
@@ -80,7 +80,7 @@ def entry_from_tool(tool: Tool) -> StandInEntry:
         required_role=tool.required_role or "admin",
         pauses_turn=tool.yields,
         needs_workspace=tool.requires_workspace,
-        default_gate="required" if (tool.toolset_id, tool.id) in DEFAULT_GATED_TOOLS else None,
+        default_gate=default_gate(tool.toolset_id, tool.id),
     )
 
 
