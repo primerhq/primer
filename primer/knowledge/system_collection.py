@@ -483,6 +483,58 @@ def _legacy_pages() -> dict[str, WikiPage]:
     return {path: pages[path] for path in sorted(pages)}
 
 
+async def _write_tree_page(
+    tree: DocumentTreeService,
+    *,
+    path: str,
+    body: str,
+    title: str,
+    meta: dict[str, Any],
+) -> None:
+    """Update or create ``path`` in the system collection, recovering if its
+    content row was orphaned by an earlier entity-only delete."""
+    parent, _, slug = path.rpartition("/")
+    try:
+        await tree.update(
+            collection_id=SYSTEM_COLLECTION_ID, path=path,
+            body=body, title=title, meta=meta,
+        )
+    except NotFoundError:
+        try:
+            await tree.create(
+                collection_id=SYSTEM_COLLECTION_ID, parent=parent, slug=slug,
+                body=body, title=title, strict_slugs=False,
+                meta=meta,
+            )
+        except ConflictError:
+            # Either a concurrent CDC convergence hook wrote this page between
+            # the miss above and this create, or the Document entity row was
+            # deleted earlier leaving an orphaned content row.
+            try:
+                await tree.update(
+                    collection_id=SYSTEM_COLLECTION_ID, path=path,
+                    body=body, title=title, meta=meta,
+                )
+            except NotFoundError:
+                orphan_id = await tree._content.resolve_id(
+                    SYSTEM_COLLECTION_ID, path,
+                )
+                if orphan_id is not None:
+                    await tree._content.delete(orphan_id)
+                created = await tree.create(
+                    collection_id=SYSTEM_COLLECTION_ID, parent=parent,
+                    slug=slug, body=body, title=title,
+                    strict_slugs=False, meta=meta,
+                )
+                if orphan_id is not None:
+                    for child in await tree._children(
+                        SYSTEM_COLLECTION_ID, orphan_id,
+                    ):
+                        await tree._docs.update(
+                            child.model_copy(update={"parent_id": created.id})
+                        )
+
+
 async def _converge(
     tree: DocumentTreeService, pages: dict[str, WikiPage],
     guard: Callable[[], Awaitable[bool]] | None = None,
@@ -499,7 +551,6 @@ async def _converge(
         if guard is not None and not await guard():
             break
         page = pages[path]
-        parent, _, slug = path.rpartition("/")
         try:
             current = await tree.read(
                 collection_id=SYSTEM_COLLECTION_ID, path=path,
@@ -513,29 +564,9 @@ async def _converge(
             and current.document.meta == page.meta
         ):
             continue
-        try:
-            await tree.update(
-                collection_id=SYSTEM_COLLECTION_ID, path=path,
-                body=page.body, title=page.title, meta=page.meta,
-            )
-        except NotFoundError:
-            try:
-                await tree.create(
-                    collection_id=SYSTEM_COLLECTION_ID, parent=parent, slug=slug,
-                    body=page.body, title=page.title, strict_slugs=False,
-                    meta=page.meta,
-                )
-            except ConflictError:
-                # A CDC convergence hook wrote this page between the miss
-                # above and this create. It races us by construction: the
-                # seed step before this one creates the agents, and every
-                # create fires converge_entity for the very path this loop
-                # is about to write. Take the page over rather than failing
-                # the whole pass over a write that arrived first.
-                await tree.update(
-                    collection_id=SYSTEM_COLLECTION_ID, path=path,
-                    body=page.body, title=page.title, meta=page.meta,
-                )
+        await _write_tree_page(
+            tree, path=path, body=page.body, title=page.title, meta=page.meta,
+        )
         written += 1
     return written
 
@@ -877,17 +908,10 @@ async def converge_entity(
                 and current.document.meta == page.meta
             ):
                 return False
-            try:
-                await tree.update(
-                    collection_id=SYSTEM_COLLECTION_ID, path=path,
-                    body=page.body, title=page.title, meta=page.meta,
-                )
-            except NotFoundError:
-                await tree.create(
-                    collection_id=SYSTEM_COLLECTION_ID, parent=subtree,
-                    slug=entity_id, body=page.body, title=page.title,
-                    strict_slugs=False, meta=page.meta,
-                )
+            await _write_tree_page(
+                tree, path=path, body=page.body,
+                title=page.title, meta=page.meta,
+            )
 
         # Re-render the subtree index so its links match what is there.
         rows = await _list_all(storage_provider, model_cls)
@@ -909,18 +933,10 @@ async def converge_entity(
             or current_index.document.title != index.title
             or current_index.document.meta != index.meta
         ):
-            try:
-                await tree.update(
-                    collection_id=SYSTEM_COLLECTION_ID, path=subtree,
-                    body=index.body, title=index.title, meta=index.meta,
-                )
-            except NotFoundError:
-                parent, _, slug = subtree.rpartition("/")
-                await tree.create(
-                    collection_id=SYSTEM_COLLECTION_ID, parent=parent,
-                    slug=slug, body=index.body, title=index.title,
-                    strict_slugs=False, meta=index.meta,
-                )
+            await _write_tree_page(
+                tree, path=subtree, body=index.body,
+                title=index.title, meta=index.meta,
+            )
         return True
     except Exception:  # noqa: BLE001 - never fail the entity write
         logger.exception(

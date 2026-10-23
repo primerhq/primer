@@ -294,3 +294,37 @@ async def test_a_degraded_build_never_claims_and_keeps_the_stored_wiki(sp, wiki,
     )
     assert (await read_stamp(sp)).app_version == "0.6.0"
     await _read(sp, "reference/tools/misc/get_datetime")
+
+
+async def test_orphaned_content_row_recovers_on_regenerate_and_converge(sp, wiki):
+    from primer.model.collection import Document
+
+    await sp.get_storage(Agent).create(
+        Agent(id="agent-a", description="helper", model=AgentModel(profile_id="prov--m"))
+    )
+    await regenerate_system_collection(sp, toolset_providers=MISC, app_version="0.6.0")
+
+    # Simulate an existing broken install where Document entity rows were deleted
+    # without their content rows (both a wiki page and a live parent page).
+    docs = sp.get_storage(Document)
+    calling_doc = (await _read(sp, "start-here/calling-tools")).document
+    agents_index_doc = (await _read(sp, "this-install/agents")).document
+    await docs.delete(calling_doc.id)
+    await docs.delete(agents_index_doc.id)
+
+    _set_body_line(wiki, "index.md", "The platform wiki, updated.")
+    await regenerate_system_collection(sp, toolset_providers=MISC, app_version="0.7.0")
+
+    restored_calling = await _read(sp, "start-here/calling-tools")
+    assert _CALLING_TOOLS_LINE in restored_calling.body
+    restored_agents = await _read(sp, "this-install/agents")
+    assert any(c.path == "this-install/agents/agent-a" for c in restored_agents.children)
+
+    # Also verify converge_entity recovers if a live page or its parent index was orphaned.
+    agent_doc = (await _read(sp, "this-install/agents/agent-a")).document
+    await docs.delete(agent_doc.id)
+    await sp.get_storage(Agent).update(
+        Agent(id="agent-a", description="updated helper", model=AgentModel(profile_id="prov--m"))
+    )
+    assert await converge_entity(sp, entity_type="agent", entity_id="agent-a") is True
+    assert "updated helper" in (await _read(sp, "this-install/agents/agent-a")).body

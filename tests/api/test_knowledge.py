@@ -268,6 +268,19 @@ class TestSystemCollectionGuard:
         )
         assert resp.status_code == 201, resp.text
 
+    @pytest.mark.asyncio
+    async def test_delete_from_system_collection_rejected(self, client, fake_storage_provider) -> None:
+        await fake_storage_provider.get_storage(Collection).create(
+            _collection(id="_internal_test", system=True)
+        )
+        await fake_storage_provider.get_storage(Document).create(
+            _document(id="doc-sys", collection_id="_internal_test", slug="index", path="index")
+        )
+        resp = await client.delete("/v1/documents/doc-sys")
+        assert resp.status_code == 400, resp.text
+        assert "system-managed" in resp.json().get("detail", "")
+        assert await fake_storage_provider.get_storage(Document).get("doc-sys") is not None
+
 
 class TestSearchNotEnabled:
     """Collections without a search block answer search routes with 409."""
