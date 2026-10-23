@@ -305,6 +305,35 @@ def test_open_shows_the_detail_page_for_panel_classes(ctx) -> None:
     assert "vec-store-1" in ctx.eval("textOf(MR.find('ssp-detail'))")
 
 
+def test_saving_a_panel_provider_opens_its_detail(ctx) -> None:
+    ctx.eval("""
+    NAVIGATED = [];
+    window.__REGISTER_PROPS = null;
+    window.PC_RegisterOverlay = function (props) {
+      window.__REGISTER_PROPS = props;
+      return el("div", { "data-testid": "register-stub" }, "Register");
+    };
+
+    MR.mount(window.ProviderCatalog, {
+      initialClass: "workspace",
+      onNavigate: onNavigate
+    });
+    """)
+    settle(ctx)
+    ctx.eval("press('pc-register-open'); MR.rerender();")
+    assert ctx.eval("MR.find('register-stub') !== null")
+
+    ctx.eval("""
+    window.__REGISTER_PROPS.onSaved({ id: 'made-workspace', provider: 'local' });
+    window.__REGISTER_PROPS.onClose();
+    MR.rerender();
+    """)
+    settle(ctx)
+    nav = js(ctx, "NAVIGATED")
+    assert nav[-1] == {"kind": "provider-instance", "classKey": "workspace", "id": "made-workspace"}
+    assert "made-workspace" in ctx.eval("textOf(MR.find('wp-detail'))")
+
+
 def test_open_edits_every_other_class_in_the_overlay(ctx) -> None:
     ctx.eval("""
     NAVIGATED = [];
