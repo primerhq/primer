@@ -446,20 +446,53 @@ async def resume_engine_session(pool: "WorkerPool", engine_lease, session):
 async def inject_resume_and_continue(
     pool: "WorkerPool", session, executor, parked, tool_result_part,
 ):
-    """Inject the resolved tool_result into the parked turn + continue.
+    """Finish the parked round, inject its answers into the parked turn + continue.
 
     Shared tail for BOTH the per-tool_name resume switch and the new
-    nested-yield continuation walk: rehydrate the parked turn's assistant
-    history, append the resolved ``tool_result_part`` as a tool message,
-    persist them via ``inject_resume_messages``, and return the
-    keep-the-lease continuation outcome (the next claim runs the
-    continuation LLM turn). On persist failure it fails the session.
+    nested-yield continuation walk: ``tool_result_part`` is the answer of the
+    call that parked. The park may have left its tool round unfinished (the
+    model asked for several calls in one round, ticket 01a15327): the calls
+    after the parked one run now, in order, with the resumed executor's own
+    manager (:func:`primer.agent.parked_round.finish_round`; each meets its own
+    role floor and approval gate). Then the parked turn's assistant history is
+    rehydrated and ONE tool message answering every call of the round, once
+    and in order (the answers the park carried, ``tool_result_part``, the
+    remaining calls' results), is persisted via ``inject_resume_messages``,
+    and the keep-the-lease continuation outcome is returned (the next claim
+    runs the continuation LLM turn). On persist failure it fails the session.
+
+    A remaining call that asks to wait (a gate of its own, ``ask_user``) parks
+    the session again on it (:func:`repark_parked_round`), carrying the round
+    as it then stands; nothing is injected until the round is answered. A park
+    that carries no round (its call was the only one, or it was written before
+    rounds were carried) answers the parked call alone, as before.
     """
+    from primer.agent.parked_round import ParkedRound, finish_round
     from primer.int.claim import ReleaseOutcome
     from primer.model.chat import Message
 
+    # ``getattr``: a park stand-in written before these fields existed carries none (an empty round).
+    parked_round = ParkedRound.from_jsonable(
+        getattr(parked, "completed_results", None), getattr(parked, "remaining_calls", None),
+    )
+    round_events: list = []
+    answers: list = []
+    try:
+        async for event in finish_round(
+            parked_round,
+            [tool_result_part],
+            tool_manager=getattr(executor, "_tool_manager", None),
+            principal=getattr(executor, "_principal", None),
+            results_out=answers,
+        ):
+            round_events.append(event)
+    except YieldToWorker as paused:
+        # A later call of the round asks to wait: what was answered so far is recorded, and the session parks on it.
+        await _persist_resume_tool_result_record(pool, session, parked, tool_result_part, round_events)
+        return repark_parked_round(pool, session, parked, paused)
+
     rehydrated_assistant = [Message.model_validate(m) for m in parked.llm_messages]
-    tool_result_msg = Message(role="tool", parts=[tool_result_part])
+    tool_result_msg = Message(role="tool", parts=answers)
     try:
         await executor.inject_resume_messages(
             [*rehydrated_assistant, tool_result_msg],
@@ -471,7 +504,7 @@ async def inject_resume_and_continue(
         )
         return await pool._end_session(session, reason="failed")
 
-    await _persist_resume_tool_result_record(pool, session, parked, tool_result_part)
+    await _persist_resume_tool_result_record(pool, session, parked, tool_result_part, round_events)
     await _mark_resume_applied(pool, session)
 
     # Continuation: clear park (on_release) + keep the lease so the next
@@ -535,9 +568,15 @@ async def _mark_resume_applied(pool: "WorkerPool", session) -> None:
 
 
 async def _persist_resume_tool_result_record(
-    pool: "WorkerPool", session, parked, tool_result_part,
+    pool: "WorkerPool", session, parked, tool_result_part, round_events=(),
 ) -> None:
-    """Write the modern TOOL_RESULT counterpart for a resumed tool call.
+    """Write the modern TOOL_RESULT counterpart for a resumed tool call, then the records of the round's later calls.
+
+    ``round_events`` (ticket 01a15327) are what the resume yielded for the calls of the parked round it ran after
+    the parked one (:func:`primer.agent.parked_round.finish_round`): the client action of a delivered notifying call
+    and the result of every call. They are written as the live turn writes them (``translate_stream_event``), right
+    after the parked call's own record and with the same writer, under the scoped id of each call's TOOL_CALL record
+    (``parked.remaining_scoped_call_ids``, stashed at park time; the raw id for a call that has none).
 
     ``inject_resume_messages`` (above) only appends the legacy
     ``{role,parts}`` Message lines that feed LLM context reconstruction;
@@ -593,6 +632,8 @@ async def _persist_resume_tool_result_record(
             },
             created_at=datetime.now(timezone.utc),
         ))
+        for record in _round_records(session, parked, round_events):
+            new_seq = await writer.append(record)
         await writer.flush()
         # ONE field-scoped write of last_seq. The pool-start copy of the row this used to put back whole carried a
         # Stop the pool had just cleared, a steer's turn_status, and any marker written before it (#681 review, P8).
@@ -620,6 +661,28 @@ async def _persist_resume_tool_result_record(
             "session %s",
             session.id,
         )
+
+
+def _round_records(session, parked, round_events) -> list:
+    """The display records of the round's calls a resume ran after the parked one (ticket 01a15327).
+
+    The live turn's own vocabulary (``translate_stream_event``): a ``client_action`` for a delivered notifying call and
+    a ``tool_result`` per call, each under the scoped id of the call's TOOL_CALL record, which the park stashed
+    (``remaining_scoped_call_ids``; a call without one keeps its raw id, as a park written before scoped ids does).
+    """
+    if not round_events:
+        return []
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    for raw_id, scoped_id in (getattr(parked, "remaining_scoped_call_ids", None) or {}).items():
+        state.scoped_call_ids[(None, raw_id)] = scoped_id
+    records: list = []
+    for event in round_events:
+        translated = translate_stream_event(event, state, turn_no=getattr(session, "turn_no", 0) or 0)
+        if translated is not None:
+            records.extend(translated if isinstance(translated, list) else [translated])
+    return records
 
 
 def build_invocation_services(pool: "WorkerPool", session, workspace, executor, tool_manager):
@@ -772,6 +835,8 @@ def repark_continuation(pool: "WorkerPool", session, parked, outcome):
         # itself.
         scoped_tool_call_id=parked.scoped_tool_call_id,
         frames=list(outcome.frames),
+        # The session still waits on the same call of its round: the round around it is unchanged (ticket 01a15327).
+        **_carried_round(parked),
     )
     return ReleaseOutcome(
         success=True,
@@ -831,6 +896,83 @@ def repark_resumed_yield_outcome(pool: "WorkerPool", session, parked, yld):
         # TOOL_CALL record either way.
         scoped_tool_call_id=parked.scoped_tool_call_id,
         graph_checkpoint=getattr(yld, "graph_checkpoint", None),
+        # The same call of the round still waits (now for its own event): the round around it is unchanged (ticket 01a15327).
+        **_carried_round(parked),
+    )
+    return ReleaseOutcome(
+        success=True,
+        drop_lease=True,
+        park=ParkRequest(
+            parked_state=new_parked.to_jsonable(),
+            parked_event_key=yielded_stamped.event_key,
+            parked_event_keys=getattr(yielded_stamped, "event_keys", None),
+            parked_until=now + timedelta(seconds=timeout),
+            parked_at=now,
+        ),
+    )
+
+
+def _carried_round(parked) -> dict:
+    """The round fields of ``parked``, for a re-park on which the SAME call of the round still waits (ticket 01a15327); ``getattr``: a stand-in for a park
+    written before the fields existed has none."""
+    return {
+        "completed_results": getattr(parked, "completed_results", None),
+        "remaining_calls": getattr(parked, "remaining_calls", None),
+        "remaining_scoped_call_ids": getattr(parked, "remaining_scoped_call_ids", None),
+    }
+
+
+def repark_parked_round(pool: "WorkerPool", session, parked, paused):
+    """Re-park an AGENT session whose resume stopped at a LATER call of the parked round (ticket 01a15327).
+
+    The resume answered the parked call and was running the round's remaining calls
+    (:func:`primer.agent.parked_round.finish_round`) when one of them asked to wait: its own approval gate, an
+    ``ask_user``, a nested run that parks (``paused.frames``, as ``invoke_agent`` and ``invoke_graph`` leave them).
+    The session parks on THAT call as a first park would (``primer.session.dispatch``): the yield it raised, with
+    ``parked_at_iso`` stamped, its frames, a child graph's checkpoint, and the scoped id of the session-level call
+    that now waits (the call itself, or for a nested yield the outermost frame's call, whose result ends the walk),
+    taken from the scoped ids the first park stashed. The in-progress turn (``llm_messages``) is unchanged, and the
+    round rides along as it now stands (``paused`` was stamped by ``finish_round``): every answer so far, and the
+    calls after this one. The turn's binding epoch and client-toolset flag are the parked turn's.
+
+    Like every resume re-park, no channel prompt is sent for the new gate (only a turn's first park fans out); the
+    gate is pending on the session like any other.
+    """
+    from datetime import timedelta
+
+    from primer.agent.parked_round import ParkedRound
+    from primer.int.claim import ParkRequest, ReleaseOutcome
+
+    yielded = paused.yielded
+    now = datetime.now(timezone.utc)
+    timeout = yielded.timeout if yielded.timeout is not None else 3600.0
+    resume_metadata = dict(yielded.resume_metadata)
+    resume_metadata["parked_at_iso"] = now.isoformat()
+    yielded_stamped = type(yielded)(
+        tool_name=yielded.tool_name,
+        event_key=yielded.event_key,
+        timeout=yielded.timeout,
+        resume_metadata=resume_metadata,
+        event_keys=getattr(yielded, "event_keys", None),
+    )
+    frames = list(getattr(paused, "frames", None) or [])
+    # The session-level call that waits now: a nested yield's ``tool_call_id`` is the INNER call's raw id, and the outermost frame is keyed by the session's own call.
+    waiting_call_id = (frames[0].tool_call_id if frames else None) or paused.tool_call_id
+    parked_round = ParkedRound.of_park(paused)
+    scoped_ids = dict(getattr(parked, "remaining_scoped_call_ids", None) or {})
+    new_parked = ParkedState(
+        yielded=yielded_stamped,
+        llm_messages=parked.llm_messages,
+        turn_no=session.turn_no,
+        started_at=now,
+        tool_call_id=paused.tool_call_id,
+        scoped_tool_call_id=scoped_ids.get(waiting_call_id),
+        graph_checkpoint=getattr(paused, "graph_checkpoint", None),
+        frames=frames,
+        binding_epoch=getattr(parked, "binding_epoch", None),
+        client_tools_attached=bool(getattr(parked, "client_tools_attached", False)),
+        **parked_round.stored_fields(),
+        remaining_scoped_call_ids={call.id: scoped_ids[call.id] for call in parked_round.remaining if call.id in scoped_ids},
     )
     return ReleaseOutcome(
         success=True,
