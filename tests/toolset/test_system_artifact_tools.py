@@ -44,6 +44,10 @@ async def test_the_artifact_tools_are_exposable_over_mcp(world) -> None:
         assert toolset.required_role(tool.id) == "admin"
         assert is_exposable(tool, provider=toolset) == (True, None)
 
+    assert tools["test_artifact_storage_provider"].interruptible is False
+    assert tools["set_active_artifact_store"].interruptible is False
+    assert tools["get_active_artifact_store"].interruptible is True
+
 
 async def test_set_then_get_the_active_store(world) -> None:
     sp, toolset, _ = world
