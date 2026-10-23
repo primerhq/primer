@@ -613,6 +613,83 @@ class TestProcessWideModelCache:
             out_b.embeddings[0].vector
         )
 
+    async def test_cancelled_first_waiter_does_not_cancel_sibling_waiters(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from primer.embedder import huggingface as hf
+
+        def slow_load(*args, **kwargs):
+            time.sleep(0.15)
+            return _make_st_mock(np.array([[0.1]]))
+
+        cls_mock = MagicMock(side_effect=slow_load)
+        monkeypatch.setattr(hf, "SentenceTransformer", cls_mock)
+        first = asyncio.create_task(hf._load_shared_model("m1", None))
+        await asyncio.sleep(0.02)
+        second = asyncio.create_task(hf._load_shared_model("m1", None))
+        await asyncio.sleep(0.02)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        result = await second
+        assert result is not None
+        assert cls_mock.call_count == 1
+
+    async def test_failed_load_with_no_waiter_logs_no_never_retrieved(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import gc
+        from primer.embedder import huggingface as hf
+
+        monkeypatch.setattr(
+            hf, "SentenceTransformer", MagicMock(side_effect=RuntimeError("hub down"))
+        )
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(RuntimeError, match="hub down"):
+                await hf._load_shared_model("m1", None)
+            gc.collect()
+            await asyncio.sleep(0)
+        hits = [
+            r.getMessage()
+            for r in caplog.records
+            if "never retrieved" in r.getMessage()
+        ]
+        assert hits == []
+
+    async def test_aclose_evicts_unreferenced_keys_and_retains_shared_ones(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from primer.embedder import huggingface as hf
+
+        _patched_st(monkeypatch, np.array([[0.1]]))
+        for token in ("t1", "t2", "t3"):
+            emb = HuggingFaceEmbedder(
+                _make_provider(provider_id="hf-row", models=["m1"], token=token)
+            )
+            await emb.embed(model="m1", inputs=[TextPart(text="x")])
+            await emb.aclose()
+        assert len(hf._model_cache) == 0
+
+        # When two rows share a (model, token) key, closing one retains the
+        # cached model until the second also closes.
+        emb_a = HuggingFaceEmbedder(
+            _make_provider(provider_id="row-a", models=["m1"], token="shared")
+        )
+        emb_b = HuggingFaceEmbedder(
+            _make_provider(provider_id="row-b", models=["m1"], token="shared")
+        )
+        await emb_a.embed(model="m1", inputs=[TextPart(text="a")])
+        await emb_b.embed(model="m1", inputs=[TextPart(text="b")])
+        assert ("m1", "shared") in hf._model_cache
+        await emb_a.aclose()
+        await emb_a.aclose()  # idempotent
+        assert ("m1", "shared") in hf._model_cache
+        await emb_b.aclose()
+        assert ("m1", "shared") not in hf._model_cache
+
+
 
 class TestPackageReexport:
     def test_reexported(self) -> None:
