@@ -24,6 +24,7 @@ import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from primer.ai_docs_path import resolve_ai_docs_dir
 from primer.knowledge.importer import slugify_segment
@@ -157,7 +158,7 @@ def _quote_user_text(text: str | None) -> str:
     cleaned = (text or "").strip()
     if not cleaned:
         return "User-supplied description: _(none)_"
-    return f"User-supplied description: {json.dumps(cleaned)}"
+    return f"User-supplied description: {json.dumps(cleaned, ensure_ascii=False)}"
 
 
 def _agent_body(a) -> str:
@@ -261,7 +262,7 @@ async def _workspaces_map(storage_provider, *, root: str = "") -> dict[str, str]
     lines = ["# Workspaces", "", "Places sessions run. One page each.", ""]
     for row in rows:
         label = row.name or row.id
-        quoted_label = json.dumps(label)
+        quoted_label = json.dumps(label, ensure_ascii=False)
         slug = _live_slug(row.id)
         lines.append(
             f"- [{row.id}]({prefix}workspaces/{slug}) - name (user-supplied): {quoted_label}, phase {row.phase}"
@@ -640,6 +641,8 @@ async def _live_entity_for_path(
         return False, None, None
     model_cls, entity_type = spec
     row = await storage_provider.get_storage(model_cls).get(slug)
+    if row is not None and _live_slug(row.id) != slug:
+        row = None
     if row is None:
         for candidate in await _list_all(storage_provider, model_cls):
             if _live_slug(candidate.id) == slug:
