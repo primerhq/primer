@@ -203,6 +203,7 @@ def keyctx():
     c = MiniRacer()
     c.eval("var window = globalThis;")
     c.eval(_shell_fn("NV_tabsStoreKey"))
+    c.eval(_shell_fn("NV_usernameOf"))
     try:
         yield c
     finally:
@@ -228,6 +229,25 @@ def test_each_user_has_their_own_store_key(keyctx) -> None:
 def test_the_install_with_auth_off_is_the_system_user(keyctx) -> None:
     """`GET /v1/auth/status` answers authenticated: true, username: "system" when auth is disabled: that is a name like any other."""
     assert _js(keyctx, 'NV_tabsStoreKey({authenticated: true, username: "system", has_user: false})').endswith(":system")
+
+
+@pytest.mark.parametrize("status", [
+    None, {}, {"authenticated": False, "username": "ana"},
+    {"authenticated": True}, {"authenticated": True, "username": ""},
+])
+def test_the_console_has_no_invented_username(keyctx, status) -> None:
+    assert _js(keyctx, f"NV_usernameOf({json.dumps(status)})") is None
+
+
+def test_the_console_uses_only_the_authenticated_username(keyctx) -> None:
+    assert _js(keyctx, 'NV_usernameOf({authenticated: true, username: "ana"})') == "ana"
+
+
+def test_the_shell_retries_auth_status_on_the_resource_backoff() -> None:
+    block = SHELL[SHELL.index('var status = window.primerApi.useResource('):SHELL.index('// The theme verbs')]
+    assert '"nv-shell:auth-status"' in block
+    assert "{ pollMs: 2000 }" in block
+    assert '|| "anon"' not in SHELL
 
 
 def test_the_effects_skip_the_phone_and_never_write_under_another_key() -> None:

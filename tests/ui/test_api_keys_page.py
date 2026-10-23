@@ -146,6 +146,12 @@ def test_the_admin_table_has_an_owner_column_and_marks_your_own_keys(app):
     assert "Owner" in app.texts() and "ana (you)" in app.text() and "bo" in app.texts()
 
 
+def test_an_unknown_username_never_marks_an_owner_as_you(app):
+    app.js('DATA["api-tokens:admin-list"] = { items: ROWS(2) }')
+    app.mount("AT_ApiTokensPage", '{ mode: "admin", username: null }')
+    assert "(you)" not in app.text()
+
+
 def test_personal_mode_is_your_api_keys_without_an_owner_column(app):
     app.js('DATA["api-tokens:list"] = { items: ROWS(1) }')
     app.mount("AT_ApiTokensPage", '{ mode: "personal", username: "ana" }')

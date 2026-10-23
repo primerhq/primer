@@ -146,6 +146,12 @@ function NV_tabsStoreKey(status) {
   if (typeof status.username !== "string" || !status.username) return null;
   return "primer.console.tabs.v1:" + status.username;
 }
+
+function NV_usernameOf(status) {
+  if (!status || status.authenticated !== true) return null;
+  if (typeof status.username !== "string" || !status.username.trim()) return null;
+  return status.username;
+}
 // The tab groups' working set, kept per user in this browser (console review C-023). Identity and layout only (TG_serialize); storage can be
 // unavailable or hold anything (private mode, quota, another version), so every access is guarded and a bad value is the same as no value.
 function NV_loadTabs(key) {
@@ -219,19 +225,19 @@ function NV_Shell() {
     { pollMs: 15000 }
   );
   var status = window.primerApi.useResource(
-    "auth-status",
+    "nv-shell:auth-status",
     function (signal) {
       return window.primerApi.apiFetch("GET", "/auth/status", null,
         { signal: signal });
     },
-    { pollMs: 0 }
+    { pollMs: 2000 }
   );
   // The theme verbs (registered once, in the core-verb effect below) run long after the render that registered them, and act on the shell as it is
   // then: the signed-in username (the key of the user's stored choice) and the shell's re-render, which redraws the profile menu's pressed button.
   // Refreshed on every render, like pushToastRef above.
   var themeEnvRef = React.useRef(null);
   themeEnvRef.current = {
-    username: (status.data && status.data.username) || "anon",
+    username: NV_usernameOf(status.data),
     bump: function () { setTick(function (v) { return v + 1; }); },
   };
   // Capability probe: speech config gates the voice affordances.
@@ -633,7 +639,7 @@ function NV_Shell() {
       registry: registry,
       frecency: frecency,
       workspaces: wsItems,
-      username: (status.data && status.data.username) || "anon",
+      username: NV_usernameOf(status.data),
       role: (status.data && status.data.role) || "user",
       speech: (caps.data && caps.data.speech) || {},
       voiceRef: voiceRef,
