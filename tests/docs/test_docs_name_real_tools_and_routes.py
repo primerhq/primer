@@ -6,8 +6,8 @@ acted on: ``docs/agents/workspaces.md`` told an agent to bind a workspace to a c
 (``set_reply_binding`` / ``clear_reply_binding``), and three docs sent the agent to ``trigger::subscribe_to_trigger``, a yielding tool that lives in
 the ``workspace_ext`` toolset (``workspace_ext::subscribe_to_trigger``). Nothing checked, so nothing noticed. Two checks:
 
-* every ``<toolset>::<tool>`` or ``<toolset>__<tool>`` in ``docs/agents/`` and ``docs/dev/`` (not the vision documents) whose toolset is built in
-  here is a tool that toolset has. A name that ends in ``_`` is a documented stem (``find_<kind>``), not a tool;
+* every ``<toolset>::<tool>`` or ``<toolset>__<tool>`` in ``docs/agents/``, ``docs/wiki/`` and ``docs/dev/`` (not the vision documents) whose
+  toolset is built in here is a tool that toolset has. A name that ends in ``_`` is a documented stem (``find_<kind>``), not a tool;
 * every ``METHOD /v1/...`` in ``docs/`` and ``AGENTS.md`` is an operation of the live OpenAPI schema, with ``{id}`` and ``<name>`` placeholders
   compared as one wildcard. Not checked, with the reason: the vision documents (``docs/dev/vision/``: the origin story and design
   philosophy, not a contract), placeholder paths the docs use to describe the factory (``/v1/{plural}``, ``/v1/x``), ``POST /v1/mcp`` (a mount
@@ -26,9 +26,11 @@ from tests.docs._live_toolsets import built_in_tools
 
 REPO = Path(__file__).resolve().parents[2]
 AGENT_DOCS = sorted(p for p in (REPO / "docs" / "agents").rglob("*.md") if not p.name.startswith("_"))
-# The dev docs name tools too (``harness__list``, ``workspace_ext__invoke_graph``); the vision documents are not a contract.
+# The wiki pages name tools too (the scoped ids in the frontmatter and the call examples), as the dev docs do
+# (``harness__list``, ``workspace_ext__invoke_graph``); the vision documents are not a contract.
+WIKI_DOCS = sorted(p for p in (REPO / "docs" / "wiki").rglob("*.md") if not p.name.startswith("_"))
 DEV_DOCS = sorted(p for p in (REPO / "docs" / "dev").rglob("*.md") if "vision" not in p.relative_to(REPO / "docs" / "dev").parts)
-TOOL_DOCS = [*AGENT_DOCS, *DEV_DOCS]
+TOOL_DOCS = [*AGENT_DOCS, *WIKI_DOCS, *DEV_DOCS]
 
 
 # ---- tools ----------------------------------------------------------------------------------------------------------------------
@@ -82,6 +84,10 @@ def test_the_tool_reference_scan_finds_references_at_all() -> None:
     """The scan must see the references it is meant to check: a regex that stopped matching would pass every doc."""
     total = sum(len(_tool_references(doc)) for doc in AGENT_DOCS)
     assert total > 100, f"only {total} tool references found in docs/agents/"
+
+
+def test_the_wiki_is_scanned_for_tool_names() -> None:
+    assert any("docs/wiki" in p.as_posix() for p in TOOL_DOCS)
 
 
 # ---- endpoints ------------------------------------------------------------------------------------------------------------------

@@ -5,14 +5,14 @@
 researcher could never happen) and that carried a cycle without ``max_iterations`` (it saves as a draft and is refused when a session binds to it).
 Both are meaning, not shape. This file checks the meaning:
 
-* every documented ``system::create_graph`` / ``update_graph`` example is runnable (``Graph.assert_runnable``) and every ``json_path`` router in it
-  reads an agent node that has a ``response_format``;
+* every documented ``create_graph`` / ``update_graph`` call (``system::`` or ``crud::``) is runnable (``Graph.assert_runnable``) and every
+  ``json_path`` router in it reads an agent node that has a ``response_format``;
 * the research cookbook's graph, read from the page itself, is run through the real ``GraphExecutor`` with scripted agents: a failed source sends the
   run back to the researcher with the failure listed in its input, a clean verdict goes to the writer, a verdict that is not JSON does not loop, and
   a run that never validates lands on the writer at the iteration cap instead of failing.
 
 What this does NOT check: that a real model follows the prompts (the agents are scripted), the tool calls the researcher and fact-checker would make
-(the executor here has no tool manager), or graph bodies that appear in the docs outside a documented ``system::`` call.
+(the executor here has no tool manager), or graph bodies that appear in the docs outside a documented ``create_graph`` / ``update_graph`` call.
 """
 
 from __future__ import annotations
@@ -32,18 +32,19 @@ from primer.model.graph import Graph, GraphNodeMessage, GraphThread, _AgentNodeR
 from primer.model.workspace_session import SessionStatus
 from primer.model_profile import ResolvedModel
 from primer.model.model_profile import ModelProfileConfig
-from tests.docs.test_docs_tool_call_bodies import AGENT_DOCS, REPO, calls_in
+from tests.docs.test_docs_tool_call_bodies import DOC_FILES, REPO, calls_in
 
 COOKBOOK = REPO / "docs" / "agents" / "cookbook" / "multi-agent-graph-research.md"
 GRAPH_CALLS = ("create_graph", "update_graph")
 
 
 def documented_graphs(text: str) -> list[dict[str, Any]]:
-    """The ``entity`` of every ``system::create_graph`` / ``update_graph`` call in a doc that carries a graph body."""
+    """The ``entity`` of every ``create_graph`` / ``update_graph`` call in a doc that carries a graph body, in the ``system`` or the ``crud``
+    toolset."""
     found = []
     for call in calls_in(text):
         entity = call.arguments.get("entity") if isinstance(call.arguments, dict) else None
-        if call.toolset == "system" and call.tool in GRAPH_CALLS and isinstance(entity, dict) and "nodes" in entity:
+        if call.toolset in ("system", "crud") and call.tool in GRAPH_CALLS and isinstance(entity, dict) and "nodes" in entity:
             found.append(entity)
     return found
 
@@ -76,12 +77,12 @@ def graph_problems(entity: dict[str, Any]) -> list[str]:
 
 
 def test_the_scan_finds_a_documented_graph() -> None:
-    graphs = [g for doc in AGENT_DOCS for g in documented_graphs(doc.read_text(encoding="utf-8"))]
+    graphs = [g for doc in DOC_FILES for g in documented_graphs(doc.read_text(encoding="utf-8"))]
 
-    assert graphs, "no documented system::create_graph / update_graph example with a graph body was found in docs/agents/"
+    assert graphs, "no documented create_graph / update_graph example with a graph body was found in docs/agents/ and docs/wiki/"
 
 
-@pytest.mark.parametrize("doc", AGENT_DOCS, ids=lambda p: str(p.relative_to(REPO)))
+@pytest.mark.parametrize("doc", DOC_FILES, ids=lambda p: str(p.relative_to(REPO)))
 def test_every_documented_graph_is_runnable_and_routes_on_structured_output(doc: Path) -> None:
     problems = [p for entity in documented_graphs(doc.read_text(encoding="utf-8")) for p in graph_problems(entity)]
 

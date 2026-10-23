@@ -107,7 +107,7 @@ def test_dependabot_has_no_cli_entry() -> None:
     assert "primectl" not in body
 
 
-_SEARCH_ROOTS = ("primer", "ui", "tests", "docs/dev", "docs/agents", "scripts")
+_SEARCH_ROOTS = ("primer", "ui", "tests", "docs/dev", "docs/agents", "docs/wiki", "scripts")
 _SEARCH_FILES = ("README.md", "AGENTS.md", "CONTRIBUTING.md", "Makefile")
 _SUFFIXES = {".py", ".jsx", ".js", ".md", ".yml", ".yaml", ".toml", ".sh"}
 
@@ -152,6 +152,11 @@ def _hits() -> list[str]:
             if "primectl" in line:
                 found.append(f"{path.relative_to(REPO)}:{lineno}: {line.strip()}")
     return found
+
+
+def test_the_wiki_root_is_searched() -> None:
+    """The P4 content lands in docs/wiki; a grep-clean gate that stopped seeing it would miss a wiki reference."""
+    assert "docs/wiki" in _SEARCH_ROOTS
 
 
 def test_no_primectl_reference_survives() -> None:
