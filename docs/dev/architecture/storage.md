@@ -184,7 +184,13 @@ policy as stored when that is a plain `required` gate (through a
 migration-local view, so a row the live model may reject is copied as
 it is) and the shipped gate otherwise. Like the views, the twin table
 and the policy ids it writes are frozen inside the migration rather
-than imported from live code.
+than imported from live code. `m015_seeded_agents_v3.py` applies
+`m011`'s rule over every definition an earlier build seeded
+(`PREVIOUS_SHIPPED`: the 2026-08-19 to 08-22 builds as `m006` left them,
+v1 and v2) and moves an unedited row to the current definition. It
+exists because `m011` had already run on deployed installs when its
+v1-only "before" set was found too narrow, and a migration that has run
+is never edited: the fix is a new version.
 
 ### The `document_content` table
 
