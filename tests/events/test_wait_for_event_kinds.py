@@ -94,10 +94,15 @@ CANVAS_GLOBS = ["canvas.event", "canvas.updated", "canvas.*", "canvas.e?ent"]
     [{"path": "workspace_id", "op": "prefix", "value": ""}],
     [{"path": "session_id", "op": "eq", "value": ""}],
     [{"path": "payload.session_id", "op": "eq", "value": "sess-1"}],
-], ids=["no fields", "element only", "session prefix", "workspace prefix", "empty session", "payload path"])
+    [{"path": "session_id", "op": "eq", "value": "s-admin"}],
+    [{"path": "workspace_id", "op": "eq", "value": "ws-prime"}],
+    [{"path": "workspace_id", "op": "eq", "value": "ws-prime"}, {"path": "session_id", "op": "eq", "value": "s-admin"}],
+], ids=["no fields", "element only", "session prefix", "workspace prefix", "empty session", "payload path", "another session",
+        "another workspace", "another workspace and session"])
 async def test_a_non_admin_canvas_wait_without_a_workspace_or_session_is_refused(sp, who, glob, fields):  # noqa: F811
     """A canvas event carries what a user typed or clicked (a value, Html emit data, the name of who did it); without a scope a
-    user-role run in one workspace would wake on any session's canvas in the install."""
+    user-role run in one workspace would wake on any session's canvas in the install, and a scope naming ANOTHER workspace or
+    session (review B2 on #856) would let it pick which one."""
     arguments: dict = {"event_types": ["session.ended", glob]}
     if fields is not None:
         arguments["fields"] = fields
@@ -106,8 +111,8 @@ async def test_a_non_admin_canvas_wait_without_a_workspace_or_session_is_refused
     assert json.loads(result.output) == {
         "type": "forbidden",
         "message": (
-            "this run's principal is not an admin, so a wait on canvas events must name the workspace or the session they are for: "
-            f"add a fields matcher {{path: workspace_id or session_id, op: eq, value}}; refused: {glob!r}"
+            "this run's principal is not an admin, so a wait on canvas events must name this run's own workspace or session: "
+            f"add a fields matcher {{path: workspace_id or session_id, op: eq, value: this run's own id}}; refused: {glob!r}"
         ),
     }
     assert await _subscriptions(sp) == [], "a refused wait stores no subscription"
