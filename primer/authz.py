@@ -51,6 +51,26 @@ def principal_rank(ref: "Principal | PrincipalRef | None") -> int:
     return _ROLE_RANK.get(ref.role, -1)
 
 
+def may_drive(actor: "Principal | PrincipalRef | None", target_creator: "Principal | PrincipalRef | None") -> bool:
+    """Whether ``actor`` may put input into a session ``target_creator`` started (steer it, restart it, message it): ``actor`` ranks at least as high.
+
+    The one rank rule of every path that drives another session (lead rulings 2 and 3 of the G7 fixes): a person's REST steer and restart, the
+    steer and restart tools called with no calling session (the MCP endpoint), a message or a steer or a restart from another session
+    (:func:`primer.session.peer_messages.sender_may_message`, which refuses an unknown sender first) and a trigger's fire
+    (:func:`primer.trigger.owner.refuse_steer_above_fire`). The target's rank is the one recorded on the session: its runs execute at most at that
+    rank (the creator's current role, capped by it), so comparing with it never lets a lower rank drive a higher run.
+
+    ``None`` ranks as an ordinary user on either side (:func:`principal_rank`).
+    """
+    return principal_rank(actor) >= principal_rank(target_creator)
+
+
+#: The refusal a person or an API client reads when :func:`may_drive` says no: fixed, so it names neither the session's creator nor its rank.
+OUTRANKED_MESSAGE = (
+    "this session runs at a higher rank than you; you may steer or restart only a session that runs at or below your own rank"
+)
+
+
 def rank_label(ref: "Principal | PrincipalRef | None") -> str:
     """The rank of ``ref`` in words, without naming who it is.
 
@@ -93,4 +113,4 @@ def _role_allows(actor: "Principal | PrincipalRef | None", need: str) -> bool:
     return _ROLE_RANK.get(actor.role, -1) >= _ROLE_RANK.get(need, 99)
 
 
-__all__ = ["_ROLE_RANK", "_role_allows", "principal_rank", "rank_label"]
+__all__ = ["OUTRANKED_MESSAGE", "_ROLE_RANK", "_role_allows", "may_drive", "principal_rank", "rank_label"]

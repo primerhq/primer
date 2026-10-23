@@ -1102,6 +1102,16 @@ class WorkerPool:
                 outcome = await pause_session_for_refused_workspace(
                     self._storage.get_storage(WorkspaceSession), sid, refused,
                 )
+        except executor_builders.RunRefused as refused:
+            # The session's creator is deleted, disabled or revoked (G6-6, G7 ruling 2): a resume does not run the
+            # parked call, approved or not, at any rank. A normal turn already ends failed when its executor cannot
+            # be built (dispatch.py); a resume handler builds its own, so its refusal ends the session here, or the
+            # park would stay resumable with no lease, forever.
+            logger.warning("session %s: %s; ending it failed", sid, refused)
+            if self._storage is not None:
+                refused_row = await self._storage.get_storage(WorkspaceSession).get(sid)
+                if refused_row is not None and refused_row.status != SessionStatus.ENDED:
+                    outcome = await self._end_session(refused_row, reason="failed")
         except Exception:
             logger.exception(
                 "run_one_session_turn for session %s raised unexpectedly",

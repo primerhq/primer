@@ -183,6 +183,30 @@ def _caller_is_admin(ctx: ToolContext | None) -> bool:
     return _role_allows(actor, "admin")
 
 
+def _caller_principal(ctx: ToolContext | None) -> Any:
+    """Who is calling, for a rank rule: the run's initiator when the call has a ToolContext, else (the MCP endpoint) the request's actor; ``None``
+    when neither is known, which :func:`primer.authz.principal_rank` ranks as an ordinary user. The two sources of :func:`_caller_is_admin`."""
+    if ctx is not None:
+        return ctx.initiated_by
+    from primer.mcp.server import current_actor
+
+    return current_actor.get()
+
+
+def _refuse_outranked(ctx: ToolContext | None, row: WorkspaceSession) -> ToolCallResult | None:
+    """``forbidden`` when the caller ranks below the creator of ``row`` (lead ruling 2 of the G7 fixes, audit G7-06), else ``None``.
+
+    For the steer and restart tools called with no calling session (the MCP endpoint): a person or an API client must out-rank or equal the session's
+    creator, the rule of the REST routes, of a trigger's fire and of a message from another session (:func:`primer.authz.may_drive`). The message is
+    fixed: it names neither the creator nor the rank.
+    """
+    from primer.authz import OUTRANKED_MESSAGE, may_drive
+
+    if may_drive(_caller_principal(ctx), row.initiated_by):
+        return None
+    return _err(OUTRANKED_MESSAGE, error_type="forbidden")
+
+
 def _caller_actor(ctx: ToolContext | None) -> str:
     """The actor an event raised by this tool call is attributed to: the run's initiator, or, on the MCP endpoint (no ToolContext), the
     request's actor; ``system`` when neither is known. The same two sources, with the same split, as :func:`_caller_is_admin`."""
@@ -2196,6 +2220,10 @@ def build_workspaces_toolset(
                 return _err(exc.message, error_type=exc.error_type)
             after = await sessions.get(args.session_id) or row
             return _ok({**after.model_dump(mode="json"), "delivery": sent.delivery})
+        # A person or an API client steering: they must rank at least as high as the session's creator (G7 ruling 2).
+        refusal = _refuse_outranked(ctx, row)
+        if refusal is not None:
+            return refusal
         # The same delivery path as the REST steer route and every other machine entrypoint (triggers, channel replies): a session with a
         # turn open (armed, running, or parked on any gate) QUEUES the instruction for its next turn boundary instead of writing a second
         # user message, a parked gate is never answered by it, and an idle or ended session starts its next turn with it.
@@ -2257,7 +2285,10 @@ def build_workspaces_toolset(
             "session: the target sees a user message that starts with "
             "[from session <your session id> (agent <your agent id>)], and "
             "the limits of message_session apply (forbidden, hop-limit, "
-            "rate-limited, conflict)."
+            "rate-limited, conflict). With no calling session (MCP) the "
+            "caller must rank at least as high as the session's creator "
+            "(type=forbidden), and a session an operator cancelled is "
+            "refused (type=conflict)."
         ),
         _SteerArgs,
         _steer_session,
@@ -2314,6 +2345,13 @@ def build_workspaces_toolset(
             after = await sessions.get(args.session_id) or row
             return _ok(after.model_dump(mode="json"))
 
+        # A person or an API client restarting: they must rank at least as high as the session's creator (G7 ruling 2). A missing session is the
+        # not-found restart_session raises, in its own words.
+        existing = await storage_provider.get_storage(WorkspaceSession).get(args.session_id)
+        if existing is not None and existing.workspace_id == args.workspace_id:
+            refusal = _refuse_outranked(ctx, existing)
+            if refusal is not None:
+                return refusal
         try:
             row = await restart_session(
                 workspace_id=args.workspace_id,
@@ -2363,7 +2401,9 @@ def build_workspaces_toolset(
             "a user message that starts with [from session <your session "
             "id> (agent <your agent id>)], and the limits of message_session "
             "apply (not-found outside your reach, forbidden, hop-limit, "
-            "rate-limited, conflict)."
+            "rate-limited, conflict). With no calling session (MCP) the "
+            "caller must rank at least as high as the session's creator "
+            "(type=forbidden)."
         ),
         _RestartArgs,
         _restart_session,

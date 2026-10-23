@@ -32,7 +32,25 @@ from primer.worker.pool import WorkerPool
 from primer.worker.yield_runtime import ParkedState
 
 
-def _bare_pool(*, storage="STORAGE", registry="REGISTRY", approval="APPROVAL"):
+class _Storage:
+    """The pool's storage: handed to the subagent callables as it is, and asked once for the session creator's current role (lead ruling 2 of
+    the G7 fixes, G6-6: a resumed subagent runs at the role its session's creator holds NOW). Every account here still holds its role."""
+
+    def get_storage(self, model):
+        return self
+
+    async def get(self, user_id):
+        from datetime import UTC, datetime
+
+        from primer.model.user import User
+
+        return User(id=user_id, username=user_id, created_at=datetime.now(UTC), role="admin")
+
+
+STORAGE = _Storage()
+
+
+def _bare_pool(*, storage=STORAGE, registry="REGISTRY", approval="APPROVAL"):
     pool = WorkerPool.__new__(WorkerPool)
     pool._storage = storage
     pool._provider_registry = registry
@@ -99,7 +117,7 @@ async def test_build_invocation_services_forwards_bound_deps(monkeypatch):
     out = await services.build_subagent_toolmanager(_stored_context())
     assert out == "TOOLMGR"
     assert captured["build"]["context"] == _as_the_session_runs(_stored_context(), _RUN)
-    assert captured["build"]["storage_provider"] == "STORAGE"
+    assert captured["build"]["storage_provider"] is STORAGE
     assert captured["build"]["provider_registry"] == "REGISTRY"
     assert captured["build"]["approval_resolver"] == "APPROVAL"
 
@@ -113,7 +131,7 @@ async def test_build_invocation_services_forwards_bound_deps(monkeypatch):
     assert captured["resume"]["child_result"] == "CHILD"
     assert captured["resume"]["depth"] == 2
     assert captured["resume"]["invoke_tool_call_id"] == "tc9"
-    assert captured["resume"]["storage_provider"] == "STORAGE"
+    assert captured["resume"]["storage_provider"] is STORAGE
     assert captured["resume"]["provider_registry"] == "REGISTRY"
     assert captured["resume"]["approval_resolver"] == "APPROVAL"
 

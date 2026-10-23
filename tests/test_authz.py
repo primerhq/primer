@@ -156,3 +156,18 @@ def test_the_trigger_steer_rank_goes_through_the_shared_rule(monkeypatch):
 
     monkeypatch.setattr(owner, "principal_rank", lambda ref: 42)
     assert owner._rank(_ref("user")) == 42
+
+
+def test_may_drive_is_the_rank_rule_of_every_path_that_drives_a_session():
+    """Lead rulings 2 and 3 of the G7 fixes: a person's or a token's steer and restart, a message from another session and a trigger's fire all
+    ask ``may_drive``: the actor ranks at least as high as the session's creator. ``None`` ranks as an ordinary user on either side."""
+    from primer.authz import may_drive
+
+    def ref(role, type_="user"):
+        return PrincipalRef(type=type_, id="x", display="x", role=role, source="local")
+
+    assert may_drive(ref("admin"), ref("admin")) and may_drive(ref("admin"), ref("user")) and may_drive(ref("user"), ref("user"))
+    assert not may_drive(ref("user"), ref("admin"))
+    assert not may_drive(ref("admin"), PrincipalRef.system()) and may_drive(PrincipalRef.system(), ref("admin"))
+    assert may_drive(None, ref("user")) and may_drive(ref("user"), None) and not may_drive(None, ref("admin"))
+    assert not may_drive(ref("restricted"), ref("user")) and not may_drive(ref(None, "api_token"), ref("user"))

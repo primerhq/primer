@@ -41,7 +41,7 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 from primer.agent.invoke import MAX_INVOCATION_DEPTH
-from primer.authz import principal_rank, rank_label
+from primer.authz import may_drive, principal_rank, rank_label
 from primer.bootstrap.prime import resolve_default_workspace_id
 from primer.events.recorder import actor_of, recorder_for
 from primer.model.except_ import ConflictError, NotFoundError
@@ -167,7 +167,7 @@ def sender_may_message(sender: PrincipalRef | None, target_creator: PrincipalRef
     """
     if sender is None:
         return False
-    return principal_rank(sender) >= principal_rank(target_creator)
+    return may_drive(sender, target_creator)
 
 
 def next_peer_hops(sender: WorkspaceSession) -> int:

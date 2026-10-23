@@ -259,6 +259,19 @@ class _Store:
         return self._obj
 
 
+class _Users:
+    """The accounts behind the two run principals below, each still holding the role it was recorded with: a run is ranked by its creator's
+    CURRENT role (lead ruling 2 of the G7 fixes, G6-6), so the creator must exist (``resolve_run_principal`` refuses a run of a deleted one)."""
+
+    async def get(self, user_id: str) -> Any:
+        from primer.model.user import User
+
+        roles = {"u-admin": "admin", "u-1": "user"}
+        if user_id not in roles:
+            return None
+        return User(id=user_id, username=user_id, created_at=datetime.now(timezone.utc), role=roles[user_id])
+
+
 class _AgentStorageProvider:
     async def get_system_state(self):
         from primer.model.system_state import SystemState
@@ -293,8 +306,12 @@ class _AgentStorageProvider:
             return _Store(self._agent)
         if cls is ModelProfile:
             return _Store(self._profile)
+        from primer.model.user import User
+
         if cls is LLMProvider:
             return _Store(self._provider_row)
+        if cls is User:
+            return _Users()
         return self._base.get_storage(cls)
 
 
