@@ -91,7 +91,7 @@ def test_save_is_never_offered_while_the_kinds_fields_are_still_loading(page: Pa
     page.route("**/v1/web_search_providers/_types", types)
     try:
         overlay = _open_the_web_search_form(page, console_url)
-        overlay.locator('[data-testid="pc-field:id"] input').fill("journey-save-gate")
+        overlay.get_by_test_id("pc-field:id").fill("journey-save-gate")
         save = overlay.get_by_test_id("provider-form-save")
         loading = overlay.get_by_test_id("provider-form-loading")
         said_loading = False
@@ -132,7 +132,7 @@ def test_a_save_the_server_refuses_is_said_in_the_form_and_the_focus_never_leave
     try:
         overlay = _open_the_web_search_form(page, console_url)
         expect(overlay.get_by_test_id("provider-form-save")).to_be_visible(timeout=15_000)
-        overlay.locator('[data-testid="pc-field:id"] input').fill("DuckDuckGo")
+        overlay.get_by_test_id("pc-field:id").fill("DuckDuckGo")
         save = overlay.get_by_test_id("provider-form-save")
         expect(save).to_be_enabled()
         save.focus()
