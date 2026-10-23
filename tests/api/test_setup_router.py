@@ -220,3 +220,24 @@ async def test_seed_adopts_a_legacy_primer_workspace(client, app):
     assert await sp.get_storage(Workspace).get("prime") is None
     assert (await sp.get_system_state()).default_workspace_id == "primer"
     assert "default_workspace" not in r.json()["setup_missing"]
+
+
+async def test_reset_agents_iterates_the_factory_mapping(client, app, monkeypatch):
+    """Audit G7-11: the reset's roster is SEEDED_AGENT_FACTORIES, not a list of its own."""
+    from primer.bootstrap.operator_defaults import (
+        SEEDED_AGENT_FACTORIES,
+        tool_runner_agent,
+    )
+
+    def probe(profile_id: str) -> Agent:
+        return tool_runner_agent(profile_id).model_copy(
+            update={"id": "probe-agent", "system_prompt": ["probe"]},
+        )
+
+    monkeypatch.setitem(SEEDED_AGENT_FACTORIES, "probe-agent", probe)
+
+    r = await client.post("/v1/setup/reset_agents")
+    assert r.status_code == 200, r.text
+    assert r.json()["reset"] == list(SEEDED_AGENT_FACTORIES)
+    probe_row = await app.state.storage_provider.get_storage(Agent).get("probe-agent")
+    assert probe_row.system_prompt == ["probe"]

@@ -21,20 +21,7 @@ from primer.api.deps import (
     get_workspace_registry,
 )
 from primer.api.errors import common_responses
-from primer.bootstrap.defaults import (
-    RESERVED_BUILDER_AGENT,
-    RESERVED_EXPLORER_AGENT,
-    RESERVED_OPERATOR_AGENT,
-    RESERVED_PLANNER_AGENT,
-    RESERVED_TOOL_RUNNER_AGENT,
-)
-from primer.bootstrap.operator_defaults import (
-    builder_agent,
-    explorer_agent,
-    operator_agent,
-    planner_agent,
-    tool_runner_agent,
-)
+from primer.bootstrap.operator_defaults import SEEDED_AGENT_FACTORIES
 from primer.bootstrap.prime import resolve_default_workspace_id
 from primer.bootstrap.seed import builtin_toolset_providers, default_profile_id, run_ensure_pass
 from primer.bootstrap.setup_state import (
@@ -100,29 +87,25 @@ async def seed_now(request: Request) -> dict:
 
 @setup_router.post(
     "/reset_agents",
-    summary="Restore the default operator and builder definitions",
+    summary="Restore the default definitions of the seeded agents",
     # ConfigError maps to 503 (primer/api/errors.py:71), not 409; the
     # response map has to name the code the handler can actually produce.
     responses=common_responses(500, 503),
 )
 async def reset_agents(request: Request) -> dict:
-    """Re-apply the DEFAULT prompt, grants and description of both agents.
+    """Re-apply the DEFAULT prompt, grants and description of every seeded agent.
 
-    Explicitly overwrites exactly those two rows and nothing else. The
-    model profile each row runs under is PRESERVED: repointing the
-    operator at a better model is a configuration choice, not a drift.
+    The roster is ``SEEDED_AGENT_FACTORIES``, the one mapping the seed and
+    migrations 11 and 15 iterate too. Explicitly overwrites exactly those
+    rows and nothing else. The model profile each row runs under is
+    PRESERVED: repointing the operator at a better model is a
+    configuration choice, not a drift.
     """
     storage_provider = get_storage_provider(request)
     agents = storage_provider.get_storage(Agent)
     fallback = await default_profile_id(storage_provider)
     reset: list[str] = []
-    for agent_id, factory in (
-        (RESERVED_OPERATOR_AGENT, operator_agent),
-        (RESERVED_BUILDER_AGENT, builder_agent),
-        (RESERVED_PLANNER_AGENT, planner_agent),
-        (RESERVED_EXPLORER_AGENT, explorer_agent),
-        (RESERVED_TOOL_RUNNER_AGENT, tool_runner_agent),
-    ):
+    for agent_id, factory in SEEDED_AGENT_FACTORIES.items():
         existing = await agents.get(agent_id)
         profile_id = (
             existing.model.profile_id if existing is not None else fallback
