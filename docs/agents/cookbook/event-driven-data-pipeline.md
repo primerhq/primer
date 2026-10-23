@@ -26,6 +26,7 @@ Stand up a tick-driven ingestion pipeline. A trigger fires on a cron schedule; i
 ```callout:info
 Primer triggers fire on a schedule (cron) or at a specific instant (delayed), not on raw HTTP webhooks. To drive ingestion from an upstream system, either expose the primer API behind a lightweight gateway or, as here, run a cron pull that the agent uses to drain a queue or inbox.
 ```
+- The default approval gates of `system::create_agent` and `trigger::create` disabled or retuned by an operator. Over MCP nothing can park for an approval, so while the gates are on, those steps are refused (`approval_required`). Run from an agent session instead, each of those calls parks until an operator approves it.
 
 ## Steps
 ### 1. Create the ingestion collection

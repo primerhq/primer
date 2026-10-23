@@ -20,6 +20,7 @@ A Telegram bot you DM to get a personal assistant. The channel trigger routes ea
 - A Telegram bot token from `@BotFather`, in the `<id>:<hash>` shape (at least 20 characters).
 - Your numeric Telegram user ID (send any message to `@userinfobot` to get it); this is the channel's `external_id`.
 - A ModelProfile for the agent's model, e.g. `anthropic-1--claude-sonnet-4-6` (see "Model profiles" in `agents`), and a workspace template available.
+- The default approval gates of `system::create_agent` and `trigger::create` disabled or retuned by an operator. Over MCP nothing can park for an approval, so while the gates are on, those steps are refused (`approval_required`). Run from an agent session instead, each of those calls parks until an operator approves it.
 
 ## Steps
 ### 1. Create the Telegram channel provider

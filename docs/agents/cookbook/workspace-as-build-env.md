@@ -20,6 +20,7 @@ Treat a workspace as a disposable build environment. Create a template carrying 
 - A Docker (or other container) workspace provider registered, with the `rust:1.83-slim` image reachable from the provider's daemon.
 - A ModelProfile for the agent's model, e.g. `anthropic-1--claude-sonnet-4-6` (see "Model profiles" in `agents`).
 - Permission to create workspace templates, agents, workspaces, and sessions over MCP.
+- The default approval gate of `system::create_agent` disabled or retuned by an operator. Over MCP nothing can park for an approval, so while the gate is on, that step is refused (`approval_required`). Run from an agent session instead, the call parks until an operator approves it.
 
 ## Steps
 ### 1. Create the build-env template

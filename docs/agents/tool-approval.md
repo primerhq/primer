@@ -70,7 +70,12 @@ has no pause/resume primitive. So if you add an approval policy to a
 tool that was previously available over MCP, it silently disappears
 from external `tools/list`. This is by design; agents reaching primer
 over MCP can't sit through a human approval loop, so the tool
-becomes inaccessible. To restore it: drop the policy.
+becomes inaccessible. To restore it: drop the policy. This includes the
+tools the platform gates by default: over MCP, every create, update and
+delete of an agent, a graph or a trigger (`crud`, and the `system` and
+`trigger` tools such as `system::create_agent`, `trigger::create` and
+the deletes) is refused (`approval_required`) unless the operator
+disables or retunes its gate.
 
 ## Mental model
 

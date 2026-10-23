@@ -21,6 +21,7 @@ Every weekday at 09:00 local time, a scheduled trigger starts a fresh agent sess
 - An embedding provider id and a vector search provider id for the collection.
 - A ModelProfile for the agent's model, e.g. `anthropic-1--claude-sonnet-4-6` (see "Model profiles" in `agents`).
 - A materialised workspace (see `cookbook/create-and-run-a-session`) whose id is threaded into the subscription.
+- The default approval gates of `system::create_agent` and `trigger::create` disabled or retuned by an operator. Over MCP nothing can park for an approval, so while the gates are on, those steps are refused (`approval_required`). Run from an agent session instead, each of those calls parks until an operator approves it.
 
 ## Steps
 ### 1. Create the knowledge collection
