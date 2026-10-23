@@ -168,10 +168,10 @@ async def ensure_main_operator_session(
       G7-12): a new display name, another login source (password or SSO) or a role change keeps the same session; an API
       token is its own principal. One query, filtered in storage on the workspace, ``initiated_by.id``,
       ``binding.agent_id`` and the status, reads them: never a scan of the workspace's sessions.
-    * **A session the caller can no longer drive is not theirs any more.** One whose recorded rank is above the caller's
-      current one (an admin's main session, after the admin was demoted) would refuse the caller's own steer
-      (:func:`primer.authz.may_drive`, lead ruling 2), so it is passed over and the caller gets a new main session at
-      their current rank. A promotion does not need one: the session keeps running, at the rank it was created with.
+    * **A role change keeps the session, demotion included.** A demoted admin gets their OWN main session back: their
+      steer of it is a live request on a session they started, which :func:`primer.authz.may_drive` always allows
+      (``own_session``, review of #853 N1), and its runs execute at their current role, which caps the recorded admin
+      rank (``resolve_run_principal``). A promotion keeps it too; it runs at the rank it was created with.
     * **A created session is named ``main`` and runs as the caller.** ``initiated_by`` carries the caller's role, so the
       session clears exactly the caller's role floor (A-20): an admin's main session can call the admin tools through
       the operator, a user's cannot. It is made exactly as the workspace-create seed makes its ``main`` (the plain
@@ -194,8 +194,6 @@ async def ensure_main_operator_session(
         create_session,
     )
 
-    from primer.authz import may_drive
-
     def _is_callers_open_operator(row: WorkspaceSession) -> bool:
         return (
             row.workspace_id == workspace_id
@@ -203,7 +201,6 @@ async def ensure_main_operator_session(
             and row.initiated_by is not None
             and (row.initiated_by.type, row.initiated_by.id) == (initiated_by.type, initiated_by.id)
             and getattr(row.binding, "agent_id", None) == RESERVED_OPERATOR_AGENT
-            and may_drive(initiated_by, row.initiated_by)
         )
 
     def _eq(field: str, value: str) -> Predicate:

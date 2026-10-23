@@ -208,10 +208,17 @@ def _refuse_outranked(ctx: ToolContext | None, row: WorkspaceSession) -> ToolCal
     carries the account's current role, so it may always act on a session its own account or token started (``own_session``, N1); a run may not
     (a trigger-capped run carries an admin's identity at a lower rank).
     """
-    from primer.authz import OUTRANKED_MESSAGE, may_drive
+    from primer.authz import OUTRANKED_MESSAGE, may_drive, rank_label
+    from primer.session.peer_messages import REFUSE_RANK
 
     if may_drive(_caller_principal(ctx), row.initiated_by, own_session=ctx is None):
         return None
+    if ctx is not None and ctx.session_id:
+        # From a session: the words a message, a steer and a restart from a session are refused in (one refusal text, review of #853 round 2).
+        return _err(
+            REFUSE_RANK.format(session_id=row.id, target_rank=rank_label(row.initiated_by), sender_rank=rank_label(run_principal(ctx))),
+            error_type="forbidden",
+        )
     return _err(OUTRANKED_MESSAGE, error_type="forbidden")
 
 

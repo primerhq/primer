@@ -29,6 +29,8 @@ if TYPE_CHECKING:
 
 
 _ROLE_RANK = {"restricted": 0, "user": 1, "admin": 2}
+#: The ``system`` principal's rank: above every role (:func:`principal_rank`).
+_SYSTEM_RANK = len(_ROLE_RANK)
 
 
 def principal_rank(ref: "Principal | PrincipalRef | None") -> int:
@@ -49,7 +51,7 @@ def principal_rank(ref: "Principal | PrincipalRef | None") -> int:
     if ref is None:
         return _ROLE_RANK["user"]
     if ref.type == "system":
-        return len(_ROLE_RANK)
+        return _SYSTEM_RANK
     return _ROLE_RANK.get(ref.role, -1)
 
 
@@ -80,15 +82,23 @@ def may_drive(
 
     ``None`` ranks as an ordinary user on either side (:func:`principal_rank`).
 
+    An admin acts on a session recorded as ``system`` too (review of #853, round 2): a session created while auth was disabled, a fire whose
+    trigger and subscription owners are both system. An admin already clears every role floor, so ranking it with the system principal here
+    gains no power; without it no person could cancel, steer, resume or restart such a session.
+
     ``own_session`` (review of #853, N1): a live request principal (a person's REST call, an MCP call with no calling session) may always act on a
     session its own account or token started (:func:`same_principal`), whatever ranks they carry, so a demoted admin is not locked out of their own
     sessions. That is safe because the request carries the account's CURRENT role and the session's runs execute at most at it (the creator's current
     role caps every run, ``resolve_run_principal``). It is NOT offered to a run (a message or a steer from another session): a trigger-capped run
     carries an admin's identity at ``user`` rank, and that admin's own sessions still run at admin.
     """
-    if principal_rank(actor) >= principal_rank(target_creator):
+    actor_rank = principal_rank(actor)
+    if actor_rank == _ROLE_RANK["admin"]:
+        actor_rank = _SYSTEM_RANK
+    if actor_rank >= principal_rank(target_creator):
         return True
     return own_session and same_principal(actor, target_creator)
+
 
 
 #: The refusal a person or an API client reads when :func:`may_drive` says no: fixed, so it names neither the session's creator nor its rank.
