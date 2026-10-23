@@ -32,7 +32,7 @@ from primer.int.toolset import ToolsetProvider
 from primer.model.agent import Agent, AgentModel
 from primer.model.chat import Done, Message, StreamEvent, TextDelta, Tool, ToolCallEnd, ToolCallPart, ToolCallStart, ToolResultPart
 from primer.model.scheduler import WorkerConfig
-from primer.model.tool_approval import ToolApprovalPolicy
+from primer.model.tool_approval import ToolApprovalPolicy, ToolApprovalRecord
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
 from primer.model.yield_ import Yielded, YieldToWorker, gate_id_of, with_wake_gate
 from primer.session.dispatch import SessionDispatchDeps, run_one_session_turn
@@ -297,6 +297,10 @@ async def test_a_second_gated_call_of_the_round_parks_the_session_again_carrying
         assert _ran(rec) == ["call-g", "call-a", "call-b"]
     assert [r["payload"]["call_id"] for r in session.logged("tool_result")] == [rows[GATED], rows["rec__user_a"], rows[SECOND_GATE], rows["rec__user_b"]], (
         "each call's result is recorded once, under its row"
+    )
+    audit = sorted(session.storage.get_storage(ToolApprovalRecord)._data.values(), key=lambda record: record.decided_at)
+    assert [(r.tool_call_id, r.tool_name, r.decision) for r in audit] == [("call-g", GATED, "approved"), ("call-h", SECOND_GATE, second)], (
+        "each gate of the round has its own approval record"
     )
 
 
