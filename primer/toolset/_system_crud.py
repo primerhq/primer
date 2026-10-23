@@ -2160,11 +2160,19 @@ def _document_extras(
         _get_content,
     )
 
+    collections = storage_provider.get_storage(Collection)
+
     async def _put_document(arguments: dict[str, Any]) -> ToolCallResult:
         try:
             args = _PutDocumentArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        coll = await collections.get(args.collection_id)
+        if coll is not None and coll.system:
+            return _err(
+                f"collection {args.collection_id!r} is system-owned and read-only",
+                error_type="forbidden",
+            )
         try:
             doc = await service_factory().upsert(
                 collection_id=args.collection_id,
@@ -2260,6 +2268,12 @@ def _document_extras(
             args = _MoveDocumentArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        coll = await collections.get(args.collection_id)
+        if coll is not None and coll.system:
+            return _err(
+                f"collection {args.collection_id!r} is system-owned and read-only",
+                error_type="forbidden",
+            )
         try:
             await service_factory().move(
                 collection_id=args.collection_id, src=args.src, dst=args.dst

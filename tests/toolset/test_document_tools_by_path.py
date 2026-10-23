@@ -169,3 +169,25 @@ async def test_move_conflict_tool_error(tools):
     )
     assert mv.is_error
     assert json.loads(mv.output)["type"] == "conflict"
+
+
+async def test_put_and_move_refuse_system_collection(tools):
+    provider, sp = tools
+    await sp.get_storage(Collection).create(
+        Collection(id="system", description="system", system=True)
+    )
+    put_res = await call(
+        provider,
+        "put_document",
+        {"collection_id": "system", "path": "index", "content": "overwritten"},
+    )
+    assert put_res.is_error
+    assert json.loads(put_res.output)["type"] == "forbidden"
+
+    mv_res = await call(
+        provider,
+        "move_document",
+        {"collection_id": "system", "from": "index", "to": "moved"},
+    )
+    assert mv_res.is_error
+    assert json.loads(mv_res.output)["type"] == "forbidden"

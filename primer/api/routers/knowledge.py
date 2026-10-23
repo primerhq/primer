@@ -1023,6 +1023,17 @@ async def _unindex_document_hook(
         )
 
 
+async def _document_pre_delete(
+    stored: Document, request: Request
+) -> None:
+    """on_pre_delete hook: block deleting documents of system collections,
+    then drop the document's indexed chunks before the row is removed."""
+    await _reject_system_collection(
+        stored.collection_id, request, verb="deleted",
+    )
+    await _unindex_document_hook(stored, request)
+
+
 document_router = make_crud_router(
     model_cls=Document,
     storage_dep=get_document_storage,
@@ -1033,7 +1044,7 @@ document_router = make_crud_router(
     on_pre_update=_document_pre_update,
     on_create=_index_document_hook,
     on_update=_index_document_hook,
-    on_pre_delete=_unindex_document_hook,
+    on_pre_delete=_document_pre_delete,
 )
 
 
