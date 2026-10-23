@@ -215,6 +215,10 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
     initialClass: null,
     editRow: null,
   });
+  // PC_RegisterOverlay reports a successful save and then reports its close.
+  // A panel-class save uses the first callback to open the created provider's
+  // detail; the following close must not replace that navigation with the list.
+  const savedPanelRef = React.useRef(false);
 
   const refetch = React.useCallback(() => {
     setReloadKey((k) => k + 1);
@@ -340,6 +344,10 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
   };
 
   const closeOverlay = () => {
+    if (savedPanelRef.current) {
+      savedPanelRef.current = false;
+      return;
+    }
     setOverlayState({ open: false, initialClass: null, editRow: null });
     setInstanceId(null);
     if (typeof onNavigate === "function") {
@@ -400,6 +408,18 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
   });
 
   const activeKlass = classKey !== "all" ? (window.PC_classByKey ? window.PC_classByKey(classKey) : (window.PC_CLASSES || []).find((c) => c.key === classKey)) : null;
+
+  const savedFromOverlay = (row) => {
+    if (activeKlass && activeKlass.form === "panel" && row && row.id) {
+      savedPanelRef.current = true;
+      setOverlayState({ open: false, initialClass: null, editRow: null });
+      refetch();
+      openProvider(activeKlass, row);
+      return;
+    }
+    closeOverlay();
+    refetch();
+  };
 
   // Panel class inline detail
   if (instanceId && activeKlass && activeKlass.form === "panel") {
@@ -522,10 +542,7 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
           initialClass={overlayState.initialClass}
           editRow={overlayState.editRow}
           onClose={closeOverlay}
-          onSaved={() => {
-            closeOverlay();
-            refetch();
-          }}
+          onSaved={savedFromOverlay}
           onDeleted={() => {
             closeOverlay();
             refetch();
