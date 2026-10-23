@@ -1,7 +1,7 @@
 """One card view model for every Platform page, ``card(row, con)``, and a card status that can act (Platform revamp Plan 01, Task 3; seam I-8).
 
-Every entry of ``NV_PLAT_PAGES`` answers ``card(row, con)`` with ONE shape: ``{id, name, sub, badge?, icon?, status?, facts}``. ``id`` is the record id
-(the scoped id for a tool); ``badge`` is a short neutral word ("built in", the toolset of a tool, a backend kind); ``status`` is ``{label, tone}``
+Every entry of ``NV_PLAT_PAGES`` answers ``card(row, con)`` with ONE shape: ``{id, name, sub, label?, badge?, icon?, status?, facts}``. ``id`` is the record id
+(the scoped id for a tool); ``label``, when set, names the card's controls where ``name`` alone is ambiguous (a tool's scoped id, audit G1-21); ``badge`` is a short neutral word ("built in", the toolset of a tool, a backend kind); ``status`` is ``{label, tone}``
 with ``tone`` one of ok, warn, error and muted, and may carry ``onClick`` and ``testid``, which makes it a button (an "Internal search: off" chip
 that opens a dialog, Plan 06); ``facts`` holds strings and ``[key, value]`` pairs (``NV_fact`` answers null for a missing value, and every renderer
 drops it). ``con`` is the console (``NV_useConsole()``), so a status can open a dialog or an overlay. The old ``chip``, ``glyph``, ``color`` and
@@ -19,7 +19,7 @@ import pytest
 from tests.ui._platform_page_harness import platform_navs, platform_page_context
 from tests.ui.test_platform_kit_page import css_body, declarations
 
-ALLOWED = {"id", "name", "sub", "badge", "icon", "status", "facts"}
+ALLOWED = {"id", "name", "sub", "label", "badge", "icon", "status", "facts"}
 TONES = {"ok", "warn", "error", "muted"}
 NAVS = platform_navs()
 
@@ -170,3 +170,11 @@ def test_the_agents_card_reads_the_model_profile_and_drops_the_status_chip(page_
     vm = card(page_ctx, "agents", '{ id: "a", name: "builder", model: { profile_id: "p1" } }')
     assert ["profile", "p1"] in [f for f in vm["facts"] if f is not None], "the profile fact reads model.profile_id"
     assert vm.get("status") is None, "no status chip: the list rows carry no status"
+
+
+def test_a_tool_card_is_labelled_by_its_scoped_id(page_ctx) -> None:
+    """Audit G1-21: the tool card is named by its bare tool name, which two toolsets may share; its controls are named by the scoped id."""
+    vm = card(page_ctx, "tools", '{ id: "web__search", description: "Search the web" }')
+    assert vm["name"] == "search" and vm["label"] == "web__search"
+    assert js(page_ctx, 'NV_platCardProps("tools", NV_PLAT_PAGES.tools.card({ id: "web__search" }, CON)).label') == "web__search"
+    assert page_ctx.eval('NV_platCardProps("agents", { id: "a1", name: "a1", facts: [] }).label === undefined')

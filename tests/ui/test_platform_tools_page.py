@@ -186,3 +186,10 @@ def test_the_tools_page_keeps_its_cards_ids_scoped_so_two_toolsets_may_each_have
     _tools(page_ctx, "web__search", "docs__search")
     assert _ids(page_ctx) == ["web__search", "docs__search"]
     assert js(page_ctx, "MR.texts().filter(function (t) { return t === 'search'; }).length") == 2
+
+
+def test_two_tools_named_search_have_controls_a_screen_reader_can_tell_apart(page_ctx) -> None:
+    """Audit G1-21: each tool card is named by its scoped id for its controls ("Open web__search"), not by the bare name both share."""
+    _tools(page_ctx, "web__search", "docs__search")
+    assert page_ctx.eval("MR.find('pk-card-open:web__search').props['aria-label']") == "Open web__search"
+    assert page_ctx.eval("MR.find('pk-card-open:docs__search').props['aria-label']") == "Open docs__search"

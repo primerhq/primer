@@ -323,13 +323,13 @@ function NV_platVerbSpecs() {
   return specs;
 }
 
-// The props PK_Card takes for one card, read off the entry's card view model (seam I-8): the record id, the name as the title, the type line as the
-// subtitle, the badge, the status (an onClick and a testid ride along, so an actionable status stays a button), the facts and the icon. A card with
-// no icon of its own draws its page's (NV_PLAT_ICONS, read when called). Pure, and kept in this JSX-free stretch of the file because
-// tests/ui/test_platform_list_page.py runs it on its own.
+// The props PK_Card takes for one card, read off the entry's card view model (seam I-8): the record id, the name as the title, the label (the name
+// its controls use, when the title alone is ambiguous), the type line as the subtitle, the badge, the status (an onClick and a testid ride along,
+// so an actionable status stays a button), the facts and the icon. A card with no icon of its own draws its page's (NV_PLAT_ICONS, read when
+// called). Pure, and kept in this JSX-free stretch of the file because tests/ui/test_platform_list_page.py runs it on its own.
 function NV_platCardProps(nav, vm) {
   return {
-    id: vm.id, title: vm.name, subtitle: vm.sub, badge: vm.badge, status: vm.status, facts: vm.facts,
+    id: vm.id, title: vm.name, label: vm.label, subtitle: vm.sub, badge: vm.badge, status: vm.status, facts: vm.facts,
     icon: vm.icon || { path: NV_PLAT_ICONS[nav] },
   };
 }
@@ -342,9 +342,10 @@ function NV_platFilterText(vm) {
 
 // Per-entity page config. list() returns a promise of {items}; card(row, con)
 // maps a row to the ONE card view model of every Platform page (seam I-8):
-//   { id, name, sub, badge?, icon?: { path, tone? }, status?: { label, tone:
+//   { id, name, sub, label?, badge?, icon?: { path, tone? }, status?: { label, tone:
 //     "ok"|"warn"|"error"|"muted", onClick?, testid?, title? }, facts }
-// id is the record id (the scoped id for a tool); badge is a short neutral
+// id is the record id (the scoped id for a tool); label, when set, names the
+// card's controls where name alone is ambiguous (a tool's scoped id); badge is a short neutral
 // word ("built in", a backend kind); facts holds strings and [key, value]
 // pairs, and the null NV_fact answers for a missing value, which every
 // renderer drops; con is the console (NV_useConsole()), so a status with an
@@ -494,8 +495,8 @@ var NV_PLAT_PAGES = {
       var bare = sep > 0 ? scoped.slice(sep + 2) : scoped;
       var desc = String(row.description || "").split("\n")[0];
       return {
-        // the scoped id is the card's id: two toolsets may each have a "search"
-        id: scoped, name: bare, sub: desc,
+        // the scoped id is the card's id and the name of its controls ("Open web__search"): two toolsets may each have a "search" (audit G1-21)
+        id: scoped, name: bare, label: scoped, sub: desc,
         badge: toolset || undefined,
         facts: [NV_fact("scoped id", scoped)],
       };

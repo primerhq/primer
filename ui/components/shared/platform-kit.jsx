@@ -189,6 +189,8 @@ function PK_CardMenu(props) {
 // is stretched over the whole card (.pk-card-open::after), so a click anywhere on it opens it and a keyboard user reaches it by Tab, and the
 // menu and an actionable status sit above the stretch. A status with onClick is a button named by its label (seam I-8); without one it is text.
 // A status's `title`, when it has one, is its tooltip (why a toolset is unreachable).
+// `label`, when set, is the name the card's controls use instead of the title ("Open <label>", "More actions for <label>"), for a card whose title
+// alone is ambiguous: two toolsets may each have a tool titled "search", and each card is labelled by its scoped id (audit G1-21).
 // A fact is a string (one line) or a [key, value] pair. The title is cut with an ellipsis when it is long, and the stretched Open covers it, so
 // the card's full name rides on the Open button as its `title` (a tooltip over the whole card).
 function PK_Card(props) {
@@ -198,6 +200,7 @@ function PK_Card(props) {
   var facts = PK_cardFacts(props.facts);
   var menu = props.menu && props.menu.length ? props.menu : null;
   var statusId = (status && status.testid) || "pk-card-status:" + id;
+  var name = props.label || props.title;
   return (
     <div className="pk-card" data-testid={"pk-card:" + id}>
       <div className="pk-card-top">
@@ -216,7 +219,7 @@ function PK_Card(props) {
         ) : status ? (
           <span className="pk-card-status" data-tone={status.tone} data-testid={statusId} title={status.title || undefined}>{status.label}</span>
         ) : null}
-        {menu ? <PK_CardMenu id={id} title={props.title} items={menu} /> : null}
+        {menu ? <PK_CardMenu id={id} title={name} items={menu} /> : null}
       </div>
       <div className="pk-card-title" title={props.title}>{props.title}</div>
       {props.subtitle ? <div className="pk-card-sub">{props.subtitle}</div> : null}
@@ -234,7 +237,7 @@ function PK_Card(props) {
         </div>
       ) : null}
       <div className="pk-card-foot">
-        <button type="button" className="pk-card-open" data-testid={"pk-card-open:" + id} aria-label={"Open " + props.title}
+        <button type="button" className="pk-card-open" data-testid={"pk-card-open:" + id} aria-label={"Open " + name}
           title={props.title} onClick={function () { props.onOpen(); }}>Open</button>
       </div>
     </div>

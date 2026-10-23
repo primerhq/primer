@@ -528,3 +528,16 @@ def test_the_card_grid_holds_its_children(kit) -> None:
              ' React.createElement(PK_Card, Object.assign({ key: "b" }, ' + CARD.replace('"p1"', '"p2"') + '))] })')
     assert kit.eval('MR.find("g").props.className') == "pk-grid"
     assert kit.eval('MR.findAll("pk-card:").length') == 2
+
+
+def test_a_card_with_a_label_is_named_by_it_where_its_title_is_ambiguous(kit) -> None:
+    """Audit G1-21: two toolsets' ``search`` tools were both "Open search" and "More actions for search". A card may carry ``label``, the name
+    its controls use instead of the title; the title drawn and its tooltip stay as they are."""
+    kit.eval('MR.mount(PK_Card, { id: "web__search", icon: { path: "M0 0h4" }, title: "search", label: "web__search", onOpen: rec("open"),'
+             ' menu: [{ label: "Delete", onClick: rec("delete"), testid: "d:web" }] })')
+    assert kit.eval('MR.find("pk-card-open:web__search").props["aria-label"]') == "Open web__search"
+    assert kit.eval("MR.find('pk-card-menu:web__search').props['aria-label']") == "More actions for web__search"
+    kit.eval("MR.click('pk-card-menu:web__search')")
+    assert kit.eval("MR.find('pk-card-menu-list:web__search').props['aria-label']") == "Actions for web__search"
+    assert kit.eval('MR.find("pk-card-open:web__search").props.title') == "search", "the tooltip is still the full title"
+    assert "search" in js(kit, "MR.texts()")
