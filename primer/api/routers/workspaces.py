@@ -1656,6 +1656,8 @@ async def compact_session_endpoint(
             model_name=llm_model.model_name or llm_model.profile_id,
             context_length=llm_model.context_length,
             fixed_overhead=fixed_overhead,
+            # The profile's reasoning level and extended reach the summariser, as on an in-turn compaction (audit G2-05).
+            config=llm_model.config,
         )
 
     io_shim = _WorkspaceIOShim(workspace_registry=registry)

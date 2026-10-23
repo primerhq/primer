@@ -469,3 +469,59 @@ async def test_the_openapi_schema_shows_the_compact_response_and_the_413(app):
     post = spec["paths"]["/v1/workspaces/{workspace_id}/sessions/{session_id}/compact"]["post"]
     assert "413" in post["responses"] and "200" in post["responses"]
 
+
+
+@pytest.mark.asyncio
+async def test_the_summariser_call_applies_the_profiles_config(client, app, fake_storage_provider, monkeypatch):
+    """Audit G2-05: the route resolved the profile but handed the summariser only its model name and window, so the
+    profile's reasoning level and ``extended`` never reached the call (an in-turn compaction applies them). The call is
+    made through the real ``openchat`` adapter and its whole body is read at the HTTP transport."""
+    from openai import AsyncOpenAI
+    from pydantic import HttpUrl, SecretStr
+
+    from primer.llm.openchat import OpenChatLLM
+    from primer.model.model_profile import ModelProfile, ModelProfileConfig, ReasoningLevel
+    from primer.model.provider import Limits, LLMProvider, LLMProviderType, OpenChatConfig, OpenChatFlavor
+    from tests.llm.test_openrouter import _sdk_http_module
+
+    http = _sdk_http_module()
+    bodies: list[dict] = []
+    sse = (
+        b'data: {"id":"x","object":"chat.completion.chunk","created":1,"model":"o3","choices":[{"index":0,"delta":{"role":"assistant","content":"the story so far"},"finish_reason":null}]}\n\n'
+        b'data: {"id":"x","object":"chat.completion.chunk","created":1,"model":"o3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+        b"data: [DONE]\n\n"
+    )
+
+    def _handle(request):
+        bodies.append(json.loads(request.content))
+        return http.Response(200, content=sse, headers={"content-type": "text/event-stream"})
+
+    real = AsyncOpenAI
+    monkeypatch.setattr(
+        "primer.llm.openchat.AsyncOpenAI",
+        lambda **kw: real(**kw, http_client=http.AsyncClient(transport=http.MockTransport(_handle))),
+    )
+    llm = OpenChatLLM(LLMProvider(
+        id="openai-chat", provider=LLMProviderType.OPENCHAT,
+        config=OpenChatConfig(url=HttpUrl("https://api.openai.com/v1/"), api_key=SecretStr("sk-test"), flavor=OpenChatFlavor.OPENAI),
+        limits=Limits(max_concurrency=1),
+    ))
+    ws, _ = await _journey(app, fake_storage_provider, monkeypatch, llm=llm)
+    # The agent's profile, as the route resolves it from storage: o3, a reasoning level and a passthrough knob.
+    profiles = fake_storage_provider.get_storage(ModelProfile)
+    row = await profiles.get("p--m")
+    await profiles.update(row.model_copy(update={
+        "model_name": "o3", "config": ModelProfileConfig(reasoning=ReasoningLevel.LOW, extended={"seed": 7}),
+    }))
+
+    r = await client.post("/v1/workspaces/ws-1/sessions/j-1/compact")
+
+    assert r.status_code == 200, r.text
+    assert "the story so far" in r.json()["summary"]
+    assert len(bodies) == 1
+    body = dict(bodies[0])
+    assert body.pop("messages"), "the summary request"
+    assert body == {
+        "model": "o3", "stream": True, "stream_options": {"include_usage": True},
+        "max_completion_tokens": 4096, "reasoning_effort": "low", "seed": 7,
+    }
