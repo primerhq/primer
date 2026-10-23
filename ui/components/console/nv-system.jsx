@@ -386,6 +386,13 @@ function NV_SysSetupCard() {
   var setBusy = busyState[1];
 
   NV_useMenuDismiss(con, "sys-setup", "nv-sys-setup-menu-btn");
+  // The menu follows the kit's menu pattern (audit G1-14): its first item takes the focus when it opens, and the arrow keys, Home and End move
+  // the focus between its items (PK_menuKeys, platform-kit.jsx).
+  var menuListRef = React.useRef(null);
+  var menuOpen = con.openMenu === "sys-setup";
+  React.useEffect(function () {
+    if (menuOpen && typeof PK_focusFirstItem === "function") PK_focusFirstItem(menuListRef);
+  }, [menuOpen]);
 
   var cardView = NV_setupCardView(setupState.data);
 
@@ -467,7 +474,6 @@ function NV_SysSetupCard() {
     ? "var(--red)"
     : "var(--green)";
 
-  var menuOpen = con.openMenu === "sys-setup";
   var PK_FoldComp = window.PK_Fold || (typeof PK_Fold !== "undefined" ? PK_Fold : null);
   var IconComp = window.Icon || (typeof Icon !== "undefined" ? Icon : null);
 
@@ -497,6 +503,8 @@ function NV_SysSetupCard() {
               className="nv-sys-setup-menu pk-card-menu-list"
               data-testid="nv-sys-setup-menu"
               role="menu"
+              ref={menuListRef}
+              onKeyDown={typeof PK_menuKeys === "function" ? PK_menuKeys : undefined}
               onClick={function (ev) { ev.stopPropagation(); }}
               onBlur={function (ev) {
                 if (NV_menuFocusLeft(ev, "nv-sys-setup-menu-btn")) con.toggleMenu(null);
@@ -553,8 +561,10 @@ function NV_SysSetupCard() {
               >
                 <div style={{ display: "flex", flexDirection: "column", gap: 2, flex: 1, minWidth: 0 }}>
                   <span style={{ fontWeight: 500 }}>{f.label}</span>
+                  {/* A detail may hold a long URL: it wraps anywhere rather than widening the row past a phone's width (audit G1-15). */}
                   {f.detail ? (
-                    <span className="muted text-sm" style={{ color: "var(--text-3)", fontSize: 11 }}>
+                    <span className="muted text-sm" data-testid={"nv-sys-setup-detail:" + f.key}
+                      style={{ color: "var(--text-3)", fontSize: 11, overflowWrap: "anywhere" }}>
                       {f.detail}
                     </span>
                   ) : null}
