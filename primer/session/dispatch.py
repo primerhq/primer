@@ -65,6 +65,7 @@ from primer.model.turn_log import (
     TurnLogYielded,
 )
 from primer.model.yield_ import CANCEL_REASON_PREEMPTED, YIELD_KIND_PREFIXES, ToolWaitPark, YieldToWorker
+from primer.authz import RUN_REFUSED_CODE, RUN_REFUSED_MESSAGE, RunRefused
 from primer.session.autonomy import session_is_autonomous
 from primer.session.enqueue import SessionWakeDeps
 from primer.session.delegation import (
@@ -75,6 +76,7 @@ from primer.session.delegation import (
 from primer.session.graph_end import graph_end_for
 from primer.session.mutation_lock import IN_LOCK_IO_TIMEOUT_S, session_lifecycle_lock
 from primer.session.pending_messages import realize_next_pending
+from primer.session.seq_reservation import reserve_next_seq
 from primer.session.turns import has_open_turn
 from primer.session.persistence import (
     TurnInvariantError,
@@ -377,11 +379,17 @@ async def run_one_session_turn(
         # session: its workspace is intact and usable once moved, so the turn fails and the session stays
         # resumable instead of ending ``failed``.
         return await pause_session_for_refused_workspace(session_storage, session_id, refused)
-    except Exception:
-        logger.exception(
-            "session %s failed to build executor; ending failed",
-            session_id,
-        )
+    except Exception as build_error:
+        if isinstance(build_error, RunRefused):
+            # The session's creator can no longer run it (G6-6; review of #853, N5): not a fault, so a warning without a traceback, and the
+            # transcript and the row say why (an ERROR record with a fixed message, ``last_turn_error``) before the session ends failed.
+            logger.warning("session %s does not run: %s; ending failed", session_id, build_error)
+            await record_refused_run(session_storage, deps.workspace_io, flipped, event_bus=deps.event_bus)
+        else:
+            logger.exception(
+                "session %s failed to build executor; ending failed",
+                session_id,
+            )
         # Serialize the terminal transition + interrupt-flag clear against
         # a concurrent resume/pause/cancel/interrupt API call (T0432-style
         # lost update; see primer.session.mutation_lock).
@@ -2583,6 +2591,47 @@ def _failure_code(exc: BaseException) -> str:
     if isinstance(exc.code, str) and exc.code:
         return exc.code
     return next((code for cls, code in _TRANSPORT_CODE_BY_CLASS if isinstance(exc, cls)), "turn_failed")
+
+
+@dataclass
+class _TickOnly:
+    """What :func:`_flush_and_tick` reads of the dispatch deps (the bus), for a writer outside a turn; with no bus there is no tap to tell."""
+
+    event_bus: Any = None
+
+    def __post_init__(self) -> None:
+        if self.event_bus is None:
+            self.event_bus = _NoTap()
+
+
+class _NoTap:
+    async def publish(self, key: str, payload: dict) -> None:
+        return None
+
+
+async def record_refused_run(session_storage: Any, workspace_io: Any, session: WorkspaceSession, *, event_bus: Any = None) -> None:
+    """Record that a run of ``session`` was refused because its creator can no longer run it (``RunRefused``; review of #853, N5).
+
+    ``last_turn_error`` (code :data:`~primer.authz.RUN_REFUSED_CODE`) on the row, and an ERROR record whose ``message`` is the fixed
+    :data:`~primer.authz.RUN_REFUSED_MESSAGE` (it names nobody) in the transcript, at a seq reserved on the row first. Called by the turn's exit
+    when the executor cannot be built for it, and by the worker pool when a resume is refused, before either ends the session ``failed``.
+    Best effort: a failure is logged and the session still ends.
+    """
+    try:
+        await _record_last_turn_error(session_storage, session.id, RUN_REFUSED_CODE, session.binding_epoch)
+        reserved = await reserve_next_seq(session_storage, session.id)
+        if reserved is None:
+            return
+        writer = WorkspaceMessageWriter(workspace_io=workspace_io, session_id=session.id, start_seq=reserved - 1)
+        # Flushed, THEN the tap is told (the rule of every exit: ``_flush_and_tick``).
+        await _flush_and_tick(_TickOnly(event_bus), writer, session.id, SessionMessageRecord(  # type: ignore[arg-type]
+            seq=1,  # overwritten by the writer's counter
+            kind=SessionMessageKind.ERROR,
+            payload={"message": RUN_REFUSED_MESSAGE, "code": RUN_REFUSED_CODE},
+            created_at=_now(),
+        ))
+    except Exception:  # noqa: BLE001 -- the record says why; the end must land whatever happens to it
+        logger.warning("session %s: the record of its refused run could not be written", session.id, exc_info=True)
 
 
 async def _record_last_turn_error(session_storage, session_id: str, code: str, binding_epoch: int) -> bool:

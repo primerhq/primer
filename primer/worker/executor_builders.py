@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from primer.model.except_ import PrimerError
+from primer.authz import RunRefused
 from primer.model.principal import PrincipalRef
 from primer.model.workspace_session import WorkspaceSession, SessionStatus
 from primer.worker.pool import _toolset_ids_from_scoped
@@ -50,11 +50,6 @@ def session_run_principal(session) -> PrincipalRef:
     :func:`resolve_run_principal` re-reads the creator's role now (lead ruling 2 of the G7 fixes, G6-6).
     """
     return getattr(session, "initiated_by", None) or PrincipalRef.unattributed()
-
-
-class RunRefused(PrimerError):
-    """A run of a session is refused because its creator can no longer be resolved: the user was deleted or disabled, or the API token was revoked
-    or has expired (G6-6, the lead's addendum to ruling 2 of the G7 fixes). Such a run does not execute at all, not even at a lower rank."""
 
 
 def _is_unattributed(ref: PrincipalRef) -> bool:
