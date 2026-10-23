@@ -187,9 +187,9 @@ def test_draft_test_connect_shows_the_mandated_reachability_only_copy() -> None:
     assert "Test connection" in test_box
 
 
-def test_draft_test_connect_is_mounted_in_the_create_modal() -> None:
+def test_draft_test_connect_is_mounted_only_for_create() -> None:
     modal = _create_modal_src()
-    assert "<SSP_TestConnectBox form={form} isLance={isLance} includeAdvanced={advancedOpened} />" in modal
+    assert "!isEdit ? <SSP_TestConnectBox form={form} isLance={isLance} includeAdvanced={advancedOpened} /> : null" in modal
 
 
 # ---- Register overlay routes SSP creation ---------------------------------

@@ -187,11 +187,11 @@ function _wpFromProvider(row) {
     k_gw_namespace: "",
     k_gw_section_name: "",
     k_gw_routing: "hostname",
-    k_gw_hostname_template: "{workspace_id}.ws.local",
+    k_gw_hostname_template: "",
     k_gw_hostname: "",
     k_gw_path_template: "/ws/{workspace_id}",
     k_gw_scheme: "ws",
-    k_gw_external_port: 80,
+    k_gw_external_port: "",
     k_gw_backend_port: 5959,
     k_image_pull_secrets: [],
   };
@@ -245,11 +245,11 @@ function _wpFromProvider(row) {
       out.k_gw_section_name = gw.section_name || "";
       const r = reach.routing || {};
       out.k_gw_routing = r.kind || "hostname";
-      out.k_gw_hostname_template = r.hostname_template || "{workspace_id}.ws.local";
+      out.k_gw_hostname_template = r.hostname_template || "";
       out.k_gw_hostname = r.hostname || "";
       out.k_gw_path_template = r.path_template || "/ws/{workspace_id}";
       out.k_gw_scheme = reach.scheme || "ws";
-      out.k_gw_external_port = reach.external_port ?? 80;
+      out.k_gw_external_port = reach.external_port ?? "";
       out.k_gw_backend_port = reach.backend_port ?? 5959;
     }
     out.k_image_pull_secrets = Array.isArray(cfg.image_pull_secrets) ? cfg.image_pull_secrets : [];
@@ -298,10 +298,40 @@ function WorkspaceProviderCreateModal({ onClose, pushToast, existing = null, onC
         setMutationError(err);
         if (err?.status === 422 && Array.isArray(err.fieldErrors)) {
           const map = {};
+          const fieldNames = {
+            root_path: "path",
+            "connection.socket_path": "c_socket_path",
+            "connection.url": "c_remote_url",
+            "connection.tls_ca": "c_remote_tls_ca",
+            "connection.tls_cert": "c_remote_tls_cert",
+            "connection.tls_key": "c_remote_tls_key",
+            "connection.path": "k_kubeconfig_path",
+            "connection.context": "k_kubeconfig_context",
+            "connection.apiserver_url": "k_sat_apiserver_url",
+            "connection.ca_data": "k_sat_ca_data",
+            "connection.token": "k_sat_token",
+            "connection.namespace": "k_sat_namespace",
+            namespace: "k_namespace",
+            "reachability.url_template": "k_ingress_url_template",
+            "reachability.gateway.name": "k_gw_name",
+            "reachability.gateway.namespace": "k_gw_namespace",
+            "reachability.gateway.section_name": "k_gw_section_name",
+            "reachability.routing.hostname_template": "k_gw_hostname_template",
+            "reachability.routing.hostname": "k_gw_hostname",
+            "reachability.routing.path_template": "k_gw_path_template",
+            "reachability.scheme": "k_gw_scheme",
+            "reachability.external_port": "k_gw_external_port",
+            "reachability.backend_port": "k_gw_backend_port",
+          };
+          const discriminatorNames = new Set([
+            "local", "container", "kubernetes", "socket", "remote", "in_cluster", "kubeconfig", "service_account_token",
+            "host_port", "bridge_network", "ingress", "gateway_httproute", "hostname", "path_prefix",
+          ]);
           for (const fe of err.fieldErrors) {
             const loc = (fe.loc || []).filter((s) => s !== "body");
-            map[loc.join(".")] = fe.msg;
-            if (loc.length > 0) map[loc[loc.length - 1]] = fe.msg;
+            if (loc[0] === "config") loc.shift();
+            const path = loc.filter((s) => !discriminatorNames.has(s)).join(".");
+            map[fieldNames[path] || path] = fe.msg;
           }
           setFieldErrors(map);
         } else {
@@ -356,8 +386,11 @@ function WorkspaceProviderCreateModal({ onClose, pushToast, existing = null, onC
       } else {
         connection = { kind: "remote", url: form.c_remote_url };
         if (form.c_remote_tls_ca) connection.tls_ca = form.c_remote_tls_ca;
+        else if (isEdit) connection.tls_ca = null;
         if (form.c_remote_tls_cert) connection.tls_cert = form.c_remote_tls_cert;
+        else if (isEdit) connection.tls_cert = null;
         if (form.c_remote_tls_key) connection.tls_key = form.c_remote_tls_key;
+        else if (isEdit) connection.tls_key = null;
       }
       let reachability;
       if (form.c_reach_kind === "host_port") {
@@ -379,6 +412,7 @@ function WorkspaceProviderCreateModal({ onClose, pushToast, existing = null, onC
       } else if (form.k_conn_kind === "kubeconfig") {
         connection = { kind: "kubeconfig", path: form.k_kubeconfig_path };
         if (form.k_kubeconfig_context) connection.context = form.k_kubeconfig_context;
+        else if (isEdit) connection.context = null;
       } else {
         connection = {
           kind: "service_account_token",
@@ -387,6 +421,7 @@ function WorkspaceProviderCreateModal({ onClose, pushToast, existing = null, onC
           token: form.k_sat_token,
         };
         if (form.k_sat_namespace) connection.namespace = form.k_sat_namespace;
+        else if (isEdit) connection.namespace = null;
       }
       let reachability;
       if (form.k_reach_kind === "in_cluster") {
@@ -396,7 +431,9 @@ function WorkspaceProviderCreateModal({ onClose, pushToast, existing = null, onC
       } else if (form.k_reach_kind === "gateway_httproute") {
         const gateway = { name: form.k_gw_name };
         if (form.k_gw_namespace) gateway.namespace = form.k_gw_namespace;
+        else if (isEdit) gateway.namespace = null;
         if (form.k_gw_section_name) gateway.section_name = form.k_gw_section_name;
+        else if (isEdit) gateway.section_name = null;
 
         let routing;
         if (form.k_gw_routing === "hostname") {
@@ -694,6 +731,7 @@ function WorkspaceProviderDetail({ providerId, pushToast, onBack = null, onDelet
     (signal) => apiFetch("GET", "/workspace_templates?limit=200", null, { signal }),
     { deps: [providerId] }
   );
+  const templatesState = window.primerApi.resourceState(templates);
   const referencingTemplates = React.useMemo(() => {
     const all = templates.data?.items ?? [];
     return all.filter((t) => t.provider_id === providerId);
@@ -745,14 +783,15 @@ function WorkspaceProviderDetail({ providerId, pushToast, onBack = null, onDelet
   return (
     <div className="col" style={{ gap: 14 }}>
       <div>
-        <a
+        <button
+          type="button"
           className="link muted text-sm"
           data-testid="wp-detail-back"
           onClick={handleBack}
-          style={{ cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}
+          style={{ cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4, border: 0, background: "none", padding: 0 }}
         >
           ‹ Workspace Providers
-        </a>
+        </button>
       </div>
       <div className="panel">
         <div className="panel-body" style={{ padding: "14px 18px", display: "flex", alignItems: "center", gap: 14 }}>
@@ -802,7 +841,11 @@ function WorkspaceProviderDetail({ providerId, pushToast, onBack = null, onDelet
             </div>
           </PK_Section>
           <PK_Section title="TEMPLATES" testid="wp-section-templates" cols={1}>
-            {referencingTemplates.length === 0 ? (
+            {templatesState === "loading" ? (
+              <div className="muted text-sm" role="status" data-testid="wp-templates-loading">Loading templates...</div>
+            ) : templatesState === "stuck" ? (
+              <Banner kind="error" title="Couldn't load templates" detail={templates.error?.detail || templates.error?.message} actions={<Btn size="sm" icon="refresh" onClick={templates.refetch}>Retry</Btn>} />
+            ) : referencingTemplates.length === 0 ? (
               <div className="empty" style={{ padding: 20 }}>
                 <div className="head">No templates bound</div>
                 <div className="sub">No workspace_templates reference this provider yet.</div>
