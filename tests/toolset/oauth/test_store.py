@@ -30,7 +30,7 @@ from primer.model.mcp_oauth import McpOAuthClient, McpOAuthPendingSignIn, McpOAu
 from primer.model.provider import SqliteConfig
 from primer.storage import raw_generation
 from primer.storage.sqlite import SqliteStorageProvider
-from primer.toolset.oauth.store import McpOAuthStore, pending_key
+from primer.toolset.oauth.store import McpOAuthStore, binding_digest, pending_key
 
 NOW = datetime(2026, 10, 18, 12, 0, 0, tzinfo=UTC)
 KEY = "store-test-key-0123456789"
@@ -356,6 +356,19 @@ async def test_a_pending_sign_in_is_stored_under_a_hash_of_its_state(store, prov
     assert await store.take_pending(pending_key(state), now=NOW) is None, "the stored key is not the capability"
     taken = await store.take_pending(state, now=NOW)
     assert taken is not None and taken.id == pending_key(state) and taken.toolset_id == "kb"
+
+
+async def test_take_pending_with_a_binding_takes_only_the_row_started_with_it(store):
+    """Audit G4-01: the store gives a pending sign-in only to the nonce it was started with; another nonce leaves the row to its own browser."""
+    await store.put_pending(pending_row(store, browser_binding=binding_digest("nonce-of-the-starting-browser")))
+    assert await store.take_pending("state-1", now=NOW, browser_binding="another-nonce") is None
+    taken = await store.take_pending("state-1", now=NOW, browser_binding="nonce-of-the-starting-browser")
+    assert taken is not None and taken.toolset_id == "kb"
+
+
+async def test_a_row_without_a_binding_is_bound_to_nothing(store):
+    await store.put_pending(pending_row(store))
+    assert await store.take_pending("state-1", now=NOW, browser_binding="any-nonce") is None
 
 
 async def test_take_pending_removes_the_row(store, provider):

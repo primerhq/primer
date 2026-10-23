@@ -38,6 +38,7 @@ from primer.toolset.oauth.service import (
 from primer.toolset.oauth.store import McpOAuthStore, pending_key
 from tests._support.mock_oauth_mcp_fixtures import mock_oauth_mcp  # noqa: F401 - the fixture
 from tests.toolset.oauth._service_helpers import (
+    BINDING,
     KEY,
     NOW,
     OTHER_KEY,
@@ -121,7 +122,7 @@ def test_the_fingerprint_covers_the_sign_in_settings_and_not_the_secret(mock_oau
 
 
 async def test_start_returns_an_authorize_url_and_stores_a_pending_sign_in(svc, target, store, mock_oauth_mcp):
-    start = await svc.start_sign_in(target, redirect_uri=REDIRECT, started_by="admin")
+    start = await svc.start_sign_in(target, redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
     q = parse_qs(urlsplit(start.authorize_url).query)
     assert start.authorize_url.startswith(mock_oauth_mcp.issuer + "/authorize")
     assert q["code_challenge_method"] == ["S256"] and q["resource"] == [mock_oauth_mcp.mcp_url] and q["redirect_uri"] == [REDIRECT]
@@ -139,16 +140,16 @@ async def test_start_returns_an_authorize_url_and_stores_a_pending_sign_in(svc, 
 
 
 async def test_start_reuses_the_registration(svc, target, store, mock_oauth_mcp):
-    first = await svc.start_sign_in(target, redirect_uri=REDIRECT, started_by="admin")
-    second = await svc.start_sign_in(target, redirect_uri=REDIRECT, started_by="admin")
+    first = await svc.start_sign_in(target, redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
+    second = await svc.start_sign_in(target, redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
     assert len(mock_oauth_mcp.state.registrations) == 1
     client_ids = {parse_qs(urlsplit(start.authorize_url).query)["client_id"][0] for start in (first, second)}
     assert client_ids == {(await store.get_client("kb")).client_id}
 
 
 async def test_start_reregisters_when_the_redirect_uri_changes(svc, target, store, mock_oauth_mcp):
-    await svc.start_sign_in(target, redirect_uri=REDIRECT, started_by="admin")
-    await svc.start_sign_in(target, redirect_uri=OTHER_REDIRECT, started_by="admin")
+    await svc.start_sign_in(target, redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
+    await svc.start_sign_in(target, redirect_uri=OTHER_REDIRECT, started_by="admin", browser_binding=BINDING)
     assert [r["redirect_uris"] for r in mock_oauth_mcp.state.registrations] == [[REDIRECT], [OTHER_REDIRECT]]
     assert (await store.get_client("kb")).redirect_uri == OTHER_REDIRECT
 
@@ -160,16 +161,16 @@ async def test_start_reregisters_when_the_stored_registration_cannot_be_read(svc
     other = McpOAuthStore(fake_storage_provider, SecretBox.from_key_material(OTHER_KEY))
     await other.put_client(McpOAuthClient(id="kb", issuer=mock_oauth_mcp.issuer, redirect_uri=REDIRECT, client_id="old-client",
                                           client_secret_enc=other.seal("old-secret"), registered_at=NOW))
-    start = await svc.start_sign_in(target, redirect_uri=REDIRECT, started_by="admin")
+    start = await svc.start_sign_in(target, redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
     assert len(mock_oauth_mcp.state.registrations) == 1 and parse_qs(urlsplit(start.authorize_url).query)["client_id"] != ["old-client"]
 
 
 async def test_start_with_a_static_client_does_not_register(svc, store, mock_oauth_mcp):
     toolset = make_toolset(mock_oauth_mcp.mcp_url, oauth={"static_client": {"client_id": "pre-client", "client_secret": "pre-secret"}})
-    start = await svc.start_sign_in(target_of(toolset), redirect_uri=REDIRECT, started_by="admin")
+    start = await svc.start_sign_in(target_of(toolset), redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
     assert mock_oauth_mcp.state.registrations == [] and parse_qs(urlsplit(start.authorize_url).query)["client_id"] == ["pre-client"]
     back = authorize(start.authorize_url)
-    status = await svc.complete_sign_in(toolset, toolset_id="kb", state=back["state"], code=back["code"], error=None)
+    status = await svc.complete_sign_in(toolset, toolset_id="kb", state=back["state"], code=back["code"], error=None, browser_binding=BINDING)
     assert status.state == "connected"
     exchange = mock_oauth_mcp.state.token_requests[-1]
     assert exchange["grant_type"] == "authorization_code" and "client_secret" not in exchange, "the confidential client authenticated with Basic"
@@ -179,7 +180,7 @@ async def test_start_with_a_static_client_does_not_register(svc, store, mock_oau
 
 async def test_start_uses_the_configured_scopes_and_resource(svc, mock_oauth_mcp):
     toolset = make_toolset(mock_oauth_mcp.mcp_url, oauth={"scopes": ["mcp", "extra"], "resource_uri": "https://r.example/x"})
-    start = await svc.start_sign_in(target_of(toolset), redirect_uri=REDIRECT, started_by="admin")
+    start = await svc.start_sign_in(target_of(toolset), redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
     q = parse_qs(urlsplit(start.authorize_url).query)
     assert q["scope"] == ["mcp extra"] and q["resource"] == ["https://r.example/x"]
 
@@ -190,7 +191,7 @@ async def test_start_purges_expired_pending_sign_ins(svc, target, store, fake_st
             id=state, toolset_id="kb", code_verifier_enc=store.seal("v"), redirect_uri=REDIRECT, issuer="https://as.example", token_endpoint="https://as.example/t",
             client_id="c", client_source="registered", config_fingerprint="f" * 64, created_at=NOW - timedelta(minutes=9), expires_at=expires,
         ))
-    await svc.start_sign_in(target, redirect_uri=REDIRECT, started_by="admin")
+    await svc.start_sign_in(target, redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
     pending = fake_storage_provider.get_storage(McpOAuthPendingSignIn)
     assert await pending.get(pending_key("old")) is None and await pending.get(pending_key("live")) is not None
 
@@ -205,7 +206,7 @@ async def test_start_refuses_an_authorization_server_without_s256(svc, store):
         router.get("https://m.example/.well-known/oauth-authorization-server").mock(return_value=httpx.Response(200, json=as_doc))
         register = router.post("https://m.example/register").mock(return_value=httpx.Response(201, json={"client_id": "x"}))
         with pytest.raises(BadRequestError, match="does not advertise PKCE S256"):
-            await svc.start_sign_in(target_of(toolset), redirect_uri=REDIRECT, started_by="admin")
+            await svc.start_sign_in(target_of(toolset), redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
     assert not register.called
     assert await store.purge_pending("kb", now=NOW + timedelta(days=1)) == 0, "no pending sign-in was stored"
 
@@ -213,7 +214,7 @@ async def test_start_refuses_an_authorization_server_without_s256(svc, store):
 async def test_start_for_a_client_credentials_toolset_is_refused(svc, mock_oauth_mcp):
     toolset = make_toolset(mock_oauth_mcp.mcp_url, oauth={"grant": "client_credentials", "static_client": {"client_id": "cc-client", "client_secret": "cc-secret"}})
     with pytest.raises(BadRequestError, match="client credentials"):
-        await svc.start_sign_in(target_of(toolset), redirect_uri=REDIRECT, started_by="admin")
+        await svc.start_sign_in(target_of(toolset), redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
 
 
 # ---- finishing it (Review Focus 3) ---------------------------------------------------------------------------------------------------------------------------------------
@@ -235,78 +236,119 @@ async def test_complete_stores_encrypted_tokens_and_reports_connected(svc, kb, s
 
 
 async def test_complete_with_a_used_state_is_invalid_state(svc, kb, store, mock_oauth_mcp):
-    start = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin")
+    start = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
     back = authorize(start.authorize_url)
-    await svc.complete_sign_in(kb, toolset_id="kb", state=back["state"], code=back["code"], error=None)
+    await svc.complete_sign_in(kb, toolset_id="kb", state=back["state"], code=back["code"], error=None, browser_binding=BINDING)
     exchanges = len(mock_oauth_mcp.state.token_requests)
     with pytest.raises(SignInError) as caught:
-        await svc.complete_sign_in(kb, toolset_id="kb", state=back["state"], code=back["code"], error=None)
+        await svc.complete_sign_in(kb, toolset_id="kb", state=back["state"], code=back["code"], error=None, browser_binding=BINDING)
     assert (caught.value.code, caught.value.toolset_id) == ("invalid_state", "kb")
     assert len(mock_oauth_mcp.state.token_requests) == exchanges and (await store.get_tokens("kb")).version == 1
 
 
 async def test_complete_after_ten_minutes_is_invalid_state(svc, kb, store, clock):
-    start = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin")
+    start = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
     back = authorize(start.authorize_url)
     clock.advance(seconds=601)
     with pytest.raises(SignInError) as caught:
-        await svc.complete_sign_in(kb, toolset_id="kb", state=back["state"], code=back["code"], error=None)
+        await svc.complete_sign_in(kb, toolset_id="kb", state=back["state"], code=back["code"], error=None, browser_binding=BINDING)
     assert caught.value.code == "invalid_state" and await store.get_tokens("kb") is None
+
+
+async def test_only_the_browser_that_started_the_sign_in_can_finish_it(svc, kb, store, mock_oauth_mcp):
+    """Audit G4-01: the state alone is not enough. A callback without the starting browser's nonce, or with another one, is invalid_state, writes
+    nothing and does NOT spend the sign-in: the browser that started it still finishes it."""
+    start = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
+    back = authorize(start.authorize_url)
+    exchanges = len(mock_oauth_mcp.state.token_requests)
+    for other in (None, "", "another-browser-0123456789"):
+        with pytest.raises(SignInError) as caught:
+            await svc.complete_sign_in(kb, toolset_id="kb", state=back["state"], code=back["code"], error=None, browser_binding=other)
+        assert caught.value.code == "invalid_state"
+    assert len(mock_oauth_mcp.state.token_requests) == exchanges and await store.get_tokens("kb") is None
+    status = await svc.complete_sign_in(kb, toolset_id="kb", state=back["state"], code=back["code"], error=None, browser_binding=BINDING)
+    assert status.state == "connected"
+
+
+async def test_the_pending_sign_in_keeps_only_a_digest_of_the_binding(svc, kb, fake_storage_provider):
+    start = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
+    state = parse_qs(urlsplit(start.authorize_url).query)["state"][0]
+    row = await fake_storage_provider.get_storage(McpOAuthPendingSignIn).get(pending_key(state))
+    assert row.browser_binding == hashlib.sha256(BINDING.encode()).hexdigest()
+    assert BINDING not in json.dumps(dump_for_storage(row), default=str) and BINDING not in start.model_dump_json()
+
+
+async def test_a_pending_sign_in_without_a_binding_cannot_be_finished(svc, kb, store, box):
+    """A row written before the binding existed is bound to nothing: no callback takes it, whatever nonce it carries."""
+    await store.put_pending(McpOAuthPendingSignIn(
+        id="legacy-state", toolset_id="kb", code_verifier_enc=store.seal("v" * 43), redirect_uri=REDIRECT, issuer="https://as.example",
+        token_endpoint="https://as.example/token", client_id="c1", client_source="registered", config_fingerprint=config_fingerprint(target_of(kb)),
+        created_at=NOW, expires_at=NOW + timedelta(minutes=10),
+    ))
+    for nonce in (BINDING, None):
+        with pytest.raises(SignInError) as caught:
+            await svc.complete_sign_in(kb, toolset_id="kb", state="legacy-state", code="c", error=None, browser_binding=nonce)
+        assert caught.value.code == "invalid_state"
+
+
+async def test_a_sign_in_cannot_start_unbound(svc, target):
+    with pytest.raises(ValueError, match="browser_binding"):
+        await svc.start_sign_in(target, redirect_uri=REDIRECT, started_by="admin", browser_binding="")
 
 
 async def test_complete_with_an_unknown_or_empty_state_is_invalid_state(svc, kb, store):
     for state in ("never-issued", ""):
         with pytest.raises(SignInError) as caught:
-            await svc.complete_sign_in(kb, toolset_id="kb", state=state, code="c", error=None)
+            await svc.complete_sign_in(kb, toolset_id="kb", state=state, code="c", error=None, browser_binding=BINDING)
         assert caught.value.code == "invalid_state"
     assert await store.get_tokens("kb") is None
 
 
 async def test_complete_for_another_toolset_is_invalid_state(svc, kb, store, mock_oauth_mcp):
-    start = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin")
+    start = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
     back = authorize(start.authorize_url)
     other = make_toolset(mock_oauth_mcp.mcp_url, oauth={}, toolset_id="other")
     with pytest.raises(SignInError) as caught:
-        await svc.complete_sign_in(other, toolset_id="other", state=back["state"], code=back["code"], error=None)
+        await svc.complete_sign_in(other, toolset_id="other", state=back["state"], code=back["code"], error=None, browser_binding=BINDING)
     assert (caught.value.code, caught.value.toolset_id) == ("invalid_state", "other")
     with pytest.raises(SignInError) as again:
-        await svc.complete_sign_in(kb, toolset_id="kb", state=back["state"], code=back["code"], error=None)
+        await svc.complete_sign_in(kb, toolset_id="kb", state=back["state"], code=back["code"], error=None, browser_binding=BINDING)
     assert again.value.code == "invalid_state", "the state was spent by the misdirected callback"
     assert await store.get_tokens("kb") is None and await store.get_tokens("other") is None
 
 
 async def test_a_declined_sign_in_is_access_denied(svc, kb, store, mock_oauth_mcp):
     mock_oauth_mcp.state.deny_next_authorize = True
-    start = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin")
+    start = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
     back = authorize(start.authorize_url)
     assert back["error"] == "access_denied" and "code" not in back
     with pytest.raises(SignInError) as caught:
-        await svc.complete_sign_in(kb, toolset_id="kb", state=back["state"], code=None, error="access_denied")
+        await svc.complete_sign_in(kb, toolset_id="kb", state=back["state"], code=None, error="access_denied", browser_binding=BINDING)
     assert caught.value.code == "access_denied" and await store.get_tokens("kb") is None
     with pytest.raises(SignInError) as replay:
-        await svc.complete_sign_in(kb, toolset_id="kb", state=back["state"], code=None, error="access_denied")
+        await svc.complete_sign_in(kb, toolset_id="kb", state=back["state"], code=None, error="access_denied", browser_binding=BINDING)
     assert replay.value.code == "invalid_state"
 
 
 async def test_another_provider_error_is_exchange_failed(svc, kb, store):
-    start = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin")
+    start = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
     state = parse_qs(urlsplit(start.authorize_url).query)["state"][0]
     with pytest.raises(SignInError) as caught:
-        await svc.complete_sign_in(kb, toolset_id="kb", state=state, code=None, error="server_error\nInjected: line")
+        await svc.complete_sign_in(kb, toolset_id="kb", state=state, code=None, error="server_error\nInjected: line", browser_binding=BINDING)
     assert caught.value.code == "exchange_failed" and await store.get_tokens("kb") is None
 
 
 async def test_a_callback_without_a_code_is_exchange_failed(svc, kb, store):
-    start = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin")
+    start = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
     state = parse_qs(urlsplit(start.authorize_url).query)["state"][0]
     with pytest.raises(SignInError) as caught:
-        await svc.complete_sign_in(kb, toolset_id="kb", state=state, code=None, error=None)
+        await svc.complete_sign_in(kb, toolset_id="kb", state=state, code=None, error=None, browser_binding=BINDING)
     assert caught.value.code == "exchange_failed" and await store.get_tokens("kb") is None
 
 
 @pytest.mark.parametrize("edit", ["scopes", "url", "oauth_removed", "toolset_deleted"])
 async def test_settings_changed_during_sign_in(svc, kb, store, mock_oauth_mcp, edit):
-    start = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin")
+    start = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
     back = authorize(start.authorize_url)
     edited = {
         "scopes": make_toolset(mock_oauth_mcp.mcp_url, oauth={"scopes": ["other"]}),
@@ -316,26 +358,26 @@ async def test_settings_changed_during_sign_in(svc, kb, store, mock_oauth_mcp, e
     }[edit]
     exchanges = len(mock_oauth_mcp.state.token_requests)
     with pytest.raises(SignInError) as caught:
-        await svc.complete_sign_in(edited, toolset_id="kb", state=back["state"], code=back["code"], error=None)
+        await svc.complete_sign_in(edited, toolset_id="kb", state=back["state"], code=back["code"], error=None, browser_binding=BINDING)
     assert caught.value.code == "settings_changed" and await store.get_tokens("kb") is None
     assert len(mock_oauth_mcp.state.token_requests) == exchanges, "the code was never exchanged for the edited toolset"
 
 
 async def test_a_refused_code_exchange_is_exchange_failed(svc, kb, store, mock_oauth_mcp):
-    start = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin")
+    start = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
     back = authorize(start.authorize_url)
     mock_oauth_mcp.state.token_status_override = 400
     with pytest.raises(SignInError) as caught:
-        await svc.complete_sign_in(kb, toolset_id="kb", state=back["state"], code=back["code"], error=None)
+        await svc.complete_sign_in(kb, toolset_id="kb", state=back["state"], code=back["code"], error=None, browser_binding=BINDING)
     assert caught.value.code == "exchange_failed" and await store.get_tokens("kb") is None
 
 
 async def test_an_unreachable_token_endpoint_is_exchange_failed(svc, kb, store, mock_oauth_mcp):
-    start = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin")
+    start = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
     back = authorize(start.authorize_url)
     mock_oauth_mcp.state.token_status_override = 503
     with pytest.raises(SignInError) as caught:
-        await svc.complete_sign_in(kb, toolset_id="kb", state=back["state"], code=back["code"], error=None)
+        await svc.complete_sign_in(kb, toolset_id="kb", state=back["state"], code=back["code"], error=None, browser_binding=BINDING)
     assert caught.value.code == "exchange_failed" and await store.get_tokens("kb") is None
 
 
@@ -442,28 +484,28 @@ async def test_a_sign_in_started_before_a_disconnect_cannot_reconnect_after_it(s
     completed within its ten minutes (by anyone holding the authorize URL), must not connect the toolset again: Disconnect ends the pending
     sign-ins too."""
     assert (await connect(svc, kb)).state == "connected"
-    start = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin")
+    start = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
     back = authorize(start.authorize_url)
     assert (await svc.disconnect(kb)).state == "needs_sign_in"
     pending = fake_storage_provider.get_storage(McpOAuthPendingSignIn)
     assert await pending.get(pending_key(back["state"])) is None, "the pending sign-in outlived the disconnect"
     exchanges = len(mock_oauth_mcp.state.token_requests)
     with pytest.raises(SignInError) as caught:
-        await svc.complete_sign_in(kb, toolset_id="kb", state=back["state"], code=back["code"], error=None)
+        await svc.complete_sign_in(kb, toolset_id="kb", state=back["state"], code=back["code"], error=None, browser_binding=BINDING)
     assert caught.value.code == "invalid_state"
     assert await store.get_tokens("kb") is None and len(mock_oauth_mcp.state.token_requests) == exchanges
 
 
 async def test_disconnect_keeps_the_pending_sign_ins_of_other_toolsets(svc, kb, store, mock_oauth_mcp):
     other = make_toolset(mock_oauth_mcp.mcp_url, oauth={}, toolset_id="other")
-    await svc.start_sign_in(target_of(other), redirect_uri=REDIRECT.replace("/kb/", "/other/"), started_by="admin")
+    await svc.start_sign_in(target_of(other), redirect_uri=REDIRECT.replace("/kb/", "/other/"), started_by="admin", browser_binding=BINDING)
     await svc.disconnect(kb)
     assert await store.purge_pending("other", now=NOW + timedelta(days=1)) == 1
 
 
 async def test_forget_removes_everything_of_one_toolset(svc, kb, store):
     await connect(svc, kb)
-    await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin")
+    await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
     await svc.forget("kb")
     assert await store.get_tokens("kb") is None and await store.get_client("kb") is None
     assert await store.purge_pending("kb", now=NOW + timedelta(days=1)) == 0
@@ -536,19 +578,19 @@ def test_redirect_uri(fake_storage_provider, box):
 
 async def test_no_token_code_or_verifier_reaches_the_log(caplog, svc, kb, store, mock_oauth_mcp, fake_storage_provider):
     caplog.set_level(logging.DEBUG)
-    start = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin")
+    start = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
     back = authorize(start.authorize_url)
     pending = await fake_storage_provider.get_storage(McpOAuthPendingSignIn).get(pending_key(back["state"]))
     verifier = store.unseal(pending.code_verifier_enc)
-    await svc.complete_sign_in(kb, toolset_id="kb", state=back["state"], code=back["code"], error=None)
+    await svc.complete_sign_in(kb, toolset_id="kb", state=back["state"], code=back["code"], error=None, browser_binding=BINDING)
     row = await store.get_tokens("kb")
     secrets_seen = [back["state"], back["code"], verifier, store.unseal(row.access_token_enc), store.unseal(row.refresh_token_enc)]
 
-    refused = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin")
+    refused = await svc.start_sign_in(target_of(kb), redirect_uri=REDIRECT, started_by="admin", browser_binding=BINDING)
     refused_back = authorize(refused.authorize_url)
     mock_oauth_mcp.state.token_status_override = 400
     with pytest.raises(SignInError):
-        await svc.complete_sign_in(kb, toolset_id="kb", state=refused_back["state"], code=refused_back["code"], error=None)
+        await svc.complete_sign_in(kb, toolset_id="kb", state=refused_back["state"], code=refused_back["code"], error=None, browser_binding=BINDING)
     mock_oauth_mcp.state.token_status_override = None
     secrets_seen += [refused_back["state"], refused_back["code"]]
 

@@ -106,6 +106,9 @@ class McpOAuthPendingSignIn(Identifiable):
 
     The row is built with the state as its id and STORED under the SHA-256 of it (:func:`primer.toolset.oauth.store.pending_key`, applied by the store),
     so the state, a capability while the sign-in is pending, is never a row id that storage code could print.
+
+    The state alone does not finish the sign-in: ``browser_binding`` ties it to the browser that started it (audit G4-01), so a leaked authorize URL,
+    completed with another account at the provider, connects nothing.
     """
 
     toolset_id: str = Field(..., description="The toolset the sign-in is for.")
@@ -120,6 +123,14 @@ class McpOAuthPendingSignIn(Identifiable):
     token_endpoint_auth_method: ClientAuthMethod | None = Field(default=None, description=_AUTH_METHOD_DESCRIPTION)
     config_fingerprint: str = Field(..., description="Hash of the URL and OAuth settings when the sign-in started. A toolset edited meanwhile does not take the tokens.")
     consumed: bool = Field(default=False, description="Set by the one caller that takes the row, so no second caller can.")
+    browser_binding: str | None = Field(
+        default=None,
+        description=(
+            "The SHA-256 hex of the nonce the browser that started the sign-in holds (an HttpOnly cookie the start answer set). Only a callback "
+            "that presents that nonce takes the row, so an authorize URL completed in another browser connects nothing. None on a row written "
+            "before the binding existed, which no callback can complete."
+        ),
+    )
     started_by: str | None = Field(default=None, description="The admin who started it.")
     created_at: datetime = Field(..., description="When it started.")
     expires_at: datetime = Field(..., description="When it stops being valid.")

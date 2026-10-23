@@ -6,10 +6,11 @@ per server process) is the only code that starts, finishes, uses or ends one:
 * **Browser sign-in** (``authorization_code``). :meth:`~ToolsetOAuthService.start_sign_in` discovers the authorization server
   (:mod:`primer.toolset.oauth.protocol`), refuses one without PKCE S256, picks the client (the toolset's static client, else its earlier registration
   when the issuer and redirect URI still match, else a new dynamic registration), stores a pending sign-in (the PKCE verifier sealed, single use, ten
-  minutes) and returns the authorize URL. :meth:`~ToolsetOAuthService.complete_sign_in` takes the pending sign-in back by its ``state`` and exchanges the
-  code. A callback whose state is unknown, used, expired or another toolset's ends as ``invalid_state``; one the provider declined as
-  ``access_denied``; one for a toolset whose URL or OAuth settings changed since the start as ``settings_changed``; a refused or failed code exchange as
-  ``exchange_failed``. None of them writes a token.
+  minutes) and returns the authorize URL. The pending sign-in is bound to the browser that started it: it keeps the digest of a nonce that browser holds
+  as an HttpOnly cookie, and :meth:`~ToolsetOAuthService.complete_sign_in` takes it back by its ``state`` only with that nonce, then exchanges the code.
+  A callback whose state is unknown, used, expired or another toolset's, or that comes from another browser, ends as ``invalid_state``; one the provider
+  declined as ``access_denied``; one for a toolset whose URL or OAuth settings changed since the start as ``settings_changed``; a refused or failed code
+  exchange as ``exchange_failed``. None of them writes a token.
 * **Client credentials**. :meth:`~ToolsetOAuthService.connect_client_credentials` exchanges the toolset's client id and secret at once, at the
   configured token endpoint or the discovered one.
 * **Disconnect** ends the toolset's pending sign-ins, revokes the refresh token (else the access token) where the server advertises RFC 7009
@@ -61,7 +62,7 @@ from primer.model.provider import HttpConfig, McpConfig, OAuthConfig, Toolset, T
 from primer.storage import raw_generation
 from primer.toolset.oauth import protocol
 from primer.toolset.oauth.protocol import ClientAuth, Discovery
-from primer.toolset.oauth.store import McpOAuthStore
+from primer.toolset.oauth.store import McpOAuthStore, binding_digest
 
 __all__ = [
     "EXPIRED_NO_REFRESH",
@@ -241,9 +242,9 @@ class SignInStart(BaseModel):
 
 
 class SignInError(Exception):
-    """A browser sign-in did not complete. ``code`` says why: ``invalid_state`` (unknown, used, expired or another toolset's state),
-    ``access_denied`` (declined at the provider), ``exchange_failed`` (the provider refused or could not exchange the code) or ``settings_changed``
-    (the toolset was edited, removed or lost its OAuth settings during the sign-in). No token was written."""
+    """A browser sign-in did not complete. ``code`` says why: ``invalid_state`` (unknown, used, expired or another toolset's state, or a browser that did
+    not start the sign-in), ``access_denied`` (declined at the provider), ``exchange_failed`` (the provider refused or could not exchange the code) or
+    ``settings_changed`` (the toolset was edited, removed or lost its OAuth settings during the sign-in). No token was written."""
 
     def __init__(self, code: SignInErrorCode, toolset_id: str) -> None:
         super().__init__(f"the sign-in of the MCP toolset {toolset_id} did not complete: {code}")
@@ -302,8 +303,13 @@ class ToolsetOAuthService:
 
     # ---- browser sign-in ------------------------------------------------------------------------------------------------------------------------------------------------
 
-    async def start_sign_in(self, target: OAuthTarget, *, redirect_uri: str, started_by: str | None) -> SignInStart:
+    async def start_sign_in(self, target: OAuthTarget, *, redirect_uri: str, started_by: str | None, browser_binding: str) -> SignInStart:
         """Start a browser sign-in of ``target``: the authorize URL to open, valid for :data:`PENDING_TTL`.
+
+        ``browser_binding`` is a nonce only the browser that starts the sign-in holds (the route sets it as an HttpOnly cookie on the start answer);
+        the pending sign-in keeps its digest, and :meth:`complete_sign_in` takes it back only with the same nonce (audit G4-01). The ``state`` in the
+        authorize URL is therefore not enough to finish the sign-in: an authorize URL that leaks (a browser history, a shared link, a provider-side
+        log) and is completed in another browser, with another account at the provider, connects nothing.
 
         Raises :class:`~primer.model.except_.BadRequestError` when the toolset uses client credentials, the authorization server cannot be discovered,
         does not advertise PKCE S256, has no authorization endpoint, or (without a configured client) refuses a registration; and
@@ -311,6 +317,8 @@ class ToolsetOAuthService:
         """
         if target.oauth.grant != "authorization_code":
             raise BadRequestError(f"the MCP toolset {target.toolset_id} signs in with client credentials, so it connects without a browser sign-in")
+        if not browser_binding:
+            raise ValueError("a browser sign-in is bound to the browser that starts it: browser_binding is required")
         now = self._clock()
         await self._store.purge_pending(target.toolset_id, now=now)
         found = await self._discover(target)
@@ -336,6 +344,7 @@ class ToolsetOAuthService:
             client_source=source,
             token_endpoint_auth_method=client.method,
             config_fingerprint=config_fingerprint(target),
+            browser_binding=binding_digest(browser_binding),
             started_by=started_by,
             created_at=now,
             expires_at=expires_at,
@@ -356,16 +365,22 @@ class ToolsetOAuthService:
         state: str,
         code: str | None,
         error: str | None,
+        browser_binding: str | None,
     ) -> ToolsetAuthStatus:
         """Finish the browser sign-in that the provider's redirect for ``toolset_id`` carries: exchange the code and store the tokens.
 
-        ``toolset`` is the toolset as it is NOW (``None`` when it no longer exists). Raises :class:`SignInError`; every failure leaves the stored tokens
-        as they were, and the state is spent whatever the outcome.
+        ``toolset`` is the toolset as it is NOW (``None`` when it no longer exists). ``browser_binding`` is the nonce the callback's browser presents
+        (the cookie the start answer set): a missing one, or one the sign-in was not started with, is ``invalid_state`` and leaves the pending sign-in
+        to the browser that started it. Raises :class:`SignInError`; every failure leaves the stored tokens as they were, and once the binding matched
+        the state is spent whatever the outcome.
         """
         now = self._clock()
-        pending = await self._store.take_pending(state, now=now) if state else None
+        pending = await self._store.take_pending(state, now=now, browser_binding=browser_binding) if state and browser_binding else None
         if pending is None or pending.toolset_id != toolset_id:
-            logger.info("MCP toolset %s: a sign-in callback carried an unknown, used, expired or misdirected state", toolset_id)
+            logger.info(
+                "MCP toolset %s: a sign-in callback carried an unknown, used, expired or misdirected state, or came from a browser that did not start "
+                "the sign-in", toolset_id,
+            )
             raise SignInError("invalid_state", toolset_id)
         if error:
             logger.info("MCP toolset %s: the authorization server ended the sign-in with %s", toolset_id, safe_code(error))

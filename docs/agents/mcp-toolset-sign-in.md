@@ -42,9 +42,13 @@ secret.
 An admin connects a browser-grant toolset from the console. Primer discovers
 the upstream endpoints, creates a PKCE authorization request, and opens the
 provider. The callback is public so the upstream redirect does not need a
-Primer session cookie. Browser callbacks receive a 303 back to the console;
-API clients receive JSON. Replayed, expired, denied, or edited callbacks write
-no token.
+Primer session cookie, but it must return to the browser that started the
+sign-in: the start answer sets a short-lived `primer_mcp_oauth` cookie that the
+callback requires. An authorize URL completed in any other browser is refused
+as `invalid_state` and connects nothing. Browser callbacks receive a 303 back to
+the console; API clients receive JSON and must carry the cookie from the start
+answer to the callback themselves. Replayed, expired, denied, or edited
+callbacks write no token.
 
 A client-credentials toolset connects without a browser. Primer sends the
 configured client credentials to the discovered or configured token endpoint.

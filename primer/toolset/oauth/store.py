@@ -20,6 +20,7 @@ The store logs nothing that comes from a row, and no method returns or raises wi
 from __future__ import annotations
 
 import hashlib
+import hmac
 import logging
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
@@ -38,7 +39,7 @@ from primer.storage import raw_generation
 from primer.storage.cas import patch_if_checked
 from primer.storage.q import Q
 
-__all__ = ["McpOAuthStore", "forget_sign_in", "pending_key"]
+__all__ = ["McpOAuthStore", "binding_digest", "forget_sign_in", "pending_key"]
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,17 @@ def _require_sealed_row(row: Any) -> None:
 def pending_key(state: str) -> str:
     """The id a pending sign-in is stored under: the SHA-256 hex of its ``state``. Knowing it does not take the row back; only the state does."""
     return hashlib.sha256(state.encode("utf-8")).hexdigest()
+
+
+def binding_digest(nonce: str) -> str:
+    """What a pending sign-in keeps of the browser-binding nonce (``browser_binding``): its SHA-256 hex, so a reader of the table cannot forge the
+    cookie that finishes the sign-in."""
+    return hashlib.sha256(nonce.encode("utf-8")).hexdigest()
+
+
+def _bound_to(row: McpOAuthPendingSignIn, nonce: str) -> bool:
+    """Whether ``nonce`` is the one ``row`` was started with (compared in constant time). A row with no binding is bound to nothing."""
+    return row.browser_binding is not None and hmac.compare_digest(row.browser_binding, binding_digest(nonce))
 
 
 async def _delete_quietly(storage: Any, row_id: str) -> bool:
@@ -222,12 +234,16 @@ class McpOAuthStore:
         _require_sealed_row(row)
         await self._pending.create(row.model_copy(update={"id": pending_key(row.id)}))
 
-    async def take_pending(self, state: str, *, now: datetime) -> McpOAuthPendingSignIn | None:
+    async def take_pending(self, state: str, *, now: datetime, browser_binding: str | None = None) -> McpOAuthPendingSignIn | None:
         """Claim the pending sign-in for ``state``: the row, once. ``None`` when it is unknown, already claimed, or expired (an expired row is deleted).
 
         The claim is a compare-and-set of ``consumed`` from False to True, so concurrent callers (the same callback hitting two pods, a replay) get the row
         exactly once. The row is deleted after the claim; one a crash left behind is marked consumed and cannot be claimed again. The row is looked up
         under :func:`pending_key` of the state, and the row returned carries that key as its id, never the state.
+
+        With ``browser_binding`` (the nonce of the browser that finishes the sign-in), the row is claimed only when it was started with that nonce
+        (:func:`binding_digest`); otherwise ``None`` and the row is left as it was, so a callback from a browser that did not start the sign-in cannot
+        spend it either. The service always passes one (audit G4-01).
         """
         key = pending_key(state)
         row = await self._pending.get(key)
@@ -235,6 +251,8 @@ class McpOAuthStore:
             return None
         if row.expires_at <= now:
             await self._drop_pending(key)
+            return None
+        if browser_binding is not None and not _bound_to(row, browser_binding):
             return None
         try:
             claimed = await patch_if_checked(self._pending, key, {"consumed": True}, where={"consumed": [False]})

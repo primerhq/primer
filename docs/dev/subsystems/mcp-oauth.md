@@ -68,9 +68,24 @@ For a browser grant, an admin starts sign-in, Primer discovers the upstream
 metadata, creates or reuses a client, records one short-lived state and PKCE
 verifier, and returns the authorization URL. `PRIMER_PUBLIC_URL` supplies the
 stable callback origin in deployments where request-derived URLs are not safe.
-The public callback consumes the state once, exchanges the code, stores the shared
-token, and returns to the console. A replay, late callback, denial, or edited state
-writes no token.
+The start answer also sets the `primer_mcp_oauth` cookie: a fresh nonce,
+HttpOnly, `SameSite=Lax`, scoped to the callback path, living as long as the
+pending sign-in (600 s), and `Secure` when the callback is https. The pending row
+keeps only the nonce's SHA-256. The public callback takes the state back only with
+that cookie, then exchanges the code, stores the shared token, clears the cookie
+and returns to the console. A callback without the cookie, or with another
+browser's, is `invalid_state` and does not spend the sign-in, so an authorize URL
+that leaks (a browser history, a shared link, a provider-side log) and is
+completed with another account at the provider connects nothing (audit G4-01). A
+replay, late callback, denial, or edited state writes no token either.
+
+In the console the cookie arrives because the flow stays in one browser: the
+Connect button's `fetch` of the start route stores the cookie for the console's
+origin, the popup it opens goes to the provider, and the provider's redirect
+back to the callback is a top-level GET navigation, which carries a `Lax` cookie
+across sites. The console must therefore be opened on the host the callback
+uses: with `PRIMER_PUBLIC_URL` set, open the console at that URL, or the cookie
+is set for one host and the callback lands on another.
 
 For client credentials, an admin starts sign-in and Primer obtains the shared token
 immediately. During normal MCP traffic, `McpBearerAuth` sends that token on every
@@ -127,7 +142,8 @@ The REST surface is:
 
 - `POST /v1/toolsets/{id}/oauth/start`, admin only, starts or restarts sign-in.
 - `GET /v1/toolsets/{id}/oauth/callback`, public, consumes an authorization-code
-  callback without requiring the browser to hold a Primer session.
+  callback without requiring the browser to hold a Primer session; it requires the
+  `primer_mcp_oauth` cookie the start answer set in the same browser.
 - `GET /v1/toolsets/{id}/oauth/status`, user tier, returns
   `ToolsetAuthStatus`.
 - `POST /v1/toolsets/{id}/oauth/disconnect`, admin only, ends the pending
@@ -171,8 +187,12 @@ tests under `tests/api/` and `tests/toolset/`.
   state across API and worker pods. Persisting one operator-owned identity makes
   the access model explicit and restart-safe.
 - **Browser callbacks live on the Primer API.** The public callback can complete an
-  upstream redirect without a Primer cookie, while the state record provides the
-  one-time binding and the browser returns to the console.
+  upstream redirect without a Primer session, and the browser returns to the
+  console. The state record alone was first taken as the binding ("public like
+  SSO's"), but SSO binds its state to a signed cookie, and a state-only callback
+  let anyone who obtained an admin's authorize URL attach their own provider
+  account as the shared sign-in (audit G4-01). The `primer_mcp_oauth` cookie now
+  binds the callback to the browser that started the sign-in.
 - **Refresh is leased and fenced.** A process-local lock cannot protect several
   pods, so storage coordinates one refresher and compare-and-set keeps a late writer
   from overwriting a newer row.

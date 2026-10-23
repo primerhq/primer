@@ -165,7 +165,8 @@ async def test_headless_oauth_flow_against_simple_auth(fake_storage_provider) ->
             secret_box=SecretBox.from_key_material("integration-test-key-0123456789"),
             http=http,
         )
-        start = await service.start_sign_in(target, redirect_uri=redirect_uri, started_by="integration-user")
+        binding = "integration-browser-binding-0123456789"
+        start = await service.start_sign_in(target, redirect_uri=redirect_uri, started_by="integration-user", browser_binding=binding)
         assert start.authorize_url is not None
         auth_url = start.authorize_url
 
@@ -185,6 +186,7 @@ async def test_headless_oauth_flow_against_simple_auth(fake_storage_provider) ->
             state=returned_state,
             code=code,
             error=None,
+            browser_binding=binding,
         )
         assert await service.access_token(target)
 
