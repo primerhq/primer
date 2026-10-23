@@ -17,6 +17,7 @@ from datetime import timedelta
 import pytest
 from pydantic import SecretStr
 
+from primer.common import ssrf
 from primer.common.secret_box import SecretBox
 from primer.model.except_ import ProviderError
 from primer.model.mcp_oauth import McpSignInRequiredError
@@ -307,10 +308,13 @@ async def test_a_token_endpoint_outage_keeps_the_refresh_token(svc, kb, target, 
     assert (row.state, row.reason) == ("connected", None) and store.unseal(row.refresh_token_enc) != old_refresh
 
 
-async def test_an_unreachable_token_endpoint_keeps_the_refresh_token(svc, kb, target, store, clock):
+async def test_an_unreachable_token_endpoint_keeps_the_refresh_token(svc, kb, target, store, clock, monkeypatch):
     await connect(svc, kb)
     _, old_refresh = await _tokens(store)
     row = await store.get_tokens("kb")
+    # Port 9 is not the mock's port, so the private-destination guard would refuse it before any connection (the endpoint is routed by host AND
+    # port); the operator's opt-in lets it through, so the call really meets a closed port.
+    monkeypatch.setattr(ssrf, "_ALLOW_PRIVATE", True)
     await store.patch_tokens("kb", {"token_endpoint": "http://127.0.0.1:9/token"}, where={"version": [raw_generation(row, "version")]})
     _near_expiry(clock)
     with pytest.raises(ProviderError, match=r"could not be reached: the token endpoint did not answer \(ConnectError\)"):
@@ -435,6 +439,19 @@ async def test_a_rejected_refreshed_token_signs_out_the_version_that_holds_it(sv
     assert (row.state, row.reason, row.access_token_enc, row.refresh_token_enc) == ("needs_sign_in", TOKEN_REJECTED, None, None)
     assert row.version == before.version + 1
     assert (await svc.status(kb)).state == "needs_sign_in"
+
+
+async def test_a_rejected_client_credentials_token_marks_error_and_keeps_the_sign_in(svc, store, mock_oauth_mcp):
+    """Review L1 of #852: client credentials can recover without a person, so the row is marked error and only the access token goes."""
+    cc = make_toolset(mock_oauth_mcp.mcp_url, oauth=CC)
+    await svc.connect_client_credentials(target_of(cc), connected_by="admin")
+    before = await store.get_tokens("kb")
+    await svc.sign_out_rejected(target_of(cc), rejected=store.unseal(before.access_token_enc))
+    row = await store.get_tokens("kb")
+    assert (row.state, row.reason, row.access_token_enc, row.version) == ("error", TOKEN_REJECTED, None, before.version + 1)
+    assert (row.client_id, row.token_endpoint, row.connected_by) == (before.client_id, before.token_endpoint, before.connected_by)
+    assert await svc.access_token(target_of(cc)), "the next call exchanges the client credentials again"
+    assert (await store.get_tokens("kb")).state == "connected"
 
 
 async def test_a_rejected_token_leaves_a_newer_one_alone(services, kb, target, store, clock):

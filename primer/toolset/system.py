@@ -80,6 +80,7 @@ ask_user). Everything historically imported as
 from __future__ import annotations
 
 import json
+import logging
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
@@ -298,13 +299,21 @@ def build_system_toolset(
     async def _inv_ts(eid: str) -> None:
         await provider_registry.invalidate_toolset(eid)
 
-    async def _toolset_on_delete(eid: str) -> None:
-        # As the REST delete (primer.api.routers.providers._toolset_on_delete): the cached provider goes, and so does the shared OAuth sign-in
-        # (its tokens, its registered client and its pending sign-ins), so a toolset created again under this id is never connected on the
-        # sign-in of the one deleted here (audit G4-02).
-        await provider_registry.invalidate_toolset(eid)
-        if mcp_oauth is not None:
-            await mcp_oauth.forget(eid)
+    async def _toolset_pre_delete(existing: Toolset) -> Any:
+        # The shared OAuth sign-in (its tokens, its registered client and its pending sign-ins) is forgotten BEFORE the row goes (audit G4-02;
+        # review L3 of #852), so a toolset created again under this id is never connected on the sign-in of the one deleted here. A forget that
+        # fails is reported and leaves the toolset in place, rather than a deleted toolset whose tokens outlive it.
+        if mcp_oauth is None or not existing.id:
+            return None
+        try:
+            await mcp_oauth.forget(existing.id)
+        except Exception as exc:  # noqa: BLE001 - answered to the caller; the row stays
+            logging.getLogger(__name__).warning("delete_toolset %s: the OAuth sign-in could not be forgotten", existing.id, exc_info=True)
+            return _err(
+                f"Toolset {existing.id!r} was not deleted: its OAuth sign-in could not be forgotten ({type(exc).__name__}); try again",
+                error_type="storage-error",
+            )
+        return None
 
     async def _inv_ssp(eid: str) -> None:
         if semantic_search_registry is not None:
@@ -463,7 +472,7 @@ def build_system_toolset(
         ("model_profile", "model_profiles", ModelProfile, None, _inv_mp, _inv_mp, "admin"),
         ("embedding_provider", "embedding_providers", EmbeddingProvider, None, _inv_emb, _inv_emb, "admin"),
         ("cross_encoder_provider", "cross_encoder_providers", CrossEncoderProvider, None, _inv_ce, _inv_ce, "admin"),
-        ("toolset", "toolsets", Toolset, None, _inv_ts, _toolset_on_delete, "user"),
+        ("toolset", "toolsets", Toolset, None, _inv_ts, _inv_ts, "user"),
         ("agent", "agents", Agent, None, None, None, "user"),
         ("graph", "graphs", Graph, None, None, None, "user"),
         ("collection", "collections", Collection, None, None, None, "user"),
@@ -530,7 +539,8 @@ def build_system_toolset(
         ),
         "toolset": (
             "Deleting a toolset that signs in with OAuth also forgets its shared sign-in (its tokens, its registered client and any sign-in "
-            "still pending), as the REST delete does: a toolset created again under the same id needs an admin to connect it."
+            "still pending), as the REST delete does: a toolset created again under the same id needs an admin to connect it. The sign-in is "
+            "forgotten first; if that fails the delete answers ``type=storage-error`` and the toolset stays."
         ),
     }
     # The writes that need an admin CALLER although the tool's static required_role is lower (architecture review A-02, security
@@ -569,6 +579,7 @@ def build_system_toolset(
     pre_deletes_by_label: dict[str, Any] = {
         "artifact_storage_provider": _artifact_provider_pre_delete,
         "collection": _collection_pre_delete,
+        "toolset": _toolset_pre_delete,
     }
     for label, plural, cls, on_c, on_u, on_d, role in crud_specs:
         pre_create, pre_update = pre_checks_by_label.get(label, (None, None))

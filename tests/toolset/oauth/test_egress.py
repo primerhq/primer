@@ -36,7 +36,8 @@ def _guard_on():
 @pytest.fixture
 def dns(monkeypatch) -> list[str]:
     """Names resolve through this table (an IP literal never reaches it); returns the lookup log."""
-    table = {"as.example": [PUBLIC], "as.internal": ["10.0.0.5"], "mixed.example": [PUBLIC, "169.254.169.254"], "mcp.example": [PUBLIC]}
+    table = {"as.example": [PUBLIC], "as.internal": ["10.0.0.5"], "mixed.example": [PUBLIC, "169.254.169.254"], "mcp.example": [PUBLIC],
+             "mcp.internal": ["10.0.0.9"]}
     looked_up: list[str] = []
 
     async def resolve(host: str, port: int) -> list[str]:
@@ -90,7 +91,21 @@ async def test_outside_any_toolset_nothing_is_direct(dns):
     async with client:
         with pytest.raises(ssrf.BlockedDestinationError):
             await client.get("http://127.0.0.1:9/mcp")
-    assert backend.log["connect"] == [] and egress.direct_hosts() == frozenset()
+    assert backend.log["connect"] == [] and egress.direct_endpoints() == frozenset()
+
+
+async def test_another_port_of_the_mcp_host_is_vetted(dns):
+    """Review L5 of #852: direct routing is keyed on host AND port, so the MCP server cannot point primer at another service on its own machine
+    (a Redis on 6379 beside an MCP server on 9). The default port of the scheme counts as named."""
+    client, backend = _client()
+    async with client:
+        with calls_for("http://127.0.0.1:9/mcp"), pytest.raises(ssrf.BlockedDestinationError):
+            await client.get("http://127.0.0.1:6379/prm")
+        with calls_for("https://mcp.internal/mcp"):
+            assert (await client.get("https://mcp.internal:443/.well-known/oauth-protected-resource")).status_code == 200
+            with pytest.raises(ssrf.BlockedDestinationError):
+                await client.get("http://mcp.internal/token")
+    assert backend.log["connect"] == [("mcp.internal", 443)]
 
 
 async def test_one_toolsets_mcp_host_is_not_direct_for_another(dns):

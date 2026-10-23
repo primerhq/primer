@@ -9,6 +9,7 @@ a sign-in.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 
@@ -145,3 +146,49 @@ async def test_every_toolset_delete_path_forgets_the_sign_in(path, oauth_app, ra
     await storage_provider.get_storage(Toolset).create(again)
     status = await service.status(again)
     assert (status.state, status.connected_at) == ("needs_sign_in", None), "a toolset created again came back on the old sign-in"
+
+
+def _system_tools(app):
+    return build_system_toolset(
+        storage_provider=app.state.storage_provider, provider_registry=app.state.provider_registry, mcp_oauth=app.state.mcp_oauth,
+    )
+
+
+async def test_the_system_tool_forgets_the_sign_in_before_it_deletes_the_row(oauth_app, monkeypatch) -> None:
+    """Review L3 of #852: as REST does, the sign-in goes first, so a delete never leaves a sign-in behind a deleted toolset."""
+    storage_provider = oauth_app.state.storage_provider
+    service: ToolsetOAuthService = oauth_app.state.mcp_oauth
+    toolset = _toolset("kb")
+    await storage_provider.get_storage(Toolset).create(toolset)
+    await _connected(service, toolset)
+    seen: list[bool] = []
+    forget = service.forget
+
+    async def forget_and_look(toolset_id: str) -> None:
+        seen.append(await storage_provider.get_storage(Toolset).get(toolset_id) is not None)
+        await forget(toolset_id)
+
+    monkeypatch.setattr(service, "forget", forget_and_look)
+    result = await _system_tools(oauth_app).call(tool_name="delete_toolset", arguments={"id": "kb"}, ctx=caller("user"))
+    assert not result.is_error, result.output
+    assert seen == [True], "the sign-in was forgotten after the row was gone"
+    assert await storage_provider.get_storage(Toolset).get("kb") is None and await service.store.get_tokens("kb") is None
+
+
+async def test_a_forget_that_fails_leaves_the_toolset_and_answers_an_error(oauth_app, monkeypatch) -> None:
+    storage_provider = oauth_app.state.storage_provider
+    service: ToolsetOAuthService = oauth_app.state.mcp_oauth
+    toolset = _toolset("kb")
+    await storage_provider.get_storage(Toolset).create(toolset)
+    await _connected(service, toolset)
+
+    async def broken(toolset_id: str) -> None:
+        raise RuntimeError("storage went away")
+
+    monkeypatch.setattr(service, "forget", broken)
+    result = await _system_tools(oauth_app).call(tool_name="delete_toolset", arguments={"id": "kb"}, ctx=caller("user"))
+    assert result.is_error
+    error = json.loads(result.output)
+    assert error["type"] == "storage-error" and "was not deleted" in error["message"] and "RuntimeError" in error["message"]
+    assert await storage_provider.get_storage(Toolset).get("kb") is not None, "the toolset stays when its sign-in could not be forgotten"
+    assert await service.store.get_tokens("kb") is not None

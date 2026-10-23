@@ -94,18 +94,24 @@ is set for one host and the callback lands on another.
 For client credentials, an admin starts sign-in and Primer obtains the shared token
 immediately. During normal MCP traffic, `McpBearerAuth` sends that token on every
 request. A 401 triggers at most one refresh and one retry. When the server
-rejects the refreshed token too, the toolset is signed out with the reason
+rejects the refreshed token too, a browser sign-in is signed out with the reason
 `The MCP server rejected the access token.` (`ToolsetOAuthService.sign_out_rejected`,
 fenced on the version that holds that token, so a reconnect or a newer token
 stored meanwhile is left alone): its status stops saying `connected`, and later
-calls fail at once instead of spending a refresh token each. Refresh is coordinated
+calls fail at once instead of spending a refresh token each. A client-credentials
+toolset can recover without a person (the rule a refused client-credentials
+refresh follows too): its row is marked `error` with that reason and only the
+access token is dropped, the call fails as a temporary provider error, and the
+next call exchanges the credentials again. Refresh is coordinated
 under a lease across pods, and a compare-and-set write prevents a late refresher
 from replacing newer credentials. Disconnect first ends the toolset's pending
 sign-ins (a Reconnect left open on the provider's page would otherwise connect the
 toolset again when completed), attempts revocation and then removes the local
 sign-in. Every path that deletes a toolset forgets its sign-in (its
 tokens, its registered client and its pending sign-ins): the REST delete and the
-system `delete_toolset` tool through `ToolsetOAuthService.forget`, and a harness
+system `delete_toolset` tool through `ToolsetOAuthService.forget` (the tool forgets
+before it deletes the row, and a forget that fails answers `storage-error` and
+leaves the toolset in place), and a harness
 uninstall or a sync that drops the toolset through the store's keyless
 `forget_sign_in`, which the service's `forget` is built on. A toolset created
 again under the same id is never connected on the deleted one's sign-in.
@@ -184,8 +190,10 @@ server's URL on the same origin (a document covering the whole origin, which man
 servers publish and the MCP SDK's client accepts too). A document for another
 host, scheme, port, sibling path or query, or with no `resource`, is refused with
 a 400 that names both resources, so a 401 cannot steer the sign-in to another
-server's authorization server. `oauth.resource_uri` itself must be on the MCP URL's
-origin (scheme, host and port): every write refuses another one with a 422 naming
+server's authorization server. `oauth.resource_uri` itself must be the MCP URL or
+a parent of it on the same origin (scheme, host and port), the same rule
+(`protocol.is_resource_of`): another origin, or another path of this one, is
+another server's resource, and every write refuses it with a 422 naming
 the field (`toolset_checks.check_oauth_resource_uri`, applied by the REST create and
 update, where the problem's `extensions.errors[].loc` is
 `body.config.config.oauth.resource_uri`, by the system tools as `validation-error`,
@@ -201,9 +209,10 @@ temporary server error; a revocation answer's body is never read.
 
 The OAuth client does not call private addresses an MCP server names (audit
 G4-08). Its transport (`primer/toolset/oauth/egress.py`) routes each request by
-host: the MCP URL's own host, and a token endpoint the toolset configures, are
-reached directly (the MCP URL is chosen by the toolset's author and is not
-guarded); any other host (the protected-resource document a 401 points at, the
+host and port: the MCP URL's own host and port, and those of a token endpoint the
+toolset configures, are reached directly (the MCP URL is chosen by the toolset's
+author and is not guarded); any other host or port (another service on the MCP
+server's machine, the protected-resource document a 401 points at, the
 authorization server's metadata, token, registration and revocation endpoints)
 passes `primer.common.ssrf`'s private-destination policy at connect time
 (`ssrf.public_addresses` through `netguard.GuardedNetworkBackend`) and connects to

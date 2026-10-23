@@ -615,10 +615,11 @@ class ToolsetOAuthService:
         """The MCP server rejected ``rejected`` as well: the token a 401 had just been answered with (the second 401 of one request, audit G4-11).
 
         A freshly refreshed token that the server will not take either means the sign-in no longer works for this server (another audience, a
-        consent withdrawn on the resource side), so the toolset is signed out with :data:`TOKEN_REJECTED`: its status stops saying connected, and the
-        next call fails at once instead of spending another refresh token. The sign-out is fenced on the version that holds ``rejected`` (and on its
-        lease as read): a reconnect, or a newer token another caller or process stored meanwhile, is left alone. A row this process cannot read is
-        left alone too (:data:`KEY_CHANGED`).
+        consent withdrawn on the resource side), so a browser sign-in is signed out with :data:`TOKEN_REJECTED`: its status stops saying connected,
+        and the next call fails at once instead of spending another refresh token. A client-credentials sign-in can recover without a person (the
+        same rule as a refused refresh): its row is marked ``error`` with :data:`TOKEN_REJECTED` and only the access token is dropped, so the next
+        call makes a fresh exchange. The write is fenced on the version that holds ``rejected`` (and on its lease as read): a reconnect, or a newer
+        token another caller or process stored meanwhile, is left alone. A row this process cannot read is left alone too (:data:`KEY_CHANGED`).
         """
         row = await self._store.get_tokens(target.toolset_id)
         if row is None or row.state != "connected" or row.config_fingerprint != config_fingerprint(target):
@@ -629,7 +630,16 @@ class ToolsetOAuthService:
             return
         if current != rejected:
             return
-        await self._sign_out(row, TOKEN_REJECTED)
+        if row.grant != "client_credentials":
+            await self._sign_out(row, TOKEN_REJECTED)
+            return
+        marked = await self._store.patch_tokens(
+            row.id or target.toolset_id,
+            {"access_token_enc": None, "state": "error", "reason": TOKEN_REJECTED, "version": row.version + 1},
+            where={"version": [raw_generation(row, "version")], "refresh_lease_until": [raw_generation(row, "refresh_lease_until")]},
+        )
+        if marked is not None:
+            logger.warning("MCP toolset %s: %s The next call exchanges the client credentials again.", target.toolset_id, TOKEN_REJECTED)
 
     async def _refresh(self, target: OAuthTarget, *, observed: McpOAuthTokenSet, forced: bool) -> str:
         """Refresh the token set ``observed`` was read from, or take the token another caller or process stored meanwhile.
@@ -855,13 +865,14 @@ class ToolsetOAuthService:
 
     @staticmethod
     def _require_resource_on_the_server(target: OAuthTarget) -> None:
-        """Refuse a ``resource_uri`` that is not on the MCP server's origin (audit G4-07): every write refuses one
-        (:func:`primer.toolset.toolset_checks.check_oauth_resource_uri`), and this keeps a row stored before that rule from starting a sign-in."""
+        """Refuse a ``resource_uri`` that is not the MCP server's URL or a parent of it on its origin (audit G4-07, review L6 of #852): every write
+        refuses one (:func:`primer.toolset.toolset_checks.check_oauth_resource_uri`), and this keeps a row stored before that rule from starting a
+        sign-in."""
         resource = target.oauth.resource_uri
-        if resource is not None and (origin_of(resource)[0] != "url" or origin_of(resource) != origin_of(target.server_url)):
+        if resource is not None and (origin_of(resource)[0] != "url" or not protocol.is_resource_of(resource, target.server_url)):
             raise BadRequestError(
-                f"the MCP toolset {target.toolset_id} names an oauth.resource_uri that is not on the MCP server's own origin (scheme, host and port), "
-                "so no token is requested for it: edit the toolset"
+                f"the MCP toolset {target.toolset_id} names an oauth.resource_uri that is not the MCP server's url or a parent of it on its own "
+                "origin (scheme, host and port), so no token is requested for it: edit the toolset"
             )
 
     @staticmethod
