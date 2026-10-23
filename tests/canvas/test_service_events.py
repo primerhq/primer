@@ -630,7 +630,8 @@ async def test_two_marks_from_stale_reads_both_land(world_with_playlist):
 
 
 async def test_a_mark_from_a_stale_read_keeps_what_another_wait_marked(world_with_playlist):
-    """mark_seen writes only the pointer, so a seen_ahead another wait wrote under it survives."""
+    """Both writers patch the read marks fenced on seen_version: the stale mark_seen is rejected, reads again and keeps the
+    seen_ahead another wait wrote under it."""
     w = world_with_playlist
     for _ in range(3):
         await _event(w, "play", "click")
@@ -717,3 +718,53 @@ async def test_an_event_is_announced_in_the_workspace_the_canvas_names_never_the
     [logged] = await w.events("canvas.event")
     assert (logged.workspace_id, logged.payload["id"]) == ("ws-1", ev.id)
     assert (await w.canvas("s1")).workspace_id == "ws-1"
+
+
+# ---- a stored row from before the read marks had seen_ahead and seen_version (review N6 on #856) -------------------------------------
+
+
+@pytest_asyncio.fixture
+async def sqlite_sp(tmp_path):
+    from primer.model.provider import SqliteConfig, StorageProviderConfig, StorageProviderType
+    from primer.storage.factory import StorageProviderFactory
+
+    provider = StorageProviderFactory.create(
+        StorageProviderConfig(provider=StorageProviderType.SQLITE, config=SqliteConfig(path=tmp_path / "t.sqlite")),
+    )
+    await provider.initialize()
+    yield provider
+    await provider.aclose()
+
+
+async def test_marks_on_a_real_backend_row_that_lacks_the_new_keys(sqlite_sp):
+    """A canvas stored before G8-07 has no ``seen_ahead`` or ``seen_version`` key. The model reads their defaults, and the
+    seen_version guard that names the default 0 must match the document that lacks the key, or no mark would ever land."""
+    from primer.canvas.service import CanvasService
+    from primer.model.canvas import CanvasEvent
+
+    def click(seq: int) -> dict:
+        return CanvasEvent(
+            id=f"e{seq}", seq=seq, rev=1, element="play", type="Button", kind="click", source="control", by="alice", wake=True,
+            at=datetime(2026, 10, 18, 12, 0, tzinfo=UTC), label="Play",
+        ).model_dump(mode="json")
+
+    doc = SessionCanvas(id="s1", workspace_id="ws-1", rev=1).model_dump(mode="json")
+    doc.update(events=[click(1), click(2), click(3)], event_seq=3, seen_event_seq=0)
+    del doc["seen_ahead"], doc["seen_version"]
+    store = sqlite_sp.get_storage(SessionCanvas)
+    await store._ensure_table()
+    await sqlite_sp.connection.execute(f'INSERT INTO "{store._table}" (id, data) VALUES (?, ?)', ("s1", json.dumps(doc)))
+    await sqlite_sp.connection.commit()
+    old = await store.get("s1")
+    assert (old.seen_ahead, old.seen_version) == ([], 0)
+
+    service = CanvasService(sqlite_sp)
+    await service.mark_events_seen("s1", [2])
+    row = await store.get("s1")
+    assert (row.seen_event_seq, row.seen_ahead, row.seen_version) == (0, [2], 1), "the first mark landed on the old document"
+    assert [e.id for e in row.unseen_events()] == ["e1", "e3"]
+    await service.mark_events_seen("s1", [1])
+    await service.mark_seen("s1", 3)
+    row = await store.get("s1")
+    assert (row.seen_event_seq, row.seen_ahead, row.seen_version) == (3, [], 3) and row.unseen_events() == []
+
