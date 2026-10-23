@@ -256,6 +256,8 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing, fram
       if (v === undefined || v === null || v === "") {
         if (isEdit && f.secret && existing?.config?.[f.key] !== undefined) {
           out[f.key] = existing.config[f.key];
+        } else if (isEdit && !f.secret) {
+          out[f.key] = null;
         }
         continue;
       }
@@ -456,6 +458,7 @@ function ChannelProviderDetail({ providerId, pushToast, onBack = null, onDeleted
     (signal) => apiFetch("GET", "/channels?limit=200", null, { signal }),
     {},
   );
+  const channelsState = window.primerApi.resourceState(channels);
   const chs = (channels.data?.items ?? []).filter((c) => c.provider_id === providerId);
 
   const del = useMutation(
@@ -515,14 +518,15 @@ function ChannelProviderDetail({ providerId, pushToast, onBack = null, onDeleted
   return (
     <div className="col" style={{ gap: 14 }}>
       <div>
-        <a
+        <button
+          type="button"
           className="link muted text-sm"
           data-testid="ch-detail-back"
           onClick={handleBack}
-          style={{ cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}
+          style={{ cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4, border: 0, background: "none", padding: 0 }}
         >
           ‹ Channel Providers
-        </a>
+        </button>
       </div>
       <div className="panel">
         <div className="panel-body" style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 18px" }}>
@@ -571,7 +575,11 @@ function ChannelProviderDetail({ providerId, pushToast, onBack = null, onDeleted
             </dl>
           </PK_Section>
           <PK_Section title="CHANNELS" testid="ch-section-channels" cols={1}>
-            {chs.length === 0 ? (
+            {channelsState === "loading" ? (
+              <div className="muted text-sm" role="status" data-testid="ch-channels-loading">Loading channels...</div>
+            ) : channelsState === "stuck" ? (
+              <Banner kind="error" title="Couldn't load channels" detail={channels.error?.detail || channels.error?.message} actions={<Btn size="sm" icon="refresh" onClick={channels.refetch}>Retry</Btn>} />
+            ) : chs.length === 0 ? (
               <div className="empty" style={{ padding: 20 }}>
                 <div className="head">No channels</div>
                 <div className="sub">Create channels under this provider to start routing.</div>

@@ -13,8 +13,11 @@ Tests that:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import pytest
+
+from primer.model.channel import ChannelProvider
 
 from tests.ui._register_harness import COMPONENTS, base_code, context, js, settle, transpiled
 
@@ -82,17 +85,19 @@ def ctx(code: str):
 
 
 def test_edit_keeps_a_stored_secret_left_blank(ctx) -> None:
+    row = ChannelProvider.model_validate({
+        "id": "cp-slack-1",
+        "provider": "slack",
+        "config": {
+            "app_token": "xapp-real-token",
+            "bot_token": "xoxb-real-token",
+            "signing_secret": "real-signing-secret",
+        },
+    }).model_dump(mode="json")
+    ctx.eval("var REAL_CHANNEL_ROW = " + json.dumps(row) + ";")
     ctx.eval("""
     CALLS = [];
-    var row = {
-      id: "cp-slack-1",
-      provider: "slack",
-      config: {
-        app_token: "xapp-stored-mask-123456",
-        bot_token: "xoxb-stored-mask-123456",
-        signing_secret: "stored-secret-mask-123456"
-      }
-    };
+    var row = REAL_CHANNEL_ROW;
     MR.mount(window.NewChannelProviderModal, {
       existing: row,
       onClose: function () {},
@@ -107,9 +112,25 @@ def test_edit_keeps_a_stored_secret_left_blank(ctx) -> None:
     put_calls = [c for c in calls if c["method"] == "PUT" and "cp-slack-1" in c["path"]]
     assert len(put_calls) == 1
     cfg = put_calls[0]["body"]["config"]
-    assert cfg["signing_secret"] == "stored-secret-mask-123456"
-    assert cfg["app_token"] == "xapp-stored-mask-123456"
-    assert cfg["bot_token"] == "xoxb-stored-mask-123456"
+    assert cfg["signing_secret"] == "**********"
+    assert cfg["app_token"] == "**********"
+    assert cfg["bot_token"] == "**********"
+
+
+def test_edit_can_clear_the_optional_channel_number(ctx) -> None:
+    ctx.eval("""
+    CALLS = [];
+    var row = { id: "cp-telegram", provider: "telegram", config: { bot_token: "**********", poll_timeout_seconds: 25 } };
+    MR.mount(window.NewChannelProviderModal, { existing: row, onClose: function () {}, frame: frameFn });
+    ALL("frame-body").forEach(function (n) {
+      if (n.type === "input" && n.props.type === "number") n.props.onChange({ target: { value: "" } });
+    });
+    MR.rerender();
+    ALL("frame-right").filter(function (n) { return n.type === "button"; })[0].props.onClick();
+    """)
+    settle(ctx)
+    call = [c for c in js(ctx, "CALLS") if c["method"] == "PUT"][0]
+    assert call["body"]["config"]["poll_timeout_seconds"] is None
 
 
 def test_edit_round_trips_every_unshown_field(ctx) -> None:
@@ -242,6 +263,19 @@ def test_the_detail_page_stacks_kit_sections(ctx) -> None:
     assert js(ctx, "MR.find('ch-section-config') != null")
     assert js(ctx, "MR.find('ch-section-channels') != null")
     assert "‹ Channel Providers" in js(ctx, "textOf(MR.find('ch-detail-back'))")
+    assert js(ctx, "MR.find('ch-detail-back').type") == "button"
+
+
+def test_channels_section_distinguishes_loading_failure_and_empty(ctx) -> None:
+    ctx.eval("""
+    serve("channel-provider-detail:cp-state", { id: "cp-state", provider: "slack", config: {}, created_at: "2026-10-22T00:00:00Z" });
+    MR.mount(window.ChannelProviderDetail, { providerId: "cp-state" });
+    """)
+    assert js(ctx, "MR.find('ch-channels-loading') != null")
+    ctx.eval("fail('channels:channels', { status: 500, title: 'Failed', detail: 'channels unavailable' }); MR.rerender();")
+    assert "channels unavailable" in js(ctx, "textOf(MR.find('ch-section-channels'))")
+    ctx.eval("serve('channels:channels', { items: [] }); MR.rerender();")
+    assert "No channels" in js(ctx, "textOf(MR.find('ch-section-channels'))")
 
 
 def test_detail_edit_opens_the_register_overlay_in_edit_mode(ctx) -> None:

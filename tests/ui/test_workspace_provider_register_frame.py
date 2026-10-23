@@ -15,8 +15,11 @@ Tests that:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import pytest
+
+from primer.model.workspace import WorkspaceProvider
 
 from tests.ui._register_harness import COMPONENTS, base_code, context, js, settle, transpiled
 
@@ -165,6 +168,10 @@ def test_a_gateway_provider_can_be_created(ctx) -> None:
       if (n.type === "input" && n.props.placeholder === "{workspace_id}.ws.local") {
         n.props.onChange({ target: { value: "{workspace_id}.ws.prod" } });
       }
+      if (n.type === "input" && n.props.placeholder === "80") {
+        GW_EXTERNAL_PORT_WAS = n.props.value;
+        n.props.onChange({ target: { value: "443" } });
+      }
     });
     MR.rerender();
     var btn = ALL("frame-right").filter(function (n) { return n.type === "button"; })[0];
@@ -172,12 +179,13 @@ def test_a_gateway_provider_can_be_created(ctx) -> None:
     """)
     settle(ctx)
     calls = js(ctx, "CALLS")
+    assert js(ctx, "GW_EXTERNAL_PORT_WAS") == ""
     post_call = [c for c in calls if c["method"] == "POST" and "workspace_providers" in c["path"]][0]
     reach = post_call["body"]["config"]["reachability"]
     assert reach["kind"] == "gateway_httproute"
     assert reach["gateway"]["name"] == "my-gateway"
     assert reach["routing"] == {"kind": "hostname", "hostname_template": "{workspace_id}.ws.prod"}
-    assert reach["external_port"] == 80
+    assert reach["external_port"] == 443
 
 
 def test_switching_the_reachability_kind_replaces_the_object(ctx) -> None:
@@ -209,6 +217,12 @@ def test_switching_the_reachability_kind_replaces_the_object(ctx) -> None:
       if (n.type === "input" && n.props.placeholder === "prod-gw") {
         n.props.onChange({ target: { value: "switched-gw" } });
       }
+        if (n.type === "input" && n.props.placeholder === "{workspace_id}.ws.local") {
+          n.props.onChange({ target: { value: "{workspace_id}.example.test" } });
+        }
+        if (n.type === "input" && n.props.placeholder === "80") {
+          n.props.onChange({ target: { value: "443" } });
+        }
     });
     MR.rerender();
     var btn = ALL("frame-right").filter(function (n) { return n.type === "button"; })[0];
@@ -224,21 +238,22 @@ def test_switching_the_reachability_kind_replaces_the_object(ctx) -> None:
 
 
 def test_edit_round_trips_every_unshown_field(ctx) -> None:
+    row = WorkspaceProvider.model_validate({
+        "id": "wp-complete",
+        "provider": "kubernetes",
+        "config": {
+            "kind": "kubernetes",
+            "variant": "system",
+            "namespace": "primer",
+            "connection": {"kind": "in_cluster"},
+            "reachability": {"kind": "in_cluster"},
+            "image_pull_secrets": ["registry-one"],
+        },
+    }).model_dump(mode="json")
+    ctx.eval("var REAL_WORKSPACE_ROW = " + json.dumps(row) + ";")
     ctx.eval("""
     CALLS = [];
-    var row = {
-      id: "wp-extra",
-      provider: "kubernetes",
-      config: {
-        kind: "kubernetes",
-        variant: "system",
-        namespace: "primer",
-        unshown_field_one: "custom_flag",
-        unshown_field_two: 42,
-        connection: { kind: "in_cluster" },
-        reachability: { kind: "in_cluster" }
-      }
-    };
+    var row = REAL_WORKSPACE_ROW;
     MR.mount(window.WorkspaceProviderCreateModal, {
       existing: row,
       onClose: function () {},
@@ -249,10 +264,64 @@ def test_edit_round_trips_every_unshown_field(ctx) -> None:
     """)
     settle(ctx)
     calls = js(ctx, "CALLS")
-    put_call = [c for c in calls if c["method"] == "PUT" and "wp-extra" in c["path"]][0]
+    put_call = [c for c in calls if c["method"] == "PUT" and "wp-complete" in c["path"]][0]
     cfg = put_call["body"]["config"]
-    assert cfg["unshown_field_one"] == "custom_flag"
-    assert cfg["unshown_field_two"] == 42
+    assert WorkspaceProvider.model_validate(put_call["body"])
+    assert cfg["image_pull_secrets"] == ["registry-one"]
+
+
+def test_edit_can_clear_optional_gateway_fields(ctx) -> None:
+    ctx.eval("""
+    CALLS = [];
+    var row = {
+      id: "wp-clear",
+      provider: "kubernetes",
+      config: {
+        kind: "kubernetes", variant: "system", namespace: "primer",
+        connection: { kind: "in_cluster" },
+        reachability: {
+          kind: "gateway_httproute",
+          gateway: { name: "gw", namespace: "gw-ns", section_name: "https" },
+          routing: { kind: "hostname", hostname_template: "{workspace_id}.example.test" },
+          scheme: "wss", external_port: 443, backend_port: 5959
+        }
+      }
+    };
+    MR.mount(window.WorkspaceProviderCreateModal, { existing: row, onClose: function () {}, frame: frameFn });
+    ALL("frame-body").forEach(function (n) {
+      if (n.type === "input" && (n.props.value === "gw-ns" || n.props.value === "https")) {
+        n.props.onChange({ target: { value: "" } });
+      }
+    });
+    MR.rerender();
+    ALL("frame-right").filter(function (n) { return n.type === "button"; })[0].props.onClick();
+    """)
+    settle(ctx)
+    call = [c for c in js(ctx, "CALLS") if c["method"] == "PUT"][0]
+    assert call["body"]["config"]["reachability"]["gateway"] == {
+        "name": "gw", "namespace": None, "section_name": None,
+    }
+
+
+def test_gateway_422_error_is_mapped_to_the_visible_port_field(ctx) -> None:
+    ctx.eval("""
+    var row = {
+      id: "wp-errors", provider: "kubernetes",
+      config: {
+        kind: "kubernetes", variant: "system", namespace: "primer",
+        connection: { kind: "in_cluster" },
+        reachability: { kind: "gateway_httproute", gateway: { name: "gw" },
+          routing: { kind: "hostname", hostname_template: "{workspace_id}.example.test" },
+          scheme: "wss", external_port: 443, backend_port: 5959 }
+      }
+    };
+    HANDLER = function () { return refuse({ status: 422, title: "Validation Error", detail: "invalid",
+      extensions: { errors: [{ loc: ["body", "config", "kubernetes", "reachability", "gateway_httproute", "external_port"], msg: "must be at most 65535" }] } }); };
+    MR.mount(window.WorkspaceProviderCreateModal, { existing: row, onClose: function () {}, frame: frameFn });
+    ALL("frame-right").filter(function (n) { return n.type === "button"; })[0].props.onClick();
+    """)
+    settle(ctx)
+    assert "must be at most 65535" in js(ctx, "textOf(MR.find('frame-body'))")
 
 
 def test_the_form_renders_inside_a_frame_with_register_and_save_labels(ctx) -> None:
@@ -319,6 +388,19 @@ def test_the_detail_page_stacks_kit_sections_without_tabs(ctx) -> None:
     assert js(ctx, "MR.find('wp-section-config') != null")
     assert js(ctx, "MR.find('wp-section-templates') != null")
     assert "‹ Workspace Providers" in js(ctx, "textOf(MR.find('wp-detail-back'))")
+    assert js(ctx, "MR.find('wp-detail-back').type") == "button"
+
+
+def test_template_section_distinguishes_loading_failure_and_empty(ctx) -> None:
+    ctx.eval("""
+    serve("ws:provider:wp-state", { id: "wp-state", provider: "kubernetes", config: { kind: "kubernetes", namespace: "primer" } });
+    MR.mount(window.WorkspaceProviderDetail, { providerId: "wp-state" });
+    """)
+    assert js(ctx, "MR.find('wp-templates-loading') != null")
+    ctx.eval("fail('ws:provider:wp-state:templates', { status: 500, title: 'Failed', detail: 'templates unavailable' }); MR.rerender();")
+    assert "templates unavailable" in js(ctx, "textOf(MR.find('wp-section-templates'))")
+    ctx.eval("serve('ws:provider:wp-state:templates', { items: [] }); MR.rerender();")
+    assert "No templates bound" in js(ctx, "textOf(MR.find('wp-section-templates'))")
 
 
 def test_detail_edit_opens_the_register_overlay_in_edit_mode(ctx) -> None:

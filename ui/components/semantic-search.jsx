@@ -231,7 +231,7 @@ function SSPListPage({ onOpen, pushToast }) {
               A SemanticSearchProvider is the database (pgvector or pgvectorscale) that stores vector indexes for your collections.
             </div>
             <div className="actions">
-              <Btn kind="primary" icon="plus" onClick={() => setRegisterOpen(true)}>Register</Btn>
+              <Btn kind="primary" icon="plus" data-testid="ssp-register-open" onClick={() => setRegisterOpen(true)}>Register</Btn>
               <Btn kind="ghost" icon="external">Read the docs</Btn>
             </div>
           </div>
@@ -272,7 +272,7 @@ function SSPListPage({ onOpen, pushToast }) {
           <span className="muted text-sm tabular" style={{ marginLeft: "auto" }}>
             <span className="mono" style={{ color: "var(--green)" }}>● live</span> · /v1/ssp every 5s
           </span>
-          <Btn kind="primary" icon="plus" onClick={() => setRegisterOpen(true)}>Register</Btn>
+          <Btn kind="primary" icon="plus" data-testid="ssp-register-open" onClick={() => setRegisterOpen(true)}>Register</Btn>
         </div>
 
         {list.error && items.length === 0 ? (
@@ -670,7 +670,7 @@ function SSPCreateModal({ onClose, pushToast, existing, initialProvider, frame, 
         </>)}
       </details>
 
-      <SSP_TestConnectBox form={form} isLance={isLance} includeAdvanced={advancedOpened} />
+      {!isEdit ? <SSP_TestConnectBox form={form} isLance={isLance} includeAdvanced={advancedOpened} /> : null}
     </div>
   );
 
@@ -868,14 +868,15 @@ function SSPDetail({ sspId, pushToast, onBack, onDeleted }) {
   return (
     <div className="col" style={{ gap: 14 }}>
       <div>
-        <a
+        <button
+          type="button"
           className="link muted text-sm"
           data-testid="ssp-detail-back"
           onClick={handleBack}
-          style={{ cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}
+          style={{ cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4, border: 0, background: "none", padding: 0 }}
         >
           ‹ Semantic Search Storage
-        </a>
+        </button>
       </div>
       <div className="panel">
         <div className="panel-body" style={{ padding: "14px 18px", display: "flex", alignItems: "center", gap: 14 }}>
@@ -935,7 +936,7 @@ function SSPDetail({ sspId, pushToast, onBack, onDeleted }) {
             <SSPConfig p={p} />
           </PK_Section>
           <PK_Section title="COLLECTIONS" testid="ssp-section-collections" cols={1}>
-            <SSPCollections collections={referencingCollections} sspId={sspId} />
+            <SSPCollections collections={referencingCollections} sspId={sspId} state={collectionsState} error={collections.error} onRetry={collections.refetch} />
           </PK_Section>
         </div>
       </div>
@@ -1059,7 +1060,13 @@ function SSPConfig({ p }) {
   );
 }
 
-function SSPCollections({ collections, sspId }) {
+function SSPCollections({ collections, sspId, state, error, onRetry }) {
+  if (state === "loading") {
+    return <div className="muted text-sm" role="status" data-testid="ssp-collections-loading">Loading collections...</div>;
+  }
+  if (state === "stuck") {
+    return <Banner kind="error" title="Couldn't load collections" detail={error?.detail || error?.message} actions={<Btn size="sm" icon="refresh" onClick={onRetry}>Retry</Btn>} />;
+  }
   if (collections.length === 0) {
     return (
       <div className="empty" style={{ padding: 20 }}>

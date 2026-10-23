@@ -83,11 +83,22 @@ def ctx(code: str):
         c.close()
 
 
-def test_ssp_creation_opens_the_register_overlay() -> None:
-    src = SSP_FILE.read_text(encoding="utf-8")
-    assert "PC_RegisterOverlay" in src
-    assert 'initialClass="ssp"' in src or 'initialClass: "ssp"' in src
-    assert "PC_RegisterDropdown" not in src
+def test_ssp_creation_opens_the_served_type_in_the_register_overlay(ctx) -> None:
+    ctx.eval("""
+    serve("ssp:list", { items: [], total: 0, limit: 50, offset: 0 });
+    serve("ssp:types", { pgvectorscale: { label: "Scale served by the API", config_fields: [] } });
+    window.primerApi.usePagedList = function (opts) {
+      var e = __entry(opts.key);
+      return { items: (e.data && e.data.items) || [], loading: e.loading, error: e.error,
+        refetch: function () { e.refetched += 1; } };
+    };
+    MR.mount(window.SSPListPage, {});
+    press("ssp-register-open");
+    MR.rerender();
+    """)
+    assert js(ctx, "MR.find('pc-register') != null")
+    assert "Semantic Search Storage provider" in js(ctx, "textOf(MR.find('pc-register-type'))")
+    assert "Scale served by the API" in js(ctx, "textOf(MR.find('pc-register'))")
 
 
 def test_the_form_renders_inside_a_frame_with_register_and_save_labels(ctx) -> None:
@@ -203,6 +214,7 @@ def test_edit_round_trips_every_unshown_field(ctx) -> None:
     assert config["diskann_max_alpha"] == 1.4
     assert config["diskann_num_bits_per_dimension"] == 2
     assert config["password"] == "**********"
+    assert js(ctx, "MR.find('ssp-test-connect-draft') == null")
 
 
 def test_lance_edit_keeps_its_hnsw_ef_search(ctx) -> None:
@@ -305,6 +317,19 @@ def test_the_detail_page_stacks_kit_sections_without_tabs(ctx) -> None:
     assert js(ctx, "MR.find('ssp-section-config') != null")
     assert js(ctx, "MR.find('ssp-section-collections') != null")
     assert "‹ Semantic Search Storage" in js(ctx, "textOf(MR.find('ssp-detail-back'))")
+    assert js(ctx, "MR.find('ssp-detail-back').type") == "button"
+
+
+def test_collections_section_distinguishes_loading_failure_and_empty(ctx) -> None:
+    ctx.eval("""
+    serve("ssp-detail:ssp-state", { id: "ssp-state", provider: "pgvector", config: { hostname: "pg" } });
+    MR.mount(window.SSPDetail, { sspId: "ssp-state" });
+    """)
+    assert js(ctx, "MR.find('ssp-collections-loading') != null")
+    ctx.eval("fail('ssp-detail:ssp-state:collections', { status: 500, title: 'Failed', detail: 'collections unavailable' }); MR.rerender();")
+    assert "collections unavailable" in js(ctx, "textOf(MR.find('ssp-section-collections'))")
+    ctx.eval("serve('ssp-detail:ssp-state:collections', { items: [] }); MR.rerender();")
+    assert "No collections bound" in js(ctx, "textOf(MR.find('ssp-section-collections'))")
 
 
 def test_detail_edit_opens_the_register_overlay_in_edit_mode(ctx) -> None:
