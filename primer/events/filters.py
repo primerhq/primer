@@ -20,8 +20,9 @@ search, as the channel ``text_pattern``), and an ``expr`` is evaluated on
 a dedicated worker thread (regopy's calls release the GIL) that the caller
 waits on for at most :data:`_EXPR_TIMEOUT_SECONDS`. rego-cpp cannot be
 interrupted, so an evaluation that runs past the bound keeps its thread
-until it ends; while it runs, the same expression is answered "no match"
-at once instead of being started again.
+until it ends; while it runs, EVERY expression is answered "no match" at
+once (one WARNING per stuck evaluation) instead of queueing behind it. A
+killable evaluator (a subprocess) is the lead's ticket.
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ from typing import Any
 import regex
 
 from primer.common.user_regex import (
+    MAX_PATTERN_LENGTH,
     UserRegexError,
     UserRegexTimeout,
     compile_user_regex,
@@ -147,6 +149,23 @@ def _log_expr_rejection(expr_text: str, exc: Exception) -> None:
         logger.warning("event filter expr rejected (no match): %s", exc)
 
 
+def _compile_field_regex(pattern: str) -> regex.Pattern:
+    """The one compile the save-time check and the dispatcher share: a stored pattern, so its verdict and compile are cached."""
+    return compile_user_regex(pattern, max_length=None, what="event filter regex", stored=True)
+
+
+def check_field_regex(pattern: str) -> None:
+    """The save-time check of one ``regex`` field pattern: at most 1000 characters, and the dispatcher's own compile (G6-11).
+
+    Raises :class:`~primer.common.user_regex.UserRegexError`.
+    """
+    if len(pattern) > MAX_PATTERN_LENGTH:
+        raise UserRegexError(
+            f"event filter regex is {len(pattern)} characters long; the limit is {MAX_PATTERN_LENGTH}"
+        )
+    _compile_field_regex(pattern)
+
+
 def _compiled(pattern: str) -> regex.Pattern | None:
     """The field pattern compiled by the ``regex`` engine (cached), or ``None`` when it cannot be used.
 
@@ -155,7 +174,7 @@ def _compiled(pattern: str) -> regex.Pattern | None:
     escaped words itself (``primer.canvas.wait``). The repeat cap applies.
     """
     try:
-        return compile_user_regex(pattern, max_length=None, what="event filter regex")
+        return _compile_field_regex(pattern)
     except UserRegexError as exc:
         if pattern not in _BAD_PATTERNS_LOGGED and len(_BAD_PATTERNS_LOGGED) < 1024:
             _BAD_PATTERNS_LOGGED.add(pattern)
@@ -176,7 +195,7 @@ def validate_filter(filter_: EventFilter | None) -> None:
         if matcher.op != "regex":
             continue
         try:
-            compile_user_regex(matcher.value, what=f"the regex for {matcher.path!r}")
+            check_field_regex(matcher.value)
         except UserRegexError as exc:
             raise ValueError(f"invalid regex {matcher.value[:200]!r} for {matcher.path!r}: {exc}") from None
 
@@ -260,7 +279,10 @@ def _start_expr(expr_text: str, input_doc: dict[str, Any]) -> "Future[bool] | bo
         _log_expr_rejection(expr_text, exc)
         return False
     with _RUNNING_LOCK:
-        if _digest(expr_text) in _RUNNING_PAST_BOUND:
+        if _RUNNING_PAST_BOUND:
+            # The one worker is still held by an evaluation that ran past the
+            # bound: every expr answers no match at once instead of queueing
+            # behind it for the full bound (round 2, M2).
             return False
     return _REGO_EXECUTOR.submit(_run_expr, expr_text, input_doc)
 
@@ -276,10 +298,16 @@ def _past_bound(expr_text: str, future: "Future[bool]") -> None:
                 _RUNNING_PAST_BOUND.discard(digest)
 
         future.add_done_callback(_ended)
-    logger.warning(
-        "event filter expr ran past its %g s bound (no match); until that "
-        "evaluation ends the same expr answers no match without running", _EXPR_TIMEOUT_SECONDS,
-    )
+        logger.warning(
+            "event filter expr %s ran past its %g s bound (no match); until that evaluation "
+            "ends, the rego worker is held and EVERY event filter expr answers no match at once",
+            digest[:12], _EXPR_TIMEOUT_SECONDS,
+        )
+    else:
+        logger.info(
+            "event filter expr %s waited past its %g s bound for the rego worker (no match)",
+            digest[:12], _EXPR_TIMEOUT_SECONDS,
+        )
 
 
 def _answer(expr_text: str, future: "Future[bool]") -> bool:
@@ -369,6 +397,7 @@ __all__ = [
     "evaluate_filter_expr_async",
     "matches",
     "matches_async",
+    "check_field_regex",
     "validate_filter",
     "validate_filter_expr",
 ]

@@ -26,8 +26,8 @@ from pydantic import BaseModel, Field, ValidationError
 
 from primer.agent.inner_dispatch import run_principal
 from primer.authz import _role_allows
-from primer.common.user_regex import UserRegexError, compile_user_regex
-from primer.events.filters import validate_filter_expr
+from primer.common.user_regex import UserRegexError
+from primer.events.filters import check_field_regex, validate_filter_expr
 from primer.events.redaction import redact_payload
 from primer.events.visibility import SCOPE_PATHS, needs_scope, user_safe_glob, user_safe_kinds
 from primer.model.event import (
@@ -162,7 +162,7 @@ def make_wait_for_event_handler(storage_provider: "StorageProvider"):
             if matcher.op == "regex":
                 # The engine that matches it, at most 1000 characters (G6-11).
                 try:
-                    compile_user_regex(matcher.value, what=f"the regex for {matcher.path!r}")
+                    check_field_regex(matcher.value)
                 except UserRegexError as exc:
                     return _err(
                         f"invalid regex {matcher.value[:200]!r}: {exc}",

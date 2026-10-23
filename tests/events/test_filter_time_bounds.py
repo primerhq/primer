@@ -146,3 +146,24 @@ async def test_the_dispatcher_awaits_a_slow_expr_off_its_loop(tmp_path):
     finally:
         await _until_no_evaluation_runs_past_the_bound()
         await sp.aclose()
+
+
+# ---- round 2, M2: a stuck worker answers every expr at once --------------------------------------------------------------
+
+
+async def test_while_the_worker_is_stuck_every_expr_answers_at_once_with_one_warning(caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="primer.events.filters"):
+        assert evaluate_filter_expr(SLOW_EXPR, {"payload": {"s": SLOW_INPUT}}) is False
+        timings = []
+        for _ in range(3):
+            started = time.perf_counter()
+            # An unrelated expr that would match: it does not queue behind the stuck one for the 0.5 s bound.
+            assert evaluate_filter_expr(QUICK_EXPR, {"payload": {"s": "kb"}}) is False
+            timings.append(time.perf_counter() - started)
+    assert max(timings) < 0.1, timings
+    stuck = [r for r in caplog.records if "ran past" in r.getMessage()]
+    assert len(stuck) == 1, [r.getMessage() for r in caplog.records]
+    await _until_no_evaluation_runs_past_the_bound()
+    assert evaluate_filter_expr(QUICK_EXPR, {"payload": {"s": "kb"}}) is True
