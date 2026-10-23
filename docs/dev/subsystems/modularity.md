@@ -221,11 +221,30 @@ them on the extra being present, and leave the fallback tests ungated.
   dependency graph. Since G6-4/G6-5 every user-written pattern (workspace
   grep, collection grep and regex search, the tap LIKE selector, graph
   `output_schema` patterns, event-filter field regexes, `text_pattern`)
-  goes through `primer/common/user_regex.py`: a 1000-character cap where
-  the user writes it, a cap on how far counted repeats unroll at compile
-  time (checked before the compiler runs), a per-process compile cache,
-  and timed matching with `concurrent=True` so a match in a worker thread
-  releases the GIL.
+  goes through `primer/common/user_regex.py`:
+  - a 1000-character cap where the user writes the pattern;
+  - refused before parsing: comment groups, the verbose flag, inline flags
+    anywhere but one `(?aimsu)` group at the very start, and group calls;
+  - an expansion cap of 10_000, read from the `regex` module's OWN parse
+    tree (`regex._regex_core`: `Source`, `Info`, `_parse_pattern`; parsing
+    never unrolls), so no spelling can hide a repeat (#859 round 2: round
+    1's hand scanner was fooled by `(?#[)(?:a{65535}){65535}]`). The walk
+    multiplies a repeat by its largest finite count and adds sequences and
+    alternatives; it refuses fuzzy constraints, unknown node types and
+    group calls;
+  - `MemoryError` and `RecursionError` at compile are refusals.
+
+  That private API is pinned: the module refuses to import when a name it
+  uses is gone, a self-check at import reads a known shape, and
+  `tests/common/test_user_regex.py` covers every shape the review found.
+
+  Patterns compile with `cache_pattern=False`. A stored pattern
+  (`stored=True`: text_pattern, filter field regexes, output_schema) is
+  kept with its verdict, refusals included, in a cache bounded by total
+  expansion; one-shot patterns (grep, the tap) are never cached.
+
+  Matching is timed with `concurrent=True`, which releases the GIL, on a
+  dedicated four-thread executor (`run_off_loop`).
 - **The slim image became the default tag (2026-08-09).** Unsuffixed
   `:{version}` and `:latest` now resolve to the slim build; batteries
   included moved to `-full`. The `-slim` and `-fat` aliases are kept one

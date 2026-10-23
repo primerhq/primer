@@ -148,8 +148,10 @@ So the practical state in this release:
   (`search_collection`) over the indexed bodies.
 - **A regex search is bounded.** `GET /v1/collections/{id}/grep` and
   the `regex` mode of the collections `search` tool take a pattern of
-  at most 1000 characters, and one search may spend 10 seconds
-  matching. A pattern that backtracks past that (`(a|aa)+$`, `(x+)+y`)
+  at most 1000 characters (no comment groups, verbose mode, mid-pattern
+  inline flags, group calls or fuzzy matching; counted repeats may not
+  multiply past 10000), and one search may spend 10 seconds matching
+  and one line search 2 seconds. A pattern that backtracks past that (`(a|aa)+$`, `(x+)+y`)
   is refused with an error that says so (HTTP 400, tool
   `validation-error`): simplify it, narrow `path_prefix`, or use the
   `literal` mode, which is a plain substring test with no length cap.
