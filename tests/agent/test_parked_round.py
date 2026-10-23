@@ -322,6 +322,24 @@ async def test_a_remaining_call_that_fails_is_answered_with_an_error_and_the_rou
 
 
 @pytest.mark.asyncio
+async def test_a_remaining_call_above_the_runs_role_is_refused_before_its_gate_and_the_round_goes_on() -> None:
+    """Nothing about the round's first gate is an approval of a later call: a later call whose tool needs a role the resumed run does not have is
+    refused in-band by the role floor, before its own approval gate can park (as on a first dispatch), and the calls after it still run."""
+    rec = _Recorder({"admin_z": "admin", "user_b": "user"})
+    manager = ToolExecutionManager.for_workspace(
+        toolset_providers={"rec": rec}, session=_Session("s-1", "ws-1"), tools=["rec__admin_z", "rec__user_b"], initiated_by=USER,
+        approval_resolver=_PoliciesOnlyResolver([_policy("admin_z")]),
+    )
+    parked_round = ParkedRound(remaining=(_call("call-z", "rec__admin_z"), _call("call-b", "rec__user_b")))
+
+    _events, results = await _finish(parked_round, [_answer("call-g")], manager)
+
+    assert [(p.id, p.error) for p in results] == [("call-g", False), ("call-z", True), ("call-b", False)]
+    assert "requires the 'admin' role" in results[1].output
+    assert _ran(rec) == ["call-b"], "the admin tool never ran and never parked"
+
+
+@pytest.mark.asyncio
 async def test_with_no_manager_to_run_them_the_remaining_calls_are_answered_not_run() -> None:
     parked_round = ParkedRound(completed=(_answer("call-a"),), remaining=(_call("call-b", "rec__user_b"),))
 

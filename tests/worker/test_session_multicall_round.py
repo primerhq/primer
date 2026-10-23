@@ -30,7 +30,7 @@ from primer.agent.workspace_executor import WorkspaceAgentExecutor
 from primer.int.claim import ReleaseOutcome
 from primer.int.toolset import ToolsetProvider
 from primer.model.agent import Agent, AgentModel
-from primer.model.chat import Done, Message, StreamEvent, TextDelta, Tool, ToolCallEnd, ToolCallPart, ToolCallStart, ToolResultPart
+from primer.model.chat import Done, Message, StreamEvent, TextDelta, Tool, ToolCallEnd, ToolCallPart, ToolCallResult, ToolCallStart, ToolResultPart
 from primer.model.scheduler import WorkerConfig
 from primer.model.tool_approval import ToolApprovalPolicy, ToolApprovalRecord
 from primer.model.workspace_session import AgentSessionBinding, SessionStatus, WorkspaceSession
@@ -253,6 +253,46 @@ async def test_every_call_of_the_round_is_recorded_once_under_its_call_row(tmp_p
     assert all(r["payload"]["error"] is False for r in results)
     seqs = [json.loads(line)["seq"] for line in session.records.read_lines(session.id)]
     assert seqs == sorted(set(seqs)), "the resume's records continue the log's sequence"
+
+
+class _Notifier(ToolsetProvider):
+    """Toolset ``ui`` with one NOTIFYING tool, ``show``: the runner answers it itself and delivers it to the client as a client action."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def required_role(self, tool_name: str) -> str:
+        return "user"
+
+    async def list_tools(self, *, principal: str | None = None) -> AsyncIterator[Tool]:
+        yield Tool(id="show", description="shows a thing", toolset_id="ui", args_schema=_SCHEMA, tool_class="notifying")
+
+    async def call(self, *, tool_name, arguments, principal=None, ctx=None):
+        self.calls.append(ctx.tool_call_id)
+        return ToolCallResult(output="shown", is_error=False)
+
+
+@pytest.mark.asyncio
+async def test_a_notifying_call_after_the_gate_is_delivered_on_resume_and_answered_in_the_round(tmp_path: Path, monkeypatch: Any) -> None:
+    """A notifying call after the gate runs on resume as it would have in the live batch: it is delivered (a ``client_action`` record, under its row,
+    before its result) and answered with the runner's synthetic success."""
+    rec = _Recorder({"user_x": "user", "user_b": "user"})
+    notifier = _Notifier()
+    tools = [GATED, "ui__show", "rec__user_b"]
+    session = _Session(tmp_path, providers={"rec": rec, "ui": notifier}, tools=tools, policies=[_policy("rec", "user_x")], monkeypatch=monkeypatch)
+    await session.start()
+    parked = await session.first_turn(_asks_many([("call-g", GATED, {}), ("call-n", "ui__show", {"what": "it"}), ("call-b", "rec__user_b", {})]))
+    assert notifier.calls == []
+
+    outcome = await session.resume(parked, {"decision": "approved"})
+
+    assert (outcome.success, outcome.park) == (True, None) and notifier.calls == ["call-n"]
+    rows = session.rows()
+    resumed = [(r["kind"], r["payload"]["call_id"]) for r in (json.loads(line) for line in session.records.read_lines(session.id)) if r["kind"] in ("client_action", "tool_result")]
+    assert resumed == [("tool_result", rows[GATED]), ("client_action", rows["ui__show"]), ("tool_result", rows["ui__show"]), ("tool_result", rows["rec__user_b"])]
+    request = await session.next_request()
+    assert _pairing(request) == (["call-g", "call-n", "call-b"], ["call-g", "call-n", "call-b"])
+    assert json.loads(_results(request)["call-n"].output) == {"delivered": True}
 
 
 # ---- a second gated call in the same round: two sequential parks --------------------------------------------------------------------------------------------------
